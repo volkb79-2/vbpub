@@ -70,23 +70,23 @@ should be delegated to an implementer inside a brief.
 | # | Decision | Taken in | Depends on | Recommendation today |
 |---|---|---|---|---|
 | F1 | How tests read a UEFI guest's screen | VML-04 | Under UEFI there is no VGA text buffer, so vmscreen's exact VGA source does not apply to any guest of this project (D4). Exact text exists only on the serial line; graphical screens need OCR | Serial log is the primary reader; OCR is the fallback for screens that never reach serial; the VGA engine stays for BIOS consumers only |
-| F2 | How tests assert on the inside of a guest (which state booted, is the package there, is the marker file there) | VML-05 | Screen text is the wrong tool for this. Options: QEMU guest agent, a root shell on the serial line with a marker protocol, SSH through a forward | QEMU guest agent in the test images, new verb `guest exec`: gives exit code and output without parsing a terminal. The product itself never needs the agent |
+| F2 | How tests assert on the inside of a guest (which state booted, is the package there, is the marker file there) | VML-05 | Screen text is the wrong tool for this. Options: QEMU guest agent, a root shell on the serial line with a marker protocol, SSH through a forward | **Resolved by D29:** test-image commands use QGA or SSH; serial is for boot observation; product images stay agent-free |
 | F3 | How a boot menu is driven and verified | DR-10 | Curses menus on a serial line are a stream of cursor movements, not readable lines. A menu choice can be made blind with keys or set from inside the guest (one-shot entry) | Drive with keys after `wait-for-text` on a stable banner line; verify the result inside the guest (F2), never from the menu's rendering; keep one scenario per bootloader that checks the listed entries by OCR or serial as far as it goes |
 | F4 | Cut the bootloader matrix before E1 | DR-10 | Four ZFS options and two btrfs options times twelve scenarios under emulation is weeks | Test four: btrfs with GRUB, btrfs with systemd-boot, ZFS with ZFSBootMenu, ZFS with GRUB on one restricted pool. Drop the two-pool ZFS layout unless the single pool fails |
 | F5 | Where GRUB's menu and environment file live | DR-21 | Debian's signed GRUB reads a small config on the ESP that jumps into `/boot/grub` of one fixed subvolume or dataset. After a rollback that path names the wrong state, and GRUB 2.12 cannot write its environment on btrfs | Keep the real menu and `grubenv` on the ESP (FAT, writable, state-independent); kernels and initramfs stay inside each state. This also removes the Debian 13 limitation for phase 2. Verify that the signed GRUB image contains the btrfs and zfs modules |
 | F6 | Rollback mechanics on btrfs (Q3) | DR-20 | Read-only snapshot with overlay needs initramfs work Debian lacks | Always boot a writable copy of the snapshot; no overlay |
-| F7 | btrfs subvolume layout and how snapper is used | DR-20 | snapper expects `.snapshots` nested under the root subvolume; a flat layout rolls back more cleanly; `snapper rollback` assumes the openSUSE layout and default-subvolume switching | Flat layout with our own "make permanent" step; use snapper for taking, listing and pruning snapshots and for its apt hook; do not use `snapper rollback` unless E1 shows it works on this layout unchanged |
+| F7 | btrfs subvolume layout and how snapper is used | DR-20 | snapper expects `.snapshots` nested under the root subvolume; a flat layout rolls back more cleanly; `snapper rollback` assumes the openSUSE layout and default-subvolume switching | **Dropped (L6):** snapper is installed but unused; use the project's native btrfs snapshot and subvolume operations |
 | F8 | Which parts of `/var/lib` stay outside the OS state | DR-01 | Section 3 of the design guide names examples only. Wrong placement either loses service data on rollback or lets dpkg state drift from `/usr` | Inside by default; outside by an explicit list in the install config (containers, databases, VM images, plus what the host profile adds). `/var/lib/systemd` and `/var/lib/dpkg` inside |
 | F9 | Who owns the partition table (Q9) | DR-01 | `debian-install-v2` refuses mounts over `/`, `/var`, `/etc`, `/boot` and creates swap and a data area itself | Our installer owns the whole table and writes a layout file; `debian-install-v2` runs afterwards in a mode that only consumes the regions the file hands to it. Needs a reading of its code and one small change there |
 | F10 | How the live system gets ZFS, and the rescue path | DR-02 | Provider rescue systems have no ZFS; building the module by DKMS inside a live session is slow and needs RAM | Bake the ZFS module for the live kernel into our ISO at build time. From a provider rescue system, load our live kernel and initrd with kexec instead of installing from the rescue system directly |
-| F11 | Form of the product tool | DR-30 | The tool must work on a half-broken system. The estate norm is a `cli-extended` wheel | One Python file, standard library only, shipped as a `.deb`; ask the operator to accept the exception to the wheel rule, or decide otherwise |
+| F11 | Form of the product tool | DR-30 | The tool must work on a half-broken system. The estate norm is a `cli-extended` wheel | **Resolved by D26:** stdlib Python, one CLI, runtime outside the OS states, versioned global formats |
 | F12 | Health check for phase 2 (Q7) | DR-40 | What "booted well" means differs per host | A fixed core (reached `multi-user.target`, no failed unit from a configured list, default route, SSH listening) plus a hook directory; state it in config, default conservative |
-| F13 | How pruning and kernel removal interact (Q6) | DR-32 | With kernels inside each state, removing a kernel package in the current state cannot break an older state; with kernels copied to the ESP it can, and the ESP is small | Keep N states by count and by ESP or pool free space; for ESP-copy designs pin copies per state and deduplicate by hash |
+| F13 | How pruning and kernel removal interact (Q6) | DR-32 | With kernels inside each state, removing a kernel package in the current state cannot break an older state; with kernels copied to the ESP it can, and the ESP is small | **Resolved by DR-85:** snapshot never fails on menu capacity; use a degraded menu and capacity-aware retention, with an ESP-exhaustion guest scenario |
 | F14 | Reading E1: is a candidate out | DR-19 | Counts of lines written, manual steps, failed scenarios | Written judgement with evidence, not a score |
 | F15 | The E2 decision rule and reading its numbers | DR-50, DR-59 | Baseline spread is unknown until V0 has run | Operator confirms the rule before the run; the frontier model checks every run for outside disturbance before it counts |
 | F16 | The filesystem and bootloader decision (D14, Q1, Q2) | DR-60 | E1 and E2 reports | Operator decides on a frontier-written recommendation |
 | F17 | Every action on r1002 that destroys data, and the hand-back | DR-55 to DR-58 | Lease terms in EXPERIMENTS.md | Controller session runs or directly supervises; no unattended agent holds host credentials |
-| F18 | Secure Boot and encryption scope for the first release (D10) | DR-33 | ZFS needs a locally enrolled key in any case; the GRUB environment block does not work on an encrypted btrfs | First release: Secure Boot supported for btrfs with signed GRUB or signed systemd-boot; ZFS documented as "enrol your own key"; encryption deferred with the reason written down |
+| F18 | Secure Boot and encryption scope for the first release (D10) | DR-33 | ZFS needs a locally enrolled key in any case; the GRUB environment block does not work on an encrypted btrfs | **Resolved by D27:** GRUB remains non-SB and systemd-boot is the Secure Boot path; encryption remains deferred |
 
 ## 4. What the operator must decide or provide first
 
@@ -98,7 +98,7 @@ should be delegated to an implementer inside a brief.
 | OP4 | Project name and final location (Q8) | DR-30 naming, the `.deb` name | **Location decided 2026-11-17: stay in `scripts/debian-rollback/` for now.** Product name proposed `snapboot`, not yet accepted |
 | OP5 | Confirm the E2 decision rule and its margin (F15) | DR-59 | **Decided 2026-11-17:** ZFS stays a candidate if no workload step is more than 20% slower than btrfs; memory pressure is recorded but not used for the verdict |
 | OP6 | Lease timing for r1002; tell the other controller session | track E | **Operator 2026-11-17: r1002 and v1001 may be used for tests at any time (controller offline).** Before using r1002 note that iogovmon's 48 h acceptance there (installed 2026-11-15 14:38Z, +12 h passed, +48 h check due 2026-11-17 14:38Z, not reported) is still open; a reinstall ends it. Identity check (Netcup API) comes before any writing SSH |
-| OP7 | Accept F11 (standard-library tool as a `.deb`) | DR-30 | follow the recommendation, flagged |
+| OP7 | Accept F11 (standard-library tool as a `.deb`) | DR-30 | **Resolved by D26:** use stdlib Python with one CLI and keep the runtime outside the OS states |
 | OP8 | Fix job for TN-15 and TN-16 (TrueNAS lanes red on `main`) | nothing here; it hides new TrueNAS failures behind three known ones | leave as is |
 
 ## 5. Process for every package
@@ -300,14 +300,15 @@ product (track F reuses the code).
 
 | Package | Content | Size |
 |---|---|---|
-| DR-20 | btrfs: snapper configuration for the flat layout (F7), apt hook check for manual and unattended runs, "make permanent" as a writable copy becoming the default (F6) | M |
+| DR-20 | btrfs: native snapshot and flat-layout handling (F7 dropped), apt hook check for manual and unattended runs, "make permanent" as a writable copy becoming the default (F6) | M |
 | DR-21 | GRUB menu generator on the ESP for btrfs states: one entry per state with its own kernel, initramfs and `rootflags=subvol=`, default and one-shot through `grubenv` on the ESP (F5) | M |
 | DR-22 | systemd-boot variant for btrfs: kernels copied to the ESP per state, entries per state, deduplication, boot counting left off until phase 2 | M |
 | DR-23 | ZFS: apt hook that snapshots the active boot environment; clone, activate, promote commands; ZFSBootMenu built from upstream release with a pinned checksum, installed on the ESP, its properties set | L |
 | DR-24 | ZFS with GRUB on one `compatibility=grub2` pool: same generator as DR-21 with a ZFS backend | M |
 
-Frontier writes each brief from DR-01 and the E1 scenario list; F5, F6, F7 are
-taken before DR-20 and DR-21 start. DR-21 and DR-24 share one generator with
+F7 is resolved as dropped by L6. Frontier writes each brief from DR-01 and
+the E1 scenario list; F5 and F6 are taken before DR-20 and DR-21 start. DR-21
+and DR-24 share one generator with
 two backends: write DR-21 with that in mind.
 
 ## 9. Track D: experiment E1

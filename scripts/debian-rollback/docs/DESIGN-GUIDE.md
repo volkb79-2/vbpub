@@ -21,7 +21,7 @@ unpacked into a new boot environment, and regenerates `/etc` from one
 configuration database. Stock Debian has no such database, so that model does
 not transfer (section 6).
 
-## 2. Decisions (operator, 2026-11-12)
+## 2. Decisions
 
 | # | Decision |
 |---|---|
@@ -46,6 +46,18 @@ not transfer (section 6).
 | D19 | Operator 2026-11-18: evaluate by hand first (PoC matrix: btrfs with snapper and GRUB, btrfs with systemd-boot, ZFS boot environments with ZFSBootMenu or GRUB); `debian-install-v2` stays separate (documented handoff point only). The original controller scheduling and host-lease sequence in this decision was superseded on 2026-11-20; see D21. |
 | D20 | Operator 2026-11-20: M2 will have separate build-time Debian Live ISO variants for target-disk GRUB and systemd-boot. The Debian Live environment continues to boot through the base ISO's GRUB path in both variants. |
 | D21 | Operator 2026-11-20: complete the systemd-boot PoC first and continue with the ZFS PoC later. r1002 and v1001 are available for project VMs without another approval request. Codex owns this work while Claude and its project controller/subcontroller are unavailable. |
+| D22 | Historical ZFS checkpoint design. **Superseded by D28.** |
+| D23 | Operator 2026-11-23: with the systemd-boot PoC complete, make ZFSBootMenu the first ZFS variant. Keep ZFS with restricted GRUB as a later comparison only if the ZFSBootMenu guest report leaves a specific question open. |
+| D24 | First ZFS system-acceptance guest: Debian 13/ZFSBootMenu 3.1 compatibility line (`openzfs-2.3-linux`), a 512 MiB ESP plus one pool partition, no target swap, 64 GiB disk, and 2048 MiB RAM for installed-system boot and recovery. Boot ZBM through the ESP fallback path without requiring writable NVRAM; measure the pinned EFI asset and keep three copies plus at least 128 MiB ESP free. `prune` defaults to the initial install plus two checkpoints, with pool capacity derived from measured BE `REFER`, persistent-data budget, and update/metadata reserve. ZFS reinstall safety uses a fail-closed signature guard with `REINSTALL=yes` as the explicit override. |
+| D25 | Operator 2026-11-24: keep the current TCG Live install at 3072 MiB, then test installed-system boot and recovery at 2048 MiB. The install RAM is a test setting, not a claimed 3 GiB minimum. Add a separate later 1–2 GiB usefulness experiment comparing no swap, ZRAM, and Zswap backed by a dedicated swap partition outside the ZFS pool; keep the current no-swap layout/default until that experiment reports evidence. |
+| D26 | F11: stdlib Python, one CLI, runtime outside the OS states, versioned global formats (Q1). |
+| D27 | GRUB target non-SB; systemd-boot is the SB path (Q5, M9). |
+| D28 | ZFS checkpoint = native snapshot; BE by clone/promote on rollback; name = state ID; supersedes D22 (Q4, M7). |
+| D29 | test images: commands via QGA or SSH; serial for boot observation; product agent-free (Q6, F2). |
+| D30 | counter floor = max(counter, names, sidecars) (Q3, M6). |
+| D31 | legacy `@os-0001`/`.conf` compatibility deleted; foreign `@os-*` unmanaged (Q2, H1). |
+| D32 | loader contracts verified against the real loader (bootctl parser or loader boot), never only our own reading (H3; rewords the 2026-11-18 guest-only rule). |
+| D33 | TODO.md is the only status page (M11). |
 
 ## 3. What "the operating system" means here
 
