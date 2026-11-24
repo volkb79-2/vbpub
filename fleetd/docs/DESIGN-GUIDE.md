@@ -366,8 +366,9 @@ has a new name, and the old job is stopped before replacement work starts.
 Fleetd delegates start and stop to the runner's `run-job` and
 `run-r2-campaign.sh` commands. The real transport shells out to the local
 identity-checked `scripts/controller/hx.sh` wrapper. Tests use an in-memory
-fake with a controllable clock, job table, progress files, and unreachable or
-slow hosts; tests do not start a host, SSH client, or Docker container.
+fake that writes real-format files into a temporary host home and calls the
+same stdlib-only `fleetd.hostside` probe as the shipped command. Tests do not
+start a host, SSH client, or Docker container.
 
 The controller keeps `fleet-campaign-state/2` JSON outside Git and updates it
 with a temporary file plus rename. Deadline records include monotonic and UTC
@@ -382,8 +383,10 @@ observed and not from the last success, marks the host lost; `tick`
 re-plans only unfinished candidate IDs from running and queued batches on the
 reachable planned host with the largest `cap_alone_bytes`. Idle planned hosts
 are probed too, so they can receive requeued work. If the original host later
-returns, the duplicate run may finish too; collection chooses one owner per
-candidate.
+returns, its duplicate may finish too; collection chooses one owner. Once the
+return refresh proves every unfinished candidate finished elsewhere, fleetd
+stops the duplicate. A job-loop error, an unfinished retry or a failed stop does
+not consume that fact: the next complete refresh retries the stop.
 
 The first detached command writes `list.sha256` before the campaign supervisor
 starts. During the brief startup interval, probe can recompute it from the
