@@ -435,11 +435,13 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   committed `VERSION` file, clears stale `dist/` output first and fails if the
   variable is absent. `TLS_EDGE_CIU_VERSION=<x.y.z>` and
   `TLS_EDGE_CLI_EXTENDED_VERSION=<x.y.z>` optionally pin the GitHub-only first-party wheels.
-  The third-party closure is generated from the first-party dependency declarations by
-  `python3 tools/bundle_wheels.py requirements` and vendored for each declared interpreter.
+  `python3 tools/bundle_wheels.py requirements` resolves the third-party closure under the
+  14-day upload buffer and writes exact pins to `requirements-bundle.txt`; cmru vendors
+  that lock for each declared interpreter.
 - CMRU's archive writer uses the runner's `SOURCE_DATE_EPOCH` and normalised owner, mode and
-  ordering. Identical inputs and epoch produce byte-identical archives. The older tls-edge-only
-  PyPI upload-age check is not reimplemented here; freshness remains cmru KI-198.
+  ordering. Identical inputs and epoch produce byte-identical archives. The upload-age policy
+  applies once, when the committed lock is generated, so a bundle build resolves no floating
+  third-party versions.
 - Tests: `run-gate tls-edge tests` (lane `tests` in `run-gate.toml`, tester-unified). A missing cmru/jinja2/docker
   fails the lane; only `TLS_EDGE_ALLOW_INSTALLER_SKIP=1` skips the installer test, deliberately, outside the lane.
 

@@ -254,10 +254,11 @@ bash scripts/verify.sh
 ## Cutting a release
 
 tls-edge's `cmru.toml` calls `cmru handler bundle-build` for both interpreter
-variants. `bundle.toml` allowlists the operator files, derives the vendored
-dependency requirements from the ciu + cli-extended + tls-edge-cli declarations,
-and fetches the three first-party wheels through one stage module. The
-maintainer scripts are not part of the instance bundle.
+variants. `bundle.toml` allowlists the operator files and vendors the exact
+third-party closure generated from the ciu + cli-extended + tls-edge-cli
+declarations under the estate's 14-day upload buffer. The three first-party
+wheels come through one stage module. The maintainer scripts are not part of
+the instance bundle.
 The build step derives `TLS_EDGE_VERSION` from the committed `VERSION` file,
 clears stale `dist/` output first and requires the version variable to be set.
 

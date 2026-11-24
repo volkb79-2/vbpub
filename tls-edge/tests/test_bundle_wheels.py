@@ -34,17 +34,99 @@ def test_merge_requirements_refuses_an_unmergeable_constraint() -> None:
     assert error.value.code == 1
 
 
-def test_committed_bundle_requirements_are_generated(tmp_path: Path) -> None:
+def test_requirements_are_rendered_as_a_sorted_exact_pinned_closure(tmp_path: Path) -> None:
     output = tmp_path / "requirements-bundle.txt"
-    bundle_wheels.write_requirements(output)
-    assert output.read_text(encoding="utf-8") == bundle_wheels.render_requirements()
+    bundle_wheels.write_requirements(
+        output,
+        resolved={
+            "jinja2": ("Jinja2", "3.1.6"),
+            "markupsafe": ("MarkupSafe", "3.0.4"),
+            "pyyaml": ("PyYAML", "6.0.3"),
+            "questionary": ("questionary", "2.1.1"),
+            "tomli-w": ("tomli_w", "1.2.0"),
+            "tomlkit": ("tomlkit", "0.15.2"),
+        },
+    )
+
+    assert output.read_text(encoding="utf-8") == bundle_wheels.render_requirements({
+        "jinja2": ("Jinja2", "3.1.6"),
+        "markupsafe": ("MarkupSafe", "3.0.4"),
+        "pyyaml": ("PyYAML", "6.0.3"),
+        "questionary": ("questionary", "2.1.1"),
+        "tomli-w": ("tomli_w", "1.2.0"),
+        "tomlkit": ("tomlkit", "0.15.2"),
+    })
+    dependency_lines = [
+        line for line in output.read_text(encoding="utf-8").splitlines() if not line.startswith("#")
+    ]
+    assert dependency_lines
+    assert all("==" in line for line in dependency_lines)
+
+
+def test_committed_bundle_requirements_are_an_exact_third_party_lock() -> None:
+    lines = [
+        line
+        for line in bundle_wheels.REQUIREMENTS_OUT.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    names = {
+        bundle_wheels.normal_name(line.partition("==")[0])
+        for line in lines
+        if "==" in line
+    }
+
+    assert len(lines) == len(names)
+    assert all(line.count("==") == 1 for line in lines)
+    assert {"jinja2", "pyyaml", "questionary", "tomli-w", "tomlkit"} <= names
+    assert not (names & bundle_wheels.FIRST_PARTY)
 
 
 def test_requirements_check_is_red_for_a_stale_file(tmp_path: Path) -> None:
     output = tmp_path / "requirements-bundle.txt"
     output.write_text("Jinja2>=0\n", encoding="utf-8")
     with pytest.raises(SystemExit) as error:
-        bundle_wheels.write_requirements(output, check=True)
+        bundle_wheels.write_requirements(
+            output,
+            check=True,
+            resolved={
+                "jinja2": ("Jinja2", "3.1.6"),
+                "markupsafe": ("MarkupSafe", "3.0.4"),
+                "pyyaml": ("PyYAML", "6.0.3"),
+                "questionary": ("questionary", "2.1.1"),
+                "tomli-w": ("tomli_w", "1.2.0"),
+                "tomlkit": ("tomlkit", "0.15.2"),
+            },
+        )
+    assert error.value.code == 1
+
+
+def test_wheel_requirements_are_derived_from_the_resolved_files(tmp_path: Path) -> None:
+    wheels = [
+        tmp_path / "Jinja2-3.1.6-py3-none-any.whl",
+        tmp_path / "MarkupSafe-3.0.4-cp313-cp313-manylinux_2_17_x86_64.whl",
+    ]
+    for wheel in wheels:
+        wheel.write_bytes(b"")
+
+    assert bundle_wheels.wheel_requirements(wheels) == {
+        "jinja2": ("Jinja2", "3.1.6"),
+        "markupsafe": ("MarkupSafe", "3.0.4"),
+    }
+
+
+def test_requirements_render_refuses_a_missing_direct_dependency() -> None:
+    with pytest.raises(SystemExit) as error:
+        bundle_wheels.render_requirements({"jinja2": ("Jinja2", "3.1.6")})
+
+    assert error.value.code == 1
+
+
+def test_wheel_requirements_refuse_an_unparseable_asset(tmp_path: Path) -> None:
+    (tmp_path / "not-a-wheel.whl").write_bytes(b"")
+
+    with pytest.raises(SystemExit) as error:
+        bundle_wheels.wheel_requirements([tmp_path / "not-a-wheel.whl"])
+
     assert error.value.code == 1
 
 

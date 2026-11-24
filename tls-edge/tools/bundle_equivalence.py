@@ -177,6 +177,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="tls-edge-equivalence-") as temp:
             temp_root = Path(temp)
+            _run(
+                ["python3", "tools/bundle_wheels.py", "requirements"],
+                cwd=TLS_EDGE_DIR,
+                env=env,
+            )
+            requirements = TLS_EDGE_DIR / "requirements-bundle.txt"
+            evidence.append(
+                f"requirements_lock={requirements.relative_to(TLS_EDGE_DIR).as_posix()} "
+                f"sha256={_sha256(requirements)}"
+            )
             first = temp_root / "new-first"
             _run(
                 [
@@ -233,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
 
             old_root = _git_archive(base, temp_root / "old")
             old_dist = old_root / "dist"
+            old_env = env | {"PIP_CONSTRAINT": str(requirements)}
             _run(
                 [
                     sys.executable, "scripts/stage-wheels.py",
@@ -240,9 +251,9 @@ def main(argv: list[str] | None = None) -> int:
                     "--cli-extended-version", first_wheels["cli-extended"],
                 ],
                 cwd=old_root,
-                env=env,
+                env=old_env,
             )
-            _run(["bash", "scripts/build-artifact.sh"], cwd=old_root, env=env)
+            _run(["bash", "scripts/build-artifact.sh"], cwd=old_root, env=old_env)
 
             for variant in ("py313", "py314"):
                 old_path = old_dist / f"tls-edge-v{version}-{variant}.tar.xz"
@@ -253,10 +264,10 @@ def main(argv: list[str] | None = None) -> int:
                 evidence.append(f"variant={variant} old_sha256={_sha256(old_path)}")
                 evidence.append(f"variant={variant} new_sha256={_sha256(new_path)}")
                 evidence.append(f"variant={variant} dropped=" + " | ".join(dropped))
-                evidence.append(f"variant={variant} operator_files_identical={True}")
+                evidence.append(f"variant={variant} operator_file_set_identical={True}")
                 evidence.append(
                     f"variant={variant} wheel_versions="
-                    + json.dumps(new_wheels, sort_keys=True)
+                    + json.dumps(_wheel_versions(new_manifest), sort_keys=True)
                 )
                 evidence.append(f"variant={variant} content_changed=" + " | ".join(changed))
                 if old_bytecode or new_bytecode:
