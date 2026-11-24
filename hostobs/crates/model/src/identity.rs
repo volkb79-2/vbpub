@@ -568,8 +568,10 @@ struct Entry {
 /// Live entries are keyed by incarnation id, with a compact reverse index from the kernel
 /// [`CgroupKey`] to the id. Retirement removes both records, so neither storage nor
 /// [`Self::end_round`] grows with ids that were minted and retired earlier. Point lookups
-/// are O(log live), [`Self::active`] is O(1), and `end_round` is
-/// O(live + retired · log live) per call, nothing proportional to ids ever minted.
+/// are O(log live), [`Self::active`] is O(1), and a round is
+/// O(live + retired · log live), plus one O(`max_active`) reverse-index rebuild after a
+/// round that retires (about 3 MiB at the 65,536 default); nothing is proportional to ids
+/// ever minted.
 ///
 /// The registry is bounded by a configurable maximum, [`DEFAULT_ACTIVE_MAX`] by default
 /// (plan v4 §A.4's `dict_active_max`). At the bound, observing an already-live key still
@@ -708,8 +710,9 @@ impl IncarnationRegistry {
     ///
     /// The pass walks the live entries only (the `BTreeMap` is ordered by id, so the
     /// returned ids remain in mint order); retired entries are removed from both indexes.
-    /// It is O(live + retired · log live) per call, nothing proportional to ids ever
-    /// minted.
+    /// It is O(live + retired · log live) per call, plus one O(`max_active`) reverse-index
+    /// allocation and rebuild after a round that retires (about 3 MiB at the 65,536
+    /// default); nothing is proportional to ids ever minted.
     pub fn end_round(&mut self) -> Vec<Incarnation> {
         if self.round_is_ended() {
             return Vec::new();
@@ -732,12 +735,17 @@ impl IncarnationRegistry {
             self.by_key.remove(key);
         }
         if !retired.is_empty() {
-            // Tombstone-heavy churn can grow a hash table past the live bound even when
-            // the live set stays small. Rebuild at the configured bound, never at an
-            // all-time peak.
-            let mut compact = HashMap::with_capacity(self.max_active);
-            compact.extend(self.entries.values().map(|entry| (entry.key, entry.id)));
-            self.by_key = compact;
+            // The long-churn capacity assertion requires a tombstone-free index whose
+            // capacity is fixed at the configured bound; this costs O(max_active).
+            let mut compact = HashMap::new();
+            if compact.try_reserve(self.max_active).is_err()
+                && compact.try_reserve(self.entries.len()).is_err()
+            {
+                self.by_key = compact;
+            } else {
+                compact.extend(self.entries.values().map(|entry| (entry.key, entry.id)));
+                self.by_key = compact;
+            }
         }
         self.retired = self.retired.saturating_add(retired.len() as u64);
         retired.into_iter().map(|(id, _)| id).collect()
@@ -1162,6 +1170,18 @@ mod tests {
         assert!(registry.is_active(b));
         assert!(!registry.is_active(a));
         assert!(registry.snapshot(a).is_none());
+    }
+
+    #[test]
+    fn a_huge_registry_bound_does_not_panic_when_retiring() {
+        let mut registry = IncarnationRegistry::with_max(usize::MAX);
+        registry.begin_round();
+        let id = registry.observe(key(1), None).expect("mint");
+        registry.end_round();
+        registry.begin_round();
+        registry.end_round();
+        registry.begin_round();
+        assert_eq!(registry.end_round(), vec![id]);
     }
 
     #[test]

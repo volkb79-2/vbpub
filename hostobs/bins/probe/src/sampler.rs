@@ -606,10 +606,12 @@ fn fill_cgroup<F: Fs>(
                 Err(error) => missing(error.quality()),
             }
         } else if let Some(contents) = readings {
+            // A missing key in a successfully read file is an absence, not a failed read
+            // and never a measured zero.
             contents
                 .get(reader)
                 .copied()
-                .unwrap_or_else(|| missing(Quality::Unsupported))
+                .unwrap_or_else(|| missing(Quality::Absent))
         } else {
             missing(failure_quality)
         };
@@ -769,7 +771,8 @@ fn signal(wake: &OwnedFd) {
         Ok(_) => {}
         Err(rustix::io::Errno::AGAIN) => {}
         Err(_) => {
-            // This side has no error channel; the driver still sees the stop flag.
+            // No error channel here: a lost publish wake delays the server until the
+            // next one; the stop guard also sets the flag.
         }
     }
 }
@@ -981,6 +984,11 @@ mod tests {
             "the root row publishes its own cgroup PSI"
         );
         assert_eq!(value(&tick, "cpu.usage_usec", 1), (20, Quality::Ok.code()));
+        assert_eq!(
+            value(&tick, "cpu.user_usec", 1),
+            (0, Quality::Absent.code()),
+            "a key missing from a successful read is absent, not unsupported"
+        );
         assert_eq!(
             value(&tick, "io.rbytes", 0),
             (0, Quality::UnknownTopology.code()),

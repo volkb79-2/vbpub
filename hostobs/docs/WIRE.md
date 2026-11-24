@@ -438,7 +438,8 @@ and `all` matches every row. It contains only metrics registered in the model ta
 facts; host readings from `/proc` and daemon `probe.*` metrics appear only on the root row and are
 `absent` on every other row, while cgroup columns are dense and carry a quality code on every row
 (a missing or failed reading has a non-measured placeholder, never a measured zero).
-`probe.cgroups_skipped` counts cgroups and directory listings the walk left out in that tick (a refused listing counts once).
+`probe.cgroups_skipped` counts cgroups and directory listings the walk left out in that tick
+(a refused listing counts once).
 Derived metrics are not produced. A selection resolving to no rows is successful with zero rows; only the seq-0
 "no tick yet" state is `unavailable`, and an unregistered requested metric yields no column.
 

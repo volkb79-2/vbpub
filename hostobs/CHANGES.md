@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- **Changed (P-hostobs-07, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live + retired · log live) `end_round`, model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
+- **Changed (P-hostobs-07, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live + retired · log live) `end_round`, plus one O(`max_active`) reverse-index rebuild after a round that retires, about 3 MiB at the 65,536 default; model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
 - **Added (probe sampler):** `hostobs-sampler` walks the configured cgroup tree under the kernel/policy bounds, publishes immutable quality-bearing `Tick`s, coalesces wakeups through eventfd, and reports walk cuts through `probe.cgroups_skipped`.
 - **Added (probe live backend):** `ProbeBackend` answers `current`, `status` and `identity` from one published tick per turn, with selector de-duplication, row budgets, zero-row success and no I/O or publication lock in the backends.
 - **Changed (kernel clocks):** `SystemClock` reads absolute `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` through rustix, and `ManualClock::suspend` advances boot time without moving monotonic time.
