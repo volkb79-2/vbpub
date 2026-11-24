@@ -200,6 +200,41 @@ def test_provenance_constructor_owns_the_optional_fields():
     assert mutation.record_effective_judge({"judge_sha256": 7}) is None
 
 
+def test_schema_one_carry_over_derives_imported_exact_id_provenance():
+    # Positive control for the read-only schema-1 path: a valid block on a
+    # record with a valid candidate id derives the canonical imported object,
+    # with the block's own judge digest and reason.
+    candidate = "c" * 64
+    carry = _carry_v1(_OLD_JUDGE)
+    assert mutation.record_provenance({
+        "candidate_id": candidate,
+        "carry_over": carry,
+    }) == {
+        "kind": "imported",
+        "from_candidate_id": candidate,
+        "from_judge_sha256": _OLD_JUDGE,
+        "match": "exact-id",
+        "reason": "schema-1 compatibility",
+    }
+    # A malformed block (here: missing every key but the version) is not read
+    # at all, even with a valid candidate id.
+    assert mutation.record_provenance({
+        "candidate_id": candidate,
+        "carry_over": {"schema_version": mutation.CARRY_OVER_SCHEMA_VERSION},
+    }) is None
+
+
+def test_top_level_provenance_without_reason_is_valid():
+    # ``reason`` is optional in the closed provenance shape; its absence alone
+    # must not reject the record.
+    without_reason = _provenance()
+    del without_reason["reason"]
+    assert mutation.record_provenance({
+        "candidate_id": _JUDGE,
+        "provenance": without_reason,
+    }) == without_reason
+
+
 def test_new_candidate_records_and_progress_events_carry_locus_and_window(
     git_repo: GitRepo, tmp_path
 ):
