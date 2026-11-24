@@ -16,6 +16,7 @@ def make_root(path: Path) -> Path:
     defaults.parent.mkdir(parents=True)
     defaults.write_text("""\
 [tls_edge]
+schema = 1
 domain = "edge.example.com"
 [tls_edge.tls]
 mode = "acme-tls"

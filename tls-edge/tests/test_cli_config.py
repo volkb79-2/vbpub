@@ -27,6 +27,7 @@ def make_root(path: Path, template: str | None = None) -> Path:
     defaults.parent.mkdir(parents=True)
     defaults.write_text(template or """\
 [tls_edge]
+schema = 1
 domain = "edge.example.com"
 [tls_edge.tls]
 mode = "acme-tls"

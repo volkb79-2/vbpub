@@ -126,7 +126,9 @@ def load_config(stack_dir: Path, defaults_only: bool) -> dict:
 
 def validate(cfg: dict) -> None:
     try:
-        edge_config.validate_config(cfg)
+        # Standalone history validates the shipped defaults before a domain is
+        # configured, but it still enforces certificate lineages and all ports.
+        edge_config.validate_config(cfg, require_domain=False)
     except edge_config.ConfigError as exc:
         sys.exit(f"error: {exc}")
     if cfg.get("secrets"):
