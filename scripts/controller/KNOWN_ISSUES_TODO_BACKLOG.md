@@ -12,7 +12,7 @@ together.
 
 | ID | Summary | Severity | Status |
 |---|---|---|---|
-| CTL-01 | OpenCode and incomplete Codex run-name guards can reuse stale completion or mixed run records | Major | OPEN 2026-11-12 |
+| CTL-01 | OpenCode and incomplete Codex run-name guards can reuse stale completion or mixed run records | Major | SUPERSEDED by CTL-37 (2026-11-24) |
 | CTL-02 | Host queue status is read from the configured controller home; retained queue state must move with that home before purge | Minor | OPEN 2026-11-13 |
 | CTL-03 | `pi-impl.sh` passes the whole prompt file as one argv element; a prompt above about 128 KiB fails to start, and a leading `@` may be read as a file reference | Minor | OPEN 2026-11-14 |
 | CTL-04 | The parallel-start test rarely fails without the account-state lock, and no mutant depends on it | P2 | OPEN 2026-11-15 |
@@ -45,12 +45,31 @@ together.
 | CTL-31 | `ctl-doctor.sh` reads `controller.local.env` line by line (a multi-line assignment reads as a stray line) and does not run the identity check | Nice-to-have | OPEN |
 | CTL-32 | `ctl-state-backup.sh` has no restore helper, and keys/pins are outside the archive by design | Nice-to-have | OPEN |
 | CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | DONE 2026-11-18 |
+| CTL-37 | A run is ten loose files keyed by a caller name | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-38 | Auto-continued Codex runs lose the final answer | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-39 | Routes in about nine places | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-40 | agctl package; bash frozen | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-41 | ctl-clean treats the symptom | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-42 | Limit note on the launch path | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-44 | HANDOFF is an append-only log | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-45 | Launcher twins | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-46 | Four readers of run records | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
+| CTL-47 | Credential loading differs per launcher | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-48 | remote-gate local worktree | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
+| CTL-49 | agctl DESIGN behind the operator | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-50 | Brief house rules | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-51 | Three tree-shipping transports | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
+| CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
 
 ---
 
 ## CTL-01 — a reused run name silently consumes stale completion and report records
 
-**Status:** OPEN (filed 2026-11-12); severity: major (a caller can report a completed or passing job while the new child is still running or has failed). `codex-impl.sh` now refuses a new run when `.done`, `.jsonl`, or `.err` exists unless `CONTROLLER_RUN_FORCE=1`; the remaining record-set and OpenCode gaps below are open.
+**Status:** SUPERSEDED by CTL-37 (2026-11-24). Was: OPEN (filed 2026-11-12); severity: major (a caller can report a completed or passing job while the new child is still running or has failed). `codex-impl.sh` now refuses a new run when `.done`, `.jsonl`, or `.err` exists unless `CONTROLLER_RUN_FORCE=1`; the remaining record-set and OpenCode gaps below are open.
 
 **Problem.** The current Codex launcher checks only `.done`, `.jsonl`, and `.err` before a new run; other name-owned records such as `.last.txt`, `.wt`, `.route`, `.thread`, and auto-resume records are not part of that check. `opencode-impl.sh` has no collision preflight: it truncates the named `.jsonl` and `.err` files, then writes `.done` only after the child exits. A previous `<run>.done` therefore remains visible while the new OpenCode child runs, so `job-check.sh` can observe a stale `EXIT=0`, evaluate a stale report or gate log, and present a completed result for a job that has only just started. Brief/report paths can also be silently replaced or mixed across jobs. Two controller incidents observed the collision behavior with the run names `review-rg-selftest-fix` and `r2-jobs-fix`.
 
@@ -1488,3 +1507,155 @@ interim only.
 **Close when.** Done: `git grep -n CONTROLLER_GATE_SLOTS -- scripts/controller` shows
 `gate-run.sh`, `ctl-doctor.sh`, the docs and the tests. Open question for the fleet
 daemon: retire the static count when its admission exists.
+
+## CTL-37 — a run is ten loose files keyed by a caller name
+
+**Status:** OPEN (filed 2026-11-24).
+
+Generated id, a synchronous `RUN <id>` before `--detach`, `runs/<id>/run.json` plus stream and `last.txt`, one runs dir. *Supersedes CTL-01.*
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md H1
+
+## CTL-38 — auto-continued Codex runs lose the final answer
+
+**Status:** OPEN (filed 2026-11-24).
+
+`resume` and continue pass no `-o`; derive `last.txt` from the stream.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md H1
+
+## CTL-39 — routes in about nine places
+
+**Status:** OPEN (filed 2026-11-24).
+
+`routes.toml` plus a local overlay, read by the launchers, job-check, the limits reader and the docs; no effort override.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md H2
+
+## CTL-40 — agctl package; bash frozen
+
+**Status:** OPEN (filed 2026-11-24).
+
+Stdlib package on cli-extended (`runs`, `routes`, `streams`, `config`). Port opendesign-accounts and ctl-limits first; skills via `register_skills_verbs`.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md H3
+
+## CTL-41 — ctl-clean treats the symptom
+
+**Status:** OPEN (filed 2026-11-24).
+
+Drop the branch; RG-294/295 plus the assay p23 prune; one-off cleanup after OK.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md H4
+
+## CTL-42 — limit note on the launch path
+
+**Status:** OPEN (filed 2026-11-24).
+
+Drop `codex_limit_note`; merge sol and the wording; the reader uses CTL-37/39 and covers pi; OD "blocked" orders and never refuses.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md H5
+
+## CTL-43 — live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY
+
+**Status:** OPEN (filed 2026-11-24).
+
+Wire `hooks/ctx-hooks.py` and delete the copy. Ceiling per model; past the soft threshold, handover, READY, end of turn.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md H6
+
+## CTL-44 — HANDOFF is an append-only log
+
+**Status:** OPEN (filed 2026-11-24).
+
+One current file plus an archive, with a generated header. `plan.yaml` gets one `state` key and a schema check; PROGRESS entries move out.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md H7
+
+## CTL-45 — launcher twins
+
+**Status:** OPEN (filed 2026-11-24).
+
+`agctl run --route` with adapters and a shared classifier; the old names become shims.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md M1
+
+## CTL-46 — four readers of run records
+
+**Status:** OPEN (filed 2026-11-24).
+
+`agctl status`/`check`; `check` also flags direct hx.sh/docker/pytest use in implementer streams.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md M2
+
+## CTL-47 — credential loading differs per launcher
+
+**Status:** OPEN (filed 2026-11-24).
+
+Load only the route's `key_var`.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md M3
+
+## CTL-48 — remote-gate local worktree
+
+**Status:** OPEN (filed 2026-11-24).
+
+`--commit <sha>` bundles from the repo; drop `CONTROLLER_REMOTE_GATE_WORKROOT`.
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md M4
+
+## CTL-49 — agctl DESIGN behind the operator
+
+**Status:** OPEN (filed 2026-11-24).
+
+Rev 4: slice 1 = registry, handover cycle and hook; finalize/prime second; §8a reduced to one threshold. *Absorbs informal CTL-36, drops the CTL-34 `.env.<name>` rename, folds CTL-35 into run dirs.*
+
+Source: .controller-state/design-review-2026-11-24/controller-tooling.md M6
+
+## CTL-50 — brief house rules
+
+**Status:** OPEN (filed 2026-11-24).
+
+Compile and test via the remote dev container before each commit; contract plus target size; at most 2 review rounds; explicit launch effort until CTL-39; unique run names; resumed runs verified from git until CTL-38.
+
+Source: .controller-state/design-review-2026-11-24/hostobs.md F4; SYNTHESIS.md T14
+
+## CTL-51 — three tree-shipping transports
+
+**Status:** OPEN (filed 2026-11-24).
+
+One shared host runner, home fleetd (`fleet host …` agent + client) for remote-gate, the dev tool, fleetd and the dr runner; carries `.assay/r2-store/<lane>/`.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md H4; SYNTHESIS.md T11
+
+## CTL-52 — dev container is hostobs-only and admits one job host-wide
+
+**Status:** OPEN (filed 2026-11-24).
+
+Generic `scripts/controller/dev` with Python and Rust profiles. Host-local weighted admission with a bounded wait. `gc`, a NOT-EVIDENCE banner, and the hostobs shim.
+
+Source: .controller-state/design-review-2026-11-24/hostobs.md F4; operator 2026-11-24
+
+## CTL-53 — worktree sprawl
+
+**Status:** OPEN (filed 2026-11-24).
+
+43 merged worktrees plus 2 rgw worktrees. One-off removal by exact path after dirty and ignored checks; later `agctl worktrees prune`.
+
+Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §5
+
+## CTL-54 — backlogs and SPECs are append-only
+
+**Status:** OPEN (filed 2026-11-24).
+
+`docs/BACKLOG-FORMAT.md` plus `agctl backlog index|check`. Pilot on scripts/controller and mdt-cockpit.
+
+Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
+
+## CTL-55 — the live-sidecar test waits a fixed wall-clock time
+
+**Status:** OPEN (filed 2026-11-24).
+
+`tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
+
+Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).

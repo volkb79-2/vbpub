@@ -2064,26 +2064,19 @@ def test_the_provisional_lane_is_registered_with_its_own_wrapper_mode_and_artifa
     assert "ASSAY_SELF_QUALIFICATION_PROVISIONAL_VERIFIED=1" in wrapper
 
 
-def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane():
+def test_the_postponement_marker_has_no_version_window_and_is_cleared_by_the_full_lane():
     gate = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     body = gate.split("record_r2_postponement() {", 1)[1].split("run_and_verify_lane() {", 1)[0]
 
     assert 'TRACKING_ID = "B169"' in body
-    assert "operator decision 2026-10-27" in body
-    assert "extended by operator on 2026-10-31" in body
-    assert "extended by operator on 2026-10-31 and" in body and "2026-11-04" in body
-    assert "operator decision 2026-11-08" in body
-    assert "E4 env-only launchers" in body and "delegated release-gate changes" in body
-    assert "R2 to run later on the latest release" in body
-    # A-507 / B535: the operator's 2026-11-12 extension for the 12.2.0 release.
-    assert "operator decision 2026-11-12" in body
-    assert "R2 waiver extended to < 12.3.0" in body and "flexible-R2 release 12.2.0" in body
-    assert "T3 post-release check" in body
-    assert "WINDOW = ((10, 0, 0), (12, 3, 0))" in body
-    # one source: the window tuple appears once and every message derives from it
-    assert body.count("(12, 3, 0)") == 1 and "(12, 2, 0)" not in body and "11.1.0" not in body
-    assert '"window": WINDOW_TEXT' in body and "{WINDOW_TEXT}" in body
-    assert 'f"the R2 postponement {TRACKING_ID} is authorized only for {WINDOW_TEXT}; "' in body
+    assert "operator decision 2026-11-18: any release is R0/R1 plus R3" in body
+    assert "on the latest release; no per-version waiver window" in body
+    assert not any(
+        removed in body for removed in (
+            "WINDOW =", "WINDOW_TEXT", "authorized only", "release_version_tuple",
+            "tag_result", '"window":',
+        )
+    )
     assert '"result": "provisional"' in body and '"rigor_postponed": "R2"' in body
     assert '"cmru_release_gate_version_bound": transaction_version is not None' in body
     assert "not an R2 pass" in body
@@ -2212,101 +2205,62 @@ def _run_postponement(
     return proc, marker
 
 
-def test_the_postponement_marker_records_a_provisional_result_inside_its_window(tmp_path):
+def test_the_postponement_marker_records_a_provisional_result_without_a_window(tmp_path):
     import json
 
     proc, marker = _run_postponement(
-        tmp_path, ["assay-v9.0.0"], cmru_release_version="10.0.0",
+        tmp_path, [], "13.0.0", cmru_release_version="13.0.0",
     )
 
     assert proc.returncode == 0, proc.stderr
     assert "not an R2 pass" in proc.stderr
     document = json.loads(marker.read_text(encoding="utf-8"))
+    assert set(document) == {"schema_version", "status", "result", "lane", "rigor_postponed", "tracking_id", "decision", "target_version", "cmru_release_gate_version_bound", "commit", "tree", "assay_version", "recorded_at", "note"}
+    assert document["schema_version"] == 1 and document["status"] == "postponed"
     assert document["result"] == "provisional" and document["rigor_postponed"] == "R2"
     assert document["tracking_id"] == "B169" and document["commit"] == "c" * 40
     assert document["cmru_release_gate_version_bound"] is True
-    assert "operator decision 2026-11-08" in document["decision"]
-    assert "R2 to run later on the latest release" in document["decision"]
-    assert "operator decision 2026-11-12" in document["decision"]
-    assert "R2 waiver extended to < 12.3.0" in document["decision"]
+    assert "operator decision 2026-11-18" in document["decision"]
+    assert "R2 runs asynchronously on the latest release" in document["decision"]
+    assert "no per-version waiver window" in document["decision"]
 
 
-def test_the_realistic_12_2_0_release_candidate_is_inside_the_window(tmp_path):
-    """A-507: the actual release transaction -- prepared heading
-    `## [12.2.0] - 2026-11-12`, CMRU's transaction version 12.2.0, latest tag
-    assay-v12.1.1 -- records the postponement; 12.3.0 is refused."""
+def test_the_realistic_13_0_0_release_candidate_escapes_the_former_window(tmp_path):
+    """B557: 13.0.0 is accepted without any visible assay tag."""
     import json
 
-    released = ["assay-v12.0.0", "assay-v12.1.0", "assay-v12.1.1"]
     proc, marker = _run_postponement(
-        tmp_path, released, changelog_headings="## [12.2.0] - 2026-11-12\n\n## [12.1.1] - 2026-11-09",
-        cmru_release_version="12.2.0",
+        tmp_path, [], changelog_headings="## [13.0.0] - 2026-11-20",
+        cmru_release_version="13.0.0",
     )
     assert proc.returncode == 0, proc.stderr
     document = json.loads(marker.read_text(encoding="utf-8"))
-    assert document["target_version"] == "12.2.0"
-    assert document["window"] == "assay >= 10.0.0, < 12.3.0"
+    assert document["target_version"] == "13.0.0"
+    assert "window" not in document
     assert document["cmru_release_gate_version_bound"] is True
-
-    later = tmp_path / "later"
-    later.mkdir()
-    proc, marker = _run_postponement(
-        later, released, changelog_headings="## [12.3.0] - 2026-11-20\n\n## [12.2.0] - 2026-11-12",
-        cmru_release_version="12.3.0",
-    )
-    assert proc.returncode != 0
-    assert "authorized only for assay >= 10.0.0, < 12.3.0" in proc.stderr
-    assert not marker.exists()
-
-
-def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
-    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v12.3.0"])
-
-    assert proc.returncode != 0
-    assert "authorized only for assay >= 10.0.0, < 12.3.0" in proc.stderr
-    assert "Extending this window requires a new operator R2-waiver decision" in proc.stderr
-    assert "run the full self-qualification lane for R2" in proc.stderr
-    assert not marker.exists()
-
-
-def test_a_12_1_0_release_is_inside_the_window_and_marker_names_it(tmp_path):
-    import json
-
-    proc, marker = _run_postponement(tmp_path, ["assay-v11.1.0"], "12.1.0")
-
-    assert proc.returncode == 0, proc.stderr
-    document = json.loads(marker.read_text(encoding="utf-8"))
-    assert document["window"] == "assay >= 10.0.0, < 12.3.0"
-    assert document["target_version"] == "12.1.0"
 
 
 @pytest.mark.parametrize(
     "prepared_version,allowed",
     [
-        ("10.0.0", True), ("10.0.1", True), ("10.1.0", True), ("10.2.0", True),
-        ("10.3.0", True), ("11.0.0", True), ("11.0.1", True), ("12.0.0", True), ("12.0.9", True),
-        ("11.1.0", True), ("12.1.0", True), ("12.2.0", True), ("12.2.9", True),
-        ("12.3.0", False),
-        ("13.0.0", False), ("9.9.9", False),
+        ("9.9.9", True), ("13.0.0", True), ("99.0.0", True),
     ],
 )
-def test_the_prepared_release_version_must_be_inside_the_postponement_window(
+def test_any_prepared_release_is_accepted_without_release_tags(
     tmp_path, prepared_version, allowed,
 ):
     proc, marker = _run_postponement(
-        tmp_path, ["assay-v9.0.0"], prepared_version, wheel_version="10.0.0",
+        tmp_path, [], prepared_version, wheel_version=prepared_version,
     )
 
     assert (proc.returncode == 0) is allowed, proc.stderr
     assert marker.exists() is allowed
-    if not allowed:
-        assert "authorized only for assay >= 10.0.0, < 12.3.0" in proc.stderr
-        assert "Extending this window requires a new operator R2-waiver decision" in proc.stderr
     if allowed:
         import json
 
         document = json.loads(marker.read_text(encoding="utf-8"))
         assert document["target_version"] == prepared_version
+        assert "window" not in document
         assert document["cmru_release_gate_version_bound"] is False
 
 
@@ -2374,8 +2328,7 @@ def test_the_postponement_refuses_an_unsupported_first_release_heading_without_f
     tmp_path, first_heading,
 ):
     proc, marker = _run_postponement(
-        tmp_path,
-        ["assay-v9.0.0"],
+        tmp_path, [],
         changelog_headings=(
             f"{first_heading}\n\n## [10.0.0] - 2026-10-27"
         ),
@@ -2391,8 +2344,7 @@ def test_the_postponement_refuses_a_prepared_heading_that_disagrees_with_cmru(
     tmp_path,
 ):
     proc, marker = _run_postponement(
-        tmp_path,
-        ["assay-v9.0.0"],
+        tmp_path, [],
         prepared_version="10.0.1",
         cmru_release_version="10.0.0",
     )
@@ -2406,8 +2358,7 @@ def test_the_postponement_accepts_a_valid_first_release_heading_bound_to_cmru(
     tmp_path,
 ):
     proc, marker = _run_postponement(
-        tmp_path,
-        ["assay-v9.0.0"],
+        tmp_path, [],
         prepared_version="10.0.1",
         cmru_release_version="10.0.1",
     )
@@ -2554,19 +2505,17 @@ def test_a_writable_fixture_root_is_not_skipped(tmp_path, monkeypatch):
     assert not fixture_root.exists()
 
 
-def test_the_postponement_refuses_when_no_stable_assay_tag_is_visible(tmp_path):
+def test_the_postponement_writes_a_marker_without_any_stable_assay_tag(tmp_path):
     proc, marker = _run_postponement(tmp_path, [])
 
-    assert proc.returncode != 0
-    assert "cannot determine the latest stable assay tag" in proc.stderr
-    assert not marker.exists()
+    assert proc.returncode == 0, proc.stderr
+    assert marker.exists()
 
 
-def test_the_postponement_refuses_when_assay_tags_cannot_be_listed(tmp_path):
+def test_the_postponement_does_not_inspect_assay_tags(tmp_path):
     proc, marker = _run_postponement(
         tmp_path, ["assay-v9.0.0"], unlistable_tags=True,
     )
 
-    assert proc.returncode != 0
-    assert "tag listing unavailable" in proc.stderr
-    assert not marker.exists()
+    assert proc.returncode == 0, proc.stderr
+    assert marker.exists()
