@@ -81,11 +81,9 @@ def _execution(plan: Mapping[str, Any]) -> dict[str, str]:
     ):
         raise ContractError("plan execution.project: expected a relative project path")
     result = {"commit": commit, "project": project or "."}
-    # The tester image identity a shard judged under. OPTIONAL here and
-    # REQUIRED by the merge check: a campaign that never names an image can
-    # still run, but its shards cannot be merged, because a merge over two
-    # unknown image identities is exactly the mixed-image merge that check
-    # exists to refuse.
+    # The tester image identity a shard judged under, kept as measurement
+    # evidence. OPTIONAL: a campaign that never names an image still runs.
+    # Strict shard merging (assay's) does its own identity checks.
     image = value.get("image_digest")
     if image is not None:
         if not isinstance(image, str) or _EXEC_IMAGE.fullmatch(image) is None:

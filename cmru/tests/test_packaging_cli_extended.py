@@ -45,12 +45,12 @@ def _code_lines(path: Path) -> str:
 # --- pyproject.toml ---------------------------------------------------------
 
 def test_pyproject_declares_cli_extended_with_the_documented_floor():
-    assert PYPROJECT["project"]["dependencies"] == ["cli-extended>=0.3.0"]
-    assert smoke.CLI_EXTENDED_REQUIREMENT == "cli-extended>=0.3.0"
+    assert PYPROJECT["project"]["dependencies"] == ["cli-extended>=0.8.0"]
+    assert smoke.CLI_EXTENDED_REQUIREMENT == "cli-extended>=0.8.0"
     text = (PROJECT / "pyproject.toml").read_text(encoding="utf-8")
     # The floor carries its reason (estate version policy), right at the declaration.
-    declaration = text.index('dependencies = ["cli-extended>=0.3.0"]')
-    assert "Floor 0.3.0" in text[:declaration] and "CX-D1" in text[:declaration]
+    declaration = text.index('dependencies = ["cli-extended>=0.8.0"]')
+    assert "Floor 0.8.0" in text[:declaration] and "CX-D1" in text[:declaration]
     assert "CLI-EXT-26" in text[:declaration]
 
 
@@ -138,7 +138,7 @@ def test_every_gate_pythonpath_keeps_the_worktree_root_only():
 
 # --- the wheel-content oracle, on synthetic wheels ---------------------------
 
-def _wheel(tmp_path: Path, *, requires=("cli-extended>=0.3.0",), extra=(), skill=True) -> Path:
+def _wheel(tmp_path: Path, *, requires=("cli-extended>=0.8.0",), extra=(), skill=True) -> Path:
     path = tmp_path / "cmru-1.0.0-py3-none-any.whl"
     members = {
         "cmru/__init__.py": "",

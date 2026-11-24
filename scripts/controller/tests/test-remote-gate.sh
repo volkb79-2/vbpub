@@ -65,9 +65,12 @@ name = a[a.index("--name") + 1]
 d = os.path.join(out, name)
 os.makedirs(os.path.join(d, "artifacts"))
 open(os.path.join(d, "job.log"), "w").write(f"checkout /x at {sha}\n")
-open(os.path.join(d, "lane.log"), "w").write(os.environ.get("FAKE_LANE_LOG", "lane ok\n"))
+lane = a[a.index("run") + 3]
+# like the real lane.log: the lane's own output, then run-gate's verdict line for this lane last
+vline = os.environ.get("FAKE_VERDICT_LINE", f"run-gate: lane '{lane}' verdict PASS; exit_code 0")
+open(os.path.join(d, "lane.log"), "w").write(os.environ.get("FAKE_LANE_LOG", "lane ok\n") + vline + "\n")
 open(os.path.join(d, "artifacts", "verdict-a.json"), "w").write("{}")
-print("run-gate: lane suite verdict PASS")
+print(f"lane {lane} verdict collected")
 sys.exit(int(os.environ.get("FAKE_RG_RC", "0")))
 PY
 chmod +x "$ROOT/bin/api-check" "$ROOT/bin/api-check-alt" "$ROOT/bin/fake-ssh"
@@ -130,7 +133,7 @@ not_contains "$RG_LOG" '"--base"' 'no base unless requested'
 final=$(sed -n 's/^log: *//p' "$ROOT/ok.out")
 [[ -f $final && $final == "$ROOT/controller/logs/"* ]] || fail 'final log must be written under CONTROLLER_LOGS_DIR'
 contains "$final" "run-gate.commit=$SHA" 'binding line names the full commit'
-contains "$ROOT/ok.out" 'verdict:  run-gate: lane suite verdict PASS' 'verdict line is printed'
+contains "$ROOT/ok.out" "verdict:  run-gate: lane 'small' verdict PASS" 'verdict line is printed'
 contains "$ROOT/ok.out" 'verdicts: 1 JSON file(s)' 'verdict JSON files are counted'
 [[ $(find "$ROOT/controller/logs" -name '*.verdict-1.json' | wc -l) == 1 ]] || fail 'verdict JSON was not copied next to the log'
 [[ $(grep -cF 'dev-gates.slice/memory.events' "$SSH_LOG") == 2 ]] || fail 'the host is contacted exactly twice (OOM counter before and after) by this wrapper'
@@ -216,6 +219,46 @@ reset_logs
 if rg gate-a proj small "$SHA" --base "$SHA" -- --base "$SHA" > /dev/null 2>&1; then fail 'a base given as option and as pass-through was accepted'; fi
 if rg gate-a proj small "$SHA" -- --base > /dev/null 2>&1; then fail 'a pass-through --base without a ref was accepted'; fi
 [[ ! -e $RG_LOG ]] || fail 'a refused --base reached the runner'
+# --- RG-298: --collect-store / --store-max-mib reach remote-gate.py run as separate argv words, before `--`
+reset_logs
+if rg gate-a proj small "$SHA" --collect-store 'proj/.run-gate/store a' > /dev/null 2>&1; then fail 'a --collect-store path with a space was accepted'; fi
+[[ ! -e $RG_LOG ]] || fail 'a refused --collect-store reached the runner'
+reset_logs
+rg gate-a proj small "$SHA" --collect-store proj/.run-gate/s1 --base "$SHA" --collect-store proj/.run-gate/s2 --store-max-mib 64 -- --jobs 3 > /dev/null 2>&1 || fail 'run with store options failed'
+contains "$RG_LOG" '"--collect-store", "proj/.run-gate/s1", "--collect-store", "proj/.run-gate/s2", "--store-max-mib", "64"' 'store options are forwarded as one argv word each'
+contains "$RG_LOG" '"--base", "'"$SHA"'"' '--base still reaches remote-gate.py beside the store options'
+contains "$RG_LOG" '"--", "--jobs", "3"' 'extra run-gate arguments stay after --'
+python3 - "$RG_LOG" <<'PY' || fail 'the store options were not placed before the run-gate pass-through'
+import json, sys
+a = json.loads(open(sys.argv[1]).read().splitlines()[-1])
+sep = a.index("--")
+assert all(a.index(x) < sep for x in ("--collect-store", "--store-max-mib")), a
+PY
+reset_logs
+mkdir -p "$ROOT/seed-src" "$ROOT/seed-cwd"
+ln -sfn ../seed-src "$ROOT/seed-cwd/rel-seed"
+( cd "$ROOT/seed-cwd" && rg gate-a proj small "$SHA" --seed-store rel-seed=proj/.run-gate/s1 > /dev/null 2>&1 ) || fail 'run with --seed-store failed'
+contains "$RG_LOG" '"--seed-store", "'"$ROOT"'/seed-src=proj/.run-gate/s1"' '--seed-store reaches the runner with its local side made absolute'
+reset_logs
+for bad in "$ROOT/missing=x/y" "$ROOT/seed-src" "$ROOT/seed-src=/abs" "$ROOT/seed-src=../x" "$ROOT/seed-src=a=b" "=x" "$ROOT/seed-src=.git" "$ROOT/seed-src=a/.git/hooks"; do
+  if rg gate-a proj small "$SHA" --seed-store "$bad" > /dev/null 2>&1; then fail "--seed-store '$bad' was accepted"; fi
+done
+[[ ! -e $RG_LOG ]] || fail 'a refused --seed-store reached the runner'
+reset_logs
+rg gate-a proj small "$SHA" > /dev/null 2>&1 || fail 'a run without store options failed'
+not_contains "$RG_LOG" 'collect-store' 'no store option unless requested'
+not_contains "$RG_LOG" 'seed-store' 'no seed unless requested'
+not_contains "$RG_LOG" 'store-max-mib' 'no store bound unless requested'
+reset_logs
+for bad in /abs/store ../x a/../../x 'a b' 'a;b' '' .git a/.git/hooks; do
+  if rg gate-a proj small "$SHA" --collect-store "$bad" > /dev/null 2>&1; then fail "--collect-store '$bad' was accepted"; fi
+done
+for bad in 0 -1 abc 1.5 '' 99999999; do
+  if rg gate-a proj small "$SHA" --store-max-mib "$bad" > /dev/null 2>&1; then fail "--store-max-mib '$bad' was accepted"; fi
+done
+if rg gate-a proj small "$SHA" --collect-store > /dev/null 2>&1; then fail '--collect-store without a value was accepted'; fi
+if rg gate-a proj small "$SHA" --store-max-mib 5 --store-max-mib 6 > /dev/null 2>&1; then fail '--store-max-mib given twice was accepted'; fi
+[[ ! -e $RG_LOG ]] || fail 'a refused store option reached the runner'
 reset_logs
 CONTROLLER_REMOTE_REPO_NAME=named-repo rg gate-a proj small "$SHA" > /dev/null 2>&1 || fail 'run with a configured repo name failed'
 contains "$RG_LOG" '"--repo", "named-repo"' 'a configured repo name is forwarded'
@@ -273,9 +316,45 @@ reset_logs
 FAKE_SSH_RC=1 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/nossh.out" 2>&1; rc=$?
 [[ $rc == 1 ]] || fail "an unreadable OOM counter must not invent an OOM verdict (exit $rc)"
 contains "$ROOT/nossh.out" 'slice_oom_kill_delta=-1' 'an unreadable counter is reported as -1'
+# --- classification evidence is runner- or run-gate-written only. The lane's own output (test stderr lands in lane.log)
+# may print OOM words or a verdict word anywhere; it never decides. Failure messages here must not contain those words
+# themselves, or a failing check would be read as one.
+FAIL_LINE="run-gate: lane 'small' verdict FAIL; exit_code 1"
+# real shape: run-gate exits 4, its verdict line carries the killed lane child's exit_code 137
+BUDGET_LINE="run-gate: lane 'small' verdict BUDGET_EXCEEDED; exit_code 137"
+NOISE=$'task killed: OOMKilled\nbash: line 1: 4242 Killed\nexit 137\nexit_code 137\noom-kill\n  run-gate: lane \'small\' verdict BUDGET_EXCEEDED; exit_code 4\nexpected verdict BUDGET_EXCEEDED\n'
 reset_logs
-FAKE_LANE_LOG=$'task killed: OOMKilled\n' FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/laneoom.out" 2>&1; rc=$?
-[[ $rc == 76 ]] || fail "an OOM marker in the lane log exited $rc, expected 76"
+FAKE_VERDICT_LINE=$FAIL_LINE FAKE_LANE_LOG=$NOISE OOM_STEP=0 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/noise.out" 2>&1; rc=$?
+[[ $rc == 1 ]] || fail "lane output quoting kill and verdict words, no slice delta, verdict FAIL exited $rc, expected 1"
+not_contains "$ROOT/noise.out" 'INCONCLUSIVE-OOM' 'lane output alone is no OOM evidence'
+contains "$ROOT/noise.out" "verdict:  $FAIL_LINE" 'the anchored run-gate line is the reported verdict'
+reset_logs
+FAKE_VERDICT_LINE=$FAIL_LINE FAKE_LANE_LOG=$NOISE OOM_STEP=2 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/noiseoom.out" 2>&1; rc=$?
+[[ $rc == 76 ]] || fail "a quoted budget word in lane output must not hide a real slice delta (exit $rc, expected 76)"
+contains "$ROOT/noiseoom.out" 'INCONCLUSIVE-OOM' 'a real slice delta with a FAIL verdict stays INCONCLUSIVE-OOM'
+reset_logs
+FAKE_VERDICT_LINE="run-gate: lane 'other' verdict BUDGET_EXCEEDED; exit_code 4" OOM_STEP=2 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/otherlane.out" 2>&1; rc=$?
+[[ $rc == 76 ]] || fail "a budget line for another lane must not count for this one (exit $rc, expected 76)"
+reset_logs
+FAKE_VERDICT_LINE="run-gate: lane 'small' verdict FAIL; exit_code 1; reason a test expected BUDGET_EXCEEDED" OOM_STEP=2 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/reasonword.out" 2>&1; rc=$?
+[[ $rc == 76 ]] || fail "a budget word inside a FAIL line's reason is not a budget verdict (exit $rc, expected 76)"
+reset_logs
+FAKE_VERDICT_LINE="note: run-gate: lane 'small' verdict BUDGET_EXCEEDED; exit_code 4" OOM_STEP=2 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/unanchored.out" 2>&1; rc=$?
+[[ $rc == 76 ]] || fail "a verdict line not at the line start is not run-gate's (exit $rc, expected 76)"
+# a run-gate budget kill (its exit 4) is a budget verdict, not an OOM: its anchored line wins over the delta
+reset_logs
+FAKE_VERDICT_LINE=$BUDGET_LINE FAKE_LANE_LOG=$NOISE OOM_STEP=0 FAKE_RG_RC=4 rg gate-a proj small "$SHA" > "$ROOT/budget.out" 2>&1; rc=$?
+[[ $rc == 4 ]] || fail "a budget verdict exited $rc, expected run-gate's own 4"
+not_contains "$ROOT/budget.out" 'INCONCLUSIVE-OOM' 'a budget verdict is not an OOM verdict'
+contains "$ROOT/budget.out" "verdict:  $BUDGET_LINE" 'the budget verdict line is reported'
+reset_logs
+FAKE_VERDICT_LINE=$BUDGET_LINE OOM_STEP=2 FAKE_RG_RC=4 rg gate-a proj small "$SHA" > "$ROOT/budgetoom.out" 2>&1; rc=$?
+[[ $rc == 4 ]] || fail "a budget verdict with a slice delta exited $rc, expected 4 (the verdict line wins)"
+not_contains "$ROOT/budgetoom.out" 'INCONCLUSIVE-OOM' 'the budget verdict beats the slice delta'
+reset_logs
+FAKE_VERDICT_LINE=$FAIL_LINE OOM_STEP=2 FAKE_RG_RC=1 rg gate-a proj small "$SHA" > "$ROOT/realoom.out" 2>&1; rc=$?
+[[ $rc == 76 ]] || fail "a real slice delta (2) with verdict FAIL exited $rc, expected 76"
+contains "$ROOT/realoom.out" 'INCONCLUSIVE-OOM' 'a real slice delta stays INCONCLUSIVE-OOM'
 reset_logs
 FAKE_RG_RC=75 rg gate-a proj small "$SHA" > /dev/null 2>&1; rc=$?
 [[ $rc == 75 ]] || fail "the runner's PSI refusal (75) must pass through, got $rc"

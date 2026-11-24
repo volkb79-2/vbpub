@@ -152,9 +152,16 @@ class GrubBoot:
             if stat.S_ISLNK(status.st_mode):
                 raise BootError(f"ESP directory {directory} is a symlink")
 
-    def publish(self, targets: Sequence[BootTarget], default: ids.StateId) -> None:
+    def publish(
+        self,
+        targets: Sequence[BootTarget],
+        default: ids.StateId,
+        *,
+        clear_default_variable: bool = False,
+    ) -> None:
         """Publish exactly the targets, then make ``default`` effective."""
 
+        _ = clear_default_variable
         try:
             self._publish(targets, default)
         except OSError as error:

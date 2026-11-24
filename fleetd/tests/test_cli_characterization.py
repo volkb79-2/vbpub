@@ -86,7 +86,6 @@ def test_module_entrypoint_prints_the_same_version_line(monkeypatch, capsys):
         # below is the handler's own domain error, never a parse error.
         (["facts", "collect", "--root", "@{root}/absent"], "required config"),
         (["facts", "validate", "@{root}/absent.json"], "absent.json"),
-        (["guard", "validate", "@{root}/absent.toml"], "absent.toml"),
         (
             [
                 "plan", "r2", "--candidates", "@{root}/absent.json",
@@ -109,7 +108,10 @@ def test_domain_errors_prove_every_flag_spelling_was_accepted(argv, marker, caps
 
 
 def test_unknown_verb_and_unknown_flag_are_input_errors(capsys):
-    for argv in (["bogus"], ["plan", "r2", "--nonsuch"], ["facts", "bogus"], ["status"]):
+    for argv in (
+        ["bogus"], ["merge-check", "x"], ["guard", "validate", "x"],
+        ["plan", "r2", "--nonsuch"], ["facts", "bogus"], ["status"],
+    ):
         assert run(argv) == 2
         captured = capsys.readouterr()
         assert captured.out == ""
@@ -147,20 +149,6 @@ def test_facts_validate_reports_the_document_kind_on_stdout(capsys):
 )
 def test_facts_validate_errors_keep_exit_two_and_an_empty_stdout(argv, capsys):
     assert run(argv) == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err.strip()
-
-
-def test_guard_validate_reports_the_document_kind_on_stdout(capsys):
-    assert run(["guard", "validate", str(FIXTURES / "guard.valid.toml")]) == 0
-    captured = capsys.readouterr()
-    assert captured.out == "valid guard.toml\n"
-    assert captured.err == ""
-
-
-def test_guard_validate_errors_keep_exit_two_and_an_empty_stdout(capsys, tmp_path):
-    assert run(["guard", "validate", str(tmp_path / "missing.toml")]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.strip()
@@ -227,7 +215,7 @@ def test_help_lists_every_document_command_and_the_library_controls(capsys):
 
     assert run(["help"]) == 0
     text = capsys.readouterr().out
-    for verb in ("facts", "guard", "plan", "run", "status", "tick", "collect", "skills"):
+    for verb in ("facts", "plan", "run", "status", "tick", "collect", "skills"):
         assert verb in text, verb
     assert "fleet" in text
     assert "--version" in text

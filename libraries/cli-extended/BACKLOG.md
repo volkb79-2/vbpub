@@ -1000,3 +1000,22 @@ usage/internal error) plus a check that the canary test itself failed. Same
 class as run-gate RG-292.
 
 Source: P-core-04b Opus review NIT 6 (outside the contract), 2026-11-24.
+
+## CLI-EXT-51 — `procio._SignalScope` replaces a caller's own SIGTERM/SIGHUP handler
+
+**Status:** OPEN. **Type:** Bug. **Area:** `procio` signal scope.
+
+`procio._SignalScope` (`src/cli_extended/procio.py:249-300`) installs its
+`SystemExit(128 + signum)` handler over any SIGTERM or SIGHUP disposition that
+is not `SIG_IGN`. A caller with its own handler therefore loses it for the whole
+duration of every `run_capture` and `run_streaming` call; ciu's foreground
+one-shot (`remember_signal`, CIU-141) is the known case, and ciu mirrors this as
+CIU-232. SIGINT is already left alone unless it still has Python's default
+handler.
+
+Wanted: leave a handler that is not `SIG_DFL` alone for SIGTERM and SIGHUP too
+(as SIGINT already is), or offer an explicit opt-out. Test: install a recording
+SIGTERM handler, run a child that SIGTERMs its parent; the handler records and
+the call returns normally.
+
+Source: P-core-10 Opus review round 2, 2026-11-24.

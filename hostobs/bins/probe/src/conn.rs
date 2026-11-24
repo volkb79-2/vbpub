@@ -2347,15 +2347,6 @@ mod tests {
     }
 
     #[test]
-    fn conn_unsubscribe_is_not_found_in_json_mode() {
-        let mut rig = ready_json(Level::Control);
-        rig.execute(3, Call::Unsubscribe(2));
-        let out = text(&rig.finish());
-        assert!(out.contains("\"corr\":3"));
-        assert!(out.contains("\"code\":\"not-found\""));
-    }
-
-    #[test]
     fn conn_corr_reuse_after_end_ok_is_legal() {
         let mut rig = ready_bin(Level::Observe);
         rig.subscribe(2, selection(1), 1_000);

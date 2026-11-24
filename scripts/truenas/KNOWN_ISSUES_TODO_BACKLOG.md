@@ -27,6 +27,7 @@ detail lives. A FIXED entry means code, tests and docs landed together.
 | TN-15 | `unit` and `unit-boot-pool-patch` lanes are red on main: the live-UI Playwright pin (1.64.0) no longer matches the pwmcp contract (1.64.1) | Major | FIXED (truenas-red-20261118) |
 | TN-16 | `unit` and `unit-boot-pool-patch` lanes are red on main: the registered v27 RC.1 install bundle digest differs from the digest recomputed from the archive | Major | FIXED (truenas-red-20261118) |
 | TN-17 | Acceptance uses a fixed release-program lock path with no alternate-home override | Minor | OPEN 2026-11-13 |
+| TN-18 | TrueNAS docs miss the read-only cgroup and D-Bus mount requirement inherited from vm-lab (tracked as `vm-lab` VML-BL-11) | Minor | OPEN 2026-11-24 |
 
 ## Entries
 
@@ -126,3 +127,10 @@ controller-home override, so it cannot run from an alternate program home
 today. Preserve that lock location while the acceptance script remains
 unchanged, or add a configuration-driven path before retiring the current
 program directory.
+
+### TN-18 TrueNAS docs miss the vm-lab mount requirement (cross-entry)
+
+Owned and tracked in `vm-lab/KNOWN_ISSUES_TODO_BACKLOG.md` VML-BL-11: `tcg_vm.py` inherits vm-lab's read-only
+cgroup and D-Bus mount requirement, which `docs/CONSUMERS.md` and `docs/DESIGN-GUIDE.md` do not mention; no
+TrueNAS test covers the new scope path, and `host_pid_cgroup` still needs `/hostproc`. This entry closes when
+VML-BL-11 does.

@@ -175,7 +175,7 @@ def test_every_flag_and_command_the_skill_names_exists_on_the_real_cli():
     named = set(re.findall(r"(?<![\w-])(--[a-z][a-z-]*)", text))
     assert named - _RUN_GATE_FLAGS <= real_flags, sorted(named - _RUN_GATE_FLAGS - real_flags)
 
-    verbs = {"facts": {"collect", "validate"}, "guard": {"validate"}, "plan": None, "run": None,
+    verbs = {"facts": {"collect", "validate"}, "plan": None, "run": None,
              "status": None, "tick": None, "collect": None, "skills": {"install", "check", "list", "uninstall"}}
     commands = [line.split() for line in text.splitlines() if line.startswith("fleet ")]
     assert commands, "the skill shows no runnable `fleet` command"

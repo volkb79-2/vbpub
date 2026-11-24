@@ -1198,6 +1198,10 @@ mutant("scripts/controller/remote-gate.sh", "remote-gate-weight-min.sh",
        '    w = min(cands)', '    w = max(cands)')
 mutant("scripts/controller/remote-gate.sh", "remote-gate-oom-delta.sh",
        '(( oomd > 0 ))', '(( oomd > 5 ))')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-budget-verdict.sh",
+       '[[ $rg_verdict != BUDGET_EXCEEDED ]]', 'true')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-verdict-anchor.sh",
+       "index($0, p) == 1 { l = $0 }", "index($0, p) >= 1 { l = substr($0, index($0, p)) }")
 mutant("scripts/controller/remote-gate.sh", "remote-gate-commit-binding.sh",
        'if [[ ${checked:-0} -ge 1 ]]; then', 'if false; then')
 mutant("scripts/controller/remote-gate.sh", "remote-gate-slot-descriptors.sh",

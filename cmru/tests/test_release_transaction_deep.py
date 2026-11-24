@@ -94,7 +94,7 @@ def test_list_cmru_workspaces_accepts_legacy_purpose_with_transaction_branch(tmp
 
 
 def test_create_workspace_captures_reset_diagnostics_and_cleans_failed_allocation(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, process_run_seam,
 ):
     """A failed materialization must preserve either stderr or stdout.
 
@@ -125,7 +125,7 @@ def test_create_workspace_captures_reset_diagnostics_and_cleans_failed_allocatio
         return subprocess.CompletedProcess(argv, 1, stdout=None, stderr=None)
 
     monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
-    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+    process_run_seam(transaction, fake_run)
 
     with pytest.raises(RuntimeError, match="reset fallback"):
         transaction.create_workspace(tmp_path, base="a" * 40, purpose="build")

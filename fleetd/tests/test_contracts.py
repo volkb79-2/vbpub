@@ -6,7 +6,6 @@ import pytest
 
 from fleetd.contracts import (
     CONTROL_PLANE_SERVICE_UNITS,
-    AssayMergeManifest,
     ContractError,
     HostFacts,
     WorkRequest,
@@ -14,8 +13,6 @@ from fleetd.contracts import (
     dump_json,
     load_json,
     parse_memory_bytes,
-    select_owner_records,
-    validate_assay_merge_manifest,
     validate_host_facts,
     validate_lane_demand,
     validate_work_request,
@@ -356,44 +353,6 @@ def test_work_request_rejects_invalid_contract(change, message):
     data = _fixture("work-request.valid.json")
     change(data)
     _fails(lambda: validate_work_request(data), message)
-
-
-def test_manifest_has_exact_one_owner_per_planned_candidate_and_ignores_duplicates():
-    manifest = validate_assay_merge_manifest(_fixture("assay-merge-manifest.valid.json"))
-    assert isinstance(manifest, AssayMergeManifest)
-    assert manifest.to_dict() == _fixture("assay-merge-manifest.valid.json")
-    records = {
-        "store-alpha": {_cid("candidate-a"): {"verdict": "owner"}},
-        "store-beta": {_cid("candidate-b"): {"verdict": "owner-b"}, _cid("candidate-a"): {"verdict": "duplicate"}},
-    }
-    assert select_owner_records(manifest, records) == {
-        _cid("candidate-a"): {"verdict": "owner"}, _cid("candidate-b"): {"verdict": "owner-b"},
-    }
-
-
-@pytest.mark.parametrize(
-    ("change", "message"),
-    [
-        (lambda data: data.update(schema="assay-merge-manifest/2"), "expected 'assay-merge-manifest/1'"),
-        (lambda data: data.update(extra=True), "unknown field.*extra"),
-        (lambda data: data.update(planned_ids=[_cid("a"), _cid("a")]), "duplicate value"),
-        (lambda data: data.update(owners=[]), "owners: expected object"),
-        (lambda data: data["owners"].update({_cid("candidate-a"): None}), r"assay-merge-manifest/1\.owners\..*: expected string"),
-        (lambda data: data["owners"].pop(_cid("candidate-a")), "missing owners: " + _cid("candidate-a")),
-        (lambda data: data["owners"].update({_cid("extra"): "store-x"}), "owners outside planned_ids: " + _cid("extra")),
-        (lambda data: data["owners"].update({"candidate-a": "store-x"}), "owners candidate ID: expected a 64-character lowercase SHA-256 candidate id"),
-    ],
-)
-def test_merge_manifest_rejects_ambiguous_ownership(change, message):
-    data = _fixture("assay-merge-manifest.valid.json")
-    change(data)
-    _fails(lambda: validate_assay_merge_manifest(data), message)
-
-
-def test_merge_owner_missing_store_or_record_refuses():
-    manifest = validate_assay_merge_manifest(_fixture("assay-merge-manifest.valid.json"))
-    _fails(lambda: select_owner_records(manifest, {"store-alpha": {}}), "owner store 'store-alpha' has no record")
-    _fails(lambda: select_owner_records(manifest, {"store-alpha": {_cid("candidate-a"): 1}}), "owner store 'store-beta' has no record")
 
 
 def test_json_loader_rejects_duplicate_keys_and_reports_syntax_location(tmp_path):

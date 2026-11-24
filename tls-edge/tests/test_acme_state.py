@@ -6,10 +6,11 @@ import shutil
 import sys
 import tomllib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import yaml
+
+from cli_extended import identity as identity_module
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = next(
@@ -31,16 +32,9 @@ ENVIRON = {
 }
 
 
-class Runtime:
-    def __init__(self):
-        self.output = self
-        self.lines: list[str] = []
-
-    def primary(self, text: str) -> None:
-        self.lines.append(text)
-
-    def confirm(self, _prompt: str) -> bool:
-        return True
+@pytest.fixture(autouse=True)
+def _cli_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(identity_module, "installed_version", lambda _name: "0.0.0")
 
 
 def _copy_stack(stack_dir: Path) -> None:
@@ -68,12 +62,11 @@ def _instance(tmp_path: Path, *, marker: bool) -> tuple[Path, Path]:
 def _configure(root: Path, tmp_path: Path, extra_answers: str = "") -> None:
     answers = tmp_path / "answers.toml"
     answers.write_text(
-        'domain = "edge.example.test"\n' + extra_answers,
+        '[tls_edge]\ndomain = "edge.example.test"\n' + extra_answers,
         encoding="utf-8",
     )
-    assert cli.configure(
-        SimpleNamespace(root=root, answers=answers, dry_run=False),
-        Runtime(),
+    assert cli.main(
+        ["configure", "--root", str(root), "--answers", str(answers), "--yes"]
     ) == 0
 
 
@@ -157,7 +150,7 @@ def test_new_instance_can_still_adopt_an_external_volume(tmp_path: Path) -> None
     _configure(
         root,
         tmp_path,
-        'acme_volume_name = "edge-proxy_acme-data"\n',
+        '[tls_edge.acme]\nvolume_name = "edge-proxy_acme-data"\n',
     )
 
     override = tomllib.loads((stack_dir / "ciu.toml.j2").read_text(encoding="utf-8"))

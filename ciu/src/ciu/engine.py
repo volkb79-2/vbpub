@@ -52,6 +52,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from cli_extended import procio
+
 from . import config_model
 from . import composefile
 from . import governance
@@ -1408,8 +1410,11 @@ def _dood_preflight(physical_stack_dir: Path) -> None:
 
 
 # ===========================================================================
-# Compose execution (S8.1) — live streaming, ported onto procutil-style Popen
+# Compose execution (S8.1) — live streaming through cli-extended's bounded procio
 # ===========================================================================
+
+COMPOSE_UP_NO_PROGRESS_SECONDS = 1800
+COMPOSE_UP_DRAIN_SECONDS = 2.0
 
 
 def compose_project_name(config: dict, stack_dir: Path) -> str:
@@ -1603,35 +1608,48 @@ def execute_docker_compose_with_logs(
 
     print("[INFO] Executing docker compose up...", flush=True)
 
-    proc = None
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, env=env, cwd=str(cwd),
-        )
         lines: list[str] = []
-        assert proc.stdout is not None
-        for line in proc.stdout:
+
+        def collect(line: str) -> None:
             print(f"  [COMPOSE] {line.rstrip()}", flush=True)
             lines.append(line)
-        proc.wait()
+
+        streamed = procio.run_streaming(
+            cmd,
+            cwd=str(cwd),
+            env=env,
+            on_line=collect,
+            drain_seconds=COMPOSE_UP_DRAIN_SECONDS,
+            no_progress_seconds=COMPOSE_UP_NO_PROGRESS_SECONDS,
+        )
         result["stdout"] = "".join(lines)
-        if proc.returncode != 0:
+        if streamed.warning is not None:
+            print(f"[WARN] {streamed.warning}", flush=True)
+        if streamed.watchdog is not None:
             result["status"] = "error"
-            result["message"] = f"Docker compose failed with exit code {proc.returncode}"
-            print(f"[ERROR] Docker compose execution failed (exit {proc.returncode})", flush=True)
+            result["message"] = streamed.watchdog.render(
+                "COMPOSE_UP_NO_PROGRESS_SECONDS"
+            )
+            print(f"[ERROR] {result['message']}", flush=True)
+            for tree_line in streamed.watchdog.tree_lines:
+                print(f"  {tree_line}", flush=True)
+            return result
+        if streamed.returncode != 0:
+            result["status"] = "error"
+            result["message"] = (
+                f"Docker compose failed with exit code {streamed.returncode}"
+            )
+            print(
+                f"[ERROR] Docker compose execution failed (exit {streamed.returncode})",
+                flush=True,
+            )
             return result
         print("[SUCCESS] Docker compose up completed", flush=True)
     except KeyboardInterrupt:
         print("\n[WARN] User interrupted docker compose execution", flush=True)
         result["status"] = "interrupted"
         result["message"] = "User interrupted execution"
-        if proc is not None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
     except FileNotFoundError as e:
         result["status"] = "error"
         result["message"] = f"docker not available: {e}"
