@@ -861,17 +861,17 @@ hashes, installs into `/opt/fleetd/<version>/venv`, and links
 
 ```bash
 wheel_dir=/var/cache/host-wheels
-fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-0.3.0-py3-none-any.whl.sha256")
-cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.5.0-py3-none-any.whl.sha256")
+fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-0.1.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.8.0-py3-none-any.whl.sha256")
 sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
   --wheel-dir "$wheel_dir" \
-  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
-  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --fleetd-version 0.1.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.8.0 --cli-extended-sha256 "$cli_extended_sha256" \
   --check
 sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
   --wheel-dir "$wheel_dir" \
-  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
-  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256"
+  --fleetd-version 0.1.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.8.0 --cli-extended-sha256 "$cli_extended_sha256"
 command -v fleet
 ```
 
