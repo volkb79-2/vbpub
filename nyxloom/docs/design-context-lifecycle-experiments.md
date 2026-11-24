@@ -3029,3 +3029,95 @@ feature: the extract is agnostic and summarizes what the transcript already cont
   as NL-36 (MCP edit/write tool with a required `intent`).
 - Consequence for docs: the git-ignored vbpub root `CLAUDE.md` was corrected by the controller by
   hand to the measured E-020 facts (it is not tracked, so no commit carries that fix).
+
+## E-021 (proposed, not yet run) · voluntary yield + priming brief for pi implementers
+
+Operator directive, 2026-11-24 (P-plat-22d0, which amends P-plat-22d). Long deepseek-pi implementer runs today stay
+in one thread until pi's auto-compaction, which fires at `contextWindow - reserveTokens` = 328,000 - 16,384, about
+311.6k (pi 1.6.0 `docs/compaction.md`, `~/.pi/agent/models.json`). The tail is the expensive part, and quality drops
+there. One real local session measured 1,635 requests, a 312k peak, 4 compactions and 287M cache-read tokens, and made
+its first edit/write tool call only at request 166 (240k).
+
+**Hypothesis.** Suppose the implementer chooses its own moment to yield at a semantic boundary, with no fixed
+threshold, and writes a priming brief: key facts with `file:line`, the tool results it still relies on (inline, each
+with its re-derive command), its position in the task and the next 3 actions. Then a fresh successor that starts from
+the original brief plus that priming brief:
+- reaches working state in far fewer tool calls than a cold start (about 20, per the P-plat-22d problem statement);
+- makes the chain cheaper than one long thread;
+- does not raise rework.
+The yielding agent knows what it will need only at yield time, which is why the state lives in the priming brief and
+not in a running NOTES file or in git.
+
+**Arms**, on the deepseek-pi route, same model (`deepseek-v4.1-flash-eco`) and thinking (`high`):
+- **Y (voluntary yield).** The brief carries the YIELD block. A successor starts as a NEW pi-impl run in the same
+  worktree, with the SUCCESSOR block, the original brief and the priming brief.
+- **C (same-thread continuation).** Today's behaviour: one run, with pi auto-compaction left on.
+
+Comparability:
+- Pair packages from the same series, i.e. siblings of one burn-down list or fix wave, with similar brief size and
+  touched-file count.
+- Assign the arm before launch by alternation, never by a guess at the package's length.
+- Historical C runs on pi (sessions that peaked at 150k or more) can serve as an extra baseline. Report them
+  separately from the prospective pairs.
+
+**Instruments.** The agent cannot see its own context size. pi exposes it only to the TUI footer, to extensions
+(`ctx.getContextUsage()`, `docs/extensions.md` "ctx.getContextUsage()") and to RPC (`get_session_stats.contextUsage`,
+`docs/rpc-commands.md`); none of these reaches the model in `pi -p --mode json`. The wrapper's live sidecar does: it
+writes `latest_total_tokens` to `<run>.live` every 30 s (`scripts/controller/pi-live.py`). The YIELD block lets the
+agent read that gauge once per boundary, and only for the 250k hard cap.
+
+The ready moment is a marker tool call, `echo E021-READY <run>; date -u +%FT%TZ`. The controller maps it to the
+request's context from the session JSONL (`$PI_SESSION_DIR/<ts>_<thread>.jsonl`, thread id in `<run>.thread`).
+
+`jsonl-metrics.py` cannot read pi sessions. `load_calls`/`iter_tool_uses` accept only `type: assistant` lines with
+Claude usage keys. pi writes `type: message`, `message.role: assistant`, `usage.{input,cacheRead,cacheWrite,output}`
+and `toolCall` blocks `{name, arguments}`. The smallest addition is a pi branch in those two parsers that maps the
+fields one to one. Until it lands, the interim converter `e021-pi-measure.py --cc-out` emits Claude-shaped lines;
+it lives with the paste block at `.controller-state/platform/briefs/`.
+
+**Metrics**, one ledger line per run (`E021 chain= arm= block= run= ...`), and per chain:
+- restart size: the successor's first-request context, `restart_ctx`;
+- ready-at size: `ready_ctx` and `ready_tools` at the marker, plus the agent's own words (`felt=`);
+- to the first productive edit: tool calls, seconds and tokens (`edit_tools`, `edit_s`, `edit_tok`);
+- the yield size: the predecessor's `end_ctx`, with `gauge=` saying whether it looked;
+- rework: review findings by severity, fix rounds, and churn. Churn is `git log --numstat` over `<base>..HEAD` minus
+  `git diff --numstat <base>..HEAD`, i.e. lines written and then undone;
+- chain cost: `in`, `cached`, `cwrite` and `out` summed over the chain, and the jsonl-metrics normalized cost (input
+  1.0, cache read 0.1, cache write 1.25, output 5.0);
+- readback outcome (OK or MISMATCH), and missed yields: CONTEXT-FULL or a compaction in a Y run without a YIELD line.
+
+A known blind spot: an edit made through `bash` (sed, a heredoc) is not counted as a productive edit. Note it per
+run when the session shows one.
+
+**Method.** The exact commands are in the paste block, section 4: launch with `pi-impl.sh`, detect the final
+`YIELD run=` line in `<run>.last.txt`, check the priming brief's size and run the secret grep, compose the successor
+prompt, launch `pi-impl.sh <wt> <prompt> <chain>-y<N>` in new mode, then run
+`python3 -I e021-pi-measure.py <session> --run --chain --arm --block >> .controller-state/e021/ledger.log`. Collect
+with `grep -hE '^(YIELD|READY) run=' $CONTROLLER_RUNS_DIR/*.last.txt` and `grep '^E021' ledger.log`. A chain has at
+most 3 yields. A successor that yields with no productive edit ends the chain.
+
+**Iteration loop.** The YIELD and SUCCESSOR blocks are versioned together (`block v<N>` in both headings, and `block=`
+in each ledger line). After every 3 Y chains, read the ledger and the successors' `felt=` lines, then change one thing
+per version:
+- the schema sections;
+- the budget;
+- the boundary wording.
+Add tool support only when the data names the need:
+- 2 or more MISMATCH readbacks on worktree state: generate the Worktree section mechanically.
+- Successors that spend more than 5 tool calls re-deriving results the brief cited: build the cited-tool-results
+  helper of P-plat-22d section 4.
+- A missed 250k cap: a pi extension that injects `ctx.getContextUsage()` into tool results (CONTEXT-ECONOMY.md
+  section 3, untested).
+- Repeated use of the converter: the native pi parser in jsonl-metrics.
+
+**Decision rule**, after at least 3 matched pairs:
+- **Adopt** (YIELD block by default, agctl support next) when all of these hold:
+  - the median successor `edit_tools` is 10 or fewer;
+  - chain normalized cost is at most C's;
+  - findings (H+M) and fix rounds are no worse in at least 2 of 3 pairs.
+- **Drop** when rework is worse in 2 or more pairs, or when MISMATCH or brief rejections persist across two block
+  versions.
+- **Otherwise iterate.** A cheaper chain that comes with worse rework is not an adopt.
+
+**Status.** Not run. The paste block is broadcast by main. Interim tooling lives in controller state; the native pi
+parser in jsonl-metrics and the agctl yield support are not built.
