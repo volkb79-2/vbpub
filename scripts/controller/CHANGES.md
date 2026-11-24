@@ -25,8 +25,17 @@ no separate version number, so entries are grouped by the work that landed.
   list. `session-start` prints the READ FIRST list of the newest `RESUME HERE #N`
   block of HANDOFF.md instead of a hard-coded order. New `CTX_REPO_ROOT` and
   `CTX_HANDOFF_FILE`; the default state directory is the nearest
-  `.controller-state` above the hook's `cwd`. The pressure state file is keyed by
-  session id as well. 12 new hand mutants.
+  `.controller-state` above the hook's `cwd` (else the repo holding the script,
+  else nothing is written). The pressure state file is keyed by session id as
+  well and lives in `<state>/hooks/`. 12 new hand mutants.
+- `hooks/ctx-hooks.py` review round 1 (P-plat-05): readback files and state are
+  per session (`readback-<session_id>-N.md`, `readback-state-<session_id>.json`),
+  `session-start` names a readback only when that session's own last build
+  succeeded and prints the live hook's role rule before the main controller's
+  list (`CTX_MAIN_CONTROLLER` names it), `CTX_HOOK_ROLE=agent` skips the
+  pre-compact build, the handover note fires at `min(soft, ceiling - 50000)`
+  (warning event in the log), and the "weigh the three things" sentence is back
+  in every note that tells a role to decide. 5 more hand mutants.
 
 ### Added
 - `rules.md`: "House rules for every implementer brief" (CTL-50): remote dev container before each commit (interim `hostobs/tools/dev` for Rust), no direct `hx.sh`/`ssh`/`docker` and no tests in the devcontainer, contract plus target size with at most 2 review rounds, explicit launch effort, unique run names with resumed runs verified from git, DONE/PARTIAL/BLOCKED with a finalization. `BRIEF-TEMPLATE.md`, `finisher-generic.md` and the README point to it; the README records the bash freeze (CTL-40).

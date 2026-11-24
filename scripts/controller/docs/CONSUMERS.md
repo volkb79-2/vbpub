@@ -292,9 +292,11 @@ Everything is a flag or an environment variable (`CTX_STATE_DIR`,
 `CTX_READBACK_REDACT_PATTERNS` (one regex per line, forwarded as `--redact-pattern`),
 `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`,
 `CTX_SESSION_KIND`, `CTX_HOOK_ROLE`, `CTX_SOFT_CONTROLLER`, `CTX_SOFT_AGENT`,
-`CTX_REPO_ROOT`, `CTX_HANDOFF_FILE`). Without
+`CTX_REPO_ROOT`, `CTX_HANDOFF_FILE`, `CTX_MAIN_CONTROLLER`). Without
 `--state-dir` the state directory is the nearest `.controller-state` at or above
-the hook input's `cwd`, so nothing depends on a fixed checkout path. The pressure
+the hook input's `cwd` (else the repo holding the script, else nothing is written),
+so nothing depends on a fixed checkout path. Readback files and state are per
+session id, so sessions sharing one state directory never read each other's. The pressure
 ladder is a note every 50000 tokens from 100000 on. The wording follows the
 session kind (`--session-kind` / `CTX_SESSION_KIND` / `CTX_HOOK_ROLE`; default:
 the main session is a `controller`, a hook fired inside an Agent-tool subagent is
@@ -312,7 +314,7 @@ To replace a hand-written hook with this script, change only the path in each
 `stop`, `pre-compact` and `session-start` (matcher `compact`).
 A failed build never fails the
 session: `session-start` then prints the exact manual command, and
-`readback-state.json` carries the failure so the next session sees it. Which
+`readback-state-<session_id>.json` carries the failure so the next session sees it. Which
 harness/situation rows are tested is in
 [the compaction checklist](../../../docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md);
 the reasoning is in the

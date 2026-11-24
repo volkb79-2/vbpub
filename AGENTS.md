@@ -697,17 +697,23 @@ and cadence.
 - **Below 200k**: the wording prefers finishing the current unit of work.
 - **From 200k on**: the wording names the next semantic boundary, and differs by role (below).
 
-The hook sends one wording per role (`ctx.py`; an Agent-tool subagent has `agent_id` in the hook
-input, and `CTX_HOOK_ROLE=agent|controller` overrides the detection for a spawned top-level
-session):
+The hook (`scripts/controller/hooks/ctx-hooks.py`) sends one wording per role (an Agent-tool
+subagent has `agent_id` in the hook input, and `CTX_HOOK_ROLE=agent|controller` overrides the
+detection for a spawned top-level session). Each role has one soft threshold (controller
+`CTX_SOFT_CONTROLLER`, default 650k; agent `CTX_SOFT_AGENT`, default 200k); the note fires at
+`min(soft, ceiling - 50k)`, the ceiling being the model's `autoCompactWindow` in
+`~/.claude/settings.json`:
 
-- **Controller / interactive session**: auto-compaction is the only limit. At the next semantic
-  boundary persist state to the plan and handoff files and CONTINUE; never stop, stand still or
-  wait for a compaction. The controller decides how its agents are guided.
-- **Agent session**: follow the dispatch brief's context rule if it has one. Otherwise decide at the
-  next semantic boundary: a small remainder is finished and reported; a large one ends the session
-  with a report that is the handoff (done and verified, half-known, the exact next step, facts that
-  exist only in the conversation). The controller decides who continues.
+- **Controller / interactive session**: below its soft threshold, at the next semantic boundary
+  persist state to the plan and handoff files and CONTINUE; never stop, stand still or wait for a
+  compaction. At or past it, write the handover (controller-handover skill), sync the plan, set
+  READY, then end the turn (auto-compaction is not a safe handover). The controller decides how its
+  agents are guided.
+- **Agent session**: marker only below its soft threshold. From it, follow the dispatch brief's
+  context rule if it has one; otherwise decide at the next semantic boundary: a small remainder is
+  finished and reported; a large one ends the session with a report that is the handoff (done and
+  verified, half-known, the exact next step, facts that exist only in the conversation). The
+  controller decides who continues.
 
 Both roles are told to weigh the same three things, not to count tokens: the remaining effort, what
 already lives in tools and files versus only in conversation prose, and how well the work resumes

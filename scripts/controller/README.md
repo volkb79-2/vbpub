@@ -697,13 +697,21 @@ for the session's model, else the top-level `autoCompactWindow`, else 500000;
 a missing or malformed file never raises) and feeds the growth line ("calls to
 the Nk ceiling"). One soft threshold per session kind: controller
 `CTX_SOFT_CONTROLLER` (alias `CTX_CONTROLLER_SOFT`, default 650000), agent
-`CTX_SOFT_AGENT` (default 200000). A controller below its threshold is told to
+`CTX_SOFT_AGENT` (default 200000); the note fires at `min(soft, ceiling - 50000)`
+and the hook log gets a `warning` event when the ceiling is at or below the soft
+threshold. A controller below its threshold is told to
 persist and keep working; at or past it, to write the handover
 (controller-handover skill), sync the plan, set READY and end the turn. An agent
 gets the marker only until its threshold, then finish-or-PARTIAL. A controller
 past 200k with a HANDOFF.md older than 15 minutes also gets a stale-state
-warning, and `session-start` prints the READ FIRST list of the newest
-`RESUME HERE #N` block of HANDOFF.md instead of a hard-coded order. Which harness/situation rows are tested is in
+warning, and `session-start` prints a role rule (main controller, sub-controller
+or any other session reads its own list) followed by the READ FIRST list of the
+newest `RESUME HERE #N` block of HANDOFF.md instead of a hard-coded order. The
+readback files and state are per session (`readback-<session_id>-N.md`,
+`readback-state-<session_id>.json`), `session-start` names a readback only when
+that session's own last build succeeded, and the pressure state files live in
+`<state>/hooks/`. With no `.controller-state` above the hook's `cwd`, the one of
+the repo holding the script is used, else nothing is written. Which harness/situation rows are tested is in
 [`docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md`](../../../docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md);
 the reason each choice was made is in the
 [read-back design](docs/DESIGN-GUIDE.md#compaction-recovery-hooks).

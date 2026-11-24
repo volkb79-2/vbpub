@@ -1558,7 +1558,7 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md H5
 
 ## CTL-43 — live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY
 
-**Status:** FIXED-pending-wiring 2026-11-24 (package P-plat-05): `scripts/controller/hooks/ctx-hooks.py` is a drop-in for the untracked `.controller-state/hooks/ctx.py`. Remaining controller steps: the operator swaps the five hook paths in `.claude/settings.local.json` (path only, mode words unchanged); `.controller-state/hooks/ctx.py` is deleted after one clean day; AGENTS.md "Context pressure ladder" and the controller-handover skill step 7 still name `ctx.py` (follow-up).
+**Status:** FIXED-pending-wiring 2026-11-24 (package P-plat-05): `scripts/controller/hooks/ctx-hooks.py` is a drop-in for the untracked `.controller-state/hooks/ctx.py`. Remaining controller steps: the operator swaps the five hook paths in `.claude/settings.local.json` (path only, mode words unchanged); `.controller-state/hooks/ctx.py` is deleted after one clean day. AGENTS.md "Context pressure ladder" and the controller-handover skill step 7 now name `ctx-hooks.py` (review r1 fix). Swapping drops the live `state-*.json` cadence state, so each live session gets one extra note at its current step.
 
 Wire `hooks/ctx-hooks.py` and delete the copy. Ceiling per model; past the soft threshold, handover, READY, end of turn.
 

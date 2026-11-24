@@ -410,7 +410,8 @@ compaction itself. So every path exits 0, the extract runs under a 15 s
 default / **20 s hard cap**, and a failure is made visible in two safe places
 instead: one log line, and (on `session-start`) the exact command to build the
 readback by hand. A failure is also recorded durably in
-`readback-state.json`, because the next session reads that state, not the log.
+`readback-state-<session_id>.json` (state is per session), because the next
+session reads that state, not the log.
 - **The whole session is the goal anchor's source, but the anchor is opt-in.**
 `pre-compact` runs the preset WITHOUT `--goal-prompt`: a controller session's
 anchor is its `plan.yaml`, and its goal shifts (AGENTS.md). A SPAWNED session
@@ -438,8 +439,8 @@ so a handover edit needs no hook edit.
 input's `cwd` (a controller that `cd`s into a worktree keeps its state). No
 repository path, transcript path or 30000/10000 budget is compiled in; the
 budgets are flags/env with those documented defaults.
-- **The numbering is crash-safe.** `readback-N.md` takes one past the highest
-number ON DISK, not one past a counter in a state file, so a state file lost to
+- **The numbering is crash-safe.** `readback-<session_id>-N.md` takes one past
+the session's highest number ON DISK, not one past a counter in a state file, so a state file lost to
 a crash cannot make a later readback overwrite an earlier one. The previous
 readback's marker is read from state and passed as `--since`, which is what
 makes two consecutive readbacks never duplicate each other.
