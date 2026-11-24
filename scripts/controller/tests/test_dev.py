@@ -29,6 +29,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTROLLER = REPO_ROOT / "scripts" / "controller"
 DEV = Path(os.environ.get("DEV_SCRIPT") or CONTROLLER / "dev")
+DEV_PROFILE = Path(os.environ.get("DEV_PROFILE_SCRIPT") or CONTROLLER / "dev_profile.py")   # a mutated copy, tests/test-mutations.sh
 PROFILES = CONTROLLER / "dev-profiles.toml"
 ROOT_TOML = REPO_ROOT / "run-gate.root.toml"
 
@@ -198,6 +199,7 @@ class DevCase(unittest.TestCase):
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO_ROOT / rel, root / rel)
         shutil.copy2(DEV, root / "scripts" / "controller" / "dev")
+        shutil.copy2(DEV_PROFILE, root / "scripts" / "controller" / "dev_profile.py")
         for proj in ("cmru", "hostobs"):
             (root / proj / "keep.txt").write_text("committed\n")
             (root / proj / "gone.txt").write_text("to be deleted\n")
@@ -387,6 +389,10 @@ class ArgvTests(DevCase):
         edits["root user"] = base.replace('user = "1003:1003"', 'user = "0:0"')
         edits["foreign capability"] = base.replace('gdb = ["SYS_PTRACE"]', 'gdb = ["SYS_ADMIN"]')
         edits["escaping mount"] = base.replace('"{work}:/work"', '"/:/work"')
+        for label, mounts in (("writable .git mount", '"{work}/.git:/work/.git"'), ("read-only .git mount", '"{work}/.git:/work/.git:ro"'),
+                              ("a mount over .git", '"{cache}:/work/x/../.git"'), ("a mount below .git", '"{cache}:/work/.git/hooks"')):
+            edits[label] = base.replace('mounts = ["{work}:/work"]', f'mounts = ["{{work}}:/work", {mounts}]')
+        edits["hostile cache path"] = base.replace('cache = "/home/gate/.cache/hostobs-target"', "cache = " + json.dumps('/x"; touch Z; "'))
         edits["memory_max below the reservation"] = base.replace('memory_max = "8g"', 'memory_max = "512m"')
         for label, text in edits.items():
             with self.subTest(label):
@@ -402,6 +408,40 @@ class ArgvTests(DevCase):
         self.assertIn("--memory=4g", argv)
         self.assertIn("--memory-reservation=2g", argv)
         self.assertIn("--memory-swap=-1", argv)
+
+    def test_the_read_only_git_mount_is_the_tools_own_whatever_the_profile_says(self) -> None:
+        git_mount = f"$HOME/agent-dev/{self.hex}/work/.git:/work/.git:ro"
+        self.assertEqual(self.argv_of(self.run_dev("--dry-run", "-p", "cmru", "test")).count(git_mount), 1)
+        path = self.tmp / "profiles.toml"
+        path.write_text(PROFILES.read_text().replace("[profiles.cmru]\n", "[profiles.cmru]\nmounts = []\n", 1))
+        argv = self.argv_of(self.run_dev("--dry-run", "-p", "cmru", "test", AGENT_DEV_TEST_PROFILES=str(path)))
+        self.assertEqual(argv.count(git_mount), 1)
+        self.assertNotIn(f"$HOME/agent-dev/{self.hex}/work:/work", argv)
+
+    def test_host_side_values_are_validated_and_hostile_ones_are_refused_before_any_host_call(self) -> None:
+        marker = self.tmp / "INJECTED"
+        payloads = [f'x"; touch {marker}; "', f"$(touch {marker})", f"`touch {marker}`", "a;b", "a\nb", "a b", "a\n"]
+        root = ROOT_TOML.read_text()
+        profiles = PROFILES.read_text()
+        path = self.tmp / "profiles.toml"
+        for payload in payloads + ["-x", "A"]:   # the last two are no image either (uppercase, leading dash) but are fine project keys
+            quoted = json.dumps(payload)
+            with self.subTest(payload=payload):
+                (self.repo / "run-gate.root.toml").write_text(root.replace(f'"{PY_IMAGE}"', quoted))
+                cases = [("lane image", ["-p", "cmru", "run", "--", "true"], {})]
+                path.write_text(profiles.replace(f'"{RS_DEV_IMAGE}"', quoted))
+                cases.append(("dev_image", ["-p", "hostobs", "run", "--", "true"], {"AGENT_DEV_TEST_PROFILES": str(path)}))
+                key_path = self.tmp / "key-profiles.toml"
+                key_path.write_text(profiles.replace("[profiles.cmru]", "[profiles." + quoted + "]"))
+                if payload in payloads:
+                    cases.append(("profile key", ["-p", payload, "run", "--", "true"], {"AGENT_DEV_TEST_PROFILES": str(key_path)}))
+                for label, args, env in cases:
+                    proc = self.run_dev(*args, **env)
+                    self.assertEqual(proc.returncode, 2, (label, proc.stderr))
+                    self.assertIn("must match", proc.stderr, label)   # refused by the profile validator, not by a later image check
+                    self.assertFalse(marker.exists(), label)
+                    self.assertEqual(self.hx_scripts(), [], label)
+        (self.repo / "run-gate.root.toml").write_text(root)
 
     def test_the_shim_produces_the_argv_of_the_generic_tool_and_maps_the_old_environment(self) -> None:
         shim = self.repo / "hostobs" / "tools" / "dev"

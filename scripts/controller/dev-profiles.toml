@@ -18,7 +18,7 @@ max_s = 3600
 user = "1003:1003"
 stop_timeout = 10
 ulimits = ["core=0:0"]
-mounts = ["{work}:/work", "{work}/.git:/work/.git:ro"]
+mounts = ["{work}:/work"]   # `dev` adds {work}/.git:/work/.git:ro itself; a profile mount of /work/.git is refused
 prefix = ["nice", "-n", "10", "ionice", "-c3"]
 
 [kinds.python]

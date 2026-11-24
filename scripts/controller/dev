@@ -148,6 +148,7 @@ build_docker_argv() {
   for u in "${ulimits[@]}"; do dpre+=(--ulimit "$u"); done
   dmount=(--cidfile "$cid")
   for m in "${mounts[@]}"; do m=${m//\{work\}/$src}; dmount+=(-v "${m//\{cache\}/$vname}"); done
+  dmount+=(-v "$src/.git:/work/.git:ro")   # never a profile key: a writable host .git would run a planted filter on the host
   dpost=(-w "$workdir")
   for e in "${envs[@]}"; do dpost+=(-e "$e"); done
   dpost+=("$run_image" "${prefix[@]}" timeout --foreground -k 5 "$max_s")
@@ -156,7 +157,8 @@ build_docker_argv() {
 # EVERY word is quoted with printf %q, whatever it contains; nothing inspects user text.
 shell_words() { local first=1 a; for a in "$@"; do if (( first )); then first=0; else printf ' '; fi; printf '%q' "$a"; done; }
 
-# ---- scripts that run ON THE HOST. Every interpolated value is validated: hex digits, names, small integers.
+# ---- scripts that run ON THE HOST. Every interpolated value is validated (hex digits, small integers, and in dev_profile.py the
+# image refs, the project key and the mount paths) and the free-text ones are also quoted with printf %q.
 remote_prelude() {
   cat <<EOF
 set -u
@@ -167,13 +169,13 @@ UPID=${upload_id:-0}
 D=\$HOME/agent-dev/\$HEX
 W=\$D/work
 UP=\$D/up-\$UPID
-NAME=${cname:-}
-VOL=${vname:-}
+NAME=$(printf '%q' "${cname:-}")
+VOL=$(printf '%q' "${vname:-}")
 WAIT_S=$wait_s
 PSI_DIR=$(printf '%q' "${AGENT_DEV_TEST_PSI_DIR:-/proc/pressure}")
 CLOCK=$(printf '%q' "${AGENT_DEV_TEST_CLOCK:-}")
-IMAGES="${image} ${dev_image}"
-DEV_IMAGE=${dev_image}
+IMAGE=$(printf '%q' "$image")
+DEV_IMAGE=$(printf '%q' "$dev_image")
 EOF
   cat <<'EOF'
 now() { if [ -n "$CLOCK" ]; then cat "$CLOCK"; else date +%s; fi; }
@@ -188,7 +190,7 @@ preflight_script() {
 if [ "$(id -u):$(id -g)" != 1003:1003 ]; then
   own 3 "the user here is $(id -u):$(id -g) but the image bakes 1003:1003 and the checkout must be owned by it; refusing"
 fi
-for t in $IMAGES; do echo "IMG=$t=$(docker image inspect --format '{{.Id}}' "$t" 2>/dev/null || true)"; done
+for t in "$IMAGE" "$DEV_IMAGE"; do [ -n "$t" ] || continue; echo "IMG=$t=$(docker image inspect --format '{{.Id}}' "$t" 2>/dev/null || true)"; done
 if [ -n "$DEV_IMAGE" ]; then
   echo "LABEL=$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified-rust-dev.base-image-id"}}' "$DEV_IMAGE" 2>/dev/null || true)"
 fi
@@ -280,6 +282,7 @@ container_command_text() {
   local m mnt=
   # mount templates are validated ([A-Za-z0-9_./:{}-]); {work} is the host checkout, expanded on the host
   for m in "${mounts[@]}"; do m=${m//\{work\}/\$W}; mnt+=" -v \"${m//\{cache\}/$vname}\""; done
+  mnt+=' -v "$W/.git:/work/.git:ro"'
   printf 'timeout --foreground -s TERM -k 15 %s %s --cidfile "$D/cid"%s %s\n' "$max_s" "$(shell_words "${dpre[@]}")" "$mnt" "$(shell_words "${dpost[@]}" "${cmd[@]}")"
 }
 

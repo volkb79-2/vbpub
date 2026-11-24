@@ -1339,5 +1339,8 @@ for name, before, after in (
     # not a TERM-trap mutant: bash runs the EXIT trap on an untrapped SIGTERM too (that mutant survived suite gate 2: equivalent)
     ("cleanup-by-cid", 'docker rm -f "$(cat "$D/cid")" >/dev/null 2>&1 7>&- 8>&- 9>&-', 'docker rm -f "$NAME" >/dev/null 2>&1 7>&- 8>&- 9>&-'),
     ("banner-dirty", "mark=''; if (( dirty )); then mark=+dirty; fi", "mark=+dirty"),
+    ("git-ro", """mnt+=' -v "$W/.git:/work/.git:ro"'""", """mnt+=' -v "$W/.git:/work/.git"'"""),
 ):
     mutant("scripts/controller/dev", f"dev-{name}", before, after)
+# the profile resolver is the host-injection gate (tests/test_dev.py reads DEV_PROFILE_SCRIPT)
+mutant("scripts/controller/dev_profile.py", "dev-profile-image-regex", 'IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:@-]*$")', 'IMAGE = re.compile(r"(?s).*")')

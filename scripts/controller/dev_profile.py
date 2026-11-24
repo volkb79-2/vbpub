@@ -7,6 +7,7 @@ Every user word stays exactly one `cmd=` record. Exit 2 with a message on stderr
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shlex
 import sys
@@ -20,7 +21,10 @@ NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 SETTINGS = {"memory", "memory_max", "cpus", "pids", "max_s", "user", "ulimits", "stop_timeout", "mounts", "prefix", "env"}
 KIND_KEYS = SETTINGS | {"python", "verbs", "default_args", "caps"}
 PROFILE_KEYS = SETTINGS | {"kind", "lane", "environment", "dev_image", "workdir", "cache", "setup", "partial_args"}
-MOUNT = re.compile(r"^\{(work|cache)\}(/\.git)?:/[A-Za-z0-9_./-]+(:ro)?$")
+# `dev` interpolates these into scripts that run on the HOST, outside the sandbox: strict allow-lists, then %q on top
+MOUNT = re.compile(r"^\{(work|cache)\}:/[A-Za-z0-9_./-]+(:ro)?$")
+IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:@-]*$")
+PROJECT_KEY = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
 class Refusal(Exception):
@@ -52,11 +56,14 @@ def settings(cfg: dict, profile: dict, kind: dict) -> dict:
                 out["env"] = out.get("env", []) + list(layer.get("env", []))
             elif key in layer:
                 out[key] = layer[key]
-    for mount in out["mounts"]:
-        if not MOUNT.match(mount):
-            raise Refusal(f"mount '{mount}' must be a {{work}} or {{cache}} path inside the container")
     if profile.get("cache"):
         out["mounts"] = out["mounts"] + ["{cache}:" + profile["cache"]]
+    for mount in out["mounts"]:
+        if not MOUNT.fullmatch(mount):
+            raise Refusal(f"mount '{mount}' must be a {{work}} or {{cache}} path inside the container")
+        dest = posixpath.normpath(mount.split(":")[1])
+        if dest == "/work/.git" or dest.startswith("/work/.git/"):
+            raise Refusal(f"mount '{mount}': /work/.git is always the read-only host .git, added by dev itself")
     return out
 
 
@@ -73,6 +80,8 @@ def lane_facts(worktree: Path, project: str, profile: dict) -> dict:
     image = envs.get(env_name, {}).get("image")
     if not image:
         raise Refusal(f"environment '{env_name}' declares no image")
+    if not isinstance(image, str) or not IMAGE.fullmatch(image):
+        raise Refusal(f"environment '{env_name}': image {image!r} must match {IMAGE.pattern}")
     facts = {"image": image, "env": {}, "python": None}
     if lane.get("kind") == "assay":
         assay_lane = load(worktree / project / "assay.toml").get("lanes", {}).get(lane.get("assay_lane"))
@@ -98,11 +107,16 @@ def expand(template: list, args: list, python: str, partial: list) -> list:
 
 def resolve(worktree: Path, project: str, verb: str, args: list) -> list:
     kinds_cfg = load(PROFILES)
+    if not PROJECT_KEY.fullmatch(project):
+        raise Refusal(f"project key '{project}' must match {PROJECT_KEY.pattern}")
     profile = kinds_cfg.get("profiles", {}).get(project)
     if profile is None:
         raise Refusal(f"unknown project '{project}' (known: {', '.join(sorted(kinds_cfg.get('profiles', {})))})")
     kind = kinds_cfg["kinds"][profile["kind"]]
     conf = settings(kinds_cfg, profile, kind)
+    dev_image = profile.get("dev_image", "")
+    if dev_image and (not isinstance(dev_image, str) or not IMAGE.fullmatch(dev_image)):
+        raise Refusal(f"profile '{project}': dev_image {dev_image!r} must match {IMAGE.pattern}")
     facts = lane_facts(worktree, project, profile)
     env = dict(facts["env"])
     for pair in conf["env"]:
@@ -111,7 +125,7 @@ def resolve(worktree: Path, project: str, verb: str, args: list) -> list:
             raise Refusal(f"profile env {key} may only add keys: the lane already sets {key}={env[key]}")
         env[key] = value
     python = facts["python"] or kind.get("python", "")
-    records = [("image", facts["image"]), ("dev_image", profile.get("dev_image", "")), ("workdir", "/work/" + profile["workdir"])]
+    records = [("image", facts["image"]), ("dev_image", dev_image), ("workdir", "/work/" + profile["workdir"])]
     records += [(k, str(conf[k])) for k in ("memory", "memory_max", "cpus", "pids", "max_s", "user", "stop_timeout")]
     records += [("ulimit", u) for u in conf["ulimits"]] + [("mount", m) for m in conf["mounts"]] + [("prefix", w) for w in conf["prefix"]]
     records += [("cap", c) for c in kind.get("caps", {}).get(verb, [])]
@@ -137,7 +151,7 @@ def resolve(worktree: Path, project: str, verb: str, args: list) -> list:
     elif verb == "clippy" and not args:
         args = kind["default_args"]["clippy"]
     elif verb == "example":
-        if len(args) < 2 or not NAME.match(args[0]) or not NAME.match(args[1]):
+        if len(args) < 2 or not NAME.fullmatch(args[0]) or not NAME.fullmatch(args[1]):
             raise Refusal("usage: dev -p PROJECT example CRATE NAME [ARGS...] (crate and example names must be plain identifiers)")
         rest = args[3:] if args[2:3] == ["--"] else args[2:]
         template = [w for w in template if w != "{rest}"]
