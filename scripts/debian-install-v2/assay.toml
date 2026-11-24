@@ -33,7 +33,9 @@ argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests
 # directory (the project) to sys.path itself.
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH", "PYTHONPATH"]
-budget = "50m"
+# 179 candidates x ~137 s / 2 jobs x 1.5 slack = ~306.5 min; rounded up so a
+# resumed full campaign has a workable bound without dropping the last candidates.
+budget = "310m"
 allow_argv_append = false
 
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
@@ -57,8 +59,8 @@ base_source = "request"
 
 [lanes.r2.judge.mutation]
 # Ceiling (assay >= 11): the one-candidate rule (B157/A-491) is lifted; windows
-# may overlap and attribute conservatively. Unmeasured lane: 2 until a first
-# campaign records per-candidate wall time and RSS.
+# may overlap and attribute conservatively. The measured IC-M1a campaign ran
+# 179 candidates at about 137 s each; the lane now requests two workers.
 jobs_max = 2
 max_mutants = 320
 operators = [
