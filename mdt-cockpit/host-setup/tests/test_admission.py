@@ -525,6 +525,13 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(out[0].startswith("WARN "))
         self.assertIn("not installed on the host", out[0])
 
+    def test_the_host_skip_says_when_it_is_expected_and_names_the_cockpit_remedy(self) -> None:
+        with self.assertRaises(adm.Skip) as ctx:
+            adm.prepare(HOST_SETTINGS, run=FakeHost(), which=which_with(run_gate=False))
+        text = str(ctx.exception)
+        self.assertIn("expected on a runner-container gate worker", text)
+        self.assertIn("ADMISSION_COCKPIT", text)
+
     def test_a_failing_show_is_a_fail(self) -> None:
         out = self.lines(HOST_SETTINGS, FakeHost(show_rc=2, show_override="boom"))
         self.assertTrue(out[0].startswith("FAIL "))

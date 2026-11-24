@@ -409,7 +409,9 @@ def prepare(settings: Settings, *, run: RunFn, which: WhichFn) -> Prepared:
     else:
         resolved = which(rg)
         if resolved is None:
-            raise Skip(f"run-gate ({rg}) is not installed on the host")
+            raise Skip(f"run-gate ({rg}) is not installed on the host (expected on a runner-container gate worker, where "
+                       "run-gate lives inside the cockpit container, not on the host: set ADMISSION_COCKPIT to that container, "
+                       "e.g. mdt-cockpit-runner, in host-setup.env)")
         rg, image = resolved, settings.ticket_image
     if not image:
         raise Skip("no ticket image: set ADMISSION_TICKET_IMAGE (a local image that provides /bin/true)")
