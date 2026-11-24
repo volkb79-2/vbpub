@@ -25,6 +25,9 @@
 - At config load, schema 2 with `swap_policy: "on"` and `swap_partition_count: 0` gets a generic swap error before root discovery; surface the named `btrfs_swap_needs_p3` refusal for a known btrfs configuration.
 - Open design decision: data-subvolume fstab rows currently have no `nofail`, so a missing subvolume can send boot to emergency mode; decide whether that stricter boot dependency is intended.
 - IC-M1b must add `user_subvol_rm_allowed` to the root btrfs option set in dr's `install-btrfs.sh` `OPTS`, and IC-M1c must verify the live `/srv/cow` mount reports it; v2 keeps the harmless data-row option meanwhile.
+- B1: the `debian-install-v2 plan` btrfs `show_plan` fallback still reaches `_disk_facts()` and can print a meaningless ext4 partition table; skip the fallback for `root_fs == "btrfs"`.
+- B2: `_stage2_btrfs` touches `stage2_done` without the ext4 path's dry-run guard; apply the same guard when btrfs dry-run support lands.
+- B3: the btrfs completion summary groups warned and failed steps under the "Btrfs skips" heading; rename it to "Btrfs skips/warnings".
 
 ## IMPLEMENTED (DIV2-BL-06, unreleased): bound KSM advisor work and scanner wakeups
 
