@@ -185,6 +185,9 @@ class VersionOrderTest(unittest.TestCase):
     # Captured from GNU coreutils 9.7 `sort -V`, ascending, on Debian-style kernel names.
     SORT_V_ASCENDING = (
         "6.1.0-9-amd64",
+        "6.12.0.custom",
+        "6.12.0-1",
+        "6.12.0.1",
         "6.12.1a-amd64",
         "6.12.1+b-amd64",
         "6.12.1-amd64",
@@ -201,7 +204,7 @@ class VersionOrderTest(unittest.TestCase):
 
     def test_ordering_matches_real_sort_v_output(self) -> None:
         shuffled = (
-            self.SORT_V_ASCENDING[7::2] + self.SORT_V_ASCENDING[:7] + self.SORT_V_ASCENDING[8::2]
+            self.SORT_V_ASCENDING[::2] + self.SORT_V_ASCENDING[1::2]
         )
         self.assertCountEqual(shuffled, self.SORT_V_ASCENDING)
         self.assertEqual(ids.newest_first(shuffled), tuple(reversed(self.SORT_V_ASCENDING)))
@@ -212,7 +215,17 @@ class VersionOrderTest(unittest.TestCase):
             ("6.12.1-amd64", "6.12.1+b-amd64", "6.12.1a-amd64"),
         )
         self.assertLess(ids.compare_versions("6.12~rc1", "6.12"), 0)
-        self.assertEqual(ids.compare_versions("6.012", "6.12"), 0)
+        self.assertEqual(
+            ids.newest_first(("6.12", "6.012", "6.0012")),
+            ("6.12", "6.012", "6.0012"),
+        )
+
+    def test_file_version_suffix_is_removed_before_the_prefix_comparison(self) -> None:
+        versions = ("6.12.0.custom", "6.12.0.1", "6.12.0-1")
+        self.assertEqual(
+            ids.newest_first(versions),
+            ("6.12.0.1", "6.12.0-1", "6.12.0.custom"),
+        )
 
 
 if __name__ == "__main__":

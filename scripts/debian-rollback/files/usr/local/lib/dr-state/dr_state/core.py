@@ -16,6 +16,7 @@ from typing import TextIO
 from . import FORMAT, apt, ids, metadata, retention
 from .boot import Boot, BootTarget, Selector
 from .boot.grub import GrubBoot
+from .boot.sdboot import SdbootBoot
 from .errors import (
     BootConfigError,
     BootError,
@@ -168,6 +169,13 @@ def _require_boot(context: Context) -> Boot:
         )
     if marker == "grub":
         return GrubBoot(context.paths, context.storage, context.runner)
+    if marker == "systemd-boot":
+        return SdbootBoot(
+            context.paths,
+            context.storage,
+            context.runner,
+            warn=lambda text: context.err(f"dr-state: {text}"),
+        )
     raise Unsupported(f"boot backend {marker!r} is not installed in this runtime")
 
 
@@ -368,6 +376,13 @@ def _label_boot(context: Context) -> Boot | None:
         return None
     if marker == "grub":
         return GrubBoot(context.paths, context.storage, context.runner)
+    if marker == "systemd-boot":
+        return SdbootBoot(
+            context.paths,
+            context.storage,
+            context.runner,
+            warn=lambda text: context.err(f"dr-state: {text}"),
+        )
     return None
 
 
@@ -445,10 +460,6 @@ def _publish(
         configured = boot.default(strict=False)
     except DrStateError:
         configured = None
-    try:
-        boot.oneshot(strict=False)
-    except DrStateError:
-        pass
     configured_name = configured.state if configured is not None else None
     if requested is not None:
         chosen_name = requested.name
@@ -459,6 +470,18 @@ def _publish(
     else:
         chosen_name = targets[0].state.name
     chosen = managed[chosen_name]
+    capacity = boot.capacity(tuple(targets))
+    if capacity is not None:
+        payload: dict[str, int] = {}
+        for target in targets:
+            for key, size in boot.payload(target):
+                payload[key] = size
+        needed = sum(payload.values())
+        if needed > capacity:
+            raise CapacityError(
+                f"ESP cannot fit the selected systemd-boot menu: need {needed} "
+                f"bytes, capacity {capacity} bytes after protected entries"
+            )
     boot.publish(tuple(targets), chosen)
 
 
@@ -720,6 +743,7 @@ def _snapshot(
         BootError,
         CapacityError,
         BootConfigError,
+        Unsupported,
         Refused,
         FormatError,
         OSError,
@@ -793,6 +817,10 @@ def cmd_boot_once(context: Context, command: Sequence[str]) -> int:
     boot = _require_boot(context)
     if not boot.supports_oneshot:
         raise Unsupported(f"{boot.name} does not support a one-shot boot")
+    if boot.name == "systemd-boot":
+        # The selector names an existing BLS entry, so parity requires publication
+        # before bootctl observes the target.
+        _publish(context)
     boot.set_oneshot(target)
     return 0
 
@@ -855,6 +883,11 @@ def cmd_delete(context: Context, command: Sequence[str]) -> int:
         raise Refused(
             f"refusing to delete the pending {boot.name} one-shot state {target.name}"
         )
+    if target.name in boot.protected():
+        raise Refused(
+            f"refusing to delete {boot.name} selector state {target.name}; "
+            "boot and select another default first"
+        )
     if dry:
         context.out(f"would delete {target.name}")
         return 0
@@ -909,9 +942,14 @@ def cmd_prune(context: Context, command: Sequence[str]) -> int:
     boot = _require_boot(context)
     default = boot.default(strict=True)
     oneshot = boot.oneshot(strict=True)
+    if default is None:
+        raise Refused(
+            f"{boot.name} has no readable configured default; refusing prune"
+        )
     managed = _managed(_stored(context))
     states = tuple(managed.values())
     protected = {running}
+    protected.update(boot.protected())
     if default is not None and default.state is not None:
         protected.add(default.state)
     if oneshot is not None and oneshot.state is not None:
@@ -951,8 +989,7 @@ def cmd_prune(context: Context, command: Sequence[str]) -> int:
             )
             failed = True
         context.out(f"deleted {state.name}")
-    if doomed:
-        _publish(context, requested=wanted_default)
+    _publish(context, requested=wanted_default)
     return 1 if failed else 0
 
 
@@ -1107,11 +1144,24 @@ def cmd_install_grub(context: Context, command: Sequence[str]) -> int:
     return 0
 
 
+def cmd_install_systemd_boot(context: Context, command: Sequence[str]) -> int:
+    if command:
+        raise UsageError("install-systemd-boot takes no arguments")
+    SdbootBoot(
+        context.paths,
+        context.storage,
+        context.runner,
+        warn=lambda text: context.err(f"dr-state: {text}"),
+    ).install()
+    return 0
+
+
 Dispatch = Callable[[Context, Sequence[str]], int]
 
 
 COMMANDS: dict[str, Dispatch] = {
     "install-grub": cmd_install_grub,
+    "install-systemd-boot": cmd_install_systemd_boot,
     "initialize-state": cmd_initialize,
     "gen-menu": cmd_gen_menu,
     "snapshot": cmd_snapshot,
@@ -1127,6 +1177,7 @@ COMMANDS: dict[str, Dispatch] = {
 WRITERS = frozenset(
     {
         "install-grub",
+        "install-systemd-boot",
         "initialize-state",
         "gen-menu",
         "snapshot",
@@ -1151,7 +1202,8 @@ def execute(
     handler = COMMANDS.get(name)
     if handler is None:
         raise UsageError(
-            "usage: dr-state install-grub|initialize-state STATE TIMESTAMP|"
+            "usage: dr-state install-grub|install-systemd-boot|"
+            "initialize-state STATE TIMESTAMP|"
             "gen-menu [--default STATE]|snapshot [--reason WORD] [--note TEXT]|"
             "apt-pre-install-pkgs|list [--long]|show STATE|set-default STATE|"
             "boot-once STATE|delete STATE [--dry-run|--yes]|"

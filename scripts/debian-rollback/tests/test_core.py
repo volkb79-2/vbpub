@@ -17,9 +17,12 @@ from dr_state.boot.grub import GrubBoot
 from dr_state.core import Completed, Context, Runner, execute, make_context
 from dr_state.errors import (
     BootConfigError,
+    BootError,
+    CapacityError,
     FormatError,
     Refused,
     StorageError,
+    Unsupported,
 )
 from dr_state.storage import KernelPair, Space, Stored
 
@@ -150,12 +153,18 @@ class FakeBoot:
         events: list[str],
         default_error: Exception | None = None,
         publish_error: Exception | None = None,
+        capacity: int | None = None,
+        payload: tuple[tuple[str, int], ...] = (),
+        extra_protected: frozenset[str] = frozenset(),
     ) -> None:
         self.default_name = default
         self.oneshot_name = oneshot
         self.events = events
         self.default_error = default_error
         self.publish_error = publish_error
+        self.capacity_value = capacity
+        self.payload_value = payload
+        self.extra_protected = extra_protected
         self.published: tuple[str, ...] = ()
 
     def default(self, *, strict: bool) -> Selector | None:
@@ -185,20 +194,20 @@ class FakeBoot:
     def install(self) -> None:
         self.events.append("install")
 
-    def capacity(self, keep: object) -> None:
+    def capacity(self, keep: object) -> int | None:
         _ = keep
-        return None
+        return self.capacity_value
 
     def payload(self, target: object) -> list[tuple[str, int]]:
         _ = target
-        return []
+        return list(self.payload_value)
 
     def protected(self) -> frozenset[str]:
         return frozenset(
             name
             for name in (self.default_name, self.oneshot_name)
             if name is not None
-        )
+        ) | self.extra_protected
 
     def inspect(self) -> Inspection:
         return Inspection(frozenset(), (), ())
@@ -321,6 +330,19 @@ class CoreTest(_support.TemporaryRootTest):
         self.assert_snapshot_survives_publication_failure(
             FormatError("format 2 is newer than supported format 1")
         )
+
+    def test_snapshot_survives_unsupported_publication_failure(self) -> None:
+        self.assert_snapshot_survives_publication_failure(
+            Unsupported("systemd-boot is not installed")
+        )
+
+    def test_selection_capacity_refuses_before_publish(self) -> None:
+        self.boot.capacity_value = 0
+        self.boot.payload_value = (("payload", 1),)
+        context = self.context()
+        with self.assertRaisesRegex(CapacityError, "cannot fit"):
+            execute(context, ("gen-menu",))
+        self.assertNotIn("publish", self.events)
 
     def test_runner_turns_an_exec_oserror_into_exit_127(self) -> None:
         with mock.patch(
@@ -470,6 +492,16 @@ class CoreTest(_support.TemporaryRootTest):
         self.assertFalse((self.paths.top / self.install.name).exists())
         self.assertIn(f"deleted {self.install.name}", context.stdout.getvalue())
 
+    def test_delete_menu_failure_leaves_storage_untouched(self) -> None:
+        self.storage.running_name = self.apt.name
+        self.boot.default_name = self.apt.name
+        self.boot.publish_error = BootError("simulated menu failure")
+        context = self.context()
+        with self.assertRaisesRegex(BootError, "simulated menu failure"):
+            execute(context, ("delete", self.install.name, "--yes"))
+        self.assertNotIn("delete", self.events)
+        self.assertTrue((self.paths.top / self.install.name).is_dir())
+
     def test_delete_proceeds_when_next_entry_is_empty(self) -> None:
         third = self.add_state(3, 14)
         context = self.grub_context(
@@ -503,6 +535,23 @@ class CoreTest(_support.TemporaryRootTest):
             execute(context, ("delete", self.apt.name, "--yes"))
         self.assertEqual(self.events, [])
         self.assertTrue((self.paths.top / self.apt.name).is_dir())
+
+    def test_delete_requires_confirmation_before_any_change(self) -> None:
+        context = self.context()
+        with self.assertRaisesRegex(Refused, "requires --yes"):
+            execute(context, ("delete", self.install.name))
+        self.assertEqual(self.events, [])
+        self.assertTrue((self.paths.top / self.install.name).is_dir())
+
+    def test_delete_refuses_every_selector_reported_by_the_boot_boundary(self) -> None:
+        self.storage.running_name = self.apt.name
+        self.boot.default_name = self.apt.name
+        self.boot.extra_protected = frozenset({self.install.name})
+        context = self.context()
+        with self.assertRaisesRegex(Refused, "selector state"):
+            execute(context, ("delete", self.install.name, "--yes"))
+        self.assertEqual(self.events, [])
+        self.assertTrue((self.paths.top / self.install.name).is_dir())
 
     def test_prune_never_deletes_a_pinned_state(self) -> None:
         third = self.add_state(3, 14)
@@ -558,6 +607,36 @@ class CoreTest(_support.TemporaryRootTest):
         self.assertTrue((self.paths.top / third.name).is_dir())
         self.assertFalse((self.paths.top / fourth.name).exists())
 
+    def test_prune_protects_every_selector_reported_by_the_boot_boundary(self) -> None:
+        third = self.add_state(3, 14)
+        fourth = self.add_state(4, 15)
+        self.boot.extra_protected = frozenset({third.name})
+        self.assertEqual(execute(self.context(), ("prune", "--keep", "0")), 0)
+        self.assertTrue((self.paths.top / third.name).is_dir())
+        self.assertFalse((self.paths.top / fourth.name).exists())
+
+    def test_prune_with_no_victims_still_republishes(self) -> None:
+        self.assertEqual(execute(self.context(), ("prune", "--keep", "10")), 0)
+        self.assertEqual(self.events, ["publish"])
+
+    def test_prune_menu_failure_leaves_storage_untouched(self) -> None:
+        third = self.add_state(3, 14)
+        fourth = self.add_state(4, 15)
+        self.boot.publish_error = BootError("simulated menu failure")
+        context = self.context()
+        with self.assertRaisesRegex(BootError, "simulated menu failure"):
+            execute(context, ("prune", "--keep", "0"))
+        self.assertNotIn("delete", self.events)
+        self.assertTrue((self.paths.top / third.name).is_dir())
+        self.assertTrue((self.paths.top / fourth.name).is_dir())
+
+    def test_prune_refuses_an_absent_default_before_any_change(self) -> None:
+        self.boot.default_name = None
+        context = self.context()
+        with self.assertRaisesRegex(Refused, "no readable configured default"):
+            execute(context, ("prune", "--keep", "0"))
+        self.assertEqual(self.events, [])
+
     def test_prune_fails_closed_when_the_default_is_unreadable(self) -> None:
         self.boot.default_error = BootConfigError("simulated unreadable grubenv")
         context = self.context()
@@ -565,6 +644,12 @@ class CoreTest(_support.TemporaryRootTest):
             execute(context, ("prune", "--keep", "0"))
         self.assertEqual(self.events, [])
         self.assertTrue((self.paths.top / self.apt.name).is_dir())
+
+    def test_boot_once_publishes_before_setting_the_systemd_boot_selector(self) -> None:
+        self.boot.name = "systemd-boot"
+        self.assertEqual(execute(self.context(), ("boot-once", self.apt.name)), 0)
+        self.assertEqual(self.events, ["publish", "one-shot"])
+        self.assertEqual(self.boot.oneshot_name, self.apt.name)
 
     def test_list_marks_unmanaged_without_publishing_it(self) -> None:
         (self.paths.top / "@os-0001").mkdir()

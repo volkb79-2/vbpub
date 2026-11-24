@@ -48,6 +48,7 @@ class PayloadTest(unittest.TestCase):
             "storage/btrfs",
             "boot/__init__",
             "boot/grub",
+            "boot/sdboot",
         ):
             with self.subTest(module=module):
                 self.assertTrue((package / f"{module}.py").is_file())
