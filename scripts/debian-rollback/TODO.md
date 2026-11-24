@@ -9,12 +9,9 @@ guide; work packages are tracked below.
 ## Done
 
 - **systemd-boot target variant:** merged in `9bd4e5dcd`; evidence is in the
-  [M2 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md) and the
-  [NoCloud builder results](docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
-- **M2 target ISO variants:** the GRUB-target and systemd-boot-target variants
-  are done; evidence is in the
-  [GRUB-target results](docs/RESULTS-M2-UNATTENDED-ISO-2026-11-18.md) and the
-  [systemd-boot results](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
+  [M2 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md) and [NoCloud builder results](docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+- **M2 target ISO variants:** GRUB-target and systemd-boot-target are done;
+  both are covered by the [M2 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
 
 ## ZFS
 
@@ -54,5 +51,5 @@ state. The install and runtime history remains in the
 - **DR-95** matrix runner committed; dr-qemu.sh retired; evidence archived — OPEN — P-rollback-30/33 — review H6
 - **DR-96** ZFS snapshot checkpoints + clone/promote; name = ID; no send/receive — OPEN — P-rollback-12/42 — review M7
 - **DR-97** all disk-wiping guards linted; release matrix on ISO-built disk — OPEN — P-rollback-04/40 — review L3, L5
-- **DR-98** kernel-install plugin instead of dpkg-divert — OPEN — P-rollback-41 — review plans-review
+- **DR-98** kernel-install plugin instead of dpkg-divert — OPEN — P-rollback-41 — review plans review
 - Parked (no ID): E2; phase 2 fallback; Secure Boot on sdboot; D25 RAM experiment; restore-image ISO + licence audit; ZFS restricted-GRUB comparison.

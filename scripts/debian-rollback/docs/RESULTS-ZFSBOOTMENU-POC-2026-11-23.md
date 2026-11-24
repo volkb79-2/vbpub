@@ -1,5 +1,7 @@
 # ZFSBootMenu PoC guest results — 2026-11-23
 
+Host names replaced by 'the test host' (2026-11-24); identifiers otherwise verbatim.
+
 This is the evidence record for the current ZFSBootMenu installer iterations.
 It is not a release claim: the target install and boot path is still under
 guest validation.
@@ -13,8 +15,8 @@ guest validation.
 | Previous candidate ISO | `debian-rollback-zbm-v3.1.0-kernel-order-20261123.iso`, SHA-256 `c71b839afd716cd8995631915c48cce790a0aff2ce47c009a18cb4cca3212f13` |
 | Current candidate ISO | `debian-rollback-zbm-v3.1.0-altroot-check-20261123.iso`, 2,103,967,744 bytes, SHA-256 `8b71bb21ad030fcc6e7ba906f6275d063165ab2220fb5e7705c54db2c52ff941` |
 
-The current candidate was built by registered lane `build-zfs-iso` and its
-checksum was verified on the build host and r1002 before boot. The registered
+The current candidate was built by registered lane `build-zfs-iso`, and its
+checksum was verified on the test host before boot. The registered
 `offline` lane passed with the mountpoint regression test. Run-Gate logs are
 retained outside the repository at
 `/tmp/run-gate/lanes/build-zfs-iso/6ae0e61a3822dfa835bbcf6ddab37367.log` and
@@ -55,24 +57,25 @@ that the initial BE has a local mountpoint whose effective value is exactly
 that altroot. Its regression test accepts that root case and refuses a
 non-root mountpoint, a different altroot, or an inherited mountpoint.
 
-The serial and runner evidence for attempt 3 is retained on the build host at
-`scripts/debian-rollback/artifacts/zfs-rebuild-20261123/` and on r1002 under
-`/root/jobs/debrollback-zbm-20261123/vm-lab/zbm-20261123/runs/kernel-order-install/`.
+The serial and runner evidence for attempt 3 is retained in the repository at
+`scripts/debian-rollback/artifacts/zfs-rebuild-20261123/` and in the test-host
+evidence archive at run directory
+`vm-lab/zbm-20261123/runs/kernel-order-install/` (relative to the job dir).
 The local serial log SHA-256 is
 `6ac5c0283ddb67af98d4db2488e3abd40a8c6de42711070c0419359644a6a4ad`.
 
 ## Current retest
 
-The altroot-check ISO is running on a new blank UEFI guest on r1002:
+The altroot-check ISO is running on a new blank UEFI guest on the test host:
 
 - VM: `debrollback-zbm-altrootcheck-20261123`
-- Run directory: `/root/jobs/debrollback-zbm-20261123/vm-lab/zbm-20261123/runs/altroot-check-install/`
+- Run directory (relative to the job dir): `vm-lab/zbm-20261123/runs/altroot-check-install/`
 - Blank qcow2 base, 3072 MiB guest RAM, four TCG vCPUs; the ISO is read-only.
 - At 23:56Z DKMS had advanced from kernel-interface checks into compiling ZFS
   module objects for `6.12.118+deb13-amd64`. The VM remained running and Docker
   reported no OOM kill; no target-install completion marker had been recorded.
   A pressure profile was unavailable because no `cgpctl` client was installed
-  on the cockpit or r1002. The serial log is retained locally at
+  on the cockpit or the test host. The serial log is retained locally at
   `scripts/debian-rollback/artifacts/zfs-rebuild-20261123/altroot-check-install-progress.serial.log`
   (SHA-256 `36ac7f66a2ff4ecf0c22acd24e7c145cc489504798662cc848039e30e107b83e`).
 

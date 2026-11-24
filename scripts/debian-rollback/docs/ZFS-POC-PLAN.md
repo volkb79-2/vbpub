@@ -1,4 +1,4 @@
-> Sections 'State identity and apt flow' and 'State-manager CLI' are superseded by D28 (native snapshot checkpoints, clone/promote, name = state ID); rewrite in P-rollback-12.
+> Sections 'ZFS state identity and apt flow' and 'ZFS state-manager CLI', and every send/receive-duplicate, `rpool/DR-STAGING`, transaction-registry, orphan and `dr-zfs-state` reference elsewhere (layers table, install step 5, pool layout, acceptance rows), are superseded by D28 (native snapshot checkpoints, clone/promote, name = state ID); rewrite in P-rollback-12.
 
 # ZFS boot-environment PoC
 

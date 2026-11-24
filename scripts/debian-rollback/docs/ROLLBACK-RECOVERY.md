@@ -183,8 +183,9 @@ checks that the witness remains and the failed BLS entry is gone.
 
 Run each on a fresh disposable VM. Do not reuse a damaged guest. These
 scenarios deliberately do not stage `dr-state boot-once`: they test selection
-after the default has become unusable. Live prune, ESP cleanup, and their
-acceptance status are tracked in [TODO.md](../TODO.md).
+after the default has become unusable. Pruning is covered by the offline
+`dr-state prune` workflow suite; live prune and ESP cleanup are not
+guest-verified (DR-85, DR-97).
 
 ## Evidence and implementation
 
@@ -196,8 +197,16 @@ acceptance status are tracked in [TODO.md](../TODO.md).
 | Serial/QMP and scenario contract coverage | `poc/test-dr-serial.py` |
 | Registered gate | `run-gate offline` from `scripts/debian-rollback/` |
 
-Dated guest results, hashes, scenario counts, and retained evidence are in the
+Dated guest results for the current source are in the
 [systemd-boot M2 report](RESULTS-SDBOOT-M2-2026-11-22.md) and the
-[NoCloud builder report](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md). Earlier runs
-remain historical evidence for the source and artifact they name; they do not
-extend the recovery contract on this page.
+[NoCloud builder report](RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+
+Historical recovery evidence used `installed-sdboot-c749-r10.qcow2` (SHA-256
+`3b13b57d6d8f8a918e5cd9dbae548e48f2acd9d4505cc67df97e7bbc7d7d284c`),
+`dr-state` hash
+`ab7cf555eba00c96de24edb7afdba8437b83b506ee0f9c14fe4fc17a6bac3e52`, driver
+hash `5f8988855a3eadbf6d2e54b7e2a55a3e79867a2643ff82d9d4ffd92c2d5bef74`, and
+installer hash `ca8848f773392aaf5eac8e90e2b89885849dbd8fac4372a58cf2ad3312e3f0a0`.
+Exact counts, hashes and log locations of these historical runs are in git at
+`313ae9dcb` (this file); host evidence is in the rollback evidence archive
+(controller state, P-rollback-01 index).

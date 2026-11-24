@@ -176,8 +176,10 @@ Real-guest provenance:
 
 The builder and installed target disk were created from the in-progress worktree
 based on `c749db1`, with the uncommitted r10 changes included. The run installed
-systemd-boot 257.13 and exercised the target disk. Exact results, counts, and
-retained evidence are in the dated reports.
+systemd-boot 257.13 and exercised the target disk. Exact counts, hashes and log
+locations of this historical run are in git at `313ae9dcb` (this file); host
+evidence is in the rollback evidence archive (controller state, P-rollback-01
+index).
 
 The first `sdboot-oneshot-consumed` attempt used a clean base with no second
 state and failed its scenario precondition. The valid run created a second
@@ -199,8 +201,10 @@ Type #1 entry and a duplicate kernel copy under
 currently running `@os-0001`, and `bootctl list` showed it as selectable while
 the dr-state `os-0001.conf` remained the configured default. The installer now
 also masks that plugin with the systemd-supported local override
-`/etc/kernel/install.d/90-loaderentry.install -> /dev/null`. The dated result
-reports record the guest evidence for that override.
+`/etc/kernel/install.d/90-loaderentry.install -> /dev/null`. Exact counts,
+hashes and log locations of this 2026-11-21 plugin-override run are in git at
+`313ae9dcb` (this file); host evidence is in the rollback evidence archive
+(controller state, P-rollback-01 index).
 
 The initial installer change only moved both hooks out of the run-parts directories. A later guest confirmed that this
 was insufficient: the systemd-boot package post-install script itself loops over installed kernels and calls
@@ -290,7 +294,8 @@ content-addressed kernel ids, entry-id mapping and rejection, backend selection,
 cleanup, parent-directory allocation, CRLF references, and orphan-directory selection. Coverage includes
 refusal-before-delete checks for missing, empty, and malformed `loader.conf` defaults; the all-backend
 sequence/reason schema; and serial guest command wrapping so trailing shell control syntax cannot swallow the
-completion marker. Exact case counts are recorded in the dated RESULTS reports.
+completion marker. Exact case counts and run identities are in git at
+`313ae9dcb` (this file).
 
 The suite also runs workflow fixtures through the real `gen-menu`, `set-default`, `prune`, and `delete` paths against disposable
 ESP trees. `DR_STATE_TEST_MODE=1` with `DR_STATE_TEST_ROOT` selects a temporary root and optional deterministic ESP
@@ -348,8 +353,10 @@ The recovery scenario contract checks require all recovery cases to select throu
 pre-staged `boot-once`, then use the safe failed-state deletion path after the recovered state becomes default. The
 historical `s2-s3` flow installed the then-current `dr-state` and APT hook payloads, then checked the timestamped APT
 snapshot, pre-change package/kernel report, and planned `hello` action.
-Historical guest results are recorded in the dated reports; they do not
-certify an integrated release candidate.
+Exact counts, hashes and log locations of these historical runs are in git at
+`313ae9dcb` (this file); host evidence is in the rollback evidence archive
+(controller state, P-rollback-01 index). They do not certify an integrated
+release candidate.
 
 The offline lane runs the pre-existing suites: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
 `iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
@@ -429,8 +436,7 @@ The historical seed ISO was built from an earlier worktree:
 - SHA-256: `8647cac8838ebe62d204ffea0a8a9ac2822ff1ecaf2e9a34a459c2cf4b1dd3d1`
 - Base installed disk: `installed-systemd-boot-current.qcow2`
 - Base SHA-256: `4a0a05be59a8981bc31e5fa167a740116be42223d3c46f7cf7dec358612aec3d`
-- Base size: 8 GiB virtual; the dated report records the retained evidence
-  location and checks.
+- Base size: 8 GiB virtual size, 1.22 GiB disk use.
 
 The builder guest completed the installation (`DR-BUILD-DONE rc=0`,
 `DR-RUNCMD-END rc=0`). The host-side `run-builder.sh` then returned 127 because
@@ -455,8 +461,9 @@ injected into the guest were:
 | NoCloud `user-data` | `79af09d956e14188e08f02f52708d6a889b4d93d15d5b1b277467240c2f6a153` |
 | NoCloud `meta-data` | `931e56dd46110d5953b050ae06e10d82cd4953e29a7ad03a443b79fbe278a5df` |
 
-Retained guest logs, transcripts, overlay, OVMF variables, and serial files are
-indexed in the dated results report. The historical evidence proves the named
+Exact counts, hashes and log locations of this historical run are in git at
+`313ae9dcb` (this file); host evidence is in the rollback evidence archive
+(controller state, P-rollback-01 index). The evidence proves the named
 artifacts and injected files, not an integrated release candidate.
 
 ## Guest coverage and limits

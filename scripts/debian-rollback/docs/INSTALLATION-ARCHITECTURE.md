@@ -20,8 +20,7 @@ counts.
   metadata live outside the OS-state subvolumes.
 - The NoCloud seed is required only by the cloud-image builder recipe. It is
   optional for the M2 product install.
-- ZFS is paused for the core split. Its historical plan and evidence are linked
-  from [TODO.md](../TODO.md); D28 defines the later storage design.
+- ZFS: see [TODO.md](../TODO.md) and D28.
 
 ## The layers
 
