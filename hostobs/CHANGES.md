@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Docs (P-hostobs-02, `HOB-66`)**: `docs/PROBE-PROCESS.md` decides the probe's process and thread model (sampler, server loop and placed writer threads; non-blocking backend rule; eventfd wakeup; rustix with one audited `unsafe` line in `kernel`; named `LISTEN_FDS`; shutdown; minimal config; in-process test harness); the hub doc no longer claims a mutex.
+
 ### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
 
 - **`bins/probe/src/server.rs`**: `Server::on_tick(now_ns)` pulls one shared delivery set from the
