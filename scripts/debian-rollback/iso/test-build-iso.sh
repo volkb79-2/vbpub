@@ -28,6 +28,16 @@ for bootloader in grub systemd-boot; do
   xorriso -osirrox on -indev "$out" -extract /dr/target-bootloader "$WORK/marker" >/dev/null 2>&1
   [ "$(cat "$WORK/marker")" = "$bootloader" ] \
     || { echo "FAIL $bootloader: ISO carries target '$(<"$WORK/marker")'" >&2; exit 1; }
+  xorriso -osirrox on -indev "$out" \
+    -extract /dr/files/usr/local/sbin/dr-state "$WORK/launcher-$bootloader" >/dev/null 2>&1
+  cmp -s "$HERE/../files/usr/local/sbin/dr-state" "$WORK/launcher-$bootloader" \
+    || { echo "FAIL $bootloader: ISO launcher differs from the files payload" >&2; exit 1; }
+  [ -x "$WORK/launcher-$bootloader" ] \
+    || { echo "FAIL $bootloader: ISO launcher lost its executable mode" >&2; exit 1; }
+  xorriso -osirrox on -indev "$out" \
+    -extract /dr/files/usr/local/lib/dr-state/dr_state/core.py "$WORK/core-$bootloader" >/dev/null 2>&1
+  cmp -s "$HERE/../files/usr/local/lib/dr-state/dr_state/core.py" "$WORK/core-$bootloader" \
+    || { echo "FAIL $bootloader: ISO runtime differs from the files payload" >&2; exit 1; }
   xorriso -osirrox on -indev "$out" -extract /boot/grub/grub.cfg "$WORK/grub.cfg" >/dev/null 2>&1
   grep -q '/live/vmlinuz-test' "$WORK/grub.cfg"
 done

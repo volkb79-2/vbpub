@@ -4,7 +4,6 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL="$HERE/install-btrfs.sh"
-DR="$HERE/dr-state"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0
@@ -33,8 +32,11 @@ absent() {
 run_dry grub-default
 contains grub-default-package "$WORK/grub-default.err" \
   '--include=linux-image-amd64,grub-efi-amd64,btrfs-progs'
+contains python3-package "$WORK/grub-default.err" 'systemd-sysv,python3,openssh-server'
+contains payload-copy "$WORK/grub-default.err" "cp -a $HERE/../files/. /mnt/drtarget/"
 contains grub-default-install "$WORK/grub-default.err" \
   'chroot /mnt/drtarget /usr/local/sbin/dr-state install-grub'
+absent grub-default-no-state-helper "$WORK/grub-default.err" '_state-name'
 absent grub-default-no-systemd-package "$WORK/grub-default.err" 'systemd-boot,'
 
 run_dry grub-explicit --bootloader grub
@@ -56,7 +58,6 @@ contains sdboot-disable-kernel-install-bls-dir "$WORK/sdboot.err" \
   '+ mkdir -p /mnt/drtarget/etc/kernel/install.d'
 contains sdboot-disable-kernel-install-bls "$WORK/sdboot.err" \
   '+ ln -s /dev/null /mnt/drtarget/etc/kernel/install.d/90-loaderentry.install'
-contains sdboot-marker "$DR" "printf 'systemd-boot\\n' >\"\$SDBOOT_MARKER.new.\$\$\""
 contains restricted-esp-install-mount "$WORK/sdboot.err" 'mount -o umask=0077'
 absent sdboot-no-grub-package "$WORK/sdboot.err" 'linux-image-amd64,grub-efi-amd64'
 absent sdboot-no-grub-installer "$WORK/sdboot.err" 'dr-state install-grub'

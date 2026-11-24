@@ -27,12 +27,14 @@ Standard library only. Host-side: it touches nothing but the socket.
 import base64
 import errno
 import hashlib
+import io
 import os
 import re
 import select
 import shlex
 import socket
 import sys
+import tarfile
 import time
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -47,6 +49,7 @@ LOGIN_PROMPT_RE = re.compile(rb"(?im)^[^\n]*\blogin:[ \t]*$")
 SHELL_PROMPT_RE = re.compile(
     rb"(?m)^[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9_.-]+(?::[^\n]*)?[#$][ \t]*$"
 )
+PAYLOAD_ROOT = Path(__file__).resolve().parent.parent / "files" / "usr" / "local"
 
 
 def console_prompt_kind(data):
@@ -1225,27 +1228,49 @@ def recovery_precondition(g, log):
     return state, kernel
 
 
+def payload_archive() -> bytes:
+    """Return the complete runtime tree as a mode-preserving, bytecode-free tar archive."""
+
+    if not PAYLOAD_ROOT.is_dir():
+        raise ValueError(f"files payload {PAYLOAD_ROOT} is missing")
+
+    def without_bytecode(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        parts = PurePosixPath(member.name).parts
+        if "__pycache__" in parts or member.name.endswith((".pyc", ".pyo")):
+            return None
+        return member
+
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for child in sorted(PAYLOAD_ROOT.iterdir(), key=lambda item: item.name):
+            archive.add(child, arcname=child.name, filter=without_bytecode)
+    return output.getvalue()
+
+
 def install_current_dr_state(g, log):
-    """Install the exact dr-state sibling of this driver into the disposable guest and verify its hash."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dr-state")
+    """Upload the files/usr/local runtime tree and verify the installed launcher."""
+    launcher = PAYLOAD_ROOT / "sbin" / "dr-state"
     try:
-        with open(path, "rb") as source:
-            payload = source.read()
-    except OSError as exc:
-        check(log, "current dr-state source is readable by the guest driver", False, repr(exc))
+        payload = payload_archive()
+        launcher_bytes = launcher.read_bytes()
+    except (OSError, ValueError) as exc:
+        check(log, "current dr-state payload is readable by the guest driver", False, repr(exc))
         return False
-    digest = hashlib.sha256(payload).hexdigest()
+    digest = hashlib.sha256(launcher_bytes).hexdigest()
     encoded = base64.encodebytes(payload).decode("ascii")
     command = (
-        "base64 -d > /usr/local/sbin/dr-state.recovery-new <<'DR_STATE_B64'\n"
+        "dr_payload=/tmp/dr-state-payload-new.$$; "
+        "base64 -d > \"$dr_payload\" <<'DR_STATE_B64'\n"
         f"{encoded}"
         "DR_STATE_B64\n"
         "__dr_b64_rc=$?; "
-        "if [ \"$__dr_b64_rc\" = 0 ] && chmod 755 /usr/local/sbin/dr-state.recovery-new "
-        "&& mv /usr/local/sbin/dr-state.recovery-new /usr/local/sbin/dr-state; then "
+        "if [ \"$__dr_b64_rc\" = 0 ] "
+        "&& rm -rf /usr/local/lib/dr-state "
+        "&& tar -C /usr/local -xf \"$dr_payload\"; then "
         "printf 'DRSTATE_SHA:%s\\n' \"$(sha256sum /usr/local/sbin/dr-state | awk '{print $1}')\"; "
         "printf 'DRSTATE_INSTALL_RC:0\\n'; "
-        "else printf 'DRSTATE_INSTALL_RC:1\\n'; fi"
+        "else printf 'DRSTATE_INSTALL_RC:1\\n'; fi; "
+        "rm -f \"$dr_payload\""
     )
     _, out = g.run(command, 300)
     return check(log, "guest uses the exact dr-state source under test",
@@ -1255,7 +1280,7 @@ def install_current_dr_state(g, log):
 
 def verify_current_dr_state(g, log):
     """Reject a guest base whose installed rollback runtime differs from this driver's source tree."""
-    path = Path(__file__).with_name("dr-state")
+    path = PAYLOAD_ROOT / "sbin" / "dr-state"
     try:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
@@ -1932,8 +1957,9 @@ def _update_dr_state(g, log, needle="subvol_parent_uuid", what="parent-aware ded
     scenario can test the current tool without a 21-minute reinstall. Returns True when the new version is in place
     (`needle` is a name that only the new version contains)."""
     _, out = g.run("mkdir -p /mnt/seed; mount -o ro /dev/sr0 /mnt/seed; echo MNTRC:$?; "
-                   "install -m 0755 /mnt/seed/poc/dr-state /usr/local/sbin/dr-state; echo INSRC:$?; umount /mnt/seed; "
-                   f"echo NEWFEATURE:$(grep -c '{needle}' /usr/local/sbin/dr-state)")
+                   "rm -rf /usr/local/lib/dr-state; "
+                   "cp -a /mnt/seed/poc/files/usr/local/. /usr/local/; echo INSRC:$?; umount /mnt/seed; "
+                   f"echo NEWFEATURE:$(grep -R -c '{needle}' /usr/local/lib/dr-state/dr_state/core.py)")
     return check(log, f"dr-state updated from the seed medium ({what} present)",
                  tag(out, "MNTRC") == "0" and tag(out, "INSRC") == "0" and (tag(out, "NEWFEATURE") or "0") not in ("0", ""),
                  f"mnt={tag(out, 'MNTRC')} install={tag(out, 'INSRC')} feature={tag(out, 'NEWFEATURE')}")

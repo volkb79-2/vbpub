@@ -44,6 +44,13 @@ done
 [ -n "$DEVICE" ] || die "--device is required"
 [ "$YES" = 1 ] || die "refusing to wipe $DEVICE without --yes"
 case "$BOOTLOADER" in grub|systemd-boot) ;; *) die "--bootloader must be grub or systemd-boot" ;; esac
+if [ -d "$HERE/files" ]; then
+  FILES_PAYLOAD=$HERE/files
+elif [ -d "$HERE/../files" ]; then
+  FILES_PAYLOAD=$HERE/../files
+else
+  die "the files/ payload is missing next to the installer or its parent directory"
+fi
 [ "$DRY" = 1 ] || [ -b "$DEVICE" ] || die "$DEVICE is not a block device"
 [ -d /sys/firmware/efi ] || [ "$DRY" = 1 ] || die "not booted in UEFI mode (D4: UEFI only)"
 if [ "$DRY" != 1 ]; then
@@ -87,8 +94,8 @@ run mkdir -p "$TOP" "$T"
 run mount "$ROOT" "$TOP"
 # The initial state ID records when its Btrfs subvolume is created, not when disk partitioning starts.
 STATE_TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
-STATE=$("$HERE/dr-state" _state-name 000001 "$STATE_TIMESTAMP" install) \
-  || die "cannot construct the timestamped initial state ID"
+STATE=$(printf '@os-000001-%s-%sZ-install' \
+  "${STATE_TIMESTAMP:0:8}" "${STATE_TIMESTAMP:8:6}")
 run btrfs subvolume create "$TOP/$STATE"
 for sv in $DATA_SUBVOLS; do
   name=${sv%%:*}
@@ -114,7 +121,7 @@ fi
 
 BOOT_PACKAGES=grub-efi-amd64
 [ "$BOOTLOADER" = systemd-boot ] && BOOT_PACKAGES=systemd-boot,systemd-boot-efi
-run debootstrap --include=linux-image-amd64,"$BOOT_PACKAGES",btrfs-progs,snapper,initramfs-tools,systemd-sysv,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
+run debootstrap --include=linux-image-amd64,"$BOOT_PACKAGES",btrfs-progs,snapper,initramfs-tools,systemd-sysv,python3,openssh-server,sudo,locales,ifupdown,isc-dhcp-client,dosfstools,ca-certificates "$SUITE" "$T" "$MIRROR"
 
 if [ "$BOOTLOADER" = systemd-boot ] && [ "$DRY" != 1 ]; then
   bls_override="$T/etc/kernel/install.d/90-loaderentry.install"
@@ -157,7 +164,12 @@ printf 'deb %s %s-updates main\ndeb %s %s-security main\n' "$MIRROR" "$SUITE" "$
 run mkdir -p "$T/etc/network/interfaces.d"
 printf 'allow-hotplug eth0\niface eth0 inet dhcp\n' | write_file "$T/etc/network/interfaces.d/eth0"
 
-run install -m 0755 "$HERE/dr-state" "$T/usr/local/sbin/dr-state"
+run cp -a "$FILES_PAYLOAD/." "$T/"
+if [ "$DRY" != 1 ]; then
+  find "$T/usr/local" \
+    \( -type d -name __pycache__ -o -type f \( -name '*.pyc' -o -name '*.pyo' \) \) \
+    -prune -exec rm -rf -- {} +
+fi
 run mount --bind /dev "$T/dev"
 run mount --bind /proc "$T/proc"
 run mount --bind /sys "$T/sys"

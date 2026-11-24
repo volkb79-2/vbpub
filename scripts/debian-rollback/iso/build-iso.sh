@@ -5,7 +5,8 @@
 #                [--config dr-install.conf] [--scratch PARENT_DIR] [--allow-unverified]
 #
 # No squashfs or initrd is rebuilt. The overlay is plain files added to the ISO9660 tree:
-#   /dr/*                          the installer payload (dr-autoinstall, dr-plan, dr-pick-disk, install-btrfs.sh, dr-state)
+#   /dr/*                          the installer payload (dr-autoinstall, dr-plan, dr-pick-disk, install-btrfs.sh)
+#   /dr/files/                     the complete target-image payload copied with modes
 #   /dr/target-bootloader         immutable target choice selected at ISO build time
 #   /dr/dr-install.conf            optional ISO-embedded config (--config); a CIDATA stick takes precedence
 #   /live/config-hooks/10-dr-autoinstall   run by live-config when the command line has live-config.hooks=file:///run/live/medium/live/config-hooks/10-dr-autoinstall
@@ -60,13 +61,16 @@ mkdir -p "$SCRATCH_PARENT"
 SCRATCH=$(mktemp -d "$SCRATCH_PARENT/dr-build.XXXXXX")
 trap 'rm -rf "$SCRATCH"' EXIT
 STAGE=$SCRATCH/stage
-mkdir -p "$STAGE/dr" "$STAGE/hooks"
+mkdir -p "$STAGE/dr/files" "$STAGE/hooks"
 printf '%s\n' "$BOOTLOADER" >"$STAGE/dr/target-bootloader"
 
 for f in dr-autoinstall dr-plan; do install -m 0755 "$HERE/$f" "$STAGE/dr/$f"; done
 install -m 0755 "$HERE/../poc/dr-pick-disk" "$STAGE/dr/dr-pick-disk"
 install -m 0755 "$HERE/../poc/install-btrfs.sh" "$STAGE/dr/install-btrfs.sh"
-install -m 0755 "$HERE/../poc/dr-state" "$STAGE/dr/dr-state"
+cp -a "$HERE/../files/." "$STAGE/dr/files/"
+find "$STAGE/dr/files" \
+  \( -type d -name __pycache__ -o -type f \( -name '*.pyc' -o -name '*.pyo' \) \) \
+  -prune -exec rm -rf -- {} +
 install -m 0755 "$HERE/config-hook" "$STAGE/hooks/10-dr-autoinstall"
 [ -z "$CONF" ] || install -m 0644 "$CONF" "$STAGE/dr/dr-install.conf"
 [ -z "$CONF" ] || "$HERE/dr-plan" --check-config --config "$CONF" >/dev/null 2>"$SCRATCH/conf.err" \
