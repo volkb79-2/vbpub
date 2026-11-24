@@ -2,7 +2,7 @@
 //!
 //! Every `fixtures/stream/hub-*.json` is replayed against `SendHub` with a fake clock (`t_ms`
 //! becomes `now_ns`): each step's outputs (outcome, pools of the watched connections, uids and
-//! the global pool, the pinned head, END counts, `query_ready`, `head_partial`, the connections
+//! the global pool, the pinned head, END counts, `query_room`, `head_partial`, the connections
 //! `poll` closes) must equal the fixture's hand-derived expectation exactly. The fixtures are
 //! written by `python/reference/make_hub_fixtures.py` from the rules of §5.3, not by running a
 //! hub. Every block is a 2-section BLOCK of the stated length: `corr` at 8, `dropped` at 104,
@@ -229,11 +229,11 @@ impl Replay {
                 let text = if result.is_ok() { "ok" } else { "close" };
                 out.push(text.to_string());
             }
-            "query_ready" => {
-                let ready = self
+            "query_room" => {
+                let room = self
                     .hub
-                    .query_ready(self.conn(step), small(step.field("s"), "s"));
-                out.push(format!("ready:{ready}"));
+                    .query_room(self.conn(step), number(step.field("len"), "len"));
+                out.push(format!("room:{room}"));
             }
             "end_stream" => {
                 let counts = self
@@ -322,8 +322,8 @@ fn render_object(object: &Json) -> String {
         let items = closed.as_array().expect("closed list");
         return format!("closed:[{}]", join_numbers(items, "conn", ","));
     }
-    if let Some(ready) = object.get("ready") {
-        return format!("ready:{}", flag(ready));
+    if let Some(room) = object.get("room") {
+        return format!("room:{}", flag(room));
     }
     if let Some(partial) = object.get("partial") {
         return format!("partial:{}", flag(partial));

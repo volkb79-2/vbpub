@@ -1306,6 +1306,11 @@ ENV LD_PRELOAD=${KSM_OPTIN_LD_PRELOAD}
 
 USER vscode
 
+# Long-lived default command for a devcontainer that sets `"overrideCommand": false` and `"init": true`
+# (MDT-107). Killing the `sleep` child only starts the next one; SIGTERM from `docker stop` exits 0.
+# The base image's own CMD is `python3`, which exits at once without a terminal.
+CMD ["/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done"]
+
 # Keep volatile release metadata after every filesystem instruction. A new
 # revision/date must not invalidate apt, tool, or venv layers.
 LABEL org.opencontainers.image.title="${OCI_TITLE}" \
