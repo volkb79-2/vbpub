@@ -450,8 +450,8 @@ def test_install_benchmark_wipes_then_runs_on_the_planned_raw_partition_only(tmp
     run_index = next(i for i, action in enumerate(actions) if action.argv[0].endswith("iobench-install-runner"))
     assert wipe_index < run_index
     assert actions[wipe_index].argv == ("/usr/sbin/wipefs", "-a", "/dev/vda5")
-    assert actions[run_index].argv[2] == "/dev/vda5"
-    assert actions[run_index].argv[4] == str(8 * GIB)
+    assert actions[run_index].argv[4] == "/dev/vda5"
+    assert actions[run_index].argv[6] == str(8 * GIB)
     assert not any(
         action.argv[0].endswith(("mkfs.ext4", "mkfs.btrfs", "mkfs.xfs", "mount", "umount"))
         for action in actions

@@ -14,6 +14,8 @@ from cli_extended import CliFailure, LogLevel
 
 from .config import (
     CLOUD_INIT_CLEANUP_MODES,
+    IO_BENCHMARK_PROFILE_DEFAULT,
+    IO_BENCHMARK_PROFILES,
     Config,
     ConfigError,
     load_config,
@@ -198,6 +200,12 @@ WIZARD_SECTIONS = (
         "Optional I/O-cost benchmark",
         (
             WizardField("run_io_benchmark", "Wipe and benchmark the planned raw iobench-raw partition?", "boolean"),
+            WizardField(
+                "io_benchmark_profile",
+                f"iobench rung for that run (default {IO_BENCHMARK_PROFILE_DEFAULT}: about 11 min; veryquick about 3 min, standard about 59 min)",
+                "choice",
+                IO_BENCHMARK_PROFILES,
+            ),
             WizardField("iocost_enabled", "Configure io.cost for the root disk when a benchmark result exists?", "boolean"),
             WizardField("run_cpu_benchmark", "Measure the host CPU once with Geekbench at the end of the install (needs internet; failure only warns)?", "boolean"),
         ),

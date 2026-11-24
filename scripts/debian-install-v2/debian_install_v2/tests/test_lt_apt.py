@@ -299,7 +299,7 @@ def test_io_benchmark_advisory_failure_is_posted_exactly_once(tmp_path, verbose)
     installer._notify = lambda message, **kw: sent.append(kw.get("event", message))  # type: ignore[method-assign]
     installer._run_io_benchmark()
     assert installer.state.load()["steps"]["io_benchmark"]["status"] == "warned"
-    posts = [s for s in sent if "iobench failed (advisory)" in s]
+    posts = [s for s in sent if "iobench quick failed (advisory)" in s]
     assert len(posts) == 1, (verbose, sent)
 
 

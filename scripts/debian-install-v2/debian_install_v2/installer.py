@@ -20,7 +20,14 @@ from collections.abc import Iterable
 
 from . import inuse_partition_editor
 from .actions import ActionError, ActionTimeout, ActionUnreapable, HostActions
-from .config import Config, ConfigError, load_config, persisted_config_data, resolve_notify_backend
+from .config import (
+    IO_BENCHMARK_OUTER_TIMEOUT_S,
+    Config,
+    ConfigError,
+    load_config,
+    persisted_config_data,
+    resolve_notify_backend,
+)
 from .disk_layout import GIB, automatic_swap_size_gb
 from . import layout_policy
 from .host_facts import _code, collect_host_facts, format_facts_html
@@ -137,9 +144,9 @@ _APT_SERVICES = ("apt-daily.service", "apt-daily-upgrade.service")
 CONTROLLER_KEY_MARKER = "vbpub-controller-ephemeral-"
 
 # Installer iobench runs against the planned, unformatted raw partition.
-# iobench's veryquick profile has a 210 s hard budget; this outer bound leaves
-# room for process startup and result persistence without an unbounded wait.
-IOBENCH_OUTER_TIMEOUT_S = 270
+# The rung is config.io_benchmark_profile; its outer bound is iobench's own
+# hard budget for that rung plus 60 s (config.IO_BENCHMARK_OUTER_TIMEOUT_S, the
+# one table). That bound only stops an unbounded wait; it is not the budget.
 IOBENCH_RESULT_KEYS = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops")
 # A terminal step status means cleanup was already verified; resume skips it.
 # "failed" is deliberately NOT terminal: it means cleanup could not be
@@ -2027,23 +2034,35 @@ MaxFileSec=1month
         detail = self.config.zswap_compressor + (f"; best-effort apply failed: {'; '.join(errors)}" if errors else "")
         self._mark_step("zswap_config", "warned" if errors else "success", detail)
 
-    def _load_io_benchmark_result(self) -> dict[str, int] | None:
-        """The persisted benchmark coefficients, or None when absent/invalid."""
+    def _read_io_benchmark_record(self) -> tuple[dict[str, int] | None, list[str]]:
+        """The persisted coefficients (None unless all six are positive) and the keys that are not.
+
+        One reader for the step and for io.cost: the runner writes these once,
+        and no consumer may invent a value for a key the record does not carry.
+        """
         path = Path(self.config.state_dir) / "io-benchmark.json"
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return None
+            return None, list(IOBENCH_RESULT_KEYS)
         results = record.get("results") if isinstance(record, dict) else None
         if not isinstance(results, dict):
-            return None
+            return None, list(IOBENCH_RESULT_KEYS)
         values: dict[str, int] = {}
+        missing: list[str] = []
         for key in IOBENCH_RESULT_KEYS:
             value = results.get(key)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                return None
+                missing.append(key)
+                continue
             values[key] = value
-        return values
+        if missing:
+            return None, missing
+        return values, []
+
+    def _load_io_benchmark_result(self) -> dict[str, int] | None:
+        """The persisted benchmark coefficients, or None when absent/invalid."""
+        return self._read_io_benchmark_record()[0]
 
     def _remove_iocost_units(self) -> None:
         """Drop a previously installed io.cost unit (no valid result any more)."""
@@ -3663,17 +3682,25 @@ MaxFileSec=1month
             f"wseqiops {results['wseqiops']}, wrandiops {results['wrandiops']} IOPS"
         )
 
+    def _io_benchmark_state_dir(self) -> Path:
+        """One iobench state directory per rung: a rung never reuses another rung's record."""
+        return Path(self.config.state_dir) / "iobench" / self.config.io_benchmark_profile
+
     def _run_io_benchmark(self) -> None:
-        """Run iobench veryquick on the planned, unformatted raw partition."""
+        """Run the configured iobench rung on the planned, unformatted raw partition."""
         if not self.config.run_io_benchmark:
             return
+        profile = self.config.io_benchmark_profile
         state = self.state.load()
         previous = state.get("steps", {}).get("io_benchmark")
         if previous and previous.get("status") in IOBENCH_FINAL_STATUSES:
             return
         _number, _start, size, device = self._raw_iobench_partition()
         size_gib = size * 512 / GIB
-        self._mark_step("io_benchmark", "started", f"PARTLABEL={layout_policy.IOBENCH_PARTLABEL} {device}")
+        self._mark_step(
+            "io_benchmark", "started",
+            f"PARTLABEL={layout_policy.IOBENCH_PARTLABEL} {device} profile={profile}",
+        )
         try:
             if not self.actions.dry_run:
                 mounted = self._run(
@@ -3700,26 +3727,37 @@ MaxFileSec=1month
             if not partuuid:
                 raise InstallerError(f"planned raw benchmark partition has no PARTUUID: {device}")
             runner = Path(__file__).resolve().parents[1] / "tools" / "iobench-install-runner"
-            output = self._run(
+            self._run(
                 [
                     str(runner),
+                    "--profile", profile,
                     "--target", device,
                     "--expect-size", str(size * 512),
                     "--expect-partuuid", partuuid,
-                    "--state-dir", str(Path(self.config.state_dir) / "iobench"),
+                    "--state-dir", str(self._io_benchmark_state_dir()),
+                    "--output", str(Path(self.config.state_dir) / "io-benchmark.json"),
                 ],
-                f"run iobench veryquick on {device}",
+                f"run iobench {profile} on {device}",
                 dangerous=True,
-                timeout=IOBENCH_OUTER_TIMEOUT_S,
+                timeout=IO_BENCHMARK_OUTER_TIMEOUT_S[profile],
             )
             if self.actions.dry_run:
-                summary = f"dry-run: would run iobench veryquick on {device} ({size_gib:.1f} GiB)"
+                summary = (
+                    f"dry-run: would run iobench {profile} on {device} "
+                    f"({size_gib:.1f} GiB, outer timeout {IO_BENCHMARK_OUTER_TIMEOUT_S[profile]} s)"
+                )
                 self._mark_step("io_benchmark", "planned", summary)
                 return
             results = self._load_io_benchmark_result()
             if results is None:
-                raise InstallerError("iobench completed without six usable io.cost coefficients")
-            summary = f"{self._format_iocost_summary(results)} on {device} ({size_gib:.1f} GiB, iobench veryquick)"
+                # Never a crash, never a partial model: name the coefficients
+                # this run did not produce and leave io.cost unconfigured.
+                missing = self._read_io_benchmark_record()[1]
+                raise InstallerError(
+                    f"iobench {profile} produced no usable io.cost coefficient(s): "
+                    f"{', '.join(missing)} missing or invalid; io.cost stays unconfigured"
+                )
+            summary = f"{self._format_iocost_summary(results)} on {device} ({size_gib:.1f} GiB, iobench {profile})"
             self._mark_step("io_benchmark", "success", summary)
             if not self.config.telegram_verbose_progress:
                 self._notify(f"<b>io benchmark</b>: {summary}", event=f"io benchmark: {summary}", status="ok")
@@ -3729,7 +3767,7 @@ MaxFileSec=1month
             raise InstallerError(detail) from exc
         except Exception as exc:
             detail = (
-                f"iobench failed (advisory): {str(exc).splitlines()[0][:400]}; "
+                f"iobench {profile} failed (advisory): {str(exc).splitlines()[0][:400]}; "
                 f"{self._write_advisory_log('io_benchmark', exc)}"
             )
             self._mark_step("io_benchmark", "warned", detail)
