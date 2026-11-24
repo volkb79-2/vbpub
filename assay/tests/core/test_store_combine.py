@@ -726,7 +726,13 @@ def test_run_mutation_refuses_manifest_without_resume_or_state_root(
             state_root=tmp_path,
             flex=mutation.FlexOptions(merge_manifest=tmp_path / "manifest.json"),
         )
-    with pytest.raises(ValueError, match="authoritative state_root"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"run_mutation --merge-manifest requires the caller's "
+            r"authoritative state_root"
+        ),
+    ):
         mutation.run_mutation(
             baseline=None,
             prepared=None,

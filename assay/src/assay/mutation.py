@@ -2528,7 +2528,15 @@ def run_mutation(
         raise ValueError(
             "run_mutation expected_selection_sha256 requires candidate_selection"
         )
-    if state_root is None and (resume or shard_specified):
+    merge_manifest_root_refusal = (
+        isinstance(flex, FlexOptions)
+        and flex.merge_manifest is not None
+    )
+    if (
+        state_root is None
+        and (resume or shard_specified)
+        and not merge_manifest_root_refusal
+    ):
         raise ValueError(
             "run_mutation resume requires the caller's authoritative "
             "state_root; an ephemeral snapshot cannot own resume evidence"
