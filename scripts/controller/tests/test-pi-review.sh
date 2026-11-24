@@ -204,6 +204,7 @@ check_unknown_thread_account() {
   (( rc == 2 )) || fail "an unresolvable implementer thread exited $rc, expected 2"
   contains "$ROOT/refused-thread.launch.log" 'no Open Design account is recorded for implementer thread ghost-session' \
     'the unresolvable thread is what refused the review'
+  lacks "$ROOT/refused-thread.launch.log" 'lookup failed' 'a lookup that found nothing is not reported as a failed lookup'
   [[ $(pi_invocations) == "$before" ]] || fail 'a review started with an unresolvable implementer thread'
 }
 
@@ -263,6 +264,43 @@ check_no_report() {
   [[ $(done_line rev-no-report) == 'EXIT=0 OUTCOME=NO-REPORT' ]] \
     || fail 'a review that wrote no review file is not NO-REPORT'
   lacks "$RUNS/rev-no-report.done" REVIEW-MODIFIED-TREE 'a NO-REPORT review did not flag the tree'
+}
+
+# A pre-existing dirty change is not charged to the reviewer: the comparison
+# is against the tree's OWN before-state, so only a difference is flagged.
+# pi-impl.sh still reports OUTCOME=UNCOMMITTED, which is pi-impl's word about
+# the worktree and not about who changed it.
+check_dirty_before_state_allowed() {
+  local rc=0
+  printf 'pre-existing change\n' >> "$WORKTREE/tracked.txt"
+  launch rev-dirty 1 none --implementer-run impl-volker || rc=$?
+  (( rc == 0 )) || fail "a review over a pre-existing dirty tree exited $rc, expected 0"
+  [[ $(done_line rev-dirty) == 'EXIT=0 OUTCOME=UNCOMMITTED' ]] \
+    || fail "a review over a dirty tree did not keep pi-impl's UNCOMMITTED word"
+  lacks "$RUNS/rev-dirty.done" REVIEW-MODIFIED-TREE 'a pre-existing change was charged to the reviewer'
+  clean_worktree
+}
+
+# A worktree whose BEFORE-state cannot be read is refused before pi starts.
+check_unreadable_before_state_refused() {
+  local shim=$ROOT/git-shim real_git before rc=0
+  real_git=$(command -v git)
+  mkdir -p "$shim"
+  cat > "$shim/git" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do [[ \$a == status ]] && exit 128; done
+exec $real_git "\$@"
+SH
+  chmod +x "$shim/git"
+  before=$(pi_invocations)
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-unreadable --report "$REPORTS/rev-unreadable.md" \
+    --account volker > "$ROOT/rev-unreadable.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 2 )) || fail "an unreadable before-state exited $rc, expected 2"
+  contains "$ROOT/rev-unreadable.launch.log" 'cannot record the worktree state before the review' \
+    'the unreadable before-state is what refused the review'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review started without a readable before-state'
 }
 
 # --- refusals ---------------------------------------------------------------
@@ -337,6 +375,8 @@ check_account_pinning
 check_modified_tracked_file
 check_modified_untracked_file
 check_no_report
+check_dirty_before_state_allowed
+check_unreadable_before_state_refused
 check_report_inside_worktree
 check_account_and_implementer_conflict
 check_account_required

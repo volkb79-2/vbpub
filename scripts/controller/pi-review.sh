@@ -23,9 +23,13 @@
 # whose BEFORE-state cannot be recorded is refused (exit 2), and one whose
 # AFTER-state cannot be read takes the same `REVIEW-MODIFIED-TREE` line with
 # the reason on stderr, because the guarantee can no longer be certified.
-# A dirty worktree is allowed (a review is compared with its own before-state);
-# a review REPORT inside the worktree is refused, because a reviewer could
-# write it there and an ignored path would not even show in status.
+# A dirty worktree is allowed (a review is compared with its own before-state,
+# so a pre-existing change is not charged to the reviewer). pi-impl.sh's own
+# UNCOMMITTED class still fires on such a tree (that word is about the worktree,
+# not about who changed it), while REVIEW-MODIFIED-TREE fires only when the
+# before and after states differ. A review REPORT inside the worktree is refused,
+# because a reviewer could write it there and an ignored path would not even
+# show in status.
 #
 # The rest is pi-impl.sh's, unchanged: its outcome vocabulary, its report check
 # (--report is passed through, so a review that writes no review file is
@@ -133,8 +137,13 @@ else
           find-thread-account "$thread_id" "$CONTROLLER_RUNS_DIR") || lookup_rc=$?
         if ((lookup_rc == 0)); then
           implementer_account=$found_account
+        elif ((lookup_rc == 1)); then
+          echo "no Open Design account is recorded for implementer thread $thread_id" >&2
+          exit 2
         else
-          echo "no Open Design account is recorded for implementer thread $thread_id (lookup exit $lookup_rc)" >&2
+          # A lookup that FAILED is not a lookup that found nothing: the account
+          # state is unreadable, and this refusal must not report it as absence.
+          echo "the Open Design account lookup failed for implementer thread $thread_id (exit $lookup_rc)" >&2
           exit 2
         fi
       fi
@@ -193,7 +202,12 @@ else
   [[ $TREE_DIFF == "$before_diff" ]] || changed="${changed:+$changed, }diff"
 fi
 if [[ -n $changed ]]; then
-  printf 'REVIEW-MODIFIED-TREE\n' >> "$CONTROLLER_RUNS_DIR/$name.done"
+  marker=$CONTROLLER_RUNS_DIR/$name.done
+  # pi-impl.sh writes this marker on every launch that got past the run-name
+  # claim; a missing one means the run never produced its own record, which the
+  # operator must not read as pi-impl's verdict.
+  [[ -e $marker ]] || printf 'pi-review: %s left no completion marker; recording only the review flag\n' "$name" >&2
+  printf 'REVIEW-MODIFIED-TREE\n' >> "$marker"
   printf 'REVIEW-MODIFIED-TREE: %s (pi-impl exit %s); the worktree is left as it is\n' \
     "$changed" "$launch_rc" >&2
   exit 4
