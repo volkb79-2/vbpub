@@ -138,6 +138,16 @@ case "$1" in
 esac
 '''
 
+# passthrough git and tar that fail a named host-side step on request (STUB_GIT_FAIL=apply|fetch, STUB_TAR_FAIL=1)
+GIT_STUB = '''#!/bin/bash
+if [[ -n ${STUB_GIT_FAIL:-} && " $* " == *" $STUB_GIT_FAIL "* ]]; then echo "git stub: $STUB_GIT_FAIL fails" >&2; exit 128; fi
+exec @GIT@ "$@"
+'''
+TAR_STUB = '''#!/bin/bash
+if [[ -n ${STUB_TAR_FAIL:-} && " $* " == *" -xf "*untracked.tar* ]]; then echo "tar stub: unpack fails" >&2; exit 2; fi
+exec @TAR@ "$@"
+'''
+
 # util-linux `script -qefc CMD FILE` without a pty: runs CMD with $SHELL -c, as a NEW process that sees only exported variables
 SCRIPT_STUB = '''#!/bin/bash
 [[ ${1:-} == -qefc ]] || { echo "script stub: unexpected arguments: $*" >&2; exit 2; }
@@ -183,7 +193,8 @@ class DevCase(unittest.TestCase):
         self.stubs, self.logs, self.home, self.psi = (self.tmp / n for n in ("stubs", "logs", "home", "psi"))
         for d in (self.stubs, self.logs, self.home, self.psi):
             d.mkdir()
-        for name, text in (("docker", DOCKER_STUB.replace("@PY@", sys.executable)), ("hx", HX_STUB), ("id", ID_STUB), ("sleep", SLEEP_STUB), ("script", SCRIPT_STUB)):
+        for name, text in (("docker", DOCKER_STUB.replace("@PY@", sys.executable)), ("hx", HX_STUB), ("id", ID_STUB), ("sleep", SLEEP_STUB), ("script", SCRIPT_STUB),
+                           ("git", GIT_STUB.replace("@GIT@", shutil.which("git") or "git")), ("tar", TAR_STUB.replace("@TAR@", shutil.which("tar") or "tar"))):
             (self.stubs / name).write_text(text)
             (self.stubs / name).chmod(0o755)
         self.clock = self.tmp / "clock"
@@ -519,6 +530,30 @@ class RemoteTests(DevCase):
         self.assertIn(f"{self.work()}:/work", run)
         self.assertIn(f"{self.work()}/.git:/work/.git:ro", run)
         self.assertEqual((self.logs / "hx.hosts").read_text().split(), ["v1001"] * 4)
+
+    def test_the_patch_does_not_depend_on_the_cockpits_git_config(self) -> None:
+        for key, value in (("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"), ("color.diff", "always"), ("color.ui", "always"), ("diff.external", "/bin/false")):
+            subprocess.run(["git", "-C", str(self.repo), "config", key, value], check=True)
+        (self.repo / "cmru" / "keep.txt").write_text("edited\n")
+        (self.repo / "cmru" / "gone.txt").unlink()
+        proc = self.run_dev("-p", "cmru", "run", "--", "true")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((self.work() / "cmru" / "keep.txt").read_text(), "edited\n")
+        self.assertFalse((self.work() / "cmru" / "gone.txt").exists())
+
+    def test_a_failed_host_side_sync_step_is_exit_3_naming_the_step_and_nothing_runs(self) -> None:
+        (self.repo / "cmru" / "keep.txt").write_text("edited\n")
+        (self.repo / "cmru" / "new.txt").write_text("untracked\n")
+        for label, step, extra in (("apply", "git apply of the uncommitted changes", {"STUB_GIT_FAIL": "apply"}),
+                                   ("fetch", "git fetch of the bundle", {"STUB_GIT_FAIL": "fetch"}), ("tar", "tar unpack of the untracked files", {"STUB_TAR_FAIL": "1"})):
+            with self.subTest(label):
+                shutil.rmtree(self.home / "agent-dev", ignore_errors=True)
+                proc = self.run_dev("-p", "cmru", "run", "--", "true", **extra)
+                self.assertEqual(proc.returncode, 3, proc.stderr)
+                lines = proc.stderr.splitlines()
+                self.assertIn(f"dev: sync failed at: {step} (host side; the command never ran)", lines)
+                self.assertEqual(lines[-2], "dev: exit 3")
+                self.assertEqual(self.runs(), [])
 
     def test_an_oversized_overlay_is_refused_before_any_host_call(self) -> None:
         (self.repo / "cmru" / "big.bin").write_bytes(b"x" * (21 * 1024 * 1024))

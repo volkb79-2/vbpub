@@ -230,18 +230,21 @@ sync_text() {
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 # no auto gc/maintenance (it daemonizes) and no lock descriptor may leak into a helper: it would hold the lock
 g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 -c maintenance.auto=false -c protocol.allow=never -c protocol.file.allow=always "$@" 7>&- 8>&- 9>&-; }
+# a failed sync step is the tool's, not the command's: exit 3 naming the step (errexit is off on the left of ||)
+step() { local what=$1; shift; "$@" || own 3 "sync failed at: $what (host side; the command never ran)"; }
+untar() { tar "$@" 7>&- 8>&- 9>&-; }
 if [ ! -d "$W/.git" ]; then
   rm -rf "$W"
-  if [ -n "$SEED" ]; then g clone -q --no-checkout "$HOME/checkouts/$SEED" "$W"; else g init -q "$W"; fi
+  if [ -n "$SEED" ]; then step "git clone of the seed checkout" g clone -q --no-checkout "$HOME/checkouts/$SEED" "$W"; else step "git init" g init -q "$W"; fi
 fi
 rm -rf "$W/.git/hooks"
 mkdir -m 0755 "$W/.git/hooks"
-if [ -f "$UP/in.bundle" ]; then g -C "$W" fetch -q "$UP/in.bundle" HEAD; fi
-g -C "$W" checkout -q -f --detach "$SHA"
-g -C "$W" reset -q --hard "$SHA"
-g -C "$W" clean -q -ffdx
-if [ -s "$UP/tracked.patch" ]; then g -C "$W" apply --binary --whitespace=nowarn "$UP/tracked.patch"; fi
-if [ -s "$UP/untracked.tar" ]; then tar -xf "$UP/untracked.tar" -C "$W" 7>&- 8>&- 9>&-; fi
+if [ -f "$UP/in.bundle" ]; then step "git fetch of the bundle" g -C "$W" fetch -q "$UP/in.bundle" HEAD; fi
+step "git checkout of the head" g -C "$W" checkout -q -f --detach "$SHA"
+step "git reset to the head" g -C "$W" reset -q --hard "$SHA"
+step "git clean" g -C "$W" clean -q -ffdx
+if [ -s "$UP/tracked.patch" ]; then step "git apply of the uncommitted changes" g -C "$W" apply --binary --whitespace=nowarn "$UP/tracked.patch"; fi
+if [ -s "$UP/untracked.tar" ]; then step "tar unpack of the untracked files" untar -xf "$UP/untracked.tar" -C "$W"; fi
 rm -rf "$UP"
 EOF
 }
@@ -413,7 +416,8 @@ stage_overlay() {   # tracked.patch (git diff HEAD --binary), untracked.list (NU
   git -C "$worktree" rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null || die 2 'the worktree has no HEAD commit'
   sync_sha=$(git -C "$worktree" rev-parse HEAD)
   [[ $sync_sha =~ ^[0-9a-f]{40,64}$ ]] || die 2 "unexpected HEAD id '$sync_sha'"
-  git -C "$worktree" diff HEAD --binary > "$stage/tracked.patch"
+  # plumbing-stable: the cockpit's diff.noprefix/mnemonicPrefix, color.diff, textconv and diff.external must not change the patch
+  git -C "$worktree" diff HEAD --binary --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ > "$stage/tracked.patch"
   git -C "$worktree" ls-files -o --exclude-standard -z > "$stage/untracked.list"
   total=$(stat -c %s "$stage/tracked.patch")
   while IFS= read -r -d '' f; do
