@@ -150,7 +150,7 @@ the Low equals the Min and the line may be omitted; it exceeds the Min only when
 Raw MemTotal − K is deliberate, unlike netcup's nominal rounding (`DESIGN-GUIDE.md:384-396`, which reproduces a
 chosen ceiling): K is measured host need, so a kernel reserving more lowers dev `MemoryMax` and preserves K (r1 10).
 
-## 5. Cockpit protection, load OOM domain, per-container caps (Q1)
+## 5. Cockpit protection, load tiers, per-container caps (Q1)
 
 **5.1 Load tiers.** dev-gates and dev-background: `MemoryMax = dev MemoryMax` (operator ruling 2026-11-24, P-plat-19h;
 it was `max(1G, dev MemoryMax − P)`), no `MemoryHigh`, with
@@ -196,16 +196,17 @@ the scope's 16G.
 - gates/background container on r1002 (and v1001 with host-setup): min(8G, tier 6858.22 MiB, dev 6858.22 MiB) =
   dev Max (the tier Max equals it); cockpit and buildkitd: min(8G, dev Max) = dev Max. On both 8 GiB hosts the 8G line never binds RAM;
   it binds only where dev Max > 8G (MemTotal above about 9.1 GiB at today's K).
-- The swap line binds: an undeclared runaway fills its tier's RAM and pages its tier neighbours; at 16G of its own
+- The swap line binds: an undeclared runaway fills dev.slice's RAM and pages its dev.slice neighbours; at 16G of its own
   swap it can no longer be reclaimed; dev.slice OOMs (the tier Max equals dev's since P-plat-19h), the victim is the
   largest rss + swap in dev.slice, normally the runaway, and `oom.group`
-  kills its container. Other tiers, the cockpit (Low 2.5G, Min 512M, −900) and the host floors are untouched.
+  kills its container. The cockpit (Low 2.5G, Min 512M, −900) and the host floors are untouched; the other load
+  tier is not.
 - Precedence: drop-ins in `/etc/systemd/system/docker-.scope.d/` override the transient unit's `MemoryMax`, but
   runc (systemd driver) also writes a declared `--memory` straight into the scope's `memory.max` after start, so a
   tighter declared cap holds in the kernel while systemd's property reads 8G. Nothing in the repo records this
   today (unmeasured): acceptance step 6 checks that a `--memory 2G` container reads `memory.max` = 2G before and
   after a daemon-reload. The converge and check.sh never compare or rewrite docker scopes (6.2 scope).
-- Exec-mode `rg-<token>` leaves and the run-gate path probe are not docker scopes; only the tier Max bounds them.
+- Exec-mode `rg-<token>` leaves and the run-gate path probe are not docker scopes; only the tier Max (= dev Max in effect) bounds them.
 - Running containers keep their old 12G scope value until re-created. That is harmless (their tier/dev Max is
   lower); no live lowering of scopes takes place.
 
@@ -229,9 +230,10 @@ dev − P); the column below shows that render.
 4. dev `MemoryMin` = 0 + 512M = 536870912 B ≤ 6858.22 − 1024 MiB.
 5. Bounds: F 565M ≤ 793.52 MiB (10 %); system.slice 373M ≤ 460M; K 1077M ≥ F + 128M = 693M.
 6. Admission memory term = ⌊7191363584 / 2 GiB⌋ = **3** (⌊6684901376 / 2 GiB⌋ = 3 at the pinned 6375M), one more than
-   the 4G-High / 2G term and the old minus-P term; the CPU term (4 vCPU / 2 = 2 on these hosts) still binds there.
+   the 4G-High / 2G term and the old minus-P term; on the unpinned formula the CPU term (4 vCPU / 2 = 2) still binds,
+   and both live hosts pin `ADMISSION_MAX_CONCURRENT=4`, which wins.
 
-| unit | property | r1002 live today | new r1002 | new v1001 (if host-setup) | rule |
+| unit | property | r1002 live today | new r1002 | new v1001 (installed 2026-11-24) | rule |
 |---|---|---|---|---|---|
 | dev.slice | MemoryMax | 7.5 GiB (runtime file) | 7191363584 | ≈ 6858M | MemTotal − EXCLUDED − K |
 | dev.slice | MemoryHigh | 7.0 GiB | none | none | `DEV_MEMORY_HIGH` ignored, NOTICE |

@@ -1179,9 +1179,8 @@ MemTotal, a derived `system.slice` floor above 460M, a `DEV_MEMORY_MAX` pin abov
 | mdt-psi-guard | weights, then tier `memory.high` | weights only (`HIGH_TIERS` empty: no MemoryHigh stage) |
 
 Where a container's memory goes: its own `--memory` if declared (runc writes it into the scope's `memory.max` even though systemd's property reads 8G; the
-acceptance run checks a `--memory 2G` container reads 2G before and after a daemon-reload), else the tier Max (gates/background containers) or dev Max (cockpit,
-buildkitd); the 8G scope default never binds RAM on 8 GiB hosts. An undeclared runaway fills its tier's RAM and pages within it; at 16G of its own swap the tier
-OOMs and the victim is the runaway, whose whole container dies (`OOMPolicy=kill` sets `memory.oom.group=1` on every `docker-<id>.scope`; needs systemd >= 253,
+acceptance run checks a `--memory 2G` container reads 2G before and after a daemon-reload), else dev Max (every dev tier: the gates/background tier Max equals it); the 8G scope default never binds RAM on 8 GiB hosts. An undeclared runaway fills dev.slice's RAM
+and pages its unprotected dev neighbours (the other load tier included); at 16G of its own swap dev.slice OOMs and the victim is normally the runaway, whose whole container dies (`OOMPolicy=kill` sets `memory.oom.group=1` on every `docker-<id>.scope`; needs systemd >= 253,
 otherwise skipped with a NOTICE). **For the cockpit container this means** an OOM kill of any process in it kills the whole cockpit: its protection is the Min
 floor, the Low, the -900 score (every OOM domain picks a load task first) and no tier ceiling, not a per-process exemption. Running containers keep their old scope
 value until re-created; nothing lowers scopes live.
