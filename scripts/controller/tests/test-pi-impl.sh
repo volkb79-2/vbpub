@@ -48,7 +48,7 @@ git -C "$WORKTREE" commit -qm task
 cat > "$CONTROLLER_ROOT/controller.local.env" <<'ENV'
 PI_ROUTE="deepseek-pi"
 PI_MODEL="deepseek-v4.1-flash-eco"
-PI_THINKING="high"
+PI_THINKING="max"
 PI_SESSION_DIR="$HOME/.pi/agent/sessions"
 ENV
 cat > "$HOME_ROOT/.env.ai" <<'ENV'
@@ -186,6 +186,27 @@ expect_rc() {
   else
     local actual=$?
     [[ $actual == "$expected" ]] || fail "command exit was $actual, expected $expected"
+  fi
+}
+
+check_pi_default_thinking_max() {
+  local home=$ROOT/default-thinking-controller rc=0 argv=''
+  mkdir -p "$home"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_HOME="$home" \
+    PI_ROUTE=deepseek-pi-volker CONTROLLER_OD_STATE="$ROOT/default-thinking-state.json" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=default-thinking-session FAKE_PI_RC=0 PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" default-thinking \
+    > "$ROOT/default-thinking.launch.log" 2>&1 < /dev/null || rc=$?
+  [[ $rc == 0 ]] || {
+    cat "$ROOT/default-thinking.launch.log" >&2
+    fail 'pi default-thinking launch failed'
+  }
+  argv=$(grep -- '^-p ' "$PI_ARGV_LOG" | tail -n 1)
+  if [[ $argv != *'--thinking max'* ]]; then
+    printf 'argv=%s\n' "$argv" >&2
+    cat "$ROOT/default-thinking.launch.log" >&2
+    fail 'pi Open Design routes do not default to the catalog maximum thinking level'
   fi
 }
 
@@ -1789,6 +1810,7 @@ check_job_status_validation() {
 
 if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
+    default-thinking) check_pi_default_thinking_max ;;
     xtrace-key) check_xtrace_key ;;
     outcome-error) check_outcome_error ;;
     outcome-length) clean_worktree; check_outcome_length ;;
@@ -2221,7 +2243,7 @@ PY
       contains "$CONSUMER_SOURCE" "\`deepseek-pi\` is the favored Pi route" 'consumer guide names the favored Pi route'
       contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide gives a Pi launch example'
       contains "$RULES_SOURCE" 'deepseek-pi-volker' 'rules list the pinned Pi routes'
-      contains "$ENV_SOURCE" 'PI_THINKING="high"' 'environment example documents Pi thinking'
+      contains "$ENV_SOURCE" 'PI_THINKING="max"' 'environment example documents Pi maximum thinking'
       contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
       contains "$README_SOURCE" "\`CONTEXT-FULL\`" 'README documents the context-full class'
       contains "$README_SOURCE" "\`TOOL-CALL-NO-TEXT\`" 'README documents the tool-call-no-text class'
@@ -2314,7 +2336,7 @@ wait_launch auto-2 deepseek-pi pi-success /dev/null
 wait_launch auto-3 deepseek-pi pi-success /dev/null
 [[ $(cat "$CONTROLLER_ROOT/runs/auto-3.route") == deepseek-pi-volker ]] || fail 'third automatic pi start must alternate back to volker'
 contains "$PI_ARGV_LOG" '--model opendesign_volker/deepseek-v4.1-flash-eco' 'pi uses the selected Volker provider and default model'
-contains "$PI_ARGV_LOG" '--thinking high' 'pi defaults to high thinking'
+contains "$PI_ARGV_LOG" '--thinking max' 'pi configured default uses maximum thinking'
 contains "$PI_ARGV_LOG" "--session-dir $HOME_ROOT/.pi/agent/sessions" 'pi uses its default session directory'
 printf 'brief\n' > "$ROOT/prompt-with-newline.md"
 PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
@@ -2527,6 +2549,7 @@ else rc=$?; [[ $rc == 2 ]] || fail "run traversal exit was $rc, expected 2"; fi
 contains "$ROOT/run-traversal.log" 'invalid run name' 'pi run name traversal guard fires'
 
 check_xtrace_key
+check_pi_default_thinking_max
 check_outcome_error
 check_outcome_length
 check_outcome_tool_call_no_text
@@ -2579,7 +2602,7 @@ contains "$DESIGN_SOURCE" 'Pi 1.5.0 can report a provider 402' 'design guide exp
 contains "$CONSUMER_SOURCE" "\`deepseek-pi\` is the favored Pi route" 'consumer guide names the favored pi route'
 contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide has a copyable pi launch'
 contains "$RULES_SOURCE" 'deepseek-pi-volker' 'controller rules list pinned pi routes'
-contains "$ENV_SOURCE" 'PI_THINKING="high"' 'local environment example documents the thinking default'
+contains "$ENV_SOURCE" 'PI_THINKING="max"' 'local environment example documents the maximum thinking default'
 if grep -Eq 'OPENDESIGN_API_KEY_[A-Z0-9_]+=' "$ENV_SOURCE"; then
   fail 'controller local environment example contains an API-key assignment'
 fi

@@ -286,7 +286,7 @@ mutant("scripts/controller/codex-impl.sh", "codex-unknown-route-fallback.sh",
 mutant("scripts/controller/opencode-impl.sh", "opencode-default-provider.sh",
        'provider=${OPENCODE_PROVIDER:-opendesign_github2}', 'provider=${OPENCODE_PROVIDER:-opendesign}')
 mutant("scripts/controller/README.md", "README-home-override-route.md",
-       '`CODEX_HOME_OVERRIDE` is honoured only on the luna route.',
+       '`CODEX_HOME_OVERRIDE` is honoured on the luna and sol/review routes.',
        '`CODEX_HOME_OVERRIDE` is honoured on every route.')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count < auto_limit )) && reasoning_end',
@@ -356,7 +356,7 @@ mutant("scripts/controller/gate-run.sh", "gate-run-refusal-example.sh",
        'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running',
        'gate-run: configure the gate lock paths before running')
 for _name, _before, _after in (
-    ("slots-range", '[[ $slots =~ ^[1-8]$ ]] || {', '[[ $slots =~ ^[0-9]+$ ]] || {'),
+    ("slots-range", '[[ $slots =~ ^[12345678]$ ]] || {', '[[ $slots =~ ^[0-9]+$ ]] || {'),
     ("slots-default", 'slots=${CONTROLLER_GATE_SLOTS:-2}', 'slots=${CONTROLLER_GATE_SLOTS:-3}'),
     ("one-slot-needs-gate2", 'if (( slots == 1 )); then\n  required_locks', 'if false; then\n  required_locks'),
     ("one-slot-message", 'gate-run: CONTROLLER_GATE_LOCK must be configured as an absolute path (CONTROLLER_GATE_SLOTS=1 uses one slot)',
@@ -953,7 +953,7 @@ mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-steering-target.md",
        'Kill `8451`, not `8123`.',
        'Kill the wrapper `8123` to stop the tool.')
 mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-codex-marker-shape.md",
-       '`EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`',
+       '`EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k> EFFORT=<value>`',
        '`EXIT=<n> AUTORESUME=<k>`')
 mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-pi-launch-route.md",
        '`deepseek-pi` is the favored Pi route',

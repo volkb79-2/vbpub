@@ -84,12 +84,15 @@ agent it started is still working: that agent (or its tool) is what to stop, not
 the dead wrapper's pid. See the
 [design guide](DESIGN-GUIDE.md#job-check-compatibility) for the checks.
 
-A Codex run states its own outcome in `.done` as
-`EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`; the Codex stream carries no pi stop
-reasons, so the child's exit status is the one fact the wrapper can state. A
-resume of an existing run name removes the previous invocation's marker before
-its child starts, so a reader never reports an older resume's exit while the new
-one works, and a wrapper refused before the child launches writes no marker.
+A Codex run derives `.last.txt` from the last completed `agent_message` item in
+that invocation's stream, on every exec path. No final assistant text means no
+`.last.txt`, rather than an older file. The run states its own outcome in
+`.done` as `EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k> EFFORT=<value>`; the
+Codex stream carries no pi stop reasons, so the child's exit status is the one
+fact the wrapper can state. A resume of an existing run name removes the
+previous invocation's marker before its child starts, so a reader never reports
+an older resume's exit while the new one works, and a wrapper refused before
+the child launches writes no marker.
 
 ## Run Pi on Open Design
 

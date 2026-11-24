@@ -6,6 +6,21 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Launcher must-fixes (CTL-38, CTL-42 part 1)
+- CTL-38: every Codex exec path — new, manual resume, and automatic
+  continuation — now derives `<run>.last.txt` from the last completed
+  `agent_message` item in that invocation's JSON stream. A stream with no final
+  text removes a stale file; the old `.done` outcome remains unchanged.
+- Codex and Pi Open Design routes default to the catalog maximum `max` effort;
+  `CODEX_EFFORT` and `PI_THINKING` still override it. Codex `.done` appends
+  `EFFORT=<value>` after the historical fields.
+- CTL-42 part 1: Codex accepts a `sol` route using `$HOME/.codex`, Luna defaults
+  to `$HOME/.codex2`, `CODEX_HOME_OVERRIDE` wins on Luna and Sol/review,
+  `codex-review.sh` selects Sol, and repository guidance names the wrappers
+  rather than a Codex home. The limits note and reader remain dropped.
+- `gate-run.sh` validates `CONTROLLER_GATE_SLOTS` with explicit ASCII digit
+  lists, so a Unicode collation cannot admit a non-ASCII digit.
+
 ### Added
 - `remote-gate.sh`: `CONTROLLER_REMOTE_GATE_WORKROOT` sets where the per-run throwaway worktree lives (default unchanged: `$CONTROLLER_HOME/remote-gate-work`). A workroot under an IDE workspace folder makes the editor's Git extension adopt every scratch worktree as a repository ("too many active changes" popup) and lets language servers index it; point it outside every workspace folder.
 - `gate-run.sh`: `CONTROLLER_GATE_SLOTS` (integer 1 to 8, default 2) sets the number

@@ -17,11 +17,11 @@
 # job-check then says DIED and advises a relaunch that refuses with exit 2.
 #
 # Every exit path writes <run>.done as `EXIT=<n> OUTCOME=<class>
-# AUTORESUME=<k>` (the historical first-line shape, additive). The class is
-# `CODE-EXIT`: the Codex stream carries no pi stop reason, so the one fact this
-# wrapper can state is the child's own exit status. A resume that is killed
-# before it reaches the marker leaves no `.done`, and `job-check.sh` reports
-# that from the owner record as `DIED`, never as `RUNNING`.
+# AUTORESUME=<k> EFFORT=<value>` (the historical first-line shape, additive).
+# The class is `CODE-EXIT`: the Codex stream carries no pi stop reason, so the
+# one fact this wrapper can state is the child's own exit status. A resume that
+# is killed before it reaches the marker leaves no `.done`, and `job-check.sh`
+# reports that from the owner record as `DIED`, never as `RUNNING`.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
@@ -46,6 +46,58 @@ controller_run_claim "$name" || exit 2
 retire_existing=0
 auto_count=0
 codex_launched=0
+codex_extract_last_text() {
+  # The JSON stream is the result: extract the final completed agent message
+  # from the child that just exited. A stream with no such item removes the
+  # previous producer's file rather than leaving it to read as this run's text.
+  python3 - "$1" "$2" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+stream = Path(sys.argv[1])
+target = Path(sys.argv[2])
+last_text = None
+try:
+    with stream.open(encoding="utf-8", errors="replace") as source:
+        for line in source:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "item.completed":
+                continue
+            item = event.get("item")
+            if not isinstance(item, dict) or item.get("type") != "agent_message":
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                last_text = text
+except OSError:
+    last_text = None
+
+if last_text is None:
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        pass
+    raise SystemExit(0)
+
+fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        output.write(last_text)
+    os.replace(temporary, target)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+PY
+}
 # shellcheck disable=SC2329 # installed as the EXIT trap below
 codex_finish() {
   # Every exit path (normal, child failure, bookkeeping failure, an error path
@@ -56,7 +108,8 @@ codex_finish() {
   # Only a launched child can exit: before the launch the wrapper states no
   # child outcome at all, and an unlaunched name keeps its "no .done" state.
   if (( codex_launched == 1 )) && [[ ! -e $out/$name.done ]]; then
-    printf 'EXIT=%s OUTCOME=CODE-EXIT AUTORESUME=%s\n' "$status" "$auto_count" > "$out/$name.done"
+    printf 'EXIT=%s OUTCOME=CODE-EXIT AUTORESUME=%s EFFORT=%s\n' \
+      "$status" "$auto_count" "$effort" > "$out/$name.done"
   fi
   controller_run_release
 }
@@ -88,8 +141,14 @@ od_start_kind=''
 od_recorded_account=''
 case $route in
   luna)
-    route_home=${CODEX_HOME_LUNA:-"$HOME/.codex"}
+    route_home=${CODEX_HOME_OVERRIDE:-${CODEX_HOME_LUNA:-"$HOME/.codex2"}}
     default_model=gpt-6-luna
+    default_effort=xhigh
+    auto_default=0
+    ;;
+  sol)
+    route_home=${CODEX_HOME_OVERRIDE:-${CODEX_HOME_REVIEW:-"$HOME/.codex"}}
+    default_model=gpt-6-sol
     default_effort=xhigh
     auto_default=0
     ;;
@@ -107,7 +166,7 @@ case $route in
       fi
     fi
     default_model=deepseek-v4.1-flash-eco
-    default_effort=high
+    default_effort=max
     auto_default=2
     ;;
   deepseek-volker|deepseek-github2)
@@ -115,7 +174,7 @@ case $route in
     route_record=$route
     od_start_kind=pinned
     default_model=deepseek-v4.1-flash-eco
-    default_effort=high
+    default_effort=max
     auto_default=2
     ;;
   *) echo "unknown CODEX_ROUTE=$route" >&2; exit 2 ;;
@@ -174,8 +233,8 @@ if [[ -n $od_start_kind ]]; then
     *) echo 'Open Design account selector returned an invalid account' >&2; exit 2 ;;
   esac
 else
-  if [[ $route == luna ]]; then
-    export CODEX_HOME=${CODEX_HOME_OVERRIDE:-$route_home}
+  if [[ $route == luna || $route == sol ]]; then
+    export CODEX_HOME=$route_home
   fi
 fi
 if [[ -n $od_start_kind ]]; then
@@ -221,6 +280,7 @@ if [[ $mode == resume ]]; then
   else
     rc=$?
   fi
+  codex_extract_last_text "$out/$name.jsonl" "$out/$name.last.txt"
 else
   codex_launched=1
   # A new run is refused above when any name-owned record exists (a resume
@@ -228,12 +288,13 @@ else
   # Same rule as the resume above: the agent closes the ownership descriptor.
   if (controller_close_ownership_fds && \
     nice codex exec -C "$worktree" -m "$model" -c "model_reasoning_effort=\"$effort\"" \
-    -s danger-full-access --skip-git-repo-check -o "$out/$name.last.txt" --json - \
+    -s danger-full-access --skip-git-repo-check --json - \
     < "$prompt" > "$out/$name.jsonl" 2> "$out/$name.err"); then
     rc=0
   else
     rc=$?
   fi
+  codex_extract_last_text "$out/$name.jsonl" "$out/$name.last.txt"
 fi
 
 reasoning_end() {
@@ -309,6 +370,7 @@ while (( auto_count < auto_limit )) && reasoning_end "$out/$name.jsonl"; do
     attempt_rc=$?
   fi
   cat -- "$attempt_stream" >> "$out/$name.jsonl"
+  codex_extract_last_text "$attempt_stream" "$out/$name.last.txt"
   rm -f -- "$attempt_stream"
   printf 'AUTORESUME attempt=%s EXIT=%s THREAD=%s\n' "$auto_count" "$attempt_rc" "$thread_id" >> "$auto_log"
   rc=$attempt_rc
@@ -323,5 +385,6 @@ if [[ -n $od_account ]]; then
       "$name" "$bookkeeping_rc" "$rc" >&2
   fi
 fi
-printf 'EXIT=%s OUTCOME=CODE-EXIT AUTORESUME=%s\n' "$rc" "$auto_count" > "$out/$name.done"
+printf 'EXIT=%s OUTCOME=CODE-EXIT AUTORESUME=%s EFFORT=%s\n' \
+  "$rc" "$auto_count" "$effort" > "$out/$name.done"
 exit "$rc"
