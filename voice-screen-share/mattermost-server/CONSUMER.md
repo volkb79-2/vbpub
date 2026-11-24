@@ -19,6 +19,15 @@ read from) nyxloom's Mattermost instance — `scripts/netcup` /
   `nyxloom-admin` (those are human/bootstrap accounts and are never handed
   out).
 
+## Calls cut-over
+
+Mattermost publishes Calls media on host TCP+UDP 8443 itself. A tls-edge 3.x
+edge with its Calls preset enabled (`[tls_edge.calls] enabled = true`) also binds
+8443 on its host, so on such a host:
+
+1. Disable the edge's Calls preset (or stop that edge) so it no longer binds 8443.
+2. Run `ciu up` for Mattermost, which publishes the Calls media pair directly.
+
 ## Current producer accounts
 
 | Account | Channel | Credentials provisioned | Used by |
