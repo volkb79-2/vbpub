@@ -59,12 +59,22 @@ The account password and its ciu secret must match, so change both:
    `.ciu/secrets/fluxer/`, preserving mode 0600.
 
 If only the file is changed, the next `ciu up` fails to sign in, tries to register the existing name and
-reports `user_failed:...`: it never overwrites an account. To start over completely with empty data volumes
-and newly generated secrets, run:
+reports `user_failed:...`: it never overwrites an account. To start over with empty data volumes and new
+account passwords, run:
 
 ```bash
-ciu up --dir voice-screen-share/fluxer-server --reset --secrets --yes
+ciu secrets reset --dir voice-screen-share/fluxer-server --yes
+ciu up --dir voice-screen-share/fluxer-server --reset --yes
 ```
+
+`ciu secrets reset` deletes only the declared secrets (the three account passwords). `fluxer-secrets.json` is
+kept and reused with the fresh data volume.
+
+## Remove a leftover account
+
+An instance created before this layout may still hold a former account such as `fx_carol`; the migration drops
+its password together with `accounts.json`. Sign in as `fx_admin` and disable or delete that account in the
+admin panel (`/admin`).
 
 ## Rotating infrastructure secrets
 
