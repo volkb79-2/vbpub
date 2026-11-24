@@ -204,6 +204,7 @@ SPEC §9.
 | RG-311 | `lanes --check` test and wording follow-ups: real-repository test pins every finding to `budget-margin`, plus five nits | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-312 | R-59 does not cover enclosing `kind = "command"` lanes or consumer timeouts; P-core-RG307 r1 follow-ups | Minor | OPEN 2026-11-24 (P-core-RG307 review r1; the two known enclosing budgets were fixed forward) |
 | RG-313 | `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record` asserts "no direct child left" immediately after the client exits, racing the fake `docker logs -f` shell's 0.2 s `sleep` window | Minor | OPEN 2026-11-24 (rg307b gate-full on v1001, assay-r1 R0; passed in the selftest lane on the same sha) |
+| RG-314 | `lanes --check` does not warn when a lane's env value contains `{worktree}` AND the same variable is in the Assay lane's `env_passthrough`: Assay folds passthrough values into `judge_sha256`, so every remote-gate throwaway checkout rejects a seeded resume | Minor | OPEN 2026-11-24 (rollback `rgw-r2-20261124T162538-r1002`, `rejected_total=14`, Assay B577) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9873,3 +9874,14 @@ Source: vbpub-core, P-core-RG307 Opus review r1 (`~/core-runs/rg307b-review-r1.m
 - **Close when.** The test passes under a loaded host without a fixed delay, and a hand mutation that makes the shim ignore TERM still fails it.
 
 Source: vbpub-core, rg307b gate-full failure 2026-11-24 (`~/controller/remote-gates/rgw-gate-full-20261124T144400-v1001/`), main's ruling "file RG-313 now" (load-independent testing rule).
+
+## RG-314 — a `{worktree}` env value that is also passed through to Assay breaks every seeded resume
+
+**Status:** OPEN 2026-11-24 (reported by vbpub-rollback from the R2 run `rgw-r2-20261124T162538-r1002`: `rejected_total=14`, Assay B577). Severity: Minor, a lane-authoring trap with a lint gap (no product defect).
+
+- **Mechanism.** Assay folds the values of the variables named in a lane's `env_passthrough` into `judge_sha256` (B142). A remote gate checks the sha out into a throwaway directory, so a lane env value that embeds `{worktree}` renders to a different path on every run. The same variable listed in the Assay lane's `env_passthrough` therefore changes the judge hash on every run, and a seeded (carried-over) resume is rejected as a judge mismatch for every mutant (14 rejected in the run above).
+- **Where it was found.** `scripts/debian-install-v2/run-gate.toml:78` exports `PYTHONPATH={worktree}/assay/src:...`, and `scripts/debian-install-v2/assay.toml:35` has `env_passthrough = ["PATH", "PYTHONPATH"]`. Many `run-gate.toml` files put `{worktree}` into `PYTHONPATH` (a rough grep finds more than a dozen); the only other `assay.toml` that passes `PYTHONPATH` through is the `ciu/docs/v8-dstdns-demo` example, which is not a gated lane. The pairing is therefore currently live only in debian-install-v2. The pairing is easy to create by accident and nothing reports it.
+- **Wanted.** `run-gate lanes --check` warns (not fails) for a lane whose env or argv sets a variable to a value containing `{worktree}` when the Assay config the lane runs lists that variable in `env_passthrough`, and names both files and the remedy: keep the path out of the passed-through variable (set it inside the lane command only, or use a worktree-relative value), or drop the variable from `env_passthrough` if the judge does not need it. A test pins the warning with a lane that has both, and a lane with only one of the two stays silent.
+- **Close when.** `lanes --check` warns for the debian-install-v2 pairing before it is fixed, and a seeded resume across two throwaway checkouts is accepted once the pairing is removed.
+
+Source: vbpub-core, filed on vbpub-rollback's report 2026-11-24.

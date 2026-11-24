@@ -104,10 +104,11 @@ class PlanTests(TmpCase):
         without = cap.dedicated_memory(env, mem_total=8 * GIB, swap_total=16 * GIB)
         with_cache = cap.dedicated_memory({**env, "DEV_CACHE_MEMORY_LOW": "1G"}, mem_total=8 * GIB, swap_total=16 * GIB)
         self.assertEqual(with_cache.low - without.low, GIB)  # dev.slice MemoryLow covers the cache (recursive protection)
-        # P-plat-19e: no tier MemoryHigh; the load tiers' MemoryMax leaves room for the cache Low, as does the swap ceiling
+        # P-plat-19e: no tier MemoryHigh; P-plat-19h: the load tiers' MemoryMax is dev's own (the cache Low no longer
+        # lowers it); the swap ceiling still leaves room for the cache Low
         self.assertIsNone(with_cache.gates_high)
-        self.assertEqual(without.gates_max - with_cache.gates_max, GIB)
-        self.assertEqual(without.background_max - with_cache.background_max, GIB)
+        self.assertEqual((with_cache.gates_max, with_cache.background_max), (without.gates_max, without.background_max))
+        self.assertEqual(with_cache.gates_max, with_cache.maximum)
         self.assertEqual(cap.load_tier_swap(16 * GIB, 768 * 1024 ** 2) - cap.load_tier_swap(16 * GIB, 768 * 1024 ** 2 + GIB), GIB)
         # `-` and empty mean none
         for none in ("", "-"):
