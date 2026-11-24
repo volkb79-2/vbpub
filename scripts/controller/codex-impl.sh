@@ -119,6 +119,13 @@ codex_finish() {
   controller_run_release
 }
 trap codex_finish EXIT
+# A bare EXIT trap is not enough when the wrapper is signalled: Bash's default
+# signal action can terminate it before the bookkeeping runs. Convert the
+# interrupt signals into an explicit exit status so `codex_finish` always sees
+# the final stream and writes this invocation's marker.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [[ $mode == new ]]; then
   existing=()
   for extension in 'done' 'jsonl' 'err'; do

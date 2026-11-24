@@ -89,6 +89,8 @@ expect_killed codex-resume-stale-last-text \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-stale-last-text.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-finish-stale-last-text \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-finish-stale-last-text.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-signal-exit-trap \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-term-trap.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-effort-vocabulary \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-effort-vocabulary.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-run-name-child-close \

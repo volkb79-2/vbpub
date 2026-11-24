@@ -217,6 +217,8 @@ mutant("scripts/controller/codex-impl.sh", "codex-finish-stale-last-text.sh",
        '    if [[ ! -e $out/$name.done ]]; then',
        '  if (( codex_launched == 1 )); then\n'
        '    if [[ ! -e $out/$name.done ]]; then')
+mutant("scripts/controller/codex-impl.sh", "codex-term-trap.sh",
+       "trap 'exit 143' TERM", ': # TERM does not run codex_finish')
 mutant("scripts/controller/codex-impl.sh", "codex-effort-vocabulary.sh",
        'case $effort in\n  minimal|low|medium|high|xhigh|max) ;;\n  *)\n    echo \'CODEX_EFFORT must be one of minimal, low, medium, high, xhigh, max\' >&2\n    exit 2\n    ;;\nesac',
        ': # CODEX_EFFORT vocabulary is not validated')
