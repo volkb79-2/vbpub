@@ -1762,6 +1762,15 @@ execution and can only add work, never hide a survivor. Shards apply the lookup
 to their own jobs and the strict merge preserves the provenance.
 See [the consumer contract](CONSUMERS.md#carry-forward-earlier-judge-results-b561wp3a).
 
+### Mutation state store boundary (B566)
+
+`mutation.py` owns site discovery and native execution; `mutation_store.py`
+owns persisted records, generations, validation, effective-judge/provenance,
+merge/shard/carry combinators, and terminal bucket classification. The import
+direction is one way; the store's `mutation` references are annotation-only.
+`RecordContext` groups cold-witness, equivalence, baseline, and kill-signal facts
+shared by record calls, while run-specific parameters stay explicit.
+
 ### Serial tail retries for native R2 (B179)
 
 After the first sweep, Assay retries once, serially, each candidate executed in
