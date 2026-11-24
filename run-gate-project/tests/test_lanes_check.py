@@ -380,7 +380,16 @@ def test_current_project_and_single_config_refusals(tmp_path, monkeypatch, capsy
     assert code == 2 and "no run-gate.toml found" in err
 
 
-def test_real_repository_all_has_only_budget_margin_warnings(tmp_path, monkeypatch, capsys):
+def test_real_repository_all_has_no_findings(tmp_path, monkeypatch, capsys):
+    """RG-307 oracle (c): the tracked estate is CLEAN, not merely warn-free.
+
+    This used to assert "only budget-margin warnings", which codified the
+    RG-307 drift: every wrapper whose outer budget equalled its Assay lane's
+    inner budget was accepted as a permanent yellow. R-59 makes that a defect,
+    so the estate must report zero findings and `--strict` must exit 0 -- a new
+    zero-margin wrapper breaks THIS test on the commit that introduces it.
+    (RG-311's point is honoured by not pinning a rule name: any finding, of
+    any rule, fails here.)"""
     probe = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--show-toplevel"],
                            capture_output=True, text=True)
     if probe.returncode:
@@ -392,14 +401,12 @@ def test_real_repository_all_has_only_budget_margin_warnings(tmp_path, monkeypat
     assert code == 0, err
     findings = [finding for project in json.loads(out)["projects"]
                 for finding in project["findings"]]
-    assert all(item["level"] == "warn" and item["rule"] == "budget-margin"
-               for item in findings)
+    assert findings == [], findings
 
     strict_code, out, err = _run(
         monkeypatch, capsys, REPO_ROOT,
         "lanes", "--check", "--all", "--strict", "--json")
-    assert strict_code == (1 if findings else 0), err
+    assert strict_code == 0, err
     strict = [finding for project in json.loads(out)["projects"]
               for finding in project["findings"]]
-    assert all(item["level"] == "fail" and item["rule"] == "budget-margin"
-               for item in strict)
+    assert strict == [], strict

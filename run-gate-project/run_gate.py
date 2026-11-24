@@ -17,7 +17,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 73  # rev 73: RG-296 offline lanes --check rules and budget-margin tiers
+__revision__ = 74  # rev 74: RG-307/RG-308a -- R-59-consistent wrapper-budget warning
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -16788,8 +16788,15 @@ class LogStreamWatch:
 
 def assay_lane_budget_lines(lane: dict) -> list[str]:
     """RG-155: the Assay lane's own `budget` ends each attempt with
-    BUDGET_EXCEEDED/LANE_TIMEOUT. When the judge inventory shows one that is
-    tighter than the Run-Gate wrapper budget, name both and their sources."""
+    BUDGET_EXCEEDED/LANE_TIMEOUT. The Run-Gate wrapper budget is the HARD
+    outer limit, so it must leave the judge room to close its verdict: R-59
+    and `lanes --check` require `outer >= inner + LANES_CHECK_BUDGET_MARGIN_SECONDS`
+    (container start and the editable Assay install consume that window).
+    RG-308(a): this used to warn whenever the inner budget was merely BELOW
+    the outer one, which is the state R-59 requires -- so every fixed lane
+    warned on every run. The warning now names the real defect (a wrapper
+    too tight for this lane) in both of its strengths, and stays silent from
+    the margin up."""
     inventory = lane.get("_assay_inventory")
     entry = inventory.get("entry") if isinstance(inventory, dict) else None
     assay_budget = entry.get("budget") if isinstance(entry, dict) else None
@@ -16806,11 +16813,29 @@ def assay_lane_budget_lines(lane: dict) -> list[str]:
              f"LANE_TIMEOUT; resume continues)"
              + (f"; run-gate wrapper budget {wrapper} is only the outer limit"
                 if wrapper else "")]
-    if wrapper_s is not None and assay_s < wrapper_s:
-        lines.append(f"run-gate: WARNING: assay.toml lane budget {assay_budget} "
-                     f"is below the run-gate budget {wrapper}; a long lane "
-                     f"needs several resumed attempts, each paying baseline "
-                     f"and snapshot again")
+    margin_s = LANES_CHECK_BUDGET_MARGIN_SECONDS
+    if wrapper_s is not None and wrapper_s < assay_s + margin_s:
+        # ROUNDED UP: a floor would name a value that still misses the
+        # requirement -- inner "100s" + 300s = 400s, whose floor 6m (360s) is
+        # 40s SHORT, i.e. a remedy that does not fix the defect it is printed
+        # for. Seconds are spelled in Run-Gate's grammar too, so this is
+        # reachable, not hypothetical.
+        needed_s = assay_s + margin_s
+        needed = f"{-(needed_s // -60)}m"
+        if wrapper_s < assay_s:
+            lines.append(
+                f"run-gate: WARNING: run-gate wrapper budget {wrapper} is "
+                f"BELOW the assay.toml lane budget {assay_budget}; the "
+                f"container is killed before Assay can close its verdict "
+                f"(no verdict is recorded) — raise the outer budget to "
+                f"at least {needed} (assay lane budget + {margin_s // 60}m)")
+        else:
+            lines.append(
+                f"run-gate: WARNING: run-gate wrapper budget {wrapper} "
+                f"leaves only {wrapper_s - assay_s}s above the assay.toml "
+                f"lane budget {assay_budget}; R-59 requires {margin_s}s of "
+                f"margin ({assay_budget} + {margin_s // 60}m = {needed}) for "
+                f"container start and the editable Assay install")
     return lines
 
 
