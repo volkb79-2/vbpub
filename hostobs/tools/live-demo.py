@@ -176,8 +176,8 @@ def assess(transcript: str, expected_ticks: int) -> tuple[bool, str]:
     if unknown is not None:
         return False, f"unknown quality code {unknown!r}"
     for _, _, _, value, quality in all_rows:
-        if quality == "absent" and value is not None and numeric_value(value) == 0:
-            return False, "absent quality shows value 0"
+        if quality is not None and quality != "ok" and value != "<not-measured>":
+            return False, f"{quality} quality shows a value"
 
     cpu: dict[str, list[tuple[int, float]]] = {}
     for seq, entity, metric, value, quality in observe_rows:
@@ -207,31 +207,39 @@ def listener(directory: Path, name: str) -> tuple[socket.socket, Path]:
     return sock, path
 
 
-def spawn_probe(probe: Path, config: Path, observe: socket.socket, operator: socket.socket):
+def spawn_probe(
+    probe: Path,
+    config: Path,
+    observe: socket.socket,
+    operator: socket.socket,
+    stderr_path: Path,
+):
+    # observe is created before operator, so the fd duplicated to 3 is never operator's.
     command = 'exec 3<&"$2" && exec 4<&"$3" && LISTEN_PID=$$ exec "$0" --config "$1"'
     env = os.environ.copy()
     for name in ("LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"):
         env.pop(name, None)
     env["LISTEN_FDS"] = "2"
     env["LISTEN_FDNAMES"] = "observe:operator"
-    child = subprocess.Popen(
-        [
-            "sh",
-            "-c",
-            command,
-            str(probe),
-            str(config),
-            str(observe.fileno()),
-            str(operator.fileno()),
-        ],
-        pass_fds=(observe.fileno(), operator.fileno()),
-        close_fds=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
+    with stderr_path.open("w", encoding="utf-8") as stderr:
+        child = subprocess.Popen(
+            [
+                "sh",
+                "-c",
+                command,
+                str(probe),
+                str(config),
+                str(observe.fileno()),
+                str(operator.fileno()),
+            ],
+            pass_fds=(observe.fileno(), operator.fileno()),
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr,
+            text=True,
+            env=env,
+        )
     return child
 
 
@@ -265,16 +273,15 @@ def run_watch(watch: Path, path: Path, level: str, ticks: int, timeout_s: int) -
     return stdout, stderr, child.returncode
 
 
-def stop_probe(child: subprocess.Popen[str]) -> tuple[int | None, str]:
+def stop_probe(child: subprocess.Popen[str]) -> int | None:
     if child.poll() is None:
         child.send_signal(signal.SIGTERM)
     try:
-        _, stderr = child.communicate(timeout=PROBE_STOP_S)
+        child.wait(timeout=PROBE_STOP_S)
     except subprocess.TimeoutExpired:
         child.kill()
-        _, stderr = child.communicate()
-        stderr += f"\nprobe did not stop after {PROBE_STOP_S}s\n"
-    return child.returncode, stderr
+        child.wait()
+    return child.returncode
 
 
 def append_watch(lines: list[str], marker: str, output: tuple[str, str, int]) -> None:
@@ -305,9 +312,10 @@ def main(argv: list[str]) -> int:
         )
         observe, observe_path = listener(directory, "observe")
         operator, operator_path = listener(directory, "operator")
+        probe_stderr = directory / "probe.stderr"
         child = None
         try:
-            child = spawn_probe(parsed.probe, config, observe, operator)
+            child = spawn_probe(parsed.probe, config, observe, operator, probe_stderr)
             transcript.extend(
                 [
                     "=== probe argv ===",
@@ -342,8 +350,12 @@ def main(argv: list[str]) -> int:
             observe.close()
             operator.close()
             if child is not None:
-                status, stderr = stop_probe(child)
-                transcript.extend(["=== probe stderr ===", stderr.rstrip("\n")])
+                status = stop_probe(child)
+                try:
+                    stderr = probe_stderr.read_text(encoding="utf-8").rstrip("\n")
+                except OSError as error:
+                    stderr = f"<cannot read probe stderr: {error}>"
+                transcript.extend(["=== probe stderr ===", stderr])
                 label = "SIGTERM" if status == -signal.SIGTERM else "exit"
                 transcript.extend(["=== probe exit ===", f"probe exit: {status} ({label})"])
 

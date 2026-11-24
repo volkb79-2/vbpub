@@ -12,6 +12,7 @@ DEPLOY = HOSTOBS / "deploy"
 SYSTEMD = DEPLOY / "systemd"
 CONFIG = DEPLOY / "hostobsd.toml"
 SERVICE = SYSTEMD / "hostobs-probe.service"
+TMPFILES = DEPLOY / "tmpfiles.d" / "hostobs.conf"
 
 HARDENING = {
     "NoNewPrivileges": "yes",
@@ -53,14 +54,24 @@ def unit(path: Path) -> dict[str, dict[str, list[str]]]:
     return sections
 
 
+def tmpfiles_directories(path: Path) -> list[tuple[str, str, str, str, str]]:
+    directories = []
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) != 6 or fields[0] != "d":
+            raise AssertionError(f"{path}:{number}: expected a six-field d line")
+        _, directory, mode, owner, group, age = fields
+        directories.append((directory, mode, owner, group, age))
+    return directories
+
+
 class DeployUnits(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.service = unit(SERVICE)
-        cls.sockets = {
-            level: unit(SYSTEMD / f"hostobs-{level}.socket")
-            for level in ("observe", "operator")
-        }
         with CONFIG.open("rb") as handle:
             cls.config = tomllib.load(handle)
 
@@ -72,10 +83,16 @@ class DeployUnits(unittest.TestCase):
     def test_service_activation_restart_and_hardening(self):
         service = self.service
         self.assertEqual(
-            self.one(service, "Service", "ExecStart", SERVICE).split()[1:],
-            ["--config", "/etc/hostobs/hostobsd.toml"],
+            self.one(service, "Service", "ExecStart", SERVICE),
+            "/usr/local/bin/hostobs-probe --config /etc/hostobs/hostobsd.toml",
             f"{SERVICE}: [Service] ExecStart",
         )
+        for key in ("User", "Group"):
+            self.assertEqual(
+                self.one(service, "Service", key, SERVICE),
+                "hostobs",
+                f"{SERVICE}: [Service] {key}",
+            )
         self.assertEqual(
             self.one(service, "Service", "Restart", SERVICE),
             "on-failure",
@@ -92,9 +109,17 @@ class DeployUnits(unittest.TestCase):
                 value,
                 f"{SERVICE}: [Service] {key}",
             )
-        for key in ("ProtectProc", "ProcSubset"):
+        forbidden = {
+            "ProtectProc": "the probe needs host-wide /proc",
+            "ProcSubset": "the probe needs host-wide /proc",
+            "PrivatePIDs": "HOB-90 requires one PID namespace",
+            "PrivateUsers": "CAP_DAC_READ_SEARCH must retain host ownership checks",
+        }
+        for key, reason in forbidden.items():
             self.assertNotIn(
-                key, service.get("Service", {}), f"{SERVICE}: [Service] must not set {key}"
+                key,
+                service.get("Service", {}),
+                f"{SERVICE}: [Service] must not set {key}: {reason}",
             )
 
     def test_every_configured_level_has_one_exact_socket(self):
@@ -107,50 +132,53 @@ class DeployUnits(unittest.TestCase):
         )
         for level in levels:
             path = SYSTEMD / f"hostobs-{level}.socket"
-            sock = self.sockets[level]
-            self.assertEqual(
-                self.one(sock, "Socket", "FileDescriptorName", path),
-                level,
-                f"{path}: [Socket] FileDescriptorName",
+            self.assertTrue(
+                path.is_file(), f"{path}: missing socket unit for configured level {level}"
             )
-            self.assertEqual(
-                self.one(sock, "Socket", "Accept", path), "no", f"{path}: [Socket] Accept"
+            sock = unit(path)
+            expected = [
+                ("Unit", "After", "systemd-tmpfiles-setup.service"),
+                ("Socket", "FileDescriptorName", level),
+                ("Socket", "Accept", "no"),
+                ("Socket", "ListenStream", f"/run/hostobs/{level}/hostobs.sock"),
+                ("Socket", "SocketGroup", f"hostobs-{level}"),
+                ("Socket", "SocketUser", "root"),
+                ("Socket", "SocketMode", "0660"),
+                ("Socket", "DirectoryMode", "0750"),
+                ("Socket", "Service", "hostobs-probe.service"),
+                ("Install", "WantedBy", "sockets.target"),
+            ]
+            for section, key, value in expected:
+                self.assertEqual(
+                    self.one(sock, section, key, path),
+                    value,
+                    f"{path}: [{section}] {key}",
+                )
+
+    def test_tmpfiles_creates_the_socket_directories(self):
+        levels = self.config["probe"]["levels"]
+        expected = [("/run/hostobs", "0755", "root", "root", "-")]
+        expected.extend(
+            (f"/run/hostobs/{level}", "0750", "root", f"hostobs-{level}", "-")
+            for level in levels
+        )
+        parsed = tmpfiles_directories(TMPFILES)
+        for entry in expected:
+            self.assertIn(
+                entry,
+                parsed,
+                f"{TMPFILES}: {entry[0]} must be {entry[2]}:{entry[3]} {entry[1]}",
             )
-            self.assertEqual(
-                self.one(sock, "Socket", "ListenStream", path),
-                f"/run/hostobs/{level}/hostobs.sock",
-                f"{path}: ListenStream",
-            )
-            self.assertEqual(
-                self.one(sock, "Socket", "SocketGroup", path),
-                f"hostobs-{level}",
-                f"{path}: SocketGroup",
-            )
-            self.assertEqual(
-                self.one(sock, "Socket", "SocketUser", path),
-                "root",
-                f"{path}: [Socket] SocketUser",
-            )
-            self.assertEqual(
-                self.one(sock, "Socket", "SocketMode", path),
-                "0660",
-                f"{path}: [Socket] SocketMode",
-            )
-            self.assertEqual(
-                self.one(sock, "Socket", "DirectoryMode", path),
-                "0750",
-                f"{path}: [Socket] DirectoryMode",
-            )
-            self.assertEqual(
-                self.one(sock, "Socket", "Service", path),
-                "hostobs-probe.service",
-                f"{path}: Service",
-            )
-            self.assertEqual(
-                self.one(sock, "Install", "WantedBy", path),
-                "sockets.target",
-                f"{path}: [Install] WantedBy",
-            )
+        self.assertEqual(
+            len(parsed),
+            len(expected),
+            f"{TMPFILES}: exactly one d line per parent and configured level",
+        )
+        self.assertEqual(
+            len(parsed),
+            len(set(parsed)),
+            f"{TMPFILES}: duplicate directory line",
+        )
 
     def test_config_has_exactly_the_probe_process_keys(self):
         self.assertEqual(

@@ -173,6 +173,8 @@ fn status_tick_seq(result_json: &str) -> Option<u64> {
     digits.get(..end)?.parse().ok()
 }
 
+/// Poll for the first published tick while seq-0 `current` is reported as `internal`
+/// (P-11(a) r1 backlog candidate; remove after the server has a typed seq-0 reply).
 fn wait_for_tick(client: &mut Client) -> Result<(), RunError> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -196,6 +198,14 @@ fn name_at(names: &[String], index: u32) -> String {
 
 fn row_line(seq: u64, entity: &str, metric: &str, value: &str, quality: &str) -> String {
     format!("tick\tseq={seq}\tentity={entity}\tmetric={metric}\tvalue={value}\tquality={quality}")
+}
+
+fn shown_value(measured: bool, value: &dyn fmt::Debug) -> String {
+    if measured {
+        format!("{value:?}")
+    } else {
+        String::from("<not-measured>")
+    }
 }
 
 fn update_names(block: &Block, names: &mut Vec<String>) -> Result<(), RunError> {
@@ -233,11 +243,7 @@ fn tick_lines(seq: u64, block: &Block, names: &[String]) -> Result<Vec<String>, 
             let sample = column
                 .sample(row_index)
                 .map_err(|error| RunError::Client(ClientError::Wire(error)))?;
-            let value = if sample.quality.is_measurement() {
-                format!("{:?}", sample.value)
-            } else {
-                String::from("<not-measured>")
-            };
+            let value = shown_value(sample.quality.is_measurement(), &sample.value);
             lines.push(row_line(
                 seq,
                 &entity,
@@ -320,12 +326,18 @@ fn run<W: Write>(args: &[String], writer: &mut W) -> Result<(), RunError> {
     )?;
     let hello = client.hello().clone();
     let interval_ms = config.interval_ms.unwrap_or(hello.limits.tick_ms);
-    validate_interval(
+    match validate_interval(
         interval_ms,
         hello.limits.tick_ms,
         hello.limits.min_interval_ms,
-    )
-    .map_err(RunError::Usage)?;
+    ) {
+        Ok(()) => {}
+        Err(message) if config.interval_ms.is_some() => return Err(RunError::Usage(message)),
+        // A hello with tick_ms 0 is a malformed server fact, not caller usage.
+        Err(_) => {
+            return Err(ClientError::Protocol(ProtocolKind::BadReply).into());
+        }
+    }
     emit_to(
         writer,
         &[format!(
@@ -362,8 +374,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        current_args, parse_args, row_line, status_tick_seq, validate_interval, WatchConfig,
-        DEFAULT_SELECTION,
+        current_args, parse_args, row_line, shown_value, status_tick_seq, validate_interval,
+        WatchConfig, DEFAULT_SELECTION,
     };
     use hostobs_client::Level;
     use std::path::PathBuf;
@@ -462,6 +474,12 @@ mod tests {
             row_line(7, "/work", "cpu.usage_usec", "U64(42)", "ok"),
             "tick\tseq=7\tentity=/work\tmetric=cpu.usage_usec\tvalue=U64(42)\tquality=ok"
         );
+    }
+
+    #[test]
+    fn a_non_measurement_never_renders_its_value() {
+        assert_eq!(shown_value(false, &0u64), "<not-measured>");
+        assert_eq!(shown_value(true, &42u64), "42");
     }
 
     #[test]

@@ -64,7 +64,7 @@ PASS requires all of the following:
 - at least one `cpu.usage_usec` value that increased from that entity's first
   to last observe tick;
 - every printed quality code is one of WIRE's eight codes;
-- a non-`ok` quality never renders its placeholder zero as a value;
+- every non-`ok` quality renders `<not-measured>`, never a numeric value or zero;
 - the probe exits by `SIGTERM`, not status 0/1/2 and not a panic.
 
 The transcript states `PASS` or `FAIL <reason>`; the launcher exits 0 only on
@@ -81,14 +81,22 @@ are never folded into numeric zero.
 
 ## Part (b): Debian VM/systemd outline
 
-Install `/usr/local/bin/hostobs-probe`, `/etc/hostobs/hostobsd.toml` and the
-three units from [`deploy/systemd/`](../deploy/systemd/). The socket units use
-the paths and modes from plan v4 §A.2:
+Install `/usr/local/bin/hostobs-probe`, `/etc/hostobs/hostobsd.toml`, the three
+units from [`deploy/systemd/`](../deploy/systemd/), and
+[`deploy/tmpfiles.d/hostobs.conf`](../deploy/tmpfiles.d/hostobs.conf) as
+`/etc/tmpfiles.d/hostobs.conf`. The socket paths and modes from plan v4 §A.2 are:
 
+- `/run/hostobs`, directory `root:root 0755`;
 - `/run/hostobs/observe/hostobs.sock`, directory `root:hostobs-observe 0750`,
   socket `root:hostobs-observe 0660`;
 - `/run/hostobs/operator/hostobs.sock`, directory `root:hostobs-operator 0750`,
   socket `root:hostobs-operator 0660`.
+
+The directory ownership comes from the tmpfiles file, not systemd's
+`DirectoryMode=`: when the socket unit creates a missing parent itself, systemd
+uses `root:root` and ignores the `SocketGroup=` for that directory. Both socket
+units order after `systemd-tmpfiles-setup.service` so boot-time creation happens
+first.
 
 Create the service user and access groups as part (b)'s setup, not in a
 committed sysusers file:
@@ -105,9 +113,11 @@ Add only the intended human or service identities to `hostobs-observe` or
 runs as `hostobs` and never binds the sockets itself: systemd passes the two
 root-owned listening fds by their `FileDescriptorName`.
 
-Reload and enable the socket units:
+After the users and groups exist, create the directories and enable the socket
+units:
 
 ```sh
+systemd-tmpfiles --create /etc/tmpfiles.d/hostobs.conf
 systemctl daemon-reload
 systemctl enable --now hostobs-observe.socket hostobs-operator.socket
 ```

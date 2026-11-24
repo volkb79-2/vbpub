@@ -27,7 +27,13 @@ DEMO = load_demo()
 
 
 def transcript(
-    ticks: str, *, operator: str = "", status: int = -15, probe_stderr: str = ""
+    ticks: str,
+    *,
+    operator: str = "",
+    status: int = -15,
+    probe_stderr: str = "",
+    observe_status: int = 0,
+    operator_status: int = 0,
 ) -> str:
     kind = "SIGTERM" if status == -15 else "exit"
     return "\n".join(
@@ -36,10 +42,10 @@ def transcript(
             "hello\tlevel=observe\ttick_ms=1000\tmin_interval_ms=1000\tmax_rows=1024"
             "\tmax_block_bytes=1048576\tinterval_ms=1000",
             ticks,
-            "watch exit: 0",
+            f"watch exit: {observe_status}",
             DEMO.WATCH_OPERATOR,
             operator,
-            "watch exit: 0",
+            f"watch exit: {operator_status}",
             "=== probe stderr ===",
             probe_stderr,
             "=== probe exit ===",
@@ -81,11 +87,15 @@ class Verdict(unittest.TestCase):
         self.assertFalse(passed)
         self.assertIn("unknown quality code", reason)
 
-    def test_absent_is_never_rendered_as_zero(self):
-        bad = cpu(2, 200).replace("value=U64(200)\tquality=ok", "value=U64(0)\tquality=absent")
-        passed, reason = DEMO.assess(transcript(f"{cpu(1, 100)}\n{bad}"), 2)
-        self.assertFalse(passed)
-        self.assertIn("absent quality shows value 0", reason)
+    def test_every_non_ok_quality_must_show_not_measured(self):
+        for quality in sorted(DEMO.QUALITY_CODES - {"ok"}):
+            with self.subTest(quality=quality):
+                bad = cpu(2, 200).replace(
+                    "value=U64(200)\tquality=ok", f"value=U64(0)\tquality={quality}"
+                )
+                passed, reason = DEMO.assess(transcript(f"{cpu(1, 100)}\n{bad}"), 2)
+                self.assertFalse(passed)
+                self.assertIn(f"{quality} quality shows a value", reason)
 
     def test_probe_must_exit_by_sigterm(self):
         for status in (0, 1, 2):
@@ -106,6 +116,22 @@ class Verdict(unittest.TestCase):
         )
         self.assertFalse(passed)
         self.assertEqual(reason, "probe panicked")
+
+    def test_each_watch_nonzero_exit_and_a_missing_quality_fail(self):
+        for kwargs, reason in (
+            ({"observe_status": 1}, "watch observe did not exit 0"),
+            ({"operator_status": 1}, "watch operator did not exit 0"),
+        ):
+            with self.subTest(reason=reason):
+                passed, found = DEMO.assess(
+                    transcript(f"{cpu(1, 100)}\n{cpu(2, 200)}", **kwargs), 2
+                )
+                self.assertFalse(passed)
+                self.assertEqual(found, reason)
+        bad = cpu(2, 200).replace("\tquality=ok", "")
+        passed, reason = DEMO.assess(transcript(f"{cpu(1, 100)}\n{bad}"), 2)
+        self.assertFalse(passed)
+        self.assertEqual(reason, "row is missing its value or quality")
 
 
 @unittest.skipUnless(
