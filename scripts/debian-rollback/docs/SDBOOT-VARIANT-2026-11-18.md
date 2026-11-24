@@ -359,7 +359,7 @@ Exact counts, hashes and log locations of these historical runs are in git at
 release candidate.
 
 The offline lane runs the pre-existing suites: `test-dr-state-window.sh`, `test-dr-state-prune.sh`,
-`iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, and `poc/test-dr-pick-disk.sh`.
+`iso/test-dr-plan.sh`, `iso/test-dr-autoinstall-guard.sh`, `poc/test-dr-pick-disk.sh`, and `poc/test-dr-qemu.sh`.
 The `offline` lane runs those suites with the systemd-boot coverage in `tester-unified`, after `shellcheck`, `bash -n`,
 and `git diff --check`.
 
@@ -381,8 +381,7 @@ The seed's `/bootloader` file contains `systemd-boot`; the builder guest reads i
 `grub`, exactly matching the installer's default. The systemd-boot guest runs only the systemd-boot seed, not the
 GRUB seed.
 
-Start each scenario against the running guest's serial socket, using the same state directory as
-`vm-lab start --plain-host`
+Start each scenario against the running guest's serial socket, using the same state directory as `dr-qemu.sh`
 (`serial.sock` and `qmp.sock` live there):
 
 ```sh

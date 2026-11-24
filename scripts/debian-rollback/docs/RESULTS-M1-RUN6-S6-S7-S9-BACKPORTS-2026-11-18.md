@@ -5,8 +5,7 @@ real defect, which is fixed in the tool but has not yet been re-run.**
 
 Same variant (btrfs, own snapshots, ESP GRUB menu; snapper not used) and guest setup as
 [run 2](RESULTS-M1-RUN2-2026-11-18.md) to [run 4](RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md):
-v1001, historical direct launcher now represented by `vm-lab start --plain-host`; vm-lab
-was not used at the time, TCG, 2 vCPUs, 2 GiB, each scenario in its own fresh
+v1001, `poc/dr-qemu.sh`, vm-lab not used, TCG, 2 vCPUs, 2 GiB, each scenario in its own fresh
 guest on the disk installed in run 2a (kernel 6.12.107, no updates or security suites, `dr-state`
 without the dedupe window). The scenarios `s6`, `s7`, `s9` and `backports` of `poc/dr-serial.py`
 (commit `9c7270623`) ran **before any review**; the series ran 13:20:07Z to 13:50:51Z on the host

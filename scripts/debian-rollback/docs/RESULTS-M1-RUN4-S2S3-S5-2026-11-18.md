@@ -7,8 +7,7 @@ chosen in the GRUB menu with keys over the serial line, and that making it the d
 gets the system booting again (the broken state is left as it is, with its menu entry).
 
 Same variant (btrfs, own snapshots, ESP GRUB menu; snapper not used), same guest setup
-and limits as run 2 (v1001, historical direct launcher now represented by
-`vm-lab start --plain-host`; vm-lab was not used at the time, TCG, 2 vCPUs, 2 GiB),
+and limits as run 2 (v1001, `poc/dr-qemu.sh`, vm-lab not used, TCG, 2 vCPUs, 2 GiB),
 a fresh guest per scenario on the disk installed in run 2a, driver `poc/dr-serial.py` at
 `d694a0ba2` (the s2-s3 part is the independently reviewed `2068bf9d2`; the `s5` scenario
 and the QMP helper were added after that review). Transcripts: `artifacts/debian-rollback/

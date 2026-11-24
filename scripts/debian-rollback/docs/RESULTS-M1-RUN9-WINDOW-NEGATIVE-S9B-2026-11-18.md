@@ -3,10 +3,8 @@
 Result: **both pass: an apt run in a rolled-back state still takes its own snapshot (parent = that state), and when
 the snapshot step fails the Pre-Invoke hook stops apt before dpkg changes anything.** S9b is a *simulated* failure.
 
-Same variant and guest setup as [run 8](RESULTS-M1-RUN8-S8-PRUNE-2026-11-18.md) (v1001,
-historical direct launcher now represented by `vm-lab start --plain-host`; vm-lab was not
-used at the time, TCG, fresh guest per scenario on `installed-btrfs-3.qcow2`,
-14:55:02Z to 14:59:01Z). Each scenario first installed
+Same variant and guest setup as [run 8](RESULTS-M1-RUN8-S8-PRUNE-2026-11-18.md) (v1001, `poc/dr-qemu.sh`, TCG,
+fresh guest per scenario on `installed-btrfs-3.qcow2`, 14:55:02Z to 14:59:01Z). Each scenario first installed
 the `dr-state` of commit `22bbc0e1f` from the seed medium (HEAD at that time: the `|| true` fail-open fix, prune
 exit code and `DR_STATE=none` refusal are in it, so those three changes have now been in a guest, though only
 the first is exercised by these scenarios). The two scenarios are new and have had no independent review yet.

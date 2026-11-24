@@ -4,10 +4,8 @@ Result: **the fresh install succeeds, S7 passes with exactly one snapshot per un
 (it was 18 in [run 6](RESULTS-M1-RUN6-S6-S7-S9-BACKPORTS-2026-11-18.md)), and S2/S3 and the kernel upgrade
 still pass on the new disk.**
 
-Same variant, guest setup and limits as the earlier runs (v1001, historical direct
-launcher now represented by `vm-lab start --plain-host`; vm-lab was not used at the time,
-TCG, 2 vCPUs, 2 GiB, a fresh guest per scenario). Transcripts:
-`artifacts/debian-rollback/m1-run7/` (local).
+Same variant, guest setup and limits as the earlier runs (v1001, `poc/dr-qemu.sh`, vm-lab not used, TCG,
+2 vCPUs, 2 GiB, a fresh guest per scenario). Transcripts: `artifacts/debian-rollback/m1-run7/` (local).
 
 ## Install (13:53:39Z to 14:17Z, `DR-BUILD-DONE rc=0`, 1397 s of guest time)
 

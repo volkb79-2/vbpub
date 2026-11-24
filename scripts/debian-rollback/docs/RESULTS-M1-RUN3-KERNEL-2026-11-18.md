@@ -7,8 +7,7 @@ kernel for the snapshot taken before the upgrade; both booted with their own ker
 and modules; a one-shot boot into the earlier state did not stick.
 
 Same snapper-free variant, same guest setup and limits as
-[run 2](RESULTS-M1-RUN2-2026-11-18.md) (v1001, historical direct launcher now
-represented by `vm-lab start --plain-host`; vm-lab was not used at the time,
+[run 2](RESULTS-M1-RUN2-2026-11-18.md) (v1001, `poc/dr-qemu.sh`, vm-lab not used,
 TCG, 2 vCPUs, 2 GiB). Scenario `kernel-upgrade` of `poc/dr-serial.py` at the head
 `2068bf9d2` (independently reviewed), run in a fresh guest (`drb3`, new overlay on
 the disk installed in run 2a, which has no updates or security suites; the scenario

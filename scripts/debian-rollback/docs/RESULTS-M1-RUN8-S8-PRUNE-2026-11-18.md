@@ -4,9 +4,7 @@ Result: **S8 passes: 30 snapshots, a 31-entry menu that boots, `dr-state prune` 
 never deletes a one-shot target, and the protected target still boots.**
 
 Same variant and guest setup as [run 7](RESULTS-M1-RUN7-FRESH-INSTALL-S7-2026-11-18.md) (v1001,
-historical direct launcher now represented by `vm-lab start --plain-host`; vm-lab was not used
-at the time, TCG, 2 vCPUs, 2 GiB, a fresh guest on `installed-btrfs-3.qcow2`,
-14:45:33Z to 14:49:04Z, 3.5 min).
+`poc/dr-qemu.sh`, TCG, 2 vCPUs, 2 GiB, a fresh guest on `installed-btrfs-3.qcow2`, 14:45:33Z to 14:49:04Z, 3.5 min).
 The `dr-state` on the disk had no `prune`; the scenario first installed the one from the seed medium (commit
 `1be8fae64`, checked by the presence of `cmd_prune`). The `prune` command and the scenario were written
 and run in the same session. Review round 7 (FIX-FIRST on a wrong check count, a swallowed delete failure) is
