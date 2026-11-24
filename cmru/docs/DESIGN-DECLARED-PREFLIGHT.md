@@ -290,11 +290,48 @@ edits, a template revision bump, scaffold examples.
      P-core-13 fixtures then do not name the first-release lane;
    - that neither the smaller `release_preconditions.py` nor the deleted survivor tests
      (`test_r2_survivors_s1.py:326-341`, `:354-385`, `:388-480`) need a `cmru/assay.toml` change;
-   - that reading `assay_lane` through `run-gate --list --json` (D17) is acceptable inside the
-     release gate.
+   - The question about reading `assay_lane` through `run-gate --list --json` moved to the run-gate
+     stream (T2); see fix-forward item F1.
 2. **The main controller:**
    - sequences P-core-13 after P-core-06 and after M0;
    - adds the test-policy estate lane to the gate set of any merge that touches root `docs/`,
      because "gate every project dir a merge touches" does not reach root docs;
    - runs the two real dry-runs.
 3. **The operator** confirms `python3 -I -B` over the plan's `python` (D9).
+
+## Fix-forward items for the implementation (design review round 2, 2026-11-24)
+
+The review found these after the decisions were accepted. The implementation applies them; none
+changes a decision.
+- F1 (D17). `run-gate --list --json` exists from run-gate 25.1.0 (`run-gate-list/1`, which
+  carries `assay_lane`). Raise `RUN_GATE_MIN_VERSION` in `run_release_gate.py:36` from 24.0.0 to
+  at least 25.1.0 in M1, or refuse naming that minimum.
+  - The list command is not a pure read: for assay environments, `assay_inventory` starts a
+    `tester-unified` probe that runs the editable assay install (`run_gate.py:9788`, `:10226`).
+  - Call the identity-bound run-gate with `_lane_environment()`, state the cost, and refuse on a
+    non-zero exit.
+- F2 (D4, sweep). Judge an export's age by the `mkdtemp` directory's own mtime or a stamp file,
+  never by the contents: `git archive` stamps entries with the commit time.
+  - A SIGTERM also orphans the preflight child (own process group, no timeout left). Record it
+    beside the export leak.
+- F3 (Multi-family). The refusal raised at `cli.py:7589-7599` is "origin/main changed after the
+  multi-family release preflight", and a single-family release reaches it too.
+  - Use one message for both cases.
+  - A dispatched child judges the handoff revision (`_consume_release_snapshot_handoff`), with no
+    fresh fetch.
+- F4 (D14/D15). Define `GatePreflightError` in `run_release_gate.py` itself, with
+  `args == (detail,)` and `remedy` as an attribute.
+  - The class must not be imported from cmru: an older engine's exec-from-blob would hit an
+    ImportError.
+  - `str(exc)` must stay the detail alone.
+- F5 (D10). Remove every `_RESERVED_CMRU_INTERNAL_ENV` name (for example
+  `CMRU_INTERNAL_RELEASE_PREFLIGHT_FD`, `config.py:1062`) except `CMRU_INTERNAL_PYTHON`, and
+  add `CMRU_PREFLIGHT_MODE`/`CMRU_PREFLIGHT_COMMIT` to that reserved set.
+- F6 (D16). The bootstrap check moves from release time to merge time (the test-policy estate
+  lane).
+  - Name the owner of `test_bootstrap_from_zero_sequence.py` after P-core-12.
+  - cmru's gate must not import `estate_test_policy` unless `tester-unified` ships it.
+- F7 (Tests). In `tests/test_r2_survivors_s1.py`, everything from `_fake_git` (:315) to the end
+  of the file (475 lines) goes. List the deletions by test name in the implementation, not by line.
+- F8 (Docs). `docs/DESIGN-GUIDE.md:1066-1067` hard-codes `campaign-cmru` and
+  `campaign-cmru-first-release`; update it with D17.
