@@ -224,7 +224,7 @@ def test_scratch_root_mode_owner_and_symlinked_base(tmp_path, monkeypatch):
     monkeypatch.setattr(run_gate.tempfile, "gettempdir", lambda: str(blocker))
     state = run_gate._ScratchRun(_run_id("2"))
     root, _physical = run_gate._scratch_root(repo, state)
-    assert root.parent == target / run_gate.SCRATCH_STORE_TMP
+    assert root.parent.resolve() == target / run_gate.SCRATCH_STORE_TMP
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
     assert (root / run_gate.SCRATCH_OWNER_NAME).is_file()
     orphan = _dir(target / run_gate.SCRATCH_STORE_TMP, _run_id('3'))
@@ -302,17 +302,29 @@ def test_prune_reports_removal_errors_and_continues(
     _age(victim)
     _age(survivor)
     victim.chmod(0o500)
+    real_rmtree = run_gate.shutil.rmtree
+
+    def deny_read_only_victim(path, *args, **kwargs):
+        # Some gate images run tests as root, where mode 0500 alone cannot
+        # deny unlink. Keep the real read-only fixture and inject its exact
+        # permission boundary so any uid exercises the error path.
+        if Path(path).name == victim.name:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_gate.shutil, "rmtree", deny_read_only_victim)
     try:
         assert _prune(project, temp_dir, monkeypatch,
                       "--older-than", "1h") == 1
         captured = capsys.readouterr()
         assert victim.is_dir() and not survivor.exists()
         assert "WARNING: cannot remove" in captured.err
-        assert "error 1" in captured.out
+        assert ("run-gate-<run-id>: removed 1, kept-live 0, "
+                "kept-young 0, error 1") in captured.out
     finally:
         if victim.exists():
             victim.chmod(0o700)
-            run_gate.shutil.rmtree(victim)
+            real_rmtree(victim)
 
 
 def test_prune_live_state_and_cleanup_edges(

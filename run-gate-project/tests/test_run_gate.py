@@ -37656,18 +37656,28 @@ class TestRgNarrowMounts:
                 raise run_gate.GateError("not host-visible")
             return Path("/phys") / str(path).lstrip("/")
         monkeypatch.setattr(run_gate, "physical_path", physical)
-        flags = run_gate.container_mount_flags(repo, wt, {})
-        overlay = [v for v in flags[1::2] if v.endswith("/config:ro")]
-        private = Path(overlay[0].split(":")[0].removeprefix("/phys")).parent
-        expected_root = repo / ".run-gate" if fallback else system_tmp
-        assert private.parent == expected_root
-        files = [p for p in private.rglob("*") if p.is_file()]
-        assert files, "the private dir should hold the sanitized copies"
-        needles = (*_FAKE_CREDENTIAL_NEEDLES, "FAKEPASSWORD123", "FAKEBASIC456")
-        for path in files:
-            body = path.read_bytes().decode("utf-8", "replace")
-            for needle in needles:
-                assert needle not in body, (path, needle)
+        run_gate._end_scratch_run()
+        state = run_gate._begin_scratch_run()
+        try:
+            flags = run_gate.container_mount_flags(repo, wt, {})
+            overlay = [v for v in flags[1::2] if v.endswith("/config:ro")]
+            private = Path(
+                overlay[0].split(":")[0].removeprefix("/phys")).parent
+            expected_parent = (repo / ".run-gate" / "tmp" if fallback
+                               else system_tmp)
+            assert private.parent.parent == expected_parent
+            files = [p for p in private.rglob("*") if p.is_file()]
+            assert files, "the private dir should hold the sanitized copies"
+            needles = (*_FAKE_CREDENTIAL_NEEDLES, "FAKEPASSWORD123",
+                       "FAKEBASIC456")
+            for path in files:
+                body = path.read_bytes().decode("utf-8", "replace")
+                for needle in needles:
+                    assert needle not in body, (path, needle)
+        finally:
+            run_gate._cleanup_scratch_run(state)
+            if run_gate._active_scratch_run() is state:
+                run_gate._end_scratch_run()
 
     def test_worktrees_dir_is_ro_with_real_contents_and_own_admin_rw(
             self, tmp_path, monkeypatch):
@@ -37970,10 +37980,12 @@ class TestRgNarrowEdges:
                 raise run_gate.GateError("not host-visible")
             return Path(path)
         monkeypatch.setattr(run_gate, "physical_path", physical)
+        run_gate._end_scratch_run()
         state = run_gate._begin_scratch_run()
         try:
             made, phys = run_gate._make_private_dir(repo)
-            assert made.parent == repo / ".run-gate" and phys == made
+            assert made.parent.parent == repo / ".run-gate" / "tmp"
+            assert phys == made
             assert made.stat().st_mode & 0o777 == 0o700
             assert list(system_tmp.iterdir()) == []  # unusable root was removed
         finally:
@@ -37987,6 +37999,7 @@ class TestRgNarrowEdges:
                             lambda: str(tmp_path / "missing-tmp"))
         blocker = tmp_path / "a-file"
         blocker.write_text("not a directory")
+        run_gate._end_scratch_run()
         state = run_gate._begin_scratch_run()
         try:
             with pytest.raises(run_gate.GateInfraError,
