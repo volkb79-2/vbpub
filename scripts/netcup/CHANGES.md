@@ -66,6 +66,11 @@ All notable changes to scripts/netcup are recorded here.
   real-flock ticket, the default-no-peak path, and the `MEM_REFUSED` verdict including its two negative cases).
 
 ### Changed
+- `runner/start-cockpit-runner.sh` starts the cockpit with the image's keepalive CMD (MDT-107) instead of a trailing
+  `sleep infinity`, which overrode it: under `--init --restart unless-stopped` a killed `sleep` made tini exit, the
+  runner restarted and every lane inside died (`P-plat-19f`). It reads `docker image inspect -f '{{json .Config.Cmd}}'`
+  before removing the old cockpit and matches the `while :; do sleep` loop text; an older image keeps `sleep infinity`
+  with one `WARN ... no keepalive CMD (MDT-107)` line on stderr, and an inspect failure exits 2 before `docker rm`/`run`.
 - The no-host-setup path's `MemoryMax=6G` instruction is superseded: the memory values come from
   `provision-gates-limits.sh`, and the unit fragment carries only what makes the slice a loaded installed slice for
   `cgroup-parent.sh` (`NC-59`).
