@@ -568,7 +568,8 @@ struct Entry {
 /// Live entries are keyed by incarnation id, with a compact reverse index from the kernel
 /// [`CgroupKey`] to the id. Retirement removes both records, so neither storage nor
 /// [`Self::end_round`] grows with ids that were minted and retired earlier. Point lookups
-/// are O(log live), [`Self::active`] is O(1), and `end_round` is O(live entries).
+/// are O(log live), [`Self::active`] is O(1), and `end_round` is
+/// O(live + retired · log live) per call, nothing proportional to ids ever minted.
 ///
 /// The registry is bounded by a configurable maximum, [`DEFAULT_ACTIVE_MAX`] by default
 /// (plan v4 §A.4's `dict_active_max`). At the bound, observing an already-live key still
@@ -581,6 +582,7 @@ pub struct IncarnationRegistry {
     /// The last round whose absence bookkeeping ran; 0 while round 0 is open.
     ended_round: u64,
     max_active: usize,
+    peak_active: usize,
     /// Live entries only, keyed by id so iteration and retirement order are stable.
     entries: BTreeMap<Incarnation, Entry>,
     by_key: HashMap<CgroupKey, Incarnation>,
@@ -610,6 +612,7 @@ impl IncarnationRegistry {
             round: 0,
             ended_round: 0,
             max_active,
+            peak_active: 0,
             entries: BTreeMap::new(),
             by_key: HashMap::new(),
             retired: 0,
@@ -650,6 +653,8 @@ impl IncarnationRegistry {
     /// [`IdentityError::LabelTooLong`], [`IdentityError::LabelControl`] or
     /// [`IdentityError::RegistryFull`] when a new key would exceed the live bound, or
     /// [`IdentityError::IncarnationSpaceExhausted`].
+    ///
+    /// A refused observation (any error) mints nothing and consumes no id.
     pub fn observe(
         &mut self,
         key: CgroupKey,
@@ -694,6 +699,7 @@ impl IncarnationRegistry {
         };
         self.entries.insert(id, entry);
         self.by_key.insert(key, id);
+        self.peak_active = self.peak_active.max(self.entries.len());
         Ok(id)
     }
 
@@ -705,7 +711,8 @@ impl IncarnationRegistry {
     ///
     /// The pass walks the live entries only (the `BTreeMap` is ordered by id, so the
     /// returned ids remain in mint order); retired entries are removed from both indexes.
-    /// It is O(live entries), never O(ids minted over the process lifetime).
+    /// It is O(live + retired · log live) per call, nothing proportional to ids ever
+    /// minted.
     pub fn end_round(&mut self) -> Vec<Incarnation> {
         if self.round_is_ended() {
             return Vec::new();
@@ -726,6 +733,14 @@ impl IncarnationRegistry {
         for (id, key) in &retired {
             self.entries.remove(id);
             self.by_key.remove(key);
+        }
+        // Removals leave hash-table tombstones. Rebuild after a retiring round with enough
+        // room for the peak live set observed so far, so churn cannot grow the reverse
+        // index beyond the configured live bound.
+        if !retired.is_empty() {
+            let mut compact = HashMap::with_capacity(self.peak_active);
+            compact.extend(self.entries.values().map(|entry| (entry.key, entry.id)));
+            self.by_key = compact;
         }
         self.retired = self.retired.saturating_add(retired.len() as u64);
         retired.into_iter().map(|(id, _)| id).collect()
@@ -814,10 +829,15 @@ impl IncarnationRegistry {
         self.entries.keys().copied().collect()
     }
 
-    /// The lengths of the two collections that grow with live incarnations.
+    /// The lengths and reverse-index capacity of the collections that grow with live
+    /// incarnations.
     #[cfg(test)]
-    fn storage_len(&self) -> (usize, usize) {
-        (self.entries.len(), self.by_key.len())
+    fn storage_len(&self) -> (usize, usize, usize) {
+        (
+            self.entries.len(),
+            self.by_key.len(),
+            self.by_key.capacity(),
+        )
     }
 }
 
@@ -1160,6 +1180,7 @@ mod tests {
             Err(IdentityError::RegistryFull { max: 2 }),
             "a new key is refused at the bound"
         );
+        assert_eq!(registry.incarnation_of(&key(3)), None);
         assert_eq!(registry.active(), 2, "the refusal evicts nothing");
         assert!(registry.is_active(first) && registry.is_active(second));
 
@@ -1189,6 +1210,7 @@ mod tests {
             Err(IdentityError::RegistryFull { max: 2 }),
             "retirement has not run yet, so the bound is still full"
         );
+        assert_eq!(registry.incarnation_of(&key(3)), None);
         assert_eq!(
             registry.end_round(),
             vec![second],
@@ -1215,6 +1237,7 @@ mod tests {
             Err(IdentityError::RegistryFull { max: 0 }),
             "a zero bound refuses instead of panicking"
         );
+        assert_eq!(zero.incarnation_of(&key(4)), None);
         assert_eq!(zero.active(), 0);
 
         assert_eq!(
@@ -1236,6 +1259,7 @@ mod tests {
         let mut registry = IncarnationRegistry::with_max(MAX_ACTIVE);
         let mut due: VecDeque<Vec<Incarnation>> = VecDeque::new();
         let mut previous = Incarnation::UNASSIGNED;
+        let mut capacity_after_round_3 = None;
         for round in 0..ROUNDS {
             registry.begin_round();
             let mut minted = Vec::new();
@@ -1251,10 +1275,16 @@ mod tests {
                 previous = id;
                 minted.push(id);
             }
-            let (entries, reverse) = registry.storage_len();
+            let (entries, reverse, capacity) = registry.storage_len();
             assert_eq!(entries, reverse, "both live indexes retire together");
             assert!(entries <= MAX_ACTIVE);
             assert!(entries + reverse <= STORAGE_BOUND);
+            if let Some(bound) = capacity_after_round_3 {
+                assert!(
+                    capacity <= bound,
+                    "capacity grows after round 3: round={round}, capacity={capacity}, bound={bound}"
+                );
+            }
 
             due.push_back(minted);
             let retired = registry.end_round();
@@ -1267,10 +1297,18 @@ mod tests {
             } else {
                 assert!(retired.is_empty(), "the first two rounds retire nothing");
             }
-            let (entries, reverse) = registry.storage_len();
+            let (entries, reverse, capacity) = registry.storage_len();
             assert_eq!(entries, reverse, "retirement removes both index records");
             assert!(entries <= MAX_ACTIVE);
             assert!(entries + reverse <= STORAGE_BOUND);
+            if round == 3 {
+                capacity_after_round_3 = Some(capacity);
+            } else if let Some(bound) = capacity_after_round_3 {
+                assert!(
+                    capacity <= bound,
+                    "reverse-index capacity grows after round 3: round={round}, capacity={capacity}, bound={bound}"
+                );
+            }
         }
         assert_eq!(
             registry.active(),
