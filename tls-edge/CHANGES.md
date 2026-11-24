@@ -5,6 +5,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+### Added
+- Site overrides now record `[tls_edge] schema = 1`; absent means schema 1 and newer schemas are refused.
+- `tls-edge configure`, `tls-edge validate`, the standalone renderer, `ciu check`, and `ciu up` use the same
+  tls-edge validation, including the same refusal messages.
+
+### Changed
+- Site overrides are plain TOML: Jinja markers and unknown keys are refused, while
+  `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]` remain open tables.
 
 <!-- cmru: pending release notes end -->
 

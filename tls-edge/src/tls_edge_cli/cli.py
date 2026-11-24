@@ -20,12 +20,15 @@ from cli_extended import (
 )
 
 from .config import (
+    check_override,
     ConfigError,
     TLS_MODES,
     atomic_write,
     load_answers,
     load_effective_config,
+    load_site,
     locate_instance_root,
+    migrate,
     normalize_domain,
     updated_consumer_env,
     updated_override,
@@ -307,6 +310,13 @@ def _port_plan(config: dict[str, Any]) -> list[str]:
     return validate_config(config)
 
 
+def _load_validated_site(root: Path) -> dict[str, Any]:
+    defaults, overlay, effective = load_site(root / "stack" / "ciu-stack")
+    overlay = migrate(overlay)
+    check_override(defaults, overlay)
+    return effective["tls_edge"]
+
+
 def _render_config(root: Path, values: dict[str, Any]) -> tuple[Path, str, int, Path, str, int]:
     try:
         override_path, override_text, override_mode = updated_override(root, values)
@@ -327,7 +337,7 @@ def _diff(path: Path, old: str, new: str) -> str:
 def configure(args: Any, runtime: CliRuntime) -> int:
     root = _root(args)
     try:
-        current, _ = load_effective_config(root)
+        current = _load_validated_site(root)
         answers = load_answers(args.answers)
         values = _collect_values(
             current, runtime, answers, allow_prompt=args.answers is None
@@ -437,7 +447,7 @@ def show(args: Any, runtime: CliRuntime) -> int:
 def validate(args: Any, runtime: CliRuntime) -> int:
     root = _root(args)
     try:
-        config, _ = load_effective_config(root)
+        config = _load_validated_site(root)
         ports = validate_config(config)
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc

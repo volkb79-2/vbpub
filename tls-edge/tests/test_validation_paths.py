@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -278,6 +279,33 @@ def test_override_rejects_scalar_for_default_table(tmp_path: Path):
         config.check_override(defaults, overlay)
 
 
+def test_override_rejects_table_for_default_scalar(tmp_path: Path):
+    _, stack_dir = _case_root(
+        tmp_path,
+        _override('[tls_edge.ports.http]\nvalue = 8080\n'),
+    )
+    defaults, overlay, _ = config.load_site(stack_dir)
+    with pytest.raises(config.ConfigError, match="tls_edge.ports.http"):
+        config.check_override(defaults, overlay)
+
+
+def test_override_schema_must_be_an_integer(tmp_path: Path):
+    _, stack_dir = _case_root(
+        tmp_path,
+        '[tls_edge]\nschema = "one"\ndomain = "edge.example.test"\n',
+    )
+    defaults, overlay, _ = config.load_site(stack_dir)
+    with pytest.raises(config.ConfigError, match="tls_edge.schema must be an integer"):
+        config.check_override(defaults, overlay)
+
+
+def test_override_rejects_non_utf8_text(tmp_path: Path):
+    _, stack_dir = _case_root(tmp_path, _override())
+    (stack_dir / "ciu.toml.j2").write_bytes(b"\xff\xfe")
+    with pytest.raises(config.ConfigError, match="cannot read site override"):
+        config.load_site(stack_dir)
+
+
 def test_missing_schema_means_schema_one(tmp_path: Path):
     _, stack_dir = _case_root(
         tmp_path,
@@ -287,6 +315,25 @@ def test_missing_schema_means_schema_one(tmp_path: Path):
     assert config.migrate(overlay) == overlay
     config.check_override(defaults, overlay)
     assert effective["tls_edge"]["schema"] == 1
+
+
+def test_hook_run_rechecks_the_sparse_override(tmp_path: Path) -> None:
+    _, stack_dir = _case_root(tmp_path, _override("[tls_edge.http3]\nenable = true\n"))
+    _, _, effective = config.load_site(stack_dir)
+    spec = importlib.util.spec_from_file_location(
+        "validate_edge_hook", stack_dir / "hooks" / "validate_edge.py"
+    )
+    assert spec is not None and spec.loader is not None
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    with pytest.raises(
+        config.ConfigError,
+        match="unknown override key tls_edge.http3.enable",
+    ):
+        hook.run(effective, None)
+    (stack_dir / "ciu.toml.j2").write_text(_override(), encoding="utf-8")
+    _, _, effective = config.load_site(stack_dir)
+    assert hook.run(effective, None) == {}
 
 
 def test_configure_writes_schema_one(

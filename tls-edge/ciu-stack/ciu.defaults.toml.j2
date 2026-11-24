@@ -14,6 +14,9 @@
 
 [tls_edge]
 stack_name = "edge-proxy"
+# Site overrides record the schema they were written for. Configure writes 1;
+# an absent override schema means 1, and newer schemas are refused.
+schema = 1
 # The operator's base domain (e.g. "example.test").  Every service gets its OWN
 # host name under it (app.<domain>) and its OWN certificate; the edge itself
 # does not need it for routing (routers carry their own Host() rule), so it is
@@ -190,6 +193,11 @@ max_file = "3"
 # dropped, so it cannot read a file owned by another uid with mode 0400.
 # `ciu up` reads the value from that environment variable (or prompts) once and
 # caches it in ciu's secret store (ciu secrets list|reset).
+
+[tls_edge.hooks]
+# CIU static preflight and pre_secrets execution use the same tls-edge validator
+# as `tls-edge validate` and the standalone renderer.
+pre_secrets = ["hooks/validate_edge.py"]
 
 # ─── ciu configfile mounts (S5; ignored by the standalone renderer, which
 #     bind-mounts ./traefik.yml and ./conf.d instead) ──────────────────────────
