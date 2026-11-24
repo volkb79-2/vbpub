@@ -940,9 +940,9 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
     esac
     printf -v "$_ded_tier_key" '%s' ""
   done
-  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryMin=${DEV_MEMORY_MIN:-none}, MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}), no MemoryHigh; host reserve K=${MDT_DEDICATED_KEEP}B (floors F, margin M, K = ${MDT_RESERVE_FMK}); dev-gates MemoryMax=${DEV_GATES_MEMORY_MAX:-none} (${_ded_gates_max_src}), dev-background MemoryMax=${DEV_BACKGROUND_MEMORY_MAX:-none} (${_ded_bg_max_src}), no tier MemoryHigh; interactive and buildkitd tiers carry no MemoryHigh/MemoryMax; interactive/buildkitd swap ceilings equal dev.slice's, gates/background swap = dev.slice's minus the protected tiers' MemoryLow sum"
+  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryMin=${DEV_MEMORY_MIN:-none}, MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}), no MemoryHigh; host keep K=${MDT_DEDICATED_KEEP}B (floors F, margin M, K = ${MDT_RESERVE_FMK}); dev-gates MemoryMax=${DEV_GATES_MEMORY_MAX:-none} (${_ded_gates_max_src}), dev-background MemoryMax=${DEV_BACKGROUND_MEMORY_MAX:-none} (${_ded_bg_max_src}), no tier MemoryHigh; interactive and buildkitd tiers carry no MemoryHigh/MemoryMax; interactive/buildkitd swap ceilings equal dev.slice's, gates/background swap = dev.slice's minus the protected tiers' MemoryLow sum"
   if [ -n "${DEV_HOST_MEMORY_KEEP:-}" ]; then
-    echo "NOTICE: DEV_HOST_MEMORY_KEEP=${DEV_HOST_MEMORY_KEEP} now PINS the host reserve K (the RAM kept outside dev.slice); it used to mean RAM+swap" >&2
+    echo "NOTICE: DEV_HOST_MEMORY_KEEP=${DEV_HOST_MEMORY_KEEP} now PINS the host keep K (the RAM kept outside dev.slice); it used to mean RAM+swap" >&2
   fi
   if [ -n "${_ded_ignored_high:-}" ]; then
     echo "NOTICE: HOST_ROLE=dedicated-dev renders no MemoryHigh anywhere in the dev tree; ignoring (clear them to silence this): ${_ded_ignored_high}" >&2

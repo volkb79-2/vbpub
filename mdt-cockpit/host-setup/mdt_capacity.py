@@ -346,7 +346,7 @@ def tier_swap_bytes(swap_mdt: int, cascade_pct: int) -> int:
 # --------------------------------------------- HOST_ROLE=dedicated-dev memory (MDT-TESTHOST-MEM)
 #
 # Not named *_RESERVE_*: every such key is refused by the 2026-11 rename guard above.
-# P-plat-19e (DESIGN-DEDICATED-DEV-MEMORY.md section 4): the host reserve K = F + M. F = the floors (MemoryMin) of
+# P-plat-19e (DESIGN-DEDICATED-DEV-MEMORY.md section 4): the host keep K = F + M. F = the floors (MemoryMin) of
 # the host's own services, M = a margin for what no floor covers. DEV_HOST_MEMORY_KEEP is only a PIN of K now.
 DEDICATED_MEMORY_KEEP_MIN = 256 * 1024 * 1024
 # Mirror of debian-install-v2 templates.CONTROL_PLANE_MEMORY_MIN (measured 1.25 x hot set; parity test).
@@ -420,7 +420,7 @@ def validate_host_memory_margin(value: str) -> str | None:
 
 @dataclass(frozen=True)
 class HostFloors:
-    """The floors (MemoryMin) and the host reserve K = F + M of HOST_ROLE=dedicated-dev, in bytes."""
+    """The floors (MemoryMin) and the host keep K = F + M of HOST_ROLE=dedicated-dev, in bytes."""
 
     units: dict[str, int]  # post-raise floor per unit
     system_slice: int
@@ -428,7 +428,7 @@ class HostFloors:
     user_slice: int
     floors: int  # F
     margin: int  # M
-    reserve: int  # K
+    keep: int  # K
     pinned: bool  # K from DEV_HOST_MEMORY_KEEP
 
 
@@ -460,20 +460,20 @@ def host_floors(values: dict[str, str], mem_total: int, raised: dict[str, int] |
     if system_slice > DEDICATED_SYSTEM_SLICE_MAX:
         raise CapacityError(f"the derived system.slice MemoryMin {format_size(system_slice)} exceeds {format_size(DEDICATED_SYSTEM_SLICE_MAX)}; lower DEV_HOST_MEMORY_MIN (or the foreign drop-in that raised a unit)")
     raw_keep = (values.get("DEV_HOST_MEMORY_KEEP", "") or "").strip()
-    reserve = floors + margin
+    keep = floors + margin
     if raw_keep:
         error = validate_host_memory_keep(raw_keep)
         if error:
             raise CapacityError(f"DEV_HOST_MEMORY_KEEP: {error}")
-        reserve = parse_size_bytes(raw_keep) or 0
-        if reserve < floors + DEDICATED_KEEP_HEADROOM:
+        keep = parse_size_bytes(raw_keep) or 0
+        if keep < floors + DEDICATED_KEEP_HEADROOM:
             raise CapacityError(f"DEV_HOST_MEMORY_KEEP {raw_keep} is below F + 128M = {format_size(floors + DEDICATED_KEEP_HEADROOM)}")
-    return HostFloors(units, system_slice, DEDICATED_CGPROFILE_SLICE_MIN, DEDICATED_USER_SLICE_MIN, floors, margin, reserve, bool(raw_keep))
+    return HostFloors(units, system_slice, DEDICATED_CGPROFILE_SLICE_MIN, DEDICATED_USER_SLICE_MIN, floors, margin, keep, bool(raw_keep))
 
 
 def system_slice_low(floors: HostFloors) -> int:
     """system.slice MemoryLow derived from K, never below its Min: equals the Min at defaults (line omitted)."""
-    return max(floors.system_slice, floors.reserve - floors.margin - floors.cgprofile_slice - floors.user_slice)
+    return max(floors.system_slice, floors.keep - floors.margin - floors.cgprofile_slice - floors.user_slice)
 
 
 @dataclass(frozen=True)
@@ -544,7 +544,7 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
     DEV_MEMORY_HIGH and the tier HIGH pins are ignored and reported in `ignored`.
     """
     floors = host_floors(values, mem_total, raised)
-    keep = floors.reserve
+    keep = floors.keep
 
     def size(key: str) -> int:
         raw = (values.get(key, "0") or "0").strip()
@@ -558,7 +558,7 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
     max_ceiling = ram - keep
     if max_ceiling < MIN_RAM_MDT:
         raise CapacityError(
-            f"MemTotal {format_size(mem_total)} minus MDT_EXCLUDED_RAM minus the host reserve K "
+            f"MemTotal {format_size(mem_total)} minus MDT_EXCLUDED_RAM minus the host keep K "
             f"{format_size(keep)} leaves {format_size(max(0, max_ceiling))} of RAM for the dev tier; "
             "at least 1G is required (lower DEV_HOST_MEMORY_MARGIN/DEV_HOST_MEMORY_MIN or the KEEP pin)"
         )
@@ -1243,7 +1243,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         fl = mem.floors
         print(f"DEDICATED_MEM_MIN={mem.dev_min}")
         print(f"DEDICATED_INTERACTIVE_MIN={mem.interactive_min}")
-        print(f"DEDICATED_RESERVE={fl.floors} {fl.margin} {fl.reserve}")
+        print(f"DEDICATED_RESERVE={fl.floors} {fl.margin} {fl.keep}")
         print(f"DEDICATED_SYSTEM_SLICE_MIN={fl.system_slice}")
         print(f"DEDICATED_SYSTEM_SLICE_LOW={system_slice_low(fl)}")
         print(f"DEDICATED_USER_SLICE_MIN={fl.user_slice}")

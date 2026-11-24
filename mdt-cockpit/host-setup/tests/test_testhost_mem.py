@@ -219,7 +219,7 @@ class FloorTests(unittest.TestCase):
                          {"ssh.service": 10, "docker.service": 210, "containerd.service": 92, "systemd-journald.service": 24,
                           "cgprofiled.service": 4, "mdt-psi-guard.service": 5})
         self.assertEqual((f.system_slice // MIB, f.user_slice // MIB, f.cgprofile_slice // MIB), (373, 64, 128))  # 341 + 32; cgprofiled stays out
-        self.assertEqual((f.floors // MIB, f.reserve // MIB), (565, 1077))
+        self.assertEqual((f.floors // MIB, f.keep // MIB), (565, 1077))
 
     def test_a_raised_unit_raises_the_system_slice_sum_and_a_lower_raise_changes_nothing(self) -> None:
         f = cap.host_floors({}, 8 * GIB, {"docker.service": 250 * MIB, "ssh.service": MIB})
@@ -423,7 +423,7 @@ echo "HIGH=${{DEV_MEMORY_HIGH:-}} MAX=${{DEV_MEMORY_MAX:-}} MIN=${{DEV_MEMORY_MI
     def test_a_keep_pin_prints_its_new_meaning_and_lifts_the_system_slice_low(self) -> None:
         r = self.run_pre("HOST_ROLE=dedicated-dev\nDEV_HOST_MEMORY_KEEP=1280M\n")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("now PINS the host reserve K", r.stderr)
+        self.assertIn("now PINS the host keep K", r.stderr)
         self.assertIn(f"KEEP={1280 * MIB}", r.stdout)
         self.assertIn(f"SYSLOW={576 * MIB} ", r.stdout)
 
