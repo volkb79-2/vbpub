@@ -5,6 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
+- host-setup follow-up to MDT-108 (P-plat-19d): `mdt-host-check.sh` now FAILs when `ManagedOOMMemoryPressure`/`ManagedOOMSwap` is not `auto` on a dev slice or `oomctl dump` monitors a `dev*.slice` or the root slice (WARN when `oomctl` is absent); `install.sh` checks every file it reads outside `host-setup/` before changing anything and refuses naming the missing paths (a checkout of `mdt-cockpit/` alone aborted mid-install after the units were rendered; the required checkout set is documented), warns once about the retired `DEV_{GATES,BACKGROUND}_OOM_PRESSURE_LIMIT`/`MDT_MEMORY_POLICY` keys, and its admission NOTE says that a missing host `run-gate` is expected on a runner-container gate worker (set `ADMISSION_COCKPIT`). Stale oomd wording removed from `mdt_capacity.py` and the `cgprofile.slice` comment. Documented (operator decision 2026-11-24, no code cap): on dedicated-dev, `dev-interactive` and `dev-buildkitd` are bounded only by dev.slice `MemoryHigh`.
 - host-setup's dev-tier slices no longer opt into systemd-oomd: `dev-gates.slice`
   and `dev-background.slice` render no `ManagedOOMMemoryPressure`,
   `ManagedOOMMemoryPressureLimit` or `ManagedOOMSwap`, and the now-dead
