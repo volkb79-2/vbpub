@@ -20,6 +20,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - `tls-edge configure` now uses one field table for prompts, answers, explicit override writes and the proposed
   merge. Shipped defaults come only from the rendered defaults file.
 - Schema-shaped answers may set any non-open, validated leaf; unmanaged leaves are written explicitly.
+- `consumer.env` now carries the six-key rendered consumer contract from the effective configuration. Existing
+  lines are kept, duplicate owned lines are removed, and the file remains the contract consumers import.
+- `tls-edge validate` and the CIU preflight hook refuse a drifted existing `consumer.env`; `tls-edge show`
+  reports drift without failing, and `tls-edge configure` re-syncs it.
+
+### Added
+- `tls-edge show --json` emits the effective contract, structured public-port plan and
+  `consumer_env` state in a versioned `tls-edge.show` envelope.
+
+### Operator notes
+- 4.0 upgrade step: run `tls-edge configure --answers <empty file> --yes` after updating and before
+  `ciu up`, so the new contract keys are added to the 3.2 `consumer.env`.
 
 ### Upgrade
 - Anyone who used the removed standalone installer or plain Compose on the committed `edge-proxy/` tree must

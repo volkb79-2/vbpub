@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -185,6 +186,11 @@ class VersionOrderTest(unittest.TestCase):
     # Captured from GNU coreutils 9.7 `sort -V`, ascending, on Debian-style kernel names.
     SORT_V_ASCENDING = (
         "6.1.0-9-amd64",
+        "6.12.0.custom",
+        "6.12.0.rc9",
+        "6.12.0.rc10",
+        "6.12.0-1",
+        "6.12.0.1",
         "6.12.1a-amd64",
         "6.12.1+b-amd64",
         "6.12.1-amd64",
@@ -201,10 +207,24 @@ class VersionOrderTest(unittest.TestCase):
 
     def test_ordering_matches_real_sort_v_output(self) -> None:
         shuffled = (
-            self.SORT_V_ASCENDING[7::2] + self.SORT_V_ASCENDING[:7] + self.SORT_V_ASCENDING[8::2]
+            self.SORT_V_ASCENDING[::2] + self.SORT_V_ASCENDING[1::2]
         )
         self.assertCountEqual(shuffled, self.SORT_V_ASCENDING)
         self.assertEqual(ids.newest_first(shuffled), tuple(reversed(self.SORT_V_ASCENDING)))
+
+    def test_fixture_is_the_real_gnu_sort_v_output(self) -> None:
+        result = subprocess.run(
+            ["sort", "-V"],
+            input="\n".join(self.SORT_V_ASCENDING) + "\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            tuple(result.stdout.splitlines()),
+            self.SORT_V_ASCENDING,
+        )
 
     def test_letter_then_plus_then_dash_and_tilde_before_end(self) -> None:
         self.assertEqual(
@@ -212,7 +232,18 @@ class VersionOrderTest(unittest.TestCase):
             ("6.12.1-amd64", "6.12.1+b-amd64", "6.12.1a-amd64"),
         )
         self.assertLess(ids.compare_versions("6.12~rc1", "6.12"), 0)
-        self.assertEqual(ids.compare_versions("6.012", "6.12"), 0)
+        self.assertEqual(
+            ids.newest_first(("6.12", "6.012", "6.0012")),
+            ("6.12", "6.012", "6.0012"),
+        )
+
+    def test_file_version_suffix_is_removed_before_the_prefix_comparison(self) -> None:
+        versions = ("6.12.0.custom", "6.12.0.1", "6.12.0-1")
+        self.assertEqual(
+            ids.newest_first(versions),
+            ("6.12.0.1", "6.12.0-1", "6.12.0.custom"),
+        )
+        self.assertLess(ids.compare_versions("6.12.0.rc9", "6.12.0.rc10"), 0)
 
 
 if __name__ == "__main__":

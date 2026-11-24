@@ -878,6 +878,66 @@
         "weakref_slot": false
       }
     },
+    "assay.mutation._CarryForwardMatch": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation._CarryForwardRecord": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation._CarryForwardResult": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation._CarryForwardSourceIndex": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.mutation._CarryOverResult": {
       "fields": {},
       "params": {

@@ -49,7 +49,7 @@ cannot prevent: its marker (`:99`) is in `/var/lib`, inside the state.
 | Item | btrfs (now) | ZFS (P-43, guests) |
 |---|---|---|
 | Table | GPT p1 ESP vfat 512 MiB, p2 the one filesystem (Q8; Q-A) (`install-btrfs.sh:79-84`) | p1 ESP, p2 `rpool` (`ZFS-POC-PLAN.md:182-189`) |
-| ESP | p1: GRUB image hard-codes `(,gpt1)/EFI/dr` (`dr/poc/dr-state:606`) | p1 |
+| ESP | p1: GRUB image hard-codes `(,gpt1)/EFI/dr` (`dr/files/usr/local/lib/dr-state/dr_state/core.py:1118`) | p1 |
 | States | top-level `@os-*`, default subvolume 5 (`install-btrfs.sh:88-92`; `py/storage/btrfs.py:47-48`, `:60-80`) | `rpool/ROOT/os-*` (`ZFS-POC-PLAN.md:37-43`) |
 | Kernels | in each state's `/boot`, no `/boot` partition | in each BE |
 | Excluded | D18 + `@usr-local`, NOCOW on docker, containers, postgresql, mysql (`install-btrfs.sh:75-77`), plus C14 | `rpool/DATA/*` |

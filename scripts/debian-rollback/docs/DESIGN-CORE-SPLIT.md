@@ -273,8 +273,9 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
 - **D16 Snapshot success (H5).** `snapshot` succeeds once `storage.snapshot` has returned and the sidecar is durable.
   If the sidecar write fails, the object is deleted and the exit is 1. Publication afterwards is best-effort, in
   publication read mode. These become a warning with exit 0: `StorageError` from `kernels`, `BootError`,
-  `CapacityError`, `BootConfigError`, and a publication-phase `Refused` (missing marker, unmounted ESP, newer ESP
-  format). The sequence stays consumed. A newer control-directory format still refuses the snapshot itself (exit 3).
+  `CapacityError`, `BootConfigError`, `Unsupported`, and a publication-phase `Refused` (missing marker, unmounted
+  ESP, newer ESP format). The sequence stays consumed. A newer control-directory format still refuses the snapshot
+  itself (exit 3).
 - **D17 Degraded menu (H5).** Every publication uses one selection. Candidates are the managed states with a kernel
   pair, minus a state being deleted. The order:
   1. the default: the requested state; else the configured default (publication mode) if it is a candidate; else the
@@ -285,8 +286,10 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
 
   Items 1 and 2 are mandatory. Items 3 and 4 are added greedily: each is kept if D19's fit still holds, else
   skipped, and the walk goes on to older states, which may share a pair. If the mandatory set does not fit,
-  `CapacityError` leaves the old menu: a warning in `snapshot` and the hooks, exit 1 in `gen-menu`/`set-default`. The
-  sort order of the menu does not change. `list` and `check` show unpublished states.
+  the selection-time `CapacityError` leaves the old menu: a warning in `snapshot` and the hooks, exit 1 in
+  `gen-menu`/`set-default`. After publication has begun, a copy-check `CapacityError` leaves the menu already shrunk
+  by D19 phase 1; nothing new is written and B-1 still holds. The sort order of the menu does not change. `list` and
+  `check` show unpublished states.
 - **D17a Stale removal.** Owned entries that are not in the target set are removed, except the current default's
   entry and the pending one-shot's entry. With an unknown one-shot (`known=False`), no stale owned entry is removed.
 - **D18 One snapshot hook (M3, B7): `DPkg::Pre-Install-Pkgs` alone.** It runs once per apt commit and carries the
@@ -326,10 +329,12 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
 
     Pairs of S already on the ESP count on both sides.
   - **Publication phases.**
-    1. **Shrink.** Remove the owned entries that D17a allows, then the pairs that no remaining entry references.
+    1. **Shrink.** Remove the owned entries that D17a allows, then the pairs that no remaining entry and no target
+       references.
     2. **Copy check.** Re-read statvfs. `new bytes + M ≤ free` must hold. New bytes are absent or repaired pairs at
        full size, rewritten entries, and `loader.conf`. In-place rewrites get no credit, because `atomic_write` holds
-       both copies until the rename. On failure, `CapacityError`, and nothing more is written.
+       both copies until the rename. On failure, `CapacityError`, and nothing more is written. The shrunken menu
+       remains; the default named by the existing `loader.conf` still resolves, so B-1 holds.
     3. **Write.** Copy the pairs, write the entries, rename `loader.conf` to the new default, then remove the old
        default's leftovers.
   - **Why B-1 holds.** The default that `loader.conf` names resolves at every step.
@@ -429,9 +434,14 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
     - `etc/kernel/{postinst.d,postrm.d}/zz-dr-state`.
   - **Timing.** The runtime tree lands in P-rollback-20, but installs switch to it only in P-rollback-21, for both
     variants at once (D33). The hooks leave the heredocs in P-rollback-25.
-  - **Installer.** `install-btrfs.sh` copies `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into the
-    target with `cp -a`. It prints the initial state name with `printf` instead of calling `dr-state _state-name`;
-    `initialize-state` stays the only validator, so the Live system needs no Python.
+  - **Installer.** `install-btrfs.sh` packs `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into a tar
+    archive whose members are explicitly owned `0:0`, then extracts it as root with `--same-owner`. It omits directory
+    members that already exist at the destination, so `/`, `/usr`, `/usr/local` and every other pre-existing target
+    directory keep their owner and mode. It prints the initial state name with `printf` instead of calling
+    `dr-state _state-name`; `initialize-state` stays the only validator, so the Live system needs no Python.
+  - **Seed and ISO ownership.** The seed ISO is packed with `-uid 0 -gid 0`; the remastered ISO applies
+    `-chown_r 0 /dr/files -- -chgrp_r 0 /dr/files --` before commit. A non-root builder therefore cannot stamp its
+    uid on a root-executed runtime.
   - **Hot patching.** The dev-only hot-patch helpers in dr-serial ship the whole `files/usr/local` tree and are
     refused with `DR_ACCEPTANCE=1` (P-rollback-25).
 

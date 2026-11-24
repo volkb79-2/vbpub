@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -28,11 +29,17 @@ from .config import (
     load_site,
     locate_instance_root,
     migrate,
+    port_plan,
     SCHEMA,
     updated_consumer_env,
     updated_override,
     validate_config,
     validate_answers,
+)
+from .contract import (
+    consumer_contract,
+    consumer_env_drift,
+    consumer_env_drift_message,
 )
 from .fields import FIELDS, Field, Layout, MANAGED_KEYS, value_at
 
@@ -177,7 +184,7 @@ def _propose(
     *,
     allow_prompt: bool,
     source: str,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], dict[str, str]]:
     proposed_overlay = deep_merge(overlay, answers)
     values: dict[str, Any] = {}
     layout = Layout(
@@ -228,7 +235,7 @@ def _propose(
         proposed["tls_edge"],
         stack_dir=root / "ciu-stack",
     )
-    return values, plan
+    return values, plan, consumer_contract(proposed["tls_edge"])
 
 
 def _load_checked_site(
@@ -248,17 +255,22 @@ def _load_validated_site(
 ) -> tuple[dict[str, Any], list[str]]:
     stack_dir = root / "ciu-stack"
     _, config, _ = _load_checked_site(root)
-    return config, validate_config(
+    ports = validate_config(
         config,
         require_domain=require_domain,
         stack_dir=stack_dir,
     )
+    consumer_env = _consumer_env_status(root, consumer_contract(config))
+    if consumer_env["state"] == "drift":
+        raise ConfigError(consumer_env_drift_message(consumer_env["drift"]))
+    return config, ports
 
 
 def _render_config(
     root: Path,
     values: dict[str, Any],
     extra: Mapping[str, Any],
+    contract: Mapping[str, str],
 ) -> tuple[Path, str, int, Path, str, int]:
     try:
         override_path, override_text, override_mode = updated_override(
@@ -266,7 +278,7 @@ def _render_config(
             values,
             extra,
         )
-        env_path, env_text, env_mode = updated_consumer_env(root, values["domain"])
+        env_path, env_text, env_mode = updated_consumer_env(root, contract)
     except (OSError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
     return override_path, override_text, override_mode, env_path, env_text, env_mode
@@ -288,7 +300,7 @@ def configure(args: Any, runtime: CliRuntime) -> int:
         answers = dict(migrate(answers))
         validate_answers(defaults, answers, answers_file=args.answers)
         extra = _answer_extras(answers)
-        values, plan = _propose(
+        values, plan, contract = _propose(
             defaults,
             overlay,
             answers,
@@ -298,7 +310,7 @@ def configure(args: Any, runtime: CliRuntime) -> int:
             source=f"answers file {args.answers}",
         )
         override_path, override_text, override_mode, env_path, env_text, env_mode = (
-            _render_config(root, values, extra)
+            _render_config(root, values, extra, contract)
         )
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
@@ -341,20 +353,56 @@ def configure(args: Any, runtime: CliRuntime) -> int:
     return 0
 
 
+def _consumer_env_status(
+    root: Path,
+    contract: Mapping[str, str],
+) -> dict[str, Any]:
+    env_path = root / "consumer.env"
+    if not os.path.lexists(env_path):
+        return {"state": "absent", "drift": []}
+    if env_path.is_symlink() or not env_path.is_file():
+        raise ConfigError(f"consumer environment must be a regular file: {env_path}")
+    try:
+        existing = env_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(f"cannot read consumer environment {env_path}: {exc}") from exc
+    drift = consumer_env_drift(contract, existing)
+    return {"state": "drift" if drift else "in-sync", "drift": drift}
+
+
 def show(args: Any, runtime: CliRuntime) -> int:
     root = _root(args)
     try:
         _, config, overlay = _load_checked_site(root)
         has_override = bool(overlay)
         mode = value_at(config, "tls.mode")
-        ports = validate_config(
+        validate_config(
             config,
             require_domain=False,
             require_certificates=False,
             stack_dir=root / "ciu-stack",
         )
+        ports = port_plan(config)
+        contract = consumer_contract(config)
+        consumer_env = _consumer_env_status(root, contract)
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
+    if runtime.output.json_mode:
+        runtime.output.primary_json({
+            "kind": "tls-edge.show",
+            "format": 1,
+            "version": runtime.identity.version,
+            "schema": SCHEMA,
+            "stack_dir": str(root / "ciu-stack"),
+            "override": has_override,
+            "contract": contract,
+            "ports": [
+                {"port": port, "protocol": protocol, "purpose": purpose}
+                for port, protocol, purpose in ports
+            ],
+            "consumer_env": consumer_env,
+        })
+        return 0
     runtime.output.primary(f"Stack dir: {root}")
     runtime.output.primary(f"Site override: {'present' if has_override else 'not configured'}")
     runtime.output.primary(f"Base domain: {value_at(config, 'domain') or '(unset)'}")
@@ -366,8 +414,18 @@ def show(args: Any, runtime: CliRuntime) -> int:
         f"Calls media: {'enabled' if value_at(config, 'calls.enabled') else 'disabled'}"
     )
     runtime.output.primary("Inbound ports:")
-    for item in ports:
-        runtime.output.primary(f"  {item}")
+    for port, protocol, purpose in ports:
+        runtime.output.primary(f"  {port}/{protocol} ({purpose})")
+    if consumer_env["state"] == "absent":
+        runtime.output.primary("Consumer environment: absent (not checked).")
+    elif consumer_env["state"] == "drift":
+        runtime.output.primary(
+            "Consumer environment: drift "
+            f"({', '.join(consumer_env['drift'])}); "
+            "run `tls-edge configure` to re-sync."
+        )
+    else:
+        runtime.output.primary("Consumer environment: in-sync.")
     if not value_at(config, "domain"):
         runtime.output.primary("Run `tls-edge configure` to complete the instance settings.")
     return 0
@@ -421,6 +479,7 @@ def build_cli() -> Any:
         description="show the effective edge features and public firewall ports",
         group=VerbGroup.EXPLORATION.value,
         include_confirmation=False,
+        include_json=True,
         options=(root_option,),
         handler=show,
     ))
