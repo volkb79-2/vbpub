@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from _layout import stack_dir
+from _layout import instance_stack_dir
 from tls_edge_cli import config
 
 
@@ -36,7 +36,7 @@ def valid_config() -> dict:
 
 
 def make_root(path: Path, template: str | None = None) -> Path:
-    root = stack_dir(path)
+    root = instance_stack_dir(path)
     defaults = root / "ciu-stack" / "ciu.defaults.toml.j2"
     defaults.parent.mkdir(parents=True)
     defaults.write_text(template or """\

@@ -15,7 +15,7 @@ import pytest
 from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
 
-from _layout import stack_dir
+from _layout import instance_stack_dir
 from tls_edge_cli import cli
 
 
@@ -60,7 +60,7 @@ class FixedPrompts:
 
 
 def make_root(path: Path) -> Path:
-    root = stack_dir(path)
+    root = instance_stack_dir(path)
     stack_dir = root / "ciu-stack"
     stack_dir.mkdir(parents=True)
     shutil.copy2(ROOT / "ciu-stack" / "ciu.defaults.toml.j2", stack_dir)

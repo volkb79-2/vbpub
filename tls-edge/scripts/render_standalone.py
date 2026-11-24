@@ -60,7 +60,11 @@ def physical_path(logical: Path) -> Path:
         return logical
     override = os.environ.get("TLS_EDGE_PHYSICAL_DIR")
     if override:
-        return Path(override) / logical.resolve().relative_to(ROOT)
+        try:
+            relative = logical.resolve().relative_to(ROOT)
+        except ValueError:
+            return logical
+        return Path(override) / relative
     result = subprocess.run(
         ["docker", "inspect", socket.gethostname()],
         capture_output=True, text=True,

@@ -20,7 +20,7 @@ from _render import copy_tracked_stack, render_ciu_case
 from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
 from conftest import ROOT, defaults_config, render_to
-from _layout import stack_dir
+from _layout import instance_stack_dir
 from tls_edge_cli import cli
 
 
@@ -63,14 +63,15 @@ class RecordingPrompts:
         return list(default)
 
 
-def _instance(instance_root: Path, override: str) -> Path:
-    stack = copy_tracked_stack(stack_dir(instance_root))
+def _instance(instance_root: Path, override: str) -> tuple[Path, Path]:
+    stack = instance_stack_dir(instance_root)
+    stack_dir = copy_tracked_stack(stack)
     (stack / "ciu.global.defaults.toml.j2").write_text(
         TRACKED_GLOBAL_DEFAULTS.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    (stack / "ciu.toml.j2").write_text(override, encoding="utf-8")
-    return stack
+    (stack_dir / "ciu.toml.j2").write_text(override, encoding="utf-8")
+    return stack, stack_dir
 
 
 def _run_cli(
@@ -163,13 +164,13 @@ def test_schema_reading_and_refusals_through_validate(
         ("absent", ""),
         ("current", "schema = 2\n"),
     ):
-        stack_dir = _instance(
+        stack, _ = _instance(
             tmp_path / case,
             _override(schema),
         )
         result, output = _run_cli(
             monkeypatch,
-            ["validate", "--root", str(stack_dir)],
+            ["validate", "--root", str(stack)],
         )
         assert result == 0, output
 
@@ -179,24 +180,24 @@ def test_schema_reading_and_refusals_through_validate(
         ("bool", "schema = true\n"),
         ("string", 'schema = "2"\n'),
     ):
-        stack_dir = _instance(
+        stack, _ = _instance(
             tmp_path / case,
             _override(schema),
         )
         result, output = _run_cli(
             monkeypatch,
-            ["validate", "--root", str(stack_dir)],
+            ["validate", "--root", str(stack)],
         )
         assert result == 2, output
         assert "tls_edge.schema must be an integer from 1 to 2" in output
 
-    stack_dir = _instance(
+    stack, _ = _instance(
         tmp_path / "future",
         _override("schema = 3\n"),
     )
     result, output = _run_cli(
         monkeypatch,
-        ["validate", "--root", str(stack_dir)],
+        ["validate", "--root", str(stack)],
     )
     assert result == 2, output
     assert "tls_edge.schema 3 is newer than this release supports (maximum 2)" in output
@@ -219,7 +220,7 @@ def test_disabled_3_1_calls_migrates_on_hook_and_both_renderers(
     assert findings == []
     assert 8443 not in _published_ports(ciu_compose)
 
-    stack_dir = _instance(
+    instance, stack_dir = _instance(
         tmp_path / "instance",
         _override(
             "schema = 1\n",
@@ -228,7 +229,7 @@ def test_disabled_3_1_calls_migrates_on_hook_and_both_renderers(
     )
     result, output = _run_cli(
         monkeypatch,
-        ["validate", "--root", str(stack_dir)],
+        ["validate", "--root", str(instance)],
     )
     assert result == 0, output
 
@@ -247,7 +248,7 @@ def test_enabled_3_1_calls_is_refused_on_hook_standalone_validate_and_configure(
     calls = "[tls_edge.calls]\nenabled = true\npublic_port = 8443\n"
     override = _override("schema = 1\n", calls)
 
-    stack_dir = _instance(tmp_path / "instance", override)
+    stack, stack_dir = _instance(tmp_path / "instance", override)
     override_path_text = str(
         (stack_dir / "ciu.toml.j2").absolute()
     )
@@ -265,7 +266,7 @@ def test_enabled_3_1_calls_is_refused_on_hook_standalone_validate_and_configure(
 
     result, output = _run_cli(
         monkeypatch,
-        ["validate", "--root", str(stack_dir)],
+        ["validate", "--root", str(stack)],
     )
     assert result == 2, output
     assert CALLS_TRUE in output
@@ -286,7 +287,7 @@ def test_enabled_3_1_calls_is_refused_on_hook_standalone_validate_and_configure(
         [
             "configure",
             "--root",
-            str(stack_dir),
+            str(stack),
             "--answers",
             str(answers),
             "--dry-run",
@@ -318,6 +319,22 @@ def test_enabled_3_1_calls_is_refused_on_hook_standalone_validate_and_configure(
             "unknown override key tls_edge.calls.enabled",
         ),
         (
+            "unknown-before-enabled",
+            _override(
+                "schema = 1\n",
+                "[tls_edge.calls]\nbandwidth = 1\nenabled = false\n",
+            ),
+            "unknown override key tls_edge.calls.bandwidth",
+        ),
+        (
+            "removed-key-before-non-bool-enabled",
+            _override(
+                "schema = 1\n",
+                '[tls_edge.calls]\npublic_port = 8443\nenabled = "false"\n',
+            ),
+            "unknown override key tls_edge.calls.enabled",
+        ),
+        (
             "non-table",
             _override("schema = 1\n", "calls = 8443\n"),
             "unknown override key tls_edge.calls",
@@ -339,10 +356,10 @@ def test_other_calls_content_is_refused_as_unknown(
     override: str,
     expected: str,
 ) -> None:
-    stack_dir = _instance(tmp_path / case, override)
+    stack, _ = _instance(tmp_path / case, override)
     result, output = _run_cli(
         monkeypatch,
-        ["validate", "--root", str(stack_dir)],
+        ["validate", "--root", str(stack)],
     )
     assert result == 2, output
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
@@ -358,7 +375,7 @@ def test_configure_drops_a_migrated_calls_table_and_shows_both_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stack_dir = _instance(
+    stack, stack_dir = _instance(
         tmp_path / "instance",
         _override(
             "schema = 1\n",
@@ -373,7 +390,7 @@ def test_configure_drops_a_migrated_calls_table_and_shows_both_changes(
         [
             "configure",
             "--root",
-            str(stack_dir),
+            str(stack),
             "--answers",
             str(answers),
             "--dry-run",
@@ -390,7 +407,7 @@ def test_configure_drops_a_migrated_calls_table_and_shows_both_changes(
         [
             "configure",
             "--root",
-            str(stack_dir),
+            str(stack),
             "--answers",
             str(answers),
             "--yes",
@@ -414,7 +431,7 @@ def test_removed_calls_flat_answer_key_is_refused(
     key: str,
     value: str,
 ) -> None:
-    stack_dir = _instance(tmp_path / key, _override(""))
+    stack, _ = _instance(tmp_path / key, _override(""))
     answers = tmp_path / f"{key}.toml"
     answers.write_text(f"{key} = {value}\n", encoding="utf-8")
     result, output = _run_cli(
@@ -422,7 +439,7 @@ def test_removed_calls_flat_answer_key_is_refused(
         [
             "configure",
             "--root",
-            str(stack_dir),
+            str(stack),
             "--answers",
             str(answers),
             "--dry-run",
@@ -462,11 +479,11 @@ def test_configure_prompt_list_has_no_calls_question(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stack_dir = _instance(tmp_path / "instance", "")
+    stack, _ = _instance(tmp_path / "instance", "")
     prompts = RecordingPrompts()
     result, output = _run_cli(
         monkeypatch,
-        ["configure", "--root", str(stack_dir), "--dry-run", "--yes"],
+        ["configure", "--root", str(stack), "--dry-run", "--yes"],
         prompts=prompts,
     )
     assert result == 0, output

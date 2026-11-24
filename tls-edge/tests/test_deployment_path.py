@@ -17,7 +17,7 @@ import pytest
 from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
 
-from _layout import stack_dir
+from _layout import instance_stack_dir
 from tls_edge_cli import cli
 
 
@@ -346,7 +346,7 @@ def test_instance_configure_creates_a_new_consumer_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stack = _copy_tracked_stack(stack_dir(tmp_path / "instance"))
+    stack = _copy_tracked_stack(instance_stack_dir(tmp_path / "instance"))
     (stack.parent / "current").symlink_to(
         stack.parent / "releases" / "tls-edge",
         target_is_directory=True,
@@ -393,7 +393,7 @@ def test_cli_guides_old_style_instance_root_to_stack_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     instance = tmp_path / "instance"
-    stack = _copy_tracked_stack(stack_dir(instance))
+    stack = _copy_tracked_stack(instance_stack_dir(instance))
     result, output = _run_cli(
         monkeypatch,
         ["validate", "--root", str(instance)],

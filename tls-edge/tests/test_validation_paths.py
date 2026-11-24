@@ -24,7 +24,7 @@ from ciu import config_model, deploy
 from ciu.deploy_pkg import profiles as profiles_pkg
 from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
-from _layout import stack_dir
+from _layout import instance_stack_dir
 from tls_edge_cli import cli, config
 
 
@@ -70,7 +70,7 @@ def _tracked_stack_files() -> list[Path]:
 
 
 def _case_root(tmp_path: Path, override: str) -> tuple[Path, Path]:
-    root = stack_dir(tmp_path / "instance")
+    root = instance_stack_dir(tmp_path / "instance")
     stack_dir = root / "ciu-stack"
     for relative in _tracked_stack_files():
         source = REPO_ROOT / relative
