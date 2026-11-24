@@ -1043,9 +1043,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 
   **Ordering (CIU-227, normative).** Every precondition a hostdir's creation
   depends on is evaluated BEFORE the directory exists, and the S6.5 helper's own
-  preconditions (S6.5) are among them. A run that is refused MUST leave the
-  filesystem unchanged; the refusal may never leave a directory whose ownership
-  the next run refuses. A `--dry-run` creates no hostdir at all: it resolves,
+  preconditions (S6.5) are among them. Each directory is checked on its own
+  (the check is per directory, not a two-pass walk): a directory is created only
+  once every precondition of ITS creation and ownership has been evaluated, and a
+  refusal may never leave a directory whose ownership the next run refuses.
+  Directories created earlier in the same walk (their ownership already
+  applied) remain and pass the next run. A `--dry-run` creates no hostdir at all: it resolves,
   validates and reports every declaration (including the S6.6 seed check and the
   incompatible-ownership refusal above) and still performs the S6.2 rewrite.
 - **S6.4** `--reset` removes `vol-*` dirs **of the stack directory** (resolved
@@ -3945,7 +3948,7 @@ It creates no hostdir, materializes no secret, writes no rendered
 compose/overlay/configfile, executes no hook `run()`, writes no `__pycache__`
 beside an imported hook, and never contacts Docker. This is what makes it a
 substitute for using `ciu up --dry-run` as a validation tool: `--dry-run`
-still creates hostdirs and runs `pre_secrets`/`pre_compose`; it skips an
+creates no hostdir (CIU-227) but runs `pre_secrets`/`pre_compose`; it skips an
 unmarked `post_compose` hook before import and runs one only under S9.6's
 literal `DRY_RUN_SAFE = True` opt-in. Compose up is skipped too.
 

@@ -984,16 +984,6 @@ importing an unsafe hook, so import-time side effects are skipped too. This is
 an explicit hook-author contract, not an inference from a function name or
 its return value.
 
-Hostdirs were the one preparation step where that "not read-only" argument did
-not hold, and CIU-227 withdrew it: a bind source is not preparation the render
-depends on (the S6.2 rewrite needs only the RESOLVED path), and a directory a
-refused run leaves behind becomes the next run's `[S6.3] Existing hostdir has
-incompatible ownership` refusal. `--dry-run` therefore resolves, validates and
-reports every hostdir declaration (`Would create: <path>`, plus whether the
-S6.5 helper would be needed) and creates nothing. `_prepare_only`, which renders
-a stack for a real start (CIU-141), keeps creating its declared hostdirs — it
-is a preparation seam, not a dry run.
-
 ## Why CIU owns service identity queries
 
 Names such as Compose project, container, network, internal host, and port are

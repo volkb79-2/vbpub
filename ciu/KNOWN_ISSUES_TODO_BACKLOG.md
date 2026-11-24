@@ -7233,6 +7233,33 @@ asserts the rendered path and the ABSENT directory (that run is a dry run), and
 test_hostdir_permission_fallback_targets_physical_path` sets the S6.5
 precondition its foreign ownership now requires before the first directory exists.
 
+**Known limits and follow-ups (Opus review r1, 2026-11-24; not blocking).**
+- **L1.** A failure AFTER `mkdir` that is not a precondition (the helper's
+  `docker run` when the daemon is unreachable or `alpine` is not pullable, or
+  `copytree`) still leaves a runner-owned directory the next run refuses with
+  S6.3. Follow-up: on any exception between `mkdir` and the end of
+  `_apply_ownership`, remove a directory this call created (`rmdir`).
+- **L2.** CIU-231's refusal also fires for an explicit `--phases`/`--profile`
+  that selects nothing when run from inside a stack dir, and the `--dir .`
+  hint does not fit that case; any directory with a `docker-compose.yml` counts
+  as a stack directory. Optional follow-up: refuse only when no
+  `--phases`/`--profile` was given.
+- **L3.** A non-root process with an effective CAP_CHOWN, or on a filesystem
+  that ignores chown, used to need no helper and is now refused when
+  `CGROUP_PARENT_DEV_INTERACTIVE` is unset. By design (known limit); no
+  machinery added.
+- **L4.** `tls-edge/docs/INSTALL.md:418` and
+  `voice-screen-share/jitsi-server/README.md:42` still describe the CIU-227
+  workaround; for the edge controller after the ciu release that carries this
+  fix.
+- NITs (r1): `and not _prepare_only` in the Step-8 `plan_only` expression is
+  redundant (`prepare_stack` never passes `dry_run`); the `.slice` assertion
+  proves nothing on two of the three refusal messages; the S6.3 test reads the
+  run's uid/gid; a dry run does not catch two declarations of the same path;
+  the helper precondition is checked twice per helper use (repeated warning);
+  the remedy's example slice name is the estate's own and will be copied.
+  Source: `~/core-runs/ciu227-review-r1.md`.
+
 ## CIU-228 — a relative `--dir` with `--root-folder` fails with `[no-ciu-root]`
 
 **Status:** OPEN (filed 2026-11-24, from vbpub-edge; judged a bug, not a vss limit); severity: Minor.

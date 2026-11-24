@@ -3870,7 +3870,7 @@ def _check_stack_config(
     Nothing here creates a hostdir, materializes a secret, writes a rendered
     compose/overlay/configfile, executes a hook ``run()``, or talks to Docker.
     ``engine.main_execution(dry_run=True)`` is NOT an implementation option:
-    it still creates hostdirs at its Step 8 and still runs every
+    it creates no hostdir (CIU-227) but still runs every
     pre_secrets/pre_compose/post_compose hook for real, skipping only
     ``docker compose up`` — the exact behaviour CIU-QOL-12 exists to give
     consumers an alternative to.
@@ -4233,7 +4233,7 @@ def action_check(
     secret is materialized, no compose/overlay/configfile is written, no hook
     ``run()`` executes, and Docker is never contacted. That is what makes this
     a usable substitute for `ciu up --dry-run` as a validation tool — the
-    dry-run path still creates hostdirs and still runs hooks for real.
+    dry-run path creates no hostdir (CIU-227) but still runs hooks for real.
 
     Exit codes are S13.4's, unchanged: ``0`` clean · ``1`` **live probe
     failure only** (``--live``) · ``2`` any static configuration error,

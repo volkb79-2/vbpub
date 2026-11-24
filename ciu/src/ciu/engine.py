@@ -962,8 +962,8 @@ def create_hostdirs(
             )
         return src
 
-    def _seed(path: Path, seed_rel: str, uid: int, gid: int, mode: int) -> None:
-        shutil.copytree(_seed_source(seed_rel), path, dirs_exist_ok=True)
+    def _seed(path: Path, src: Path, uid: int, gid: int, mode: int) -> None:
+        shutil.copytree(src, path, dirs_exist_ok=True)
         _apply_ownership(path, uid, gid, mode)
 
     def _create_dir(path: Path, uid: int, gid: int, mode: int, seed_rel: Optional[str]) -> None:
@@ -992,15 +992,16 @@ def create_hostdirs(
             )
 
         _require_helper_preconditions(uid, gid)
+        # S6.6: a missing seed is refused BEFORE the directory exists in both
+        # modes, so it never leaves an unchowned runner-owned directory (CIU-227).
+        seed_src = _seed_source(seed_rel) if seed_rel else None
         if plan_only:
-            if seed_rel:
-                _seed_source(seed_rel)   # S6.6: the same refusal a real run gives
             print(f"[INFO]   Would create: {path} ({uid}:{gid}, {oct(mode)})", flush=True)
             created_count += 1
             return
         path.mkdir(mode=mode, parents=True, exist_ok=True)
-        if seed_rel:
-            _seed(path, seed_rel, uid, gid, mode)
+        if seed_src is not None:
+            _seed(path, seed_src, uid, gid, mode)
         _apply_ownership(path, uid, gid, mode)
         print(f"[INFO]   Created: {path} ({uid}:{gid}, {oct(mode)})", flush=True)
         created_count += 1

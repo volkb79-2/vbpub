@@ -94,7 +94,15 @@ the technical detail below it.
   identity, never defaulted. `--dry-run` resolves, checks and reports every
   declaration (`Would create ...`, `S6.5 root helper REQUIRED/not needed`),
   including the S6.6 seed and the S6.3 refusals, and still rewrites each value
-  to its absolute physical path (S6.2).
+  to its absolute physical path (S6.2). The S6.6 seed check now also runs before
+  `mkdir` in a real run (a mistyped `seed` used to leave an unchowned
+  runner-owned directory, the same symptom). The ordering is per directory, not a
+  two-pass walk: a directory created earlier in the same walk with ownership
+  already applied remains and passes the next run. The stale statements that
+  `--dry-run` creates hostdirs were corrected in SPEC S13.4a, `docs/FEATURES.md`
+  and two `deploy.py` docstrings. Not covered (follow-up): a failure AFTER
+  `mkdir` that is not a precondition (the helper's `docker run`, `copytree`)
+  still leaves a runner-owned directory.
 - CIU-230: the S6.5 root helper's refusals now carry their remedy. Each names
   `CGROUP_PARENT_DEV_INTERACTIVE`, the expected value shape (a LOADED `.slice`
   unit name) and the command that lists candidates
@@ -108,8 +116,9 @@ the technical detail below it.
 - CIU-227/230/231: `tests/tests/test_ciu_227_230_hostdir_preconditions.py`
   covers the ownership-need derivation, the refuse-fix-rerun sequence with no
   manual cleanup, the plan-only (dry-run) mode against both a missing and a
-  satisfiable precondition, the S6.6/S6.3 refusals under plan mode, the Step-8
-  wiring, and the three remedy texts (plus a bare-message control that fails
+  satisfiable precondition, the S6.6/S6.3 refusals under plan mode, a missing
+  seed in a real run, the S6.5 tier resolved once for several hostdirs, the
+  Step-8 wiring for both a dry run and a real run, and the three remedy texts (plus a bare-message control that fails
   them). `tests/tests/test_ciu_231_implicit_stack_selection.py` covers the
   refusal inside a stack dir, its shipped-stack form, and the three rc-0 cases
   that stay unchanged. CIU-227 flipped one pinned expectation in

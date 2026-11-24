@@ -149,6 +149,49 @@ def test_plan_only_still_evaluates_the_seed_and_incompatible_refusals(
     assert foreign.is_dir()                                  # untouched
 
 
+def test_a_missing_seed_is_refused_before_the_directory_exists(
+    tmp_path, monkeypatch, unprivileged,
+):
+    """S6.6 in a REAL run: a mistyped seed must not leave an unchowned runner-owned dir.
+
+    Before this check moved ahead of ``mkdir`` the directory was created, the seed
+    refused, and the NEXT run died on ``[S6.3] Existing hostdir has incompatible
+    ownership`` -- CIU-227's own symptom.
+    """
+    monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+    monkeypatch.setattr(engine.governance, "check_slice_unit", lambda _name: (True, "loaded"))
+    monkeypatch.setattr(engine.os, "chown", lambda *_a: None)
+
+    with pytest.raises(ValueError, match=r"\[S6\.6\] hostdir seed directory not found"):
+        engine.create_hostdirs(
+            _config({"data": {"path": "", "seed": "does-not-exist"}}),
+            tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+        )
+    assert not (tmp_path / "vol-api-data").exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_helper_precondition_is_resolved_once_for_several_hostdirs(
+    tmp_path, monkeypatch, unprivileged,
+):
+    """Two foreign-owned hostdirs resolve the S6.5 tier ONCE and both are created."""
+    monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+    monkeypatch.setattr(engine.governance, "check_slice_unit", lambda _name: (True, "loaded"))
+    monkeypatch.setattr(engine.os, "chown", lambda *_a: None)
+    calls: list[str] = []
+    real = engine._root_helper_cgroup_parent
+    monkeypatch.setattr(engine, "_root_helper_cgroup_parent",
+                        lambda: calls.append("resolved") or real())
+
+    engine.create_hostdirs(
+        _config({"data": "", "logs": ""}), tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+    )
+
+    assert (tmp_path / "vol-api-data").is_dir()
+    assert (tmp_path / "vol-api-logs").is_dir()
+    assert calls == ["resolved"]                            # memoised, not per directory
+
+
 def test_ciu_230_every_refusal_names_the_variable_shape_and_remedy(monkeypatch):
     """CIU-230: each refusal carries all three remedy facts, including the finder.
 
@@ -185,8 +228,12 @@ def test_ciu_230_every_refusal_names_the_variable_shape_and_remedy(monkeypatch):
         assert_full_remedy(str(bare))                        # controlled-wrong message
 
 
-def test_up_dry_run_reaches_step_8_in_plan_only_mode(monkeypatch, tmp_path):
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_up_reaches_step_8_in_plan_only_mode_only_for_a_dry_run(monkeypatch, tmp_path, dry_run):
     """The Step-8 wiring: the mode follows the run kind, not a constant.
+
+    A REAL ``ciu up`` (``dry_run=False``) must create its hostdirs: a constant
+    ``plan_only=True`` would leave Docker to create the bind sources root-owned.
 
     ``prepare_stack`` (a render for a REAL start) still creates its hostdirs;
     that is pinned by ``test_ciu_engine_execution_boundaries.py::
@@ -200,13 +247,19 @@ def test_up_dry_run_reaches_step_8_in_plan_only_mode(monkeypatch, tmp_path):
     (stack / "compose.yml").write_text("services:\n  api:\n    image: x\n", encoding="utf-8")
     _stub_pipeline(monkeypatch)
     seen: list[bool] = []
-    monkeypatch.setattr(
-        engine, "create_hostdirs",
-        lambda _config, _dir, *, repo_root, plan_only=False: seen.append(plan_only),
-    )
 
-    engine.main_execution(
-        stack, compose_file="compose.yml", dry_run=True, define_root=tmp_path,
-        skip_hooks=True, skip_secrets=True,
-    )
-    assert seen == [True]
+    class _StopAfterStep8(Exception):
+        """Step 8 is the unit under test; later steps need a full project."""
+
+    def _record(_config, _dir, *, repo_root, plan_only=False):
+        seen.append(plan_only)
+        raise _StopAfterStep8
+
+    monkeypatch.setattr(engine, "create_hostdirs", _record)
+
+    with pytest.raises(_StopAfterStep8):
+        engine.main_execution(
+            stack, compose_file="compose.yml", dry_run=dry_run, define_root=tmp_path,
+            skip_hooks=True, skip_secrets=True,
+        )
+    assert seen == [dry_run]
