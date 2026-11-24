@@ -113,6 +113,18 @@ class StateMachineTests(unittest.TestCase):
         self.assertEqual(host.value("dev-buildkitd.slice", "memory.high"), "max")  # only gates + background
         self.assertEqual(host.value("dev-interactive.slice", "memory.high"), "max")
 
+    def test_no_memory_high_stage_when_the_high_tiers_are_empty_as_on_dedicated_dev(self) -> None:
+        host = FakeHost(self)
+        guard = host.guard("enforce", high_tiers=())
+        guard.tick(0.0)
+        t = drive(host, guard, 12, share_mem=0.5)  # stage 1 still applies
+        self.assertEqual(host.value("dev-gates.slice", "cpu.weight"), "1")
+        drive(host, guard, 31, start=t, share_mem=0.5)
+        for tier in ("dev-gates.slice", "dev-background.slice", "dev-buildkitd.slice", "dev-interactive.slice"):
+            self.assertEqual(host.value(tier, "memory.high"), "max", tier)
+        self.assertFalse([k for k in guard.owned_keys() if k.endswith("/memory.high")])
+        self.assertEqual(GUARD.HIGH_TIERS, ("dev-gates.slice", "dev-background.slice"))  # other roles keep the stage
+
     def test_memory_high_never_goes_below_the_floor(self) -> None:
         host = FakeHost(self)
         for tier in ("dev-gates.slice", "dev-background.slice"):

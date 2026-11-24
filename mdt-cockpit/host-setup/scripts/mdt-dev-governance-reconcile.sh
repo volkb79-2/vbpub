@@ -317,6 +317,7 @@ fi
 # Raising and every min/low write apply directly; a LOWER memory.max is written only when memory.current is at
 # least 64M below the target, otherwise memory.reclaim runs in chunks of <= 256M (at most 8 per run) and the
 # lowering is deferred (recorded in /run/mdt/reconcile/memory-deferred; the timer retries).
+_cv_dir="${MDT_RECONCILE_DIR:-/run/mdt/reconcile}"   # check.sh reads <dir>/memory-deferred
 _mdt_converge_prop() { # <unit> <cgroup dir> <Property> <file>
   local unit="$1" dir="$2" prop="$3" file="$4" want cur now i
   want=$(systemctl show -p "$prop" --value "$unit" 2>/dev/null) || return 0
@@ -333,7 +334,7 @@ _mdt_converge_prop() { # <unit> <cgroup dir> <Property> <file>
       now=$(cat "$dir/memory.current" 2>/dev/null || echo 0)
     done
     if [ "$now" -gt $(( want - 67108864 )) ]; then
-      mkdir -p /run/mdt/reconcile && echo "$unit $want" >> /run/mdt/reconcile/memory-deferred
+      mkdir -p "$_cv_dir" && echo "$unit $want" >> "$_cv_dir/memory-deferred"
       log "NOTE: $unit memory.max $cur -> $want deferred (memory.current $now); the timer retries"
       return 0
     fi
@@ -346,7 +347,7 @@ _mdt_converge_prop() { # <unit> <cgroup dir> <Property> <file>
   fi
 }
 if [ "${HOST_ROLE:-}" = dedicated-dev ]; then
-  rm -f /run/mdt/reconcile/memory-deferred
+  rm -f "$_cv_dir/memory-deferred"
   for _cv_unit in dev.slice dev-interactive.slice dev-background.slice dev-gates.slice dev-buildkitd.slice system.slice user.slice \
       $(for _cv_f in "${MDT_SYSTEMD_DIR:-/etc/systemd/system}"/*.service.d/95-mdt-memory-min.conf; do [ -f "$_cv_f" ] && basename "$(dirname "$_cv_f")" | sed 's/\.d$//'; done); do
     _cv_cg=$(systemctl show -p ControlGroup --value "$_cv_unit" 2>/dev/null)
