@@ -235,7 +235,7 @@ behaviour (B12): `dr-state list --json`, `check --json`, `/proc/cmdline`, `findm
 - Follow-up apt in the recovered BE makes the next checkpoint.
 - Non-`os-*` clone name: unmanaged; `set-default` inside it renames it (U4); `snapshot` refuses until then.
 - Delete and prune: a checkpoint with clones is refused, naming them; `prune --dry-run` matches core D20.
-- ZBM snapshot interaction: a snapshot made in ZBM's UI is listed; `delete` and `prune` refuse its BE, naming it;
+- ZBM snapshot interaction: a snapshot made in ZBM's UI is not listed; `delete` and `prune` refuse its BE, naming it;
   after the operator destroys it, the retry succeeds.
 - Kernel coverage: old and new kernels boot, stable and backports where the ZFS module supports them.
 - Feature ordering recorded; `swapon --show` empty.
