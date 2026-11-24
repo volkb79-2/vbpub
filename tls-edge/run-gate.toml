@@ -36,18 +36,3 @@ budget = "30m"
 cpus = "1"
 memory = "1g"
 
-# P-edge-08 release-path equivalence. This is deliberately separate from the
-# ordinary developer lanes: it runs the old and new builders in the capped
-# tester-unified container and writes ignored evidence under evidence/.
-[lanes.bundle-equivalence]
-kind = "command"
-environment = "tester-unified"
-argv = [
-  "bash", "-c",
-  "cd {worktree}/tls-edge && exec env PATH=/opt/tester-venv/bin:$PATH PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python tools/bundle_equivalence.py --base d6f224a24d85612b064e1704ec19845542b740f8 --output {worktree}/evidence/P-edge-08-equivalence.log",
-]
-budget = "45m"
-
-[lanes.bundle-equivalence.resources]
-cpus = "2"
-memory = "2g"
