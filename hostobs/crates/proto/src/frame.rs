@@ -76,7 +76,10 @@
 
 use std::collections::HashSet;
 
-use crate::dict::{Aggregation, Dictionary, Entry, MetricKind, MetricValueType};
+use crate::dict::{
+    aggregation_from_code, metric_kind_from_code, Aggregation, Dictionary, Entry, MetricKind,
+    MetricValueType,
+};
 use crate::error::{ProtoError, MAX_FRAME_BYTES};
 use crate::quality::Quality;
 use crate::read::Cursor;
@@ -772,7 +775,7 @@ fn decode_column_body(body: &[u8], n_rows: usize) -> Result<Column, ProtoError> 
     let mut cursor = Cursor::new(body, "column section");
     let metric = cursor.u32()?;
     let value_type = MetricValueType::from_code(cursor.u8()?)?;
-    let kind = MetricKind::from_code(cursor.u8()?)?;
+    let kind = metric_kind_from_code(cursor.u8()?)?;
     let pad = cursor.u16()?;
     if pad != 0 {
         return Err(ProtoError::ColumnReserved { metric, pad });
@@ -849,7 +852,7 @@ fn decode_time_body(body: &[u8], n_buckets: usize) -> Result<Vec<TimeBucket>, Pr
     }
     let mut agg = Vec::with_capacity(n_buckets);
     for _ in 0..n_buckets {
-        agg.push(Aggregation::from_code(cursor.u8()?)?);
+        agg.push(aggregation_from_code(cursor.u8()?)?);
     }
     cursor.pad_to_end(8)?;
     Ok(real_ns
@@ -1488,8 +1491,8 @@ mod tests {
         FRAME_HEADER_LEN, HEADER_BODY_LEN, MAGIC, MAX_FRAME_BYTES, PROTO_MAJOR, PROTO_MINOR,
     };
     use crate::dict::{
-        Aggregation, Dictionary, Entry, MetricFacts, MetricKind, MetricScope, MetricSource,
-        MetricUnit, MetricValueType,
+        aggregation_from_code, Aggregation, Dictionary, Entry, MetricFacts, MetricKind,
+        MetricScope, MetricSource, MetricUnit, MetricValueType,
     };
     use crate::error::ProtoError;
     use crate::quality::Quality;
@@ -3559,7 +3562,7 @@ mod tests {
         ];
         for (metric, kind, mask) in permitted {
             for code in 0..6u8 {
-                let agg = Aggregation::from_code(code).expect("a defined aggregation");
+                let agg = aggregation_from_code(code).expect("a defined aggregation");
                 let mut block = history_block(&[agg], vec![column_of(metric, kind, 1)]);
                 block.dictionary = Some(table.clone());
                 let decoded = decode_block(&history_bytes(&block));
