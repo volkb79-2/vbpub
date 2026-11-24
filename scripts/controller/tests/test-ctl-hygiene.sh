@@ -182,7 +182,7 @@ new_tree b1-norepo; rm -rf "$R"; n_lines 71 > "$M/MEMORY.md"
 hyg; has 'M1' 'M1 still runs without a repository'; lacks 'B1' 'B1 needs a repository'
 
 # --- F5: a failing rule group becomes an `error` finding and the later groups still run; a bad date does not stop anything
-new_tree err; n_lines 71 > "$M/MEMORY.md"; blocks 3 > "$S/HANDOFF.md"
+new_tree rule-errors; n_lines 71 > "$M/MEMORY.md"; blocks 3 > "$S/HANDOFF.md"
 TODAY=not-a-date hyg
 has 'error HYGIENE_TODAY: ValueError' 'a bad HYGIENE_TODAY is reported'; has 'M1 ' 'the rules still run after a bad date'; has 'H1 ' 'every rule group still runs'
 if [[ $(id -u) != 0 ]]; then   # root reads a mode-000 directory anyway
