@@ -1325,7 +1325,7 @@ def test_carry_forward_requires_native_r2_and_list_pending_context(
         str(inside),
     )
     assert code == 2
-    assert "requires a native R2 mutation lane" in error
+    assert "require a native R2 mutation lane" in error
 
 
 def test_carry_forward_source_must_be_inside_the_checkout(
