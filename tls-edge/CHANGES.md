@@ -18,6 +18,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - An override that sets `[tls_edge.hooks] pre_secrets` must keep `hooks/validate_edge.py` in that list; a 3.1
   override that replaced the list is refused until the entry is added back.
 
+### Testing
+- Added standalone/ciu port-plan and renderer oracles plus D10's classified coverage-exclusion policy.
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _support  # noqa: F401
 from dr_state import errors, cli
@@ -76,19 +77,52 @@ class ExitTranslationTest(unittest.TestCase):
         self.assertIn("Traceback (most recent call last)", stderr)
         self.assertEqual(self.run_error(errors.Refused("unsafe"), debug=True), (3, "dr-state: unsafe\n"))
 
-    def test_dispatch_and_core_only_main_outcomes(self) -> None:
+    def test_dispatch_and_missing_command_outcomes(self) -> None:
         stderr = io.StringIO()
         self.assertEqual(cli.run(("list",), lambda invocation: 0, stderr=stderr), 0)
         self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(cli.run((), lambda invocation: 0, stderr=stderr), 2)
+        self.assertIn("command is required", stderr.getvalue())
+
+    def test_json_is_refused_before_dispatch_in_both_positions(self) -> None:
+        dispatch = mock.Mock()
+        for argv in (
+            ("--json", "list"),
+            ("list", "--json"),
+        ):
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                self.assertEqual(cli.run(argv, dispatch, stderr=stderr), 4)
+                self.assertEqual(
+                    stderr.getvalue(),
+                    "dr-state: JSON output is not supported in this runtime\n",
+                )
+        dispatch.assert_not_called()
+
+    def test_json_after_note_is_the_note_value(self) -> None:
+        seen: list[cli.Invocation] = []
+
+        def dispatch(invocation: cli.Invocation) -> int:
+            seen.append(invocation)
+            return 0
+
+        stderr = io.StringIO()
+        self.assertEqual(
+            cli.run(("snapshot", "--note", "--json"), dispatch, stderr=stderr),
+            0,
+        )
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(seen[0].command, ("snapshot", "--note", "--json"))
+
+    def test_global_json_without_a_command_is_unsupported(self) -> None:
+        stderr = io.StringIO()
         original = cli.sys.stderr
         try:
             cli.sys.stderr = stderr
-            self.assertEqual(cli.main(("--json",)), 2)
-            self.assertEqual(cli.main(("list", "--json")), 2)
+            self.assertEqual(cli.main(("--json",)), 4)
         finally:
             cli.sys.stderr = original
-        self.assertIn("command is required", stderr.getvalue())
-        self.assertIn("implementation is not installed", stderr.getvalue())
+        self.assertIn("JSON output is not supported", stderr.getvalue())
 
 
 if __name__ == "__main__":
