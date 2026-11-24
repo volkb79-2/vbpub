@@ -124,18 +124,25 @@ Use this order for each implementation task.
    `CODEX_ROUTE=deepseek-github2`. OpenCode is available through
    `scripts/controller/opencode-impl.sh`. Codex stores its run
    stream and completion marker in `$CONTROLLER_RUNS_DIR` (default
-   `$CONTROLLER_HOME/runs/`); OpenCode uses `$CONTROLLER_HOME/runs/`. Run long
-   jobs detached and read the `.done` marker to learn the child process exit
-   status. Codex resumes a run on the same
+   `$CONTROLLER_HOME/runs/`); OpenCode uses `$CONTROLLER_HOME/runs/`. Every
+   Codex exec path — new, manual resume, and automatic continuation — derives
+   `<run>.last.txt` from the last completed `agent_message` item in that
+   invocation's JSON stream. A stream with no final assistant text leaves no
+   `.last.txt`; an older file is removed. Run long jobs detached and read the
+   `.done` marker to learn the child process exit status. Codex resumes a run on the same
    thread up to `CODEX_AUTO_CONTINUE` times after a reasoning-only completed
    turn; the default is two for DeepSeek and zero for Luna. The `.done` marker
-   records `EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`, and the attempt log is
-   `<run>.autoresume.log`. A new run name with an existing `<run>.done`,
+   records `EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k> EFFORT=<value>`, and the
+   `EFFORT` field is Codex-only; Pi records no thinking level in its `.done`
+   marker. `CODEX_EFFORT` accepts only `minimal`, `low`, `medium`, `high`,
+   `xhigh` or `max`. The attempt log is `<run>.autoresume.log`. A new run name with an existing `<run>.done`,
    `<run>.jsonl`, or `<run>.err` record is refused before the child starts and
    all existing paths are printed. `CONTROLLER_RUN_FORCE=1` permits replacing
    evidence for a new run that was intentionally abandoned or failed. Resume
    mode does not take that new-run guard: it continues the same thread over an
-   existing stream and writes a fresh completion marker when it finishes.3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
+   existing stream and writes a fresh completion marker when it finishes.
+
+3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
    name, exact worktree path, route, and absolute report paths. It reports runs
    without `.done` as running; for completed runs it checks intent-only
    endings, reasoning-end, usage-limit retry text, missing turn completion,
@@ -246,6 +253,7 @@ for the safety checks.
 | `deepseek-volker`, `deepseek-github2` | `codex-impl.sh` | Codex pinned to the named account. |
 | `opencode` | `opencode-impl.sh` | OpenCode using its configured Open Design provider. |
 | `luna` | `codex-impl.sh` | Luna Codex route. |
+| `sol` | `codex-impl.sh`, `codex-review.sh` | Independent Sol review route; `codex-review.sh` selects it. |
 
 The existing `luna` route remains available for side-by-side implementation
 runs while the favored Pi route gathers operating experience.
@@ -255,7 +263,7 @@ The `deepseek` route uses the two locally configured Codex homes:
 `CODEX_HOME_DEEPSEEK_VOLKER` or `CODEX_HOME_DEEPSEEK_GITHUB2` to override either
 home. Both homes must have their own catalog with a null `tool_mode`; the
 selected home's catalog is checked before Codex starts. The model defaults to
-`deepseek-v4.1-flash-eco` at `high` effort.
+`deepseek-v4.1-flash-eco` at `max` effort. Set `CODEX_EFFORT` to override it.
 
 The gateway has no quota endpoint, so the wrapper never probes it. It reads
 only its local state and chooses the available account with the oldest
@@ -313,14 +321,19 @@ Add a numeric `window_end_epoch` field to an account when recording its
 current weekly window end. The state schema rejects unknown fields so account
 keys cannot be stored there by mistake.
 
-`CODEX_HOME_OVERRIDE` is honoured only on the luna route.
+`CODEX_HOME_OVERRIDE` wins on Luna and an explicit `CODEX_ROUTE=sol`
+`codex-impl.sh` run. `codex-review.sh` deliberately chooses
+`CODEX_HOME_REVIEW` (default `$HOME/.codex`), which wins for reviews and keeps
+a caller's override from redirecting them. Luna defaults to `$HOME/.codex2`
+(or `CODEX_HOME_LUNA`); an explicit Sol `codex-impl.sh` run defaults to
+`$HOME/.codex` (or `CODEX_HOME_REVIEW`).
 
 ### Pi on Open Design
 
 `PI_ROUTE=deepseek-pi` selects between the same two Open Design accounts using
 the shared account state and alternation logic. Use
 `PI_ROUTE=deepseek-pi-volker` or `PI_ROUTE=deepseek-pi-github2` to pin an
-account. The default model is `deepseek-v4.1-flash-eco` at `high` thinking;
+account. The default model is `deepseek-v4.1-flash-eco` at `max` thinking;
 override these with `PI_MODEL` and `PI_THINKING`. Pi receives the selected
 provider/model pair (`opendesign_volker/<model>` or
 `opendesign_github2/<model>`).

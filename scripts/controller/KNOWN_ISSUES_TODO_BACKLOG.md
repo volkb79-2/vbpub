@@ -46,11 +46,11 @@ together.
 | CTL-32 | `ctl-state-backup.sh` has no restore helper, and keys/pins are outside the archive by design | Nice-to-have | OPEN |
 | CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | DONE 2026-11-18 |
 | CTL-37 | A run is ten loose files keyed by a caller name | Must-fix | OPEN 2026-11-24 (Opus design review) |
-| CTL-38 | Auto-continued Codex runs lose the final answer | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-38 | Auto-continued Codex runs lose the final answer | Must-fix | FIXED 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; r1 follow-ups 93fe8963d, 2f52b9793) |
 | CTL-39 | Routes in about nine places | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-40 | agctl package; bash frozen | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-41 | ctl-clean treats the symptom | Should-fix | OPEN 2026-11-24 (Opus design review) |
-| CTL-42 | Limit note on the launch path | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-42 | Limit note on the launch path | Should-fix | PARTIAL 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; sol + wrapper wording fixed; limits-reader and OD ordering remain OPEN) |
 | CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-44 | HANDOFF is an append-only log | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-45 | Launcher twins | Should-fix | OPEN 2026-11-24 (Opus design review) |
@@ -64,6 +64,8 @@ together.
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
+| CTL-56 | P-plat-04 r1 leftovers: locale oracle, interim-message fake, misplaced Pi mutant reference, Unicode continuation digits | Should-fix | OPEN 2026-11-24 |
+| CTL-61 | P-plat-21 r1 leftovers: resume-helper prompt limits, test gaps, fail-open input check, live smoke before relying on clear-resume (B2-B13) | Should-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1518,9 +1520,37 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md H1
 
 ## CTL-38 — auto-continued Codex runs lose the final answer
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED 2026-11-24 (commit
+`0c366bf2fa11743281cf4bbcddb0cc981ebba5d1`; filed from the same-day design
+review).
 
-`resume` and continue pass no `-o`; derive `last.txt` from the stream.
+A new Codex run used `-o` for `.last.txt`, but manual `resume` and automatic
+continuation did not. A reasoning-only first turn therefore left either no final
+text or the previous invocation's text, including after the continuation produced
+the actual final answer.
+
+`codex-impl.sh` now has one `codex_extract_last_text` function used after the new,
+manual-resume and each auto-continue child exits. It takes the last completed
+`agent_message` item from that child's JSON stream, replaces `.last.txt`
+atomically, and removes an older file when the stream has no final text. The new
+run no longer passes `-o`; the child exit and `.done` classification are unchanged.
+
+`check_ctl38_last_text_all_paths` covers `FINAL-A` to `FINAL-B` on resume across a
+reasoning-only first turn, automatic continuation, and stale-file removal for a
+no-text stream. The wrapper suite also asserts a positive new-run extraction.
+A hand mutant that removed the resume extraction was killed by the focused gate
+test (`CTL-38 resume did not derive exactly FINAL-B from its stream`).
+
+Review r1 closed two remaining gaps. Commit `93fe8963d` removes the old
+`.done` and `.last.txt` before a resume launch and extracts from the current
+stream on the EXIT/signal path; its focused test holds a resumed child, verifies
+the old text is gone, recreates it once, and then SIGTERMs the wrapper.
+Commit `2f52b9793` extracts from this invocation's accumulated `$name.jsonl`
+after an auto-continuation, so a later empty attempt does not erase text already
+produced by attempt 1.
+
+**Close when.** Done: all Codex exec paths derive `.last.txt` from their own
+stream, and the no-text and stale-file cases are tested.
 
 Source: .controller-state/design-review-2026-11-24/controller-tooling.md H1
 
@@ -1550,9 +1580,32 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md H4
 
 ## CTL-42 — limit note on the launch path
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** PARTIAL 2026-11-24 (commit
+`0c366bf2fa11743281cf4bbcddb0cc981ebba5d1`; sol and wrapper wording fixed,
+limits-reader and Open Design ordering remain open); filed from the same-day
+design review.
 
-Drop `codex_limit_note`; merge sol and the wording; the reader uses CTL-37/39 and covers pi; OD "blocked" orders and never refuses.
+The unmerged `ctl-routes-limits-20261118` branch was reviewed as two separable
+changes. Its useful route correction was re-applied by hand: `codex-impl.sh`
+accepts `sol` with the independent review home, Luna defaults to `$HOME/.codex2`,
+and `CODEX_HOME_OVERRIDE` wins for Luna and explicit `CODEX_ROUTE=sol` Codex
+launches. `codex-review.sh` deliberately chooses `CODEX_HOME_REVIEW`, which wins
+for reviews. The env example, config/consumer docs, and AGENTS.md wording now
+name the wrapper rather than a Codex home.
+
+The branch's launch-path limits note, standalone limits reader, reader test, and
+detached reader fix were not carried. Tests `route-home-luna`, `route-home-sol`,
+both override cases, and the review-route assertion exercise the salvaged
+behavior. A hand mutant restoring the Pi Open Design default from `max` to `high`
+was killed by the focused gate test.
+
+Remaining open work: make the read-only limits reader consume the planned
+`routes.toml` and run registry and cover Pi routes, and make Open Design
+`blocked_until` an ordering hint rather than a refusal based on stale local state.
+
+**Close when.** The limits reader has the new sources and Pi coverage, and the
+Open Design picker treats local blocking as ordering with the provider's 402 as
+authority.
 
 Source: .controller-state/design-review-2026-11-24/controller-tooling.md H5
 
@@ -1660,9 +1713,28 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 
 Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
 
-## CTL-56 — P-plat-21 r1 leftovers (resume helpers)
+## CTL-56 — P-plat-04 r1 leftovers
 
-**Status:** OPEN (filed 2026-11-24 from the Opus r1 review `.controller-state/platform/reviews/plat-21-r1-opus.md`; F1-F3 fixed in fix round 1).
+**Status:** OPEN (filed 2026-11-24).
+
+- Finding 4: the locale test does not discriminate on glibc ≥2.28 or the
+  tester-unified `C.UTF-8` locale; the explicit ASCII digit list is correct, but
+  the oracle needs a locale where the old range admits `٣`, or a direct
+  validator-list check.
+- The CTL-38 fake resume stream has no interim `agent_message` before
+  `FINAL-B`, so a first-message-wins extractor could still pass.
+- CTL-42's text still cites the Pi `max` mutant, which belongs to the launcher
+  effort change rather than the route-salvage item.
+- `CODEX_AUTO_CONTINUE` is ASCII-checked in shell and then passed to Python
+  `int()`, which accepts Unicode digits; reject those explicitly at the wrapper
+  boundary.
+
+Source: P-plat-04 r1 Opus review findings 4 and 9, explicitly deferred by the
+controller.
+
+## CTL-61 — P-plat-21 r1 leftovers (resume helpers)
+
+**Status:** OPEN (filed 2026-11-24 from the Opus r1 and r2 reviews `.controller-state/platform/reviews/plat-21-r1-opus.md`, `plat-21-r2-opus.md`; F1-F3, R1 and R2 fixed).
 
 Not blocking, for `compact-resume.sh`, `clear-resume.sh`, `resume-lib.sh` and their tests:
 - **B2 prompt limits undocumented:** keep prompt and guidance short (the tmux client refuses a command line over about 16 KiB, "command too long"), no trailing `;` (tmux drops it as a command separator), no leading `/` or `!` (Claude Code treats them as commands) and no trailing `@mention` (Enter accepts the completion). Document in AGENTS.md; consider refusing such input with exit 2.
@@ -1671,6 +1743,11 @@ Not blocking, for `compact-resume.sh`, `clear-resume.sh`, `resume-lib.sh` and th
 - **B5 missing lib:** `source resume-lib.sh` failing under `set -u` ends as exit 3 "never idle" with nothing sent; use `|| exit 2`.
 - **B6 broad shellcheck disables:** the file-wide `disable=SC1091,SC2034,SC2154` in both helpers hides real unused/unassigned variables; run `shellcheck -x` in `tests/run-suite.sh` and narrow them.
 - **B7 DESIGN 6a:** a compaction is not a "fresh session" (step 3 framing); the SessionStart[compact] note of section 6.4 ("the handover predates it") will false-alarm on every deliberate compact; `agctl successor <pane> <prompt-file> [--clear]` needs a guidance argument for the default compact mode.
-- **B8 self-compaction example** uses the relative `scripts/controller/...`; the controller tools run from `.worktrees/controller-tools`, so give an absolute or tools-relative path.
+- **B8 self-compaction example** uses the relative `scripts/controller/...` and `>/dev/null 2>&1`: launched from the wrong cwd it fails invisibly after the session has ended its turn. Give an absolute or tools-relative path (the controller tools run from `.worktrees/controller-tools`) and log to a file.
+- **B9 fail-open input check:** a pane with NO `❯` row counts as ready (the cleared fixtures depend on it), so a permission or selection menu with an indented cursor could receive our Enter. Measure the real empty row (`❯` plus NBSP) and treat "no input row" as not ready.
+- **B10 live smoke before relying on clear-resume again:** neither helper's empty-input check has been observed on a live pane. `capture-pane -p` drops attributes, so dim placeholder or suggestion text in an empty input box (for example after `/clear`) reads as typed text: clear-resume would exit 5 after `/clear` and leave a cleared, prompt-less session. One operator-watched run of EACH helper settles it.
+- **B11 type/Enter race:** text the operator types between the third ready check and the send, or during the `type_pause` before Enter, merges into ours; inherent to polling, document it.
+- **B12 first-line-empty input:** an input whose first line is empty with text only on continuation lines (Shift+Enter first) reads as empty.
+- **B13 timeout classification:** `wait_idle` reports 3 or 5 from the LAST poll only, so a pane that had text for 29 min and was busy at the final poll reports 3 (cosmetic).
 
-Source: Opus r1 review of P-plat-21 at head 4b9563cbd.
+Source: Opus r1 review of P-plat-21 at head 4b9563cbd and r2 review at head b2162f3f1.

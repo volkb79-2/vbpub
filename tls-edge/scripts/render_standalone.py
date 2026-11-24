@@ -113,9 +113,19 @@ def load_config(stack_dir: Path, defaults_only: bool) -> dict:
     return config["tls_edge"]
 
 
-def _validate(cfg: dict, *, require_domain: bool) -> None:
+def _validate(
+    cfg: dict,
+    *,
+    require_domain: bool,
+    stack_dir: Path | None = None,
+) -> None:
     try:
-        edge_config.validate_config(cfg, require_domain=require_domain)
+        edge_config.validate_config(
+            cfg,
+            require_domain=require_domain,
+            stack_dir=stack_dir,
+            for_standalone=True,
+        )
     except edge_config.ConfigError as exc:
         sys.exit(f"error: {exc}")
     if cfg.get("secrets"):
@@ -185,7 +195,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.stack_dir, args.defaults_only)
-    _validate(cfg, require_domain=args.check)
+    _validate(cfg, require_domain=args.check, stack_dir=args.stack_dir)
     cfg["standalone"] = True
     if args.stamp:
         cfg["render_stamp"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")

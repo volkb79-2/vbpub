@@ -6,6 +6,30 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Launcher must-fixes (CTL-38, CTL-42 part 1)
+- CTL-38: every Codex exec path — new, manual resume, and automatic
+  continuation — now derives `<run>.last.txt` from the last completed
+  `agent_message` item in that invocation's JSON stream. A stream with no final
+  text removes a stale file; the old `.done` outcome remains unchanged.
+- Codex and Pi Open Design routes default to the catalog maximum `max` effort;
+  `CODEX_EFFORT` and `PI_THINKING` still override it. Codex `.done` appends
+  `EFFORT=<value>` after the historical fields; that field is Codex-only and
+  Pi records no thinking level in its `.done` marker.
+- `CODEX_EFFORT` accepts only `minimal`, `low`, `medium`, `high`, `xhigh` or
+  `max`; another value exits 2 before the owner record or child launch.
+- CTL-42 part 1: Codex accepts a `sol` route using `$HOME/.codex`, Luna defaults
+  to `$HOME/.codex2`, and `CODEX_HOME_OVERRIDE` wins on Luna and an explicit
+  `CODEX_ROUTE=sol codex-impl.sh` launch. `codex-review.sh` deliberately gives
+  `CODEX_HOME_REVIEW` precedence, so a caller's override cannot redirect a
+  review. Repository guidance names the wrappers rather than a Codex home. The
+  limits note and reader remain dropped.
+- Route/home migration: usage-limit recovery now accepts the review's `sol`
+  `.route` value. Previously started Luna threads under `$HOME/.codex` must be
+  resumed with `CODEX_HOME_LUNA="$HOME/.codex"`, because new Luna runs default
+  to `$HOME/.codex2`.
+- `gate-run.sh` validates `CONTROLLER_GATE_SLOTS` with explicit ASCII digit
+  lists, so a Unicode collation cannot admit a non-ASCII digit.
+
 ### Added
 - `compact-resume.sh <pane> <guidance-file> <prompt-file> <log>` (P-plat-21 r1): the DEFAULT successor restart, productized from the gitignored original (wait for idle, `/compact <guidance>`, wait for the compaction to finish, type the prompt file; context kept as a summary, background work survives; measured 442k -> ~60k in ~46 s). Exit codes 0, 2 (bad arguments or no pane), 3 (never idle), 4 (compaction unfinished), 5 (the input line never emptied: before every typed send the pane must be idle AND the input row, the last line starting with `❯`, empty), 6 (a send-keys call failed; text is sent after `--`, so a prompt starting with `-` survives). The footer markers, idle polling and log/pane checks moved into the sourced `resume-lib.sh`, which `clear-resume.sh` (the `/clear` clean-slate option) uses too. New `tests/test-compact-resume.sh` (stub `tmux`, `COMPACT_RESUME_*` seams); AGENTS.md, the `controller-handover` skill and the agctl DESIGN (verb `agctl successor <pane> <prompt-file> [--clear]`) updated.
 - `clear-resume.sh <pane> <prompt-file> <log>` (P-plat-21): the proven successor-restart helper for an interactive Claude Code session in tmux (wait for idle, `/clear`, wait for `ctx ?`, type the prompt file, Enter), from the gitignored program-directory original. Adds argument validation with a usage line, documented exit codes (0 sent; 2 bad arguments or no pane; 3 never idle, nothing sent; 5 input line never emptied; 6 a send-keys call failed), `set -u`, the footer markers as named variables (tied to Claude Code 2.1.331) and `CLEAR_RESUME_*` test seams. New `tests/test-clear-resume.sh` drives it against a stub `tmux`. Documented in AGENTS.md, the `controller-handover` skill and the agctl DESIGN (future verb `agctl successor`).

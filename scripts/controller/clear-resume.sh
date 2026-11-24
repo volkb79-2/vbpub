@@ -12,7 +12,8 @@ set -u
 # Exit codes: 0 prompt sent (a missing cleared marker only logs WARN); 2 bad arguments, unreadable
 # prompt file, unwritable log or no such pane (nothing sent); 3 pane never idle within 30 min
 # (nothing sent); 5 the input line never emptied (someone has text there; checked before /clear and
-# before the prompt, nothing is typed over it); 6 a send-keys call failed (nothing more is sent).
+# before the prompt, nothing is typed over it; also the pane still busy 30 min after /clear, prompt
+# not sent); 6 a send-keys call failed (nothing more is sent).
 # Progress goes to <log-file>. Footer markers and the shared idle logic: resume-lib.sh. Test seams (tests/test-clear-resume.sh): CLEAR_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,
 # FINAL_WAIT,CLEAR_TRIES}.
 RESUME_PREFIX=CLEAR_RESUME

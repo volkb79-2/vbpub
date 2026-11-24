@@ -79,27 +79,24 @@ caller records the route evidence and corrects or relaunches a mismatched
 invocation before assigning repository work; an agent's self-report is not the
 route evidence.
 
-For programmatic Codex invocations in this environment, always set
-`CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"`. Also set `CODEX_HOME`
-explicitly to `$HOME/.codex` or `$HOME/.codex2`, exactly as the operator
-directs; do not rely on an inherited value. Ordinary tasks use GPT-6-Luna at
-xhigh when that is the operator's route; programmatic reviews and plans use
-GPT-6-Sol at xhigh when directed. Keep the route, shared session database, and
-Codex home explicit:
+For programmatic Codex invocations in this environment, repository work MUST
+be launched through the controller wrapper with the route selected by name.
+Use `scripts/controller/codex-impl.sh` with `CODEX_ROUTE=luna`,
+`CODEX_ROUTE=deepseek-volker`, or `CODEX_ROUTE=deepseek-github2`; reviews use
+`scripts/controller/codex-review.sh`. The wrapper owns the profile-home and
+shared-session details. Do not export a Codex home by hand. Ordinary tasks use
+GPT-6-Luna at xhigh when that is the operator's route; programmatic reviews and
+plans use GPT-6-Sol at xhigh when directed.
 
 ```bash
-export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
-# Use "$HOME/.codex2" instead only when the operator directs.
-export CODEX_HOME="$HOME/.codex"
 printf '%s' "$PROMPT" |
   codex exec -m gpt-6-sol \
     -c 'model_reasoning_effort="xhigh"' \
     -
 ```
 
-For a Luna-routed task, use the same stdin form with `-m gpt-6-luna` and
-`-c 'model_reasoning_effort="xhigh"'`; choose `.codex` or `.codex2` as the
-operator directs.
+The direct form above is only for ad-hoc Codex work outside repository work,
+using the operator's active profile settings.
 
 ### Claude sessions
 
@@ -148,9 +145,6 @@ read-only sandbox first.
 Example, from the review worktree:
 
 ```bash
-export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
-# Use "$HOME/.codex2" instead only when the operator directs.
-export CODEX_HOME="$HOME/.codex"
 git rev-parse HEAD
 git status --short
 printf '%s' "$PROMPT" |
@@ -672,7 +666,7 @@ An interactive Claude Code session in a tmux pane can be restarted without the o
 click. Both helpers wait until the pane is idle (no busy marker for 3 checks, max 30 min), act,
 then type the prompt file's text and Enter; exit codes are in each script header (2: bad
 arguments or no pane, nothing sent; 3: never idle; compact only, 4: compaction unfinished;
-5: the input line never emptied; 6: a `tmux send-keys` call failed). Before EVERY typed send both
+5: the input line never emptied, or the pane stayed busy before the second send; 6: a `tmux send-keys` call failed). Before EVERY typed send both
 helpers wait until the pane is idle AND the input row (the last line starting with `❯`) is empty,
 so nothing is typed over text someone has in the input line.
 
@@ -700,7 +694,7 @@ so nothing is typed over text someone has in the input line.
   DETACHED (`setsid nohup scripts/controller/compact-resume.sh "$TMUX_PANE" <guidance>
   <prompt-file> <log> >/dev/null 2>&1 &`, never Bash `run_in_background`, which dies with the
   session), then ends its turn; the helper acts once it has ended.
-- **Limits:** the footer markers (`esc to interrupt`, `Compacting`, `ctx ?`; one copy in
+- **Limits:** the footer markers (`esc to interrupt`, `Compacting`, `ctx ?`, the input-row `❯`; one copy in
   `scripts/controller/resume-lib.sh`) are tied to Claude Code 2.1.331 and must be re-measured
   after an upgrade. Whether a cross-session message arriving in the gap between the restart and
   the prompt survives is untested, so a successor asks its peers to resend anything sent around
