@@ -167,11 +167,11 @@ def _override(body: str = "") -> str:
             "acme-tls requires the public HTTPS port to be 443",
         ),
         (
-            "calls-conflicts-with-https",
-            _override("[tls_edge.calls]\nenabled = true\npublic_port = 443\n"),
+            "calls-enabled-in-3-1",
+            _override("[tls_edge.calls]\nenabled = true\npublic_port = 8443\n"),
             "[tls_edge.ports]\nhttps = 443\n"
-            "[tls_edge.calls]\nenabled = true\npublic_port = 443\n",
-            "Calls TCP conflicts with the public HTTPS TCP port",
+            "[tls_edge.calls]\nenabled = true\npublic_port = 8443\n",
+            "tls_edge.calls.enabled = true: tls-edge 4.0 no longer forwards media",
         ),
         (
             "static-without-lineages",
@@ -190,7 +190,7 @@ def _override(body: str = "") -> str:
             "newer-schema",
             '[tls_edge]\nschema = 99\ndomain = "edge.example.test"\n',
             '[tls_edge]\ndomain = "edge.example.test"\n',
-            "tls_edge.schema 99 is newer than this release supports (maximum 1)",
+            "tls_edge.schema 99 is newer than this release supports (maximum 2)",
         ),
         (
             "good",
@@ -360,7 +360,10 @@ def test_override_schema_must_be_an_integer(tmp_path: Path):
         '[tls_edge]\nschema = "one"\ndomain = "edge.example.test"\n',
     )
     defaults, overlay, _ = config.load_site(stack_dir)
-    with pytest.raises(config.ConfigError, match="tls_edge.schema must be an integer"):
+    with pytest.raises(
+        config.ConfigError,
+        match="tls_edge.schema must be an integer from 1 to 2",
+    ):
         config.check_override(defaults, overlay)
 
 
@@ -370,7 +373,10 @@ def test_override_schema_must_be_at_least_one(tmp_path: Path):
         '[tls_edge]\nschema = 0\ndomain = "edge.example.test"\n',
     )
     defaults, overlay, _ = config.load_site(stack_dir)
-    with pytest.raises(config.ConfigError, match="tls_edge.schema must be at least 1"):
+    with pytest.raises(
+        config.ConfigError,
+        match="tls_edge.schema must be an integer from 1 to 2",
+    ):
         config.check_override(defaults, overlay)
 
 
@@ -498,7 +504,8 @@ def test_missing_schema_means_schema_one(tmp_path: Path):
     defaults, overlay, effective = config.load_site(stack_dir)
     assert config.migrate(overlay) == overlay
     config.check_override(defaults, overlay)
-    assert effective["tls_edge"]["schema"] == 1
+    assert defaults["tls_edge"]["schema"] == 2
+    assert effective["tls_edge"]["schema"] == 2
 
 
 def test_hook_run_rechecks_the_sparse_override(tmp_path: Path) -> None:
@@ -520,7 +527,7 @@ def test_hook_run_rechecks_the_sparse_override(tmp_path: Path) -> None:
     assert hook.run(effective, None) == {}
 
 
-def test_configure_writes_schema_one(
+def test_configure_writes_schema_two(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -534,4 +541,4 @@ def test_configure_writes_schema_one(
     )
     assert result == 0
     written = tomllib.loads(override_path.read_text(encoding="utf-8"))
-    assert written["tls_edge"]["schema"] == 1
+    assert written["tls_edge"]["schema"] == 2

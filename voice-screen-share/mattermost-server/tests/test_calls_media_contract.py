@@ -107,7 +107,7 @@ def test_no_public_calls_media_without_both_flags(
     }
 
 
-def test_calls_ports_do_not_collide_with_tls_edge_without_calls_preset(
+def test_calls_ports_do_not_collide_with_tls_edge_inbound_ports(
     tmp_path: Path,
 ) -> None:
     edge = tls_edge_root()
@@ -116,7 +116,6 @@ def test_calls_ports_do_not_collide_with_tls_edge_without_calls_preset(
 
     edge_config = render_tls_edge_config()
     edge_config["http3"]["enabled"] = True
-    edge_config["calls"]["enabled"] = False
     edge_config["ports"]["expose_http"] = True
 
     source = str(edge / "src")

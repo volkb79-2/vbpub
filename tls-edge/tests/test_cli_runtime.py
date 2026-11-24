@@ -152,7 +152,7 @@ def test_configure_dry_run_decline_write_and_idempotent(
     assert "Configuration already matches these answers." in output
 
 
-def test_configure_writes_dns_calls_and_static_values(
+def test_configure_writes_dns_and_static_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -180,10 +180,6 @@ enabled = true
 [tls_edge.ports]
 bind_ip = "127.0.0.1"
 
-[tls_edge.calls]
-enabled = true
-public_port = 9443
-
 [tls_edge.runtime]
 cgroup_parent = "dev-background.slice"
 """,
@@ -202,7 +198,6 @@ cgroup_parent = "dev-background.slice"
         "provider": "cloudflare",
         "wildcard_main": "example.org",
     }
-    assert settings["calls"]["public_port"] == 9443
     assert settings["http3"]["enabled"] is True
     assert settings["ingress_external"] is True
     assert settings["ports"]["bind_ip"] == "127.0.0.1"
@@ -293,7 +288,7 @@ def test_interactive_configure_and_cross_field_repair(
     )
     assert result == 0, output
     written = tomllib.loads(override.read_text(encoding="utf-8"))
-    assert written["tls_edge"]["schema"] == 1
+    assert written["tls_edge"]["schema"] == 2
     assert written["tls_edge"]["tls"]["mode"] == "acme-tls"
 
 
@@ -425,11 +420,6 @@ def test_configure_reports_a_failure_after_the_override_write(
             '[tls_edge.tls]\nmode = "static"\n'
             '[tls_edge.acme]\nemail = "ops@example.test"\n',
             "tls_edge.acme.email applies only when tls_edge.tls.mode starts with acme-",
-        ),
-        (
-            '[tls_edge]\ndomain = "edge.example.test"\n'
-            '[tls_edge.calls]\nenabled = false\npublic_port = 8443\n',
-            "tls_edge.calls.public_port applies only when tls_edge.calls.enabled = true",
         ),
     ],
 )

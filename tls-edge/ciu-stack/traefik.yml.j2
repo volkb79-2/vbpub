@@ -73,15 +73,6 @@ entryPoints:
 {% else %}
       tls: {}
 {% endif %}
-{% if tls_edge.calls.enabled %}
-
-  # Mattermost Calls media: UDP is preferred, TCP is the fallback.  Consumers
-  # attach tcp/udp routers to these entrypoints (consumer-examples/pattern-e).
-  mattermost-calls-tcp:
-    address: ":{{ tls_edge.calls.tcp_internal_port }}"
-  mattermost-calls-udp:
-    address: ":{{ tls_edge.calls.udp_internal_port }}/udp"
-{% endif %}
 {% if acme %}
 
 # ─── ACME (Let's Encrypt) ─────────────────────────────────────────────────────

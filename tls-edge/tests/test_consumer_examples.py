@@ -8,16 +8,14 @@ import subprocess
 import pytest
 import yaml
 
-from conftest import ROOT, defaults_config, merge, needs_docker, needs_jinja, render_to
+from conftest import ROOT, defaults_config, needs_docker, needs_jinja, render_to
 
 EXAMPLES = sorted(p.parent for p in (ROOT / "consumer-examples").glob("*/docker-compose.yml"))
 ENV = {"TLS_EDGE_DOMAIN": "example.test",
+       "MEDIA_PUBLIC_PORT": "8443",
+       "MEDIA_CONTAINER_PORT": "8443",
        "GUARD_HASH": "user:$2y$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"}
 EXPECTED = {"pattern-a-public-only", "pattern-d-guarded", "pattern-e-media-udp"}
-EDGE_OVERRIDES = {
-    # The compose example documents that it needs tls-edge's optional Calls L4 entrypoints.
-    "pattern-e-media-udp": {"calls": {"enabled": True}},
-}
 
 
 def _config(example) -> dict:
@@ -39,8 +37,18 @@ def test_example_set_is_the_documented_one():
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda p: p.name)
 def test_example_compose_config_is_valid_offline(example):
     model = _config(example)
-    for service in model["services"].values():
-        assert "ports" not in service, "a consumer must not publish host ports"
+    services = model["services"].values()
+    if example.name == "pattern-e-media-udp":
+        media = next(iter(services))
+        assert {entry["protocol"] for entry in media["ports"]} == {"tcp", "udp"}
+        labels = media.get("labels", {})
+        assert not {
+            key for key in labels
+            if key.startswith(("traefik.tcp.", "traefik.udp."))
+        }
+    else:
+        for service in services:
+            assert "ports" not in service, "a consumer must not publish host ports"
     # The routed service (the one with traefik.enable) joins the shared network.
     routed = [s for s in model["services"].values() if s.get("labels", {}).get("traefik.enable") == "true"]
     assert routed and all("ingress_public" in s["networks"] for s in routed)
@@ -50,7 +58,7 @@ def test_example_compose_config_is_valid_offline(example):
 @needs_jinja
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda p: p.name)
 def test_labels_target_entrypoints_the_edge_defines(example, tmp_path):
-    cfg = merge(defaults_config(), EDGE_OVERRIDES.get(example.name, {}))
+    cfg = defaults_config()
     out = render_to(tmp_path, cfg)
     entrypoints = set(yaml.safe_load((out / "traefik.yml").read_text())["entryPoints"])
     labels = {}

@@ -83,11 +83,6 @@ services:
       # HTTP/3 over QUIC shares the public HTTPS port on UDP.
       - "{{ bind }}{{ tls_edge.ports.https }}:443/udp"
 {% endif %}
-{% if tls_edge.calls.enabled %}
-      # Mattermost Calls: the same public port over TCP and UDP.
-      - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.tcp_internal_port }}/tcp"
-      - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.udp_internal_port }}/udp"
-{% endif %}
 {% if tls_edge.tls.mode == 'acme-dns' %}
 {% if tls_edge.standalone %}
     # lego DNS provider credentials live in the gitignored .env (chmod 600).

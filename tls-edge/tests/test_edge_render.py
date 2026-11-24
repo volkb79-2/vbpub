@@ -51,14 +51,13 @@ def test_generic_defaults_publish_only_http_and_https_tcp(tmp_path):
 
 
 def test_http3_publishes_udp_on_https_port_and_keeps_tcp(tmp_path):
-    cfg = merge(defaults_config(), {"http3": {"enabled": True}, "calls": {"enabled": False}})
+    cfg = merge(defaults_config(), {"http3": {"enabled": True}})
     out = render_to(tmp_path, cfg)
     compose = yaml.safe_load((out / "docker-compose.yml").read_text())
     assert sorted(compose["services"]["traefik"]["ports"]) == [
         "443:443/tcp", "443:443/udp", "80:80/tcp",
     ]
     static = yaml.safe_load((out / "traefik.yml").read_text())
-    assert "mattermost-calls-tcp" not in static["entryPoints"]
     assert static["entryPoints"]["websecure"]["http3"] == {"advertisedPort": 443}
 
 

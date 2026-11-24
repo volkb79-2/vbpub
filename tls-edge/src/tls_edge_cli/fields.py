@@ -36,10 +36,6 @@ def _acme_dns(edge: Mapping[str, Any]) -> bool:
     return edge["tls"]["mode"] == "acme-dns"
 
 
-def _calls_enabled(edge: Mapping[str, Any]) -> bool:
-    return edge["calls"]["enabled"] is True
-
-
 def _hostdir(edge: Mapping[str, Any]) -> bool:
     return edge["acme"]["store"] == "hostdir"
 
@@ -229,18 +225,6 @@ FIELDS: tuple[Field, ...] = (
         when=_static_or_dev,
         when_text='tls_edge.tls.mode = "static" or "dev"',
     ),
-    Field(
-        "calls.enabled",
-        "bool",
-        "Publish the optional Mattermost Calls TCP+UDP media pair?",
-    ),
-    Field(
-        "calls.public_port",
-        "port",
-        "Public Calls media TCP+UDP port",
-        when=_calls_enabled,
-        when_text="tls_edge.calls.enabled = true",
-    ),
 )
 
 
@@ -257,8 +241,6 @@ LEGACY_ANSWER_KEYS: Mapping[str, str] = MappingProxyType({
     "http_port": "ports.http",
     "https_port": "ports.https",
     "http3_enabled": "http3.enabled",
-    "calls_enabled": "calls.enabled",
-    "calls_port": "calls.public_port",
     "bind_ip": "ports.bind_ip",
     "ingress_external": "ingress_external",
     "acme_volume_name": "acme.volume_name",

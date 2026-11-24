@@ -285,7 +285,7 @@ def configure(args: Any, runtime: CliRuntime) -> int:
     try:
         defaults, _, overlay = _load_checked_site(root)
         answers = load_answers(args.answers)
-        answers = dict(migrate(answers))
+        answers = dict(migrate(answers, source=args.answers))
         validate_answers(defaults, answers, answers_file=args.answers)
         extra = _answer_extras(answers)
         values, plan = _propose(
@@ -362,9 +362,6 @@ def show(args: Any, runtime: CliRuntime) -> int:
     runtime.output.primary(
         f"HTTP/3: {'enabled' if value_at(config, 'http3.enabled') else 'disabled'}"
     )
-    runtime.output.primary(
-        f"Calls media: {'enabled' if value_at(config, 'calls.enabled') else 'disabled'}"
-    )
     runtime.output.primary("Inbound ports:")
     for item in ports:
         runtime.output.primary(f"  {item}")
@@ -403,7 +400,7 @@ def build_cli() -> Any:
     )
     registry.register(VerbSpec(
         "configure",
-        description="interactively configure TLS, public ports, HTTP/3, and optional media services",
+        description="interactively configure TLS, public ports, HTTP/3, and ingress/runtime settings",
         group=VerbGroup.MODIFICATION.value,
         mutating=True,
         dry_run=True,

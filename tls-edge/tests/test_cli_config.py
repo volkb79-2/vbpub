@@ -12,12 +12,11 @@ from tls_edge_cli import config
 
 def valid_config() -> dict:
     return {
-        "schema": 1,
+        "schema": 2,
         "domain": "edge.example.com",
         "tls": {"mode": "acme-tls"},
         "ports": {"expose_http": True, "http": 80, "https": 443, "bind_ip": ""},
         "http3": {"enabled": False},
-        "calls": {"enabled": False},
         "acme": {
             "email": "",
             "volume_name": "",
@@ -40,7 +39,7 @@ def make_root(path: Path, template: str | None = None) -> Path:
     defaults.parent.mkdir(parents=True)
     defaults.write_text(template or """\
 [tls_edge]
-schema = 1
+schema = 2
 domain = "edge.example.com"
 ingress_external = false
 [tls_edge.tls]
@@ -51,8 +50,6 @@ http = 80
 https = 443
 bind_ip = ""
 [tls_edge.http3]
-enabled = false
-[tls_edge.calls]
 enabled = false
 [tls_edge.acme]
 email = ""
@@ -306,7 +303,6 @@ def test_validate_config_builds_default_and_optional_port_plans():
     (lambda c: c.update(domain=""), "domain is required"),
     (lambda c: c["ports"].update(expose_http=1), "ports.expose_http"),
     (lambda c: c["http3"].update(enabled="yes"), "http3.enabled"),
-    (lambda c: c["calls"].update(enabled=0), "calls.enabled"),
     (lambda c: c["ports"].update(http=443), "cannot publish the same TCP port"),
     (lambda c: c["ports"].update(https=444), "acme-tls requires"),
     (lambda c: c["ports"].update(bind_ip=123), "ports.bind_ip must be an IP address or an empty string"),
@@ -318,8 +314,6 @@ def test_validate_config_builds_default_and_optional_port_plans():
     (lambda c: c["static"].update(source="copy"), "static.source"),
     (lambda c: c["static"].update(domains="edge.example.com"), "static.domains"),
     (lambda c: c["static"].update(domains=["not a domain"]), "static certificate lineage"),
-    (lambda c: (c["http3"].update(enabled=True), c["calls"].update(enabled=True), c["calls"].update(public_port=80)), "Calls TCP conflicts"),
-    (lambda c: (c["http3"].update(enabled=True), c["calls"].update(enabled=True), c["calls"].update(public_port=443)), "Calls TCP conflicts"),
     (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="bad/name")), "acme.dns.provider"),
     (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="cloudflare", wildcard_main="bad domain")), "wildcard_main"),
     (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="cloudflare", wildcard_main=3)), "wildcard_main must be a DNS name or empty"),
@@ -332,14 +326,13 @@ def test_validate_config_rejects_invalid_combinations(mutate, message):
         config.validate_config(value)
 
 
-def test_validate_config_http3_calls_dns_static_and_port_constraints():
+def test_validate_config_http3_dns_static_and_port_constraints():
     value = valid_config()
     value["http3"]["enabled"] = True
-    value["calls"].update(enabled=True, public_port=8443)
-    assert config.validate_config(value)[-3:] == [
+    assert config.validate_config(value) == [
+        "80/tcp (HTTP redirect and/or HTTP-01)",
+        "443/tcp (HTTPS, HTTP/1.1 and HTTP/2)",
         "443/udp (HTTP/3 over QUIC)",
-        "8443/tcp (Calls media)",
-        "8443/udp (Calls media)",
     ]
 
     value = valid_config()
@@ -359,12 +352,6 @@ def test_validate_config_http3_calls_dns_static_and_port_constraints():
     value["tls"]["mode"] = "static"
     with pytest.raises(config.ConfigError, match="requires at least one static certificate lineage"):
         config.validate_config(value)
-
-    value = valid_config()
-    value["calls"].update(enabled=True, public_port=443)
-    with pytest.raises(config.ConfigError, match="Calls TCP conflicts"):
-        config.validate_config(value)
-
 
 def test_validate_config_hostdir_rules_and_modes(tmp_path: Path):
     value = valid_config()
