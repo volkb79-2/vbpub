@@ -103,7 +103,7 @@ def test_real_git_and_bash_the_host_checkout_gets_a_main_branch_without_checking
     assert rg.build_bundle(ctx, st, [seed], str(dest)) == seed
     job = rg.render_job(hosts()["v1001"], "t8", st, "suite", ".", "", 60, [])
     fetch = job[job.index("if [[ -f $D/in.bundle ]]"):job.index("# every release tag of the source")]
-    setref = job[job.index("if [[ -n $MAIN_SHA ]]; then\n  # a local"):job.index("if (( ADMISSION_CHECK ))")]
+    setref = job[job.index("if [[ -n $MAIN_SHA ]]; then\n  # origin/main and a local"):job.index("if (( ADMISSION_CHECK ))")]
     script = (f'D={dest.parent}\nCKDIR={host}\nBASE_SHA=\nMAIN_SHA={main}\nlog() {{ echo "$@" >&2; }}\n' + fetch
               + f"git -C {host} checkout -q --detach {head} 2>/dev/null || git -C {host} update-ref --no-deref HEAD {head}\n" + setref)
     r = subprocess.run(["bash", "-euo", "pipefail", "-c", script], capture_output=True, text=True, env=GIT_ENV)
@@ -118,7 +118,7 @@ def test_the_main_step_of_the_job_reports_a_missing_commit_instead_of_failing(tm
     repo.mkdir()
     sh("git", "init", "-q", "-b", "x", cwd=repo)
     job = rg.render_job(hosts()["v1001"], "t9", {"sha": SHA, "base": None, "main": "f" * 40, "tags": []}, "suite", ".", "", 60, [])
-    setref = job[job.index("if [[ -n $MAIN_SHA ]]; then\n  # a local"):job.index("if (( ADMISSION_CHECK ))")]
+    setref = job[job.index("if [[ -n $MAIN_SHA ]]; then\n  # origin/main and a local"):job.index("if (( ADMISSION_CHECK ))")]
     r = subprocess.run(["bash", "-euo", "pipefail", "-c", f'CKDIR={repo}\nMAIN_SHA={"f" * 40}\nlog() {{ echo "$@" >&2; }}\n' + setref],
                        capture_output=True, text=True, env=GIT_ENV)
     assert r.returncode == 0 and "is missing on the host" in r.stderr
