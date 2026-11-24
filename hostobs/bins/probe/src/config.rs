@@ -1,14 +1,14 @@
-//! The probe's strict, dependency-free configuration and start-up argument rules.
+//! The probe's strict configuration and start-up argument rules.
 //!
-//! The accepted file is deliberately a small subset of TOML. Every file this parser
-//! accepts is valid TOML, but it does not accept aliases, dotted keys, inline tables,
-//! escapes or any value outside the shape in `docs/PROBE-PROCESS.md` section (g).
+//! TOML supplies syntax and byte spans; semantic validation below supplies the probe's
+//! requirements from `docs/PROBE-PROCESS.md` section (g). Unknown fields are refused at
+//! every level, so a valid TOML spelling cannot silently add a setting.
 //!
 //! Protocol-wide keys have exactly one spelling: `[limits] max_rows`. A per-level form
 //! such as `[limits.observe]` is an unknown section, so it cannot silently configure a
 //! level while the probe-wide value keeps its default (P-06 backlog B3).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
@@ -17,6 +17,8 @@ use std::path::{Component, Path, PathBuf};
 
 use hostobs_probe::limits::Level;
 use hostobs_probe::server::ServerLimits;
+use serde::Deserialize;
+use toml::Spanned;
 
 /// Largest accepted configuration file.
 pub(crate) const MAX_CONFIG_BYTES: usize = 64 * 1024;
@@ -51,7 +53,6 @@ impl Config {
 
 /// One command-line action, before phase-B wiring.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum Action {
     /// Print the package version and exit successfully.
     Version,
@@ -64,7 +65,6 @@ pub(crate) enum Action {
 
 /// A one-line command-line refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ArgumentError(String);
 
 impl fmt::Display for ArgumentError {
@@ -77,73 +77,113 @@ impl fmt::Display for ArgumentError {
 ///
 /// The only successful forms are exactly `--version`, or exactly one
 /// `--config <path>`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parse_args(args: &[String]) -> Result<Action, ArgumentError> {
-    if args.len() == 1 && args[0] == "--version" {
-        return Ok(Action::Version);
-    }
-    if args.is_empty() {
-        return Err(ArgumentError(String::from(
-            "usage: hostobs-probe --config <path> | --version",
-        )));
-    }
-
-    let mut config: Option<PathBuf> = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--config" => {
-                if config.is_some() {
-                    return Err(ArgumentError(String::from(
-                        "--config may be given exactly once",
-                    )));
-                }
-                let Some(value) = args.get(index + 1) else {
-                    return Err(ArgumentError(String::from("--config requires a path")));
-                };
-                if value.is_empty() || value.starts_with("--") {
-                    return Err(ArgumentError(String::from("--config requires a path")));
-                }
-                config = Some(PathBuf::from(value));
-                index += 2;
-            }
-            unknown => {
-                return Err(ArgumentError(format!(
-                    "unexpected argument {unknown:?}; expected --config <path> or --version"
-                )));
-            }
+    match args {
+        [version] if version == "--version" => Ok(Action::Version),
+        [config, path] if config == "--config" && valid_path(path) => Ok(Action::Run {
+            config: PathBuf::from(path),
+        }),
+        [config] if config == "--config" => {
+            Err(ArgumentError(String::from("--config requires a path")))
         }
+        [config, _] if config == "--config" => {
+            Err(ArgumentError(String::from("--config requires a path")))
+        }
+        _ if args
+            .iter()
+            .filter(|argument| argument.as_str() == "--config")
+            .count()
+            > 1 =>
+        {
+            Err(ArgumentError(String::from(
+                "--config may be given exactly once",
+            )))
+        }
+        [] => Err(ArgumentError(String::from(
+            "usage: hostobs-probe --config <path> | --version",
+        ))),
+        [unknown] => Err(ArgumentError(format!(
+            "unexpected argument {unknown:?}; expected --config <path> or --version"
+        ))),
+        [first, second] => {
+            let unknown = if first == "--version" { second } else { first };
+            Err(ArgumentError(format!(
+                "unexpected argument {unknown:?}; expected --config <path> or --version"
+            )))
+        }
+        _ => Err(ArgumentError(String::from(
+            "unexpected arguments; expected --config <path> or --version",
+        ))),
     }
-    config
-        .map(|config| Action::Run { config })
-        .ok_or_else(|| ArgumentError(String::from("--config is required")))
+}
+
+fn valid_path(path: &str) -> bool {
+    !path.is_empty() && !path.starts_with("--")
 }
 
 /// A one-line configuration refusal naming its line and key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ConfigError {
     line: usize,
+    column: usize,
     key: String,
     message: String,
 }
 
 impl ConfigError {
-    fn at(line: usize, key: impl Into<String>, message: impl Into<String>) -> ConfigError {
+    fn at(
+        line: usize,
+        column: usize,
+        key: impl Into<String>,
+        message: impl Into<String>,
+    ) -> ConfigError {
         ConfigError {
             line,
+            column,
             key: key.into(),
             message: message.into(),
         }
     }
 
     fn file(message: impl Into<String>) -> ConfigError {
-        ConfigError::at(0, "<file>", message)
+        ConfigError::at(0, 0, "<file>", message)
+    }
+
+    fn semantic(
+        source: &str,
+        span: &std::ops::Range<usize>,
+        key: &str,
+        message: impl Into<String>,
+    ) -> ConfigError {
+        let (line, column) = position(source, span.start);
+        ConfigError::at(line, column, key, message)
+    }
+
+    fn toml(source: &str, error: toml::de::Error) -> ConfigError {
+        let message = one_line(error.message());
+        let (line, column) = error
+            .span()
+            .as_ref()
+            .map_or((0, 0), |span| position(source, span.start));
+        let key = named_field(&message)
+            .or_else(|| {
+                error
+                    .span()
+                    .map(|span| key_at(source, span.start))
+                    .filter(|key| key != "<toml>")
+            })
+            .unwrap_or_else(|| String::from("<toml>"));
+        ConfigError::at(line, column, key, message)
     }
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {} key {}: {}", self.line, self.key, self.message)
+        write!(
+            f,
+            "line {}:{} key {}: {}",
+            self.line, self.column, self.key, self.message
+        )
     }
 }
 
@@ -152,7 +192,7 @@ impl std::error::Error for ConfigError {}
 /// Read a configuration file and enforce its byte and UTF-8 bounds.
 pub(crate) fn read(path: &Path) -> Result<Config, ConfigError> {
     let file = File::open(path)
-        .map_err(|error| ConfigError::file(format!("cannot open {}: {error}", path.display())))?;
+        .map_err(|error| ConfigError::file(format!("cannot open {path:?}: {error}")))?;
     let bound = u64::try_from(MAX_CONFIG_BYTES.saturating_add(1)).unwrap_or(u64::MAX);
     let mut bytes = Vec::new();
     file.take(bound)
@@ -172,188 +212,71 @@ fn decode(bytes: &[u8]) -> Result<Config, ConfigError> {
     parse(text)
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum Section {
-    Probe,
-    Limits,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Document {
+    probe: Probe,
+    limits: Limits,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum Key {
-    Levels,
-    TickMs,
-    CgroupRoot,
-    MaxRows,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Probe {
+    levels: Spanned<Vec<String>>,
+    tick_ms: Spanned<u32>,
+    cgroup_root: Spanned<String>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum Value {
-    String(String),
-    Integer(u64),
-    Array(Vec<String>),
-}
-
-#[derive(Default)]
-struct Slots {
-    levels: Option<(usize, Vec<String>)>,
-    tick_ms: Option<(usize, u64)>,
-    cgroup_root: Option<(usize, String)>,
-    max_rows: Option<(usize, u64)>,
-    keys: BTreeSet<Key>,
-    sections: BTreeSet<Section>,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Limits {
+    max_rows: Spanned<u32>,
 }
 
 fn parse(text: &str) -> Result<Config, ConfigError> {
-    let mut slots = Slots::default();
-    let mut section: Option<Section> = None;
-
-    for (offset, raw) in text.lines().enumerate() {
-        let line = offset.saturating_add(1);
-        let before_comment = strip_comment(raw);
-        if raw
-            .chars()
-            .any(|character| character.is_control() && character != '\t')
-        {
-            let key = before_comment
-                .split_once('=')
-                .map_or("<line>", |(key, _value)| trim_toml(key));
-            return Err(ConfigError::at(
-                line,
-                key,
-                "contains a forbidden control character",
-            ));
-        }
-        let trimmed = trim_toml(before_comment);
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.starts_with('[') {
-            let Some(name) = trimmed
-                .strip_prefix('[')
-                .and_then(|rest| rest.strip_suffix(']'))
-            else {
-                return Err(ConfigError::at(line, trimmed, "malformed section header"));
-            };
-            let parsed = match name {
-                "probe" => Section::Probe,
-                "limits" => Section::Limits,
-                _ => {
-                    return Err(ConfigError::at(
-                        line,
-                        name,
-                        "unknown section; only [probe] and [limits] are accepted",
-                    ));
-                }
-            };
-            if !slots.sections.insert(parsed) {
-                return Err(ConfigError::at(
-                    line,
-                    format!("[{name}]"),
-                    "duplicate section",
-                ));
-            }
-            section = Some(parsed);
-            continue;
-        }
-
-        let Some((raw_key, raw_value)) = trimmed.split_once('=') else {
-            return Err(ConfigError::at(
-                line,
-                trimmed,
-                "expected a section header or key = value",
-            ));
-        };
-        let key_text = trim_toml(raw_key);
-        let value_text = trim_toml(raw_value);
-        if key_text.is_empty() || value_text.is_empty() {
-            return Err(ConfigError::at(
-                line,
-                key_text,
-                "a key and a value are both required",
-            ));
-        }
-        let Some(section) = section else {
-            return Err(ConfigError::at(
-                line,
-                key_text,
-                "key appears outside a section",
-            ));
-        };
-        let (key, expected_section) = match key_text {
-            "levels" => (Key::Levels, Section::Probe),
-            "tick_ms" => (Key::TickMs, Section::Probe),
-            "cgroup_root" => (Key::CgroupRoot, Section::Probe),
-            "max_rows" => (Key::MaxRows, Section::Limits),
-            _ => {
-                return Err(ConfigError::at(
-                    line,
-                    key_text,
-                    "unknown key or unsupported dotted/per-level form",
-                ));
-            }
-        };
-        if section != expected_section {
-            return Err(ConfigError::at(
-                line,
-                key_text,
-                "key appears outside its section",
-            ));
-        }
-        if !slots.keys.insert(key) {
-            return Err(ConfigError::at(line, key_text, "duplicate key"));
-        }
-        let value = parse_value(value_text, line, key_text)?;
-        match (key, value) {
-            (Key::Levels, Value::Array(levels)) => slots.levels = Some((line, levels)),
-            (Key::TickMs, Value::Integer(value)) => slots.tick_ms = Some((line, value)),
-            (Key::CgroupRoot, Value::String(value)) => {
-                slots.cgroup_root = Some((line, value));
-            }
-            (Key::MaxRows, Value::Integer(value)) => slots.max_rows = Some((line, value)),
-            (key, _) => {
-                return Err(ConfigError::at(
-                    line,
-                    key_text,
-                    format!("{} has the wrong value type", key_name(key)),
-                ));
-            }
-        }
+    let document: Document =
+        toml::from_str(text).map_err(|error| ConfigError::toml(text, error))?;
+    let levels = configured_levels(text, &document.probe.levels)?;
+    let tick_ms = *document.probe.tick_ms.get_ref();
+    if !(100..=60_000).contains(&tick_ms) {
+        return Err(ConfigError::semantic(
+            text,
+            &document.probe.tick_ms.span(),
+            KEY_TICK_MS,
+            "must be in 100..=60000",
+        ));
     }
-
-    let (levels_line, levels) = slots
-        .levels
-        .ok_or_else(|| ConfigError::at(0, KEY_LEVELS, "required key is missing"))?;
-    let (tick_line, tick_ms) = slots
-        .tick_ms
-        .ok_or_else(|| ConfigError::at(0, KEY_TICK_MS, "required key is missing"))?;
-    let (root_line, cgroup_root) = slots
-        .cgroup_root
-        .ok_or_else(|| ConfigError::at(0, KEY_CGROUP_ROOT, "required key is missing"))?;
-    let (rows_line, max_rows) = slots
-        .max_rows
-        .ok_or_else(|| ConfigError::at(0, KEY_MAX_ROWS, "required key is missing"))?;
-
-    let levels = configured_levels(levels_line, &levels)?;
-    let tick_ms = u32::try_from(tick_ms)
-        .ok()
-        .filter(|value| (100..=60_000).contains(value))
-        .ok_or_else(|| ConfigError::at(tick_line, KEY_TICK_MS, "must be in 100..=60000"))?;
+    let cgroup_root = document.probe.cgroup_root.get_ref();
     let path = Path::new(&cgroup_root);
     if !path.is_absolute()
         || path
             .components()
             .any(|component| component == Component::ParentDir)
     {
-        return Err(ConfigError::at(
-            root_line,
+        return Err(ConfigError::semantic(
+            text,
+            &document.probe.cgroup_root.span(),
             KEY_CGROUP_ROOT,
             "must be absolute and contain no .. component",
         ));
     }
-    let max_rows = u32::try_from(max_rows)
-        .ok()
-        .filter(|value| (1..=4_096).contains(value))
-        .ok_or_else(|| ConfigError::at(rows_line, KEY_MAX_ROWS, "must be in 1..=4096"))?;
+    if cgroup_root.chars().any(char::is_control) {
+        return Err(ConfigError::semantic(
+            text,
+            &document.probe.cgroup_root.span(),
+            KEY_CGROUP_ROOT,
+            "must contain no NUL or control character",
+        ));
+    }
+    let max_rows = *document.limits.max_rows.get_ref();
+    if !(1..=4_096).contains(&max_rows) {
+        return Err(ConfigError::semantic(
+            text,
+            &document.limits.max_rows.span(),
+            KEY_MAX_ROWS,
+            "must be in 1..=4096",
+        ));
+    }
 
     Ok(Config {
         levels,
@@ -363,10 +286,16 @@ fn parse(text: &str) -> Result<Config, ConfigError> {
     })
 }
 
-fn configured_levels(line: usize, names: &[String]) -> Result<Vec<Level>, ConfigError> {
+fn configured_levels(
+    source: &str,
+    names: &Spanned<Vec<String>>,
+) -> Result<Vec<Level>, ConfigError> {
+    let span = names.span();
+    let names = names.get_ref();
     if names.is_empty() {
-        return Err(ConfigError::at(
-            line,
+        return Err(ConfigError::semantic(
+            source,
+            &span,
             KEY_LEVELS,
             "must contain at least one level",
         ));
@@ -379,16 +308,18 @@ fn configured_levels(line: usize, names: &[String]) -> Result<Vec<Level>, Config
             Some(Level::Operator) => Level::Operator,
             Some(Level::Observer) => Level::Observer,
             Some(Level::Control) | None => {
-                return Err(ConfigError::at(
-                    line,
+                return Err(ConfigError::semantic(
+                    source,
+                    &span,
                     KEY_LEVELS,
                     format!("{name:?} is not a probe-served level"),
                 ));
             }
         };
         if !seen.insert(level) {
-            return Err(ConfigError::at(
-                line,
+            return Err(ConfigError::semantic(
+                source,
+                &span,
                 KEY_LEVELS,
                 format!("duplicate level {name:?}"),
             ));
@@ -398,159 +329,66 @@ fn configured_levels(line: usize, names: &[String]) -> Result<Vec<Level>, Config
     Ok(levels)
 }
 
-fn key_name(key: Key) -> &'static str {
-    match key {
-        Key::Levels => KEY_LEVELS,
-        Key::TickMs => KEY_TICK_MS,
-        Key::CgroupRoot => KEY_CGROUP_ROOT,
-        Key::MaxRows => KEY_MAX_ROWS,
+fn position(source: &str, offset: usize) -> (usize, usize) {
+    let mut offset = offset.min(source.len());
+    while !source.is_char_boundary(offset) {
+        offset = offset.saturating_sub(1);
+    }
+    let line_start = source
+        .get(..offset)
+        .and_then(|prefix| prefix.rfind('\n'))
+        .map_or(0, |newline| newline.saturating_add(1));
+    let line = source.get(..line_start).map_or(1, |prefix| {
+        prefix.bytes().filter(|byte| *byte == b'\n').count() + 1
+    });
+    let column = source
+        .get(line_start..offset)
+        .map_or(1, |prefix| prefix.chars().count() + 1);
+    (line, column)
+}
+
+fn one_line(message: &str) -> String {
+    let text = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        String::from("TOML refused the document")
+    } else {
+        text
     }
 }
 
-fn strip_comment(line: &str) -> &str {
-    let mut quoted = false;
-    for (offset, byte) in line.bytes().enumerate() {
-        match byte {
-            b'"' => quoted = !quoted,
-            b'#' if !quoted => return &line[..offset],
-            _ => {}
-        }
+fn named_field(message: &str) -> Option<String> {
+    let mut parts = message.split('`');
+    let field = parts.nth(1)?;
+    if field.is_empty()
+        || !field
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '.'))
+    {
+        return None;
     }
-    line
+    field.rsplit('.').next().map(str::to_string)
 }
 
-fn trim_toml(text: &str) -> &str {
-    text.trim_matches(|character| matches!(character, ' ' | '\t'))
-}
-
-fn is_toml_space(character: char) -> bool {
-    matches!(character, ' ' | '\t')
-}
-
-fn parse_value(text: &str, line: usize, key: &str) -> Result<Value, ConfigError> {
-    if text.starts_with('[') {
-        return parse_array(text, line, key).map(Value::Array);
-    }
-    if text.starts_with('"') {
-        return parse_basic_string(text, line, key).map(Value::String);
-    }
-    if text.bytes().all(|byte| byte.is_ascii_digit()) && !text.is_empty() {
-        if text.len() > 1 && text.starts_with('0') {
-            return Err(ConfigError::at(
-                line,
-                key,
-                "integers may not have a leading zero",
-            ));
-        }
-        return text
-            .parse()
-            .map(Value::Integer)
-            .map_err(|_| ConfigError::at(line, key, "integer does not fit"));
-    }
-    Err(ConfigError::at(
-        line,
-        key,
-        "value must be a basic string, an unsigned integer, or a one-line string array",
-    ))
-}
-
-fn parse_basic_string(text: &str, line: usize, key: &str) -> Result<String, ConfigError> {
-    let Some(inner) = text
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-    else {
-        return Err(ConfigError::at(
-            line,
-            key,
-            "unterminated basic string or trailing characters after it",
-        ));
-    };
-    if inner.contains('\\') || inner.contains('"') {
-        return Err(ConfigError::at(
-            line,
-            key,
-            "basic string contains a backslash or unescaped quote",
-        ));
-    }
-    if inner.chars().any(char::is_control) {
-        return Err(ConfigError::at(
-            line,
-            key,
-            "basic string contains a control character",
-        ));
-    }
-    Ok(inner.to_string())
-}
-
-fn parse_array(text: &str, line: usize, key: &str) -> Result<Vec<String>, ConfigError> {
-    let Some(inner) = text
+fn key_at(source: &str, offset: usize) -> String {
+    let start = source
+        .get(..offset)
+        .and_then(|prefix| prefix.rfind('\n'))
+        .map_or(0, |newline| newline.saturating_add(1));
+    let end = source
+        .get(offset..)
+        .and_then(|suffix| suffix.find('\n'))
+        .map_or(source.len(), |newline| offset.saturating_add(newline));
+    let line = source.get(start..end).unwrap_or_default().trim();
+    if let Some(section) = line
         .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-    else {
-        return Err(ConfigError::at(
-            line,
-            key,
-            "array must be one line and end with ]",
-        ));
-    };
-    let characters: Vec<char> = inner.chars().collect();
-    let mut index = 0;
-    while index < characters.len() && is_toml_space(characters[index]) {
-        index += 1;
+        .and_then(|rest| rest.split_once(']').map(|(name, _)| name))
+    {
+        return section.trim().to_string();
     }
-    if index == characters.len() {
-        return Ok(Vec::new());
-    }
-
-    let mut values = Vec::new();
-    loop {
-        while index < characters.len() && is_toml_space(characters[index]) {
-            index += 1;
-        }
-        if index == characters.len() || characters[index] != '"' {
-            return Err(ConfigError::at(
-                line,
-                key,
-                "array elements must be basic strings",
-            ));
-        }
-        let start = index;
-        index += 1;
-        while index < characters.len() && characters[index] != '"' {
-            if characters[index] == '\\' || characters[index].is_control() {
-                return Err(ConfigError::at(
-                    line,
-                    key,
-                    "array string contains a backslash or control character",
-                ));
-            }
-            index += 1;
-        }
-        if index == characters.len() {
-            return Err(ConfigError::at(line, key, "array string is unterminated"));
-        }
-        let quoted: String = characters[start..=index].iter().collect();
-        values.push(parse_basic_string(&quoted, line, key)?);
-        index += 1;
-        while index < characters.len() && is_toml_space(characters[index]) {
-            index += 1;
-        }
-        if index == characters.len() {
-            break;
-        }
-        if characters[index] != ',' {
-            return Err(ConfigError::at(
-                line,
-                key,
-                "array elements must be separated by commas",
-            ));
-        }
-        index += 1;
-        if index == characters.len() {
-            return Err(ConfigError::at(line, key, "array has a trailing comma"));
-        }
-    }
-    Ok(values)
+    line.split_once('=')
+        .map(|(key, _)| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .unwrap_or_else(|| String::from("<toml>"))
 }
 
 /// A one-line listener mapping refusal.
@@ -654,6 +492,11 @@ max_rows = 1024
         assert!(text.contains(key), "missing key {key:?}: {text}");
     }
 
+    fn missing_key_refusal(text: &str, key: &str) {
+        let error = one_line(parse(text).expect_err("configuration must be refused"));
+        assert!(error.contains(key), "missing key {key:?}: {error}");
+    }
+
     #[test]
     fn the_documented_example_parses_and_sets_only_the_two_probe_wide_keys() {
         let config = parse(EXAMPLE).expect("example configuration");
@@ -711,21 +554,24 @@ max_rows = 1
 
     #[test]
     fn unknown_sections_keys_and_per_level_probe_wide_forms_are_refused() {
-        for (text, key) in [
+        for (text, line, key) in [
             (
                 "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n[limits]\nmax_rows=1\n[limits.observe]\nmax_rows=2\n",
-                "limits.observe",
+                "line 7",
+                "observe",
             ),
             (
                 "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\nlimts.max_rows=1\n[limits]\nmax_rows=1\n",
-                "limts.max_rows",
+                "line 5",
+                "limts",
             ),
             (
                 "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n[limits]\nmax_rows={value=1}\n",
+                "line 6",
                 "max_rows",
             ),
         ] {
-            parse_refusal(text, "line", key);
+            parse_refusal(text, line, key);
         }
     }
 
@@ -744,7 +590,7 @@ max_rows = 1
         parse_refusal(
             "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n[probe]\n[limits]\nmax_rows=1\n",
             "line 5",
-            "[probe]",
+            "probe",
         );
     }
 
@@ -752,23 +598,23 @@ max_rows = 1
     fn every_required_key_is_checked_when_absent() {
         for (key, text) in [
             (
-                "probe.levels",
+                "levels",
                 "[probe]\ntick_ms=100\ncgroup_root=\"/\"\n[limits]\nmax_rows=1\n",
             ),
             (
-                "probe.tick_ms",
+                "tick_ms",
                 "[probe]\nlevels=[\"observe\"]\ncgroup_root=\"/\"\n[limits]\nmax_rows=1\n",
             ),
             (
-                "probe.cgroup_root",
+                "cgroup_root",
                 "[probe]\nlevels=[\"observe\"]\ntick_ms=100\n[limits]\nmax_rows=1\n",
             ),
             (
-                "limits.max_rows",
+                "max_rows",
                 "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n[limits]\n",
             ),
         ] {
-            parse_refusal(text, "line 0", key);
+            missing_key_refusal(text, key);
         }
     }
 
@@ -780,7 +626,6 @@ max_rows = 1
             "[\"observe\", \"observe\"]",
             "[\"admin\"]",
             "[\"observe\" \"operator\"]",
-            "[\"observe\",]",
         ] {
             let text = format!(
                 "[probe]\nlevels={levels}\ntick_ms=100\ncgroup_root=\"/\"\n\
@@ -791,21 +636,45 @@ max_rows = 1
     }
 
     #[test]
-    fn integer_grammar_and_ranges_are_strict() {
-        for tick in ["99", "60001", "+100", "1_000", "0100"] {
+    fn integer_ranges_are_strict_and_valid_toml_spellings_are_accepted() {
+        for tick in ["99", "60001", "-1", "0100"] {
             let text = format!(
                 "[probe]\nlevels=[\"observe\"]\ntick_ms={tick}\ncgroup_root=\"/\"\n\
                  [limits]\nmax_rows=1\n"
             );
             parse_refusal(&text, "line 3", "tick_ms");
         }
-        for rows in ["0", "4097", "-1", "1_024", "01"] {
+        for rows in ["0", "4097", "-1", "01"] {
             let text = format!(
                 "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n\
                  [limits]\nmax_rows={rows}\n"
             );
             parse_refusal(&text, "line 6", "max_rows");
         }
+        for (tick, expected) in [("+100", 100), ("1_000", 1_000)] {
+            let text = format!(
+                "[probe]\nlevels=[\"observe\"]\ntick_ms={tick}\ncgroup_root=\"/\"\n\
+                 [limits]\nmax_rows=1\n"
+            );
+            assert_eq!(parse(&text).expect("valid TOML integer").tick_ms, expected);
+        }
+        for (rows, expected) in [("+1", 1), ("1_024", 1_024)] {
+            let text = format!(
+                "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n\
+                 [limits]\nmax_rows={rows}\n"
+            );
+            assert_eq!(parse(&text).expect("valid TOML integer").max_rows, expected);
+        }
+    }
+
+    #[test]
+    fn a_trailing_array_comma_is_valid_toml() {
+        let text = "[probe]\nlevels=[\"observe\", \"operator\",]\ntick_ms=100\n\
+                    cgroup_root=\"/\"\n[limits]\nmax_rows=1\n";
+        assert_eq!(
+            parse(text).expect("valid TOML array").levels,
+            [Level::Observe, Level::Operator]
+        );
     }
 
     #[test]
@@ -815,6 +684,7 @@ max_rows = 1
             r#""""#,
             r#""/tmp/../etc""#,
             r#""/tmp/a\b""#,
+            r#""/tmp/\u0000""#,
             "\"/tmp/control\u{0001}\"",
             r#""/tmp/a" trailing"#,
         ] {
