@@ -57,6 +57,54 @@ done
 command -v flock >/dev/null 2>&1 || { echo 'flock is required' >&2; exit 2; }
 command -v run-gate >/dev/null 2>&1 || { echo 'run-gate is required on PATH' >&2; exit 2; }
 
+# CTL-57: a slot is not an admission. After it holds a slot and before it starts run-gate, wait while the host's memory
+# PSI `full` avg10 is >= 3 (the programme's stop signal; no knob), one log line per minute, bounded by
+# CONTROLLER_GATE_PSI_WAIT_S (default 1800). The wait is counted in its own sleeps, not read from a clock. Giving up is
+# exit 75 "not admitted, nothing ran": never a lane verdict. An UNREADABLE value is not waited on: exit 75 at once. Same
+# rule as `dev` host-admission/1.
+psi_file=${CONTROLLER_GATE_PSI_FILE:-/proc/pressure/memory}
+psi_wait_limit=${CONTROLLER_GATE_PSI_WAIT_S:-1800}
+[[ $psi_wait_limit =~ ^[0-9]+$ ]] || {
+  echo 'gate-run: CONTROLLER_GATE_PSI_WAIT_S must be a whole number of seconds (unset it for the default 1800)' >&2
+  exit 2
+}
+psi_why=
+memory_state() {   # 0 busy (psi_why names it), 1 quiet, 2 unreadable
+  local full
+  full=$(awk '/^full/ { sub("avg10=", "", $2); print $2; exit }' "$psi_file" 2>/dev/null) || full=
+  case $full in
+    ''|*[!0-9.]*|.*|*.|*.*.*) return 2 ;;
+  esac
+  psi_why="memory PSI full avg10=$full >= 3"
+  awk -v m="$full" 'BEGIN { exit !(m + 0 >= 3) }'
+}
+memory_refuse_unreadable() {
+  echo "gate-run: not admitted (memory PSI unreadable: $psi_file); nothing ran" >&2
+  exit 75
+}
+admit_memory() {
+  local waited=0 next_log=0 state=0
+  memory_state || state=$?
+  (( state != 2 )) || memory_refuse_unreadable
+  (( state == 0 )) || return 0
+  while :; do
+    if (( waited >= psi_wait_limit )); then
+      echo "gate-run: not admitted ($psi_why for ${waited}s); nothing ran" >&2
+      exit 75
+    fi
+    if (( waited >= next_log )); then
+      echo "gate-run: waiting for host admission: $psi_why, ${waited}s of ${psi_wait_limit}s" >&2
+      next_log=$((next_log + 60))
+    fi
+    sleep 10 || { echo 'gate-run: wait interval failed' >&2; exit 2; }
+    waited=$((waited + 10))
+    state=0
+    memory_state || state=$?
+    (( state != 2 )) || memory_refuse_unreadable
+    (( state == 0 )) || return 0
+  done
+}
+
 slot_acquired=0
 run_slot() {
   local rc lock=${slot_lock[$1]} label=${slot_label[$1]} fd=${slot_fd[$1]}
@@ -70,6 +118,7 @@ run_slot() {
   if flock -n -E 75 "$fd"; then
     slot_acquired=1
     echo "gate-run: slot $label" >&2
+    admit_memory
     nice -n 10 run-gate "$@"
     return $?
   else
@@ -95,6 +144,7 @@ poll_lock() {
   if flock -n -E 75 "$fd"; then
     slot_acquired=1
     echo "gate-run: slot $label" >&2
+    admit_memory
     nice -n 10 run-gate "$@"
     return $?
   else

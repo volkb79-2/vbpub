@@ -5,6 +5,7 @@
 set -uo pipefail
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset CONTROLLER_GATE_SLOTS CONTROLLER_GATE_LOCK CONTROLLER_GATE2_LOCK CONTROLLER_GATE_LOCK_DIR RUN_GATE_PROFILE
+unset CONTROLLER_GATE_PSI_FILE CONTROLLER_GATE_PSI_WAIT_S
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 GATE_RUN_SRC=${GATE_RUN_SCRIPT:-$SCRIPT_DIR/../gate-run.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-gate-slots-test.XXXXXX")
@@ -32,7 +33,12 @@ not_contains() {
 mkdir -p "$ROOT/home" "$ROOT/controller" "$ROOT/bin" "$ROOT/fakebin"
 RUN_GATE_LOG=$ROOT/run-gate.log
 FAKE_SLEEP_COUNT=$ROOT/sleep-count
-export RUN_GATE_LOG FAKE_SLEEP_COUNT
+FAKE_PSI_SLEEP_COUNT=$ROOT/psi-sleep-count
+export RUN_GATE_LOG FAKE_SLEEP_COUNT FAKE_PSI_SLEEP_COUNT
+# CTL-57: every case but the memory-PSI ones runs against a quiet PSI file, so the real host's pressure decides nothing.
+PSI_QUIET=$ROOT/psi-quiet
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PSI_QUIET"
+export CONTROLLER_GATE_PSI_FILE=$PSI_QUIET
 # run-gate records its cwd and arguments and says whether the lock file it was told about is held at that moment: the slot lock
 # must stay held for as long as the gate runs.
 cat > "$ROOT/bin/run-gate" <<'SH'
@@ -47,7 +53,16 @@ SH
 cat > "$ROOT/fakebin/sleep" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
-[[ $1 == 5 ]] || { echo "fake sleep: expected 5, got $1" >&2; exit 2; }
+# the memory-PSI wait sleeps 10 s per round: count those rounds apart, and make the host quiet at a chosen round
+if [[ $1 == 10 ]]; then
+  psi_count=$(cat "$FAKE_PSI_SLEEP_COUNT" 2>/dev/null || echo 0)
+  psi_count=$((psi_count + 1))
+  printf '%s\n' "$psi_count" > "$FAKE_PSI_SLEEP_COUNT"
+  if [[ -n ${FAKE_PSI_QUIET_AT:-} ]] && (( psi_count == FAKE_PSI_QUIET_AT )); then cp "$FAKE_PSI_QUIET_FILE" "$CONTROLLER_GATE_PSI_FILE"; fi
+  if (( psi_count > 3000 )); then echo 'fake sleep: gate-run still waits on memory PSI' >&2; kill -TERM "$PPID"; fi
+  exit 0
+fi
+[[ $1 == 5 ]] || { echo "fake sleep: expected 5 or 10, got $1" >&2; exit 2; }
 count=$(cat "$FAKE_SLEEP_COUNT" 2>/dev/null || echo 0)
 count=$((count + 1))
 printf '%s\n' "$count" > "$FAKE_SLEEP_COUNT"
@@ -135,7 +150,7 @@ new_case() {
   # new_case <name>: a fresh directory, a fresh run-gate log; sets CASE
   CASE=$(case_dir "$1")
   mkdir -p "$CASE/locks"
-  rm -f -- "$RUN_GATE_LOG" "$RUN_GATE_LOG.probe" "$FAKE_SLEEP_COUNT"
+  rm -f -- "$RUN_GATE_LOG" "$RUN_GATE_LOG.probe" "$FAKE_SLEEP_COUNT" "$FAKE_PSI_SLEEP_COUNT"
   HOLDER_PIDS=()
 }
 hold_slots() {
@@ -412,5 +427,79 @@ gate "$CASE/out" "${env_lines[@]}" FAKE_RUN_GATE_RC=9 FAKE_RELEASE_FIFO="$CASE/r
 [[ $rc == 9 ]] || fail "gate-run returned $rc from the poll loop instead of the gate exit 9"
 reap_holder 1
 release_all
+
+# 12. CTL-57: a held slot is not an admission: memory PSI full avg10 >= 3 (or unreadable) holds the gate back
+psi_case() {
+  # psi_case <name> <full avg10 text or '-' for no file>: a fresh case with that PSI file; sets PSI
+  new_case "$1"
+  PSI=$CASE/psi
+  if [[ $2 == - ]]; then rm -f -- "$PSI"; else printf 'some avg10=9.99 avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' "$2" > "$PSI"; fi
+}
+psi_lines() { grep -c 'gate-run: waiting for host admission' "$CASE/out" || true; }
+# quiet (and just below the threshold): starts at once, no wait
+for quiet_value in 0.00 2.99; do
+  psi_case "psi-quiet-$quiet_value" "$quiet_value"
+  mapfile -t env_lines < <(slot_env "$CASE" 2)
+  gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" || fail "quiet memory PSI $quiet_value: gate-run failed"
+  [[ $(log_lines) == 1 ]] || fail "quiet memory PSI $quiet_value: the gate did not start"
+  [[ ! -e $FAKE_PSI_SLEEP_COUNT ]] || fail "quiet memory PSI $quiet_value: gate-run waited"
+done
+# busy (exactly at the threshold) then quiet: starts after, and says why it waited
+psi_case psi-busy-then-quiet 3.00
+printf 'full avg10=0.50 avg60=0.00 avg300=0.00 total=0\n' > "$CASE/psi-later"
+mapfile -t env_lines < <(slot_env "$CASE" 2)
+gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" FAKE_PSI_QUIET_AT=2 FAKE_PSI_QUIET_FILE="$CASE/psi-later" || fail 'busy then quiet: gate-run failed'
+[[ $(log_lines) == 1 ]] || fail 'busy then quiet: the gate did not start after the host went quiet'
+[[ $(cat "$FAKE_PSI_SLEEP_COUNT") == 2 ]] || fail "busy then quiet: expected 2 wait rounds, got $(cat "$FAKE_PSI_SLEEP_COUNT")"
+contains "$CASE/out" 'gate-run: waiting for host admission: memory PSI full avg10=3.00 >= 3, 0s of 1800s' 'the wait names the value and the bound'
+# the second place a slot is taken: the poll loop (both slots busy, then one released) waits as well
+psi_case psi-poll-path 4.50
+printf 'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$CASE/psi-later"
+hold_slots 1 2
+mapfile -t env_lines < <(slot_env "$CASE" 2)
+gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" FAKE_RELEASE_FIFO="$CASE/release-2" FAKE_PSI_QUIET_AT=1 FAKE_PSI_QUIET_FILE="$CASE/psi-later" \
+  || fail 'the poll path did not wait for memory PSI and then start'
+reap_holder 1
+release_all
+contains "$CASE/out" 'waiting for host admission: memory PSI full avg10=4.50 >= 3' 'a gate taken from the poll loop waits for memory PSI too'
+[[ $(log_lines) == 1 ]] || fail 'poll path: the gate did not start'
+# busy until the bound: exit 75, one line a minute, nothing ran, and never a lane verdict
+psi_case psi-timeout 5.25
+mapfile -t env_lines < <(slot_env "$CASE" 2)
+rc=0
+gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" CONTROLLER_GATE_PSI_WAIT_S=130 FAKE_RUN_GATE_RC=1 || rc=$?
+[[ $rc == 75 ]] || fail "busy memory PSI past the bound must exit 75, got $rc"
+[[ $(log_lines) == 0 ]] || fail 'busy memory PSI past the bound: run-gate ran'
+[[ $(psi_lines) == 3 ]] || fail "expected one wait line a minute (0s, 60s, 120s), got $(psi_lines)"
+contains "$CASE/out" 'gate-run: not admitted (memory PSI full avg10=5.25 >= 3 for 130s); nothing ran' 'the refusal says nothing ran'
+# an unreadable file is refused at once (no wait), like dev host-admission/1
+psi_case psi-unreadable -
+mapfile -t env_lines < <(slot_env "$CASE" 2)
+rc=0
+gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" CONTROLLER_GATE_PSI_WAIT_S=30 || rc=$?
+[[ $rc == 75 ]] || fail "an unreadable memory PSI file must exit 75, got $rc"
+[[ $(log_lines) == 0 ]] || fail 'an unreadable memory PSI file started the gate'
+[[ ! -e $FAKE_PSI_SLEEP_COUNT ]] || fail 'an unreadable memory PSI file was waited on instead of refused at once'
+contains "$CASE/out" "gate-run: not admitted (memory PSI unreadable: $PSI); nothing ran" 'unreadable is named as such'
+# a file without a full line, and a malformed value, are unreadable too
+psi_case psi-garbled 'x1'
+mapfile -t env_lines < <(slot_env "$CASE" 2)
+rc=0
+gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" CONTROLLER_GATE_PSI_WAIT_S=10 || rc=$?
+[[ $rc == 75 ]] || fail "a malformed memory PSI value must exit 75, got $rc"
+[[ ! -e $FAKE_PSI_SLEEP_COUNT ]] || fail 'a malformed memory PSI value was waited on'
+# the file turning unreadable while waiting is refused at once as well
+psi_case psi-vanishes 4.00
+printf 'full avg10=garbled\n' > "$CASE/psi-later"
+mapfile -t env_lines < <(slot_env "$CASE" 2)
+rc=0
+gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" FAKE_PSI_QUIET_AT=1 FAKE_PSI_QUIET_FILE="$CASE/psi-later" || rc=$?
+[[ $rc == 75 ]] || fail "a memory PSI file that turns unreadable while waiting must exit 75, got $rc"
+[[ $(log_lines) == 0 ]] || fail 'a memory PSI file that turned unreadable while waiting started the gate'
+[[ $(cat "$FAKE_PSI_SLEEP_COUNT") == 1 ]] || fail 'the wait went on after the PSI value became unreadable'
+contains "$CASE/out" "gate-run: not admitted (memory PSI unreadable: $PSI); nothing ran" 'unreadable while waiting is named as such'
+rc=0
+gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_WAIT_S=ten || rc=$?
+[[ $rc == 2 ]] || fail "a non-numeric CONTROLLER_GATE_PSI_WAIT_S must exit 2, got $rc"
 
 echo 'PASS gate slots: 1..8 configurable slots, derived locks, refusals, wait and progress wording'

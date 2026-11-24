@@ -63,9 +63,11 @@ together.
 | CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
-| CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
+| CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | FIXED 2026-11-24 |
 | CTL-56 | P-plat-04 r1 leftovers: locale oracle, interim-message fake, misplaced Pi mutant reference, Unicode continuation digits | Should-fix | OPEN 2026-11-24 |
 | CTL-61 | P-plat-21 r1 leftovers: resume-helper prompt limits, test gaps, fail-open input check, live smoke before relying on clear-resume (B2-B13) | Should-fix | OPEN 2026-11-24 |
+| CTL-57 | `gate-run.sh` local admission only queues on the slot locks; it starts a gate while the cockpit is at the memory-PSI stop signal | Must-fix | FIXED 2026-11-24 |
+| CTL-60 | P-plat-20 r1 leftovers: fourth-snapshot assertion, never-started sidecar reported as inconclusive, no-PSI host refused with 75, chain-run shows 75 as STOPPED-ON-FAIL | Should-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1707,7 +1709,7 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 
 ## CTL-55 — the live-sidecar test waits a fixed wall-clock time
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED (2026-11-24, P-plat-20: `check_live_snapshot` waits on sidecar progress; the 300 s hang guard is reported as inconclusive).
 
 `tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
 
@@ -1751,3 +1753,19 @@ Not blocking, for `compact-resume.sh`, `clear-resume.sh`, `resume-lib.sh` and th
 - **B13 timeout classification:** `wait_idle` reports 3 or 5 from the LAST poll only, so a pane that had text for 29 min and was busy at the final poll reports 3 (cosmetic).
 
 Source: Opus r1 review of P-plat-21 at head 4b9563cbd and r2 review at head b2162f3f1.
+## CTL-57 — gate-run.sh starts local gates at the memory-PSI stop signal
+
+**Status:** FIXED (2026-11-24, P-plat-20: `gate-run.sh` waits for memory PSI `full` avg10 < 3 after taking a slot, bounded by `CONTROLLER_GATE_PSI_WAIT_S`; exit 75 "not admitted, nothing ran", unreadable PSI exits 75 at once).
+
+`gate-run.sh` admitted a local gate as soon as one of its slot locks was free. At 07:50Z on 2026-11-24 the cockpit host ran 4 local gates at memory PSI `full` avg10 3-6, above the programme's only stop signal (>= 3). Sessions can be told to stop, but external codex implementers that call `gate-run.sh` mid-run cannot. Same semantics as host-admission/1 of `scripts/controller/dev` (CTL-52, package P-plat-02), so one rule covers both.
+
+Source: vbpub-main-controller, 2026-11-24 07:50Z (cockpit PSI 3-6 with 4 local gates).
+
+## CTL-60 — P-plat-20 r1 leftovers
+
+**Status:** OPEN (filed 2026-11-24, from the P-plat-20 round-1 Opus review; CTL-56 here is P-plat-04's; plat-docs-20261124 holds an older, different CTL-56..59 set that needs renumbering when it merges).
+
+1. `check_live_snapshot` asserts on the third distinct snapshot only; a `tool_in_flight` that decays on idle ticks is caught only by the fourth, the first guaranteed idle tick. Also assert on it (about 1 s).
+2. A sidecar that never starts, dies at once or writes to the wrong `--out` is reported after 300 s as `inconclusive: no sidecar progress`. Detect that the held marker exists, the wrapper lives and no pi-live child is left, and fail with a definite message.
+3. A host without PSI (`CONFIG_PSI` off, `psi=0`) makes every local `gate-run.sh` exit 75, "retry later" for a permanent condition. ctl-doctor should report PSI readability and the docs should say what to do.
+4. `chain-run.sh` reports a `gate-run.sh` exit 75 ("not admitted, nothing ran") as `STOPPED-ON-FAIL: lane exited 75`, which reads like a lane verdict. It needs its own marker.

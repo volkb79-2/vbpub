@@ -12,6 +12,9 @@
 # nyxloom/docs/plan-resource-governance.md). This is the backstop for that
 # case: "never truly unbounded," for anything on this host, no exceptions.
 #
+# On HOST_ROLE=dedicated-dev (P-plat-19e) this IS the per-container default
+# (MemoryMax 8G unless DOCKER_SCOPE_BACKSTOP_MEMORY_MAX pins another value; every
+# other role keeps 12G); spawners declare tighter caps with --memory.
 # THIS IS NOT A TIER CEILING. It reaches every container regardless of slice
 # — including production's (Soulmask/Jitsi containers get the same generic
 # docker-<id>.scope naming as anything else) — so it MUST be sized generously
