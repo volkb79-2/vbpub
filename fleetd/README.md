@@ -25,9 +25,8 @@ for the invariants and [the consumer guide](docs/CONSUMERS.md) for examples.
 
 The `fleet` command is a registered `cli-extended` CLI: one grammar, one real
 wheel dependency (`cli-extended>=0.5.0`), never vendored and never put on a
-path. A managed host that runs `fleet facts collect` or `fleet guard validate`
-installs both wheels offline; the host needs neither the repository nor an
-`hx` wrapper.
+path. A managed host that runs `fleet facts collect` installs both wheels
+offline; the host needs neither the repository nor an `hx` wrapper.
 
 On a managed vbpub host, install it with the runner's script, which verifies
 both wheel hashes and installs into `/opt/fleetd/<version>/venv` (never the
@@ -151,16 +150,19 @@ that return fact pending for a later successful refresh. Never-started
 candidates remain `missing` with a distinct reason; zero-progress failed
 batches include the failure reason and exit code when available. Host transport or
 contract errors are shown as `ERROR` in status while other hosts continue to
-be supervised. Missing artifacts or candidates are reported. This lightweight result does not merge host Assay
-stores with `--merge-manifest`; strict store ownership, the baseline cache,
-forced-command host entry, always-on daemon, and active guard remain follow-up
-work (see the [backlog](KNOWN_ISSUES_TODO_BACKLOG.md)).
+be supervised. Missing artifacts or candidates are reported. This lightweight
+result does not merge host Assay stores. Strict store ownership and the
+baseline cache remain assay work (B544/B565 and B542); the forced-command host
+entry, daemon, and thrashguard job registration remain follow-up work (see the
+[backlog](KNOWN_ISSUES_TODO_BACKLOG.md)).
 
 ## The default R2 campaign
 
 Multi-host, multi-instance R2 is the default way mutation judging runs, and
-fleetd supplies the four pieces that make it a mechanism rather than per-tool
-scripts. None of them contacts a host.
+fleetd supplies three pieces that make it a mechanism rather than per-tool
+scripts. None of them contacts a host. Assay owns strict shard merging
+(`--merge-shard-store`, driven by run-gate's `--merge-shards N`; B565's
+`strict-shard` policy).
 
 - `fleet scope` produces the campaign's candidate-id set. The default scope
   judges only the lines added since the tool's previous release tag; a
@@ -176,9 +178,6 @@ scripts. None of them contacts a host.
 - `fleet collect` then `fleet measurement` record what each candidate actually
   cost in the campaign evidence, so the next campaign's sizing has a `measured`
   basis instead of a guess.
-- `fleet merge-check` refuses a shard set whose shards judged a different
-  commit, tester image or plan, or left an index missing.
-
 See [the default R2 campaign](docs/R2-DEFAULT.md) for the mechanism and
 [docs/CONSUMERS.md](docs/CONSUMERS.md#declare-the-campaign-scope) for commands
 you can paste.
@@ -205,7 +204,9 @@ each host plan carries `reserve_services` provenance. See the
 [facts and planning contract](docs/SPEC.md#facts-collection).
 
 Serialized campaign inputs use `host-facts/1`, `work-request/1`,
-`candidate-table/1`, `fleet-host-set/1`, and `assay-merge-manifest/1`. The `fleet`
+`candidate-table/1`, and `fleet-host-set/1`. `assay-merge-manifest/1` is
+assay's owner-manifest contract (B544, and B565's `owner-manifest` policy);
+fleetd no longer validates it. The `fleet`
 command itself is registered with the shared `cli-extended` library, its one
 runtime dependency (see [the CLI and install section](docs/SPEC.md#host-install-and-the-wheel-layout));
 all other imports are the Python standard library. The registered `r0-r1` lane runs

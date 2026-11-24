@@ -205,45 +205,6 @@ effects = ["Completed in the sandbox against its throw-away HOME and the fixture
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[facts-validate-option-spelling-ba5fd61a]"]
 
 [[cases]]
-id = "case:route:entrypoint:fleet/guard/validate/argument-shape/argument:route:entrypoint:fleet/guard/validate/file"
-state = "active"
-decision = "accept"
-reviewed_signature = "sha256:9f864afcdce0d68fff8b5470957e7ba6c8463550dc7734349223cd2729f3830e"
-rationale = "The positional is accepted in the shape the registration declares."
-invocation = ["guard", "validate", "@guard.valid.toml"]
-expected_exit_status = 0
-expected_stdout_contains = "valid guard.toml"
-expected_stderr_contains = ""
-effects = ["Completed in the sandbox against its throw-away HOME and the fixture inputs named in the invocation; no host was contacted and nothing outside the sandbox was changed."]
-test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[guard-validate-argument-shape-ea789fa3]"]
-
-[[cases]]
-id = "case:route:entrypoint:fleet/guard/validate/minimum"
-state = "active"
-decision = "accept"
-reviewed_signature = "sha256:d1065ea9a064562781f5e24c1fa1c6d4e3120c80f364fd8e756c5f028214ce5b"
-rationale = "The route's minimum executable syntax is accepted and reaches its handler or its own input validation."
-invocation = ["guard", "validate", "@guard.valid.toml"]
-expected_exit_status = 0
-expected_stdout_contains = "valid guard.toml"
-expected_stderr_contains = ""
-effects = ["Completed in the sandbox against its throw-away HOME and the fixture inputs named in the invocation; no host was contacted and nothing outside the sandbox was changed."]
-test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[guard-validate-minimum-bfe4535d]"]
-
-[[cases]]
-id = "case:route:entrypoint:fleet/guard/validate/option-spelling/option:route:entrypoint:fleet/guard/validate/--debug-raw/--debug-raw"
-state = "active"
-decision = "accept"
-reviewed_signature = "sha256:5300eed950d08198b3b0b58ef183649e513bc84a67e9abc7a9f7f1b4cf00ba3c"
-rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
-invocation = ["guard", "validate", "@guard.valid.toml", "--debug-raw"]
-expected_exit_status = 0
-expected_stdout_contains = "valid guard.toml"
-expected_stderr_contains = ""
-effects = ["Completed in the sandbox against its throw-away HOME and the fixture inputs named in the invocation; no host was contacted and nothing outside the sandbox was changed."]
-test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[guard-validate-option-spelling-e1fcb1db]"]
-
-[[cases]]
 id = "case:route:entrypoint:fleet/measurement/argument-shape/argument:route:entrypoint:fleet/measurement/campaign"
 state = "active"
 decision = "refuse"
@@ -346,71 +307,6 @@ expected_stdout_contains = ""
 expected_stderr_contains = "[ERROR]"
 effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[measurement-option-spelling-ff2f68cf]"]
-
-[[cases]]
-id = "case:route:entrypoint:fleet/merge-check/argument-shape/argument:route:entrypoint:fleet/merge-check/identity"
-state = "active"
-decision = "refuse"
-reviewed_signature = "sha256:aad94329974329b1e403d884623acf2849763a17206c9d0a63ffa6798949c759"
-rationale = "The positional is accepted in the shape the registration declares."
-invocation = ["merge-check", "x"]
-expected_exit_status = 2
-expected_stdout_contains = ""
-expected_stderr_contains = "[ERROR]"
-effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
-test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[merge-check-argument-shape-eabcbf86]"]
-
-[[cases]]
-id = "case:route:entrypoint:fleet/merge-check/minimum"
-state = "active"
-decision = "refuse"
-reviewed_signature = "sha256:6d785cd60d2e145465c455295effcb32fbc3e5a08cc6641e309e213adaa98a51"
-rationale = "The route's minimum executable syntax is accepted and reaches its handler or its own input validation."
-invocation = ["merge-check", "x"]
-expected_exit_status = 2
-expected_stdout_contains = ""
-expected_stderr_contains = "[ERROR]"
-effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
-test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[merge-check-minimum-027c7040]"]
-
-[[cases]]
-id = "case:route:entrypoint:fleet/merge-check/option-spelling/option:route:entrypoint:fleet/merge-check/--debug-raw/--debug-raw"
-state = "active"
-decision = "refuse"
-reviewed_signature = "sha256:c2e0c33d4fd8d46b550f47853af497817297418db5b04ed935bbc237f234aa0b"
-rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
-invocation = ["merge-check", "x", "--debug-raw"]
-expected_exit_status = 2
-expected_stdout_contains = ""
-expected_stderr_contains = "[ERROR]"
-effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
-test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[merge-check-option-spelling-53103db1]"]
-
-[[cases]]
-id = "case:route:entrypoint:fleet/merge-check/option-spelling/option:route:entrypoint:fleet/merge-check/--json/--json"
-state = "active"
-decision = "refuse"
-reviewed_signature = "sha256:06466f796529a76d70dd2018b25a0a96361a97439b225c8386fa23cc6a43e6c9"
-rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
-invocation = ["merge-check", "x", "--json"]
-expected_exit_status = 2
-expected_stdout_contains = ""
-expected_stderr_contains = "[ERROR]"
-effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
-test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[merge-check-option-spelling-d884177c]"]
-
-[[cases]]
-id = "case:route:entrypoint:fleet/merge-check/option-spelling/option:route:entrypoint:fleet/merge-check/--require-complete/--require-complete"
-state = "active"
-decision = "refuse"
-reviewed_signature = "sha256:e80bb6b8b12d048940848a3c527a7f7747db8d1416c4fffb6d2245950f7f3d19"
-rationale = "The option is accepted in exactly this spelling (no prefix abbreviation)."
-invocation = ["merge-check", "x", "--require-complete"]
-expected_exit_status = 2
-expected_stdout_contains = ""
-expected_stderr_contains = "[ERROR]"
-effects = ["Refused by the shared parser, a declared constraint or the verb's own input validation before any host is contacted; no campaign state and no file outside the sandbox is changed."]
-test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[merge-check-option-spelling-a6f552c1]"]
 
 [[cases]]
 id = "case:route:entrypoint:fleet/plan/argument-shape/argument:route:entrypoint:fleet/plan/lane"

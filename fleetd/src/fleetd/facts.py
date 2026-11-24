@@ -19,7 +19,6 @@ from .contracts import (
     ContractError,
     validate_host_facts,
 )
-from .guard import validate_guard
 
 
 DEFAULT_ROOT = Path("/")
@@ -491,15 +490,18 @@ def _guard_facts(root: Path, config: FactsConfig) -> dict[str, Any]:
     digest_material = b"".join(name.encode("utf-8") + b"\0" + data + b"\0" for name, data in file_entries)
     digest: str | None = None if digest_reason is not None else "sha256:" + hashlib.sha256(digest_material).hexdigest()
     enabled: bool | None = None
-    enabled_reason: str | None = None
-    if parse_reason is None:
-        try:
-            guard = validate_guard(merged)
-            enabled = bool(guard.to_dict()["enabled"])
-        except ContractError as exc:
-            enabled_reason = f"guard configuration is invalid ({exc})"
-    else:
-        enabled_reason = parse_reason
+    enabled_reason: str | None = parse_reason
+    if enabled_reason is None:
+        if "enabled" not in merged:
+            enabled_reason = "guard configuration has no top-level enabled value"
+        else:
+            value = merged["enabled"]
+            if isinstance(value, bool):
+                enabled = value
+            else:
+                enabled_reason = (
+                    f"guard configuration enabled is {type(value).__name__}, expected bool"
+                )
 
     state, state_reason = _guard_state(root, config)
     result: dict[str, Any] = {"enabled": enabled, "config_digest": digest, "state": state}
