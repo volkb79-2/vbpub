@@ -63,22 +63,30 @@ def test_requirements_are_rendered_as_a_sorted_exact_pinned_closure(tmp_path: Pa
     assert all("==" in line for line in dependency_lines)
 
 
-def test_committed_bundle_requirements_are_an_exact_third_party_lock() -> None:
+def test_committed_lock_covers_every_generated_dependency_floor() -> None:
     lines = [
         line
         for line in bundle_wheels.REQUIREMENTS_OUT.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     ]
-    names = {
-        bundle_wheels.normal_name(line.partition("==")[0])
-        for line in lines
-        if "==" in line
-    }
-
-    assert len(lines) == len(names)
     assert all(line.count("==") == 1 for line in lines)
-    assert {"jinja2", "pyyaml", "questionary", "tomli-w", "tomlkit"} <= names
-    assert not (names & bundle_wheels.FIRST_PARTY)
+    pins = {}
+    for line in lines:
+        name, version = line.split("==")
+        canonical = bundle_wheels.normal_name(name)
+        assert canonical not in pins, f"duplicate committed pin for {canonical}"
+        assert not any(char in version for char in "*<>=!~;")
+        pins[canonical] = bundle_wheels._version_tuple(version)
+
+    generated = bundle_wheels.merge_requirements(bundle_wheels.dependency_sources())
+    for raw in generated:
+        name, canonical, floor = bundle_wheels._parse_requirement(raw)
+        assert canonical in pins, f"generated dependency {name} has no committed exact pin"
+        if floor:
+            assert pins[canonical] >= bundle_wheels._version_tuple(floor[2:]), (
+                f"committed pin for {name} does not satisfy {floor}"
+            )
+    assert not (set(pins) & bundle_wheels.FIRST_PARTY)
 
 
 def test_requirements_check_is_red_for_a_stale_file(tmp_path: Path) -> None:
