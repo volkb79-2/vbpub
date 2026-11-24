@@ -255,3 +255,13 @@ def test_consumer_env_drift_names_duplicates_and_multiple_keys() -> None:
         "consumer.env TLS_EDGE_DOMAIN, TLS_EDGE_NETWORK differ from the site "
         "override; run tls-edge configure to re-sync"
     )
+
+
+def test_consumer_env_drift_ignores_unowned_operator_lines() -> None:
+    contract = _contract()
+    values = contract.consumer_contract(_edge())
+    existing = "OPERATOR_FLAG=keep\n" + contract.render_env(values).replace(
+        f"TLS_EDGE_DOMAIN={values['TLS_EDGE_DOMAIN']}",
+        "TLS_EDGE_DOMAIN=drift.example.test",
+    )
+    assert contract.consumer_env_drift(values, existing) == ["TLS_EDGE_DOMAIN"]
