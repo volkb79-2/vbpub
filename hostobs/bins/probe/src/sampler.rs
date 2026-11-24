@@ -21,7 +21,7 @@ use hostobs_model::identity::{
     CgroupKey, IdentityError as ModelIdentityError, IncarnationRegistry, DEFAULT_ACTIVE_MAX,
     MAX_LABEL_LEN,
 };
-use hostobs_model::metric::{sampler_baseline, Metric, MetricRegistry};
+use hostobs_model::metric::{sampler_baseline, Metric, MetricError, MetricRegistry};
 use hostobs_model::quality::Quality;
 use hostobs_model::value::{Sample, Value};
 use hostobs_proto::dict::{Entry, MetricFacts, MetricValueType};
@@ -30,6 +30,29 @@ use hostobs_proto::frame::{BlockHeaderFacts, Column, Row};
 use crate::backend::TickData;
 
 const MAX_SLEEP_NS: u64 = 100_000_000;
+
+/// A refusal to start the sampler.
+#[derive(Debug)]
+pub enum SamplerError {
+    /// The compiled metric baseline or one of its required lookups is invalid.
+    Metrics(MetricError),
+    /// The configured period cannot drive a sampler.
+    InvalidTickMs,
+    /// The sampler thread could not be created.
+    Spawn(io::Error),
+}
+
+impl std::fmt::Display for SamplerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SamplerError::Metrics(error) => write!(f, "sampler metrics: {error}"),
+            SamplerError::InvalidTickMs => f.write_str("sampler tick_ms must be non-zero"),
+            SamplerError::Spawn(error) => write!(f, "cannot start sampler thread: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SamplerError {}
 
 type MetricMapping = (&'static str, &'static str, &'static str);
 const METRIC_MAPPINGS: &[MetricMapping] = &[
@@ -293,16 +316,15 @@ struct MetricSpec {
 
 impl<F: Fs, C: Clock> Sampler<F, C> {
     /// Build a sampler from the filesystem, roots, clock, config and registry bound.
-    #[must_use]
     pub fn new(
         fs: F,
         roots: Roots,
         clock: C,
         cfg: SamplerConfig,
         registry_max: usize,
-    ) -> Sampler<F, C> {
-        let registry = sampler_baseline().expect("the static metric baseline is valid");
-        let metrics = supported_metrics(&registry);
+    ) -> Result<Sampler<F, C>, SamplerError> {
+        let registry = sampler_baseline().map_err(SamplerError::Metrics)?;
+        let metrics = supported_metrics(&registry)?;
         let positions = metrics
             .iter()
             .enumerate()
@@ -316,7 +338,7 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
                 .collect(),
         );
         let next_deadline_ns = clock.mono_ns();
-        Sampler {
+        Ok(Sampler {
             fs,
             clock,
             proc_root: Proc::new(roots.proc),
@@ -329,7 +351,7 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
             seq: 0,
             ticks_skipped: 0,
             next_deadline_ns,
-        }
+        })
     }
 
     /// Run one complete scan and build the next immutable tick.
@@ -513,16 +535,16 @@ fn empty_tick_data() -> TickData {
     }
 }
 
-fn supported_metrics(registry: &MetricRegistry) -> Vec<MetricSpec> {
+fn supported_metrics(registry: &MetricRegistry) -> Result<Vec<MetricSpec>, SamplerError> {
     METRIC_MAPPINGS
         .iter()
         .map(|&(_, _, name)| {
-            let metric = registry.get(name).expect("supported metric is registered");
-            MetricSpec {
+            let metric = registry.get(name).map_err(SamplerError::Metrics)?;
+            Ok(MetricSpec {
                 name,
                 facts: facts(metric),
                 value_type: value_type(name),
-            }
+            })
         })
         .collect()
 }
@@ -798,18 +820,17 @@ impl Drop for StopGuard {
 ///
 /// # Errors
 ///
-/// [`io::ErrorKind::InvalidInput`] for `tick_ms == 0`; otherwise the thread spawn error.
+/// [`SamplerError::InvalidTickMs`] for a zero period,
+/// [`SamplerError::Metrics`] for a startup metric refusal, and
+/// [`SamplerError::Spawn`] when the named thread cannot be created.
 pub fn spawn(
     cfg: SamplerConfig,
     published: Arc<Published>,
     wake: OwnedFd,
     stop: Arc<AtomicBool>,
-) -> io::Result<JoinHandle<()>> {
+) -> Result<JoinHandle<()>, SamplerError> {
     if cfg.tick_ms == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "sampler tick_ms must be non-zero",
-        ));
+        return Err(SamplerError::InvalidTickMs);
     }
     let roots = Roots {
         proc: PathBuf::from("/proc"),
@@ -817,7 +838,7 @@ pub fn spawn(
         cgroup: cfg.cgroup_root.clone(),
     };
     let clock = SystemClock::new(Timeline::new(cfg.boot_id, cfg.epoch));
-    let mut sampler = Sampler::new(RealFs::new(), roots, clock, cfg, DEFAULT_ACTIVE_MAX);
+    let mut sampler = Sampler::new(RealFs::new(), roots, clock, cfg, DEFAULT_ACTIVE_MAX)?;
     let wake = Arc::new(wake);
     thread::Builder::new()
         .name("hostobs-sampler".to_string())
@@ -838,6 +859,7 @@ pub fn spawn(
                 sampler.sleep_until_deadline(&stop);
             }
         })
+        .map_err(SamplerError::Spawn)
 }
 
 #[cfg(test)]
@@ -848,11 +870,12 @@ mod tests {
 
     use hostobs_kernel::fs::MemFs;
     use hostobs_model::identity::Incarnation;
+    use hostobs_model::metric::MetricRegistry;
     use hostobs_model::quality::Quality;
 
     use super::{
-        advance_deadline, publish, signal, spawn, Published, Sampler, SamplerConfig, StopGuard,
-        Tick, Timeline,
+        advance_deadline, publish, signal, spawn, supported_metrics, Published, Sampler,
+        SamplerConfig, SamplerError, StopGuard, Tick, Timeline,
     };
     use crate::backend::TickData as Data;
     use hostobs_kernel::clock::{Clock, ManualClock};
@@ -892,6 +915,7 @@ mod tests {
             cfg,
             registry_max,
         )
+        .expect("the compiled metric baseline is valid")
     }
 
     fn filled() -> MemFs {
@@ -1007,6 +1031,18 @@ mod tests {
                 "{daemon} is root-row only"
             );
         }
+    }
+
+    #[test]
+    fn a_missing_compiled_metric_is_a_typed_startup_refusal() {
+        assert!(matches!(
+            supported_metrics(&MetricRegistry::new()),
+            Err(SamplerError::Metrics(_))
+        ));
+        assert_eq!(
+            SamplerError::InvalidTickMs.to_string(),
+            "sampler tick_ms must be non-zero"
+        );
     }
 
     #[test]

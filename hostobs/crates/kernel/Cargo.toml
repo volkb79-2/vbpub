@@ -4,9 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-# The plan's `unsafe` allowance for this crate (§A.3) stays declared, but nothing here
-# uses it: the crate carries its own `#![forbid(unsafe_code)]`, which a package lint
-# override cannot raise. Cargo refuses to combine `[lints] workspace = true` with a
+# The plan's `unsafe` allowance for this crate (§A.3) stays declared for one audited use:
+# `activation::adopt_raw` claims a systemd-owned listening fd. The crate carries
+# `#![deny(unsafe_code)]`; Cargo refuses to combine `[lints] workspace = true` with a
 # package-level override, so the allowance is spelled out directly (the same shape
 # `crates/act` has).
 [lints.rust]
