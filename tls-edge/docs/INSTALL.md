@@ -227,6 +227,7 @@ routers of `pattern-e-media-udp` (one media pair per edge).
 ## 6. Update
 
 ```bash
+printf '' > /tmp/tls-edge-empty.toml
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
 sudo /srv/tls-edge-instance/bin/tls-edge configure --answers /tmp/tls-edge-empty.toml --yes
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
