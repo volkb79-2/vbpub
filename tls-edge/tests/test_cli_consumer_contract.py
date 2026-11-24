@@ -561,11 +561,6 @@ def test_show_json_reports_drift_and_absence_without_failing(
     result, output = _configure(root, answers_path, monkeypatch)
     assert result == 0, output
     env_path = root / "stack" / "consumer.env"
-    while "\n\n" in env_path.read_text(encoding="utf-8"):
-        env_path.write_text(
-            env_path.read_text(encoding="utf-8").replace("\n\n", "\n"),
-            encoding="utf-8",
-        )
     _hand_edit_domain(env_path)
 
     result, output = run_cli(

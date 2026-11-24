@@ -401,8 +401,8 @@ def validate_config(
     """Validate cross-field edge behavior and return the inbound port plan."""
     tls = _table(config, "tls")
     ports = _table(config, "ports")
-    http3 = _table(config, "http3")
-    calls = _table(config, "calls")
+    _table(config, "http3")
+    _table(config, "calls")
     acme = _table(config, "acme")
     static = _table(config, "static")
     mode = _required(tls, "mode", "tls.mode")
@@ -423,24 +423,14 @@ def validate_config(
         ):
             raise ConfigError("ingress_network must be a valid Docker network name")
 
+    inbound = port_plan(config)
     expose_http = _required(ports, "expose_http", "ports.expose_http")
-    h3_enabled = _required(http3, "enabled", "http3.enabled")
-    calls_enabled = _required(calls, "enabled", "calls.enabled")
-    if not isinstance(expose_http, bool):
-        raise ConfigError("ports.expose_http must be true or false")
-    if not isinstance(h3_enabled, bool):
-        raise ConfigError("http3.enabled must be true or false")
-    if not isinstance(calls_enabled, bool):
-        raise ConfigError("calls.enabled must be true or false")
-
     http_port = normalize_port(
         _required(ports, "http", "ports.http"), "ports.http"
     )
     https_port = normalize_port(
         _required(ports, "https", "ports.https"), "ports.https"
     )
-    if expose_http and http_port == https_port:
-        raise ConfigError("HTTP and HTTPS cannot publish the same TCP port")
     if mode == "acme-tls" and https_port != 443:
         raise ConfigError("acme-tls requires the public HTTPS port to be 443")
     if mode == "acme-http" and (not expose_http or http_port != 80):
@@ -510,8 +500,6 @@ def validate_config(
     static_domains = normalize_static_domains(
         _required(static, "domains", "static.domains")
     )
-
-    inbound = port_plan(config)
 
     if mode == "acme-dns":
         provider = normalize_provider(
