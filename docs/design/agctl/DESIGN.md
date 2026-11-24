@@ -48,12 +48,14 @@ agctl state must answer estate-wide questions, not only questions about one impl
 - the plan state (the §3 map);
 - the worktree branch and head, and whether that head is merged into `origin/main`;
 - its runs: id, route, state or outcome, live context, and the yield chain (`<run>-y<N>`, from the E-021 `YIELD`/`READY` lines in `last.txt`);
-- its gates: host, lane, lock holder, result.
+- its gates: host, lane, slots held or free, result.
 
 Every row names the source of each field and its mtime. Inputs are aggregated in place, never copied:
 - **Plans and state:** each sub-controller's `.controller-state/<name>/STATE.md` (assay, core, edge, hostobs, platform, rollback today) and its `.controller-state/PROGRAM-2026-11-24/PLAN-<name>.md`. After the §3 migration the input is `~/controller-state/<name>/plan.yaml`, the machine source. Until then STATE.md is prose: agctl shows only the lines that name a package id, marked `unverified`.
 - **Runs:** the legacy flat records `$CONTROLLER_RUNS_DIR/<name>.{done,live,wt,route,thread,last.txt}`, plus `runs/<id>/run.json` and `live.json` (§4). A free lock on a run that has not ended reads as DIED.
-- **Gates:** `$CONTROLLER_HOME/remote-gate-locks/` (which host is held) and `$CONTROLLER_HOME/remote-gates/` (results) (`remote-gate.sh:154,195`).
+- **Gates:** `$CONTROLLER_HOME/remote-gate-locks/` (`remote-gate.sh:180`) and `$CONTROLLER_HOME/remote-gates/` (results, `:221`).
+  - The locks are bare flocks (`<host>.admit`, `<host>.slot<N>`, `:184-191`) and record no holder, so agctl can probe only held or free.
+  - Follow-up: remote-gate.sh writes a holder line (run or session, lane, start) beside each slot it takes.
 - **Git:** `git worktree list --porcelain` and `git branch --merged origin/main`.
 
 **Join key: the package id.** Branch names carry it already. Run labels must also start with it, which is a label convention that `agctl run` warns about.
