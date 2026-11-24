@@ -1040,6 +1040,24 @@ not from the phrase "memory admission" appearing anywhere: a lane that was admit
 reason is not a memory refusal either. Neither refusal started the lane, so nothing was cleaned up and no container
 exists.
 
+## Host admission for dev runs (`host-admission/1`)
+
+The contract of `scripts/controller/dev` (design: `docs/design/agent-dev/DESIGN.md` section 7); `run-job`,
+`remote-gate.py` and `fleet host start` adopt it in P-fd-05. Memory is overcommitted by design, so there is no
+MemAvailable check and no memory-weighted slot. The one rule: **wait while the host's memory PSI `full` avg10 is
+>= 3**; CPU, io and memory-`some` pressure never block a start.
+
+- **Ticket.** `~/host-admission/ticket` (flock) serialises starts. It is taken after the per-worktree lock and the
+  sync, and held 20 s past the container start (`( exec 9>&-; sleep 20 ) &` keeps its fd) so the next start sees
+  this container's load in the PSI.
+- **Wait.** PSI is read every 10 s, progress printed every 60 s, and the call exits 75 at `AGENT_DEV_WAIT_S`
+  (default 900) with nothing run. Unreadable PSI is exit 75 at once (indeterminate is never admitted), and so is no ticket within `AGENT_DEV_WAIT_S`.
+- **Disconnect.** The EXIT/HUP/INT/PIPE/TERM trap removes the container by cid before the lock and ticket fds
+  close. A SIGKILL of the wrapper is bounded by the in-container `timeout` and `dev stop`.
+- **Same worktree.** A second call exits 3 (non-blocking lock).
+- **Known limit.** remote-gate lanes and legacy `hostobs-dev-*` containers share `dev-gates.slice` without taking
+  the ticket; they meet dev runs only in the PSI.
+
 ## Cached tool copies and concurrent launches (CTL-12)
 
 `runner/remote-gate-cache.sh` is the repository-owned way for a controller helper to run this repository's
