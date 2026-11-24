@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -297,7 +298,7 @@ def test_enabled_3_1_calls_is_refused_on_hook_standalone_validate_and_configure(
 
 
 @pytest.mark.parametrize(
-    ("case", "override"),
+    ("case", "override", "expected"),
     [
         (
             "extra-key",
@@ -305,6 +306,7 @@ def test_enabled_3_1_calls_is_refused_on_hook_standalone_validate_and_configure(
                 "schema = 1\n",
                 "[tls_edge.calls]\nenabled = false\npublic_port = 8443\nbandwidth = 1\n",
             ),
+            "unknown override key tls_edge.calls.bandwidth",
         ),
         (
             "non-bool-enabled",
@@ -312,6 +314,12 @@ def test_enabled_3_1_calls_is_refused_on_hook_standalone_validate_and_configure(
                 "schema = 1\n",
                 '[tls_edge.calls]\nenabled = "false"\npublic_port = 8443\n',
             ),
+            "unknown override key tls_edge.calls.enabled",
+        ),
+        (
+            "non-table",
+            _override("schema = 1\n", "calls = 8443\n"),
+            "unknown override key tls_edge.calls",
         ),
         (
             "schema-2",
@@ -319,6 +327,7 @@ def test_enabled_3_1_calls_is_refused_on_hook_standalone_validate_and_configure(
                 "schema = 2\n",
                 "[tls_edge.calls]\nenabled = false\npublic_port = 8443\n",
             ),
+            "unknown override key tls_edge.calls.enabled",
         ),
     ],
 )
@@ -327,6 +336,7 @@ def test_other_calls_content_is_refused_as_unknown(
     monkeypatch: pytest.MonkeyPatch,
     case: str,
     override: str,
+    expected: str,
 ) -> None:
     root, _ = _instance(tmp_path / case, override)
     result, output = _run_cli(
@@ -334,12 +344,13 @@ def test_other_calls_content_is_refused_as_unknown(
         ["validate", "--root", str(root)],
     )
     assert result == 2, output
-    expected = (
-        "unknown override key tls_edge.calls.enabled"
-        if case == "schema-2"
-        else "unknown override key tls_edge.calls"
-    )
-    assert expected in output
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    errors = [
+        line.removeprefix("[ERROR] ")
+        for line in clean.splitlines()
+        if line.startswith("[ERROR] ")
+    ]
+    assert errors == [expected]
 
 
 def test_configure_drops_a_migrated_calls_table_and_shows_both_changes(

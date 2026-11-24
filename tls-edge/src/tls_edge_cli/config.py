@@ -207,7 +207,18 @@ def _check_override_table(
                 and isinstance(value, Mapping)
                 and value
             ):
-                dotted = f"{dotted}.{next(iter(value))}"
+                outside_removed = [
+                    str(item)
+                    for item in value
+                    if str(item) not in _REMOVED_CALLS_KEYS
+                ]
+                enabled = value.get("enabled")
+                if outside_removed:
+                    dotted = f"{dotted}.{outside_removed[0]}"
+                elif "enabled" in value and not isinstance(enabled, bool):
+                    dotted = f"{dotted}.enabled"
+                else:
+                    dotted = f"{dotted}.{next(iter(value))}"
             raise ConfigError(f"unknown override key {dotted}")
         expected = defaults[key]
         if isinstance(value, Mapping) != isinstance(expected, Mapping):
