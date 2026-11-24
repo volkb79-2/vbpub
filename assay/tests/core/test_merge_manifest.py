@@ -11,12 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import GitRepo
-from test_flex_r2_campaigns import _STRICT_AB, _seed
+from test_flex_r2_campaigns import _STRICT_AB, _seed, _stable_resource_counters
 
 from assay import cli, mutation, mutation_store
 from assay.cli import main
 from assay.errors import LaneConfigError, Outcome, ReasonCode
 from test_mutation_judge_identity import _record
+
+_AUTOUSE = (_stable_resource_counters,)
 
 _JUDGE = "e" * 64
 _OTHER_JUDGE = "a" * 64
