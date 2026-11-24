@@ -733,15 +733,15 @@ it from the capacity it already enforces on `dev-gates.slice` and publishes it. 
 ```
 cap = max(1, min(cpu_cap, memory_cap))
 cpu_cap    = floor(gates CPU cores / ADMISSION_CPUS_PER_GATE)          # default 2 CPUs per concurrent gate
-memory_cap = floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)       # default 2G per gate; no term when the tier has no MemoryHigh
+memory_cap = floor(gates MemoryMax (dedicated-dev) or MemoryHigh / ADMISSION_MEMORY_PER_GATE)   # default 2G per gate; no term when the tier has neither
 ```
 
 `gates CPU cores` is the effective minimum of the parent `dev.slice` and `dev-gates.slice` CPUQuota. `mdt_capacity`
 supplies the auto-derived shares, while explicit `DEV_CPU_QUOTA` and `DEV_GATES_CPU_QUOTA` percentages cap those
 shares; `-` omits that level's quota. For example, `DEV_CPU_QUOTA=200%` on an 8-core host limits the gate tier to
-2 cores even when its own quota is larger. `gates MemoryHigh` is what the tier is rendered with: on `HOST_ROLE=dedicated-dev`
-the derivation of "Memory of the dedicated-dev role" (`mdt_capacity.dedicated_memory`: dev.slice's High minus the
-protected tiers' MemoryLow, so a leak ends in the tier first), otherwise `DEV_GATES_MEMORY_HIGH`. The defaults are
+2 cores even when its own quota is larger. The gates memory ceiling is what the tier is rendered with: on `HOST_ROLE=dedicated-dev`
+its MemoryMax from "Memory of the dedicated-dev role" (`mdt_admission.gates_memory_ceiling()`: dev.slice's Max minus the
+protected tiers' MemoryLow; that role has no MemoryHigh), otherwise `DEV_GATES_MEMORY_HIGH`. The defaults are
 planning figures, not limits (the tier is overcommitted by design and PSI is what bounds real load): one gate per
 2 vCPU is the conservative figure the operator published by hand on v1001, 2G is the memory budget of a typical
 lane. Examples: a 4 vCPU / 8 GB dedicated-dev host (v1001, r1002) gives 2, an 8 vCPU / 16 GB one gives 4, a
@@ -1151,95 +1151,87 @@ model/serial/size/wwn) equals the root disk's; `proven` and `unproven` values co
 `iobench calibrate` (`libraries/iobench/docs/CONSUMERS.md` section 2) or pin `DEV_IO_*_MAX`. Producing the result during debian-install-v2 is backlog MDT-063;
 until then run the calibration by hand on the test hosts.
 
-### Memory of the dedicated-dev role (MDT-TESTHOST-MEM)
+### Memory of the dedicated-dev role (MDT-TESTHOST-MEM, P-plat-19e)
 
-The test hosts are planned for overcommit: the 4 GiB gates tier and the 5-8 GiB background tiers held a 1-1.75 GiB cmru lane or a 4 GiB mdt-cockpit test
-behind an artificial ceiling long before the host was short of memory. On `HOST_ROLE=dedicated-dev` the whole of RAM plus disk swap belongs to the dev
-tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 1G, minimum 256M; it must cover the host's own working set, see below; not named `*_RESERVE_*` because the 2026-11 rename guard refuses those keys).
-`shared-prod` and an empty role keep sections 2.4 and 3 of the env file exactly as configured; nothing below applies to them.
+Full design, kernel semantics and review dispositions: `docs/DESIGN-DEDICATED-DEV-MEMORY.md`. Operator requirement: protect only the host's basic services, put
+no `MemoryHigh` on test containers, give unprotected memory to the load and let swap absorb the rest. `shared-prod` and an empty role keep sections 2.4 and 3
+of the env file exactly as configured; nothing below applies to them (new `mdt-host-check.sh` findings are WARN there).
+
+**Host reserve K = F + M.** F = the `MemoryMin` floors (the table below, the derived `system.slice` sum, cgprofile.slice's own 128M, `user.slice` 64M = 565M
+today), M = `DEV_HOST_MEMORY_MARGIN` (default 512M, at least 64M; unmeasured until the acceptance run) so K = 1077M. `DEV_HOST_MEMORY_KEEP` is only a pin of K now
+(RAM kept outside dev.slice, not RAM+swap as before; install.sh prints a NOTICE when it is set; refused below F + 128M). Refused before any write: F above 10% of
+MemTotal, a derived `system.slice` floor above 460M, a `DEV_MEMORY_MAX` pin above `MemTotal - MDT_EXCLUDED_RAM - K`, `DEV_INTERACTIVE_MEMORY_MIN` above its Low.
 
 | control | shared-prod | dedicated-dev |
 |---|---|---|
-| `dev.slice` MemoryMax | `DEV_MEMORY_MAX` (empty = none) | pin, else `MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - DEV_HOST_MEMORY_KEEP` |
-| `dev.slice` MemoryHigh | `DEV_MEMORY_HIGH` | pin, else `MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP` |
-| `dev.slice` MemoryLow | `DEV_MEMORY_LOW` | pin, else the sum of the tiers' MemoryLow (a tier's Low protects only when its ancestors carry it) |
-| `dev-interactive` / `dev-buildkitd` MemoryHigh / MemoryMax | `DEV_<TIER>_MEMORY_{HIGH,MAX}` | ignored: no directive rendered (install.sh names the values it ignored) |
-| `dev-gates` / `dev-background` MemoryHigh | `DEV_{GATES,BACKGROUND}_MEMORY_HIGH` | pin, else `dev.slice` MemoryHigh minus P = (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`), never below 1G and never above dev.slice's (see "Load tiers yield first"); `-`/`0` omits |
-| `dev-gates` / `dev-background` MemoryMax | `DEV_{GATES,BACKGROUND}_MEMORY_MAX` | pin, else `dev.slice` MemoryHigh (a reachable RAM ceiling; AD2-0) |
-| `dev-gates` / `dev-background` MemorySwapMax | `DEV_{GATES,BACKGROUND}_MEMORY_SWAP_MAX` | pin, else `dev.slice` swap max minus P (floor 256M, never above dev.slice's) |
-| tier MemoryLow / MemoryMin | as configured | as configured: this is the protection between tiers (e.g. the IDE, BuildKit) |
-| interactive / buildkitd MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
-| `system.slice` | untouched | MemoryLow = `DEV_HOST_MEMORY_KEEP` |
-| host services (`DEV_HOST_PROTECTED_UNITS`: docker, containerd, cgpd, mdt-psi-guard, journald, oomd; never ssh) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999); a unit that leaves the list loses its drop-in on the next install |
-| mdt-psi-guard signals | `MDT_PROTECTED_UNITS` + host memory `full` | the same plus the host services above |
+| `dev.slice` MemoryMax | `DEV_MEMORY_MAX` (empty = none) | pin, else `MemTotal - MDT_EXCLUDED_RAM - K` (r1002: 7191363584 = 6858.22 MiB); above it the tree pages |
+| `dev.slice` MemoryHigh | `DEV_MEMORY_HIGH` | none (a High throttles while RAM is free); `DEV_MEMORY_HIGH` and the tier HIGH pins are ignored and named |
+| `dev.slice` MemoryMin / MemoryLow | guaranteed ceiling / `DEV_MEMORY_LOW` | the sum of every child Min key (cockpit 512M, `DEV_INTERACTIVE_MEMORY_MIN`) / the sum of the tiers' MemoryLow |
+| `dev-gates` / `dev-background` MemoryMax | `DEV_{GATES,BACKGROUND}_MEMORY_MAX` | pin (at most dev's Max), else dev Max minus P = (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`), floor 1G (r1002: 4507009024 = 4298.22 MiB); no MemoryHigh |
+| `dev-gates` / `dev-background` MemorySwapMax | `..._MEMORY_SWAP_MAX` | pin, else dev swap max minus P (floor 256M) |
+| `dev-interactive` / `dev-buildkitd` | per tier keys | no ceiling of their own (bounded by dev.slice); swap equals dev.slice's; `..._HIGH/_MAX` ignored |
+| ssh, docker, containerd, journald, mdt-psi-guard, cgprofiled MemoryMin | untouched | `95-mdt-memory-min.conf` per unit: 10M, 210M, 92M, 24M, 5M, 4M (`DEV_HOST_MEMORY_MIN` = `unit=size` rows, `-` = none); raise-only against a higher drop-in |
+| `system.slice` / `user.slice` MemoryMin | untouched | 373M (the post-raise sum of its units + 32M) / 64M |
+| `system.slice` MemoryLow | untouched | derived from K, never below its Min (equal at defaults: no line) |
+| host services (`DEV_HOST_PROTECTED_UNITS`; never ssh) | untouched | OOMScoreAdjust=-900 drop-in |
+| `docker-.scope` | MemoryMax 12G, swap 16G | MemoryMax **8G** (empty `DOCKER_SCOPE_BACKSTOP_MEMORY_MAX` renders 8G here, 12G on every other role; an explicit value wins), swap 16G, `OOMPolicy=kill` |
+| cockpit devcontainers | oom_score_adj 0 | `--oom-score-adj=-900` (devcontainer.json runArg `${localEnv:MDT_COCKPIT_OOM_SCORE_ADJ:0}`; host-setup publishes -900 on this role only; create-time, rebuild an existing cockpit) |
+| mdt-psi-guard | weights, then tier `memory.high` | weights only (`HIGH_TIERS` empty: no MemoryHigh stage) |
 
-Finite `MemoryMax` plus a large `MemorySwapMax` IS the dedicated-runner
-overcommit design: cgroup v2 reclaims the cgroup to swap first and reaches an
-OOM kill only when reclaim cannot proceed because swap is exhausted or the
-pages are unreclaimable. No dev-tier template opts into
-`ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or
-`ManagedOOMSwap`. Operator directive 2026-11-24: work is not killed or refused
-merely because RAM is short; only fleetd freezes work at host memory PSI
-`full avg10 >= 3`.
+Where a container's memory goes: its own `--memory` if declared (runc writes it into the scope's `memory.max` even though systemd's property reads 8G; the
+acceptance run checks a `--memory 2G` container reads 2G before and after a daemon-reload), else the tier Max (gates/background containers) or dev Max (cockpit,
+buildkitd); the 8G scope default never binds RAM on 8 GiB hosts. An undeclared runaway fills its tier's RAM and pages within it; at 16G of its own swap the tier
+OOMs and the victim is the runaway, whose whole container dies (`OOMPolicy=kill` sets `memory.oom.group=1` on every `docker-<id>.scope`; needs systemd >= 253,
+otherwise skipped with a NOTICE). **For the cockpit container this means** an OOM kill of any process in it kills the whole cockpit: its protection is the Min
+floor, the Low, the -900 score (every OOM domain picks a load task first) and no tier ceiling, not a per-process exemption. Running containers keep their old scope
+value until re-created; nothing lowers scopes live.
 
-Load tiers yield first (MDT-TESTHOST-MEM-2). A running cockpit (`dev-interactive`, MemoryLow 512M) and BuildKit (`dev-buildkitd`, 256M) only keep their Low while the
-siblings that carry the load stay below dev.slice by at least that sum, P = `DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`
-(the last is the `dev-cache.slice`'s Low, default empty = 0). So `dev-gates.slice` and `dev-background.slice` get (AD2-0):
-- MemoryHigh = dev.slice MemoryHigh minus P, floored at 1G and capped at dev.slice's value. It is the value that acts: the kernel throttles and reclaims the load tier first.
-- MemoryMax = dev.slice MemoryHigh (never below the tier's MemoryHigh). dev.slice's own Max is a RAM+swap figure that `memory.max` (RAM only) can never reach; a RAM-sized
-  Max is a reachable backstop.
-- MemorySwapMax = dev.slice swap max minus P, floored at 256M and capped at dev.slice's. If gates could take all of dev's swap, dev-level reclaim could not move the
-  cockpit's above-Low pages out and would only throttle it; the subtraction keeps that room.
-- Consequence (intended): a lane that needs more than MemoryHigh..MemoryMax resident with no swap left is OOM-killed inside gates (`oom_kill` in the tier's `memory.events`)
-  instead of thrashing the host. An infrastructure event, never a product verdict. zswap writeback and
-  dev.slice's values are unchanged; no systemd-oomd kill is configured.
+Admission's memory term keeps existing: on this role `gates_memory_ceiling()` returns the gates MemoryMax (r1002: floor(4507009024 / 2G) = 2), other roles
+`DEV_GATES_MEMORY_HIGH`. PSI `full avg10 >= 3` stays the stop signal; fleetd's freeze is backlog P-fd-05.
 
-A `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}` pin wins (HIGH/MAX floor 256M, HIGH <= MAX); `-`/`0` omit. If dev.slice itself has no MemoryHigh (pin `-`), the tier's
-High and Max are omitted too. CPU weights are unchanged. Example (8 GB RAM, 16 GB swap, keep 1G, Low 512M+256M, no cache): dev.slice high 7246938112, gates/background high 6441631744
-(= minus 805306368), gates/background max 7246938112, swap max = dev swap minus 805306368.
+**Converge.** `mdt-dev-governance-reconcile.sh` (run by install.sh after the reload, and by the timer) makes the kernel agree with systemd's properties for dev.slice, its
+tiers, system.slice, user.slice and the floored units: it writes the cgroup file directly, reads it back, never `set-property`, never touches a docker scope, and skips
+a key psi-guard owns. A lower `memory.max` is written only when `memory.current` is at least 64M below it; otherwise `memory.reclaim` runs (chunks of 256M, at most 8 per
+run; for dev.slice the load tiers dev-gates and dev-background are reclaimed, never dev.slice itself, because the cockpit lives there) and the lowering is deferred
+(`/run/mdt/reconcile/memory-deferred`; the timer retries). The 64M rule protects only the reconcile's own write: a `systemctl daemon-reload` (install.sh's, the IO reload, an
+apt hook) can make systemd itself write the lower `memory.max` below `memory.current`, and the kernel then reclaims and OOM-kills in that cgroup. That is why a lowering
+is only done with the lanes drained (see the migration below).
 
-Sizing the keep: `DEV_HOST_MEMORY_KEEP` must cover the host's own working set (dockerd, containerd, journald, cgpd, page cache). Measured on both test hosts:
-`system.slice` memory.current 1.0-1.1 GB, hence the 1G default; `mdt-host-check.sh` warns when the measured `system.slice` memory.current exceeds the keep.
-Pins have floors: a keep below 256M, a `DEV_MEMORY_HIGH`/`DEV_MEMORY_MAX` pin below 256M, or a non-size is refused (the install exits 2 before changing anything);
-a `0` pin (like `-`) omits the directive, the same meaning `0` has in the shared validators.
+**Do not hand-set memory properties.** No `systemctl set-property` (runtime files under `/run/systemd/system.control/` outrank `/etc`), no `systemctl revert` for
+memory or oomd keys on system.slice, user.slice or the dev slices: `mdt-host-check.sh` FAILs on such files on this role (WARN elsewhere) and on a foreign memory
+drop-in (`90-vbpub-memory-min.conf`, MemoryMin only, is allowed; the runner's `20-memory-policy.conf` is a WARN naming `provision-gates-limits.sh`).
 
-What bounds the dev tier (and what does not). `memory.max` is NOT a leak backstop: the kernel's `memory.max` counts RAM (and the zswap pool charged to the cgroup)
-only, physical RAM caps that, so `MemTotal + SwapTotal - keep` can never be reached on these hosts; it is kept as the documented combined figure, not as a limit that acts.
-The limits that act, in the order a growing dev tier meets them: (1) dev.slice MemoryHigh = RAM - keep: allocation is throttled (sleeps up to 2 s per event) while
-the kernel reclaims the tier into zswap and disk swap; thrashing and slow lanes come BEFORE any kill. (2) The large `memory.swap.max` allowance is the overcommit
-mechanism: cgroup v2 migrates cold pages to swap and keeps reclaiming rather than OOM-killing merely because RAM is short. (3) Fleetd freezes dev work when host
-memory PSI `full avg10 >= 3`; host-setup renders no systemd-oomd ManagedOOM target. (4) Only when swap is exhausted or pages cannot be reclaimed does the
-global kernel OOM killer run and take the largest dev-tier process (host services carry -900). Open and
-unmeasured (MDT-072): `io.max` on dev.slice throttles the swap-out of dev pages, and reclaim that waits on a throttled device can stall other cgroups too (priority
-inversion); watch `memory` PSI on the host, not only the lane. Per-container ceilings stay where a launcher sets them (`docker run --memory`, cmru's `CMRU_TESTER_*`);
-the docker-scope backstop (7.1) is untouched.
+**Migrating an installed host** (main controller, root; r1002): (0) only on `HOST_ROLE=dedicated-dev`; drain the lanes AND HOLD the drain until step 4 is verified (no run-gate or mutation lane, vm-lab or edge demo stack in dev-gates or
+dev-background; a reload, install.sh's or the reconcile timer's IO reload, may apply the lower `memory.max` itself); (1) `mdt-host-check.sh` and
+`grep -rs ManagedOOM /etc/systemd/system/{system,user,dev*}.slice.d/`: nothing may set `kill`; (2) copy aside, then delete, the memory and oomd keys of the runtime files of
+`{system,user,dev*}.slice.d` under BOTH `/run/systemd/system.control/` and `/etc/systemd/system.control/` (the places `mdt-host-check.sh` FAILs on; files with other content are
+left for hand handling; never `systemctl revert`, no hand daemon-reload); (3) in `/etc/mdt/host-setup.env` SET `DEV_MEMORY_HIGH=`, `DEV_MEMORY_MAX=`, `DEV_GATES_MEMORY_HIGH=`, `DEV_GATES_MEMORY_MAX=`,
+`DEV_BACKGROUND_MEMORY_HIGH=`, `DEV_BACKGROUND_MEMORY_MAX=` and `DOCKER_SCOPE_BACKSTOP_MEMORY_MAX=` (or `8G`) to empty and never delete those lines (install.sh refuses an env that lacks a
+declared key; an old example's `DEV_BACKGROUND_MEMORY_MAX=8G` is refused and its `DEV_GATES_MEMORY_MAX=1.5G` would silently pin the gates), empty `DEV_HOST_MEMORY_KEEP=`, leave
+`DEV_HOST_MEMORY_MIN` and `DEV_HOST_MEMORY_MARGIN` empty (append after a trailing newline), keep `MDT_PSI_GUARD=report`; then derive the targets with
+`python3 mdt_capacity.py dedicated-memory /etc/mdt/host-setup.env --meminfo /proc/meminfo` and check each `memory.current` <= target - 64M; (4) `sudo ./install.sh`; the dev (7.5 to
+6.70 GiB) and tier (5.5 to 4.20 GiB) lowering is safe because of step 0; the converge defers its own write if a lane is still above the target and the timer finishes it; (5) rebuild the cockpit devcontainer when convenient; (6) the acceptance and measurement
+run of the design note (section 4.1 load and window, then write the measured floors, `DEV_HOST_MEMORY_MARGIN` and `DEV_HOST_MEMORY_MEASURED`, re-run install.sh; on failure pin
+`DEV_HOST_MEMORY_KEEP=1280M` and file the result). `mdt-host-check.sh` NOTEs while `DEV_HOST_MEMORY_MEASURED` is empty.
 
-Operator decision 2026-11-24 (documented, no code cap): on a dedicated-dev host `dev-interactive.slice` and `dev-buildkitd.slice` are intentionally bounded
-only by dev.slice's `MemoryHigh` (reclaim into swap above it) and carry no `MemoryMax` of their own; dev.slice's own `MemoryMax` is the combined RAM+swap figure
-that `memory.max` cannot reach (see above). Only `dev-gates.slice` and `dev-background.slice` get a finite `MemoryMax` (dev.slice's `MemoryHigh`). The IDE and the
-BuildKit daemon are therefore never OOM-killed by a tier cap, and a runaway in either meets only dev.slice throttling, the swap allowance and finally the global OOM killer.
+ssh is deliberately not protected by a score: sshd restores the OOM score it started with into every login session, so `OOMScoreAdjust=-900` on `ssh.service` would make every login
+shell -900 (`DEV_HOST_PROTECTED_UNITS` refuses ssh/sshd; ssh gets a `MemoryMin` floor instead). install.sh removes a stale `ssh.service.d/50-mdt-dedicated-dev.conf` an earlier
+version rendered. Drop-ins are mode 0644. A killed lane is an infrastructure event (its history record survives), never a product verdict. No dev tier opts into systemd-oomd.
+zswap (zstd, `max_pool_percent` 25, writeback `yes` on every tier) is unchanged. Open and unmeasured (R3, MDT-072): `io.max` on dev.slice throttles swap writeback, so reclaim at a
+`memory.max` can exhaust its retries on pages under writeback; the acceptance run gates it.
 
-ssh is deliberately not protected: sshd restores the OOM score it started with into every login session, so `OOMScoreAdjust=-900` on `ssh.service` would make every login
-shell, IDE server and manual process -900 after the next sshd restart (the sshd listener already runs at -1000). `DEV_HOST_PROTECTED_UNITS` refuses ssh/sshd names, and
-install.sh removes a stale `ssh.service.d/50-mdt-dedicated-dev.conf` an earlier version rendered. Drop-ins are mode 0644.
+### Acceptance and measurement kit of the dedicated-dev memory model (P-plat-19g, `tools/accept/`)
 
-OOM behaviour: when RAM is short, cgroup v2 first reclaims dev pages into the large swap allowance. If reclaim cannot keep up, fleetd freezes dev work at host memory
-PSI `full avg10 >= 3`. No dev tier opts into systemd-oomd. Only genuinely exhausted or unreclaimable swap reaches the kernel OOM killer, which prefers any dev-tier
-process because the host services carry -900. A killed lane is an infrastructure event (its history record survives), never a product verdict. The install lowers a
-running service's score in place; nothing is restarted.
+Step 6 of the migration, root on the host (details: the header of each script, `accept-eval.py --help`). Keep admission and the edge demo stacks drained (section 8 step 0) and start exactly one gate lane by hand during each window.
 
-zswap (read on v1001/r1002, 2026-11-05: zstd, `max_pool_percent` 25, `accept_threshold_percent` 90, shrinker on, writeback `yes` on every tier) already suits
-overcommit: the pool is a cache that drains its coldest pages to disk swap, and the IO caps of the role bound that disk traffic. Unchanged.
-
-mdt-psi-guard reviewed: its thresholds are stall fractions (unit memory `some` 10%, host memory `full` 5%, unit CPU `some` 25%, each held 10 s), and its
-stage 2 lowers a tier's `memory.high` to 90% of that tier's live `memory.current`, so it throttles by pressure, never by a constant limit; the only constant is
-its 256M floor. With no tier `memory.high` the saved original is `max` and is restored on release. The dedicated-dev role adds the host services to the units it
-watches. It stays `report` until `MDT_PSI_GUARD=enforce` is chosen.
-
-Apply and verify: `install.sh` (or `install.sh --wizard`), then `systemctl show dev.slice -p MemoryHigh -p MemoryMax -p MemoryLow`, the cgroup files
-`/sys/fs/cgroup/dev.slice/memory.{high,max,low}`, `/sys/fs/cgroup/system.slice/memory.low` and `mdt-host-check.sh`. Existing tier values in the env file may stay
-(they are ignored and named at every install) or be cleared. Back to the old behaviour: set `HOST_ROLE=shared-prod` (the installer removes its drop-ins) and restore the
-tier values.
+1. Per run, twice (`EV` a fresh ABSOLUTE directory): launch DETACHED so an ssh drop cannot orphan it, e.g.
+   `systemd-run --unit mdt-accept-1 --collect "$PWD/tools/accept/accept-run.sh" --evidence "$EV" --warmup 600 --window 1800` (the unit runs in `/`, hence absolute paths; its
+   start hints are in `journalctl -u mdt-accept-1`). During the window start the operator part: the one gate lane, the cockpit attached and idle, an ssh login; write
+   `"<idle> <loaded>"` seconds of `ssh <host> true` into `$EV/ssh.txt`. The probes exit by themselves after warm-up + window + 300 s; after a SIGKILL run
+   `docker rm -f mdt-accept-probe-gates mdt-accept-probe-bg` at once. cgprofile sessions are not captured: the daemon refuses cgroup targets (CP-55).
+2. `tools/accept/accept-eval.py "$EV1" "$EV2"`: exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE (missing data or a load that was not real: repeat; "install.sh would refuse these values" needs a decision on the floor row, not a repeat), 2 usage or crash (never a pin reason).
+3. `tools/accept/daemon-reload-check.sh`: it refuses (exit 3, nothing done) while `/run/mdt/reconcile/memory-deferred` exists or systemd and the kernel disagree on a dev `MemoryMax`.
+4. PASS: put the printed lines into `/etc/mdt/host-setup.env` and re-run `install.sh`. FAIL: raise the failing value and repeat, or pin `DEV_HOST_MEMORY_KEEP=1280M` (section 8).
 
 ### Shared tree cache of the dedicated-dev role (AD2-2, MDT-074)
 

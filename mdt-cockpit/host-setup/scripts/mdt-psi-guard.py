@@ -22,7 +22,10 @@ Staged actions (every one reverted on release, on stop and on the next start):
 
 1. ``cpu.weight`` and ``io.weight`` of ``dev-gates``, ``dev-background`` and ``dev-buildkitd`` set to 1;
 2. 30 s later, if the pressure is still above its threshold, ``memory.high`` of ``dev-gates`` and
-   ``dev-background`` lowered to ``max(floor, 0.9 x memory.current)``.
+   ``dev-background`` lowered to ``max(floor, 0.9 x memory.current)``. NOT on HOST_ROLE=dedicated-dev
+   (P-plat-19e): no MemoryHigh anywhere in that role's dev tree, so ``HIGH_TIERS`` is empty there and the guard
+   runs stage 1 only. Converge invariant: the reconcile step never writes a key listed under ``owned`` in
+   ``state.json`` (``"<tier>/memory.high"``).
 
 It never freezes or kills anything: a wall-clock budget that expired while frozen would change a
 gate's result. Events go to ``<state-dir>/events.jsonl`` (``/run/mdt/psi-guard``), rotated at 1 MiB to
@@ -150,7 +153,9 @@ class Guard:
         proc_pressure: Path = Path("/proc/pressure"),
         memory_high_floor: int = MEMORY_HIGH_FLOOR,
         max_event_bytes: int = MAX_EVENT_BYTES,
+        high_tiers: tuple[str, ...] = HIGH_TIERS,
     ) -> None:
+        self.high_tiers = high_tiers
         self.cg_root = cg_root
         self.units = units
         self.state_dir = state_dir
@@ -323,7 +328,7 @@ class Guard:
         self._save_state()
 
     def _stage2(self, now: float) -> None:
-        for tier in HIGH_TIERS:
+        for tier in self.high_tiers:
             current = _read_text(slice_path(self.cg_root, "dev.slice") / tier / "memory.current")
             if current is None or not current.isdigit():
                 continue
@@ -417,7 +422,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     units = protected_units(cfg)
     guard = Guard(cg_root=args.cgroup_root, units=units, state_dir=args.state_dir, mode=mode,
-                  proc_pressure=args.proc_pressure)
+                  proc_pressure=args.proc_pressure,
+                  high_tiers=() if cfg.get("HOST_ROLE", "") == "dedicated-dev" else HIGH_TIERS)
     if mode == "off":
         guard.recover(time.monotonic())  # leave nothing owned by an earlier run
         print("mdt-psi-guard: MDT_PSI_GUARD=off; nothing to do")

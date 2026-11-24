@@ -1989,3 +1989,26 @@ Source: memory `devcontainer-pid1-dies-when-sleep-child-killed` (2026-11-18)
 Host-setup renders no `ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or `ManagedOOMSwap` on any dev tier, and the dead per-tier pressure-limit knobs are removed. Finite `MemoryMax` plus a large `MemorySwapMax` is the overcommit design: cgroup v2 reclaims to swap before OOM, while fleetd alone freezes work at host memory PSI `full avg10 >= 3` (operator directive 2026-11-24). The default golden changes only for `dev-gates.slice` and `dev-background.slice`; every other rendered unit and every other role is unchanged.
 
 Follow-up P-plat-19d (2026-11-24): `mdt-host-check.sh` FAILs when oomd can still act on a dev tier (live `ManagedOOM*` not `auto`, or `oomctl dump` lists a `dev*.slice` or the root slice), because host-setup never removes a stale drop-in or `set-property` override it did not render; install.sh names the retired oomd keys when a host-setup.env still sets them; on dedicated-dev, `dev-interactive` and `dev-buildkitd` carry no `MemoryMax` by operator decision 2026-11-24 (bounded by dev.slice `MemoryHigh` only).
+
+## MDT-109 - P-plat-19e impl r1 leftovers (2026-11-24)
+
+**Status:** OPEN. From the Opus review `reviews/plat-19e-impl-r1-opus.md`; F1-F3 and B1 were fixed in fix round 1.
+
+- **F4.** Raised floors are not seen by `check.sh`, `mdt_admission.gates_memory_ceiling()` or the wizard: install.sh derives with `--raised` (foreign MemoryMin above the table), the others call `dedicated_memory()` without it, so after a foreign raise check.sh FAILs permanently on the system.slice `memory.min` and the dev/tier `memory.max` derivation. No live impact today (DI2's table equals the mirror). Fix: one shared raise scan.
+- **F5.** The `check.sh` tests are string-level only. Note section 7 asks for the extracted function executed for: runtime file FAIL/WARN by role, IO-only OK, `20-memory-policy.conf` WARN, mismatch FAIL, mismatch WARN with a deferral record, owned key INFO. An executed test with a raise would have caught F4. Also a JSONC parse of the three devcontainer.json files.
+- **B2.** A `DEV_MEMORY_MIN_GUARANTEED_HIGH` pin still renders a MemoryHigh in the dev tree (`dev-memory_min_guaranteed.slice`); add it to the ignored HIGH keys.
+- **B3.** psi-guard role wiring in `main()` (`high_tiers=()` on dedicated-dev) is untested; the test passes `high_tiers=()` directly.
+- **B4.** `_other_memory_min` also scans the real `/run`, `/usr/lib`, `/lib` systemd dirs in tests (not hermetic); a system.slice raise from it bypasses the 460M / 10 % bounds.
+- **B5.** Stale text: `units/dev-cache.slice.in:18` ("their MemoryMax is dev High"); the `runtime-optional-keys.re` comment ("DEV_HOST_MEMORY_KEEP ... default 512M"); the report's claim that `DEV_INTERACTIVE_MEMORY_MIN=-` gives the 512M default (it means no floor).
+- **Cleanup.** The dead HIGH plumbing (`DedicatedMemory.high`, `load_high`, `gates_high`, `background_high`, their `*_source`, the CLI `DEDICATED_{MEM,GATES,BACKGROUND}_HIGH*` lines and the install.sh case arms with their SC2034 directive); check.sh still reads `DEDICATED_MEM_HIGH`.
+- **r2 backlog.** The note's migration "Step 0" sits as a continuation of item 1 instead of standing before it. The wizard may still offer `-` for `DEV_MEMORY_MAX` on dedicated-dev, which install.sh then refuses (safe). `check.sh` and the CLI ignore `--raised` (see F4).
+
+## MDT-110 - P-plat-19g acceptance kit leftovers (2026-11-24)
+
+**Status:** OPEN. From the Opus review `reviews/plat-19g-r2-opus.md` (line numbers are files at e23d857ab, `host-setup/tools/accept/` unless noted); r2 F1, F3 and F4 were fixed in the fix-forward.
+
+- **F2 (floors, K direction).** `accept-eval.py:206-207` compares floor rows with the mirror table, not the tested floors, so a base that already carries `DEV_HOST_MEMORY_MIN` overrides (any second iteration) drops or lowers them and K falls unnoticed; `:155-157` notes only "K rose" (the safe direction). Fix: compare with `cap.host_floors(base, mt).units` and keep base rows not re-measured higher; note `got.keep < tested.keep` ("re-run at the new K"); hint "set MARGIN=<M> and re-run" when measured M is below the tested margin; note that a `DEV_HOST_MEMORY_KEEP` pin masks the lines. The first r1002 run is unaffected (migration step 3 leaves MIN and MARGIN empty).
+- **Finding 9 (attribution).** `accept-run.sh` records no per-tier count of `docker-*.scope` children per tick, so the evaluator cannot show that exactly one gate lane ran and nothing else did; an OOM of another container can only cause a false FAIL (the KEEP=1280M pin). Until then main writes the lane's gate log path into `$EV`.
+- **Finding 10 (memory.peak).** 4.1's per-unit `memory.peak` is not sampled (`accept-run.sh` `ucols`, `:111-116`); no criterion uses it.
+- **F5/F7 (notes).** `swap_used` (`accept-run.sh:134`) feeds no criterion (any OOM FAILs, conservative); optionally cross-check `tested.maximum` against the manifest's `memory.max:dev.slice` (`accept-eval.py:146`).
+- **F6 (tests).** `tests/test_accept_kit.py:366` asserts a prefix of an append-only log (vacuous): use `assertEqual(self.calls(), before)`; the `frac >= 0.5` half of the load rule (`accept-eval.py:112-118`) is untested: add a run whose `dev.max_local` rises on one tick only and expect rc 4.

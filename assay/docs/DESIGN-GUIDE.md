@@ -1753,6 +1753,15 @@ Schema 2 stores only import metadata beside that object, and schema-1 blocks are
 Malformed provenance makes the candidate re-judge without failing the lane; malformed locus metadata is dropped, counted, and exact-id resume continues.
 See [the consumer contract and field table](CONSUMERS.md#carry-finished-records-across-a-judge-change-b530).
 
+### Carry forward earlier-judge records (B561/WP3a)
+
+Carry-forward is a conservative lookup across whole-tree judge changes:
+survivors are carried with canonical provenance, while every prior kill is
+re-run in full. Locus matching is advisory, so ambiguity falls back to fresh
+execution and can only add work, never hide a survivor. Shards apply the lookup
+to their own jobs and the strict merge preserves the provenance.
+See [the consumer contract](CONSUMERS.md#carry-forward-earlier-judge-results-b561wp3a).
+
 ### Serial tail retries for native R2 (B179)
 
 After the first sweep, Assay retries once, serially, each candidate executed in
@@ -5136,10 +5145,10 @@ candidates, so scoring it as judge code inflated the judge's own cost without
 protecting any verdict.
 
 - **Dependency is one way.** `assay_analysis` imports `assay` public names;
-  `assay` never imports `assay_analysis` except inside `cli._run_analyze`,
-  which loads it lazily when `argv` starts with `analyze`. Every other
-  `assay` command runs without the package loaded. A contract test pins that
-  `_run_analyze` is the only importer.
+  `assay` never imports `assay_analysis` except inside `cli._analysis_cli`,
+  the lazy seam shared by `analyze` and `capabilities`. Every other `assay`
+  command runs without the package loaded. A contract test pins that
+  `_analysis_cli` is the only importer.
 - **Private-name rule.** Analysis may not use a private (underscore) judge
   name. The allowlist, `ALLOWED_PRIVATE_JUDGE_NAMES`, exists and stays empty
   (CD18): anything analysis needs becomes a public judge name.

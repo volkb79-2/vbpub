@@ -11,6 +11,25 @@ the wheel or the matching zipapp from one immutable `assay-v*` GitHub Release. T
 the normal integration; the zipapp is the zero-install option for a gate image that already
 has Python.
 
+## Capability document
+
+`assay capabilities --json` prints one closed JSON object without reading any project
+file, so it also works outside a repository. `--json` is accepted for explicitness;
+the same document is the default output. It requires the `assay_analysis` package
+shipped in the complete assay wheel and zipapp, and has no degraded mode. The fields are:
+
+- `schema`: the document schema, currently `"assay-capabilities/1"`.
+- `assay_version`: the running assay version.
+- `verdict_schema_version`: the verdict schema version this build emits and verifies.
+- `commands`: long options for `run`, `plan`, `verify`, `lanes`, and `analyze campaign`,
+  derived from the live argparse parsers and sorted (`--help` included).
+- `mutation_store_policies`: mutation-store flags supported by `run`, mapped to
+  `same-judge`, `strict-shard`, `import-unverified`, or `hint` semantics.
+
+The document is closed. A new key, dropped key, or changed meaning requires a new
+`schema` value. Consumers must know every key they accept instead of silently ignoring
+unknown keys, and must refuse an unrecognized `schema`.
+
 ## What `assay.toml` is, and what it is not (B009)
 
 **`assay.toml` is an adapter and judgment-policy file for a project that has
@@ -2050,6 +2069,72 @@ and campaign analysis. No writer emits them. Their canonical provenance is
 derived as `{kind: "imported", from_candidate_id: <own id>,
 from_judge_sha256: <schema-1 from>, match: "exact-id",
 reason: <schema-1 reason>}`.
+
+### Carry forward earlier-judge results (B561/WP3a)
+
+`--carry-forward DIR` (repeatable, with `--resume`) searches earlier-judge
+stores for still-pending candidates. `DIR` must exist inside the checkout.
+The judge hashes the whole judged tree, so test, source, environment, argv or
+Assay changes are the normal reason for a different judge; an exact
+whole-tree-judge match is not required.
+
+```sh
+assay run <lane> --resume --state-dir <current-store> \
+  --carry-forward <checkout>/.assay/prior-state
+```
+
+Lookup checks the exact candidate id first, then a unique function locus, then
+a line-window key for prior KILLS only. Same-effective-judge exact-id records
+remain the job of `--resume`/`--merge-state` and are not copied twice.
+
+A prior survivor found by exact id or locus is carried pessimistically as a
+current `survived` record; the R2 claim therefore stays FAIL. It keeps the
+source record's executing `judge_sha256` and gains the standard schema-2 block
+plus top-level provenance:
+
+```json
+"carry_over": {"schema_version": 2, "into_judge_sha256": "<current>",
+               "source": "<DIR>", "reason": "carry-forward",
+               "imported_at": "...Z", "importer_version": "..."},
+"provenance": {"kind": "carried", "from_candidate_id": "<prior id>",
+               "from_judge_sha256": "<prior judge>",
+               "match": "exact-id|locus", "reason": "carry-forward"}
+```
+
+A prior KILL found by exact id, locus or window is not carried: its candidate
+stays pending and runs in full under the current judge, producing a fresh
+record with neither `provenance` nor `carry_over`. If a survivor and a KILL
+both claim it, the KILL wins and schedules the full run. Ambiguous loci,
+malformed records, known nonterminal buckets and records outside the current
+path/operator family are ignored; known nonterminal work also runs in full.
+
+The run emits one `carry_forward` event before candidate dispatch. It reports
+`exact_id`, `locus` and `window` match counts, `survivors_carried`,
+`kills_requeued`, `ambiguous_loci_ignored`, `unmatched`, `from_judges` (the
+number of distinct prior source judges), `same_judge_resume`, `invalid_records`,
+the source list and `reason: "carry-forward"`. The exact-id `carry_over` event
+and behavior are unchanged.
+
+Only two run combinations are refused because they choose different provenance
+writers for the same record: `--carry-over` and `--carry-over-reason`.
+`--carry-forward` composes with `--shard`, `--merge-state`,
+`--merge-shard-store`, `--reuse-from`, candidate files and candidate
+selections. Each shard applies carry-forward only to its own selected jobs; the
+strict whole-lane merge keeps each carried record's provenance.
+
+`assay plan <lane> --list-pending --state-dir <store> --judge <sha> \
+  --carry-forward <checkout>/.assay/prior-state` appends
+`carry_forward=exact-id|locus|window|none` to each pending candidate ID and
+prints a match summary. The judge is required so planning applies the same
+eligibility filter as a run. Without `--carry-forward`, `--list-pending` output
+is unchanged and remains one candidate ID per line. Its first-token list
+format still lets the annotated lines feed `--only-candidates`.
+
+A carried survivor can be carried again from the old generation even after a
+new test would kill it. When at least one survivor is carried, the run's text
+output says once that carried survivors stay carried until `--rejudge-carried`
+(or a WP4 replay) runs. Until that flag lands, `--rejudge-outcome survived`
+forces the full re-run now.
 
 `--merge-state DIR` (repeatable) copies records of the SAME judge from another
 store -- the way shard stores are merged (below). It needs no reason; records
@@ -4720,6 +4805,7 @@ never says `coverage_parsed`.
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5, and `locus_unavailable_total` from advisory locus metadata dropped on load) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`, `locus_unavailable_total`) |
+| `carry_forward` | all earlier-judge carry-forward sources were checked, once before candidate dispatch | `exact_id`, `locus`, `window`, `survivors_carried`, `kills_requeued`, `ambiguous_loci_ignored`, `unmatched`, `from_judges`, `same_judge_resume`, `invalid_records`, `sources`, `reason` |
 | `baseline` | the sweep's baseline record | `candidate_total` |
 | `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). B561 adds optional `locus` and `window_key`, both absent for the exact-id fallback. `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`) and `startup_seconds` (`to_session_start`/`to_first_test`) are Assay's own clock. Assay 12 (B206) removed the sampled `cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `judge_rss_bytes` and the `resources` object: every resource number now comes from the cgprofile observer as `profile` (a `resource-profile/1` object: `status` `MEASURED`/`PARTIAL`/`NO_MEASUREMENT`, one `reason` when there is no measurement, `wall_seconds` from Assay's clock, `metrics`, `missing`, `observer`; see [the v17-to-v18 migration notes](#migration-notes-v17-to-v18)). `worker_count` is the workers of the invocation that ran the candidate (B203), and a `killed` candidate carries `first_failing_test` (B205; null when unknown). Profiles are diagnostic and never classify a candidate; they are also stored in the candidate state record and as one line in `profile-<lane>.jsonl` beside the progress file. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`format`, `spawned_at`) |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason`, `budget_exceeded_dispatched`, `budget_exceeded_unstarted` (B524 — see below; both additive, and both `0` on the three early-return `reason`s, where nothing was attempted) |

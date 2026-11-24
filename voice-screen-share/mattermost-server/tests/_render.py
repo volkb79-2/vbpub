@@ -91,20 +91,6 @@ def render_mattermost(
     return yaml.safe_load(rendered)
 
 
-def render_tls_edge_config() -> dict[str, Any]:
-    """Render tls-edge's tracked defaults with the same synthetic environment."""
-    edge = tls_edge_root()
-    if edge is None:
-        raise FileNotFoundError("tls-edge is absent from this checkout")
-    _, _, render_toml_template = _ciu_renderers()
-    document = render_toml_template(
-        edge / "ciu-stack/ciu.defaults.toml.j2",
-        {"env": ENVIRON},
-        environ=ENVIRON,
-    )
-    return document["tls_edge"]
-
-
 def service_environment(service: Mapping[str, Any]) -> dict[str, str]:
     """Normalize Compose mapping/list environment syntax to string key/value pairs."""
     raw = service.get("environment", {})

@@ -949,7 +949,54 @@ Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` SYNTHE
 
 **Status:** OPEN. **Type:** Test debt. **Area:** Process supervision tests.
 
-Six intentionally timed tests carry `estate_allow` markers for
-`short-timeout` or `wall-time-assert`. Replace elapsed bounds and short real
-timeouts with operation-count, event or injected-clock oracles where that
-preserves the behavioural contract, then remove the markers for this id.
+Six tests carry `estate_allow` markers for this id:
+- Five are intentionally timed `procio` tests (`tests/test_procio.py`: two
+  `short-timeout`, three `wall-time-assert`). Replace their elapsed bounds and
+  short real timeouts with operation-count, event or injected-clock oracles
+  where that preserves the behavioural contract, then remove the markers.
+- One, `tests/test_w6_testing.py:239-243` (`short-timeout`), is not a timed
+  test. It is a static false positive of the plugin's `short-timeout` rule on
+  fake call data, with no process and no timing. Its marker stays until the
+  rule stops matching literal test data (a test-policy detection fix, not a
+  cli-extended change).
+
+## CLI-EXT-48 — the module-wide containment marker in `test_procio.py` covers pure tests
+
+**Status:** OPEN. **Type:** Test debt. **Area:** Process supervision tests.
+
+`tests/test_procio.py:35` sets a module-level
+`pytestmark = pytest.mark.requires_contained_cgroup`, so all 80 tests carry
+it. That includes pure ones: the fake-`/proc` parsers, the vocabulary test and
+the import checks. Outside a contained cgroup all 80 fail at setup (mode
+`fail`). This is correct, but broader than needed. Mark only the tests that
+start, signal or reap real processes, so the pure tests run anywhere.
+
+Source: P-core-04b Opus review NIT 3, 2026-11-24.
+
+## CLI-EXT-49 — `tests/conftest.py` keeps a `direct_children` adapter
+
+**Status:** OPEN. **Type:** Test debt. **Area:** Process supervision tests.
+
+`tests/conftest.py:23-30` keeps a `direct_children()` compatibility adapter
+over `estate_test_policy.children.direct_children`. P-core-04b kept it because
+that package could only add markers to `test_procio.py`, not change its
+imports. The adapter's key changes the start time from a string to an int.
+That is safe today, because the fixture only uses set membership and the pid.
+Wanted: import `estate_test_policy.children.direct_children` in
+`test_procio.py` directly and delete the adapter.
+
+Source: P-core-04b Opus review NIT 4, 2026-11-24.
+
+## CLI-EXT-50 — `tools/canary-run.sh` counts any pytest failure as a canary rejection
+
+**Status:** OPEN. **Type:** Bug (gate evidence). **Area:** R3 canary.
+
+`tools/canary-run.sh` sends pytest's output to `/dev/null` and reports any
+non-zero pytest exit as "canary rejected". A test-policy setup error, a
+collection error or a broken image therefore passes as a successful canary.
+Wanted: tell the expected oracle failure apart from infrastructure failure,
+for example by pytest's exit code (1 = test failures, 2+ = interrupted or
+usage/internal error) plus a check that the canary test itself failed. Same
+class as run-gate RG-292.
+
+Source: P-core-04b Opus review NIT 6 (outside the contract), 2026-11-24.

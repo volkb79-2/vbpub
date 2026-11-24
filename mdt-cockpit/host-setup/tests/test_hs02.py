@@ -101,7 +101,7 @@ class ValidateConfigOnAnOldEnvFileTests(unittest.TestCase):
             text=True, stdout=subprocess.PIPE).stdout.split()
         python = [k for k in example_keys() if OPTIONAL_RE and OPTIONAL_RE.fullmatch(k)]
         self.assertEqual(sorted(shell), sorted(python))
-        self.assertEqual(len(python), 52)  # the 9 ADMISSION_* keys + 28 IO/scheduler keys + HOST_ROLE + DEV_HOST_MEMORY_KEEP/DEV_HOST_PROTECTED_UNITS + DEV_CACHE_MEMORY_LOW and the 11 other dev-cache / MDT_TREE_* keys
+        self.assertEqual(len(python), 55)  # the 9 ADMISSION_* keys + 28 IO/scheduler keys + HOST_ROLE + DEV_HOST_MEMORY_{KEEP,MIN,MARGIN,MEASURED}/DEV_HOST_PROTECTED_UNITS + DEV_CACHE_MEMORY_LOW and the 11 other dev-cache / MDT_TREE_* keys
 
     def test_install_runs_the_validator_before_anything_it_exempts(self) -> None:
         install = (ROOT / "install.sh").read_text()
