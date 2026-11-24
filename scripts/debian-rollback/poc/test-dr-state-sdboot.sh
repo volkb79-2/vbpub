@@ -24,13 +24,21 @@
 # temporary root. They never mount or touch /boot/efi or /.top.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DR="$HERE/dr-state"
+DR_BASH="$HERE/dr-state"
+DR_PY="$HERE/../files/usr/local/sbin/dr-state"
+DR="$DR_BASH"
+FIXTURE_BOOT=${FIXTURE_BOOT:-systemd-boot}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0
 case_count=0
 
 bad() { echo "FAIL $*"; fail=1; }
+
+pair_id() { # KVER KERNEL_SHA256 INITRD_SHA256
+  printf '%s-%s\n' "$1" \
+    "$(printf '%s%s' "$2" "$3" | sha256sum | awk '{print $1}')"
+}
 
 expect_exit() { # expect_exit LABEL WANT_RC COMMAND...
   local label=$1 want=$2; shift 2
@@ -53,8 +61,33 @@ expect_text() { # expect_text LABEL WANT COMMAND...
 workflow_run() { # workflow_run ROOT FREE CLUSTER COMMAND...
   local root=$1 free=$2 cluster=$3
   shift 3
-  env DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$root" \
-    DR_STATE_TEST_ESP_FREE="$free" DR_STATE_TEST_ESP_CLUSTER="$cluster" "$DR" "$@"
+  if [ -n "${DR_STATE_TEST_OS_RELEASE+x}" ]; then
+    printf 'PRETTY_NAME="%s"\nID=%s\nVERSION_ID=%s\n' \
+      "${DR_STATE_TEST_OS_RELEASE:-}" "${DR_STATE_TEST_OS_ID:-debian}" \
+      "${DR_STATE_TEST_OS_VERSION_ID:-13}" >"$root/etc/os-release"
+  fi
+  if [ -n "${DR_STATE_TEST_KERNEL+x}" ]; then
+    printf '%s\n' "${DR_STATE_TEST_KERNEL:-}" >"$root/proc/sys/kernel/osrelease"
+  fi
+  if [ -n "${DR_STATE_TEST_PACKAGES+x}" ]; then
+    printf '%s\n' "${DR_STATE_TEST_PACKAGES:-}" >"$root/test-bin/packages"
+  fi
+  if [ "$DR" = "$DR_BASH" ]; then
+    env DR_STATE_TEST_MODE=1 DR_STATE_TEST_ROOT="$root" \
+      DR_STATE_TEST_ESP_FREE="$free" DR_STATE_TEST_ESP_CLUSTER="$cluster" \
+      GRUBEDITENV_LOG="${GRUBEDITENV_LOG:-$root/grub-editenv.log}" \
+      GRUBEDITENV_STATE="${GRUBEDITENV_STATE:-$root/grub-editenv.state}" \
+      PATH="$root/test-bin:$PATH" "$DR" "$@"
+  else
+    env -u DR_STATE_TEST_MODE -u DR_STATE_TEST_ROOT \
+      -u DR_STATE_TEST_ESP_FREE -u DR_STATE_TEST_ESP_CLUSTER \
+      -u DR_STATE_TEST_FAIL_STEP -u DR_STATE_TEST_OS_RELEASE \
+      -u DR_STATE_TEST_OS_ID -u DR_STATE_TEST_OS_VERSION_ID \
+      -u DR_STATE_TEST_KERNEL -u DR_STATE_TEST_PACKAGES \
+      GRUBEDITENV_LOG="${GRUBEDITENV_LOG:-$root/grub-editenv.log}" \
+      GRUBEDITENV_STATE="${GRUBEDITENV_STATE:-$root/grub-editenv.state}" \
+      PATH="$root/test-bin:$PATH" "$DR" --sysroot "$root" "$@"
+  fi
 }
 
 workflow_run_fail() { # workflow_run_fail ROOT STEP COMMAND...
@@ -68,10 +101,40 @@ workflow_run_fail() { # workflow_run_fail ROOT STEP COMMAND...
 workflow_fixture() { # workflow_fixture ROOT full|sparse
   local root=$1 shape=${2:-full}
   mkdir -p "$root/esp" "$root/top" "$root/etc" "$root/run" \
-    "$root/sys/firmware/efi/efivars" "$root/top/.dr-state"
+    "$root/sys/firmware/efi/efivars" "$root/top/.dr-state" \
+    "$root/boot" "$root/proc/sys/kernel" "$root/test-bin"
+  ln -sfn ../esp "$root/boot/efi"
+  ln -sfn top "$root/.top"
   printf '000001\n' >"$root/top/.dr-state/last-sequence"
-  printf 'BOOTLOADER=systemd-boot\n' >"$root/etc/dr-state.conf"
-  printf '%s / btrfs defaults,noatime 0 0\n' "$UUID" >"$root/etc/fstab"
+  mkdir -p "$root/esp/EFI/dr"
+  printf '%s\n' "$FIXTURE_BOOT" >"$root/esp/EFI/dr/bootloader"
+  printf 'UUID=%s / btrfs defaults,noatime 0 0\n' "$UUID" >"$root/etc/fstab"
+  printf 'PRETTY_NAME="Debian GNU/Linux 13 (fixture)"\nID=debian\nVERSION_ID=13\n' \
+    >"$root/etc/os-release"
+  printf '%s\n' "$KVER" >"$root/proc/sys/kernel/osrelease"
+  # shellcheck disable=SC2016  # literal stub body
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "btrfs\n"' >"$root/test-bin/findmnt"
+  # shellcheck disable=SC2016  # literal stub body
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -eu' \
+    'file=${1:?}' \
+    'op=${2:?}' \
+    'printf "%s\n" "${*:2}" >>"${GRUBEDITENV_LOG:?}"' \
+    'case "$op" in' \
+    '  create) : >"$file" ;;' \
+    '  set) printf "%s\n" "${3#saved_entry=}" >"${GRUBEDITENV_STATE:?}" ;;' \
+    '  list) [ ! -s "${GRUBEDITENV_STATE:?}" ] || printf "saved_entry=%s\n" "$(cat -- "$GRUBEDITENV_STATE")" ;;' \
+    '  *) exit 64 ;;' \
+    'esac' \
+    >"$root/test-bin/grub-editenv"
+  # shellcheck disable=SC2016  # literal stub body
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -eu' \
+    '[ -f "${0%/*}/packages" ] && cat "${0%/*}/packages" || true' \
+    >"$root/test-bin/dpkg-query"
+  chmod 755 "$root/test-bin/findmnt" "$root/test-bin/grub-editenv" "$root/test-bin/dpkg-query"
   if [ "$shape" = full ]; then
     mkdir -p "$root/esp/EFI/dr/kernels" "$root/esp/loader/entries"
   fi
@@ -201,34 +264,16 @@ install_fake_maintenance_btrfs() { # ROOT -> btrfs stub for snapshot and delete 
     'set -eu' \
     'op=${2:?}' \
     'dest=${!#}' \
+    'uuid_for() { hash=$(printf "%s" "$1" | sha256sum | awk "{print \$1}"); printf "%s-%s-%s-%s-%s\n" "${hash:0:8}" "${hash:8:4}" "${hash:12:4}" "${hash:16:4}" "${hash:20:12}"; }' \
     'case "$op" in' \
-    '  snapshot) source=${3:?}; mkdir -p -- "$dest"; printf "fixture-%s\n" "${source##*/}" >"$dest/.fixture-parent-uuid" ;;' \
-    '  show) [ -d "$dest" ] || exit 1; printf "Name: %s\nUUID: fixture-%s\n" "$dest" "${dest##*/}"; [ ! -f "$dest/.fixture-parent-uuid" ] || printf "Parent UUID: %s\n" "$(cat "$dest/.fixture-parent-uuid")" ;;' \
+    '  snapshot) source=${3:?}; mkdir -p -- "$dest"; uuid_for "$source" >"$dest/.fixture-parent-uuid" ;;' \
+    '  show) [ -d "$dest" ] || exit 1; printf "Name: %s\nUUID: %s\n" "$dest" "$(uuid_for "$dest")"; [ ! -f "$dest/.fixture-parent-uuid" ] || printf "Parent UUID: %s\n" "$(cat "$dest/.fixture-parent-uuid")" ;;' \
+    '  list) : ;;' \
     '  delete) state=${dest##*/}; entry="${FAKE_BLS_ENTRY_DIR:-}/${state#@}.conf"; if [ -n "${FAKE_BLS_ENTRY_DIR:-}" ] && [ -e "$entry" ]; then echo "BLS entry still exposes doomed state $state" >&2; exit 74; fi; if [ "${FAKE_BTRFS_FAIL_DELETE:-0}" = 1 ]; then exit 73; fi; /bin/rm -rf -- "$dest" ;;' \
     '  *) exit 64 ;;' \
     'esac' \
     >"$root/btrfs-bin/btrfs"
   chmod 755 "$root/btrfs-bin/btrfs"
-}
-
-install_fake_grub_editenv() { # ROOT -> grub-editenv stub with create/set/list support and an argv log
-  local root=$1
-  mkdir -p "$root/grub-bin"
-  # shellcheck disable=SC2016  # the single-quoted strings are the literal body of the generated stub
-  printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    'set -eu' \
-    'file=${1:?}' \
-    'op=${2:?}' \
-    'printf "%s\n" "${*:2}" >>"${GRUBEDITENV_LOG:?}"' \
-    'case "$op" in' \
-    '  create) : >"$file" ;;' \
-    '  set) printf "%s\n" "${3#saved_entry=}" >"${GRUBEDITENV_STATE:?}" ;;' \
-    '  list) [ ! -s "${GRUBEDITENV_STATE:?}" ] || printf "saved_entry=%s\n" "$(cat -- "$GRUBEDITENV_STATE")" ;;' \
-    '  *) exit 64 ;;' \
-    'esac' \
-    >"$root/grub-bin/grub-editenv"
-  chmod 755 "$root/grub-bin/grub-editenv"
 }
 
 workflow_prune_form() { # ROOT DEFAULT_ID ONESHOT_ID LABEL: dry-run prune must protect both entries
@@ -309,21 +354,21 @@ workflow_snapshot_overlong_reason() { # ROOT REASON LABEL: the constructed name 
     bad "workflow-snapshot-$label: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
   elif [ -z "$created" ]; then
     bad "workflow-snapshot-$label: no snapshot state was created"
- elif ! id=$("$DR" _sdboot-entry-id "${created##*/}" 2>/dev/null); then
+ elif [[ "${created##*/}" != @os-* ]]; then
     bad "workflow-snapshot-$label: created non-selectable state $created"
   else
+    id=${created#@}
     id_len=$(printf '%s' "$id" | wc -c)
     [ "$id_len" -le 240 ] || bad "workflow-snapshot-$label: entry id is $id_len bytes"
   fi
 }
 
-workflow_grub_conf_state_fixture() { # ROOT: GRUB backend with a legacy state whose name ends in .conf
+workflow_grub_fixture() { # ROOT: GRUB backend with two ordinary managed states
   local root=$1
   workflow_fixture "$root" full
-  printf 'BOOTLOADER=grub\n' >"$root/etc/dr-state.conf"
-  workflow_state "$root" @os-000001-20261118-120000Z-install.conf
+  printf 'grub\n' >"$root/esp/EFI/dr/bootloader"
+  workflow_state "$root" @os-000001-20261118-120000Z-install
   workflow_state "$root" @os-000002-20261118-120100Z-apt
-  install_fake_grub_editenv "$root"
 }
 
 workflow_invalid_conf_fixture() { # ROOT: one invalid selectable-name state and one valid state
@@ -345,14 +390,14 @@ workflow_assert_entry() { # workflow_assert_entry ROOT STATE KVER
   local root=$1 state=$2 kver=$3 entry_id source_kernel source_initrd kernel_sha256 initrd_sha256 kid
   local entry linux_path initrd_path options_line
   case_count=$((case_count + 1))
-  entry_id=$("$DR" _sdboot-entry-id "$state") || { bad "workflow-entry-id: cannot map $state"; return; }
+  entry_id=${state#@}
   source_kernel="$root/top/$state/boot/vmlinuz-$kver"
   source_initrd="$root/top/$state/boot/initrd.img-$kver"
   kernel_sha256=$(sha256sum -- "$source_kernel" | awk '{print $1}') \
     || { bad "workflow-entry-source-hash: cannot hash $source_kernel"; return; }
   initrd_sha256=$(sha256sum -- "$source_initrd" | awk '{print $1}') \
     || { bad "workflow-entry-source-hash: cannot hash $source_initrd"; return; }
-  kid=$("$DR" _sdboot-kernel-id "$kver" "$kernel_sha256" "$initrd_sha256") \
+  kid=$(pair_id "$kver" "$kernel_sha256" "$initrd_sha256") \
     || { bad "workflow-entry-kernel-id: cannot map $state kernel $kver"; return; }
   entry="$root/esp/loader/entries/$entry_id.conf"
   linux_path="/EFI/dr/kernels/$kid/vmlinuz"
@@ -387,26 +432,12 @@ PAIR_HASH_A=$(printf '%s%s' "$HASH_A" "$HASH_B" | sha256sum | awk '{print $1}')
 ID_A=$KVER-$PAIR_HASH_A
 UUID=11111111-2222-3333-4444-555555555555
 
-# Backend selection: absence is the only path to the GRUB default; conflict and unknown values fail loudly.
-expect_text backend-default grub "$DR" _sdboot-select-backend '' ''
-expect_text backend-explicit-grub grub "$DR" _sdboot-select-backend grub ''
-expect_text backend-conf-systemd systemd-boot "$DR" _sdboot-select-backend systemd-boot ''
+# Backend marker reads fail loudly; the P-20b removal set pins config/conflict decisions in unit tests.
 expect_text backend-marker-systemd systemd-boot "$DR" _sdboot-select-backend '' systemd-boot
-expect_text backend-both-agree systemd-boot "$DR" _sdboot-select-backend systemd-boot systemd-boot
-expect_exit backend-conflict 1 "$DR" _sdboot-select-backend grub systemd-boot
 expect_exit backend-unknown 1 "$DR" _sdboot-select-backend grub2 ''
-expect_text backend-source-present grub "$DR" _sdboot-source-value '/etc/dr-state.conf BOOTLOADER' 1 grub
-expect_exit backend-source-absent 0 "$DR" _sdboot-source-value '/etc/dr-state.conf BOOTLOADER' 0 ''
-expect_exit backend-source-empty-config 1 "$DR" _sdboot-source-value '/etc/dr-state.conf BOOTLOADER' 1 ''
 expect_exit backend-source-empty-marker 1 "$DR" _sdboot-source-value '/boot/efi/EFI/dr/bootloader' 1 ''
-printf 'BOOTLOADER=\n' >"$WORK/conf-empty"
-expect_exit backend-empty-config-file 1 "$DR" _sdboot-conf-backend "$WORK/conf-empty"
 printf '' >"$WORK/marker-empty"
 expect_exit backend-empty-marker-file 1 "$DR" _sdboot-marker-backend "$WORK/marker-empty"
-case_count=$((case_count + 1))
-"$DR" _sdboot-conf-backend "$WORK/conf-empty" >"$WORK/out" 2>"$WORK/err" || true
-grep -Fq 'BOOTLOADER is present but empty' "$WORK/err" \
-  || bad "backend-empty-config-message: missing clear empty-key refusal"
 case_count=$((case_count + 1))
 "$DR" _sdboot-marker-backend "$WORK/marker-empty" >"$WORK/out" 2>"$WORK/err" || true
 grep -Fq 'bootloader marker is present but empty' "$WORK/err" \
@@ -562,19 +593,11 @@ printf 'VERSION 2\n\nnot-an-action\n' >"$APT_PLAN_BAD"
 # shellcheck disable=SC2016  # the child bash expands its positional parameters
 expect_exit apt-plan-malformed-refused 1 bash -c '"$1" _apt-plan-summary <"$2"' _ "$DR" "$APT_PLAN_BAD"
 
-# The same sanitizer protects snapshot callers, including hook-composed reasons.
-workflow_snapshot_reason "$WORK/snapshot-reason-rollback" rollback.conf manual-rollback-conf
-workflow_snapshot_reason "$WORK/snapshot-reason-apt" apt.conf manual-apt-conf
-workflow_snapshot_reason "$WORK/snapshot-reason-kernel" kernel.conf manual-kernel-conf
-workflow_snapshot_reason "$WORK/snapshot-reason-space" 'bad name' manual-bad-name
-workflow_snapshot_reason "$WORK/snapshot-reason-slash" 'bad/name' manual-bad-name
-workflow_snapshot_reason "$WORK/snapshot-reason-at" 'bad@name' manual-bad-name
-workflow_snapshot_reason "$WORK/snapshot-reason-control" $'bad\tname' manual-bad-name
-workflow_snapshot_overlong_reason "$WORK/snapshot-reason-overlong" "$_LONG_REASON" overlong
-
 # Both backends use the same safe short slug and enumerate the result.
+DR="$DR_PY"
+FIXTURE_BOOT=grub
 WF_GRUB_REASON="$WORK/wf-grub-reason"
-workflow_grub_conf_state_fixture "$WF_GRUB_REASON"
+workflow_grub_fixture "$WF_GRUB_REASON"
 install_fake_snapshot_btrfs "$WF_GRUB_REASON"
 case_count=$((case_count + 1))
 GRUBEDITENV_LOG="$WF_GRUB_REASON/grub-editenv.log" GRUBEDITENV_STATE="$WF_GRUB_REASON/grub-editenv.state" \
@@ -589,7 +612,7 @@ elif [[ "$created" != *-manual-v1-2 ]]; then
 fi
 
 WF_GRUB_SPACE_REASON="$WORK/wf-grub-space-reason"
-workflow_grub_conf_state_fixture "$WF_GRUB_SPACE_REASON"
+workflow_grub_fixture "$WF_GRUB_SPACE_REASON"
 install_fake_snapshot_btrfs "$WF_GRUB_SPACE_REASON"
 case_count=$((case_count + 1))
 GRUBEDITENV_LOG="$WF_GRUB_SPACE_REASON/grub-editenv.log" \
@@ -616,59 +639,8 @@ else
   fi
 fi
 
-# The legacy-name restriction is systemd-boot-only: GRUB keeps enumerating and selecting a .conf-named state.
-WF_GRUB_CONF="$WORK/wf-grub-conf"
-workflow_grub_conf_state_fixture "$WF_GRUB_CONF"
-case_count=$((case_count + 1))
-GRUBEDITENV_LOG="$WF_GRUB_CONF/grub-editenv.log" GRUBEDITENV_STATE="$WF_GRUB_CONF/grub-editenv.state" \
-  PATH="$WF_GRUB_CONF/grub-bin:$PATH" workflow_run "$WF_GRUB_CONF" 999999999 4096 gen-menu \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-grub-conf-gen-menu: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fq -- 'menuentry "Debian @os-000001-20261118-120000Z-install.conf (kernel ' "$WF_GRUB_CONF/esp/EFI/dr/grub.cfg"; then
-  bad "workflow-grub-conf-gen-menu: legacy .conf state was omitted"
-elif ! grep -Fq -- 'menuentry "Debian @os-000002-20261118-120100Z-apt (kernel ' "$WF_GRUB_CONF/esp/EFI/dr/grub.cfg"; then
-  bad "workflow-grub-conf-gen-menu: ordinary state was omitted"
-fi
-
-case_count=$((case_count + 1))
-GRUBEDITENV_LOG="$WF_GRUB_CONF/grub-editenv.log" GRUBEDITENV_STATE="$WF_GRUB_CONF/grub-editenv.state" \
-  PATH="$WF_GRUB_CONF/grub-bin:$PATH" workflow_run "$WF_GRUB_CONF" 999999999 4096 list \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-grub-conf-list: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fq -- '@os-000001-20261118-120000Z-install.conf kernel=' "$WORK/out"; then
-  bad "workflow-grub-conf-list: legacy .conf state was omitted"
-fi
-
-case_count=$((case_count + 1))
-GRUBEDITENV_LOG="$WF_GRUB_CONF/grub-editenv.log" GRUBEDITENV_STATE="$WF_GRUB_CONF/grub-editenv.state" \
-  PATH="$WF_GRUB_CONF/grub-bin:$PATH" workflow_run "$WF_GRUB_CONF" 999999999 4096 \
-  set-default @os-000001-20261118-120000Z-install.conf >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-grub-conf-set-default: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fqx -- 'set saved_entry=@os-000001-20261118-120000Z-install.conf' "$WF_GRUB_CONF/grub-editenv.log"; then
-  bad "workflow-grub-conf-set-default: grub-editenv did not receive the legacy state"
-fi
-
-case_count=$((case_count + 1))
-GRUBEDITENV_LOG="$WF_GRUB_CONF/grub-editenv.log" GRUBEDITENV_STATE="$WF_GRUB_CONF/grub-editenv.state" \
-  PATH="$WF_GRUB_CONF/grub-bin:$PATH" workflow_run "$WF_GRUB_CONF" 999999999 4096 \
-  gen-menu --default @os-000001-20261118-120000Z-install.conf >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-grub-conf-gen-menu-default: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-elif ! grep -Fqx -- 'set saved_entry=@os-000001-20261118-120000Z-install.conf' "$WF_GRUB_CONF/grub-editenv.log"; then
-  bad "workflow-grub-conf-gen-menu-default: gen-menu did not save the legacy state"
-fi
-
-case_count=$((case_count + 1))
-DR_STATE=@os-000001-20261118-120000Z-install.conf GRUBEDITENV_LOG="$WF_GRUB_CONF/grub-editenv.log" \
-  GRUBEDITENV_STATE="$WF_GRUB_CONF/grub-editenv.state" PATH="$WF_GRUB_CONF/grub-bin:$PATH" \
-  workflow_run "$WF_GRUB_CONF" 999999999 4096 prune --keep 10 --dry-run \
-  >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ]; then
-  bad "workflow-grub-conf-prune: legacy running state was refused ($(tr '\n' ' ' <"$WORK/err"))"
-fi
+DR="$DR_BASH"
+FIXTURE_BOOT=systemd-boot
 
 # (d) ESP space check: needed bytes versus free bytes.
 expect_exit space-needed-less 0 "$DR" _sdboot-space-check 1000 2000
@@ -1023,8 +995,8 @@ else
   kernel_sha_1=$(sha256sum -- "$WF_SAME_INITRD/top/@os-000001-20261118-120000Z-install/boot/vmlinuz-$KVER" | awk '{print $1}')
   kernel_sha_2=$(sha256sum -- "$WF_SAME_INITRD/top/@os-000002-20261118-120100Z-apt/boot/vmlinuz-$KVER" | awk '{print $1}')
   initrd_sha=$(sha256sum -- "$WF_SAME_INITRD/top/@os-000001-20261118-120000Z-install/boot/initrd.img-$KVER" | awk '{print $1}')
-  kid_1=$("$DR" _sdboot-kernel-id "$KVER" "$kernel_sha_1" "$initrd_sha")
-  kid_2=$("$DR" _sdboot-kernel-id "$KVER" "$kernel_sha_2" "$initrd_sha")
+  kid_1=$(pair_id "$KVER" "$kernel_sha_1" "$initrd_sha")
+  kid_2=$(pair_id "$KVER" "$kernel_sha_2" "$initrd_sha")
   [ "$kid_1" != "$kid_2" ] || bad "workflow-same-initrd: distinct vmlinuz files shared one ESP ID"
 fi
 
@@ -1266,88 +1238,6 @@ for default_id in os-000002-20261118-120100Z-apt.conf os-000002-20261118-120100Z
   fi
 done
 
-# A snapshot records the system facts and free-text note from before a change. Its sidecar stays outside the OS
-# subvolume, and list/show expose the captured facts. Deleting the state removes its metadata but never reuses its ID.
-WF_METADATA="$WORK/wf-metadata"
-workflow_fixture "$WF_METADATA" full
-workflow_state "$WF_METADATA" @os-000001-20261118-120000Z-install
-install_fake_maintenance_btrfs "$WF_METADATA"
-case_count=$((case_count + 1))
-DR_STATE=@os-000001-20261118-120000Z-install DR_STATE_TEST_OS_RELEASE='Debian GNU/Linux 13 (fixture)' \
-DR_STATE_TEST_OS_ID=debian DR_STATE_TEST_OS_VERSION_ID=13 DR_STATE_TEST_KERNEL=6.12.117-fixture \
-DR_STATE_TEST_PACKAGES=$'apt\t3.0\ndpkg\t1.22' PATH="$WF_METADATA/btrfs-bin:$PATH" \
-  workflow_run "$WF_METADATA" 999999999 4096 snapshot --reason manual \
-    --note $'before apt install hello\noperator context' >"$WORK/out" 2>"$WORK/err"; rc=$?
-created=$(find "$WF_METADATA/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000002-*-*Z-manual' -printf '%f\n' | head -n 1)
-if [ "$rc" != 0 ] || [[ ! "$created" =~ ^@os-000002-[0-9]{8}-[0-9]{6}Z-manual$ ]]; then
-  bad "workflow-snapshot-metadata: rc=$rc state='$created' ($(tr '\n' ' ' <"$WORK/err"))"
-else
-  DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_METADATA" 999999999 4096 show "$created" >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 0 ] || ! grep -Fqx 'source: manual' "$WORK/out" \
-    || ! grep -Fqx 'sequence: 000002' "$WORK/out" \
-    || ! grep -Fqx 'origin-slug: manual' "$WORK/out" \
-    || ! grep -Fqx 'reason: manual' "$WORK/out" \
-    || ! grep -Fqx 'os-at-snapshot: Debian GNU/Linux 13 (fixture)' "$WORK/out" \
-    || ! grep -Fqx 'running-kernel-at-snapshot: 6.12.117-fixture' "$WORK/out" \
-    || ! grep -Eq '^apt[[:space:]]+3\.0$' "$WORK/out" \
-    || ! grep -Fq 'before apt install hello' "$WORK/out" \
-    || ! grep -Fq 'operator context' "$WORK/out"; then
-    bad "workflow-snapshot-show: report omitted captured facts or note: $(tr '\n' ' ' <"$WORK/out")"
-  fi
-  DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_METADATA" 999999999 4096 list >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 0 ] || ! grep -Fq "$created" "$WORK/out" \
-    || ! grep -Fq 'created=' "$WORK/out" || ! grep -Fq 'reason=manual' "$WORK/out" \
-    || ! grep -Fq 'note=before apt install hello operator context' "$WORK/out"; then
-    bad "workflow-snapshot-list: report omitted its snapshot summary: $(tr '\n' ' ' <"$WORK/out")"
-  fi
-  DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_METADATA" 999999999 4096 list --long >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 0 ] || ! grep -Fq 'key-package-versions:' "$WORK/out" \
-    || ! grep -Fq 'operator context' "$WORK/out"; then
-    bad "workflow-snapshot-list-long: detailed report omitted packages or note: $(tr '\n' ' ' <"$WORK/out")"
-  fi
-  DR_STATE=@os-000001-20261118-120000Z-install PATH="$WF_METADATA/btrfs-bin:$PATH" workflow_run "$WF_METADATA" 999999999 4096 delete "$created" --yes \
-    >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 0 ] || [ -e "$WF_METADATA/top/.dr-state/metadata/$created.meta" ] \
-    || [ "$(cat "$WF_METADATA/top/.dr-state/last-sequence")" != 000002 ]; then
-    bad "workflow-snapshot-delete-metadata: rc=$rc state_exists=$( [ -e "$WF_METADATA/top/$created" ] && echo yes || echo no ) sidecar_exists=$( [ -e "$WF_METADATA/top/.dr-state/metadata/$created.meta" ] && echo yes || echo no ) stdout='$(tr '\n' ' ' <"$WORK/out")' stderr='$(tr '\n' ' ' <"$WORK/err")'"
-  fi
-  case_count=$((case_count + 1))
-  DR_STATE=@os-000001-20261118-120000Z-install PATH="$WF_METADATA/btrfs-bin:$PATH" \
-    workflow_run "$WF_METADATA" 999999999 4096 snapshot --reason before-upgrade \
-    >"$WORK/out" 2>"$WORK/err"; rc=$?
-  created_again=$(find "$WF_METADATA/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000003-*-*Z-manual-before-upgrade' -printf '%f\n' | head -n 1)
-  if [ "$rc" != 0 ] || [ -z "$created_again" ] || [ -e "$WF_METADATA/top/$created" ]; then
-    bad "workflow-sequence-not-reused-after-delete: rc=$rc created='$created_again' deleted_id_exists=$( [ -e "$WF_METADATA/top/$created" ] && echo yes || echo no ) ($(tr '\n' ' ' <"$WORK/err"))"
-  fi
-fi
-
-# Fresh installation initializes sequence 000001 only after the install state has a complete kernel pair.
-WF_INITIALIZE="$WORK/wf-initialize"
-workflow_fixture "$WF_INITIALIZE" full
-workflow_state "$WF_INITIALIZE" @os-000001-20261121-120000Z-install
-workflow_remove_state_counter "$WF_INITIALIZE"
-case_count=$((case_count + 1))
-DR_STATE_TEST_OS_RELEASE='Debian GNU/Linux 13 (fixture)' DR_STATE_TEST_KERNEL=6.12.117-fixture \
-  workflow_run "$WF_INITIALIZE" 999999999 4096 initialize-state \
-    @os-000001-20261121-120000Z-install 20261121120000 >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ] || [ "$(cat "$WF_INITIALIZE/top/.dr-state/last-sequence" 2>/dev/null)" != 000001 ] \
-  || [ ! -f "$WF_INITIALIZE/top/.dr-state/metadata/@os-000001-20261121-120000Z-install.meta" ]; then
-  bad "workflow-initialize-state: rc=$rc counter=$(cat "$WF_INITIALIZE/top/.dr-state/last-sequence" 2>/dev/null) ($(tr '\n' ' ' <"$WORK/err"))"
-else
-  DR_STATE=@os-000001-20261121-120000Z-install workflow_run "$WF_INITIALIZE" 999999999 4096 \
-    show @os-000001-20261121-120000Z-install >"$WORK/out" 2>"$WORK/err"; rc=$?
-  if [ "$rc" != 0 ] || ! grep -Fqx 'sequence: 000001' "$WORK/out" \
-    || ! grep -Fqx 'origin-slug: install' "$WORK/out" || ! grep -Fqx 'source: install' "$WORK/out"; then
-    bad "workflow-initialize-state-metadata: rc=$rc report=$(tr '\n' ' ' <"$WORK/out")"
-  fi
-  case_count=$((case_count + 1))
-  DR_STATE_TEST_OS_RELEASE='Debian GNU/Linux 13 (fixture)' DR_STATE_TEST_KERNEL=6.12.117-fixture \
-    workflow_run "$WF_INITIALIZE" 999999999 4096 initialize-state \
-      @os-000001-20261121-120000Z-install 20261121120000 >"$WORK/out" 2>"$WORK/err"; rc=$?
-  [ "$rc" = 0 ] && [ "$(cat "$WF_INITIALIZE/top/.dr-state/last-sequence")" = 000001 ] \
-    || bad "workflow-initialize-state-idempotent: rc=$rc counter=$(cat "$WF_INITIALIZE/top/.dr-state/last-sequence") ($(tr '\n' ' ' <"$WORK/err"))"
-fi
-
 # Snapshot allocation must fail closed without a valid high-water mark and must not make an ID reuse guess.
 for counter_value in missing malformed symlink; do
   WF_COUNTER="$WORK/wf-counter-$counter_value"
@@ -1370,40 +1260,6 @@ for counter_value in missing malformed symlink; do
     bad "workflow-counter-$counter_value-fails-closed: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
   fi
 done
-
-# APT's pre-install package plan runs before dpkg. The first hook snapshots the running root; later dpkg passes in the
-# same transaction append unique package actions to that snapshot without making a second copy.
-WF_APT_PLAN="$WORK/wf-apt-plan"
-workflow_fixture "$WF_APT_PLAN" full
-workflow_state "$WF_APT_PLAN" @os-000001-20261118-120000Z-install
-install_fake_maintenance_btrfs "$WF_APT_PLAN"
-for round in 1 2; do
-  if [ "$round" = 1 ]; then APT_INPUT="$APT_PLAN_V2"; else APT_INPUT="$WORK/apt-plan-second"; fi
-  if [ "$round" = 2 ]; then
-    printf 'VERSION 2\nAPT::Get::CommandLine::AsString=apt%%20upgrade\n\nbar 1.0 < 2.0 /var/cache/apt/archives/bar.deb\n' \
-      >"$APT_INPUT"
-  fi
-  case_count=$((case_count + 1))
-  (
-    exec 3<"$APT_INPUT"
-    DR_STATE=@os-000001-20261118-120000Z-install APT_HOOK_INFO_FD=3 DR_STATE_TEST_OS_RELEASE='Debian GNU/Linux 13 (fixture)' \
-    DR_STATE_TEST_KERNEL=6.12.117-fixture DR_STATE_TEST_PACKAGES=$'apt\t3.0' \
-    PATH="$WF_APT_PLAN/btrfs-bin:$PATH" \
-      workflow_run "$WF_APT_PLAN" 999999999 4096 apt-pre-install-pkgs
-  ) >"$WORK/out" 2>"$WORK/err"; rc=$?
-  [ "$rc" = 0 ] || bad "workflow-apt-plan-round-$round: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
-done
-apt_snapshots=$(find "$WF_APT_PLAN/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000002-*-*Z-apt' -printf '%f\n' | wc -l)
-apt_state=$(find "$WF_APT_PLAN/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000002-*-*Z-apt' -printf '%f\n' | head -n 1)
-DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_APT_PLAN" 999999999 4096 show "$apt_state" >"$WORK/out" 2>"$WORK/err"; rc=$?
-if [ "$rc" != 0 ] || [ "$apt_snapshots" != 1 ] \
-  || ! grep -Fqx 'source: apt' "$WORK/out" \
-  || ! grep -Fqx 'reason: apt' "$WORK/out" \
-  || ! grep -Fq 'install hello - -> 2.10-3' "$WORK/out" \
-  || ! grep -Fq 'upgrade libc6:amd64 2.36-9 -> 2.37-1' "$WORK/out" \
-  || ! grep -Fq 'upgrade bar 1.0 -> 2.0' "$WORK/out"; then
-  bad "workflow-apt-plan-metadata: rc=$rc snapshots=$apt_snapshots report=$(tr '\n' ' ' <"$WORK/out")"
-fi
 
 # boot-once passes the canonical type-1 entry id (WITH .conf) to the single bootctl writer.
 WF_BOOT_ONCE="$WORK/wf-boot-once"
@@ -1814,6 +1670,218 @@ else
     bad "workflow-delete-success: confirmation output missing"
   fi
 fi
+
+boot_agnostic_cases() { # TAG BINARY MARKER
+  local tag=$1 binary=$2 marker=$3 prior_dr=$DR prior_marker=$FIXTURE_BOOT
+  local root created created_again deleted_exists required rc snap_rc selected_before \
+    selected_after snapshots apt_state apt_input
+  DR=$binary
+  FIXTURE_BOOT=$marker
+
+  # Snapshot reasons and the overlong-name boundary are backend-independent.
+  root="$WORK/bag-$tag-reason"
+  workflow_snapshot_reason "$root-rollback" rollback.conf manual-rollback-conf
+  workflow_snapshot_reason "$root-apt" apt.conf manual-apt-conf
+  workflow_snapshot_reason "$root-kernel" kernel.conf manual-kernel-conf
+  workflow_snapshot_reason "$root-space" 'bad name' manual-bad-name
+  workflow_snapshot_reason "$root-slash" 'bad/name' manual-bad-name
+  workflow_snapshot_reason "$root-at" 'bad@name' manual-bad-name
+  workflow_snapshot_reason "$root-control" $'bad\tname' manual-bad-name
+  workflow_snapshot_overlong_reason "$root-overlong" "$_LONG_REASON" overlong
+
+  # Metadata, list/show, delete-metadata and no sequence reuse.
+  root="$WORK/bag-$tag-metadata"
+  workflow_fixture "$root" full
+  workflow_state "$root" @os-000001-20261118-120000Z-install
+  install_fake_maintenance_btrfs "$root"
+  case_count=$((case_count + 1))
+  DR_STATE=@os-000001-20261118-120000Z-install \
+  DR_STATE_TEST_OS_RELEASE='Debian GNU/Linux 13 (fixture)' \
+  DR_STATE_TEST_OS_ID=debian DR_STATE_TEST_OS_VERSION_ID=13 \
+  DR_STATE_TEST_KERNEL=6.12.117-fixture DR_STATE_TEST_PACKAGES=$'apt\t3.0\ndpkg\t1.22' \
+  PATH="$root/btrfs-bin:$PATH" \
+    workflow_run "$root" 999999999 4096 snapshot --reason manual \
+      --note $'before apt install hello\noperator context' >"$WORK/out" 2>"$WORK/err"; rc=$?
+  created=$(find "$root/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000002-*-*Z-manual' -printf '%f\n' | head -n 1)
+  if [ "$rc" != 0 ] || [[ ! "$created" =~ ^@os-000002-[0-9]{8}-[0-9]{6}Z-manual$ ]]; then
+    bad "workflow-snapshot-metadata: rc=$rc state='$created' ($(tr '\n' ' ' <"$WORK/err"))"
+  else
+    DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$root" 999999999 4096 show "$created" \
+      >"$WORK/out" 2>"$WORK/err"; rc=$?
+    if [ "$rc" != 0 ] || ! grep -Fqx 'source: manual' "$WORK/out" \
+      || ! grep -Fqx 'sequence: 000002' "$WORK/out" \
+      || ! grep -Fqx 'origin-slug: manual' "$WORK/out" \
+      || ! grep -Fqx 'reason: manual' "$WORK/out" \
+      || ! grep -Fqx 'os-at-snapshot: Debian GNU/Linux 13 (fixture)' "$WORK/out" \
+      || ! grep -Fqx 'running-kernel-at-snapshot: 6.12.117-fixture' "$WORK/out" \
+      || ! grep -Eq '^apt[[:space:]]+3\.0$' "$WORK/out" \
+      || ! grep -Fq 'before apt install hello' "$WORK/out" \
+      || ! grep -Fq 'operator context' "$WORK/out"; then
+      bad "workflow-snapshot-show: report omitted captured facts or note: $(tr '\n' ' ' <"$WORK/out")"
+    fi
+    DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$root" 999999999 4096 list \
+      >"$WORK/out" 2>"$WORK/err"; rc=$?
+    if [ "$rc" != 0 ] || ! grep -Fq "$created" "$WORK/out" \
+      || ! grep -Fq 'created=' "$WORK/out" || ! grep -Fq 'reason=manual' "$WORK/out" \
+      || ! grep -Fq 'note=before apt install hello operator context' "$WORK/out"; then
+      bad "workflow-snapshot-list: report omitted its snapshot summary: $(tr '\n' ' ' <"$WORK/out")"
+    fi
+    DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$root" 999999999 4096 list --long \
+      >"$WORK/out" 2>"$WORK/err"; rc=$?
+    if [ "$rc" != 0 ] || ! grep -Fq 'key-package-versions:' "$WORK/out" \
+      || ! grep -Fq 'operator context' "$WORK/out"; then
+      bad "workflow-snapshot-list-long: detailed report omitted packages or note: $(tr '\n' ' ' <"$WORK/out")"
+    fi
+    DR_STATE=@os-000001-20261118-120000Z-install PATH="$root/btrfs-bin:$PATH" \
+      workflow_run "$root" 999999999 4096 delete "$created" --yes \
+      >"$WORK/out" 2>"$WORK/err"; rc=$?
+    if [ "$rc" != 0 ] || [ -e "$root/top/.dr-state/metadata/$created.meta" ] \
+      || [ "$(cat "$root/top/.dr-state/last-sequence")" != 000002 ]; then
+      bad "workflow-snapshot-delete-metadata: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+    fi
+    case_count=$((case_count + 1))
+    DR_STATE=@os-000001-20261118-120000Z-install PATH="$root/btrfs-bin:$PATH" \
+      workflow_run "$root" 999999999 4096 snapshot --reason before-upgrade \
+      >"$WORK/out" 2>"$WORK/err"; rc=$?
+    created_again=$(find "$root/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000003-*-*Z-manual-before-upgrade' -printf '%f\n' | head -n 1)
+    if [ -e "$root/top/$created" ]; then deleted_exists=yes; else deleted_exists=no; fi
+    if [ "$rc" != 0 ] || [ -z "$created_again" ] \
+      || [ -e "$root/top/$created" ]; then
+      bad "workflow-sequence-not-reused-after-delete: rc=$rc created='$created_again' deleted='$created' deleted-exists=$deleted_exists ($(tr '\n' ' ' <"$WORK/err"))"
+    fi
+  fi
+
+  if [ "$tag" = python ]; then
+    # A configured GRUB default must survive the next snapshot's publication.
+    root="$WORK/bag-$tag-configured-default"
+    workflow_fixture "$root" full
+    workflow_two_states "$root"
+    install_fake_maintenance_btrfs "$root"
+    case_count=$((case_count + 1))
+    DR_STATE=@os-000001-20261118-120000Z-install PATH="$root/btrfs-bin:$PATH" \
+      workflow_run "$root" 999999999 4096 set-default @os-000002-20261118-120100Z-apt \
+      >"$WORK/out" 2>"$WORK/err"; rc=$?
+    selected_before=$(cat "$root/grub-editenv.state" 2>/dev/null)
+    DR_STATE=@os-000001-20261118-120000Z-install PATH="$root/btrfs-bin:$PATH" \
+      workflow_run "$root" 999999999 4096 snapshot --reason before-upgrade \
+      >"$WORK/out" 2>"$WORK/err"; snap_rc=$?
+    selected_after=$(cat "$root/grub-editenv.state" 2>/dev/null)
+    if [ "$rc" != 0 ] || [ "$snap_rc" != 0 ] \
+      || [ "$selected_before" != @os-000002-20261118-120100Z-apt ] \
+      || [ "$selected_after" != "$selected_before" ]; then
+      bad "workflow-set-default-survives-snapshot: set-default=$rc snapshot=$snap_rc before='$selected_before' after='$selected_after' ($(tr '\n' ' ' <"$WORK/err"))"
+    fi
+  fi
+
+  # Fresh initialization and its idempotent repeat.
+  root="$WORK/bag-$tag-initialize"
+  workflow_fixture "$root" full
+  workflow_state "$root" @os-000001-20261121-120000Z-install
+  workflow_remove_state_counter "$root"
+  case_count=$((case_count + 1))
+  DR_STATE_TEST_OS_RELEASE='Debian GNU/Linux 13 (fixture)' DR_STATE_TEST_KERNEL=6.12.117-fixture \
+    workflow_run "$root" 999999999 4096 initialize-state \
+      @os-000001-20261121-120000Z-install 20261121120000 >"$WORK/out" 2>"$WORK/err"; rc=$?
+  if [ "$rc" != 0 ] || [ "$(cat "$root/top/.dr-state/last-sequence" 2>/dev/null)" != 000001 ] \
+    || [ ! -f "$root/top/.dr-state/metadata/@os-000001-20261121-120000Z-install.meta" ]; then
+    bad "workflow-initialize-state: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+  else
+    DR_STATE=@os-000001-20261121-120000Z-install workflow_run "$root" 999999999 4096 \
+      show @os-000001-20261121-120000Z-install >"$WORK/out" 2>"$WORK/err"; rc=$?
+    if [ "$rc" != 0 ] || ! grep -Fqx 'sequence: 000001' "$WORK/out" \
+      || ! grep -Fqx 'origin-slug: install' "$WORK/out" \
+      || ! grep -Fqx 'source: install' "$WORK/out"; then
+      bad "workflow-initialize-state-metadata: rc=$rc report=$(tr '\n' ' ' <"$WORK/out")"
+    fi
+    case_count=$((case_count + 1))
+    DR_STATE_TEST_OS_RELEASE='Debian GNU/Linux 13 (fixture)' DR_STATE_TEST_KERNEL=6.12.117-fixture \
+      workflow_run "$root" 999999999 4096 initialize-state \
+        @os-000001-20261121-120000Z-install 20261121120000 >"$WORK/out" 2>"$WORK/err"; rc=$?
+    [ "$rc" = 0 ] && [ "$(cat "$root/top/.dr-state/last-sequence")" = 000001 ] \
+      || bad "workflow-initialize-state-idempotent: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+  fi
+
+  # One APT snapshot, then the same-window hook appends unique package actions.
+  root="$WORK/bag-$tag-apt"
+  workflow_fixture "$root" full
+  workflow_state "$root" @os-000001-20261118-120000Z-install
+  install_fake_maintenance_btrfs "$root"
+  for required in 1 2; do
+    if [ "$required" = 1 ]; then
+      apt_input=$APT_PLAN_V2
+    else
+      apt_input="$root/apt-plan-second"
+      printf 'VERSION 2\nAPT::Get::CommandLine::AsString=apt%%20upgrade\n\nbar 1.0 < 2.0 /var/cache/apt/archives/bar.deb\n' \
+        >"$apt_input"
+    fi
+    case_count=$((case_count + 1))
+    (
+      exec 3<"$apt_input"
+      DR_STATE=@os-000001-20261118-120000Z-install APT_HOOK_INFO_FD=3 \
+      DR_STATE_TEST_OS_RELEASE='Debian GNU/Linux 13 (fixture)' \
+      DR_STATE_TEST_KERNEL=6.12.117-fixture DR_STATE_TEST_PACKAGES=$'apt\t3.0' \
+      PATH="$root/btrfs-bin:$PATH" workflow_run "$root" 999999999 4096 apt-pre-install-pkgs
+    ) >"$WORK/out" 2>"$WORK/err"; rc=$?
+    [ "$rc" = 0 ] || bad "workflow-apt-plan-round-$required: rc=$rc ($(tr '\n' ' ' <"$WORK/err"))"
+  done
+  snapshots=$(find "$root/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000002-*-*Z-apt' -printf '%f\n' | wc -l)
+  apt_state=$(find "$root/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000002-*-*Z-apt' -printf '%f\n' | head -n 1)
+  DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$root" 999999999 4096 show "$apt_state" \
+    >"$WORK/out" 2>"$WORK/err"; rc=$?
+  if [ "$rc" != 0 ] || [ "$snapshots" != 1 ] \
+    || ! grep -Fqx 'source: apt' "$WORK/out" \
+    || ! grep -Fqx 'reason: apt' "$WORK/out" \
+    || ! grep -Fq 'install hello - -> 2.10-3' "$WORK/out" \
+    || ! grep -Fq 'upgrade libc6:amd64 2.36-9 -> 2.37-1' "$WORK/out" \
+    || ! grep -Fq 'upgrade bar 1.0 -> 2.0' "$WORK/out"; then
+    bad "workflow-apt-plan-metadata: rc=$rc snapshots=$snapshots report=$(tr '\n' ' ' <"$WORK/out")"
+  fi
+
+  DR=$prior_dr
+  FIXTURE_BOOT=$prior_marker
+}
+
+boot_agnostic_cases bash "$DR_BASH" systemd-boot
+boot_agnostic_cases python "$DR_PY" grub
+
+# D9 replacements: unmanaged objects are listed, never published, and never mutation targets.
+DR="$DR_PY"
+FIXTURE_BOOT=grub
+WF_UNMANAGED="$WORK/wf-unmanaged"
+workflow_fixture "$WF_UNMANAGED" full
+workflow_two_states "$WF_UNMANAGED"
+workflow_state "$WF_UNMANAGED" @os-0001
+DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_UNMANAGED" 999999999 4096 gen-menu \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+case_count=$((case_count + 1))
+if [ "$rc" != 0 ] || ! grep -Fq '@os-0001 (unmanaged)' <(workflow_run "$WF_UNMANAGED" 999999999 4096 list 2>/dev/null) \
+  || grep -Fq 'Debian @os-0001 ' "$WF_UNMANAGED/esp/EFI/dr/grub.cfg"; then
+  bad "workflow-unmanaged-listed: unmanaged state was not listed or entered the menu ($(tr '\n' ' ' <"$WORK/err"))"
+fi
+case_count=$((case_count + 1))
+DR_STATE=@os-000001-20261118-120000Z-install workflow_run "$WF_UNMANAGED" 999999999 4096 \
+  delete @os-0001 --yes >"$WORK/out" 2>"$WORK/err"; rc=$?
+if [ "$rc" != 3 ] || ! grep -Fq 'unmanaged' "$WORK/err" || [ ! -d "$WF_UNMANAGED/top/@os-0001" ]; then
+  bad "workflow-unmanaged-listed: unmanaged delete wanted exit 3 and no change, got $rc"
+fi
+
+WF_UNMANAGED_RUN="$WORK/wf-unmanaged-running"
+workflow_fixture "$WF_UNMANAGED_RUN" full
+workflow_state "$WF_UNMANAGED_RUN" @os-0001
+install_fake_snapshot_btrfs "$WF_UNMANAGED_RUN"
+counter_before=$(cat "$WF_UNMANAGED_RUN/top/.dr-state/last-sequence")
+case_count=$((case_count + 1))
+DR_STATE=@os-0001 PATH="$WF_UNMANAGED_RUN/btrfs-bin:$PATH" \
+  workflow_run "$WF_UNMANAGED_RUN" 999999999 4096 snapshot --reason before-upgrade \
+  >"$WORK/out" 2>"$WORK/err"; rc=$?
+counter_after=$(cat "$WF_UNMANAGED_RUN/top/.dr-state/last-sequence")
+if [ "$rc" != 3 ] || ! grep -Fq 'unmanaged' "$WORK/err" \
+  || [ "$counter_before" != "$counter_after" ] \
+  || find "$WF_UNMANAGED_RUN/top" -mindepth 1 -maxdepth 1 -name '@os-000002-*' -print -quit | grep -q .; then
+  bad "workflow-unmanaged-running-snapshot: understood running state or changed storage (rc=$rc)"
+fi
+DR="$DR_BASH"
+FIXTURE_BOOT=systemd-boot
 
 if [ "$fail" = 0 ]; then
   echo "test-dr-state-sdboot: OK ($case_count cases)"

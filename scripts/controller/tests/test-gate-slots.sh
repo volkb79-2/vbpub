@@ -238,6 +238,33 @@ for bad in 0 9 10 x 2.5 -1 08 '+2' ' 3' '3 '; do
   [[ ! -e $(lock_of "$CASE" 1) ]] || fail "a lock file was created with CONTROLLER_GATE_SLOTS='$bad'"
 done
 
+check_locale_safe_slot_digits() {
+  local locale_name utf8_locale='' arabic_three rc=0
+  # Run under an available UTF-8 locale; the explicit ASCII digit list must
+  # refuse a non-ASCII digit regardless of locale collation.
+  while IFS= read -r locale_name; do
+    case ${locale_name,,} in
+      *.utf8|*.utf-8)
+        if LC_ALL=$locale_name locale charmap 2>/dev/null | grep -Fqx UTF-8; then
+          utf8_locale=$locale_name
+          break
+        fi
+        ;;
+    esac
+  done < <(locale -a)
+  [[ -n $utf8_locale ]] || fail 'no available UTF-8 locale can exercise the slot-count guard'
+  arabic_three=$(printf '\u0663')
+  new_case locale-digit
+  mapfile -t env_lines < <(slot_env "$CASE" 2)
+  gate "$CASE/out" "${env_lines[@]}" LC_ALL="$utf8_locale" CONTROLLER_GATE_SLOTS="$arabic_three" || rc=$?
+  [[ $rc == 2 ]] || fail "a non-ASCII digit under LC_ALL=$utf8_locale must exit 2, got $rc"
+  contains "$CASE/out" 'CONTROLLER_GATE_SLOTS must be an integer from 1 to 8' \
+    'a non-ASCII digit under a Unicode locale names the slot-count rule'
+  [[ $(log_lines) == 0 ]] || fail 'run-gate started with a non-ASCII slot count'
+  [[ ! -e $(lock_of "$CASE" 1) ]] || fail 'a lock file was created with a non-ASCII slot count'
+}
+check_locale_safe_slot_digits
+
 # 6. empty means unset: the default of two slots (so slot 2 is still required)
 new_case empty-slots
 rc=0

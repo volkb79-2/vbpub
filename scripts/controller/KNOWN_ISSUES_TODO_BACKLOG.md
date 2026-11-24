@@ -46,11 +46,11 @@ together.
 | CTL-32 | `ctl-state-backup.sh` has no restore helper, and keys/pins are outside the archive by design | Nice-to-have | OPEN |
 | CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | DONE 2026-11-18 |
 | CTL-37 | A run is ten loose files keyed by a caller name | Must-fix | OPEN 2026-11-24 (Opus design review) |
-| CTL-38 | Auto-continued Codex runs lose the final answer | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-38 | Auto-continued Codex runs lose the final answer | Must-fix | FIXED 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; r1 follow-ups 93fe8963d, 2f52b9793) |
 | CTL-39 | Routes in about nine places | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-40 | agctl package; bash frozen | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-41 | ctl-clean treats the symptom | Should-fix | OPEN 2026-11-24 (Opus design review) |
-| CTL-42 | Limit note on the launch path | Should-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-42 | Limit note on the launch path | Should-fix | PARTIAL 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; sol + wrapper wording fixed; limits-reader and OD ordering remain OPEN) |
 | CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-44 | HANDOFF is an append-only log | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-45 | Launcher twins | Should-fix | OPEN 2026-11-24 (Opus design review) |
@@ -64,6 +64,7 @@ together.
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
+| CTL-56 | P-plat-04 r1 leftovers: locale oracle, interim-message fake, misplaced Pi mutant reference, Unicode continuation digits | Should-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1518,9 +1519,37 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md H1
 
 ## CTL-38 — auto-continued Codex runs lose the final answer
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED 2026-11-24 (commit
+`0c366bf2fa11743281cf4bbcddb0cc981ebba5d1`; filed from the same-day design
+review).
 
-`resume` and continue pass no `-o`; derive `last.txt` from the stream.
+A new Codex run used `-o` for `.last.txt`, but manual `resume` and automatic
+continuation did not. A reasoning-only first turn therefore left either no final
+text or the previous invocation's text, including after the continuation produced
+the actual final answer.
+
+`codex-impl.sh` now has one `codex_extract_last_text` function used after the new,
+manual-resume and each auto-continue child exits. It takes the last completed
+`agent_message` item from that child's JSON stream, replaces `.last.txt`
+atomically, and removes an older file when the stream has no final text. The new
+run no longer passes `-o`; the child exit and `.done` classification are unchanged.
+
+`check_ctl38_last_text_all_paths` covers `FINAL-A` to `FINAL-B` on resume across a
+reasoning-only first turn, automatic continuation, and stale-file removal for a
+no-text stream. The wrapper suite also asserts a positive new-run extraction.
+A hand mutant that removed the resume extraction was killed by the focused gate
+test (`CTL-38 resume did not derive exactly FINAL-B from its stream`).
+
+Review r1 closed two remaining gaps. Commit `93fe8963d` removes the old
+`.done` and `.last.txt` before a resume launch and extracts from the current
+stream on the EXIT/signal path; its focused test holds a resumed child, verifies
+the old text is gone, recreates it once, and then SIGTERMs the wrapper.
+Commit `2f52b9793` extracts from this invocation's accumulated `$name.jsonl`
+after an auto-continuation, so a later empty attempt does not erase text already
+produced by attempt 1.
+
+**Close when.** Done: all Codex exec paths derive `.last.txt` from their own
+stream, and the no-text and stale-file cases are tested.
 
 Source: .controller-state/design-review-2026-11-24/controller-tooling.md H1
 
@@ -1550,9 +1579,32 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md H4
 
 ## CTL-42 — limit note on the launch path
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** PARTIAL 2026-11-24 (commit
+`0c366bf2fa11743281cf4bbcddb0cc981ebba5d1`; sol and wrapper wording fixed,
+limits-reader and Open Design ordering remain open); filed from the same-day
+design review.
 
-Drop `codex_limit_note`; merge sol and the wording; the reader uses CTL-37/39 and covers pi; OD "blocked" orders and never refuses.
+The unmerged `ctl-routes-limits-20261118` branch was reviewed as two separable
+changes. Its useful route correction was re-applied by hand: `codex-impl.sh`
+accepts `sol` with the independent review home, Luna defaults to `$HOME/.codex2`,
+and `CODEX_HOME_OVERRIDE` wins for Luna and explicit `CODEX_ROUTE=sol` Codex
+launches. `codex-review.sh` deliberately chooses `CODEX_HOME_REVIEW`, which wins
+for reviews. The env example, config/consumer docs, and AGENTS.md wording now
+name the wrapper rather than a Codex home.
+
+The branch's launch-path limits note, standalone limits reader, reader test, and
+detached reader fix were not carried. Tests `route-home-luna`, `route-home-sol`,
+both override cases, and the review-route assertion exercise the salvaged
+behavior. A hand mutant restoring the Pi Open Design default from `max` to `high`
+was killed by the focused gate test.
+
+Remaining open work: make the read-only limits reader consume the planned
+`routes.toml` and run registry and cover Pi routes, and make Open Design
+`blocked_until` an ordering hint rather than a refusal based on stale local state.
+
+**Close when.** The limits reader has the new sources and Pi coverage, and the
+Open Design picker treats local blocking as ordering with the provider's 402 as
+authority.
 
 Source: .controller-state/design-review-2026-11-24/controller-tooling.md H5
 
@@ -1659,3 +1711,22 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 `tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
 
 Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
+
+## CTL-56 — P-plat-04 r1 leftovers
+
+**Status:** OPEN (filed 2026-11-24).
+
+- Finding 4: the locale test does not discriminate on glibc ≥2.28 or the
+  tester-unified `C.UTF-8` locale; the explicit ASCII digit list is correct, but
+  the oracle needs a locale where the old range admits `٣`, or a direct
+  validator-list check.
+- The CTL-38 fake resume stream has no interim `agent_message` before
+  `FINAL-B`, so a first-message-wins extractor could still pass.
+- CTL-42's text still cites the Pi `max` mutant, which belongs to the launcher
+  effort change rather than the route-salvage item.
+- `CODEX_AUTO_CONTINUE` is ASCII-checked in shell and then passed to Python
+  `int()`, which accepts Unicode digits; reject those explicitly at the wrapper
+  boundary.
+
+Source: P-plat-04 r1 Opus review findings 4 and 9, explicitly deferred by the
+controller.

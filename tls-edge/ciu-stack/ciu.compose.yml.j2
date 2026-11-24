@@ -10,6 +10,7 @@
 # ciu SPEC S5.3: the service key `traefik` must not be renamed — the
 # [tls_edge.traefik.configfile.*] mounts are keyed by it.
 {% set acme = tls_edge.tls.mode in ['acme-tls', 'acme-http', 'acme-dns'] %}
+{% set acme_volume = acme and (tls_edge.acme.store == 'volume' or tls_edge.acme.volume_name) %}
 {% if tls_edge.standalone %}
 name: {{ tls_edge.stack_name }}
 {% endif %}
@@ -120,9 +121,14 @@ services:
       # Keep this outside /etc/traefik: CIU mounts configfile parent directories
       # there read-only. Docker creates the mountpoint if the image lacks it.
       # The Traefik container root filesystem remains read-only.
+{% if acme_volume %}
       # NOTE: `docker compose down -v` / `ciu --reset` destroys this volume and
       # forces re-issuance on next start (mind Let's Encrypt rate limits).
       - acme-data:/var/lib/traefik
+{% else %}
+      # The new-instance hostdir lives outside stack/, so reset and clean keep it.
+      - {{ tls_edge.traefik.hostdir.acme }}:/var/lib/traefik
+{% endif %}
 {% elif tls_edge.static.source == 'volume' %}
       # Dev certificates from scripts/dev-certs.sh --target volume (DooD-safe).
       - certs-dev:/certs:ro
@@ -189,11 +195,11 @@ networks:
     external: true
     name: {{ deploy.network_name }}
 {% endif %}
-{% if acme or tls_edge.static.source == 'volume' %}
+{% if acme_volume or tls_edge.static.source == 'volume' %}
 
 # ─── Volumes ──────────────────────────────────────────────────────────────────
 volumes:
-{% if acme %}
+{% if acme_volume %}
   acme-data:
 {% if tls_edge.acme.volume_name %}
     # Adopted existing volume (migration): keeps the ACME account and every
