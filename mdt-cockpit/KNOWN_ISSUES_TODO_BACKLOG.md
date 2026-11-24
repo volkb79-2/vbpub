@@ -1964,8 +1964,8 @@ the first-party CLIs" section.
 
 **Acceptance.** A fake `npm` that answers ETARGET twice and then succeeds lets the install pass and logs both retries; a fake that always answers ETARGET fails after the bound with the original error text.
 
-## MDT-108 - dedicated runner hosts need an explicit memory overcommit policy (2026-11-24)
+## MDT-108 - dedicated runner hosts must rely on finite caps plus swap, not systemd-oomd kills (2026-11-24)
 
-**Status:** FIXED 2026-11-24 in commit `6ceb69b13a794443383b0041b145ba28a7b464b2`.
+**Status:** FIXED 2026-11-24 in commit `07dc9d6898eb8fa57e6fb5bd6d86231eae21f3e0`.
 
-`MDT_MEMORY_POLICY=overcommit` is now accepted only with `HOST_ROLE=dedicated-dev`: it renders unlimited `MemoryMax`/`MemorySwapMax` for `dev.slice`, `dev-gates.slice`, `dev-background.slice` and the dedicated-dev `system.slice` drop-in, removes every dev-tier `ManagedOOM*=kill`, preserves `MemoryHigh`/`MemoryLow` and explicit pins, and logs every policy change or pin that wins; the empty policy and every other role retain the existing render byte-for-byte.
+Host-setup renders no `ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or `ManagedOOMSwap` on any dev tier, and the dead per-tier pressure-limit knobs are removed. Finite `MemoryMax` plus a large `MemorySwapMax` is the overcommit design: cgroup v2 reclaims to swap before OOM, while fleetd alone freezes work at host memory PSI `full avg10 >= 3` (operator directive 2026-11-24). The default golden changes only for `dev-gates.slice` and `dev-background.slice`; every other rendered unit and every other role is unchanged.
