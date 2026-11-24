@@ -227,6 +227,7 @@ items:
   - {id: B575, title: "Carry-forward review notes (WP3a, out of contract)", type: feature, component: mutation, context_estimate: small}
   - {id: B576, title: "mutation_store contract-test gaps (P-assay-11 review)", type: bugfix, component: gate, context_estimate: small}
   - {id: B577, title: "A resume that rejects every record does not say why", type: feature, component: mutation, context_estimate: small}
+  - {id: B578, title: "A kill with rc!=0 and no failing test named is still counted as killed", type: bugfix, component: mutation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -15998,3 +15999,25 @@ The single error is at `descendants[0]`, so the only difference between an accep
 2. In CONSUMERS, the env_passthrough section: one paragraph stating that a passthrough value that embeds a checkout path makes every remote-gate run a new judge, so resume, carry-forward and the shard merge across runs never match. Name the relative-path fix.
 
 **Close when.** A test proves that a mismatch caused by a single passthrough value names that variable in the resume event and on stderr, and the CONSUMERS paragraph is in place. Source: vbpub-rollback's message to vbpub-assay at ~16:58Z; record diff by vbpub-assay.
+
+## B578 — A kill with rc!=0 and no failing test named is still counted as killed
+
+**Status: OPEN (filed 2026-11-24 from the P-assay-08 backfill pilot, main controller's request); severity: medium (judge classification; it can inflate scores).**
+
+**Question.** A candidate whose suite exits non-zero (`terminal_result` FAIL, `COMMAND_FAILED`, rc 1) but whose record names no failing test (`first_failing_test: null`) is bucketed `killed`. If any rc!=0 counts as a kill, a crash, collection error, fixture or infrastructure failure, or flake is scored as a test that caught the mutant. Every mutation score is then inflated by an unknown amount.
+
+**Evidence.** cmru lane assay-first-release-r2, shard 1/64, at X=5e02d731b, same judge c6e270f2c6851ef0… on both hosts. Stores are staged at `cmru/.assay/r2-staging/rgw-assay-first-release-r2-20261124T{125223-v1001,152154-r1002}/assay-store.tgz`. A grep over both stores (150 records) finds 3 `killed` records with no test named:
+- `20fc27434d6f` `cmru/src/cmru/bundle.py:165` True->False.
+  - v1001: **survived** (rc 0, full suite 1240 s).
+  - r1002: **killed**, no test named, rc 1 after 153 s.
+  - This is a contradiction: the r1002 "kill" is not a test catching the mutant.
+- `a60ef98a3b9b` `getpy.py:259` False->True. v1001: killed with no test named (160 s). r1002: killed by `tests/test_installer_extensions.py::TestRefusals::test_b_same_stdlib_import_in_two_fragments_is_fine`.
+- `caa7954ab604` `delegate_targets.py:30` And->Or. v1001: killed by `tests/test_release_coverage_gaps.py::test_getpy_context_outputs_and_rejections`. r1002: killed with no test named (173 s).
+- So the null name occurs on real kills too (2 of 3). It is at least an extraction gap in `first_failing_test`, and at most (1 of 3) a misclassified non-kill.
+
+**Wanted.**
+1. Find why `first_failing_test` is null on a real test failure: the output parser, `-x`/fail-fast output shape, the heavy-last ordering, or output truncation. Fix the extraction.
+2. Decide the rule for rc!=0 with no identified test failure (pytest exit codes 2/3/4/5, a crash, or rc 1 with no `FAILED` line). Leave it out of `killed`: either a new closed-vocabulary bucket, or a re-run and then `error`. Name the reason in the record. A kill must be evidenced by a failing test.
+3. Count these records in the verdict, so a campaign shows how many kills are unattributed.
+
+**Close when.** A fixture with a mutant that makes the suite exit non-zero without any test failing is not bucketed `killed`, and a real failure under the lane's real pytest options always records its test id. The backfill campaign's unattributed-kill count is reported at the 64/64 combine. Source: vbpub-assay record diff of the shard-1 pilots, ~19:35Z.
