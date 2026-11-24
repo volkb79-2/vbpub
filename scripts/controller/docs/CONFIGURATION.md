@@ -33,10 +33,12 @@ Useful settings:
 | `CONTROLLER_GATE_PSI_FILE` | Test seam: the PSI file `gate-run.sh` reads instead of `/proc/pressure/memory`. |
 | `CONTROLLER_REPO` | Checkout used for status and queue work; repo-local scripts derive it. Set it when the queue is installed under `CONTROLLER_HOME/bin`. |
 | `CODEX_HOME_LUNA`, `CODEX_HOME_DEEPSEEK_VOLKER`, `CODEX_HOME_DEEPSEEK_GITHUB2`, `CODEX_HOME_REVIEW` | Explicit Codex config homes for Luna, the two pinned Open Design accounts, and review. |
-| `CODEX_HOME_OVERRIDE` | Optional home override honoured only on the Luna route. |
+| `CODEX_HOME_OVERRIDE` | Optional home override honoured by `codex-impl.sh` on Luna and an explicit Sol route; `codex-review.sh` deliberately gives `CODEX_HOME_REVIEW` precedence. |
 | `CODEX_SQLITE_HOME` | Shared Codex session database path. |
+| `CODEX_EFFORT` | Optional Codex reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; DeepSeek routes default to `max`, Luna and Sol to `xhigh`. |
 | `CODEX_AUTO_CONTINUE` | Optional non-negative Codex resume count after a reasoning-only completed turn; defaults to `0` for Luna and `2` for DeepSeek. |
 | `CONTROLLER_OD_STATE` | Optional absolute path for key-free Open Design account state; defaults to `$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. |
+| `PI_THINKING` | Optional Pi thinking level; the DeepSeek Pi routes default to `max`. Pi records no thinking level in its `.done` marker. |
 | `CONTROLLER_OD_PREFER_EXPIRING` | Set to `1` to prefer the available Open Design account with the soonest recorded `window_end_epoch`; defaults to `0`. |
 | `CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS` | Positive integer seconds to block an account when a 402 has no parseable reset time; defaults to `21600` (6 hours). |
 | `PI_EMPTY_RETRY_LIMIT` | Non-negative continuation count for a pi run whose final assistant message is empty (no text, no tool call); defaults to `2`, `0` disables continuation. |

@@ -25,6 +25,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - MAJOR release: verdict schema v20 is a hard cut from v19 (B245, unit U2). `assay verify` accepts only v20, no compatibility shim; `--reuse-from` refuses a v19 verdict as an unsupported schema version (only v12-v15 start cold). `assay lanes --json` advertises the capability `verdict-v20` in place of `verdict-v19`. The ingested operator namespace gains `cargo-mutants` beside `stryker` (the schema's `mutation_operator` pattern and `assay.vocabulary.INGESTED_OPERATOR_NAMESPACES` change together). An ingested `judgment.r2` gains the optional `report_absent` (the tool wrote no report because it ran zero mutants; legal only with `INCONCLUSIVE`/`NO_MUTANTS`, zero totals, the `cargo-mutants` producer with report schema `outcomes.json` and the literal `producer_tool.version` `unobserved`) and `changed_diff` (`{base_rev, head_rev, relative_to, sha256, bytes}`, the changed-lines diff handed to cargo-mutants through the argv placeholder `{assay.changed_diff}`; required exactly when that placeholder is in `argv_declared`, the producer is `cargo-mutants` and the R2 `mode` is `changed_lines`, forbidden otherwise and under `native`). See the v19-to-v20 migration notes in `docs/CONSUMERS.md`.
 
 ### Fixed
+- B556 (items 1-2): a non-git `OSError` during snapshot preparation or cleanup
+  remains `ERROR`/`GIT_FAILED`; its detail is the last stage entered followed
+  by `str(exc)` plus the `/proc/self/fd` path for an integer fd (best effort, at report time).
 - B557: removed assay's per-version R2 waiver window from the provisional
   self-qualification gate, lane configuration and public docs; any release is
   R0/R1 plus R3 plus independent review, while R2 remains owed and runs asynchronously on the latest release.

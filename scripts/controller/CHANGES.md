@@ -6,6 +6,30 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Launcher must-fixes (CTL-38, CTL-42 part 1)
+- CTL-38: every Codex exec path — new, manual resume, and automatic
+  continuation — now derives `<run>.last.txt` from the last completed
+  `agent_message` item in that invocation's JSON stream. A stream with no final
+  text removes a stale file; the old `.done` outcome remains unchanged.
+- Codex and Pi Open Design routes default to the catalog maximum `max` effort;
+  `CODEX_EFFORT` and `PI_THINKING` still override it. Codex `.done` appends
+  `EFFORT=<value>` after the historical fields; that field is Codex-only and
+  Pi records no thinking level in its `.done` marker.
+- `CODEX_EFFORT` accepts only `minimal`, `low`, `medium`, `high`, `xhigh` or
+  `max`; another value exits 2 before the owner record or child launch.
+- CTL-42 part 1: Codex accepts a `sol` route using `$HOME/.codex`, Luna defaults
+  to `$HOME/.codex2`, and `CODEX_HOME_OVERRIDE` wins on Luna and an explicit
+  `CODEX_ROUTE=sol codex-impl.sh` launch. `codex-review.sh` deliberately gives
+  `CODEX_HOME_REVIEW` precedence, so a caller's override cannot redirect a
+  review. Repository guidance names the wrappers rather than a Codex home. The
+  limits note and reader remain dropped.
+- Route/home migration: usage-limit recovery now accepts the review's `sol`
+  `.route` value. Previously started Luna threads under `$HOME/.codex` must be
+  resumed with `CODEX_HOME_LUNA="$HOME/.codex"`, because new Luna runs default
+  to `$HOME/.codex2`.
+- `gate-run.sh` validates `CONTROLLER_GATE_SLOTS` with explicit ASCII digit
+  lists, so a Unicode collation cannot admit a non-ASCII digit.
+
 ### Added
 - `gate-run.sh`: after it holds a slot and before it starts `run-gate`, it waits while memory PSI `full` avg10 is >= 3 (CTL-57): one line a minute, bounded by `CONTROLLER_GATE_PSI_WAIT_S` (default 1800), then exit 75 "not admitted ... nothing ran" (never a lane verdict). An unreadable PSI file exits 75 at once. `CONTROLLER_GATE_PSI_FILE` is the test seam. Same rule as `dev` host-admission/1. Tests in `tests/test-gate-slots.sh` (the other gate-run tests run against a quiet PSI file); 9 new hand mutants.
 - `rules.md`: "House rules for every implementer brief" (CTL-50): remote dev container before each commit (interim `hostobs/tools/dev` for Rust), no direct `hx.sh`/`ssh`/`docker` and no tests in the devcontainer, contract plus target size with at most 2 review rounds, explicit launch effort, unique run names with resumed runs verified from git, DONE/PARTIAL/BLOCKED with a finalization. `BRIEF-TEMPLATE.md`, `finisher-generic.md` and the README point to it; the README records the bash freeze (CTL-40).

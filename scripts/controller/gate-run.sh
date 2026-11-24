@@ -17,7 +17,7 @@ export RUN_GATE_PROFILE=${RUN_GATE_PROFILE:-off}
 
 [[ $# -gt 0 ]] || { echo "usage: $0 <run-gate arguments...>" >&2; exit 2; }
 slots=${CONTROLLER_GATE_SLOTS:-2}
-[[ $slots =~ ^[1-8]$ ]] || {
+[[ $slots =~ ^[12345678]$ ]] || {
   echo 'gate-run: CONTROLLER_GATE_SLOTS must be an integer from 1 to 8 (unset it for the default 2)' >&2
   exit 2
 }
