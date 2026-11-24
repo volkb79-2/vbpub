@@ -1,6 +1,6 @@
 # ZFSBootMenu PoC guest results — 2026-11-23
 
-Host names replaced by 'the test host' (2026-11-24); identifiers otherwise verbatim.
+Host names replaced by 'the test host' and host paths made relative to the job dir (2026-11-24); VM and run-dir names are verbatim evidence identifiers.
 
 This is the evidence record for the current ZFSBootMenu installer iterations.
 It is not a release claim: the target install and boot path is still under
@@ -16,7 +16,7 @@ guest validation.
 | Current candidate ISO | `debian-rollback-zbm-v3.1.0-altroot-check-20261123.iso`, 2,103,967,744 bytes, SHA-256 `8b71bb21ad030fcc6e7ba906f6275d063165ab2220fb5e7705c54db2c52ff941` |
 
 The current candidate was built by registered lane `build-zfs-iso`, and its
-checksum was verified on the test host before boot. The registered
+checksum was verified on the build host and the test host before boot. The registered
 `offline` lane passed with the mountpoint regression test. Run-Gate logs are
 retained outside the repository at
 `/tmp/run-gate/lanes/build-zfs-iso/6ae0e61a3822dfa835bbcf6ddab37367.log` and
@@ -57,9 +57,9 @@ that the initial BE has a local mountpoint whose effective value is exactly
 that altroot. Its regression test accepts that root case and refuses a
 non-root mountpoint, a different altroot, or an inherited mountpoint.
 
-The serial and runner evidence for attempt 3 is retained in the repository at
-`scripts/debian-rollback/artifacts/zfs-rebuild-20261123/` and in the test-host
-evidence archive at run directory
+The serial and runner evidence for attempt 3 is retained on the build host at
+`scripts/debian-rollback/artifacts/zfs-rebuild-20261123/` (gitignored) and on the
+test host under run directory
 `vm-lab/zbm-20261123/runs/kernel-order-install/` (relative to the job dir).
 The local serial log SHA-256 is
 `6ac5c0283ddb67af98d4db2488e3abd40a8c6de42711070c0419359644a6a4ad`.

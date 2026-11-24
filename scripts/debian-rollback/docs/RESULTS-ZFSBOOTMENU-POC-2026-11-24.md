@@ -1,6 +1,6 @@
 # ZFSBootMenu PoC guest results — 2026-11-24
 
-Host names replaced by 'the test host' (2026-11-24); identifiers otherwise verbatim.
+Host names replaced by 'the test host' and host paths made relative to the job dir (2026-11-24); VM and run-dir names are verbatim evidence identifiers.
 
 Continuation of the [2026-11-23 progress report](RESULTS-ZFSBOOTMENU-POC-2026-11-23.md).
 This report distinguishes the earlier completed install from the current

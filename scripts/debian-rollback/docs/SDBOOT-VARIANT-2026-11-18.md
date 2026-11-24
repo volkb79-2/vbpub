@@ -354,7 +354,7 @@ pre-staged `boot-once`, then use the safe failed-state deletion path after the r
 historical `s2-s3` flow installed the then-current `dr-state` and APT hook payloads, then checked the timestamped APT
 snapshot, pre-change package/kernel report, and planned `hello` action.
 Exact counts, hashes and log locations of these historical runs are in git at
-`313ae9dcb` (this file); host evidence is in the rollback evidence archive
+`313ae9dcb` (`docs/ROLLBACK-RECOVERY.md`); host evidence is in the rollback evidence archive
 (controller state, P-rollback-01 index). They do not certify an integrated
 release candidate.
 
