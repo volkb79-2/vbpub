@@ -54,7 +54,27 @@ def _literal_argvs() -> list[tuple[str, int, list[str]]]:
                 continue
             if any(isinstance(e, ast.Starred) for e in node.elts):
                 continue  # argv assembled from spliced lists is covered by the dynamic walk below
-            found.append((name, node.lineno, [_render(e) for e in node.elts]))
+            rendered = [_render(e) for e in node.elts]
+            # Dynamic operands become "x". Substitute the smallest valid
+            # representative for the fixed-shape btrfs/dr-state commands so
+            # the production allowlist still checks their operation grammar.
+            if rendered[:4] == ["/usr/bin/btrfs", "filesystem", "show", "--raw"]:
+                rendered[-1] = "/dev/vda2"
+            elif (
+                len(rendered) == 4
+                and rendered[0] == "/usr/bin/btrfs"
+                and rendered[1:3] in (["subvolume", "show"], ["subvolume", "create"])
+            ):
+                rendered[3] = "/.top/@x"
+            elif rendered[:2] == ["/usr/bin/chattr", "+C"] and len(rendered) == 3:
+                rendered[2] = "/.top/@x"
+            elif (
+                len(rendered) >= 5
+                and rendered[0] == "/usr/bin/env"
+                and rendered[1:3] == ["-u", "DR_STATE"]
+            ):
+                rendered[3] = "/usr/local/sbin/dr-state"
+            found.append((name, node.lineno, rendered))
     return found
 
 

@@ -51,7 +51,8 @@ _SAFE_COMMANDS = {
     # flag-checked since 2026-11-05 (div2-layout-tests): -s/-o value selectors, -t/-U/-L lookups, -p low-level probe
     "blkid": {"-s", "-o", "-t", "-U", "-L", "-p"},
     "blockdev": {"--getsize64", "--rereadpt"},
-    "btrfs": {"filesystem"},
+    "btrfs": {"filesystem", "subvolume", "--raw"},
+    "chattr": {"+C"},
     "curl": set(),
     "cloud-init": set(),
     # dd has no dash options here; its key=value operands are checked against _DD_OPERAND_RE
@@ -60,7 +61,10 @@ _SAFE_COMMANDS = {
     "dumpe2fs": {"-h"},
     "e2fsck": {"-f", "-n", "-y", "-v"},
     "fallocate": {"-l"},
-    "findmnt": {"-n", "-rn", "-o", "SOURCE,TARGET,FSTYPE"},
+    "findmnt": {
+        "-n", "-rn", "-o", "SOURCE,FSTYPE", "SOURCE,TARGET,FSTYPE",
+        "SOURCE,FSTYPE,TARGET,FSROOT", "FSROOT", "--nofsroot",
+    },
     "sha256sum": set(),
     "free": {"-g"},
     "git": {"clone", "fetch", "reset"},
@@ -70,6 +74,7 @@ _SAFE_COMMANDS = {
     # the installer never re-measures and never redirects the facts directory.
     "cpu_benchmark.py": {"--major", "--geekbench-version", "--sha256", "--produced-by", "--timeout"},
     "lsblk": {"-no", "-o"},
+    "lsattr": {"-d"},
     "lvremove": {"-y"},
     # LT-UPG: list an initrd's contents to verify the root-shrink hook is in it.
     "lsinitramfs": set(),
@@ -131,6 +136,10 @@ _SAFE_COMMANDS = {
     "update-initramfs": {"-u", "-k"},
     "wget": {"-q"},
     "xfs_growfs": {"/"},
+    # Internal rollback-layer calls. `env` is special-cased below so it can
+    # clear only DR_STATE and exec only dr-state; it is never a general
+    # allowlist bypass.
+    "env": {"-u"},
 }
 
 
@@ -179,6 +188,36 @@ class HostActions:
                 raise ActionError("iobench installer PARTUUID is invalid")
             if argv[7] != "--state-dir" or not Path(argv[8]).is_absolute() or ".." in Path(argv[8]).parts:
                 raise ActionError("iobench installer state directory is invalid")
+        elif command == "btrfs":
+            filesystem_show = (
+                len(argv) == 5
+                and argv[1:4] == ["filesystem", "show", "--raw"]
+                and argv[4].startswith("/dev/")
+            )
+            subvolume_show_or_create = (
+                len(argv) == 4
+                and argv[1:3] in (["subvolume", "show"], ["subvolume", "create"])
+                and re.fullmatch(r"/\.top/@[A-Za-z0-9_.+-]{1,48}", argv[3])
+            )
+            if not (filesystem_show or subvolume_show_or_create):
+                raise ActionError(f"btrfs invocation is not allowlisted: {argv[1:]!r}")
+        elif command == "chattr":
+            if (
+                len(argv) != 3
+                or argv[1] != "+C"
+                or not re.fullmatch(r"/\.top/@[A-Za-z0-9_.+-]{1,48}", argv[2])
+            ):
+                raise ActionError(f"chattr invocation is not allowlisted: {argv[1:]!r}")
+        elif command == "env":
+            if not (
+                len(argv) >= 5
+                and argv[1:4] == ["-u", "DR_STATE", "/usr/local/sbin/dr-state"]
+                and argv[4:] in (
+                    ["list"],
+                    ["snapshot", "--reason", "host-setup"],
+                )
+            ):
+                raise ActionError(f"env invocation is not allowlisted: {argv[1:]!r}")
         elif allowed:
             if command == "apt-get":
                 args = argv[1:]

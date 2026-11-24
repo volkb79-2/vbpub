@@ -94,10 +94,21 @@ def pool_end(disk_sectors: int, swap_extents: list[tuple[int, int]] | tuple[tupl
 #   }
 # --------------------------------------------------------------------------
 
-DATA_KINDS = ("partitions", "lvm")
+DATA_KINDS = ("partitions", "lvm", "none", "subvolumes")
 DATA_FILESYSTEMS = ("btrfs", "ext4", "xfs")
 PART_FILESYSTEMS = DATA_FILESYSTEMS + ("none",)
 LV_FILESYSTEMS = DATA_FILESYSTEMS + ("none",)
+LEGACY_SCHEMA_VERSION = 1
+ROOT_AWARE_SCHEMA_VERSION = 2
+SUBVOLUME_NAME_RE = re.compile(r"@[A-Za-z0-9_.+-]{1,48}")
+# These top-level objects belong to the ISO layout or rollback machinery. A v2
+# data subvolume with one of these names would either collide with the ready
+# layout or look like a rollback state.
+RESERVED_BTRFS_SUBVOLUMES = frozenset({
+    "@swap", "@home", "@root", "@srv", "@www", "@log", "@docker",
+    "@containers", "@postgresql", "@mysql", "@usr-local",
+    "@dr-enroll-src", "@dr-enroll-old",
+})
 LVM_PV_PARTLABEL = "MDT_LVM_PV"
 LINUX_FS_TYPE_GUID = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 LINUX_LVM_TYPE_GUID = "E6D6D379-F507-44C2-A23C-238F2A3DF928"
@@ -130,6 +141,20 @@ _UNSEEDED_RUNTIME_MOUNT_TREES = (
 # These paths themselves contain or anchor OS state. Child data mounts are
 # allowed unless they intersect one of the protected trees above.
 _RESERVED_MOUNT_POINTS = ("/var", "/var/lib", "/srv", "/home")
+# The ISO layout's excluded mounts (DESIGN-GUIDE D18 plus /usr/local).
+BTRFS_ISO_EXCLUDED_MOUNTS = (
+    "/home", "/root", "/srv", "/var/www", "/var/log",
+    "/var/lib/docker", "/var/lib/containers",
+    "/var/lib/postgresql", "/var/lib/mysql", "/usr/local",
+)
+# C9 applies the at-or-above rule to the existing protected system paths as
+# well: an exact protected path or one of its ancestors is refused, while a
+# descendant remains eligible for an explicitly configured data subvolume.
+BTRFS_EXCLUDED_MOUNTS = tuple(sorted({
+    *_RESERVED_MOUNT_TREES,
+    *_RESERVED_MOUNT_POINTS,
+    *BTRFS_ISO_EXCLUDED_MOUNTS,
+}))
 PREPOPULATED_SYSTEM_MOUNTS: frozenset[str] = frozenset()
 MAX_GIB = 10240
 GPT_MAX_PARTITIONS = 128
@@ -139,11 +164,14 @@ MIN_SECTORS = {"btrfs": 512 * MIB_SECTORS, "xfs": 512 * MIB_SECTORS, "ext4": 64 
 MIN_LV_EXTENTS = 16  # 64 MiB
 PARTITIONING_KEYS = frozenset({"root", "reserve_gb", "data", "iobench_raw_gb"})
 DATA_KEYS = {
+    "none": frozenset({"kind"}),
     "partitions": frozenset({"kind", "volumes"}),
     "lvm": frozenset({"kind", "vg", "pv_size", "vg_free_gib", "volumes"}),
+    "subvolumes": frozenset({"kind", "volumes"}),
 }
 PARTITION_VOLUME_KEYS = frozenset({"size", "fs", "mount", "label", "type", "subvol"})
 LV_VOLUME_KEYS = frozenset({"name", "size", "fs", "mount", "label", "subvol"})
+SUBVOLUME_KEYS = frozenset({"name", "mount", "nocow"})
 REMOVED_KEYS = (
     "disk_layout", "root_max_size_gb", "data_area", "data_partition", "data_lvm", "root_resize_policy",
 )
@@ -213,6 +241,7 @@ class DataVolume:
     mount: str | None
     label: str | None
     ptype: str = "linux"  # raw partitions only: linux | zfs (GPT type GUID)
+    nocow: bool = False  # btrfs subvolume only
 
     @property
     def type_guid(self) -> str:
@@ -232,7 +261,7 @@ class PoolEntry:
 
 @dataclass(frozen=True)
 class DataArea:
-    kind: str  # none | partitions | lvm
+    kind: str  # none | partitions | lvm | subvolumes
     vg: str = ""
     volumes: tuple[DataVolume, ...] = ()
     pv_size: Size = STAR  # lvm: size of the PV partition
@@ -264,6 +293,8 @@ class DataArea:
 
     @property
     def filesystems(self) -> set[str]:
+        if self.kind == "subvolumes":
+            return {"btrfs"}
         return {v.fs for v in self.volumes}
 
 
@@ -302,13 +333,18 @@ class DiskSpec:
         return self.root.kind in {"gib", "percent"}
 
 
-def _check_mount(mount: object, what: str) -> str:
+def _check_mount_syntax(mount: object, what: str) -> str:
     if not isinstance(mount, str) or not mount.startswith("/") or (mount != "/" and mount.endswith("/")):
         raise LayoutPolicyError(f"{what} mount must be an absolute path without a trailing slash")
     if not re.fullmatch(r"/[A-Za-z0-9_.@+/-]*", mount) or "//" in mount or "/." in mount + "/":
         raise LayoutPolicyError(f"{what} mount {mount!r} contains unsupported characters or dot segments")
     if mount == "/":
         raise LayoutPolicyError(f"{what} mount {mount!r} would hide protected system path '/'")
+    return mount
+
+
+def _check_mount(mount: object, what: str) -> str:
+    mount = _check_mount_syntax(mount, what)
     if mount in PREPOPULATED_SYSTEM_MOUNTS:
         return mount
     for protected in _RESERVED_MOUNT_TREES:
@@ -332,6 +368,29 @@ def _check_mount(mount: object, what: str) -> str:
         if mount == protected or protected.startswith(mount + "/"):
             raise LayoutPolicyError(
                 f"{what} mount {mount!r} would hide protected system path {protected!r}"
+            )
+    return mount
+
+
+def _check_subvolume_mount(mount: object, what: str) -> str:
+    """Apply C9's excluded-path rule to a btrfs data-subvolume mount.
+
+    A mount at an excluded path, or at its ancestor, would cover ISO-owned
+    state. A mount below one is allowed (for example `/srv/cow` below `/srv`).
+    """
+    if not isinstance(mount, str):
+        raise LayoutPolicyError(f"{what} mount must be an absolute path without a trailing slash")
+    if mount == "/":
+        raise LayoutPolicyError(
+            f"{what} mount '/' is at or above excluded path '/'"
+        )
+    mount = _check_mount_syntax(mount, what)
+    if mount in PREPOPULATED_SYSTEM_MOUNTS:
+        return mount
+    for excluded in BTRFS_EXCLUDED_MOUNTS:
+        if mount == excluded or excluded.startswith(mount + "/"):
+            raise LayoutPolicyError(
+                f"{what} mount {mount!r} is at or above excluded path {excluded!r}"
             )
     return mount
 
@@ -406,6 +465,33 @@ def _parse_volume(item: object, kind: str, index: int) -> DataVolume:
     if label is not None:
         _check_label(label, what)
     return DataVolume(name, size, fs, mount, label, ptype)
+
+
+def _parse_subvolume(item: object, index: int) -> DataVolume:
+    what = f"partitioning.data.volumes[{index}]"
+    if not isinstance(item, dict):
+        raise LayoutPolicyError(f"{what} must be an object")
+    unknown = sorted(set(item) - SUBVOLUME_KEYS)
+    if unknown:
+        raise LayoutPolicyError(f"{what} has unknown key(s): {', '.join(unknown)}")
+    name = item.get("name")
+    if not isinstance(name, str) or not SUBVOLUME_NAME_RE.fullmatch(name):
+        raise LayoutPolicyError(
+            f"{what}.name must be a top-level btrfs subvolume name beginning with @ "
+            "(letters, digits, _, ., + or -, at most 49 characters)"
+        )
+    if name in RESERVED_BTRFS_SUBVOLUMES or name.startswith("@os-"):
+        raise LayoutPolicyError(
+            f"{what}.name {name!r} is reserved by the ISO layout or rollback layer"
+        )
+    mount = item.get("mount")
+    if not isinstance(mount, str):
+        raise LayoutPolicyError(f"{what}.mount must be an absolute path")
+    _check_subvolume_mount(mount, what)
+    nocow = item.get("nocow", False)
+    if not isinstance(nocow, bool):
+        raise LayoutPolicyError(f"{what}.nocow must be a JSON boolean")
+    return DataVolume(name, STAR, "btrfs", mount, None, nocow=nocow)
 
 
 def _count_stars(named: list[tuple[str, Size]]) -> None:
@@ -493,13 +579,24 @@ def parse_partitioning(raw: object) -> DiskSpec:
         raise LayoutPolicyError("partitioning.data must be an object")
     kind = data_raw.get("kind")
     if kind not in DATA_KINDS:
-        raise LayoutPolicyError("partitioning.data.kind must be partitions or lvm")
+        raise LayoutPolicyError("partitioning.data.kind must be none, partitions, lvm or subvolumes")
     unknown = sorted(set(data_raw) - DATA_KEYS[kind])
     if unknown:
         raise LayoutPolicyError(f"partitioning.data has unknown key(s): {', '.join(unknown)}")
+    if kind == "none":
+        without_data = dict(raw)
+        without_data.pop("data")
+        return parse_partitioning(without_data)
     volumes_raw = data_raw.get("volumes")
     if not isinstance(volumes_raw, list) or not volumes_raw:
         raise LayoutPolicyError("partitioning.data.volumes must be a non-empty list")
+    if kind == "subvolumes":
+        volumes = [_parse_subvolume(item, i) for i, item in enumerate(volumes_raw)]
+        names = [v.name for v in volumes if v.name]
+        if len(names) != len(set(names)):
+            raise LayoutPolicyError("partitioning.data: btrfs subvolume names must be unique")
+        _check_mounts_distinct([v.mount for v in volumes if v.mount])  # type: ignore[misc]
+        return DiskSpec(root, reserve, DataArea("subvolumes", volumes=tuple(volumes)), iobench_raw_gb)
     volumes = [_parse_volume(item, kind, i) for i, item in enumerate(volumes_raw)]
     names = [v.name for v in volumes if v.name]
     if len(names) != len(set(names)):
@@ -547,9 +644,186 @@ def parse_partitioning(raw: object) -> DiskSpec:
     return DiskSpec(root, reserve, area, iobench_raw_gb)
 
 
-def disk_spec(partitioning: object) -> DiskSpec:
-    """The single disk plan; omitted settings resolve to root `*` plus the raw benchmark partition."""
-    return parse_partitioning(partitioning or {})
+def validate_root_layout(
+    spec: DiskSpec,
+    *,
+    root_fs: str,
+    schema_version: int,
+    swap_policy: str,
+    swap_partition_count: int,
+    run_io_benchmark: bool,
+) -> None:
+    """Apply the discovered root filesystem to the already-parsed disk plan.
+
+    Root type is a host fact, never a configuration key. Schema 2 is the
+    root-aware contract; schema 1 remains the legacy ext4 meaning.
+    """
+    if root_fs == "btrfs":
+        if schema_version != ROOT_AWARE_SCHEMA_VERSION:
+            raise LayoutPolicyError(
+                "btrfs_config_requires_schema_version_2: a btrfs root requires "
+                "schema_version 2; schema_version 1 keeps its legacy ext4 meaning"
+            )
+        if not spec.root.is_star:
+            raise LayoutPolicyError(
+                "btrfs_root_resize_unsupported: a btrfs root requires partitioning.root=\"*\""
+            )
+        if spec.reserve.kind != "gib" or spec.reserve.value != 0:
+            raise LayoutPolicyError(
+                "btrfs_reserve_unsupported: a btrfs root requires partitioning.reserve_gb=0"
+            )
+        if spec.data.kind not in {"none", "subvolumes"}:
+            raise LayoutPolicyError(
+                "btrfs_data_kind_unsupported: a btrfs root accepts only data kind none or subvolumes"
+            )
+        if spec.iobench_raw_gb is not None:
+            raise LayoutPolicyError(
+                "btrfs_iobench_raw_unavailable: a btrfs root has no iobench-raw partition; "
+                "set partitioning.iobench_raw_gb=false"
+            )
+        if swap_policy != "off" or swap_partition_count != 0:
+            raise LayoutPolicyError(
+                "btrfs_swap_needs_p3: btrfs swap needs WP-10 P3; until it lands set "
+                "swap_policy=off and swap_partition_count=0"
+            )
+        return
+    if root_fs == "ext4":
+        if schema_version == LEGACY_SCHEMA_VERSION:
+            # Schema 1 is byte-for-byte the pre-btrfs ext4 contract. Its
+            # public loader already enforces the positive swap count.
+            return
+        if spec.data.kind == "subvolumes":
+            raise LayoutPolicyError(
+                "subvolumes_require_btrfs: data kind subvolumes requires a discovered btrfs root"
+            )
+        if swap_partition_count == 0:
+            raise LayoutPolicyError(
+                "ext4_swap_partition_count_required: an ext4 root keeps the existing positive "
+                "swap_partition_count contract"
+            )
+        if run_io_benchmark and spec.iobench_raw_gb is None:
+            raise LayoutPolicyError(
+                "ext4_iobench_requires_raw_partition: run_io_benchmark on ext4 requires the raw "
+                "iobench partition; disable the benchmark or reserve iobench_raw_gb"
+            )
+        return
+    raise LayoutPolicyError(
+        f"root_fs_unsupported: root filesystem {root_fs!r} is not supported"
+    )
+
+
+def _validate_btrfs_raw_plan(
+    partitioning: object,
+    *,
+    schema_version: int,
+    swap_policy: str,
+    swap_partition_count: int,
+) -> None:
+    """Refuse every unsupported btrfs shape by its named contract code.
+
+    This runs before parse_partitioning() so a valid-but-resize-shaped ext4
+    plan (for example root=40 with data="*") still reports
+    btrfs_root_resize_unsupported instead of a generic pool-shape error.
+    """
+    if schema_version != ROOT_AWARE_SCHEMA_VERSION:
+        raise LayoutPolicyError(
+            "btrfs_config_requires_schema_version_2: a btrfs root requires "
+            "schema_version 2; schema_version 1 keeps its legacy ext4 meaning"
+        )
+    if not isinstance(partitioning, dict):
+        raise LayoutPolicyError("partitioning must be an object")
+    if partitioning.get("root", "*") != "*":
+        raise LayoutPolicyError(
+            "btrfs_root_resize_unsupported: a btrfs root requires partitioning.root=\"*\""
+        )
+    reserve = partitioning.get("reserve_gb", 0)
+    if isinstance(reserve, bool) or reserve != 0:
+        raise LayoutPolicyError(
+            "btrfs_reserve_unsupported: a btrfs root requires partitioning.reserve_gb=0"
+        )
+    data = partitioning.get("data")
+    if data is not None:
+        if not isinstance(data, dict) or data.get("kind") not in {"none", "subvolumes"}:
+            raise LayoutPolicyError(
+                "btrfs_data_kind_unsupported: a btrfs root accepts only data kind none or subvolumes"
+            )
+    if partitioning.get("iobench_raw_gb", DEFAULT_IOBENCH_RAW_GB) is not False:
+        raise LayoutPolicyError(
+            "btrfs_iobench_raw_unavailable: a btrfs root has no iobench-raw partition; "
+            "set partitioning.iobench_raw_gb=false"
+        )
+    if swap_policy != "off" or swap_partition_count != 0:
+        raise LayoutPolicyError(
+            "btrfs_swap_needs_p3: btrfs swap needs WP-10 P3; until it lands set "
+            "swap_policy=off and swap_partition_count=0"
+        )
+
+
+def disk_spec(
+    partitioning: object,
+    *,
+    root_fs: str | None = None,
+    schema_version: int = 1,
+    swap_policy: str = "on",
+    swap_partition_count: int = 4,
+    run_io_benchmark: bool = False,
+) -> DiskSpec:
+    """The single disk plan; omitted settings resolve to root `*` plus the raw benchmark partition.
+
+    Static parsing is identical with or without a host. Passing `root_fs` as a
+    discovered host fact applies the root-specific contract and its named
+    refusal codes.
+    """
+    if root_fs not in (None, "btrfs", "ext4"):
+        raise LayoutPolicyError(
+            f"root_fs_unsupported: root filesystem {root_fs!r} is not supported"
+        )
+    if root_fs == "btrfs":
+        _validate_btrfs_raw_plan(
+            partitioning,
+            schema_version=schema_version,
+            swap_policy=swap_policy,
+            swap_partition_count=swap_partition_count,
+        )
+    if (
+        schema_version == LEGACY_SCHEMA_VERSION
+        and isinstance(partitioning, dict)
+        and isinstance(partitioning.get("data"), dict)
+        and partitioning["data"].get("kind") == "none"
+    ):
+        raise LayoutPolicyError(
+            "data_kind_none_requires_schema_version_2: an explicit data kind none "
+            "is part of the root-aware schema"
+        )
+    spec = parse_partitioning(partitioning or {})
+    if spec.data.kind == "subvolumes":
+        if schema_version != ROOT_AWARE_SCHEMA_VERSION:
+            raise LayoutPolicyError(
+                "subvolumes_require_schema_version_2: data kind subvolumes requires schema_version 2"
+            )
+        if not spec.root.is_star:
+            raise LayoutPolicyError(
+                "btrfs_root_resize_unsupported: btrfs subvolumes require partitioning.root=\"*\""
+            )
+        if spec.reserve.kind != "gib" or spec.reserve.value != 0:
+            raise LayoutPolicyError(
+                "btrfs_reserve_unsupported: btrfs subvolumes require partitioning.reserve_gb=0"
+            )
+        if spec.iobench_raw_gb is not None:
+            raise LayoutPolicyError(
+                "btrfs_iobench_raw_unavailable: a btrfs root has no iobench-raw partition; "
+                "set partitioning.iobench_raw_gb=false"
+            )
+    if root_fs is not None:
+        validate_root_layout(
+            spec,
+            root_fs=root_fs,
+            schema_version=schema_version,
+            swap_policy=swap_policy,
+            swap_partition_count=swap_partition_count,
+            run_io_benchmark=run_io_benchmark,
+        )
+    return spec
 
 
 def removed_keys_message(present: list[str]) -> str:

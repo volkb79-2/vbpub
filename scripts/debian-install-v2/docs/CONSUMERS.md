@@ -282,6 +282,75 @@ Other supported data mounts include `/srv/cow`, `/srv/data`, and
 ordering details and [DESIGN-GUIDE](DESIGN-GUIDE.md#data-mount-safety) for why
 these paths differ.
 
+## Configure an ISO-installed btrfs root
+
+Use this mode when the rollback ISO already created a single-device btrfs
+root with the top-level `/.top` layout. v2 discovers the root type, writes no
+partition table, and does not grow or shrink either the partition or
+filesystem. Schema 1 configurations remain valid and retain their ext4 meaning;
+btrfs requires schema 2. Every other root in IC-M1a is an explicit refusal:
+multi-device btrfs reports `root_multi_device`, and ZFS reports
+`root_fs_unsupported` until IC-M6.
+
+For r1002's CoW area, use `@cow` mounted at `/srv/cow`:
+
+```json
+{
+  "schema_version": 2,
+  "swap_policy": "off",
+  "swap_partition_count": 0,
+  "run_io_benchmark": false,
+  "partitioning": {
+    "root": "*",
+    "reserve_gb": 0,
+    "iobench_raw_gb": false,
+    "data": {
+      "kind": "subvolumes",
+      "volumes": [
+        {"name": "@cow", "mount": "/srv/cow", "nocow": false}
+      ]
+    }
+  }
+}
+```
+
+This shape is required because IC-M1a accepts only root `"*"`, reserve 0,
+`data.kind: "none"` or `"subvolumes"`, no raw benchmark partition, and no managed
+swap. Unsupported combinations name their code rather than falling back:
+`btrfs_config_requires_schema_version_2`, `btrfs_root_resize_unsupported`,
+`btrfs_reserve_unsupported`, `btrfs_data_kind_unsupported`,
+`btrfs_iobench_raw_unavailable`, and `btrfs_swap_needs_p3`.
+
+v2 creates only top-level `@...` children under `/.top` (subvolid 5). Per-volume
+`nocow` is applied with `chattr +C` on the empty subvolume before any file is
+written. A re-run accepts an existing subvolume only when its NOCOW property
+matches; another filesystem object or a different property is
+`btrfs_subvolume_properties_differ`. The fstab row reuses the root source and
+option set plus `user_subvol_rm_allowed` and `subvol=<name>`. A mount at or
+above an ISO-excluded path is refused, while `/srv/cow` (below `/srv`) is the
+supported example. The existing protected system-path set (including `/boot`,
+`/etc`, `/usr`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, and the
+package-manager/cloud state below `/var`) uses the same at-or-above rule;
+descendants are eligible.
+
+The operator decision recorded for WP-10 supersedes the old C6 `@swap`
+swapfile design and the C9 swap row: this package creates no swapfile and no
+permanent `iobench-raw` partition. WP-10 P3 owns btrfs swap later. The Q-A
+raw-benchmark import also remains pending, so a btrfs installer reports the
+benchmark and io.cost as skipped rather than pretending they ran.
+
+With the rollback layer present and a managed running state, a completing
+stage two ends with one `dr-state snapshot --reason host-setup`; snapshot
+failure fails the install. Layer absence/unmanaged roots are recorded as
+named skips. The v2 stage environments set `DR_STATE=none`; the snapshot call
+clears it only for that command. A re-run after `stage2_done` takes no second
+snapshot.
+
+The dr first-boot hook/bundle handoff, ISO netcup console option, `/.top` mode
+0700, and the runner's btrfs CoW mount are IC-M1b/c, not this package. Until
+IC-M1c lands, the existing partition-label runner path is not proof for the
+btrfs layout; the VM acceptance in IC-M1c is the required integration check.
+
 ## Run a swap-benchmark window
 
 Use one managed swap partition for a raw benchmark only through the committed
@@ -402,9 +471,10 @@ HTTPS JSONC URL. For a profile protected by Apache `.htaccess`/Basic Auth, enter
 the HTTPS URL without userinfo or a query string, then enter the username and
 password in the separate wizard prompts. The password is placed in the private
 ISO, never in Git or a published generic ISO. JSONC accepts only `//` and
-`/* ... */` comments; all other syntax is strict JSON and `schema_version`
-must match the shipped loader. Per-host notification and SSH fields are
-rejected in profiles.
+`/* ... */` comments; all other syntax is strict JSON. Released profiles use
+`schema_version: 1` (the existing ext4 configuration); an ISO-installed btrfs
+host is configured with a schema-2 config file rather than a built-in profile.
+Per-host notification and SSH fields are rejected in profiles.
 
 The source settings are distinct: a public HTTPS Git remote/branch supplies
 the installer tree and released profiles; an HTTPS URL supplies the initial

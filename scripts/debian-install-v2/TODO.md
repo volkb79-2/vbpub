@@ -1,6 +1,27 @@
 <!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # debian-install-v2 — TODO / backlog
 
+## OPEN (IC-M1a follow-ups, 2026-11-24): btrfs swap, raw benchmark import, and integration
+
+**Status:** open by the IC-M1a package split; no host or VM work belongs here.
+
+- WP-10 P3 owns swap on btrfs. The operator decision supersedes C6's `@swap`
+  swapfile and C9's btrfs swap row: the end-of-disk span is first one
+  unformatted raw partition for iobench, then regular swap partitions; a re-bench
+  frees the span and reinstates the swaps. Until P3, a btrfs config must use
+  `swap_policy: off` and `swap_partition_count: 0`, otherwise v2 refuses with
+  `btrfs_swap_needs_p3`.
+- Q-A option (c) owns import of the raw benchmark result into io.cost. Until it
+  lands, a btrfs root has no `iobench-raw` partition and v2 records the
+  benchmark and io.cost as skipped (`iobench_raw_unavailable_on_btrfs` /
+  `iocost_not_configured_btrfs`).
+- IC-M1b owns the dr first-boot hook/bundle handoff, the ISO netcup console
+  option, and `/.top` mode 0700. IC-M1c owns the `r1-vm-iso-btrfs` lane and the
+  runner's btrfs CoW mount/acceptance. IC-M1a must not add those files or claim
+  their milestone evidence.
+- IC-M6 owns ZFS-root support; IC-M1a detects it and refuses with
+  `root_fs_unsupported`.
+
 ## IMPLEMENTED (DIV2-BL-06, unreleased): bound KSM advisor work and scanner wakeups
 
 **Status:** IMPLEMENTED in this unreleased change.

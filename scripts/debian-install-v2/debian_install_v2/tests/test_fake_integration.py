@@ -101,7 +101,7 @@ def make_installer(tmp_path: Path) -> tuple[Installer, FakeHostActions]:
         partitioning={"root": "keep", "reserve_gb": "*"},
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = "/dev/vda3 / ext4\n"
     actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
     installer = Installer(config, actions)

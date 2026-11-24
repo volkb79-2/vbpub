@@ -97,6 +97,7 @@ CLOUD_INIT_USER_DATA_CACHE_FILES = (
 # Fixed outside cloud-init's cache and independent of the profile-selected
 # state_dir. A retained NoCloud ISO can run runcmd again after `cloud-init clean`.
 INSTALL_COMPLETE_MARKER = "/var/lib/vbpub/install-v2-complete"
+ROLLBACK_STATE_COMMAND = "/usr/local/sbin/dr-state"
 
 # LT-F-r1002-01: stage2's apt-get exited 100 because unattended-upgrade (started
 # by apt-daily-upgrade.service 4 s earlier) held the dpkg lock. Every apt-get the
@@ -247,6 +248,7 @@ class Installer:
         # One line for the "Install complete" milestone (scores + result URL; never the claim link).
         self._cpu_benchmark_note = ""
         self.release = ""
+        self.root_fs = "ext4"
         self.root_disk = ""
         self.root_partition_path = ""
         self.root_number = 0
@@ -268,6 +270,7 @@ class Installer:
         """Read release and root device from the host (can raise: call it inside failure_guard)."""
         self.release = self._detect_release()
         self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
+        self._validate_root_config()
 
     def _run(
         self,
@@ -306,14 +309,73 @@ class Installer:
 
     def _discover_root(self) -> tuple[str, str, int]:
         if self.actions.dry_run:
+            self.root_fs = "ext4"
             return "vda", "/dev/vda3", 3
-        root = self._run(["/usr/bin/findmnt", "-n", "-o", "SOURCE", "/"], "find root device")
-        if not root.startswith("/dev/"):
-            raise HostIdentityRefusal(f"root is not a plain block-device mount: {root!r}")
-        match = re.fullmatch(r"/dev/(?P<disk>.+?)(?:p)?(?P<number>[0-9]+)", root)
+        output = self._run(
+            ["/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/"],
+            "find root device and filesystem type",
+        )
+        lines = [line for line in output.splitlines() if line.strip()]
+        if len(lines) != 1:
+            raise HostIdentityRefusal(f"root mount discovery did not return exactly one row: {output!r}")
+        fields = lines[0].split()
+        if len(fields) != 2:
+            if fields and fields[-1] == "btrfs":
+                raise HostIdentityRefusal(
+                    "root_multi_device: a btrfs root must be backed by exactly one device"
+                )
+            raise HostIdentityRefusal(f"root mount discovery is malformed: {lines[0]!r}")
+        source, filesystem = fields
+        self.root_fs = filesystem
+        if "[" in source or "]" in source:
+            raise HostIdentityRefusal(
+                f"root mount source still contains a btrfs subvolume suffix: {source!r}; "
+                "findmnt --nofsroot is required"
+            )
+        if filesystem == "zfs":
+            # Discovered here so the root-aware config check can refuse it with
+            # layout_policy's named root_fs_unsupported code before state or
+            # any host mutation.
+            return "", source, 0
+        if not source.startswith("/dev/"):
+            raise HostIdentityRefusal(f"root is not a plain block-device mount: {source!r}")
+        match = re.fullmatch(r"/dev/(?P<disk>.+?)(?:p)?(?P<number>[0-9]+)", source)
         if not match:
-            raise HostIdentityRefusal(f"cannot derive root disk and partition number from {root!r}")
-        return match.group("disk"), root, int(match.group("number"))
+            raise HostIdentityRefusal(f"cannot derive root disk and partition number from {source!r}")
+        if filesystem == "btrfs":
+            self._require_single_btrfs_device(source)
+        return match.group("disk"), source, int(match.group("number"))
+
+    def _require_single_btrfs_device(self, source: str) -> None:
+        output = self._run(
+            ["/usr/bin/btrfs", "filesystem", "show", "--raw", source],
+            "verify the btrfs root backing-device count",
+        )
+        device_ids = re.findall(r"^\s*devid\s+([0-9]+)\b", output, re.MULTILINE)
+        if len(device_ids) > 1:
+            raise HostIdentityRefusal(
+                "root_multi_device: a btrfs root must be backed by exactly one device"
+            )
+        if len(device_ids) != 1:
+            raise HostIdentityRefusal(
+                "root_device_list_unavailable: cannot establish the btrfs backing-device list"
+            )
+
+    def _validate_root_config(self) -> None:
+        """Apply the discovered root filesystem before state or host mutation."""
+        if self.root_fs == "ext4" and self.config.schema_version == 1:
+            # Legacy ext4 plans keep their pre-btrfs validation and error
+            # ordering, including direct Config construction in old tests.
+            return
+        try:
+            self._disk_spec()
+        except InstallerError as exc:
+            # A root/config mismatch is still a "do not touch this host" refusal:
+            # the failure guard posts it without installing a key or state.
+            raise HostIdentityRefusal(str(exc)) from exc
+
+    def _is_btrfs_root(self) -> bool:
+        return getattr(self, "root_fs", "ext4") == "btrfs"
 
     @property
     def _partition_base(self) -> str:
@@ -346,33 +408,47 @@ class Installer:
         if plan["swap_policy"] == "on":
             retained_swap = f"{plan['swap_retained_before_root_gb']:.2f} GiB kept before root"
             tail_swap = f"{plan['swap_after_root_gb']:.2f} GiB after root"
+        root_detail = (
+            " -- ISO-installed btrfs layout retained; no partition or filesystem resize"
+            if plan.get("root_fs") == "btrfs"
+            else f"-> {plan['new_root_size_sectors']} sectors"
+        )
         plan_lines = [
             "<b>Install plan</b>",
             f"Release: {_code(self.release)} | Root: {_code(plan['root_device'])} "
-            f"-> {plan['new_root_size_sectors']} sectors",
+            f"{root_detail}",
             f"Disk policy: root={_code(str(plan['root_policy']))}, "
             f"swap={_code(str(plan['swap_policy']))}, "
             f"swap total={_code(swap_total)}",
         ]
         if plan["partitioning"]:
-            plan_lines.append(
-                f"Partitioning: {_code(json.dumps(plan['partitioning'], sort_keys=True))}; "
-                f"{len(plan['data_partitions'])} planned data/raw partition(s) in front of the end-of-disk swap "
-                "(see README \"Disk layout\")"
+            if plan.get("root_fs") == "btrfs":
+                plan_lines.append(
+                    f"Btrfs data: {_code(json.dumps(plan['partitioning'], sort_keys=True))}; "
+                    "no partition table, resize or swap work"
+                )
+            else:
+                plan_lines.append(
+                    f"Partitioning: {_code(json.dumps(plan['partitioning'], sort_keys=True))}; "
+                    f"{len(plan['data_partitions'])} planned data/raw partition(s) in front of the end-of-disk swap "
+                    "(see README \"Disk layout\")"
+                )
+        if plan.get("root_fs") == "btrfs":
+            plan_lines.append("Btrfs root: ISO layout retained; no sfdisk plan")
+        else:
+            plan_lines.append("Resolved disk table (GiB):")
+            plan_lines.extend(
+                f"  {row['entry']}: {row['gib']:.2f} GiB at sector {row['start']}"
+                for row in plan["plan_table"]
             )
-        plan_lines.append("Resolved disk table (GiB):")
-        plan_lines.extend(
-            f"  {row['entry']}: {row['gib']:.2f} GiB at sector {row['start']}"
-            for row in plan["plan_table"]
-        )
-        if plan["swap_policy"] == "on":
-            plan_lines.append(
-                f"Swap allocation: {_code(retained_swap)}, {_code(tail_swap)} "
-                f"({plan['swap_partition_count']} partitions)"
-            )
-        for swap in plan["swap_partitions"]:
-            plan_lines.append(f"Swap partition: {_code(swap['device'])} ({swap['sectors']} sectors)")
-        plan_lines.append(f"sfdisk plan:\n<pre>{plan['sfdisk_plan']}</pre>")
+            if plan["swap_policy"] == "on":
+                plan_lines.append(
+                    f"Swap allocation: {_code(retained_swap)}, {_code(tail_swap)} "
+                    f"({plan['swap_partition_count']} partitions)"
+                )
+            for swap in plan["swap_partitions"]:
+                plan_lines.append(f"Swap partition: {_code(swap['device'])} ({swap['sectors']} sectors)")
+            plan_lines.append(f"sfdisk plan:\n<pre>{plan['sfdisk_plan']}</pre>")
         return "<b>Starting debian-install-v2</b>\n\n" + facts_html + "\n\n" + "\n".join(plan_lines)
 
     @property
@@ -567,6 +643,11 @@ class Installer:
         self._stage1()
 
     def resume(self) -> None:
+        completion_marker = Path(self.config.state_dir) / "stage2_done"
+        if completion_marker.exists() or completion_marker.is_symlink():
+            # A rerun after completion is a pure no-op: no plan, notifications,
+            # host actions, or another host-setup snapshot.
+            return
         # Stage2 appends to custom_script.output2 (systemd StandardOutput=append:
         # creates it 0644), so restrict /root/custom_script* before anything can
         # write to or fail around it.
@@ -597,6 +678,7 @@ class Installer:
             telegram_chat_id=self.config.telegram_chat_id,
             mattermost_webhook_url=self.config.mattermost_webhook_url,
         )
+        self._validate_root_config()
         if self.config.credential_mode == "systemd":
             # systemd supplies this path for LoadCredential= entries. Resolve
             # that runtime fact rather than guessing its private directory.
@@ -708,6 +790,31 @@ class Installer:
         }
 
     def show_plan(self) -> dict[str, object]:
+        if self._is_btrfs_root():
+            spec = self._disk_spec()
+            subvolumes = [
+                {"name": volume.name, "mount": volume.mount, "nocow": volume.nocow}
+                for volume in spec.data.volumes
+            ]
+            return {
+                "release": self.release,
+                "root_fs": "btrfs",
+                "root_device": self.root_partition_path,
+                "new_root_size_sectors": 0,
+                "root_shrink_check": "not_applicable",
+                "root_policy": "untouched",
+                "partitioning": self.config.partitioning or {},
+                "data_partitions": [],
+                "data_subvolumes": subvolumes,
+                "iobench_partition": None,
+                "plan_table": [],
+                "swap_policy": "off",
+                "swap_total_gb": None,
+                "swap_retained_before_root_gb": None,
+                "swap_after_root_gb": None,
+                "swap_partition_count": 0,
+                "swap_partitions": [],
+            }
         partitions, new_root_size, shrink_needed = self._resolve_swap_plan()
         plan_path = Path(self.config.state_dir) / "partition-plan.sfdisk"
         if plan_path.is_file():
@@ -1906,6 +2013,18 @@ MaxFileSec=1month
 
     def _configure_iocost(self) -> None:
         """io.cost for the root disk from the benchmark; skipped (not failed) without a result."""
+        if self._is_btrfs_root():
+            # IC-M1a has no raw benchmark target and does not import a Q-A
+            # result. A stale file from another run must not configure io.cost
+            # behind that contract.
+            self._remove_iocost_units()
+            note = (
+                "iocost_not_configured_btrfs: no iobench-raw partition on a btrfs root; "
+                "the Q-A benchmark import is pending"
+            )
+            self._mark_step("iocost", "skipped", note)
+            self._iocost_note = note
+            return
         if not self.config.iocost_enabled:
             # A re-run with iocost off must not leave an earlier unit configuring io.cost at boot.
             self._remove_iocost_units()
@@ -1981,6 +2100,11 @@ MaxFileSec=1month
             self._iocost_warn(f"io.cost.qos is not enabled for {devno or 'the root disk'}")
 
     def _disk_facts(self) -> tuple[int, int, int]:
+        if self._is_btrfs_root():
+            raise InstallerError(
+                "btrfs_partition_table_operations_unavailable: a btrfs root is "
+                "configured without partition-table or filesystem-resize actions"
+            )
         if self.actions.dry_run:
             def gib_to_sectors(size_gib: int) -> int:
                 return size_gib * 1024 * 1024 * 1024 // 512
@@ -2203,6 +2327,13 @@ MaxFileSec=1month
         validate_shrink_safety: bool = True,
         root_safety_facts: tuple[int, int, int] | None = None,
     ) -> tuple[list[tuple[int, int]], int]:
+        if self._is_btrfs_root():
+            self._mark_step(
+                "swap_partitions",
+                "skipped",
+                "btrfs_swap_needs_p3: no partition-table or swapfile work on this root",
+            )
+            return [], 0
         disk_sectors, root_start, root_size = self._disk_facts()
         if self.config.swap_policy == "untouched":
             raise InstallerError(
@@ -2405,16 +2536,27 @@ MaxFileSec=1month
     def _disk_spec(self) -> layout_policy.DiskSpec:
         """The only supported root/data/swap geometry plan."""
         try:
-            return layout_policy.disk_spec(self.config.partitioning)
+            return layout_policy.disk_spec(
+                self.config.partitioning,
+                root_fs=getattr(self, "root_fs", "ext4"),
+                schema_version=self.config.schema_version,
+                swap_policy=self.config.swap_policy,
+                swap_partition_count=self.config.swap_partition_count,
+                run_io_benchmark=self.config.run_io_benchmark,
+            )
         except layout_policy.LayoutPolicyError as exc:
             raise InstallerError(str(exc)) from exc
 
     def _root_policy(self) -> str:
         """Root resize behaviour is derived exclusively from partitioning.root."""
+        if self._is_btrfs_root():
+            return "untouched"
         return self._disk_spec().root_policy
 
     def _root_guarded(self) -> bool:
         """Root must not be grown later by cloud-init/initramfs: its size is a decision of the plan."""
+        if self._is_btrfs_root():
+            return False
         return self._disk_spec().root.kind != "star"
 
     def _memory_total_bytes(self) -> int:
@@ -2626,6 +2768,10 @@ MaxFileSec=1month
 
     def _root_shrink_safety_facts(self) -> tuple[int, int, int]:
         """Snapshot filesystem minimum and used bytes for one shrink decision."""
+        if self._is_btrfs_root():
+            raise InstallerError(
+                "btrfs_root_resize_unsupported: shrink safety facts are ext4-only"
+            )
         block_size, minimum_blocks = self._root_filesystem_facts()
         used_bytes = 0 if self.actions.dry_run else self._root_used_bytes()
         return block_size, minimum_blocks, used_bytes
@@ -2646,6 +2792,10 @@ MaxFileSec=1month
         actual shrink, which needs the offline window the initramfs hook
         provides (see CASE-B-ROOT-SHRINK-DESIGN.md).
         """
+        if self._is_btrfs_root():
+            raise InstallerError(
+                "btrfs_root_resize_unsupported: ext filesystem facts are not available on a btrfs root"
+            )
         if self.actions.dry_run:
             return 4096, 1_000_000
         dumpe2fs_output = self._run(
@@ -2679,6 +2829,8 @@ MaxFileSec=1month
         root_safety_facts: tuple[int, int, int] | None = None,
     ) -> tuple[list[tuple[int, int]], int, bool]:
         """Resolve final root/swap geometry without making any disk changes."""
+        if self._is_btrfs_root():
+            return [], 0, False
         partitions, target_root_size = self._plan_swap_partitions(
             validate_shrink_safety=validate_shrink_safety,
             root_safety_facts=root_safety_facts,
@@ -2712,6 +2864,13 @@ MaxFileSec=1month
         _apply_known_swap_shape() handles it exactly as today) unless the
         disk lacks space for the known swap shape as-is.
         """
+        if self._is_btrfs_root():
+            self._mark_step(
+                "root_shrink",
+                "skipped",
+                "btrfs_root_resize_unsupported: no shrink hook on a btrfs root",
+            )
+            return
         swap_partitions, target_root_sectors, shrink_needed = (
             resolved_plan if resolved_plan is not None else self._resolve_root_shrink_plan()
         )
@@ -2804,6 +2963,13 @@ MaxFileSec=1month
         state = self.state.load()
         root_shrink_step = state.get("steps", {}).get("root_shrink")
         if not root_shrink_step or root_shrink_step.get("status") != "planned":
+            return False
+        if self._is_btrfs_root():
+            self._mark_step(
+                "root_shrink",
+                "skipped",
+                "btrfs_root_resize_unsupported: no shrink verification on a btrfs root",
+            )
             return False
         disk_sectors, root_start, root_size = self._disk_facts()
         if self.actions.dry_run:
@@ -2954,6 +3120,13 @@ MaxFileSec=1month
         return "\n".join(lines) + "\n"
 
     def _apply_known_swap_shape(self) -> None:
+        if self._is_btrfs_root():
+            self._mark_step(
+                "partitions",
+                "skipped",
+                "btrfs_root_no_partitioning: a btrfs root requires no partition-table write",
+            )
+            return
         partitions, new_root_size = self._plan_swap_partitions()
         _disk_sectors, _root_start, current_root_size = self._disk_facts()
         if not self.actions.dry_run and new_root_size < current_root_size:
@@ -3492,6 +3665,13 @@ MaxFileSec=1month
 
     def _run_io_benchmark(self) -> None:
         """Run iobench veryquick on the planned, unformatted raw partition."""
+        if self._is_btrfs_root():
+            self._mark_step(
+                "io_benchmark",
+                "skipped",
+                "iobench_raw_unavailable_on_btrfs: no raw iobench partition; Q-A import is pending",
+            )
+            return
         if not self.config.run_io_benchmark:
             return
         state = self.state.load()
@@ -3583,6 +3763,22 @@ MaxFileSec=1month
                 raise InstallerError(f"health gate failed: zswap {name} is {actual!r}, expected {want!r}")
 
     def _health_gate_swap_devices(self, *, mark_step: bool = True) -> None:
+        if self._is_btrfs_root():
+            if self.config.run_zswap_config:
+                self._health_gate_zswap()
+            self._health_gate_iocost()
+            output_file = Path(self.config.stage2_output)
+            if not self.actions.dry_run and not (
+                output_file.is_file() and output_file.stat().st_size >= 0
+            ):
+                raise InstallerError(f"health gate failed: stage2 log does not exist: {output_file}")
+            if mark_step:
+                self._mark_step(
+                    "health_gate",
+                    "planned" if self.actions.dry_run else "success",
+                    "btrfs_swap_needs_p3: no swap-device health checks on a btrfs root",
+                )
+            return
         fstab_path = Path("/etc/fstab")
         fstab_lines = fstab_path.read_text(encoding="utf-8").splitlines() if fstab_path.is_file() else []
         fstab_swap_lines = [
@@ -3640,6 +3836,13 @@ MaxFileSec=1month
             self._mark_step("health_gate", "planned" if self.actions.dry_run else "success", swap_detail)
 
     def _disable_active_swap(self) -> None:
+        if self._is_btrfs_root():
+            self._mark_step(
+                "swap_partitions",
+                "skipped",
+                "btrfs_swap_needs_p3: swap is not managed on a btrfs root in IC-M1a",
+            )
+            return
         if self.config.swap_policy == "on":
             self._remove_managed_swap_backings()
             return
@@ -3651,6 +3854,13 @@ MaxFileSec=1month
             self._mark_step("swap_partitions", "success" if not self.actions.dry_run else "planned", "swap disabled; existing backing files/LVs are not deleted")
 
     def _activate_swap_partitions(self) -> None:
+        if self._is_btrfs_root():
+            self._mark_step(
+                "swap_partitions",
+                "skipped",
+                "btrfs_swap_needs_p3: no swap partition activation on a btrfs root",
+            )
+            return
         if self.config.swap_policy != "on":
             return
         prefix = self._partition_base
@@ -3731,11 +3941,172 @@ MaxFileSec=1month
         options = "noatime,user_subvol_rm_allowed,nofail" if fs == "btrfs" else "defaults,nofail"
         return f"{source} {mount} {fs} {options} 0 2" if fs == "ext4" else f"{source} {mount} {fs} {options} 0 0"
 
+    def _require_btrfs_top_level(self) -> None:
+        if self.actions.dry_run:
+            return
+        try:
+            fsroot = self._run(
+                ["/usr/bin/findmnt", "-n", "-o", "FSROOT", "/.top"],
+                "verify /.top is btrfs subvolume id 5",
+            )
+        except ActionError as exc:
+            raise InstallerError(
+                "btrfs_top_level_required: /.top is not mounted; IC-M1a requires the "
+                "ISO top-level subvolume at subvolid 5"
+            ) from exc
+        if fsroot != "/":
+            raise InstallerError(
+                "btrfs_top_level_required: /.top must be btrfs subvolid 5 "
+                f"(FSROOT '/'); found {fsroot!r}"
+            )
+
+    def _btrfs_subvolume_exists(self, path: str) -> bool:
+        try:
+            self._run(
+                ["/usr/bin/btrfs", "subvolume", "show", path],
+                f"inspect btrfs subvolume {path}",
+            )
+            return True
+        except ActionError as exc:
+            if self.actions.exists(path):
+                raise InstallerError(
+                    f"btrfs_subvolume_properties_differ: {path} exists but is not a btrfs subvolume"
+                ) from exc
+            return False
+
+    def _btrfs_nocow(self, path: str) -> bool:
+        try:
+            attributes = self._run(
+                ["/usr/bin/lsattr", "-d", path],
+                f"read btrfs NOCOW property of {path}",
+            )
+        except ActionError as exc:
+            raise InstallerError(
+                f"btrfs_subvolume_properties_unreadable: cannot read lsattr for {path}"
+            ) from exc
+        fields = attributes.split()
+        if not fields:
+            raise InstallerError(
+                f"btrfs_subvolume_properties_unreadable: lsattr returned no flags for {path}"
+            )
+        return "C" in fields[0]
+
+    def _ensure_btrfs_subvolume(self, name: str, nocow: bool) -> str:
+        path = f"/.top/{name}"
+        exists = False if self.actions.dry_run else self._btrfs_subvolume_exists(path)
+        if not exists:
+            self._run(
+                ["/usr/bin/btrfs", "subvolume", "create", path],
+                f"create top-level btrfs subvolume {path}",
+                dangerous=True,
+            )
+        elif self._btrfs_nocow(path) != nocow:
+            raise InstallerError(
+                "btrfs_subvolume_properties_differ: "
+                f"{path} NOCOW={not nocow}, expected NOCOW={nocow}"
+            )
+        # chattr +C is valid only while the new subvolume is empty. Nothing
+        # writes into it between create and this call.
+        if nocow and not exists:
+            self._run(
+                ["/usr/bin/chattr", "+C", path],
+                f"set NOCOW on empty btrfs subvolume {path}",
+                dangerous=True,
+            )
+        return path
+
+    def _root_btrfs_fstab(self) -> tuple[str, str]:
+        for line in self._read_fstab_lines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            fields = stripped.split()
+            if len(fields) >= 4 and fields[1] == "/" and fields[2] == "btrfs":
+                return fields[0], fields[3]
+        raise InstallerError(
+            "btrfs_root_fstab_entry_missing: /etc/fstab has no btrfs root entry "
+            "to derive the data-subvolume source and option set"
+        )
+
+    def _btrfs_subvolume_fstab_entry(self, source: str, options: str, volume: layout_policy.DataVolume) -> str:
+        option_parts = [part for part in options.split(",") if part and not part.startswith("subvol=")]
+        if "user_subvol_rm_allowed" not in option_parts:
+            option_parts.append("user_subvol_rm_allowed")
+        option_parts.append(f"subvol={volume.name}")
+        return f"{source} {volume.mount} btrfs {','.join(option_parts)} 0 0"
+
+    def _configure_btrfs_subvolumes(self, area: layout_policy.DataArea) -> None:
+        self._require_btrfs_top_level()
+        self._packages(layout_policy.data_area_packages(area), "data-area")
+        subvolume_paths = [
+            self._ensure_btrfs_subvolume(volume.name or "", volume.nocow)
+            for volume in area.volumes
+        ]
+        source, root_options = self._root_btrfs_fstab()
+        entries = [
+            self._btrfs_subvolume_fstab_entry(source, root_options, volume)
+            for volume in area.volumes
+        ]
+        wanted = {volume.mount for volume in area.volumes}
+        retained = [
+            line for line in self._read_fstab_lines()
+            if not (
+                line.strip()
+                and not line.lstrip().startswith("#")
+                and len(line.split()) >= 2
+                and line.split()[1] in wanted
+            )
+        ]
+        self.actions.write_file("/etc/fstab", "\n".join(retained + entries + [""]), 0o644)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload fstab-generated units")
+        for volume in area.volumes:
+            mount = volume.mount or ""
+            self._run(["/usr/bin/mkdir", "-p", mount], f"create {mount}")
+            mounted = False
+            if not self.actions.dry_run:
+                try:
+                    row = self._run(
+                        ["/usr/bin/findmnt", "-rn", "-o", "SOURCE,FSTYPE,TARGET,FSROOT", mount],
+                        f"verify the existing btrfs mount at {mount}",
+                    ).split()
+                    expected_root = f"/{volume.name}"
+                    source = row[0].split("[", 1)[0] if row else ""
+                    if (
+                        len(row) != 4
+                        or source != self.root_partition_path
+                        or row[1] != "btrfs"
+                        or row[2] != mount
+                        or row[3] != expected_root
+                    ):
+                        found = " ".join(row) or "<empty>"
+                        raise InstallerError(
+                            f"btrfs_subvolume_mount_differs: {mount} must be btrfs "
+                            f"subvolume {expected_root} of {self.root_partition_path}; found {found!r}"
+                        )
+                    mounted = True
+                except ActionError:
+                    # findmnt exits 1 for "not mounted"; any mounted path is
+                    # verified above before it is accepted.
+                    mounted = False
+            if not mounted:
+                self._run(["/usr/bin/mount", mount], f"mount {mount}", dangerous=True)
+        self._mark_step(
+            "data_area",
+            "planned" if self.actions.dry_run else "success",
+            "btrfs top-level subvolumes: "
+            + ", ".join(
+                f"{path} -> {volume.mount}" for path, volume in zip(subvolume_paths, area.volumes)
+            ),
+        )
+
     def _configure_data_area(self) -> None:
         """Create filesystem / LVM on the data-area partition the table already holds, mount it, persist fstab."""
         area = self._data_area_cfg()
         if area.kind == "none":
             self._mark_step("data_area", "not_needed", "no data area in partitioning")
+            return
+        if area.kind == "subvolumes":
+            self._configure_btrfs_subvolumes(area)
             return
         self._packages(layout_policy.data_area_packages(area), "data-area")
         disk_sectors, root_start, root_size = self._disk_facts()
@@ -3844,6 +4215,13 @@ MaxFileSec=1month
 
     def _grow_root_to_plan(self) -> None:
         """Grow the root partition/filesystem after its final boundary is present."""
+        if self._is_btrfs_root():
+            self._mark_step(
+                "root_resize",
+                "skipped",
+                "btrfs_root_resize_unsupported: a btrfs root is neither grown nor shrunk",
+            )
+            return
         _disk_sectors, root_start, current_size = self._disk_facts()
         _partitions, target_size, _shrink_needed = self._resolve_swap_plan()
         if self._root_policy() == "untouched":
@@ -3979,6 +4357,13 @@ MaxFileSec=1month
 
     def _ensure_disk_transaction_manifest(self) -> None:
         """Persist a checksummed pre-change table even when the policy is a no-op."""
+        if self._is_btrfs_root():
+            self._mark_step(
+                "disk_transaction",
+                "skipped",
+                "btrfs_root_no_partitioning: no partition table is written on a btrfs root",
+            )
+            return
         manifest_path = Path(self.config.state_dir) / "disk-transaction.json"
         if self.actions.dry_run:
             if str(manifest_path) in self.actions.dry_run_writes:
@@ -4297,6 +4682,7 @@ MaxFileSec=1month
         self.actions.write_file(env_file, env, 0o600)
         service = STAGE2_SERVICE.format(
             state_dir=self.config.state_dir,
+            completion_marker=f"{self.config.state_dir}/stage2_done",
             env_file=env_file,
             python=python,
             entrypoint=entrypoint,
@@ -4657,6 +5043,13 @@ MaxFileSec=1month
             self._configure_apt_auto_upgrade()
         # LT-UPG: upgrade BEFORE the root-shrink hook install and the reboot.
         self._upgrade_at_install()
+        if self._is_btrfs_root():
+            self._configure_root_cap_boot_guards()
+            self._plan_root_shrink()
+            self._configure_control_plane_memory_min()
+            self._install_stage2()
+            self._reboot()
+            return
         # First validate any root shrink while the old swap backing is still
         # present. In particular, do not let deleting a swapfile lower the
         # measured filesystem usage and hide blocks that may be interleaved
@@ -4754,6 +5147,13 @@ MaxFileSec=1month
         mode = self.config.cloud_init_cleanup_mode
         if mode == "retain":
             return
+        if not self.actions.dry_run and not self.actions.exists("/usr/bin/cloud-init"):
+            self._mark_step(
+                "cloud_init_cache_cleanup",
+                "skipped",
+                "cloud_init_absent: /usr/bin/cloud-init is not installed; nothing to clean",
+            )
+            return
 
         step = "cloud_init_cache_cleanup"
         self._mark_step(step, "run", mode)
@@ -4774,8 +5174,78 @@ MaxFileSec=1month
             raise
         self._mark_step(step, "success", mode)
 
+    def _snapshot_host_setup_once(self) -> None:
+        """Take the one final host-setup checkpoint when the rollback layer manages this root."""
+        previous = self.state.load().get("steps", {}).get("host_setup_snapshot", {})
+        if previous.get("status") == "success":
+            return
+        if not self.actions.exists(ROLLBACK_STATE_COMMAND):
+            self._mark_step(
+                "host_setup_snapshot",
+                "skipped",
+                "rollback_layer_absent: /usr/local/sbin/dr-state is not installed",
+            )
+            return
+        try:
+            states = self._run(
+                ["/usr/bin/env", "-u", "DR_STATE", ROLLBACK_STATE_COMMAND, "list"],
+                "read rollback states before the host-setup snapshot",
+            )
+        except ActionError as exc:
+            raise InstallerError(f"rollback_layer_unreadable: dr-state list failed: {exc}") from exc
+        managed_running = False
+        for line in states.splitlines():
+            row = re.match(r"^(\S+)(?:\s+\(([^)]*)\))?(?=\s|$)", line)
+            if row is None:
+                continue
+            state_name = row.group(1)
+            labels = {label.strip() for label in (row.group(2) or "").split(",") if label.strip()}
+            if (
+                re.fullmatch(r"@os-[0-9]{6}-\d{8}-\d{6}Z-[A-Za-z0-9_.+-]+", state_name)
+                and "running" in labels
+                and "unmanaged" not in labels
+            ):
+                managed_running = True
+                break
+        if not managed_running:
+            self._mark_step(
+                "host_setup_snapshot",
+                "skipped",
+                "rollback_layer_unmanaged: dr-state reports no managed running root",
+            )
+            return
+        try:
+            self._run(
+                [
+                    "/usr/bin/env",
+                    "-u",
+                    "DR_STATE",
+                    ROLLBACK_STATE_COMMAND,
+                    "snapshot",
+                    "--reason",
+                    "host-setup",
+                ],
+                "write the one post-install rollback checkpoint",
+                dangerous=True,
+            )
+        except Exception as exc:
+            self._mark_step("host_setup_snapshot", "failed", str(exc))
+            raise
+        self._mark_step(
+            "host_setup_snapshot",
+            "success",
+            "dr-state snapshot --reason host-setup",
+        )
+
     def _configure_root_cap_boot_guards(self) -> None:
         """Keep cloud-init and initramfs from growing a capped root later."""
+        if self._is_btrfs_root():
+            self._mark_step(
+                "root_cap_guards",
+                "skipped",
+                "btrfs_root_resize_unsupported: cloud-init/growroot guards are ext4-only",
+            )
+            return
         if not self._root_guarded():
             return
         self.actions.write_file(
@@ -4785,6 +5255,9 @@ MaxFileSec=1month
         self.actions.write_file("/etc/growroot-disabled", "")
 
     def _stage2(self) -> None:
+        if self._is_btrfs_root():
+            self._stage2_btrfs()
+            return
         # Also apply this on a resumed stage-two run whose stage-one work was
         # completed by an older installer revision.
         self._configure_control_plane_memory_min()
@@ -4845,3 +5318,45 @@ MaxFileSec=1month
         # _remove_controller_ssh_key() deliberately does NOT happen here --
         # see resume(), which calls it only after the stage2_done marker
         # file exists. See that comment for why.
+
+    def _stage2_btrfs(self) -> None:
+        """Stage two for an ISO-installed btrfs root: no table or resize work."""
+        self._configure_control_plane_memory_min()
+        self._packages(["btrfs-progs", "util-linux"], "stage2")
+        self._mark_step(
+            "layout_partitioning",
+            "skipped",
+            "btrfs_root_no_partitioning: root, swap and data use the ISO top-level layout",
+        )
+        self._disable_active_swap()
+        if self.config.run_zswap_config:
+            self._configure_zswap()
+        if self.config.run_cgroup2_config:
+            self._configure_cgroup2_flags()
+        if self.config.run_ksm:
+            self._configure_ksm()
+        if self.config.run_oomd_config:
+            self._configure_oomd()
+        if self.config.run_fstrim:
+            self._configure_fstrim()
+        if self.config.run_auto_reboot:
+            self._configure_auto_reboot()
+        self._run_io_benchmark()
+        self._configure_iocost()
+        self._grow_root_to_plan()
+        self._configure_root_cap_boot_guards()
+        self._activate_swap_partitions()
+        if self._data_area_cfg().kind != "none":
+            self._configure_data_area()
+        self._health_gate_swap_devices()
+        self._verify_control_plane_memory_min()
+        self._run_cpu_benchmark()
+        self._release_apt_timers()
+        self.actions.write_file(
+            INSTALL_COMPLETE_MARKER,
+            f"schema_version={self.config.schema_version}\n",
+            0o600,
+        )
+        self._cleanup_cloud_init_cache()
+        self._snapshot_host_setup_once()
+        self.state.save(phase="done", status="success")

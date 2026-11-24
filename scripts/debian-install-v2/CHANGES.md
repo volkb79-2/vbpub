@@ -4,6 +4,35 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Added (IC-M1a, btrfs-root configuration)
+- v2 now configures a single-device btrfs root installed by the rollback ISO
+  without writing a partition table or resizing the filesystem. Root discovery
+  uses `findmnt --nofsroot`, multi-device btrfs is refused, and ZFS is detected
+  and refused with `root_fs_unsupported`.
+- Config loading now also accepts `schema_version: 2`, which carries the
+  root-aware validation. Schema 1 remains the default for existing ext4
+  configurations and keeps its legacy ext4 meaning; an ISO-installed btrfs
+  root requires schema 2. On btrfs, only root `"*"`, reserve 0, data kind
+  `none` or `subvolumes`, no raw benchmark partition, and `swap_policy: "off"`
+  with `swap_partition_count: 0` are accepted; each unsupported shape has a
+  named refusal.
+- `data.kind: "subvolumes"` creates top-level `@...` children under `/.top`,
+  verifies idempotent NOCOW properties before writing the setting, writes fstab
+  rows from the root's source/options plus `user_subvol_rm_allowed` and
+  `subvol=<name>`, and verifies an already-mounted target is the configured
+  subvolume. The r1002 `@cow` at `/srv/cow` example is documented.
+- v2 stage environments export `DR_STATE=none`. A completing btrfs stage two
+  ends with one checked `dr-state snapshot --reason host-setup` when the layer
+  manages the running root; layer absence/unmanaged roots are named skips.
+  Failures propagate, and a rerun after the stage-two marker takes no snapshot.
+- The stage-two unit removes only `/root/.vbpub/firstboot.json` and
+  `/root/.vbpub/firstboot.started` after the completion marker exists, using
+  one literal `ExecStartPost` command. v2's existing install guard is unchanged.
+- Btrfs skips ext4 shrink/growth/root-cap work. Swapfiles and permanent
+  `iobench-raw` partitions are not implemented: WP-10 P3 and the Q-A import
+  remain follow-ups, and the benchmark/io.cost skips are named in state.
+  IC-M1b/c remain outside this package.
+
 ### Changed (rp-04, shared paths from the repo path config)
 - The VM test harness (`testing/vm/run-vm-harness.sh`, `vmctl`, `testing/download-base-image.sh`) no longer
   hardcodes `artifacts/vm-lab` and `downloads/`: the host folders come from the repo path resolver
