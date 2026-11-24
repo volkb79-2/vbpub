@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from assay import mutation, observer_windows
+from assay import mutation, mutation_store, observer_windows
 from assay.mutation import MutationStateError
 from observer_support import golden
 from test_mutation_judge_identity import _job, _record, _store
@@ -21,7 +21,7 @@ JUDGE = "j" * 64
 def _load(tmp_path: Path, **overrides):
     job = _job()
     root = _store(tmp_path, job, _record(job, judge=JUDGE, **overrides))
-    return mutation._load_validated_state_record(root, job, judge=JUDGE)
+    return mutation_store._load_validated_state_record(root, job, judge=JUDGE)
 
 
 def _measured_profile() -> dict:
@@ -58,7 +58,7 @@ def test_a_record_without_a_worker_count_is_corrupt(tmp_path: Path):
     del payload["worker_count"]
     root = _store(tmp_path, job, payload)
     with pytest.raises(MutationStateError, match="worker_count must be a positive integer"):
-        mutation._load_validated_state_record(root, job, judge=JUDGE)
+        mutation_store._load_validated_state_record(root, job, judge=JUDGE)
 
 
 @pytest.mark.parametrize("profile", [None, [], {"schema": "other"}])

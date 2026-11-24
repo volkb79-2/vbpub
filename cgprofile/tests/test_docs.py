@@ -151,7 +151,7 @@ def test_release_gate_is_r0_r1_and_r3_only_and_complete_gate_includes_r2():
     assert argvs == [["run-gate", "r0-r1"], ["run-gate", "r3"]]
     lanes = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
     assert "r2" in lanes["gate"]["argv"][-1]
-    assert lanes["r2"]["budget"] == "24h"
+    assert lanes["r2"]["budget"] == "1445m"   # RG-307: assay lane 24h + R-59's 5m
 
 
 def test_every_release_surface_states_there_is_no_full_source_r2_verdict():

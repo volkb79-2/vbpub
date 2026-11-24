@@ -158,7 +158,7 @@ def test_run_detached_ships_bundle_verifies_checksum_and_starts_job(tmp_path):
     def sha(argv):
         return rg.Result(0, shipped.get("sum", "") + "  in.bundle\n")
 
-    ctx, out = ctx_for(tmp_path, git_handlers() + [psi(1, 1), ls, ("sha256sum", sha)])
+    ctx, out = ctx_for(tmp_path, [FETCHED_MAIN] + git_handlers() + [psi(1, 1), ls, ("sha256sum", sha)])  # `--base origin/main` is the fetched one
     sha_expected = rg.hashlib.sha256(b"bundle").hexdigest()
     shipped["sum"] = sha_expected
     rc = rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t1", "--base", "origin/main", "--", "--fresh"))
@@ -473,10 +473,11 @@ esac
 # ---- --base must reach the host (job exit 72 'base ... missing on the host') ----
 
 BASE = "c" * 40
+FETCHED_MAIN = ("for-each-ref", rg.Result(0, BASE + "\n"))  # `--base main` is the fetched origin/main
 
 
 def _base_ctx(tmp_path, handlers, name):
-    ctx, _ = ctx_for(tmp_path, handlers + git_handlers(count="3") + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))])
+    ctx, _ = ctx_for(tmp_path, handlers + [FETCHED_MAIN] + git_handlers(count="3") + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))])
     assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--base", "main", "--name", name)) == 0
     return ctx
 
@@ -517,7 +518,7 @@ def test_no_base_means_no_temporary_ref(tmp_path):
 
 
 def test_failing_update_ref_aborts_before_the_bundle(tmp_path):
-    handlers = [("update-ref", rg.Result(1, "", "boom"))] + git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))]
+    handlers = [("update-ref", rg.Result(1, "", "boom")), FETCHED_MAIN] + git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))]
     ctx, _ = ctx_for(tmp_path, handlers)
     with pytest.raises(rg.GateError, match="cannot name the base commit"):
         rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--base", "main", "--name", "b5"))
@@ -525,7 +526,7 @@ def test_failing_update_ref_aborts_before_the_bundle(tmp_path):
 
 
 def test_failed_bundle_still_removes_the_temporary_ref(tmp_path):
-    handlers = [("bundle create", rg.Result(1, "", "nope"))] + git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))]
+    handlers = [("bundle create", rg.Result(1, "", "nope")), FETCHED_MAIN] + git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))]
     ctx, _ = ctx_for(tmp_path, handlers)
     with pytest.raises(rg.GateError, match="git bundle failed"):
         rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--base", "main", "--name", "b6"))
@@ -580,7 +581,7 @@ def test_the_closest_of_several_host_checkouts_is_the_seed(tmp_path):
         return rg.Result(0, ("1" if f"^{other}" in argv else "5") + "\n")
 
     ls = ("ls /home/runner/checkouts", rg.Result(0, f"{other}\n{SEED}\n"))  # nearer one first, farther one after: the farther must not replace it
-    ctx, _ = ctx_for(tmp_path, [("rev-list --count", count)] + git_handlers() + [psi(1, 1), ls])
+    ctx, _ = ctx_for(tmp_path, [("rev-list --count", count), FETCHED_MAIN] + git_handlers() + [psi(1, 1), ls])
     assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--base", "main", "--name", "b7")) == 0
     bundle = next(c[0] for c in ctx.runner.calls if "bundle" in c[0] and "create" in c[0])
     assert f"^{other}" in bundle and f"^{SEED}" not in bundle

@@ -433,12 +433,14 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
     - `etc/apt/apt.conf.d/80dr-state`;
     - `etc/kernel/{postinst.d,postrm.d}/zz-dr-state`.
   - **Timing.** The runtime tree lands in P-rollback-20, but installs switch to it only in P-rollback-21, for both
-    variants at once (D33). The hooks leave the heredocs in P-rollback-25.
-  - **Installer.** `install-btrfs.sh` packs `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into a tar
-    archive whose members are explicitly owned `0:0`, then extracts it as root with `--same-owner`. It omits directory
-    members that already exist at the destination, so `/`, `/usr`, `/usr/local` and every other pre-existing target
-    directory keep their owner and mode. It prints the initial state name with `printf` instead of calling
-    `dr-state _state-name`; `initialize-state` stays the only validator, so the Live system needs no Python.
+    variants at once (D33). The runtime tree and target hooks now ship as files (P-rollback-21 and P-rollback-25).
+  - **Installer.** The two-step install packs `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into `usr/`
+    and `etc/` tar archives whose members are explicitly owned `0:0`, then extracts them as root with `--same-owner`.
+    The `usr/` archive lands at the runtime's existing early point; the `etc/` archive lands only after
+    `gen-menu --default`. Each archive omits directory members, so `/`, `/usr`, `/usr/local`, `/etc` and every other
+    pre-existing target directory keep their owner and mode. The installer prints the initial state name with
+    `printf` instead of calling `dr-state _state-name`; `initialize-state` stays the only validator, so the Live
+    system needs no Python.
   - **Seed and ISO ownership.** The seed ISO is packed with `-uid 0 -gid 0`; the remastered ISO applies
     `-chown_r 0 /dr/files -- -chgrp_r 0 /dr/files --` before commit. A non-root builder therefore cannot stamp its
     uid on a root-executed runtime.

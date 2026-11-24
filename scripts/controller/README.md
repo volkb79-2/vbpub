@@ -11,10 +11,16 @@ Every implementer brief carries the house rules in [`rules.md`](rules.md)
 `docker`, no tests in the devcontainer, contract plus size, at most 2 review
 rounds, explicit effort, unique run names, DONE/PARTIAL/BLOCKED.
 
+**Remote dev tool.** `dev -p <project> <verb>` compiles, tests and lints a project in
+its run-gate environment's capped, network-less container on a gate host, before
+the commit (house rule 1). Never gate evidence. Guide: [`docs/DEV.md`](docs/DEV.md);
+profiles: `dev-profiles.toml`; contract: `docs/design/agent-dev/DESIGN.md`.
+
 **Bash is frozen** (CTL-40): no new bash beyond ~50-line entry points; new
 logic goes into the `agctl` Python package. The one exception is the generic
-dev tool (`dev`, about 250 lines), whose Python port follows with the fleetd
-host agent.
+dev tool (`dev`, about 530 lines including the moved host-side scripts; the
+profile resolution is already Python, `dev_profile.py`), whose full Python port
+follows with the fleetd host agent.
 
 ## Set up once
 
@@ -62,6 +68,10 @@ see [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md)). It prints names and paths
 never a value from the env file, the host table or a key. Limit: the env file is
 scanned line by line, so a multi-line assignment reads as a stray line.
 
+## Hygiene notifier (`ctl-hygiene.sh`)
+
+`scripts/controller/ctl-hygiene.sh` is read-only and always exits 0: it prints one `HYGIENE <rule> <path>: <value> (threshold <t>)` line per finding (nothing when all is well) for an oversized or stale `MEMORY.md` (M1-M3), handoff/state files with too many blocks or bytes (H1, H2), stale or foreign `handovers/` files (S1) and tracked backlogs whose closed entries exceed 30% of the file (B1). `ctl-doctor.sh` appends its lines to the report (a `hygiene` array in `--json`) without changing the status; thresholds and test seams are in the script header and `docs/design/agctl/CONTEXT-ECONOMY.md` section 5.
+
 ## State backup (`ctl-state-backup.sh`)
 
 `scripts/controller/ctl-state-backup.sh [--list] [--include-large] [--max-file-bytes <n>]`
@@ -79,6 +89,10 @@ existing `CONTROLLER_BACKUP_DIR` keeps its mode. When `CONTROLLER_REPO` is a lin
 worktree that lacks `.controller-state` or `plan.yaml`, the run prints a WARNING
 naming them: the real state lives in the main checkout. What is state and what is work:
 [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md).
+
+## Successor restart (`compact-resume.sh`, `clear-resume.sh`)
+
+`compact-resume.sh <tmux-pane-id> <guidance-file> <prompt-file> <log-file>` (default: `/compact`, background work survives) and `clear-resume.sh <tmux-pane-id> <prompt-file> <log-file>` (clean slate: `/clear`) restart an interactive Claude Code session in a tmux pane and type the prompt file; both share `resume-lib.sh`; launch detached with `setsid nohup`; procedure, exit codes and limits: AGENTS.md "Successor restart of an interactive session".
 
 ## Controller loop
 
@@ -561,8 +575,11 @@ slot), builds a throwaway detached worktree under `CONTROLLER_HOME`, runs the
 lane and writes `$CONTROLLER_LOGS_DIR/<run>.log` with a binding line
 `run-gate.commit=<sha>` plus the copied verdict JSON files. Exit codes: the
 lane's own, 2 refusal, 3 identity or transport failure, 75 slots or PSI busy,
-76 `INCONCLUSIVE-OOM` (an OOM kill in the host's gate slice during the run;
-not a lane FAIL). Every setting is a `CONTROLLER_REMOTE_*` variable in
+76 `INCONCLUSIVE-OOM` (an OOM kill in the host's gate slice during the run,
+measured by the slice oom_kill delta; not a lane FAIL; a run-gate
+`BUDGET_EXCEEDED` verdict, read only from run-gate's own verdict line for the
+lane, is never 76 and keeps run-gate's exit 4; words in the lane's own output
+never decide either). Every setting is a `CONTROLLER_REMOTE_*` variable in
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md); `CONTROLLER_REMOTE_GATE_HOSTS`
 is required. The weights sample is `remote-gate-weights.tsv.example`.
 `-- --base <ref>` (or `--base=<ref>`) after the commit is accepted as a spelling
@@ -704,13 +721,39 @@ printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py pre-compact \
 ```
 
 Subcommands: `statusline`, `post-tool-use`, `pre-compact`, `session-start`,
-`stop`. Configuration is flags or environment (`CTX_STATE_DIR`,
+`stop`: the same five words as the retired untracked `.controller-state/hooks/ctx.py`,
+so wiring this script is a path change in `.claude/settings.local.json`
+(`python3 <repo>/scripts/controller/hooks/ctx-hooks.py <mode>` per mode).
+Configuration is flags or environment (`CTX_STATE_DIR`,
 `CTX_EXTRACT_CMD`,
 `CTX_READBACK_BUDGET_TOKENS` = 30000, `CTX_READBACK_TAIL_PROSE_TOKENS` =
 10000, `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_GOAL_PROMPT`,
-`CTX_READBACK_REDACT_PATTERNS`, `CTX_SESSION_KIND`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`); the
-state directory defaults to the hook input's own `cwd/.controller-state`, so no
-checkout path is hard-coded. Which harness/situation rows are tested is in
+`CTX_READBACK_REDACT_PATTERNS`, `CTX_SESSION_KIND`, `CTX_HOOK_ROLE`,
+`CTX_REPO_ROOT`, `CTX_HANDOFF_FILE`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`); the
+state directory defaults to the nearest `.controller-state` at or above the hook
+input's `cwd`, so no checkout path is hard-coded.
+
+The pressure ladder (`post-tool-use`) notes every 50k from 100k on. The ceiling
+comes from `~/.claude/settings.json` (`modelSettings.<model>.autoCompactWindow`
+for the session's model, else the top-level `autoCompactWindow`, else 500000;
+a missing or malformed file never raises) and feeds the growth line ("calls to
+the Nk ceiling"). One soft threshold per session kind: controller
+`CTX_SOFT_CONTROLLER` (alias `CTX_CONTROLLER_SOFT`, default 650000), agent
+`CTX_SOFT_AGENT` (default 200000); the note fires at `min(soft, ceiling - 50000)`
+and the hook log gets a `warning` event when the ceiling is at or below the soft
+threshold. A controller below its threshold is told to
+persist and keep working; at or past it, to write the handover
+(controller-handover skill), sync the plan, set READY and end the turn. An agent
+gets the marker only until its threshold, then finish-or-PARTIAL. A controller
+past 200k with a HANDOFF.md older than 15 minutes also gets a stale-state
+warning, and `session-start` prints a role rule (main controller, sub-controller
+or any other session reads its own list) followed by the READ FIRST list of the
+newest `RESUME HERE #N` block of HANDOFF.md instead of a hard-coded order. The
+readback files and state are per session (`readback-<session_id>-N.md`,
+`readback-state-<session_id>.json`), `session-start` names a readback only when
+that session's own last build succeeded, and the pressure state files live in
+`<state>/hooks/`. With no `.controller-state` above the hook's `cwd`, the one of
+the repo holding the script is used, else nothing is written. Which harness/situation rows are tested is in
 [`docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md`](../../../docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md);
 the reason each choice was made is in the
 [read-back design](docs/DESIGN-GUIDE.md#compaction-recovery-hooks).

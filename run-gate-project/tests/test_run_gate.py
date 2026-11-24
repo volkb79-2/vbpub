@@ -41124,7 +41124,12 @@ class TestR2JobsPR3:
             "cowtree-probe-ModuleNotFoundError")
 
     def test_lane_header_names_the_assay_lane_budget(self, capsys):
-        """RG-155 oracle: both budgets, their sources, and the warning."""
+        """RG-155 oracle: both budgets, their sources, and the R-59 warning.
+
+        RG-308(a) inverted the polarity: `inner < outer` is the state R-59
+        REQUIRES, so the old "assay.toml lane budget is below the run-gate
+        budget" warning fired on every fixed lane. Only a wrapper that leaves
+        less than the five-minute margin warns now."""
         lane = {"budget": "300m", "kind": "assay",
                 "_assay_inventory": {"entry": {"budget": "3m"}}}
         run_gate.print_lane_bounds(lane)
@@ -41132,10 +41137,11 @@ class TestR2JobsPR3:
         assert "budget 300m (hard limit" in out
         assert "assay.toml lane budget 3m" in out
         assert "LANE_TIMEOUT" in out
-        assert "WARNING: assay.toml lane budget 3m is below" in out
+        # 3m inner, 300m outer: far above the margin, nothing to warn about.
+        assert "WARNING" not in out
         lane["_assay_inventory"] = {"entry": {"budget": "600m"}}
-        assert not any("WARNING" in line
-                       for line in run_gate.assay_lane_budget_lines(lane))
+        assert any("WARNING" in line and "BELOW" in line
+                   for line in run_gate.assay_lane_budget_lines(lane))
         assert run_gate.assay_lane_budget_lines({"budget": "5m"}) == []
         # an unparsable Assay budget is not disclosed (and never raises)
         assert run_gate.assay_lane_budget_lines(
@@ -41143,6 +41149,72 @@ class TestR2JobsPR3:
         # no inventory budget: nothing printed, not even a blank line
         run_gate.print_assay_lane_budget({"budget": "5m"})
         assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize(
+        "outer,inner,kind", [
+            # outer BELOW inner: the container dies before a verdict exists.
+            ("44m", "45m", "below"),
+            # outer between inner and inner + 5m: the R-59 margin case.
+            ("47m", "45m", "margin"),
+            # exactly inner + 5m: the boundary is satisfied, silent.
+            ("50m", "45m", None),
+            # far above inner: silent.
+            ("300m", "3m", None),
+        ])
+    def test_wrapper_budget_warning_follows_r59(self, outer, inner, kind):
+        """RG-308(a) oracle: warn only below inner + R-59's margin, naming
+        both budgets and the margin, and stay silent from the margin up.
+
+        `LANES_CHECK_BUDGET_MARGIN_SECONDS` (5m) is the SAME constant
+        `lanes --check` uses, so the run-time warning and the offline check
+        can never disagree about which lanes are defective."""
+        lines = run_gate.assay_lane_budget_lines(
+            {"budget": outer, "kind": "assay",
+             "_assay_inventory": {"entry": {"budget": inner}}})
+        warnings = [line for line in lines if "WARNING" in line]
+        assert len(lines) == (2 if kind else 1), lines
+        if kind is None:
+            assert warnings == []
+            return
+        warning = warnings[0]
+        # Both budgets are named every time; the five-minute margin is
+        # spelled out as the requirement (`300s`) or as `+ 5m` in the remedy.
+        assert outer in warning and inner in warning
+        assert ("BELOW" in warning) is (kind == "below")
+        assert ("R-59" in warning) is (kind == "margin")
+        if kind == "below":
+            assert "killed before Assay can close its verdict" in warning
+            assert "50m" in warning          # 45m inner + 5m, the remedy
+            assert "+ 5m" in warning
+        else:
+            assert "leaves only 120s above" in warning
+            assert "300s" in warning          # the required margin
+            assert "50m" in warning          # 45m inner + 5m, the remedy
+
+    def test_margin_warning_names_the_margin_and_the_remedy(self):
+        """The margin wording must state the requirement AND the fix, in
+        minutes, so an operator can copy the number straight into the toml."""
+        lines = run_gate.assay_lane_budget_lines(
+            {"budget": "7h", "kind": "assay",
+             "_assay_inventory": {"entry": {"budget": "420m"}}})
+        warning = lines[1]
+        assert "WARNING" in warning and "R-59" in warning
+        assert "7h" in warning and "420m" in warning
+        assert "300s" in warning            # the required margin, in seconds
+        assert "425m" in warning             # inner + 5m, the remedy
+
+    def test_the_named_remedy_itself_satisfies_the_margin(self):
+        """A remedy that still fails the rule it prescribes is worse than no
+        number at all. The named value is rounded UP to whole minutes, so it
+        is >= inner + 5m for a sub-minute inner budget too ("100s" is valid
+        Run-Gate duration grammar: 100s + 300s = 400s, whose floor is 6m
+        = 360s and 40s SHORT of the requirement)."""
+        lines = run_gate.assay_lane_budget_lines(
+            {"budget": "5m", "kind": "assay",
+             "_assay_inventory": {"entry": {"budget": "100s"}}})
+        warning = lines[1]
+        assert "7m" in warning
+        assert run_gate.budget_seconds("7m") >= 100 + 300
 
     @pytest.mark.parametrize("reason", [
         "cowtree-probe-ModuleNotFoundError", "cow-root-unset",

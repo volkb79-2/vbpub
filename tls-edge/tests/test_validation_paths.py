@@ -24,6 +24,7 @@ from ciu import config_model, deploy
 from ciu.deploy_pkg import profiles as profiles_pkg
 from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
+from _layout import instance_stack_dir
 from tls_edge_cli import cli, config
 
 
@@ -69,15 +70,14 @@ def _tracked_stack_files() -> list[Path]:
 
 
 def _case_root(tmp_path: Path, override: str) -> tuple[Path, Path]:
-    root = tmp_path / "instance"
-    stack_root = root / "stack"
-    stack_dir = stack_root / "ciu-stack"
+    root = instance_stack_dir(tmp_path / "instance")
+    stack_dir = root / "ciu-stack"
     for relative in _tracked_stack_files():
         source = REPO_ROOT / relative
         target = stack_dir / relative.relative_to(Path("tls-edge/ciu-stack"))
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-    shutil.copy2(ROOT / "ciu.global.defaults.toml.j2", stack_root)
+    shutil.copy2(ROOT / "ciu.global.defaults.toml.j2", root)
     (stack_dir / "ciu.toml.j2").write_text(override, encoding="utf-8")
     return root, stack_dir
 
@@ -90,14 +90,14 @@ def _run_ciu_check(root: Path) -> int:
         "INSTANCE_ID": "test",
     }
     global_config = deploy.load_global_config(
-        root / "stack", write_rendered=False, environ=environ
+        root, write_rendered=False, environ=environ
     )
     profile = deploy.resolve_profiles(global_config, None, environ=environ)
     selection = deploy.build_selection(profile)
     context = profiles_pkg.render_ciu_context(profile, selection)
     rendered = {}
     for entry in selection:
-        stack_dir = root / "stack" / entry["path"]
+        stack_dir = root / entry["path"]
         rendered[entry["path"]] = config_model.render_stack(
             stack_dir,
             global_config=profile.config,
@@ -107,7 +107,7 @@ def _run_ciu_check(root: Path) -> int:
             environ=environ,
         )
     return deploy.action_check(
-        root / "stack", profile, selection, rendered,
+        root, profile, selection, rendered,
         live=False, json_output=False,
     )
 
@@ -168,11 +168,11 @@ def _override(body: str = "") -> str:
             "acme-tls requires the public HTTPS port to be 443",
         ),
         (
-            "calls-conflicts-with-https",
-            _override("[tls_edge.calls]\nenabled = true\npublic_port = 443\n"),
+            "calls-enabled-in-3-1",
+            _override("[tls_edge.calls]\nenabled = true\npublic_port = 8443\n"),
             "[tls_edge.ports]\nhttps = 443\n"
-            "[tls_edge.calls]\nenabled = true\npublic_port = 443\n",
-            "Calls TCP conflicts with the public HTTPS TCP port",
+            "[tls_edge.calls]\nenabled = true\npublic_port = 8443\n",
+            "tls_edge.calls.enabled = true: tls-edge 4.0 no longer forwards media",
         ),
         (
             "static-without-lineages",
@@ -191,7 +191,7 @@ def _override(body: str = "") -> str:
             "newer-schema",
             '[tls_edge]\nschema = 99\ndomain = "edge.example.test"\n',
             '[tls_edge]\ndomain = "edge.example.test"\n',
-            "tls_edge.schema 99 is newer than this release supports (maximum 1)",
+            "tls_edge.schema 99 is newer than this release supports (maximum 2)",
         ),
         (
             "good",
@@ -361,7 +361,10 @@ def test_override_schema_must_be_an_integer(tmp_path: Path):
         '[tls_edge]\nschema = "one"\ndomain = "edge.example.test"\n',
     )
     defaults, overlay, _ = config.load_site(stack_dir)
-    with pytest.raises(config.ConfigError, match="tls_edge.schema must be an integer"):
+    with pytest.raises(
+        config.ConfigError,
+        match="tls_edge.schema must be an integer from 1 to 2",
+    ):
         config.check_override(defaults, overlay)
 
 
@@ -371,7 +374,10 @@ def test_override_schema_must_be_at_least_one(tmp_path: Path):
         '[tls_edge]\nschema = 0\ndomain = "edge.example.test"\n',
     )
     defaults, overlay, _ = config.load_site(stack_dir)
-    with pytest.raises(config.ConfigError, match="tls_edge.schema must be at least 1"):
+    with pytest.raises(
+        config.ConfigError,
+        match="tls_edge.schema must be an integer from 1 to 2",
+    ):
         config.check_override(defaults, overlay)
 
 
@@ -491,7 +497,7 @@ def test_ciu_hooks_preflight_invokes_validate_edge(
     monkeypatch.setattr(hooks_runner, "load_hook_for_check", recording_loader)
     assert _run_ciu_check(root) == 0
     assert calls == [
-        root / "stack" / "ciu-stack" / "hooks" / "validate_edge.py"
+        root / "ciu-stack" / "hooks" / "validate_edge.py"
     ]
 
 
@@ -527,7 +533,8 @@ def test_missing_schema_means_schema_one(tmp_path: Path):
     defaults, overlay, effective = config.load_site(stack_dir)
     assert config.migrate(overlay) == overlay
     config.check_override(defaults, overlay)
-    assert effective["tls_edge"]["schema"] == 1
+    assert defaults["tls_edge"]["schema"] == 2
+    assert effective["tls_edge"]["schema"] == 2
 
 
 def test_hook_run_rechecks_the_sparse_override(tmp_path: Path) -> None:
@@ -556,7 +563,7 @@ def test_hook_reports_consumer_env_drift_as_an_error_finding(
 
     root, stack_dir = _case_root(tmp_path, _override())
     _, _, effective = config.load_site(stack_dir)
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.write_text(
         render_env(consumer_contract(effective["tls_edge"])),
         encoding="utf-8",
@@ -582,12 +589,12 @@ def test_hook_reports_consumer_env_drift_as_an_error_finding(
     ]
 
 
-def test_configure_writes_schema_one(
+def test_configure_writes_schema_two(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, _ = _case_root(tmp_path, _override())
-    override_path = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    override_path = root / "ciu-stack" / "ciu.toml.j2"
     override_path.unlink()
 
     result, _ = _run_cli_with_prompts(
@@ -596,4 +603,4 @@ def test_configure_writes_schema_one(
     )
     assert result == 0
     written = tomllib.loads(override_path.read_text(encoding="utf-8"))
-    assert written["tls_edge"]["schema"] == 1
+    assert written["tls_edge"]["schema"] == 2

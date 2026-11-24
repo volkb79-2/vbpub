@@ -11,7 +11,7 @@ Retained design record:
 
 ## Install
 
-cmru depends on the **`cli-extended`** wheel (`cli-extended>=0.3.0`, the shared CLI
+cmru depends on the **`cli-extended`** wheel (`cli-extended>=0.8.0`, the shared CLI
 contract layer). It is published to GitHub Releases only, never PyPI: the bare name is
 unclaimed there, so a plain `pip install cmru` or `pip install -e .` would query the
 index for it. Install it first, from the release, verified by the sha256 in
@@ -481,6 +481,14 @@ non-Python tools must still flush their own output. `--log-prefix-time-short` ad
 `HH:MM:SS` before CMRU's existing severity prefix. INFO/WARN/ERROR are colour-coded only on
 an interactive terminal; `cmru.release.log` and pipes remain plain ANSI-free text.
 
+Each command is supervised for its whole process group. The step ends when its own child exits,
+not when every descendant has closed the inherited output pipe. A descendant that still holds
+the pipe after the two-second drain produces one `[WARN] ...` on stdout and one `[cmru] ...`
+entry in that step's log; it is named but never killed. A silent command becomes a step failure
+at its no-progress bound, with the winning configuration key and the pre-signal process tree
+printed in the diagnostic. Streamed bytes are diagnostic text: malformed UTF-8 is written as U+FFFD
+without changing the child's exit status. Captured probes use strict text decoding.
+
 ## Project framework and templates
 
 Each project owns one complete `cmru.toml` contract: identity, versioning, release artifacts,
@@ -499,6 +507,16 @@ require `quiet = true` for the normal summary-only transcript; use `--show-run-d
 live subprocess output is required. They reject unknown keys. Put project-only data beneath `[project_metadata]` so a misspelled
 execution setting fails before it can alter a release. `cmru.build.toml`, shell sourcing, and
 configuration aliases are retired; there is no compatibility parser.
+
+The optional top-level `[runner]` table currently owns one control:
+`no_progress_timeout_seconds`. Its default is the finite 1800 seconds and there is no off value.
+The optional key of the same name on a step wins; otherwise the project value applies. Both
+values must be numeric, not boolean, finite, and greater than zero, and unknown `[runner]` keys
+are refused with exit 2. The timeout is an inactivity bound, not a maximum runtime. Its failure
+diagnostic names the exact source key that won. A project may omit both levels:
+revision 5 remains unchanged, and `cmru standards` remains valid for existing projects.
+`steps.clean` receives only this resolved timeout and source through the cleanup-specific
+contract; cleanup's quiet output, environment, command/cwd mapping and `logs` root do not change.
 
 The stock `tester-gate` command additionally requires an explicit tester image, memory,
 combined memory/swap, CPU ceiling, process ceiling (`CMRU_TESTER_PIDS_LIMIT`, passed as
@@ -1013,8 +1031,8 @@ The installed `run-gate` wheel is the canonical test entrypoint. From the
 focused `run-gate release-preconditions` lane covers the changelog preflight,
 the dry-run's waiver, image-identity, and bootstrap-version checks. The focused
 `run-gate survivor-regressions` lane covers the s1 survivor oracles and keeps
-the whole-target Assay inventories for `cmru`, `cmru-r0-r1`, and both
-first-release lanes aligned with executable source modules; see the
+the whole-target Assay inventories for `cmru`, `cmru-r0-r1`, and the whole-source
+`cmru-first-release-r2` lane aligned with executable source modules; see the
 [inventory design](docs/DESIGN-GUIDE.md#whole-target-assay-inventories-list-executable-modules). The
 aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later;
 development and local build suffixes are rejected. Its preflight
@@ -1099,7 +1117,7 @@ the estate Python environment that holds the installed `cmru` wheel and its decl
 `cli-extended` dependency, with that environment's `bin` directory on `PATH`. The
 controller finds it itself: if the host `python3` cannot import a declared dependency, **or
 imports one whose installed distribution version does not satisfy CMRU's declared requirement**
-(a host with `cli-extended` 0.2.0 against `cli-extended>=0.3.0`), it re-starts itself once
+(a host with `cli-extended` 0.2.0 against `cli-extended>=0.8.0`), it re-starts itself once
 under the CMRU environment's interpreter and says so on stderr. That interpreter is probed
 for the installed version first; one below the floor is refused before the controller or any
 worktree code runs. Inside
@@ -1118,18 +1136,19 @@ retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) 
 tracking id, follow-up lane and prerequisites, and the marker
 `.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or snapshot check
 leaves neither record, and a full `gate` records `state: "passed"` with an empty
-`deferred_lanes` and removes any stale marker. The recorded follow-up lane is `gate`
-(the standalone `mutation` lane cannot run without the aggregate gate's baseline facts).
+`deferred_lanes` and removes any stale marker. The recorded follow-up lane is
+`assay-first-release-r2` for every release, first or not: the native whole-target lane is the one
+surviving R2 path (KI-199).
 Success is decided only after cleanup: if removing the planted canary or releasing the
 snapshot fails after every lane passed, the gate exits non-zero, the marker is removed and the
 manifest says `failed`. An invocation refused before a new gate starts (for example an
 unauthorized tracking id) leaves the previous run's evidence untouched. The follow-up needs
 a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU).
 If origin has no published stable CMRU tag, the same protected provisional
-release workflow instead runs the explicit whole-source `assay-first-release`
-lane. It does not fabricate a diff base. The gate records that whole-source R2
-is still due and names `run-gate assay-first-release-r2` as its follow-up; a
-failed or inaccessible origin query is an error, never an empty release history.
+release workflow runs the ordinary `assay` lane, because `_plan_gate` selects no
+special lane for a first release; the gate records that whole-source R2 is still
+due and names `run-gate assay-first-release-r2` as its follow-up; a failed or
+inaccessible origin query is an error, never an empty release history.
 See the [first-release design](docs/DESIGN-GUIDE.md#first-release-has-no-historical-diff-baseline)
 and [release steps](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
 The registered `gate` lane queries every CMRU release tag on origin through
@@ -1236,6 +1255,5 @@ successful full-suite run still executes all tests. `.assay/` verdict, result,
 and progress artifacts are retained as gate evidence, along with Run-Gate's
 campaign closeout files `.assay/campaign-cmru.exit`,
 `.assay/campaign-cmru.json`, `.assay/campaign-cmru.txt` and
-`.assay/campaign-cmru.err`. The first-release Assay lane uses the same four
-suffixes with the `campaign-cmru-first-release` basename.
+`.assay/campaign-cmru.err`. No other Assay lane's closeout basename is retained.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

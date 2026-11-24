@@ -425,6 +425,12 @@ expect_killed ctx-hooks-subagent-skip \
   env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-subagent-skip.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 expect_killed ctx-hooks-crash-log \
   env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-crash-log.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+for ctx_mutant in ceiling-model ceiling-top subagent-path stale-check stale-age soft-handover agent-soft soft-alias \
+                  role-env read-order-newest merges-window state-walkup role-env-skip sid-state effective-soft \
+                  pressure-dir state-fallback; do
+  expect_killed "ctx-hooks-$ctx_mutant" \
+    env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-$ctx_mutant.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+done
 expect_killed push-pipeline-exit-propagation \
   env PUSH_IMAGE_SCRIPT="$ROOT/mutants/scripts/controller/push-image-status.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 for skills_mutant in skills-stamp-ownership skills-modified-clobber skills-stale-detection \
@@ -474,7 +480,7 @@ for gate_run_profile_mutant in default override; do
   expect_killed "gate-run-profile-$gate_run_profile_mutant" \
     env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-profile-$gate_run_profile_mutant.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 done
-for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup weight-min oom-delta commit-binding slot-descriptors base-forward api-override runner-ref base-passthrough base-twice \
+for remote_gate_mutant in identity allow-list project-dir-guard slot-roundup weight-min oom-delta budget-verdict verdict-anchor commit-binding slot-descriptors base-forward api-override runner-ref base-passthrough base-twice \
                           old-env-silent old-env-one-dropped old-env-py-name old-env-dry-hold weights-unreadable-silent weights-missing-warns repo-name-default snapshot-fixed-name snapshot-leftover; do
   expect_killed "remote-gate-$remote_gate_mutant" \
     env REMOTE_GATE_SCRIPT="$ROOT/mutants/scripts/controller/remote-gate-$remote_gate_mutant.sh" bash "$SCRIPT_DIR/test-remote-gate.sh"
@@ -489,7 +495,7 @@ for doctor_mutant in tool-flock-severity tool-docker-severity home-missing env-m
                      hosts-guard hosts-lanes-shape hosts-lanes-warn hosts-api-exec hosts-key-missing hosts-key-mode hosts-pin hosts-pin-devnull hosts-pin-devnull-ok hosts-strict \
                      hosts-nopin hosts-leak allow-unknown allow-unset remote-file-split image-absent image-exact-name image-unreachable \
                      image-no-docker image-toml pinned-warn pinned-logs pinned-scan pinned-home profile-default gate-lock-unset gate-lock-absolute gate-lock-parent gate-lock-distinct gate-slots-invalid gate-slots-print gate-slots-default-print gate-slots-leak gate-slots-fallback gate-slot2-one-slot gate-derived-check gate-derived-range gate-lock-dir-absolute gate-lock-dir-unused gate-collide-pair-text gate-derived-fix dir-missing dir-writable \
-                     symlink-detect residency-ignore residency-outside residency-runs json exit-code usage-exit; do
+                     symlink-detect residency-ignore residency-outside residency-runs json exit-code usage-exit hygiene-default; do
   # Only the non-root block of the doctor test can kill this one: as root it is reported skipped, never killed.
   if [[ $doctor_mutant == dir-writable && $(id -u) == 0 ]]; then
     echo "SKIPPED: ctl-doctor-$doctor_mutant (its test block needs a non-root uid)"
@@ -502,9 +508,21 @@ for doctor_lib_mutant in readonly-mkdir readonly-resolve configured-home configu
   expect_killed "ctl-doctor-lib-$doctor_lib_mutant" \
     env CTL_DOCTOR_SCRIPT="$ROOT/mutants/scripts/controller/doctor-lib-$doctor_lib_mutant/ctl-doctor.sh" bash "$SCRIPT_DIR/test-ctl-doctor.sh"
 done
+for hygiene_mutant in state-default heading-paren; do
+  expect_killed "ctl-hygiene-$hygiene_mutant" \
+    env CTL_HYGIENE_SCRIPT="$ROOT/mutants/scripts/controller/ctl-hygiene-$hygiene_mutant.sh" bash "$SCRIPT_DIR/test-ctl-hygiene.sh"
+done
 for backup_mutant in cap jsonl git-dir work-tree unset relative list-only mode follow-links sidecar verify-compare runs-state \
                      remote-summaries empty overwrite link-targets hardlink-targets chmod-existing chmod-never verify-empty verify-no-sidecar linked-detect linked-members; do
   expect_killed "ctl-state-backup-$backup_mutant" \
     env CTL_STATE_BACKUP_SCRIPT="$ROOT/mutants/scripts/controller/ctl-state-backup-$backup_mutant.sh" bash "$SCRIPT_DIR/test-ctl-state-backup.sh"
+done
+for dev_mutant in ticket-hold psi-threshold psi-file psi-full-line image-id quoting cleanup-by-cid banner-dirty git-ro tty-env; do
+  expect_killed "dev-$dev_mutant" \
+    env DEV_SCRIPT="$ROOT/mutants/scripts/controller/dev-$dev_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
+done
+for profile_mutant in image-regex work-mount; do
+  expect_killed "dev-profile-$profile_mutant" \
+    env DEV_PROFILE_SCRIPT="$ROOT/mutants/scripts/controller/dev-profile-$profile_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
 done
 echo "PASS hand mutations: $killed_count killed"

@@ -35,6 +35,9 @@ for bootloader in grub systemd-boot; do
   [ -x "$WORK/launcher-$bootloader" ] \
     || { echo "FAIL $bootloader: ISO launcher lost its executable mode" >&2; exit 1; }
   for member in \
+    /dr/files/etc/apt/apt.conf.d/80dr-state \
+    /dr/files/etc/kernel/postinst.d/zz-dr-state \
+    /dr/files/etc/kernel/postrm.d/zz-dr-state \
     /dr/files/usr/local/sbin/dr-state \
     /dr/files/usr/local/lib/dr-state/dr_state/core.py; do
     line=$(xorriso -indev "$out" -lsl "$member" 2>/dev/null || true)
@@ -45,6 +48,18 @@ for bootloader in grub systemd-boot; do
     -extract /dr/files/usr/local/lib/dr-state/dr_state/core.py "$WORK/core-$bootloader" >/dev/null 2>&1
   cmp -s "$HERE/../files/usr/local/lib/dr-state/dr_state/core.py" "$WORK/core-$bootloader" \
     || { echo "FAIL $bootloader: ISO runtime differs from the files payload" >&2; exit 1; }
+  for pair in \
+    "etc/apt/apt.conf.d/80dr-state:644" \
+    "etc/kernel/postinst.d/zz-dr-state:755" \
+    "etc/kernel/postrm.d/zz-dr-state:755"; do
+    path=${pair%:*}; want=${pair##*:}
+    extracted="$WORK/hook-$bootloader-${path//\//_}"
+    xorriso -osirrox on -indev "$out" -extract "/dr/files/$path" "$extracted" >/dev/null 2>&1
+    cmp -s "$HERE/../files/$path" "$extracted" \
+      || { echo "FAIL $bootloader: ISO hook $path differs from the files payload" >&2; exit 1; }
+    [ "$(stat -c %a "$extracted")" = "$want" ] \
+      || { echo "FAIL $bootloader: ISO hook $path mode is $(stat -c %a "$extracted"), want $want" >&2; exit 1; }
+  done
   xorriso -osirrox on -indev "$out" -extract /boot/grub/grub.cfg "$WORK/grub.cfg" >/dev/null 2>&1
   grep -q '/live/vmlinuz-test' "$WORK/grub.cfg"
 done

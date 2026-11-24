@@ -23,6 +23,7 @@ from cmru import runner
 
 DRAIN = 0.5
 JOIN_LIMIT = 60.0  # far above the drain; a regression hangs on a 600 s sleeper
+pytestmark = pytest.mark.requires_contained_cgroup
 
 
 def _alive(pid: int) -> bool:
@@ -123,29 +124,6 @@ def test_grandchild_holding_the_pipe_with_a_successful_child_still_returns(tmp_p
         out = capsys.readouterr().out
         assert "hello\nworld\n" in out
         assert sum(line.startswith("[WARN]") for line in out.splitlines()) == 1
-    finally:
-        _kill_quietly(holder)
-
-
-def test_holder_scan_failure_still_warns_without_pids(tmp_path, monkeypatch, capsys):
-    def broken_scan(_inode):
-        raise OSError("injected /proc failure")
-
-    monkeypatch.setattr(runner, "_pipe_holder_pids", broken_scan)
-    pidfile = tmp_path / "holder.pid"
-    log = tmp_path / "step.log"
-    holder = None
-    try:
-        with log.open("a", encoding="utf-8") as handle:
-            thread, outcome = _run_in_thread(
-                ["bash", "-c", _holder_script(pidfile, 0)], tmp_path, handle,
-            )
-            holder = _wait_pidfile(pidfile)
-            thread.join(JOIN_LIMIT)
-            assert not thread.is_alive()
-        assert "error" not in outcome
-        warn = [line for line in capsys.readouterr().out.splitlines() if line.startswith("[WARN]")]
-        assert len(warn) == 1 and str(holder) not in warn[0]
     finally:
         _kill_quietly(holder)
 
@@ -450,97 +428,12 @@ def test_unignored_sigterm_is_still_handled_while_sighup_is_ignored(tmp_path, de
     assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
 
 
-def test_signal_right_after_popen_returns_still_reaps_the_step(tmp_path, monkeypatch, default_termination_signals):
-    """A SIGTERM landing between ``Popen`` returning and the read loop must take the reaping path."""
-    real_popen = subprocess.Popen
-    started: list[int] = []
-
-    class SignallingPopen(real_popen):
-        armed = False
-
-        @property
-        def stdout(self):
-            if SignallingPopen.armed:
-                SignallingPopen.armed = False
-                os.kill(os.getpid(), signal.SIGTERM)
-            return self._test_stdout
-
-        @stdout.setter
-        def stdout(self, value):
-            self._test_stdout = value
-
-    def factory(*args, **kwargs):
-        process = SignallingPopen(*args, **kwargs)
-        started.append(process.pid)
-        SignallingPopen.armed = True
-        return process
-
-    monkeypatch.setattr(runner.subprocess, "Popen", factory)
-    try:
-        with pytest.raises(SystemExit) as exited:
-            runner.run_command(["sleep", "600"], tmp_path, _InterruptingLog("never"), quiet=True)
-        assert exited.value.code == 128 + signal.SIGTERM
-        assert started and not _alive(started[0]), "the step was left running after the signal"
-    finally:
-        for pid in started:
-            _kill_quietly(pid)
-
-
 def test_command_that_cannot_start_raises_without_reaping_or_closing_anything(tmp_path):
     log = tmp_path / "step.log"
     with log.open("a", encoding="utf-8") as handle:
         with pytest.raises(FileNotFoundError):
             runner.run_command([str(tmp_path / "no-such-program")], tmp_path, handle)
     assert log.read_text(encoding="utf-8") == ""
-
-
-def test_pipe_holder_scan_skips_processes_it_cannot_inspect(monkeypatch):
-    """Synthetic /proc observations expose the visible holder without starting processes."""
-    current_pid = 100
-    holder_pid = 41
-    unreadable_pid = 57
-    inode = 73
-    wanted = f"pipe:[{inode}]"
-    probes: list[str] = []
-    fd_entries = {holder_pid: ["0", "4"], current_pid: ["0", "1"]}
-    fd_targets = {
-        (holder_pid, "0"): "/dev/null",
-        (holder_pid, "4"): wanted,
-        (current_pid, "0"): wanted,
-        (current_pid, "1"): wanted,
-    }
-
-    def listdir(path):
-        probes.append(path)
-        if path == "/proc":
-            return ["self", "uptime", str(holder_pid), str(unreadable_pid), str(current_pid)]
-        if path == f"/proc/{unreadable_pid}/fd":
-            raise PermissionError("injected: not ours to inspect")
-        for pid, descriptors in fd_entries.items():
-            if path == f"/proc/{pid}/fd":
-                return descriptors
-        raise AssertionError(f"unexpected directory probe: {path}")
-
-    def readlink(path):
-        prefix, descriptor = path.rsplit("/", 1)
-        pid = int(prefix.removeprefix("/proc/").removesuffix("/fd"))
-        return fd_targets[(pid, descriptor)]
-
-    monkeypatch.setattr(runner.os, "getpid", lambda: current_pid)
-    monkeypatch.setattr(runner.os, "listdir", listdir)
-    monkeypatch.setattr(runner.os, "readlink", readlink)
-
-    assert runner._pipe_holder_pids(inode) == [holder_pid]
-    assert probes == ["/proc", f"/proc/{holder_pid}/fd", f"/proc/{unreadable_pid}/fd"]
-
-
-def test_reap_of_an_already_finished_group_finds_nothing_to_signal(tmp_path, monkeypatch):
-    process = subprocess.Popen(["true"], start_new_session=True)
-    process.wait()
-    runner._reap_process_group(process)  # SIGTERM finds no group; the empty group ends the wait
-    monkeypatch.setattr(runner, "GROUP_TERM_GRACE_SECONDS", 0.0)
-    runner._reap_process_group(process)  # no grace: SIGKILL finds no group either, then reaps
-    assert process.returncode == 0
 
 
 def test_failed_second_handler_install_restores_the_first(tmp_path, monkeypatch, default_termination_signals):

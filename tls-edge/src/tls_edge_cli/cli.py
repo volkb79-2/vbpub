@@ -27,6 +27,7 @@ from .config import (
     deep_merge,
     load_answers,
     load_site,
+    is_installed_stack,
     locate_instance_root,
     migrate,
     port_plan,
@@ -38,6 +39,7 @@ from .config import (
 )
 from .contract import (
     consumer_contract,
+    consumer_env_duplicates,
     consumer_env_drift,
     consumer_env_drift_message,
 )
@@ -188,8 +190,8 @@ def _propose(
     proposed_overlay = deep_merge(overlay, answers)
     values: dict[str, Any] = {}
     layout = Layout(
-        root=root,
-        stack_dir=root / "stack" / "ciu-stack",
+        root=root.parent,
+        stack_dir=root / "ciu-stack",
         overlay=overlay,
         edge={},
     )
@@ -233,7 +235,7 @@ def _propose(
     proposed = deep_merge(defaults, proposed_overlay)
     plan = validate_config(
         proposed["tls_edge"],
-        stack_dir=root / "stack" / "ciu-stack",
+        stack_dir=root / "ciu-stack",
     )
     return values, plan, consumer_contract(proposed["tls_edge"])
 
@@ -241,7 +243,7 @@ def _propose(
 def _load_checked_site(
     root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    stack_dir = root / "stack" / "ciu-stack"
+    stack_dir = root / "ciu-stack"
     defaults, overlay, effective = load_site(stack_dir)
     overlay = migrate(overlay)
     check_override(defaults, overlay)
@@ -253,16 +255,21 @@ def _load_validated_site(
     *,
     require_domain: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
-    stack_dir = root / "stack" / "ciu-stack"
+    stack_dir = root / "ciu-stack"
     _, config, _ = _load_checked_site(root)
     ports = validate_config(
         config,
         require_domain=require_domain,
         stack_dir=stack_dir,
     )
-    consumer_env = _consumer_env_status(root, consumer_contract(config))
+    consumer_env, duplicates = _consumer_env_status(
+        root,
+        consumer_contract(config),
+    )
     if consumer_env["state"] == "drift":
-        raise ConfigError(consumer_env_drift_message(consumer_env["drift"]))
+        raise ConfigError(
+            consumer_env_drift_message(consumer_env["drift"], duplicates=duplicates)
+        )
     return config, ports
 
 
@@ -271,17 +278,21 @@ def _render_config(
     values: dict[str, Any],
     extra: Mapping[str, Any],
     contract: Mapping[str, str],
-) -> tuple[Path, str, int, Path, str, int]:
+) -> tuple[Path, str, int, tuple[Path, str, int] | None]:
+    env_path = root / "consumer.env"
     try:
         override_path, override_text, override_mode = updated_override(
             root,
             values,
             extra,
         )
-        env_path, env_text, env_mode = updated_consumer_env(root, contract)
+        if is_installed_stack(root) or os.path.lexists(env_path):
+            env = updated_consumer_env(root, contract)
+        else:
+            env = None
     except (OSError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
-    return override_path, override_text, override_mode, env_path, env_text, env_mode
+    return override_path, override_text, override_mode, env
 
 
 def _diff(path: Path, old: str, new: str) -> str:
@@ -297,7 +308,7 @@ def configure(args: Any, runtime: CliRuntime) -> int:
     try:
         defaults, _, overlay = _load_checked_site(root)
         answers = load_answers(args.answers)
-        answers = dict(migrate(answers))
+        answers = dict(migrate(answers, source=args.answers))
         validate_answers(defaults, answers, answers_file=args.answers)
         extra = _answer_extras(answers)
         values, plan, contract = _propose(
@@ -309,16 +320,18 @@ def configure(args: Any, runtime: CliRuntime) -> int:
             allow_prompt=args.answers is None,
             source=f"answers file {args.answers}",
         )
-        override_path, override_text, override_mode, env_path, env_text, env_mode = (
+        override_path, override_text, override_mode, env = (
             _render_config(root, values, extra, contract)
         )
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
 
     original_override = override_path.read_text(encoding="utf-8") if override_path.exists() else ""
-    original_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     changes = _diff(override_path, original_override, override_text)
-    changes += _diff(env_path, original_env, env_text)
+    if env is not None:
+        env_path, env_text, env_mode = env
+        original_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        changes += _diff(env_path, original_env, env_text)
     if not changes:
         runtime.output.primary("Configuration already matches these answers.")
         return 0
@@ -336,30 +349,40 @@ def configure(args: Any, runtime: CliRuntime) -> int:
         runtime.output.primary("Configuration was not changed.")
         return 0
 
+    managed_paths = (
+        f"{override_path} and {env[0]}"
+        if env is not None
+        else str(override_path)
+    )
     try:
         atomic_write(override_path, override_text, override_mode)
-        atomic_write(env_path, env_text, env_mode)
+        if env is not None:
+            atomic_write(env_path, env_text, env_mode)
     except OSError as exc:
         raise CliFailure(
-            f"could not finish writing configuration: {exc}; inspect {override_path} "
-            f"and {env_path} before retrying",
+            f"could not finish writing configuration: {exc}; inspect "
+            f"{managed_paths} before retrying",
             exit_code=2,
         ) from exc
-    runtime.output.primary(f"Saved {override_path} and {env_path}.")
-    runtime.output.primary(
-        f"Next: cd {root / 'stack'} && sudo ./ciu check && sudo ./ciu up --dry-run; "
-        "review the rendered config, then deploy with CIU."
-    )
+    if env is None:
+        runtime.output.primary(f"Saved {override_path}.")
+    else:
+        runtime.output.primary(f"Saved {override_path} and {env_path}.")
+    if is_installed_stack(root):
+        runtime.output.primary(
+            f"Next: cd {root} && sudo ./ciu check && sudo ./ciu up --dry-run; "
+            "review the rendered config, then deploy with CIU."
+        )
     return 0
 
 
 def _consumer_env_status(
     root: Path,
     contract: Mapping[str, str],
-) -> dict[str, Any]:
-    env_path = root / "stack" / "consumer.env"
+) -> tuple[dict[str, Any], list[str]]:
+    env_path = root / "consumer.env"
     if not os.path.lexists(env_path):
-        return {"state": "absent", "drift": []}
+        return {"state": "absent", "drift": []}, []
     if env_path.is_symlink() or not env_path.is_file():
         raise ConfigError(f"consumer environment must be a regular file: {env_path}")
     try:
@@ -367,7 +390,8 @@ def _consumer_env_status(
     except (OSError, UnicodeError) as exc:
         raise ConfigError(f"cannot read consumer environment {env_path}: {exc}") from exc
     drift = consumer_env_drift(contract, existing)
-    return {"state": "drift" if drift else "in-sync", "drift": drift}
+    duplicates = consumer_env_duplicates(contract, existing)
+    return {"state": "drift" if drift else "in-sync", "drift": drift}, duplicates
 
 
 def show(args: Any, runtime: CliRuntime) -> int:
@@ -380,11 +404,11 @@ def show(args: Any, runtime: CliRuntime) -> int:
             config,
             require_domain=False,
             require_certificates=False,
-            stack_dir=root / "stack" / "ciu-stack",
+            stack_dir=root / "ciu-stack",
         )
         ports = port_plan(config)
         contract = consumer_contract(config)
-        consumer_env = _consumer_env_status(root, contract)
+        consumer_env, _duplicates = _consumer_env_status(root, contract)
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
     if runtime.output.json_mode:
@@ -393,7 +417,7 @@ def show(args: Any, runtime: CliRuntime) -> int:
             "format": 1,
             "version": runtime.identity.version,
             "schema": SCHEMA,
-            "stack_dir": str(root / "stack" / "ciu-stack"),
+            "stack_dir": str(root / "ciu-stack"),
             "override": has_override,
             "contract": contract,
             "ports": [
@@ -403,15 +427,12 @@ def show(args: Any, runtime: CliRuntime) -> int:
             "consumer_env": consumer_env,
         })
         return 0
-    runtime.output.primary(f"Instance: {root}")
+    runtime.output.primary(f"Stack dir: {root}")
     runtime.output.primary(f"Site override: {'present' if has_override else 'not configured'}")
     runtime.output.primary(f"Base domain: {value_at(config, 'domain') or '(unset)'}")
     runtime.output.primary(f"Certificate mode: {mode}")
     runtime.output.primary(
         f"HTTP/3: {'enabled' if value_at(config, 'http3.enabled') else 'disabled'}"
-    )
-    runtime.output.primary(
-        f"Calls media: {'enabled' if value_at(config, 'calls.enabled') else 'disabled'}"
     )
     runtime.output.primary("Inbound ports:")
     for port, protocol, purpose in ports:
@@ -448,7 +469,8 @@ def build_cli() -> Any:
     identity = _identity()
     root_option = OptionSpec(
         ("--root",),
-        "tls-edge instance root (normally detected from this installed CLI)",
+        "tls-edge stack directory containing ciu-stack/ "
+        "(normally detected from this installed CLI)",
         metavar="PATH",
         parser_kwargs={"type": Path, "default": None},
     )
@@ -461,7 +483,7 @@ def build_cli() -> Any:
     )
     registry.register(VerbSpec(
         "configure",
-        description="interactively configure TLS, public ports, HTTP/3, and optional media services",
+        description="interactively configure TLS, public ports, HTTP/3, and ingress/runtime settings",
         group=VerbGroup.MODIFICATION.value,
         mutating=True,
         dry_run=True,

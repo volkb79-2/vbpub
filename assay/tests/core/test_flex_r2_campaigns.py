@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from conftest import GitRepo
 
-from assay import _judge_projection, isolation, mutation, verdict
+from assay import _judge_projection, isolation, mutation, mutation_store, verdict
 from assay.cli import main
 from assay.resource_limits import ResourceLimitCounters
 
@@ -235,7 +235,7 @@ def test_resource_sensitive_records_re_execute_when_resources_change(
     state = tmp_path / "state"
     _code, first = _run(git_repo, state, tmp_path / "1.jsonl")
     (slow_record,) = _records(state)
-    assert slow_record["outcome_bucket"] in mutation.RESOURCE_SENSITIVE_BUCKETS
+    assert slow_record["outcome_bucket"] in mutation_store.RESOURCE_SENSITIVE_BUCKETS
     resource = _event(first, "candidates")["resource_sha256"]
     assert _records(state)[0]["resource_sha256"] == resource
 
@@ -427,7 +427,7 @@ def test_carry_over_imports_finished_records_with_provenance(
     }
     assert (
         record["carry_over"]["schema_version"]
-        == mutation.CARRY_OVER_SCHEMA_VERSION_V2
+        == mutation_store.CARRY_OVER_SCHEMA_VERSION_V2
     )
     assert record["carry_over"]["into_judge_sha256"] == judge_b
     assert record["carry_over"]["reason"] == "comment-only test change"
@@ -524,8 +524,8 @@ def test_only_killed_and_survived_are_importable(bucket: str):
     """Each unresolved bucket separately (review M7a): adding only one of
     `crashed`/`hung`/`budget_exceeded`/`equivalent` must fail here."""
     expected = bucket in ("killed", "survived")
-    assert mutation._carry_over_importable(bucket, frozenset()) is expected
-    assert mutation._carry_over_importable(bucket, frozenset({bucket})) is False
+    assert mutation_store._carry_over_importable(bucket, frozenset()) is expected
+    assert mutation_store._carry_over_importable(bucket, frozenset({bucket})) is False
 
 
 @pytest.mark.parametrize(

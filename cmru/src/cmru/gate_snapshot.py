@@ -24,8 +24,8 @@ from typing import Iterator, Mapping
 
 # Run-Gate's live Assay lanes in cmru/run-gate.toml emit closeout artifacts
 # using the Assay lane name. Keep this finite set and its suffixes in sync with
-# those two aggregate-gate choices; a directory or prefix allowlist is unsafe.
-_ASSAY_CLOSEOUT_LANES = ("cmru", "cmru-first-release")
+# that aggregate-gate choice; a directory or prefix allowlist is unsafe.
+_ASSAY_CLOSEOUT_LANES = ("cmru",)
 _ASSAY_CLOSEOUT_SUFFIXES = ("exit", "json", "txt", "err")
 _LANE_EVIDENCE_FILES = (
     "cmru/coverage.json",

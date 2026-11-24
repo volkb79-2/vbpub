@@ -136,7 +136,9 @@ def test_source_family_helper_refuses_multiple_families(monkeypatch, tmp_path):
         transaction.source_git_root_for_projects(tmp_path, [object(), object()])
 
 
-def test_create_workspace_removes_shared_allocation_when_reset_fails(monkeypatch, tmp_path):
+def test_create_workspace_removes_shared_allocation_when_reset_fails(
+    monkeypatch, tmp_path, process_run_seam,
+):
     removed = []
     context = SimpleNamespace()
     shared = _fake_shared()
@@ -144,9 +146,8 @@ def test_create_workspace_removes_shared_allocation_when_reset_fails(monkeypatch
     shared.remove_workspace = lambda value, **kwargs: removed.append((value, kwargs))
     monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
     calls = []
-    monkeypatch.setattr(
-        transaction.subprocess,
-        "run",
+    process_run_seam(
+        transaction,
         lambda *args, **kwargs: calls.append(kwargs) or subprocess.CompletedProcess(
             args[0], 1, stdout="", stderr="reset failed"
         ),

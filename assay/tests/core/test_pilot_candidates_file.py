@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from assay import cli, mutation
+from assay import cli, mutation, mutation_store
 from assay.adapters.python import PythonAdapter
 from assay.cli import main
 from assay.errors import LaneConfigError, Outcome, ReasonCode
@@ -1232,7 +1232,7 @@ def test_proc_fd_state_store_stays_bound_to_the_admitted_directory(
         cli._verify_state_directory_identity(
             admitted_root, root_fd, requested_path=state_dir
         )
-        mutation._write_mutation_state_record(
+        mutation_store._write_mutation_state_record(
             state_dir,
             {"candidate_id": "a" * 64},
             state_root_fd=root_fd,
@@ -1411,7 +1411,7 @@ def test_mutation_record_writer_stays_in_admitted_directory_after_path_replaceme
         state_dir.parent.rename(moved_parent)
         state_dir.parent.mkdir()
         state_dir.mkdir()
-        mutation._write_mutation_state_record(
+        mutation_store._write_mutation_state_record(
             state_dir,
             {"candidate_id": "a" * 64},
             state_root_fd=root_fd,
@@ -1558,7 +1558,7 @@ def test_validated_resume_reads_state_records_from_admitted_directory_fd(
         (state_dir / mutation.mutation_state_record_name(selected)).write_text(
             "{}", encoding="utf-8"
         )
-        record = mutation._load_validated_state_record(
+        record = mutation_store._load_validated_state_record(
             state_dir,
             job,
             judge=judge_sha256,
@@ -1615,13 +1615,13 @@ def test_real_candidate_timeout_record_is_valid_but_not_a_completed_pilot(
     relabelled_timeout = json.loads(json.dumps(valid_record))
     relabelled_timeout["outcome_bucket"] = "killed"
     record_path.write_text(json.dumps(relabelled_timeout), encoding="utf-8")
-    assert mutation._load_validated_state_record(
+    assert mutation_store._load_validated_state_record(
         state_dir,
         job,
         judge=judge_sha256,
         campaign_deadline_sha256=None,
-        cold_witness=False,
-    ) is mutation._RECORD_REJECTED
+        context=mutation_store.RecordContext(cold_witness=False),
+    ) is mutation_store._RECORD_REJECTED
 
     def assert_rejected(change) -> None:
         changed = json.loads(json.dumps(valid_record))

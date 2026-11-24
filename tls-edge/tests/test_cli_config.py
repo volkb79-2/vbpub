@@ -7,17 +7,17 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from tls_edge_cli import config, contract
+from _layout import instance_stack_dir
+from tls_edge_cli import config
 
 
 def valid_config() -> dict:
     return {
-        "schema": 1,
+        "schema": 2,
         "domain": "edge.example.com",
         "tls": {"mode": "acme-tls"},
         "ports": {"expose_http": True, "http": 80, "https": 443, "bind_ip": ""},
         "http3": {"enabled": False},
-        "calls": {"enabled": False},
         "acme": {
             "email": "",
             "volume_name": "",
@@ -36,11 +36,12 @@ def valid_config() -> dict:
 
 
 def make_root(path: Path, template: str | None = None) -> Path:
-    defaults = path / "stack" / "ciu-stack" / "ciu.defaults.toml.j2"
+    root = instance_stack_dir(path)
+    defaults = root / "ciu-stack" / "ciu.defaults.toml.j2"
     defaults.parent.mkdir(parents=True)
     defaults.write_text(template or """\
 [tls_edge]
-schema = 1
+schema = 2
 domain = "edge.example.com"
 ingress_external = false
 [tls_edge.tls]
@@ -51,8 +52,6 @@ http = 80
 https = 443
 bind_ip = ""
 [tls_edge.http3]
-enabled = false
-[tls_edge.calls]
 enabled = false
 [tls_edge.acme]
 email = ""
@@ -70,21 +69,21 @@ acme = { path = "", uid = 0, gid = 0, mode = "0700" }
 [tls_edge.runtime]
 cgroup_parent = ""
 """, encoding="utf-8")
-    return path
+    return root
 
 
 def test_locate_explicit_root_and_reject_wrong_layout(tmp_path: Path):
     root = make_root(tmp_path / "instance")
     assert config.locate_instance_root(root) == root.absolute()
-    with pytest.raises(config.ConfigError, match="not a tls-edge instance root"):
+    with pytest.raises(config.ConfigError, match="not a tls-edge stack directory"):
         config.locate_instance_root(tmp_path / "missing")
 
 
 def test_locate_installed_root_from_current_symlink(tmp_path: Path, monkeypatch):
     root = make_root(tmp_path / "instance")
-    release = root / "releases" / "tls-edge-v3.1.0"
+    release = root.parent / "releases" / "tls-edge-v3.1.0"
     make_root(release)
-    (root / "current").symlink_to(release)
+    (root.parent / "current").symlink_to(release)
     monkeypatch.setattr(sys, "prefix", str(release / "venv"))
     assert config.locate_instance_root() == root
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "unmanaged" / "venv"))
@@ -100,14 +99,14 @@ def test_deep_merge_converts_nested_structures():
 
 def test_instance_paths_point_into_the_installed_stack(tmp_path: Path):
     defaults, override, env = config.instance_paths(tmp_path)
-    assert defaults == tmp_path / "stack/ciu-stack/ciu.defaults.toml.j2"
-    assert override == tmp_path / "stack/ciu-stack/ciu.toml.j2"
-    assert env == tmp_path / "stack/consumer.env"
+    assert defaults == tmp_path / "ciu-stack/ciu.defaults.toml.j2"
+    assert override == tmp_path / "ciu-stack/ciu.toml.j2"
+    assert env == tmp_path / "consumer.env"
 
 
 def test_render_defaults_and_report_template_and_toml_errors(tmp_path: Path):
     root = make_root(tmp_path / "instance")
-    path = root / "stack/ciu-stack/ciu.defaults.toml.j2"
+    path = root / "ciu-stack/ciu.defaults.toml.j2"
     assert config.render_defaults(path)["tls_edge"]["domain"] == "edge.example.com"
     with pytest.raises(config.ConfigError, match="cannot load tls-edge defaults"):
         config.render_defaults(tmp_path / "absent")
@@ -123,29 +122,29 @@ def test_load_site_merges_a_valid_override_and_requires_tls_edge_defaults(
     tmp_path: Path,
 ):
     root = make_root(tmp_path / "instance")
-    defaults, overlay, effective = config.load_site(root / "stack" / "ciu-stack")
+    defaults, overlay, effective = config.load_site(root / "ciu-stack")
     assert defaults["tls_edge"]["domain"] == "edge.example.com"
     assert overlay == {}
     assert effective["tls_edge"] == valid_config()
 
-    override = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    override = root / "ciu-stack" / "ciu.toml.j2"
     override.write_text(
         '[tls_edge]\ndomain = "override.example.org"\n',
         encoding="utf-8",
     )
-    _, overlay, effective = config.load_site(root / "stack" / "ciu-stack")
+    _, overlay, effective = config.load_site(root / "ciu-stack")
     assert overlay["tls_edge"]["domain"] == "override.example.org"
     assert effective["tls_edge"]["domain"] == "override.example.org"
 
     bad = make_root(tmp_path / "bad", "[other]\nvalue = 1\n")
     with pytest.raises(config.ConfigError, match="must contain a \\[tls_edge\\] table"):
-        config.load_site(bad / "stack" / "ciu-stack")
+        config.load_site(bad / "ciu-stack")
 
 
 @pytest.mark.parametrize("kind", ["symlink", "directory", "malformed"])
 def test_load_site_refuses_invalid_overrides(tmp_path: Path, kind: str) -> None:
     root = make_root(tmp_path / kind)
-    override = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    override = root / "ciu-stack" / "ciu.toml.j2"
     if kind == "symlink":
         override.symlink_to(root / "missing")
     elif kind == "directory":
@@ -153,7 +152,7 @@ def test_load_site_refuses_invalid_overrides(tmp_path: Path, kind: str) -> None:
     else:
         override.write_text("broken = [", encoding="utf-8")
     with pytest.raises(config.ConfigError, match="site override"):
-        config.load_site(root / "stack" / "ciu-stack")
+        config.load_site(root / "ciu-stack")
 
 
 def test_load_answers_none_valid_unknown_and_parse_error(tmp_path: Path):
@@ -306,7 +305,6 @@ def test_validate_config_builds_default_and_optional_port_plans():
     [
         ("ports", "expose_http", "ports.expose_http must be true or false"),
         ("http3", "enabled", "http3.enabled must be true or false"),
-        ("calls", "enabled", "calls.enabled must be true or false"),
     ],
 )
 def test_port_plan_refuses_non_boolean_listener_switches(
@@ -333,7 +331,6 @@ def test_port_plan_refuses_http_and_https_on_the_same_tcp_port() -> None:
     (lambda c: c.update(domain=""), "domain is required"),
     (lambda c: c["ports"].update(expose_http=1), "ports.expose_http"),
     (lambda c: c["http3"].update(enabled="yes"), "http3.enabled"),
-    (lambda c: c["calls"].update(enabled=0), "calls.enabled"),
     (lambda c: c["ports"].update(http=443), "cannot publish the same TCP port"),
     (lambda c: c["ports"].update(https=444), "acme-tls requires"),
     (lambda c: c["ports"].update(bind_ip=123), "ports.bind_ip must be an IP address or an empty string"),
@@ -345,8 +342,6 @@ def test_port_plan_refuses_http_and_https_on_the_same_tcp_port() -> None:
     (lambda c: c["static"].update(source="copy"), "static.source"),
     (lambda c: c["static"].update(domains="edge.example.com"), "static.domains"),
     (lambda c: c["static"].update(domains=["not a domain"]), "static certificate lineage"),
-    (lambda c: (c["http3"].update(enabled=True), c["calls"].update(enabled=True), c["calls"].update(public_port=80)), "Calls TCP conflicts"),
-    (lambda c: (c["http3"].update(enabled=True), c["calls"].update(enabled=True), c["calls"].update(public_port=443)), "Calls TCP conflicts"),
     (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="bad/name")), "acme.dns.provider"),
     (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="cloudflare", wildcard_main="bad domain")), "wildcard_main"),
     (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="cloudflare", wildcard_main=3)), "wildcard_main must be a DNS name or empty"),
@@ -359,14 +354,13 @@ def test_validate_config_rejects_invalid_combinations(mutate, message):
         config.validate_config(value)
 
 
-def test_validate_config_http3_calls_dns_static_and_port_constraints():
+def test_validate_config_http3_dns_static_and_port_constraints():
     value = valid_config()
     value["http3"]["enabled"] = True
-    value["calls"].update(enabled=True, public_port=8443)
-    assert config.validate_config(value)[-3:] == [
+    assert config.validate_config(value) == [
+        "80/tcp (HTTP redirect and/or HTTP-01)",
+        "443/tcp (HTTPS, HTTP/1.1 and HTTP/2)",
         "443/udp (HTTP/3 over QUIC)",
-        "8443/tcp (Calls media)",
-        "8443/udp (Calls media)",
     ]
 
     value = valid_config()
@@ -386,12 +380,6 @@ def test_validate_config_http3_calls_dns_static_and_port_constraints():
     value["tls"]["mode"] = "static"
     with pytest.raises(config.ConfigError, match="requires at least one static certificate lineage"):
         config.validate_config(value)
-
-    value = valid_config()
-    value["calls"].update(enabled=True, public_port=443)
-    with pytest.raises(config.ConfigError, match="Calls TCP conflicts"):
-        config.validate_config(value)
-
 
 def test_validate_config_hostdir_rules_and_modes(tmp_path: Path):
     value = valid_config()
@@ -473,7 +461,7 @@ def test_updated_override_creates_preserves_and_rejects_invalid_paths(tmp_path: 
 
 def test_updated_override_reports_parse_and_nested_shape_errors(tmp_path: Path):
     root = make_root(tmp_path / "instance")
-    path = root / "stack/ciu-stack/ciu.toml.j2"
+    path = root / "ciu-stack/ciu.toml.j2"
     path.write_text("broken = [", encoding="utf-8")
     with pytest.raises(config.ConfigError, match="malformed site override"):
         config.updated_override(root, {"domain": "x.example"})
@@ -499,17 +487,41 @@ def test_updated_consumer_env_creates_and_replaces_only_owned_entries(
     root = make_root(tmp_path / "instance")
     one = _consumer_contract("one.example")
     path, text, mode = config.updated_consumer_env(root, one)
-    assert text == contract.render_env(one) and mode == 0o644
+    assert text == (
+        "TLS_EDGE_DOMAIN=one.example\n"
+        "TLS_EDGE_NETWORK=ingress_public\n"
+        "TLS_EDGE_HTTPS_ENTRYPOINT=websecure\n"
+        "TLS_EDGE_HEADERS_MIDDLEWARE=secure-headers@file\n"
+        "TLS_EDGE_HTTP3=false\n"
+        "TLS_EDGE_PUBLIC_PORTS=80/tcp,443/tcp\n"
+    )
+    assert mode == 0o644
     path.write_text("OTHER=value\nTLS_EDGE_DOMAIN=old\nTLS_EDGE_DOMAIN=duplicate\n", encoding="utf-8")
     path.chmod(0o600)
     two = _consumer_contract("two.example")
     _, text, mode = config.updated_consumer_env(root, two)
-    assert text == contract.render_env(two, "OTHER=value\n")
+    assert text == (
+        "OTHER=value\n"
+        "TLS_EDGE_DOMAIN=two.example\n"
+        "TLS_EDGE_NETWORK=ingress_public\n"
+        "TLS_EDGE_HTTPS_ENTRYPOINT=websecure\n"
+        "TLS_EDGE_HEADERS_MIDDLEWARE=secure-headers@file\n"
+        "TLS_EDGE_HTTP3=false\n"
+        "TLS_EDGE_PUBLIC_PORTS=80/tcp,443/tcp\n"
+    )
     assert mode == 0o600
     path.write_text("OTHER=value\n", encoding="utf-8")
     three = _consumer_contract("three.example")
     _, text, mode = config.updated_consumer_env(root, three)
-    assert text == contract.render_env(three, "OTHER=value\n")
+    assert text == (
+        "OTHER=value\n"
+        "TLS_EDGE_DOMAIN=three.example\n"
+        "TLS_EDGE_NETWORK=ingress_public\n"
+        "TLS_EDGE_HTTPS_ENTRYPOINT=websecure\n"
+        "TLS_EDGE_HEADERS_MIDDLEWARE=secure-headers@file\n"
+        "TLS_EDGE_HTTP3=false\n"
+        "TLS_EDGE_PUBLIC_PORTS=80/tcp,443/tcp\n"
+    )
     assert mode == 0o600
     path.unlink()
     path.mkdir()

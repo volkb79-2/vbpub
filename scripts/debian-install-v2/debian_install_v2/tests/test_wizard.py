@@ -17,6 +17,7 @@ from debian_install_v2.config import (
 from debian_install_v2.wizard import (
     _ask_field,
     _load_questionary,
+    _summary,
     WIZARD_SECTIONS,
     run_configuration_wizard,
     uncovered_config_fields,
@@ -159,6 +160,30 @@ def test_wizard_exposes_one_disk_plan_and_auto_swap_size():
     assert _ask_field(
         _Questionary(text=["12"]), fields_by_name["swap_disk_total_gb"], None, runtime
     ) == 12
+
+
+def test_wizard_summary_accepts_schema_two_subvolumes():
+    config = Config(
+        schema_version=2,
+        partitioning={
+            "root": "*",
+            "reserve_gb": 0,
+            "iobench_raw_gb": False,
+            "data": {
+                "kind": "subvolumes",
+                "volumes": [{"name": "@cow", "mount": "/srv/cow", "nocow": False}],
+            },
+        },
+        swap_policy="off",
+        swap_partition_count=0,
+        run_io_benchmark=False,
+    )
+
+    summary = _summary(config)
+
+    assert "schema_version: 2" in summary
+    assert "'@cow'" in summary
+    assert "iobench-raw=disabled" in summary
 
 
 def test_save_config_writes_valid_mode_0600_json_and_refuses_clobber(tmp_path):

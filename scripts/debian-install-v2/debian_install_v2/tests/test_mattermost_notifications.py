@@ -13,6 +13,7 @@ import subprocess
 import threading
 import urllib.error
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -255,6 +256,7 @@ def test_every_milestone_is_posted_with_the_common_prefix(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError):
         installer.install()
     monkeypatch.setattr(installer, "_stage2", lambda: (_ for _ in ()).throw(RuntimeError("stage2 broke")))
+    (Path(installer.config.state_dir) / "stage2_done").unlink(missing_ok=True)
     with pytest.raises(RuntimeError):
         installer.resume()
     assert len(posts) == 8, posts
@@ -347,7 +349,8 @@ def _env_of(command):
 def test_customscript_carries_webhook_shell_quoted(url):
     bundle = build_customscript_bundle(Config(mattermost_webhook_url=url))
     env = _env_of(bundle["customScript"])  # shlex round-trip: no injection, no truncation
-    assert set(env) == {"REPO_URL", "REPO_BRANCH", "VBPUB_CONFIG_EXTRA_JSON"}
+    assert set(env) == {"DR_STATE", "REPO_URL", "REPO_BRANCH", "VBPUB_CONFIG_EXTRA_JSON"}
+    assert env["DR_STATE"] == "none"
     assert json.loads(env["VBPUB_CONFIG_EXTRA_JSON"])["mattermost_webhook_url"] == url
     assert shlex.quote(json.dumps(json.loads(env["VBPUB_CONFIG_EXTRA_JSON"]), sort_keys=True, separators=(",", ":"))) in bundle["customScript"]
 

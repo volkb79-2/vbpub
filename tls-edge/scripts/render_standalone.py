@@ -4,8 +4,9 @@
 Reads ciu-stack/ciu.defaults.toml.j2 (+ optional gitignored ciu-stack/ciu.toml.j2
 override, same schema) through the same pipeline ciu uses — Jinja render, TOML
 parse, deep merge — then renders docker-compose.yml, traefik.yml and
-conf.d/certs.yml into edge-proxy/ with a standalone context (no `deploy`
-namespace; `tls_edge.standalone` forced true).
+the dynamic config into the directory named by --out with a standalone
+context (no `deploy` namespace; `tls_edge.standalone` forced true).  The
+generated tree is a trial artifact, never a committed deployment.
 
 DooD-aware: when running inside a container whose Docker daemon is the host's
 (devcontainer), bind-mount sources are emitted as physical host paths.
@@ -36,12 +37,12 @@ except ImportError:
 
 
 TEMPLATES = ("ciu.compose.yml.j2", "traefik.yml.j2", "conf.d/certs.yml.j2")
-STATIC_FILES = ("conf.d/options.yml", "conf.d/middlewares.yml")
+STATIC_FILES = ("env.example", "conf.d/options.yml", "conf.d/middlewares.yml")
 
-# ciu v2 renders ciu.compose.yml; the standalone renderer targets edge-proxy/
-# which ships a committed docker-compose.yml for plain `docker compose up`.
+# ciu v2 renders ciu.compose.yml; a trial render uses docker-compose.yml.
 STANDALONE_OUTPUT_NAMES = {
     "ciu.compose.yml.j2": "docker-compose.yml",
+    "env.example": ".env.example",
 }
 
 
@@ -121,7 +122,7 @@ def _validate(
         sys.exit(f"error: {exc}")
     if cfg.get("secrets"):
         sys.exit("error: [tls_edge.secrets] directives require ciu; in standalone "
-                 "mode put credentials in the gitignored edge-proxy/.env instead")
+                 "mode put credentials in the generated .env file instead")
 
 
 def validate(cfg: dict) -> None:
@@ -150,7 +151,7 @@ def render_outputs(stack_dir: Path, out_dir: Path, cfg: dict,
         written.append(target)
     if not certs_only:
         for rel in STATIC_FILES:
-            target = out_dir / rel
+            target = out_dir / STANDALONE_OUTPUT_NAMES.get(rel, rel)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(stack_dir / rel, target)
             written.append(target)
@@ -173,11 +174,10 @@ def main() -> None:
     parser.add_argument("--stack-dir", type=Path, default=ROOT / "ciu-stack")
     parser.add_argument("--out", type=Path, default=ROOT / "edge-proxy")
     parser.add_argument("--defaults-only", action="store_true",
-                        help="ignore ciu.toml.j2 (maintainer regeneration of the "
-                             "committed default artifacts)")
+                        help="ignore ciu.toml.j2 and render the default trial tree")
     parser.add_argument("--stamp", action="store_true",
                         help="write a real timestamp into conf.d/certs.yml "
-                             "(used by the certbot deploy hook)")
+                             "instead of the inert default")
     parser.add_argument("--certs-only", action="store_true",
                         help="render only conf.d/certs.yml")
     parser.add_argument("--check", action="store_true",
@@ -200,10 +200,8 @@ def main() -> None:
         print(f"OK: mode={cfg['tls']['mode']} renders and validates")
         return
 
-    # base_dir points at the DEPLOYMENT directory (where compose runs and the
-    # bind-mount sources live) — always edge-proxy/, independent of --out, so
-    # drift-check renders to a temp dir produce identical mount lines.
-    deploy_dir = ROOT / "edge-proxy"
+    # base_dir points at the trial deployment directory where Compose runs.
+    deploy_dir = args.out
     if args.defaults_only:
         # Committed default artifacts stay machine-neutral; DooD users re-render.
         base = deploy_dir

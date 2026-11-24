@@ -666,13 +666,15 @@ def test_budget_record_lookup_without_a_valid_judge_digest_is_false(tmp_path):
 def test_budget_record_lookup_preserves_terminal_evidence_corruption(
     tmp_path, monkeypatch
 ):
-    corruption = cli.mutation.MutationTerminalEvidenceError("invalid terminal proof")
+    corruption = cli.mutation_store.MutationTerminalEvidenceError("invalid terminal proof")
 
     def load_corrupt_record(*_args, **_kwargs):
         raise corruption
 
-    monkeypatch.setattr(cli.mutation, "_load_validated_state_record", load_corrupt_record)
-    with pytest.raises(cli.mutation.MutationTerminalEvidenceError) as caught:
+    monkeypatch.setattr(
+        cli.mutation_store, "_load_validated_state_record", load_corrupt_record
+    )
+    with pytest.raises(cli.mutation_store.MutationTerminalEvidenceError) as caught:
         cli._pilot_has_budget_record(
             tmp_path,
             object(),

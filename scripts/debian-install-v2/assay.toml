@@ -53,7 +53,7 @@ unsafe_symlink_omissions = [
 [lanes.r2.judge]
 language = "python"
 source_roots = ["debian_install_v2"]
-base = "origin/main"
+base_source = "request"
 
 [lanes.r2.judge.mutation]
 # Ceiling (assay >= 11): the one-candidate rule (B157/A-491) is lifted; windows

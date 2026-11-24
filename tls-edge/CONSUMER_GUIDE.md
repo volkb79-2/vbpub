@@ -2,7 +2,7 @@
 
 ## Overview
 
-The edge-proxy stack runs a single Traefik instance that:
+The tls-edge instance runs a single Traefik deployment that:
 - terminates TLS for all consumer services on this host
 - routes requests by host name (one host name per service, all on port 443)
 - discovers consumer services automatically from Docker labels
@@ -13,7 +13,7 @@ ACME HTTP-01 challenges.  It can be disabled (`tls_edge.ports.expose_http =
 false`).  Always publish `https://` URLs.
 
 Consumers attach to the shared `ingress_public` network and declare routing
-via Compose labels.  No access to the edge-proxy stack itself is needed.
+via Compose labels.  No access to the tls-edge instance itself is needed.
 
 The network, HTTPS entrypoint, headers middleware, HTTP/3 state and public
 ports are one rendered contract, not values inferred from tls-edge defaults.
@@ -39,27 +39,21 @@ cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
 Container names of an installed instance are `tls-edge-<id>-traefik` and
-`tls-edge-<id>-dockerproxy` (the network alias `traefik` is kept).  The log
-and restart commands below say `edge-traefik` (the name of the plain-compose
-render in `edge-proxy/`); substitute your container's name.
+`tls-edge-<id>-dockerproxy` (the network alias `traefik` is kept).  Use those
+names in the commands below; they are discovered from Compose labels where the
+scripts can do so.
 
 ---
 
 ## Prerequisites
 
-1. The edge-proxy stack is running (any of these starts it):
+1. The tls-edge instance is running:
    ```sh
-   # Standalone (pre-rendered default — acme-tls mode, no tooling required):
-   cd tls-edge/edge-proxy && docker compose up -d
-
-   # Installed instance (get.py, bundled ciu; docs/INSTALL.md):
+   # Supported path (get.py, bundled ciu; docs/INSTALL.md):
    cd /srv/tls-edge-instance/stack && ./ciu up
-
-   # Interactive installer for the plain-compose render:
-   tls-edge/scripts/install.sh
    ```
 
-2. The shared ingress network exists (created by the edge-proxy stack):
+2. The shared ingress network exists (created by the tls-edge stack):
    ```sh
    docker network ls | grep ingress_public
    ```
@@ -114,9 +108,9 @@ harmless if present, but omitting them keeps labels clean.
 Every service gets its own host name on the shared HTTPS port; the edge has no
 alternate HTTPS entrypoint. Generic defaults publish 80/tcp (optional redirect
 and ACME HTTP-01) and 443/tcp (all HTTPS). HTTP/3 can add UDP on the public
-HTTPS port, and the optional Mattermost Calls preset adds 8443/tcp+udp. Point
-one DNS name per service at the host (a wildcard record is fine) and route by
-`Host()`.
+HTTPS port. Raw TCP/UDP media is published directly by the application and is
+not an edge entrypoint. Point one DNS name per service at the host (a wildcard
+record is fine) and route by `Host()`.
 
 > Only one service can own the combination of hostname + entrypoint.  To
 > share one host name between two services add a path matcher:
@@ -146,8 +140,7 @@ terminates TLS and obtains a certificate for the configured
 The Jitsi Videobridge media path is separate: the `jvb` service publishes UDP
 10000 directly on the host, and advertises the host's public IP to clients.
 Open UDP 10000 in both host and provider firewalls. This traffic does not pass
-through Traefik, and Jitsi does not require the optional Mattermost Calls
-8443/tcp+udp preset.
+through Traefik or tls-edge.
 
 The relevant consumer labels are:
 
@@ -261,7 +254,7 @@ Checklist:
 
 Protects the route with HTTP Basic Authentication declared entirely in Docker
 Compose labels.  Traefik discovers the middleware automatically — no changes to
-the edge-proxy stack are needed.
+the tls-edge instance are needed.
 
 #### How it works
 
@@ -376,7 +369,7 @@ Traefik self-signed default), canary route end-to-end, ops isolation probe.
 
 ```sh
 # Traefik logs show provider reload events when containers start/stop.
-docker logs edge-traefik --follow --tail 50
+docker logs tls-edge-<id>-traefik --follow --tail 50
 
 # Look for lines like:
 #   level=info ... msg="Adding route for [svc.my.domain]"
@@ -420,10 +413,10 @@ The Traefik access log is in **JSON format**.  Use `jq` to query it:
 
 ```sh
 # Time, router name, and HTTP status for all routed requests
-docker logs edge-traefik | jq -r 'select(.RouterName != null) | [.time, .RouterName, .DownstreamStatus] | @tsv'
+docker logs tls-edge-<id>-traefik | jq -r 'select(.RouterName != null) | [.time, .RouterName, .DownstreamStatus] | @tsv'
 
 # Filter to a specific router
-docker logs edge-traefik | jq -r 'select(.RouterName == "pattern-a-app@docker")'
+docker logs tls-edge-<id>-traefik | jq -r 'select(.RouterName == "pattern-a-app@docker")'
 
 # Docker events show container registration / deregistration moments.
 docker events --filter type=container --filter event=start --filter event=die
@@ -459,15 +452,17 @@ the offline run-gate lane because it needs public DNS, ACME, and UDP/443 access.
 Docker host port collisions (two containers try to `ports: - "443:..."` directly):
 - Docker rejects the second `docker compose up` with an error like:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
-- Only the edge-proxy stack should ever publish ports 80, 443 and 8443.
-- Consumer stacks must NOT publish their own ports on those numbers.
+- Only the tls-edge instance should publish HTTP/HTTPS ports 80 and 443.
+- HTTP consumer services must not publish those edge ports. An application
+  that serves raw TCP/UDP media owns and publishes its separate host port
+  pair directly; Mattermost Calls uses TCP/UDP 8443.
 
 Traefik router rule collisions (two services declare the same hostname + entrypoint):
 - Traefik logs a warning and routes to one of them (indeterminate selection).
 - Use unique subdomains, or add a path prefix rule to distinguish them.
 - Only one service can own a given Host + entrypoint combination; add
   `&& PathPrefix(...)` to share it between multiple services.
-- Check for conflicts: `docker logs edge-traefik | grep -i "conflict\|duplicate"`
+- Check for conflicts: `docker logs tls-edge-<id>-traefik | grep -i "conflict\|duplicate"`
 
 ---
 
@@ -487,17 +482,15 @@ certificates per week per domain).  Do not delete the volume in production.
 
 ### static mode — per-subdomain or SAN cert (automatic certbot renewal)
 
-Certbot runs on the host and renews certificates automatically.  After
-renewal, the deploy hook rewrites the `# rendered:` timestamp in
-`edge-proxy/conf.d/certs.yml` on the host filesystem.  The `:ro` bind mount
-propagates this change into the container and triggers Traefik's inotify
-file-provider watcher, reloading the new certificate with **zero downtime**.
+Certbot runs on the host and renews certificates automatically.  After renewal,
+the deploy hook resolves the instance's Traefik container from Compose labels
+and runs `docker restart --time 5 <name>`.  The restart takes about 3 seconds
+and reads no modified synced file.
 
 ```sh
-# Install the hook (run once, or via scripts/install.sh):
-cp tls-edge/scripts/certbot-deploy-hook.sh \
+# Install the stable hook symlink (run once, and again after updating a 3.x copied hook):
+ln -sf /srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh \
    /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
 
 # Test renewal dry-run including hook execution:
 certbot renew --dry-run
@@ -506,14 +499,10 @@ certbot renew --dry-run
 Expected output during renewal:
 ```
 Running deploy hook: /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
-[certbot-hook] Certificate renewed.  Reloading Traefik dynamic config...
-[certbot-hook] Reload triggered.
+tls-edge: restarting tls-edge-example-traefik to reload certificates (about 3 s)
 ```
 
-If the inotify reload does not fire for any reason, the fallback is:
-```sh
-docker restart --time 5 edge-traefik   # ~3 seconds downtime
-```
+When no matching container is running, the hook prints a message and exits 0.
 
 ### static mode — wildcard cert via manual DNS TXT (no DNS API required)
 
@@ -570,8 +559,8 @@ certbot certonly \
   --email ops@example.com --agree-tos --no-eff-email \
   -d example.com -d '*.example.com'
 
-# After certbot completes, Traefik reloads via the deploy hook automatically.
-# No container restart needed.
+# After certbot completes, the deploy hook restarts Traefik automatically
+# (about 3 s) so it reads the renewed certificate files.
 ```
 
 > **Tip**: if you later gain API access to your DNS provider, switch to
@@ -592,7 +581,7 @@ or when adding new domains.
 |---|---|---|
 | `traefik.enable=true` | yes | Opt this container into Traefik routing |
 | `traefik.http.routers.<n>.rule` | yes | Routing rule, e.g. `Host(...)` |
-| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443); Calls media uses TCP/UDP `calls` entrypoints (8443), see `consumer-examples/pattern-e-media-udp` |
+| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443) |
 | `traefik.http.services.<n>.loadbalancer.server.port` | yes | Container port to forward to |
 | `traefik.http.routers.<n>.tls=true` | no | TLS is enabled at the entrypoint level — not needed |
 | `traefik.http.routers.<n>.tls.certresolver` | no | Cert resolver is set at the entrypoint level — not needed |
@@ -602,10 +591,9 @@ or when adding new domains.
 `<n>` must be a unique name per router/service **across all containers on the host**.
 Convention: `<stack>-<service>`.
 
-Raw TCP/UDP media forwarding is a separate optional feature; HTTP router labels
-do not carry it. For Mattermost Calls, public TCP and UDP 8443 are routed by
-the L4 labels in the Mattermost CIU template. See
-[`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the port mapping and firewall
+Raw TCP/UDP media is not forwarded by Traefik and HTTP router labels do not
+carry it. The application publishes its own media ports directly. See
+[`docs/CONSUMERS.md`](docs/CONSUMERS.md) for examples and firewall
 requirements.
 
 ---
@@ -624,18 +612,17 @@ tls-edge/
       certs.yml.j2                  ←   static cert store template
     ciu.toml.j2                     ←   (gitignored) your local overrides
 
-  edge-proxy/                       ← rendered output — DO NOT EDIT DIRECTLY
-    docker-compose.yml              ←   pre-rendered for acme-tls (default mode)
-    traefik.yml                     ←   pre-rendered static config
+  edge-proxy/                       ← optional gitignored trial render
+    docker-compose.yml              ←   generated for acme-tls (default mode)
+    traefik.yml                     ←   generated static config
     conf.d/
       options.yml                   ←   copied from ciu-stack/conf.d/
       middlewares.yml               ←   copied from ciu-stack/conf.d/
       certs.yml                     ←   rendered cert store (ACME mode: empty)
-    .env                            ←   (gitignored) acme-dns credentials
+    .env                            ←   (gitignored) acme-dns trial credentials
 
   scripts/
-    render.sh                       ←   standalone re-render (writes edge-proxy/)
-    install.sh                      ←   first-time setup + hook installation
+    render.sh                       ←   standalone re-render (default --out: edge-proxy/)
     verify.sh                       ←   post-deploy check suite
     dev-certs.sh                    ←   generate self-signed certs for dev mode
     certbot-deploy-hook.sh          ←   install to /etc/letsencrypt/renewal-hooks/deploy/
@@ -652,15 +639,13 @@ tls-edge/
     .env.example
 ```
 
-To change any configuration value, edit `ciu-stack/ciu.toml.j2` (create it if
-it does not exist) with only the keys to override, then re-render:
+For the supported deployment, use `/srv/tls-edge-instance/bin/tls-edge
+configure` and then run ciu:
 
 ```sh
-# Standalone:
-tls-edge/scripts/render.sh
-
-# ciu v2:
-cd tls-edge/ciu-stack && ciu
+sudo /srv/tls-edge-instance/bin/tls-edge configure
+cd /srv/tls-edge-instance/stack
+sudo ./ciu check && sudo ./ciu up --dry-run && sudo ./ciu up
 ```
 
 Static config changes (log level, entrypoints, TLS mode, ACME settings) take

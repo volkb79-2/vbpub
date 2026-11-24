@@ -733,11 +733,44 @@ project-relative files/directories and the transaction refuses missing or symlin
 rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
+## Step supervision is bounded and comes from cli-extended
+
+CMRU does not keep a second implementation of child supervision. A project command is started in
+its own session through `cli_extended.procio.run_streaming`, with `progress_paths=()` and the
+resolved no-progress bound. The 1800-second default is finite and has no off value. The optional
+top-level `[runner] no_progress_timeout_seconds` supplies a project value; the optional
+`steps.<name>.no_progress_timeout_seconds` wins over it. The strict loader accepts only that
+runner key, requires a non-boolean finite number greater than zero at either level, and reports
+the exact source key in the watchdog failure. The keys are optional, so revision 5 projects and
+`cmru standards` do not need a migration.
+
+The supervisor drains output for two seconds after the child exits, then stops even if a
+descendant still holds the pipe. It keeps the child's exit code, prints one
+`[WARN] ...` line on stdout, and writes one `[cmru] ...` line to the step log; the aggregate
+mirror does not receive the warning. A silent live child hits the watchdog: the captured tree is
+printed before the group receives TERM and then KILL after the five-second grace, and the step
+fails with return code 1. SIGINT, SIGTERM and SIGHUP use the same group-reaping path. A signal
+ignored at startup stays ignored in the child.
+
+Stream output is diagnostic, not structured output (D-179). Its locale decoder uses universal
+newlines and `errors="replace"`, so a completed child that wrote malformed bytes still succeeds
+and its log/mirror receive U+FFFD. Captured probes have the opposite contract:
+`run_process(capture=True)` delegates to `procio.run_capture`, retains strict text decoding, and
+gets its bounded drain and group-reaping timeout. Its new `stdin` argument accepts only `None` or
+`subprocess.DEVNULL`.
+
+Cleanup is deliberately special (D-178). `steps.clean` is parsed with the same project default
+and override, but `cleanup --policy` copies exactly the resolved timeout and source key into its
+existing synthetic cleanup config. Cleanup keeps `quiet=True`, its command/cwd and
+`repo_root/logs`, its project and protected environments, and ignores ordinary step controls,
+login and `env_command`. Thus the watchdog reaches cleanup without activating controls that
+cleanup never honored.
+
 ## Whole-target Assay and explicit R2 bases
 
 CMRU's `cmru` Assay lane judges every executable production module under
 `whole_target`, at 100% line and branch coverage. This is the same source
-inventory as the first-release lane, checked by
+inventory as `cmru-r0-r1` and `cmru-first-release-r2`, checked by
 `tests/test_assay_lane_inventory.py`. Whole-target R1 makes the release claim
 independent of Git history: merging a candidate onto `origin/main` cannot
 turn its coverage range empty, and there is no R1 release-tag pin to keep in
@@ -790,8 +823,8 @@ valid new gate start deletes any earlier marker, while an invocation refused by 
 validation (before a new gate starts) preserves the previous run's evidence. Success is decided
 only after snapshot cleanup: a cleanup failure after the lanes passed rewrites the manifest as
 `failed`, removes the marker and fails the gate, because the canary-replaced signal is exactly
-what cleanup exists to catch. The recorded follow-up is the full `gate`, not the standalone
-`mutation` lane, which cannot run without gate-prepared baseline facts. Rejected: keeping
+what cleanup exists to catch. The recorded follow-up is `assay-first-release-r2` for every
+release, first or not (KI-199). Rejected: keeping
 `state: "passed"` and relying on the marker alone (a reader of the manifest would see an
 unqualified pass). The native-R2 mutation lane declares contract-2 event
 observation; the current command lanes declare resource ceilings but do not
@@ -804,25 +837,26 @@ KI-77 tracks actual event capture for those lanes before they opt in.
 A first stable release has no previous release commit to use for changed-source
 R1 or tag-based R2. The gate queries origin through CMRU's credential-scoped
 Git transport and distinguishes a successful empty stable-tag list from a
-failed query. Only the former selects the registered whole-source
-`cmru-first-release` Assay lane, and only inside the protected CMRU release
-transaction whose candidate SHA matches HEAD. The lane names every tracked
-production module explicitly and is checked against the source tree, so an
-added module cannot silently fall outside the claim. The gate does not invent
-a baseline from `main`, a local-only tag, or another project's release.
+failed query; the former is a fact about the baseline, not a reason to select a
+different lane (KI-141 part 7). The ordinary `cmru`/`assay` lanes judge the whole
+target and need no diff base, so a first release runs exactly the same gate: its
+lane names every tracked production module explicitly and is checked against the
+source tree, so an added module cannot silently fall outside the claim. The gate
+does not invent a baseline from `main`, a local-only tag, or another project's
+release.
 
-The first-release R2 campaign remains a separate, explicit whole-source
+The whole-source R2 campaign remains a separate, explicit
 follow-up. The release marker points to `run-gate assay-first-release-r2`, which
 uses the same declared source list and does not need a previous tag. This keeps
 the release claim honest while allowing the long mutation campaign to run
 after the first stable tag exists. Once a stable CMRU release is published,
-subsequent release candidates use the ordinary whole-target R1 lane and an
-R2 campaign based on an explicit published ancestor tag.
+subsequent release candidates use that same whole-target R1 lane and the same
+R2 follow-up; only a tag-based `gate` campaign judges a changed source range.
 
 ### Whole-target Assay inventories list executable modules
 
-CMRU's `cmru`, `cmru-r0-r1`, and first-release lanes use Assay's whole-target
-mode, which needs at least one executable line in every target. CMRU's package
+CMRU's `cmru`, `cmru-r0-r1`, and `cmru-first-release-r2` lanes use Assay's
+whole-target mode, which needs at least one executable line in every target. CMRU's package
 initializer contains only its module docstring, so including it makes Assay
 refuse the baseline as `TARGET_NOT_MEASURED`. The lane inventory test derives
 the source-module set from Python syntax and checks every whole-target lane
@@ -1064,8 +1098,7 @@ same worktree lifecycle.
 
 Run-Gate's Assay lane closeout writes four files beside the verdict and
 progress stream. CMRU retains the exact `.assay/campaign-cmru.{exit,json,txt,err}`
-set and the corresponding four `campaign-cmru-first-release` files because
-those are the two Assay lanes the aggregate gate can select. Each path is named
+set because that is the one Assay lane the aggregate gate can select. Each path is named
 in the evidence set; any other `.assay` output remains subject to lane-output
 validation.
 
@@ -1200,7 +1233,7 @@ The choices, and what was rejected:
   with different code than a release uses).
 - **The declared floor is checked from installed metadata, not from importability.** The
   gate controller used to stop at `find_spec`, so a host that imported `cli_extended`
-  0.2.0 ran the protected gate under a wheel older than CMRU's declared `cli-extended>=0.3.0`.
+  0.2.0 ran the protected gate under a wheel older than CMRU's declared `cli-extended>=0.8.0`.
   It now reads each dependency's installed distribution version and tests it against the whole
   declared requirement (`>=`, `>`, `<=`, `<`, `==`, `!=`, evaluated by a small stdlib ordering,
   because nothing from the worktree or a dependency may be imported before the interpreter is

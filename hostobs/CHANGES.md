@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Changed (P-plat-02):** `tools/dev` is now a thin shim over the generic remote dev tool `scripts/controller/dev -p hostobs` (guide `scripts/controller/docs/DEV.md`): `HOSTOBS_DEV_{HOST,MEMORY,CPUS,PIDS,MAX_S}` map to `AGENT_DEV_*`, any other `HOSTOBS_DEV_*` exits 2, `clean [--checkout]` is `gc --this`; admission is the host-memory-PSI wait (`host-admission/1`), exit 75 when the host stays busy; the host state is `~/agent-dev/<hex>` and `agent-dev-cache-hostobs-<hex>` (the old `hostobs-dev-*` state is removed by `dev gc`).
 - **Fixed (P-hostobs-06b):** the serving core has no production panic in `accept`; frame-level tests cover the D-W53 shared-uid Query regression and D-W52's clamped `current` size refusal, an accept-level test covers observe's level cap, `classify` asserts in debug builds that JSON never reaches a block level, and retired JSON block-level cells are gone.
 - **Changed (P-hostobs-07, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live + retired · log live) `end_round`, plus one O(`max_active`) reverse-index rebuild after a round that retires, about 3 MiB at the 65,536 default; model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
 - **Added (probe sampler):** `hostobs-sampler` walks the configured cgroup tree under the kernel/policy bounds, publishes immutable quality-bearing `Tick`s, coalesces wakeups through eventfd, and reports walk cuts through `probe.cgroups_skipped`.

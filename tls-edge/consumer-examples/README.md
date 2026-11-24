@@ -1,11 +1,16 @@
 # Consumer examples, label by label
 
 A consumer is any Compose stack that wants the edge to publish it. The edge (Traefik) discovers it
-from container labels on the shared `ingress_public` network; the consumer publishes no host ports
-of its own (80, 443 and 8443 belong to the edge). All hosts below use `${TLS_EDGE_DOMAIN}` from
-`.env.example` (the placeholder `example.test`); an installed edge writes the same variable to
+from container labels on the shared `ingress_public` network. HTTP consumers publish no host ports;
+the edge owns 80 and 443. Raw TCP/UDP media is published directly by its application on a separate
+host port pair. All hosts below use `${TLS_EDGE_DOMAIN}` from `.env.example` (the placeholder
+`example.test`); an installed edge writes the same variable to
 `<instance>/stack/consumer.env`, so a real consumer can run
-`docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d`.
+`docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d`;
+`pattern-e-media-udp` additionally needs `MEDIA_PUBLIC_PORT` and
+`MEDIA_CONTAINER_PORT` set because they are not in `consumer.env`.
+The effective edge values are defined by the
+[rendered consumer contract](../docs/CONSUMERS.md#rendered-consumer-contract).
 
 Check any example offline before starting it: `docker compose --env-file ../.env.example config`.
 
@@ -13,7 +18,7 @@ Check any example offline before starting it: `docker compose --env-file ../.env
 |---|---|---|
 | `pattern-a-public-only` | one web app on its own host name | enable, router rule + entrypoint, service port |
 | `pattern-d-guarded` | the same plus a basicAuth guard | + a middleware and its attachment |
-| `pattern-e-media-udp` | HTTPS UI plus a raw TCP/UDP media port (Mattermost Calls) | + a TCP router and a UDP router |
+| `pattern-e-media-udp` | HTTPS UI plus an application-published raw TCP/UDP media pair | HTTP router; media bypasses Traefik |
 | [Jitsi Meet deployment](https://github.com/volkb79-2/vbpub/tree/main/voice-screen-share/jitsi-server) | in-repository consumer | standard `websecure` host router; JVB media stays direct on UDP 10000 |
 
 ## In-repository Jitsi deployment
@@ -26,7 +31,7 @@ HTTP/3 are edge-wide; Jitsi needs no special tls-edge setting or per-router
 transport label. WebSocket signaling uses the same HTTPS router.
 
 Jitsi Videobridge media is separate: the JVB publishes UDP 10000 directly on
-the host, so it does not use Traefik or the optional Mattermost Calls preset.
+the host, so it does not use Traefik or tls-edge.
 Only `jitsi-web` joins the public ingress network. See the
 [Jitsi deployment guide](https://github.com/volkb79-2/vbpub/blob/main/voice-screen-share/jitsi-server/README.md)
 for DNS, firewall, and media details. The Jitsi consumer suite renders its
@@ -41,14 +46,14 @@ default entrypoint, including the optional HTTP/3 setting.
   (`pattern-a-app`). Two stacks using one router name conflict and Traefik drops or misroutes one.
 - **One host name per service**, all on port 443. There is no alternate HTTPS port; give each
   service its own DNS name (one A/AAAA record each, or one wildcard record).
-- **Do not publish `80`, `443` or `8443`** from a consumer; Docker would refuse the second bind.
+- **Do not publish `80` or `443`** from an HTTP consumer; Docker would refuse the second bind.
 
 ## pattern-a: a web app
 
 | Label | What it does |
 |---|---|
 | `traefik.enable=true` | Opt in. The edge runs with `exposedByDefault=false`, so unlabelled containers are never routed. |
-| ``traefik.http.routers.pattern-a-app.rule=Host(`app.${TLS_EDGE_DOMAIN}`)`` | Which requests belong to this router. The `Host()` names are also the names the ACME resolver requests certificates for, **one certificate per host** the first time it is requested (a wildcard certificate only exists when the edge is configured `acme-dns` with `wildcard_main`). |
+| ``traefik.http.routers.pattern-a-app.rule=Host(`app.${TLS_EDGE_DOMAIN}`)`` | Which requests belong to this router. The `Host()` names are also the names the ACME resolver requests certificates for, **one certificate per host** the first time it is requested. An automatic wildcard certificate requires `acme-dns` with `wildcard_main`; static mode supports a manually renewed wildcard. |
 | `traefik.http.routers.pattern-a-app.entrypoints=websecure` | Attach to the HTTPS entrypoint on :443. TLS is switched on at that entrypoint and the certificate resolver is set there too, so **no `tls=true` or `certresolver` label is needed**. |
 | `traefik.http.services.pattern-a-app.loadbalancer.server.port=8080` | The container port Traefik forwards to (the app's plain HTTP port; TLS ends at the edge). |
 
@@ -69,20 +74,19 @@ Generate the hash with `scripts/gen-guard-secret.sh user 'a-long-secret'` and pu
 **single-quoted** (`GUARD_HASH='user:$2y$12$...'`) so Compose does not read `$2y` as a variable. See that
 example's own README for escaping rules and why WebSocket clients should not be guarded.
 
-## pattern-e: web UI plus TCP and UDP media
+## pattern-e: web UI plus application-published media
 
-The HTTPS part is pattern-a. The media part uses the two extra entrypoints that exist while the edge has
-`[tls_edge.calls] enabled = true`: `mattermost-calls-tcp` and `mattermost-calls-udp`, both
-published on 8443.
+The HTTPS part is pattern-a. The application also publishes its raw TCP+UDP
+listener directly on the host, using `MEDIA_PUBLIC_PORT` and
+`MEDIA_CONTAINER_PORT` from `.env.example`. There are no TCP/UDP Traefik
+routers or entrypoints.
 
-| Label | What it does |
+| Setting | What it does |
 |---|---|
-| `traefik.docker.network=ingress_public` | Which of the container's networks Traefik dials (matters when the container has several). |
-| ``traefik.tcp.routers.pattern-e-media-tcp.rule=HostSNI(`*`)`` | TCP routers match on SNI. Media is opaque (no TLS terminated here), so `*` accepts everything. |
-| `traefik.tcp.routers.pattern-e-media-tcp.entrypoints=mattermost-calls-tcp` | Bind to the TCP entrypoint on 8443 (the fallback transport). |
-| `traefik.tcp.routers.pattern-e-media-tcp.service=...` and `traefik.tcp.services.pattern-e-media-tcp.loadbalancer.server.port=8443` | Which TCP service receives it and its port. |
-| `traefik.udp.routers.pattern-e-media-udp.entrypoints=mattermost-calls-udp` | Bind to the UDP entrypoint on 8443 (the preferred transport). A UDP router has **no rule**: UDP carries no host name. |
-| `traefik.udp.routers.pattern-e-media-udp.service=...` and `traefik.udp.services.pattern-e-media-udp.loadbalancer.server.port=8443` | The UDP service and its port. |
+| `MEDIA_PUBLIC_PORT` | The host port pair clients use. Allow it for both TCP and UDP in the host and provider firewalls. |
+| `MEDIA_CONTAINER_PORT` | The application's listener, reached directly through Docker's host publication. |
+| `traefik.http.routers.pattern-e-app.rule=Host(...)` | Routes only the HTTPS UI through `websecure`. |
 
-There is **one media pair per edge**: only one consumer may attach to it. The application must advertise
-`<public host>:8443` to its clients, and the host or provider firewall must allow 8443/tcp and 8443/udp inbound.
+The application must advertise the same public host and port pair to its
+clients. Mattermost Calls and Jitsi JVB are examples of application-owned
+media endpoints.

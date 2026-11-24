@@ -9,10 +9,59 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
-### Added
-- run-gate: `lanes --check [--project DIR | --all] [--strict] [--json]` applies Run-Gate's budget-margin, canary, Assay-lane and native-R2 shard rules offline (RG-296); the current estate reports RG-307's 16 non-fatal margin warnings.
+<!-- cmru: release history -->
+
+## [25.9.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=b31dc08c84a7766bd032b025ac4a55b40117d519 -->
 
 ### Fixed
+- fix(run-gate): P-core-RG307 r1 fix-forward: raise the two enclosing command lanes (gate-full 75m, vm-lab gate 280m), correct the RG-311 docstring, file RG-312 (1193575c2)
+
+### Changed
+- run-gate: the run-time Assay-budget warning follows R-59 (RG-308a) (80e886952)
+- run-gate: raise the 14 estate assay-wrapper budgets to inner + 5m (RG-307) (892d86ffa)
+
+### Documentation
+- docs(run-gate): file RG-313, SIGTERM client test races the fake docker logs shell exit (5f8dc5b56)
+- docs(run-gate): record RG-307 and RG-308(a) (rev 74) (456002611)
+
+
+## [25.8.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=0b374018822e6b898dc85963afabc16e3721e122 -->
+
+### Added
+- feat(run-gate): add offline lanes check (RG-296) (ef65a6048)
+- feat(run-gate): run the R3 canary in the release receipt image (e8c5b856f)
+
+### Fixed
+- fix(run-gate): complete RG-296 review round 1 (16518b395)
+- fix(run-gate): close RG-296 selftest failures (e026c44c9)
+- fix(run-gate): align release gate contracts after P10c review (48e97d929)
+
+### Changed
+- RG-294/RG-295: complete private allocation branch coverage (21396f412)
+- RG-294/RG-295: cover scratch error boundaries (b282b26fd)
+- RG-294/RG-295: prove review fixes and guard mutations (5dc67f6fa)
+- RG-294/RG-295: harden scratch ownership and prune (77d53b482)
+- RG-294/RG-295: own scratch lifetime and add prune (896f9e23f)
+
+### Documentation
+- docs(run-gate): file RG-309..311 (P-core-08 review round 2 follow-ups) (9dbbffd1c)
+- docs(run-gate): file RG-301..306 (P-core-01 r2 NITs, .run-gate producer lifetimes) (4035ca187)
+- docs(tester-unified): rebuild the image after every Run-Gate release (checklist) (6d6212754)
+
+### Testing
+- test(run-gate): define the receipt-image release canary (13fdfd51c)
+- test(run-gate): the exec-mode refusal oracle judges instruction text, not the checkout path (RG-290) (5f64e8b5a)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- run-gate: `lanes --check [--project DIR | --all] [--strict] [--json]` applies Run-Gate's budget-margin, canary, Assay-lane and native-R2 shard rules offline (RG-296); the estate's 16 zero-margin wrappers were raised to `inner + 5m` in this rev (RG-307), so `--strict` is now clean estate-wide.
+
+### Fixed
+- run-gate: the run-time Assay-budget warning follows R-59 (RG-308a). It used to fire whenever the inner Assay budget was BELOW the outer wrapper budget — the state R-59 requires — so every fixed lane warned on every run. It now warns only when the wrapper budget is below `inner + LANES_CHECK_BUDGET_MARGIN_SECONDS` (5m): the margin wording names both budgets and the margin, and a wrapper below the inner budget gets the stronger "killed before Assay can close its verdict" wording. From inner + 5m up the run is silent, and the "effective per-attempt bound" line is unchanged.
 - run-gate: `main()` owns one scratch root per invocation; `doctor --prune` uses owner identity to reclaim SIGKILL/OOM and legacy orphans across projects without containers, reporting partial removals as exit 1 (RG-294/RG-295).
 
 ### Changed
@@ -21,8 +70,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Testing
 - no action needed: tests and documentation only (RG-290 and the image rebuild rule)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.7.0] - 2026-11-18
 <!-- cmru: generated -->

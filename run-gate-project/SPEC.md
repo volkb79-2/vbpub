@@ -253,6 +253,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   canary comparison. A declared `judge.canary.budget_per_attempt` must be
   `<=` that Assay lane's comparable budget. The named Assay lane must exist;
   every such lane in a project with no `assay.toml` reports that missing file.
+  The same five-minute margin governs the RUN-TIME disclosure: `R-05`'s
+  `assay.toml lane budget ...` line stays unconditional, and a `WARNING` is
+  printed only when the wrapper budget is below the Assay lane budget plus
+  `LANES_CHECK_BUDGET_MARGIN_SECONDS` — the margin wording for the
+  `inner <= outer < inner + 5m` case, and a stronger BELOW wording (the
+  container is killed before Assay closes its verdict) for `outer < inner`.
+  From inner + 5m up the run prints no warning, so a lane that satisfies this
+  rule is silent at run time and clean under `lanes --check` alike (RG-308a).
   A native-R2 Assay lane (one that declares
   `judge.mutation`) must admit `--shard 0/2` as instance `<lane>.shard0of2` and
   `--merge-shards 2` through `attach_r2_flex()`, while

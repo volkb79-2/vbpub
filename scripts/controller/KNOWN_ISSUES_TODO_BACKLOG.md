@@ -51,7 +51,7 @@ together.
 | CTL-40 | agctl package; bash frozen | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-41 | ctl-clean treats the symptom | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-42 | Limit note on the launch path | Should-fix | PARTIAL 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; sol + wrapper wording fixed; limits-reader and OD ordering remain OPEN) |
-| CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | FIXED-pending-wiring 2026-11-24 (P-plat-05: tracked `hooks/ctx-hooks.py`) |
 | CTL-44 | HANDOFF is an append-only log | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-45 | Launcher twins | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-46 | Four readers of run records | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
@@ -60,15 +60,19 @@ together.
 | CTL-49 | agctl DESIGN behind the operator | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-50 | Brief house rules | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-51 | Three tree-shipping transports | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
-| CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | FIXED 2026-11-24 (P-plat-02: generic `scripts/controller/dev`) |
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | FIXED 2026-11-24 |
 | CTL-56 | P-plat-04 r1 leftovers: locale oracle, interim-message fake, misplaced Pi mutant reference, Unicode continuation digits | Should-fix | OPEN 2026-11-24 |
+| CTL-61 | P-plat-21 r1 leftovers: resume-helper prompt limits, test gaps, fail-open input check, live smoke before relying on clear-resume (B2-B13) | Should-fix | OPEN 2026-11-24 |
 | CTL-57 | `gate-run.sh` local admission only queues on the slot locks; it starts a gate while the cockpit is at the memory-PSI stop signal | Must-fix | FIXED 2026-11-24 |
 | CTL-58 | `push-image.sh` destroys the host's rollback image: `docker load` untags the old `<image:tag>` and no `:prev-*` tag is kept | Should-fix | OPEN 2026-11-24 |
+| CTL-59 | P-plat-02 r2 leftovers (dev tool) | Nice-to-have | OPEN 2026-11-24 (Opus r2 review) |
 | CTL-60 | P-plat-20 r1 leftovers: fourth-snapshot assertion, never-started sidecar reported as inconclusive, no-PSI host refused with 75, chain-run shows 75 as STOPPED-ON-FAIL | Should-fix | OPEN 2026-11-24 |
 | CTL-62 | remote-gate admission holds the admit ticket while waiting, is not PSI-only, and lets an identical live launch through | Must-fix | OPEN 2026-11-24 |
+| CTL-63 | `ctl-hygiene.sh` B1 is blind to 6 of the 21 tracked backlogs: `**State:** DONE` files and files without any status line read as all-open, and the `unparsed` report fires only at 0 entries | Nice-to-have | OPEN 2026-11-24 |
+| CTL-64 | `ctl-hygiene.sh` reads the backlogs (B1) of the checkout that holds the script, the state of the main checkout: a lagging worktree reports stale B1 numbers next to fresh state numbers | Nice-to-have | OPEN 2026-11-24 |
 
 ---
 
@@ -1614,7 +1618,7 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md H5
 
 ## CTL-43 — live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED-pending-wiring 2026-11-24 (package P-plat-05): `scripts/controller/hooks/ctx-hooks.py` is a drop-in for the untracked `.controller-state/hooks/ctx.py`. Remaining controller steps: the operator swaps the five hook paths in `.claude/settings.local.json` (path only, mode words unchanged); `.controller-state/hooks/ctx.py` is deleted after one clean day. AGENTS.md "Context pressure ladder" and the controller-handover skill step 7 now name `ctx-hooks.py` (review r1 fix). Swapping drops the live `state-*.json` cadence state, so each live session gets one extra note at its current step.
 
 Wire `hooks/ctx-hooks.py` and delete the copy. Ceiling per model; past the soft threshold, handover, READY, end of turn.
 
@@ -1686,9 +1690,9 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md H4; SYNTHESIS.md T1
 
 ## CTL-52 — dev container is hostobs-only and admits one job host-wide
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED 2026-11-24 (package P-plat-02; guide `scripts/controller/docs/DEV.md`).
 
-Generic `scripts/controller/dev` with Python and Rust profiles. Host-local weighted admission with a bounded wait. `gc`, a NOT-EVIDENCE banner, and the hostobs shim.
+Generic `scripts/controller/dev` with Python and Rust profiles (`scripts/controller/dev-profiles.toml`). Admission is host-local and memory-PSI-only (host-admission/1: memory `full` avg10 >= 3 waits, bounded by `AGENT_DEV_WAIT_S`, then exit 75); RAM overcommit (finite MemoryMax, large swap) is by design. `gc`, a NOT-EVIDENCE banner, and the hostobs shim.
 
 Source: .controller-state/design-review-2026-11-24/hostobs.md F4; operator 2026-11-24
 
@@ -1735,6 +1739,25 @@ Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
 Source: P-plat-04 r1 Opus review findings 4 and 9, explicitly deferred by the
 controller.
 
+## CTL-61 — P-plat-21 r1 leftovers (resume helpers)
+
+**Status:** OPEN (filed 2026-11-24 from the Opus r1 and r2 reviews `.controller-state/platform/reviews/plat-21-r1-opus.md`, `plat-21-r2-opus.md`; F1-F3, R1 and R2 fixed).
+
+Not blocking, for `compact-resume.sh`, `clear-resume.sh`, `resume-lib.sh` and their tests:
+- **B2 prompt limits undocumented:** keep prompt and guidance short (the tmux client refuses a command line over about 16 KiB, "command too long"), no trailing `;` (tmux drops it as a command separator), no leading `/` or `!` (Claude Code treats them as commands) and no trailing `@mention` (Enter accepts the completion). Document in AGENTS.md; consider refusing such input with exit 2.
+- **B3 test gaps:** a compact scenario where the spinner appears only after 3 or more idle polls (pins `START_TRIES` and the start-wait loop), a frame with the `Compacting` line 5-6 lines up (pins `FOOT_LINES=6`), and the stub recording the `capture-pane` target (a wrong `-t` survives today).
+- **B4 defaults unpinned:** no test pins poll 2 s, idle 900, clear 30, start 60, done 1800 (surviving mutants `IDLE_TRIES 900->5`, `CLEAR_TRIES 30->1`, `poll 2->0.01`, `START_TRIES 60->2`, `$idle_tries` used in place of `$done_tries` in the done wait).
+- **B5 missing lib:** `source resume-lib.sh` failing under `set -u` ends as exit 3 "never idle" with nothing sent; use `|| exit 2`.
+- **B6 broad shellcheck disables:** the file-wide `disable=SC1091,SC2034,SC2154` in both helpers hides real unused/unassigned variables; run `shellcheck -x` in `tests/run-suite.sh` and narrow them.
+- **B7 DESIGN 6a:** a compaction is not a "fresh session" (step 3 framing); the SessionStart[compact] note of section 6.4 ("the handover predates it") will false-alarm on every deliberate compact; `agctl successor <pane> <prompt-file> [--clear]` needs a guidance argument for the default compact mode.
+- **B8 self-compaction example** uses the relative `scripts/controller/...` and `>/dev/null 2>&1`: launched from the wrong cwd it fails invisibly after the session has ended its turn. Give an absolute or tools-relative path (the controller tools run from `.worktrees/controller-tools`) and log to a file.
+- **B9 fail-open input check:** a pane with NO `❯` row counts as ready (the cleared fixtures depend on it), so a permission or selection menu with an indented cursor could receive our Enter. Measure the real empty row (`❯` plus NBSP) and treat "no input row" as not ready.
+- **B10 live smoke before relying on clear-resume again:** neither helper's empty-input check has been observed on a live pane. a plain `capture-pane -p` drops attributes, so dim suggestion text in an empty input box read as typed text (all five live helpers hung on 2026-11-24); the check now captures with `-e` and drops dim runs (stub-tested only). Other dim placeholders after `/clear` or a reverse-video cursor cell are unmeasured. One operator-watched run of EACH helper settles it.
+- **B11 type/Enter race:** text the operator types between the third ready check and the send, or during the `type_pause` before Enter, merges into ours; inherent to polling, document it.
+- **B12 first-line-empty input:** an input whose first line is empty with text only on continuation lines (Shift+Enter first) reads as empty.
+- **B13 timeout classification:** `wait_idle` reports 3 or 5 from the LAST poll only, so a pane that had text for 29 min and was busy at the final poll reports 3 (cosmetic).
+
+Source: Opus r1 review of P-plat-21 at head 4b9563cbd and r2 review at head b2162f3f1.
 ## CTL-57 — gate-run.sh starts local gates at the memory-PSI stop signal
 
 **Status:** FIXED (2026-11-24, P-plat-20: `gate-run.sh` waits for memory PSI `full` avg10 < 3 after taking a slot, bounded by `CONTROLLER_GATE_PSI_WAIT_S`; exit 75 "not admitted, nothing ran", unreadable PSI exits 75 at once).
@@ -1753,6 +1776,19 @@ Wanted: before `docker load`, retag the host's current `<image:tag>` as `<image>
 
 Interim rollback path: push `tester-unified:prev-20261124b` from the cockpit.
 
+## CTL-59 — P-plat-02 r2 leftovers (dev tool)
+
+**Status:** OPEN (filed 2026-11-24, from the Opus r2 review of `scripts/controller/dev`, bound to aaa56b27e).
+
+Six small items, none of which blocks the tool:
+
+1. A signal that arrives before the cidfile is written orphans the container: `cleanup` finds no cid, and the background `timeout`/docker client goes on to create and run it with nobody waiting. Bounded by `max_s`; the next call exits 3 "container exists, use dev stop". Fix: with an empty cid, `docker rm -f "$NAME"` (safe under the lock after the exists check) and/or kill the background job.
+2. A few host steps still fail with errexit's code 1 or 2 and no `dev: exit 3` line: `rm -rf "$W"`, `rm -rf`/`mkdir` of `.git/hooks`, and the upload `tar -xf - -C "$UP"` in `upload_text`. Wrap them in `step`/`own 3` like the sync steps.
+3. `--dry-run` shows the image tag in its argv, while a real run uses the host image id. Say so in DEV.md or print "image id resolved at preflight".
+4. The signal test's assertion message "removed only after the client ended" says the opposite of what it checks; reword it.
+5. The docker command is built in two places (`build_docker_argv` for dry-run and tests, `container_command_text` for the run), so the read-only `.git` mount had to be added at both and the `dev-git-ro` mutant covers only one. Derive the run text from the arrays.
+6. `dev` is 552 lines against DESIGN §0's "~250 lines on top of the moved code" and is at the bash freeze limit (CTL-40): grow in Python (`dev_profile.py`), not in the shell.
+
 ## CTL-60 — P-plat-20 r1 leftovers
 
 **Status:** OPEN (filed 2026-11-24, from the P-plat-20 round-1 Opus review; CTL-56 here is P-plat-04's; the older plat-docs-20261124 CTL-56 (remote-gate admission) is now CTL-62 and its duplicate CTL-55/CTL-57 were dropped).
@@ -1769,3 +1805,15 @@ Interim rollback path: push `tester-unified:prev-20261124b` from the cockpit.
 Wanted: the admit ticket is never held while waiting; admission is memory-PSI-only (programme rule: memory `full` avg10 >= 3 waits), so `CONTROLLER_REMOTE_SLOTS` / `CONTROLLER_REMOTE_BUDGET_MB` become no-ops, `remote-gate.py` `mem_admit_ok` becomes PSI-only, and its host-side `psi_high` / `--wait-psi` check (today memory `some` > 25 or io `full` > 25) moves to memory `full` avg10 >= 3; the anti-starvation ticket design in the `remote-gate.sh` header is retired with it; a second identical live launch (host + project + lane + sha + args digest) is refused with exit 2; the run name (today second-resolution and fixed before the host-side wait) gets a pid/random suffix so it is unique, and a refused run prints REFUSED, never another run's result.
 
 Source: P-plat-14b plan; observations in runs rgw-assay-first-release-r2-20261124T054814-v1001 (vbpub-assay) and rgw-r0-r1-20261124T060903-v1001 (vbpub-hostobs).
+
+## CTL-63 — ctl-hygiene.sh B1 cannot see 6 of the 21 tracked backlogs
+
+**Status:** OPEN (filed 2026-11-24, P-plat-22b-C review r1 F4; a spec decision for the controller).
+
+B1 counts an entry as closed only from a `Status:` line (or a closed word in the heading's parentheses). `fleetd` (46 entries), `scripts/debian-rollback` (36) and `vm-lab` (30) use `**State:** DONE|open` instead; `hostobs` (58), `tls-edge` (10) and `scripts/truenas` (10) carry no status line at all. Every entry then counts as open and B1 stays silent, and the `unparsed` report only fires for a file with 0 entries. Cheap fix that keeps the spec's closed-word rule: also report `B1 <path>: unparsed: <n> entries but no Status line` when a file has entries, no Status line and no closed heading. Whether `State:` becomes an accepted alias for `Status:` is the controller's call.
+
+## CTL-64 — ctl-hygiene.sh B1 reads the script's own checkout, the state comes from the main checkout
+
+**Status:** OPEN (filed 2026-11-24, P-plat-22b-C review r1 F6).
+
+`ctl-hygiene.sh` resolves `state_dir` to the main checkout's `.controller-state` but leaves `repo` at the checkout that holds the script. Run from a lagging worktree such as `.worktrees/controller-tools`, B1 reports stale backlog numbers beside fresh state numbers. Fix: resolve the default `repo` to the main checkout too (`${common%/.git}`), or say in the header that B1 follows the script's checkout.

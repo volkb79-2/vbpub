@@ -172,6 +172,7 @@ def build_customscript_bundle(
 
     config_json = json.dumps(config_data, sort_keys=True, separators=(",", ":"))
     env_parts = [
+        "DR_STATE=none",
         f"REPO_URL={shlex.quote(repo_url)}",
         f"REPO_BRANCH={shlex.quote(repo_branch)}",
         *([f"REPO_COMMIT={repo_commit}"] if repo_commit else []),

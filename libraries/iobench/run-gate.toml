@@ -25,7 +25,7 @@ resource_observer = "cgprofile"
 environment = "tester-unified"
 jobs = "auto"
 clean_tree = false
-budget = "360m"
+budget = "365m"
 artifacts = [".assay/verdict-iobench.json",
   ".assay/progress-iobench.jsonl"]
 

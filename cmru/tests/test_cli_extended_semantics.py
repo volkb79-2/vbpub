@@ -579,6 +579,7 @@ def test_tester_gate_rejects_invalid_cpu_before_host_probe(monkeypatch, capsys, 
 )
 def test_abandon_workspace_refuses_remote_state_that_disagrees_with_its_markers(
     monkeypatch, tmp_path, pushed, removed, remote_present, expected_error,
+    process_run_seam,
 ):
     workspace = SimpleNamespace(branch="cmru-release-candidate", context=None)
     stdout = (
@@ -587,7 +588,7 @@ def test_abandon_workspace_refuses_remote_state_that_disagrees_with_its_markers(
     )
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: pushed)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: removed)
-    monkeypatch.setattr(transaction.subprocess, "run", lambda argv, **_kw: SimpleNamespace(
+    process_run_seam(transaction, lambda argv, **_kw: SimpleNamespace(
         returncode=0, stdout=stdout, stderr="",
     ))
     monkeypatch.setattr(transaction, "remove_workspace", lambda *_: pytest.fail("refusal removed local state"))
@@ -596,12 +597,14 @@ def test_abandon_workspace_refuses_remote_state_that_disagrees_with_its_markers(
         transaction.abandon_workspace(tmp_path, workspace)
 
 
-def test_abandon_workspace_refuses_when_remote_state_cannot_be_read(monkeypatch, tmp_path):
+def test_abandon_workspace_refuses_when_remote_state_cannot_be_read(
+    monkeypatch, tmp_path, process_run_seam,
+):
     workspace = SimpleNamespace(branch="cmru-release-candidate", context=None)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: False)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
     monkeypatch.setattr(transaction, "remove_workspace", lambda *_: pytest.fail("removed local state"))
-    monkeypatch.setattr(transaction.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+    process_run_seam(transaction, lambda *_a, **_k: SimpleNamespace(
         returncode=2, stdout="", stderr="offline",
     ))
 
@@ -611,7 +614,7 @@ def test_abandon_workspace_refuses_when_remote_state_cannot_be_read(monkeypatch,
 
 @pytest.mark.parametrize("changed", ["candidate", "tags"])
 def test_abandon_workspace_rechecks_inspected_remote_facts_before_deleting(
-    monkeypatch, tmp_path, changed,
+    monkeypatch, tmp_path, changed, process_run_seam,
 ):
     workspace = SimpleNamespace(branch="cmru-release-candidate", context=None)
 
@@ -630,7 +633,7 @@ def test_abandon_workspace_rechecks_inspected_remote_facts_before_deleting(
             pytest.fail("changed remote facts must block deletion")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(transaction.subprocess, "run", run)
+    process_run_seam(transaction, run)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
     monkeypatch.setattr(transaction, "remove_workspace", lambda *_: pytest.fail("removed local state"))
@@ -645,7 +648,7 @@ def test_abandon_workspace_rechecks_inspected_remote_facts_before_deleting(
 
 @pytest.mark.parametrize("verification", ["deleted", "still-present", "unknown", "delete-failed"])
 def test_abandon_workspace_deletes_remote_ref_then_verifies_before_local_cleanup(
-    monkeypatch, tmp_path, verification,
+    monkeypatch, tmp_path, verification, process_run_seam,
 ):
     workspace = SimpleNamespace(branch="cmru-release-candidate", context=None)
     calls = []
@@ -678,7 +681,7 @@ def test_abandon_workspace_deletes_remote_ref_then_verifies_before_local_cleanup
             )
         raise AssertionError(argv)
 
-    monkeypatch.setattr(transaction.subprocess, "run", run)
+    process_run_seam(transaction, run)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
     monkeypatch.setattr(transaction, "mark_backup_removed", lambda *_: removed_marker.append(True))
