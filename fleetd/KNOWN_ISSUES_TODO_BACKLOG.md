@@ -49,6 +49,8 @@
 | FD-044 | Rolling scope frozen; delete it after B561 carry-forward | P2 | OPEN | 2026-11-24 |
 | FD-045 | Docs are a second, prose-pinned source of truth | P2 | OPEN | 2026-11-24 |
 | FD-046 | Facts tables and one lane-cost store | P2 | OPEN | 2026-11-24 |
+| FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
+| FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -922,3 +924,29 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md M5
 fleetd facts: per-service floors from host facts.toml (installer-written), drop the copied table + drift test; speed resolution same as cgprofile machine/1. One lane-cost store (run-gate footprint/history); remote-gate weight and fleet sizing read it; fleet measurement retired.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md M3, M4
+
+## FD-047 FakeTransport rewrites progress mtimes after the shared probe
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-24.
+
+`FakeTransport._probe` replaces each shared-probe `progress_mtime` with the
+per-job `FakeJob.progress_mtime`. The real probe returns the progress file's
+`stat` mtime, so jobs sharing a file have one mtime and a file with content gets
+that mtime even when the fake job field is null. Remove the override, or document
+and justify the deliberate divergence in FD-039. Close when the fake row is the
+direct `hostside.probe_document` value and no test depends on fake-only timing.
+
+Source: fix-round review finding 4; `fleetd/src/fleetd/transport.py:427-429`.
+
+## FD-048 Malformed Run-Gate lane config can crash the host probe and fake start
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-24.
+
+A non-table `lanes` value or lane declaration raises `AttributeError` in
+`resolve_assay_lane`; the fake start catches only `ValueError`. One unsafe lane
+declaration also fails the whole host probe, and the shipped entrypoint prints a
+traceback instead of one concise error line. Validate the table shape and define
+the per-job versus whole-probe error boundary for fake and shipped execution.
+Close with malformed-config tests through both paths.
+
+Source: fix-round review finding 5; `fleetd/src/fleetd/hostside.py:33-43,245`.

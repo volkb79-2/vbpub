@@ -6,6 +6,9 @@ All notable changes to this project are recorded here.
 
 ### Fixed
 
+- Host-side progress and verdict readers now skip non-string candidate ids
+  instead of raising a `TypeError` while testing set membership. Their outcome
+  bucket list is shared through `hostside.OUTCOME_BUCKETS`.
 - Host-side probe logic is now the stdlib-only `fleetd.hostside` module shipped
   as source and imported by the controller. `FakeTransport` materializes a
   temporary host home and calls the same probe, lane resolution, progress
