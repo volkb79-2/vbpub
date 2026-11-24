@@ -116,8 +116,11 @@ std has no `poll`, no eventfd and no absolute `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`
   `rustix.workspace = true`, and `Cargo.lock` is the resolved authority. One rustix version only
   (`multiple-versions = "deny"`), a dependency of `crates/kernel` and `bins/probe`.
 - **Who resolves the lock:** the offline cache lacks rustix, so P-08 cannot resolve it offline.
-  T2's networked image-build step runs `cargo add rustix@<ver>` once against the hostobs
-  workspace and hands back the resulting `Cargo.toml` and `Cargo.lock` diff; P-08 commits exactly
+  P-08 writes the manifest entries offline (`[workspace.dependencies] rustix = { version = "<ver>",
+  default-features = false, features = [...] }` plus `rustix.workspace = true` in `crates/kernel`
+  and `bins/probe`) and hands them to T2. T2's networked step runs `cargo update -p rustix
+  --precise <ver>` once and hands back the `Cargo.lock` diff. Each new transitive crate takes the
+  newest release that is at least 14 days old (`--precise` where needed). P-08 commits exactly
   that diff.
 - **The one `unsafe`:** `OwnedFd::from_raw_fd` for each `LISTEN_FDS` descriptor lives in a new
   `crates/kernel/src/activation.rs`. `crates/kernel` already carries the plan's allowance
@@ -127,8 +130,10 @@ std has no `poll`, no eventfd and no absolute `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`
   - **Public API, the only one:** `kernel::activation::take(listen_pid, listen_fds,
     listen_fdnames, my_pid) -> Result<Vec<(String, UnixListener)>, ActivationError>`. It calls
     `parse` (§(e)), refuses a second call through a process-wide `AtomicBool`, and passes only
-    fds in `parse`'s range `3..3+LISTEN_FDS` to `adopt_raw`. No safe public function takes a raw
-    fd number, so no caller can adopt an fd something else owns.
+    fds in `parse`'s range `3..3+LISTEN_FDS` to `adopt_raw`. `take` checks and sets its
+    once-guard before calling `parse`, so a second call is refused even when the first call
+    failed. No safe public function takes a raw fd number, so no caller can adopt an fd something
+    else owns.
   - **`adopt_raw`:** before `from_raw_fd` it checks, with the safe
     `std::fs::read_link("/proc/self/fd/<n>")`, that the target starts with `socket:`, which
     proves the fd is open and is a socket (no `mem::forget` path). The SAFETY argument:
@@ -231,7 +236,9 @@ keys, so the shape would change twice.
 - **`kernel::activation`:** unit tests inside `activation.rs` test `parse` purely and call the
   private `adopt_raw` directly on fds whose ownership the test released with `into_raw_fd`: a
   listening abstract socket is adopted, and a connected `UnixStream::pair()` end, a `UnixDatagram`
-  and a read-only file are refused. A second `take` call is refused.
+  and a read-only file are refused. The read-only-file case closes its fd after the refusal: it
+  passes the `as_raw_fd()` of a `File` the test keeps owning (`adopt_raw` refuses a non-socket
+  before `from_raw_fd`), and dropping that `File` closes it. A second `take` call is refused.
 - **The one Python run over a real socket** is a `python/tests` case. It binds an abstract
   listener and spawns the built probe with that listener as fd 3, through
   `sh -c 'exec 3<&"$2" && LISTEN_PID=$$ exec "$0" --config "$1"' <probe> <config> <fd>`
@@ -350,10 +357,12 @@ it.
 > licence (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) is inside hostobs `deny.toml`,
 > and it builds no `libc` on Linux. With it, the probe needs exactly one `unsafe` line,
 > adopting a `LISTEN_FDS` descriptor. The offline cache lacks rustix, so hostobs cannot resolve
-> the lock itself: please let the networked image-build step run `cargo add rustix@<ver>` (with
-> the features above, as a `[workspace.dependencies]` entry used by `crates/kernel` and
-> `bins/probe`) once against the hostobs workspace and hand back the resulting `Cargo.toml` and
-> `Cargo.lock` diff; P-08 commits exactly that diff. Expect also libc, errno and windows-sys
+> the lock itself. P-08 writes the manifest entries offline (`[workspace.dependencies] rustix =
+> { version = "<ver>", default-features = false, features = [...] }` plus
+> `rustix.workspace = true` in `crates/kernel` and `bins/probe`) and hands them to T2. T2's
+> networked step runs `cargo update -p rustix --precise <ver>` once and hands back the
+> `Cargo.lock` diff. Each new transitive crate takes the newest release that is at least 14 days
+> old (`--precise` where needed). P-08 commits exactly that diff. Expect also libc, errno and windows-sys
 > (with windows-link/windows-targets depending on the version) in the lock: not built on Linux,
 > but they must be in the cache (verify-crate-cache matches the lock exactly; deny.toml has no
 > targets filter). All are MIT OR Apache-2.0. The images get a new registry-set identity, and
