@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Changed (P-plat-02):** `tools/dev` is now a thin shim over the generic remote dev tool `scripts/controller/dev -p hostobs` (guide `scripts/controller/docs/DEV.md`): `HOSTOBS_DEV_{HOST,MEMORY,CPUS,PIDS,MAX_S}` map to `AGENT_DEV_*`, any other `HOSTOBS_DEV_*` exits 2, `clean [--checkout]` is `gc --this`; admission is the host-memory-PSI wait (`host-admission/1`), exit 75 when the host stays busy; the host state is `~/agent-dev/<hex>` and `agent-dev-cache-hostobs-<hex>` (the old `hostobs-dev-*` state is removed by `dev gc`).
 - **Docs (P-hostobs-19, closes `HOB-74`):** `docs/CONSUMERS.md` gets a "Boundaries" section with the four consumer rules (cgprofile frozen, span emission is one JSON line on the observer socket, act never writes `io.cost`/`io.weight`/sysctl, iogovmon reads hostobs only after M3); cgprofile's freeze is filed as `CP-66`.
 - The hostobs backlog now lists only open items; fixed and closed entries are archived one per line in `archive/2026-Q4.md`, with HOB-62..74 filed and HOB-49's WIRE citation corrected.
 - **Changed (WIRE.md, P-hostobs-03, `HOB-65`/`HOB-71`/`HOB-72` spec):** no request waits (D-W49, D-W50; D-W30 retired), JSON mode only at observer/control (D-W51), probe-wide keys with `max_rows` 1,024, Query 1/4 MiB, `max_block_bytes` 1 MiB and history 2/8 (D-W52), no per-uid pools and per-uid caps equal to the level caps at observe (D-W20, D-W53); code follows in P-hostobs-05/06 (V-21).
