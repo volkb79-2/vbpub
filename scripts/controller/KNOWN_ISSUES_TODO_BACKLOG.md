@@ -64,6 +64,7 @@ together.
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | FIXED 2026-11-24 |
+| CTL-60 | P-plat-20 r1 leftovers: fourth-snapshot assertion, never-started sidecar reported as inconclusive, no-PSI host refused with 75, chain-run shows 75 as STOPPED-ON-FAIL | Should-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1659,3 +1660,12 @@ Source: .controller-state/PROGRAM-2026-11-24/PROGRAM.md §6
 `tests/test-pi-impl.sh` `check_live_snapshot` polls 100 × `sleep 0.1` (about 10 s of wall clock) for `"tool_in_flight": "bash"` in the `.live` sidecar, which is written every `PI_LIVE_INTERVAL_SECONDS=1` by a process tree started under the same load. On 2026-11-24 the `suite` lane at 0314fdf1b (a docs-only change) failed with `the live sidecar never reported the tool call in flight` while another session's mutation lane loaded the host (load average ~6 on 8 cores). Against the estate rule that verdicts do not depend on host load. Fix: wait on a progress condition instead of a clock, for example until the fake pi's own "tool started" marker exists AND the sidecar has completed at least two write cycles (a sidecar sequence counter), with only a generous outer bound (minutes) that reports "inconclusive under load" separately from "never reported".
 
 Source: suite lane log of 2026-11-24 (run-gate lane `suite`, head 0314fdf1b).
+
+## CTL-60 — P-plat-20 r1 leftovers
+
+**Status:** OPEN (filed 2026-11-24, from the P-plat-20 round-1 Opus review; CTL-56..59 are on plat-docs-20261124).
+
+1. `check_live_snapshot` asserts on the third distinct snapshot only; a `tool_in_flight` that decays on idle ticks is caught only by the fourth, the first guaranteed idle tick. Also assert on it (about 1 s).
+2. A sidecar that never starts, dies at once or writes to the wrong `--out` is reported after 300 s as `inconclusive: no sidecar progress`. Detect that the held marker exists, the wrapper lives and no pi-live child is left, and fail with a definite message.
+3. A host without PSI (`CONFIG_PSI` off, `psi=0`) makes every local `gate-run.sh` exit 75, "retry later" for a permanent condition. ctl-doctor should report PSI readability and the docs should say what to do.
+4. `chain-run.sh` reports a `gate-run.sh` exit 75 ("not admitted, nothing ran") as `STOPPED-ON-FAIL: lane exited 75`, which reads like a lane verdict. It needs its own marker.

@@ -208,7 +208,7 @@ for pi_case in \
       bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 for pi_live_case in \
-  pi-live-atomic:live-atomic pi-live-tool-in-flight:live-snapshot \
+  pi-live-atomic:live-atomic pi-live-tool-in-flight:live-wrapper \
   pi-live-missing-fact:live-snapshot pi-live-usage-trend:live-usage-trend \
   pi-live-tokens-zero-as-measurement:live-usage-trend \
   pi-live-progress-stream-only:live-progress \

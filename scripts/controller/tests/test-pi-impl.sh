@@ -454,6 +454,11 @@ check_live_snapshot() {
   local live=$CONTROLLER_ROOT/runs/live-run.live hold=$ROOT/live-run.release held=$ROOT/live-run.held
   local snap=$ROOT/live-run.snapshot.json
   rm -f "$CONTROLLER_ROOT/runs/live-run.done" "$live" "$hold" "$held" "$snap"
+  # The wrapper starts pi-live.py from its own directory: a mirror whose pi-live.py is $PILIVE lets a mutant reach it.
+  local ctl=$ROOT/live-ctl
+  rm -rf "$ctl"; mkdir "$ctl"
+  ln -s "$(dirname -- "$SRC")"/* "$ctl"/
+  ln -sf "$PILIVE" "$ctl/pi-live.py"
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     CONTROLLER_OD_STATE="$ROOT/live-state.json" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
@@ -461,7 +466,7 @@ check_live_snapshot() {
     FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
     FAKE_PI_HOLD_UNTIL="$hold" FAKE_PI_HELD_MARKER="$held" \
     PI_LIVE_INTERVAL_SECONDS=1 PI_EMPTY_RETRY_LIMIT=0 \
-    "$SRC" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
+    "$ctl/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
   local wrapper=$!
   local deadline=$(( $(date +%s) + LIVE_HANG_GUARD_S )) changes=0 current previous=
   # Phases: the agent holds with the whole stream written, then three distinct snapshots are seen.
@@ -472,6 +477,7 @@ check_live_snapshot() {
       fail 'inconclusive: no sidecar progress within the hang guard'
     fi
     if ! kill -0 "$wrapper" 2>/dev/null; then
+      : > "$hold"  # an orphaned fake pi would otherwise spin on its hold loop forever
       wait "$wrapper" 2>/dev/null || true
       cat "$ROOT/live-run.launch.log" >&2
       fail 'the wrapper exited before the check released its agent'
@@ -1927,6 +1933,10 @@ body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["latest_total_tokens"] == 258492, body
 assert body["latest_total_tokens_last_report"] == 0, body
 PY
+      ;;
+    live-wrapper)
+      # Only the wrapper-driven live sidecar check (stream consumed, tool in flight).
+      check_live_snapshot
       ;;
     live-snapshot)
       # The sidecar itself is under test here, on the fixture stream a hung
