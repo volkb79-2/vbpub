@@ -62,7 +62,9 @@ HTTP/3, network/volume adoption, and runtime placement. It displays the exact ch
 inbound firewall ports before writing the instance override and `consumer.env`.
 
 A host that already runs a tls-edge instance older than 4.0 has no in-place path to 4.0: such an instance cannot
-update to 4.0 through the installer, so 4.0 is installed fresh exactly as this section describes.
+update to 4.0 through the installer, so 4.0 is installed fresh as this section describes. `get.py install` on a root
+that already holds an instance runs an update instead, so stop the old edge (it holds ports 80 and 443) and move its
+instance root aside, or install into the other scope, before the fresh install.
 
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
 does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
