@@ -21,6 +21,7 @@ from typing import Mapping, Sequence
 
 OUTCOME_BUCKETS = ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent")
 _SAFE_ASSAY_LANE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+_CANDIDATE_ID = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def decode_payload(encoded: str) -> list[dict[str, object]]:
@@ -54,12 +55,13 @@ def progress_records(
     *,
     start_offset: int = 0,
     end_offset: int | None = None,
+    strict: bool = False,
 ) -> list[dict[str, object]]:
     """Read candidate progress records from one byte window.
 
     Malformed JSON lines are ignored, matching the host probe's existing
-    tolerance. A UTF-8 or range error is raised; callers choose whether it is a
-    probe-wide unknown or a collector contract error.
+    tolerance. ``strict`` applies the collector's closed field contract; the
+    probe keeps its historical tolerant filtering.
     """
     if isinstance(start_offset, bool) or not isinstance(start_offset, int) or start_offset < 0:
         raise ValueError("progress start offset must be a non-negative integer")
@@ -72,18 +74,43 @@ def progress_records(
     except UnicodeDecodeError as exc:
         raise ValueError("progress artifact is not UTF-8") from exc
     records: list[dict[str, object]] = []
-    for line in text.splitlines():
+    for line_number, line in enumerate(text.splitlines(), start=1):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
         if not isinstance(event, dict) or event.get("event") != "candidate":
             continue
-        if event.get("candidate_id") not in expected_ids:
+        candidate_id = event.get("candidate_id")
+        if strict and (
+            not isinstance(candidate_id, str) or _CANDIDATE_ID.fullmatch(candidate_id) is None
+        ):
+            raise ValueError(f"progress line {line_number}: invalid candidate id")
+        if candidate_id not in expected_ids:
             continue
-        records.append({key: event[key] for key in (
+        record = {key: event[key] for key in (
             "candidate_id", "outcome_bucket", "elapsed_seconds", "emitted_at"
-        ) if key in event})
+        ) if key in event}
+        if strict:
+            if event.get("outcome_bucket") not in OUTCOME_BUCKETS:
+                raise ValueError(f"progress line {line_number}: unsupported candidate outcome")
+            elapsed = event.get("elapsed_seconds")
+            if (
+                isinstance(elapsed, bool)
+                or not isinstance(elapsed, (int, float))
+                or not math.isfinite(float(elapsed))
+                or elapsed < 0
+            ):
+                elapsed = None
+            emitted = event.get("emitted_at")
+            record["elapsed_seconds"] = elapsed
+            record["emitted_at"] = emitted if isinstance(emitted, str) else None
+        profile = event.get("profile")
+        metrics = profile.get("metrics") if isinstance(profile, Mapping) else None
+        peak = metrics.get("memory_peak_bytes") if isinstance(metrics, Mapping) else None
+        if isinstance(peak, int) and not isinstance(peak, bool) and peak > 0:
+            record["memory_peak_bytes"] = peak
+        records.append(record)
     return records
 
 

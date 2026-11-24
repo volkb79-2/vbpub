@@ -9,18 +9,24 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import shlex
 import subprocess
 
 import pytest
 
 from fleetd.contracts import ContractError
+from fleetd import hostside
 from fleetd.campaign import STALL_FLOOR_SECONDS, CampaignManager, _probe_settled
 from fleetd.runner import JobSpec, RunnerJobs, probe_payload, probe_script
-from fleetd.transport import FakeTransport, _probe_targets, _read_command_metadata
+from fleetd.transport import FakeTransport, _read_command_metadata
 
 from test_campaign import FakeClock, _plan, _real_runner_home, _spec_for_project, _state
 
 MAX_ARG_STRLEN = 128 * 1024
+
+
+def _probe_groups(script: str) -> list[dict[str, object]]:
+    return hostside.decode_payload(shlex.split(script.splitlines()[-1])[-2])
 
 
 def _many_jobs(count: int, *, commit: str = "a" * 40, project: str = "fleetd", first: int = 0) -> dict[str, JobSpec]:
@@ -59,17 +65,11 @@ def test_probe_payload_groups_by_checkout_and_derives_each_ids_path_from_the_nam
     first = _many_jobs(2, commit="a" * 40, project="fleetd")
     second = _many_jobs(2, commit="b" * 40, project=".", first=2)
     jobs = {**first, **second}
-    targets = _probe_targets(probe_script(jobs))
-    by_name = {target["name"]: target for target in targets}
-    assert set(by_name) == set(jobs)
-    for name, spec in jobs.items():
-        assert by_name[name] == {
-            "name": name,
-            "ids_path": spec.candidate_file_home_path,
-            "commit": spec.commit,
-            "project": spec.project,
-            "lane": spec.lane,
-        }
+    groups = _probe_groups(probe_script(jobs))
+    assert {name for group in groups for name in group["names"]} == set(jobs)
+    for group in groups:
+        for name in group["names"]:
+            assert group["ids_template"].replace("@NAME@", name) == jobs[name].candidate_file_home_path
     # One table entry per (campaign, host, commit, project, lane), not per job.
     assert probe_payload(jobs) != probe_payload(first)
     transport = FakeTransport()
@@ -85,7 +85,7 @@ def _probed_names(transport: FakeTransport, host: str) -> list[str]:
         if alias == host and kind == "run"
         and (_read_command_metadata(script) or {}).get("operation") == "probe"
     ]
-    return sorted(target["name"] for target in _probe_targets(probes[-1]))
+    return sorted(name for group in _probe_groups(probes[-1]) for name in group["names"])
 
 
 def test_a_finished_job_is_not_probed_again(tmp_path):

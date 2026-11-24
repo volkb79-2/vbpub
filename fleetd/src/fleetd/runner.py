@@ -6,7 +6,6 @@ import base64
 import hashlib
 import importlib.resources
 import json
-import math
 import re
 import shlex
 import zlib
@@ -14,6 +13,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Mapping
 
+from . import hostside
 from .contracts import ContractError, is_candidate_id
 from .runner_layout import (
     ASSAY_DIR,
@@ -370,26 +370,6 @@ def _parse_pressure(value: object) -> dict[str, float | None] | None:
     return result
 
 
-def _progress_memory_peak(event: Mapping[str, object]) -> int | None:
-    """Read one ``resource-profile/1`` memory peak, or ``None``.
-
-    Assay 12 removed its sampled ``peak_rss_bytes``; the cgprofile observer's
-    ``profile.metrics.memory_peak_bytes`` is the only per-candidate memory
-    number a progress event carries. A profile that is absent, of another
-    status, or has a null/non-positive peak yields ``None`` -- never zero.
-    """
-    profile = event.get("profile")
-    if not isinstance(profile, Mapping):
-        return None
-    metrics = profile.get("metrics")
-    if not isinstance(metrics, Mapping):
-        return None
-    value = metrics.get("memory_peak_bytes")
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return None
-    return value
-
-
 def parse_progress(
     content: bytes,
     expected_ids: set[str],
@@ -397,52 +377,18 @@ def parse_progress(
     start_offset: int = 0,
     end_offset: int | None = None,
 ) -> list[dict[str, object]]:
-    """Parse the candidate events needed by the collector from one progress stream."""
-    if isinstance(start_offset, bool) or not isinstance(start_offset, int) or start_offset < 0:
-        raise ContractError("progress start offset must be a non-negative integer")
-    if end_offset is not None and (
-        isinstance(end_offset, bool) or not isinstance(end_offset, int) or end_offset < start_offset
-    ):
-        raise ContractError("progress end offset must be an integer at or after its start")
+    """Apply the collector's closed contract to the host-side reader."""
     try:
-        text = content[start_offset:end_offset].decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ContractError("progress artifact is not UTF-8") from exc
-    records: list[dict[str, object]] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict) or event.get("event") != "candidate":
-            continue
-        candidate_id = event.get("candidate_id")
-        if not isinstance(candidate_id, str) or not is_candidate_id(candidate_id):
-            raise ContractError(f"progress line {line_number}: invalid candidate id")
-        if candidate_id not in expected_ids:
-            continue
-        outcome = event.get("outcome_bucket")
-        if not isinstance(outcome, str):
-            raise ContractError(f"progress line {line_number}: unsupported candidate outcome")
-        if outcome not in {"killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"}:
-            raise ContractError(f"progress line {line_number}: unsupported candidate outcome")
-        elapsed = event.get("elapsed_seconds")
-        if (
-            isinstance(elapsed, bool)
-            or not isinstance(elapsed, (int, float))
-            or not math.isfinite(float(elapsed))
-            or elapsed < 0
-        ):
-            elapsed = None
-        emitted = event.get("emitted_at")
-        records.append({
-            "candidate_id": candidate_id,
-            "outcome_bucket": outcome,
-            "elapsed_seconds": elapsed,
-            "emitted_at": emitted if isinstance(emitted, str) else None,
-            "memory_peak_bytes": _progress_memory_peak(event),
-        })
-    return records
+        records = hostside.progress_records(
+            content,
+            expected_ids,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            strict=True,
+        )
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
+    return [{**record, "memory_peak_bytes": record.get("memory_peak_bytes")} for record in records]
 
 
 def canonical_probe_json(value: object) -> str:

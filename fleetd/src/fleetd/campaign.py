@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from . import hostside
 from .contracts import ContractError, is_candidate_id
 from .measurement import measurement_document
 from .plan import replan_pending
@@ -135,6 +136,18 @@ def _event_key(event: Mapping[str, object], host: str, job: str) -> tuple[float,
     except (ValueError, OverflowError, OSError):
         when = math.inf
     return when, host, job
+
+
+def _merge_memory_peak(previous: dict[str, Any], event: Mapping[str, object]) -> None:
+    """Keep one progress event while filling its measured peak from a later read."""
+    peak = event.get("memory_peak_bytes")
+    if (
+        previous.get("memory_peak_bytes") is None
+        and isinstance(peak, int)
+        and not isinstance(peak, bool)
+        and peak > 0
+    ):
+        previous["memory_peak_bytes"] = peak
 
 
 class CampaignManager:
@@ -592,9 +605,6 @@ class CampaignManager:
         host_state["status"] = "ONLINE"
         host_state.pop("error", None)
         host_state["pressure"] = self.runner.pressure(host_id)
-        if returned_lost:
-            host_state["loss_requeued"] = False
-            host_state["returned_after_loss"] = True
         for name, job in job_rows.items():
             row = rows[name]
             state_name = row.get("state")
@@ -652,8 +662,9 @@ class CampaignManager:
             allowed = set(job["candidate_ids"])
             all_records = job.setdefault("records", [])
             record_keys = {
-                (item.get("candidate_id"), item.get("outcome_bucket"), item.get("emitted_at"), item.get("elapsed_seconds"))
-                for item in all_records if isinstance(item, dict)
+                (item.get("candidate_id"), item.get("outcome_bucket"), item.get("emitted_at"), item.get("elapsed_seconds")): item
+                for item in all_records
+                if isinstance(item, dict)
             }
             not_started_ids = set(job.get("not_started_ids", []))
             for event in [*records, *verdict_records]:
@@ -687,9 +698,12 @@ class CampaignManager:
                     "memory_peak_bytes": memory_peak,
                 }
                 key = (candidate_id, outcome, emitted, elapsed)
-                if key not in record_keys:
-                    record_keys.add(key)
+                previous = record_keys.get(key)
+                if previous is None:
+                    record_keys[key] = record
                     all_records.append(record)
+                else:
+                    _merge_memory_peak(previous, record)
             job["not_started_ids"] = sorted(not_started_ids)
             finished = {record["candidate_id"] for record in all_records if isinstance(record, dict)}
             job["finished_ids"] = sorted(finished)
@@ -739,6 +753,8 @@ class CampaignManager:
                 else:
                     job["status"] = "SUPERSEDED_PENDING"
         if returned_lost:
+            host_state["loss_requeued"] = False
+            host_state["returned_after_loss"] = True
             self._stop_returned_duplicates(state, host_id)
         self._stop_superseded_host(state, host_id)
 
@@ -1344,7 +1360,7 @@ class CampaignManager:
     def _collect_result(self, state: dict[str, Any]) -> dict[str, Any]:
         expected_ids = set(state["planned_ids"])
         events: list[dict[str, Any]] = []
-        seen_progress: set[tuple[str, str, str, str | None, float | None]] = set()
+        seen_progress: dict[tuple[str, str, str, str | None, float | None], dict[str, Any]] = {}
         missing_artifacts: list[dict[str, str]] = []
         not_started_reasons: dict[str, str] = {}
         progress_paths: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -1373,9 +1389,13 @@ class CampaignManager:
                     else None
                 )
                 key = (job["host"], candidate_id, outcome, emitted_at, elapsed_seconds)
-                if key not in seen_progress:
-                    events.append({**record, "host": job["host"], "job": job["name"]})
-                    seen_progress.add(key)
+                event = {**record, "host": job["host"], "job": job["name"]}
+                previous = seen_progress.get(key)
+                if previous is None:
+                    events.append(event)
+                    seen_progress[key] = event
+                else:
+                    _merge_memory_peak(previous, event)
             if job["status"] in {"QUEUED", "STARTING"}:
                 continue
             path = job.get("progress_path")
@@ -1412,9 +1432,13 @@ class CampaignManager:
                         else None
                     )
                     key = (host, record["candidate_id"], record["outcome_bucket"], emitted_at, elapsed_seconds)
-                    if key not in seen_progress:
-                        events.append({**record, "host": host, "job": job["name"]})
-                        seen_progress.add(key)
+                    event = {**record, "host": host, "job": job["name"]}
+                    previous = seen_progress.get(key)
+                    if previous is None:
+                        events.append(event)
+                        seen_progress[key] = event
+                    else:
+                        _merge_memory_peak(previous, event)
         for job in sorted(state["jobs"].values(), key=lambda row: row["name"]):
             if job["status"] in {"QUEUED", "STARTING"}:
                 continue
@@ -1548,43 +1572,9 @@ class CampaignManager:
     @classmethod
     def _verdict_records(cls, content: bytes, expected_ids: set[str]) -> list[dict[str, Any]]:
         try:
-            document = json.loads(content.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ContractError("verdict artifact is not UTF-8 JSON") from exc
-        mutations: list[Mapping[str, Any]] = []
-        claims = document.get("claims", []) if isinstance(document, dict) else []
-        if isinstance(claims, list):
-            for claim in claims:
-                if isinstance(claim, dict) and claim.get("rigor") == "R2" and isinstance(claim.get("mutation"), dict):
-                    mutations.append(claim["mutation"])
-        judgment = document.get("judgment") if isinstance(document, dict) else None
-        r2 = judgment.get("r2") if isinstance(judgment, dict) else None
-        if isinstance(r2, dict) and isinstance(r2.get("mutation"), dict):
-            mutations.append(r2["mutation"])
-        records = []
-        for mutation in mutations:
-            for bucket in ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"):
-                outcomes = mutation.get(bucket, [])
-                if not isinstance(outcomes, list):
-                    continue
-                for outcome in outcomes:
-                    if not isinstance(outcome, dict):
-                        continue
-                    candidate_id = outcome.get("candidate_id")
-                    if not isinstance(candidate_id, str) or candidate_id not in expected_ids:
-                        continue
-                    records.append({
-                        "candidate_id": candidate_id,
-                        "outcome_bucket": bucket,
-                        "elapsed_seconds": None,
-                        "emitted_at": None,
-                        "not_started": (
-                            bucket == "budget_exceeded"
-                            and isinstance(outcome.get("process_tree_evidence"), dict)
-                            and outcome["process_tree_evidence"].get("leader_status") == "not-started"
-                        ),
-                    })
-        return records
+            return hostside.verdict_reading(content, expected_ids)[0]
+        except ValueError as exc:
+            raise ContractError(str(exc)) from exc
 
     @staticmethod
     def _measured_bucket(row: Mapping[str, Any]) -> str | None:

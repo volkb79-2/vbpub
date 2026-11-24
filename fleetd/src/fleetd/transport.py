@@ -7,14 +7,16 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
+import tempfile
 import time
-import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Protocol, Sequence
 
-from .runner_layout import NAME_PLACEHOLDER, progress_home_path
+from . import hostside
+from .runner_layout import progress_home_path
 
 
 class TransportError(RuntimeError):
@@ -225,24 +227,12 @@ def _read_command_metadata(script: str) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
-def _probe_targets(script: str) -> list[dict[str, str]]:
-    """Expand the probe script's own payload, the one the real host would read.
-
-    Reading the real argument (and not a second copy in the metadata comment)
-    keeps the fake honest about what the probe sends and keeps the script small.
-    """
-    lines = script.splitlines()
-    groups = json.loads(zlib.decompress(base64.b64decode(shlex.split(lines[-1])[-2], validate=True)))
-    return [
-        {
-            "name": name,
-            "ids_path": group["ids_template"].replace(NAME_PLACEHOLDER, name),
-            "commit": group["commit"],
-            "project": group["project"],
-            "lane": group["lane"],
-        }
-        for group in groups for name in group["names"]
-    ]
+def _write_host_files(root: Path, files: Mapping[str, bytes]) -> None:
+    """Materialize the fake's home-relative file table for the shared probe."""
+    for relative, content in files.items():
+        target = root / _home_relative(relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
 
 
 class FakeTransport:
@@ -365,124 +355,54 @@ class FakeTransport:
         return host.files[relative]
 
     def _probe(self, host: FakeHost, script: str) -> str:
-        rows = []
-        for target in _probe_targets(script):
-            name = str(target["name"])
-            job = host.jobs.get(name)
-            if job is None:
-                ready = str(target["commit"]) not in host.missing_checkouts
-                rows.append({"name": name, "state": "MISSING", "checkout_ready": ready})
-                continue
-            ids_path = str(target["ids_path"])
-            try:
-                planned = tuple(
-                    line for line in host.files[ids_path].decode("ascii").splitlines() if line
-                )
-            except (KeyError, UnicodeError):
-                planned = ()
-            calculated_digest = hashlib.sha256("".join(f"{candidate_id}\n" for candidate_id in sorted(planned)).encode("ascii")).hexdigest()
-            try:
-                list_digest = host.files[f"jobs/{name}/list.sha256"].decode("ascii").strip()
-            except (KeyError, UnicodeError):
-                list_digest = calculated_digest if planned else None
-            progress_path = progress_home_path(
-                str(target["commit"]), str(target["project"]), str(target["lane"]),
-            )
-            raw_progress = host.files.get(progress_path, b"")
-            end_offset = job.progress_end_offset if job.state == "EXIT" else len(raw_progress)
-            if end_offset is None or end_offset < job.progress_offset:
-                end_offset = job.progress_offset
-            progress_records = []
-            for line in raw_progress[job.progress_offset:end_offset].decode("utf-8", errors="replace").splitlines():
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
+        groups = hostside.decode_payload(shlex.split(script.splitlines()[-1])[-2])
+        with tempfile.TemporaryDirectory(prefix="fleetd-fake-probe-") as temporary:
+            home = Path(temporary)
+            _write_host_files(home, host.files)
+            for group in groups:
+                checkout = home / "checkouts" / str(group["commit"])
+                if str(group["commit"]) in host.missing_checkouts:
+                    shutil.rmtree(checkout, ignore_errors=True)
                     continue
-                if isinstance(event, dict) and event.get("event") == "candidate" and event.get("candidate_id") in planned:
-                    record = {
-                        key: event[key] for key in (
-                            "candidate_id", "outcome_bucket", "elapsed_seconds", "emitted_at"
-                        ) if key in event
-                    }
-                    profile = event.get("profile")
-                    metrics = profile.get("metrics") if isinstance(profile, dict) else None
-                    peak = metrics.get("memory_peak_bytes") if isinstance(metrics, dict) else None
-                    if isinstance(peak, int) and not isinstance(peak, bool):
-                        record["memory_peak_bytes"] = peak
-                    progress_records.append(record)
-            finished = {}
-            for event in progress_records:
-                candidate_id = event.get("candidate_id")
-                if isinstance(candidate_id, str) and candidate_id not in finished:
-                    finished[candidate_id] = event
-            verdict_records = []
-            baseline_seconds = None
-            if job.state == "EXIT":
-                try:
-                    verdict = json.loads(host.files[job.verdict_path].decode("utf-8"))
-                except (KeyError, UnicodeError, json.JSONDecodeError):
-                    verdict = None
-                mutations = []
-                claims = verdict.get("claims", []) if isinstance(verdict, dict) else []
-                if isinstance(claims, list):
-                    mutations.extend(
-                        claim["mutation"] for claim in claims
-                        if isinstance(claim, dict) and claim.get("rigor") == "R2"
-                        and isinstance(claim.get("mutation"), dict)
+                project = checkout if group["project"] == "." else checkout / str(group["project"])
+                project.mkdir(parents=True, exist_ok=True)
+                (checkout / ".git").mkdir(exist_ok=True)
+                for name in group["names"]:
+                    if name not in host.jobs:
+                        shutil.rmtree(home / "jobs" / str(name), ignore_errors=True)
+            for name, job in host.jobs.items():
+                job_dir = home / "jobs" / name
+                job_dir.mkdir(parents=True, exist_ok=True)
+                for marker in ("EXIT", "pid", "progress-end-offset"):
+                    (job_dir / marker).unlink(missing_ok=True)
+                if job.state == "RUNNING":
+                    (job_dir / "pid").write_text(f"{os.getpid()}\n", encoding="ascii")
+                elif job.state == "EXIT" and isinstance(job.exit_code, int):
+                    (job_dir / "EXIT").write_text(f"{job.exit_code}\n", encoding="ascii")
+                (job_dir / "progress-offset").write_text(f"{job.progress_offset}\n", encoding="ascii")
+                if job.progress_end_offset is not None:
+                    (job_dir / "progress-end-offset").write_text(
+                        f"{job.progress_end_offset}\n", encoding="ascii"
                     )
-                judgment = verdict.get("judgment") if isinstance(verdict, dict) else None
-                r2 = judgment.get("r2") if isinstance(judgment, dict) else None
-                if isinstance(r2, dict) and isinstance(r2.get("mutation"), dict):
-                    mutations.append(r2["mutation"])
-                for mutation in mutations:
-                    for bucket in ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"):
-                        outcomes = mutation.get(bucket, [])
-                        if not isinstance(outcomes, list):
-                            continue
-                        for outcome in outcomes:
-                            if not isinstance(outcome, dict) or outcome.get("candidate_id") not in planned:
-                                continue
-                            evidence = outcome.get("process_tree_evidence")
-                            verdict_records.append({
-                                "candidate_id": outcome["candidate_id"],
-                                "outcome_bucket": bucket,
-                                "elapsed_seconds": None,
-                                "emitted_at": None,
-                                "not_started": (
-                                    bucket == "budget_exceeded"
-                                    and isinstance(evidence, dict)
-                                    and evidence.get("leader_status") == "not-started"
-                                ),
-                            })
-                command = r2.get("r2_command") if isinstance(r2, dict) else None
-                baseline = command.get("r2_baseline") if isinstance(command, dict) else None
-                baseline_seconds = baseline.get("wall_s") if isinstance(baseline, dict) else None
-                if (
-                    isinstance(baseline_seconds, bool)
-                    or not isinstance(baseline_seconds, (int, float))
-                    or baseline_seconds < 0
-                ):
-                    baseline_seconds = None
-            rows.append({
-                "name": job.name,
-                "state": job.state,
-                "exit_code": job.exit_code,
-                "list_digest": list_digest,
-                "progress_count": len(finished),
-                "progress_mtime": job.progress_mtime if raw_progress else None,
-                "progress_path": progress_path,
-                "progress_offset": job.progress_offset,
-                "progress_end_offset": job.progress_end_offset,
-                "verdict_path": job.verdict_path,
-                "records": progress_records,
-                "verdict_records": verdict_records,
-                "baseline_seconds": baseline_seconds,
-            })
-        pressure = {
-            "memory_some_avg10": host.pressure["memory"],
-            "io_some_avg10": host.pressure["io"],
-        }
-        return json.dumps({"jobs": rows, "pressure": pressure}, sort_keys=True, separators=(",", ":"))
+                if job.progress_path and host.files.get(job.progress_path) and job.progress_mtime is not None:
+                    progress = home / _home_relative(job.progress_path)
+                    os.utime(progress, (job.progress_mtime, job.progress_mtime))
+            proc = home / "proc"
+            (proc / "pressure").mkdir(parents=True, exist_ok=True)
+            for resource in ("memory", "io"):
+                value = host.pressure[resource]
+                if value is not None:
+                    (proc / "pressure" / resource).write_text(
+                        f"some avg10={value} avg60=0 avg300=0 total=0\n", encoding="ascii"
+                    )
+            document = hostside.probe_document(home, groups, proc, home=home)
+            for row in document["jobs"]:
+                job = host.jobs.get(str(row["name"]))
+                if job is not None:
+                    row["progress_mtime"] = (
+                        job.progress_mtime if host.files.get(job.progress_path) else None
+                    )
+        return json_output(document)
 
     def _start(self, alias: str, host: FakeHost, metadata: Mapping[str, object]) -> tuple[int, str, str]:
         name = str(metadata.get("name", ""))
@@ -502,6 +422,20 @@ class FakeTransport:
             if old.list_digest != digest:
                 return 73, "", "named job exists with another candidate-list digest"
             return 0, "EXISTING\n", ""
+        commit = str(metadata.get("commit", ""))
+        project = str(metadata.get("project", ""))
+        declared_lane = str(metadata.get("lane", ""))
+        with tempfile.TemporaryDirectory(prefix="fleetd-fake-start-") as temporary:
+            home = Path(temporary)
+            _write_host_files(home, host.files)
+            checkout = home / "checkouts" / commit
+            project_dir = checkout if project == "." else checkout / project
+            project_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                assay_lane = hostside.resolve_assay_lane(checkout, project, declared_lane)
+            except ValueError as exc:
+                return 73, "", str(exc)
+        progress_path = progress_home_path(commit, project, assay_lane)
         suffix = f"campaigns/{name}-s1"
         job = FakeJob(
             name=name,
@@ -509,9 +443,9 @@ class FakeTransport:
             list_digest=digest,
             started_at=self.clock(),
             progress_mtime=None,
-            progress_path=str(metadata.get("progress_path", "")),
+            progress_path=progress_path,
             verdict_path=f"{suffix}/verdict.json",
-            progress_offset=len(host.files.get(str(metadata.get("progress_path", "")), b"")),
+            progress_offset=len(host.files.get(progress_path, b"")),
         )
         host.jobs[name] = job
         host.starts += 1

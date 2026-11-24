@@ -490,6 +490,29 @@ def test_fake_probe_uses_shared_runner_files_and_rejects_invalid_start_inputs():
     assert transport.run("host-a", start_script(spec)) == (73, "", "candidate ids file is missing or invalid")
 
 
+def test_fake_start_and_probe_resolve_the_declared_assay_lane():
+    spec = JobSpec("campaign", "host-a", 0, 0, ("a" * 64,), "b" * 40, ".", "r2", 1)
+    transport = FakeTransport()
+    runner = RunnerJobs(transport)
+    host = transport.host("host-a")
+    host.files[f"checkouts/{spec.commit}/run-gate.toml"] = (
+        b'[lanes.r2]\nkind = "assay"\nassay_lane = "contract-assay"\n'
+    )
+    assert runner.start(spec) is True
+    expected = progress_home_path(spec.commit, spec.project, "contract-assay")
+    assert host.jobs[spec.name].progress_path == expected
+    assert runner.probe("host-a", {spec.name: spec})[spec.name]["progress_path"] == expected
+    host.jobs[spec.name].state = "UNKNOWN"
+    assert runner.probe("host-a", {spec.name: spec})[spec.name]["state"] == "UNKNOWN"
+    unsafe = replace(spec, batch=1, candidate_ids=("b" * 64,))
+    host.files[unsafe.candidate_file_home_path] = b"b" * 64 + b"\n"
+    host.files[f"checkouts/{spec.commit}/run-gate.toml"] = (
+        b'[lanes.r2]\nkind = "assay"\nassay_lane = "../bad"\n'
+    )
+    rc, _out, err = transport.run("host-a", start_script(unsafe))
+    assert (rc, err) == (73, "resolved Assay lane is not a safe artifact name")
+
+
 def test_fake_probe_clamps_offsets_and_ignores_non_candidate_events():
     transport = FakeTransport()
     runner = RunnerJobs(transport)
@@ -3060,6 +3083,34 @@ def test_measurement_writes_per_candidate_evidence_from_owner_records(tmp_path):
     assert empty["baseline_seconds"] is None
 
 
+def test_collect_keeps_a_measured_peak_when_the_probe_record_lacks_it(tmp_path):
+    manager = CampaignManager(tmp_path, FakeTransport())
+    manager.run("campaign", _plan(1))
+    state = _state(tmp_path)
+    job = next(job for job in state["jobs"].values() if job["status"] == "RUNNING")
+    candidate_id = job["candidate_ids"][0]
+    emitted_at = "2030-01-01T00:00:00+00:00"
+    transport = manager.runner.transport
+    transport.add_progress(
+        job["host"], job["name"], candidate_id, "killed",
+        elapsed_seconds=4.0, emitted_at=emitted_at, memory_peak_bytes=64 * 1024**2,
+    )
+    remote = transport.host(job["host"]).jobs[job["name"]]
+    job["progress_path"] = remote.progress_path
+    job["progress_offset"] = remote.progress_offset
+    job["progress_end_offset"] = None
+    job["probe_settled"] = True
+    job["records"].append({
+        "candidate_id": candidate_id, "outcome_bucket": "killed",
+        "elapsed_seconds": 4.0, "emitted_at": emitted_at,
+    })
+    manager._write_state(state)
+    document = manager.measurement("campaign")
+    row = next(row for row in document["candidates"] if row["candidate_id"] == candidate_id)
+    assert row["memory_peak_bytes"] == 64 * 1024**2
+    assert document["summary"]["memory_peak_bytes_median"] == 64 * 1024**2
+
+
 def test_measurement_cli_reports_the_document(tmp_path, capsys, monkeypatch):
     manager = CampaignManager(tmp_path, FakeTransport())
     manager.run("campaign", _plan(2))
@@ -3085,15 +3136,8 @@ def test_campaign_baseline_is_the_largest_reported_baseline_across_its_jobs():
     assert CampaignManager._campaign_baseline({"jobs": {"a": {}}}) is None
 
 
-def test_progress_profile_memory_peak_is_read_only_from_a_measured_profile():
-    from fleetd.runner import _progress_memory_peak
-
+def test_progress_parser_reads_only_a_positive_profile_memory_peak():
     candidate = "a" * 64
-    assert _progress_memory_peak({"profile": None}) is None
-    assert _progress_memory_peak({"profile": {"metrics": None}}) is None
-    assert _progress_memory_peak({"profile": {"metrics": {"memory_peak_bytes": 0}}}) is None
-    assert _progress_memory_peak({"profile": {"metrics": {"memory_peak_bytes": True}}}) is None
-    assert _progress_memory_peak({"profile": {"metrics": {"memory_peak_bytes": 42}}}) == 42
     content = (
         json.dumps({
             "event": "candidate", "candidate_id": candidate, "outcome_bucket": "killed",
@@ -3102,6 +3146,11 @@ def test_progress_profile_memory_peak_is_read_only_from_a_measured_profile():
     ).encode()
     record = parse_progress(content, {candidate})[0]
     assert record["memory_peak_bytes"] == 1024
+    assert parse_progress(
+        b'{"event":"candidate","candidate_id":"' + candidate.encode()
+        + b'","outcome_bucket":"killed","profile":{"metrics":{"memory_peak_bytes":0}}}\n',
+        {candidate},
+    )[0]["memory_peak_bytes"] is None
 
 
 def test_execution_context_carries_an_optional_image_digest(tmp_path):
@@ -3691,6 +3740,50 @@ def test_a_host_that_went_lost_then_errored_then_returned_still_stops_its_duplic
     assert final["hosts"]["host-b"]["status"] == "ONLINE"
     assert final["hosts"]["host-b"]["returned_after_loss"] is True and final["hosts"]["host-b"]["loss_requeued"] is False
     assert final["jobs"][lost["name"]]["status"] == "SUPERSEDED"
+    assert transport.host("host-b").stops == stops_before + 1
+
+
+def test_a_return_after_loss_survives_a_job_loop_error_and_stops_once(tmp_path):
+    plan, first_id, second_id = _two_host_one_candidate_plan()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    first_job = _first_running(state, "host-a")
+    lost = _first_running(state, "host-b")
+    transport.add_progress("host-a", first_job["name"], first_id, "killed")
+    transport.finish("host-a", first_job["name"])
+    manager.status("campaign")
+    transport.set_unreachable("host-b")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    retry = next(job for job in _state(tmp_path)["jobs"].values() if job.get("requeue_reason") == "host-lost")
+    transport.add_progress("host-a", retry["name"], second_id, "survived")
+    transport.finish("host-a", retry["name"])
+    manager.tick("campaign")
+
+    transport.set_unreachable("host-b", False)
+    _corrupt_digest(transport, "host-b", lost["name"])
+    stops_before = transport.host("host-b").stops
+    manager.tick("campaign")
+    first_return = _state(tmp_path)
+    assert first_return["hosts"]["host-b"]["status"] == "ERROR"
+    assert first_return["hosts"]["host-b"].get("returned_after_loss") is not True
+    assert first_return["hosts"]["host-b"]["loss_requeued"] is True
+    assert first_return["jobs"][lost["name"]]["status"] == "LOST"
+    assert transport.host("host-b").stops == stops_before
+
+    _restore_digest(transport, "host-b", lost["name"])
+    manager.tick("campaign")
+    final = _state(tmp_path)
+    assert final["hosts"]["host-b"]["status"] == "ONLINE"
+    assert final["hosts"]["host-b"]["returned_after_loss"] is True
+    assert final["hosts"]["host-b"]["loss_requeued"] is False
+    assert final["jobs"][lost["name"]]["status"] == "SUPERSEDED"
+    assert transport.host("host-b").stops == stops_before + 1
+    manager.tick("campaign")
     assert transport.host("host-b").stops == stops_before + 1
 
 

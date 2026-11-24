@@ -70,6 +70,7 @@ def test_probe_reads_a_running_job_progress_without_a_stored_digest(tmp_path):
         + json.dumps({
             "event": "candidate", "candidate_id": candidate, "outcome_bucket": "killed",
             "elapsed_seconds": 1.0, "emitted_at": "2030-01-01T00:00:00Z",
+            "profile": {"metrics": {"memory_peak_bytes": 4096}},
         }) + "\n",
         encoding="utf-8",
     )
@@ -83,6 +84,7 @@ def test_probe_reads_a_running_job_progress_without_a_stored_digest(tmp_path):
     assert row["records"] == [{
         "candidate_id": candidate, "outcome_bucket": "killed",
         "elapsed_seconds": 1.0, "emitted_at": "2030-01-01T00:00:00Z",
+        "memory_peak_bytes": 4096,
     }]
     missing_ids = replace(spec, batch=1, candidate_ids=("c" * 64,))
     (home / "jobs" / missing_ids.name).mkdir()
@@ -263,10 +265,13 @@ def test_progress_records_reject_ranges_and_utf8_and_filter_lines():
         "[]",
         json.dumps({"event": "heartbeat"}),
         json.dumps({"event": "candidate", "candidate_id": "b" * 64, "outcome_bucket": "killed"}),
-        json.dumps({"event": "candidate", "candidate_id": candidate}),
+        json.dumps({
+            "event": "candidate", "candidate_id": candidate,
+            "profile": {"metrics": {"memory_peak_bytes": 42}},
+        }),
     ])
     assert hostside.progress_records(content.encode(), {candidate}) == [{
-        "candidate_id": candidate,
+        "candidate_id": candidate, "memory_peak_bytes": 42,
     }]
 
 
