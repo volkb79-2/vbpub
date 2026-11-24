@@ -319,7 +319,7 @@ fi
 # lowering is deferred (recorded in /run/mdt/reconcile/memory-deferred; the timer retries).
 _cv_dir="${MDT_RECONCILE_DIR:-/run/mdt/reconcile}"   # check.sh reads <dir>/memory-deferred
 _mdt_converge_prop() { # <unit> <cgroup dir> <Property> <file>
-  local unit="$1" dir="$2" prop="$3" file="$4" want cur now i
+  local unit="$1" dir="$2" prop="$3" file="$4" want cur now
   want=$(systemctl show -p "$prop" --value "$unit" 2>/dev/null) || return 0
   [ -n "$want" ] || return 0
   [ "$want" = infinity ] && want=max
@@ -328,7 +328,7 @@ _mdt_converge_prop() { # <unit> <cgroup dir> <Property> <file>
   [ "$cur" = "$want" ] && return 0
   if [ "$file" = memory.max ] && [ "$want" != max ] && { [ "$cur" = max ] || [ "$want" -lt "$cur" ]; }; then
     now=$(cat "$dir/memory.current" 2>/dev/null || echo 0)
-    for i in 1 2 3 4 5 6 7 8; do
+    for _ in 1 2 3 4 5 6 7 8; do
       [ "$now" -le $(( want - 67108864 )) ] && break
       echo 256M > "$dir/memory.reclaim" 2>/dev/null || true
       now=$(cat "$dir/memory.current" 2>/dev/null || echo 0)

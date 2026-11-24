@@ -902,6 +902,7 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
     fi
   fi
   while IFS='=' read -r _ded_key _ded_value; do
+    # shellcheck disable=SC2034  # the DEV_*_MEMORY_HIGH values reach the templates through RENDER_VARS (indirect expansion)
     case "$_ded_key" in
       DEDICATED_MEM_MIN) DEV_MEMORY_MIN="$_ded_value" ;;
       DEDICATED_INTERACTIVE_MIN) DEV_INTERACTIVE_MEMORY_MIN="$_ded_value" ;;
