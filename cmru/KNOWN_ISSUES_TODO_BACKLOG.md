@@ -4237,21 +4237,35 @@ Source: vbpub-edge, via the main controller (get.py investigation), 2026-11-24.
 
 The operator's point: the release is isolated by design. It is built and published from a snapshot commit, and the tag points at the candidate commit, not at main's tip. Promotion only records release metadata on main (the version record, the CHANGES section, release docs). A post-snapshot change to the project's paths on main does not change what was released, and main containing newer project commits than the tag is the normal state of a busy project. The refusal adds a manual step to every release of an active project and protects nothing that a clean merge breaks.
 
-The one real hazard is a CLEAN merge that is semantically wrong. CHANGES.md is the case: the candidate renames `## [Unreleased]` to `## [X.Y.Z] - date` and opens a new empty `## [Unreleased]`. A three-way merge of main's new bullets under the old heading can land them under the RELEASED version's heading without any conflict, which silently mis-attributes them.
+What promotion lands on main: the candidate's `chore(<proj>): prepare release inputs` commit (`cli.py:5460`, `_commit_prepared_generated`), which holds the prepare step's declared `commit_generated` outputs plus the changelog, and, for the `file:` version strategy only, a `chore: bump ...` VERSION commit (`version.py:469`). `scm` and `counter` versions live only in the tag. There is no separate release-history file: the configured `changelog` is the history.
+
+How the changelog changes: `changelog.py:740-792` inserts a new generated `## [X.Y.Z] - date` section after the `<!-- cmru: release history -->` marker. It leaves the `## [Unreleased]` heading in place. `fold_unreleased_notes` (`changelog.py:90`) moves the `[Unreleased]` body into that section's `PENDING_NOTES` block and leaves only HTML comments under `[Unreleased]`. Measured with a scratch git repo (review, 2026-11-24):
+- `[Unreleased]` empty at snapshot time, main adds a bullet: the merge is clean, and the bullet correctly stays under `[Unreleased]`.
+- Notes folded at snapshot time, main adds a bullet under `[Unreleased]`: the merge CONFLICTS, because the candidate rewrote that body. It is never a silent mis-attribution, but it is the same manual step the operator objects to.
+
+The real hazard for an automatic clean-merge promotion is the `commit_generated` outputs. They are inside the project's paths (generated source, lockfiles), so today's refusal protects them. A clean merge in which main also edited such a file, or its inputs, can land a generated file that neither side produced, or one that is stale against main's inputs.
 
 **Wanted.**
-- Promote automatically when the merge is clean. Refuse only on a real merge conflict, or when a post-merge check fails. Print the overlapping project paths as INFO.
-- Post-merge checks, by content, before pushing main; on failure, abort the merge and keep today's refusal and recovery text:
-  - the released version's CHANGES section on the merge result is byte-identical to the candidate's;
-  - every CHANGES bullet that main added since the snapshot is under `## [Unreleased]` on the merge result;
-  - the release-history and version records the release wrote are identical to the candidate's;
-  - the release tag still points at the candidate commit, an ancestor of the merge.
-- A main change to the release's own records (the released version's CHANGES section, release history, version files) is a refusal even when git merges it cleanly.
+- Promote automatically when the merge is clean. Refuse on a real conflict or on a failed post-merge check. Print the overlapping project paths as INFO.
+- A CHANGES-aware resolution of the folded-notes conflict. The merge result's `[Unreleased]` body = main's `[Unreleased]` body minus the bullets folded into the released section. The released section stays the candidate's.
+- Post-merge checks before pushing main. On failure, abort the merge and keep today's refusal and recovery text. Each of these is byte-identical to the candidate's:
+  - the configured changelog's released section;
+  - the `file:` VERSION file (when used);
+  - every `commit_generated` path, unless main did not touch it or its declared inputs.
+  Assert, but do not test: the tag points at the candidate commit (always an ancestor of the `--no-ff` merge).
+- Update the merge commit message and the docstrings. `transaction.py:3668` hard-codes "none of the released project's paths changed".
+- Multi-project runs: `_release_projects` continues the next project on the merged candidate (`cli.py:3968-3975`), so main's changes to project A reach later projects in the same run. Each is still gated on that tree, so this is safe; say so in SPEC.
+- Cases that already fail safe (one line each in SPEC):
+  - a main revert or deletion of the changelog is a modify/delete conflict, so refused;
+  - two releases of one project both insert after the marker, so a conflict; releases are also serialised by the repo flock (`transaction.py:390`);
+  - the next release's range and source-end cursor handle post-snapshot commits (`changelog.py:719`).
 - Tests with real git repositories in tmp_path:
   - main edits an unrelated project file: promoted;
-  - main adds an `[Unreleased]` bullet next to the heading the candidate renamed: promoted, and the bullet stays unreleased (or the check refuses if the merge mis-attributes it);
-  - a real conflict: refused, the candidate unchanged.
-- SPEC: S-REL promotion text and RELEASE-TRANSACTIONS.md "Failure and retained candidate".
+  - an empty `[Unreleased]` and main adds a bullet: promoted, and the bullet stays unreleased;
+  - folded notes and main adds a bullet: promoted by the CHANGES-aware resolution, with main's bullet under `[Unreleased]` and the released section unchanged;
+  - main edits a `commit_generated` path: refused;
+  - a real conflict elsewhere: refused, with the candidate unchanged.
+- SPEC: S-REL promotion text (`docs/SPEC.md` about :1503) and RELEASE-TRANSACTIONS.md "Failure and retained candidate" (about :556).
 
 Design home: P-core-14 (release-surface items) or the P7 package, whichever reaches transaction.py first.
 
@@ -4263,11 +4277,11 @@ Source: the operator via the main controller, 2026-11-24 (mdt-cockpit release).
 
 Building `tester-unified:wave-20261124b` by hand on the cockpit (P-core-05) failed twice before it worked:
 - `build-image.sh` calls `cmru tester-gate` as a host-slice preflight. That needs six values (`CMRU_TESTER_UNIFIED_IMAGE`, `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`, `CMRU_TESTER_PIDS_LIMIT`, `CMRU_TESTER_CGROUP_PROBE_IMAGE`), which normally come from `cmru.orchestration.toml` through `cmru release`. The script neither sets them nor names them in its usage text.
-- The cockpit environment sets `BUILDX_BUILDER=mdt-managed`, a remote BuildKit that cannot see local daemon images. The build then fails with "pull access denied ... tester-base:local". It works with `BUILDX_BUILDER=default`, which `tester-unified-rust/build-image.sh` already exposes as `--builder`.
+- The cockpit environment sets `BUILDX_BUILDER=mdt-managed`, a remote BuildKit that cannot see local daemon images. The build then fails with "pull access denied ... tester-base:local". It works with `BUILDX_BUILDER=default`, which `tester-unified-rust/build-image.sh` already exposes as `--builder` (its own default is `mdt-managed`).
 
 **Wanted.**
-- `build-image.sh` reads the six values from `cmru.orchestration.toml` [env], with the caller's environment winning, or refuses naming them.
-- It takes `--builder NAME` (default `default`, like the rust scripts) and refuses a builder whose driver cannot see the local base image, with a clear message.
+- The six values live in `cmru.orchestration.toml` `[orchestration.defaults.env]`, some with `${...}` expansion, so a shell script cannot simply read them. Either `cmru tester-gate` loads the orchestration defaults itself, or the script uses cmru's env loader, with the caller's environment winning; otherwise it refuses naming them.
+- It takes `--builder NAME` (default `default`; note that `tester-unified-rust/build-image.sh` defaults to `mdt-managed` and only its `build-dev-image.sh` defaults to `default`) and refuses a builder whose driver cannot see the local base image, with a clear message.
 - The README documents a hand build.
 - Tests at a fake docker/cmru boundary.
 
