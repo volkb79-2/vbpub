@@ -66,6 +66,7 @@ together.
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
 | CTL-56 | remote-gate admission holds the admit ticket while waiting, is not PSI-only, and lets an identical live launch through | Must-fix | OPEN 2026-11-24 |
 | CTL-57 | `gate-run.sh` local admission only queues on the slot locks; it starts a gate while the cockpit is at the memory-PSI stop signal | Must-fix | OPEN 2026-11-24 |
+| CTL-58 | `push-image.sh` destroys the host's rollback image: `docker load` untags the old `<image:tag>` and no `:prev-*` tag is kept | Should-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1677,3 +1678,13 @@ Source: P-plat-14b plan; observations in runs rgw-assay-first-release-r2-2026112
 `gate-run.sh` admits a local gate as soon as one of its slot locks is free. At 07:50Z on 2026-11-24 the cockpit host ran 4 local gates at memory PSI `full` avg10 3-6, above the programme's only stop signal (>= 3). Sessions can be told to stop, but external codex implementers that call `gate-run.sh` mid-run cannot. Wanted: after taking a slot and before starting the lane, wait while `/proc/pressure/memory` `full` avg10 >= 3, print one line per minute naming the PSI value and the wait, release nothing it does not hold, and give up after a bounded wait with exit 75, "not admitted, nothing ran" (never a FAIL verdict); an unreadable PSI file exits 75 at once. Same semantics as host-admission/1 of `scripts/controller/dev` (CTL-52, package P-plat-02; design `docs/design/agent-dev/DESIGN.md` §7, unmerged on 2026-11-24), so one rule covers both.
 
 Source: vbpub-main-controller, 2026-11-24 07:50Z (cockpit PSI 3-6 with 4 local gates).
+
+## CTL-58 — push-image.sh destroys the host's rollback image
+
+**Status:** OPEN (filed 2026-11-24, routed from vbpub-core / T2 via the main controller).
+
+`scripts/controller/push-image.sh <host> <image:tag>` streams the image and runs `docker load` on the host. When the tag already exists there, docker untags the old image ("The image tester-unified:local already exists, renaming the old one with ID sha256:04ad9c4010f4… to empty string"), and the host keeps no `:prev-*` tag, so a host-side rollback is impossible without re-pushing the old image from the cockpit. Seen 2026-11-24 pushing tester-unified:local = dcaf4222c68d to v1001 and r1002; on the cockpit, `tester-unified/promote-image.sh` kept `tester-unified:prev-20261124b`, the hosts have no such tag.
+
+Wanted: before `docker load`, retag the host's current `<image:tag>` as `<image>:prev-<date>`, never overwriting an existing prev tag (the same rule as `tester-unified/promote-image.sh`); print the kept image id. Test at a fake docker boundary (current tag present / absent / prev tag already present).
+
+Interim rollback path: push `tester-unified:prev-20261124b` from the cockpit.
