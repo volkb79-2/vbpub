@@ -119,6 +119,43 @@ def test_render_defaults_and_report_template_and_toml_errors(tmp_path: Path):
         config.render_defaults(path)
 
 
+def test_load_site_merges_a_valid_override_and_requires_tls_edge_defaults(
+    tmp_path: Path,
+):
+    root = make_root(tmp_path / "instance")
+    defaults, overlay, effective = config.load_site(root / "stack" / "ciu-stack")
+    assert defaults["tls_edge"]["domain"] == "edge.example.com"
+    assert overlay == {}
+    assert effective["tls_edge"] == valid_config()
+
+    override = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    override.write_text(
+        '[tls_edge]\ndomain = "override.example.org"\n',
+        encoding="utf-8",
+    )
+    _, overlay, effective = config.load_site(root / "stack" / "ciu-stack")
+    assert overlay["tls_edge"]["domain"] == "override.example.org"
+    assert effective["tls_edge"]["domain"] == "override.example.org"
+
+    bad = make_root(tmp_path / "bad", "[other]\nvalue = 1\n")
+    with pytest.raises(config.ConfigError, match="must contain a \\[tls_edge\\] table"):
+        config.load_site(bad / "stack" / "ciu-stack")
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory", "malformed"])
+def test_load_site_refuses_invalid_overrides(tmp_path: Path, kind: str) -> None:
+    root = make_root(tmp_path / kind)
+    override = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    if kind == "symlink":
+        override.symlink_to(root / "missing")
+    elif kind == "directory":
+        override.mkdir()
+    else:
+        override.write_text("broken = [", encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="site override"):
+        config.load_site(root / "stack" / "ciu-stack")
+
+
 def test_load_answers_none_valid_unknown_and_parse_error(tmp_path: Path):
     assert config.load_answers(None) == {}
     path = tmp_path / "answers.toml"
