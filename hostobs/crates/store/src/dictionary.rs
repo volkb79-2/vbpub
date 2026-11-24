@@ -39,8 +39,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::StoreError;
 
-/// The default bound on live entries (plan v4 §A.4's `dict_active_max` proposal).
-pub const DEFAULT_ACTIVE_MAX: usize = 65_536;
+/// The default bound on live entries, re-used from [`hostobs_model::identity::DEFAULT_ACTIVE_MAX`]
+/// (plan v4 §A.4's `dict_active_max`).
+pub const DEFAULT_ACTIVE_MAX: usize = hostobs_model::identity::DEFAULT_ACTIVE_MAX;
 
 /// The longest label the index will hold, in bytes (plan v4 §B.3's entry text bound).
 pub const MAX_LABEL: usize = 256;
