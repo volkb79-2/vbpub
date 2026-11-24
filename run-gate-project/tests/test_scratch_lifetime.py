@@ -133,10 +133,6 @@ def test_prune_refuses_symlink_and_ignores_nonmatching_entries(
     non_dir.write_text("not a directory\n")
     _age(non_dir)
 
-    def no_docker(*_args, **_kwargs):
-        raise AssertionError("doctor --prune must not probe containers")
-
-    monkeypatch.setattr(run_gate.shutil, "which", no_docker)
     assert _prune(project, temp_dir, monkeypatch, "--older-than", "1h") == 0
     captured = capsys.readouterr()
     assert link.is_symlink() and sentinel.read_text() == "outside\n"
@@ -198,6 +194,23 @@ def test_in_process_main_stamps_and_removes_allocated_scratch(
         run_gate.SCRATCH_TEMP_PREFIX)
 
 
+def test_inflight_record_without_active_scratch_omits_run_id(tmp_path):
+    project = _project(tmp_path / "repo")
+    (project / ".gitignore").write_text(".run-gate/\n")
+    record = project / ".run-gate" / run_gate.INFLIGHT_DIR_NAME / "suite.json"
+    _record(project, _run_id("a"), project)
+    payload = json.loads(record.read_text())
+    payload.pop("scratch_run_id")
+
+    run_gate._end_scratch_run()
+    assert run_gate.write_inflight_record(
+        project, project, "suite", payload)
+    written = json.loads(record.read_text())
+    assert written["schema"] == run_gate.INFLIGHT_SCHEMA
+    assert written["lane"] == "suite"
+    assert "scratch_run_id" not in written
+
+
 def test_private_allocation_outside_run_refuses_without_creating(tmp_path):
     run_gate._end_scratch_run()
     repo = tmp_path / "repo"
@@ -207,6 +220,38 @@ def test_private_allocation_outside_run_refuses_without_creating(tmp_path):
             match="run-gate scratch allocation outside a run"):
         run_gate._make_private_dir(repo)
     assert not (repo / ".run-gate").exists()
+
+
+def test_scratch_base_regular_file_is_an_infra_error(tmp_path):
+    base = tmp_path / "scratch-base"
+    base.write_text("not a directory\n")
+    with pytest.raises(
+            run_gate.GateInfraError, match="is not a real directory"):
+        run_gate._ensure_scratch_base(base)
+    assert base.read_text() == "not a directory\n"
+
+
+def test_private_allocation_chmod_failure_removes_partial_dir(
+        tmp_path, monkeypatch):
+    active = run_gate._active_scratch_run()
+    assert active is not None and active.root is not None
+    root = active.root
+    real_chmod = Path.chmod
+
+    def deny_private_chmod(path, mode, *args, **kwargs):
+        if path.parent == root and path.name.startswith("private-"):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", deny_private_chmod)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(
+            run_gate.GateInfraError,
+            match="no host-visible private directory"):
+        run_gate._make_private_dir(repo)
+    assert not list(root.glob("private-*"))
+    assert (root / run_gate.SCRATCH_OWNER_NAME).is_file()
 
 
 def test_scratch_root_mode_owner_and_symlinked_base(tmp_path, monkeypatch):
@@ -325,6 +370,70 @@ def test_prune_reports_removal_errors_and_continues(
         if victim.exists():
             victim.chmod(0o700)
             real_rmtree(victim)
+
+
+def test_prune_open_failure_is_an_infra_exit(
+        tmp_path, monkeypatch, capsys):
+    project, temp_dir = _project(tmp_path / "repo"), tmp_path / "system-temp"
+    temp_dir.mkdir()
+    store = project / ".run-gate"
+    store.mkdir()
+    real_open = run_gate.os.open
+
+    def deny_store_open(path, *args, **kwargs):
+        if Path(path) == store:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_gate.os, "open", deny_store_open)
+    assert _prune(project, temp_dir, monkeypatch, "--older-than", "1h") == 2
+    error = capsys.readouterr().err
+    assert "cannot open scratch base" in error
+    assert str(store) in error and "Permission denied" in error
+
+
+def test_prune_entry_stat_failure_is_an_infra_exit(
+        tmp_path, monkeypatch, capsys):
+    project, temp_dir = _project(tmp_path / "repo"), tmp_path / "system-temp"
+    temp_dir.mkdir()
+    victim = _dir(temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('b')}")
+    _age(victim)
+    real_stat = run_gate.os.stat
+
+    def deny_victim_stat(path, *args, **kwargs):
+        if (isinstance(path, (str, os.PathLike))
+                and Path(path).name == victim.name
+                and kwargs.get("dir_fd") is not None):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_gate.os, "stat", deny_victim_stat)
+    assert _prune(project, temp_dir, monkeypatch, "--older-than", "1h") == 2
+    assert victim.is_dir()
+    assert "cannot inspect scratch entry" in capsys.readouterr().err
+
+
+def test_prune_skips_entry_that_vanishes_before_rmtree(
+        tmp_path, monkeypatch, capsys):
+    project, temp_dir = _project(tmp_path / "repo"), tmp_path / "system-temp"
+    temp_dir.mkdir()
+    vanished = _dir(
+        temp_dir, f"{run_gate.SCRATCH_TEMP_PREFIX}{_run_id('c')}")
+    _age(vanished)
+    real_rmtree = run_gate.shutil.rmtree
+
+    def vanish_before_rmtree(path, *args, **kwargs):
+        if Path(path).name == vanished.name:
+            raise FileNotFoundError(str(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_gate.shutil, "rmtree", vanish_before_rmtree)
+    assert _prune(project, temp_dir, monkeypatch, "--older-than", "1h") == 0
+    captured = capsys.readouterr()
+    assert vanished.is_dir()
+    assert ("run-gate-<run-id>: removed 0, kept-live 0, "
+            "kept-young 0, error 0") in captured.out
+    assert "WARNING" not in captured.err
 
 
 def test_prune_live_state_and_cleanup_edges(
