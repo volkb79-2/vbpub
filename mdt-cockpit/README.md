@@ -954,6 +954,8 @@ host, with product assertions inside the guest:
   validation cases.
 - `run-gate host-setup-admission` runs the host admission, wizard, installer,
   and capacity subset in `tester-unified` with a two CPU lane limit.
+- `run-gate io-governance-stress` (MDT-111 regression lane, not in the release flow) runs the two FIFO-backed lister
+  tests 50 times on one CPU beside a busy loop.
 - `run-gate release` is the image-release gate for the Docker/OCI release
   flow tests; CMRU consumes this declaration instead of carrying a second
   `tester-gate` command.

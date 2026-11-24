@@ -74,21 +74,25 @@ class DerivationTests(unittest.TestCase):
         self.assertEqual(derive(values, nproc=8, mem_gib=16).max_concurrent, 4)
 
     def test_memory_term_binds_when_it_is_smaller(self) -> None:
-        # 16 GB, keep 1G, tiers protect 6G: gates MemoryHigh = 15G - 6G = 9G -> 4 per 2G; cpu says 8
+        # 16 GB, keep 1G, tiers protect 6G (P-plat-19h: no minus-P): gates MemoryMax = dev's 15G -> 7 per 2G; cpu says 16
         values = {**DEDICATED, "DEV_INTERACTIVE_MEMORY_LOW": "4G", "DEV_BUILDKITD_MEMORY_LOW": "2G"}
-        d = derive(values, nproc=16, mem_gib=16)
-        self.assertEqual(d.max_concurrent, 4)
-        self.assertIn("memory 9G", d.basis)
+        d = derive(values, nproc=32, mem_gib=16)
+        self.assertEqual(d.max_concurrent, 7)
+        self.assertIn("memory 15G", d.basis)
         self.assertEqual(derive({**values, "ADMISSION_MEMORY_PER_GATE": "1G"}, nproc=16, mem_gib=16).max_concurrent, 8)
 
     def test_dedicated_dev_memory_term_comes_from_the_gates_memory_max(self) -> None:
-        # r1002 (design 6.1): gates MemoryMax 4507009024 -> floor(/ 2 GiB) = 2; the basis names MemoryMax, not MemoryHigh
+        # r1002 (design 6.1, P-plat-19h): gates MemoryMax = dev's 7191363584 -> floor(/ 2 GiB) = 3; the basis names MemoryMax
         values = {"HOST_ROLE": "dedicated-dev", "DEV_INTERACTIVE_MEMORY_LOW": "2.5G"}
         d = adm.derive(values, nproc=16, mem_total=8320679936, swap_total=63 * GIB)
-        self.assertEqual(d.max_concurrent, 2)
+        self.assertEqual(d.max_concurrent, 3)
         self.assertIn("dedicated-dev gates MemoryMax", d.basis)
         self.assertNotIn("MemoryHigh", d.basis)
-        self.assertEqual(adm.gates_memory_ceiling(values, mem_total=8320679936, swap_total=0)[0], 4507009024)
+        self.assertEqual(adm.gates_memory_ceiling(values, mem_total=8320679936, swap_total=0)[0], 7191363584)
+        # main's live r1002 pin DEV_HOST_MEMORY_KEEP=1560M: dev Max 6684901376 (6375M) -> floor(/ 2 GiB) = 3
+        pinned = {**values, "DEV_HOST_MEMORY_KEEP": "1560M"}
+        self.assertEqual(adm.gates_memory_ceiling(pinned, mem_total=8320679936, swap_total=0)[0], 6684901376)
+        self.assertEqual(adm.derive(pinned, nproc=16, mem_total=8320679936, swap_total=63 * GIB).max_concurrent, 3)
 
     def test_shared_prod_uses_the_configured_gates_memory_high(self) -> None:
         shared = {"DEV_GATES_MEMORY_HIGH": "6G"}
