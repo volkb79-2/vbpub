@@ -175,8 +175,9 @@ Semantics:
   `send_sequence` on a short-lived `QmpClient`.
 - **`serial_mark` / `wait_serial`**: `serial_mark()` is `make_mark(serial.log)` (offset, inode, head
   and tail hashes: truncate-and-regrow is caught); `wait_serial` polls `read_serial(serial.log,
-  mark=since)`, rendered by `serialtext.render`. Patterns are line-anchored, on rendered text. A
-  stale mark becomes `GuestError`. No local ANSI handling.
+  mark=since)`, rendered by `serialtext.render`. Each rendered line is searched with the caller's
+  pattern unchanged (a match cannot cross lines). A stale mark becomes `GuestError`. No local ANSI
+  handling.
 - **`serial_write`** raises `SerialInputUnavailable` unless `runner.json` has `serial_console: true`
   (only then does `serial.sock` exist), then connects via `unix_socket_client_path`, writes, closes.
   ENOENT and ECONNREFUSED are retried until the deadline; any other `OSError` (`ENAMETOOLONG`) fails.
@@ -198,8 +199,9 @@ Moves into `vm_lab.guest` (rewritten for the new channel, with their tests):
 - the boot_id reboot proof, extended by the "old boot still answers" guard;
 - the connect-error split (transient ENOENT/ECONNREFUSED versus permanent), now for the serial
   write path;
-- the anchored-prompt lesson from `console_prompt_kind`: serial patterns are line-anchored and run
-  on vmscreen-rendered text; the kernel build banner case becomes a `wait_serial` glue test;
+- the anchored-prompt lesson from `console_prompt_kind`: each rendered line is searched with the
+  caller's pattern unchanged (a match cannot cross lines) on vmscreen-rendered text; the kernel build
+  banner case becomes a `wait_serial` glue test;
 - the built-ins-only reboot of `force_reboot_to_init_failure`, generalised into the one-payload rule;
 - QMP reset and `send-key`, on vmscreen's `QmpClient` instead of `qmp_command`.
 
