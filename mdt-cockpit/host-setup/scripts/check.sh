@@ -14,7 +14,7 @@ info(){ printf '  INFO %s\n' "$*"; }   # neither pass nor fail -- disclosure onl
 check_host_setup_endpoint_record() {
   local command_name="${AUGEASWRAP_BIN:-augeaswrap}" result
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    fail "mdt-host-setup endpoint record cannot be checked: augeaswrap is missing; install the augeaswrap wheel and make '$command_name' available on PATH"
+    fail "mdt-host-setup endpoint record cannot be checked: augeaswrap is missing; install the augeaswrap wheel and make '$command_name' available on PATH (procedure: scripts/netcup/CONSUMERS.md#install-augeaswrap-for-host-setup)"
     return
   fi
   if [ ! -f /etc/host-endpoints.d/mdt-host-setup.env ]; then
