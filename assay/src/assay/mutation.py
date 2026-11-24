@@ -154,6 +154,7 @@ from .mutation_store import (
     CARRY_FORWARD_REASON,
     MUTATION_STATE_SCHEMA_VERSION,
     RESOURCE_SENSITIVE_BUCKETS,
+    RecordContext,
     Clock,
     FlexOptions,
     InvalidCandidateSelectionError,
@@ -2986,13 +2987,18 @@ def run_mutation(
                 judge=judge,
                 shard_ids=[candidate_id(job) for job in selected_jobs],
             )
-        if flex is not None and flex.shard_stores:
-            assert state_root is not None and judge is not None
-            shard_baseline_sha256 = (
+        record_context = RecordContext(
+            cold_witness=cold_witness,
+            equivalence_artifact=equivalence_artifact,
+            baseline_equivalence_sha256=(
                 hashlib.sha256(baseline_equivalence).hexdigest()
                 if baseline_equivalence is not None
                 else None
-            )
+            ),
+            kill_signal_artifact=kill_signal_artifact,
+        )
+        if flex is not None and flex.shard_stores:
+            assert state_root is not None and judge is not None
 
             def _strict_record(job: MutantJob, raw: bytes) -> Any:
                 return mutation_store._load_validated_state_record(
@@ -3000,10 +3006,7 @@ def run_mutation(
                     job,
                     judge=judge,
                     raw_override=raw,
-                    cold_witness=cold_witness,
-                    equivalence_artifact=equivalence_artifact,
-                    baseline_equivalence_sha256=shard_baseline_sha256,
-                    kill_signal_artifact=kill_signal_artifact,
+                    context=record_context,
                 )
 
             shard_counts = _validate_shard_stores(
@@ -3060,15 +3063,8 @@ def run_mutation(
                     job,
                     judge=judge,
                     campaign_deadline_sha256=campaign_deadline_sha256,
-                    cold_witness=cold_witness,
+                    context=record_context,
                     state_root_fd=state_root_fd,
-                    equivalence_artifact=equivalence_artifact,
-                    baseline_equivalence_sha256=(
-                        hashlib.sha256(baseline_equivalence).hexdigest()
-                        if baseline_equivalence is not None
-                        else None
-                    ),
-                    kill_signal_artifact=kill_signal_artifact,
                     locus_status=flat_locus_status,
                 )
                 locus_unavailable_total += sum(flat_locus_status)
@@ -3083,14 +3079,7 @@ def run_mutation(
                         job,
                         judge=judge,
                         campaign_deadline_sha256=campaign_deadline_sha256,
-                        cold_witness=cold_witness,
-                        equivalence_artifact=equivalence_artifact,
-                        baseline_equivalence_sha256=(
-                            hashlib.sha256(baseline_equivalence).hexdigest()
-                            if baseline_equivalence is not None
-                            else None
-                        ),
-                        kill_signal_artifact=kill_signal_artifact,
+                        context=record_context,
                         raw_override=_read_generation_record_bytes(
                             state_root,
                             candidate_id(job),
@@ -3152,10 +3141,7 @@ def run_mutation(
                     state_root_fd=state_root_fd,
                     state_root_guard=state_root_guard,
                     campaign_deadline_sha256=campaign_deadline_sha256,
-                    cold_witness=cold_witness,
-                    equivalence_artifact=equivalence_artifact,
-                    baseline_equivalence=baseline_equivalence,
-                    kill_signal_artifact=kill_signal_artifact,
+                    context=record_context,
                     rejudge_outcomes=rejudge_outcomes,
                     resource_sha256=(
                         projection.resource_sha256 if projection is not None else None
@@ -3203,10 +3189,7 @@ def run_mutation(
                     state_root_fd=state_root_fd,
                     state_root_guard=state_root_guard,
                     campaign_deadline_sha256=campaign_deadline_sha256,
-                    cold_witness=cold_witness,
-                    equivalence_artifact=equivalence_artifact,
-                    baseline_equivalence=baseline_equivalence,
-                    kill_signal_artifact=kill_signal_artifact,
+                    context=record_context,
                     rejudge_outcomes=rejudge_outcomes,
                     clock=clock,
                     deadline_check=deadline.remaining,

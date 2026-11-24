@@ -118,6 +118,17 @@ _RECORD_REJECTED = "REJECTED"
 #: no deferral, unlike the runtime-called ``execute_command``.
 Clock = Callable[[], datetime]
 
+
+@record
+class RecordContext:
+    """(B566) The judge facts every record validation of one run shares."""
+
+    cold_witness: bool = False
+    equivalence_artifact: str | None = None
+    baseline_equivalence_sha256: str | None = None
+    kill_signal_artifact: str | None = None
+
+
 class MutationStateError(AssayError):
     """A persisted mutation record or shard summary cannot be trusted."""
 
@@ -1594,11 +1605,8 @@ def _load_validated_state_record(
     *,
     judge: str,
     campaign_deadline_sha256: str | None = None,
-    cold_witness: bool = False,
+    context: RecordContext = RecordContext(),
     state_root_fd: int | None = None,
-    equivalence_artifact: str | None = None,
-    baseline_equivalence_sha256: str | None = None,
-    kill_signal_artifact: str | None = None,
     raw_override: Any = _READ_FROM_STORE,
     accept_any_judge: bool = False,
     locus_status: list[bool] | None = None,
@@ -1899,10 +1907,10 @@ def _load_validated_state_record(
     try:
         terminal_matches_bucket = _terminal_result_matches_bucket(
             payload,
-            equivalence_artifact=equivalence_artifact,
-            baseline_equivalence_sha256=baseline_equivalence_sha256,
-            kill_signal_artifact=kill_signal_artifact,
-            cold_witness=cold_witness,
+            equivalence_artifact=context.equivalence_artifact,
+            baseline_equivalence_sha256=context.baseline_equivalence_sha256,
+            kill_signal_artifact=context.kill_signal_artifact,
+            cold_witness=context.cold_witness,
             resource_limit_evidence=resource_limit_evidence,
             process_tree_evidence=process_tree_evidence,
         )
@@ -2020,7 +2028,7 @@ def _load_validated_state_record(
         payload.get("liveness_resource_evidence")
     ):
         return _RECORD_REJECTED
-    if cold_witness and (
+    if context.cold_witness and (
         payload["outcome_bucket"] == "survived"
         or (
             isinstance(payload.get("execution"), Mapping)
@@ -2878,7 +2886,7 @@ def _validate_carry_forward_match(
     judge: str,
     state_root: Path,
     campaign_deadline_sha256: str | None,
-    common: Mapping[str, Any],
+    context: RecordContext,
 ) -> Mapping[str, Any] | None:
     """Apply the WP2 record loader to an exact or sub-file carry candidate."""
     identity = candidate_id(job)
@@ -2915,7 +2923,7 @@ def _validate_carry_forward_match(
             campaign_deadline_sha256=campaign_deadline_sha256,
             raw_override=raw,
             accept_any_judge=True,
-            **common,
+            context=context,
         )
     except MutationStateError:
         return None
@@ -2932,26 +2940,12 @@ def _carry_forward_records(
     state_root_fd: int | None,
     state_root_guard: Callable[[], None] | None,
     campaign_deadline_sha256: str | None,
-    cold_witness: bool,
-    equivalence_artifact: str | None,
-    baseline_equivalence: bytes | None,
-    kill_signal_artifact: str | None,
+    context: RecordContext,
     rejudge_outcomes: frozenset[str],
     clock: Clock,
     deadline_check: Callable[[], float] | None = None,
 ) -> _CarryForwardResult:
     """Carry prior-judge survivors and leave every prior kill for full runs."""
-    baseline_equivalence_sha256 = (
-        hashlib.sha256(baseline_equivalence).hexdigest()
-        if baseline_equivalence is not None
-        else None
-    )
-    common = {
-        "cold_witness": cold_witness,
-        "equivalence_artifact": equivalence_artifact,
-        "baseline_equivalence_sha256": baseline_equivalence_sha256,
-        "kill_signal_artifact": kill_signal_artifact,
-    }
     guard: Callable[[], None] = state_root_guard or (lambda: None)
     (
         match_candidates,
@@ -2992,7 +2986,7 @@ def _carry_forward_records(
                 judge=judge,
                 state_root=state_root,
                 campaign_deadline_sha256=campaign_deadline_sha256,
-                common=common,
+                context=context,
             )
             if checked is None:
                 invalid_match_records.add((match.source, match.relative))
@@ -3101,7 +3095,7 @@ def _carry_forward_records(
                 judge=judge,
                 campaign_deadline_sha256=campaign_deadline_sha256,
                 raw_override=encoded,
-                **common,
+                context=context,
             )
         except MutationStateError:
             checked = None
@@ -3373,10 +3367,7 @@ def _carry_over_records(
     state_root_fd: int | None,
     state_root_guard: Callable[[], None] | None,
     campaign_deadline_sha256: str | None,
-    cold_witness: bool,
-    equivalence_artifact: str | None,
-    baseline_equivalence: bytes | None,
-    kill_signal_artifact: str | None,
+    context: RecordContext,
     rejudge_outcomes: frozenset[str],
     clock: Clock,
     resource_sha256: str | None = None,
@@ -3402,17 +3393,6 @@ def _carry_over_records(
     corrupt, of a refused shape, or of another bucket is not taken; its
     candidate simply executes. Nothing here can fail the lane.
     """
-    baseline_equivalence_sha256 = (
-        hashlib.sha256(baseline_equivalence).hexdigest()
-        if baseline_equivalence is not None
-        else None
-    )
-    common = {
-        "cold_witness": cold_witness,
-        "equivalence_artifact": equivalence_artifact,
-        "baseline_equivalence_sha256": baseline_equivalence_sha256,
-        "kill_signal_artifact": kill_signal_artifact,
-    }
     guard: Callable[[], None] = state_root_guard or (lambda: None)
     taken: list[Mapping[str, Any]] = []
     refused: list[tuple[str, str]] = []
@@ -3452,7 +3432,7 @@ def _carry_over_records(
                         judge=judge,
                         raw_override=raw,
                         accept_any_judge=True,
-                        **common,
+                        context=context,
                         locus_status=status,
                     )
                 except MutationStateError as exc:
@@ -3525,7 +3505,7 @@ def _carry_over_records(
             judge=judge,
             campaign_deadline_sha256=campaign_deadline_sha256,
             raw_override=encoded,
-            **common,
+            context=context,
         )
         if check is None or check is _RECORD_REJECTED:
             refused.append((identity, "imported record would not resume"))
