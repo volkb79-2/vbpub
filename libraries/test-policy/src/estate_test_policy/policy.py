@@ -15,7 +15,9 @@ RULE_SLEEP = "fixed-sleep"
 RULE_TIMEOUT = "short-timeout"
 RULE_WALLTIME = "wall-time-assert"
 RULE_LEAK = "resource-leak"
-RULES = (RULE_SLEEP, RULE_TIMEOUT, RULE_WALLTIME, RULE_LEAK)
+RULE_CHILDREN = "children"
+RULE_CONTAINED = "contained-cgroup"
+RULES = (RULE_SLEEP, RULE_TIMEOUT, RULE_WALLTIME, RULE_LEAK, RULE_CHILDREN)
 
 TIMEOUT_FLOOR_S = 120.0
 SLEEP_THRESHOLD_S = 0.2
@@ -223,7 +225,6 @@ def validate_allow(args: tuple, kwargs: dict) -> tuple[str | None, str | None]:
 class Snapshot:
     threads: frozenset
     fds: frozenset
-    children: frozenset
 
 
 def diff_snapshots(before: Snapshot, after: Snapshot) -> list[str]:
@@ -231,5 +232,4 @@ def diff_snapshots(before: Snapshot, after: Snapshot) -> list[str]:
     out = []
     out += [f"thread still running: {name}" for name in sorted(after.threads - before.threads)]
     out += [f"file descriptor still open: {fd}" for fd in sorted(after.fds - before.fds)]
-    out += [f"child process still present: pid {pid}" for pid in sorted(after.children - before.children)]
     return out
