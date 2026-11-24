@@ -304,9 +304,57 @@ fi
 # The real overwriter is systemd itself (daemon-reload / set-property re-apply the unit
 # values); see the "Known limit" in scripts/mdt-psi-guard.py.
 _psi_guard_state="${MDT_PSI_GUARD_STATE:-/run/mdt/psi-guard/state.json}"
+_guard_owned=""
 if [ -r "$_psi_guard_state" ]; then
   _guard_owned=$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])).get("owned", {}))))' "$_psi_guard_state" 2>/dev/null || true)
   [ -n "$_guard_owned" ] && log "psi-guard currently owns: $_guard_owned"
+fi
+
+# --- dedicated-dev memory converge (P-plat-19e 6.2) ------------------------------
+# systemd's property is the intent; this makes the kernel agree for dev.slice, its tiers, system.slice, user.slice
+# and every unit that carries host-setup's 95-mdt-memory-min.conf floor. It writes the cgroup file directly and
+# reads it back; never `set-property`, never a docker-*.scope. Keys psi-guard owns (state.json) are skipped.
+# Raising and every min/low write apply directly; a LOWER memory.max is written only when memory.current is at
+# least 64M below the target, otherwise memory.reclaim runs in chunks of <= 256M (at most 8 per run) and the
+# lowering is deferred (recorded in /run/mdt/reconcile/memory-deferred; the timer retries).
+_mdt_converge_prop() { # <unit> <cgroup dir> <Property> <file>
+  local unit="$1" dir="$2" prop="$3" file="$4" want cur now i
+  want=$(systemctl show -p "$prop" --value "$unit" 2>/dev/null) || return 0
+  [ -n "$want" ] || return 0
+  [ "$want" = infinity ] && want=max
+  case " ${_guard_owned:-} " in *" $unit/$file "*) log "$unit $file is owned by psi-guard: left alone"; return 0 ;; esac
+  cur=$(cat "$dir/$file" 2>/dev/null) || return 0
+  [ "$cur" = "$want" ] && return 0
+  if [ "$file" = memory.max ] && [ "$want" != max ] && { [ "$cur" = max ] || [ "$want" -lt "$cur" ]; }; then
+    now=$(cat "$dir/memory.current" 2>/dev/null || echo 0)
+    for i in 1 2 3 4 5 6 7 8; do
+      [ "$now" -le $(( want - 67108864 )) ] && break
+      echo 256M > "$dir/memory.reclaim" 2>/dev/null || true
+      now=$(cat "$dir/memory.current" 2>/dev/null || echo 0)
+    done
+    if [ "$now" -gt $(( want - 67108864 )) ]; then
+      mkdir -p /run/mdt/reconcile && echo "$unit $want" >> /run/mdt/reconcile/memory-deferred
+      log "NOTE: $unit memory.max $cur -> $want deferred (memory.current $now); the timer retries"
+      return 0
+    fi
+  fi
+  echo "$want" > "$dir/$file" 2>/dev/null || true
+  if [ "$(cat "$dir/$file" 2>/dev/null)" = "$want" ]; then
+    log "$unit $file $cur -> $want (kernel was out of step with systemd)"
+  else
+    log "ERROR: $unit $file is $(cat "$dir/$file" 2>/dev/null), wanted $want"; MDT_RC=1
+  fi
+}
+if [ "${HOST_ROLE:-}" = dedicated-dev ]; then
+  rm -f /run/mdt/reconcile/memory-deferred
+  for _cv_unit in dev.slice dev-interactive.slice dev-background.slice dev-gates.slice dev-buildkitd.slice system.slice user.slice \
+      $(for _cv_f in "${MDT_SYSTEMD_DIR:-/etc/systemd/system}"/*.service.d/95-mdt-memory-min.conf; do [ -f "$_cv_f" ] && basename "$(dirname "$_cv_f")" | sed 's/\.d$//'; done); do
+    _cv_cg=$(systemctl show -p ControlGroup --value "$_cv_unit" 2>/dev/null)
+    [ -n "$_cv_cg" ] && [ -d "$CG$_cv_cg" ] || continue
+    for _cv_pair in MemoryMin:memory.min MemoryLow:memory.low MemoryHigh:memory.high MemoryMax:memory.max MemorySwapMax:memory.swap.max; do
+      _mdt_converge_prop "$_cv_unit" "$CG$_cv_cg" "${_cv_pair%%:*}" "${_cv_pair#*:}"
+    done
+  done
 fi
 
 # --- slice zswap writeback policies -------------------------------------------

@@ -384,8 +384,10 @@ DEDICATED_OOM_SCORE_ADJUST = -900
 
 
 def validate_host_memory_keep(value: str) -> str | None:
-    """DEV_HOST_MEMORY_KEEP: a size of at least 256M (K/M/G/T suffix or bytes); 0 and empty are refused."""
-    parsed = parse_size_bytes(value) if value.strip() else None
+    """DEV_HOST_MEMORY_KEEP: empty (derive K = F + M) or a size of at least 256M (K/M/G/T suffix or bytes); 0 is refused."""
+    if not value.strip():
+        return None
+    parsed = parse_size_bytes(value)
     if parsed is None or parsed < DEDICATED_MEMORY_KEEP_MIN:
         return (
             f"{value!r} is not a valid host memory size: use a size of at least 256M such as 1280M "
@@ -639,7 +641,7 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
         raise CapacityError(f"DEV_INTERACTIVE_MEMORY_MIN {format_size(interactive_min)} exceeds DEV_INTERACTIVE_MEMORY_LOW {format_size(interactive_low)}")
     dev_min = (min_of("DEV_MEMORY_MIN_GUARANTEED_CEILING") + interactive_min + min_of("DEV_GATES_MEMORY_MIN")
                + min_of("DEV_BACKGROUND_MEMORY_MIN") + min_of("DEV_BUILDKITD_MEMORY_MIN"))
-    if maximum is not None and dev_min > maximum - GIB:
+    if maximum is not None and dev_min and dev_min > maximum - GIB:
         raise CapacityError(f"dev.slice MemoryMin {format_size(dev_min)} (sum of the child Min keys) exceeds MemoryMax - 1G = {format_size(maximum - GIB)}")
     return DedicatedMemory(keep, ram, swap, high, maximum, high_source, max_source, low, low_source,
                            protected, None, load_max, "none (no MemoryHigh on this role)", g[1],

@@ -878,7 +878,7 @@ _mdt_other_memory_min() {
   done < <(systemctl show -p FragmentPath,DropInPaths --value "$unit" 2>/dev/null | tr ' ' '\n')
   echo "$best"
 }
-DEV_MEMORY_MIN="${DEV_MEMORY_MIN_GUARANTEED_CEILING:-}"   # other roles: exactly the guaranteed slice's own value
+DEV_MEMORY_MIN=""   # dedicated-dev: dev.slice's own MemoryMin (sum of every child Min key); other roles use the guaranteed ceiling
 if [ "$MDT_DEDICATED_MEM" = 1 ]; then
   _ded_cli() { python3 "$HERE/mdt_capacity.py" dedicated-memory "$CANDIDATE_PATH" --meminfo /proc/meminfo "$@"; }
   if ! _ded_mem=$(_ded_cli); then
@@ -1074,7 +1074,7 @@ case "$_tree_plan" in
 esac
 
 echo "== render + install units =="
-RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX DEV_MEMORY_MIN \
+RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX \
 DEV_MEMORY_LOW DEV_MEMORY_HIGH DEV_MEMORY_MAX \
 DEV_INTERACTIVE_MEMORY_MIN DEV_INTERACTIVE_MEMORY_LOW DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX \
 DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_CPU_QUOTA \
@@ -1105,7 +1105,15 @@ render() { # render <template> <dest>
   sed -i '/^[A-Za-z][A-Za-z0-9]*=$/d' "$dst"
   echo "rendered $dst"
 }
-render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+  # dev.slice's MemoryMin = the sum of every child Min key there; the guaranteed slice keeps its own ceiling.
+  _ded_guaranteed_ceiling="${DEV_MEMORY_MIN_GUARANTEED_CEILING:-}"
+  DEV_MEMORY_MIN_GUARANTEED_CEILING="$DEV_MEMORY_MIN"
+  render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
+  DEV_MEMORY_MIN_GUARANTEED_CEILING="$_ded_guaranteed_ceiling"
+else
+  render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
+fi
 render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interactive.slice
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
 render "$HERE/units/dev-memory_min_guaranteed.slice.in" \

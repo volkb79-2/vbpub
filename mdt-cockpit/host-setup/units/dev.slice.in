@@ -45,11 +45,12 @@ MemoryZSwapWriteback=@DEV_ZSWAP_WRITEBACK@
 # the dev-interactive/-gates/-background/-buildkitd Min keys): any surplus
 # leaks, via cgroup v2's proportional redistribution, to the gate tiers.
 # Other roles: exactly DEV_MEMORY_MIN_GUARANTEED_CEILING (the guaranteed
-# slice's own value, shared with dev-memory_min_guaranteed.slice).
+# slice's own value, shared with dev-memory_min_guaranteed.slice); on
+# dedicated-dev install.sh renders THIS file with the sum in that variable.
 # HOST_ROLE=dedicated-dev renders NO MemoryHigh here (P-plat-19e): above the
 # MemoryMax the tree pages, it is not throttled. The three other root controls
 # have their own DEV_MEMORY_* keys below.
-MemoryMin=@DEV_MEMORY_MIN@
+MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
 MemoryLow=@DEV_MEMORY_LOW@
 MemoryHigh=@DEV_MEMORY_HIGH@
 MemoryMax=@DEV_MEMORY_MAX@
