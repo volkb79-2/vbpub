@@ -54,6 +54,15 @@ def _run_inner(pytester, monkeypatch, body: str):
     )
 
 
+def test_this_project_runs_the_source_plugin_in_fail_mode(request):
+    """The project's OWN wiring: source plugin loaded, entry point blocked, mode fail."""
+    import estate_test_policy.plugin as plugin
+
+    assert Path(plugin.__file__).resolve().is_relative_to(conftest.POLICY_SRC)
+    assert request.config.pluginmanager.is_blocked("estate_test_policy")
+    assert request.config.getini("estate_policy") == "fail"
+
+
 def test_source_plugin_wins_over_an_installed_lookalike(pytester, monkeypatch):
     result = _run_inner(
         pytester,
