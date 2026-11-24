@@ -173,4 +173,6 @@ environment = "bare-host"
 # of being refused before the sub-lane can run (RG-26).
 argv = ["bash", "-c", "run-gate selftest && run-gate --base {base} assay-r1 && run-gate assay-r3"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
-budget = "1h"
+# The three sub-lane budgets add up to 70m (selftest 20m + assay-r1 35m + assay-r3 15m);
+# 75m keeps the wrapper above that sum (RG-307 raised assay-r1 from 30m to 35m).
+budget = "75m"

@@ -388,8 +388,8 @@ def test_real_repository_all_has_no_findings(tmp_path, monkeypatch, capsys):
     inner budget was accepted as a permanent yellow. R-59 makes that a defect,
     so the estate must report zero findings and `--strict` must exit 0 -- a new
     zero-margin wrapper breaks THIS test on the commit that introduces it.
-    (RG-311's point is honoured by not pinning a rule name: any finding, of
-    any rule, fails here.)"""
+    This deliberately overrides RG-311 bullet 1 ("all WARN, no FAIL only") per
+    the P-core-RG307 brief: ANY finding, of any rule, fails here."""
     probe = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--show-toplevel"],
                            capture_output=True, text=True)
     if probe.returncode:

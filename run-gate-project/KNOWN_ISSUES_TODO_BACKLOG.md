@@ -202,6 +202,7 @@ SPEC §9.
 | RG-309 | `lanes --check` treats an Assay-accepted canary budget spelling as a hard `canary` FAIL | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-310 | the new `lanes --check` options break more option abbreviations than CHANGES and RG-308(b) record | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-311 | `lanes --check` test and wording follow-ups: real-repository test pins every finding to `budget-margin`, plus five nits | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
+| RG-312 | R-59 does not cover enclosing `kind = "command"` lanes or consumer timeouts; P-core-RG307 r1 follow-ups | Minor | OPEN 2026-11-24 (P-core-RG307 review r1; the two known enclosing budgets were fixed forward) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9733,8 +9734,8 @@ zero findings estate-wide. Severity: Minor.
 `run-gate lanes --check --all` used to report 16 wrappers whose outer budget
 equalled the inner Assay lane budget. Container start and the editable Assay install
 consume that same window, so a near-limit run can end as an outer timeout
-instead of Assay's BUDGET verdict. These are `budget-margin` warnings today;
-`--strict` promotes them to failures.
+instead of Assay's BUDGET verdict. These WERE `budget-margin` warnings; RG-307 raised them
+and the real-repository test now asserts zero findings.
 
 | Project | Run-Gate lane | Old outer | New outer | Assay lane | Inner |
 |---|---|---|---|---|---|
@@ -9829,9 +9830,9 @@ Source: `~/core-runs/P-core-08-review-r2.md`.
 
 **Status:** OPEN 2026-11-24 (P-core-08 review round 2, L2 and NITs). Severity: Minor.
 
-- The real-repository test asserts that every finding is `budget-margin`, as the
-  budget-tier ruling asked. A project that adopts a valid Assay spelling would
-  then break Run-Gate's own selftest; assert "all WARN, no FAIL" only.
+- (Bullet 1 superseded by P-core-RG307: the real-repository test now asserts
+  ZERO findings and `--strict` exit 0. A future valid Assay-only duration
+  spelling would turn it red for a non-defect; reconcile with RG-309.)
 - The RG-296 body says the rules were "ported to tests/test_lanes_check.py";
   they live in `run_gate.py` and the project tests remain.
 - `budget-unreadable` fires even when there is no outer budget or canary to
@@ -9840,3 +9841,19 @@ Source: `~/core-runs/P-core-08-review-r2.md`.
 - A broken `assay.toml` in single-project mode can exit 1 or 2 depending on the
   error kind.
 Source: `~/core-runs/P-core-08-review-r2.md`.
+
+## RG-312 — R-59 does not check enclosing command lanes or consumer timeouts
+
+**Status:** OPEN 2026-11-24 (P-core-RG307 Opus review r1: M1, M2, L2, NITs). Severity: Minor.
+
+- **Enclosing command lanes (M1).** `lanes --check` compares a wrapper `budget` with its inner Assay budget only. A `kind = "command"` lane that runs other lanes in sequence (`run-gate-project` `gate-full` = selftest 20m + assay-r1 + assay-r3 15m; `vm-lab` `gate` = r0-r1 20m + wheel 10m + r2) has a hard budget that must stay above the SUM of its steps. RG-307 raised `assay-r1` 30m -> 35m and `vm-lab` `r2` 240m -> 245m, which made both enclosing lanes too short (70m vs 1h; 275m vs 270m); fixed forward in P-core-RG307 (75m, 280m). Wanted: a check that parses `run-gate <lane>` steps out of a command lane's argv and warns when the budget is below the sum, plus an estate-wide review of other command lanes that chain wrapped lanes.
+- **Consumer timeouts have no headroom (M2).** `nyxloom/nyxloom-trove/nyxloom.toml` `[gates.tester-unified]` `timeout_seconds = 2100` equals the 35m lane budget exactly (main's ruling, the smallest value that satisfies `TestEstateBudgetTimeoutPairing`). Nyxloom's clock also counts run-gate admission and lock waits. topos has the same 1800 vs 30m pairing. Wanted: the pairing test requires headroom (for example `timeout >= budget + 300`), then raise nyxloom (>= 2400) and topos.
+- **L2.** No test covers a lane with a valid inner Assay budget but no wrapper `budget`; removing that guard in `assay_lane_budget_lines()` would crash such lanes unnoticed.
+- **NIT 1.** The margin warning prints a false equation: `(100s + 5m = 7m)` when the remedy is rounded up; say "raise to at least 7m".
+- **NIT 2.** `tests/test_run_gate.py` `assert run_gate.budget_seconds("7m") >= 100 + 300` compares two constants and cannot fail.
+- **NIT 3.** The R-59 sentence in `SPEC.md` (~:256) needs a wording pass (two issues named in the review).
+- **NIT 4.** The header line and the BELOW warning contradict each other when outer < inner (pre-existing): the header still names the inner budget as the effective bound.
+- **NIT 5.** The margin branch's "+ 5m" text is not asserted; a mutant on `margin_s // 60` in the margin wording survives.
+- **NIT 7.** The nyxloom.toml comment says "R-32/R-59 pair them"; only R-32 pairs consumer timeouts (R-59 is wrapper vs inner).
+
+Source: vbpub-core, P-core-RG307 Opus review r1 (`~/core-runs/rg307b-review-r1.md`).
