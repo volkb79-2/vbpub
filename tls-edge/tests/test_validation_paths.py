@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -464,6 +465,34 @@ def test_ciu_check_accepts_a_valid_hostdir_site(tmp_path: Path) -> None:
     )
 
     assert _run_ciu_check(root) == 0
+
+
+def test_ciu_hooks_preflight_invokes_validate_edge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ciu import hooks_runner
+
+    root, _ = _case_root(tmp_path, _override())
+    calls: list[Path] = []
+    original = hooks_runner.load_hook_for_check
+
+    def recording_loader(path: Path):
+        run_fn, validate_fn = original(path)
+        if Path(path).name != "validate_edge.py" or validate_fn is None:
+            return run_fn, validate_fn
+
+        def recording_validate(config: dict, ctx: Any) -> list[str]:
+            calls.append(Path(path))
+            return validate_fn(config, ctx)
+
+        return run_fn, recording_validate
+
+    monkeypatch.setattr(hooks_runner, "load_hook_for_check", recording_loader)
+    assert _run_ciu_check(root) == 0
+    assert calls == [
+        root / "stack" / "ciu-stack" / "hooks" / "validate_edge.py"
+    ]
 
 
 def test_standalone_refuses_hostdir_acme_storage(tmp_path: Path):
