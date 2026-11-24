@@ -5136,10 +5136,10 @@ candidates, so scoring it as judge code inflated the judge's own cost without
 protecting any verdict.
 
 - **Dependency is one way.** `assay_analysis` imports `assay` public names;
-  `assay` never imports `assay_analysis` except inside `cli._run_analyze`,
-  which loads it lazily when `argv` starts with `analyze`. Every other
-  `assay` command runs without the package loaded. A contract test pins that
-  `_run_analyze` is the only importer.
+  `assay` never imports `assay_analysis` except inside `cli._analysis_cli`,
+  the lazy seam shared by `analyze` and `capabilities`. Every other `assay`
+  command runs without the package loaded. A contract test pins that
+  `_analysis_cli` is the only importer.
 - **Private-name rule.** Analysis may not use a private (underscore) judge
   name. The allowlist, `ALLOWED_PRIVATE_JUDGE_NAMES`, exists and stays empty
   (CD18): anything analysis needs becomes a public judge name.
