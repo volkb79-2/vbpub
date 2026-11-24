@@ -39,11 +39,9 @@ For a different self-hosted consumer, follow the same transport mapping:
   host `ports:` mapping on the application container.
 
 The tls-edge service is installed as a get.py instance in `/srv/tls-edge-instance` and run with the
-bundled ciu (`cd /srv/tls-edge-instance/stack && ./ciu up`); see [INSTALL.md](INSTALL.md). Until
-the live host is migrated (the plan is in INSTALL.md, section "Migrate from a hand-made
-deployment") it still runs host-level Docker Compose from `/root/tls-edge-LIVE`, rendered from
-`edge-proxy/` with a site override; there the container is `edge-traefik`, in an instance it is
-`tls-edge-<id>-traefik`.
+bundled ciu (`cd /srv/tls-edge-instance/stack && ./ciu up`); see [INSTALL.md](INSTALL.md). Its
+Traefik container is `tls-edge-<id>-traefik`. The standalone renderer is only a disposable trial
+and is not a deployment path.
 
 ## Network/firewall requirements
 

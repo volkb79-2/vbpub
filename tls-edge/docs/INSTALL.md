@@ -136,6 +136,11 @@ a later change to a shipped default harmless for a configured instance. Prompt d
 effective values from the rendered defaults plus the site override; there is no second source of literal
 defaults.
 
+The CLI's `--root` is a stack directory: any directory that directly contains `ciu-stack/`. On an installed
+instance that directory is `/srv/tls-edge-instance/stack`; in a repository checkout it is `tls-edge/`.
+`consumer.env` is optional for a checkout, so `validate`, `show`, and `configure --dry-run` work without it. A
+directory that does not contain `ciu-stack/` is refused with the expected defaults path in the message.
+
 The site override is plain TOML and is never templated. A `{{`, `{%`, or `{#` marker in it is refused with the
 override path. `tls-edge configure` records `[tls_edge] schema = 1`; an override without the key means schema 1,
 and a newer schema is refused. Unknown keys are refused by their full dotted path, for example
@@ -159,6 +164,19 @@ removes it from `ciu check` and `ciu up`, so keep the shipped entries (tracked u
 **Per host vs wildcard.** The HTTPS entrypoint carries the resolver but no fixed domain list, so every consumer
 router's `Host()` rule gets its own certificate the first time it is requested. A wildcard certificate exists
 only with `acme-dns` and `[tls_edge.acme.dns] wildcard_main = "example.test"`.
+
+**Static-mode certbot hook.** Install the hook once on the host:
+
+```bash
+cp /srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh \
+  /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
+chmod +x /etc/letsencrypt/renewal-hooks/deploy/01-reload-traefik.sh
+certbot renew --dry-run
+```
+
+After a renewal the hook finds the Traefik container by its Compose service label and installed-instance name
+pattern, then runs `docker restart --time 5 <name>`. Expect about 3 seconds of edge downtime. It does not write
+or rewrite any file in the instance; when no matching container is running it prints a message and exits 0.
 
 **Staging CA** while testing: `[tls_edge.acme] ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"`
 (switch back and remove the ACME volume contents before going live, or the staging account is reused).
@@ -379,6 +397,6 @@ treat the release page as the trust boundary.
 
 The ciu default is `[tls_edge.runtime] cgroup_parent = ""` so an install works on hosts without the slice. On a host
 that runs under the shared governance rule, set `cgroup_parent = "edge.slice"` in the override
-(`ciu-stack/ciu.toml.j2`) at install time; this is mandatory migration step 2 in section 8, and the plain-compose
-fallback (`edge-proxy/`) has no cgroup parent at all: add it by hand if you use that path.
+(`ciu-stack/ciu.toml.j2`) at install time; this is mandatory migration step 2 in section 8. The generated
+`edge-proxy/` trial tree is not the supported deployment and has no cgroup parent by default.
 - An update never changes the instance path, so the ciu identity, container names and volumes stay the same.

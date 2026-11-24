@@ -339,20 +339,17 @@ The keys omitted from this file continue to come from
 `ciu-stack/ciu.defaults.toml.j2`. The CLI writes the same supported settings
 while preserving other site overrides and comments.
 
-For a repo checkout deployed with the standalone renderer, put the sparse
-override at `ciu-stack/ciu.toml.j2`, then run `scripts/render.sh`. For the
-manually managed host copy at `/root/tls-edge-LIVE`, make the change in that
-host copy and rerender that copy. Do not edit the devcontainer checkout and
-expect it to change the separately deployed host service. The generated files
-under `edge-proxy/` are output and may be overwritten by the next render. The
-one-off plain Compose quickstart permits directly editing rendered
-`edge-proxy/traefik.yml`, but that is not a durable configuration source.
+The supported deployment edits the instance's `stack/ciu-stack/ciu.toml.j2`
+through `tls-edge configure`, then runs ciu from `stack/`. For a disposable
+trial, put the sparse override at `ciu-stack/ciu.toml.j2` in a checkout and run
+`scripts/render.sh --out DIR`. The generated tree is ignored and may be
+overwritten by the next render; it is not a deployment.
 
 The tracked file that carries default values is not the normal place for a
 single instance's changes: edit the site override. Maintainers adding a
 supported feature should add its typed default and comments to
 `ciu-stack/ciu.defaults.toml.j2`, render it into the needed templates, and
-then expose it through the installer or operator CLI.
+then expose it through the operator CLI.
 
 ## Configuration CLI and wizard
 
