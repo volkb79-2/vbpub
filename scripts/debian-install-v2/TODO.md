@@ -540,3 +540,11 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 **Do.** Run one full `r2` campaign on a test host, record its wall time and mutant count, and set `[lanes.r2] budget` from that measurement. Do not raise it to an arbitrary larger value in the same change: the point is a measured bound, not a guess. `run-gate.toml` is not changed by WP-10 P2.
 
 **Close when.** `[lanes.r2]`'s budget is a measured value, a complete r2 campaign finishes inside it on a test host (`MUTATION_EXIT=0`), and the campaign's wall time and mutant count are recorded next to the number.
+
+**Superseded (2026-11-24).** Not run as this item's own campaign: the controller's separate v2 `r2` fix-forward package owns the measurement, the budget change and this item's closure.
+
+## OPEN (WP-10 P2 r1 review, 2026-11-24): three out-of-contract findings, filed not fixed
+
+- trace: `installer.py:2043,2095,2145` read `io-benchmark.json` without binding it to this install's `io_benchmark` step or to `record['profile'] == config.io_benchmark_profile`, so a failed runner beside an older complete file still configures io.cost (docs `DESIGN-GUIDE.md:350-352`, `CONSUMERS.md:226-228` claim otherwise); bind the record to the run that produced it and record the named refusal.
+- docs: `README.md:879` and `IO-BENCHMARK-DESIGN.md:72-73` say the benchmark "is not used to write an io.cost model" while `README.md:646-655` and the `iocost` step do write it from the same result; state one outcome in both places.
+- bound: `installer.py:3716` (`_packages(["fio"], "io_benchmark")`) runs before the runner and outside the iobench outer timeout, so "quick about 11 min" is a floor, not a ceiling; give the package step its own named bound and state the measured total.

@@ -219,8 +219,10 @@ quick, standard`. The key is accepted and simply unused when
 The outer timeout is iobench's hard budget for that rung plus 60 s; it stops an
 unbounded wait and is not the budget the run plans against. Each rung keeps its
 own state directory (`state_dir/iobench/<rung>`), so switching rung never
-inherits another rung's record — and iobench refuses a directory whose stored
-record names a different rung.
+inherits another rung's record — and `tools/iobench-install-runner` refuses a
+state directory whose stored record names a different rung
+(`state_dir_profile_mismatch`; iobench's own guard protects only a `veryquick`
+run's directory).
 
 A rung can complete without all six io.cost coefficients. The step is then
 `warned`, its detail names the missing keys, and io.cost stays **unconfigured**

@@ -41,9 +41,12 @@ _CLOUD_INIT_CLEAN_ARGV = {
     ("clean",),
     ("clean", "--logs", "--seed"),
 }
-# The installer benchmark rungs (config.IO_BENCHMARK_PROFILES). Literal because
-# this module is imported by the installer's own bootstrap copy set, which does
-# not carry config's timeout table either.
+# The installer benchmark rungs (config.IO_BENCHMARK_PROFILES). A literal copy
+# on purpose: this module is the command allow-list and imports no other
+# package module, so it cannot take the tuple from config. The copy cannot
+# drift silently: every rung's runner argv is sent through this validator by
+# the installer tests, which are parametrized over config's vocabulary, so a
+# rung added to config without being added here is refused (and that test red).
 _IOBENCH_PROFILES = {"veryquick", "quick", "standard"}
 
 
@@ -198,6 +201,15 @@ class HostActions:
                     raise ActionError(f"iobench installer {flag} path is invalid")
             if (argv[9], argv[11]) != ("--state-dir", "--output"):
                 raise ActionError("iobench installer paths are not the fixed state/output pair")
+            # The installer builds exactly `<state_dir>/iobench/<rung>` and
+            # `<state_dir>/io-benchmark.json`. Anything wider would let a caller
+            # bug have the runner, running as root, atomically replace an
+            # arbitrary file (its own is_symlink check does not stop that).
+            state_dir = Path(argv[10])
+            if state_dir.name != argv[2]:
+                raise ActionError("iobench installer state directory is not the rung's own directory")
+            if argv[12] != str(state_dir.parent.parent / "io-benchmark.json"):
+                raise ActionError("iobench installer output is not the install's io-benchmark.json")
         elif command == "btrfs":
             filesystem_show = (
                 len(argv) == 5

@@ -3767,7 +3767,7 @@ MaxFileSec=1month
             raise InstallerError(detail) from exc
         except Exception as exc:
             detail = (
-                f"iobench failed (advisory): {str(exc).splitlines()[0][:400]}; "
+                f"iobench {profile} failed (advisory): {str(exc).splitlines()[0][:400]}; "
                 f"{self._write_advisory_log('io_benchmark', exc)}"
             )
             self._mark_step("io_benchmark", "warned", detail)

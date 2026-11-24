@@ -15,7 +15,10 @@ All notable changes to debian-install-v2 are recorded here.
   `config.IO_BENCHMARK_OUTER_TIMEOUT_S` = veryquick 270 s, quick 780 s,
   standard 3660 s (each rung's iobench budget + 60 s). This supersedes
   DIV2-BL-05's 5/12/45 min ladder, whose 45 min was below standard's own
-  budget.
+  budget. `IOBENCH_OUTER_TIMEOUT_S` is **REMOVED, with no alias**: the per-rung
+  table above is the only timeout source, and a caller that needs the bound
+  for a rung reads `IO_BENCHMARK_OUTER_TIMEOUT_S[profile]`; a second name would
+  be a shadowing default that silently kept the old single 270 s.
 - `tools/iobench-install-runner` takes `--profile` and `--output` instead of
   the hard-coded veryquick and `state_dir/../io-benchmark.json`; the installer
   passes `state_dir/iobench/<rung>` as the state directory, so one rung can
@@ -26,8 +29,11 @@ All notable changes to debian-install-v2 are recorded here.
   key names, and io.cost stays unconfigured (never a crash, never a partial
   model). The `io_benchmark` step detail names the rung in every summary.
 - The action allowlist covers the new runner argv shape (13 arguments: profile,
-  target, size, PARTUUID, state dir, output) and still refuses the retired
-  shape, an unreleased rung and a non-normalised path.
+  target, size, PARTUUID, state dir, output), still refuses the retired shape
+  and an unreleased rung, and now accepts only the exact pair the installer
+  builds: `--state-dir <state_dir>/iobench/<rung>` and `--output
+  <state_dir>/io-benchmark.json`. An arbitrary absolute path as the output is
+  refused, so a caller bug can never have the root runner replace another file.
 
 ### Added (IC-M1a, btrfs-root configuration)
 - v2 now configures a single-device btrfs root installed by the rollback ISO

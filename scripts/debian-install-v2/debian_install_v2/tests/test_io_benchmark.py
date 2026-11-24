@@ -177,7 +177,9 @@ def test_benchmark_failure_is_advisory_and_keeps_the_reserved_partition(tmp_path
 
     assert step(installer)["status"] == "warned"
     assert disk.table[raw_number]["name"] == IOBENCH_PARTLABEL
-    assert len([item for item in sent if "iobench failed (advisory)" in item.lower()]) == 1
+    # The generic advisory line names the rung the install asked for.
+    assert step(installer)["detail"].startswith("iobench quick failed (advisory)")
+    assert len([item for item in sent if "iobench quick failed (advisory)" in item.lower()]) == 1
 
 
 def test_failed_benchmark_keeps_full_stderr_and_names_the_log(tmp_path):
