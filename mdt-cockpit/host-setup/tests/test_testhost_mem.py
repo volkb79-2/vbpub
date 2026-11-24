@@ -240,8 +240,9 @@ class FloorTests(unittest.TestCase):
     def test_the_mirror_equals_debian_install_v2_and_the_design_note_table(self) -> None:
         import ast
         tree = ast.parse((ROOT.parents[1] / "scripts/debian-install-v2/debian_install_v2/templates.py").read_text(encoding="utf-8"))
-        table = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-                     and any(getattr(t, "id", "") == "CONTROL_PLANE_MEMORY_MIN" for t in n.targets))
+        node = next(n.value for n in tree.body if isinstance(n, ast.Assign)
+                    and any(getattr(t, "id", "") == "CONTROL_PLANE_MEMORY_MIN" for t in n.targets))
+        table = eval(compile(ast.Expression(node), "templates.py", "eval"), {"__builtins__": {}})  # literal tuples of str and `n * 1024 * 1024`
         self.assertEqual({u: row[1] for u, row in table.items()}, cap.DEDICATED_HOST_MEMORY_MIN_DEFAULTS)
         note = (ROOT / "docs" / "DESIGN-DEDICATED-DEV-MEMORY.md").read_text(encoding="utf-8")
         rows = {u: int(v) * MIB for u, v in re.findall(r"(?m)^\| ((?:[a-z-]+)\.service) \| (\d+)M \|", note)}
@@ -351,7 +352,7 @@ class InstallBlockTests(unittest.TestCase):
     DROPINS = shell_block(INSTALL_SH, "# HOST_ROLE=dedicated-dev host protection (MDT-TESTHOST-MEM, P-plat-19e)",
                           'if [ -n "${IO_SD_DEV:-}" ]; then\n  if [ "$(_mdt_host_role)" = dedicated-dev ]')
     SIZE_FN = shell_block(INSTALL_SH, "_size_to_bytes() {", "for _swap_var in DEV_SWAP_MAX DEV_INTERACTIVE_MEMORY_SWAP_MAX")
-    OTHER_FN = shell_block(INSTALL_SH, "_mdt_other_memory_min() {", 'DEV_MEMORY_MIN=""')
+    OTHER_FN = shell_block(INSTALL_SH, "_other_memory_min() {", 'DEV_MEMORY_MIN=""')
 
     # The installer's own role detection (install.sh sets MDT_DEDICATED_MEM from _mdt_host_role), not a flag the test sets.
     ROLE_DETECT = shell_block(INSTALL_SH, "MDT_DEDICATED_MEM=0\nif [ \"$(_mdt_host_role)\" = dedicated-dev ]; then", "_host_swap_bytes=\"\"\n")
@@ -363,23 +364,22 @@ class InstallBlockTests(unittest.TestCase):
         self.bin.mkdir()
         fake = self.bin / "systemctl"
         # `systemctl cat U` succeeds for every unit except ghost.service; OOMScoreAdjust of containerd is -999, 0 for the rest;
-        # FragmentPath,DropInPaths of docker.service names $RAISE (a foreign MemoryMin drop-in) when that file exists
         fake.write_text('#!/bin/sh\ncase "$1" in\n cat) [ "$2" != ghost.service ] ;;\n'
                         ' --version) echo "systemd ${FAKE_SD_VERSION:-257} (257.9-1)" ;;\n'
-                        ' show) case "$3" in\n  FragmentPath,DropInPaths) if [ "$5" = docker.service ] && [ -n "${RAISE:-}" ] && [ -f "$RAISE" ]; then echo "$RAISE"; fi ;;\n'
-                        '  *) case "$5" in containerd.service) echo -999;; *) echo 0;; esac ;;\n esac ;;\nesac\n')
+                        ' show) case "$5" in containerd.service) echo -999;; *) echo 0;; esac ;;\nesac\n')
         fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
 
     def run_pre(self, env_text: str, *, mem_gib: int = 8, swap_gib: int = 16, raise_text: str = "") -> subprocess.CompletedProcess:
         env = self.tmp / "candidate.env"
         env.write_text(env_text)
-        raise_file = self.tmp / "raise.conf"
-        if raise_text:
-            raise_file.write_text(raise_text)
+        sysd = self.tmp / "sysd"
+        if raise_text:  # a foreign MemoryMin drop-in of docker.service (DI2's 90-vbpub-memory-min.conf)
+            (sysd / "docker.service.d").mkdir(parents=True, exist_ok=True)
+            (sysd / "docker.service.d" / "90-vbpub-memory-min.conf").write_text(raise_text)
         mi = meminfo(self.tmp / "meminfo", mem_gib, swap_gib)
         block = self.PRE.replace("/proc/meminfo", str(mi))
         script = f'''set -euo pipefail
-export PATH="{self.bin}:$PATH" RAISE="{raise_file}"
+export PATH="{self.bin}:$PATH" MDT_SYSTEMD_DIR="{sysd}"
 HERE="{ROOT}"; CANDIDATE_PATH="{env}"; CONFIG_PATH=/etc/mdt/host-setup.env
 . "{ROOT}/scripts/mdt-container-io-caps.lib.sh" 2>/dev/null
 set -a; . "{env}"; set +a
@@ -515,7 +515,7 @@ echo "CASCADE=$DEV_SWAP_CASCADE_PCT"
                 self.assertIn("MemoryMax=12G", before["docker-scope-default-limits.conf.in"])
 
     def test_dedicated_dev_renders_differently_so_the_identity_check_is_not_vacuous(self) -> None:
-        env = "HOST_ROLE=dedicated-dev\nDEV_MEMORY_MAX=7.5G\nDEV_INTERACTIVE_MEMORY_MAX=4.5G\n"
+        env = "HOST_ROLE=dedicated-dev\nDEV_MEMORY_MAX=6G\nDEV_INTERACTIVE_MEMORY_MAX=4.5G\n"
         self.assertNotEqual(self.render_all(env, with_block=False), self.render_all(env, with_block=True))
 
     def test_dedicated_dev_keeps_a_finite_memory_max_on_gates_and_background_and_no_high_anywhere(self) -> None:

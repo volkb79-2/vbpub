@@ -865,17 +865,19 @@ MDT_DEDICATED_KEEP=""
 MDT_FLOOR_UNITS=""        # "unit=bytes ..." post-raise floors (P-plat-19e)
 MDT_SYSTEM_SLICE_MIN=""; MDT_SYSTEM_SLICE_LOW=""; MDT_USER_SLICE_MIN=""; MDT_RESERVE_FMK=""
 # Highest MemoryMin another fragment/drop-in (never our own 95- file) already gives <unit>, in bytes (0 = none):
-# the floors are raise-only. Read-only; an unreadable value counts as none.
-_mdt_other_memory_min() {
-  local unit="$1" best=0 f v n
-  while IFS= read -r f; do
-    [ -f "$f" ] || continue
-    case "$f" in */95-mdt-memory-min.conf) continue ;; esac
-    v=$(sed -n 's/^MemoryMin=//p' "$f" | tail -n1)
-    [ -n "$v" ] || continue
-    n=$(_size_to_bytes "$v" 2>/dev/null) || continue
-    if [ "$n" -gt "$best" ]; then best="$n"; fi
-  done < <(systemctl show -p FragmentPath,DropInPaths --value "$unit" 2>/dev/null | tr ' ' '\n')
+# the floors are raise-only. Read-only (the pre-flight runs no systemctl): it scans the unit search path.
+_other_memory_min() {
+  local unit="$1" best=0 f v n d
+  for d in "${MDT_SYSTEMD_DIR:-/etc/systemd/system}" /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+    for f in "$d/$unit" "$d/$unit.d"/*.conf; do
+      [ -f "$f" ] || continue
+      case "$f" in */95-mdt-memory-min.conf) continue ;; esac
+      v=$(sed -n 's/^MemoryMin=//p' "$f" | tail -n1)
+      [ -n "$v" ] || continue
+      n=$(_size_to_bytes "$v" 2>/dev/null) || continue
+      if [ "$n" -gt "$best" ]; then best="$n"; fi
+    done
+  done
   echo "$best"
 }
 DEV_MEMORY_MIN=""   # dedicated-dev: dev.slice's own MemoryMin (sum of every child Min key); other roles use the guaranteed ceiling
@@ -889,7 +891,7 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
   while IFS='=' read -r _ded_key _ded_value; do
     case "$_ded_key" in
       "DEDICATED_FLOOR "*)
-        _ded_other=$(_mdt_other_memory_min "${_ded_key#DEDICATED_FLOOR }")
+        _ded_other=$(_other_memory_min "${_ded_key#DEDICATED_FLOOR }")
         if [ "$_ded_other" -gt "$_ded_value" ]; then _ded_raised+=(--raised "${_ded_key#DEDICATED_FLOOR }=$_ded_other"); fi ;;
     esac
   done <<<"$_ded_mem"
@@ -1175,7 +1177,7 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
   }
   for _ded_slice_row in "system.slice=$MDT_SYSTEM_SLICE_MIN" "user.slice=$MDT_USER_SLICE_MIN"; do
     _ded_slice="${_ded_slice_row%%=*}"; _ded_planned="${_ded_slice_row#*=}"
-    _ded_other=$(_mdt_other_memory_min "$_ded_slice")
+    _ded_other=$(_other_memory_min "$_ded_slice")
     if [ "$_ded_other" -gt "$_ded_planned" ]; then _ded_planned="$_ded_other"; fi
     if [ "$_ded_planned" -gt 0 ]; then _ded_write_floor "$_ded_slice" Slice "$_ded_planned"; fi
   done

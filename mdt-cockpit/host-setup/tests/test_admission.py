@@ -106,7 +106,8 @@ class DerivationTests(unittest.TestCase):
             self.assertIn("memory: no term", d.basis)
 
     def test_a_tiny_host_still_gets_one(self) -> None:
-        d = derive(DEDICATED, nproc=1, mem_gib=2)
+        # 3 GiB: the default floors (565M) exceed 10% of MemTotal, so the host drops the unit rows (F = 192M)
+        d = derive({**DEDICATED, "DEV_HOST_MEMORY_MIN": "-"}, nproc=1, mem_gib=3)
         self.assertEqual(d.max_concurrent, 1)
         self.assertIn("raised to the minimum of 1", d.basis)
 

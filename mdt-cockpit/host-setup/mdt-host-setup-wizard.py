@@ -854,6 +854,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_HOST_MEMORY_KEEP": mdt_capacity.validate_host_memory_keep,
         "DEV_HOST_MEMORY_MIN": mdt_capacity.validate_host_memory_min,
         "DEV_HOST_MEMORY_MARGIN": mdt_capacity.validate_host_memory_margin,
+        "DEV_HOST_MEMORY_MEASURED": lambda value: None,  # free text: `<UTC date> <evidence dir>`, never read by the derivation
         "DEV_HOST_PROTECTED_UNITS": mdt_capacity.validate_host_protected_units,
         "DEV_CACHE_MEMORY_LOW": mdt_capacity.validate_optional_size,
         "DEV_CACHE_ZSWAP_WRITEBACK": validate_yes_no,
