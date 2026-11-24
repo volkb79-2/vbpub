@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -210,6 +211,20 @@ class VersionOrderTest(unittest.TestCase):
         )
         self.assertCountEqual(shuffled, self.SORT_V_ASCENDING)
         self.assertEqual(ids.newest_first(shuffled), tuple(reversed(self.SORT_V_ASCENDING)))
+
+    def test_fixture_is_the_real_gnu_sort_v_output(self) -> None:
+        result = subprocess.run(
+            ["sort", "-V"],
+            input="\n".join(self.SORT_V_ASCENDING) + "\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            tuple(result.stdout.splitlines()),
+            self.SORT_V_ASCENDING,
+        )
 
     def test_letter_then_plus_then_dash_and_tilde_before_end(self) -> None:
         self.assertEqual(

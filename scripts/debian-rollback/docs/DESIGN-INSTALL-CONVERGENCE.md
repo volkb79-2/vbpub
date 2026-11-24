@@ -19,7 +19,7 @@ layer is dr-state software, hooks, markers and the loader image behind that entr
 
 | Item | btrfs | ZFS |
 |---|---|---|
-| ESP | GPT, p1, vfat, 512 MiB (`dr/poc/install-btrfs.sh:79-83`). p1 because the standalone GRUB image hard-codes `(,gpt1)/EFI/dr` (`dr/poc/dr-state:606`) | p1, 512 MiB: three ZBM copies of 85,742,592 bytes plus 128 MiB free (`dr/docs/ZFS-POC-PLAN.md:197-198`) |
+| ESP | GPT, p1, vfat, 512 MiB (`dr/poc/install-btrfs.sh:79-83`). p1 because the standalone GRUB image hard-codes `(,gpt1)/EFI/dr` (`dr/files/usr/local/lib/dr-state/dr_state/boot/grub.py`) | p1, 512 MiB: three ZBM copies of 85,742,592 bytes plus 128 MiB free (`dr/docs/ZFS-POC-PLAN.md:197-198`) |
 | Root container | p2 btrfs `drroot` (`install-btrfs.sh:80`, `:84`) | p2 `rpool`; `ROOT`, `DATA` with `canmount=off` (`ZFS-POC-PLAN.md:182-186`) |
 | Top level | default subvolume stays id 5; states and data subvolumes are its children (`install-btrfs.sh:10`, `:92-97`); GRUB reads `/<state>/boot/...` from it (`dr-state:997-998`) | n/a |
 | Initial state | `@os-000001-<UTC>-install` (`install-btrfs.sh:88-92`) | `rpool/ROOT/os-000001-<UTC>-install`: local `mountpoint=/`, `canmount=noauto`, `org.zfsbootmenu:commandline`; `bootfs` set (`ZFS-POC-PLAN.md:37-43`, `:185`) |
