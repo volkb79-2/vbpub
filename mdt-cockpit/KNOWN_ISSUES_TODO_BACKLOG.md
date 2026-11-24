@@ -1963,3 +1963,9 @@ the first-party CLIs" section.
 2. Decide whether codex, claude and opencode should follow the same vetted-record and age-buffer rule as the other three tools (the estate rule is a 14-day buffer); if they stay on `latest`, say so in `docs/BUILD-ARCHITECTURE.md`, because a version published minutes before the build is then shipped unvetted.
 
 **Acceptance.** A fake `npm` that answers ETARGET twice and then succeeds lets the install pass and logs both retries; a fake that always answers ETARGET fails after the bound with the original error text.
+
+## MDT-108 - dedicated runner hosts need an explicit memory overcommit policy (2026-11-24)
+
+**Status:** FIXED 2026-11-24 in commit `6ceb69b13a794443383b0041b145ba28a7b464b2`.
+
+`MDT_MEMORY_POLICY=overcommit` is now accepted only with `HOST_ROLE=dedicated-dev`: it renders unlimited `MemoryMax`/`MemorySwapMax` for `dev.slice`, `dev-gates.slice`, `dev-background.slice` and the dedicated-dev `system.slice` drop-in, removes every dev-tier `ManagedOOM*=kill`, preserves `MemoryHigh`/`MemoryLow` and explicit pins, and logs every policy change or pin that wins; the empty policy and every other role retain the existing render byte-for-byte.
