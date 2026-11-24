@@ -186,7 +186,6 @@ def test_mutation_manifest_pins_the_suite_collection_inputs_it_copies(tmp_path):
 #    in the module, and an entry that no longer matches any read fails as stale.
 MODULE_SKIP_MARKERS = {
     "test_tester_image_cli_extended_identity.py": "tester-unified absent (isolated mutation fixture)",
-    "test_tester_unified_image.py": "tester-unified generator absent (isolated mutation fixture)",
 }
 # (module, path prefix) -> (guard that must still be in the module source, why).
 RUNTIME_GUARDED = {
