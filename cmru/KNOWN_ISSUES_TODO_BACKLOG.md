@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-205 | OPEN (filed 2026-11-24, P-core-06 review follow-ups: watchdog escaped PIDs unprinted, SystemExit(143) swallowed by refusal handlers, test gaps, stale 0.3.0 prose) | — |
 | KI-204 | OPEN (filed 2026-11-24, tester-unified/build-image.sh by hand: undeclared env and builder assumptions) | — |
 | KI-203 | OPEN (filed 2026-11-24, operator challenge: promotion refuses a clean merge when main touched the project) | — |
 | KI-202 | OPEN (filed 2026-11-24, repo-wide GitHub "Latest" follows the last cmru release) | — |
@@ -4286,3 +4287,20 @@ Building `tester-unified:wave-20261124b` by hand on the cockpit (P-core-05) fail
 - Tests at a fake docker/cmru boundary.
 
 Source: vbpub-core, P-core-05 image build, 2026-11-24.
+
+## KI-205 - P-core-06 (procio adoption) review follow-ups
+
+**Status:** OPEN (filed 2026-11-24); severity: low. Source: the Opus r1 review of P-core-06 (MERGE-WITH-FOLLOWUP, merged as q243, cb1cbf66f). Items L1 and L2 are behaviour; the rest are tests and prose.
+
+**Wanted.**
+1. **Escaped PIDs are never shown** (`src/cmru/runner.py:500-512`). The watchdog report prints `render(source)` and `tree_lines`; `ProcessEntry.line` has no pgid and `WatchdogReport.escaped_pids` is dropped, so a `setsid`-escaped descendant that survives cannot be told apart from the killed tree. Print and log one line `not killed (escaped the step's process group): <pids>` when `escaped_pids` is set. Test with a `setsid` grandchild and a handshake.
+2. **SIGTERM converted to `SystemExit(143)` is swallowed by refusal handlers.** Every captured probe now runs inside procio's signal scope, so a SIGTERM during one raises `SystemExit`. `doctor.py:149` turns it into `ValueError("the configuration is invalid")` (`load_forge_config` -> `config.py:491` `git rev-parse` is a captured probe) and carries on; `versions.py:855` and `versions.py:1463` turn it into `VersionsError`. Before P7 SIGTERM killed cmru there. Re-raise a caught `SystemExit` whose code is >= 128 unchanged. Related: CLI-EXT-51 (`_SignalScope` replaces a caller's own handler).
+3. **The drain bound is pinned only to <= 60 s** (`tests/test_runner_procio_adoption.py:354-397`). A mutant to 30 s survives. Also assert that the WARN body contains `stopped reading after 2s` (procio renders `drain_seconds` into it).
+4. **Assertions dropped when `tests/test_process_run.py` was rewritten:** the `[INFO] external-tool: tool argument` echo of `delegated._run` (re-add the `capsys` assertion), doctor's `timeout` forwarding, and a captured missing-executable test (`pytest.raises(FileNotFoundError)`; the design lists "a missing executable still raises the plain spawn error").
+5. **`stdin=DEVNULL` oracle depends on the environment** (`test_run_process_stdin_devnull_is_expressed_as_immediate_eof`, :627). If the lane's fd 0 is already `/dev/null`, a mutant that drops the forwarding survives. Run the call from a driver subprocess whose stdin is a test-held open pipe with pending data and have the child report `os.readlink("/proc/self/fd/0")`.
+6. **The whole-module marker `requires_contained_cgroup`** covers pure config/refusal/revision-5 tests in `test_runner_procio_adoption.py` and `test_process_run.py`, which start no processes; under `estate_policy = "warn"` a non-contained runner skips them silently. Mark only the process-signalling tests.
+7. **Test nits:** `holder` in `test_holder_warning_is_once_...` is assigned after the join (read the pidfile right after `_wait_file`); the adapter in `test_cli_abandon.py:40-64` duplicates the conftest `process_run_seam` fixture; the uncaptured `git tag` fakes (`test_config_version_residual_contracts.py:202`, `test_residual_config_transaction_version_contracts.py:159`) return `stdout=""` where a real call has `stdout=None`; KI-189's index row says `FIXED IN THIS BRANCH` but only the routing part is fixed (the `_git` folding remains); a watchdog failure in quiet mode raises before the error-line excerpt and tail are printed.
+8. **Stale `0.3.0` cli-extended floor prose** (the code and test pins moved to 0.8.0 in P-core-06): `docs/SPEC.md:1293`, `tools/run_release_gate.py:294` (docstring), `docs/UPGRADING-6.0.md:78,118`, `docs/cli-review-findings.toml:6,96`, and outside cmru `tester-unified/README.md:196`, `tester-unified/gen-requirements.py:60`.
+9. **Size note:** P-core-06 added +1425 lines against the brief's +1400 stop; the controller accepted it at merge. No code change.
+
+**Close when:** items 1 and 2 are fixed with tests; items 3-8 are done or dispositioned here; the `0.3.0` grep over `cmru/` and `tester-unified/` finds only intentional history.
