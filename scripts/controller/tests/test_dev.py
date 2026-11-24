@@ -81,8 +81,9 @@ if verb == "volume":
         for v in lines("volumes.txt"):
             print(v)
     elif args[1] == "rm":
+        kept = [v for v in lines("volumes.txt") if v != args[2]]  # read BEFORE open(..., "w") truncates the file
         with open(os.path.join(log, "volumes.txt"), "w") as fh:
-            fh.write("".join(v + "\n" for v in lines("volumes.txt") if v != args[2]))
+            fh.write("".join(v + "\n" for v in kept))
     elif args[1] == "inspect":
         sys.exit(0 if args[-1] in lines("volumes.txt") else 1)
     sys.exit(0)
@@ -293,6 +294,8 @@ class ArgvTests(DevCase):
         image = argv.index(PY_IMAGE)
         self.assertEqual(argv[image + 1:image + 11], ["nice", "-n", "10", "ionice", "-c3", "timeout", "--foreground", "-k", "5", "3600"])
         cmd = argv[image + 11:]
+        end = cmd.index('exec "$@"')  # the dry-run prints one argv word per line; the setup script spans lines
+        cmd = cmd[:2] + ["\n".join(cmd[2:end + 1])] + cmd[end + 1:]
         self.assertEqual(cmd[0:2], ["bash", "-c"])
         self.assertIn("--editable ../assay", cmd[2])
         self.assertTrue(cmd[2].endswith('exec "$@"'))
