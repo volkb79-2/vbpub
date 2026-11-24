@@ -1040,6 +1040,37 @@ not from the phrase "memory admission" appearing anywhere: a lane that was admit
 reason is not a memory refusal either. Neither refusal started the lane, so nothing was cleaned up and no container
 exists.
 
+## Collecting a run's store directory (remote-gate `--collect-store`, RG-298)
+
+A remote run's checkout is throwaway: the job removes it on exit, so a directory the lane filled inside it (for example an
+Assay shard store under `<project>/.run-gate/assay-shards/...`) was lost. `--collect-store <rel>` (repeatable) packs that
+directory **before** the checkout is removed:
+
+```bash
+remote-gate.py run v1001 <worktree> assay --detach --name r1 \
+    --collect-store scripts/netcup/.run-gate/assay-shards --store-max-mib 512
+remote-gate.py collect r1    # fetches assay-store.tgz + assay-store.tgz.sha256 into <out-dir>/r1/ and verifies the checksum
+```
+
+- `<rel>` is relative to the **repository root of the run's own host checkout** and normalised (`a//b/./c/` is `a/b/c`).
+  An absolute path, `..`, the root itself, a character outside `A-Za-z0-9._@+=,:-` or a symlinked component is refused
+  with exit 2 before anything is sent (the local worktree is checked, and the host job checks its own tree again and
+  reports `STORE-COLLECT-FAILED <rel> symlink`). Each run has its own checkout, so concurrent runs never share a store.
+- After the lane exits, per path: absent gives one `STORE-ABSENT <rel>` job-log line and no archive; more than
+  `--store-max-mib` (default 512) **uncompressed tar bytes** gives `STORE-TOO-LARGE <rel> <bytes>` and nothing is packed;
+  any packing failure gives `STORE-COLLECT-FAILED <rel> <reason>`; success logs `STORE-COLLECTED <rels>`. None of
+  these changes the lane's verdict or the job's exit code. `collect` echoes these lines before the verdict line.
+- Archive layout (one choice, for all paths): **one** `assay-store.tgz` per run whose members keep their `<rel>/` prefix
+  (`tar -xzf assay-store.tgz -C <dir>` recreates `<dir>/<rel>/...`), plus `assay-store.tgz.sha256` in `sha256sum` format.
+  A path that was absent, too large or refused is simply not in it. If the archive itself cannot be written, every path
+  that would have gone into it gets its own `STORE-COLLECT-FAILED` line and no archive is left behind.
+- `collect` verifies the fetched archive against the host's sha256. A mismatch prints `STORE-CHECKSUM-MISMATCH ...`,
+  renames the file to `assay-store.tgz.rejected` (a corrupt archive never keeps its usable name) and makes `collect`
+  exit 77 when the lane's own exit code was 0; a lane that failed keeps its own exit code. `result.json` and the
+  final `lane ... verdict ...` line are never changed by a store problem.
+- A run cancelled with `cancel` (TERM) is not collected: the job stops before the packing step. Never `/tmp`; the archive
+  is written under the run's own `~/rg/<name>/` directory.
+
 ## Cached tool copies and concurrent launches (CTL-12)
 
 `runner/remote-gate-cache.sh` is the repository-owned way for a controller helper to run this repository's
