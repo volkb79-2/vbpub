@@ -1,0 +1,81 @@
+# iogovmon acceptance-2 stage parameters (read by stage.py; every number of the run lives here).
+# Example config of the 2026-11-18 run. Copy to the on-host workdir as stage.toml and adjust the [paths] to the host.
+# Window = 1 h, aligned to the UTC hour.
+
+[paths]
+workdir = "/root/iogovmon-accept2"
+log = "/root/iogovmon-accept2/stage.log"
+snapdir = "/root/iogovmon-accept2/snap"
+summary = "/root/iogovmon-accept2/stage-summary.txt"
+phases = "/root/iogovmon-accept2/stage-phases.json"
+stop_file = "/root/iogovmon-accept2/STOP"
+lock_file = "/root/iogovmon-accept2/stage.lock"
+iogovmon_config = "/etc/iogovmon/iogovmon.toml"
+journal_dir = "/var/lib/iogovmon/journal"
+agg_file = "/var/lib/iogovmon/agg.json"
+cow_dir = "/srv/cow/iogov-fill"          # btrfs, vda4
+root_dir = "/var/tmp/iogov-fill"         # ext4, vda3 (the root filesystem)
+load_file = "/var/tmp/iogov-load.bin"    # the A1 positive-control load file (named in the brief)
+probe_file = "/var/tmp/iogov-probe.bin"  # calibration probe file (only removed here if a crash left it)
+root_mount = "/"                         # the filesystem of root_dir
+cow_mount = "/srv/cow"                   # must be a SEPARATE mount (st_dev differs from root_mount), checked at start and before every fill
+block_device = "vda"                     # for the in-flight check before quiet phases
+cron_fstrim_file = "/etc/cron.d/kernel"   # its active fstrim line (daily `fstrim -a`) is commented out for the run and restored by the exact reverse edit
+fstrim_timer = "fstrim.timer"            # stopped for the run (only if it was active), restored at the end / STOP / exception / --cleanup
+
+[schedule]
+window_s = 3600
+w0_min_lead_s = 600        # W0 = first window boundary at least this long after T0
+snapshot_grace_s = 480     # iogovmon closes a window at its next run (<= ~6 min): phase-end snapshots are taken this long after the boundary
+a0_windows = 6             # A0 baseline
+a1_windows = 0             # A1 live control phase: DISABLED (decision: no live control; synthetic check instead)
+a2_windows = 0             # A2 recovery: DISABLED
+b1_quiet = 2
+b2_quiet = 2
+b3_extra_quiet = 1         # B3 cycle = burst, quiet to the window end, plus this many more quiet windows
+b4_quiet = 3
+b5a_quiet = 2             # B5a: delete WITHOUT any trim, then this many quiet windows
+b5b_quiet = 2             # B5b: discard restored + fstrim, then this many quiet windows
+resume_guard_s = 900      # --resume is refused from B1 start minus this long
+t0_max_age_s = 1800        # --run refuses a t0 older than this (and a W0 already in the past); 600 would be stricter
+t0_max_future_s = 7200     # --run refuses a t0 more than 2 h in the future
+settle_s = 0               # extra settle time after a loaded step before the quiet windows begin (0 = next boundary; see report: tick backoff <= 1 h)
+
+[limits]
+root_max_pct = 88.0        # `/` never above this df-style used%
+cow_max_pct = 95.0         # `/srv/cow` never above this
+min_free_inode_pct = 10.0
+check_interval_s = 1         # statvfs is cheap
+hard_margin_bytes = 3221225472   # every fill fio --size stops this far (3 GiB) below the HARD limit; at 490 MiB/s and a 1 s check the overshoot is < 1 GiB
+
+[load]                     # A1 control (kind none = no live control)
+kind = "none"              # "none" = disabled (shipped); "iothrottle" and "fio" are kept but OFF
+read_dev = "/dev/vda"
+read_iops = 10             # runtime IOReadIOPSMax on iogovmon.slice: measured p50 0.36 ms -> ~100 ms (250x), x = -7.6 log2
+bs = "4k"
+rw = "randwrite"
+iodepth = 4
+rate_mbps = 8
+size = "2G"
+
+[fill]
+chunk_gib = 32             # largest single big file
+max_wall_s = 5400          # per-fill wall-clock cap (90 min)
+[fill.cow_pct]
+b1 = 50
+b2 = 80
+b4 = 94
+[fill.root_pct]
+b2 = 60
+b4 = 85
+
+[churn]
+burst_s = 1800
+files = 150000
+min_kib = 1
+max_kib = 64
+rewrite_pct = 30
+delete_pct = 20
+fsync_batch = 200
+fio_file = "4G"
+fio_iodepth = 8

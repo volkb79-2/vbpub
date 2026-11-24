@@ -45,8 +45,9 @@ here.
 - **Why:** Cleanup historically ignores ordinary step controls. Passing its full parsed step
   would newly activate ignored controls and change existing projects; copying only the two
   watchdog fields preserves the cleanup contract by construction.
-- **Binds:** P7.1's cleanup construction and stub oracle, P7.2's live cleanup watchdog
-  oracle, and P7.3's cleanup user documentation.
+- **Binds:** the single P7 package (one merge; the former P7.1/P7.2/P7.3 split is gone): its
+  cleanup construction and stub oracle, its live cleanup watchdog oracle, and its cleanup user
+  documentation.
 - **Preserved cleanup fields:** the command list and original absolute command cwd from
   `project.steps["clean"]`; `bake_set_prefix=None`, `bake_set_vars=[]`,
   `no_cache_env=None`, `clean_dirs=[]`, `required_env=[]`, `login=None`, `step_env={}`,
@@ -55,9 +56,9 @@ here.
   absolute command cwd, and `repo_root/logs` as the log root. `env_command` and login are not
   run.
 - **Behavior oracles:**
-  - P7.1 stubs `execute_step` and proves the parsed project default/step override reaches the
+  - A stub of `execute_step` proves the parsed project default/step override reaches the
     cleanup config with the winning source key and all cleanup fields above remain unchanged.
-  - P7.2, in the registered capped lane with stubbed remote cleanup inputs, invokes
+  - A test marked `requires_contained_cgroup` (TP-13), with stubbed remote cleanup inputs, invokes
     `cmru cleanup --policy`; the override reaches the watchdog, its diagnostic names
     `steps.clean.no_progress_timeout_seconds`, the cleanup environment/cwd/log root/quiet
     behavior above survives, and ignored controls stay inert.
@@ -75,11 +76,11 @@ here.
 - **Why:** Streamed output is diagnostic, and failing a completed build because its output
   contains malformed text is less reliable than preserving the child result. This
   intentionally changes CMRU's current strict-decoder behavior.
-- **Binds:** P7.2's streamed adapter and malformed-output oracle, and P7.3's SPEC S3.4a and
-  user documentation. It requires no new procio API or release; cli-extended 0.7.0 is
-  sufficient.
-- **Behavior oracle:** In the registered capped lane with UTF-8 selected, run a step child
-  that writes `b"ok \xff end\n"` and exits 0. CMRU succeeds, the step log and aggregate
+- **Binds:** the single P7 package (one merge; the former P7.1/P7.2/P7.3 split is gone): its
+  streamed adapter and malformed-output oracle, and its SPEC S3.4a and user documentation.
+  It requires `cli-extended>=0.8.0`, the floor P7 raises once the tester image carries 0.8.0.
+- **Behavior oracle:** In a test marked `requires_contained_cgroup` (TP-13) with UTF-8
+  selected, run a step child that writes `b"ok \xff end\n"` and exits 0. CMRU succeeds, the step log and aggregate
   mirror contain `ok \ufffd end\n`, and no `UnicodeDecodeError` escapes. A nonzero child exit
   still produces the existing step failure.
 - **Rationale:** `docs/DESIGN-RUNNER-PROCIO-ADOPTION.md` §§ "Required behavior comparison"
