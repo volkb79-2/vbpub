@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
-- **Changed (model identity, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live) `end_round`, model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
+- **Changed (P-hostobs-07, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live + retired · log live) `end_round`, plus one O(`max_active`) reverse-index rebuild after a round that retires, about 3 MiB at the 65,536 default; model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
+- **Added (probe sampler):** `hostobs-sampler` walks the configured cgroup tree under the kernel/policy bounds, publishes immutable quality-bearing `Tick`s, coalesces wakeups through eventfd, and reports walk cuts through `probe.cgroups_skipped`.
+- **Added (probe live backend):** `ProbeBackend` answers `current`, `status` and `identity` from one published tick per turn, with selector de-duplication, row budgets, zero-row success and no I/O or publication lock in the backends.
+- **Changed (kernel clocks):** `SystemClock` reads absolute `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` through rustix, and `ManualClock::suspend` advances boot time without moving monotonic time.
+- **Changed (probe epoch):** the process epoch is the `CLOCK_BOOTTIME` nanosecond value at start rather than a value persisted beside the store, so nothing is persisted and a restart in one boot still gets a greater epoch.
+- **Added (probe metrics):** `probe.cgroups_skipped` (gauge) and `probe.ticks_skipped` (counter) are daemon-scope metrics on the root row.
 - **Build (P-hostobs-08):** rustix 1.1.6 (`std`, `event`, `net`, `time`, no default features) is a workspace dependency of `kernel` and `probe`. The probe's unused `ruzstd`, `serde`, `serde_json` and `toml` are gone. The Rust lanes and `tools/dev` run on `tester-unified-rust(-dev):rs-20261124`, which carries the new lock's registry set; `rs-20261118` stays tagged for rollback.
 - **Docs (P-hostobs-19, closes `HOB-74`):** `docs/CONSUMERS.md` gets a "Boundaries" section with the four consumer rules (cgprofile frozen, span emission is one JSON line on the observer socket, act never writes `io.cost`/`io.weight`/sysctl, iogovmon reads hostobs only after M3); cgprofile's freeze is filed as `CP-66`.
 - The hostobs backlog now lists only open items; fixed and closed entries are archived one per line in `archive/2026-Q4.md`, with HOB-62..74 filed and HOB-49's WIRE citation corrected.
