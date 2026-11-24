@@ -30,10 +30,9 @@
 //! - **Writing goes through [`Server::wrote`] only**, which delegates to `Conn::on_written` (that
 //!   calls the hub's `wrote` itself, R2); the server never calls the hub's `wrote`.
 //!   [`Server::output`] pins the head: never call it to test emptiness.
-//! - **Tick delivery and retries (design S7, S25 and S27).** [`Server::on_tick`] asks the
-//!   registry for at most one shared tick per due stream, then drives each subscriber through
-//!   [`Conn::push_tick`] or [`Conn::end_subscription`]. [`Server::wrote`] and [`Server::poll`]
-//!   finish with a retry pass over every backpressured query, in `ConnId` then `corr` order.
+//! - **Tick delivery (design S25 and S27).** [`Server::on_tick`] asks the registry for at most
+//!   one shared tick per due stream, then drives each subscriber through [`Conn::push_tick`] or
+//!   [`Conn::end_subscription`]. A request never waits for a later clock or write.
 //! - **Timer order (R20), per [`Server::poll`].** Connections are polled in `ConnId` order
 //!   (the hello deadline, the reader's age, idle); then the hub's `poll` closes the stalled or
 //!   dribbled ones with `slow-client` (again in id order); the first fatal outcome of a
@@ -408,8 +407,8 @@ impl<B: Backend> Server<B> {
     }
 
     /// The clock reached `now_ns` (R20): every connection's timers in `ConnId` order, then the
-    /// hub's `slow-client` closes, the retry pass, then a sweep of the closed connections that
-    /// hold no final bytes. Returns the ids the sweep finished, ascending.
+    /// hub's `slow-client` closes, then a sweep of the closed connections that hold no final
+    /// bytes. Returns the ids the sweep finished, ascending.
     pub fn poll(&mut self, now_ns: u64) -> Vec<ConnId> {
         for conn in self.conns.values_mut() {
             conn.poll(now_ns, &mut self.hub);
@@ -419,7 +418,6 @@ impl<B: Backend> Server<B> {
                 conn.close_for(Code::SlowClient, &mut self.hub);
             }
         }
-        self.retry_pass(now_ns);
         self.sweep()
     }
 
@@ -432,13 +430,11 @@ impl<B: Backend> Server<B> {
         self.hub.head(id, now_ns)
     }
 
-    /// The driver wrote `n` bytes of the head [`Server::output`] offered. A completed write frees
-    /// Query room, so the method ends with the retry pass (design S7).
+    /// The driver wrote `n` bytes of the head [`Server::output`] offered.
     pub fn wrote(&mut self, id: ConnId, n: usize, now_ns: u64) {
         if let Some(conn) = self.conns.get_mut(&id) {
             conn.on_written(n, now_ns, &mut self.hub);
         }
-        self.retry_pass(now_ns);
     }
 
     /// The final bytes of a closed connection (module docs): taken once.
@@ -582,20 +578,6 @@ impl<B: Backend> Server<B> {
         }
     }
 
-    /// Retry every backpressured `current` in `ConnId` then `corr` order (design S7 and S24).
-    fn retry_pass(&mut self, now_ns: u64) {
-        let pending: Vec<ConnId> = self
-            .conns
-            .iter()
-            .filter_map(|(id, conn)| conn.has_pending().then_some(*id))
-            .collect();
-        for id in pending {
-            self.drive(id, |conn, hub, backend, _streams| {
-                conn.retry_pending(now_ns, hub, backend);
-            });
-        }
-    }
-
     /// Finish every closed connection that holds no final bytes; the ids, ascending.
     fn sweep(&mut self) -> Vec<ConnId> {
         let mut done = Vec::new();
@@ -696,6 +678,13 @@ mod tests {
 
     fn frame_payload(frame: &[u8]) -> &[u8] {
         frame.get(12..).unwrap_or_default()
+    }
+
+    fn is_error(frame: &[u8], code: Code) -> bool {
+        let body = text(frame_payload(frame));
+        let rep = check_rep(body.as_bytes(), false).expect("REP");
+        assert!(!rep.ok, "{body}");
+        body.contains(&format!("\"code\":\"{}\"", code.name()))
     }
 
     fn end_info(frame: &[u8]) -> (bool, u32, u32, Option<String>) {
@@ -2472,138 +2461,6 @@ mod tests {
     }
 
     #[test]
-    fn server_retry_pass_after_wrote_frees_uid_query_pool() {
-        let data = live_data(5, "one");
-        let selected = selection(1);
-        let need = stream_block_len(&ServerLimits::new(), &data);
-        let mut d = Driver::with(query_bound_limits(need));
-        let waiting = d.open(Level::Observe, 1);
-        let blocker = d.open(Level::Observe, 1);
-        d.ready(waiting);
-        d.ready(blocker);
-        put_current(&mut d, &selected, data);
-        fill_query(&mut d, blocker, need);
-
-        d.send(waiting, &request(2, "current", CURRENT_ARGS));
-        d.pump(waiting, usize::MAX);
-        d.take_out(waiting);
-        assert_eq!(
-            d.server.conn(waiting).map(|conn| conn.outstanding()),
-            Some(1)
-        );
-        assert_eq!(d.server.hub().queued(waiting).query, 0);
-
-        let written = match d.server.output(blocker, d.now) {
-            Some([first, second]) => first.len().saturating_add(second.len()),
-            None => panic!("blocker has no pinned Query block"),
-        };
-        assert_eq!(written, need);
-        d.server.wrote(blocker, written, d.now);
-        assert_eq!(
-            d.server.conn(waiting).map(|conn| conn.outstanding()),
-            Some(0)
-        );
-        assert_eq!(d.server.hub().queued(waiting).query, need);
-        d.pump(waiting, usize::MAX);
-        let raw = raw_frames(&d.take_out(waiting));
-        assert_eq!(raw.len(), 2);
-        assert_eq!(raw[0].0, FrameType::Block.code());
-        assert_end_ok(&raw[1].2, 1, 0, "complete");
-        d.server.finish(waiting);
-        d.server.finish(blocker);
-        assert_clean(&d, "retry after wrote");
-    }
-
-    #[test]
-    fn server_retry_pass_at_poll_finishes_a_pending_current() {
-        let data = live_data(5, "one");
-        let selected = selection(1);
-        let need = stream_block_len(&ServerLimits::new(), &data);
-        let mut d = Driver::with(query_bound_limits(need));
-        let waiting = d.open(Level::Observe, 1);
-        let blocker = d.open(Level::Observe, 1);
-        d.ready(waiting);
-        d.ready(blocker);
-        put_current(&mut d, &selected, data);
-        fill_query(&mut d, blocker, need);
-        d.send(waiting, &request(2, "current", CURRENT_ARGS));
-        d.pump(waiting, usize::MAX);
-        d.take_out(waiting);
-        assert_eq!(
-            d.server.conn(waiting).map(|conn| conn.outstanding()),
-            Some(1)
-        );
-
-        d.server.finish(blocker);
-        assert_eq!(
-            d.server.conn(waiting).map(|conn| conn.outstanding()),
-            Some(1)
-        );
-        d.tick(MS);
-        assert_eq!(
-            d.server.conn(waiting).map(|conn| conn.outstanding()),
-            Some(0)
-        );
-        assert_eq!(d.server.hub().queued(waiting).query, need);
-        d.pump(waiting, usize::MAX);
-        let raw = raw_frames(&d.take_out(waiting));
-        assert_eq!(raw.len(), 2);
-        assert_eq!(raw[0].0, FrameType::Block.code());
-        assert_end_ok(&raw[1].2, 1, 0, "complete");
-        d.server.finish(waiting);
-        assert_clean(&d, "retry at poll");
-    }
-
-    #[test]
-    fn server_retry_pass_runs_in_connection_id_order() {
-        let data = live_data(5, "one");
-        let selected = selection(1);
-        let need = stream_block_len(&ServerLimits::new(), &data);
-        let mut d = Driver::with(query_bound_limits(need.saturating_mul(2)));
-        let first = d.open(Level::Observe, 1);
-        let second = d.open(Level::Observe, 1);
-        let blocker_a = d.open(Level::Observe, 1);
-        let blocker_b = d.open(Level::Observe, 1);
-        for id in [first, second, blocker_a, blocker_b] {
-            d.ready(id);
-        }
-        put_current(&mut d, &selected, data);
-        fill_query(&mut d, blocker_a, need);
-        fill_query(&mut d, blocker_b, need);
-        for (id, corr) in [(first, 2), (second, 3)] {
-            d.send(id, &request(corr, "current", CURRENT_ARGS));
-            d.pump(id, usize::MAX);
-            d.take_out(id);
-        }
-        assert_eq!(d.server.conn(first).map(|conn| conn.outstanding()), Some(1));
-        assert_eq!(
-            d.server.conn(second).map(|conn| conn.outstanding()),
-            Some(1)
-        );
-
-        d.server.finish(blocker_a);
-        d.tick(MS);
-        assert_eq!(d.server.conn(first).map(|conn| conn.outstanding()), Some(0));
-        assert_eq!(
-            d.server.conn(second).map(|conn| conn.outstanding()),
-            Some(1)
-        );
-        assert_eq!(d.server.hub().queued(first).query, need);
-        assert_eq!(d.server.hub().queued(second).query, 0);
-
-        d.server.finish(blocker_b);
-        d.tick(MS);
-        assert_eq!(
-            d.server.conn(second).map(|conn| conn.outstanding()),
-            Some(0)
-        );
-        assert_eq!(d.server.hub().queued(second).query, need);
-        d.server.finish(first);
-        d.server.finish(second);
-        assert_clean(&d, "retry id order");
-    }
-
-    #[test]
     fn server_finish_releases_selections() {
         for path in ["finish", "shutdown", "fatal", "draining"] {
             let mut d = Driver::new();
@@ -2746,39 +2603,15 @@ mod tests {
 
     #[test]
     fn conn_corr_in_use() {
-        let mut subscription = Driver::new();
-        let id = subscription.open(Level::Observe, 1);
-        subscription.ready(id);
-        wire_subscribe(&mut subscription, id, 2, 1, 1_000);
-        subscription.send(id, &control_frame(FrameType::Req, 2, b"{"));
-        assert_eq!(subscription.close_code(id), Some(Code::BadFrame));
-        assert!(subscription.server.is_closed(id));
-        subscription.settle_all();
-        assert_clean(&subscription, "subscription corr in use");
-
-        let data = live_data(5, "one");
-        let selected = selection(1);
-        let need = stream_block_len(&ServerLimits::new(), &data);
-        let mut pending = Driver::with(query_bound_limits(need));
-        let waiting = pending.open(Level::Observe, 1);
-        let blocker = pending.open(Level::Observe, 1);
-        pending.ready(waiting);
-        pending.ready(blocker);
-        put_current(&mut pending, &selected, data);
-        fill_query(&mut pending, blocker, need);
-        pending.send(waiting, &request(2, "current", CURRENT_ARGS));
-        pending.pump(waiting, usize::MAX);
-        pending.take_out(waiting);
-        assert_eq!(
-            pending.server.conn(waiting).map(|conn| conn.outstanding()),
-            Some(1)
-        );
-        pending.send(waiting, &control_frame(FrameType::Req, 2, b"{"));
-        assert_eq!(pending.close_code(waiting), Some(Code::BadFrame));
-        assert!(pending.server.is_closed(waiting));
-        pending.server.finish(blocker);
-        pending.settle_all();
-        assert_clean(&pending, "pending corr in use");
+        let mut d = Driver::new();
+        let id = d.open(Level::Observe, 1);
+        d.ready(id);
+        wire_subscribe(&mut d, id, 2, 1, 1_000);
+        d.send(id, &control_frame(FrameType::Req, 2, b"{"));
+        assert_eq!(d.close_code(id), Some(Code::BadFrame));
+        assert!(d.server.is_closed(id));
+        d.settle_all();
+        assert_clean(&d, "subscription corr in use");
     }
 
     #[test]
@@ -2788,28 +2621,28 @@ mod tests {
         let need = stream_block_len(&ServerLimits::new(), &data);
         let mut d = Driver::with(query_bound_limits(need));
         let id = d.open(Level::Observe, 1);
-        let blocker = d.open(Level::Observe, 1);
         d.ready(id);
-        d.ready(blocker);
         put_current(&mut d, &selected, data);
-        fill_query(&mut d, blocker, need);
-        for corr in 2..6 {
-            d.send(id, &request(corr, "current", CURRENT_ARGS));
-        }
-        d.send(id, &req(6, "status"));
-        d.send(id, &request(7, "current", CURRENT_ARGS));
+        d.send(id, &request(2, "current", CURRENT_ARGS));
+        assert_eq!(d.server.hub().queued(id).query, need);
+        d.send(id, &request(3, "current", CURRENT_ARGS));
+        d.send(id, &req(4, "status"));
         d.pump(id, usize::MAX);
         let raw = raw_frames(&d.take_out(id));
-        assert_eq!(d.server.conn(id).map(|conn| conn.outstanding()), Some(4));
+        assert_eq!(raw.len(), 5);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
+        assert_eq!((raw[1].0, raw[1].1), (FrameType::Block.code(), 2));
+        assert_eq!((raw[2].0, raw[2].1), (FrameType::End.code(), 2));
+        assert_end_ok(&raw[2].2, 1, 0, "complete");
         let refused = raw
             .iter()
-            .find(|(kind, corr, _)| *kind == FrameType::Rep.code() && *corr == 7)
+            .find(|(kind, corr, _)| *kind == FrameType::Rep.code() && *corr == 3)
             .expect("too-many reply");
         let body = text(frame_payload(&refused.2));
         assert!(body.contains("\"code\":\"too-many-requests\""));
         let status = raw
             .iter()
-            .find(|(kind, corr, _)| *kind == FrameType::Rep.code() && *corr == 6)
+            .find(|(kind, corr, _)| *kind == FrameType::Rep.code() && *corr == 4)
             .expect("status reply");
         assert!(
             check_rep(frame_payload(&status.2), false)
@@ -2817,9 +2650,43 @@ mod tests {
                 .ok
         );
         assert_eq!(d.state(id), Some(State::Ready));
-        d.server.finish(blocker);
+        assert_eq!(d.server.hub().queued(id).query, 0);
         d.server.finish(id);
         assert_clean(&d, "too many requests");
+    }
+
+    #[test]
+    fn conn_current_budget_query() {
+        let data = live_data(5, "one");
+        let selected = selection(1);
+        let need = stream_block_len(&ServerLimits::new(), &data);
+        let mut d = Driver::with(query_bound_limits(need));
+        let id = d.open(Level::Observe, 1);
+        let blockers: Vec<ConnId> = [2, 3, 4, 5]
+            .into_iter()
+            .map(|uid| {
+                let blocker = d.open(Level::Observe, uid);
+                fill_query(&mut d, blocker, need);
+                blocker
+            })
+            .collect();
+        d.ready(id);
+        put_current(&mut d, &selected, data);
+        assert!(!d.server.hub().query_room(id, need));
+        d.send(id, &request(2, "current", CURRENT_ARGS));
+        d.pump(id, usize::MAX);
+        let raw = raw_frames(&d.take_out(id));
+        assert_eq!(raw.len(), 1);
+        assert_eq!((raw[0].0, raw[0].1), (FrameType::Rep.code(), 2));
+        assert!(is_error(&raw[0].2, Code::Budget));
+        assert!(text(frame_payload(&raw[0].2)).contains("\"detail\":{\"pool\":\"query\"}"));
+        assert_eq!(d.server.hub().queued(id).query, 0);
+        assert_eq!(d.server.conn(id).map(|conn| conn.subscriptions()), Some(0));
+        for blocker in blockers {
+            d.server.finish(blocker);
+        }
+        d.server.finish(id);
+        assert_clean(&d, "current Query budget");
     }
 
     // ---- hostile runs ----

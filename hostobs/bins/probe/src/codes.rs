@@ -67,6 +67,8 @@ pub enum Pool {
     Selections,
     /// Rows resolved for one selection.
     Rows,
+    /// Queued query blocks.
+    Query,
     /// History spans, reserved for P5b-3.
     Spans,
 }
@@ -80,6 +82,7 @@ impl Pool {
             Pool::UidSelections => "uid-selections",
             Pool::Selections => "selections",
             Pool::Rows => "rows",
+            Pool::Query => "query",
             Pool::Spans => "spans",
         }
     }
@@ -331,6 +334,7 @@ mod tests {
             (Pool::UidSelections, "uid-selections"),
             (Pool::Selections, "selections"),
             (Pool::Rows, "rows"),
+            (Pool::Query, "query"),
             (Pool::Spans, "spans"),
         ];
         for (pool, name) in names {
