@@ -33,10 +33,13 @@ enabled = false
 [tls_edge.acme]
 email = ""
 volume_name = ""
+store = "volume"
 [tls_edge.static]
 cert_base = "/etc/letsencrypt"
 domains = []
 source = "bind"
+[tls_edge.traefik.hostdir]
+acme = { path = "", uid = 0, gid = 0, mode = "0700" }
 [tls_edge.runtime]
 cgroup_parent = ""
 """, encoding="utf-8")

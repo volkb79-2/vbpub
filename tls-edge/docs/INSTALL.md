@@ -58,6 +58,12 @@ it does not collect site settings. `tls-edge configure` then asks for the domain
 HTTP/3, optional Calls media, network/volume adoption, and runtime placement. It displays the exact changes and
 inbound firewall ports before writing the instance override and `consumer.env`.
 
+On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
+does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"` and writes
+`[tls_edge.traefik.hostdir.acme] path = "../../shared/acme"`. That source is outside `stack/`: `ciu --reset`,
+`docker compose down -v`, and `ciu clean` do not remove it. A `--scope user` install cannot create a root-owned
+directory, so it keeps the volume behaviour.
+
 For unattended configuration, prepare a TOML file and pass it to the CLI:
 
 ```bash
@@ -118,7 +124,7 @@ are `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hook
 `ciu check`, the automatic `ciu up` static preflight, `scripts/render_standalone.py --check`, `tls-edge validate`,
 and `tls-edge configure --dry-run` all run this same validation. Limit: ciu runs the validator because the shipped
 defaults declare it under `[tls_edge.hooks]` `pre_secrets` and `pre_compose`. An override that empties both lists
-removes it from `ciu check` and `ciu up`, so keep the shipped entries.
+removes it from `ciu check` and `ciu up`, so keep the shipped entries (tracked upstream as ciu CIU-226).
 
 | `[tls_edge.tls] mode` | How | Port needed | Certificates |
 |---|---|---|---|
@@ -184,8 +190,41 @@ The update downloads and verifies the new bundle, builds its venv, swaps `curren
 you edited in the synced set (not `ciu.toml.j2`, which is not part of it) stop the update with exit 2 and a list;
 keep host edits in `ciu.toml.j2` or pass `--overwrite-local` (the replaced files are saved under
 `shared/overwritten/<UTC time>/`). The installer does not touch `ciu.toml.j2`, `consumer.env`, `.ciu/`, volumes
-or the ACME account. `tls-edge configure` is the supported writer for the site override and domain variable;
+or `shared/acme`. `tls-edge configure` is the supported writer for the site override and domain variable;
 `status` shows the installed tag and any locally modified files.
+
+An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
+keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
+`acme.volume_name` names an existing external volume, that volume is still used unchanged. `down -v` and
+`ciu --reset` preserve an external volume, but `ciu clean` may remove it when it carries this project's labels;
+only the hostdir is guaranteed to survive `ciu clean`.
+
+To move an existing instance to the durable hostdir manually:
+
+1. `cd /srv/tls-edge-instance/stack && sudo ./ciu down`
+2. Create the destination, then copy `acme.json` from the exact existing volume with one exact-name container:
+
+   ```bash
+   sudo install -d -m 0700 -o root -g root /srv/tls-edge-instance/shared/acme
+   sudo docker run --rm --name tls-edge-acme-copy \
+     -v '<current acme volume>:/source:ro' \
+     -v /srv/tls-edge-instance/shared/acme:/destination \
+     alpine sh -c 'cp -p /source/acme.json /destination/acme.json'
+   ```
+
+3. Set this in the site override (clear `volume_name` if it was used):
+
+   ```toml
+   [tls_edge.acme]
+   store = "hostdir"
+   volume_name = ""
+   [tls_edge.traefik.hostdir]
+   acme = { path = "../../shared/acme", uid = 0, gid = 0, mode = "0700" }
+   ```
+
+4. Run `sudo ./ciu check && sudo ./ciu up`. Keep the old volume until the new edge has issued or reused its
+   certificates successfully. A rollback to a release older than 3.2 ignores `store`, mounts an empty
+   `acme-data` volume, and forces re-issuance; the hostdir remains on disk for a later roll-forward.
 
 ## 7. Roll back
 
@@ -194,8 +233,9 @@ sudo /srv/tls-edge-instance/bin/tls-edge-installer rollback
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
-`rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. The ACME volume is
-independent of releases, so certificates survive.
+`rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. A 3.2 rollback keeps
+`shared/acme`, but a rollback to a release older than 3.2 ignores `acme.store`, starts an empty `acme-data` volume,
+and re-issues every certificate. The hostdir remains on disk; roll forward again to reuse it.
 
 ## 8. Migrate from a hand-made deployment (PLAN, not executed)
 

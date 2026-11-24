@@ -236,6 +236,63 @@ def test_adapter_bootstraps_only_the_git_root(tmp_path):
     assert (tmp_path / "stack" / ".git").is_dir()
     assert not (tmp_path / "stack" / "ciu-stack" / "ciu.toml.j2").exists()
     assert not (tmp_path / "stack" / "consumer.env").exists()
+    assert not (tmp_path / "shared" / "acme").exists()
+
+
+def test_adapter_bootstrap_creates_hostdir_for_root(tmp_path):
+    calls: list[tuple[Path, int, int]] = []
+    chmods: list[tuple[Path, int]] = []
+
+    def record_chown(path, uid, gid):
+        calls.append((Path(path), uid, gid))
+
+    def record_chmod(path, mode):
+        chmods.append((Path(path), mode))
+
+    ADAPTER.bootstrap(
+        tmp_path,
+        euid=0,
+        chown_fn=record_chown,
+        chmod_fn=record_chmod,
+    )
+
+    hostdir = tmp_path / "shared" / "acme"
+    assert hostdir.is_dir() and not hostdir.is_symlink()
+    assert calls == [(hostdir, 0, 0)]
+    assert chmods == [(hostdir, 0o700)]
+
+
+def test_adapter_bootstrap_does_nothing_for_non_root(tmp_path):
+    calls: list[tuple[Path, int, int]] = []
+
+    def refuse_chown(path, uid, gid):
+        calls.append((Path(path), uid, gid))
+
+    ADAPTER.bootstrap(
+        tmp_path,
+        euid=1000,
+        chown_fn=refuse_chown,
+        chmod_fn=lambda _path, _mode: None,
+    )
+
+    assert calls == []
+    assert not (tmp_path / "shared" / "acme").exists()
+
+
+@pytest.mark.parametrize("action", ["apply", "rollback"])
+def test_adapter_apply_and_rollback_never_create_acme_hostdir(
+    tmp_path: Path, action: str
+) -> None:
+    tree = tmp_path / "releases" / "tls-edge-v9.9.9" / "tree"
+    tree.mkdir(parents=True)
+    result = ADAPTER.main([
+        action,
+        "--release-root", str(tree),
+        "--config", str(tmp_path / "host.toml"),
+        "--manifest", str(tmp_path / "manifest.json"),
+    ])
+    assert result == 0
+    assert not (tmp_path / "shared" / "acme").exists()
 
 
 def _repack(served: Path, tag: str, mutate) -> None:

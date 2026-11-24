@@ -10,6 +10,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - `tls-edge configure`, `tls-edge validate`, the standalone renderer, `ciu check`, and `ciu up` use the same
   tls-edge validation, including the same refusal messages, while the shipped `hooks/validate_edge.py`
   declarations stay in place.
+- New root-run instances store their ACME account and certificates in `shared/acme` (root:root, mode 0700),
+  outside the stack tree that `ciu --reset`, `docker compose down -v`, and `ciu clean` remove.
 
 ### Changed
 - Unknown keys in the site override are refused (`unknown override key tls_edge.<path>`); 3.1 overrides written by `configure` are unaffected.
@@ -17,6 +19,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]` remain open tables.
 - An override that sets `[tls_edge.hooks] pre_secrets` must keep `hooks/validate_edge.py` in that list; a 3.1
   override that replaced the list is refused until the entry is added back.
+- `tls-edge configure` now writes `acme.store` explicitly. Existing 3.1 instances and user-scope installs keep
+  their `acme-data` volume; `acme.volume_name` adoption is unchanged.
 
 <!-- cmru: pending release notes end -->
 

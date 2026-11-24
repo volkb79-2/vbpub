@@ -24,10 +24,13 @@ STACK_DIR = Path(__file__).resolve().parents[1]
 
 def _finding(config: dict[str, Any]) -> str | None:
     try:
-        defaults, overlay, _ = load_site(STACK_DIR)
+        defaults, overlay, effective = load_site(STACK_DIR)
         overlay = migrate(overlay)
         check_override(defaults, overlay)
-        validate_edge_config(config["tls_edge"])
+        # CIU has already rewritten hostdirs in the merged config to absolute
+        # strings. Validate the unsuffixed effective override so path, UID and
+        # mutual-exclusion rules still have their declared table values.
+        validate_edge_config(effective["tls_edge"], stack_dir=STACK_DIR)
     except ConfigError as exc:
         return str(exc)
     return None

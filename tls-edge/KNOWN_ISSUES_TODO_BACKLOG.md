@@ -16,24 +16,26 @@ between safe generic edge defaults and an application-specific listener.
 the edge listener to remain disabled until an operator opts in. A live Calls
 acceptance check still belongs in the migration checklist.
 
-### acme-data volume loss triggers certificate re-issuance
+### acme-data volume loss triggers certificate re-issuance (`store = "volume"`)
 
-Running `docker compose down -v` or `ciu --reset` destroys the `acme-data`
-named volume, which contains `acme.json` — Traefik's ACME account key and all
-issued certificates.  On the next start, Traefik re-issues certificates from
-scratch.  Let's Encrypt enforces a rate limit of approximately five duplicate
-certificates per registered domain per week; hitting this limit blocks new
-issuance for up to a week.
+This limitation applies only with `[tls_edge.acme] store = "volume"`. Running
+`docker compose down -v` or `ciu --reset` destroys the instance-owned
+`acme-data` named volume, which contains `acme.json` — Traefik's ACME account
+key and all issued certificates. On the next start, Traefik re-issues
+certificates from scratch. Let's Encrypt enforces a rate limit of approximately
+five duplicate certificates per registered domain per week; hitting this limit
+blocks new issuance for up to a week.
 
-Workaround: avoid `-v` on the edge-proxy stack.  Before any destructive
-operation, back up the volume:
+Workaround: use the hostdir storage created for new root-run instances, or
+avoid `-v` on the edge-proxy stack. Before any destructive operation on a
+volume-backed edge, back up the volume:
 ```bash
 docker run --rm -v acme-data:/data -v "$(pwd)":/backup alpine \
   tar czf /backup/acme-data.tar.gz -C /data .
 ```
-ciu users who run into this regularly can migrate `acme-data` to a ciu hostdir
-(spec S6.7a), which survives `ciu --reset` and can be backed up with the
-host filesystem.
+To move an existing instance to `<instance root>/shared/acme`, follow INSTALL
+section 6. The hostdir survives `ciu --reset`, `down -v`, and `ciu clean`, and
+can be backed up with the host filesystem.
 
 ---
 
@@ -229,17 +231,6 @@ pointer to the Mattermost stack. The live cut-over is one window: the edge
 drops its 8443 listeners and Mattermost publishes 8443 itself.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M7
-
-### TE-10 — ACME state deletable by routine commands
-
-The default `acme-data` is a compose-owned volume, so `ciu --reset`,
-`down -v` and `ciu clean` delete the ACME account and every certificate.
-Decided: new instances keep ACME state where those commands cannot reach it: an
-explicit hostdir outside `stack/` (`<instance root>/shared/acme`), or an
-adapter-created external volume if the design note finds the hostdir
-unworkable; `acme.volume_name` adoption stays.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M8
 
 ### TE-11 — docs restate facts
 
