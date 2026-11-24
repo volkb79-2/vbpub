@@ -72,7 +72,7 @@ require_augeaswrap() {
 
 host_setup_endpoint_entries() {
   local checkout_root="${1:?checkout root is required}" root="${2:-/}" prefix=""
-  local docker_entry docker_gid buildkit_socket buildkit_gid docker_api_socket
+  local docker_entry docker_gid buildkit_socket buildkit_gid docker_api_socket cockpit_oom_entry=""
   local -a docker_api_sockets=()
   if [ "$root" != / ]; then
     [[ "$root" == /* ]] || { echo "ERROR: host root must be absolute: $root" >&2; return 2; }
@@ -112,6 +112,8 @@ host_setup_endpoint_entries() {
   }
   docker_api_socket="${docker_api_sockets[0]}"
 
+  # dedicated-dev only (P-plat-19e 5.2): the devcontainers' --oom-score-adj; install.sh sets the variable on that role.
+  [ -z "${MDT_COCKPIT_OOM_SCORE_ADJ_PUBLISH:-}" ] || cockpit_oom_entry="MDT_COCKPIT_OOM_SCORE_ADJ=${MDT_COCKPIT_OOM_SCORE_ADJ_PUBLISH}"
   printf '%s\n' \
     'BUILDX_BUILDER=mdt-managed' \
     "BUILDKIT_HOST=unix://${buildkit_socket}" \
@@ -120,7 +122,8 @@ host_setup_endpoint_entries() {
     "MDT_BUILDKIT_SOCKET_DIR=${buildkit_socket%/*}" \
     "MDT_BUILDKIT_GID=${buildkit_gid}" \
     "MDT_DOCKER_API_SOCKET=${docker_api_socket}" \
-    "MDT_DOCKER_API_SOCKET_DIR=${docker_api_socket%/*}"
+    "MDT_DOCKER_API_SOCKET_DIR=${docker_api_socket%/*}" \
+    ${cockpit_oom_entry:+"$cockpit_oom_entry"}
 }
 
 host_setup_buildkit_socket_path() {

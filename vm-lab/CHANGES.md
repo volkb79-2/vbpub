@@ -5,6 +5,21 @@ All notable changes to vm-lab are recorded here.
 ## [Unreleased]
 
 ### Changed
+- **Plain Docker-host start (VML-BL-07).** `start --plain-host` runs directly
+  on a local Docker daemon: it skips cockpit/inspector-container lookups,
+  translates no bind paths, verifies a loaded `*.slice` and local cgroups
+  directly, and still uses the same operator-configured slice, hardening and
+  container builder. Plain-host names require a hyphen, and its network must
+  resolve by exact name to a Docker network on the `bridge` driver.
+  `--cpu-shares`, `--boot-order c|dc`, `--config-disk`, and `--iso`/`--seed-iso`
+  aliases were added for rollback-launcher parity; the copied rollback launcher
+  is retired. Cockpit mode remains the default.
+- **Cockpit-visible changes in this release.** An explicit empty
+  `--cgroup-parent ""` now refuses instead of falling back to
+  `CGROUP_PARENT_DEV_BACKGROUND`; the placement, network, and network-identity
+  refusal texts changed; the post-start `HostConfig.NetworkMode` verification
+  now also applies in cockpit mode; and the `[started]` JSON object now includes
+  `"mode": "cockpit" | "plain-host"`.
 - **Cockpit cgroup inspection without the host PID namespace.** Self-inspection now requires read-only host cgroup-v2 and system D-Bus mounts, a loaded and active Docker systemd scope with a readable nonzero `TasksCurrent`, and a well-formed 64-character container ID. It resolves the scope's cgroup through D-Bus and verifies that the scope lies within the selected slice. The Docker-scope path no longer needs a host PID namespace; `host_pid_cgroup` (used by the TrueNAS live gate) still needs `/hostproc` from the inspector. Mounts at or beneath the required paths must all be read-only, and the scope's cgroup path must end in `docker-<id>.scope`.
 - **vmscreen floor (VML-BL-03):** `dependencies = ["vmscreen>=0.1.0"]`, the first vmscreen release (`vmscreen-v0.1.0`, 2026-11-18), which has the `--qemu-dump-dir` option that `vm_lab.text` requires.
 - **vm-lab is a top-level project (RP-02, mdt-cockpit MDT-044).** The tool moved from `scripts/vm-lab/` (`vm_lab.py`, `vm_lab_console.py`, `vm_lab_text.py`) to `vm-lab/` with the package `vm_lab` in `src/` (`vm_lab.core`, `vm_lab.console`, `vm_lab.text`, `vm_lab.cli`), a `pyproject.toml` (name `vm-lab`, Python >= 3.11, dependency `vmscreen`, console script `vm-lab = vm_lab.cli:main`) and `python -m vm_lab`. History follows (`git mv`). Importers: `from vm_lab import core as vm_lab` for the functions tests patch; `from vm_lab import <name>` still works for the names `scripts/truenas/tcg_vm.py` re-exports. The TrueNAS front only changed its `sys.path` entry (`<repo>/vm-lab/src`) and its import lines.
@@ -15,7 +30,25 @@ All notable changes to vm-lab are recorded here.
 - **The QEMU image build context ships with the wheel (VML-BL-02).** `qemu-image/` moved to `src/vm_lab/qemu-image` and is declared package data (`vm_lab/qemu-image/*`); `QEMU_IMAGE_CONTEXT` resolves next to the module, so `vm-lab image build` works from a checkout, an editable install and an installed wheel without `--context`. `--context DIR` stays the override; an empty value counts as not given. The "no Dockerfile" refusal no longer suggests running from a checkout.
 - The unit lane is now `r0-r1` (`vm-lab/run-gate.toml`: coverage floor 72 %, measured 74.0 %), next to the new `r2` (assay mutation lane), `wheel` and `gate` lanes. A test builds a wheel from a copy of the project, so the lane first installs the pinned build tools (`setuptools==82.0.1`, `wheel==0.47.0`, `setuptools_scm==10.0.5`).
 
+### Fixed
+- **Guest session review fixes (P-31a).** Serial patterns now search each
+  rendered line unchanged, so realistic panic lines and inline regex flags
+  work; implicit failure watches start at their own mark; and success/failure
+  ordering follows the earliest stream position. Readiness replaces any stale
+  SSH master before reuse. Private credentials cannot live below the state
+  directory, must be owned by the caller, and reject SSH path expansion
+  hazards; malformed marks, invalid timeouts, NUL commands and missing
+  container identity become `GuestError`. A network disconnect no longer
+  masks an exception from the managed block.
+
 ### Added
+- **Guest session module (VML-BL-08 / P-31a).** `vm_lab.guest` provides
+  `ssh_endpoint`, `attached_to_network`, `Guest` and the guest-session error
+  types. SSH command authentication uses a pinned base host key with no TOFU;
+  serial remains the boot/failure channel; QMP provides reset and validated
+  key sequences. Reboots are proven by a changed Linux `boot_id`, and serial
+  waits use vmscreen marks and rendered, line-anchored text. The module copies
+  the private key only into an enforced 0700 driver directory at mode 0600.
 - **Release registration (VML-BL-01):** `cmru.toml` (tag `vm-lab-v*`, wheel only to GitHub Releases, notes in `VM_LAB_RELEASE_NOTES`), `assay.toml` (judged lane `vm-lab`) and an entry in `cmru.orchestration.toml` that releases `vmscreen` first. The `vmscreen>=0.1.0` floor is set (VML-BL-03).
 - `wheel` gate lane: builds the vmscreen and vm-lab wheels from copies of the sources, installs both into a throwaway venv, runs `vm-lab --help` and `vmscreen --help` and checks the packaged Dockerfile. No Docker, no QEMU.
 - Admission lock from an installed wheel: when the Git probe next to the module finds no repository (or no git), the lock directory is `--lock-dir` (on `start` and `disk promote`), else `VM_LAB_ADMISSION_LOCK_DIR` (absolute, existing, writable); neither: refusal naming both. The lock file name is unchanged; checkout, wrapper, editable and TrueNAS use are unchanged.

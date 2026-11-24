@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import runpy
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +17,9 @@ def make_root(path: Path) -> Path:
     defaults.parent.mkdir(parents=True)
     defaults.write_text("""\
 [tls_edge]
+schema = 1
 domain = "edge.example.com"
+ingress_external = false
 [tls_edge.tls]
 mode = "acme-tls"
 [tls_edge.ports]
@@ -31,10 +34,15 @@ enabled = false
 [tls_edge.acme]
 email = ""
 volume_name = ""
+store = "volume"
 [tls_edge.static]
 cert_base = "/etc/letsencrypt"
 domains = []
 source = "bind"
+[tls_edge.traefik.hostdir]
+acme = { path = "", uid = 0, gid = 0, mode = "0700" }
+[tls_edge.runtime]
+cgroup_parent = ""
 """, encoding="utf-8")
     return path
 
@@ -246,7 +254,7 @@ ingress_external = true
 cgroup_parent = "dev-background.slice"
 """)
     assert cli.configure(SimpleNamespace(root=root, answers=answers, dry_run=False), Runtime()) == 0
-    document = __import__("tomllib").loads((root / "stack/ciu-stack/ciu.toml.j2").read_text())
+    document = tomllib.loads((root / "stack/ciu-stack/ciu.toml.j2").read_text())
     settings = document["tls_edge"]
     assert settings["acme"]["dns"] == {"provider": "cloudflare", "wildcard_main": "example.org"}
     assert settings["calls"]["public_port"] == 9443
@@ -263,10 +271,32 @@ static_domains = ["static.example.org"]
 static_source = "volume"
 """)
     assert cli.configure(SimpleNamespace(root=static_root, answers=static_answers, dry_run=False), Runtime()) == 0
-    static_doc = __import__("tomllib").loads((static_root / "stack/ciu-stack/ciu.toml.j2").read_text())
+    static_doc = tomllib.loads((static_root / "stack/ciu-stack/ciu.toml.j2").read_text())
     assert static_doc["tls_edge"]["static"] == {
         "cert_base": "/srv/certs", "domains": ["static.example.org"], "source": "volume"
     }
+
+
+def test_configure_repairs_a_cross_field_invalid_current_site(tmp_path: Path):
+    root = make_root(tmp_path / "instance")
+    override = root / "stack/ciu-stack/ciu.toml.j2"
+    override.write_text(
+        '[tls_edge]\ndomain = "edge.example.com"\n'
+        '[tls_edge.tls]\nmode = "static"\n',
+        encoding="utf-8",
+    )
+    answers = answer_file(
+        tmp_path / "answers.toml",
+        'tls_mode = "acme-tls"\nhttps_port = 443\n',
+    )
+
+    assert cli.configure(
+        SimpleNamespace(root=root, answers=answers, dry_run=False),
+        Runtime(),
+    ) == 0
+    written = tomllib.loads(override.read_text(encoding="utf-8"))
+    assert written["tls_edge"]["schema"] == 1
+    assert written["tls_edge"]["tls"]["mode"] == "acme-tls"
 
 
 def test_configure_wraps_answer_and_partial_write_errors(tmp_path: Path, monkeypatch):
@@ -312,14 +342,13 @@ def test_show_and_validate_valid_empty_and_invalid_instances(tmp_path: Path):
         cli.validate(SimpleNamespace(root=root), Runtime())
 
 
-def test_show_unconfigured_domain_without_inbound_ports(tmp_path: Path, monkeypatch):
+def test_show_unconfigured_domain(tmp_path: Path):
     root = make_root(tmp_path / "unconfigured")
     override = root / "stack/ciu-stack/ciu.toml.j2"
     override.write_text('[tls_edge]\ndomain = ""\n', encoding="utf-8")
-    monkeypatch.setattr(cli, "validate_config", lambda *_args, **_kwargs: [])
     runtime = Runtime()
     assert cli.show(SimpleNamespace(root=root), runtime) == 0
-    assert "Inbound ports:" not in runtime.output.lines
+    assert "Inbound ports:" in runtime.output.lines
     assert any("Run `tls-edge configure`" in line for line in runtime.output.lines)
 
 

@@ -11,10 +11,11 @@ So one hook owns all of it, and every value lives in exactly one place:
 
     <stack>/.ciu/secrets/            (0700, gitignored via `**/.ciu/`)
         fluxer-secrets.json          canonical store, 0600, generated ONCE
-        accounts.json                admin + dummy-user passwords, 0600, ONCE
         env.fluxer env.api env.postgres env.meilisearch env.livekit env.s3init
                                      derived per-role env files, 0600,
                                      rewritten every run from the store
+        fluxer/account_<name>        account passwords, owned by ciu
+                                     GEN_LOCAL declarations, not this hook
 
 Compose loads the derived files with `env_file` (see ciu.compose.yml.j2). No
 secret value is ever printed, logged, put in a template, or put in
@@ -52,7 +53,6 @@ _HEX_KEYS = (
 )
 
 STORE_NAME = "fluxer-secrets.json"
-ACCOUNTS_NAME = "accounts.json"
 
 
 class SecretsError(RuntimeError):
@@ -153,19 +153,6 @@ def account_names(root: dict) -> list[str]:
     return [str(name) for name in names if name]
 
 
-def ensure_accounts(directory: Path, names: list[str]) -> int:
-    path = directory / ACCOUNTS_NAME
-    data = _load_json(path)
-    added = 0
-    for name in names:
-        if not data.get(name):
-            data[name] = secrets.token_urlsafe(18)
-            added += 1
-    if added:
-        _write_private(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-    return added
-
-
 def derived_env_files(store: dict, livekit_key: str, s3_access_key: str) -> dict[str, dict[str, str]]:
     """File name -> {ENV: value}. The mapping mirrors the upstream compose bundle."""
     return {
@@ -210,8 +197,8 @@ def validate_config(config: dict, ctx) -> list:
     if not isinstance(root, dict):
         return ["no [fluxer] table in the merged config"]
     names = account_names(root)
-    if len(names) < 2:
-        findings.append("[fluxer.accounts] needs an admin and at least one user")
+    if len(names) != 3:
+        findings.append("[fluxer.accounts] needs one admin and two regular users")
     if len(set(names)) != len(names):
         findings.append("[fluxer.accounts] usernames must be unique")
     for name in names:
@@ -231,14 +218,12 @@ def run(config: dict, ctx) -> dict:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     store, added = ensure_store(directory)
-    accounts_added = ensure_accounts(directory, account_names(root))
     livekit_key = (root.get("livekit") or {}).get("api_key", "fluxer")
     s3_access_key = (root.get("s3") or {}).get("access_key", "fluxer")
     write_env_files(directory, derived_env_files(store, livekit_key, s3_access_key))
     # Paths and counts only, never a value.
     print(
-        f"[FLUXER-SECRETS] store={directory / STORE_NAME} keys_added={added} "
-        f"accounts_file={directory / ACCOUNTS_NAME} accounts_added={accounts_added}",
+        f"[FLUXER-SECRETS] store={directory / STORE_NAME} keys_added={added}",
         flush=True,
     )
     return {}

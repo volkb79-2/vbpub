@@ -57,7 +57,7 @@ fn a_parse_failure_is_unreadable_and_never_a_zero() {
     assert_eq!(readings.u64("cpu.usage_usec"), Some(10));
     assert_eq!(
         readings.quality("cpu.user_usec"),
-        Some(QualityCode::UNREADABLE)
+        Some(QualityCode::Unreadable)
     );
     assert_eq!(readings.u64("cpu.user_usec"), None, "no invented zero");
     assert_eq!(readings.u64("cpu.nr_periods"), Some(3));
@@ -75,9 +75,9 @@ fn a_max_limit_is_a_state_and_never_a_number() {
     let limit = parse_limit("memory.max", &read("memory.max")).expect("memory.max");
     assert_eq!(limit.raw, b"max");
     assert_eq!(limit.value, None, "`max` is not -1, not 0 and not u64::MAX");
-    assert_eq!(limit.quality, QualityCode::UNSUPPORTED);
+    assert_eq!(limit.quality, QualityCode::Unsupported);
     assert_eq!(limit.reading().u64(), None);
-    assert_eq!(limit.reading().quality(), QualityCode::UNSUPPORTED);
+    assert_eq!(limit.reading().quality(), QualityCode::Unsupported);
 
     // A numeric limit is a number, and keeps the text the kernel wrote.
     let mut fs = MemFs::new();
@@ -85,7 +85,7 @@ fn a_max_limit_is_a_state_and_never_a_number() {
     fs.file("/cg/memory.max", "1073741824\n", 2);
     let limit = parse_limit("memory.max", b"1073741824\n").expect("limit");
     assert_eq!(limit.value, Some(1_073_741_824));
-    assert_eq!(limit.quality, QualityCode::OK);
+    assert_eq!(limit.quality, QualityCode::Ok);
     assert_eq!(limit.reading().u64(), Some(1_073_741_824));
 
     // `cpu.max` is two values and its quota may be `max`.
@@ -113,7 +113,7 @@ fn memory_stat_and_events_keep_every_key_the_files_write() {
     assert_eq!(stat.len(), 11, "every one of the fixture's eleven keys");
     for entry in stat.entries() {
         assert!(entry.metric.starts_with("mem.stat."), "{}", entry.metric);
-        assert_eq!(entry.reading.quality(), QualityCode::OK, "{}", entry.metric);
+        assert_eq!(entry.reading.quality(), QualityCode::Ok, "{}", entry.metric);
     }
     let events = parse_memory_events(
         "memev.",
@@ -174,7 +174,7 @@ fn an_io_aggregate_over_bottom_devices_is_a_sum_and_an_unknown_device_is_a_state
     );
     assert_eq!(
         hostobs_kernel::cgroup::KernelError::UnknownTopology.quality(),
-        QualityCode::UNKNOWN_TOPOLOGY,
+        QualityCode::UnknownTopology,
         "the state is a code, not a zero"
     );
 
@@ -204,10 +204,10 @@ fn an_unparsable_io_counter_makes_the_sum_unavailable_and_a_cost_gauge_is_separa
     let readings = parse_io_stat(text, Bounds::POLICY, &topology).expect("io.stat");
     assert_eq!(
         readings.quality("io.rbytes"),
-        Some(QualityCode::UNREADABLE),
+        Some(QualityCode::Unreadable),
         "one bad field poisons the counters it feeds, not the file"
     );
-    assert_eq!(readings.quality("io.wbytes"), Some(QualityCode::UNREADABLE));
+    assert_eq!(readings.quality("io.wbytes"), Some(QualityCode::Unreadable));
     assert_eq!(readings.u64("io.rbytes"), None, "no partial total");
     // iocost lives on its own metrics and still reads.
     assert_eq!(readings.u64("io.cost.usage"), Some(5));
@@ -221,11 +221,11 @@ fn an_unparsable_io_counter_makes_the_sum_unavailable_and_a_cost_gauge_is_separa
     assert_eq!(readings.u64("io.rbytes"), Some(10));
     assert_eq!(
         readings.quality("io.cost.usage"),
-        Some(QualityCode::UNSUPPORTED)
+        Some(QualityCode::Unsupported)
     );
     assert_eq!(
         readings.quality("io.cost.vrate"),
-        Some(QualityCode::UNSUPPORTED)
+        Some(QualityCode::Unsupported)
     );
 }
 
@@ -243,26 +243,26 @@ fn an_overflowing_io_sum_is_unreadable_instead_of_clamped() {
     let readings = parse_io_stat(counters, Bounds::POLICY, &topology).expect("io.stat");
     assert_eq!(
         readings.quality("io.rbytes"),
-        Some(QualityCode::UNREADABLE),
+        Some(QualityCode::Unreadable),
         "an overflowing total is refused, not clamped at u64::MAX"
     );
     assert_eq!(readings.u64("io.rbytes"), None);
     // The whole counter set is refused together, which is the module's stated rule: a
     // partial total is a wrong number that looks right, and `io.rbytes`/`io.wbytes` are
     // read as one aggregate. So nobody can read `wbytes` as a total while `rbytes` failed.
-    assert_eq!(readings.quality("io.wbytes"), Some(QualityCode::UNREADABLE));
+    assert_eq!(readings.quality("io.wbytes"), Some(QualityCode::Unreadable));
 
     let cost = b"8:0 cost.usage=18446744073709551615\n8:16 cost.usage=1 cost.wait=2\n";
     let readings = parse_io_stat(cost, Bounds::POLICY, &topology).expect("io.stat");
     assert_eq!(
         readings.quality("io.cost.usage"),
-        Some(QualityCode::UNREADABLE),
+        Some(QualityCode::Unreadable),
         "the iocost sum refuses an overflow too (checked_add, not saturating_add)"
     );
     assert_eq!(readings.u64("io.cost.usage"), None);
     assert_eq!(
         readings.quality("io.cost.wait"),
-        Some(QualityCode::UNREADABLE),
+        Some(QualityCode::Unreadable),
         "one bad iocost field makes the iocost sums unavailable as a set"
     );
 }
@@ -292,7 +292,7 @@ fn pressure_files_carry_gauges_and_counters_and_a_missing_full_row() {
     assert_eq!(readings.u64("psi.io.some.total"), Some(5));
     assert_eq!(
         readings.quality("psi.io.full.total"),
-        Some(QualityCode::UNSUPPORTED)
+        Some(QualityCode::Unsupported)
     );
     // A row that is not `some` or `full` is refused.
     assert!(parse_pressure(
@@ -332,7 +332,7 @@ fn a_whole_cgroup_directory_is_read_file_by_file_in_one_committed_order() {
     let max = first.readings_of("memory.max").expect("memory.max");
     assert_eq!(
         max.quality("limit.memory.max"),
-        Some(QualityCode::UNSUPPORTED)
+        Some(QualityCode::Unsupported)
     );
 
     // A file the fixture does not have is a *failure with its reason*, not a silence:
@@ -350,7 +350,7 @@ fn a_whole_cgroup_directory_is_read_file_by_file_in_one_committed_order() {
     for file in ["io.stat", "memory.stat", "pids.max"] {
         assert_eq!(
             partial.failure_of(file).map(|error| error.quality()),
-            Some(QualityCode::ABSENT),
+            Some(QualityCode::Absent),
             "{file}: a controller that is off is an absence"
         );
     }

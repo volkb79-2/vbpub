@@ -62,17 +62,17 @@
 //! * A record whose kind is not `1`, whose sequence is not the position the reader is at,
 //!   whose declared padding is not the implied padding, or whose lengths disagree is a typed
 //!   refusal — a reader never *infers* a record's length from what happens to follow it.
-//! * A payload must be a `proto` BLOCK frame: its 12-byte frame header says so, and this
-//!   module checks it before any byte is stored. That is a re-statement of plan v4 §B.1's
-//!   frame header (12 bytes), not a second codec: the store never looks inside a block.
-//!   `store` cannot depend on `hostobs-proto` (a path dependency rewrites `Cargo.lock`, and
-//!   the lane image bakes that lock — `HOB-27`), so the four facts that decide whether a
-//!   payload may be stored at all are checked here, and every other question about the
-//!   block's content is `proto`'s.
+//! * A payload must be the `proto` frame its corpus requires (BLOCK for history, EVT for
+//!   events), and this module checks it before any byte is stored. The fixed fields come from
+//!   [`hostobs_proto::frame::StoredFrameFields`], not a second header parser. The segment
+//!   format applies its corpus frame type and SECTIONED flag and its configured payload
+//!   bound; every question about the block's content remains `proto`'s.
 //! * A footer must follow the records it counts, name the header's sequence and generation,
 //!   and end the file exactly.
 
 use core::fmt;
+
+use hostobs_proto::frame::{FrameType, StoredFrameFields};
 
 use crate::crc::{crc32, crc32_pair};
 use crate::error::StoreError;
@@ -105,16 +105,16 @@ pub const PAYLOAD_BLOCK: u8 = 1;
 pub const PAYLOAD_EVT: u8 = 2;
 
 /// The frame type byte of a `proto` BLOCK frame (plan v4 §B.1).
-pub const BLOCK_FRAME_TYPE: u8 = 5;
+pub const BLOCK_FRAME_TYPE: u8 = FrameType::Block.code();
 
 /// The frame type byte of a `proto` EVT frame (plan v4 §B.1).
-pub const EVT_FRAME_TYPE: u8 = 3;
+pub const EVT_FRAME_TYPE: u8 = FrameType::Evt.code();
 
 /// The frame flag bit a block must carry (plan v4 §B.1 `FLAG_SECTIONED`).
-pub const FRAME_FLAG_SECTIONED: u8 = 0b0000_0001;
+pub const FRAME_FLAG_SECTIONED: u8 = hostobs_proto::frame::FLAG_SECTIONED;
 
 /// The frame header's length (plan v4 §B.1).
-pub const FRAME_HEADER_LEN: usize = 12;
+pub const FRAME_HEADER_LEN: usize = hostobs_proto::frame::FRAME_HEADER_LEN;
 
 /// The largest padding a record may carry: records start eight-byte aligned.
 pub const MAX_RECORD_PAD: usize = 7;
@@ -810,12 +810,12 @@ impl Footer {
     }
 }
 
-/// The facts a stored payload must satisfy to be a `proto` BLOCK frame (plan v4 §B.1).
+/// The facts a stored payload's `proto` frame header carries (plan v4 §B.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameFacts {
     /// The frame's declared length (`u32` at byte 0).
     pub len: u32,
-    /// The frame type byte (must be [`BLOCK_FRAME_TYPE`]).
+    /// The frame type byte (BLOCK in history tiers, EVT in the events store).
     pub frame_type: u8,
     /// The frame flags byte.
     pub flags: u8,
@@ -825,12 +825,12 @@ pub struct FrameFacts {
 
 /// Check that `payload` is the `proto` frame its corpus requires, and read its header facts.
 ///
-/// The store never looks inside a block: the four facts below are the ones that decide
-/// whether these bytes may be stored at all. Anything else (section directory, columns,
-/// dictionary) is `proto`'s refusal, checked by its decoder when a consumer reads the
-/// payload back. The *frame type* is part of that first decision: history stores BLOCK
-/// frames and the events store stores EVT frames, so a corpus cannot accidentally serve the
-/// other's payload.
+/// [`StoredFrameFields`] owns the fixed-header layout. The store checks the facts its segments
+/// own in their established order: the configured payload bound, declared length, exact frame
+/// type, exact flags and reserved word. Anything inside the frame (section directory, columns,
+/// dictionary) is `proto`'s refusal, checked by its decoder when a consumer reads the payload
+/// back. History stores BLOCK frames and the events store stores EVT frames, both with
+/// SECTIONED set, so a corpus cannot accidentally serve the other's payload.
 ///
 /// # Errors
 ///
@@ -856,34 +856,42 @@ pub fn check_payload(
             have: payload.len(),
         });
     }
-    let declared = read_u32(payload, 0)?;
-    if declared != len {
+    let header_bytes: &[u8; FRAME_HEADER_LEN] = payload
+        .get(..FRAME_HEADER_LEN)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(StoreError::Truncated {
+            context: "payload frame header",
+            need: FRAME_HEADER_LEN,
+            have: payload.len(),
+        })?;
+    let header = StoredFrameFields::parse_header(header_bytes);
+    if header.len != len {
         return Err(StoreError::PayloadFrameLength {
-            declared,
+            declared: header.len,
             have: payload.len(),
         });
     }
-    let frame_type = read_u8(payload, 4)?;
-    if frame_type != expected.frame_type() {
+    if header.frame_type != expected.frame_type() {
         return Err(StoreError::PayloadFrameType {
             expected: expected.frame_type(),
-            found: frame_type,
+            found: header.frame_type,
         });
     }
-    let flags = read_u8(payload, 5)?;
-    if flags & !FRAME_FLAG_SECTIONED != 0 || flags & FRAME_FLAG_SECTIONED == 0 {
-        return Err(StoreError::PayloadFrameFlags { flags });
+    if header.flags != FRAME_FLAG_SECTIONED {
+        return Err(StoreError::PayloadFrameFlags {
+            flags: header.flags,
+        });
     }
-    let reserved = read_u16(payload, 6)?;
-    if reserved != 0 {
-        return Err(StoreError::PayloadFrameReserved { found: reserved });
+    if header.reserved != 0 {
+        return Err(StoreError::PayloadFrameReserved {
+            found: header.reserved,
+        });
     }
-    let corr = read_u32(payload, 8)?;
     Ok(FrameFacts {
-        len: declared,
-        frame_type,
-        flags,
-        corr,
+        len: header.len,
+        frame_type: header.frame_type,
+        flags: header.flags,
+        corr: header.corr,
     })
 }
 
@@ -1241,9 +1249,10 @@ pub fn header_and_body_crc(
 mod tests {
     use super::{
         check_payload, check_tier_name, pad_for, read_u32, record_crc, Footer, FrameFacts,
-        RecordHeader, SegmentFileName, SegmentHeader, TierKind, BLOCK_FRAME_TYPE, FOOTER_LEN,
-        FRAME_HEADER_LEN, HEADER_LEN, MAX_RECORD_PAD, PAYLOAD_BLOCK, QUARANTINE_SUFFIX,
-        RECORD_BLOCK, RECORD_EVT, RECORD_HEADER_LEN, SEGMENT_MAGIC, SEGMENT_VERSION, SEQ_NAME_MAX,
+        RecordHeader, SegmentFileName, SegmentHeader, TierKind, BLOCK_FRAME_TYPE, EVT_FRAME_TYPE,
+        FOOTER_LEN, FRAME_FLAG_SECTIONED, FRAME_HEADER_LEN, HEADER_LEN, MAX_RECORD_PAD,
+        PAYLOAD_BLOCK, QUARANTINE_SUFFIX, RECORD_BLOCK, RECORD_EVT, RECORD_HEADER_LEN,
+        SEGMENT_MAGIC, SEGMENT_VERSION, SEQ_NAME_MAX,
     };
     use crate::crc::crc32;
     use crate::error::StoreError;
@@ -1753,10 +1762,16 @@ mod tests {
             FrameFacts {
                 len: 32,
                 frame_type: BLOCK_FRAME_TYPE,
-                flags: 1,
+                flags: FRAME_FLAG_SECTIONED,
                 corr: 77
             }
         );
+        let mut event = payload.clone();
+        event[4] = EVT_FRAME_TYPE;
+        let facts = check_payload(&event, TierKind::Events, 1024)
+            .expect("the stored events corpus carries EVT with SECTIONED");
+        assert_eq!(facts.frame_type, EVT_FRAME_TYPE);
+        assert_eq!(facts.flags, FRAME_FLAG_SECTIONED);
         let mut not_a_block = payload.clone();
         not_a_block[4] = 1;
         assert_eq!(
@@ -1774,6 +1789,56 @@ mod tests {
                 declared: 64,
                 have: 32
             })
+        );
+        let mut length_before_type = wrong_len.clone();
+        length_before_type[4] = 0;
+        assert_eq!(
+            check_payload(&length_before_type, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameLength {
+                declared: 64,
+                have: 32
+            }),
+            "the declared length is the first refusal"
+        );
+        let mut length_before_flags = wrong_len.clone();
+        length_before_flags[5] = 0b11;
+        assert_eq!(
+            check_payload(&length_before_flags, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameLength {
+                declared: 64,
+                have: 32
+            }),
+            "the declared length precedes unknown flags"
+        );
+        let mut length_before_reserved = wrong_len;
+        length_before_reserved[6] = 1;
+        assert_eq!(
+            check_payload(&length_before_reserved, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameLength {
+                declared: 64,
+                have: 32
+            }),
+            "the declared length precedes the reserved word"
+        );
+        let mut type_before_flags_and_reserved = payload.clone();
+        type_before_flags_and_reserved[4] = 1;
+        type_before_flags_and_reserved[5] = 0;
+        type_before_flags_and_reserved[6] = 1;
+        assert_eq!(
+            check_payload(&type_before_flags_and_reserved, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameType {
+                expected: BLOCK_FRAME_TYPE,
+                found: 1,
+            }),
+            "the corpus frame type precedes flags and reserved"
+        );
+        let mut flags_before_reserved = payload.clone();
+        flags_before_reserved[5] = 0;
+        flags_before_reserved[6] = 1;
+        assert_eq!(
+            check_payload(&flags_before_reserved, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameFlags { flags: 0 }),
+            "the exact flags precede the reserved word"
         );
         let mut extra_flag = payload.clone();
         extra_flag[5] = 0b0000_0011;

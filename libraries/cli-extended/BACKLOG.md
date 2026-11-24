@@ -705,6 +705,12 @@ The same work made the short-window `procio` tests load-independent (a child mus
 own start-up: `START_LIMIT`). Meta-test: `tests/test_no_leftover_children.py`. After: the wrapper
 reports `leaked=0` for the whole suite and for `test_procio.py`.
 
+**Upstreamed 2026-11-24 (P-core-04b):** `estate_test_policy` TP-12 now owns the
+leftover-child guard. cli-extended removed its local subreaper, scanner,
+pidfd cleanup and `allow_children` marker; its remaining subprocess oracle
+tests the source-loaded plugin's behaviour, and the procio orphan fixture
+uses a source-backed compatibility shape rather than cli-extended guard logic.
+
 **Provenance:** `ciu/docs/DESIGN-NOTE-2026-11-CIU-215-CIU-220.md`, Decision 2.
 
 ## CLI-EXT-35 — shared line-stream engine with per-line severity rendering
@@ -938,3 +944,59 @@ Add a per-run scratch helper whose directory the parent removes in `finally`,
 plus `prune(root, live_ids, older_than)`. It waits for a consumer (T1 agctl).
 
 Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` SYNTHESIS T3
+
+## CLI-EXT-47 — timed `procio` oracles need non-duration substitutes
+
+**Status:** OPEN. **Type:** Test debt. **Area:** Process supervision tests.
+
+Six tests carry `estate_allow` markers for this id:
+- Five are intentionally timed `procio` tests (`tests/test_procio.py`: two
+  `short-timeout`, three `wall-time-assert`). Replace their elapsed bounds and
+  short real timeouts with operation-count, event or injected-clock oracles
+  where that preserves the behavioural contract, then remove the markers.
+- One, `tests/test_w6_testing.py:239-243` (`short-timeout`), is not a timed
+  test. It is a static false positive of the plugin's `short-timeout` rule on
+  fake call data, with no process and no timing. Its marker stays until the
+  rule stops matching literal test data (a test-policy detection fix, not a
+  cli-extended change).
+
+## CLI-EXT-48 — the module-wide containment marker in `test_procio.py` covers pure tests
+
+**Status:** OPEN. **Type:** Test debt. **Area:** Process supervision tests.
+
+`tests/test_procio.py:35` sets a module-level
+`pytestmark = pytest.mark.requires_contained_cgroup`, so all 80 tests carry
+it. That includes pure ones: the fake-`/proc` parsers, the vocabulary test and
+the import checks. Outside a contained cgroup all 80 fail at setup (mode
+`fail`). This is correct, but broader than needed. Mark only the tests that
+start, signal or reap real processes, so the pure tests run anywhere.
+
+Source: P-core-04b Opus review NIT 3, 2026-11-24.
+
+## CLI-EXT-49 — `tests/conftest.py` keeps a `direct_children` adapter
+
+**Status:** OPEN. **Type:** Test debt. **Area:** Process supervision tests.
+
+`tests/conftest.py:23-30` keeps a `direct_children()` compatibility adapter
+over `estate_test_policy.children.direct_children`. P-core-04b kept it because
+that package could only add markers to `test_procio.py`, not change its
+imports. The adapter's key changes the start time from a string to an int.
+That is safe today, because the fixture only uses set membership and the pid.
+Wanted: import `estate_test_policy.children.direct_children` in
+`test_procio.py` directly and delete the adapter.
+
+Source: P-core-04b Opus review NIT 4, 2026-11-24.
+
+## CLI-EXT-50 — `tools/canary-run.sh` counts any pytest failure as a canary rejection
+
+**Status:** OPEN. **Type:** Bug (gate evidence). **Area:** R3 canary.
+
+`tools/canary-run.sh` sends pytest's output to `/dev/null` and reports any
+non-zero pytest exit as "canary rejected". A test-policy setup error, a
+collection error or a broken image therefore passes as a successful canary.
+Wanted: tell the expected oracle failure apart from infrastructure failure,
+for example by pytest's exit code (1 = test failures, 2+ = interrupted or
+usage/internal error) plus a check that the canary test itself failed. Same
+class as run-gate RG-292.
+
+Source: P-core-04b Opus review NIT 6 (outside the contract), 2026-11-24.

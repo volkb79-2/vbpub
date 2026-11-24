@@ -1482,7 +1482,6 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | V-18 | plan §B.1 | JSON mode for "ctl, shell, launchers, debug" (all verbs) | JSON mode refuses block verbs; `hostobsctl --json` renders them | none (D-W13) |
 | V-19 | plan §A.2 | verbs listed per level only | `status`, `events`, `spans` also at control (relayed), `unsubscribe` at observe/operator | none (§4.3) |
 | V-20 | plan §B.4 | clients per level only | per-uid connection and selection caps, hello and idle deadlines, refuse without a byte | none (D-W19, D-W20) |
-| V-21 | `bins/probe/src/{conn,server,classify,limits}.rs`, `crates/proto/src/hub.rs`, `fixtures/stream/hub-*`; `crates/client/src/error.rs` `FATAL_CODES` (9 → 10, `binary-required`) and its test at :227; `python/hostobs_client/conn.py` `FATAL_CODES` (pinned by `python/tests/test_client_hardening.py:335`); `python/reference/make_hub_fixtures.py` and `python/tests/test_hub_fixtures.py` (uid pools, `uid_*_bytes`, `hub-uid-cap`); `python/tests/fake_probe.py` | per-uid pools, JSON mode at observe/operator, per-level keys, 9 fatal codes, `max_rows` 4,096, Query 4 / 16 MiB, `max_block_bytes` 4 MiB, observe per-uid connections 8, per-uid selections 4 | D-W51..D-W53 | P-hostobs-06 (`HOB-71`, `HOB-72`) |
 
 ### Open questions (both DECIDED)
 
@@ -1536,4 +1535,4 @@ clock; the §5.1 reply-size bounds for every paged verb. Closes `HOB-54`.
 | H | previous-body view pins a whole frame; table provenance; CPython patch level (minor) | fixed: retention stated and bounded (one previous frame of ≤ 1 MiB per stream; a digest rejected, it adds a hash to the measured path and makes the skip probabilistic); table attributed to `bench2.py`, the `bytes()` row to `bench.py`; pinned CPython 3.14.10, re-measure on any version change, patch level included | §7.4, §7.8, D-W15 |
 | I | V-11..V-13 and the stream machines have no backlog id (minor) | fixed: `HOB-51`..`HOB-53` (V-11..V-13), `HOB-54` (stream layer, P2/P3/P5b exit criteria) | backlog, V-11..V-13, §12, CHANGES.md |
 
-Case counts (§11.4): 12 reader, 6 client, 19 hub, 22 connection (the code follows with V-21).
+Case counts (§11.4): 12 reader, 6 client, 19 hub, 22 connection.

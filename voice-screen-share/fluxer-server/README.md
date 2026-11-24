@@ -78,7 +78,7 @@ long voice session. The edge adds no CSP header (good: Fluxer sets its own) and 
 ## Clients and server URL (links only, checked 2026-11-04)
 
 - Server / web client: `https://fluxer.<PUBLIC_FQDN>/` (the `public_host`; sign-in is username + password,
-  accounts in `USERS.md`; the credentials file is `.ciu/secrets/accounts.json`, never in git).
+  accounts in `USERS.md`; each password is a ciu `GEN_LOCAL` secret, never in git).
   Instance discovery document: `https://fluxer.<PUBLIC_FQDN>/.well-known/fluxer`.
 - Official download page: <https://fluxer.com/download> (verification help: <https://fluxer.com/help/verify-fluxer-download>).
   Installers are NOT GitHub release assets (the `fluxer-desktop-stable@...` releases carry only update
@@ -96,17 +96,24 @@ long voice session. The edge adds no CSP header (good: Fluxer sets its own) and 
 ```bash
 cd /workspaces/vbpub
 ciu env generate --root-folder voice-screen-share/fluxer-server     # creates ciu.env + a network (CIU-162)
-ciu up --dir voice-screen-share/fluxer-server --yes --root-folder voice-screen-share/fluxer-server
+ciu up --dir voice-screen-share/fluxer-server --yes
 ```
 
-`ciu up` runs the `pre_compose` hook (generates every secret once, see below), starts the stack and then the
-`post_compose` hook (admin + dummy users, see `USERS.md`). Checks: `docker ps` shows all containers
+Run `ciu up` from the checkout root with `--dir` alone. Adding `--root-folder` makes ciu join the relative
+`--dir` onto the root a second time and refuse with `[no-ciu-root]` (CIU-228). Set `DOCKER_GID` if the host has
+no docker group, the same as for jitsi-server.
+
+`ciu up` materializes the three account passwords, runs the `pre_compose` hook (generates the formatted service
+secrets once, see below), starts the stack and then the `post_compose` hook (admin + two regular users, see
+`USERS.md`). Checks: `docker ps` shows all containers
 `healthy` (`seaweedfs-init` exited 0), `GET /_health` on the edge answers `OK`.
 
 Known tool issues (filed in the ciu backlog): `ciu env generate` attaches the devcontainer to a new network
 (CIU-162; detach it by exact name afterwards), a root that exists only in a linked worktree cannot `ciu up`
 (CIU-167; run it from the main checkout), and the S6.5 root helper refuses to run in a devcontainer
-(see the jitsi-server README; this project uses named volumes and is not affected). `ciu up` from the main
+(see the jitsi-server README; this project uses named volumes and is not affected). `ciu up --dry-run` is not
+side-effect free here: it runs the `pre_compose` hook, which writes the generated service secrets into
+`.ciu/secrets/fluxer-secrets.json` on first use. `ciu up` from the main
 checkout was verified on 2026-11-04 with `expose_public = true`: 21 containers up, accounts created, the edge
 issued the certificate for `fluxer.<PUBLIC_FQDN>`.
 
@@ -117,32 +124,42 @@ does not answer a bare STUN request, so a real two-client call is still the acce
 
 ## Secrets
 
-The images read all secrets from environment variables, and several need a fixed format (standard base64,
-a P-256 VAPID pair), so `hooks/pre_compose_secrets.py` owns them instead of `[fluxer.secrets]` directives:
-`.ciu/secrets/fluxer-secrets.json` (generated once, never regenerated) and derived per-role env files
-(`env.fluxer`, `env.api`, `env.postgres`, ...), all mode 0600 in a 0700, gitignored directory, loaded by
-compose with `env_file`. No secret is in a tracked file, a rendered compose, the log or this document; tests
-assert it. `FLUXER_SETUP_TOKEN` is generated there too and used by the accounts hook.
+The images read service secrets from environment variables, and several need a fixed format (standard base64,
+a P-256 VAPID pair), so `hooks/pre_compose_secrets.py` owns those in `.ciu/secrets/fluxer-secrets.json`
+(generated once, never regenerated) and in derived per-role env files (`env.fluxer`, `env.api`, `env.postgres`,
+...), all mode 0600 in a 0700, gitignored directory and loaded by compose with `env_file`.
+`FLUXER_SETUP_TOKEN` is generated there too and used by the accounts hook.
+
+The three account passwords are different: they are `GEN_LOCAL` declarations in `[fluxer.secrets]`, owned and
+materialized by ciu under `.ciu/secrets/fluxer/`. The hook reads them through `ctx.secret_file()` and sends
+them to the Fluxer account script on stdin. No secret is in a tracked file, a rendered compose, a log or this
+document; tests assert it.
 
 ## Accounts
 
-`hooks/post_compose_accounts.py` creates the administrator and three dummy users idempotently over the
-registration API, from inside the api container (no browser step). Where the credentials are, how to rotate
-them and what stays manual: `USERS.md`.
+`hooks/post_compose_accounts.py` creates the administrator, `fx_alice`, and `fx_bob` idempotently over the
+registration API, from inside the api container (no browser step). Where each password is, how to read and
+rotate it, and what stays manual: `USERS.md`.
+
+A scripted sign-in check cannot use a plain `POST /api/auth/login`: Fluxer answers `CAPTCHA_REQUIRED` until the
+client solves its ALTCHA proof of work. `hooks/fluxer_accounts.mjs` shows how: it solves the challenge with the
+image's own `altcha-lib` inside the api container. To check sign-in through the edge, run the same
+`altcha-lib` solve in a one-shot container on the edge's ingress network, with the password read from its
+`GEN_LOCAL` file and never on the command line.
 
 ## Tests
 
 ```bash
-cd voice-screen-share/fluxer-server && python -m pytest tests -q
+cd voice-screen-share/fluxer-server && run-gate suite
 ```
 
 Offline: isolation, only the LiveKit pair published, digest pins, caps, port plan agreement with `../README.md`,
-no credentials or domain in tracked files, hook idempotence and file modes, `docker compose config` when
-docker is present. Gate lane: `run-gate.toml`.
+no credentials or domain in tracked files, exact ciu account declarations, hook idempotence and file modes,
+and `docker compose config`. Gate lane: `run-gate.toml`.
 
 ## Manual acceptance (needs two clients, not done headlessly)
 
-1. Sign in as two dummy users in two browsers (Chrome/Firefox) at `https://<public_host>`.
+1. Sign in as `fx_alice` and `fx_bob` in two browsers (Chrome/Firefox) at `https://<public_host>`.
 2. Create a community and a voice channel, join from both, verify audio both ways and that the microphone
    setting shows **RNNoise** (Settings > Voice).
 3. Share a screen; verify the other client sees it, both over UDP 7892 and with UDP blocked (TCP 7891 fallback).

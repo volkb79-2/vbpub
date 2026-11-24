@@ -31,6 +31,11 @@ ERROR_CODES = (
 )
 REQ, REP, EVT, DICT, BLOCK, END = 1, 2, 3, 4, 5, 6
 
+BLOCK_LIMIT_KEYS = (
+    "max_subscriptions", "client_queue_bytes", "query_queue_bytes", "max_block_bytes",
+    "max_rows", "max_block_buckets", "max_page_blocks", "min_interval_ms", "tick_ms",
+)
+
 
 class Clock:
     def __init__(self, now: int = 1_000 * NS) -> None:
@@ -96,8 +101,35 @@ def json_bytes(value: object) -> bytes:
 
 
 def hello_result(level: str = "observe", minor: int = 1, **over: object) -> dict:
-    limits = dict.fromkeys(LIMIT_KEYS, 4)
-    limits.update(max_frame_bytes=16 * 1024 * 1024, max_request_bytes=32 * 1024, max_outstanding=4, tick_ms=1000)
+    limits = {
+        "max_frame_bytes": 16 * 1024 * 1024,
+        "max_request_bytes": 32 * 1024,
+        "request_deadline_ms": 5000,
+        "hello_deadline_ms": 5000,
+        "idle_ms": 300000,
+        "stall_ms": 5000,
+        "frame_completion_ms": 5000,
+        "max_outstanding": 4,
+        "max_subscriptions": 4,
+        "client_queue_bytes": 4 * 1024 * 1024,
+        "query_queue_bytes": 1024 * 1024,
+        "control_queue_bytes": 2 * 1024 * 1024,
+        "max_reply_bytes": 448 * 1024,
+        "max_block_bytes": 1024 * 1024,
+        "max_rows": 1024,
+        "max_block_buckets": 4096,
+        "max_page_blocks": 64,
+        "min_interval_ms": 1000,
+        "tick_ms": 1000,
+    }
+    if level in ("observer", "control"):
+        for key in BLOCK_LIMIT_KEYS:
+            limits[key] = 0
+    if level == "observer":
+        limits.update(max_request_bytes=16 * 1024, control_queue_bytes=320 * 1024, max_reply_bytes=16 * 1024)
+    elif level == "control":
+        limits.update(max_request_bytes=1024 * 1024, request_deadline_ms=25000)
+    assert tuple(limits) == LIMIT_KEYS
     result = {
         "proto": {"major": 1, "minor": minor}, "level": level, "server": "hostobsd-test", "boot_id": BOOT,
         "epoch": 1, "features": ["peak_reset"], "verbs": ["hello", "status"],
