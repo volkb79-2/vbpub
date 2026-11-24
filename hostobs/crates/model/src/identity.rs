@@ -738,14 +738,13 @@ impl IncarnationRegistry {
             // The long-churn capacity assertion requires a tombstone-free index whose
             // capacity is fixed at the configured bound; this costs O(max_active).
             let mut compact = HashMap::new();
-            if compact.try_reserve(self.max_active).is_err()
-                && compact.try_reserve(self.entries.len()).is_err()
+            if compact.try_reserve(self.max_active).is_ok()
+                || compact.try_reserve(self.entries.len()).is_ok()
             {
-                self.by_key = compact;
-            } else {
                 compact.extend(self.entries.values().map(|entry| (entry.key, entry.id)));
                 self.by_key = compact;
             }
+            // Otherwise keep the current index: it is still exact, only not compacted.
         }
         self.retired = self.retired.saturating_add(retired.len() as u64);
         retired.into_iter().map(|(id, _)| id).collect()
@@ -1176,12 +1175,21 @@ mod tests {
     fn a_huge_registry_bound_does_not_panic_when_retiring() {
         let mut registry = IncarnationRegistry::with_max(usize::MAX);
         registry.begin_round();
-        let id = registry.observe(key(1), None).expect("mint");
+        let retired = registry.observe(key(1), None).expect("mint retired key");
+        let live = registry.observe(key(2), None).expect("mint live key");
         registry.end_round();
         registry.begin_round();
+        assert_eq!(registry.observe(key(2), None), Ok(live));
         registry.end_round();
         registry.begin_round();
-        assert_eq!(registry.end_round(), vec![id]);
+        assert_eq!(registry.observe(key(2), None), Ok(live));
+        assert_eq!(registry.end_round(), vec![retired]);
+        registry.begin_round();
+        assert_eq!(
+            registry.observe(key(2), None),
+            Ok(live),
+            "the surviving key keeps its id when compaction cannot reserve"
+        );
     }
 
     #[test]
