@@ -13,7 +13,7 @@ root-owned helper that hands a read-only fd replaces it); kill switches exercise
 timers stopped). Until then host-tuning's and the installer's `services.iogovmon.install` stays `false`; it flips to `true` in the change that records this
 acceptance. IOWeight in `iogovmon.slice` is advisory (effective only with io.cost or bfq): the real control is the PSI gating of the mini write bench
 (starts only below the limits, aborts when they rise) plus the byte budgets.
-**Evidence 2026-11-24:** r1002 has a recommend-only journal of more than 5 days (2026-11-19T04:08Z..11-24T05:40Z, 1,320 ticks, 107 valid benches) after
+**Evidence 2026-11-24:** r1002 has a recommend-only journal of more than 5 days (2026-11-19T04:08Z..11-24T05:40Z, 1,320 ticks, 107 bench runs with `r_seq` valid in 70, see IGM-17) after
 acceptance-2. It is kept as the "48 h of ticks" candidate. The byte/PSI budgets are still to be verified from it. The timers were stopped and disabled
 2026-11-24T05:40Z. See `docs/evidence/ACCEPT2-STAGE-2026-11-19.md`.
 
@@ -188,6 +188,8 @@ environment variables, and `iogovmon.slice` keep their existing names.
 
 **Priority.** Minor; it makes the r_seq series sparse on thin disks and holds back the weekly escalation (it follows an `ok` run only).
 
+**Update 2026-11-24.** On r1002 after acceptance-2 (2026-11-19T04:08Z..11-24), `r_seq` was lost to `no_nonzero_offset_found` in 36 of 107 bench runs (34 %); it was valid in 70 and invalid without a recorded reason in 1.
+
 ## IGM-18 - the bench's own write load aborts the bench, so a thin disk never reaches the read lane and the lane windows never fill
 
 **Status:** OPEN. Filed 2026-11-16 from the r1002 0.1.0 acceptance (+12 h check).
@@ -309,22 +311,25 @@ the bench's own cgroup, or the protected cgroups' pressure only.
 **Status:** OPEN. Filed 2026-11-24 from the r1002 acceptance-2 fill stage (`docs/evidence/ACCEPT2-STAGE-2026-11-19.md`).
 
 **Problem.** `r_cold` reads random blocks of the device and keeps only non-zero blocks. On a thin disk the non-zero fraction is whatever data
-exists. On r1002 it was 7-10 % at baseline. With the defaults (`read_samples_per_tick=12`, `read_max_attempts=36`, 300 s ticks), a 1 h window
-gets 22-43 non-zero reads against `min_samples["r_cold"]=30`, so windows go `insufficient` on a lightly used disk. Acceptance-2 ran with
-`read_max_attempts=128` (`.cond-v2`) to avoid this. Fill changes the population itself: the yield rose from 10.4 % (A0) to 75 % (B4/B5a) and
-fell back to 10.3 % only after `fstrim`. The lane then measured fresh fill data instead of the original data. A capability change and a
-population change cannot be told apart from the lane's median.
+exists. On r1002 it was 7-10 % at baseline. With the per-tick defaults (`read_samples_per_tick=12`, `read_max_attempts=36`, 300 s ticks) and
+the condensed `window_hours=1`, a 1 h window gets 22-43 non-zero reads against `min_samples["r_cold"]=30`, so windows go `insufficient` on a
+lightly used disk. (The default `window_hours` is 24: a 24 h window gets 518-1037 reads at a 5-10 % yield and goes `insufficient` only below
+about 0.3 %.) Acceptance-2 ran with `read_max_attempts=128` (`.cond-v2`) to avoid this. Fill changes the population itself: the yield rose
+from 10.4 % (A0) to 75 % (B4/B5a) and fell back to 10.3 % only after `fstrim`. The lane then measured fresh fill data instead of the
+original data. A capability change and a population change cannot be told apart from the lane's median. That confound applies at any window
+length. IGM-17 (`r_seq` finds no non-zero offset) has the same root cause: probing a thin disk with random offsets.
 
 **Do (the item is the decision).**
 1. Derive `read_max_attempts` from a measured yield: probe once at install or plan time and record it, or make the attempts adaptive up to
    the HARD_MAX of 128. Either way, a 1 h window must reach `min_samples` at a 5 % yield.
 2. Record the yield (non-zero / attempts) per window in the journal and the recognizer state. A window whose yield differs from the baseline
-   windows by more than a stated factor is marked `confounded`, not judged.
+   windows by more than a stated factor is marked `population_shift`, not judged. (Not `confounded`: the recognizer already uses that name for
+   its settings-epoch flag.)
 
 **Where.** `src/iogovmon/rawread.py` (offset sampling), `config.py` (`read_max_attempts`, `min_samples`), `recognizer.py` (window qualification).
 
 **Close when.** A fixture with a 5 % non-zero device fills a 1 h `r_cold` window at the defaults. A fixture whose yield jumps from 10 % to
-70 % yields a `confounded` window instead of a shift or no-shift verdict. Both are documented in the DESIGN-GUIDE.
+70 % yields a `population_shift` window instead of a shift or no-shift verdict. Both are documented in the DESIGN-GUIDE.
 
 ## IGM-20 - the recognizer is blind to tail-only shifts and to median drifts under ~1.4x
 
@@ -332,20 +337,22 @@ population change cannot be told apart from the lane's median.
 
 **Problem.** The recognizer judges each window by its median, through log2 CUSUM with `cusum_k = 0.5` (ignores drift under ~1.4x) and
 `noise_floor_log2 = 0.25`. During the fill stage it raised no event at all, beyond `baseline_established`. That held while `r_seq` fell
-25 % and `w_fresh_qd4` fell 20-30 % at the median, while `w_over_4k` rose 15-20 %, and while reads of the churned fill data on btrfs grew
-an ~80 ms p95/p99 tail over a median that moved only about 2x. Earlier synthetic checks (`synth_shift_check.py`) also showed tail-only x8
-and x1.5 median shifts unseen.
+25 % and `w_fresh_qd4` fell 20-30 % at the median, while `w_over_4k` rose 15-20 %. These shifts stayed under the allowance. Earlier
+synthetic checks (`synth_shift_check.py`) also showed tail-only x8 and x1.5 median shifts unseen.
 
 **Do (choose one disposition).**
 1. Add one tail statistic per latency lane (window p95 or p99, with its own baseline and CUSUM), judged separately from the median, with its
    own `min_samples`.
-2. Document the limit: the recognizer detects median capability changes of about 1.4x or more only. Tail regressions are out of scope, and
-   README, DESIGN-GUIDE and the `recommendations` text say so.
+2. Document the limit: the recognizer detects median capability changes of about 1.4x asymptotically (with `k_eff=0.5`, `h=2` and
+   `confirm_windows=3`, a 1.5x shift takes ~24 windows to build S and alarms at about window 26, while a 2x shift alarms at about window 6).
+   Tail regressions are out of scope, and README, DESIGN-GUIDE and the `recommendations` text say so.
+3. Idea, not a decision: the acceptance-2 run saw an ~80 ms p95/p99 tail on btrfs file reads (refprobe `read-fill`, after the B3 churn) that no
+   iogovmon lane observes, because `r_cold` reads the raw device. A btrfs file-level cold-read lane would be the only way iogovmon could see it.
 
 **Where.** `src/iogovmon/recognizer.py`, `config.py` (`cusum_*`, `noise_floor_log2`), `docs/DESIGN-GUIDE.md`.
 
 **Close when.** Option 1: a fixture with a tail-only x8 shift raises `shift_detected` on the tail statistic, and a quiet fixture raises
-none. Option 2: the limit is stated in all three places, and `synth_shift_check.py` (imported by P-hostobs-21) asserts it.
+none. Option 2: the limit is stated in all three places, and `synth_shift_check.py` (carried by the acceptance tooling import, `iogovmon/tools/accept/`) asserts it.
 
 ## IGM-21 - the HARD_MIN/HARD_MAX clamps are code constants, not a documented limits profile
 
@@ -355,7 +362,7 @@ none. Option 2: the limit is stated in all three places, and `synth_shift_check.
 write 2 GiB/day, bench pressure some 5 / tick pressure some 25, `read_max_attempts` ≤128. The clamps are right as safety rails. But they
 are code constants, and nothing documents them as a profile. Acceptance-2 had to run on a config that already sat at several maxima
 (`read_max_attempts=128`, 256 MiB/day). Changing a clamp for a condensed acceptance would mean editing code, and the only record of a
-clamp is `Config.clamped` at load time.
+clamp is `Config.clamped` at load time (and the clamps are printed by `plan` and `config`).
 
 **Do.** Move the clamps into one documented limits profile, for example a `LIMITS` table in `config.py` rendered into the README by the
 existing docs check. Each limit carries its reason. An explicit operator override (a named file or key, e.g. `[limits.override]` with a
