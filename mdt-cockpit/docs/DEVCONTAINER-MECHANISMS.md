@@ -257,7 +257,7 @@ flowchart TD
     ZR --> UZR["~/.zshrc (yours; stub by default)"]
     UZR --> ZLG["login: /etc/zsh/zlogin, ~/.zlogin"]
   end
-  SH["profile.sh (POSIX sh, runs once per shell)<br/>shell.env, ai.env, aliases.sh, cgroup + KSM banner"]
+  SH["profile.sh (POSIX sh, runs once per shell)<br/>shell.env, shell-start.d/*, aliases.sh, cgroup + KSM banner"]
   PH["path-hook.sh<br/>merges the managed PATH entries"]
   BBR --> SH
   PD --> PH
@@ -270,8 +270,9 @@ flowchart TD
 - **`profile.sh`** (`/usr/local/share/mdt-cockpit/profile.sh`) is POSIX sh and guards itself, so the
   second source in a login-interactive shell does nothing. In order it: sets
   `MDT_CUSTOMIZATION_ROOT`; sets `ZSH=/opt/mdt/oh-my-zsh` when present; sources, with `set -a`,
-  `/usr/local/share/mdt-cockpit/shell.env`, then `~/.config/mdt-cockpit/shell.env`, then
-  `~/.config/mdt-cockpit/ai.env`; in interactive shells sources the image `aliases.sh`, then
+  `/usr/local/share/mdt-cockpit/shell.env`, then `~/.config/mdt-cockpit/shell.env`, then each
+  regular file (including dotfiles) in `~/.config/mdt-cockpit/shell-start.d/` in lexical order;
+  in interactive shells it sources the image `aliases.sh`, then
   `~/.config/mdt-cockpit/aliases.sh`; prints the cgroup banner (`memory.max`, `memory.high`,
   `cpu.weight`, `io.max`) and the KSM status line. It never edits `PATH`.
 - **`bashrc`**: history settings, coloured prompt, `ls`/`grep` colours, bash-completion.
@@ -294,7 +295,8 @@ read it.
 |---|---|---|
 | Variables for every process, including `docker exec` and tasks | `containerEnv` (or `remoteEnv` for VS Code-started processes) in `devcontainer.json` | all shells and non-shell processes |
 | `export` lines | `~/.config/mdt-cockpit/shell.env` | bash and zsh, interactive and login (sourced by `profile.sh` with `set -a`) |
-| Secrets such as API keys | `~/.config/mdt-cockpit/ai.env` (copy `ai.env.example`) | same |
+| Sourceable shell startup files | `~/.config/mdt-cockpit/shell-start.d/` | same; files are sourced in lexical order and variables are exported |
+| A home-level `.env.ai` file | Register it in `~/.config/mdt-cockpit/shell-start.d/` (copy `/usr/local/share/mdt-cockpit/.env.ai.example` if needed) | same; no filename-specific discovery |
 | Aliases and small functions | `~/.config/mdt-cockpit/aliases.sh` | bash and zsh, interactive only |
 | A `PATH` entry | `containerEnv.PATH` (`${containerEnv:PATH}` appended) | all shells |
 | Your own CLIs | `~/.local/bin` | last on `PATH`; an image tool of the same name wins |

@@ -1,5 +1,10 @@
 # M2: unattended installer ISO, btrfs with snapshots (2026-11-18)
 
+This is a dated evidence report for the GRUB-target Live ISO builds named
+below. It does not describe the later systemd-boot PoC or the planned second
+M2 ISO variant. The current layer and consumer flow is in
+[INSTALLATION-ARCHITECTURE.md](INSTALLATION-ARCHITECTURE.md).
+
 **What this ISO does NOT do** (read this first):
 - **No offline install.** The installer downloads Debian from `deb.debian.org` (debootstrap, `apt`); without network it stops.
 - **No Secure Boot.** The boot loader written to the disk is an unsigned GRUB image (`poc/dr-state install-grub`).

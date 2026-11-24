@@ -26,12 +26,11 @@ if [ -d /opt/mdt/oh-my-zsh ]; then
     export ZSH
 fi
 
-# Image defaults first, then the user's files, so a user file can override or
-# unset any default. ai.env has no image default: it carries the user's keys.
+# Image defaults first, then the user's overrides, so a user file can override
+# or unset any default.
 for bootstrap_file in \
     "$MDT_CUSTOMIZATION_ROOT/shell.env" \
-    "$MDT_USER_CONFIG/shell.env" \
-    "$MDT_USER_CONFIG/ai.env"
+    "$MDT_USER_CONFIG/shell.env"
 do
     if [ -r "$bootstrap_file" ]; then
         set -a
@@ -40,6 +39,32 @@ do
         set +a
     fi
 done
+
+# User-owned startup files are the general extension point for shell setup.
+# Source ordinary and dot files in lexical order; do not infer meaning from a
+# filename. This lets users register a single file or symlink without teaching
+# the image about tool-specific configuration names.
+mdt_source_startup_files() {
+    # zsh's default NOMATCH option rejects an empty directory. Keep the option
+    # change local to this function so the user's shell settings are restored.
+    if [ -n "${ZSH_VERSION:-}" ]; then
+        setopt localoptions nonomatch
+    fi
+    for startup_file in \
+        "$MDT_USER_CONFIG/shell-start.d/"* \
+        "$MDT_USER_CONFIG/shell-start.d/".[!.]* \
+        "$MDT_USER_CONFIG/shell-start.d/"..?*
+    do
+        if [ -f "$startup_file" ] && [ -r "$startup_file" ]; then
+            set -a
+            # shellcheck source=/dev/null
+            . "$startup_file"
+            set +a
+        fi
+    done
+}
+mdt_source_startup_files
+unset -f mdt_source_startup_files
 
 # Cgroup governance banner — shows the EFFECTIVE limits this container is running
 # under (host-controlled, cgroup v2), so you can see at a glance whether you're on

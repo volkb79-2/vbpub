@@ -79,8 +79,8 @@ def test_bundle_deterministic_archive_reads_epoch_from_environment(tmp_path, mon
 
 def test_changelog_git_failure_preserves_diagnostic(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        changelog.subprocess,
-        "run",
+        changelog,
+        "run_process",
         lambda *a, **k: SimpleNamespace(returncode=2, stderr="bad ref\n", stdout=""),
     )
     with pytest.raises(RuntimeError, match=r"git rev-parse HEAD failed \(2\): bad ref"):

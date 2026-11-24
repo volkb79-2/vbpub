@@ -242,13 +242,13 @@ def test_changelog_plan_selects_external_explicit_major_counter_and_initial_vers
 
 def test_changelog_generated_output_change_reports_git_status_failure(monkeypatch, tmp_path):
     project = SimpleNamespace(name="demo", cwd="demo", commit_generated=("VERSION",))
-    monkeypatch.setattr(changelog.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="status failed"))
+    monkeypatch.setattr(changelog, "run_process", lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="status failed"))
     with pytest.raises(RuntimeError, match="git status"):
         changelog._generated_outputs_changed(tmp_path, project)
 
 
 def test_changelog_previous_project_tag_returns_stripped_success(monkeypatch, tmp_path):
-    monkeypatch.setattr(changelog.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout=" demo-v1.2.3 \n", stderr=""))
+    monkeypatch.setattr(changelog, "run_process", lambda *a, **k: SimpleNamespace(returncode=0, stdout=" demo-v1.2.3 \n", stderr=""))
     assert changelog._previous_project_tag(tmp_path, "demo-v", "demo-v1.3.0") == "demo-v1.2.3"
 
 

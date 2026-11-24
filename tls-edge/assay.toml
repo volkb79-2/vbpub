@@ -1,0 +1,54 @@
+# Release qualification for tls-edge's interactive instance configuration CLI.
+# The ordinary Run-Gate `tests` lane is R0-only. This lane adds Assay's
+# whole-target line+branch R1 and import-break R3 using the same complete suite.
+# Whole-target R1 makes an empty diff/base irrelevant and refuses unmeasured
+# targets or hidden exclusions; the measured inventory is every executable
+# module in the shipped tls-edge CLI package.
+schema_version = 2
+
+[lanes.release-gate]
+scope = "S1"
+rigor = ["R0", "R1", "R3"]
+enforcement = "gate"
+argv = [
+  "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
+  "--cov=src/tls_edge_cli", "--cov-branch", "--cov-report=json:coverage.json",
+  "-rs",
+]
+env = { PYTHONDONTWRITEBYTECODE = "1", TLS_EDGE_REQUIRE_TOOLS = "1" }
+env_passthrough = ["PATH"]
+budget = "20m"
+allow_argv_append = false
+
+[lanes.release-gate.isolation]
+# vbpub tracks three security fixtures whose absolute symlinks cannot be
+# materialised in an Assay snapshot; keep the estate-approved omission list
+# byte-for-byte aligned with the other vbpub Assay consumers.
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.release-gate.judge]
+language = "python"
+source_roots = ["src/tls_edge_cli"]
+mode = "whole_target"
+targets = [
+  "src/tls_edge_cli/cli.py",
+  "src/tls_edge_cli/config.py",
+]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+
+[lanes.release-gate.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.release-gate.judge.canary]
+# The canary must make this lane's own test command reject broken imports.
+mechanism = "import-break"
+target = "src/tls_edge_cli/config.py"
+budget_per_attempt = "10m"

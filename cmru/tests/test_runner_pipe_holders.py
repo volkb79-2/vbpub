@@ -494,31 +494,44 @@ def test_command_that_cannot_start_raises_without_reaping_or_closing_anything(tm
     assert log.read_text(encoding="utf-8") == ""
 
 
-def test_pipe_holder_scan_skips_processes_it_cannot_inspect(tmp_path, monkeypatch):
-    """A pid whose descriptors cannot be listed is skipped; the other holder is still named."""
-    read_end, write_end = os.pipe()
-    holder = subprocess.Popen(["sleep", "600"], pass_fds=[write_end])
-    unreadable = subprocess.Popen(["sleep", "600"], pass_fds=[write_end])
-    try:
-        inode = os.fstat(read_end).st_ino
-        # Our own pid also holds both ends and is never reported.
-        assert runner._pipe_holder_pids(inode) == sorted([holder.pid, unreadable.pid])
+def test_pipe_holder_scan_skips_processes_it_cannot_inspect(monkeypatch):
+    """Synthetic /proc observations expose the visible holder without starting processes."""
+    current_pid = 100
+    holder_pid = 41
+    unreadable_pid = 57
+    inode = 73
+    wanted = f"pipe:[{inode}]"
+    probes: list[str] = []
+    fd_entries = {holder_pid: ["0", "4"], current_pid: ["0", "1"]}
+    fd_targets = {
+        (holder_pid, "0"): "/dev/null",
+        (holder_pid, "4"): wanted,
+        (current_pid, "0"): wanted,
+        (current_pid, "1"): wanted,
+    }
 
-        real_listdir = os.listdir
+    def listdir(path):
+        probes.append(path)
+        if path == "/proc":
+            return ["self", "uptime", str(holder_pid), str(unreadable_pid), str(current_pid)]
+        if path == f"/proc/{unreadable_pid}/fd":
+            raise PermissionError("injected: not ours to inspect")
+        for pid, descriptors in fd_entries.items():
+            if path == f"/proc/{pid}/fd":
+                return descriptors
+        raise AssertionError(f"unexpected directory probe: {path}")
 
-        def listdir(path):
-            if str(path) == f"/proc/{unreadable.pid}/fd":
-                raise PermissionError("injected: not ours to inspect")
-            return real_listdir(path)
+    def readlink(path):
+        prefix, descriptor = path.rsplit("/", 1)
+        pid = int(prefix.removeprefix("/proc/").removesuffix("/fd"))
+        return fd_targets[(pid, descriptor)]
 
-        monkeypatch.setattr(runner.os, "listdir", listdir)
-        assert runner._pipe_holder_pids(inode) == [holder.pid]
-    finally:
-        os.close(read_end)
-        os.close(write_end)
-        for process in (holder, unreadable):
-            process.kill()
-            process.wait()
+    monkeypatch.setattr(runner.os, "getpid", lambda: current_pid)
+    monkeypatch.setattr(runner.os, "listdir", listdir)
+    monkeypatch.setattr(runner.os, "readlink", readlink)
+
+    assert runner._pipe_holder_pids(inode) == [holder_pid]
+    assert probes == ["/proc", f"/proc/{holder_pid}/fd", f"/proc/{unreadable_pid}/fd"]
 
 
 def test_reap_of_an_already_finished_group_finds_nothing_to_signal(tmp_path, monkeypatch):

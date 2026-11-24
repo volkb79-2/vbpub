@@ -234,9 +234,6 @@ fn verb_gate(query: &Query<'_>, corr: u32, name: &[u8]) -> Result<&'static Verb,
     if !binary && verb.shape == Shape::Block {
         return Err(refuse(Code::BinaryRequired, corr));
     }
-    if !verb.served {
-        return Err(refuse(Code::UnknownVerb, corr));
-    }
     Ok(verb)
 }
 
@@ -296,8 +293,8 @@ fn call_of(
     }
 }
 
-/// Steps 10 and 11 after the verb table has accepted a served verb. Block requests are
-/// refused by the outstanding cap; JSON-shape requests remain answerable (design S5, Q6).
+/// Step 10 after the served check. Block requests are refused by the outstanding cap;
+/// JSON-shape requests remain answerable (design S5, Q6).
 fn call_after_served(
     query: &Query<'_>,
     corr: u32,
@@ -349,6 +346,9 @@ pub fn classify_with(query: &Query<'_>, facts: &ConnFacts) -> Result<Dispatch, R
     };
     let name = query.payload.get(req.verb.clone()).unwrap_or_default();
     let verb = verb_gate(query, corr, name)?;
+    if !verb.served {
+        return Err(refuse(Code::UnknownVerb, corr));
+    }
     let text = query.payload.get(req.args.clone()).unwrap_or_default();
     let call = call_after_served(query, corr, verb, text, facts)?;
     Ok(Dispatch { corr, call })
@@ -842,31 +842,60 @@ mod tests {
     }
 
     #[test]
-    fn step_8_beats_step_9_and_step_10() {
+    fn step_8_beats_step_10_for_a_block_verb() {
         let text = line("current", "{\"a\":1,\"a\":2}", 3);
         assert_plain(&json(text.as_bytes()), Code::BinaryRequired, 3);
         let text = req("current", "{}");
-        assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
+        let refusal = refused(&binary(text.as_bytes()));
+        assert_eq!(
+            (refusal.code, refusal.corr, refusal.detail),
+            (Code::BadRequest, 5, key("selection"))
+        );
     }
 
     // ---- step 9: known but not served
 
     #[test]
     fn step_9_a_known_verb_that_is_not_served_is_unknown_verb() {
-        for verb in ["events", "spans", "procs", "unsubscribe", "current"] {
+        for verb in ["events", "spans", "procs", "snapshot_at"] {
             let text = req(verb, "{}");
             assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         }
-        for verb in ["events", "spans", "procs", "unsubscribe"] {
+        for verb in ["events", "spans", "procs"] {
             let text = line(verb, "{}", 5);
             assert_refusal(&json(text.as_bytes()), Code::UnknownVerb, 5, &Detail::Empty);
         }
     }
 
     #[test]
+    fn step_9_unsubscribe_and_current_are_served() {
+        let text = req("current", CURRENT_ARGS);
+        assert!(matches!(
+            dispatched(&binary(text.as_bytes())).call,
+            Call::Current(_)
+        ));
+        let text = req("unsubscribe", "{\"sub\":2}");
+        assert_eq!(
+            dispatched(&binary(text.as_bytes())).call,
+            Call::Unsubscribe(2)
+        );
+        let text = line("unsubscribe", "{\"sub\":2}", 4);
+        assert_eq!(
+            dispatched(&json(text.as_bytes())).call,
+            Call::Unsubscribe(2)
+        );
+    }
+
+    #[test]
     fn step_9_beats_step_10() {
         let text = req("events", "{\"a\":1,\"a\":2}");
         assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
+        for verb in ["snapshot_at", "series_batch"] {
+            let text = req(verb, "{}");
+            let query = binary(text.as_bytes());
+            let refusal = classify_with(&query, &full_facts()).expect_err("served check wins");
+            assert_eq!((refusal.code, refusal.corr), (Code::UnknownVerb, 5));
+        }
     }
 
     // ---- step 10: the argument schemas

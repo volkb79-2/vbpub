@@ -98,11 +98,13 @@ image_tag = "11.10.1"
 port = 8065
 
 [mattermost.calls]
-# Built-in Calls is the only bundled plugin enabled for this instance. Its
-# media listeners remain inside Mattermost; tls-edge publishes them over
-# TCP and UDP on the configured public port.
+# Built-in Calls is the only bundled plugin enabled for this instance. When
+# both this feature and public exposure are enabled, Mattermost publishes its
+# media listeners directly on the host as TCP and UDP on public_port.
 enabled = true
+# In-container media listener port.
 port = 8443
+# Host media port. TCP and UDP share the number; they are separate sockets.
 public_port = 8443
 allow_screen_sharing = true
 

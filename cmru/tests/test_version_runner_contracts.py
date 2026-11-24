@@ -16,9 +16,9 @@ def test_version_bumps_and_counter_ignore_malformed_counter_tags(tmp_path, monke
     assert version.bump_version("1.2.3", "minor") == "1.3.0"
     with pytest.raises(ValueError, match="Unknown version bump"):
         version.bump_version("1.2.3", "wat")
-    monkeypatch.setattr(version.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="demo-1.0.0-r2\ndemo-1.0.0-bad\n"))
+    monkeypatch.setattr(version, "run_process", lambda *a, **k: SimpleNamespace(stdout="demo-1.0.0-r2\ndemo-1.0.0-bad\n"))
     assert version._next_counter_version(tmp_path, "demo-", "1.0.0") == "1.0.0-r3"
-    monkeypatch.setattr(version.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=""))
+    monkeypatch.setattr(version, "run_process", lambda *a, **k: SimpleNamespace(stdout=""))
     assert version._next_counter_version(tmp_path, "demo-", "1.0.0") == "1.0.0-r1"
 
 

@@ -33,7 +33,7 @@ entryPoints:
     http:
       redirections:
         entryPoint:
-          to: websecure
+          to: ":443"
           scheme: https
           permanent: true
 
@@ -42,6 +42,7 @@ entryPoints:
   # need tls=true or certresolver labels.
   websecure:
     address: ":443"
+
     http:
 
       middlewares:
@@ -49,13 +50,6 @@ entryPoints:
 
       tls:
         certResolver: letsencrypt
-
-  # Mattermost Calls media: UDP is preferred, TCP is the fallback.  Consumers
-  # attach tcp/udp routers to these entrypoints (consumer-examples/pattern-e).
-  mattermost-calls-tcp:
-    address: ":8443"
-  mattermost-calls-udp:
-    address: ":8443/udp"
 
 # ─── ACME (Let's Encrypt) ─────────────────────────────────────────────────────
 # Certificates are issued automatically for every Host() a consumer router
@@ -65,7 +59,7 @@ certificatesResolvers:
   letsencrypt:
     acme:
 
-      storage: /etc/traefik/acme/acme.json
+      storage: /var/lib/traefik/acme.json
       caServer: "https://acme-v02.api.letsencrypt.org/directory"
 
       # TLS-ALPN-01: the whole challenge happens on :443 — no port 80 needed.

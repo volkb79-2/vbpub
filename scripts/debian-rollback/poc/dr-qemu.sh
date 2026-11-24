@@ -14,7 +14,7 @@
 #
 #   dr-qemu.sh start --name N --state-dir DIR --image IMG --network NET --cgroup-parent SLICE
 #       --memory-mib M --cpus C --ovmf-code F --ovmf-vars F
-#       (--base-raw FILE | --base-qcow2 FILE)  [--seed-iso FILE] [--data-disk-size BYTES]...
+#       (--base-raw FILE | --base-qcow2 FILE)  [--iso FILE] [--boot-order c|dc] [--data-disk-size BYTES]...
 #       [--forward HOSTPORT:GUESTPORT]... [--cpu-shares 64] [--resume] [--dry-run]
 #   dr-qemu.sh stop --name N
 #
@@ -27,7 +27,7 @@ die() { echo "dr-qemu: $*" >&2; exit 1; }
 
 cmd=${1:-}; [ $# -gt 0 ] && shift
 NAME="" STATE="" IMAGE="" NETWORK="" SLICE="" MEM="" CPUS="" OCODE="" OVARS=""
-BASE_RAW="" BASE_QCOW2="" SEED="" CONFIG_DISK="" SHARES=64 RESUME=0 DRY=0
+BASE_RAW="" BASE_QCOW2="" CDROM_ISO="" CONFIG_DISK="" BOOT_ORDER=c SHARES=64 RESUME=0 DRY=0
 declare -a SIZES=() FORWARDS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,7 +42,8 @@ while [ $# -gt 0 ]; do
     --ovmf-vars) OVARS=${2:?}; shift 2 ;;
     --base-raw) BASE_RAW=${2:?}; shift 2 ;;
     --base-qcow2) BASE_QCOW2=${2:?}; shift 2 ;;
-    --seed-iso) SEED=${2:?}; shift 2 ;;
+    --iso|--seed-iso) [ -z "$CDROM_ISO" ] || die "specify only one of --iso and --seed-iso"; CDROM_ISO=${2:?}; shift 2 ;;
+    --boot-order) BOOT_ORDER=${2:?}; shift 2 ;;
     --config-disk) CONFIG_DISK=${2:?}; shift 2 ;;   # raw image shown to the guest as a READ-ONLY virtio disk (the CIDATA stick)
     --data-disk-size) SIZES+=("${2:?}"); shift 2 ;;
     --forward) FORWARDS+=("${2:?}"); shift 2 ;;
@@ -68,7 +69,7 @@ done
 [[ "$MEM" =~ ^[0-9]+$ ]] && [ "$MEM" -ge 512 ] && [ "$MEM" -le 8192 ] || die "--memory-mib must be 512..8192"
 [[ "$CPUS" =~ ^[1-4]$ ]] || die "--cpus must be 1..4"
 case "$NETWORK" in host|none|bridge|container:*|"") die "--network must name a dedicated user-defined network, not '$NETWORK'" ;; esac
-for p in "$STATE" "$OCODE" "$OVARS" "$BASE_RAW" "$BASE_QCOW2" "$SEED" "$CONFIG_DISK"; do
+for p in "$STATE" "$OCODE" "$OVARS" "$BASE_RAW" "$BASE_QCOW2" "$CDROM_ISO" "$CONFIG_DISK"; do
   case "$p" in *,*|*\ *|*=*) die "path with comma, space or '=' refused (would inject --mount options): $p" ;; esac
 done
 for s in "${SIZES[@]:-}"; do
@@ -76,6 +77,8 @@ for s in "${SIZES[@]:-}"; do
 done
 [ -n "$BASE_RAW$BASE_QCOW2" ] || die "need --base-raw or --base-qcow2"
 [ -z "$BASE_RAW" ] || [ -z "$BASE_QCOW2" ] || die "--base-raw and --base-qcow2 are exclusive"
+[ "$BOOT_ORDER" = c ] || [ "$BOOT_ORDER" = dc ] || die "--boot-order must be c or dc (CD-ROM then disk)"
+[ "$BOOT_ORDER" != dc ] || [ -n "$CDROM_ISO" ] || die "--boot-order dc requires --iso (or --seed-iso)"
 [ "${#FORWARDS[@]}" -ge 1 ] || FORWARDS=(2222:22)
 
 MEM_BYTES=$(( (MEM + 512) * 1024 * 1024 ))
@@ -99,6 +102,7 @@ declare -a argv=(
   --mount "type=bind,src=$OVARS,dst=/ovmf/OVMF_VARS_4M.fd,readonly"
   --env "VM_NAME=$NAME"
   --env "VM_MODE=$([ "$RESUME" = 1 ] && echo resume || echo create)"
+  --env "VM_BOOT_ORDER=$BOOT_ORDER"
   --env "VM_MEMORY_MIB=$MEM" --env "VM_CPUS=$CPUS"
   --env "VM_EXTRA_DISK_SIZES_BYTES=$(IFS=,; echo "${SIZES[*]:-}")"
 )
@@ -107,8 +111,8 @@ if [ -n "$BASE_RAW" ]; then
 else
   argv+=(--mount "type=bind,src=$BASE_QCOW2,dst=/base/disk.qcow2,readonly" --env VM_DISK_FORMAT=qcow2)
 fi
-if [ -n "$SEED" ]; then
-  argv+=(--mount "type=bind,src=$SEED,dst=/media/seed.iso,readonly" --env VM_READONLY_MEDIA=/media/seed.iso)
+if [ -n "$CDROM_ISO" ]; then
+  argv+=(--mount "type=bind,src=$CDROM_ISO,dst=/media/boot.iso,readonly" --env VM_CDROM_ISO=/media/boot.iso)
 fi
 if [ -n "$CONFIG_DISK" ]; then
   argv+=(--mount "type=bind,src=$CONFIG_DISK,dst=/media/config.img,readonly" --env VM_CONFIG_DISK=/media/config.img)
@@ -133,6 +137,7 @@ if [ "$VM_MODE" = "create" ]; then
   if [ "$VM_DISK_FORMAT" = "raw" ]; then
     test ! -e /state/disk.raw
     cp --sparse=always /base/disk.raw /state/disk.raw
+    chmod u+w /state/disk.raw  # the immutable base may itself be read-only
   else
     test ! -e /state/disk-overlay.qcow2
     qemu-img create -q -f qcow2 -F qcow2 -b /base/disk.qcow2 /state/disk-overlay.qcow2
@@ -155,7 +160,7 @@ for size in ${VM_EXTRA_DISK_SIZES_BYTES:-}; do
     -device "virtio-blk-pci,drive=data${index},serial=drdata$(printf '%03d' "$index"),addr=$(printf '0x%x' "$((7 + index))")"
 done
 IFS=$old_ifs
-if [ -n "${VM_READONLY_MEDIA:-}" ]; then set -- "$@" -cdrom "$VM_READONLY_MEDIA"; fi
+if [ -n "${VM_CDROM_ISO:-}" ]; then set -- "$@" -cdrom "$VM_CDROM_ISO"; fi
 if [ -n "${VM_CONFIG_DISK:-}" ]; then
   set -- "$@" -drive "file=$VM_CONFIG_DISK,if=none,id=cfgdisk,format=raw,readonly=on" \
     -device "virtio-blk-pci,drive=cfgdisk,serial=drcfg001,addr=0x6"
@@ -168,7 +173,7 @@ exec qemu-system-x86_64 \
   -drive if=pflash,format=raw,file=/state/OVMF_VARS_4M.fd \
   -drive "$disk_args" \
   -netdev "user,id=net0,$VM_HOSTFWD" -device virtio-net-pci,netdev=net0 \
-  -boot order=c,menu=on -monitor none -display none \
+  -boot "order=$VM_BOOT_ORDER,menu=on" -monitor none -display none \
   "$@" \
   -chardev socket,id=serial0,path=/state/serial.sock,server=on,wait=off,logfile=/state/serial.log,logappend=on -serial chardev:serial0 \
   -qmp unix:/state/qmp.sock,server=on,wait=off

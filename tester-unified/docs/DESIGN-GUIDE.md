@@ -91,7 +91,8 @@ Dockerfile oracle that forbids a later layer rewriting that wheel still holds): 
 login-hook tests exercise it), Node.js with npm and npx copied from a digest-pinned official node image
 stage (it is only a `FROM <image>@sha256:` stage, which the oracle asserts), Go from the toolchain image
 selected by `wings-patchstack/stack.conf`, and the **real `systemctl` client** from Debian's `systemd`
-package, plus `augtool` and `augparse` from Debian's `augeas-tools` package.
+package, `augtool` and `augparse` from Debian's `augeas-tools` package, and `xorriso` from Debian's
+`xorriso` package.
 
 Go is copied into this image because Wings is a Go project and its gate must
 run inside tester-unified under the same Run-Gate cgroup placement, identity,
@@ -108,6 +109,11 @@ that both executables are present and owned by `augeas-tools` during the apt
 layer. The package adds about 1 MB plus its `libxml2` dependency; keeping the
 layer before the project and dependency `COPY` instructions preserves their
 existing source-input boundary.
+
+The image installs Debian trixie's `xorriso` package for debian-rollback's
+registered offline lane. That lane creates both NoCloud seed ISO variants and
+extracts the `/bootloader` marker from each; the Dockerfile asserts that the
+binary is present and owned by the `xorriso` package.
 
 Why `systemctl`: the cgprofile placement probe (`cgprofile/tools/gate.sh`,
 `lib/access.py` `_PLACEMENT_PROBE`, "placement verifier image must provide systemctl") starts a probe

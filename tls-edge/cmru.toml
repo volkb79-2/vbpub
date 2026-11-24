@@ -4,12 +4,12 @@ schema_version = 1
 kind = "none"
 
 [env]
-TLS_EDGE_RELEASE_NOTES = "## tls-edge offline installer\n\nEdge proxy and TLS termination (Traefik v3) as a self-contained instance, one bundle per interpreter: `tls-edge-v<ver>-py313.tar.xz` and `-py314`. Install with `get.py install --variant py313` (see docs/INSTALL.md).\n\n**Breaking**: the alternate HTTPS port (9443) is removed; ciu container names are `tls-edge-<id>-traefik` / `-dockerproxy`. Read docs/INSTALL.md section 8 before updating a live edge.\n\n**Verify** (releases are unsigned: SHA-256 and the in-bundle manifest only)\n```bash\nsha256sum -c tls-edge-v*-py313.tar.xz.sha256\n```"
+TLS_EDGE_RELEASE_NOTES = "## tls-edge offline installer\n\nEdge proxy and TLS termination (Traefik v3) as a self-contained instance, one bundle per interpreter: `tls-edge-v<ver>-py313.tar.xz` and `-py314`. Install with `get.py install --variant py313`, then configure the instance with the bundled `tls-edge` command (see docs/INSTALL.md).\n\nHTTP/3 over QUIC is an optional shared endpoint feature and publishes UDP on the public HTTPS port when enabled. The generic defaults keep it off and keep the Mattermost Calls TCP+UDP preset off; enable only the listeners required by the host. HTTP/1.1 and HTTP/2 remain available over TCP.\n\n**Breaking**: the alternate HTTPS port (9443) is removed; ciu container names are `tls-edge-<id>-traefik` / `-dockerproxy`; Calls media is no longer published by default. Read docs/INSTALL.md section 8 before updating a live edge.\n\n**Verify** (releases are unsigned: SHA-256 and the in-bundle manifest only)\n```bash\nsha256sum -c tls-edge-v*-py313.tar.xz.sha256\n```"
 
 [project]
 id = "tls-edge"
 description = "Edge proxy and TLS termination stack."
-template_revision = 4
+template_revision = 5
 prefix = "tls-edge-v"
 artifacts = ["tarball"]
 
@@ -31,7 +31,7 @@ required_commands = ["python3", "docker", "git"]
 manifest_name = "manifest.json"
 signature_name = "manifest.json.minisig"
 # The bundled ciu (wheel + dependency wheels) runs the stack from <root>/stack/.
-launchers = ["ciu"]
+launchers = ["ciu", "tls-edge"]
 stable_dir = "stack"
 stub_launchers = ["ciu"]
 
@@ -67,41 +67,34 @@ distribution = "PyYAML"
 path = "wheels/tomli_w-*.whl"
 distribution = "tomli_w"
 
-[[project.installer.questions]]
-id = "domain"
-prompt = "Public domain served through the edge (TLS_EDGE_DOMAIN, e.g. example.test)"
-type = "string"
+[[project.installer.wheels]]
+path = "wheels/tls_edge_cli-*.whl"
+distribution = "tls-edge-cli"
 
-[[project.installer.questions]]
-id = "acme_email"
-prompt = "ACME account email (Let's Encrypt notices; empty = none)"
-type = "string"
-required = false
+[[project.installer.wheels]]
+path = "wheels/cli_extended-*.whl"
+distribution = "cli-extended"
 
-[[project.installer.questions]]
-id = "tls_mode"
-prompt = "Certificate mode"
-type = "choice"
-choices = ["acme-tls", "acme-http", "acme-dns", "static", "dev"]
-default = "acme-tls"
+[[project.installer.wheels]]
+path = "wheels/tomlkit-*.whl"
+distribution = "tomlkit"
 
-[[project.installer.questions]]
-id = "dns_provider"
-prompt = "DNS provider (lego name, only for acme-dns; empty = cloudflare)"
-type = "string"
-required = false
+[[project.installer.wheels]]
+path = "wheels/questionary-*.whl"
+distribution = "questionary"
 
-[[project.installer.questions]]
-id = "calls"
-prompt = "Publish the Mattermost Calls pair on 8443 (tcp and udp)?"
-type = "bool"
-default = true
+[[project.installer.wheels]]
+path = "wheels/prompt_toolkit-*.whl"
+distribution = "prompt-toolkit"
+
+[[project.installer.wheels]]
+path = "wheels/wcwidth-*.whl"
+distribution = "wcwidth"
 
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "tls-edge: standalone render validation", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "scripts/render_standalone.py", "--check", "--defaults-only"], cwd = "." },
-  { label = "tls-edge: Calls defaults agreement", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"], cwd = "." },
+  { label = "tls-edge: R0/R1/R3 release gate", argv = ["run-gate", "release-gate"], cwd = "." },
 ]
 
 [steps.build]

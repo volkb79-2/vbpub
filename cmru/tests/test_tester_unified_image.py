@@ -145,7 +145,7 @@ CMRU_WHEEL_INSTALL_RUN_BODY = (
     + " && rm -rf /tmp/internal-build-venv /tmp/internal-wheels "
     "/tmp/internal-build-requirements.txt /tmp/cli-extended-release"
     + ' && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, '
-    "xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, "
+    "xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, tomlkit, textual, zstandard, mcp, "
     "paramiko, coverage, structlog, markdown_it, linkify_it; "
     "print('tester-unified closure OK')\""
     + ' && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, '
@@ -259,6 +259,14 @@ TESTER_AUGEAS_TOOLS_RUN = (
     '&& test "$(dpkg -S /usr/bin/augparse | cut -d: -f1)" = augeas-tools '
     "&& rm -rf /var/lib/apt/lists/*"
 )
+# TU-XORR (debian-rollback's offline lane packs NoCloud seed ISOs): an apt layer like TU-AUG's.
+TESTER_XORRISO_RUN = (
+    "apt-get update && apt-get install -y --no-install-recommends xorriso "
+    "&& test -x /usr/bin/xorriso "
+    '&& test "$(dpkg -S /usr/bin/xorriso | cut -d: -f1)" = xorriso '
+    "&& /usr/bin/xorriso -version "
+    "&& rm -rf /var/lib/apt/lists/*"
+)
 TESTER_NODE_LINKS_RUN = (
     "ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm "
     "&& ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx "
@@ -270,6 +278,7 @@ CMRU_PRE_SENSITIVE_RUN_BODIES = (
     TESTER_ZSH_RUN,
     TESTER_SYSTEMCTL_RUN,
     TESTER_AUGEAS_TOOLS_RUN,
+    TESTER_XORRISO_RUN,
     TESTER_NODE_LINKS_RUN,
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
@@ -332,6 +341,8 @@ def _all_projects(root: Path, **overrides: str) -> Path:
                                   '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "pwmcp__client": '[project]\nname = "pwmcp-client"\ndependencies = ["playwright==1"]\n'
                          '[project.optional-dependencies]\ntest = ["pillow>=10"]\n',
+        "tls-edge": '[project]\nname = "tls-edge-cli"\ndependencies = ["Jinja2>=3", "tomlkit>=0.13.3"]\n'
+                    '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "libraries__cli-extended": '[project]\nname = "cli-extended"\ndependencies = []\n'
                                    '[build-system]\nrequires = ["setuptools==1", "wheel==3"]\n',
     }
@@ -450,7 +461,7 @@ def test_generator_deduplicates_and_prints_one_requirement_per_line(tmp_path, ca
 
 def _real_estate_layout(tmp_path):
     """The REAL pyprojects laid out as the Dockerfile COPYs them."""
-    for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
+    for name in ("ciu", "cmru", "assay", "topos", "nyxloom", "tls-edge"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
     (tmp_path / "cgprofile").symlink_to(REPO_ROOT / "cgprofile")
     (tmp_path / "augeaswrap").symlink_to(REPO_ROOT / "augeaswrap")
@@ -4681,6 +4692,21 @@ def test_tester_unified_installs_real_augeas_tools_before_source_copy_layers():
         if line.startswith("COPY tester-unified/gen-requirements.py ")
     )
     assert augeas_index < source_copy_index
+
+
+def test_tester_unified_installs_real_xorriso_before_source_copy_layers():
+    """TU-XORR: debian-rollback's offline lane packs NoCloud seed ISOs with Debian's xorriso."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    instructions = _dockerfile_logical_instructions(dockerfile)
+    xorriso_runs = [line for line in instructions if line.startswith("RUN ") and "xorriso" in line]
+    assert xorriso_runs == [f"RUN {TESTER_XORRISO_RUN}"], xorriso_runs
+
+    xorriso_index = instructions.index(xorriso_runs[0])
+    source_copy_index = next(
+        index for index, line in enumerate(instructions)
+        if line.startswith("COPY tester-unified/gen-requirements.py ")
+    )
+    assert xorriso_index < source_copy_index
 
 
 def test_go_toolchain_is_selected_by_wings_configuration_and_recorded():
