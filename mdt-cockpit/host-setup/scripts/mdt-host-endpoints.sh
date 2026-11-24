@@ -65,7 +65,7 @@ refuse_legacy_host_setup_files() {
 require_augeaswrap() {
   local command_name="${AUGEASWRAP_BIN:-augeaswrap}"
   command -v "$command_name" >/dev/null 2>&1 || {
-    echo "ERROR: host endpoint publication requires augeaswrap 0.1.0; install the augeaswrap wheel and make '$command_name' available on PATH before running host-setup/install.sh" >&2
+    echo "ERROR: host endpoint publication requires augeaswrap 0.1.0; install the augeaswrap wheel and make '$command_name' available on PATH before running host-setup/install.sh (procedure: scripts/netcup/CONSUMERS.md#install-augeaswrap-for-host-setup, installer scripts/netcup/runner/install-augeaswrap.sh)" >&2
     return 2
   }
 }
