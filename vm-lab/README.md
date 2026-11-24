@@ -257,14 +257,14 @@ the remote command's stdin. A started command is never retried. `Guest.reboot`
 is the shorthand for the explicit boot-id sequence above. `Guest.reset` and
 `Guest.send_keys` use QMP; keys are validated as one sequence before any key
 is sent. `serial_write`, `wait_serial`, `serial_mark` and `press_until` cover
-serial input and line-anchored waits. Call `close()` to drop the SSH master.
+serial input and per-line waits. Call `close()` to drop the SSH master.
 
 Serial wait patterns are searched unchanged against each rendered line
 independently. Inline flags such as `(?i)` work, but a pattern cannot span a
 newline. Use `^` and `$` when a match must be a complete line rather than a
 fragment such as a prompt-looking suffix of a kernel banner. `$` also matches
 the unfinished final line, so a prompt is visible before its terminating
-newline; leading and trailing spaces are stripped from rendered output, so
+newline; trailing spaces are stripped from rendered output, so
 anchor on the last visible prompt character.
 
 With `wait_ready(..., fail_on=PATTERN, since=None)`, the call marks the serial

@@ -184,3 +184,21 @@ Offer the QEMU image through a ciu service instead of a local `docker build`, so
 **State:** open · **Severity:** medium · **Owner:** operator · **Links:** vm-lab/src/vm_lab/guest.py
 
 **Problem.** The live behaviour of `ssh -M -N -f` under `subprocess.run` with captured stdout and stderr pipes has not been confirmed. A forked master that inherits pipe descriptors could make every call wait for the full SSH timeout. **Wanted.** Run one leased probe confirming that `_invoke` returns promptly after the master is established, and record the result outside the repository.
+
+## VML-BL-29 — Serial wait APIs treat implicit and malformed marks inconsistently
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/guest.py, vm-lab/tests/test_vm_lab_guest.py
+
+**Problem.** `wait_serial(since=None)` silently reads the whole log because `read_serial` treats `None` as no mark, while `wait_ready(since=<malformed>, fail_on=None)` ignores the bad mark because failure checking is disabled. Equal-looking call shapes therefore have different mark semantics. **Wanted.** Define one fail-closed contract for implicit and malformed marks across both wait APIs, with truncation and malformed-mark tests.
+
+## VML-BL-30 — Non-pattern serial arguments escape as `TypeError`
+
+**State:** open · **Severity:** low · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/guest.py
+
+**Problem.** `_search_serial` raises `TypeError` when `wait_serial` or `press_until` receives a value that is not a compiled pattern, bypassing the module's `GuestError` boundary. **Wanted.** Validate public serial-pattern arguments and normalize invalid inputs to `GuestError`, with behavior tests that do not depend on call shape.
+
+## VML-BL-31 — Readiness can exhaust its budget opening the SSH master
+
+**State:** open · **Severity:** medium · **Owner:** vm-lab · **Links:** vm-lab/src/vm_lab/guest.py
+
+**Problem.** If the guest becomes ready near the wait deadline, `_open_master` gets about 0.1 seconds and raises `GuestTimeout` even though readiness was already proven. **Wanted.** Reserve a minimum master-connect budget or separate the readiness and master-establishment deadlines, with a near-deadline fake-clock test.
