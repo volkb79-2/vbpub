@@ -248,6 +248,8 @@ tls-edge-installer status --scope user
 `tls-edge configure --answers <empty file> --yes` after the update and before `ciu up`; otherwise the
 preflight hook refuses the missing contract keys. Run `configure` after every update, before the next `ciu up`,
 so the override is written in the updated schema.
+A tls-edge 3.x edge with its Calls preset enabled holds 8443 on that host; disable it before running
+Mattermost's `ciu up`, which publishes Calls media directly.
 
 An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
 keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
@@ -301,10 +303,9 @@ roll forward again to reuse it.
 State of the live host today (read only): compose project `edge-proxy` from `/root/tls-edge-LIVE`, containers
 `edge-traefik` and `edge-dockerproxy`, volume `edge-proxy_acme-data` (holds `acme.json`: the ACME account and every
 issued certificate), network `ingress_public` with consumers attached, `traefik_internal`, `cgroup_parent: edge.slice`,
-and edge ports 80 and 443 plus the alternate HTTPS port being removed. Mattermost publishes its Calls media
-pair directly on 8443. HTTP/3 is not currently enabled. The replacement can optionally enable HTTP/3 on UDP
-443; allow that port through both firewalls before doing so. A tls-edge 3.x edge with its Calls preset enabled
-holds 8443 on that host; disable it before `ciu up` so it cannot conflict with Mattermost's direct publication.
+ports 80, 443, and 8443 tcp+udp for Calls plus the alternate HTTPS port being removed. HTTP/3 is not
+currently enabled. The replacement can optionally enable HTTP/3 on UDP 443; allow that port through both
+firewalls before doing so.
 The two edges cannot run together because both need TCP 443, so the cut-over is a stop plus start of about
 15 to 30 seconds.
 
@@ -354,16 +355,21 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 5. **Cut over (downtime starts).** `cd /root/tls-edge-LIVE && docker compose -p edge-proxy down` (never `-v`; compose
    keeps `ingress_public` because consumers are attached and removes the unused `traefik_internal`), then
    `cd /srv/tls-edge-instance/stack && sudo ./ciu up`. Traefik re-reads `acme.json`: no re-issuance.
-6. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
+6. **Start direct media.** From `voice-screen-share/mattermost-server`, run its `ciu up` so Mattermost binds
+   8443 directly. Follow that project's [`CONSUMER.md`](../../voice-screen-share/mattermost-server/CONSUMER.md#calls-cut-over)
+   "Calls cut-over" section. Run this only after the old edge is stopped and the 4.0 edge is up.
+7. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    and a Mattermost media test from outside on its directly published 8443 tcp and udp ports.
-7. **Rollback (any failure in 6).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`). `ciu down`
+8. **Rollback (any failure in 7).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`). `ciu down`
    only stops containers; to remove them as well, use `docker compose -p <project> down` (never `-v`), where
    `<project>` comes from `docker inspect <container_prefix>-traefik --format '{{index .Config.Labels "com.docker.compose.project"}}'`
    (`container_prefix` is in `ciu-stack/ciu.toml`).
+   Before restarting the old edge, stop Mattermost's direct publication (`ciu down` in
+   `voice-screen-share/mattermost-server`); otherwise both stacks bind 8443.
    Then `cd /root/tls-edge-LIVE && docker compose up -d`. Volume and network were never touched and the ports
    are the same; downtime is seconds.
-8. **Later cleanup** (after one soak and a renewal window): archive `/root/tls-edge-LIVE`; remove old compose-project
+9. **Later cleanup** (after one soak and a renewal window): archive `/root/tls-edge-LIVE`; remove old compose-project
    leftovers by exact name. Keep `ingress_external = true` as long as the network predates the instance.
 
 **Impact on consumers.** Networks and labels are unchanged. The container name changes from `edge-traefik` to
