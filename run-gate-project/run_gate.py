@@ -19864,10 +19864,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    first — by name, disclosed — and runs anew. Refused",
         "                    by name on host and exec lanes, which start no",
         "                    container of run-gate's own",
-        "  --json            `history`/`footprint`/`status`/`lanes --check`: emit one JSON",
+        "  --json            `history`/`footprint`/`status`: emit one JSON",
         "                    document (history has latest + bounded history +",
         "                    duration stats; footprint has the manifest shape;",
-        "                    status has its closed verdict/exit code and occupancy).",
+        "                    status has its closed verdict/exit code and occupancy);",
+        "                    `lanes --check` also emits one JSON document.",
         "                    Every other verb REFUSES it by name rather than",
         "                    silently printing its human form. `--list --json`",
         "                    (R-55) emits the lane inventory with each lane's",
@@ -20199,7 +20200,7 @@ def _check_lanes_project(project_dir: Path, project_name: str,
     }
 
 
-def _dispatch_lanes_check(args: argparse.Namespace) -> LaneResult:
+def _dispatch_lanes_check(args: argparse.Namespace) -> bool:
     if args.all_projects:
         projects = _lanes_check_tracked_projects()
     elif args.project is not None:
@@ -20246,9 +20247,7 @@ def _dispatch_lanes_check(args: argparse.Namespace) -> LaneResult:
                       f"{finding['rule']} {finding['detail']}", flush=True)
         print(f"checked {len(checked)} projects, {lane_count} lanes, "
               f"{failures} failures, {warnings} warnings", flush=True)
-    if failures:
-        return LaneResult("FAIL", reason="lanes-check-findings")
-    return operation_result(0, "lanes-check-failed")
+    return bool(failures)
 
 
 def sequence_leaf_names(name: str, lanes: dict) -> list[str]:
@@ -21094,7 +21093,9 @@ def _dispatch(argv: list[str] | None = None, *,
             return operation_result(cmd_validate_pointers(
                 Path(args.target), args.root), "pointer-validation-failed")
         if args.lane == "lanes" and not args.help:
-            return _dispatch_lanes_check(args)
+            if _dispatch_lanes_check(args):
+                return LaneResult("FAIL", reason="lanes-check-findings")
+            return operation_result(0, "lanes-check-failed")
         project_dir = find_project_dir()
         if project_dir is None:
             if args.help or (args.lane is None and not args.list

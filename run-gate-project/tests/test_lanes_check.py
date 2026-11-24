@@ -42,8 +42,7 @@ def _project(repo: Path, name: str, gate_config: str, assay_config: str | object
     project.mkdir()
     (project / "run-gate.toml").write_text(gate_config, encoding="utf-8")
     if assay_config is not _OMIT:
-        (project / "assay.toml").write_text(
-            str(assay_config), encoding="utf-8")
+        (project / "assay.toml").write_text(str(assay_config), encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"fixture {name}")
     return project
@@ -216,9 +215,8 @@ argv = ["true"]
     _project(repo, "00-clean", clean)
     _project(repo, "01-load-error", "schema_version = 1\n[lanes.bad\n")
     _project(repo, "02-broken", _gate_config("44m"), _assay_config("45m"))
-    untracked = repo / "03-untracked"
-    untracked.mkdir()
-    (untracked / "run-gate.toml").write_text("[lanes.bad\n", encoding="utf-8")
+    (repo / "03-untracked").mkdir()
+    (repo / "03-untracked" / "run-gate.toml").write_text("[lanes.bad\n", encoding="utf-8")
     code, out, _err = _run(
         monkeypatch, capsys, repo, "lanes", "--check", "--all")
     assert code == 1
@@ -236,17 +234,9 @@ def test_json_shape_has_level_on_each_finding(tmp_path, monkeypatch, capsys):
         monkeypatch, capsys, project, "lanes", "--check", "--json")
     assert code == 0 and err == ""
     assert json.loads(out) == {"projects": [{
-        "project": "project",
-        "lanes_checked": 1,
-        "findings": [{
-            "lane": "outer",
-            "rule": "budget-margin",
-            "detail": (
-                "outer budget 49m leaves 240s above assay lane 'inner' budget "
-                "45m; require 5m"),
-            "level": "warn",
-        }],
-    }]}
+        "project": "project", "lanes_checked": 1, "findings": [{
+            "lane": "outer", "rule": "budget-margin", "level": "warn",
+            "detail": "outer budget 49m leaves 240s above assay lane 'inner' budget 45m; require 5m"}]}]}
 
 
 def test_project_option_checks_a_non_current_project(tmp_path, monkeypatch, capsys):
@@ -311,9 +301,8 @@ def test_current_project_and_single_config_refusals(tmp_path, monkeypatch, capsy
 
 
 def test_real_repository_all_has_only_budget_margin_warnings(tmp_path, monkeypatch, capsys):
-    probe = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True)
+    probe = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True)
     if probe.returncode:
         raise pytest.skip.Exception(
             "Git metadata is unavailable in this lane container")
