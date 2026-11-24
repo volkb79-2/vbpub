@@ -437,9 +437,10 @@ is derived and argued in [`assay.toml`](../assay.toml)'s header. The rejected al
 their own tests reached 98.06%/97.90% and 99.45%/97.88%, `kernel` after its own tests reached
 92.19% line/93.50% region, and `store` after its own tests reached 94.87% line/93.90% region —
 a crate whose floor starts at the bootstrap value is treated as scaffold, and one with real
-tests raises its own floor instead of hiding code. The other six packages keep their bootstrap
-or inherited floor: `serve` inherits the 90%/85% floor that `probe` had for the serving code
-moved by P-12, while `act`, `client`, `eval`, `bins/act` and `bins/probe` retain 90%/85%.
+tests raises its own floor instead of hiding code. `serve` takes the stricter 98%/96% floor
+of its two P-12 move donors: `proto`, which owned the hub, rather than `probe`'s 90%/85%;
+its first post-move measurement was 98.49% line/98.50% region. The other five packages keep
+their bootstrap floor: `act`, `client`, `eval`, `bins/act` and `bins/probe` retain 90%/85%.
 Scaffold identity tests are not a product-coverage claim. Floors are never lowered and code
 is never excluded from coverage.
 The line-only Assay claim sits ON TOP of these per-crate line/region floors: the floors fire

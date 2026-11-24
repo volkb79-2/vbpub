@@ -290,10 +290,10 @@ Lost: it widens the spawn lint to a directory. Setting `LISTEN_PID` after the fo
 
 ## (i) The hub text
 
-`crates/serve/src/hub.rs` (moved from `proto` by P-12) said "P5b wraps one `SendHub` in one mutex". That is wrong: the server
-loop thread owns the one `SendHub` inside `Server`, with no lock (§(a)). WIRE §5.3 already states
-that no mutex is needed (design R27); only the hub.rs module doc was stale, and this package fixes
-it.
+The hub module doc (then `crates/proto/src/hub.rs`, now `crates/serve/src/hub.rs`) said "P5b
+wraps one `SendHub` in one mutex". That is wrong: the server loop thread owns the one `SendHub`
+inside `Server`, with no lock (§(a)). WIRE §5.3 already states that no mutex is needed (design
+R27); only the hub.rs module doc was stale, and this package fixes it.
 
 ## Rules for P-09 (driver)
 

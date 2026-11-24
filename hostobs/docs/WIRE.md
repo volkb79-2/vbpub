@@ -640,8 +640,9 @@ buffer for the allocation tests; a poisoned reader holds no buffer. The 64 KiB g
 to `len / 64 KiB` reallocations for the largest frame (256 at 16 MiB); this is accepted, because the
 capacity bound forbids geometric growth.
 
-5.3 **Send hub** (`proto::hub::SendHub`, server side, one per serving process that owns every
-connection's outgoing queue). The serving process's driver is a single-threaded `poll(2)` loop that
+5.3 **Send hub** (`hostobs_serve::hub::SendHub`, `crates/serve`, server side, one per serving
+process that owns every connection's outgoing queue). The serving process's driver is a
+single-threaded `poll(2)` loop that
 owns the hub and passes `&mut SendHub` to the connection methods; no mutex exists. The hub owns the
 global pools, so the victim of an overflow is chosen with every queue in view.
 
@@ -737,8 +738,9 @@ pinned later is stamped `dropped = 0` with its own `corr`; operations on an unkn
 and keeps reporting a connection until the caller `remove`s it; `ConnId` starts at 1, a wrap skips 0
 and an id still in use; a stamped field that lies outside a block shorter than its header is not
 written (no panic). A tick's generation MUST be at least 1 (`last_pushed_gen` 0 means nothing
-pushed, and the first push of a stream is the dictionary form whatever generation it carries). The hub lives in `proto::hub`, not `proto::stream`, to keep `stream.rs` the reader and
-timers only.
+pushed, and the first push of a stream is the dictionary form whatever generation it carries).
+The hub lives in `hostobs_serve::hub` (`crates/serve`, moved from `proto` by P-12), not in
+`proto`, so `proto::stream` stays the reader and timers only.
 
 **Mode detection** (`proto::stream::ModeDetect`, server, P2; drives §5.4's `Undecided` rows):
 `feed(bytes) -> Detect` with `Detect::Need` (consumed everything, fewer than 8 prefix bytes so far),

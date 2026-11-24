@@ -8,7 +8,7 @@
 //! hub. Every block is a 2-section BLOCK of the stated length: `corr` at 8, `dropped` at 104,
 //! the tail from 112 filled with the step's `tag` (default 160).
 
-// The fixture parser is shared with `golden_fixtures.rs` as source (see that file).
+// The fixture parser is shared with `crates/proto/tests/golden_fixtures.rs` as source (see that file).
 #[path = "../../../test-support/json.rs"]
 mod json;
 

@@ -1086,7 +1086,7 @@ Source: `runs/p09-driver.report.md` Backlog candidates 1; `reviews/p09-r1-26c204
 
 ## HOB-91 — `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,200 rows
 
-**Where:** `bins/probe/src/config.rs` (`(1..=4_096).contains(&max_rows)`), `bins/probe/src/limits.rs`, `docs/WIRE.md`.
+**Where:** `bins/probe/src/config.rs` (`(1..=4_096).contains(&max_rows)`), `crates/serve/src/limits.rs`, `docs/WIRE.md`.
 
 `limits.rs::worst_case_query_ram_is_derived_from_the_encoder_helpers` pins 1,024 rows at 890,624 bytes. Scaled with the same row shape, the default 1 MiB `max_block_bytes` is reached at about 1,200 rows (the report says 1,170). A configuration with `max_rows = 4096` and the default block size is therefore accepted at start-up and refused later, at block build time.
 
@@ -1106,7 +1106,8 @@ Source: `runs/p09-driver.report.md` Backlog candidates 3; `docs/PROBE-PROCESS.md
 
 ## HOB-93 — P-hostobs-09 residual doc and test nits
 
-**Where:** `bins/probe/src/config.rs` (`parse_refusal`), `docs/PROBE-PROCESS.md` §(d), `hostobs/README.md` lines 133-135.
+**Where:** `bins/probe/src/config.rs` (`parse_refusal`), `docs/PROBE-PROCESS.md` §(d), `hostobs/README.md`
+section "Developing and debugging".
 
 - `parse_refusal` asserts `text.contains(key)` on the whole refusal text. Today the serde messages never contain field names, so the test still fails on the regression, but `contains(&format!("key {key}:"))` pins the key slot exactly.
 - §(d) is stricter than the kernel requires. A client in a descendant PID namespace is visible to the probe. The exact rule is that the probe's namespace must be the same as, or an ancestor of, every client's. "One shared namespace" stays as the simple form.
