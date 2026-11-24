@@ -137,7 +137,8 @@ def size(n: float) -> str:
 
 def proposal(runs: list[dict], rows: list[str], margin: float, inter: float | None) -> tuple[list[str], str | None, int | None]:
     """The env lines, a refusal text when mdt_capacity (install.sh's own derivation) would refuse them, and the
-    proposed (= measured) host keep K in bytes (None when it could not be derived)."""
+    proposed host keep K in bytes: floors + the measured margin, never below the tested one, with any KEEP pin of the
+    snapshot dropped (None when it could not be derived)."""
     base, man = runs[0]["base"], runs[0]["man"]
     notes: list[str] = []
     if cap is None or "mem_total" not in man:
@@ -150,9 +151,12 @@ def proposal(runs: list[dict], rows: list[str], margin: float, inter: float | No
             new["DEV_HOST_MEMORY_MIN"] = " ".join(rows)
         if inter:
             new["DEV_INTERACTIVE_MEMORY_MIN"] = size(inter)
+        new.pop("DEV_HOST_MEMORY_KEEP", None)   # a KEEP pin in the snapshot would win over floors + margin: the proposal is the unpinned K
         got = cap.dedicated_memory(new, mem_total=mt, swap_total=st)
     except cap.CapacityError as exc:
         return notes, str(exc), None
+    if (base.get("DEV_HOST_MEMORY_KEEP") or "").strip():
+        notes.append(f"# tested at the pin DEV_HOST_MEMORY_KEEP={base['DEV_HOST_MEMORY_KEEP'].strip()}; the proposed K below is floors + margin without it: remove the pin to apply these lines")
     notes.append(f"# K {tested.keep / MIB:.0f}M tested -> {got.keep / MIB:.0f}M proposed, dev.slice MemoryMax {tested.maximum / MIB:.0f}M -> {got.maximum / MIB:.0f}M")
     if got.keep > tested.keep:
         notes.append("# K rose: re-run once at the new K (raise and repeat, design note 4.1)")
@@ -224,8 +228,9 @@ def _main(argv: list[str] | None) -> int:
         print("INCONCLUSIVE proposal: mdt_capacity is not importable (kit copied out of the checkout); the env lines are NOT checked against install.sh")
         verdict = "FAIL" if verdict == "FAIL" else "INCONCLUSIVE"
     pre = "" if verdict == "PASS" else "# "
-    # P-plat-19h: the pin advice names the K this evaluation measured (floors + measured margin), never a fixed 1280M
-    pin = f"DEV_HOST_MEMORY_KEEP={size(keep)}, the measured K" if keep else "DEV_HOST_MEMORY_KEEP at the measured K (not derivable here: see the notes above)"
+    # P-plat-19h: the pin advice names the proposed K (floors + measured margin, snapshot pin dropped), never a fixed 1280M
+    pin = (f"DEV_HOST_MEMORY_KEEP={size(keep)}, the proposed K (floors + measured margin, never below the tested one)" if keep
+           else "DEV_HOST_MEMORY_KEEP at the proposed K (not derivable here: see the notes below)")
     print("== host-setup.env" + ("" if verdict == "PASS" else f" (NOT to be applied: {verdict}; on FAIL pin {pin}, design note 8)"))
     for u, h in sorted(hot.items()):
         print(f"# hot set {u}: {h / MIB:.1f}M -> floor {size(1.25 * h)}" + (f" (table {table[u] // MIB}M)" if u in table else ""))

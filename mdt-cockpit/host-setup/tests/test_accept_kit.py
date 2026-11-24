@@ -109,12 +109,25 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         k = int(re.search(r"# K \d+M tested -> (\d+)M proposed", out).group(1))
         self.assertGreater(k, 1280)
-        self.assertIn(f"pin DEV_HOST_MEMORY_KEEP={k}M, the measured K", out)
+        self.assertIn(f"pin DEV_HOST_MEMORY_KEEP={k}M, the proposed K", out)
         self.assertNotIn("1280M", out)
         with mock.patch.object(ev, "cap", None):  # K not derivable: no number rather than a made-up one
             _, out = self.ev(write_run(self.tmp / "r2", refault=5000))
-        self.assertIn("DEV_HOST_MEMORY_KEEP at the measured K (not derivable here", out)
+        self.assertIn("DEV_HOST_MEMORY_KEEP at the proposed K (not derivable here", out)
         self.assertNotIn("1280M", out)
+
+    def test_a_keep_pin_in_the_snapshot_is_not_reported_as_the_proposed_k(self) -> None:
+        # P-plat-19h r1 M1: r1002 is pinned (1560M) when the next run is made; the pin wins in host_floors, so the
+        # proposal must be computed without it or "K rose" never fires and the advice repeats the value that just failed
+        d = write_run(self.tmp / "r1", refault=5000)
+        (d / "host-setup.env.snapshot").write_text("HOST_ROLE=dedicated-dev\nDEV_HOST_MEMORY_KEEP=1300M\n")
+        rc, out = self.ev(d)
+        self.assertEqual(rc, 1, out)
+        k = int(re.search(r"# K 1300M tested -> (\d+)M proposed", out).group(1))
+        self.assertLess(k, 1300)  # floors + the 512M margin, not the pin
+        self.assertIn(f"pin DEV_HOST_MEMORY_KEEP={k}M, the proposed K", out)
+        self.assertIn("tested at the pin DEV_HOST_MEMORY_KEEP=1300M", out)
+        self.assertNotIn("K rose", out)
 
     def test_oom_kill_fails(self) -> None:
         rc, out = self.ev(write_run(self.tmp / "r1", oom=1))

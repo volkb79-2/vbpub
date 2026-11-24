@@ -22,7 +22,7 @@ Before=slices.target
 # memory.pressure is THE pressure signal admission reads (D-6: "swap usage
 # is never the gate; PSI is").
 # HOST_ROLE=dedicated-dev renders NO MemoryHigh here: MemoryMax (= dev Max, P-plat-19h)
-# is the paging point and the OOM domain of the load (P-plat-19e).
+# is inert: reclaim and OOM happen at dev.slice, not per tier (P-plat-19h).
 MemoryMin=@DEV_GATES_MEMORY_MIN@
 MemoryLow=@DEV_GATES_MEMORY_LOW@
 MemoryHigh=@DEV_GATES_MEMORY_HIGH@

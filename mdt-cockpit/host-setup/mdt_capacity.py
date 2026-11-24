@@ -536,7 +536,7 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
 
     MemoryMax = MemTotal - MDT_EXCLUDED_RAM - K, K = the host floors F + a margin M (or the DEV_HOST_MEMORY_KEEP
     pin). The dev tree carries NO MemoryHigh (a High throttles even while RAM is free): above MemoryMax it pages.
-    dev-gates / dev-background MemoryMax = dev MemoryMax (P-plat-19h; the load OOM domain; the cockpit's
+    dev-gates / dev-background MemoryMax = dev MemoryMax (P-plat-19h; inert: reclaim/OOM are at dev.slice; the cockpit's
     protection is its MemoryLow/Min and OOM score, not a smaller tier ceiling).
     dev.slice MemoryMin = the sum of every child Min key (the cockpit's floor holds against gate load).
     A DEV_MEMORY_MAX / tier MAX pin wins per value (at most dev's own ceiling); `-` omits it.
@@ -607,8 +607,8 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
             total += parsed or 0
         low, low_source = (total, "sum of the tier MemoryLow values") if total else (None, "none")
     # Load tiers (gates, background): MemoryMax = dev.slice's own MemoryMax (P-plat-19h: no minus-P subtraction;
-    # the interactive MemoryLow protection stays); no MemoryHigh. A tier at its Max pages its own pages and OOMs
-    # only inside itself. memory.swap.max stays dev.slice's minus the protected sum (AD2-0, load_tier_swap).
+    # the interactive MemoryLow protection stays); no MemoryHigh. Equal to dev's Max the tier Max is inert: reclaim
+    # and OOM happen at dev.slice. memory.swap.max stays dev.slice's minus the protected sum (AD2-0, load_tier_swap).
     # A DEV_{GATES,BACKGROUND}_MEMORY_MAX pin wins (at most dev's own ceiling); `-`/0 omit.
     protected = 0
     for key in _PROTECTED_LOW_KEYS:

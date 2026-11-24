@@ -2012,3 +2012,9 @@ Follow-up P-plat-19d (2026-11-24): `mdt-host-check.sh` FAILs when oomd can still
 - **Finding 10 (memory.peak).** 4.1's per-unit `memory.peak` is not sampled (`accept-run.sh` `ucols`, `:111-116`); no criterion uses it.
 - **F5/F7 (notes).** `swap_used` (`accept-run.sh:134`) feeds no criterion (any OOM FAILs, conservative); optionally cross-check `tested.maximum` against the manifest's `memory.max:dev.slice` (`accept-eval.py:146`).
 - **F6 (tests).** `tests/test_accept_kit.py:366` asserts a prefix of an append-only log (vacuous): use `assertEqual(self.calls(), before)`; the `frac >= 0.5` half of the load rule (`accept-eval.py:112-118`) is untested: add a run whose `dev.max_local` rises on one tick only and expect rc 4.
+
+## MDT-113 - a `-` or `0` pin of a tier MemoryMax renders `max` on dedicated-dev (2026-11-24)
+
+**Status:** OPEN. Found by the P-plat-19h r1 review (F7); predates that package, which sets the derived tier Max to dev.slice's.
+
+On `HOST_ROLE=dedicated-dev`, `DEV_{GATES,BACKGROUND}_MEMORY_MAX=-` or `0` goes through `pick` (`host-setup/mdt_capacity.py:565`, called at `:623`) to `None`; install.sh then renders an empty `MemoryMax=` and the kernel shows `max`. check.sh accepts it (`want=max`, `scripts/check.sh:351`) and the accept kit refuses such a tier (`tools/accept/accept-run.sh:37`). dev.slice stays finite, so the effect today equals the derived value (tier Max = dev Max), but it is a path to a tier without a MemoryMax and the estate rule is never `MemoryMax=infinity`. Fix: on dedicated-dev, refuse `-`/`0` for the two tier MAX pins in `dedicated_memory` (omitting one has no purpose now that the derived value equals dev's), with a test, and make check.sh FAIL a tier `max` on this role.
