@@ -362,13 +362,13 @@ def analysis_import_sites(source: str) -> list[str | None]:
     return hits
 
 
-def test_only_cli_run_analyze_imports_assay_analysis():
+def test_only_cli_analysis_seam_imports_assay_analysis():
     hits = [
         (path.relative_to(PROJECT_ROOT).as_posix(), site)
         for path in sorted(PACKAGE_DIR.rglob("*.py"))
         for site in analysis_import_sites(path.read_text(encoding="utf-8"))
     ]
-    assert hits == [("src/assay/cli.py", "_run_analyze")]
+    assert hits == [("src/assay/cli.py", "_analysis_cli")]
 
 
 def test_analysis_import_checker_refuses_a_module_level_import():
