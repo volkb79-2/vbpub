@@ -58,9 +58,10 @@ command -v flock >/dev/null 2>&1 || { echo 'flock is required' >&2; exit 2; }
 command -v run-gate >/dev/null 2>&1 || { echo 'run-gate is required on PATH' >&2; exit 2; }
 
 # CTL-57: a slot is not an admission. After it holds a slot and before it starts run-gate, wait while the host's memory
-# PSI `full` avg10 is >= 3 (the programme's stop signal; no knob; an unreadable value counts as busy), one log line per
-# minute, bounded by CONTROLLER_GATE_PSI_WAIT_S (default 1800). The wait is counted in its own sleeps, not read from a
-# clock. Giving up is exit 75 "not admitted, nothing ran": never a lane verdict. Same rule as `dev` host-admission/1.
+# PSI `full` avg10 is >= 3 (the programme's stop signal; no knob), one log line per minute, bounded by
+# CONTROLLER_GATE_PSI_WAIT_S (default 1800). The wait is counted in its own sleeps, not read from a clock. Giving up is
+# exit 75 "not admitted, nothing ran": never a lane verdict. An UNREADABLE value is not waited on: exit 75 at once. Same
+# rule as `dev` host-admission/1.
 psi_file=${CONTROLLER_GATE_PSI_FILE:-/proc/pressure/memory}
 psi_wait_limit=${CONTROLLER_GATE_PSI_WAIT_S:-1800}
 [[ $psi_wait_limit =~ ^[0-9]+$ ]] || {
@@ -68,18 +69,24 @@ psi_wait_limit=${CONTROLLER_GATE_PSI_WAIT_S:-1800}
   exit 2
 }
 psi_why=
-memory_busy() {   # 0 busy (psi_why names it), 1 quiet
+memory_state() {   # 0 busy (psi_why names it), 1 quiet, 2 unreadable
   local full
   full=$(awk '/^full/ { sub("avg10=", "", $2); print $2; exit }' "$psi_file" 2>/dev/null) || full=
   case $full in
-    ''|*[!0-9.]*|.*|*.|*.*.*) psi_why="memory PSI unreadable ($psi_file)"; return 0 ;;
+    ''|*[!0-9.]*|.*|*.|*.*.*) return 2 ;;
   esac
   psi_why="memory PSI full avg10=$full >= 3"
   awk -v m="$full" 'BEGIN { exit !(m + 0 >= 3) }'
 }
+memory_refuse_unreadable() {
+  echo "gate-run: not admitted (memory PSI unreadable: $psi_file); nothing ran" >&2
+  exit 75
+}
 admit_memory() {
-  local waited=0 next_log=0
-  memory_busy || return 0
+  local waited=0 next_log=0 state=0
+  memory_state || state=$?
+  (( state != 2 )) || memory_refuse_unreadable
+  (( state == 0 )) || return 0
   while :; do
     if (( waited >= psi_wait_limit )); then
       echo "gate-run: not admitted ($psi_why for ${waited}s); nothing ran" >&2
@@ -91,7 +98,10 @@ admit_memory() {
     fi
     sleep 10 || { echo 'gate-run: wait interval failed' >&2; exit 2; }
     waited=$((waited + 10))
-    memory_busy || return 0
+    state=0
+    memory_state || state=$?
+    (( state != 2 )) || memory_refuse_unreadable
+    (( state == 0 )) || return 0
   done
 }
 

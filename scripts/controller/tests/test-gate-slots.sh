@@ -445,20 +445,32 @@ gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" CONTROLLER_GA
 [[ $(log_lines) == 0 ]] || fail 'busy memory PSI past the bound: run-gate ran'
 [[ $(psi_lines) == 3 ]] || fail "expected one wait line a minute (0s, 60s, 120s), got $(psi_lines)"
 contains "$CASE/out" 'gate-run: not admitted (memory PSI full avg10=5.25 >= 3 for 130s); nothing ran' 'the refusal says nothing ran'
-# an unreadable file counts as busy
+# an unreadable file is refused at once (no wait), like dev host-admission/1
 psi_case psi-unreadable -
 mapfile -t env_lines < <(slot_env "$CASE" 2)
 rc=0
 gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" CONTROLLER_GATE_PSI_WAIT_S=30 || rc=$?
 [[ $rc == 75 ]] || fail "an unreadable memory PSI file must exit 75, got $rc"
 [[ $(log_lines) == 0 ]] || fail 'an unreadable memory PSI file started the gate'
-contains "$CASE/out" "gate-run: not admitted (memory PSI unreadable ($PSI) for 30s); nothing ran" 'unreadable is named as such'
+[[ ! -e $FAKE_PSI_SLEEP_COUNT ]] || fail 'an unreadable memory PSI file was waited on instead of refused at once'
+contains "$CASE/out" "gate-run: not admitted (memory PSI unreadable: $PSI); nothing ran" 'unreadable is named as such'
 # a file without a full line, and a malformed value, are unreadable too
 psi_case psi-garbled 'x1'
 mapfile -t env_lines < <(slot_env "$CASE" 2)
 rc=0
 gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" CONTROLLER_GATE_PSI_WAIT_S=10 || rc=$?
 [[ $rc == 75 ]] || fail "a malformed memory PSI value must exit 75, got $rc"
+[[ ! -e $FAKE_PSI_SLEEP_COUNT ]] || fail 'a malformed memory PSI value was waited on'
+# the file turning unreadable while waiting is refused at once as well
+psi_case psi-vanishes 4.00
+printf 'full avg10=garbled\n' > "$CASE/psi-later"
+mapfile -t env_lines < <(slot_env "$CASE" 2)
+rc=0
+gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" FAKE_PSI_QUIET_AT=1 FAKE_PSI_QUIET_FILE="$CASE/psi-later" || rc=$?
+[[ $rc == 75 ]] || fail "a memory PSI file that turns unreadable while waiting must exit 75, got $rc"
+[[ $(log_lines) == 0 ]] || fail 'a memory PSI file that turned unreadable while waiting started the gate'
+[[ $(cat "$FAKE_PSI_SLEEP_COUNT") == 1 ]] || fail 'the wait went on after the PSI value became unreadable'
+contains "$CASE/out" "gate-run: not admitted (memory PSI unreadable: $PSI); nothing ran" 'unreadable while waiting is named as such'
 rc=0
 gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_WAIT_S=ten || rc=$?
 [[ $rc == 2 ]] || fail "a non-numeric CONTROLLER_GATE_PSI_WAIT_S must exit 2, got $rc"
