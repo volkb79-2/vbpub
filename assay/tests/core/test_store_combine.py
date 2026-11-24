@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +65,23 @@ def _jobs() -> tuple[mutation.MutantJob, mutation.MutantJob]:
     return jobs[0], jobs[1]
 
 
+def _job(source: str) -> mutation.MutantJob:
+    raw = source.encode("utf-8")
+    start = raw.index(b"True")
+    return mutation.MutantJob(
+        path="pkg/flags.py",
+        original_text=source,
+        site=mutation.MutationSite(
+            start_byte=start,
+            end_byte=start + 4,
+            replacement=b"False",
+            lineno=source[:start].count("\n") + 1,
+            operator="python:bool-const-flip",
+            description="True->False",
+        ),
+    )
+
+
 def _payload(
     job: mutation.MutantJob,
     *,
@@ -85,6 +103,7 @@ def _request(
     carry_over_reason: str | None = None,
     events: list[dict[str, object]] | None = None,
 ) -> mutation_store.CombineRequest:
+    target.mkdir(parents=True, exist_ok=True)
     return mutation_store.CombineRequest(
         jobs=jobs,
         judge=_JUDGE,
@@ -107,8 +126,10 @@ def _request(
     )
 
 
-def _arm_shard(store: Path, job: mutation.MutantJob) -> None:
-    _write(store, _payload(job, bucket="killed"))
+def _arm_shard(
+    store: Path, job: mutation.MutantJob, *, bucket: str = "killed"
+) -> None:
+    _write(store, _payload(job, bucket=bucket))
     ids = [mutation.candidate_id(job)]
     mutation_store._write_shard_manifest(
         store,
@@ -278,40 +299,147 @@ def test_carry_forward_policy_requeues_a_kill_as_a_hint(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("kind", "current_source", "prior_source"),
+    [
+        ("exact-id", "def flag():\n    return True\n", "def flag():\n    return True\n"),
+        (
+            "locus",
+            "def flag():\n    return True\n",
+            "def flag():\n    return True\n\nOTHER = 1\n",
+        ),
+        (
+            "window",
+            "def flag():\n    marker = 1\n    return True\n",
+            "def flag():\n    marker = 2\n    return True\n",
+        ),
+    ],
+)
+def test_carry_forward_kill_hint_names_the_prior_candidate(
+    tmp_path: Path,
+    kind: str,
+    current_source: str,
+    prior_source: str,
+) -> None:
+    current = _job(current_source)
+    prior = _job(prior_source)
+    witness = {
+        "node_id": _NODE,
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    fields = mutation_store.candidate_identity_fields(prior)
+    fields.update(mutation_store._locus_fields_for_job(prior))
+    source = tmp_path / "prior"
+    _write(
+        source,
+        _payload(
+            prior,
+            judge=_EARLIER,
+            bucket="killed",
+            execution={"mode": "full", "witness": witness},
+            **fields,
+        ),
+    )
+
+    result = mutation_store.combine(
+        (mutation_store.StoreSource(path=source, policy="carry-forward"),),
+        _request((current,), tmp_path / "target"),
+    )
+
+    assert result.records == ()
+    assert result.hints == (
+        mutation_store.Hint(
+            candidate_id=mutation.candidate_id(current),
+            node_id=_NODE,
+            source="store",
+            source_ref=str(source),
+            from_candidate_id=mutation.candidate_id(prior),
+            from_judge_sha256=_EARLIER,
+            match=kind,
+        ),
+    )
+
+
 def test_policy_precedence_keeps_own_then_merge_then_shard_then_import(
     tmp_path: Path,
 ) -> None:
     job, _second = _jobs()
-    target = tmp_path / "target"
     own = _payload(job, bucket="survived")
-    _write(target, own)
+    merge_against_own_source = tmp_path / "merge-against-own"
+    _write(
+        merge_against_own_source,
+        _payload(job, bucket="killed"),
+    )
     merge_source = tmp_path / "merge"
-    _write(merge_source, _payload(job, bucket="killed"))
+    merge_record = _payload(job, bucket="survived")
+    _write(merge_source, merge_record)
     shard_source = tmp_path / "shard"
-    _arm_shard(shard_source, job)
+    shard_record = _payload(job, bucket="survived")
+    _arm_shard(shard_source, job, bucket="survived")
     import_source = tmp_path / "import"
-    _write(import_source, _payload(job, judge=_EARLIER, bucket="killed"))
+    import_record = _payload(job, judge=_EARLIER, bucket="survived")
+    _write(import_source, import_record)
+    merge = mutation_store.StoreSource(path=merge_source, policy="same-judge")
+    shard = mutation_store.StoreSource(path=shard_source, policy="strict-shard")
+    imported = mutation_store.StoreSource(
+        path=import_source, policy="import-unverified"
+    )
 
+    own_target = tmp_path / "own-target"
+    _write(own_target, own)
     result = mutation_store.combine(
         (
             mutation_store.StoreSource(
-                path=merge_source, policy="same-judge"
+                path=merge_against_own_source, policy="same-judge"
             ),
-            mutation_store.StoreSource(
-                path=shard_source, policy="strict-shard"
-            ),
-            mutation_store.StoreSource(
-                path=import_source, policy="import-unverified"
-            ),
+            shard,
+            imported,
         ),
+        _request((job,), own_target, carry_over_reason="precedence test"),
+    )
+    assert result.records == (own,)
+
+    merge_target = tmp_path / "merge-target"
+    merge_events: list[dict[str, object]] = []
+    result = mutation_store.combine(
+        (merge, shard, imported),
         _request(
-            (job,),
-            target,
-            carry_over_reason="precedence test",
+            (job,), merge_target, carry_over_reason="precedence test", events=merge_events
         ),
     )
+    assert result.records == (merge_record,)
+    assert "provenance" not in result.records[0]
+    merge_carry = next(
+        event for event in merge_events if event.get("event") == "carry_over"
+    )
+    assert (merge_carry["copied_total"], merge_carry["imported_total"]) == (1, 0)
 
-    assert result.records == (own,)
+    shard_target = tmp_path / "shard-target"
+    shard_events: list[dict[str, object]] = []
+    result = mutation_store.combine(
+        (shard, imported),
+        _request(
+            (job,), shard_target, carry_over_reason="precedence test", events=shard_events
+        ),
+    )
+    assert result.records == (shard_record,)
+    assert "provenance" not in result.records[0]
+    shard_carry = next(
+        event for event in shard_events if event.get("event") == "carry_over"
+    )
+    assert (shard_carry["copied_total"], shard_carry["imported_total"]) == (1, 0)
+
+    import_target = tmp_path / "import-target"
+    result = mutation_store.combine(
+        (imported,),
+        _request((job,), import_target, carry_over_reason="precedence test"),
+    )
+    assert result.records[0]["candidate_id"] == mutation.candidate_id(job)
+    assert result.records[0]["provenance"]["kind"] == "imported"
+    assert result.imported_total == 1
 
 
 def test_same_judge_precedes_carry_forward_and_hints_do_not_replace_it(
@@ -485,6 +613,36 @@ def test_run_mutation_refuses_manifest_without_resume_or_state_root(
         )
 
 
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        {"shard_index": 0, "shard_count": 1},
+        {"candidate_selection": frozenset({"c" * 64})},
+    ],
+)
+def test_run_mutation_refuses_a_manifest_inside_a_slice(
+    tmp_path: Path, conflict: dict[str, object]
+) -> None:
+    with pytest.raises(ValueError, match="merge_manifest is the whole-lane merge"):
+        mutation.run_mutation(
+            baseline=None,
+            prepared=None,
+            plan=None,
+            deadline=None,
+            targets=(),
+            adapter=None,
+            jobs=1,
+            max_mutants=1,
+            operators=(),
+            process_runner=None,
+            clock=None,
+            resume=True,
+            state_root=tmp_path,
+            flex=mutation.FlexOptions(merge_manifest=tmp_path / "manifest.json"),
+            **conflict,
+        )
+
+
 def test_hint_adapter_projects_to_eligible_witnesses() -> None:
     job, _second = _jobs()
     candidate = mutation.candidate_id(job)
@@ -539,54 +697,143 @@ def test_hint_adapter_projects_to_eligible_witnesses() -> None:
     ) == ()
 
 
+def _zero_timings(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: (
+                0.0
+                if key.endswith("_seconds")
+                and isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                else _zero_timings(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_zero_timings(item) for item in value]
+    return value
+
+
+def _verdict_semantics(path: Path) -> dict[str, object]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+
+    def without_timing(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: without_timing(item)
+                for key, item in value.items()
+                if key not in {"started", "ended"}
+                and not key.endswith("_at")
+                and not key.endswith("_seconds")
+            }
+        if isinstance(value, list):
+            return [without_timing(item) for item in value]
+        return value
+
+    return {
+        "outcome": document["outcome"],
+        "claims": without_timing(document["claims"]),
+    }
+
+
 def test_a_real_run_is_unchanged_when_store_hints_are_present(
     git_repo: GitRepo,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _seed(git_repo, _STRICT_AB, sites=2)
-    prior = tmp_path / "prior"
+    git_repo.write(".gitignore", ".assay/\n")
+    git_repo.commit_all("ignore carry-forward stores")
+    prior = git_repo.path / ".assay" / "prior"
     code, first = _run(git_repo, prior, tmp_path / "first.jsonl")
     assert code == 0
     assert _executed(first) == ["killed", "killed"]
-    judge_file = git_repo.path / "tests/judge.sh"
-    judge_file.write_text(
-        judge_file.read_text(encoding="utf-8") + "# new judge identity\n",
-        encoding="utf-8",
-    )
-    git_repo.commit_all("change judge identity")
-
-    original = mutation_store._carry_forward_records
-    seen_hints: list[mutation_store.Hint] = []
-
-    def with_hint(*args: object, **kwargs: object):
-        result = original(*args, **kwargs)
-        candidate = next(iter(prior.glob("*.json"))).stem
-        hint = mutation_store.Hint(
-            candidate_id=candidate,
+    prior_hints = tuple(
+        mutation_store.Hint(
+            candidate_id=record["candidate_id"],
             node_id=_NODE,
             source="store",
             source_ref=str(prior),
-            from_candidate_id=candidate,
-            from_judge_sha256=_EARLIER,
+            from_candidate_id=record["candidate_id"],
+            from_judge_sha256=record["judge_sha256"],
             match="exact-id",
         )
-        seen_hints.append(hint)
-        return replace(result, hints=(hint,))
+        for path in sorted(prior.glob("*.json"))
+        for record in (json.loads(path.read_text(encoding="utf-8")),)
+    )
+    git_repo.write("tests/judge.sh", _STRICT_AB + "# new judge identity\n")
+    git_repo.commit_all("change judge identity")
 
-    monkeypatch.setattr(mutation_store, "_carry_forward_records", with_hint)
-    code, events = _run(
+    original_carry = mutation_store._carry_forward_records
+    original_write = mutation_store._write_mutation_state_record
+    seen_hints: list[mutation_store.Hint] = []
+    hints_enabled = False
+
+    def deterministic_write(
+        state_root: Path,
+        payload: dict[str, object],
+        **kwargs: object,
+    ) -> None:
+        stable = _zero_timings(payload)
+        assert isinstance(stable, dict)
+        original_write(state_root, stable, **kwargs)
+
+    def carry_with_optional_hints(*args: object, **kwargs: object):
+        result = original_carry(*args, **kwargs)
+        if hints_enabled:
+            seen_hints.extend(prior_hints)
+            return replace(result, hints=(*result.hints, *prior_hints))
+        return replace(result, hints=())
+
+    monkeypatch.setattr(mutation_store, "_write_mutation_state_record", deterministic_write)
+    monkeypatch.setattr(
+        mutation_store, "_carry_forward_records", carry_with_optional_hints
+    )
+    no_hint_target = tmp_path / "without-hints"
+    no_hint_verdict = tmp_path / "without-hints-verdict.json"
+    code, no_hint_events = _run(
         git_repo,
-        tmp_path / "target",
-        tmp_path / "second.jsonl",
+        no_hint_target,
+        tmp_path / "without-hints.jsonl",
         "--carry-forward",
         str(prior),
+        verdict=no_hint_verdict,
     )
-
     assert code == 0
-    assert seen_hints
-    assert _executed(events) == ["killed", "killed"]
-    assert _event(events, "carry_forward")["kills_requeued"] == 2
+    assert _executed(no_hint_events) == ["killed", "killed"]
+    assert _event(no_hint_events, "carry_forward")["kills_requeued"] == 2
+
+    hints_enabled = True
+    hinted_target = tmp_path / "with-hints"
+    hinted_verdict = tmp_path / "with-hints-verdict.json"
+    code, hinted_events = _run(
+        git_repo,
+        hinted_target,
+        tmp_path / "with-hints.jsonl",
+        "--carry-forward",
+        str(prior),
+        verdict=hinted_verdict,
+    )
+    assert code == 0
+    assert len(seen_hints) == 2
+    assert [
+        (event.get("candidate_id"), event.get("outcome_bucket"))
+        for event in no_hint_events
+        if event.get("event") == "candidate"
+    ] == [
+        (event.get("candidate_id"), event.get("outcome_bucket"))
+        for event in hinted_events
+        if event.get("event") == "candidate"
+    ]
+    no_hint_records = {
+        path.name: path.read_bytes() for path in sorted(no_hint_target.glob("*.json"))
+    }
+    hinted_records = {
+        path.name: path.read_bytes() for path in sorted(hinted_target.glob("*.json"))
+    }
+    assert len(no_hint_records) == 2
+    assert no_hint_records == hinted_records
+    assert _verdict_semantics(no_hint_verdict) == _verdict_semantics(hinted_verdict)
 
 
 def test_merge_manifest_progress_event_is_in_the_closed_vocabulary() -> None:

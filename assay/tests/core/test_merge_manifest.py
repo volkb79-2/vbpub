@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -132,6 +133,7 @@ def _request(
     campaign_deadline: str | None = None,
     events: list[dict[str, object]] | None = None,
 ) -> mutation_store.CombineRequest:
+    target.mkdir(parents=True, exist_ok=True)
     return mutation_store.CombineRequest(
         jobs=jobs,
         judge=_JUDGE,
@@ -317,6 +319,17 @@ def test_a_missing_manifest_is_a_malformed_manifest(tmp_path: Path) -> None:
         mutation_store.load_merge_manifest(tmp_path / "absent.json")
 
 
+def test_combine_maps_a_malformed_manifest_to_its_refusal(tmp_path: Path) -> None:
+    job = _job()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_bytes(b"\xffnot-utf8")
+
+    with pytest.raises(
+        mutation_store.MergeManifestError, match="malformed-manifest"
+    ):
+        _combine(manifest, (job,), tmp_path / "target")
+
+
 def test_a_symlinked_manifest_is_malformed_not_followed(tmp_path: Path) -> None:
     real = tmp_path / "real.json"
     real.write_text(
@@ -338,7 +351,7 @@ def test_a_relative_manifest_path_is_anchored_by_the_caller(
 
     loaded = mutation_store.load_merge_manifest(Path("relative-manifest.json"))
 
-    assert loaded.path == tmp_path / "relative-manifest.json"
+    assert loaded.path.resolve() == (tmp_path / "relative-manifest.json").resolve()
 
 
 def test_the_manifest_read_is_bounded(
@@ -394,7 +407,7 @@ def test_store_paths_resolve_relative_to_the_manifest_directory(tmp_path: Path) 
     loaded = mutation_store.load_merge_manifest(manifest)
 
     assert loaded.stores == (
-        mutation_store.MergeManifestStore(path=store, candidates=()),
+        mutation_store.MergeManifestStore(path=store.resolve(), candidates=()),
     )
 
 
@@ -556,6 +569,8 @@ def test_non_owner_duplicate_and_unplanned_record_are_ignored_and_counted(
     )
     _write(second_store, duplicate)
     _write(first_store, _payload(unplanned_job))
+    (first_store / "notes.txt").write_text("not a record\n", encoding="utf-8")
+    (first_store / "judges").mkdir()
     duplicate_path = second_store / f"{mutation.candidate_id(first_job)}.json"
     os.utime(duplicate_path, (1, 1))
     manifest = _manifest(
@@ -634,6 +649,34 @@ def test_owner_record_replaces_a_differing_same_judge_target(
     assert (target / f"{mutation.candidate_id(job)}.json").read_bytes() == (
         mutation_store._canonical_state_record_bytes(owner)
     )
+
+
+def test_an_unknown_rejudge_id_refuses_before_the_owner_replaces_the_target(
+    tmp_path: Path,
+) -> None:
+    job = _job()
+    candidate = mutation.candidate_id(job)
+    source = tmp_path / "source"
+    _write(source, _payload(job, bucket="survived"))
+    target = tmp_path / "target"
+    _write(target, _payload(job, bucket="killed"))
+    target_record = target / f"{candidate}.json"
+    original = target_record.read_bytes()
+    manifest = _manifest(tmp_path, [(source, (candidate,))])
+    request = replace(
+        _request((job,), target),
+        rejudge_ids=frozenset({"f" * 64}),
+    )
+
+    with pytest.raises(
+        mutation_store.InvalidRejudgeIdError, match="not present"
+    ):
+        mutation_store.combine(
+            (mutation_store.StoreSource(path=manifest, policy="owner-manifest"),),
+            request,
+        )
+
+    assert target_record.read_bytes() == original
 
 
 def test_identical_and_foreign_target_records_are_not_counted_as_replacements(
@@ -754,7 +797,6 @@ def test_unreadable_and_rejected_owner_records_are_invalid(
         json.dumps({**_payload(job), "schema_version": 999}),
         encoding="utf-8",
     )
-    original_load = mutation_store._load_validated_state_record
     loaded: list[object] = []
 
     def rejected(*args: object, **kwargs: object):
@@ -765,7 +807,6 @@ def test_unreadable_and_rejected_owner_records_are_invalid(
     with pytest.raises(mutation_store.MergeManifestError, match="invalid-owner-record"):
         _combine(manifest, (job,), tmp_path / "rejected-target")
     assert loaded
-    assert mutation_store._load_validated_state_record is not original_load
 
 
 def test_owner_load_error_and_target_read_error_are_bounded_refusals(
@@ -807,7 +848,7 @@ def test_scandir_failure_after_proof_contributes_no_ignored_counts(
     def fail(_path: Path):
         raise OSError("simulated directory replacement")
 
-    monkeypatch.setattr(mutation_store.os, "scandir", fail)
+    monkeypatch.setattr(mutation_store, "_scan_store", fail)
     events: list[dict[str, object]] = []
     result = _combine(manifest, (job,), tmp_path / "target", events=events)
     assert result.records[0]["candidate_id"] == mutation.candidate_id(job)
