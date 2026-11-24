@@ -220,7 +220,7 @@ for pi_case in \
       bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 for pi_live_case in \
-  pi-live-atomic:live-atomic pi-live-tool-in-flight:live-snapshot \
+  pi-live-atomic:live-atomic pi-live-tool-in-flight:live-wrapper \
   pi-live-missing-fact:live-snapshot pi-live-usage-trend:live-usage-trend \
   pi-live-tokens-zero-as-measurement:live-usage-trend \
   pi-live-progress-stream-only:live-progress \
@@ -376,7 +376,8 @@ expect_killed gate-run-refusal-names-example \
   env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-refusal-example.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 for gate_slots_mutant in slots-range slots-default one-slot-needs-gate2 one-slot-message lock-dir-absolute lock-dir-unused-below-three \
                          distinct-detail two-slot-distinct-oneline first-pass-last-slot poll-last-slot poll-open-last-slot fd-shared fd-first-slots \
-                         slot-label lock-held-while-running wait-two wait-many wait-one progress-many progress-two progress-one labels-join exit-code; do
+                         slot-label lock-held-while-running wait-two wait-many wait-one progress-many progress-two progress-one labels-join exit-code \
+                         psi-threshold psi-unreadable-quiet psi-unreadable-waits psi-unreadable-in-wait psi-timeout-rc psi-bound psi-log-rate psi-first-pass-skip psi-poll-skip; do
   expect_killed "gate-run-$gate_slots_mutant" \
     env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-$gate_slots_mutant.sh" bash "$SCRIPT_DIR/test-gate-slots.sh"
 done
