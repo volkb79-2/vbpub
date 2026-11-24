@@ -1327,3 +1327,16 @@ for _name, _before, _after in (
     ("hardlink-targets",'"flags=rh;s,^\\./,,;s,^,$label/,"', '"flags=r;s,^\\./,,;s,^,$label/,"'),
 ):
     mutant("scripts/controller/ctl-state-backup.sh", f"ctl-state-backup-{_name}.sh", _before, _after)
+
+# the generic remote dev tool (tests/test_dev.py reads DEV_SCRIPT): one hand mutant per guard
+for name, before, after in (
+    ("ticket-hold", "( exec 9>&-; sleep 20 ) >/dev/null 2>&1 </dev/null &", ":"),
+    ("psi-threshold", "exit !(m + 0 >= 3)", "exit !(m + 0 > 3)"),
+    ("psi-file", '"$PSI_DIR/memory" 2>/dev/null', '"$PSI_DIR/io" 2>/dev/null'),
+    ("psi-full-line", "/^full/ { sub", "/^some/ { sub"),
+    ("image-id", 'elif [[ $lid != "$hid" ]]; then', "elif false; then"),
+    ("quoting", "printf '%q' \"$a\"; done; }", "printf '%s' \"$a\"; done; }"),
+    ("trap-term", "trap 'exit 143' TERM", ":"),
+    ("banner-dirty", "mark=''; if (( dirty )); then mark=+dirty; fi", "mark=+dirty"),
+):
+    mutant("scripts/controller/dev", f"dev-{name}", before, after)

@@ -15,6 +15,7 @@
 # Environment (optional): AGENT_DEV_HOST (v1001; r1002 only if listed in CONTROLLER_REMOTE_GATE_HOSTS), AGENT_DEV_MEMORY
 # (the soft memory reservation, 512m..8g), AGENT_DEV_CPUS (>0..3), AGENT_DEV_PIDS (<=1024), AGENT_DEV_MAX_S (<=14400),
 # AGENT_DEV_WAIT_S (900). Container properties come from dev-profiles.toml. Seams: AGENT_DEV_HX, AGENT_DEV_TEST_{PSI_DIR,CLOCK,PROFILES}. HOSTOBS_DEV_* exits 2.
+# shellcheck disable=SC2015,SC2016 # `A && B || die` guards; single-quoted text is the remote script, expanded on the host
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -37,7 +38,7 @@ cleanup() {
   return "$rc"
 }
 trap cleanup EXIT
-usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit "${1:-2}"; }
+usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | grep -v '^# shellcheck' | sed 's/^# \{0,1\}//' >&2; if [[ ${1:-2} != 0 ]]; then own_exit=1; fi; exit "${1:-2}"; }
 
 # ---- arguments ----------------------------------------------------------------------------------------
 for v in $(compgen -v HOSTOBS_DEV_ || true); do die 2 "$v is no longer read (renamed AGENT_DEV_*; the image is no override): unset it"; done
@@ -384,6 +385,7 @@ for base in "$HOME/agent-dev" "$HOME/hostobs-dev"; do
     exec 7>&-
   done
 done
+exit 0
 EOF
 }
 
