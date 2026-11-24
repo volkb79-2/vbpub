@@ -226,6 +226,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-81620d4f91a2] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=81620d4f91a25519af79fe198b0bf4ad4fe43572 -->
+
+### Fixed
+- fix(mdt-cockpit): image CMD keeps the devcontainer up when its sleep is killed (MDT-107, image part) (26be6c51a)
+- fix(mdt-cockpit): change to `.env.ai`, mechanism to source defined files on new shells `$MDT_USER_CONFIG/shell-start.d/`,  deepseek config guide (313ae9dcb)
+
+### Changed
+- mdt-cockpit: watcher docs round 2 (9,400 provenance in CHANGES and backlog, MDT-089 gap 3 reconciled) (3616c4bf2)
+- mdt-cockpit: watcher docs review fixes (defaults list, process vs container counts, count scope, 9,400 provenance, home-settings cross-reference) (8cb715a3c)
+- mdt-cockpit: document the VS Code file-watcher exhaustion case and add a multi-root workspace template with the exclusions (MDT-076 follow-up) (d4aecf063)
+- RP-06: docs and backlog texts say the flat downloads files moved and the placeholders are committed (754949c6a)
+- RP-04: netcup examples, mounttrace lane, pwmcp, zswap and docs take vm-lab from the resolver (6c829fded)
+- mdt-cockpit: MDT-086 verified on the controller host after the cutover (440e44835)
+- mdt-cockpit: bootstrap honours a devcontainer.json GID default for the socket groups; the controller host's config defaults to its real cgprofile-control GID (ade725079)
+- vm-lab: repoint every reference to the old scripts/vm-lab location; Pillow as the optional record extra (0f3c54385)
+- mdt-cockpit: host cutover executed (runbook status), MDT-105 codex install has no retry on ETARGET (dd0b61e71)
+- cowtree: resolve refuses a symlinked root, same mode check in resolve and provision, topmost mount wins, exact permission wording, honest zstd rationale (delta review) (2579b6fc4)
+- rename repo-paths.toml to vm-lab.toml (named after the project that owns ISOs, base images and VM state); module, verb and wrapper names stay (e7391bc2d)
+- cowtree: a set MDT_COW_ROOT that is not on btrfs raises RootInvalid; only unset/empty (and a permission error) means plain (f8f2c2683)
+- cowtree: repo-paths.toml gets a required top-level repo key; the CoW folder no longer derives from the directory name, so worktrees share the main checkout's CoW folders (f05f26240)
+
+### Documentation
+- docs: review r1 fixes for P-plat-00/03 (house rules consistency, interim exit 3, FD-041/043) (4dfd1fee0)
+- docs(backlog): file CTL-37..54, MDT-106/107, FD-039..046 (P-plat-00) (696310699)
+- docs: vm-lab.toml is now cowtree.toml in AGENTS.md, BTRFS-COW, MDT-044, downloads README, vm-lab docs and WORK-PACKAGES; state who owns the schema, the entries and the host settings (a3857edd8)
+- docs: repo-paths.toml is the single source of the shared paths; checkout stays on ext4, CoW mirror under MDT_COW_ROOT/<repo-name> (MDT-044, cowtree docs, AGENTS.md) (c1b55093a)
+
+
 ## [source-8747b3689fc9] - 2026-11-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=8747b3689fc90aafd2798994fe2ad1bcad372eac -->
