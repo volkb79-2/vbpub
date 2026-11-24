@@ -39,9 +39,9 @@ agctl owns controller identity and handover, the run registry, routes, agent fin
 
 ## 5. Routes
 
-- **Tracked `agctl/src/agctl/routes.toml` (package data) plus overlay `$CONTROLLER_HOME/routes.local.toml`**; an overlay-only table is a new route. The overlay replaces whole field values (lists too), and `[alias]` entries likewise. Load fails with exit 2 naming file, route and field on an unknown field or on a selected route missing a required one (a Codex route needs `home`). (H2: a route took nine edits.)
-- **Readers:** agctl run, the shims, job-check (trailers), opendesign-accounts, `agctl limits`; bash via `agctl route show <r> --format nul|json` (`nul`: `field=value\0` in schema order, absent fields omitted). Docs link, never copy.
-- **Fields of `[route.<name>]`:** `harness` (`codex|pi|opencode`), `account`, `home` (Codex) or `provider` (pi), `model`, `effort` (omitted = catalog default; no wrapper override, CTL-39), `key_var` (the one variable loaded from `~/.env.ai` into the child, length-checked, never printed; B12), `catalog`, `family` (`openai|deepseek|anthropic`), `trailer` (full line), `window` (`openai-subscription|opendesign-balance`), `continues`, `concurrency` (account cap, shown, never enforced), `on_limit` (`resume` everywhere today: the run ends with the limit outcome and resumes on the same thread once the window or cap clears; never a fresh relaunch). Types: `harness, family, window, on_limit` enums; `account, model, provider, effort, key_var, trailer` str; `home, catalog` path (`~` expanded); `continues` int ≥0 (luna/sol 0, deepseek and pi 2); `concurrency` int.
+- **Tracked `agctl/src/agctl/routes.toml` (package data) plus overlay `$CONTROLLER_HOME/routes.local.toml`**; an overlay-only table is a new route or model. The overlay replaces whole field values (lists too), and `[alias]` entries likewise. Load fails with exit 2 naming file, route and field on an unknown field or model, or on a selected route missing a required one (a Codex route needs `home`). (H2: a route took nine edits.)
+- **Readers:** agctl run, the shims, job-check (trailers), opendesign-accounts, `agctl limits`; bash via `agctl route show <r> --format nul|json` (`nul`: `field=value\0` in schema order, absent fields omitted; `trailer` from the model). Docs link, never copy.
+- **Fields of `[route.<name>]`:** `harness` (`codex|pi|opencode`), `account`, `home` (Codex) or `provider` (pi), `model` (key of a `[model.<id>]` table holding `trailer`, str, full line; quote ids with dots), `effort` (omitted = catalog default; no wrapper override, CTL-39), `key_var` (the one variable loaded from `~/.env.ai` into the child, length-checked, never printed; B12), `catalog`, `family` (`openai|deepseek|anthropic`), `window` (`openai-subscription|opendesign-balance`), `continues`, `concurrency` (account cap, shown, never enforced), `on_limit` (`resume` everywhere today: the run ends with the limit outcome and resumes on the same thread once the window or cap clears; never a fresh relaunch). Types: `harness, family, window, on_limit` enums; `account, model, provider, effort, key_var` str; `home, catalog` path (`~` expanded); `continues` int ≥0 (luna/sol 0, deepseek and pi 2); `concurrency` int.
 - **Routes today:**
 
 | Route | Harness | Account | Model | Effort | `key_var` | Home / provider |
@@ -51,7 +51,7 @@ agctl owns controller identity and handover, the run registry, routes, agent fin
 | deepseek-{a} | codex | a | deepseek-v4.1-flash-eco | catalog (max) | `OPENDESIGN_API_KEY_{A}` | `~/.codex-opendesign-{a}` |
 | deepseek-pi-{a} | pi | a | same | catalog | same | `opendesign_{a}` |
 
-  a = volker or github2 (A = upper case). Trailers are full lines, e.g. `Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>`; sol `Codex gpt-6-sol`, deepseek `Codex deepseek-v4.1-flash` (pi too, §10). volker: `concurrency = 10`.
+  a = volker or github2 (A = upper case). **Trailer rule (operator 2026-11-24):** the trailer names the MODEL only; the harness is irrelevant: `Co-Authored-By: <model display name> <noreply@<model provider domain>>`, e.g. `Co-Authored-By: DeepSeek V4.1 Flash <noreply@deepseek.com>` for every DeepSeek route (Codex and pi alike); Claude keeps its existing lines. routes.toml holds it once per model (`[model.<id>] trailer`), routes reference the model; job-check's trailer check reads it from there. volker: `concurrency = 10`.
 - **Aliases** `deepseek`, `deepseek-pi` are `[alias]` lists (volker, github2). Try the first unblocked entry in list order; blocked entries go last, ordered by earliest `blocked_until`. No failover inside one launch. Never a refusal for "blocked": the provider's 402 is the authority (B11; `pick_available` exit 3 goes, H5).
 - **A missing key is a refusal** (configuration, not usage); each route loads only its own key.
 - **Per-session budgets are a main-controller decision, not routes.toml data** (today: drain volker first, then +1 on github2 per sub-controller).
@@ -96,4 +96,4 @@ The tracked `scripts/controller/hooks/ctx-hooks.py` is wired (operator re-wires 
 
 ## 10. Open questions
 
-1. **pi trailer (operator):** H2 says pi should not carry the Codex DeepSeek trailer; pi keeps today's value until the operator picks a line.
+None. (Closed 2026-11-24: the pi trailer question is decided by the §5 trailer rule.)
