@@ -346,12 +346,27 @@ def tier_swap_bytes(swap_mdt: int, cascade_pct: int) -> int:
 # --------------------------------------------- HOST_ROLE=dedicated-dev memory (MDT-TESTHOST-MEM)
 #
 # Not named *_RESERVE_*: every such key is refused by the 2026-11 rename guard above.
-# Plain 1G, not derived from the host at install time: the two test hosts measured 1.0-1.1 GB of
-# system.slice memory.current (dockerd, containerd, journald, cgprofiled, page cache), so 1G covers that working
-# set. A host whose system.slice is larger must raise DEV_HOST_MEMORY_KEEP; mdt-host-check.sh warns when
-# the measured system.slice memory.current exceeds the keep.
-DEDICATED_MEMORY_KEEP_DEFAULT = "1G"
+# P-plat-19e (DESIGN-DEDICATED-DEV-MEMORY.md section 4): the host keep K = F + M. F = the floors (MemoryMin) of
+# the host's own services, M = a margin for what no floor covers. DEV_HOST_MEMORY_KEEP is only a PIN of K now.
 DEDICATED_MEMORY_KEEP_MIN = 256 * 1024 * 1024
+# Mirror of debian-install-v2 templates.CONTROL_PLANE_MEMORY_MIN (measured 1.25 x hot set; parity test).
+DEDICATED_HOST_MEMORY_MIN_DEFAULTS = {
+    "ssh.service": 10 * MIB,
+    "docker.service": 210 * MIB,
+    "containerd.service": 92 * MIB,
+    "systemd-journald.service": 24 * MIB,
+    "cgprofiled.service": 4 * MIB,  # lives in cgprofile.slice (its own 128M), not summed into system.slice
+    "mdt-psi-guard.service": 5 * MIB,
+}
+DEDICATED_SYSTEM_SLICE_UNITS = frozenset(DEDICATED_HOST_MEMORY_MIN_DEFAULTS) - {"cgprofiled.service"}
+DEDICATED_SYSTEM_SLICE_HEADROOM = 32 * MIB
+DEDICATED_SYSTEM_SLICE_MAX = 460 * MIB
+DEDICATED_USER_SLICE_MIN = 64 * MIB
+DEDICATED_CGPROFILE_SLICE_MIN = 128 * MIB  # cgprofile-owned; counted in F only
+DEDICATED_MEMORY_MARGIN_DEFAULT = 512 * MIB
+DEDICATED_MEMORY_MARGIN_MIN = 64 * MIB
+DEDICATED_KEEP_HEADROOM = 128 * MIB  # K >= F + this
+DEDICATED_INTERACTIVE_MIN_DEFAULT = 512 * MIB
 # A pinned dev.slice MemoryHigh/MemoryMax below this stalls the whole dev tier (every allocation throttled).
 DEDICATED_MEMORY_PIN_MIN = 256 * 1024 * 1024
 # Host services the dedicated-dev role protects from the dev tier (OOMScoreAdjust drop-in, the
@@ -369,14 +384,96 @@ DEDICATED_OOM_SCORE_ADJUST = -900
 
 
 def validate_host_memory_keep(value: str) -> str | None:
-    """DEV_HOST_MEMORY_KEEP: a size of at least 256M (K/M/G/T suffix or bytes); 0 and empty are refused."""
-    parsed = parse_size_bytes(value) if value.strip() else None
+    """DEV_HOST_MEMORY_KEEP: empty (derive K = F + M) or a size of at least 256M (K/M/G/T suffix or bytes); 0 is refused."""
+    if not value.strip():
+        return None
+    parsed = parse_size_bytes(value)
     if parsed is None or parsed < DEDICATED_MEMORY_KEEP_MIN:
         return (
-            f"{value!r} is not a valid host memory size: use a size of at least 256M such as 1G "
-            "(the RAM+swap kept for the host itself on HOST_ROLE=dedicated-dev; 0 and empty are refused)"
+            f"{value!r} is not a valid host memory size: use a size of at least 256M such as 1280M "
+            "(a pin of the RAM kept outside dev.slice on HOST_ROLE=dedicated-dev; 0 is refused, empty derives it)"
         )
     return None
+
+
+def validate_host_memory_min(value: str) -> str | None:
+    """DEV_HOST_MEMORY_MIN: empty (the mirrored table), `-` (no unit floors) or space-separated `unit=size` rows."""
+    if value.strip() in ("", "-"):
+        return None
+    for row in value.split():
+        unit, _, size = row.partition("=")
+        parsed = parse_size_bytes(size) if size else None
+        if not _UNIT_RE.match(unit) or unit.endswith(".slice") or parsed is None or parsed < MIB:
+            return f"{row!r} is not a unit=size row (a .service/.socket name, a size of at least 1M, e.g. docker.service=300M)"
+    return None
+
+
+def validate_host_memory_margin(value: str) -> str | None:
+    """DEV_HOST_MEMORY_MARGIN: empty (512M) or a size of at least 64M."""
+    if not value.strip():
+        return None
+    parsed = parse_size_bytes(value)
+    if parsed is None or parsed < DEDICATED_MEMORY_MARGIN_MIN:
+        return f"{value!r} is not a valid margin: use a size of at least 64M such as 512M"
+    return None
+
+
+@dataclass(frozen=True)
+class HostFloors:
+    """The floors (MemoryMin) and the host keep K = F + M of HOST_ROLE=dedicated-dev, in bytes."""
+
+    units: dict[str, int]  # post-raise floor per unit
+    system_slice: int
+    cgprofile_slice: int
+    user_slice: int
+    floors: int  # F
+    margin: int  # M
+    keep: int  # K
+    pinned: bool  # K from DEV_HOST_MEMORY_KEEP
+
+
+def host_floors(values: dict[str, str], mem_total: int, raised: dict[str, int] | None = None) -> HostFloors:
+    """F, M and K (section 4). `raised` = the highest MemoryMin another fragment/drop-in already gives a unit: the
+    floor is raise-only, and the system.slice sum is taken from the post-raise values."""
+    raw = (values.get("DEV_HOST_MEMORY_MIN", "") or "").strip()
+    error = validate_host_memory_min(raw)
+    if error:
+        raise CapacityError(f"DEV_HOST_MEMORY_MIN: {error}")
+    if raw == "-":
+        planned: dict[str, int] = {}
+    else:
+        planned = dict(DEDICATED_HOST_MEMORY_MIN_DEFAULTS)
+        for row in ([] if not raw else raw.split()):
+            unit, _, size = row.partition("=")
+            planned[unit] = parse_size_bytes(size) or 0
+    units = {u: max(v, (raised or {}).get(u, 0)) for u, v in planned.items()}
+    in_system = sum(v for u, v in units.items() if u in DEDICATED_SYSTEM_SLICE_UNITS or u not in DEDICATED_HOST_MEMORY_MIN_DEFAULTS)
+    system_slice = in_system + DEDICATED_SYSTEM_SLICE_HEADROOM if in_system else 0
+    floors = system_slice + DEDICATED_CGPROFILE_SLICE_MIN + DEDICATED_USER_SLICE_MIN
+    raw_margin = (values.get("DEV_HOST_MEMORY_MARGIN", "") or "").strip()
+    error = validate_host_memory_margin(raw_margin)
+    if error:
+        raise CapacityError(f"DEV_HOST_MEMORY_MARGIN: {error}")
+    margin = parse_size_bytes(raw_margin) if raw_margin else DEDICATED_MEMORY_MARGIN_DEFAULT
+    if floors > mem_total // 10:
+        raise CapacityError(f"the host floors F={format_size(floors)} exceed 10% of MemTotal {format_size(mem_total)}; lower DEV_HOST_MEMORY_MIN")
+    if system_slice > DEDICATED_SYSTEM_SLICE_MAX:
+        raise CapacityError(f"the derived system.slice MemoryMin {format_size(system_slice)} exceeds {format_size(DEDICATED_SYSTEM_SLICE_MAX)}; lower DEV_HOST_MEMORY_MIN (or the foreign drop-in that raised a unit)")
+    raw_keep = (values.get("DEV_HOST_MEMORY_KEEP", "") or "").strip()
+    keep = floors + margin
+    if raw_keep:
+        error = validate_host_memory_keep(raw_keep)
+        if error:
+            raise CapacityError(f"DEV_HOST_MEMORY_KEEP: {error}")
+        keep = parse_size_bytes(raw_keep) or 0
+        if keep < floors + DEDICATED_KEEP_HEADROOM:
+            raise CapacityError(f"DEV_HOST_MEMORY_KEEP {raw_keep} is below F + 128M = {format_size(floors + DEDICATED_KEEP_HEADROOM)}")
+    return HostFloors(units, system_slice, DEDICATED_CGPROFILE_SLICE_MIN, DEDICATED_USER_SLICE_MIN, floors, margin, keep, bool(raw_keep))
+
+
+def system_slice_low(floors: HostFloors) -> int:
+    """system.slice MemoryLow derived from K, never below its Min: equals the Min at defaults (line omitted)."""
+    return max(floors.system_slice, floors.keep - floors.margin - floors.cgprofile_slice - floors.user_slice)
 
 
 @dataclass(frozen=True)
@@ -405,6 +502,12 @@ class DedicatedMemory:
     gates_max: int | None = None
     background_high: int | None = None
     background_max: int | None = None
+    # P-plat-19e: the floors behind `keep` (= K), dev.slice MemoryMin (sum of every child Min key), the cockpit's
+    # Min, and the HIGH pins that were ignored (key=value) because this role carries no MemoryHigh.
+    floors: HostFloors | None = None
+    dev_min: int = 0
+    interactive_min: int = 0
+    ignored: tuple[str, ...] = ()
 
 # The tiers whose MemoryLow dev-gates / dev-background must leave room for.
 # DEV_CACHE_MEMORY_LOW is the future dev-cache.slice's Low (AD2-2): a dev sibling too, so its protection must
@@ -429,22 +532,19 @@ _TIER_LOW_KEYS = (
 )
 
 
-def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int) -> DedicatedMemory:
-    """dev.slice limits for a sole-tenant dev/test host planned for overcommit.
+def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
+                     raised: dict[str, int] | None = None) -> DedicatedMemory:
+    """dev.slice limits for a sole-tenant dev/test host planned for overcommit (P-plat-19e).
 
-    MemoryMax = MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - DEV_HOST_MEMORY_KEEP
-    (a combined RAM+swap figure; the kernel's memory.max counts RAM (and zswap) only, which physical RAM
-    caps, so on these hosts it is NOT reachable and is no leak backstop: the bounds that act are MemoryHigh
-    throttling, memory.swap.max and finally the global OOM killer; systemd-oomd is not one of them; see README).
-    MemoryHigh = MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP: the RAM the dev tier may hold; above
-    it the kernel reclaims the tier into zswap/swap instead of taking pages from the host.
-    An explicit DEV_MEMORY_HIGH / DEV_MEMORY_MAX is a pin and wins per value; `-` omits it.
+    MemoryMax = MemTotal - MDT_EXCLUDED_RAM - K, K = the host floors F + a margin M (or the DEV_HOST_MEMORY_KEEP
+    pin). The dev tree carries NO MemoryHigh (a High throttles even while RAM is free): above MemoryMax it pages.
+    dev-gates / dev-background MemoryMax = dev MemoryMax - the protected tiers' MemoryLow (the load OOM domain).
+    dev.slice MemoryMin = the sum of every child Min key (the cockpit's floor holds against gate load).
+    A DEV_MEMORY_MAX / tier MAX pin wins per value (at most dev's own ceiling); `-` omits it.
+    DEV_MEMORY_HIGH and the tier HIGH pins are ignored and reported in `ignored`.
     """
-    raw_keep = (values.get("DEV_HOST_MEMORY_KEEP", "") or DEDICATED_MEMORY_KEEP_DEFAULT).strip()
-    error = validate_host_memory_keep(raw_keep)
-    if error:
-        raise CapacityError(f"DEV_HOST_MEMORY_KEEP: {error}")
-    keep = parse_size_bytes(raw_keep) or 0
+    floors = host_floors(values, mem_total, raised)
+    keep = floors.keep
 
     def size(key: str) -> int:
         raw = (values.get(key, "0") or "0").strip()
@@ -455,13 +555,12 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
 
     ram = mem_total - size("MDT_EXCLUDED_RAM")
     swap = max(0, swap_total - size("MDT_EXCLUDED_SWAP"))
-    high_ceiling = ram - keep
-    max_ceiling = ram + swap - keep
-    if high_ceiling < MIN_RAM_MDT:
+    max_ceiling = ram - keep
+    if max_ceiling < MIN_RAM_MDT:
         raise CapacityError(
-            f"MemTotal {format_size(mem_total)} minus MDT_EXCLUDED_RAM minus DEV_HOST_MEMORY_KEEP "
-            f"{format_size(keep)} leaves {format_size(max(0, high_ceiling))} of RAM for the dev tier; "
-            "at least 1G is required (lower DEV_HOST_MEMORY_KEEP)"
+            f"MemTotal {format_size(mem_total)} minus MDT_EXCLUDED_RAM minus the host keep K "
+            f"{format_size(keep)} leaves {format_size(max(0, max_ceiling))} of RAM for the dev tier; "
+            "at least 1G is required (lower DEV_HOST_MEMORY_MARGIN/DEV_HOST_MEMORY_MIN or the KEEP pin)"
         )
 
     def pick(key: str, derived: int) -> tuple[int | None, str]:
@@ -472,6 +571,8 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
             parsed = parse_size_bytes(raw)
             if parsed is None:
                 raise CapacityError(f"{key}={raw!r} is not a size (use a size such as 6G, `-` or 0 to omit)")
+            if parsed == 0 and key == "DEV_MEMORY_MAX":  # 0G, 0M, 0.0 ...: an unlimited dev tree (review r2 B1a)
+                raise CapacityError(f"{key}={raw!r} would leave dev.slice without a MemoryMax; empty derives it, or give a size")
             if parsed == 0:  # the shared validators' "0 = none": same as `-`
                 return None, "omitted (0)"
             if key != "DEV_MEMORY_LOW" and parsed < DEDICATED_MEMORY_PIN_MIN:
@@ -479,12 +580,22 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
             return parsed, f"pin {key}={raw}"
         return derived, "derived"
 
-    high, high_source = pick("DEV_MEMORY_HIGH", high_ceiling)
-    maximum, max_source = pick("DEV_MEMORY_MAX", max_ceiling)
-    if high is not None and maximum is not None and high > maximum:
+    ignored = tuple(
+        f"{key}={(values.get(key, '') or '').strip()}"
+        for key in ("DEV_MEMORY_HIGH", "DEV_GATES_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_HIGH")
+        if (values.get(key, "") or "").strip() not in ("", "-", "0")
+    )
+    high, high_source = None, "none (no MemoryHigh on this role)"
+    # the note's single ceiling: an unlimited dev tree would be the only path to a host-wide OOM (P-plat-19e review B1)
+    if (values.get("DEV_MEMORY_MAX", "") or "").strip().lower() in ("-", "0", "max", "infinity"):
         raise CapacityError(
-            f"dev.slice MemoryHigh {format_size(high)} ({high_source}) exceeds MemoryMax "
-            f"{format_size(maximum)} ({max_source}); keep MemoryHigh <= MemoryMax"
+            f"DEV_MEMORY_MAX={(values.get('DEV_MEMORY_MAX', '') or '').strip()!r} would leave dev.slice without a MemoryMax; "
+            "empty derives it (RAM minus the host keep K), or give a size"
+        )
+    maximum, max_source = pick("DEV_MEMORY_MAX", max_ceiling)
+    if maximum is not None and maximum > max_ceiling:
+        raise CapacityError(
+            f"DEV_MEMORY_MAX {format_size(maximum)} exceeds MemTotal - MDT_EXCLUDED_RAM - K = {format_size(max_ceiling)}"
         )
     # MemoryLow of a tier only protects its pages when every ancestor carries at least as much
     # (cgroup v2): dev.slice's own Low is therefore the SUM of the tiers' Low values, never more.
@@ -496,12 +607,10 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
             parsed = parse_size_bytes(raw) if raw not in ("", "-") else None
             total += parsed or 0
         low, low_source = (total, "sum of the tier MemoryLow values") if total else (None, "none")
-    # Load tiers (gates, background): dev.slice's value minus the protected tiers' MemoryLow, never below 1G
-    # and never above dev.slice's own. MemoryHigh is the limit that acts (throttling + reclaim, so the load
-    # yields before the protected tiers' Low is touched); MemoryMax is derived the same way for consistency
-    # (it stays >= the tier's MemoryHigh) although memory.max is not reachable on these hosts. memory.swap.max
-    # stays equal to dev.slice's: swap is one shared pool, a smaller tier cap would only make the load die
-    # earlier without returning any RAM. A DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX} pin wins; `-`/0 omit.
+    # Load tiers (gates, background): MemoryMax = dev.slice's minus the protected tiers' MemoryLow, never below 1G
+    # and never above dev.slice's own; no MemoryHigh. A tier at its Max pages its own pages and OOMs only inside
+    # itself. memory.swap.max stays equal to dev.slice's minus the protected sum (AD2-0, load_tier_swap).
+    # A DEV_{GATES,BACKGROUND}_MEMORY_MAX pin wins (at most dev's own ceiling); `-`/0 omit.
     protected = 0
     for key in _PROTECTED_LOW_KEYS:
         raw = (values.get(key, "") or "").strip()
@@ -514,33 +623,38 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
             return None
         return min(dev_value, max(DEDICATED_LOAD_FLOOR, dev_value - protected))
 
-    # MemoryMax of a load tier = dev.slice's MemoryHigh (AD2-0): memory.max counts RAM only, so dev's own
-    # (RAM+swap-derived) Max is unreachable; a RAM-sized Max is a real backstop that, once the tier can no
-    # longer swap, OOM-kills inside the tier instead of thrashing the host.
-    load_high = derive_load(high)
-    load_max = high
-    if load_high is not None and load_max is not None:
-        load_max = max(load_max, load_high)
+    load_max = derive_load(maximum)
     resolved: dict[str, tuple[int | None, str]] = {}
     for tier in ("GATES", "BACKGROUND"):
-        h, hs = pick(f"DEV_{tier}_MEMORY_HIGH", load_high or 0)
         m, ms = pick(f"DEV_{tier}_MEMORY_MAX", load_max or 0)
-        if hs == "derived" and load_high is None:
-            h, hs = None, "omitted (dev.slice has no MemoryHigh)"
         if ms == "derived" and load_max is None:
-            m, ms = None, "omitted (dev.slice has no MemoryHigh)"
-        # one side pinned, the other derived: the derived value follows the pin instead of refusing the pair
-        if h is not None and m is not None and h > m:
-            if hs == "derived":
-                h, hs = m, "derived, clamped to the MemoryMax pin"
-            elif ms == "derived":
-                m, ms = h, "derived, raised to the MemoryHigh pin"
-        if h is not None and m is not None and h > m:
-            raise CapacityError(f"dev-{tier.lower()}.slice MemoryHigh {format_size(h)} ({hs}) exceeds MemoryMax {format_size(m)} ({ms}); keep MemoryHigh <= MemoryMax")
-        resolved[tier] = (h, hs, m, ms)
+            m, ms = None, "omitted (dev.slice has no MemoryMax)"
+        if m is not None and maximum is not None and m > maximum:
+            raise CapacityError(f"DEV_{tier}_MEMORY_MAX {format_size(m)} exceeds dev.slice MemoryMax {format_size(maximum)}")
+        resolved[tier] = (m, ms)
     g, b = resolved["GATES"], resolved["BACKGROUND"]
+    # dev.slice MemoryMin = the sum of EVERY child Min key (the cockpit's floor holds against gate load).
+    def min_of(key: str, default: int = 0) -> int:
+        raw = (values.get(key, "") or "").strip()
+        if raw in ("", "-"):
+            return default if raw == "" else 0
+        parsed = parse_size_bytes(raw)
+        if parsed is None:
+            raise CapacityError(f"{key}={raw!r} is not a size")
+        return parsed
+
+    interactive_min = min_of("DEV_INTERACTIVE_MEMORY_MIN", DEDICATED_INTERACTIVE_MIN_DEFAULT)
+    interactive_low = min_of("DEV_INTERACTIVE_MEMORY_LOW")
+    if interactive_low and interactive_min > interactive_low:
+        raise CapacityError(f"DEV_INTERACTIVE_MEMORY_MIN {format_size(interactive_min)} exceeds DEV_INTERACTIVE_MEMORY_LOW {format_size(interactive_low)}")
+    dev_min = (min_of("DEV_MEMORY_MIN_GUARANTEED_CEILING") + interactive_min + min_of("DEV_GATES_MEMORY_MIN")
+               + min_of("DEV_BACKGROUND_MEMORY_MIN") + min_of("DEV_BUILDKITD_MEMORY_MIN"))
+    if maximum is not None and dev_min and dev_min > maximum - GIB:
+        raise CapacityError(f"dev.slice MemoryMin {format_size(dev_min)} (sum of the child Min keys) exceeds MemoryMax - 1G = {format_size(maximum - GIB)}")
     return DedicatedMemory(keep, ram, swap, high, maximum, high_source, max_source, low, low_source,
-                           protected, load_high, load_max, g[1], g[3], b[1], b[3], g[0], g[2], b[0], b[2])
+                           protected, None, load_max, "none (no MemoryHigh on this role)", g[1],
+                           "none (no MemoryHigh on this role)", b[1], None, g[0], None, b[0],
+                           floors, dev_min, interactive_min, ignored)
 
 
 def validate_host_protected_units(value: str) -> str | None:
@@ -1047,6 +1161,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     m.add_argument("env", type=Path)
     m.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
     m.add_argument("--dev-swap", type=int, default=None, help="dev.slice MemorySwapMax in bytes: also print the derived load-tier swap ceiling")
+    m.add_argument("--raised", action="append", default=[], metavar="UNIT=BYTES",
+                   help="the highest MemoryMin another drop-in already gives UNIT (raise-only floors); repeatable")
     d = sub.add_parser("derive", help="print the derived MDT capacity as KEY=VALUE lines")
     d.add_argument("env", type=Path)
     d.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
@@ -1109,9 +1225,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     dedicated = values.get("HOST_ROLE", "") == "dedicated-dev"
     if args.cmd == "dedicated-memory":
         try:
-            mem = dedicated_memory(values, mem_total=total, swap_total=swap)
+            raised = {u: int(b) for u, _, b in (r.partition("=") for r in args.raised)}
+            mem = dedicated_memory(values, mem_total=total, swap_total=swap, raised=raised)
             protected = dedicated_protected_units(values)
-        except CapacityError as exc:
+        except (CapacityError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
         print(f"DEDICATED_MEM_KEEP={mem.keep}")
@@ -1131,6 +1248,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.dev_swap is not None:
             print(f"DEDICATED_LOAD_SWAP={load_tier_swap(args.dev_swap, mem.protected)}")
         print(f"DEDICATED_PROTECTED_UNITS={' '.join(protected)}")
+        fl = mem.floors
+        print(f"DEDICATED_MEM_MIN={mem.dev_min}")
+        print(f"DEDICATED_INTERACTIVE_MIN={mem.interactive_min}")
+        print(f"DEDICATED_RESERVE={fl.floors} {fl.margin} {fl.keep}")
+        print(f"DEDICATED_SYSTEM_SLICE_MIN={fl.system_slice}")
+        print(f"DEDICATED_SYSTEM_SLICE_LOW={system_slice_low(fl)}")
+        print(f"DEDICATED_USER_SLICE_MIN={fl.user_slice}")
+        for unit, floor in sorted(fl.units.items()):
+            print(f"DEDICATED_FLOOR {unit}={floor}")
+        print(f"DEDICATED_IGNORED={' '.join(mem.ignored)}")
         return 0
     try:
         cap = derive_from_config(values, mem_total=total, swap_total=swap, nproc=args.nproc)

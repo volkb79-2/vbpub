@@ -12,6 +12,7 @@ import argparse
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 STACK_DIR = "stack"
@@ -59,6 +60,31 @@ def prepare(instance_root: Path) -> None:
     _ensure_git(stack)
 
 
+def bootstrap(
+    instance_root: Path,
+    *,
+    euid: int | None = None,
+    chown_fn: Callable | None = None,
+    chmod_fn: Callable | None = None,
+) -> None:
+    """Prepare the first install and root-only persistent ACME hostdir."""
+    prepare(instance_root)
+    effective_euid = os.geteuid() if euid is None else euid
+    if effective_euid != 0:
+        return
+
+    shared = instance_root / "shared"
+    shared.mkdir(mode=0o755, exist_ok=True)
+    hostdir = shared / "acme"
+    if os.path.lexists(hostdir):
+        if hostdir.is_symlink() or not hostdir.is_dir():
+            raise FileExistsError(f"{hostdir} must be a plain directory")
+    else:
+        hostdir.mkdir(mode=0o700)
+    (chown_fn or os.chown)(hostdir, 0, 0)
+    (chmod_fn or os.chmod)(hostdir, 0o700)
+
+
 def check(instance_root: Path) -> None:
     stack = instance_root / STACK_DIR
     required = (
@@ -87,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         instance_root = _release_root(args.release_root).parents[2]
         if args.action == "health":
             check(instance_root)
+        elif args.action == "bootstrap":
+            bootstrap(instance_root)
         else:
             prepare(instance_root)
     except (OSError, RuntimeError, ValueError) as exc:

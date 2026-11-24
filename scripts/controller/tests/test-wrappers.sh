@@ -12,6 +12,7 @@ unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BL
 unset OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER
 unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC FAKE_CODEX_DAEMON
 unset FAKE_CODEX_HOLD_ON_CALL FAKE_CODEX_HOLD_UNTIL FAKE_CODEX_HOLD_CALL_COUNT FAKE_CODEX_HOLD_PID FAKE_CODEX_REASONING
+unset FAKE_CODEX_RESUME_SEQUENCE FAKE_CODEX_RESUME_TEXT FAKE_CODEX_TEXT_REASONING_EMPTY FAKE_CODEX_TEXT_REASONING_HOLD
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-wrapper-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
@@ -52,6 +53,32 @@ if [[ -n ${FAKE_CODEX_STREAM:-} ]]; then
   cat -- "$FAKE_CODEX_STREAM"
   exit 42
 fi
+if [[ ${FAKE_CODEX_RESUME_SEQUENCE:-} == reasoning-text && $1 == exec && $2 == resume ]]; then
+  # A resumed invocation whose first turn is reasoning-only and whose second
+  # completed turn carries the final assistant text.
+  printf '{"type":"turn.started"}\n'
+  printf '{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}\n'
+  printf '{"type":"turn.completed"}\n'
+  printf '{"type":"turn.started"}\n'
+  printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "${FAKE_CODEX_RESUME_TEXT:-FINAL-B}"
+  printf '{"type":"turn.completed"}\n'
+  exit "${CODEX_RC:-0}"
+fi
+if [[ ${FAKE_CODEX_TEXT_REASONING_EMPTY:-0} == 1 ]]; then
+  if [[ $1 == exec && $2 == resume ]]; then
+    # The continuation produces no stream event at all and fails.
+    printf '{"type":"error","message":"continuation failed"}\n' >&2
+    exit 42
+  fi
+  # The primary child completes text and then ends its turn on reasoning, so
+  # the wrapper reaches auto-continuation with real text already in the stream.
+  printf '{"type":"thread.started","thread_id":"text-reasoning-thread"}\n'
+  printf '{"type":"turn.started"}\n'
+  printf '{"type":"item.completed","item":{"type":"agent_message","text":"ATTEMPT-1-FINAL"}}\n'
+  printf '{"type":"item.completed","item":{"type":"reasoning","text":"trailing thought"}}\n'
+  printf '{"type":"turn.completed"}\n'
+  exit 0
+fi
 if [[ ${FAKE_CODEX_402:-0} == 1 ]]; then
   printf '{"error":{"code":"insufficient_balance","details":{"coding_plan_exhausted":true,"reset_at":"2099-11-17T11:44:44Z"}}}\n' >&2
   exit 42
@@ -88,6 +115,22 @@ if (( hold_this_call == 1 )); then
     (( waited < 6000 )) || break
   done
   exit "${CODEX_RC:-0}"
+fi
+if [[ ${FAKE_CODEX_TEXT_REASONING_HOLD:-0} == 1 ]]; then
+  if [[ $1 == exec && $2 == resume ]]; then
+    # The first continuation ends reasoning-only, so the wrapper starts a
+    # second continuation. That second call is held by the generic hold block.
+    printf '{"type":"turn.started"}\n'
+    printf '{"type":"item.completed","item":{"type":"reasoning","text":"still thinking"}}\n'
+    printf '{"type":"turn.completed"}\n'
+    exit 0
+  fi
+  printf '{"type":"thread.started","thread_id":"held-source-thread"}\n'
+  printf '{"type":"turn.started"}\n'
+  printf '{"type":"item.completed","item":{"type":"agent_message","text":"ATTEMPT-1-FINAL"}}\n'
+  printf '{"type":"item.completed","item":{"type":"reasoning","text":"trailing thought"}}\n'
+  printf '{"type":"turn.completed"}\n'
+  exit 0
 fi
 if [[ -n ${FAKE_CODEX_SLEEP:-} ]]; then
   # A slow child, so a test can observe a run that is still working.
@@ -146,8 +189,18 @@ PUSH_IMAGE_SCRIPT=${PUSH_IMAGE_SCRIPT:-$SCRIPT_DIR/../push-image.sh}
 CODEX_IMPL_SCRIPT=${CODEX_IMPL_SCRIPT:-$SCRIPT_DIR/../codex-impl.sh}
 OPENCODE_IMPL_SCRIPT=${OPENCODE_IMPL_SCRIPT:-$SCRIPT_DIR/../opencode-impl.sh}
 README_SOURCE=${README_SOURCE:-$SCRIPT_DIR/../README.md}
-contains "$README_SOURCE" "\`CODEX_HOME_OVERRIDE\` is honoured only on the luna route." \
-  'README states that CODEX_HOME_OVERRIDE applies only to Luna'
+RULES_SOURCE=${RULES_SOURCE:-$SCRIPT_DIR/../rules.md}
+CHANGES_SOURCE=${CHANGES_SOURCE:-$SCRIPT_DIR/../CHANGES.md}
+BACKLOG_SOURCE=${BACKLOG_SOURCE:-$SCRIPT_DIR/../KNOWN_ISSUES_TODO_BACKLOG.md}
+contains "$README_SOURCE" "\`CODEX_HOME_OVERRIDE\` wins on Luna and an explicit \`CODEX_ROUTE=sol\`" \
+  'README states that CODEX_HOME_OVERRIDE applies to Luna and explicit Sol runs'
+contains "$RULES_SOURCE" 'normal and signal exits' \
+  'rules state that final text is derived on normal and signal exits'
+not_contains "$RULES_SOURCE" 'may be stale' 'rules no longer describe stale resumed final text'
+contains "$CHANGES_SOURCE" 'unique run names with resumed runs verified from git' \
+  'changelog preserves the historical CTL-50 rule'
+contains "$BACKLOG_SOURCE" 'resumed runs verified from git until CTL-38' \
+  'backlog preserves the historical CTL-50 rule'
 
 python3 - "$ROOT/controller/hosts.local.json" "$ROOT/bin" <<'PY'
 import json, pathlib, sys
@@ -174,12 +227,205 @@ if PATH="$ROOT/bin:$PATH" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$R
 
 mkdir -p "$ROOT/worktree"
 printf 'brief\n' > "$ROOT/brief.md"
+
+check_ctl38_last_text_all_paths() {
+  local runs=$ROOT/controller/runs rc=0
+
+  # Manual resume: an older FINAL-A is replaced by the final completed agent
+  # message of this invocation, even though the resumed stream starts with a
+  # reasoning-only turn.
+  printf 'FINAL-A' > "$runs/ctl38-resume.last.txt"
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-resume.log" CODEX_AUTO_CONTINUE=0 FAKE_CODEX_RESUME_SEQUENCE=reasoning-text \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-resume resume ctl38-thread \
+    > "$ROOT/ctl38-resume.out" 2>&1 || rc=$?
+  [[ $rc == 0 ]] || { cat "$ROOT/ctl38-resume.out" >&2; fail 'CTL-38 resume failed'; }
+  printf 'FINAL-B' > "$ROOT/ctl38-resume.expected"
+  cmp -s "$ROOT/ctl38-resume.expected" "$runs/ctl38-resume.last.txt" \
+    || fail 'CTL-38 resume did not derive exactly FINAL-B from its stream'
+  [[ $(cat "$runs/ctl38-resume.done") == 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 resume did not retain the additive done-marker shape'
+
+  # Automatic continuation: the first child ends reasoning-only; the resumed
+  # child's own stream supplies the final text.
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-auto.log" CODEX_AUTO_CONTINUE=1 FAKE_CODEX_REASONING=1 \
+    FAKE_CODEX_RESUME_SEQUENCE=reasoning-text \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-auto \
+    > "$ROOT/ctl38-auto.out" 2>&1 || fail 'CTL-38 automatic continuation failed'
+  cmp -s "$ROOT/ctl38-resume.expected" "$runs/ctl38-auto.last.txt" \
+    || fail 'CTL-38 auto-resume did not use the continuation stream final text'
+  [[ $(cat "$runs/ctl38-auto.done") == 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=1 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 auto-resume did not record its effort and continuation count'
+
+  # A child with no completed agent message leaves no file, even when a stale
+  # FINAL-A already exists. Its EXIT/outcome remains the historical child result.
+  printf 'FINAL-STALE' > "$runs/ctl38-empty.last.txt"
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-empty.log" CODEX_AUTO_CONTINUE=0 FAKE_CODEX_REASONING=1 \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-empty resume ctl38-empty-thread \
+    > "$ROOT/ctl38-empty.out" 2>&1 || fail 'CTL-38 no-text resume failed'
+  [[ ! -e $runs/ctl38-empty.last.txt ]] \
+    || fail 'CTL-38 left a stale last.txt for a stream with no final text'
+  [[ $(cat "$runs/ctl38-empty.done") == 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 changed the done outcome for a no-text stream'
+
+  # Text followed by trailing reasoning reaches auto-continuation. If the next
+  # attempt exits with an empty stream, the invocation's earlier final message
+  # remains the result rather than being deleted with the attempt.
+  rc=0
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-full-stream.log" CODEX_AUTO_CONTINUE=1 \
+    FAKE_CODEX_TEXT_REASONING_EMPTY=1 \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-full-stream \
+    > "$ROOT/ctl38-full-stream.out" 2>&1 || rc=$?
+  [[ $rc == 42 ]] || { cat "$ROOT/ctl38-full-stream.out" >&2; fail "CTL-38 full-stream fixture exited $rc, expected 42"; }
+  printf 'ATTEMPT-1-FINAL' > "$ROOT/ctl38-full-stream.expected"
+  cmp -s "$ROOT/ctl38-full-stream.expected" "$runs/ctl38-full-stream.last.txt" \
+    || fail 'CTL-38 auto-resume erased the invocation text when a later attempt was empty'
+  [[ $(cat "$runs/ctl38-full-stream.done") == 'EXIT=42 OUTCOME=CODE-EXIT AUTORESUME=1 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 full-stream fixture recorded the wrong completion marker'
+
+  # Hold the SECOND continuation so the check can inspect the file between
+  # attempts. The first continuation is reasoning-only and must not erase text
+  # already present in the invocation's accumulated stream.
+  local held_launcher held_rc=0
+  rm -f -- "$ROOT/ctl38-held.hold.pid" "$ROOT/ctl38-held.release" "$ROOT/ctl38-held.count"
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-held.log" CODEX_AUTO_CONTINUE=2 FAKE_CODEX_TEXT_REASONING_HOLD=1 \
+    FAKE_CODEX_HOLD_UNTIL="$ROOT/ctl38-held.release" FAKE_CODEX_HOLD_PID="$ROOT/ctl38-held.hold.pid" \
+    FAKE_CODEX_HOLD_ON_CALL=3 FAKE_CODEX_HOLD_CALL_COUNT="$ROOT/ctl38-held.count" \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-held > "$ROOT/ctl38-held.out" 2>&1 &
+  held_launcher=$!
+  for _ in {1..2000}; do
+    [[ -s $ROOT/ctl38-held.hold.pid ]] && break
+    kill -0 "$held_launcher" 2>/dev/null || break
+    sleep 0.05
+  done
+  [[ -s $ROOT/ctl38-held.hold.pid ]] \
+    || { cat "$ROOT/ctl38-held.out" >&2; fail 'CTL-38 held continuation never started'; }
+  cmp -s "$ROOT/ctl38-full-stream.expected" "$runs/ctl38-held.last.txt" \
+    || fail 'CTL-38 an intervening reasoning-only attempt erased the invocation text'
+  : > "$ROOT/ctl38-held.release"
+  wait "$held_launcher" || held_rc=$?
+  [[ $held_rc == 0 ]] || { cat "$ROOT/ctl38-held.out" >&2; fail "CTL-38 held continuation exited $held_rc"; }
+  [[ $(cat "$runs/ctl38-held.done") == 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=2 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 held continuation recorded the wrong completion marker'
+
+  # A signalled resume must not expose the previous invocation's text beside the
+  # fresh marker. The fake child publishes its pid after the stream is open and
+  # holds until the check signals the wrapper's private process group.
+  local signal_launcher signal_pgid signal_rc
+  printf 'FINAL-A' > "$runs/ctl38-signal.last.txt"
+  printf 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0 EFFORT=xhigh\n' > "$runs/ctl38-signal.done"
+  rm -f -- "$ROOT/ctl38-signal.hold.pid" "$ROOT/ctl38-signal.release"
+  setsid --wait env \
+    PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-signal.log" CODEX_AUTO_CONTINUE=0 \
+    FAKE_CODEX_HOLD_UNTIL="$ROOT/ctl38-signal.release" FAKE_CODEX_HOLD_PID="$ROOT/ctl38-signal.hold.pid" \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-signal resume ctl38-signal-thread \
+    > "$ROOT/ctl38-signal.out" 2>&1 &
+  signal_launcher=$!
+  for _ in {1..2000}; do
+    [[ -s $ROOT/ctl38-signal.hold.pid ]] && break
+    kill -0 "$signal_launcher" 2>/dev/null || break
+    sleep 0.05
+  done
+  [[ -s $ROOT/ctl38-signal.hold.pid ]] \
+    || { cat "$ROOT/ctl38-signal.out" >&2; fail 'CTL-38 signalled resume child never started'; }
+  [[ ! -e $runs/ctl38-signal.last.txt ]] \
+    || fail 'CTL-38 resumed child started beside the previous final text'
+  # Recreate the old text after launch so the EXIT-trap extraction is observable
+  # independently of the pre-launch cleanup above.
+  printf 'FINAL-A' > "$runs/ctl38-signal.last.txt"
+  signal_pgid=$(ps -o pgid= -p "$(cat "$ROOT/ctl38-signal.hold.pid")" | tr -d '[:space:]')
+  [[ $signal_pgid =~ ^[0-9]+$ ]] || fail 'CTL-38 signalled resume published no process group'
+  kill -TERM -- "-$signal_pgid" || fail 'CTL-38 signalled resume process group was already gone'
+  wait "$signal_launcher" 2>/dev/null
+  signal_rc=$?
+  (( signal_rc != 0 )) || fail 'CTL-38 signalled resume unexpectedly exited zero'
+  [[ $(cat "$runs/ctl38-signal.done") == 'EXIT=143 OUTCOME=CODE-EXIT AUTORESUME=0 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 signalled resume did not write its own done marker'
+  [[ ! -e $runs/ctl38-signal.last.txt ]] \
+    || fail 'CTL-38 signalled resume left the previous final text beside its done marker'
+}
+check_ctl38_last_text_all_paths
+
+check_codex_route_homes_and_override() {
+  home_launch() {
+    local name=$1 route=$2 log=$3
+    shift 3
+    PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+      CODEX_ROUTE="$route" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$log" \
+      "$@" "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "$name" \
+      > "$ROOT/$name.out" 2>&1 || {
+        cat "$ROOT/$name.out" >&2
+        fail "Codex route-home launch failed: $name"
+      }
+  }
+
+  home_launch route-home-luna luna "$ROOT/route-home-luna.log" env
+  contains "$ROOT/route-home-luna.log" "HOME=$ROOT/home/.codex2" \
+    'the luna route defaults to the .codex2 home'
+  home_launch route-home-sol sol "$ROOT/route-home-sol.log" env
+  contains "$ROOT/route-home-sol.log" "HOME=$ROOT/home/.codex" \
+    'the sol route defaults to the .codex home'
+  home_launch route-home-luna-override luna "$ROOT/route-home-luna-override.log" \
+    env CODEX_HOME_OVERRIDE="$ROOT/codex-home-override-luna"
+  contains "$ROOT/route-home-luna-override.log" "HOME=$ROOT/codex-home-override-luna" \
+    'CODEX_HOME_OVERRIDE wins over the luna default'
+  home_launch route-home-sol-override sol "$ROOT/route-home-sol-override.log" \
+    env CODEX_HOME_OVERRIDE="$ROOT/codex-home-override-sol"
+  contains "$ROOT/route-home-sol-override.log" "HOME=$ROOT/codex-home-override-sol" \
+    'CODEX_HOME_OVERRIDE wins over the sol default'
+}
+check_codex_route_homes_and_override
+
+check_codex_effort_vocabulary() {
+  local value rc
+  for value in minimal low medium high xhigh max; do
+    PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+      CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+      CODEX_LOG="$ROOT/effort-$value.log" CODEX_EFFORT="$value" FAKE_CODEX_MODE=clean \
+      "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "effort-$value" > "$ROOT/effort-$value.out" 2>&1 \
+      || fail "valid CODEX_EFFORT value was rejected: $value"
+    contains "$ROOT/controller/runs/effort-$value.done" "EFFORT=$value" \
+      "CODEX_EFFORT=$value is recorded in the done marker"
+  done
+  if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/invalid-effort.log" CODEX_EFFORT='max high' \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" invalid-effort > "$ROOT/invalid-effort.out" 2>&1; then
+    fail 'invalid CODEX_EFFORT was accepted'
+  else
+    rc=$?
+    [[ $rc == 2 ]] || fail "invalid CODEX_EFFORT exit was $rc, expected 2"
+  fi
+  contains "$ROOT/invalid-effort.out" \
+    'CODEX_EFFORT must be one of minimal, low, medium, high, xhigh, max' \
+    'invalid CODEX_EFFORT names the allowed values'
+  [[ ! -e $ROOT/invalid-effort.log ]] || fail 'Codex ran with invalid CODEX_EFFORT'
+  [[ ! -s $ROOT/controller/runs/invalid-effort.lock ]] \
+    || fail 'invalid CODEX_EFFORT wrote an owner record before the child launch'
+  [[ ! -e $ROOT/controller/runs/invalid-effort.done ]] || fail 'invalid CODEX_EFFORT wrote a done marker'
+}
+check_codex_effort_vocabulary
+
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_RC=7 \
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" codex-fail > "$ROOT/codex.out" 2>&1; then
   fail 'Codex child failure was not propagated'
 else rc=$?; [[ $rc == 7 ]] || fail "Codex exit was $rc, expected 7"; fi
 contains "$ROOT/controller/runs/codex-fail.done" 'EXIT=7' 'Codex child exit is persisted'
+contains "$ROOT/controller/runs/codex-fail.done" 'EFFORT=xhigh' 'Luna retains its xhigh default in the done marker'
+[[ $(cat "$ROOT/controller/runs/codex-fail.last.txt") == complete ]] \
+  || fail 'the new-run Codex path did not derive .last.txt from its stream'
 contains "$CODEX_LOG" "HOME=$ROOT/codex-luna" 'Luna profile path is explicit'
 contains "$CODEX_LOG" 'SQLITE=' 'shared session database path is set'
 mkdir -p "$ROOT/codex-deepseek-volker/catalog"
@@ -221,7 +467,11 @@ done
 contains "$CODEX_LOG" "HOME=$VOLKER_HOME" 'volker route selects the volker Codex home'
 contains "$CODEX_LOG" "HOME=$GITHUB2_HOME" 'github2 route selects the github2 Codex home'
 contains "$CODEX_LOG" 'deepseek-v4.1-flash-eco' 'DeepSeek route uses the configured default model'
-contains "$CODEX_LOG" 'model_reasoning_effort="high"' 'DeepSeek route uses high reasoning effort'
+contains "$CODEX_LOG" 'model_reasoning_effort="max"' 'DeepSeek route uses the catalog maximum effort'
+for run in od-alternation-1 od-alternation-2 od-alternation-3 od-alternation-4; do
+  contains "$ROOT/controller/runs/$run.done" 'EFFORT=max' \
+    'DeepSeek route records the maximum effort in its done marker'
+done
 not_contains "$CODEX_LOG" test-key 'API key values are absent from Codex argv logs'
 not_contains "$OD_STATE" test-key 'Open Design account state contains no key material'
 for run in od-alternation-1 od-alternation-2 od-alternation-3 od-alternation-4; do
@@ -237,6 +487,17 @@ assert isinstance(state["threads"], dict)
 assert all(set(state[name]) <= {"last_used_epoch", "blocked_until_epoch", "window_end_epoch"} for name in ("volker", "github2"))
 assert all(account in {"volker", "github2"} for account in state["threads"].values())
 PY
+
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$OD_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/od-effort-low.log" \
+  CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 CODEX_EFFORT=low \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-effort-low > "$ROOT/od-effort-low.out" 2>&1 \
+  || fail 'explicit low effort DeepSeek run failed'
+contains "$ROOT/od-effort-low.log" 'model_reasoning_effort="low"' \
+  'CODEX_EFFORT=low overrides the DeepSeek maximum default'
+contains "$ROOT/controller/runs/od-effort-low.done" 'EFFORT=low' \
+  'an explicit low effort is recorded in the done marker'
 
 python3 - "$ROOT/od-unsafe-state.json" <<'PY'
 import json, sys
@@ -352,6 +613,10 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONT
   || fail 'pinned DeepSeek route failed instead of staying on volker'
 [[ $(cat "$ROOT/controller/runs/od-pinned.route") == deepseek-volker ]] || fail 'pinned route changed accounts'
 contains "$ROOT/od-pinned-codex.log" "HOME=$VOLKER_HOME" 'pinned DeepSeek route uses the named account home'
+contains "$ROOT/od-pinned-codex.log" 'model_reasoning_effort="max"' \
+  'pinned DeepSeek route uses the catalog maximum effort'
+contains "$ROOT/controller/runs/od-pinned.done" 'EFFORT=max' \
+  'pinned DeepSeek route records the maximum effort in its done marker'
 python3 - "$ROOT/od-pinned.json" <<'PY' || fail 'pinned DeepSeek start selected the other account in state'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -888,10 +1153,12 @@ if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" C
   fail 'unknown Codex route was accepted'
 fi
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
-  CODEX_HOME_REVIEW="$ROOT/codex-review" CODEX_LOG="$CODEX_LOG" \
+  CODEX_HOME_REVIEW="$ROOT/codex-review" CODEX_HOME_OVERRIDE="$ROOT/codex-hijack" CODEX_LOG="$CODEX_LOG" \
   "$SCRIPT_DIR/../codex-review.sh" "$ROOT/worktree" "$ROOT/brief.md" review-run > "$ROOT/review.out" 2>&1; then :; else fail 'Codex review wrapper failed'; fi
 contains "$CODEX_LOG" "HOME=$ROOT/codex-review" 'review uses its separately configured profile'
+not_contains "$CODEX_LOG" "HOME=$ROOT/codex-hijack" 'review ignores a caller CODEX_HOME_OVERRIDE'
 contains "$CODEX_LOG" 'gpt-6-sol' 'review uses the independent review model default'
+contains "$ROOT/controller/runs/review-run.route" sol 'the review wrapper records the sol route'
 
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   OPENCODE_COMMAND="$ROOT/bin/opencode" OPENCODE_LOG="$OPENCODE_LOG" \
