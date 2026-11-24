@@ -6,7 +6,6 @@ test runs in the r0-r1 lane. `tools/` is outside the coverage scope (`--cov=iogo
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import random
 import re
