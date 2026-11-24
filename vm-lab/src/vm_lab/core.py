@@ -701,28 +701,50 @@ def resolve_docker_path(path: Path, mounts: list[dict[str, Any]], *, writable: b
     return mount_source_for_path(resolved, mounts, require_writable=writable)
 
 
+def _read_only_mount_problem(mounts: list[dict[str, Any]], source: str, description: str) -> str | None:
+    """Return why a required host mount is absent or not read-only, or None when it is valid."""
+    matching = [
+        mount
+        for mount in mounts
+        if mount.get("Source") == source and mount.get("Destination") == source
+    ]
+    if not matching:
+        return f"{description} mount {source} is missing"
+    if any(mount.get("RW") is False for mount in matching):
+        return None
+    if any(mount.get("RW") is True for mount in matching):
+        return f"{description} mount {source} is read-write; it must be read-only"
+    return f"{description} mount {source} has no readable read-only state"
+
+
 def find_cgroup_inspector() -> str:
     ids = docker_run(["docker", "ps", "-q", "--no-trunc"]).stdout.splitlines()
     matches: list[str] = []
+    rejected: list[str] = []
     for container_id in ids:
         inspected = docker_inspect(container_id)
         mounts = inspected.get("Mounts", [])
-        has_cgroupfs = any(
-            mount.get("Source") == "/sys/fs/cgroup"
-            and mount.get("Destination") == "/sys/fs/cgroup"
-            for mount in mounts
-        )
-        has_host_bus = any(
-            mount.get("Source") == "/run/dbus/system_bus_socket"
-            and mount.get("Destination") == "/run/dbus/system_bus_socket"
-            for mount in mounts
-        )
-        if has_cgroupfs and has_host_bus:
+        problems = [
+            problem
+            for problem in (
+                _read_only_mount_problem(mounts, "/sys/fs/cgroup", "host cgroup"),
+                _read_only_mount_problem(
+                    mounts,
+                    "/run/dbus/system_bus_socket",
+                    "system D-Bus",
+                ),
+            )
+            if problem is not None
+        ]
+        if not problems:
             matches.append(container_id)
+        else:
+            rejected.append(f"{container_id}: {'; '.join(problems)}")
     if len(matches) != 1:
+        detail = f" Rejected candidates: {'; '.join(rejected)}." if rejected else ""
         raise RunnerError(
-            "expected one running Docker container with host /sys/fs/cgroup and system D-Bus mounts; "
-            f"found {len(matches)}. Start the host cgroup inspector before launching a VM."
+            "expected one running Docker container with read-only host /sys/fs/cgroup and system D-Bus mounts; "
+            f"found {len(matches)}.{detail} Start the host cgroup inspector before launching a VM."
         )
     return matches[0]
 
@@ -744,7 +766,7 @@ def busctl_value(inspector: str, path: str, interface: str, prop: str) -> str:
             prop,
         ],
     )
-    match = re.fullmatch(r'[stbxoay]\s+(?:"([^"]*)"|([0-9]+|true|false))', raw)
+    match = re.fullmatch(r'[st]\s+(?:"([^"]*)"|([0-9]+|true|false))', raw)
     if not match:
         raise RunnerError(f"could not parse host systemd property {interface}.{prop}: {raw!r}")
     return match.group(1) if match.group(1) is not None else match.group(2)
@@ -752,6 +774,20 @@ def busctl_value(inspector: str, path: str, interface: str, prop: str) -> str:
 
 def systemd_slice_path(inspector: str, slice_name: str) -> str:
     validate_slice_name(slice_name)
+    return systemd_unit_control_group(inspector, slice_name, "org.freedesktop.systemd1.Slice")
+
+
+def systemd_unit_control_group(inspector: str, unit_name: str, interface: str) -> str:
+    """Resolve a loaded systemd unit to its host cgroup path through the host manager."""
+    object_path = systemd_unit_object_path(inspector, unit_name)
+    load_state = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Unit", "LoadState")
+    if load_state != "loaded":
+        raise RunnerError(f"systemd unit {unit_name} has LoadState={load_state!r}; refusing unresolved units")
+    return systemd_control_group(inspector, object_path, unit_name, interface)
+
+
+def systemd_unit_object_path(inspector: str, unit_name: str) -> str:
+    """Return the object path for a systemd unit obtained from the host manager."""
     output = inspector_exec(
         inspector,
         [
@@ -763,20 +799,41 @@ def systemd_slice_path(inspector: str, slice_name: str) -> str:
             "org.freedesktop.systemd1.Manager",
             "GetUnit",
             "s",
-            slice_name,
+            unit_name,
         ],
     )
     match = re.fullmatch(r'o\s+"([^"]+)"', output)
     if not match:
-        raise RunnerError(f"systemd did not return an object path for {slice_name}: {output!r}")
-    object_path = match.group(1)
+        raise RunnerError(f"systemd did not return an object path for {unit_name}: {output!r}")
+    return match.group(1)
+
+
+def systemd_control_group(inspector: str, object_path: str, unit_name: str, interface: str) -> str:
+    """Read and validate a systemd unit's cgroup path."""
+    control_group = busctl_value(inspector, object_path, interface, "ControlGroup")
+    if not control_group.startswith("/") or ".." in PurePosixPath(control_group).parts:
+        raise RunnerError(f"systemd returned an unsafe cgroup path for {unit_name}: {control_group!r}")
+    return control_group
+
+
+def systemd_scope_path(inspector: str, container_id: str) -> str:
+    """Resolve Docker's active systemd scope for one container with live tasks."""
+    if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+        raise RunnerError(f"Docker returned an invalid full container ID: {container_id!r}")
+    unit_name = f"docker-{container_id}.scope"
+    object_path = systemd_unit_object_path(inspector, unit_name)
     load_state = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Unit", "LoadState")
     if load_state != "loaded":
-        raise RunnerError(f"systemd slice {slice_name} has LoadState={load_state!r}; refusing auto-created slices")
-    control_group = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Slice", "ControlGroup")
-    if not control_group.startswith("/") or ".." in PurePosixPath(control_group).parts:
-        raise RunnerError(f"systemd returned an unsafe cgroup path for {slice_name}: {control_group!r}")
-    return control_group
+        raise RunnerError(f"systemd unit {unit_name} has LoadState={load_state!r}; refusing unresolved units")
+    active_state = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Unit", "ActiveState")
+    if active_state != "active":
+        raise RunnerError(f"Docker systemd scope {unit_name} has ActiveState={active_state!r}")
+    tasks_raw = busctl_value(inspector, object_path, "org.freedesktop.systemd1.Scope", "TasksCurrent")
+    if re.fullmatch(r"[0-9]+", tasks_raw) is None:
+        raise RunnerError(f"Docker systemd scope {unit_name} has unreadable TasksCurrent={tasks_raw!r}")
+    if int(tasks_raw) < 1:
+        raise RunnerError(f"Docker systemd scope {unit_name} has no active tasks: TasksCurrent={tasks_raw!r}")
+    return systemd_control_group(inspector, object_path, unit_name, "org.freedesktop.systemd1.Scope")
 
 
 def cgroup_file(inspector: str, control_group: str, name: str) -> str | None:
@@ -876,11 +933,11 @@ def verify_running_container(
         raise RunnerError(f"container {name!r} is not attached to required network {network!r}")
     if not item.get("State", {}).get("Running"):
         raise RunnerError(f"container {name!r} exited during startup; inspect with `docker logs {name}`")
-    pid = int(item["State"]["Pid"])
-    actual_cgroup = host_pid_cgroup(inspector, pid)
+    container_id = item.get("Id", "")
+    actual_cgroup = systemd_scope_path(inspector, container_id)
     if actual_cgroup != expected_cgroup_path and not actual_cgroup.startswith(expected_cgroup_path.rstrip("/") + "/"):
         raise RunnerError(
-            f"container host PID {pid} is in {actual_cgroup!r}, outside selected slice {expected_cgroup_path!r}"
+            f"Docker container {name!r} scope is in {actual_cgroup!r}, outside selected slice {expected_cgroup_path!r}"
         )
     leaf = cgroup_levels(inspector, actual_cgroup)[0]
     if (
@@ -889,6 +946,7 @@ def verify_running_container(
         or abs(float(leaf["cpu_max"]) - float(profile.cpus)) > 0.01
     ):
         raise RunnerError(f"host cgroup read-back does not match requested caps: {leaf}")
+    pid = int(item["State"]["Pid"])
     return {
         "container": name,
         "host_pid": pid,
