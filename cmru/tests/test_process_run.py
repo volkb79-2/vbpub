@@ -110,3 +110,19 @@ def test_delegated_process_runs_the_real_child_and_returns_its_status(tmp_path):
     )
 
     assert result == 3
+
+
+def test_uncaptured_probe_forwards_only_supplied_keywords(monkeypatch):
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    process_run.run_process(["tool"], capture=False, text=None)
+
+    assert seen["argv"] == ["tool"]
+    assert seen["kwargs"] == {"check": False}
