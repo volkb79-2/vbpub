@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from tls_edge_cli import config
+from tls_edge_cli import config, contract
 
 
 def valid_config() -> dict:
@@ -448,23 +448,39 @@ def test_updated_override_reports_parse_and_nested_shape_errors(tmp_path: Path):
         config.updated_override(root, {"domain": "x.example"})
 
 
-def test_updated_consumer_env_creates_and_replaces_only_domain_entries(tmp_path: Path):
+def _consumer_contract(domain: str) -> dict[str, str]:
+    return {
+        "TLS_EDGE_DOMAIN": domain,
+        "TLS_EDGE_NETWORK": "ingress_public",
+        "TLS_EDGE_HTTPS_ENTRYPOINT": "websecure",
+        "TLS_EDGE_HEADERS_MIDDLEWARE": "secure-headers@file",
+        "TLS_EDGE_HTTP3": "false",
+        "TLS_EDGE_PUBLIC_PORTS": "80/tcp,443/tcp",
+    }
+
+
+def test_updated_consumer_env_creates_and_replaces_only_owned_entries(
+    tmp_path: Path,
+) -> None:
     root = make_root(tmp_path / "instance")
-    path, text, mode = config.updated_consumer_env(root, "one.example")
-    assert text == "TLS_EDGE_DOMAIN=one.example\n" and mode == 0o644
+    one = _consumer_contract("one.example")
+    path, text, mode = config.updated_consumer_env(root, one)
+    assert text == contract.render_env(one) and mode == 0o644
     path.write_text("OTHER=value\nTLS_EDGE_DOMAIN=old\nTLS_EDGE_DOMAIN=duplicate\n", encoding="utf-8")
     path.chmod(0o600)
-    _, text, mode = config.updated_consumer_env(root, "two.example")
-    assert text == "OTHER=value\nTLS_EDGE_DOMAIN=two.example\n"
+    two = _consumer_contract("two.example")
+    _, text, mode = config.updated_consumer_env(root, two)
+    assert text == contract.render_env(two, "OTHER=value\n")
     assert mode == 0o600
     path.write_text("OTHER=value\n", encoding="utf-8")
-    _, text, mode = config.updated_consumer_env(root, "three.example")
-    assert text == "OTHER=value\nTLS_EDGE_DOMAIN=three.example\n"
+    three = _consumer_contract("three.example")
+    _, text, mode = config.updated_consumer_env(root, three)
+    assert text == contract.render_env(three, "OTHER=value\n")
     assert mode == 0o600
     path.unlink()
     path.mkdir()
     with pytest.raises(config.ConfigError, match="consumer environment must be a regular file"):
-        config.updated_consumer_env(root, "three.example")
+        config.updated_consumer_env(root, three)
 
 
 def test_atomic_write_sets_mode(tmp_path: Path):

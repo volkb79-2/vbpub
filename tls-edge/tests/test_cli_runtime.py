@@ -141,6 +141,11 @@ def test_configure_dry_run_decline_write_and_idempotent(
     assert 'domain = "edge.example.org"' in override.read_text(encoding="utf-8")
     assert (root / "stack/consumer.env").read_text(encoding="utf-8") == (
         "TLS_EDGE_DOMAIN=edge.example.org\n"
+        "TLS_EDGE_NETWORK=ingress_public\n"
+        "TLS_EDGE_HTTPS_ENTRYPOINT=websecure\n"
+        "TLS_EDGE_HEADERS_MIDDLEWARE=secure-headers@file\n"
+        "TLS_EDGE_HTTP3=false\n"
+        "TLS_EDGE_PUBLIC_PORTS=80/tcp,443/tcp\n"
     )
     assert "sudo ./ciu check" in output
 

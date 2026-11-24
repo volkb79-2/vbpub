@@ -520,6 +520,39 @@ def test_hook_run_rechecks_the_sparse_override(tmp_path: Path) -> None:
     assert hook.run(effective, None) == {}
 
 
+def test_hook_reports_consumer_env_drift_as_an_error_finding(
+    tmp_path: Path,
+) -> None:
+    from tls_edge_cli.contract import consumer_contract, render_env
+
+    root, stack_dir = _case_root(tmp_path, _override())
+    _, _, effective = config.load_site(stack_dir)
+    env_path = root / "stack" / "consumer.env"
+    env_path.write_text(
+        render_env(consumer_contract(effective["tls_edge"])),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8").replace(
+            "TLS_EDGE_DOMAIN=edge.example.test",
+            "TLS_EDGE_DOMAIN=hand-edited.example.test",
+        ),
+        encoding="utf-8",
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        "validate_edge_drift_hook",
+        stack_dir / "hooks" / "validate_edge.py",
+    )
+    assert spec is not None and spec.loader is not None
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    assert hook.validate_config(effective, None) == [
+        "consumer.env TLS_EDGE_DOMAIN differs from the site override; "
+        "run tls-edge configure to re-sync"
+    ]
+
+
 def test_configure_writes_schema_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

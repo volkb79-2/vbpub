@@ -20,7 +20,7 @@ All examples use `example.test`, a reserved placeholder; use your own domain.
     ciu                            stub: execs the ciu pinned by `current`
     ciu-stack/                     templates (synced from the release)
       ciu.toml.j2                  YOUR site override (written by `tls-edge configure`)
-    consumer.env                   TLS_EDGE_DOMAIN=<your domain>, written by the CLI
+    consumer.env                   six effective consumer-contract keys, written by the CLI
     .git, .gitignore               a one-commit repository so ciu can run (see 9)
     .ciu/                          ciu state (survives updates)
 ```
@@ -127,9 +127,31 @@ sudo ./scripts/verify.sh --domain app.example.test
 ## 4. Configure listeners and certificates
 
 Use `/srv/tls-edge-instance/bin/tls-edge configure` for supported settings. It preserves unrelated site
-configuration and comments, and updates only `TLS_EDGE_DOMAIN` in `consumer.env`. Use `--dry-run` to review a
-change without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full
-schema and shipped defaults are in `ciu.defaults.toml.j2`.
+configuration and comments. In `consumer.env`, it rewrites the six tls-edge-owned keys and keeps every other
+line, including operator-owned values; missing keys are appended in contract order and duplicate owned lines
+are removed. An existing file keeps its mode, while a new file is `0644`. Use `--dry-run` to review a change
+without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full schema
+and shipped defaults are in `ciu.defaults.toml.j2`.
+
+The six keys are `TLS_EDGE_DOMAIN`, `TLS_EDGE_NETWORK`, `TLS_EDGE_HTTPS_ENTRYPOINT`,
+`TLS_EDGE_HEADERS_MIDDLEWARE`, `TLS_EDGE_HTTP3` and `TLS_EDGE_PUBLIC_PORTS`. Their values are defined once in
+[CONSUMERS.md](CONSUMERS.md#rendered-consumer-contract). Read the deployed values with
+`tls-edge show --json`; do not infer them from templates.
+
+`tls-edge validate` and the CIU preflight hook refuse an existing `consumer.env` when an owned key is missing
+or differs from the effective site configuration:
+
+```text
+consumer.env TLS_EDGE_DOMAIN differs from the site override; run tls-edge configure to re-sync
+```
+
+`tls-edge show` reports the drift without failing, and `tls-edge configure` re-syncs it. An absent file is not
+checked. To re-sync without changing any answer, use an empty answers file:
+
+```bash
+printf '' > /tmp/tls-edge-empty.toml
+sudo /srv/tls-edge-instance/bin/tls-edge configure --answers /tmp/tls-edge-empty.toml --yes
+```
 
 `configure` writes every managed field whose mode applies to the proposed configuration. This keep-list makes
 a later change to a shipped default harmless for a configured instance. Prompt defaults are the current
@@ -198,14 +220,15 @@ docker compose --env-file /srv/tls-edge-instance/stack/consumer.env config   # o
 docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d
 ```
 
-Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), no published ports
-80/443/8443 on the consumer. Mattermost Calls media attaches with the TCP and UDP routers of `pattern-e-media-udp`
-(one media pair per edge).
+Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), and published
+application ports disjoint from `TLS_EDGE_PUBLIC_PORTS`. Mattermost Calls media attaches with the TCP and UDP
+routers of `pattern-e-media-udp` (one media pair per edge).
 
 ## 6. Update
 
 ```bash
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
+sudo /srv/tls-edge-instance/bin/tls-edge configure --answers /tmp/tls-edge-empty.toml --yes
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
@@ -215,6 +238,10 @@ keep host edits in `ciu.toml.j2` or pass `--overwrite-local` (the replaced files
 `shared/overwritten/<UTC time>/`). The installer does not touch `ciu.toml.j2`, `consumer.env`, `.ciu/`, volumes
 or `shared/acme`. `tls-edge configure` is the supported writer for the site override and domain variable;
 `status` shows the installed tag and any locally modified files.
+
+4.0 upgrade step: a 3.2 `consumer.env` has only `TLS_EDGE_DOMAIN`. Run
+`tls-edge configure --answers <empty file> --yes` after the update and before `ciu up`; otherwise the
+preflight hook refuses the missing contract keys.
 
 An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
 keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
