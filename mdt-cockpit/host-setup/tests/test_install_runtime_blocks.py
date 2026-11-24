@@ -291,6 +291,7 @@ class OomdDevTierCheck(unittest.TestCase):
         dump=None means oomctl is not installed."""
         import shutil
 
+        bash = shutil.which("bash")  # the child's PATH holds only the shims
         props = props or {}
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp) / "bin"
@@ -316,7 +317,7 @@ class OomdDevTierCheck(unittest.TestCase):
                 + self.FUNCTION + "\ncheck_oomd_dev_tier\n"
             )
             return subprocess.run(
-                ["bash", "-c", harness], capture_output=True, text=True, env={"PATH": str(bindir)}
+                [bash, "-c", harness], capture_output=True, text=True, env={"PATH": str(bindir)}
             ).stdout
 
     def test_all_auto_and_an_unrelated_dump_is_ok(self) -> None:
@@ -407,7 +408,7 @@ class CheckoutSetPreflight(unittest.TestCase):
 class RetiredOomKeysWarning(unittest.TestCase):
     """MDT-108: an old host-setup.env that still sets the retired oomd keys gets one WARN naming them, never a failure."""
 
-    BLOCK = INSTALL_SH[INSTALL_SH.index("_mdt_retired_keys=()"):INSTALL_SH.index('DEV_STATIC_RBW="$MDT_STATIC_RBPS"')]
+    BLOCK = INSTALL_SH[INSTALL_SH.index("_retired_oomd_keys=()"):INSTALL_SH.index('DEV_STATIC_RBW="$MDT_STATIC_RBPS"')]
 
     def _run(self, assignments: str) -> subprocess.CompletedProcess:
         return run_bash(f'set -euo pipefail\nCONFIG_PATH=/etc/mdt/host-setup.env\n{assignments}\n{self.BLOCK}\necho done')

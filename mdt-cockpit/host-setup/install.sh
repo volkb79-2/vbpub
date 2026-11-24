@@ -677,12 +677,12 @@ if [ "$(_mdt_host_role)" = unset ]; then
   echo "NOTICE: HOST_ROLE is not set in $CONFIG_PATH — treated as shared-prod (conservative static limits). On a sole-tenant dev/test host set HOST_ROLE=dedicated-dev so dev.slice uses the MEASURED device limits (install.sh --wizard asks)." >&2
 fi
 # MDT-108: these keys drove the removed systemd-oomd kill on the dev tiers and are now ignored. Never fatal.
-_mdt_retired_keys=()
-for _mdt_k in DEV_GATES_OOM_PRESSURE_LIMIT DEV_BACKGROUND_OOM_PRESSURE_LIMIT MDT_MEMORY_POLICY; do
-  [ -n "${!_mdt_k+x}" ] && _mdt_retired_keys+=("$_mdt_k")
+_retired_oomd_keys=()
+for _retired_oomd_k in DEV_GATES_OOM_PRESSURE_LIMIT DEV_BACKGROUND_OOM_PRESSURE_LIMIT MDT_MEMORY_POLICY; do
+  if [ -n "${!_retired_oomd_k+x}" ]; then _retired_oomd_keys+=("$_retired_oomd_k"); fi
 done
-if [ "${#_mdt_retired_keys[@]}" -gt 0 ]; then
-  echo "WARN: ${_mdt_retired_keys[*]} in $CONFIG_PATH are retired (MDT-108: no systemd-oomd kill on the dev tiers) and are ignored; delete the line(s)" >&2
+if [ "${#_retired_oomd_keys[@]}" -gt 0 ]; then
+  echo "WARN: ${_retired_oomd_keys[*]} in $CONFIG_PATH are retired (MDT-108: no systemd-oomd kill on the dev tiers) and are ignored; delete the line(s)" >&2
 fi
 DEV_STATIC_RBW="$MDT_STATIC_RBPS"; DEV_STATIC_WBW="$MDT_STATIC_WBPS"
 DEV_STATIC_RIOPS="$MDT_STATIC_RIOPS"; DEV_STATIC_WIOPS="$MDT_STATIC_WIOPS"
