@@ -52,6 +52,7 @@ SHELL_PROMPT_RE = re.compile(
 )
 PAYLOAD_ROOT = Path(__file__).resolve().parent.parent / "files"
 HOT_PATCH_REFUSAL = "dev-only: acceptance runs on freshly built disks"
+DR_ACCEPTANCE_ERROR = "DR_ACCEPTANCE must be 0 or 1"
 
 
 def console_prompt_kind(data):
@@ -1269,7 +1270,7 @@ def installed_payload_digest_command() -> str:
 
 
 def payload_archive() -> bytes:
-    """Return the runtime tree as a root-owned, mode-preserving tar archive."""
+    """Return the complete payload as a root-owned archive of regular file members."""
 
     def normalized(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         parts = PurePosixPath(member.name).parts
@@ -1283,22 +1284,35 @@ def payload_archive() -> bytes:
 
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
-        runtime_root = PAYLOAD_ROOT / "usr" / "local"
-        for child in sorted(runtime_root.iterdir(), key=lambda item: item.name):
-            archive.add(child, arcname=child.name, filter=normalized)
+        for path in payload_files():
+            archive.add(
+                path,
+                arcname=path.relative_to(PAYLOAD_ROOT).as_posix(),
+                recursive=False,
+                filter=normalized,
+            )
     return output.getvalue()
 
 
 def _hot_patch_refused(log, helper: str) -> bool:
     """Record and refuse a dev-only hot patch in acceptance mode."""
-    if os.environ.get("DR_ACCEPTANCE") != "1":
+    acceptance = os.environ.get("DR_ACCEPTANCE", "")
+    if acceptance in ("", "0"):
         return False
-    check(log, f"{helper} refused: {HOT_PATCH_REFUSAL}", False, "DR_ACCEPTANCE=1")
+    if acceptance == "1":
+        check(log, f"{helper} refused: {HOT_PATCH_REFUSAL}", False, "DR_ACCEPTANCE=1")
+    else:
+        check(
+            log,
+            f"{helper} refused: {DR_ACCEPTANCE_ERROR}",
+            False,
+            f"DR_ACCEPTANCE={acceptance!r}",
+        )
     return True
 
 
 def install_current_dr_state(g, log):
-    """Dev-only: upload the runtime tree and verify the complete installed payload."""
+    """Upload the complete payload; dev-only: acceptance runs on freshly built disks."""
     if _hot_patch_refused(log, "install_current_dr_state"):
         return False
     try:
@@ -1316,14 +1330,14 @@ def install_current_dr_state(g, log):
         "__dr_b64_rc=$?; "
         "if [ \"$__dr_b64_rc\" = 0 ] "
         "&& rm -rf /usr/local/lib/dr-state "
-        "&& tar -C /usr/local --same-owner -xf \"$dr_payload\"; then "
+        "&& tar -C / --same-owner -xf \"$dr_payload\"; then "
         "printf 'DRSTATE_SHA:%s\\n' \"$(" + installed_payload_digest_command() + ")\"; "
         "printf 'DRSTATE_INSTALL_RC:0\\n'; "
         "else printf 'DRSTATE_INSTALL_RC:1\\n'; fi; "
         "rm -f \"$dr_payload\""
     )
     _, out = g.run(command, 300)
-    return check(log, "guest uses the exact dr-state source under test",
+    return check(log, "guest uses the exact files payload under test",
                  tag(out, "DRSTATE_INSTALL_RC") == "0" and tag(out, "DRSTATE_SHA") == digest,
                  f"rc={tag(out, 'DRSTATE_INSTALL_RC')} sha={tag(out, 'DRSTATE_SHA')} expected={digest}")
 
@@ -1347,7 +1361,7 @@ def current_apt_hook_config():
 
 
 def install_current_apt_hook(g, log):
-    """Dev-only: install the exact APT hook config into the disposable guest."""
+    """Install the APT hook config; dev-only: acceptance runs on freshly built disks."""
     if _hot_patch_refused(log, "install_current_apt_hook"):
         return False
     try:
@@ -1996,7 +2010,7 @@ def _precondition(g, log):
 
 
 def _update_dr_state(g, log, what="Python runtime"):
-    """Dev-only: install the runtime tree from the seed ISO (mounted at /dev/sr0)."""
+    """Install from the seed ISO; dev-only: acceptance runs on freshly built disks."""
     if _hot_patch_refused(log, "_update_dr_state"):
         return False
     digest = payload_manifest_digest()
@@ -2006,9 +2020,17 @@ def _update_dr_state(g, log, what="Python runtime"):
         "if cp -a --no-preserve=ownership "
         "/mnt/seed/poc/files/usr/local/sbin/dr-state /usr/local/sbin/dr-state "
         "&& cp -a --no-preserve=ownership "
-        "/mnt/seed/poc/files/usr/local/lib/dr-state /usr/local/lib/; "
+        "/mnt/seed/poc/files/usr/local/lib/dr-state /usr/local/lib/ "
+        "&& cp -a --no-preserve=ownership "
+        "/mnt/seed/poc/files/etc/apt/apt.conf.d/80dr-state /etc/apt/apt.conf.d/80dr-state "
+        "&& cp -a --no-preserve=ownership "
+        "/mnt/seed/poc/files/etc/kernel/postinst.d/zz-dr-state /etc/kernel/postinst.d/zz-dr-state "
+        "&& cp -a --no-preserve=ownership "
+        "/mnt/seed/poc/files/etc/kernel/postrm.d/zz-dr-state /etc/kernel/postrm.d/zz-dr-state; "
         "then echo INSRC:0; else echo INSRC:1; fi; "
-        "chown -R 0:0 /usr/local/sbin/dr-state /usr/local/lib/dr-state; echo OWNRC:$?; "
+        "chown -R 0:0 /usr/local/sbin/dr-state /usr/local/lib/dr-state "
+        "/etc/apt/apt.conf.d/80dr-state "
+        "/etc/kernel/postinst.d/zz-dr-state /etc/kernel/postrm.d/zz-dr-state; echo OWNRC:$?; "
         "umount /mnt/seed; "
         f"echo DRSTATE_SHA:$({installed_payload_digest_command()})"
     )

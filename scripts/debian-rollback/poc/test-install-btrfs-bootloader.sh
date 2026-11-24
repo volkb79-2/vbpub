@@ -36,6 +36,34 @@ assert_include() { # assert_include LABEL FILE PACKAGE_LIST
   [ "$got" = "--include=$want" ] || bad "$label debootstrap include list is '$got', want '$want'"
 }
 
+assert_payload_order() { # assert_payload_order LABEL DRY_TRACE
+  local label=$1 file=$2 usrp ui gm ea epi epr before_menu
+  usrp=$(grep -nF '+ payload /mnt/drtarget/usr/local/sbin/dr-state' "$file" | cut -d: -f1)
+  ui=$(grep -nF 'update-initramfs -u -k all' "$file" | cut -d: -f1)
+  gm=$(grep -nF 'gen-menu --default @os-000001-' "$file" | cut -d: -f1)
+  ea=$(grep -nF '+ payload /mnt/drtarget/etc/apt/apt.conf.d/80dr-state' "$file" | cut -d: -f1)
+  epi=$(grep -nF '+ payload /mnt/drtarget/etc/kernel/postinst.d/zz-dr-state' "$file" | cut -d: -f1)
+  epr=$(grep -nF '+ payload /mnt/drtarget/etc/kernel/postrm.d/zz-dr-state' "$file" | cut -d: -f1)
+  cases=$((cases + 1))
+  if [ -z "$usrp" ] || [ -z "$ui" ] || [ -z "$gm" ] || [ -z "$ea" ] || [ -z "$epi" ] || [ -z "$epr" ]; then
+    bad "$label payload activation markers are incomplete"
+    return
+  fi
+  before_menu=$(sed -n "1,$((gm - 1))p" "$file" 2>/dev/null || true)
+  cases=$((cases + 1))
+  if grep -Fq '/mnt/drtarget/etc/apt/apt.conf.d/80dr-state' <<<"$before_menu" \
+      || grep -Fq '/mnt/drtarget/etc/kernel/postinst.d/zz-dr-state' <<<"$before_menu" \
+      || grep -Fq '/mnt/drtarget/etc/kernel/postrm.d/zz-dr-state' <<<"$before_menu"; then
+    bad "$label activated a hook payload member before gen-menu --default"
+  fi
+  cases=$((cases + 1))
+  if [ "$usrp" -lt "$ui" ] && [ "$gm" -lt "$ea" ] && [ "$gm" -lt "$epi" ] && [ "$gm" -lt "$epr" ]; then
+    :
+  else
+    bad "$label usr payload or post-gen-menu hook activation order is wrong"
+  fi
+}
+
 run_dry grub-default
 contains grub-default-package "$WORK/grub-default.err" \
   '--include=linux-image-amd64,grub-efi-amd64,btrfs-progs'
@@ -231,27 +259,13 @@ dd=$(grep -nF 'mkdir -p /etc/kernel/dr-disabled' "$WORK/sdboot.err" | cut -d: -f
 pi=$(grep -nF 'dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postinst-zz-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)
 pr=$(grep -nF 'dpkg-divert --local --add --rename --divert /etc/kernel/dr-disabled/postrm-zz-systemd-boot' "$WORK/sdboot.err" | cut -d: -f1)
 gm=$(grep -nF 'gen-menu --default @os-000001-' "$WORK/sdboot.err" | cut -d: -f1)
-usrp=$(grep -nF '+ payload /mnt/drtarget/usr/local/sbin/dr-state' "$WORK/sdboot.err" | cut -d: -f1)
-ui=$(grep -nF 'update-initramfs -u -k all' "$WORK/sdboot.err" | cut -d: -f1)
-ea=$(grep -nF '+ payload /mnt/drtarget/etc/apt/apt.conf.d/80dr-state' "$WORK/sdboot.err" | cut -d: -f1)
-epi=$(grep -nF '+ payload /mnt/drtarget/etc/kernel/postinst.d/zz-dr-state' "$WORK/sdboot.err" | cut -d: -f1)
-epr=$(grep -nF '+ payload /mnt/drtarget/etc/kernel/postrm.d/zz-dr-state' "$WORK/sdboot.err" | cut -d: -f1)
 [ -n "$kd" ] && [ -n "$kp" ] && [ -n "$dp" ] && [ -n "$bc" ] && [ -n "$dd" ] && [ -n "$pi" ] && [ -n "$pr" ] && [ -n "$si" ] && [ -n "$gm" ] \
   && [ "$kd" -lt "$kp" ] && [ "$kp" -lt "$dp" ] && [ "$dp" -lt "$bc" ] \
   && [ "$bc" -lt "$dd" ] && [ "$dd" -lt "$pi" ] && [ "$pi" -lt "$pr" ] \
   && [ "$pr" -lt "$si" ] && [ "$si" -lt "$gm" ] \
   || bad "sdboot BLS override must precede debootstrap, and bootloader setup/state capture must precede gen-menu"
-cases=$((cases + 1))
-before_menu=$(sed -n "1,$((gm - 1))p" "$WORK/sdboot.err" 2>/dev/null || true)
-if grep -Fq '/mnt/drtarget/etc/apt/apt.conf.d/80dr-state' <<<"$before_menu" \
-    || grep -Fq '/mnt/drtarget/etc/kernel/postinst.d/zz-dr-state' <<<"$before_menu" \
-    || grep -Fq '/mnt/drtarget/etc/kernel/postrm.d/zz-dr-state' <<<"$before_menu"; then
-  bad "a hook payload member was activated before gen-menu --default"
-fi
-cases=$((cases + 1))
-[ -n "$usrp" ] && [ -n "$ui" ] && [ -n "$ea" ] && [ -n "$epi" ] && [ -n "$epr" ] \
-  && [ "$usrp" -lt "$ui" ] && [ "$gm" -lt "$ea" ] && [ "$gm" -lt "$epi" ] && [ "$gm" -lt "$epr" ] \
-  || bad "usr payload activation or post-gen-menu hook activation order is wrong"
+assert_payload_order sdboot "$WORK/sdboot.err"
+assert_payload_order grub "$WORK/grub-default.err"
 
 cases=$((cases + 1))
 if "$INSTALL" --dry-run --yes --device /dev/dr-not-used --bootloader grub2 >/dev/null 2>&1; then
