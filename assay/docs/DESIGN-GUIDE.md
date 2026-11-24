@@ -1764,12 +1764,10 @@ See [the consumer contract](CONSUMERS.md#carry-forward-earlier-judge-results-b56
 
 ### Mutation state store boundary (B566)
 
-`mutation.py` owns site discovery and native execution; `mutation_store.py`
-owns persisted records, generations, validation, effective-judge/provenance,
-merge/shard/carry combinators, and terminal bucket classification. The import
-direction is one way; the store's `mutation` references are annotation-only.
-`RecordContext` groups cold-witness, equivalence, baseline, and kill-signal facts
-shared by record calls, while run-specific parameters stay explicit.
+`mutation.py` owns site discovery and execution; `mutation_store.py` owns persisted records,
+generations, validation, effective judge, provenance, merge/shard/carry helpers, and terminal classification.
+The import edge is one way; the store's `mutation` references are annotation-only.
+`RecordContext` groups shared record-judge facts; run-specific parameters stay explicit.
 
 ### Serial tail retries for native R2 (B179)
 
