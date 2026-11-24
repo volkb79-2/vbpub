@@ -1780,13 +1780,12 @@ def test_dockerignore_build_output_rules_hide_no_committed_context_path():
     assert not hidden, hidden
 
 
-def test_dockerfile_fetch_floor_accepts_cmru_declared_floor():
+def test_dockerfile_fetch_floor_equals_cmru_declared_floor():
     code = re.sub(r"\\\n\s*", " ", _dockerfile_run_lines())
     floor = re.search(r"fetch-cli-extended\.py .*?--min-version (\S+)", code).group(1)
     declared = tomllib.loads((REPO_ROOT / "cmru" / "pyproject.toml").read_text("utf-8"))
     (spec,) = [d for d in declared["project"]["dependencies"] if gen.requirement_name(d) == "cli-extended"]
-    declared_floor = spec.replace(" ", "").split(">=", 1)[1]
-    assert tuple(map(int, floor.split("."))) <= tuple(map(int, declared_floor.split(".")))
+    assert spec.replace(" ", "") == f"cli-extended>={floor}"
 
 
 # --- fetch-cli-extended.py: the digest is mandatory and checked before any file exists
