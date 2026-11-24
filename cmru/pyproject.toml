@@ -15,6 +15,8 @@ authors = [{name = "Volker Badziong"}]
 # Floor 0.8.0 (raised from 0.3.0 in P7): it carries the shared `procio` implementation
 # (`run_streaming`, `run_capture`, signal-safe group reaping and bounded pipe drain)
 # that replaces cmru's private copy and gives captured probes a group-reaping timeout.
+# The previous 0.3.0 floor remains significant for CLI-EXT-26: `register_skills_verbs`
+# forwards consumer global options so `skills` accepts `--log-prefix-time-short`.
 # It is published to GitHub Releases only; the bare name is unclaimed on PyPI, so
 # every install of cmru MUST be `--no-index --find-links <wheelhouse>` (or
 # `--no-deps` after installing cli-extended first); see README "Install" (CX-D2).

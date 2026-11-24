@@ -87,6 +87,7 @@ artifacts = ["wheel"]
 
 [project.version]
 strategy = "scm"
+bump = "conventional"
 
 [project.release]
 git_tag = false
@@ -211,6 +212,7 @@ def test_step_override_wins_over_project_runner_and_other_steps_inherit_it(tmp_p
         ("nan", float("nan")),
         ("inf", float("inf")),
         ('"5"', "5"),
+        (str(10**400), 10**400),
     ],
 )
 def test_runner_timeout_refusals_use_the_exact_message_and_exit_2(
@@ -235,6 +237,7 @@ def test_runner_timeout_refusals_use_the_exact_message_and_exit_2(
         ("nan", float("nan")),
         ("inf", float("inf")),
         ('"5"', "5"),
+        (str(10**400), 10**400),
     ],
 )
 def test_step_timeout_refusals_use_the_exact_message_and_exit_2(
@@ -261,6 +264,55 @@ def test_runner_rejects_unknown_runner_keys(tmp_path, capsys):
         cli.load_forge_config(config)
     assert refused.value.code == 2
     assert "runner: unknown keys ['unknown_key']" in capsys.readouterr().err
+
+
+def test_runner_table_must_be_a_table(tmp_path, capsys):
+    config_path = _project_config(tmp_path)
+    text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        text.replace(
+            "schema_version = 1\n\n",
+            "schema_version = 1\nrunner = \"not a table\"\n\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as refused:
+        cli.load_forge_config(config_path)
+
+    assert refused.value.code == 2
+    assert "[ERROR] [runner] must be a table" in capsys.readouterr().err
+
+
+def test_direct_parse_step_validates_runner_shape_and_timeout_for_coverage():
+    raw = {
+        "runner": {"no_progress_timeout_seconds": 30},
+        "steps": {
+            "build": {
+                "quiet": True,
+                "commands": [{"label": "build", "argv": ["true"], "cwd": "."}],
+            },
+        },
+    }
+
+    parsed = runner.parse_step(raw, "build")
+    assert parsed.no_progress_timeout_seconds == 30.0
+    assert parsed.no_progress_timeout_source == "runner.no_progress_timeout_seconds"
+
+    for invalid in (True, "5"):
+        raw["runner"] = {"no_progress_timeout_seconds": invalid}
+        with pytest.raises(ValueError, match="runner.no_progress_timeout_seconds"):
+            runner.parse_step(raw, "build")
+
+    raw["runner"] = "not a table"
+    with pytest.raises(ValueError, match=r"\[runner\] must be a table"):
+        runner.parse_step(raw, "build")
+
+    raw["runner"] = {}
+    raw["steps"]["build"]["no_progress_timeout_seconds"] = 10**400
+    with pytest.raises(ValueError, match="steps.build.no_progress_timeout_seconds"):
+        runner.parse_step(raw, "build")
 
 
 def test_fake_clock_watchdog_exits_1_and_names_the_winning_source(tmp_path, monkeypatch, capsys):
@@ -371,6 +423,36 @@ def test_malformed_streamed_utf8_is_replaced_and_does_not_fail_a_zero_exit(
     expected = "ok \ufffd end\n"
     assert expected in (tmp_path / "logs" / "build.log").read_text(encoding="utf-8")
     assert expected in aggregate.read_text(encoding="utf-8")
+
+
+def test_quiet_failure_surfaces_error_lines_and_context(tmp_path, capsys):
+    script = (
+        "import sys\n"
+        "print('[ERROR] build failed', flush=True)\n"
+        "print('context after failure', flush=True)\n"
+        "raise SystemExit(7)\n"
+    )
+    step = runner.StepConfig(
+        name="build",
+        commands=[{"label": "fail", "argv": [sys.executable, "-c", script], "cwd": "."}],
+        bake_set_prefix=None,
+        bake_set_vars=[],
+        no_cache_env=None,
+        clean_dirs=[],
+        required_env=[],
+        login=None,
+        step_env={},
+        env_command=None,
+        quiet=True,
+    )
+
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        runner.execute_step(step, tmp_path, tmp_path / "logs")
+
+    assert failed.value.returncode == 7
+    err = capsys.readouterr().err
+    assert "error-looking line(s)" in err and "[ERROR] build failed" in err
+    assert "context after failure" in err
 
 
 def test_cleanup_stub_copies_only_the_two_watchdog_fields(tmp_path, monkeypatch):
@@ -515,7 +597,7 @@ def test_captured_probe_timeout_reaps_its_lingering_grandchild(tmp_path, monkeyp
     script = (
         f"echo $$ > {shell_pidfile}; "
         f"sleep 600 & echo $! > {holder_pidfile}; "
-        f": > {ready}; wait"
+        f"printf ready > {ready}; wait"
     )
     _install_fake_procio_clock(monkeypatch, ready)
     thread, outcome = _run_in_thread(
@@ -541,24 +623,68 @@ def test_captured_probe_timeout_reaps_its_lingering_grandchild(tmp_path, monkeyp
         _kill_quietly(shell)
 
 
-def test_run_process_stdin_devnull_is_expressed_as_immediate_eof(tmp_path):
+@pytest.mark.parametrize("capture", [True, False])
+def test_run_process_stdin_devnull_is_expressed_as_immediate_eof(tmp_path, capture):
+    marker = tmp_path / "stdin.json"
+    script = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text(json.dumps({{'data': sys.stdin.read()}}))\n"
+    )
     result = process_run.run_process(
-        [sys.executable, "-c", "import sys; print(repr(sys.stdin.read()))"],
+        [sys.executable, "-c", script],
         cwd=tmp_path,
         stdin=subprocess.DEVNULL,
+        capture=capture,
     )
     assert result.returncode == 0
-    assert result.stdout == "''\n"
-    assert result.stderr == ""
+    assert json.loads(marker.read_text(encoding="utf-8")) == {"data": ""}
+    if capture:
+        assert result.stdout == "" and result.stderr == ""
+    else:
+        assert result.stdout is None and result.stderr is None
+
+
+def test_uncaptured_process_forwards_scoped_input_and_text_mode(tmp_path):
+    marker = tmp_path / "uncaptured.json"
+    script = (
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "raw = sys.stdin.buffer.read()\n"
+        f"Path({str(marker)!r}).write_text(json.dumps({{'cwd': os.getcwd(), "
+        "'value': os.environ['CMRU_UNCAPTURED_VALUE'], 'raw': raw.decode()}))\n"
+    )
+    environment = {**os.environ, "CMRU_UNCAPTURED_VALUE": "scoped"}
+
+    result = process_run.run_process(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        timeout=120,
+        input=b"payload",
+        capture=False,
+        text=None,
+    )
+
+    assert result.returncode == 0 and result.stdout is None and result.stderr is None
+    assert json.loads(marker.read_text(encoding="utf-8")) == {
+        "cwd": str(tmp_path),
+        "value": "scoped",
+        "raw": "payload",
+    }
 
 
 @pytest.mark.parametrize("stdin", [subprocess.PIPE, subprocess.STDOUT, "pipe"])
-def test_run_process_refuses_any_other_stdin_value_before_spawning(tmp_path, stdin):
+@pytest.mark.parametrize("capture", [True, False])
+def test_run_process_refuses_any_other_stdin_value_before_spawning(
+    tmp_path, stdin, capture,
+):
     marker = tmp_path / "spawned"
     with pytest.raises(ValueError, match="stdin must be None or subprocess.DEVNULL"):
         process_run.run_process(
             [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).write_text('x')"],
             cwd=tmp_path,
             stdin=stdin,
+            capture=capture,
         )
     assert not marker.exists()

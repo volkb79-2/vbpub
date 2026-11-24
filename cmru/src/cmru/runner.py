@@ -503,13 +503,12 @@ def _run_command(
         diagnostic = result.watchdog.render(no_progress_timeout_source)
         log_error(diagnostic)
         _write_line(log_handle, f"[cmru] {diagnostic}\n")
-        if result.watchdog.tree_lines:
-            tree_header = "process tree before termination:"
-            print(tree_header, file=sys.stderr, flush=True)
-            _write_line(log_handle, f"[cmru] {tree_header}\n")
-            for tree_line in result.watchdog.tree_lines:
-                print(tree_line, file=sys.stderr, flush=True)
-                _write_line(log_handle, tree_line + "\n")
+        tree_header = "process tree before termination:"
+        print(tree_header, file=sys.stderr, flush=True)
+        _write_line(log_handle, f"[cmru] {tree_header}\n")
+        for tree_line in result.watchdog.tree_lines:
+            print(tree_line, file=sys.stderr, flush=True)
+            _write_line(log_handle, tree_line + "\n")
         raise subprocess.CalledProcessError(1, argv)
     if exit_code != 0:
         if quiet and error_lines:

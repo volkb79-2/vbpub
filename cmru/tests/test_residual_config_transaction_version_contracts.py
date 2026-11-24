@@ -156,7 +156,7 @@ def test_transaction_delete_and_discard_refuse_unsafe_state(tmp_path):
 
 
 def test_version_counter_success_and_external_prepare_value_are_observable(tmp_path):
-    with patch.object(version.subprocess, "run", side_effect=[SimpleNamespace(returncode=0, stdout=""), SimpleNamespace(returncode=0)]) as run:
+    with patch.object(version, "run_process", side_effect=[SimpleNamespace(returncode=0, stdout=""), SimpleNamespace(returncode=0)]) as run:
         assert version._apply_strategy_counter(tmp_path, "demo-v", "1.0.0") == "demo-v1.0.0-r1"
     assert run.call_count == 2
 

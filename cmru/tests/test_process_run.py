@@ -97,7 +97,6 @@ def test_doctor_process_probe_returns_the_real_result(tmp_path):
     result = doctor._run(
         [sys.executable, "-c", "print('doctor-ok')"],
         timeout=120,
-        cwd=tmp_path,
     )
 
     assert result.returncode == 0

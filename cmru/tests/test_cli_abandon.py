@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from cli_extended import CliFailure
-from cmru import cli, exit_codes, transaction
+from cmru import cli, exit_codes, git_auth, transaction
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +37,33 @@ def _workspace(path: Path, branch: str, base: str = "a" * 40):
     )
 
 
+def _install_cli_process_seam(monkeypatch, replacement):
+    """Route legacy captured-Git fakes through the shared run_process seam."""
+    def adapted_run_process(
+        argv, *, cwd=None, env=None, timeout=None, check=False,
+        capture=True, text=True, input=None, stdin=None,
+    ):
+        kwargs = {"check": check}
+        if capture:
+            kwargs["capture_output"] = True
+        if text is not None:
+            kwargs["text"] = text
+        if cwd is not None:
+            kwargs["cwd"] = cwd
+        if env is not None:
+            kwargs["env"] = env
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if input is not None:
+            kwargs["input"] = input
+        if stdin is not None:
+            kwargs["stdin"] = stdin
+        return replacement(list(argv), **kwargs)
+
+    monkeypatch.setattr(git_auth, "run_process", adapted_run_process)
+    monkeypatch.setattr(cli.subprocess, "run", replacement)
+
+
 def _read_only_git(monkeypatch, *, heads=None, tags=""):
     if heads is None:
         heads = "a" * 40 + "\trefs/heads/main\n"
@@ -49,7 +76,7 @@ def _read_only_git(monkeypatch, *, heads=None, tags=""):
             return subprocess.CompletedProcess(argv, 1, "", "")
         raise AssertionError(f"unexpected subprocess: {argv}")
 
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    _install_cli_process_seam(monkeypatch, run)
 
 
 def _loaded_config(root, configs):
@@ -315,7 +342,7 @@ def test_abandon_recheck_ignores_tags_from_an_unselected_project(
         if argv[:2] == ["git", "merge-base"]:
             return subprocess.CompletedProcess(argv, 1, "", "")
         raise AssertionError(argv)
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    _install_cli_process_seam(monkeypatch, run)
     removed = []
     monkeypatch.setattr(
         transaction, "abandon_workspace",
@@ -1128,7 +1155,7 @@ def test_abandon_rechecks_remote_state_after_confirmation_before_mutating(
             return subprocess.CompletedProcess(argv, 1 if argv[3] == "b" * 40 else 0, "", "")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    _install_cli_process_seam(monkeypatch, run)
     monkeypatch.setattr(
         transaction, "abandon_workspace",
         lambda *_args, **_kwargs: pytest.fail("stale remote state reached abandonment"),
@@ -1578,7 +1605,7 @@ def test_abandon_requires_remote_candidate_to_be_known_ancestor(
         if argv[:3] == ["git", "ls-remote", "--tags"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    _install_cli_process_seam(monkeypatch, run)
 
     with pytest.raises(CliFailure, match="nothing was abandoned"):
         _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
@@ -1641,7 +1668,7 @@ def test_abandon_parses_remote_refs_and_accepts_unpromoted_candidate(
         code, stdout = next(responses)
         return subprocess.CompletedProcess(argv, code, stdout, "")
 
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    _install_cli_process_seam(monkeypatch, run)
     assert _invoke_abandon(candidate, branch=candidate.branch) == 0
     assert "Candidate:" in capsys.readouterr().out
     assert len(calls) == 4
@@ -1668,7 +1695,7 @@ def test_abandon_refuses_promoted_or_indeterminate_remote_main(monkeypatch, tmp_
                 calls["merge"] += 1
                 return subprocess.CompletedProcess(argv, merge_result, "", "")
             raise AssertionError(argv)
-        monkeypatch.setattr(cli.subprocess, "run", run)
+        _install_cli_process_seam(monkeypatch, run)
         with pytest.raises(CliFailure, match="nothing was abandoned"):
             _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
         assert message in capsys.readouterr().out
@@ -1694,7 +1721,7 @@ def test_abandon_checks_remote_tag_metadata_and_detects_release_coordinates(
             if argv[:2] == ["git", "merge-base"]:
                 return subprocess.CompletedProcess(argv, 1, "", "")
             raise AssertionError(argv)
-        monkeypatch.setattr(cli.subprocess, "run", run)
+        _install_cli_process_seam(monkeypatch, run)
         with pytest.raises(CliFailure, match="nothing was abandoned"):
             _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
         assert expected in capsys.readouterr().out
@@ -1713,7 +1740,7 @@ def test_abandon_checks_remote_tag_metadata_and_detects_release_coordinates(
             # The tag is on the candidate and descends from the recorded base.
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)
-    monkeypatch.setattr(cli.subprocess, "run", run_tag)
+    _install_cli_process_seam(monkeypatch, run_tag)
     monkeypatch.setattr(
         cli, "load_config",
         lambda _path: _loaded_config(
@@ -1754,7 +1781,7 @@ def test_abandon_refuses_a_new_release_tag_at_the_original_snapshot_commit(
             return subprocess.CompletedProcess(argv, 1 if merge_calls == 1 else 0, "", "")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    _install_cli_process_seam(monkeypatch, run)
     with pytest.raises(CliFailure, match="nothing was abandoned"):
         _invoke_abandon(candidate, branch=candidate.branch, dry_run=False)
     output = capsys.readouterr().out
@@ -1792,7 +1819,7 @@ def test_abandon_allows_a_base_commit_tag_proven_to_precede_the_attempt(
             return subprocess.CompletedProcess(argv, 1 if is_base_comparison else 0, "", "")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    _install_cli_process_seam(monkeypatch, run)
     assert _invoke_abandon(candidate, branch=candidate.branch) == 0
     assert "Candidate:" in capsys.readouterr().out
 
@@ -1836,7 +1863,7 @@ def test_abandon_distinguishes_remote_tag_candidate_results(
             return subprocess.CompletedProcess(argv, 1, "", "")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    _install_cli_process_seam(monkeypatch, run)
     if mode == "not-on-candidate":
         assert _invoke_abandon(candidate) == 0
         assert "Candidate:" in capsys.readouterr().out

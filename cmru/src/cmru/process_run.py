@@ -32,6 +32,8 @@ def run_process(
     stdin=None,
 ) -> subprocess.CompletedProcess:
     """Run one argument-vector command with CMRU's shared subprocess policy."""
+    if stdin is not None and stdin != subprocess.DEVNULL:
+        raise ValueError("stdin must be None or subprocess.DEVNULL")
     argv_list = list(argv)
     if capture:
         result = procio.run_capture(

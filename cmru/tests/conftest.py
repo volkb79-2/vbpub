@@ -40,6 +40,51 @@ pytest_plugins = ["cli_extended.pytest_plugin", "estate_test_policy.plugin"]
 #: The process environment when the session started (before any test ran).
 SESSION_START_ENVIRON = dict(os.environ)
 
+
+@pytest.fixture
+def process_run_seam(monkeypatch):
+    """Install an old subprocess fake at today's shared process-run seam.
+
+    Captured calls now enter ``cli_extended.procio.run_capture`` through
+    ``cmru.process_run.run_process``. Tests that deliberately fake Git still
+    describe the same completed-process responses; this fixture translates
+    those fakes to the production seam instead of making production inspect a
+    test's monkeypatch. Direct, not-yet-migrated ``subprocess.run`` calls in
+    the same module are patched too because existing tests exercise both.
+    """
+    def install(module, replacement):
+        from cmru import git_auth
+
+        def adapted_run_process(
+            argv, *, cwd=None, env=None, timeout=None, check=False,
+            capture=True, text=True, input=None, stdin=None,
+        ):
+            kwargs = {"check": check}
+            if capture:
+                kwargs["capture_output"] = True
+            if text is not None:
+                kwargs["text"] = text
+            if cwd is not None:
+                kwargs["cwd"] = cwd
+            if env is not None:
+                kwargs["env"] = env
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            if input is not None:
+                kwargs["input"] = input
+            if stdin is not None:
+                kwargs["stdin"] = stdin
+            return replacement(list(argv), **kwargs)
+
+        if hasattr(module, "run_process"):
+            monkeypatch.setattr(module, "run_process", adapted_run_process)
+        if hasattr(module, "subprocess"):
+            monkeypatch.setattr(module.subprocess, "run", replacement)
+        if module.__name__ in {"cmru.cli", "cmru.transaction"}:
+            monkeypatch.setattr(git_auth, "run_process", adapted_run_process)
+
+    return install
+
 #: Keep the known integration/install/e2e cost centers out of a fail-fast kill's
 #: prefix. The env gate keeps every lane except the first-release R2 lane on
 #: pytest's normal collection order.
