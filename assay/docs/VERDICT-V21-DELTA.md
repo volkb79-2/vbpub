@@ -13,7 +13,7 @@ P-assay-09 (B567 part 1), 2026-11-24. Binding: D-A3, D-A8, D-A12 (`.controller-s
 | B545 | No schema field. Producer: the progress `outcome_bucket` is taken from the same record the verdict projects, with one classifier, `_bucket_for_run` (`mutation.py:4365`). A supervisor-killed candidate is never `killed`: `_has_clean_failure_report` requires FAIL, rc 1 and an exited leader (`mutation.py:4302-4318`). A test that an in-suite timeout fails (rc 1, clean exit) is `killed` on both sides. The closeout keeps refusing a mismatch (`analysis/.../campaign.py:695-698`). The first step is to reproduce RG-278 candidate 16300. | B545 | possibly. Whichever side mislabelled 16300 flips; unknown until reproduced (E) |
 | B556-code | New `ReasonCode.SNAPSHOT_IO_FAILED` (ERROR) for a non-git `OSError`. The site is `runner.py:7577-7599`, which today raises `GIT_FAILED`. `GIT_FAILED` becomes git-only. | B556, D-A13 | **YES**. The B053/DA-R8 refusal tests expect `GIT_FAILED` |
 | B556-cleanup | The cleanup-failure shape is recommendation (b) in §5.2 | B556 | only the reason code under (b). Option (a) would reverse A-193/A-194 |
-| B559 | R2 precedence: survivors outrank started timeouts and hangs (§5.1) | B559 | **YES**. See `test_mutation_judge.py:146`, `test_runner_cargo_mutants_r2.py:178` and the comment at `hostobs/assay.toml:253` |
+| B559 | R2 precedence: survivors outrank started timeouts and hangs (§5.1) | B559 | **YES**. See `test_mutation_judge.py:146` and `test_runner_cargo_mutants_r2.py:178`. The `hostobs/assay.toml:253` comment is left to the hostobs owner (§5.1) |
 | B554 (+B234) | **Addition to D-A12's list, to confirm.** The descendant item in the schema (`verdict.schema.json:1739ff`, `additionalProperties: false`, only `pid/ppid/comm`) gains the optional `cmdline` that the writer already emits (`process_tree.py:170`) and verify already accepts (`verify.py:2546`). B234's optional `state` letter is added with it: it requires a complete `pid/ppid/comm` identity and is enforced in the schema `allOf` and in verify. Both are BLOCKED-ON-V20 and missed v20. Under D-A12 they cannot land anywhere else. | B554, B234, B532 note | no. It fixes a live v20 defect: a real leaked-descendant verdict is schema-invalid |
 | verify rules | §4 | B567, F15, L1 | no (new refusals for new fields) |
 | version | `VERDICT_SCHEMA_VERSION` 20→21 (`verdict.py:443`), with the schema `$id`/`title`/`const`, the pin and `reuse.py` (§6) | M3 | hard cut: verify refuses v20 (A-170) |
@@ -26,13 +26,15 @@ The §3.3.1 object (WP2 design note) is projected **unchanged**: `{kind, from_ca
 
 | `kind` | Where it comes from | Fields | Legal buckets |
 |---|---|---|---|
-| `fresh` | Executed by this run. The state record carries no provenance. | exactly `{kind}` | any |
-| `resumed` | **Assigned at projection.** This run took a record from its own store, and that record has no stored provenance. | `from_candidate_id` = own id, `from_judge_sha256` = the record's judge, `match: exact-id` | any |
+| `fresh` | Executed by this run, with no stored provenance in the state record. Not-started placeholders are also `fresh`: candidates left out by a selection (`_append_unselected`, `mutation.py:4166`) and the campaign-deadline remainder. | exactly `{kind}` | any |
+| `resumed` | **Assigned at projection.** The record has no stored provenance and was not executed by this run. It came from the run's own store, from `--merge-state` or from `--merge-shard-store`. | `from_candidate_id` = own id, `from_judge_sha256` = the record's judge, `match: exact-id` | any |
 | `imported` | `--carry-over` (stored). A schema-1 `carry_over` block is derived by `record_provenance`. | all except `replay_node_id`. `reason` is required | `killed`, `survived` (`CARRY_OVER_IMPORTABLE_BUCKETS`, `mutation.py:1805`) |
 | `carried` | `--carry-forward` survivor (stored) | all except `replay_node_id` | `survived` only |
 | `replayed` | A fresh current-judge isolated run whose test was chosen from a prior record (stored). This covers a carried-kill replay (`match` exact-id/locus/window), a hint kill (`match: hint`) and an R-a survivor probe kill (`match: exact-id`). | `replay_node_id` is required | `killed` only |
 
-**Stored kinds win, and resume never launders.** A resumed record that carries stored provenance projects its stored kind. An imported record that a later run resumes therefore still projects `imported`, so an imported kill still trips D-A3. `test_flex_r2_campaigns.py:426-429` resumes an imported survivor this way, and P-assay-17 adds the kill variant.
+**Stored kinds win, and resume never launders.** A resumed record that carries stored provenance projects its stored kind. An imported record that a later run resumes therefore still projects `imported`, so an imported kill still trips D-A3. `test_flex_r2_campaigns.py:426-429` resumes an imported survivor this way, and P-assay-17 adds the kill variant. With these two rows, every outcome has exactly one kind, so the counts in §2.3 sum to `total`.
+
+**Narrowing of §3.3.1.** §3.3.1 says `resumed` "is assigned when a run takes a record from its store". This list narrows that to "only a record with no stored provenance". A later package adds that one-line amendment to §3.3.1; this document does not edit the design note, which lives on the WP2 branch.
 
 ### 2.2 One vocabulary: `kind` is origin, `mode` is execution
 
@@ -44,11 +46,15 @@ The design note §5.2 proposed modes `carried`, `carried-unverified` and `replay
 - `witness-isolated` is the one new `execution.mode`, because it has fields of its own.
 - §5.2's `prior{…}` object is dropped: its fields are the provenance fields, and `node_baseline_sha256` moves into the execution.
 
+This mapping supersedes the wording "modes `carried`/`carried-unverified`/`witness-isolated`/`replayed`" in backlog B567 and in PLAN P-assay-09/17. P-assay-17's acceptance reads "carried-unverified kill = `killed ∧ kind = imported`". B567 gets an amendment line later; this document does not edit the backlog.
+
 A non-fresh outcome keeps the execution that its executing judge (`from_judge_sha256`) recorded. Two invariants link the axes. First, `execution.mode = witness-isolated` holds exactly when `kind = replayed`. Second, `witness.node_id = replay_node_id`.
 
 The `witness-isolated` execution is `{mode, witness, node_baseline_sha256}`:
 - `witness` is the failed-call receipt on the mutant (M).
 - `node_baseline_sha256` names one entry of `judgment.r2.node_baselines: [{node_id, sha256, outcome: "passed"}]`, where `sha256` is the digest of the canonical receipt of the pristine-tree (P) run.
+
+**Node-baseline persistence.** The node-baseline cache is per run, so a reference to it alone would not survive a resume or a `--merge-shard-store` run: the later run would have no matching entry, and verify would refuse a legitimate verdict. The node-baseline receipt `{node_id, sha256, outcome}` is therefore persisted **with the `replayed` state record**. Every run that projects that record also projects its receipt into `judgment.r2.node_baselines`, deduplicated by `sha256`. P-assay-13 writes the receipt.
 
 ### 2.3 `judgment.r2.provenance` (native only)
 
@@ -70,7 +76,7 @@ The `witness-isolated` execution is `{mode, witness, node_baseline_sha256}`:
 **Why not another existing status.**
 - R2 `INCONCLUSIVE` means "no evidence about the tests" (`NO_MUTANTS`, `ALL_MUTANTS_EQUIVALENT`, `MUTATION_UNSUPPORTED`).
 - `NO_MEASUREMENT` means the measurement's subject is unknown (`PROVENANCE_UNVERIFIED`, `errors.py:163-172`).
-- `BUDGET_EXCEEDED` tells run-gate to resume (`run_gate.py:16524`), but a resume does not help: an imported record is resumed, not re-judged.
+- `BUDGET_EXCEEDED` tells run-gate that the lane may resume its assay state (`run_gate.py:5926-5929`), but a resume does not help: an imported record is resumed, not re-judged.
 - FAIL states exactly what holds: "every candidate killed" is not established.
 - The remedy is `--rejudge-outcome killed` (`mutation.py:3962`) or a carry-forward replay (WP4).
 - run-gate maps both FAIL and INCONCLUSIVE to FAIL (`run_gate.py:353-360`), so the choice changes only the reason code.
@@ -79,7 +85,7 @@ The `witness-isolated` execution is `{mode, witness, node_baseline_sha256}`:
 
 1. **Re-derive the counts.** The kind counts, `unverified_kills` and `by_source_judge` are recomputed from the per-candidate objects, and the sum must equal `total`. A disagreement is refused.
 2. **Kind/bucket matrix (§2.1).** **F15**: a `killed` outcome with `kind = carried` is refused. So are `replayed` outside `killed`, `imported` outside `killed`/`survived`, and a violation of the `witness-isolated` ⇔ `replayed` biconditional.
-3. **Node baseline.** A `witness-isolated` outcome is refused when its `node_baseline_sha256` does not resolve to a `node_baselines` entry with the same `node_id` and `outcome: "passed"`. It is also refused when its witness is not a failed-call receipt.
+3. **Node baseline.** A `witness-isolated` outcome is refused when its `node_baseline_sha256` does not resolve to a `node_baselines` entry with the same `node_id` and `outcome: "passed"`. It is also refused when its witness is not a failed-call receipt. The entry comes from the receipt stored with the record (§2.2), so a resumed or shard-merged `replayed` kill still resolves.
 4. **R2 re-derivation.** It keeps reusing `judge_mutation` (`verify.py:3636`), including the new branches. `KILLS_UNVERIFIED` and `SELECTION_PARTIAL` join the mutation-only reason sets (`verdict.py:794`, `verify.py:180`). `unselected_total` must not exceed the count of `budget_exceeded` entries whose leader status is `not-started` (`verify.py:2499`).
 5. **WP0b: a failed isolated run is never a kill.** WP0b (M, `MEASUREMENTS.md` "R2 isolated replay") measured r = 3.81 s median, with 19/20 old kills confirmed. The isolated run is **neither a kill nor a survivor, nor `budget_exceeded`/`hung`** when any of these happens:
    - a project collection guard refuses it (cmru's conftest: 0/20 without `--cli-case-partial`, M);
@@ -105,11 +111,11 @@ The `witness-isolated` execution is `{mode, witness, node_baseline_sha256}`:
 8. all-equivalent
 9. PASS
 
-Not-started work keeps outranking survivors because run-gate resumes on `BUDGET_EXCEEDED` (`run_gate.py:16524`), and a deadline-truncated run must stay resumable. The not-started fact is already on the wire (`ProcessTreeEvidence.not_started()`, `mutation.py:4165-4181`). There is one R2 claim, whose detail names the timeout and hang counts; the bucket lists already name those candidates.
+Not-started work keeps outranking survivors because run-gate treats a `BUDGET_EXCEEDED` lane as one that may resume its assay state (`run_gate.py:5926-5929`), and a deadline-truncated run must stay resumable. The not-started fact is already on the wire (`ProcessTreeEvidence.not_started()`, `mutation.py:4165-4181`). There is one R2 claim, whose detail names the timeout and hang counts; the bucket lists already name those candidates.
 
 A native producer re-judges started timeouts alone, once, at the end, and only one that still times out stays `budget_exceeded`. Ingested lanes (cargo-mutants) cannot retry, so they get the precedence alone.
 
-**Reverses:** `test_budget_exceeded_outranks_survived_when_both_are_present` (`test_mutation_judge.py:146`), `test_a_timeout_outranks_survivors` (`test_runner_cargo_mutants_r2.py:178`) and the comment at `hostobs/assay.toml:253`. In the hostobs run (21 survivors, 6 timeouts, M), the result goes from `BUDGET_EXCEEDED/LANE_TIMEOUT` (exit 4; run-gate BUDGET_EXCEEDED) to `FAIL/MUTANTS_SURVIVED` (exit 1; run-gate FAIL). If the operator rejects this, today's order stays and D-A3 still sits right after `survived`.
+**Reverses:** `test_budget_exceeded_outranks_survived_when_both_are_present` (`test_mutation_judge.py:146`) and `test_a_timeout_outranks_survivors` (`test_runner_cargo_mutants_r2.py:178`). The comment at `hostobs/assay.toml:253` becomes stale, but it is outside the assay program. Its change is coordination with the hostobs owner after the operator confirms B559, not a P-assay-17 edit. In the hostobs run (21 survivors, 6 timeouts, M), the result goes from `BUDGET_EXCEEDED/LANE_TIMEOUT` (exit 4; run-gate BUDGET_EXCEEDED) to `FAIL/MUTANTS_SURVIVED` (exit 1; run-gate FAIL). If the operator rejects this, today's order stays and D-A3 still sits right after `survived`.
 
 ### 5.2 B556 cleanup: a / b / c
 
@@ -130,7 +136,8 @@ A native producer re-judges started timeouts alone, once, at the end, and only o
 - **What consumers must change.**
   - **run-gate:** three new reason codes. A selection remainder no longer reads `LANE_TIMEOUT`. Under B559, survivors plus timeouts become FAIL.
   - **`assay/analysis`:** `campaign.py` reads `provenance.kind` per outcome, and `rigor_export.py:250` follows the constant.
-  - **hostobs/cmru:** comments and any reason-code readers (audit).
+  - **hostobs:** the `assay.toml:253` comment, changed by the hostobs owner after the operator confirms B559 (coordination, not a P-assay-17 edit).
+  - **cmru:** any reason-code readers (audit).
   - **fixtures:** `tests/fixtures/verdicts/*.json` are regenerated.
   - **docs:** CONSUMERS (contract), DESIGN-GUIDE (link), CHANGES (1-3 lines); the P4 note is marked historical.
 
