@@ -46,7 +46,7 @@ def defaults_config() -> dict:
 
 
 def merge(cfg: dict, override: dict) -> dict:
-    return RENDER.deep_merge(cfg, override)
+    return RENDER.edge_config._deep_merge(cfg, override)
 
 
 def render_to(tmp: Path, cfg: dict) -> Path:
