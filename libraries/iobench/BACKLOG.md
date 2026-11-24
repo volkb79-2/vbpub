@@ -365,7 +365,7 @@ named refusal and never promotes fallback output to raw-target proof.
 **Status:** OPEN (filed 2026-11-24 from the WP-10 P1 merge ruling; no lane change made yet). Priority: R2
 evidence for the M1 raw claim writer, which has no mutation evidence until this runs.
 
-**Finding.** The only complete `r2` measurement so far is the remote gate
+**Finding.** The only `r2` measurement so far is the remote gate
 `rgw-gate-20261124T164429-v1001` at head `74e86a3f5` (run-gate 25.7.0, image
 `sha256:6ca3cb7d01fd`, budget 400 min). It ended `FAIL` exit 4 (`BUDGET_EXCEEDED`): 75 of 1891
 candidates judged in 6 h — 0.2 candidates/min, about 5 min each, ETA about 8450 min — and wrote no
@@ -375,7 +375,8 @@ candidate set the whole `src/iobench` subtree; the lane memory cap (`run-gate.to
 `memory = "1536m"`) — not `jobs_max = 4` (`assay.toml:69`) — is what decides the job count, so
 `jobs = "auto"` (`run-gate.toml:26`) ran one job with a 1.2 GiB memory budget (75 % of the cap);
 and `budget_per_candidate = "auto"` (`assay.toml:72`) produced the 5 min per candidate above.
-`[lanes.r2] budget = "365m"` (`run-gate.toml:28`) is a fifth of the measured ETA.
+`[lanes.r2] budget = "365m"` (`run-gate.toml:28`) is about one twenty-third of the measured ETA
+(365 of about 8450 min).
 
 **Package (six items, shortest first).** Each is a lane/config or host change, not a code change
 under test.
