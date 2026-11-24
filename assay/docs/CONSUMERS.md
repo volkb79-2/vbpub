@@ -2051,37 +2051,43 @@ derived as `{kind: "imported", from_candidate_id: <own id>,
 from_judge_sha256: <schema-1 from>, match: "exact-id",
 reason: <schema-1 reason>}`.
 
-### Carry forward sub-file matches (B561/WP3a)
+### Carry forward earlier-judge results (B561/WP3a)
 
-Use `--carry-forward` to search earlier-judge stores after the judged tree or
-another part of the judge changes. The judge hashes the whole judged tree, so
-cross-judge records are the normal input to this feature:
+`--carry-forward DIR` (repeatable, with `--resume`) searches earlier-judge
+stores for still-pending candidates. `DIR` must exist inside the checkout.
+The judge hashes the whole judged tree, so test, source, environment, argv or
+Assay changes are the normal reason for a different judge; an exact
+whole-tree-judge match is not required.
 
 ```sh
 assay run <lane> --resume --state-dir <current-store> \
   --carry-forward <checkout>/.assay/prior-state
 ```
 
-The source directory must be inside the checkout and may be repeated. Records
-are checked against the current project path and operator family and their
-candidate identity and locus metadata are validated before use. Lookup order is
-exact candidate id, unique A' function locus, then B line window for kills
-only. Same-effective-judge exact-id records remain the responsibility of
-`--resume` or `--merge-state` and are never copied a second time.
+Lookup checks the exact candidate id first, then a unique function locus, then
+a line-window key for prior KILLS only. Same-effective-judge exact-id records
+remain the job of `--resume`/`--merge-state` and are not copied twice.
 
-A prior survivor matched by exact id or A' is imported pessimistically as
-`survived` with schema-2 `carry_over` provenance (`reason: "carry-forward"`,
-`from_judge_sha256` from the source record, `into_judge_sha256` from the current
-run, and `locus_match` set to `exact-id` or `locus`); the R2 claim therefore
-remains FAIL. A prior KILL matched by exact id, A' or B is not imported: the
-candidate remains pending and runs in full. If both a prior survivor and KILL
-claim a candidate, the KILL queues the full run. Ambiguous locus keys, invalid
-or stale-locus records, and records from another project path or operator are
-ignored. Invalid records are counted in `invalid_records`. Known nonterminal
-buckets (`hung` for a timeout, `budget_exceeded`, `crashed`, and other known
-buckets) are ignored and run in full. A literal unknown bucket such as
-`timeout` is invalid under the current bucket set, so it is skipped, counted,
-and run in full.
+A prior survivor found by exact id or locus is carried pessimistically as a
+current `survived` record; the R2 claim therefore stays FAIL. It keeps the
+source record's executing `judge_sha256` and gains the standard schema-2 block
+plus top-level provenance:
+
+```json
+"carry_over": {"schema_version": 2, "into_judge_sha256": "<current>",
+               "source": "<DIR>", "reason": "carry-forward",
+               "imported_at": "...Z", "importer_version": "..."},
+"provenance": {"kind": "carried", "from_candidate_id": "<prior id>",
+               "from_judge_sha256": "<prior judge>",
+               "match": "exact-id|locus", "reason": "carry-forward"}
+```
+
+A prior KILL found by exact id, locus or window is not carried: its candidate
+stays pending and runs in full under the current judge, producing a fresh
+record with neither `provenance` nor `carry_over`. If a survivor and a KILL
+both claim it, the KILL wins and schedules the full run. Ambiguous loci,
+malformed records, known nonterminal buckets and records outside the current
+path/operator family are ignored; known nonterminal work also runs in full.
 
 The run emits one `carry_forward` event before candidate dispatch. It reports
 `exact_id`, `locus` and `window` match counts, `survivors_carried`,
@@ -2089,6 +2095,13 @@ The run emits one `carry_forward` event before candidate dispatch. It reports
 number of distinct prior source judges), `same_judge_resume`, `invalid_records`,
 the source list and `reason: "carry-forward"`. The exact-id `carry_over` event
 and behavior are unchanged.
+
+Only two run combinations are refused because they choose different provenance
+writers for the same record: `--carry-over` and `--carry-over-reason`.
+`--carry-forward` composes with `--shard`, `--merge-state`,
+`--merge-shard-store`, `--reuse-from`, candidate files and candidate
+selections. Each shard applies carry-forward only to its own selected jobs; the
+strict whole-lane merge keeps each carried record's provenance.
 
 `assay plan <lane> --list-pending --state-dir <store> --judge <sha> \
   --carry-forward <checkout>/.assay/prior-state` appends
@@ -2098,12 +2111,11 @@ eligibility filter as a run. Without `--carry-forward`, `--list-pending` output
 is unchanged and remains one candidate ID per line. Its first-token list
 format still lets the annotated lines feed `--only-candidates`.
 
-A carried survivor can be carried again on a later run. Use
-`--rejudge-outcome survived` to run it in full; WP3b will add a survivor-loop
-notice to run output. Because this phase requires the exact same whole-tree
-judge hash, cross-edit locus reuse is limited until prior-judge context is
-specified. Run-Gate does not need a change in WP3a; callers can use this flag
-with Assay directly.
+A carried survivor can be carried again from the old generation even after a
+new test would kill it. When at least one survivor is carried, the run's text
+output says once that carried survivors stay carried until `--rejudge-carried`
+(or a WP4 replay) runs. Until that flag lands, `--rejudge-outcome survived`
+forces the full re-run now.
 
 `--merge-state DIR` (repeatable) copies records of the SAME judge from another
 store -- the way shard stores are merged (below). It needs no reason; records
