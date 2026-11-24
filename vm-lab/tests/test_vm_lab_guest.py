@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 import io
 import json
 import os
@@ -240,6 +241,16 @@ def test_ssh_endpoint_refuses_a_private_directory_inside_the_state_directory(tmp
         vm_guest.ssh_endpoint(state, tmp_path / "missing-credentials", private_dir=state / "private")
 
 
+def test_ssh_endpoint_refuses_a_private_directory_through_a_state_symlink(tmp_path: Path):
+    state = tmp_path / "state"
+    state.mkdir()
+    write_runner(state)
+    link = tmp_path / "link"
+    link.symlink_to(state, target_is_directory=True)
+    with pytest.raises(vm_guest.GuestError, match="outside the guest state directory"):
+        vm_guest.ssh_endpoint(state, tmp_path / "missing-credentials", private_dir=link / "private")
+
+
 @pytest.mark.parametrize("directory_name", ["private key", "private%key"])
 def test_ssh_endpoint_refuses_unsafe_ssh_paths(tmp_path: Path, directory_name: str):
     state = tmp_path / "state"
@@ -287,8 +298,9 @@ def test_private_file_writer_closes_the_descriptor_when_fchmod_fails(tmp_path: P
     monkeypatch.setattr(vm_guest.os, "fchmod", fail_fchmod)
     with pytest.raises(vm_guest.GuestError, match="cannot write private file"):
         vm_guest._write_private_file(private / "id_ed25519", b"private")
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as raised:
         os.close(descriptors[0])
+    assert raised.value.errno == errno.EBADF
 
 
 # --- SSH command behavior ------------------------------------------------------------------
@@ -402,6 +414,18 @@ def test_wait_ready_replaces_a_master_left_from_a_guest_side_reboot(lab: Lab):
     assert lab.guest.run("systemctl reboot").rc == 0
     assert lab.guest.wait_ready(5) == BOOT_IDS[1]
     assert lab.machine.read()["master_boot_id"] == BOOT_IDS[1]
+
+
+def test_wait_ready_replaces_a_stale_control_path_with_one_master(lab: Lab):
+    ready(lab)
+    assert lab.guest._control_path.exists()
+    lab.machine.update(master=False, master_boot_id=None, master_opens=0, plain_sessions=0)
+
+    assert lab.guest.wait_ready(5) == BOOT_IDS[0]
+    state = lab.machine.read()
+    assert state["master"] is True
+    assert state["master_opens"] == 1
+    assert state["plain_sessions"] == 0
 
 
 # --- reboot and failure proof ---------------------------------------------------------------
@@ -673,6 +697,25 @@ def test_a_disconnect_failure_does_not_mask_a_body_error(monkeypatch: pytest.Mon
     with pytest.raises(RuntimeError, match="body"):
         with vm_guest.attached_to_network("guest-net", plain_host=False):
             raise RuntimeError("body")
+
+
+def test_a_disconnect_failure_is_raised_after_a_successful_body(monkeypatch: pytest.MonkeyPatch):
+    def docker_run(argv, **kwargs):
+        if argv[2] == "connect":
+            return None
+        if argv[2] == "disconnect":
+            raise vm_guest.RunnerError("disconnect failed")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(
+        vm_guest,
+        "inspect_current_container",
+        lambda: ("caller-id", {"NetworkSettings": {"Networks": {}}}),
+    )
+    monkeypatch.setattr(vm_guest, "docker_run", docker_run)
+    with pytest.raises(vm_guest.GuestError, match="cannot detach"):
+        with vm_guest.attached_to_network("guest-net", plain_host=False):
+            pass
 
 
 def test_missing_cockpit_hostname_becomes_a_guest_error(monkeypatch: pytest.MonkeyPatch):

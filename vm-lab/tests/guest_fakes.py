@@ -55,6 +55,8 @@ class FakeMachine:
             "exec_broken": False,
             "host_key": HOST_KEY,
             "master": False,
+            "master_opens": 0,
+            "plain_sessions": 0,
             "link_loss": False,
             "late_check": 0,
             "silent_loss": False,
@@ -385,16 +387,34 @@ if operation == "check":
     raise SystemExit(0)
 
 if operation == "exit":
-    update_state(lambda current: current.update(master=False, master_boot_id=None))
+
+    def close_master(current):
+        if not current["master"]:
+            raise PermissionError("no master")
+        current["master"] = False
+        current["master_boot_id"] = None
+
+    try:
+        update_state(close_master)
+    except PermissionError:
+        fail("Control socket connect: no such file or directory")
     Path(options["ControlPath"]).unlink(missing_ok=True)
     raise SystemExit(0)
 
 if options.get("Master") == "yes":
     if not state["up"] or state["exec_broken"]:
         fail("ssh: connection refused")
+    if Path(options["ControlPath"]).exists() and not state["master"]:
+
+        def record_plain_session(current):
+            current["plain_sessions"] += 1
+
+        update_state(record_plain_session)
+        raise SystemExit(0)
 
     def open_master(current):
         current["master"] = True
+        current["master_opens"] += 1
         current["master_boot_id"] = current["boot_id"]
 
     update_state(open_master)
@@ -456,6 +476,7 @@ if remote and "systemctl reboot" in remote:
     append_serial("reboot requested\n")
     raise SystemExit(0)
 if remote and "__DAMAGE_PANIC__" in remote:
+
     def damage(current):
         current["pending_reboot"] = True
         current["panic_on_boot"] = True

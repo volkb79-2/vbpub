@@ -609,6 +609,8 @@ class Guest:
             except GuestError:
                 if not ignore_errors:
                     raise
+            finally:
+                self._control_path.unlink(missing_ok=True)
 
     def run(self, cmd: str, timeout: float = 300, *, input: bytes | None = None) -> Result:
         self._require_open()
@@ -668,9 +670,7 @@ class Guest:
                 completed, _elapsed = self._invoke(
                     self._master_argv(), timeout=min(SSH_MASTER_CONNECT_TIMEOUT_SECONDS + 1, max(0.1, remaining))
                 )
-            except GuestTimeout:
-                completed = None
-            except GuestTransportError:
+            except (GuestTimeout, GuestTransportError):
                 completed = None
             if completed is not None:
                 stderr = completed.stderr.decode("utf-8", "replace")
@@ -751,8 +751,6 @@ class Guest:
                 raise self._guest_error(GuestTimeout, f"guest did not become ready within {seconds:g}s")
             try:
                 boot_id = self._probe_boot_id(min(remaining, 6.0))
-            except GuestIdentityChanged:
-                raise
             except (GuestTimeout, GuestTransportError):
                 boot_id = None
             if boot_id is not None and boot_id != not_boot_id:
