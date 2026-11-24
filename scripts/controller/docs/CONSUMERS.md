@@ -89,7 +89,8 @@ that invocation's stream, on every exec path. No final assistant text means no
 `.last.txt`, rather than an older file. The run states its own outcome in
 `.done` as `EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k> EFFORT=<value>`; the
 Codex stream carries no pi stop reasons, so the child's exit status is the one
-fact the wrapper can state. A resume of an existing run name removes the
+fact the wrapper can state. `EFFORT` is Codex-only; Pi records no thinking level in its `.done` marker.
+A resume of an existing run name removes the
 previous invocation's marker before its child starts, so a reader never reports
 an older resume's exit while the new one works, and a wrapper refused before
 the child launches writes no marker.

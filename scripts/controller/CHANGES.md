@@ -13,7 +13,8 @@ no separate version number, so entries are grouped by the work that landed.
   text removes a stale file; the old `.done` outcome remains unchanged.
 - Codex and Pi Open Design routes default to the catalog maximum `max` effort;
   `CODEX_EFFORT` and `PI_THINKING` still override it. Codex `.done` appends
-  `EFFORT=<value>` after the historical fields.
+  `EFFORT=<value>` after the historical fields; that field is Codex-only and
+  Pi records no thinking level in its `.done` marker.
 - CTL-42 part 1: Codex accepts a `sol` route using `$HOME/.codex`, Luna defaults
   to `$HOME/.codex2`, and `CODEX_HOME_OVERRIDE` wins on Luna and an explicit
   `CODEX_ROUTE=sol codex-impl.sh` launch. `codex-review.sh` deliberately gives

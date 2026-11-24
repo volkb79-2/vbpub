@@ -2266,6 +2266,10 @@ PY
       contains "$CONSUMER_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'consumer guide names the exhausted continuation class'
       contains "$README_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'README names the exhausted continuation class'
       contains "$README_SOURCE" 'PI_EMPTY_RETRY_LIMIT' 'README names the continuation bound'
+      contains "$README_SOURCE" '`EFFORT` field is Codex-only' \
+        'README states that done-marker effort is Codex-only'
+      contains "$CONSUMER_SOURCE" 'Pi records no thinking level in its `.done` marker' \
+        'consumer guide states that Pi records no thinking level'
       contains "$DESIGN_SOURCE" 'Continuation is bounded and class-specific' 'design guide explains the continuation bound'
       contains "$DESIGN_SOURCE" 'Why liveness is a file, not a poll of the process' 'design guide explains the liveness sidecar'
       contains "$README_SOURCE" 'job-status.sh' 'README documents the liveness read'

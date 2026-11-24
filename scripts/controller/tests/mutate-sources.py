@@ -961,6 +961,9 @@ mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-steering-target.md",
 mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-codex-marker-shape.md",
        '`EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k> EFFORT=<value>`',
        '`EXIT=<n> AUTORESUME=<k>`')
+mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-pi-thinking-not-recorded.md",
+       'Pi records no thinking level in its `.done` marker.',
+       'Pi records its thinking level in its `.done` marker.')
 mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-pi-launch-route.md",
        '`deepseek-pi` is the favored Pi route',
        '`deepseek-pi` is unavailable in the Pi route selector.')

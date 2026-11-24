@@ -254,7 +254,8 @@ for pi_live_case in \
 done
 for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route \
                      README-long-tool-state README-steering-action README-died-state \
-                     DESIGN-long-tool-rationale CONSUMER-steering-target CONSUMER-codex-marker-shape; do
+                     DESIGN-long-tool-rationale CONSUMER-steering-target CONSUMER-codex-marker-shape \
+                     CONSUMER-pi-thinking-not-recorded; do
   case $pi_doc_mutant in
     README-pi-route-table|README-long-tool-state|README-steering-action|README-died-state) doc_env=README_SOURCE ;;
     DESIGN-pi-402-classification|DESIGN-long-tool-rationale) doc_env=DESIGN_SOURCE ;;

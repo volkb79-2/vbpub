@@ -36,7 +36,7 @@ Useful settings:
 | `CODEX_EFFORT` | Optional Codex reasoning effort; DeepSeek routes default to `max`, Luna and Sol to `xhigh`. |
 | `CODEX_AUTO_CONTINUE` | Optional non-negative Codex resume count after a reasoning-only completed turn; defaults to `0` for Luna and `2` for DeepSeek. |
 | `CONTROLLER_OD_STATE` | Optional absolute path for key-free Open Design account state; defaults to `$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. |
-| `PI_THINKING` | Optional Pi thinking level; the DeepSeek Pi routes default to `max`. |
+| `PI_THINKING` | Optional Pi thinking level; the DeepSeek Pi routes default to `max`. Pi records no thinking level in its `.done` marker. |
 | `CONTROLLER_OD_PREFER_EXPIRING` | Set to `1` to prefer the available Open Design account with the soonest recorded `window_end_epoch`; defaults to `0`. |
 | `CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS` | Positive integer seconds to block an account when a 402 has no parseable reset time; defaults to `21600` (6 hours). |
 | `PI_EMPTY_RETRY_LIMIT` | Non-negative continuation count for a pi run whose final assistant message is empty (no text, no tool call); defaults to `2`, `0` disables continuation. |
