@@ -20,6 +20,27 @@ check() { # check LABEL WANT_RC  (labels come from STUB_LABELS)
   PATH="$WORK/bin:$PATH" "$HERE/dr-autoinstall" _holds-system /dev/vda >/dev/null 2>&1; local rc=$?
   [ "$rc" = "$2" ] || { echo "FAIL $1: want rc $2, got $rc"; fail=1; }
 }
+
+# The ISO marker is the sole source of target bootloader selection. Install
+# config files do not override it; invalid or missing markers fail closed.
+printf 'grub\n' >"$WORK/bootloader"
+"$HERE/dr-autoinstall" _target-bootloader "$WORK/bootloader" >"$WORK/out" 2>/dev/null; rc=$?
+[ "$rc" = 0 ] && [ "$(cat "$WORK/out")" = grub ] \
+  || { echo "FAIL target-bootloader-grub: rc=$rc output=$(cat "$WORK/out" 2>/dev/null)"; fail=1; }
+printf 'systemd-boot\n' >"$WORK/bootloader"
+"$HERE/dr-autoinstall" _target-bootloader "$WORK/bootloader" >"$WORK/out" 2>/dev/null; rc=$?
+[ "$rc" = 0 ] && [ "$(cat "$WORK/out")" = systemd-boot ] \
+  || { echo "FAIL target-bootloader-systemd-boot: rc=$rc output=$(cat "$WORK/out" 2>/dev/null)"; fail=1; }
+for bad_marker in missing malformed multiple; do
+  case "$bad_marker" in
+    missing) marker_file=$WORK/missing ;;
+    malformed) marker_file=$WORK/bad; printf 'other\n' >"$marker_file" ;;
+    multiple) marker_file=$WORK/multiple; printf 'grub\nsystemd-boot\n' >"$marker_file" ;;
+  esac
+  "$HERE/dr-autoinstall" _target-bootloader "$marker_file" >/dev/null 2>&1; rc=$?
+  [ "$rc" != 0 ] || { echo "FAIL target-bootloader-$bad_marker-REFUSES"; fail=1; }
+done
+
 printf '\n\nEFI\ndrroot\n' >"$WORK/labels";   check "drroot-on-a-partition-is-detected" 0
 # lsblk itself failing must NOT read as "clean": the guard fails closed (rc 0 = holds a system = the runner refuses)
 cat >"$WORK/bin/lsblk-fail" <<'EOF'

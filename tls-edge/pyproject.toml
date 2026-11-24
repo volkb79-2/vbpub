@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tls-edge-cli"
+dynamic = ["version", "dependencies"]
+description = "Configure an installed tls-edge Traefik instance"
+requires-python = ">=3.13"
+license = "MIT"
+
+[project.optional-dependencies]
+interactive = ["questionary>=2.1.1"]
+# Keep the tester-unified closure self-contained. These overlap with the runtime
+# manifest where tests exercise runtime behavior; tester-unified derives only
+# from pyproject metadata and does not read requirements-*.txt files.
+test = [
+  "pytest>=8", # test suite uses parametrization and temporary paths
+  "pytest-cov>=6", # R1 release gate emits line and branch coverage JSON
+  "tomlkit>=0.13.3", # CLI tests import the runtime TOML editor
+  "Jinja2>=3.1.6", # template rendering in the installer and compose tests
+  "PyYAML>=6.0", # rendered Compose fixture checks
+  "tomli_w>=1.0", # CIU's TOML writer is exercised in tests
+]
+
+[project.scripts]
+tls-edge = "tls_edge_cli.cli:main"
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+dependencies = {file = ["requirements-runtime.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

@@ -1,19 +1,20 @@
 """Offline guards for the jitsi-server project: render, compose validation,
 no credentials/domains in tracked files, port-plan agreement, edge consumer
-shape, pinned images. No network; docker is used only for `compose config`
-(skipped when absent).
+shape, pinned images. No network; docker is used only for `compose config`.
 """
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import os
 import re
-import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
-import pytest
+import jinja2
+import yaml
 
 PROJECT = Path(__file__).resolve().parents[1]
 AREA = PROJECT.parent
@@ -21,8 +22,6 @@ DEFAULTS = PROJECT / "ciu.defaults.toml.j2"
 COMPOSE = PROJECT / "ciu.compose.yml.j2"
 GLOBAL = PROJECT / "ciu.global.defaults.toml.j2"
 README_AREA = AREA / "README.md"
-
-jinja2 = pytest.importorskip("jinja2")
 
 ENV = {"PUBLIC_FQDN": "example.test", "PUBLIC_IP": "203.0.113.7"}
 LIVE_EDGE_PORTS = {80, 443, 8443, 8444, 9443}
@@ -50,14 +49,11 @@ def _compose_text() -> str:
 
 
 def _tracked_files() -> list[Path]:
-    try:
-        out = subprocess.run(
-            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "."],
-            cwd=PROJECT, capture_output=True, check=True,
-        ).stdout.decode().split("\0")
-        files = [PROJECT / f for f in out if f]
-    except (OSError, subprocess.CalledProcessError):
-        files = [p for p in PROJECT.rglob("*") if p.is_file() and ".ciu" not in p.parts]
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "."],
+        cwd=PROJECT, capture_output=True, check=True,
+    ).stdout.decode().split("\0")
+    files = [PROJECT / f for f in out if f]
     return [f for f in files if f.is_file() and "__pycache__" not in f.parts]
 
 
@@ -75,7 +71,6 @@ def test_domain_is_configurable_not_hardcoded() -> None:
     assert other["public_host"] == "jitsi.other.test"
 
 
-@pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not available")
 def test_rendered_compose_validates(tmp_path: Path) -> None:
     f = tmp_path / "compose.yml"
     f.write_text(_compose_text(), encoding="utf-8")
@@ -98,8 +93,6 @@ def test_rendered_compose_validates(tmp_path: Path) -> None:
         ["docker", "compose", "-f", str(f), "-f", str(over), "config", "-q"],
         capture_output=True, text=True, env=env, timeout=60,
     )
-    if "docker daemon" in proc.stderr.lower() and proc.returncode != 0:
-        pytest.skip("docker compose unavailable")
     assert proc.returncode == 0, proc.stderr
 
 
@@ -135,18 +128,31 @@ def test_secret_store_is_gitignored_and_secrets_are_0600() -> None:
     for name, spec in cfg["secrets"].items():
         assert spec["directive"].startswith("GEN_LOCAL:jitsi/"), name
         assert spec["mode"] == "0600", name
-    if shutil.which("git"):
-        for rel in (".ciu/secrets/jitsi/user_admin", ".ciu/credentials.txt"):
-            r = subprocess.run(["git", "check-ignore", "-q", rel], cwd=PROJECT, capture_output=True)
-            assert r.returncode == 0, f"{rel} is not gitignored"
+    for rel in (".ciu/secrets/jitsi/user_admin",):
+        r = subprocess.run(["git", "check-ignore", "-q", rel], cwd=PROJECT, capture_output=True)
+        assert r.returncode == 0, f"{rel} is not gitignored"
 
 
-def test_every_user_has_a_declared_hook_secret() -> None:
+def test_rendered_users_and_password_declarations_are_exactly_three_hook_secrets() -> None:
     cfg = _cfg()
-    assert 3 <= len(cfg["users"]) <= 5
-    assert any(u["name"] == "admin" for u in cfg["users"])
-    for u in cfg["users"]:
-        assert cfg["secrets"][u["secret"]]["consumed_by"] == "hook"
+    assert [u["name"] for u in cfg["users"]] == ["admin", "alice", "bob"]
+    assert "dummy_users" not in cfg["auth"]
+    assert all("dummy" not in u for u in cfg["users"])
+
+    expected = {
+        "user_admin",
+        "user_alice",
+        "user_bob",
+        "jicofo_auth_password",
+        "jvb_auth_password",
+        "jicofo_component_secret",
+    }
+    assert set(cfg["secrets"]) == expected
+    for username in ("admin", "alice", "bob"):
+        spec = cfg["secrets"][f"user_{username}"]
+        assert spec["directive"] == f"GEN_LOCAL:jitsi/user_{username}"
+        assert spec["mode"] == "0600"
+        assert spec["consumed_by"] == "hook"
     assert cfg["hooks"]["post_compose"] == ["hooks/post_compose_users.py"]
     assert (PROJECT / "hooks" / "post_compose_users.py").is_file()
 
@@ -187,15 +193,69 @@ def test_edge_consumer_labels_and_networks() -> None:
     text = _compose_text()
     cfg = _cfg()
     r = cfg["router_name"]
-    assert f"traefik.http.routers.{r}.entrypoints" in text and '"websecure"' in text
+    public_host = cfg["public_host"]
+    web_port = cfg["web"]["port"]
+    host_rule = f"Host({chr(96)}{public_host}{chr(96)})"
+    services = text.split("services:\n", 1)[1].split("\nnetworks:\n", 1)[0]
+    web = services.split("\n  jitsi-web:\n", 1)[1]
+    assert f'traefik.http.routers.{r}.rule: "{host_rule}"' in web
+    assert f'traefik.http.routers.{r}.entrypoints: "websecure"' in web
+    assert f'traefik.http.services.{r}.loadbalancer.server.port: "{web_port}"' in web
+    assert 'traefik.docker.network: "ingress_public"' in web
     assert "ingress_public" in text
     # only the web service joins the edge network
-    web = text.split("  jitsi-web:")[1]
     assert "- ingress" in web
-    assert text.split("  jitsi-web:")[0].count("- ingress") == 0
+    assert services.split("\n  jitsi-web:\n", 1)[0].count("- ingress") == 0
     # service key must not be a generic alias on the shared network
     assert re.search(r"^  web:", text, re.MULTILINE) is None
     assert "no-new-privileges:true" in text and "cap_drop:" in text
+
+
+def _tls_edge_default(output_dir: Path, *, http3: bool) -> tuple[dict, dict, dict]:
+    edge_root = PROJECT.parents[1] / "tls-edge"
+    renderer_path = edge_root / "scripts" / "render_standalone.py"
+    spec = importlib.util.spec_from_file_location("jitsi_tls_edge_renderer", renderer_path)
+    assert spec is not None and spec.loader is not None, f"cannot load {renderer_path}"
+    renderer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = renderer
+    spec.loader.exec_module(renderer)
+
+    stack_dir = edge_root / "ciu-stack"
+    edge_cfg = renderer.load_config(stack_dir, defaults_only=True)
+    edge_cfg["http3"]["enabled"] = http3
+    renderer.validate(edge_cfg)
+    renderer.render_outputs(stack_dir, output_dir, edge_cfg, certs_only=False)
+    static = yaml.safe_load((output_dir / "traefik.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((output_dir / "docker-compose.yml").read_text(encoding="utf-8"))
+    return edge_cfg, static, compose
+
+
+def test_default_tls_edge_contract_accepts_jitsi_router_and_optional_http3(tmp_path: Path) -> None:
+    edge_h2, static_h2, compose_h2 = _tls_edge_default(tmp_path / "edge-h2", http3=False)
+    jitsi = _cfg()
+    compose = yaml.safe_load(_compose_text())
+    web = compose["services"]["jitsi-web"]
+    labels = web["labels"]
+    router = jitsi["router_name"]
+
+    assert jitsi["ingress_network"] == edge_h2["ingress_network"]
+    assert labels["traefik.docker.network"] == edge_h2["ingress_network"]
+    entrypoint_name = labels[f"traefik.http.routers.{router}.entrypoints"]
+    entrypoint = static_h2["entryPoints"][entrypoint_name]
+    assert entrypoint["address"] == ":443"
+    assert "http3" not in entrypoint
+    assert entrypoint["http"]["tls"]["certResolver"] == edge_h2["acme"]["resolver_name"]
+    https_port = edge_h2["ports"]["https"]
+    h2_ports = compose_h2["services"]["traefik"]["ports"]
+    assert f"{https_port}:443/tcp" in h2_ports
+    assert f"{https_port}:443/udp" not in h2_ports
+
+    edge_h3, static_h3, compose_h3 = _tls_edge_default(tmp_path / "edge-h3", http3=True)
+    h3_entrypoint = static_h3["entryPoints"][entrypoint_name]
+    h3_port = edge_h3["ports"]["https"]
+    assert h3_entrypoint["http3"]["advertisedPort"] == h3_port
+    assert f"{h3_port}:443/tcp" in compose_h3["services"]["traefik"]["ports"]
+    assert f"{h3_port}:443/udp" in compose_h3["services"]["traefik"]["ports"]
 
 
 def test_own_names_and_governance() -> None:
@@ -225,10 +285,8 @@ def test_images_pinned_by_digest_and_at_least_14_days_old() -> None:
     assert len({cfg[s]["image_tag"].split("@")[0] for s in ("web", "prosody", "jicofo", "jvb")}) == 1
 
 
-def test_dummy_users_are_opt_in_and_hostdirs_are_not_group_writable() -> None:
+def test_hostdirs_are_not_group_writable() -> None:
     cfg = _cfg()
-    assert cfg["auth"]["dummy_users"] is False
-    assert [u["name"] for u in cfg["users"] if not u.get("dummy")] == ["admin"]
     # web has no hostdir: its /config is the rendered, read-only custom-config.js mount
     assert "hostdir" not in cfg["web"]
     for svc in ("prosody", "jicofo", "jvb"):

@@ -33,6 +33,8 @@ TESTER_STAGE = "stage-2"
 DOCKERFILE = REPO_ROOT / "tester-unified" / "Dockerfile"
 RUN_GATE_WHEEL_VERSION_HELPER = REPO_ROOT / "tester-unified" / "run-gate-wheel-version.py"
 NYXLOOM_DOCKERFILE = REPO_ROOT / "nyxloom" / "nyxloomd" / "Dockerfile"
+CLI_EXTENDED_WHEEL_URL = "https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.8.0/cli_extended-0.8.0-py3-none-any.whl"
+CLI_EXTENDED_WHEEL_SHA256 = "8df21b7e85cf2eddc4a5787688b78eead86ec405d117e30b4bed0c612734f1c1"
 CMRU_WHEEL_BUILD_COMMAND = (
     r"/tmp/internal-build-venv/bin/pip wheel[\s\S]*?/src/cmru"
 )
@@ -145,7 +147,7 @@ CMRU_WHEEL_INSTALL_RUN_BODY = (
     + " && rm -rf /tmp/internal-build-venv /tmp/internal-wheels "
     "/tmp/internal-build-requirements.txt /tmp/cli-extended-release"
     + ' && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, '
-    "xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, "
+    "xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, tomlkit, textual, zstandard, mcp, "
     "paramiko, coverage, structlog, markdown_it, linkify_it; "
     "print('tester-unified closure OK')\""
     + ' && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, '
@@ -259,6 +261,22 @@ TESTER_AUGEAS_TOOLS_RUN = (
     '&& test "$(dpkg -S /usr/bin/augparse | cut -d: -f1)" = augeas-tools '
     "&& rm -rf /var/lib/apt/lists/*"
 )
+# TU-XORR (debian-rollback's offline lane packs NoCloud seed ISOs): an apt layer like TU-AUG's.
+TESTER_XORRISO_RUN = (
+    "apt-get update && apt-get install -y --no-install-recommends xorriso "
+    "&& test -x /usr/bin/xorriso "
+    '&& test "$(dpkg -S /usr/bin/xorriso | cut -d: -f1)" = xorriso '
+    "&& /usr/bin/xorriso -version "
+    "&& rm -rf /var/lib/apt/lists/*"
+)
+# T6: debian-rollback invokes bootctl, and the package must also own the binary.
+TESTER_SYSTEMD_BOOT_TOOLS_RUN = (
+    "apt-get update && apt-get install -y --no-install-recommends systemd-boot-tools "
+    "&& test -x /usr/bin/bootctl "
+    '&& test "$(dpkg -S /usr/bin/bootctl | cut -d: -f1)" = systemd-boot-tools '
+    "&& /usr/bin/bootctl --version "
+    "&& rm -rf /var/lib/apt/lists/*"
+)
 TESTER_NODE_LINKS_RUN = (
     "ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm "
     "&& ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx "
@@ -270,6 +288,8 @@ CMRU_PRE_SENSITIVE_RUN_BODIES = (
     TESTER_ZSH_RUN,
     TESTER_SYSTEMCTL_RUN,
     TESTER_AUGEAS_TOOLS_RUN,
+    TESTER_XORRISO_RUN,
+    TESTER_SYSTEMD_BOOT_TOOLS_RUN,
     TESTER_NODE_LINKS_RUN,
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
@@ -332,6 +352,8 @@ def _all_projects(root: Path, **overrides: str) -> Path:
                                   '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "pwmcp__client": '[project]\nname = "pwmcp-client"\ndependencies = ["playwright==1"]\n'
                          '[project.optional-dependencies]\ntest = ["pillow>=10"]\n',
+        "tls-edge": '[project]\nname = "tls-edge-cli"\ndependencies = ["Jinja2>=3", "tomlkit>=0.13.3"]\n'
+                    '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "libraries__cli-extended": '[project]\nname = "cli-extended"\ndependencies = []\n'
                                    '[build-system]\nrequires = ["setuptools==1", "wheel==3"]\n',
     }
@@ -450,7 +472,7 @@ def test_generator_deduplicates_and_prints_one_requirement_per_line(tmp_path, ca
 
 def _real_estate_layout(tmp_path):
     """The REAL pyprojects laid out as the Dockerfile COPYs them."""
-    for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
+    for name in ("ciu", "cmru", "assay", "topos", "nyxloom", "tls-edge"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
     (tmp_path / "cgprofile").symlink_to(REPO_ROOT / "cgprofile")
     (tmp_path / "augeaswrap").symlink_to(REPO_ROOT / "augeaswrap")
@@ -1554,24 +1576,41 @@ def test_dockerfile_fetches_the_release_by_sha256_before_cmru_is_installed():
     assert "COPY tester-unified/fetch-cli-extended.py" in code
 
 
+def _assert_wheel_pin(
+    dockerfile: Path, prefix: str, url: str, digest: str, label: str,
+) -> dict[str, str]:
+    """The shared fake-boundary oracle for both repository-owned wheel pins."""
+    text = dockerfile.read_text("utf-8")
+    args = dict(re.findall(rf"^ARG ({prefix}_\w+)=(\S*)$", text, re.MULTILINE))
+    assert (args.get(f"{prefix}_WHEEL_URL"), args.get(f"{prefix}_WHEEL_SHA256")) == (url, digest), (
+        f"{prefix} does not pin the released asset and digest"
+    )
+    label_match = re.search(
+        rf'^LABEL org\.vbpub\.{label}\.wheel-sha256="\$\{{{prefix}_WHEEL_SHA256\}}"$',
+        text, re.MULTILINE)
+    assert label_match, f"org.vbpub.{label}.wheel-sha256 label is missing"
+    return args
+
+
 def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_opt_in():
     """D-3: the repo carries the sha256 pin (the pointer cannot vouch for itself);
     `latest.json` mode needs an explicit CLI_EXTENDED_RESOLVE=latest build arg."""
     text = DOCKERFILE.read_text("utf-8")
-    args = dict(re.findall(r"^ARG (CLI_EXTENDED_\w+)=(\S*)$", text, re.MULTILINE))
+    args = _assert_wheel_pin(
+        DOCKERFILE, "CLI_EXTENDED", CLI_EXTENDED_WHEEL_URL, CLI_EXTENDED_WHEEL_SHA256,
+        "cli-extended",
+    )
     assert args["CLI_EXTENDED_RESOLVE"] == "pinned"
     url, digest = args["CLI_EXTENDED_WHEEL_URL"], args["CLI_EXTENDED_WHEEL_SHA256"]
     fetcher = _load_fetcher()
     assert fetcher._check_url(url) == url  # the allowlisted release prefix
     named = fetcher._WHEEL.fullmatch(url.rsplit("/", 1)[-1])
     assert named is not None
+    assert named["version"] == "0.8.0"
     declared = tomllib.loads((REPO_ROOT / "cmru" / "pyproject.toml").read_text("utf-8"))
     (spec,) = [d for d in declared["project"]["dependencies"] if gen.requirement_name(d) == "cli-extended"]
     assert fetcher._at_least(named["version"], spec.replace(" ", "").split(">=")[1])
     assert re.fullmatch(r"[0-9a-f]{64}", digest)
-    # PKG-4 N8: the literal default digest, verified against the downloaded
-    # cli_extended-0.5.0 wheel (release cli-extended-v0.5.0); a changed pin must be a deliberate edit here too.
-    assert digest == "755c6f4919b587bbada9f9988a7bd677428513e93a040b4d3561fd76316ac951"
     flat = " ".join(re.sub(r"\\\n\s*", " ", _dockerfile_run_lines()).split())
     # pinned branch passes the pin, latest branch passes only the pointer, anything else fails the build.
     assert re.search(r'pinned\) set -- --wheel-url "\$\{CLI_EXTENDED_WHEEL_URL\}" '
@@ -1584,13 +1623,25 @@ def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_
     # exact two-space `sha256sum -c` line format on the unflattened text just below.
     assert re.search(r'fi && set -- /tmp/cli-extended-release/cli_extended-\*\.whl && \[ "\$#" -eq 1 \] '
                      r'&& \[ -f "\$1" \] && echo "\$\{CLI_EXTENDED_WHEEL_SHA256\}\s+\$1" \| sha256sum -c -', flat)
-    assert 'echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -\n\n' in text, (
+    assert 'echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c - \\\n' in text, (
         "sha256sum -c reads `<digest><two spaces><file>`"
     )
-    assert re.search(r'^LABEL org\.vbpub\.cli-extended\.wheel-sha256="\$\{CLI_EXTENDED_WHEEL_SHA256\}"$',
-                     text, re.MULTILINE)
     assert re.search(r'\*\) echo "[^"]*" >&2; exit 1 ;;', flat)
     assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"' in flat
+
+@pytest.mark.parametrize(("prefix", "url", "digest", "label"), [
+    ("CLI_EXTENDED", CLI_EXTENDED_WHEEL_URL, CLI_EXTENDED_WHEEL_SHA256, "cli-extended"),
+], ids=["cli-extended"])
+def test_shared_wheel_pin_oracle_refuses_a_wrong_sha_on_a_temp_dockerfile(
+    tmp_path, prefix, url, digest, label,
+):
+    text = DOCKERFILE.read_text("utf-8")
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        text.replace(f"ARG {prefix}_WHEEL_SHA256={digest}",
+                     f"ARG {prefix}_WHEEL_SHA256={'0' * 64}"), "utf-8")
+    with pytest.raises(AssertionError, match=prefix):
+        _assert_wheel_pin(dockerfile, prefix, url, digest, label)
 
 
 def _local_mode_script(tmp_path: Path) -> str:
@@ -4681,6 +4732,34 @@ def test_tester_unified_installs_real_augeas_tools_before_source_copy_layers():
         if line.startswith("COPY tester-unified/gen-requirements.py ")
     )
     assert augeas_index < source_copy_index
+
+
+def test_tester_unified_installs_real_xorriso_before_source_copy_layers():
+    """TU-XORR: debian-rollback's offline lane packs NoCloud seed ISOs with Debian's xorriso."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    instructions = _dockerfile_logical_instructions(dockerfile)
+    xorriso_runs = [line for line in instructions if line.startswith("RUN ") and "xorriso" in line]
+    assert xorriso_runs == [f"RUN {TESTER_XORRISO_RUN}"], xorriso_runs
+
+    xorriso_index = instructions.index(xorriso_runs[0])
+    source_copy_index = next(
+        index for index, line in enumerate(instructions)
+        if line.startswith("COPY tester-unified/gen-requirements.py ")
+    )
+    assert xorriso_index < source_copy_index
+
+
+def test_tester_unified_installs_real_systemd_boot_tools_before_source_copy_layers():
+    """T6: debian-rollback invokes bootctl, and Debian's package must own it."""
+    instructions = _dockerfile_logical_instructions(DOCKERFILE.read_text("utf-8"))
+    boot_runs = [line for line in instructions
+                 if line.startswith("RUN ") and "systemd-boot-tools" in line]
+    assert boot_runs == [f"RUN {TESTER_SYSTEMD_BOOT_TOOLS_RUN}"], boot_runs
+    source_copy = next(i for i, line in enumerate(instructions)
+                       if line.startswith("COPY tester-unified/gen-requirements.py "))
+    xorriso = next(i for i, line in enumerate(instructions)
+                   if line.startswith("RUN ") and " xorriso" in f" {line}")
+    assert xorriso < instructions.index(boot_runs[0]) < source_copy
 
 
 def test_go_toolchain_is_selected_by_wings_configuration_and_recorded():

@@ -1,12 +1,10 @@
 # Planned experiments
 
-Status 2026-11-18: no scenario has been run yet; the installer step of the btrfs
-candidate ran once in a guest, see [RESULTS-M1-RUN1-2026-11-18.md](RESULTS-M1-RUN1-2026-11-18.md).
-Two experiments are planned. The
-first needs no host and proves function; the second needs a real host and
-measures performance and memory behaviour. Results go into this directory as
-dated reports, and the filesystem decision (D14 in the
-[design guide](DESIGN-GUIDE.md)) is taken from both.
+Experiment definitions originally written 2026-11-18. Current status and work
+order are in [`../TODO.md`](../TODO.md). The
+[installation architecture](INSTALLATION-ARCHITECTURE.md) defines the product
+flows. Do not use the historical controller or lease instructions below as
+current host policy.
 
 ## E1. Rollback scenarios in the VM lab
 

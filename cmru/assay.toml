@@ -86,6 +86,7 @@ targets = [
   "src/cmru/manifest.py",
   "src/cmru/output.py",
   "src/cmru/process_guard.py",
+  "src/cmru/process_run.py",
   "src/cmru/record_step.py",
   "src/cmru/release.py",
   "src/cmru/release_controller.py",
@@ -171,6 +172,7 @@ targets = [
   "src/cmru/manifest.py",
   "src/cmru/output.py",
   "src/cmru/process_guard.py",
+  "src/cmru/process_run.py",
   "src/cmru/record_step.py",
   "src/cmru/release.py",
   "src/cmru/release_controller.py",
@@ -250,6 +252,7 @@ targets = [
   "src/cmru/manifest.py",
   "src/cmru/output.py",
   "src/cmru/process_guard.py",
+  "src/cmru/process_run.py",
   "src/cmru/record_step.py",
   "src/cmru/release.py",
   "src/cmru/release_controller.py",
@@ -287,7 +290,7 @@ enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
   "--ignore=tests/test_w3_prep_changelog_preflight.py",
   "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
-env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
+env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1", CMRU_TEST_ORDER = "heavy-last" }
 env_passthrough = ["PATH"]
 budget = "7h"
 allow_argv_append = false
@@ -332,6 +335,7 @@ targets = [
   "src/cmru/manifest.py",
   "src/cmru/output.py",
   "src/cmru/process_guard.py",
+  "src/cmru/process_run.py",
   "src/cmru/record_step.py",
   "src/cmru/release.py",
   "src/cmru/release_controller.py",
@@ -369,6 +373,11 @@ artifact = "coverage.json"
 # stops at its first failing test; the R0/R1 baseline keeps full coverage and
 # survivors still run the full suite. Nov-8 shard lanes measured ~570 s -> ~288 s
 # per candidate over 1712 candidates, with kill outcomes unchanged (WP1).
+# With CMRU_TEST_ORDER=heavy-last, tests/conftest.py stably moves the eight
+# known slow install/e2e/image-integration files (59% of the measured suite time)
+# after the fast unit files in BOTH baseline and candidate collection. A fail-fast
+# kill can therefore land in seconds instead of paying for a heavy file first;
+# neither run changes suite membership.
 jobs_max = 2
 max_mutants = 10000
 operators = [

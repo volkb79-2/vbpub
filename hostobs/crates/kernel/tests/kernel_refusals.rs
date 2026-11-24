@@ -18,7 +18,7 @@ use hostobs_kernel::procfs::{parse_loadavg, parse_meminfo, ProcError};
 use hostobs_kernel::quality::QualityCode;
 
 /// Assert that every error in `errors` renders a non-empty, distinct text and that its
-/// quality code is not [`QualityCode::OK`].
+/// quality code is not [`QualityCode::Ok`].
 fn refuses(rendered: Vec<(String, QualityCode)>) {
     let mut texts: Vec<String> = Vec::new();
     for (text, quality) in rendered {
@@ -36,12 +36,12 @@ fn refuses(rendered: Vec<(String, QualityCode)>) {
 fn every_cgroup_refusal_maps_to_its_code_and_renders_its_own_text() {
     let rendered: Vec<(String, QualityCode)> = vec![
         (
-            KernelError::Absent(QualityCode::ABSENT).detail(),
-            KernelError::Absent(QualityCode::ABSENT).quality(),
+            KernelError::Absent(QualityCode::Absent).detail(),
+            KernelError::Absent(QualityCode::Absent).quality(),
         ),
         (
-            KernelError::Absent(QualityCode::UNSUPPORTED).detail(),
-            KernelError::Absent(QualityCode::UNSUPPORTED).quality(),
+            KernelError::Absent(QualityCode::Unsupported).detail(),
+            KernelError::Absent(QualityCode::Unsupported).quality(),
         ),
         (
             KernelError::Read(FsError::PermissionDenied).to_string(),
@@ -93,17 +93,17 @@ fn every_cgroup_refusal_maps_to_its_code_and_renders_its_own_text() {
         "io.stat: line 7 does not parse"
     );
     assert_eq!(
-        KernelError::Absent(QualityCode::UNSUPPORTED).detail(),
+        KernelError::Absent(QualityCode::Unsupported).detail(),
         "absent (unsupported)"
     );
     // An absence is the *caller's* code: the same missing file is `absent` for a controller
     // and `unsupported` for a kernel feature, and the reader never picks.
-    assert_eq!(Absence::Controller.quality(), QualityCode::ABSENT);
-    assert_eq!(Absence::Feature.quality(), QualityCode::UNSUPPORTED);
+    assert_eq!(Absence::Controller.quality(), QualityCode::Absent);
+    assert_eq!(Absence::Feature.quality(), QualityCode::Unsupported);
     // `From<FsError>` keeps the I/O failure, so a caller's `?` does not discard it.
     assert_eq!(
         KernelError::from(FsError::TooLarge { max_bytes: 8 }).quality(),
-        QualityCode::NOT_SAMPLED
+        QualityCode::NotSampled
     );
 }
 
@@ -169,7 +169,7 @@ fn every_proc_refusal_maps_to_its_code_and_renders_its_own_text() {
     refuses(rendered);
 
     // A vanished process is an absence, not a failure: the sampler's answer was "gone".
-    assert_eq!(ProcError::Gone.quality(), QualityCode::ABSENT);
+    assert_eq!(ProcError::Gone.quality(), QualityCode::Absent);
     assert_eq!(ProcError::Gone.detail(), "the process is gone");
     assert_eq!(
         ProcError::from(FsError::NotFound),
@@ -183,7 +183,7 @@ fn every_proc_refusal_maps_to_its_code_and_renders_its_own_text() {
     );
     assert_eq!(
         ProcError::from(hostobs_kernel::cmdline::CmdlineError::BoundZero).quality(),
-        QualityCode::NOT_SAMPLED
+        QualityCode::NotSampled
     );
 }
 
@@ -238,7 +238,7 @@ fn every_identity_and_clock_refusal_maps_to_unreadable_and_renders_its_own_text(
     // identity (`device 0`) is a refusal rather than a key.
     assert_eq!(
         hostobs_kernel::identity::identity_failure_quality(),
-        QualityCode::UNREADABLE
+        QualityCode::Unreadable
     );
     assert_eq!(
         ClockTicks::new(0),
@@ -320,31 +320,31 @@ fn every_filesystem_refusal_carries_its_kind_and_its_code() {
     let rendered: Vec<(String, QualityCode)> = vec![
         (
             FsError::NotFound.to_string(),
-            FsError::NotFound.quality(QualityCode::ABSENT),
+            FsError::NotFound.quality(QualityCode::Absent),
         ),
         (
             FsError::PermissionDenied.to_string(),
-            FsError::PermissionDenied.quality(QualityCode::ABSENT),
+            FsError::PermissionDenied.quality(QualityCode::Absent),
         ),
         (
             FsError::NotAFile.to_string(),
-            FsError::NotAFile.quality(QualityCode::ABSENT),
+            FsError::NotAFile.quality(QualityCode::Absent),
         ),
         (
             FsError::NotADirectory.to_string(),
-            FsError::NotADirectory.quality(QualityCode::ABSENT),
+            FsError::NotADirectory.quality(QualityCode::Absent),
         ),
         (
             FsError::TooLarge { max_bytes: 16 }.to_string(),
-            FsError::TooLarge { max_bytes: 16 }.quality(QualityCode::ABSENT),
+            FsError::TooLarge { max_bytes: 16 }.quality(QualityCode::Absent),
         ),
         (
             FsError::TooManyEntries { max_entries: 4 }.to_string(),
-            FsError::TooManyEntries { max_entries: 4 }.quality(QualityCode::ABSENT),
+            FsError::TooManyEntries { max_entries: 4 }.quality(QualityCode::Absent),
         ),
         (
             FsError::Io(IoKind::Other).to_string(),
-            FsError::Io(IoKind::Other).quality(QualityCode::ABSENT),
+            FsError::Io(IoKind::Other).quality(QualityCode::Absent),
         ),
     ];
     refuses(rendered);
@@ -358,10 +358,10 @@ fn every_filesystem_refusal_carries_its_kind_and_its_code() {
 fn readings_refuse_a_placeholder_that_looks_measured() {
     let mut readings = Readings::new();
     readings.measured("a", hostobs_kernel::value::Value::U64(1));
-    readings.missing("b", QualityCode::ABSENT);
+    readings.missing("b", QualityCode::Absent);
     // Pushing an `ok` absence is refused by the value type, so it adds nothing rather
     // than publishing a zero that reads as a measurement.
-    readings.missing("c", QualityCode::OK);
+    readings.missing("c", QualityCode::Ok);
     assert_eq!(readings.len(), 2);
     assert_eq!(readings.u64("a"), Some(1));
     assert_eq!(readings.u64("b"), None);
@@ -379,12 +379,12 @@ fn readings_refuse_a_placeholder_that_looks_measured() {
         file: "pids.max",
         value: None,
         raw: b"max".to_vec(),
-        quality: QualityCode::UNSUPPORTED,
+        quality: QualityCode::Unsupported,
     };
     assert_eq!(limit.reading().u64(), None);
     assert_eq!(
         limit.reading().quality(),
-        QualityCode::UNSUPPORTED,
+        QualityCode::Unsupported,
         "a `max` limit is a state, not a placeholder zero"
     );
 }

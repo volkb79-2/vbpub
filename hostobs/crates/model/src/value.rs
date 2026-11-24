@@ -115,6 +115,16 @@ impl Sample {
         Sample { value, quality }
     }
 
+    /// The collector-side name for [`Sample::from_wire`].
+    ///
+    /// A reader may already have a raw value and a quality byte; this constructor keeps
+    /// those bytes without pretending the pair is a measurement when the quality says it
+    /// is not.
+    #[must_use]
+    pub const fn from_raw(value: Value, quality: Quality) -> Sample {
+        Sample::from_wire(value, quality)
+    }
+
     /// The quality code of this value.
     #[must_use]
     pub const fn quality(&self) -> Quality {
@@ -216,7 +226,9 @@ mod tests {
             assert_eq!(sample.quality(), quality);
             assert_eq!(sample.value(), None, "{quality}");
         }
-        assert!(SampleError::MissingCannotBeOk.to_string().contains("ok"));
+        assert!(SampleError::MissingCannotBeOk
+            .to_string()
+            .contains("not a missing sample"));
     }
 
     #[test]
@@ -282,6 +294,10 @@ mod tests {
             Sample::from_wire(Value::U64(5), Quality::Stale),
             Sample::from_wire(Value::U64(5), Quality::Ok),
             "the same bytes with a different quality are different values"
+        );
+        assert_eq!(
+            Sample::from_raw(Value::U64(5), Quality::Stale),
+            Sample::from_wire(Value::U64(5), Quality::Stale)
         );
     }
 }

@@ -1,120 +1,52 @@
-# Next steps
+# debian-rollback status
 
-State 2026-11-18: the btrfs variant (own snapshots, ESP GRUB menu) installs, boots,
-snapshots before apt, rolls back through the menu and survives a kernel upgrade in a
-guest; see [docs/MILESTONES-2026-11-18.md](docs/MILESTONES-2026-11-18.md) (plan),
-[docs/RESULTS-M1-RUN2-2026-11-18.md](docs/RESULTS-M1-RUN2-2026-11-18.md) and
-[docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md](docs/RESULTS-M1-RUN3-KERNEL-2026-11-18.md)
-(results, with what is NOT verified). The PoC tools are in `poc/`. S5 (broken
-initramfs, recovery through the GRUB menu) and the strengthened s2-s3 re-run passed
-([run 4](docs/RESULTS-M1-RUN4-S2S3-S5-2026-11-18.md)); S6, S9 and the backports kernel passed
-([run 6](docs/RESULTS-M1-RUN6-S6-S7-S9-BACKPORTS-2026-11-18.md)); S7 found 18 snapshots per
-unattended run and passes with the dedupe window ([run 7](docs/RESULTS-M1-RUN7-FRESH-INSTALL-S7-2026-11-18.md),
-with a fresh install from the current installer); S8 (30 states, `dr-state prune`) passed
-([run 8](docs/RESULTS-M1-RUN8-S8-PRUNE-2026-11-18.md)); the hook's failure path (simulated)
-and the dedupe window's negative case passed
-([run 9](docs/RESULTS-M1-RUN9-WINDOW-NEGATIVE-S9B-2026-11-18.md)). Next: the
-systemd-boot and ZFS variants of the M1 matrix, then the unattended ISO (M2; the controller
-approved the plan with 7 conditions, which the ISO results doc will list when M2 starts).
-Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+This is the project's only status page. Architecture and operating details are
+in [INSTALLATION-ARCHITECTURE.md](docs/INSTALLATION-ARCHITECTURE.md),
+[ROLLBACK-RECOVERY.md](docs/ROLLBACK-RECOVERY.md), and
+[DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md). Decisions are recorded in the design
+guide; work packages are tracked below.
 
-**The plan for everything that remains is
-[docs/WORK-PACKAGES.md](docs/WORK-PACKAGES.md)** (written 2026-11-12): package
-ids VML-04 to VML-10 and DR-01 to DR-81, model routing, frontier decisions F1
-to F18, operator prerequisites OP1 to OP8. It supersedes the VML-04 to VML-06
-rows of the table below (the old Y5, Y4, Y6 packages are now VML-08, VML-09,
-VML-10) and details steps 4 to 10 of this list. Next: operator items OP1 to
-OP3, then VML-04; DR-01 needs no guest and can start at once.
+## Done
 
-1. **Operator review of these documents.** Confirm or correct the decisions
-   table, the OS-versus-data line (design guide section 3) and the experiment
-   plans. Open: project name and final location (Q8).
-2. **Desk checks** that need no VM (design guide Q4, Q5). Done 2026-11-12 for
-   signed systemd-boot in Debian 13 (exists) and `compatibility=grub2` against
-   `zpool upgrade` (safe); results are in the design guide's question table.
-   Left for the VM (E1): Secure Boot through shim to systemd-boot, and whether
-   Debian 14's `grub-install` sets up the btrfs-header environment block.
-   Still a desk check: snapper 0.10.6 against the features needed.
-3. **General VM tool in the top-level project `vm-lab/`**, lifted from
-   `scripts/truenas/tcg_vm.py` with TrueNAS behaviour unchanged. Add selectable
-   RAM, a serial boot menu, reset, boot-loop detection. Own change, own review.
-   Unblocks experiment E1.
-   Packages (operator go-ahead 2026-11-12 for all synergy items Y1-Y6 of the
-   design guide, section 9.1). Implementation is outsourced through
-   `scripts/controller/codex-impl.sh` with `CODEX_ROUTE=deepseek` (or
-   `opencode-impl.sh`). The luna route is usage-limited until 2026-11-17, so
-   reviews go to a Sonnet agent or a fresh deepseek session that never edits.
-   Each package runs in its own `ciu worktree` and is merged to `main` with
-   `--no-ff`. Serial, because they touch the same files. Gate lanes are queued
-   through the controller's two gate slots
-   (`$CONTROLLER_HOME/codex/gate-run.sh`; the
-   in-repo `scripts/controller/gate-run.sh` needs lock paths that are not
-   configured in this environment). Briefs, review reports and gate logs are
-   under `artifacts/debian-rollback/` (ignored, local).
+- **systemd-boot target variant:** merged in `9bd4e5dcd`; evidence is in the
+  [M2 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md) and [NoCloud builder results](docs/RESULTS-SDBOOT-NOCLOUD-2026-11-23.md).
+- **M2 target ISO variants:** GRUB-target and systemd-boot-target are done;
+  both are covered by the [M2 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
 
-   | Package | Content | Route | State |
-   |---|---|---|---|
-   | VML-01 | Extract the general VM launcher module (now `vm-lab/src/vm_lab/core.py`); TrueNAS front unchanged; `console reset` | Sonnet; deepseek review, 2 rounds | merged 2026-11-12 |
-   | VML-02 | Y2 + Y1: console recorder and typing in the VM tool; pwmcp's `console_capture.py` and `launch-truenas-vm.sh` replaced by it | deepseek, finished by Sonnet; Sonnet reviews, 3 rounds | merged 2026-11-12 (vbpub@c46b0dfe8) |
-   | VML-03a | vmscreen `--qemu-dump-dir`: works when QEMU sees the dump directory under another path (the VM tool's container) | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@77343737e) |
-   | VML-03b | Y3: `console text` and `console wait-for-text` in the VM tool: vmscreen (exact text) first, `pwmcp ocr --image` for graphical screens; fail patterns and boot-loop detection | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@d55c3132e); not yet run against a real guest |
-   | VML-06a | Raw base images cloned by reflink (`start --base-format`, `--allow-full-copy`), `disk promote` into a shared base folder; qcow2 path unchanged (D17, WORK-PACKAGES VML-06) | Sonnet; Sonnet review FIX-FIRST then MERGE | merged 2026-11-17 (vbpub@3038974b4); not yet run against a real guest or a real btrfs reflink through the tool |
-   | VML-07 | Hardening follow-ups of VML-02, VML-03b, VML-06a: signals, screendump ownership, per-call time budget, broken PATH vmscreen, promote interrupt cleanup | Sonnet; Sonnet review MERGE, four follow-ups folded in | merged 2026-11-17 (vbpub@522c8d69a); not yet run against a real guest |
-   | VML-04 | Serial engine for `console text` / `wait-for-text`, `console mark` and `--since-mark`, `serial_console` recorded in runner.json (auto uses serial only for guests started with `--serial-console`), stale-mark refusal; first real-guest runs recorded | Sonnet; Sonnet review FIX-FIRST then MERGE | merged 2026-11-17 (vbpub@223114257); evidence in `artifacts/debian-rollback/vml-04-run/`; not yet verified live: `auto` on a guest started without `--serial-console`, OCR with a working sidecar on a quiet serial log. (The old row text "capture console screens into pwmcp's corpus" is VML-08.) |
-   | VML-05 | Y4: one console interface, QMP backend and pwmcp browser backend | open | after VML-03 |
-   | VML-06 | Y6: pwmcp test fixture serving a guest's VNC socket to its browser | open | after VML-05 |
+2026-11-24: `poc/dr-qemu.sh` retired in favour of `vm-lab start --plain-host` (vm-lab VML-BL-07); source at `a5802b837:scripts/debian-rollback/poc/dr-qemu.sh`
 
-   Routes, state 2026-11-12 late: luna answers again (controller's probe);
-   deepseek still returns HTTP 402 (quota). Probe a route with a one-line job
-   before relying on it. Implementation on luna, review by a Sonnet agent;
-   Sonnet implements when no Codex route works.
+## ZFS
 
-   **Neither screen reader works in this devcontainer yet** (open, needs an
-   operator decision): the exact-text reader needs `vmscreen` installed
-   (`pip install` of `libraries/vmscreen`, editable is enough; it does not run
-   from a bare source tree and is not in the release machinery, VMS-BL-01),
-   and the OCR reader needs pwmcp's sidecar enabled (`pwmcp.ocr.enabled`).
-   `console text` and `console wait-for-text` are unit-tested against fakes
-   only. First real run: VML-04 or experiment E1.
+ZFS is paused for the core split (D28, DR-84, DR-96). PoC evidence is archived
+outside git (it contains a password hash); index in the rollback controller
+state. The install and runtime history remains in the
+[ZFS PoC plan](docs/ZFS-POC-PLAN.md) and its dated reports.
 
-   `libraries/vmscreen` (exact console text, `wait-text`, `send`, `ocr-pair`)
-   was found only after VML-02; see the correction in the design guide,
-   section 9.1. Read its README before writing the VML-03 brief.
+2026-11-24: the last PoC candidate ISO (`findmnt-securehandoff`) installed in a TCG guest (3072 MiB, 4 vCPUs): `DR-ZFS-AUTOINSTALL-DONE rc=0` after 4,978 s, clean power-off. First-boot acceptance was not run: it tests the superseded state manager. The installed disk is kept read-only as the base for the ZFS guest acceptance.
 
-   Review follow-ups of VML-02, VML-03b and VML-06a were all folded into VML-07
-   (merged 2026-11-17). Left open: the key table exists in the VM tool and in
-   vmscreen (VMS-BL-03, rule "same names" documented, no mechanical check); a
-   `start` killed by SIGTERM or SIGKILL leaves a hidden `.<name>.partial` to
-   remove by hand.
+## Work order
 
-   **First real guest, 2026-11-17** (Debian 13 genericcloud, raw base in the CoW
-   `downloads/vm-images`, state in the CoW `scripts/debian-rollback/vm-lab/`,
-   QEMU image `debian-install-vm:cb76f8b5350b`, network `vbpub-cmqemn-network`,
-   1 GiB, 2 CPUs, TCG): the raw reflink clone through `start` worked on real
-   btrfs (GNU `cp` in this container); the guest reached the login prompt on
-   ttyS0 in about 45 s; `disk promote` refused a running guest, then promoted the
-   stopped guest's disk with all extents shared with the source; graceful
-   `stop` worked. `console text` found no exact-text source (UEFI shows a
-   graphical framebuffer, not the VGA text buffer) and the OCR engine failed
-   (sidecar off): the serial-log reader (VML-04) is the way to read the screen,
-   as planned. Still not verified live: QEMU 11's `screendump` writing into the
-   recorder's pre-created file in place, the recorder itself, `console
-   wait-for-text`, `console sendkey`.
+- Done:
+  - Status documents (P-rollback-02).
+  - vm-lab inspector (P-rollback-03).
+  - Lint of the disk-wiping guards (P-rollback-04).
+  - Core-split design (P-rollback-10, [DESIGN-CORE-SPLIT.md](docs/DESIGN-CORE-SPLIT.md)).
+  - bootctl spike (P-rollback-11, [SPIKE-BOOTCTL-ORACLE.md](docs/SPIKE-BOOTCTL-ORACLE.md)).
+  - ZFS plan rewrite (P-rollback-12, [ZFS-POC-PLAN.md](docs/ZFS-POC-PLAN.md)).
+- In progress:
+  - Stdlib Python core, first part (P-rollback-20a).
+  - vm-lab start on a plain Docker host (P-rollback-30).
+  - Backlog migration (P-rollback-05).
+- Next:
+  - Python core with the btrfs and GRUB backends (P-rollback-20b), then
+    systemd-boot (P-rollback-21) and the apt hook and retention work
+    (P-rollback-22).
+  - Guest session in `vm-lab` (P-rollback-31).
+- Later:
+  - Loader-contract tier.
+  - Release matrix on ISO-built disks.
+  - ZFS rebuilt on the core.
 
-   The TrueNAS `unit` and `unit-boot-pool-patch` lanes are red on `main` for
-   reasons outside this work (TN-15, TN-16 in the TrueNAS backlog).
+## Open items
 
-4. **Unattended installer ISO**, modelled on `scripts/truenas/golden-iso`, that
-   partitions and installs instead of restoring a fixed image. Two layouts:
-   btrfs with snapper, ZFS with boot environments. Unblocks E1 scenario S1 and
-   the real-host installs.
-5. **Experiment E1** in the VM lab for both candidates
-   ([docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)).
-6. **Experiment E2** on r1002, only after the controller session sends "lease
-   start". Prepare the install and workload scripts before the lease.
-7. **Decide** filesystem and bootloader (D14, Q1, Q2) from E1 and E2, and
-   record the decision in the design guide.
-8. **Phase 1 product**: installer, snapshot hook, boot-menu entries, the
-   "make permanent" and prune commands, README and consumer guide.
-9. **Phase 2**: automatic fallback, tied into `vbpub-reboot-check.timer`.
-10. **Cloud image** built from the installer's output.
+Open items are in [KNOWN_ISSUES_TODO_BACKLOG.md](KNOWN_ISSUES_TODO_BACKLOG.md) (DR-82 and up); closed ones are in [archive/](archive/).

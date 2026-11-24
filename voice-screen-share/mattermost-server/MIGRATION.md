@@ -44,12 +44,22 @@ ciu up --dir $S --yes --dry-run --root-folder $S                 # review, then 
 Verify: `ls -ld $S/vol-postgres-data` (owner uid 70, mode 700, unchanged), `ls -l $S/.ciu/secrets`,
 the new container names with `docker ps --filter name=mattermost-e0nixp`, the
 `/api/v4/system/ping` through the edge, and that the existing channels/users are there.
-Calls: `mmctl plugin list` shows `com.mattermost.calls` enabled; edge 8443 TCP+UDP is
-already published on the live host.
+Calls: `mmctl plugin list` shows `com.mattermost.calls` enabled. The Calls media
+pair is not part of this migration; follow the Calls cut-over order below before
+`ciu up`.
 
 Consumers that use the container name or secrets paths: `nyxloom` secrets examples now
 read `voice-screen-share/mattermost-server/.ciu/secrets/...`; the nyxloom
 `[intake_bridge] container` is deliberately unset (resolve from `docker ps` for the new id).
+
+## Calls cut-over
+
+Mattermost publishes Calls media on host TCP+UDP 8443 itself. A tls-edge 3.x
+edge with its Calls preset enabled (`[tls_edge.calls] enabled = true`) also binds
+8443 on its host, so on such a host:
+
+1. Disable the edge's Calls preset (or stop that edge) so it no longer binds 8443.
+2. Run `ciu up` for Mattermost, which publishes the Calls media pair directly.
 
 ## Rollback
 

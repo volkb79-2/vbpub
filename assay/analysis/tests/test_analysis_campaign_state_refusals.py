@@ -68,11 +68,31 @@ STATE_CASES = (
     ),
     ("judge-not-digest", _one_record(lambda r: r.update(judge_sha256="zz")), "judge_sha256 is not a SHA-256 digest"),
     (
-        # B530: a carry_over block that names another executing judge (or is
-        # otherwise malformed) leaves the record without an effective judge.
         "carry-over-malformed",
         _one_record(lambda r: r.update(carry_over={"from_judge_sha256": "a" * 64})),
-        "carry_over provenance is malformed",
+        "record provenance is malformed",
+    ),
+    (
+        "provenance-invalid",
+        _one_record(lambda r: r.update(provenance={
+            "kind": "fresh",
+            "from_candidate_id": "a" * 64,
+            "from_judge_sha256": J_X,
+            "match": "exact-id",
+        })),
+        "record provenance is malformed",
+    ),
+    (
+        "schema-two-without-provenance",
+        _one_record(lambda r: r.update(carry_over={
+            "schema_version": 2,
+            "into_judge_sha256": "b" * 64,
+            "source": "/prior/store",
+            "reason": "missing provenance",
+            "imported_at": "2026-11-18T00:00:00Z",
+            "importer_version": "12.3.0",
+        })),
+        "record provenance is malformed",
     ),
     (
         "record-not-object",

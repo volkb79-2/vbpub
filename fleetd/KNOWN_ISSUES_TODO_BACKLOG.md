@@ -6,18 +6,18 @@
 |---|---|---|---|---|
 | FD-001 | Lite campaign dispatch, restart recovery, progress supervision, and candidate-result collection | P1 | DONE | 2026-11-13 |
 | FD-002 | Standalone lane demand does not derive Assay mutation.jobs_max | P1 | OPEN | 2026-11-13 |
-| FD-003 | Manual Run-Gate commands cannot pass fleetd's per-host RAM budget to Assay | P1 | OPEN | 2026-11-13 |
-| FD-004 | Host facts and planning do not account for the dev-gates slice memory ceiling | P1 | OPEN | 2026-11-13 |
-| FD-005 | Learn one bounded f_h per host from independent timing samples | P2 | OPEN | 2026-11-13 |
-| FD-006 | Lift the one-slot-per-host and J worker cap in the campaign supervisor | P2 | OPEN | 2026-11-13 |
+| FD-003 | Manual Run-Gate commands cannot pass fleetd's per-host RAM budget to Assay | P1 | OPEN (solved at host admission, FD-042) | 2026-11-13 |
+| FD-004 | Host facts and planning do not account for the dev-gates slice memory ceiling | P1 | OPEN (solved at host admission, FD-042) | 2026-11-13 |
+| FD-005 | Learn one bounded f_h per host from independent timing samples | P2 | PARKED 2026-11-24 (until the live campaign) | 2026-11-13 |
+| FD-006 | Lift the one-slot-per-host and J worker cap in the campaign supervisor | P2 | PARKED 2026-11-24 (until the live campaign) | 2026-11-13 |
 | FD-007 | Replace the RAM-proportional control-plane reserve with service MemoryMin facts or a fixed profile constant | P1 | DONE | 2026-11-13 |
 | FD-007b | Calibrate the fixed profile reserve from measured p95 under load | P2 | OPEN | 2026-11-15 |
 | FD-007c | Per-service reserve fallback with provenance for optional and missing units | P1 | DONE | 2026-11-15 |
-| FD-008 | Strict whole-lane result merge from an explicit candidate-owner manifest | P1 | OPEN | 2026-11-13 |
+| FD-008 | Strict whole-lane result merge from an explicit candidate-owner manifest | P1 | MOVED to assay B565 strict merge | 2026-11-13 |
 | FD-009 | Restricted host enrollment for the existing hx transport | P1 | OPEN | 2026-11-13 |
 | FD-010 | Consume Assay's exact-key baseline reuse in campaign execution | P2 | OPEN | 2026-11-13 |
-| FD-011 | Optional persistent campaign scheduler after the one-shot loop is proven | P2 | OPEN | 2026-11-13 |
-| FD-012 | Export campaign progress for cgprofile guard policy and evidence | P2 | OPEN | 2026-11-13 |
+| FD-011 | Optional persistent campaign scheduler after the one-shot loop is proven | P2 | PARKED 2026-11-24 (until the live campaign) | 2026-11-13 |
+| FD-012 | Export campaign progress for cgprofile guard policy and evidence | P2 | CHANGED: thrashguard registration | 2026-11-13 |
 | FD-013 | Serialize concurrent campaign state updates | P2 | DONE | 2026-11-14 |
 | FD-014 | Probe command grows with the number of batches and hits the 128 KiB argument limit near 100 batches per host | P2 | DONE | 2026-11-14 |
 | FD-015 | Cold-start stall threshold ignores the predicted candidate time, so slow lanes stall and re-queue without end | P1 | DONE | 2026-11-14 |
@@ -39,8 +39,18 @@
 | FD-033 | The rolling cursor goes stale on every release that changes a target file | P2 | DONE | 2026-11-15 |
 | FD-034 | No host-install script for fleetd; the docs prescribed a system-Python pip install that Debian 13 refuses | P2 | DONE | 2026-11-15 |
 | FD-035 | `host-facts/1` validation does not bound a service `MemoryMin`, so an implausible fact is first refused at plan time, not at collect or validate time | P3 | DONE (by design) | 2026-11-15 |
-| FD-037 | Rolling mode keys a candidate by its file's content, so a partial edit re-judges the whole file | P3 | OPEN | 2026-11-15 |
+| FD-037 | Rolling mode keys a candidate by its file's content, so a partial edit re-judges the whole file | P3 | PARKED 2026-11-24 (until the live campaign) | 2026-11-15 |
 | FD-038 | Rolling mode's changed candidates share the `slice_size` budget, so heavy per-release churn can defer them and starve the never-judged remainder | P3 | DONE | 2026-11-15 |
+| FD-039 | Host-side probe logic was a Python string and `FakeTransport` reimplemented it | P1 | PART 1 FIXED | 2026-11-24 |
+| FD-040 | The real probe lost the cgprofile `memory_peak_bytes` that the fake returned | P1 | FIXED | 2026-11-24 |
+| FD-041 | Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`; assay owns `assay-merge-manifest/1` | P1 | OPEN | 2026-11-24 |
+| FD-042 | Two schedulers book v1001: host-local weighted admission in the shared runner | P1 | OPEN | 2026-11-24 |
+| FD-043 | Campaign unit = assay shard range per host | P2 | OPEN | 2026-11-24 |
+| FD-044 | Rolling scope frozen; delete it after B561 carry-forward | P2 | OPEN | 2026-11-24 |
+| FD-045 | Docs are a second, prose-pinned source of truth | P2 | OPEN | 2026-11-24 |
+| FD-046 | Facts tables and one lane-cost store | P2 | OPEN | 2026-11-24 |
+| FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
+| FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -70,7 +80,7 @@ refuse a mismatch before rendering an executable command.
 
 ## FD-003 Fleet RAM budget is not sent to the current runner
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+**State:** OPEN; solved at host admission (FD-042), 2026-11-24. **Priority:** P1. **Filed:** 2026-11-13.
 
 `fleet plan` computes `B_h` and proves each planned wave against it, but the
 current Run-Gate `--only-candidates` interface has no per-invocation
@@ -83,7 +93,7 @@ the plan's wave proof as an execution guarantee.
 
 ## FD-004 Host slice memory ceiling is not part of the planner facts
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+**State:** OPEN; solved at host admission (FD-042), 2026-11-24. **Priority:** P1. **Filed:** 2026-11-13.
 
 WP1(a) reports physical lane memory and per-service control-plane `MemoryMin`,
 while WP2 computes `B_h = P_h × overcommit − O_h` as specified in the compute-host
@@ -97,7 +107,7 @@ slice use and other running jobs before treating planned capacity as enforceable
 
 ## FD-005 Learn the per-host correction factor
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+**State:** PARKED 2026-11-24 (until the live campaign). **Priority:** P2. **Filed:** 2026-11-13.
 
 WP2 accepts one stored `f_h` per host, defaults it to 1.0, and validates it in
 `[0.5, 2.0]`; this package deliberately does not learn it. WP5 should implement
@@ -108,7 +118,7 @@ model change or re-enrollment, and never fit by lane or hardware flavor.
 
 ## FD-006 Lift the manual one-slot-per-host and J cap
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+**State:** PARKED 2026-11-24 (until the live campaign). **Priority:** P2. **Filed:** 2026-11-13.
 
 The current manual planner uses one campaign slot per host because concurrent
 same-lane selected runs share Run-Gate's in-flight identity and Assay store,
@@ -251,7 +261,7 @@ separate step for the host board.
 
 ## FD-008 Strict whole-lane result merge
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+**State:** MOVED to assay B565 strict merge (2026-11-24). **Priority:** P1. **Filed:** 2026-11-13.
 
 MVP-B-lite collects candidate verdict and progress files into one
 `fleet-campaign-result/1`; it does not merge the same-judge Assay state stores
@@ -290,7 +300,7 @@ cache or weaken the baseline PASS requirement.
 
 ## FD-011 Optional persistent campaign scheduler
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+**State:** PARKED 2026-11-24 (until the live campaign). **Priority:** P2. **Filed:** 2026-11-13.
 
 The supported controller interface is deliberately one-shot: `run` starts
 available jobs and returns, while callers invoke `status` and `tick` as needed.
@@ -302,7 +312,7 @@ model needs a separately reviewed lifecycle and local-state contract.
 
 ## FD-012 Campaign progress for guard policy
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+**State:** CHANGED 2026-11-24: thrashguard registration (job registration on the thrashguard socket, owner TG-1). **Priority:** P2. **Filed:** 2026-11-13.
 
 MVP-B-lite reports progress but does not connect campaign ownership or
 progress to cgprofile's report/enforce guard. Define a host-local, read-only
@@ -811,7 +821,7 @@ chosen rule and a test pins that no file is deferred without being reported.
 
 ## FD-037 Rolling keys a candidate by its file's content, so a partial edit re-judges the whole file
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-15 (with FD-033).
+**State:** PARKED 2026-11-24 (until the live campaign). **Priority:** P3. **Filed:** 2026-11-15 (with FD-033).
 
 Rolling whole-target mode (FD-033) keys a candidate to its file's **content**
 (the git blob id) rather than to a line span, because Assay's candidate id folds in the
@@ -835,3 +845,118 @@ another site.
 only the edited region's candidates while every unedited region keeps its
 marks, and the accounting names the sites that were re-judged and the sites that
 were kept.
+
+## FD-039 Host probe/start are string programs re-implemented by FakeTransport
+
+**State:** PART 1 FIXED (2026-11-24, `6226a08a1`); installed `fleet host ...`
+verbs remain P-fd-05. **Priority:** P1. **Filed:** 2026-11-24.
+
+fleetd: host-side logic as a real module (hostside.py) shared by the shipped probe and FakeTransport; then installed `fleet host …` verbs with a versioned `fleet-host-agent/1` answer.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md H1
+
+**Evidence.** `fleetd.hostside` is stdlib-only source shipped through
+`importlib.resources`; the probe, Assay-lane resolution, progress filtering and
+verdict reading each have one implementation. `FakeTransport` materializes a
+temporary host home and calls the same functions:
+`test_the_shipped_probe_equals_the_direct_hostside_answer` and
+`test_fake_start_and_probe_resolve_the_declared_assay_lane`.
+
+## FD-040 `memory_peak_bytes` is always null on real hosts
+
+**State:** FIXED (2026-11-24, `6226a08a1`). **Priority:** P1. **Filed:** 2026-11-24.
+
+Collect's de-duplication drops the progress records that carry the peak, so `memory_peak_bytes` is null for every candidate collected from a real host. Fix with the hostside module (FD-039): real-format progress files collect a non-null peak.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md H1
+
+**Evidence.** The shared probe reads `profile.metrics.memory_peak_bytes` from
+Assay `resource-profile/1` progress events, and collection merges a measured
+duplicate into the first-owned record instead of dropping it:
+`test_measurement_writes_per_candidate_evidence_from_owner_records`,
+`test_collect_keeps_a_measured_peak_when_the_probe_record_lacks_it`, and
+`test_progress_parser_reads_only_a_positive_profile_memory_peak`.
+
+## FD-041 Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
+
+fleetd: delete `fleet merge-check` now (assay strict merge owns it); assay owns `assay-merge-manifest/1`. Drop guard.toml validation (owner: thrashguard/TG-1); FD-012 becomes job registration on the thrashguard socket. Also delete `fleet-shard-identity/1` (fd-H5 Direction).
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md H5, M1
+
+## FD-042 Two schedulers book v1001: host-local weighted admission in the shared runner
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
+
+runner: host-local weighted admission slots in run-job / fleet host start (weight from the job spec, budget from host /etc); remote-gate and fleetd both admit through it; probe reports held slots; closes FD-003/FD-004 at the host.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md H3
+
+## FD-043 Campaign unit = assay shard range per host
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-24.
+
+fleetd: campaign unit = assay shard range per host (sizing → --shard-offset/--shard-total); retire batch candidate lists except the memory-crash retry; collect = store copy + strict --merge-shards. Operator decision 2026-11-24 (option C): shard ranges per host now; RAM-ordered lists later only with measured per-candidate RAM.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md H2; .controller-state/PROGRAM-2026-11-24/PROGRAM.md 2026-11-24 05:23Z (operator: option C)
+
+## FD-044 Rolling scope frozen; delete it after B561 carry-forward
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-24.
+
+fleetd: freeze rolling scope; delete `fleet scope` and the rolling cursor after assay B561 carry-forward exists.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md H5
+
+## FD-045 Docs are a second, prose-pinned source of truth
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-24.
+
+fleetd docs: design moves to fleetd/docs/DESIGN.md, rules stated once in SPEC, closed FD items one line, drop sentence-pinning doc tests.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md M5
+
+## FD-046 Facts tables and one lane-cost store
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-24.
+
+fleetd facts: per-service floors from host facts.toml (installer-written), drop the copied table + drift test; speed resolution same as cgprofile machine/1. One lane-cost store (run-gate footprint/history); remote-gate weight and fleet sizing read it; fleet measurement retired.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md M3, M4
+
+## FD-047 FakeTransport rewrites progress mtimes after the shared probe
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-24.
+
+`FakeTransport._probe` replaces each shared-probe `progress_mtime` with the
+per-job `FakeJob.progress_mtime`. The real probe returns the progress file's
+`stat` mtime, so jobs sharing a file have one mtime and a file with content gets
+that mtime even when the fake job field is null. Remove the override, or document
+and justify the deliberate divergence in FD-039. Close when the fake row is the
+direct `hostside.probe_document` value and no test depends on fake-only timing.
+
+Source: fix-round review finding 4; `fleetd/src/fleetd/transport.py:427-429`.
+
+## FD-048 Malformed Run-Gate lane config can crash the host probe and fake start
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-24.
+
+A non-table `lanes` value or lane declaration raises `AttributeError` in
+`resolve_assay_lane`; the fake start catches only `ValueError`. One unsafe lane
+declaration also fails the whole host probe, and the shipped entrypoint prints a
+traceback instead of one concise error line. Validate the table shape and define
+the per-job versus whole-probe error boundary for fake and shipped execution.
+Close with malformed-config tests through both paths.
+
+Also: a garbled artifact can still crash the whole host probe. `math.isfinite(float(x))`
+on a huge JSON integer raises `OverflowError`, which `probe_document` (it catches
+`OSError` and `ValueError`) does not catch. Sites: `hostside.progress_records` (strict),
+`verdict_reading` (baseline `wall_s`) and `campaign.py:686`. The old runner had it too.
+Close with a huge-integer artifact test through both paths.
+
+Source: fix-round review finding 5; `fleetd/src/fleetd/hostside.py:33-43,245`;
+r2 review finding B.
+
+Nit (r2 finding C): `returned_after_loss` is set on every refresh while pending and
+nothing reads it except tests. Document it as a status marker or drop it.

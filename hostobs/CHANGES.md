@@ -2,6 +2,102 @@
 
 ## [Unreleased]
 
+- **Changed (model identity, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live) `end_round`, model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
+- **Build (P-hostobs-08):** rustix 1.1.6 (`std`, `event`, `net`, `time`, no default features) is a workspace dependency of `kernel` and `probe`. The probe's unused `ruzstd`, `serde`, `serde_json` and `toml` are gone. The Rust lanes and `tools/dev` run on `tester-unified-rust(-dev):rs-20261124`, which carries the new lock's registry set; `rs-20261118` stays tagged for rollback.
+- **Docs (P-hostobs-19, closes `HOB-74`):** `docs/CONSUMERS.md` gets a "Boundaries" section with the four consumer rules (cgprofile frozen, span emission is one JSON line on the observer socket, act never writes `io.cost`/`io.weight`/sysctl, iogovmon reads hostobs only after M3); cgprofile's freeze is filed as `CP-66`.
+- The hostobs backlog now lists only open items; fixed and closed entries are archived one per line in `archive/2026-Q4.md`, with HOB-62..74 filed and HOB-49's WIRE citation corrected.
+- **Changed (WIRE.md, P-hostobs-03, `HOB-65`/`HOB-71`/`HOB-72` spec):** no request waits (D-W49, D-W50; D-W30 retired), JSON mode only at observer/control (D-W51), probe-wide keys with `max_rows` 1,024, Query 1/4 MiB, `max_block_bytes` 1 MiB and history 2/8 (D-W52), no per-uid pools and per-uid caps equal to the level caps at observe (D-W20, D-W53).
+- **Changed (probe serving, P-hostobs-05, `HOB-65`):** `current` is answered in its read turn or refused before REP with `too-many-requests` while its connection's Query blocks are unwritten, or `budget {"pool":"query"}` when the Query pools lack room; pending requests, retry, re-resolution and `SendHub::query_ready` are removed.
+- **Changed (probe serving, P-hostobs-06, `HOB-71`):** `tick_ms`, `max_rows` 1,024, `max_block_bytes` 1 MiB, Live 4/32 MiB, Query 1/4 MiB and history concurrency 2/8 are probe-wide; `max_block_bytes` is clamped to both connection pools.
+- **Changed (send hub, P-hostobs-06, `HOB-71`):** per-uid Live and Query pools are removed; the same-uid multiple-connection and query-backpressure cases now exercise only connection and global pools, and observe's connection and selection uid caps equal its level caps.
+- **Changed (JSON mode, P-hostobs-06, `HOB-72`):** observe and operator refuse a first `{` with exactly one fatal `binary-required` line at `corr` 0 and close; observer and control keep JSON mode, and both clients now treat ten codes as fatal.
+- **Docs (P-hostobs-02, `HOB-66`)**: `docs/PROBE-PROCESS.md` decides the probe's process and thread model (sampler, server loop and placed writer threads; non-blocking backend rule; eventfd wakeup; rustix with one audited `unsafe` line in `kernel`; named `LISTEN_FDS`; shutdown; minimal config; in-process test harness); the hub doc no longer claims a mutex.
+
+### Changed (P-hostobs-04 workspace unification)
+
+- **Crates**: `model` now owns the one quality/value vocabulary and metric fact table;
+  `kernel` and `store` depend on `model`, `proto` depends on `model`, and `store` depends on
+  both, with deleted local copies replaced by re-exports or model types.
+- **SP-2**: the kernel evidence now derives rates through `model::derive_rate` instead of a
+  test-local arithmetic implementation.
+- **Store payloads**: fixed frame-header fields are parsed by `proto`; the store applies its
+  configured payload bound, declared length, corpus frame type, flags and reserved checks in
+  their original order, with the existing typed refusals unchanged.
+- **Probe**: the unused `hostobs-kernel` workspace dependency is removed; the four
+  unused registry dependencies (`ruzstd`, `serde`, `serde_json`, `toml`) remain
+  until P-hostobs-08 removes them with its image rebuild.
+- **Docs**: the sampler source is cited by archive tag, commit and path; the README records
+  the measured working dev image and remote `tools/dev` run.
+
+### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
+
+- **`bins/probe/src/server.rs`**: `Server::on_tick(now_ns)` pulls one shared delivery set from the
+  registry and sends every push or stream-ending delivery through `Server::drive`. `wrote` and
+  `poll` now finish with the pending-`current` retry pass over connections and correlations in
+  ascending id order.
+- **`bins/probe/src/verbs.rs`**: `current`, `subscribe` and `unsubscribe` are served at observe and
+  operator, so `hello.verbs` lists `hello,status,current,subscribe,unsubscribe` there. JSON mode
+  keeps `current` and `subscribe` at `binary-required`; `unsubscribe` is served and answers
+  `not-found` for an unknown subscription.
+- **Tests**: server-level shared-tick, joiner-generation, interval, failed-stream and retry-order
+  cases; REQ/BLOCK/END sequences for all three verbs; the reachable §11.4 connection cases for
+  subscription idle, dribbling readers, half-close, corr reuse and `too-many-requests`; and a
+  2,000-turn hostile run over four slots and two uids whose modelled client decodes every BLOCK,
+  applies `StreamDicts`, and checks every END count.
+- **Docs and backlog**: WIRE §4.3/§5.4/§11.4, the live-stream and server design notes, and
+  `HOB-54`; the backlog row remains OPEN because P5b-3 and P5b-4 remain.
+
+### Added (P5b-2c connection: subscribe lifecycle, current, outstanding requests and Draining; `HOB-54` stays open)
+
+- **`bins/probe/src/conn.rs`**: `current` now resolves, bounds, encodes and queues a dictionary-bearing
+  Query block in REP/BLOCK/END order; Query backpressure records only the selection and needed length,
+  and `retry_pending` re-resolves the latest tick when room appears. `subscribe` applies the
+  per-connection, uid and probe budgets, returns its REP without resolving a tick and waits for the
+  first due stream block. `unsubscribe` removes the registry entry and ends the stream with exact
+  pinned-block/unpinned-drop counts. Clean client EOF enters Draining, ends every subscription in
+  `corr` order with `client-eof`, then finishes outstanding requests before closing silently.
+- **State guards**: `subs` and `pending` participate in `corr`-in-use, `max_outstanding`,
+  `subscriptions()`, idle suppression and every push path. All new pushes stop immediately after the
+  connection closes; `end_subscription` on a closed connection only removes the connection-side key,
+  leaving registry release to `Server::finish`.
+- **`bins/probe/src/server.rs`**: the server owns `SelectionStreams` built from unified stream bounds;
+  observe/operator now share `tick_ms`, `max_rows` and one `max_block_bytes`, clamped to the smallest
+  Query and Live pool cap of both levels. `drive` passes the registry, `on_eof` uses `drive`, `finish`
+  releases the connection's registry entries before removing its hub state, and `Server::streams()`
+  exposes the counters. `status` takes `dropped_blocks` from the hub and ignores the backend's field.
+- **Tests**: the P5b-2c section 5.3 cases cover `current`, subscribe, unsubscribe, outstanding,
+  corr-in-use, Draining, idle, server-ended stream and status behavior. The close-path matrix includes
+  real connection-side subscriptions for slow-client, shutdown, fatal request, frame-too-large, request
+  deadline, Draining completion and driver finish, then checks registry, hub and connection counters.
+  `Conn` sequences are parsed by the Rust client's REP/END checks and block dictionary state. The
+  2,000-step stream-operation hostile run checks registry and hub exactness after termination.
+- **`WIRE.md`**: the `current` pre-REP resolution/size rule and pending retry, subscription ownership
+  and next-tick delivery, unsubscribe counts, Draining completion, outstanding accounting, unified
+  block bounds, idle/Draining rows and decisions D-W29/D-W30.
+
+### Added (P5b-2b data side: backend seam, tick encoding, registry and hub additions; `HOB-54` stays open)
+
+- **`Backend`**: `TickData` (server-owned header fields separated from backend facts), a deterministic
+  `TickData::example`, `BackendError::{Unavailable, TooManyRows}` and
+  `Backend::current(&Selection, max_rows)`; `FixedBackend` answers from a canonical-selection map and
+  models the stop-at-`max_rows + 1` contract. `StatusView` forwards `current`.
+- **`tick.rs`**: full S16 validation, position-preserving dictionary bodies with every `intern` error
+  mapped to `internal`, a checked arithmetic frame-length preflight, canonical bare encoding, the
+  infallible dictionary splice, the generation-1 `current` block and a `LiveTick` whose dictionary form
+  is built once. Oversize is judged before `encode_bare`.
+- **`registry.rs`**: shared canonical selection streams, per-connection/subscription and per-uid
+  accounting, requesting-level uid/probe caps, `SelId` monotonicity, interval scheduling,
+  generation/form lifecycle, backend-unavailable skip, row/internal termination and deterministic
+  delivery order.
+- **`hostobs-proto` hub**: `SendHub::dropped_blocks`, `SendHub::query_room` and the Query-pin fix that
+  stamps 0 without consuming a reused Live stream's pending drops.
+- **Tests and fixtures**: every P5b-2b section 5.2 case, including S16 intern refusals, 4,096-row
+  encode equality, all registry caps/schedules/failures, a 2,000-step registry hostile run, hub
+  drop/room tests and the twentieth fixture `hub-query-pin-after-corr-reuse`. `assay.toml` judges the
+  two new source files.
+- **`WIRE.md`**: M2 END failures, hub drop accounting and Query room, Query pin behavior, join-cap
+  precedence and the generation lifecycle.
+
 ### Added (P5b-2a request side: canonical selections and the three request schemas; `HOB-54` stays open)
 
 - **`bins/probe/src/selection.rs`**: the checked canonical `Selection` stream key, with the 16-entity,

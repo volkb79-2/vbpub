@@ -196,7 +196,7 @@ self-qualification launcher tests plus
 `tests/core/test_docs_examples_and_vocabulary.py`. Selectors after `--` are
 passed to pytest. It is the path-triggered pre-merge set for
 `assay/tools/**`, `assay/gate/**`, `assay/assay.toml`, and the public documents
-carrying the R2 waiver window. A focused pass is diagnostic only; it does not
+carrying the provisional R2 policy. A focused pass is diagnostic only; it does not
 replace `run-gate tester-unified` or produce a qualification receipt. To check the
 contention independence of the hung-Docker fixture, use:
 
@@ -210,8 +210,7 @@ release receipt.
 
 ### Provisional release qualification B169 B170
 
-For a release inside the operator-authorized B169 window, CMRU's isolated
-`run-tests` step runs `tester-unified` first and then
+For any release, CMRU's isolated `run-tests` step runs `tester-unified` first and then
 `self-qualification-provisional` before it creates the release tag. Both
 commands run through `tools/release-gate.sh`.
 The lane runs R0, R1 over all of `src/assay` with 100% whole-target line and
@@ -222,25 +221,15 @@ verified, records `.assay/mutation-postponed-assay.json` with
 transaction version was received and matched, and false when no transaction
 binding was applied. That marker says R2 is owed; it is not an R2 pass. Use
 `run-gate self-qualification` when full R0-R3 evidence is required.
+Any release is R0/R1 plus R3 and an independent review; R2 runs asynchronously
+on the latest release. There is no per-version waiver window.
 
 The gate reads the first H2 release heading after `## [Unreleased]` in
 `CHANGES.md`, because CMRU runs the release gate before the tag exists. It
 refuses that heading if it is malformed or unsupported, even when an older
 heading is valid. CMRU passes the transaction's planned version as a protected
-gate input; the heading must match it. The currently authorized target
-interval is `10.0.0 <= version < 12.3.0`; at least one stable `assay-vX.Y.Z`
-tag must be listable, and its latest version must be below 12.3.0. The
-2026-11-08 operator decision extended the waiver for the release carrying the
-E4 env-only launchers and delegated release-gate changes; the 2026-11-12
-operator decision (A-507) extends it to the flexible-R2 release 12.2.0, gated
-by R0, R1 and the R3 canary, with assay's own R2 run afterwards as the T3 check
-owed under B535 (until a PASS is recorded for the latest eligible release).
-The superseded 12.2.0 release is not retro-run. A release at
-9.9.9, 12.3.0 or later, an unreadable tag
-list, or no visible stable tag refuses the waiver. Any further extension
-requires a new operator R2-waiver decision. The refusal names this decision
-and recommends the full self-qualification lane when the waiver no longer
-applies.
+gate input; the heading must match it. Release tags are not consulted; R2
+postponement is available for every supported stable release.
 
 #### T3 changed-line R2 campaign (B535)
 
@@ -1931,10 +1920,12 @@ optional `locus` object (`schema`, `key`, `qualname`, `segment_sha256`,
 `rel_start`, `rel_end`) and lookup-only `window_key` when the mutation site has
 a unique enclosing function. Both fields are absent for the exact-id fallback.
 They help find an earlier record after unrelated file edits; they do not prove
-that its outcome is still valid. A stored record with malformed locus metadata
-or values that do not reproduce from its own recorded path, source digest,
-span, operator and replacement digest is `UNREADABLE_ARTIFACT` (`stale locus`).
-Pre-B561 records without these fields remain valid exact-id records.
+that its outcome is still valid. Locus metadata is advisory: on load, a stored
+value with an unknown schema or one that does not reproduce for the current
+candidate is dropped without an error. The record still resumes by exact
+candidate id, and the `resume` progress event counts it in
+`locus_unavailable_total`. Pre-B561 records without these fields remain valid
+exact-id records.
 
 Three consequences worth planning around:
 
@@ -2014,12 +2005,16 @@ CURRENT candidate identity (path, source bytes, span, replacement, operator)
 and its bucket is `killed` or `survived`; `crashed`, `hung` and
 `budget_exceeded` are re-executed, and so is anything named by
 `--rejudge`/`--rejudge-outcome`. An imported record keeps `judge_sha256` =
-the judge that executed it and gains
+the judge that executed it and gains top-level `provenance` plus this
+schema-2 block:
 
 ```json
-"carry_over": {"schema_version": 2, "from_judge_sha256": "...", "into_judge_sha256": "...",
+"carry_over": {"schema_version": 2, "into_judge_sha256": "...",
                "source": "<DIR>", "reason": "<text>", "imported_at": "...Z",
-               "importer_version": "...", "locus_match": "exact-id"}
+               "importer_version": "..."},
+"provenance": {"kind": "imported", "from_candidate_id": "<own id>",
+               "from_judge_sha256": "...", "match": "exact-id",
+               "reason": "<text>"}
 ```
 
 so the next `--resume` reuses it without the flag. Nothing is silently merged
@@ -2027,16 +2022,34 @@ into "judged by this judge": the progress stream emits a `carry_over` event
 (`imported_total`, `copied_total`, `refused_total` with a sample of reasons,
 `from_judge_counts`, `reason`), `candidates.imported_total`, and
 `assay analyze campaign` reports `state.imported` and prints a
-`carry-over: N counted result(s) were IMPORTED ...` line in its text closeout.
+`carry-over: N counted result(s) were imported ...` line in its text closeout.
 Known limit (B532): the verdict document itself does not yet mark imported
 outcomes.
 
-Schema-1 blocks remain accepted unchanged. In schema 2, `locus_match` names
-how a future carry-forward search found the record (`exact-id`, `locus` or
-`window`), and the machine reason `carry-forward` is valid without an
-operator-authored text. `from_judge_sha256` is provenance only, including for
-a kill replayed by the current judge: `into_judge_sha256` is the effective
-judge in both the imported and replay shapes.
+`provenance` is the one contract that verdict v21 will project per candidate;
+its state-record shape is:
+
+| field | required | rule |
+|---|---|---|
+| `kind` | yes | `imported`, `carried`, or `replayed`; absent `provenance` means `fresh`, and `resumed` is assigned only at v21 projection time |
+| `from_candidate_id` | yes | the prior record's candidate id; for `match = "exact-id"` it equals this record's id |
+| `from_judge_sha256` | yes | the judge that executed the prior evidence |
+| `match` | yes | `exact-id`, `locus`, `window`, or `hint` |
+| `reason` | no | operator or fixed machine text, at most 1024 UTF-8 bytes |
+| `replay_node_id` | no | allowed only with `kind = "replayed"` |
+
+The reader is `assay.mutation.record_provenance(payload)`. Validation is
+shape-only and never raises: an invalid provenance object or schema-2 block
+makes that record unusable, so `record_effective_judge` is `None` and the
+candidate is re-judged and counted rather than failing the lane. Schema-2
+`carry_over` is valid only beside `kind = "imported"` or `"carried"` whose
+`from_judge_sha256` equals the record's executing `judge_sha256`.
+
+Schema-1 `carry_over` blocks remain read-only compatibility for resume, merge
+and campaign analysis. No writer emits them. Their canonical provenance is
+derived as `{kind: "imported", from_candidate_id: <own id>,
+from_judge_sha256: <schema-1 from>, match: "exact-id",
+reason: <schema-1 reason>}`.
 
 ### Carry forward sub-file matches (B561/WP3a)
 
@@ -4760,7 +4773,7 @@ never says `coverage_parsed`.
 | `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`) |
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
-| `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
+| `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5, and `locus_unavailable_total` from advisory locus metadata dropped on load) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`, `locus_unavailable_total`) |
 | `carry_forward` | all earlier-judge carry-forward sources were checked, once before candidate dispatch | `exact_id`, `locus`, `window`, `survivors_carried`, `kills_requeued`, `ambiguous_loci_ignored`, `unmatched`, `from_judges`, `same_judge_resume`, `invalid_records`, `sources`, `reason` |
 | `baseline` | the sweep's baseline record | `candidate_total` |
 | `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). B561 adds optional `locus` and `window_key`, both absent for the exact-id fallback. `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`) and `startup_seconds` (`to_session_start`/`to_first_test`) are Assay's own clock. Assay 12 (B206) removed the sampled `cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `judge_rss_bytes` and the `resources` object: every resource number now comes from the cgprofile observer as `profile` (a `resource-profile/1` object: `status` `MEASURED`/`PARTIAL`/`NO_MEASUREMENT`, one `reason` when there is no measurement, `wall_seconds` from Assay's clock, `metrics`, `missing`, `observer`; see [the v17-to-v18 migration notes](#migration-notes-v17-to-v18)). `worker_count` is the workers of the invocation that ran the candidate (B203), and a `killed` candidate carries `first_failing_test` (B205; null when unknown). Profiles are diagnostic and never classify a candidate; they are also stored in the candidate state record and as one line in `profile-<lane>.jsonl` beside the progress file. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`format`, `spawned_at`) |

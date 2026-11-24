@@ -28,7 +28,7 @@ OPS = {
     "push_live",
     "push_query",
     "push_control",
-    "query_ready",
+    "query_room",
     "end_stream",
     "head",
     "head_partial",
@@ -63,7 +63,8 @@ class HubFixtureTests(unittest.TestCase):
                 self.assertEqual(f"{doc['case']}.json", name)
                 self.assertEqual(set(doc), {"case", "doc", "limits", "conns", "steps", "expect"})
                 self.assertEqual(set(doc["limits"]), LIMIT_KEYS)
-                self.assertTrue(all(isinstance(uid, int) for uid in doc["conns"]))
+                self.assertIsInstance(doc["conns"], int)
+                self.assertGreaterEqual(doc["conns"], 1)
                 self.assertEqual(len(doc["steps"]), len(doc["expect"]))
                 last = 0
                 for step, outputs in zip(doc["steps"], doc["expect"]):
@@ -71,14 +72,14 @@ class HubFixtureTests(unittest.TestCase):
                     self.assertGreaterEqual(step["t_ms"], last)
                     last = step["t_ms"]
                     if "c" in step:
-                        self.assertLess(step["c"], len(doc["conns"]))
+                        self.assertLess(step["c"], doc["conns"])
                     for output in outputs:
                         if isinstance(output, str):
                             self.assertIn(output, OUTCOMES)
                         elif output is not None:
                             self.assertIn(
                                 next(iter(output)),
-                                {"pools", "closed", "head", "counts", "ready", "partial"},
+                                {"pools", "closed", "head", "counts", "room", "partial"},
                             )
                     self.assertEqual("watch" in step, any(
                         isinstance(o, dict) and "pools" in o for o in outputs

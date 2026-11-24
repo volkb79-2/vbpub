@@ -350,7 +350,7 @@ RUN --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-input
     install -m 0644 /tmp/mdt-inputs/customization/README.md "${share_dir}/README.md"; \
     install -m 0644 /tmp/mdt-inputs/customization/aliases.sh "${share_dir}/aliases.sh"; \
     install -m 0644 /tmp/mdt-inputs/customization/aliases.sh.example "${share_dir}/aliases.sh.example"; \
-    install -m 0644 /tmp/mdt-inputs/customization/ai.env.example "${share_dir}/ai.env.example"; \
+    install -m 0644 /tmp/mdt-inputs/customization/.env.ai.example "${share_dir}/.env.ai.example"; \
     install -m 0644 /tmp/mdt-inputs/customization/shell.env "${share_dir}/shell.env"; \
     install -m 0644 /tmp/mdt-inputs/customization/bashrc "${share_dir}/bashrc"; \
     install -m 0644 /tmp/mdt-inputs/customization/zshrc "${share_dir}/zshrc"; \
@@ -1305,6 +1305,11 @@ COPY --from=ksm-build /tmp/ksm-optin.so /usr/local/lib/ksm-optin.so
 ENV LD_PRELOAD=${KSM_OPTIN_LD_PRELOAD}
 
 USER vscode
+
+# Long-lived default command for a devcontainer that sets `"overrideCommand": false` and `"init": true`
+# (MDT-107). Killing the `sleep` child only starts the next one; SIGTERM from `docker stop` exits 0.
+# The base image's own CMD is `python3`, which exits at once without a terminal.
+CMD ["/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done"]
 
 # Keep volatile release metadata after every filesystem instruction. A new
 # revision/date must not invalidate apt, tool, or venv layers.

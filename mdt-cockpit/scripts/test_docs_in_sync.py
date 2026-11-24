@@ -29,6 +29,7 @@ LIVE_DOCS = (
     "USAGE.md",
     "DEVCONTAINER-LIFECYCLE.md",
     "docs/HOME-PERSISTENCE.md",
+    "docs/AI-HARNESSES.md",
     "templates/README.md",
     "customization/README.md",
 )
@@ -100,6 +101,9 @@ def test_every_closed_vocabulary_value_a_consumer_types_is_documented() -> None:
         "aider-main-pin.toml", "cmru versions resolve", "docker login docker.io", "until an aider release supports Python 3.14",
         "AIDER_COMMIT", "COPILOT_VERSION",
         "ZSH_DISABLE_COMPFIX", "ZSH_CACHE_DIR",
+        "deepseek-v4.1-flash-eco", "OPENDESIGN_API_KEY_GITHUB2", "OPENDESIGN_API_KEY_VOLKER",
+        "opendesign_github2", "opendesign_volker", "model_reasoning_effort", "#high",
+        "--thinking high", "opencode-od", "pi-od", "max", "low", "high",
         "/etc/xdg/nvim", "/etc/htoprc", "/etc/mc/mc.ini", "/etc/nanorc", "/etc/zsh/zshrc", "/etc/bash.bashrc",
     ]
     missing = [value for value in typed if value not in corpus]
@@ -124,7 +128,6 @@ RETIRED_EVERYWHERE = (
     "migrate_persistent_home",
     ".mdt-home-migration",
     "mdt--mounted-folders/home",
-    "~/.config/modern-debian-tools-python-debug/ai.env",
 )
 RETIRED_OUTSIDE_THE_EXPLAINERS = ("home-vscode", "~/mdt-manifest.md", "~/.oh-my-zsh-custom", "home-defaults")
 EXPLAINERS = ("docs/DESIGN-GUIDE.md", "docs/HOME-PERSISTENCE.md")

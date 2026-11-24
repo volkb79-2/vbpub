@@ -413,7 +413,7 @@ def test_tag_head_relationship_refuses_when_git_cannot_compare_the_commits(
         repo.tag("demo-v1.0.0")
         repo.commit("demo/x.py", "feat: more")
         tag_commit = _git(repo.root, "rev-parse", "demo-v1.0.0^{commit}")
-        real_run = subprocess.run
+        real_run = version.run_process
 
         def run(argv, **kwargs):
             # Fail only the tag-vs-HEAD comparison (resolved tag commit first).
@@ -421,7 +421,7 @@ def test_tag_head_relationship_refuses_when_git_cannot_compare_the_commits(
                 return subprocess.CompletedProcess(argv, 128, stdout, stderr)
             return real_run(argv, **kwargs)
 
-        monkeypatch.setattr(version.subprocess, "run", run)
+        monkeypatch.setattr(version, "run_process", run)
         with pytest.raises(ReleasePlanRefused) as refused:
             _tag_head_relationship(repo.root, "demo-v1.0.0")
 

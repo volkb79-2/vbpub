@@ -135,7 +135,7 @@ class StartRig:
 def rig(monkeypatch, tmp_path, host) -> StartRig:
     root = tmp_path.resolve()
     mounts = [{"Destination": str(root), "Source": "/host" + str(root), "RW": True}]
-    monkeypatch.setattr(vm_lab, "inspect_network", lambda _name: None)
+    monkeypatch.setattr(vm_lab, "inspect_network", lambda name: (name, "bridge"))
     monkeypatch.setattr(vm_lab, "image_id", lambda _name: "sha256:img")
     monkeypatch.setattr(vm_lab, "inspect_current_container", lambda: ("cid", {"Mounts": mounts}))
     monkeypatch.setattr(vm_lab, "cgroup_preflight", lambda *_a, **_k: ("insp", LEVELS, "/cg"))

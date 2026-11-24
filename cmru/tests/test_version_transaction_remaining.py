@@ -36,7 +36,7 @@ def test_version_external_empty_value_and_bad_git_are_refused(tmp_path):
     (tmp_path / "cmru.vars").write_text("VERSION=\n")
     with pytest.raises(RuntimeError, match="does not define"):
         version._external_version(tmp_path, "VERSION")
-    with patch.object(version.subprocess, "run", return_value=SimpleNamespace(returncode=1, stderr="bad", stdout="")):
+    with patch.object(version, "run_process", return_value=SimpleNamespace(returncode=1, stderr="bad", stdout="")):
         with pytest.raises(RuntimeError, match="git"):
             version._git(tmp_path, "status")
 

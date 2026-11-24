@@ -47,7 +47,9 @@ Contents below a listed directory inherit that directory's owner and persistence
 | `.zshrc` | comment-only stub | The only file the finalizer itself writes (only when none of `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin` exists). Yours from then on. |
 | `.claude/skills/<skill>`, `.agents/skills/<skill>` | agent skills of `cmru`, `pwmcp` and any other first-party CLI with a `skills` verb | Written by the CLI's own `skills install`, which the finalizer runs only when `skills check` reports them not current; stamped, owned by that tool, never touching other files in `.claude` or `.agents`. A second finalizer run changes nothing. |
 | `.bashrc`, `.bash_logout`, `.profile`, `.zprofile` | optional user shell startup | **Not created.** bash and zsh load the image defaults from `/etc/bash.bashrc` and `/etc/zsh/zshrc`; create your own file to add to or override them. |
-| `.config/mdt-cockpit/` | **your** MDT overrides: `ai.env`, optional `shell.env`, `aliases.sh` | Not created by the image. Sourced after the image's own files. Examples: `/usr/local/share/mdt-cockpit/*.example`. |
+| `.config/mdt-cockpit/shell-start.d/` | **your** shell startup snippets, including registered secret files | Not created by the image. Every regular file is sourced in lexical order by the shared bash/zsh profile loader. |
+| `.config/mdt-cockpit/` | Optional `shell.env` and `aliases.sh` overrides | Not created by the image. Sourced after the image's own files. Examples: `/usr/local/share/mdt-cockpit/*.example`. |
+| `.env.ai` | User-owned API key file, when a tool expects this home-level path | Not created by the image. Register it in `.config/mdt-cockpit/shell-start.d/` to export its variables in shells. |
 | `.config/htop/htoprc`, `.config/mc/ini`, `.nanorc` / `.config/nano/nanorc`, `.config/nvim/init.lua` | per-tool user config | **Not created.** The image defaults load from `/etc/htoprc`, `/etc/mc/mc.ini`, `/etc/nanorc`, `/etc/xdg/nvim`; creating your file overrides them (nano: per setting). Tools write these files themselves when you save settings. |
 | `.local/bin` | the user's own CLIs | Last on `PATH`. An image tool of the same name wins; call the user copy by path or put it earlier in your own startup file. |
 | `.local/share`, `.local/state`, `.cache` (including `.cache/oh-my-zsh`) | tool data, state and rebuildable caches | Created by the tools themselves on first use; persist. |
@@ -84,7 +86,7 @@ The previous template kept its state under `~/mdt--mounted-folders/` (split moun
 | `.claudelink/`, `.pi/`, `.reasonix/`, `.openclaw/` | same name | Agent state. `.reasonix.toml` and `.gitconfig` (single files) too. |
 | `opencode-data/` or `.local/share/opencode/` | `.local/share/opencode/` | OpenCode data. |
 | `.config/<tool>/` | `.config/<tool>/` | **Selectively**: `gh`, `git`, `docker`, `opencode`, … — only directories you recognise as yours. |
-| `.config/modern-debian-tools-python-debug/ai.env` | `.config/mdt-cockpit/ai.env` | Your API keys. |
+| API key file in `.config/modern-debian-tools-python-debug/` | `.env.ai`, then register it in `.config/mdt-cockpit/shell-start.d/` | Copy your own values manually; nothing migrates automatically. |
 
 Stop the container first (so SQLite WAL/SHM files are quiescent), then, on the host:
 
@@ -105,8 +107,11 @@ for codex in .codex .codex2; do
 done
 [ -d "$OLD/opencode-data" ] && cp -a "$OLD/opencode-data" "$NEW/.local/share/opencode"
 [ -d "$OLD/.local/share/opencode" ] && cp -a "$OLD/.local/share/opencode" "$NEW/.local/share/"
-[ -f "$OLD/.config/modern-debian-tools-python-debug/ai.env" ] \
-    && cp -a "$OLD/.config/modern-debian-tools-python-debug/ai.env" "$NEW/.config/mdt-cockpit/ai.env"
+# If you chose to copy API keys into "$NEW/.env.ai", register that file for shells:
+mkdir -p "$NEW/.config/mdt-cockpit/shell-start.d"
+if [ -f "$NEW/.env.ai" ] && [ ! -e "$NEW/.config/mdt-cockpit/shell-start.d/.env.ai" ]; then
+    ln -s "$NEW/.env.ai" "$NEW/.config/mdt-cockpit/shell-start.d/.env.ai"
+fi
 for tool in gh git docker opencode; do
     [ -d "$OLD/.config/$tool" ] && cp -a "$OLD/.config/$tool" "$NEW/.config/"
 done

@@ -5,6 +5,10 @@ controller's decisions are folded in (section 8 lists them). Continues
 `P5B-SERVER-DESIGN.md` (rules R1..R28; this file's rules are S1..S34) on the P5b-1b head `9ce8d228a`.
 Normative protocol: `WIRE.md` (sections quoted as §n). Where this file and WIRE.md disagree, this file
 names the WIRE.md edit (section 6) and the package that owns it. Nothing here was compiled.
+**Historical where WIRE.md D-W49..D-W53 now rule (2026-11-24):** the pending `current`, its retry pass
+and `query_ready` (S5-S7, S22-S24, S27, Q3; WIRE §5.1 "No request waits"), the per-uid pools and the
+per-level unified keys (S20; WIRE §5.1 "Probe-wide keys"), and JSON mode at observe/operator (S15, S32;
+WIRE §1.3). Marked inline below; the rest stands.
 
 ## 1. Scope and shape
 
@@ -25,7 +29,8 @@ The shape of P5b-1 is kept: sans-IO `Conn` / `Server`, the backend injected, eve
 - `registry.rs` (pure state, owned by `Server`): `SelectionStreams`, the shared selection streams,
   their subscribers, generations and the distinct-selection accounting.
 - `Conn` gains its subscriptions (`subs`) and its outstanding requests (`pending`); `Server` gains
-  `on_tick(now)` and a retry pass for outstanding `current` requests.
+  `on_tick(now)` and a retry pass for outstanding `current` requests. *(Historical: `pending` and the
+  retry pass; WIRE.md §5.1 now rules.)*
 
 **Not in P5b-2:** a collector or sampler (later package; `Backend::current` is its seam), `snapshot_at`,
 `series_batch`, `procs` (P5b-3), END reason `page`, the `issuer`/`peer_identity` (P5b-3), socketpair
@@ -289,6 +294,11 @@ Tests: section 5.4 (incl. every §11.4 case of section 5.5). WIRE edits: §4.3 n
 §11.4 (S31), §5.4 driver note
 (S25), design R3/R21 superseded notes, `HOB-54` row; the series gets the Opus final review (design §2).
 
+**Implemented with P5b-2c + P5b-2d.** The merged package delivers shared ticks through
+`Server::on_tick`, runs the pending-`current` retry pass after `wrote` and `poll`, serves the three
+block verbs and updates `hello.verbs`, and adds the server-level section 5.4/5.5 tests including
+the block-verb hostile run. P5b-3 and P5b-4 remain, so `HOB-54` stays open.
+
 ## 3. Resolutions (S1..S34)
 
 **S1 Selection parsing (§4.2).** `args::selection(obj, "selection")`: `selection` is an object with
@@ -315,11 +325,11 @@ one metric). `{"all":true}` together with other selectors is legal (a distinct c
 `subscribe` `corr`. Every block is encoded with `corr` 0 and `dropped` 0; the hub stamps both at pin
 (D-W7). One rule for query and live blocks.
 **S4 `corr` in use (§2.3, R11 step 2).** Binary mode: `ConnFacts.corr_in_use` is true when the frame
-`corr` is a key of `subs` or of `pending`. `classify_with` refuses it exactly like `corr` 0 (`bad-frame`,
+`corr` is a key of `subs` or of `pending` *(historical: `subs` only, WIRE.md §2.3 now rules)*. `classify_with` refuses it exactly like `corr` 0 (`bad-frame`,
 REP `corr` 0, fatal), before `check_req`. JSON mode: always false (no block verb, nothing outstanding).
 A `corr` is free again once its final REP or END is queued; reuse after that is legal (§2.3) and S12
 keeps it exact.
-**S5 Outstanding (§5.1, R11 step 10).** `outstanding = pending.len()`. In P5b-2 only a `current` whose
+**S5 Outstanding (§5.1, R11 step 10).** *(Historical: WIRE.md §4.2 step 10 and §5.1 now rule.)* `outstanding = pending.len()`. In P5b-2 only a `current` whose
 block met `Backpressure` is outstanding. `ConnFacts.outstanding_full = pending.len() >= max_outstanding`;
 a REQ of a **BLK-shape verb** (`current`, `subscribe`; later `snapshot_at`, `series_batch`) then answers
 `too-many-requests` (non-fatal, `detail {}`), after step 9 and before the argument schema. JSON-shape
@@ -334,13 +344,14 @@ with the conn's own (unified, S20) `max_rows` and `max_block_bytes`: `Rows` -> R
 `current_result(tick_ms)` (`tick_ms` of the conn's level, unified by S20); if that push closed the conn,
 stop (S27); then `push_query(id, corr, block)`: `Queued` -> `counts = end_stream(id, corr)`, push
 `end_ok(corr, counts.blocks, counts.dropped, Complete)` (1 and 0). `Backpressure(_)` -> the bytes are
-dropped and `pending.insert(corr, Pending { selection, need: len })`. `query_block` = the S11 build
+dropped and `pending.insert(corr, Pending { selection, need: len })` *(historical: refused before the
+REP instead, WIRE.md §5.1 now rules)*. `query_block` = the S11 build
 with its own generation 1, always dictionary-bearing (a query stream numbers its own, §6.2), checks in
 the order rows, `validate`, dictionary body, size (`encoded_len(&data, Some(body.len()))` is `None` or
 `> max_block_bytes` -> `Oversize`, judged arithmetically BEFORE any block encode), then encode.
 Invariant: `max_block_bytes <= query_queue_bytes` (S20), so a block that passes always fits an empty
 Query pool and a pending request always becomes queueable once its own connection's pool drains.
-**S7 Pending retry.** `retry_pending` (called by the server's retry pass after every `wrote` and at the
+**S7 Pending retry.** *(Historical: retired, WIRE.md D-W49.)* `retry_pending` (called by the server's retry pass after every `wrote` and at the
 end of every `poll`, S27) handles `pending` in ascending `corr`: when `hub.query_room(id, need)` it re-runs
 the S6 pipeline from `backend.current(&sel, max_rows)` (the latest tick NOW: the request holds no block
 bytes, D-W30):
@@ -410,7 +421,7 @@ push REP `{}` on the request `corr`, `counts = hub.end_stream(id, sub)`, push `e
 counts.dropped, Unsubscribed)`. The race "tick queued while unsubscribing": the unpinned tick is removed
 by `end_stream` and counted in `dropped`; a pinned one is written before the END and counted in
 `blocks`. In JSON mode `unsubscribe` is a served JSON verb (not `binary-required`) and always answers
-`not-found`.
+`not-found` *(historical: no JSON mode at observe/operator, WIRE.md §1.3 now rules)*.
 **S16 Tick validation and header.** `validate`: every row `ent < entries.len()` and an `Entity`; every
 column `metric < entries.len()` and a `Metric` whose `facts.kind == column.kind`, `column.rows() ==
 rows.len()`, metric indices pairwise distinct, every quality byte a known code (`Quality::from_code`);
@@ -440,13 +451,15 @@ judged for a join: no new stream is created; controller decision, finding 4); se
 `Budget(Selections)`; else `next_id.checked_add(1)` (`None` -> `Exhausted`) and create. `caps` are the
 requesting connection's level values (finding 14). Every leave
 decrements the ref, removes a 0 ref and an empty uid entry, and destroys an empty stream.
-**S20 Server-wide stream bounds.** `ServerLimits::unified()` also sets, for observe and operator:
-`tick_ms` to the larger of the two (one sampler tick), `max_rows` and `max_block_bytes` to the smaller
-of the two (a stream may serve both levels), and then clamps each level's `max_block_bytes` to
-`min(max_block_bytes, query_queue_bytes, client_queue_bytes)` of that level, so the invariant
-`max_block_bytes <= query_queue_bytes` (and `<= client_queue_bytes`) holds for every built server (no
-panic: a misconfiguration is clamped, and a `Server::new` test asserts the invariant on the defaults and
-on a deliberately wrong input). What hello announces is what the server enforces.
+**S20 Server-wide stream bounds.** *(Historical: probe-wide keys, no per-uid pools; WIRE.md §5.1 now rules.)* `ServerLimits::unified()` also sets, for observe and operator:
+`tick_ms` to the larger of the two (one sampler tick); `max_rows`, `client_queue_bytes`, and
+`query_queue_bytes` to their smaller values; and one shared `max_block_bytes` to the smaller
+configured byte limit, clamped again by those shared queue caps. The per-uid and global Live and
+Query pool limits are derived from the shared per-connection caps. Thus the same queue and block
+bounds are announced and enforced for either level and `max_block_bytes <= query_queue_bytes` (and
+`<= client_queue_bytes`) holds for both levels in every built server (no panic: a misconfiguration
+is clamped; a `Server::new` test covers defaults, unequal pool caps and a deliberately wrong input).
+What hello announces is what the server enforces.
 `ServerLimits::stream_limits()` = `StreamLimits { bounds: BlockBounds { max_rows, max_block_bytes } }`
 of the unified observe level (equal to operator's after unification). `min_interval_ms`,
 `max_uid_selections` and `max_selections` stay per level (S19 passes the requesting level's caps).
@@ -460,14 +473,14 @@ but per stream it holds, outside every pool, the current `dict_body` (at most `m
 `Vec<Entry>`: bounded by `max_selections x (max_block_bytes + entries)` = 8 x (4 MiB + entries) with
 the defaults (entries <= 65,536 x ~300 B by the dictionary bounds; ~1.2 MB at 4,096 rows). A `LiveTick`
 lives only inside one `on_tick`. `Pending` keeps the `Selection` and a length, never block bytes.
-**S23 Draining and idle (§1.5, §5.4).** Clean EOF in `Ready`: state `Draining`; for every `corr` in
+**S23 Draining and idle (§1.5, §5.4).** *(Historical for `pending`: WIRE.md §5.4 now rules.)* Clean EOF in `Ready`: state `Draining`; for every `corr` in
 `subs` ascending: `streams.unsubscribe`, `counts = end_stream`, push `end_ok(corr, .., ClientEof)`; `subs`
 cleared; `pending` keeps retrying. Draining closes silently when `pending` is empty and `hub.queued(id)
 == Pools::default()` (checked after `on_eof`, `on_written` and `retry_pending`). The idle condition is
 `Ready && reader at a boundary && queue empty && subs empty && pending empty`.
 **S24 Determinism.** `BTreeMap` everywhere; `SelId` from 1, monotonic, never reused; subscribers in
 `SubKey` order (`ConnId`, then `corr`); `on_tick` deliveries in `SelId` order; the retry pass in `ConnId`
-then `corr` order.
+then `corr` order *(historical: no retry pass, WIRE.md D-W49)*.
 **S25 Tick delivery API: backend pull.** `Server::on_tick(now_ns)` asks the registry, which asks
 `backend.current` for each due stream; the driver (P5b-4) calls it once per sampler tick, after `poll`
 in the same loop iteration. Rejected: `deliver_tick(selection_id, bytes)` (the driver would have to know
@@ -477,12 +490,12 @@ saturating; generation `checked_add`; `n_rows` `u32::try_from`; lengths `checked
 `saturating_add`; `need` is a `usize` from a real length.
 **S27 The `drive` rule extended (design 1b module doc).** Every new push path goes through
 `Server::drive`: `on_eof` (client-eof ENDs), `on_tick` (Live pushes and ENDs), the retry pass (blocks and
-ENDs). `drive` runs `enforce_control` after each. Every new push path (`push_tick`, `end_subscription`,
+ENDs; historical, WIRE.md D-W49). `drive` runs `enforce_control` after each. Every new push path (`push_tick`, `end_subscription`,
 `retry_pending`, the subscribe/unsubscribe/current arms, the Draining ENDs) returns at once when
 `is_closed()`, and stops after any push that closes the conn (S6, S7, S15, S17, S23): no later push,
 `end_stream` or registry change is made on a closed conn except S17's `subs.remove`.
 **S28 Precedence with the new verbs** (R11 numbering): (2) `corr` 0 or in use (S4); (9) served flags flip
-in 2c; (10) `too-many-requests` (S5); (11) argument schemas (S1, S8, `sub` u32); execution budgets
+in 2d; (10) `too-many-requests` (S5; historical, WIRE.md §4.2 step 10 now rules); (11) argument schemas (S1, S8, `sub` u32); execution budgets
 (S9) come after the schema, then the backend. `forbidden` / `binary-required` keep coming from the full
 table.
 **S29 END payload.** `end_ok`: `{"ok":true,"blocks":B,"dropped":D,"next":null,"reason":"<r>"}`;
@@ -515,7 +528,8 @@ implementer's choice.
   pushes. Subscribe/unsubscribe churn costs registry map operations and two small control frames, never an
   encode (S9): no CPU amplification from a stream of small requests; the control frames are bounded by
   `control_queue_bytes` (`slow-client`).
-- **`current` amplification.** A SUCCESSFUL `current` costs one resolution and one encode; a non-reading
+- **`current` amplification** *(historical for the pending part: WIRE.md §5.1 now rules; a non-reading
+  client's next `current` is `too-many-requests`)*. A SUCCESSFUL `current` costs one resolution and one encode; a non-reading
   client gets one block queued per free Query room, then <= `max_outstanding` pending requests (holding
   no bytes, S22), then `too-many-requests`. Retries need room, which needs reads (S7). A FAILING
   `current` (`budget rows`, `internal` after `Oversize`) is never outstanding, so it can repeat at line
@@ -539,8 +553,14 @@ implementer's choice.
 - **Memory per subscriber vs shared bytes.** Per subscriber: a `subs` entry, a registry `Sub`, a hub stream
   state (tens of bytes each) and <= 2 queue entries (one pinned, one unpinned) referencing shared ticks.
   Per stream, outside every pool: `entries` + `dict_body` (`dict_body` <= `max_block_bytes`), so <= 8 x
-  (4 MiB + entries) with the defaults (S22). Physical tick memory <= the Live pools (global 32 MiB)
-  because nothing else holds tick bytes.
+  (4 MiB + entries) with the defaults (S22). The global Live cap (32 MiB by default) bounds queued
+  live-frame lengths only. `on_tick` first builds a delivery batch that can retain up to
+  `max_selections` base frames outside that pool, each <= `max_block_bytes` (8 x 4 MiB by defaults).
+  While pushing one delivery, `LiveTick` may also cache its dictionary frame (<= `max_block_bytes`),
+  even when the hub rejects it. Building that frame allocates a `Vec` and may reallocate; those logical
+  frame lengths are bounded by `max_block_bytes`, but their allocation capacity is outside hub
+  accounting. These are component bounds, not a total physical peak-memory bound; allocator overhead
+  is not included.
 - **Backend misbehaviour.** Bounded by S16 (validation), S11 (rows, size) and R25 (replies); every
   failure is `internal`/`budget` and ends the stream, never a panic or an oversized frame.
 
@@ -607,6 +627,9 @@ implementer's choice.
   every Push's bare form absent exactly on change ticks.
 
 ### 5.3 P5b-2c
+
+*(Historical where a test pins pending, retry, per-uid pool or JSON-mode behaviour: WIRE.md §11.4 and
+D-W49..D-W53 now rule; this applies to 5.4 too.)*
 - `conn_current_*`: queued (REP, BLOCK, END `complete` blocks 1 in FIFO order, the client `StreamDicts`
   accepts the block), backend error, rows budget, oversize -> `internal`, backpressure -> outstanding 1,
   retry when room -> BLOCK + END, retry failure after REP -> `END ok:false`, the retried block is from the
@@ -621,23 +644,26 @@ implementer's choice.
 - `conn_closed_stops_every_push_path` (a push that closes the conn: no later push, `end_stream` or
   registry change; `end_subscription` on a closed conn only removes `subs`).
 - `conn_current_uses_unified_bounds` and `server_limits_block_invariant` (`max_block_bytes <=
-  query_queue_bytes, client_queue_bytes` after `unified()`, defaults and a wrong input).
+  query_queue_bytes, client_queue_bytes` after `unified()`, defaults and a wrong input), plus
+  `server_current_uses_smallest_shared_query_pool` (a second valid BLOCK waits when the smaller
+  observe/operator Query pool is full).
 - `conn_status_tests_rewritten` (the two P5b-1b status tests now expect the hub's count).
 - `conn_draining_*`: client-eof END per subscription in corr order with exact counts; pending finishes then
   silent close; close only when pending empty and queue empty.
 - `conn_idle_*`: not idle with a subscription or a pending request; idle again after unsubscribe.
 - `conn_server_end_*`: `end_subscription` budget rows / internal; unknown corr ignored.
 - `conn_status_dropped_blocks_from_hub` (`conn_hello_verbs_at_block_levels` moves to 2d with the flip).
-- R18/R22: counters, `uid_pools`, `global_pools`, registry counts back to zero after every close path with
-  subscriptions (slow-client, shutdown, fatal request, frame-too-large, deadline, Draining done, driver
-  finish) -- through `Server::finish`.
+- R18/R22: counters, `uid_pools`, `global_pools`, and registry counts return to zero after every close
+  path with a real connection-side subscription (slow-client, shutdown, fatal request, frame-too-large,
+  request deadline, Draining done, driver finish) -- through `Server::finish`.
 - Every client-visible sequence is replayed through the Rust client's checks where possible:
   `check_rep`/`check_end`, `decode_block_with` + `StreamDicts::accept`, END `blocks == received`.
 
 ### 5.4 P5b-2d
 - `server_on_tick_*`: shared bytes (two conns, one `Arc`, distinct `corr`/`dropped` prefixes), joiner on
-  generation 5 gets the dictionary form then bare, interval skipping a change tick (§5.3 D-W27 at server
-  level), Push skipped for a closed-unfinished conn, End delivered to every subscriber.
+  generation 5 gets the dictionary form then bare, and a faster subscriber changes the generation on
+  a tick skipped by a slower subscriber that then gets the dictionary form on its next due tick (§5.3
+  D-W27 at server level); Push skipped for a closed-unfinished conn; End delivered to every subscriber.
 - `server_retry_pass_*`: after `wrote` of another conn of the same uid frees the uid Query pool; at `poll`;
   id order.
 - `server_finish_releases_selections` for all close paths (S18).
@@ -660,6 +686,9 @@ implementer's choice.
 
 ## 6. WIRE.md edits implied (owner package)
 
+*(Historical: the §4.6, §5.1 outstanding, §5.4 pending and D-W30 items are superseded by WIRE.md
+D-W49..D-W53.)*
+
 - §2.2 (2b): `END ok:false` in M2 carries `internal` or `budget {"pool":"rows"}` (S11, S7).
 - §4.2 (2a): selection rules of S1 (decoded identity, empty path refused, `all` must be `true`, element
   key paths); precedence: steps 2 (`corr` in use) and 10 (`too-many-requests`) are now implemented (S4,
@@ -676,9 +705,9 @@ implementer's choice.
 - §4.7 and §5.1 (2b): a join that adds a selection the uid does not use yet counts against the uid cap
   (`budget uid-selections`) but not the probe cap (S19, finding 4); the caps applied are the requesting
   level's; a uid's selections are counted across levels.
-- §5.1 (2c): outstanding = a backpressured `current` in M2 (S5); `max_rows` and `max_block_bytes` are
-  unified to the smaller of observe/operator and `max_block_bytes <= query_queue_bytes,
-  client_queue_bytes` holds by construction (S20).
+- §5.1 (2c): outstanding = a backpressured `current` in M2 (S5); `max_rows`, `client_queue_bytes`,
+  `query_queue_bytes`, and `max_block_bytes` are unified to the smaller of observe/operator;
+  `max_block_bytes <= query_queue_bytes, client_queue_bytes` holds by construction (S20).
 - §5.3 (2b): Query pin stamps 0 without resetting `pending_drops` (S12); `dropped_blocks`, `query_room`.
 - §5.4 (2c): `Ready` idle row includes "no pending request"; `Draining` row closes when pending and queue
   are empty (S23); (2d) driver note: `on_tick` once per tick after `poll` (S25).
@@ -697,13 +726,13 @@ implementer's choice.
 - **Q2 First block at the next tick, not at subscribe** (S9, S10). Reason: an encode at subscribe makes
   subscribe/unsubscribe churn an encode amplifier (the Live tick can be shed unread); the cost is <=
   `tick_ms` latency.
-- **Q3 A backpressured `current` holds its request, not its bytes**, and is re-resolved at queue time
+- **Q3 (historical: retired, WIRE.md D-W49) A backpressured `current` holds its request, not its bytes**, and is re-resolved at queue time
   (S7, D-W30). Reason: holding bytes keeps up to 16 MiB per conn outside every pool. Invariant: a pending
   request always becomes queueable, because `max_block_bytes <= query_queue_bytes` (S20).
 - **Q4 The three hub changes in `proto`** (S12 stamp fix, `dropped_blocks`, `query_room`) go into 2b with
   a hub delta review, plus the new hub fixture case (finding 12).
 - **Q5 An empty `path`/`prefix` is refused** (S1).
-- **Q6 `too-many-requests` applies to BLK-shape verbs only** (`current`, `subscribe`; S5), replacing the
+- **Q6 (historical: WIRE.md §4.2 step 10 now rules) `too-many-requests` applies to BLK-shape verbs only** (`current`, `subscribe`; S5), replacing the
   draft's "uniform", with the one-line WIRE §4.2/§5.4 edit. Reason (reviewer): `unsubscribe`/`status`
   never become outstanding, and a uniform refusal makes Python `Subscription.close()` raise while 4
   `current`s are pending.

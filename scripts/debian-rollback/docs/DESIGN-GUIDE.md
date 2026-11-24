@@ -1,7 +1,11 @@
 # Design guide: snapshot and rollback for Debian
 
-Status: planning, 2026-11-12. Nothing here is implemented or tested. Evidence
-for the statements below is in [RESEARCH-2026-11.md](RESEARCH-2026-11.md).
+Historical design and research baseline dated 2026-11-12. The opening status
+and work order below predate the implemented M1/M2 work and are not current
+status. See [INSTALLATION-ARCHITECTURE.md](INSTALLATION-ARCHITECTURE.md) for
+the current implementation and install flows, and [`../TODO.md`](../TODO.md)
+for the active work order. Evidence for the original research remains in
+[RESEARCH-2026-11.md](RESEARCH-2026-11.md).
 
 ## 1. Goal
 
@@ -17,7 +21,7 @@ unpacked into a new boot environment, and regenerates `/etc` from one
 configuration database. Stock Debian has no such database, so that model does
 not transfer (section 6).
 
-## 2. Decisions (operator, 2026-11-12)
+## 2. Decisions
 
 | # | Decision |
 |---|---|
@@ -36,10 +40,25 @@ not transfer (section 6).
 | D13 | A mirrored (RAID1) root pool is nice to have, not needed now. |
 | D14 | The filesystem (btrfs or ZFS) is **not decided**. It is decided after the experiments in [EXPERIMENTS.md](EXPERIMENTS.md). |
 | D15 | The VM launcher in `scripts/truenas/tcg_vm.py` becomes a general tool in its own directory and stops being TrueNAS-specific (section 9). |
-| D16 | Keep planning until a host is free; no host work before the lease. |
+| D16 | Historical 2026-11-18 scheduling rule: keep planning until a host is free. Superseded by D21, which makes r1002 and v1001 available for this work without another approval request. |
 | D17 | VM files (decided 2026-11-17, estate rule in AGENTS.md "Directory conventions and VM files"): project VMs in `<project>/vm-lab/`, ISOs in `downloads/iso/`, shared qemu base images in `downloads/vm-images/`. Raw disks on btrfs, per-VM disks as reflink copies of a base, zstd compression (storage is scarce; the random-write concern is kept in mdt-cockpit `BTRFS-COW-OPTIONS.md` 4.6, no benchmark yet). Run disks use `cache=unsafe`, **including the rollback experiments**: the host page cache survives a killed QEMU, so a hard power cut of the guest stays testable; a host crash is out of scope. |
 | D18 | Operator 2026-11-18: outside the snapshot by default are `/home`, `/root`, `/srv`, `/var/www`, `/var/lib/docker`, `/var/lib/containers`, `/var/log`, `/var/lib/postgresql`, `/var/lib/mysql`. `/opt` is inside by default (it usually holds software that must match the OS state; opt-out per host in the install config). `/etc` stays inside: boot and system configuration (systemd units and slices, apt configuration) changes together with apt install/remove and must roll back with it. `/usr/local` stays outside (not asked, left as in this section). |
-| D19 | Operator 2026-11-18: evaluate by hand first (PoC matrix: btrfs with snapper and GRUB, btrfs with systemd-boot, ZFS boot environments with ZFSBootMenu or GRUB), in nested QEMU (TCG assumed) on v1001 within the controller's limits; the unattended btrfs ISO flavor starts about 5 h after the PoC begins; `debian-install-v2` stays separate (documented handoff point only). Plan in [MILESTONES-2026-11-18.md](MILESTONES-2026-11-18.md). |
+| D19 | Operator 2026-11-18: evaluate by hand first (PoC matrix: btrfs with snapper and GRUB, btrfs with systemd-boot, ZFS boot environments with ZFSBootMenu or GRUB); `debian-install-v2` stays separate (documented handoff point only). The original controller scheduling and host-lease sequence in this decision was superseded on 2026-11-20; see D21. |
+| D20 | Operator 2026-11-20: M2 will have separate build-time Debian Live ISO variants for target-disk GRUB and systemd-boot. The Debian Live environment continues to boot through the base ISO's GRUB path in both variants. |
+| D21 | Operator 2026-11-20: complete the systemd-boot PoC first and continue with the ZFS PoC later. r1002 and v1001 are available for project VMs without another approval request. Codex owns this work while Claude and its project controller/subcontroller are unavailable. |
+| D22 | Historical ZFS checkpoint design. **Superseded by D28.** |
+| D23 | Operator 2026-11-23: with the systemd-boot PoC complete, make ZFSBootMenu the first ZFS variant. Keep ZFS with restricted GRUB as a later comparison only if the ZFSBootMenu guest report leaves a specific question open. |
+| D24 | Codex design choice for the first ZFS system-acceptance guest (subject to proof): use the current Debian 13/ZFSBootMenu 3.1 compatibility line (`openzfs-2.3-linux`), a 512 MiB ESP plus one pool partition, no target swap, 64 GiB disk, and 2048 MiB RAM for installed-system boot and recovery. Boot ZBM through the ESP fallback path without requiring writable NVRAM; measure the pinned EFI asset and keep three identical copies plus at least 128 MiB ESP free. Record the displayed countdown. `prune` defaults to the initial install plus two checkpoints, and pool capacity derives from measured BE `REFER`, persistent-data budget, and update/metadata reserve. ZFS reinstall safety has its own fail-closed signature guard with `REINSTALL=yes` as the explicit override. Retention default superseded by DR-85. |
+| D25 | Operator 2026-11-24: keep the current TCG Live install at 3072 MiB, then test installed-system boot and recovery at 2048 MiB. The install RAM is a test setting, not a claimed 3 GiB minimum. Add a separate later 1–2 GiB usefulness experiment comparing no swap, ZRAM, and Zswap backed by a dedicated swap partition outside the ZFS pool; keep the current no-swap layout/default until that experiment reports evidence. |
+| D26 | F11: stdlib Python, one CLI, runtime outside the OS states, versioned global formats (Q1). |
+| D27 | GRUB target non-SB; systemd-boot is the SB path (Q5, M9). |
+| D28 | ZFS checkpoint = native snapshot; BE by clone/promote on rollback; name = state ID; supersedes D22 (Q4, M7). |
+| D29 | test images: commands via QGA or SSH; serial for boot observation; product agent-free (Q6, F2). |
+| D30 | counter floor = max(counter, names, sidecars) (Q3, M6). |
+| D31 | legacy `@os-0001`/`.conf` compatibility deleted; foreign `@os-*` unmanaged (Q2, H1). |
+| D32 | loader contracts verified against the real loader (bootctl parser or loader boot), never only our own reading (H3; rewords the 2026-11-18 guest-only rule). |
+| D33 | TODO.md is the only status page (M11). |
+| D34 | No automatic retention yet (operator 2026-11-24); `prune` stays manual with a `check` warning; revisit after the P-rollback-40 ESP-exhaustion evidence; source DESIGN-CORE-SPLIT D34. |
 
 ## 3. What "the operating system" means here
 

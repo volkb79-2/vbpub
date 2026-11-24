@@ -1,0 +1,105 @@
+{
+  "case": "hub-query-pin-after-corr-reuse",
+  "doc": "after a Query stream's END, a new Live stream reuses its corr; the old Query pin stamps 0 and leaves the Live stream's pending drop for the next Live pin",
+  "limits": {
+    "client_queue_bytes": 1000,
+    "global_live_bytes": 8000,
+    "query_queue_bytes": 1000,
+    "global_query_bytes": 4000,
+    "control_queue_bytes": 500,
+    "stall_ms": 5000,
+    "frame_completion_ms": 5000
+  },
+  "conns": 1,
+  "steps": [
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 3,
+      "len": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "end_stream",
+      "c": 0,
+      "s": 3
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 3,
+      "gen": 1,
+      "bare": 200,
+      "dict": 240
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 3,
+      "gen": 1,
+      "bare": 200,
+      "dict": 240
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    }
+  ],
+  "expect": [
+    [
+      "queued"
+    ],
+    [
+      {
+        "counts": {
+          "blocks": 1,
+          "dropped": 0
+        }
+      }
+    ],
+    [
+      "queued"
+    ],
+    [
+      "coalesced"
+    ],
+    [
+      {
+        "head": {
+          "len": 200,
+          "corr": 3,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [],
+    [
+      {
+        "head": {
+          "len": 240,
+          "corr": 3,
+          "dropped": 1,
+          "tail_tag": 160
+        }
+      }
+    ]
+  ]
+}

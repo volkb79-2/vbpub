@@ -69,6 +69,8 @@ EDGE_TRAEFIK="${EDGE_TRAEFIK:-$(_discover traefik | head -n1)}"
 EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-$(_discover dockerproxy | head -n1)}"
 EDGE_TRAEFIK="${EDGE_TRAEFIK:-edge-traefik}"
 EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-edge-dockerproxy}"
+EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/traefik"}}{{.Name}}{{end}}{{end}}' "$EDGE_TRAEFIK" 2>/dev/null || true)}"
+# Accept the former /etc/traefik target for an already-running instance during upgrade.
 EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/traefik/acme"}}{{.Name}}{{end}}{{end}}' "$EDGE_TRAEFIK" 2>/dev/null || true)}"
 EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-edge-proxy_acme-data}"
 OVERRIDE_FILE="$STACK_DIR/ciu.toml.j2"
@@ -120,7 +122,9 @@ echo
 # ─── check 1: render pipeline + drift ─────────────────────────────────────────
 echo "$(_bold "1. Render pipeline + drift")"
 
-if "$SCRIPT_DIR/render.sh" --check 2>&1 | sed 's/^/   /'; then
+if [[ -z "$DOMAIN" ]]; then
+    skip "no domain — skipping render.sh --check (it requires a domain)"
+elif "$SCRIPT_DIR/render.sh" --check 2>&1 | sed 's/^/   /'; then
     pass "render.sh --check succeeded"
 else
     fail "render.sh --check failed"

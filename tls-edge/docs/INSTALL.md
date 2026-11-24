@@ -12,29 +12,29 @@ All examples use `example.test`, a reserved placeholder; use your own domain.
 ```text
 /srv/tls-edge-instance/            instance root (system scope)
   bin/ciu                          -> ../current/venv/bin/ciu (the bundled ciu)
+  bin/tls-edge                     -> ../current/venv/bin/tls-edge (instance configuration CLI)
   bin/tls-edge-installer           copy of get.py for update / status / rollback
   current                          -> releases/<tag>-<sha12>-<variant>   (atomic switch)
   releases/                        previous releases kept for rollback
-  shared/answers.toml              your wizard answers (0600)
   stack/                           THE CIU ROOT: always run ciu from here
     ciu                            stub: execs the ciu pinned by `current`
-    ciu-stack/                     templates (synced from the release; do not edit)
-      ciu.toml.j2                  YOUR site override (seeded once, never overwritten)
-    consumer.env                   TLS_EDGE_DOMAIN=<your domain>, for consumer stacks
+    ciu-stack/                     templates (synced from the release)
+      ciu.toml.j2                  YOUR site override (written by `tls-edge configure`)
+    consumer.env                   TLS_EDGE_DOMAIN=<your domain>, written by the CLI
     .git, .gitignore               a one-commit repository so ciu can run (see 9)
     .ciu/                          ciu state (survives updates)
 ```
 
 Containers started by `ciu up` are `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy`; `<id>` is derived from
 the path `/srv/tls-edge-instance/stack`, which is why that path is stable. The compose service name `traefik`
-stays a DNS name on the networks. Public ports are exactly **80/tcp, 443/tcp and 8443 tcp+udp** (8443 is the
-Mattermost Calls media pair; there is no alternate HTTPS port).
+stays a DNS name on the networks. Generic defaults publish **80/tcp and 443/tcp**. HTTP/3 optionally adds
+UDP on the same public HTTPS port; the optional Mattermost Calls preset adds its own TCP+UDP pair on 8443.
 
 ## 2. Requirements
 
 - Linux x86_64 with Docker (the daemon socket must be usable by root), `git`, and `python3` 3.13 or 3.14.
 - DNS: one record per service host name (or one wildcard record) pointing at this host.
-- Firewall (host and provider): inbound 80/tcp, 443/tcp, 8443/tcp, 8443/udp.
+- Firewall (host and provider): allow the ports shown by `tls-edge configure` or `tls-edge show`.
 - The bundle is per interpreter: `--variant py313` for Python 3.13 (Debian 13), `--variant py314` for 3.14.
   `python3 --version` tells you which; a mismatch fails closed at install (the wheels do not match).
 
@@ -42,31 +42,52 @@ Mattermost Calls media pair; there is no alternate HTTPS port).
 
 ```bash
 install -d -m 0755 /srv/tls-edge-instance
-# Fetch get.py from the RELEASE TAG, not the moving `main` branch (it runs as root):
-curl -fsSLO https://raw.githubusercontent.com/volkb79-2/vbpub/tls-edge-v3.0.0/tls-edge/get.py
-sudo python3 get.py install --variant py313          # asks the wizard questions
-cd /srv/tls-edge-instance/stack && sudo ./ciu up
+# Fetch get.py from the CLI-enabled RELEASE TAG, not the moving `main` branch (it runs as root).
+TAG='tls-edge-vX.Y.Z' # replace with the release tag
+curl -fsSLO "https://raw.githubusercontent.com/volkb79-2/vbpub/${TAG}/tls-edge/get.py"
+sudo python3 get.py install --version "$TAG" --variant py313
+sudo /srv/tls-edge-instance/bin/tls-edge configure
+cd /srv/tls-edge-instance/stack
+sudo ./ciu check
+sudo ./ciu up --dry-run
+sudo ./ciu up
 ```
 
-Pin a release with `--version tls-edge-v3.0.0`. The wizard asks: `domain` (required), `acme_email` (optional),
-`tls_mode` (default `acme-tls`), `dns_provider` (only for `acme-dns`), `calls` (default yes). For automation:
+The install command pins the same release tag used to fetch `get.py`. `get.py` bootstraps the instance and installs the bundled CLI;
+it does not collect site settings. `tls-edge configure` then asks for the domain, certificate mode, public ports,
+HTTP/3, optional Calls media, network/volume adoption, and runtime placement. It displays the exact changes and
+inbound firewall ports before writing the instance override and `consumer.env`.
+
+For unattended configuration, prepare a TOML file and pass it to the CLI:
 
 ```bash
-sudo python3 get.py install --variant py313 --unattended --answers answers.toml
+sudo /srv/tls-edge-instance/bin/tls-edge configure --answers edge.toml --yes
+sudo /srv/tls-edge-instance/bin/tls-edge validate
 ```
 
 ```toml
-# answers.toml
+# edge.toml. Unspecified values keep the currently rendered/default value.
 domain = "example.test"
-acme_email = "ops@example.test"
 tls_mode = "acme-tls"
-calls = true
+acme_email = "ops@example.test"
+http_enabled = true
+http_port = 80
+https_port = 443
+http3_enabled = true
+calls_enabled = false
+bind_ip = ""
+ingress_external = false
+acme_volume_name = ""
+cgroup_parent = ""
 ```
 
-A required answer that is missing exits 2 before anything changes. `get.py` verifies the bundle SHA-256 and the
-manifest (every file, every wheel), installs the wheels offline with `--require-hashes`, runs the adapter, and
-only then switches `current`. Do not pipe `get.py` into `python3 -` if you want `bin/tls-edge-installer`: the
-self-copy needs a file.
+For `acme-dns`, add `dns_provider` and optionally `dns_wildcard`. For `static` or `dev`, add
+`static_cert_base`, `static_domains = ["example.test"]`, and `static_source = "bind"` or `"volume"`. The CLI
+never asks for or stores DNS credentials; configure those through CIU secrets as described below.
+
+`get.py` verifies the bundle SHA-256 and the manifest (every file, every wheel), installs the wheels offline
+with `--require-hashes`, runs the bootstrap adapter, and only then switches `current`. Do not pipe `get.py` into
+`python3 -` if you want `bin/tls-edge-installer`: the self-copy needs a file.
 
 Verify the running edge:
 
@@ -80,10 +101,24 @@ sudo ./scripts/verify.sh --domain app.example.test
 
 `verify.sh` discovers the container and volume names of a ciu instance by itself.
 
-## 4. Configure domain and certificates
+## 4. Configure listeners and certificates
 
-Edit `/srv/tls-edge-instance/stack/ciu-stack/ciu.toml.j2` (your override; defaults are in
-`ciu.defaults.toml.j2`), then `sudo ./ciu up` again.
+Use `/srv/tls-edge-instance/bin/tls-edge configure` for supported settings. It preserves unrelated site
+configuration and comments, and updates only `TLS_EDGE_DOMAIN` in `consumer.env`. Use `--dry-run` to review a
+change without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full
+schema and shipped defaults are in `ciu.defaults.toml.j2`.
+
+The site override is plain TOML and is never templated. A `{{`, `{%`, or `{#` marker in it is refused with the
+override path. `tls-edge configure` records `[tls_edge] schema = 1`; an override without the key means schema 1,
+and a newer schema is refused. Unknown keys are refused by their full dotted path, for example
+`unknown override key tls_edge.http3.enable`. The open tables where provider or site-defined keys are expected
+are `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]`. An override that sets
+`[tls_edge.hooks] pre_secrets` must keep `hooks/validate_edge.py` in that list, or it is refused.
+
+`ciu check`, the automatic `ciu up` static preflight, `scripts/render_standalone.py --check`, `tls-edge validate`,
+and `tls-edge configure --dry-run` all run this same validation. Limit: ciu runs the validator because the shipped
+defaults declare it under `[tls_edge.hooks]` `pre_secrets` and `pre_compose`. An override that empties both lists
+removes it from `ciu check` and `ciu up`, so keep the shipped entries.
 
 | `[tls_edge.tls] mode` | How | Port needed | Certificates |
 |---|---|---|---|
@@ -114,11 +149,14 @@ dns_api_token = { directive = "ASK_EXTERNAL:CF_DNS_API_TOKEN", mode = "0444" }
 CF_DNS_API_TOKEN_FILE = "/run/secrets/dns_api_token"
 ```
 
-`ciu` asks for the token on `ciu up` (or reads `CF_DNS_API_TOKEN` from the environment). The seeded override has
-this block commented, ready to uncomment.
+`ciu` asks for the token on `ciu up` (or reads `CF_DNS_API_TOKEN` from the environment). Add this block to the
+site override after running the CLI; secret references are intentionally kept out of wizard answers.
 
-**Port 80** is on by default (redirect and HTTP-01). `[tls_edge.ports] expose_http = false` turns it off;
-`acme-http` then cannot work. **Calls**: `[tls_edge.calls] enabled = false` removes the 8443 pair.
+**Port 80** is on by default (redirect and HTTP-01). `http_enabled = false` turns it off; `acme-http` then
+cannot work. **HTTP/3**: set `http3_enabled = true` to publish UDP on the public HTTPS port; keep TCP open for
+HTTP/1.1 and HTTP/2 clients and fallback. **Calls**: set `calls_enabled = true` and `calls_port = 8443` only
+when the host has a Calls consumer. Enable the corresponding UDP/TCP rules in both firewalls. Use
+`tls-edge show` to print the configured inbound port plan.
 
 ## 5. Add a consumer
 
@@ -145,8 +183,9 @@ cd /srv/tls-edge-instance/stack && sudo ./ciu up
 The update downloads and verifies the new bundle, builds its venv, swaps `current`, and syncs `stack/`. Files
 you edited in the synced set (not `ciu.toml.j2`, which is not part of it) stop the update with exit 2 and a list;
 keep host edits in `ciu.toml.j2` or pass `--overwrite-local` (the replaced files are saved under
-`shared/overwritten/<UTC time>/`). `ciu.toml.j2`, `consumer.env`, `.ciu/`, volumes and the ACME account are never
-touched. `status` shows the installed tag and any locally modified files.
+`shared/overwritten/<UTC time>/`). The installer does not touch `ciu.toml.j2`, `consumer.env`, `.ciu/`, volumes
+or the ACME account. `tls-edge configure` is the supported writer for the site override and domain variable;
+`status` shows the installed tag and any locally modified files.
 
 ## 7. Roll back
 
@@ -163,15 +202,35 @@ independent of releases, so certificates survive.
 State of the live host today (read only): compose project `edge-proxy` from `/root/tls-edge-LIVE`, containers
 `edge-traefik` and `edge-dockerproxy`, volume `edge-proxy_acme-data` (holds `acme.json`: the ACME account and every
 issued certificate), network `ingress_public` with consumers attached, `traefik_internal`, `cgroup_parent: edge.slice`,
-ports 80, 443, 8443 tcp+udp plus the alternate port that is being removed. The published ports are the same on
-old and new, so the two edges cannot run together: the cut-over is a stop plus start of about 15 to 30 seconds.
+ports 80, 443, and 8443 tcp+udp plus the alternate HTTPS port being removed. HTTP/3 is not currently enabled.
+The replacement can optionally enable HTTP/3 on UDP 443; allow that port through both firewalls before doing so.
+The two edges cannot run together because both need TCP 443, so the cut-over is a stop plus start of about
+15 to 30 seconds.
 
-1. **Prepare (no downtime).** `install -d -m 0755 /srv/tls-edge-instance`, then install with the live values
-   (domain, ACME email, mode `acme-tls`, calls yes). Do **not** run `ciu up`.
-2. **Adopt what exists.** In `/srv/tls-edge-instance/stack/ciu-stack/ciu.toml.j2` set
-   `[tls_edge] ingress_external = true`, `[tls_edge.acme] volume_name = "edge-proxy_acme-data"` and
-   `[tls_edge.runtime] cgroup_parent = "edge.slice"`. The network and volume are adopted (`external: true`), never
-   created or removed by the instance.
+1. **Prepare (no downtime).** `install -d -m 0755 /srv/tls-edge-instance`, then install the bundle. Create an
+   answers file with the live domain and ACME email and these settings, replacing `example.test` and the email:
+
+   ```toml
+   domain = "example.test"
+   tls_mode = "acme-tls"
+   acme_email = "ops@example.test"
+   http_enabled = true
+   http_port = 80
+   https_port = 443
+   http3_enabled = true
+   calls_enabled = true
+   calls_port = 8443
+   ingress_external = true
+   acme_volume_name = "edge-proxy_acme-data"
+   cgroup_parent = "edge.slice"
+   ```
+
+   Run `/srv/tls-edge-instance/bin/tls-edge configure --answers /path/to/live.toml --yes` and
+   `/srv/tls-edge-instance/bin/tls-edge validate`. Do **not** run `ciu up` yet. The proposed public set is
+   80/tcp, 443/tcp, 443/udp (HTTP/3), and 8443/tcp+udp (Calls); allow these in both firewalls.
+2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
+   `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
+   adopted (`external: true`), never created or removed by the instance.
 3. **Dry run.** `cd /srv/tls-edge-instance/stack && sudo ./ciu check && sudo ./ciu up --dry-run`. Compare the
    rendered ports, mounts and cgroup parent with `docker inspect edge-traefik`. Note: `ciu env generate` and
    `up --dry-run` create a Docker network and attach the calling container (ciu CIU-162); detach and remove it
@@ -183,7 +242,8 @@ old and new, so the two edges cannot run together: the cut-over is a stop plus s
    keeps `ingress_public` because consumers are attached and removes the unused `traefik_internal`), then
    `cd /srv/tls-edge-instance/stack && sudo ./ciu up`. Traefik re-reads `acme.json`: no re-issuance.
 6. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
-   consumer host (not the default certificate, not expired), a Calls test from outside on 8443 tcp and udp, one real call.
+   consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
+   a Calls test from outside on 8443 tcp and udp, and one real call.
 7. **Rollback (any failure in 6).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`), then
    `cd /root/tls-edge-LIVE && docker compose up -d`. Volume and network were never touched and the ports are the same;
    downtime is seconds.
@@ -208,14 +268,16 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
 
 ### Releasing tls-edge (maintainers)
 
-- **The version is set explicitly: `cmru release tls-edge --set-version 3.0.0`.** The project uses
-  `bump = "conventional"`, but the two breaking changes of this release (alternate HTTPS port removed, container
-  names `tls-edge-<id>-traefik`) were committed without a `!` / `BREAKING CHANGE:` footer, so the automatic bump
-  would produce 2.1.0. The history is merged and is not rewritten; `--set-version 3.0.0` is the intent. From the
-  next release on, mark breaking commits with `!` and drop the explicit version.
+- **Version 3.0.0 was released on 2026-11-04.** For the next release, select
+  the version explicitly to account for the changed generic Calls default and
+  mark breaking changes with `!` or a `BREAKING CHANGE:` footer so conventional
+  versioning can identify them.
 - Stage the bundled ciu reproducibly: `TLS_EDGE_CIU_VERSION=<x.y.z>` (or `scripts/stage-wheels.py --ciu-version`)
   refuses any other ciu release; without it the newest stable ciu is bundled. The staged ciu version and sha256 are
-  printed: copy them into the release notes. `--allow-fresh` waives the 14-day rule and must be justified there.
+  printed: copy them into the release notes. PyPI wheels are resolved with pip's `--uploaded-prior-to P14D` cutoff,
+  then checked against PyPI upload timestamps. Staging fails before replacing existing wheels if its selected pip
+  lacks the cutoff option. If a new minimum dependency is not yet old enough, wait for an eligible release or use
+  `--allow-fresh`, which omits the cutoff and age check; justify it in the release notes.
 - Tests: `run-gate tls-edge tests` (lane `tests` in `run-gate.toml`, tester-unified). A missing cmru/jinja2/docker
   fails the lane; only `TLS_EDGE_ALLOW_INSTALLER_SKIP=1` skips the installer test, deliberately, outside the lane.
 

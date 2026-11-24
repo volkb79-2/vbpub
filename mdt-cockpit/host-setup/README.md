@@ -76,8 +76,8 @@ DESIGN-2026-09-12-liveness-placement-admission.md`).
 | Tier | Who joins | Character |
 |---|---|---|
 | `dev-interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`DEV_INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
-| `dev-gates.slice` | gate/lane containers + placed lane leaves `rg-<token>`, via explicit `docker run --cgroup-parent` or `$CGROUP_PARENT_DEV_GATES` | the admission capacity object: bounded memory+swap, `systemd-oomd` kills inside the tier first — a gate is disposable, a stack is not |
-| `dev-background.slice` | long-running dev stacks (an app under development, ...), via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
+| `dev-gates.slice` | gate/lane containers + placed lane leaves `rg-<token>`, via explicit `docker run --cgroup-parent` or `$CGROUP_PARENT_DEV_GATES` | the admission capacity object: finite memory+swap caps; cgroup v2 reclaims to swap before OOM, and no `systemd-oomd` kill is enabled |
+| `dev-background.slice` | long-running dev stacks (an app under development, ...), via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | finite hard memory+swap caps (large swap given ample host swap — size for yours); reclaim to swap runs before OOM, and no `systemd-oomd` kill is enabled |
 | `dev-buildkitd.slice` | exactly one container: the host-managed rootless BuildKit worker (`mdt-buildkitd.service`, plain `docker run --cgroup-parent=`, never through a Buildx driver — see `plan-buildkitd-service.md`) | one shared build cache across every consuming project; hard `CPUQuota` derived as `nproc - MDT_EXCLUDED_CPU_CORES - DEV_TIER_EXCLUDED_CPU_CORES` cores (same as every other child) unless overridden; active-build latency-sensitive, so `CPUWeight`/`IOWeight` sit between interactive's and background's; also gets a tighter runtime IOPS sub-ceiling (bandwidth untouched), same as `dev-gates.slice` |
 | (production tiers) | e.g. a production service's own top-level slice | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
 
@@ -503,8 +503,8 @@ Filed from a real, measured incident (2026-08-04): gates used to share
 started with only ~2 GiB of headroom before
 `dev-background.slice`'s own `memory.high` began throttling it — an unrelated
 long-running stack was silently eating a gate's budget. `dev-gates.slice`
-gives gates their own ceiling, `systemd-oomd` protection (a gate is
-disposable; a stack is not, D-19), and a `MemorySwapMax` sized against this
+gives gates their own ceiling, no `systemd-oomd` kill opt-in (the finite
+cap plus swap is the backpressure, D-19), and a `MemorySwapMax` sized against this
 host's own real swap capacity rather than dev-background's.
 
 **`dev-gates.slice` contains dev LOAD only — it does not hold the profiler
@@ -537,15 +537,13 @@ this service setting explicitly. On upgrades from configs without the policy
 key, it preserves existing non-`-` values for review rather than treating them
 as defaults to erase.
 
-**Sizing choices (RW-32/D2, D3).** `ManagedOOMSwap=kill` is deliberately
-ABSENT from `dev-gates.slice.in` (unlike `dev-background.slice`'s own,
-which keeps it): D-19 lists only the pressure kill, and this tier's
-`MemorySwapMax` (auto-detected, see "Tiering model" above) exists
-specifically to make swap a disposable lane's relief valve — an oomd
-*swap* kill triggers on host swap usage and would kill whichever lane is
-using the allowance this unit deliberately grants it, on a signal D-6
-rejects ("swap usage is never the gate; PSI is"). See
-`units/dev-gates.slice.in`'s own comment. `CPUWeight=20`/`IOWeight=10` —
+**Sizing choices (RW-32/D2, 2026-11-24 correction).** No dev-tier template
+renders `ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or
+`ManagedOOMSwap`. A finite `MemoryMax` plus a large `MemorySwapMax` is the
+overcommit design: cgroup v2 reclaims the tier to swap before it OOM-kills;
+only exhausted or unreclaimable swap reaches the kernel OOM path. The operator
+directive reserves freezing to fleetd at host memory PSI `full avg10 >= 3`.
+`CPUWeight=20`/`IOWeight=10` —
 identical to `dev-background.slice`'s own — stand as designed (D-19): a
 fourth same-weight sibling does lower interactive's share under
 simultaneous gates + background contention (the shared non-interactive
@@ -567,7 +565,7 @@ place (an idle sibling claims nothing); revisit once real usage data
 exists (design §7), not by guessing further.
 
 Env keys (`host-setup.env.example`): `DEV_GATES_MEMORY_HIGH`/`_MAX`/
-`_SWAP_MAX`/`_CPU_WEIGHT`/`_CPU_QUOTA`/`_IO_WEIGHT`/`_OOM_PRESSURE_LIMIT`/
+`_SWAP_MAX`/`_CPU_WEIGHT`/`_CPU_QUOTA`/`_IO_WEIGHT`/
 `_ZSWAP_WRITEBACK`, sized for a 16 GiB host and expected to be re-tuned from
 real admission-usage data (design doc §7: "measure first"); also gets a
 runtime IOPS sub-ceiling from `DEV_SUBSLICE_IOPS_PCT` (dev.slice section, no
@@ -697,6 +695,12 @@ sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~12 min 
 sudo mdt-host-check.sh             # verify
 ```
 
+**Required checkout set.** `install.sh` reads files outside `mdt-cockpit/host-setup/`, so a host checkout of `mdt-cockpit/` alone is not enough. The checkout
+must contain, at their repo-relative paths, `mdt-cockpit/` and `scripts/debian-install-v2/tools/` (`iocost_coef_gen.py`, `iocost_plausibility.py`, `cpu_benchmark.py`,
+`cpu_benchmark.py.sha256`, `cpu_benchmark.pins.json`). Before changing anything the installer checks every such file (one list, `preflight_checkout_set` in
+`install.sh`) and exits 2 naming the missing paths and this set; `--help`, `--dry-run-endpoints`, `--apply-protection`, `cpu-benchmark` (which checks its own three `cpu_benchmark*` files) and the `--admission-only` publish do not need them. The preflight also runs the `cpu_benchmark.py.sha256` check, so a modified tool is refused before anything is rendered.
+A sparse checkout therefore needs `git sparse-checkout set mdt-cockpit scripts/debian-install-v2/tools`.
+
 ### Host service installation and endpoint publication
 
 `mdt-cockpit/host-setup` no longer provisions cgprofile or topos runtime files,
@@ -769,7 +773,11 @@ policy is left alone (no new generation). A missing cap is published with `run-g
 default `auto`, the full install keeps a differing readable cap; the explicit `--admission-only` command reconciles
 it with `--replace`. `replace` opts the full install into the same reconciliation, while `missing` never replaces.
 The explicit `--admission-only` action also uses `--replace` to repair a published object whose limit cannot be
-parsed. The cap is read back after every write. Prerequisites a fresh host does not have yet (Docker CLI missing,
+parsed. The cap is read back after every write. `run-gate` on the HOST is not expected on a runner-container gate worker (for example r1002 after the mdt-cockpit deploy): there run-gate lives inside the cockpit
+container (`mdt-cockpit-runner`, see `scripts/netcup/runner/README.md`), so the NOTE `run-gate (...) is not installed on the host` means `ADMISSION_COCKPIT` is still empty.
+Set `ADMISSION_COCKPIT=mdt-cockpit-runner` (and `ADMISSION_TICKET_IMAGE` if needed) in `/etc/mdt/host-setup.env`, then run `sudo ./host-setup/install.sh --admission-only`.
+On a host that runs gates directly (no cockpit container), run-gate must instead be on `PATH` or named by `ADMISSION_RUN_GATE`.
+Prerequisites a fresh host does not have yet (Docker CLI missing,
 Docker daemon unavailable, run-gate missing on the host or in the cockpit, cockpit stopped, ticket image absent)
 are distinct printed `NOTE`s and exit 0. After reinstall, operators must run
 `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. A publish that was
@@ -993,7 +1001,7 @@ Reboot-survival works in three layers; each exists because the previous one
 cannot express the next:
 
 1. **Static slice units** (`/etc/systemd/system/*.slice`) — memory knobs,
-   weights, `ManagedOOM*`, zswap-writeback policy (systemd ≥ 256), and
+   weights, zswap-writeback policy (systemd ≥ 256), and
    deliberately **tight** static IO caps as boot-window fallback. Survive
    reboot and `daemon-reload` by themselves; zero runtime machinery. Rendered
    from `host-setup.env` at install time so per-host tuning stays in one
@@ -1165,6 +1173,15 @@ tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 1G, minimum 256
 | host services (`DEV_HOST_PROTECTED_UNITS`: docker, containerd, cgpd, mdt-psi-guard, journald, oomd; never ssh) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999); a unit that leaves the list loses its drop-in on the next install |
 | mdt-psi-guard signals | `MDT_PROTECTED_UNITS` + host memory `full` | the same plus the host services above |
 
+Finite `MemoryMax` plus a large `MemorySwapMax` IS the dedicated-runner
+overcommit design: cgroup v2 reclaims the cgroup to swap first and reaches an
+OOM kill only when reclaim cannot proceed because swap is exhausted or the
+pages are unreclaimable. No dev-tier template opts into
+`ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` or
+`ManagedOOMSwap`. Operator directive 2026-11-24: work is not killed or refused
+merely because RAM is short; only fleetd freezes work at host memory PSI
+`full avg10 >= 3`.
+
 Load tiers yield first (MDT-TESTHOST-MEM-2). A running cockpit (`dev-interactive`, MemoryLow 512M) and BuildKit (`dev-buildkitd`, 256M) only keep their Low while the
 siblings that carry the load stay below dev.slice by at least that sum, P = `DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`
 (the last is the `dev-cache.slice`'s Low, default empty = 0). So `dev-gates.slice` and `dev-background.slice` get (AD2-0):
@@ -1174,7 +1191,8 @@ siblings that carry the load stay below dev.slice by at least that sum, P = `DEV
 - MemorySwapMax = dev.slice swap max minus P, floored at 256M and capped at dev.slice's. If gates could take all of dev's swap, dev-level reclaim could not move the
   cockpit's above-Low pages out and would only throttle it; the subtraction keeps that room.
 - Consequence (intended): a lane that needs more than MemoryHigh..MemoryMax resident with no swap left is OOM-killed inside gates (`oom_kill` in the tier's `memory.events`)
-  instead of thrashing the host. An infrastructure event, never a product verdict. oomd, zswap writeback and dev.slice's values are unchanged.
+  instead of thrashing the host. An infrastructure event, never a product verdict. zswap writeback and
+  dev.slice's values are unchanged; no systemd-oomd kill is configured.
 
 A `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}` pin wins (HIGH/MAX floor 256M, HIGH <= MAX); `-`/`0` omit. If dev.slice itself has no MemoryHigh (pin `-`), the tier's
 High and Max are omitted too. CPU weights are unchanged. Example (8 GB RAM, 16 GB swap, keep 1G, Low 512M+256M, no cache): dev.slice high 7246938112, gates/background high 6441631744
@@ -1188,21 +1206,27 @@ a `0` pin (like `-`) omits the directive, the same meaning `0` has in the shared
 What bounds the dev tier (and what does not). `memory.max` is NOT a leak backstop: the kernel's `memory.max` counts RAM (and the zswap pool charged to the cgroup)
 only, physical RAM caps that, so `MemTotal + SwapTotal - keep` can never be reached on these hosts; it is kept as the documented combined figure, not as a limit that acts.
 The limits that act, in the order a growing dev tier meets them: (1) dev.slice MemoryHigh = RAM - keep: allocation is throttled (sleeps up to 2 s per event) while
-the kernel reclaims the tier into zswap and disk swap; thrashing and slow lanes come BEFORE any kill. (2) `memory.swap.max` of dev.slice (the tiers share it): when swap is
-used up MemoryHigh can no longer reclaim, the tier stays throttled but keeps allocating. (3) systemd-oomd can act earlier (gates: memory pressure 75%, background: pressure and swap;
-interactive is never a target). (4) With free RAM at zero the global kernel OOM killer runs and takes the largest dev-tier process (host services carry -900). Open and
+the kernel reclaims the tier into zswap and disk swap; thrashing and slow lanes come BEFORE any kill. (2) The large `memory.swap.max` allowance is the overcommit
+mechanism: cgroup v2 migrates cold pages to swap and keeps reclaiming rather than OOM-killing merely because RAM is short. (3) Fleetd freezes dev work when host
+memory PSI `full avg10 >= 3`; host-setup renders no systemd-oomd ManagedOOM target. (4) Only when swap is exhausted or pages cannot be reclaimed does the
+global kernel OOM killer run and take the largest dev-tier process (host services carry -900). Open and
 unmeasured (MDT-072): `io.max` on dev.slice throttles the swap-out of dev pages, and reclaim that waits on a throttled device can stall other cgroups too (priority
 inversion); watch `memory` PSI on the host, not only the lane. Per-container ceilings stay where a launcher sets them (`docker run --memory`, cmru's `CMRU_TESTER_*`);
 the docker-scope backstop (7.1) is untouched.
+
+Operator decision 2026-11-24 (documented, no code cap): on a dedicated-dev host `dev-interactive.slice` and `dev-buildkitd.slice` are intentionally bounded
+only by dev.slice's `MemoryHigh` (reclaim into swap above it) and carry no `MemoryMax` of their own; dev.slice's own `MemoryMax` is the combined RAM+swap figure
+that `memory.max` cannot reach (see above). Only `dev-gates.slice` and `dev-background.slice` get a finite `MemoryMax` (dev.slice's `MemoryHigh`). The IDE and the
+BuildKit daemon are therefore never OOM-killed by a tier cap, and a runaway in either meets only dev.slice throttling, the swap allowance and finally the global OOM killer.
 
 ssh is deliberately not protected: sshd restores the OOM score it started with into every login session, so `OOMScoreAdjust=-900` on `ssh.service` would make every login
 shell, IDE server and manual process -900 after the next sshd restart (the sshd listener already runs at -1000). `DEV_HOST_PROTECTED_UNITS` refuses ssh/sshd names, and
 install.sh removes a stale `ssh.service.d/50-mdt-dedicated-dev.conf` an earlier version rendered. Drop-ins are mode 0644.
 
-OOM behaviour: when RAM and swap are genuinely exhausted the dev tier is killed first. In order: (1) reclaim takes dev pages before the host's
-(system.slice MemoryLow, dev.slice MemoryHigh); (2) systemd-oomd kills inside dev-gates / dev-background on sustained pressure (`*_OOM_PRESSURE_LIMIT`, 75%),
-dev-interactive is never an oomd target; (3) the kernel OOM killer prefers any dev-tier process because the host services carry -900 (thrash from step 1 comes before any kill). A killed lane is an
-infrastructure event (its history record survives), never a product verdict. The install lowers a running service's score in place; nothing is restarted.
+OOM behaviour: when RAM is short, cgroup v2 first reclaims dev pages into the large swap allowance. If reclaim cannot keep up, fleetd freezes dev work at host memory
+PSI `full avg10 >= 3`. No dev tier opts into systemd-oomd. Only genuinely exhausted or unreclaimable swap reaches the kernel OOM killer, which prefers any dev-tier
+process because the host services carry -900. A killed lane is an infrastructure event (its history record survives), never a product verdict. The install lowers a
+running service's score in place; nothing is restarted.
 
 zswap (read on v1001/r1002, 2026-11-05: zstd, `max_pool_percent` 25, `accept_threshold_percent` 90, shrinker on, writeback `yes` on every tier) already suits
 overcommit: the pool is a cache that drains its coldest pages to disk swap, and the IO caps of the role bound that disk traffic. Unchanged.
@@ -1418,7 +1442,11 @@ presence, BFQ scheduler, timer enablement, and lists every running
 container's cgroup parent, and the published run-gate gates admission cap against the host policy (MDT-077,
 above). Exit 0 = no failures (warnings possible).
 
-The one failure it reports as FAIL rather than WARN is a missing
+It also FAILs when systemd-oomd can act on the dev tier (MDT-108): `ManagedOOMMemoryPressure` or `ManagedOOMSwap` is not `auto` on any `dev*.slice` or on `-.slice`, or
+`oomctl dump` lists a `dev*.slice` or the root slice. A stale drop-in, a `systemctl set-property` override or a distro ancestor default is the usual cause; host-setup never
+removes what it did not render. WARN (not FAIL) when `oomctl` is absent, its dump fails, or its output lacks the `Memory Pressure Monitored CGroups:` section (format unrecognised, never read as clean).
+
+The other failure it reports as FAIL rather than WARN is a missing
 `memory_recursiveprot`: with that flag absent every `MemoryLow`/`MemoryMin` in
 both tiers protects nothing, while `systemctl show` still reports the value you
 set. See [CGROUP-NOTES.md §5](CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-unit-setting-at-all).

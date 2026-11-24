@@ -5,6 +5,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
+- host-setup follow-up to MDT-108 (P-plat-19d): `mdt-host-check.sh` now FAILs when `ManagedOOMMemoryPressure`/`ManagedOOMSwap` is not `auto` on a dev slice or `oomctl dump` monitors a `dev*.slice` or the root slice (WARN when `oomctl` is absent); `install.sh` checks every file it reads outside `host-setup/` before changing anything and refuses naming the missing paths (a checkout of `mdt-cockpit/` alone aborted mid-install after the units were rendered; the required checkout set is documented), warns once about the retired `DEV_{GATES,BACKGROUND}_OOM_PRESSURE_LIMIT`/`MDT_MEMORY_POLICY` keys, and its admission NOTE says that a missing host `run-gate` is expected on a runner-container gate worker (set `ADMISSION_COCKPIT`). Stale oomd wording removed from `mdt_capacity.py` and the `cgprofile.slice` comment. Documented (operator decision 2026-11-24, no code cap): on dedicated-dev, `dev-interactive` and `dev-buildkitd` are bounded only by dev.slice `MemoryHigh`.
+- host-setup's dev-tier slices no longer opt into systemd-oomd: `dev-gates.slice`
+  and `dev-background.slice` render no `ManagedOOMMemoryPressure`,
+  `ManagedOOMMemoryPressureLimit` or `ManagedOOMSwap`, and the now-dead
+  `DEV_{GATES,BACKGROUND}_OOM_PRESSURE_LIMIT` knobs are removed. Finite
+  `MemoryMax` plus a large `MemorySwapMax` is the overcommit design because
+  cgroup v2 reclaims to swap before OOM; only fleetd freezes at host memory
+  PSI `full avg10 >= 3` (operator directive 2026-11-24, MDT-108).
 - New `templates/vscode/multi-root.code-workspace.example` (a `.code-workspace` with `files.watcherExclude` and the Git detection settings) and a `templates/vscode/README.md` section "File watcher exhaustion": the measured 2026-11-18 case (the container held 523,900 of 524,288 inotify watches, 522,385 of them in the watcher, because the template's exclusions never reached the window, MDT-076), how to read the watcher's requests (Server log at Trace), how to count watches per process, and that putting the block into the workspace file's `settings` (plus four estate-specific home excludes the example leaves out) cut the total to 9,400; the example alone was not re-measured. Docs and template only; mdt itself still cannot refresh the machine settings (MDT-076 stays open).
 - The bootstrap no longer warns that a published socket group will be missing when the `devcontainer.json` itself names that GID as the `${localEnv:KEY:<gid>}` default. The controller host's own config (and dstdns's) now defaults `CGPROFILE_CONTROL_GID` to that host's real `cgprofile-control` GID, so a VS Code server started before the host endpoint record existed still adds the right group; the shipped templates keep the inert 65534.
 - The btrfs CoW area is now ON in both devcontainer templates and the controller's own `.devcontainer`: the `/srv/mdt-cockpit-cow/${localEnv:USER}` bind (rslave) and `MDT_COW_ROOT` are active instead of commented out (operator decision 2026-11-17). A host without the area comments both out together; the `--mount` refusal while the source is missing stays the fail-closed guarantee.
@@ -22,6 +30,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Upgrade note (cutover): after removing the retired files and running `install.sh`, log in again and restart long-lived sessions (the VS Code Remote-SSH server, systemd units and services, which never read `/etc/environment`): builds from processes that started earlier still carry the old `BUILDX_BUILDER`/`BUILDKIT_HOST` without `MDT_BUILDKIT_SOCKET` and exit 2 with "MDT_BUILDKIT_SOCKET is unset". The refusal message gives the safe removal order, `systemctl daemon-reload`, and the caveat that removing the tmpfiles rules stops `/run/cgprofile` and `/run/topos` being recreated at boot until `cgprofiled install` / `toposd install` run, so do not reboot in between.
 
 ### Fixed
+- The image ends with a keepalive `CMD` (`trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done`) instead of the base image's `python3` (MDT-107, the devcontainer stopped whenever its PID-1 `sleep` child was killed, measured twice on 2026-11-18). The Dev Containers default made PID 1 a `while sleep 1 & wait $!` loop that exited with its child; a devcontainer that sets `"overrideCommand": false` and `"init": true` runs this `CMD` under a real init instead. Killing the keepalive shell itself still stops the container. `test_devcontainer_template.py` runs the `CMD` against a killed `sleep` and a SIGTERM. Both devcontainer templates and the controller's `.devcontainer/devcontainer.json` now set `"overrideCommand": false` and `"init": true`; this needs the released image's `CMD` (an older image's `python3` exits at once, so rebuild only after the release) and a devcontainer rebuild. `test_devcontainer_template.py` pins the settings in all three files.
 - The image-runtime tests no longer assume every optional tool is installed. `tests/runtime/harness.py` gains `tool_disabled()` / `requires_tool()` (the build switch `INSTALL_<TOOL>` read from the environment, then `cmru.toml [env]`; `claude` maps to `INSTALL_CLAUDE_CODE`); the AI CLI contract test requires a switched-off tool to be ABSENT and the claude and opencode update tests skip when their tool is off.
 - `_vetted_ai_cli_versions` bound `_load_version_records` as a default argument at import, so a replaced loader was ignored and the staging tests silently read the committed `cmru.toml` (their expected versions only matched it by coincidence, and `test_the_cutoff_is_the_records_own_age_cutoff` aged out of the 28-day limit on 2026-11-16). The loader is now resolved at call time and that test pins `now`.
 - The image build failed at the first-party wheel install (`No matching distribution found for augeaswrap>=0.1.0 (from cgprofile)`): cgprofile 3.0.0 depends on augeaswrap and the install is `--no-index`. `augeaswrap` is now a first-party wheel (`pip/wheels.list`, `FIRST_PARTY_WHEEL_NAMES`, `FIRST_PARTY_NO_AGE_WINDOW`, the Dockerfile manifest line, README, `docs/CONSUMERS.md`) and a declared build dependency of mdt-cockpit in `cmru.orchestration.toml`.
@@ -224,6 +233,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   (MDT-022); a transient missing IO device with a valid baseline keeps the per-container IO caps for that sweep (MDT-019).
 
 <!-- cmru: release history -->
+
+## [source-81620d4f91a2] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=81620d4f91a25519af79fe198b0bf4ad4fe43572 -->
+
+### Fixed
+- fix(mdt-cockpit): image CMD keeps the devcontainer up when its sleep is killed (MDT-107, image part) (26be6c51a)
+- fix(mdt-cockpit): change to `.env.ai`, mechanism to source defined files on new shells `$MDT_USER_CONFIG/shell-start.d/`,  deepseek config guide (313ae9dcb)
+
+### Changed
+- mdt-cockpit: watcher docs round 2 (9,400 provenance in CHANGES and backlog, MDT-089 gap 3 reconciled) (3616c4bf2)
+- mdt-cockpit: watcher docs review fixes (defaults list, process vs container counts, count scope, 9,400 provenance, home-settings cross-reference) (8cb715a3c)
+- mdt-cockpit: document the VS Code file-watcher exhaustion case and add a multi-root workspace template with the exclusions (MDT-076 follow-up) (d4aecf063)
+- RP-06: docs and backlog texts say the flat downloads files moved and the placeholders are committed (754949c6a)
+- RP-04: netcup examples, mounttrace lane, pwmcp, zswap and docs take vm-lab from the resolver (6c829fded)
+- mdt-cockpit: MDT-086 verified on the controller host after the cutover (440e44835)
+- mdt-cockpit: bootstrap honours a devcontainer.json GID default for the socket groups; the controller host's config defaults to its real cgprofile-control GID (ade725079)
+- vm-lab: repoint every reference to the old scripts/vm-lab location; Pillow as the optional record extra (0f3c54385)
+- mdt-cockpit: host cutover executed (runbook status), MDT-105 codex install has no retry on ETARGET (dd0b61e71)
+- cowtree: resolve refuses a symlinked root, same mode check in resolve and provision, topmost mount wins, exact permission wording, honest zstd rationale (delta review) (2579b6fc4)
+- rename repo-paths.toml to vm-lab.toml (named after the project that owns ISOs, base images and VM state); module, verb and wrapper names stay (e7391bc2d)
+- cowtree: a set MDT_COW_ROOT that is not on btrfs raises RootInvalid; only unset/empty (and a permission error) means plain (f8f2c2683)
+- cowtree: repo-paths.toml gets a required top-level repo key; the CoW folder no longer derives from the directory name, so worktrees share the main checkout's CoW folders (f05f26240)
+
+### Documentation
+- docs: review r1 fixes for P-plat-00/03 (house rules consistency, interim exit 3, FD-041/043) (4dfd1fee0)
+- docs(backlog): file CTL-37..54, MDT-106/107, FD-039..046 (P-plat-00) (696310699)
+- docs: vm-lab.toml is now cowtree.toml in AGENTS.md, BTRFS-COW, MDT-044, downloads README, vm-lab docs and WORK-PACKAGES; state who owns the schema, the entries and the host settings (a3857edd8)
+- docs: repo-paths.toml is the single source of the shared paths; checkout stays on ext4, CoW mirror under MDT_COW_ROOT/<repo-name> (MDT-044, cowtree docs, AGENTS.md) (c1b55093a)
+
 
 ## [source-8747b3689fc9] - 2026-11-17
 <!-- cmru: generated -->

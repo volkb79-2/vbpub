@@ -29,8 +29,13 @@ except ImportError:
     sys.exit("error: python3-jinja2 is required (pip install jinja2 / apt install python3-jinja2)")
 
 ROOT = Path(__file__).resolve().parent.parent
-ACME_MODES = ("acme-tls", "acme-http", "acme-dns")
-MODES = ACME_MODES + ("static", "dev")
+try:
+    from tls_edge_cli import config as edge_config
+except ImportError:
+    sys.path.insert(0, str(ROOT / "src"))
+    from tls_edge_cli import config as edge_config
+
+
 TEMPLATES = ("ciu.compose.yml.j2", "traefik.yml.j2", "conf.d/certs.yml.j2")
 STATIC_FILES = ("conf.d/options.yml", "conf.d/middlewares.yml")
 
@@ -55,17 +60,6 @@ def render_toml(path: Path, context: dict) -> dict:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         sys.exit(f"error: {path}: invalid TOML after render: {exc}")
-
-
-def deep_merge(base: dict, override: dict) -> dict:
-    """Dicts merge recursively; scalars and lists replace (ciu S3.3)."""
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
 
 
 def physical_path(logical: Path) -> Path:
@@ -105,27 +99,33 @@ def physical_path(logical: Path) -> Path:
 
 def load_config(stack_dir: Path, defaults_only: bool) -> dict:
     context = {"env": dict(os.environ)}
-    config = render_toml(stack_dir / "ciu.defaults.toml.j2", context)
-    override_file = stack_dir / "ciu.toml.j2"
-    if not defaults_only and override_file.exists():
-        config = deep_merge(config, render_toml(override_file, context))
+    if defaults_only:
+        config = render_toml(stack_dir / "ciu.defaults.toml.j2", context)
+    else:
+        try:
+            defaults, overlay, config = edge_config.load_site(stack_dir)
+            overlay = edge_config.migrate(overlay)
+            edge_config.check_override(defaults, overlay)
+        except edge_config.ConfigError as exc:
+            sys.exit(f"error: {exc}")
     if "tls_edge" not in config:
         sys.exit("error: configuration is missing the [tls_edge] root table")
     return config["tls_edge"]
 
 
-def validate(cfg: dict) -> None:
-    mode = cfg["tls"]["mode"]
-    if mode not in MODES:
-        sys.exit(f"error: tls.mode {mode!r} is not one of {', '.join(MODES)}")
-    if mode == "acme-http" and not cfg["ports"]["expose_http"]:
-        sys.exit("error: tls.mode acme-http needs ports.expose_http = true "
-                 "(the HTTP-01 challenge arrives on port 80)")
-    if mode in ("static", "dev") and not cfg["static"]["domains"]:
-        sys.exit(f"error: tls.mode {mode} needs [tls_edge.static] domains = [...]")
+def _validate(cfg: dict, *, require_domain: bool) -> None:
+    try:
+        edge_config.validate_config(cfg, require_domain=require_domain)
+    except edge_config.ConfigError as exc:
+        sys.exit(f"error: {exc}")
     if cfg.get("secrets"):
         sys.exit("error: [tls_edge.secrets] directives require ciu; in standalone "
                  "mode put credentials in the gitignored edge-proxy/.env instead")
+
+
+def validate(cfg: dict) -> None:
+    """Validate as the Jitsi consumer calls it, before a site domain exists."""
+    _validate(cfg, require_domain=False)
 
 
 def render_outputs(stack_dir: Path, out_dir: Path, cfg: dict,
@@ -185,7 +185,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.stack_dir, args.defaults_only)
-    validate(cfg)
+    _validate(cfg, require_domain=args.check)
     cfg["standalone"] = True
     if args.stamp:
         cfg["render_stamp"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")

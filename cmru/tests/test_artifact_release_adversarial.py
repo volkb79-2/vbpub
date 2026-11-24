@@ -246,7 +246,7 @@ class TestVersionStrategyBoundaries(unittest.TestCase):
     def test_counter_strategy_ignores_malformed_tags_and_increments_numeric_max(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch.object(version.subprocess, "run", return_value=SimpleNamespace(
+            with patch.object(version, "run_process", return_value=SimpleNamespace(
                     stdout="demo-v1.0.0-r2\ndemo-v1.0.0-rbad\ndemo-v1.0.0-r10\n")):
                 self.assertEqual(version._next_counter_version(root, "demo-v", "1.0.0"), "1.0.0-r11")
 

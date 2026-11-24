@@ -82,15 +82,16 @@ def test_allow_marker_validation_errors(args, kwargs, fragment):
 def test_allow_marker_valid():
     assert policy.validate_allow(("fixed-sleep",), {"reason": "hardware property", "backlog": "RG-162"}) == ("fixed-sleep", None)
     assert policy.validate_allow((), {"rule": "resource-leak", "reason": "kernel behaviour", "backlog": "A-12-3"}) == ("resource-leak", None)
+    assert policy.validate_allow(("children",), {"reason": "session helper by design", "backlog": "TP-12"}) == ("children", None)
+    assert policy.RULE_CONTAINED not in policy.RULES
 
 
 def test_diff_snapshots_reports_everything():
-    before = policy.Snapshot(frozenset({"a#1"}), frozenset({"0->x"}), frozenset({"5"}))
-    after = policy.Snapshot(frozenset({"a#1", "b#2"}), frozenset({"0->x", "7->y"}), frozenset({"5", "9"}))
+    before = policy.Snapshot(frozenset({"a#1"}), frozenset({"0->x"}))
+    after = policy.Snapshot(frozenset({"a#1", "b#2"}), frozenset({"0->x", "7->y"}))
     assert policy.diff_snapshots(before, after) == [
         "thread still running: b#2",
         "file descriptor still open: 7->y",
-        "child process still present: pid 9",
     ]
     assert policy.diff_snapshots(after, before) == []
 

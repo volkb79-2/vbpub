@@ -26,6 +26,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from cmru import exit_codes
+from cmru.process_run import run_process
 from cmru.config import (
     ForgeConfig,
     InvocationContext,
@@ -1263,12 +1264,12 @@ def _compile_python_constraints(
         f"{name}=={version}" for name, (version, _target_id, _result, _source) in sorted(selected.items())
     ) + "\n"
     try:
-        completed = subprocess.run(
+        completed = run_process(
             command,
             cwd=project_root,
             input=requirements,
             text=True,
-            capture_output=True,
+            capture=True,
             check=False,
             env=environment,
             timeout=900,
@@ -1953,8 +1954,8 @@ def _run_npm(
             age_exclusions.append(name)
     if age_exclusions:
         try:
-            version_probe = subprocess.run(
-                ["npm", "--version"], cwd=project_root, text=True, capture_output=True,
+            version_probe = run_process(
+                ["npm", "--version"], cwd=project_root, text=True, capture=True,
                 check=False, timeout=20,
             )
         except FileNotFoundError as exc:
@@ -1973,8 +1974,8 @@ def _run_npm(
         if npm_config is not None:
             command.extend(("--userconfig", str(npm_config)))
         try:
-            completed = subprocess.run(
-                command, cwd=project_root, text=True, capture_output=True, check=False, timeout=900,
+            completed = run_process(
+                command, cwd=project_root, text=True, capture=True, check=False, timeout=900,
             )
         except FileNotFoundError as exc:
             raise VersionsPrerequisiteError("npm targets require npm on PATH") from exc
@@ -2031,9 +2032,9 @@ def _temporary_netrc(
 def _go_workspace_files(project_root: Path, environment: Mapping[str, str]) -> list[Path]:
     """Ask Go which workspace it will use and return every mutable workspace file."""
     try:
-        completed = subprocess.run(
+        completed = run_process(
             ["go", "env", "GOWORK"], cwd=project_root, text=True,
-            capture_output=True, check=False, timeout=20, env=dict(environment),
+            capture=True, check=False, timeout=20, env=dict(environment),
         )
     except FileNotFoundError as exc:
         raise VersionsPrerequisiteError("Go targets require go on PATH") from exc
@@ -2091,8 +2092,8 @@ def _run_go(
             for workspace_path in _go_workspace_files(project_root, environment):
                 transaction.track(workspace_path)
         try:
-            completed = subprocess.run(
-                command, cwd=project_root, text=True, capture_output=True, check=False,
+            completed = run_process(
+                command, cwd=project_root, text=True, capture=True, check=False,
                 timeout=900, env=environment,
             )
         except FileNotFoundError as exc:

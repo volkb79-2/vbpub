@@ -724,11 +724,37 @@ or rebuilt. The host's ptrace policy still applies. The live migration worked wi
 `ptrace_scope=0`, without the container capability. Check the host policy if migration is refused. See
 [Anthropic's reload behavior](https://code.claude.com/docs/en/vs-code#continue-conversations-after-a-reload).
 
-Put settings that must apply in both shells in `~/.config/mdt-cockpit/shell.env` (exports),
-`ai.env` (keys) and `aliases.sh` (aliases, interactive only); `profile.sh` sources them in bash
-and zsh alike. The full startup-file order for both shells, the flow diagram, the bash-versus-zsh
-compatibility notes and the troubleshooting table are in
+### API keys and shell startup
+
+Put sourceable files that must run at shell startup in
+`~/.config/mdt-cockpit/shell-start.d/`; the shared profile sources regular files and dotfiles in
+lexical order for bash and zsh, exporting their variables. To make the conventional home-level
+`.env.ai` file available both to tools that read it directly and to shell-launched tools, create it
+with private permissions and register it in that directory. For the two OpenDesign routes, fill
+`OPENDESIGN_API_KEY_GITHUB2` and `OPENDESIGN_API_KEY_VOLKER` in this file:
+
+```bash
+install -m 600 /usr/local/share/mdt-cockpit/.env.ai.example ~/.env.ai
+${EDITOR:-vi} ~/.env.ai
+mkdir -p ~/.config/mdt-cockpit/shell-start.d
+ln -s ~/.env.ai ~/.config/mdt-cockpit/shell-start.d/.env.ai
+```
+
+The loader does not search for `.env.ai` or any other filename; it only sources files placed in
+`shell-start.d/`. The shell profile also supports `~/.config/mdt-cockpit/shell.env` for simple
+export overrides and `aliases.sh` for aliases and functions in interactive shells. The full
+startup-file order for both shells, the flow diagram, bash-versus-zsh compatibility notes, and
+troubleshooting table are in
 [How an mdt devcontainer works, end to end](DEVCONTAINER-MECHANISMS.md#8-shell-selection-and-startup).
+
+Codex reads the matching route key from the shell environment through its profile's `env_key`.
+The local user-level `opencode-od` and `pi-od` launchers load `~/.env.ai` directly (or the file
+named by `OPENDESIGN_ENV_FILE`); the cockpit image does not install these launchers. The
+[OpenDesign harness configuration guide](AI-HARNESSES.md) has the provider settings, route
+selection, and pasteable commands for `deepseek-v4.1-flash-eco`. Both routes are named
+`opendesign_github2` and `opendesign_volker` in OpenCode and Pi, and default to `max`; use
+`model_reasoning_effort="high"` in Codex, `#high` in OpenCode, or `--thinking high` in Pi to
+override one invocation.
 
 ## VM-backed test runners
 
@@ -810,7 +836,7 @@ directory remains separate at `/run/mdt/host-ssh`.
 
 The image package names are `mdt-cockpit` and `mdt-cockpit-devcontainer`, and the runtime
 namespace matches: your own MDT overrides go under `~/.config/mdt-cockpit/` (a directory *you*
-create; `ai.env` for keys, optional `shell.env` and `aliases.sh`), and the image's files,
+create; `shell-start.d/` for sourceable startup files, optional `shell.env` and `aliases.sh`), and the image's files,
 examples and manifest are under `/usr/local/share/mdt-cockpit/`.
 
 Image-owned executables and runtimes are outside the mounted home, in the `mdt` group tree:

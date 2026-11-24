@@ -179,7 +179,7 @@ def test_bundle_run_bundle_cleans_stale_dist_and_requires_copy_sources(tmp_path,
 
 def test_changelog_generated_outputs_status_errors_and_render_dates(tmp_path):
     project = SimpleNamespace(name="demo", cwd="demo", commit_generated=("generated",))
-    with patch.object(changelog.subprocess, "run", return_value=SimpleNamespace(returncode=1, stderr="bad", stdout="")):
+    with patch.object(changelog, "run_process", return_value=SimpleNamespace(returncode=1, stderr="bad", stdout="")):
         with pytest.raises(RuntimeError, match="git status"):
             changelog._generated_outputs_changed(tmp_path, project)
     section = changelog._render_section("source-a", {"Changed": ["entry"]}, source_end="a" * 40, backfilled_tag="demo-v1")

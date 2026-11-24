@@ -134,6 +134,75 @@ def test_template_keeps_codex_database_persistent_and_container_running() -> Non
     assert '"shutdownAction": "none"' in TEMPLATE_TEXT
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        TEMPLATE,
+        ROOT / "templates" / "host-folder" / "devcontainer.json",
+        ROOT.parent / ".devcontainer" / "devcontainer.json",
+    ],
+    ids=["template", "host-folder", "controller"],
+)
+def test_devcontainer_runs_the_image_command_under_an_init_and_stays_up(path: Path) -> None:
+    # MDT-107: the Dev Containers default command makes PID 1 a `while sleep 1 & wait` loop that ends,
+    # and takes the container down, when its sleep is killed.
+    document = bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))
+    assert document["overrideCommand"] is False
+    assert document["init"] is True
+    assert document["shutdownAction"] == "none"
+
+
+def _children_of(pid: int) -> list[int]:
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # `pid (comm) state ppid ...`; comm may hold spaces and parentheses, so split after the last ")"
+        if int(stat.rsplit(")", 1)[1].split()[1]) == pid:
+            found.append(int(entry.name))
+    return found
+
+
+def test_the_image_command_survives_a_killed_sleep_and_ends_on_sigterm() -> None:
+    """The image's CMD is what PID 1's init runs once `overrideCommand` is false: it must keep running
+    when its sleep child is killed, and exit 0 on the SIGTERM `docker stop` sends. Signals only go to
+    the child this test started (a descendant of a process it created)."""
+    import signal
+    import time
+
+    cmds = re.findall(r"^CMD (\[.*\])\s*$", (ROOT / "Dockerfile").read_text(encoding="utf-8"), re.MULTILINE)
+    assert cmds, "the image must define a long-lived CMD"
+    proc = subprocess.Popen(json.loads(cmds[-1]), start_new_session=True)
+    try:
+        def sleeper(excluding: int = 0) -> int:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                kids = [pid for pid in _children_of(proc.pid) if pid != excluding]
+                if kids:
+                    return kids[0]
+                time.sleep(0.05)
+            raise AssertionError("the command never started a sleep child")
+
+        first = sleeper()
+        os.kill(first, signal.SIGKILL)
+        second = sleeper(excluding=first)
+        assert second != first
+        assert proc.poll() is None, "killing the sleep ended the command"
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=30) == 0
+    finally:
+        # the command's own process group, so an orphaned `sleep 3600` never outlives the test
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+
+
 def test_template_exposes_the_pwmcp_endpoint_but_never_a_second_path_definition() -> None:
     document = bootstrap._parse_jsonc_object(TEMPLATE_TEXT)
     assert document["remoteEnv"] == {"PWMCP_MCP_URL": "http://pwmcp:8931/mcp"}
