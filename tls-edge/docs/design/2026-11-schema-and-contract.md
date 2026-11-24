@@ -34,8 +34,8 @@ class Field:
 | `ports.http`, `ports.https` | port | always | 1-65535, not bool |
 | `ports.bind_ip`, `acme.volume_name`, `runtime.cgroup_parent` | text | always | IP / volume name / cgroup path, or `""` |
 | `acme.store` | choice `volume`,`hostdir`, prompt None | always | initial: section 4 |
-| `traefik.hostdir.acme.path` | text, prompt None | `acme.store == "hostdir"` | initial `"../../shared/acme"` |
-| `static.cert_base`, `static.domains`, `static.source` | text / list / choice | mode `static` or `dev` | path; lineages, default `[domain]`; `bind`,`volume` |
+| `traefik.hostdir.acme.path` | text, prompt None | `acme.store == "hostdir"` | initial `"../../shared/acme"` on an instance layout only; in a checkout `store = "hostdir"` without a path is refused |
+| `static.cert_base`, `static.domains`, `static.source` | text / list / choice | mode `static` or `dev` | path; lineages, initial `[domain]`; `bind`,`volume` |
 | `calls.enabled`, `calls.public_port` | bool / port | always / `calls.enabled` | rows deleted in P-edge-06 |
 
 To add a setting, add one row and the key in `ciu.defaults.toml.j2`, for example
@@ -66,7 +66,7 @@ for f in FIELDS:                        # in table order
         refuse if f.key in answers      # "tls_edge.static.domains applies only when tls_edge.tls.mode is static or dev"
         continue
     v = answers[f.key] if set
-        else prompt(f, default=edge[f.key]) when interactive (no --answers)
+        else prompt(f, default=edge[f.key]) when interactive (no --answers) and f.prompt is set
         else f.initial(layout) if the override lacks the key and f.initial
         else edge[f.key]
     proposed_overlay[f.key] = f.check(typecheck(f, v))
@@ -130,7 +130,7 @@ def render_env(contract: Mapping[str, str], existing: str = "") -> str
 | `TLS_EDGE_DOMAIN` | normalised `domain`, `""` when unset | `example.test` |
 | `TLS_EDGE_NETWORK` | `ingress_network` | `ingress_public` |
 | `TLS_EDGE_HTTPS_ENTRYPOINT` | constant `HTTPS_ENTRYPOINT` (`traefik.yml.j2:52`) | `websecure` |
-| `TLS_EDGE_HEADERS_MIDDLEWARE` | the middleware the HTTPS entrypoint already applies; `""` when `headers.enabled = false` | `secure-headers@file` |
+| `TLS_EDGE_HEADERS_MIDDLEWARE` | constant `HEADERS_MIDDLEWARE = "secure-headers@file"` | `secure-headers@file` |
 | `TLS_EDGE_HTTP3` | `true` / `false` | `false` |
 | `TLS_EDGE_PUBLIC_PORTS` | `<port>/<proto>` from the validator's port plan, comma-joined, sorted by port and then `tcp` before `udp`, no spaces | `80/tcp,443/tcp,443/udp` |
 
@@ -138,7 +138,7 @@ def render_env(contract: Mapping[str, str], existing: str = "") -> str
 so the contract and the firewall text have one source. Every value matches `[A-Za-z0-9._@,/-]*`,
 which `render_env` asserts, so `consumer.env` never needs quoting.
 A tls-edge render test pins `HTTPS_ENTRYPOINT` to the entrypoint in the rendered `traefik.yml` that
-carries the resolver.
+carries the resolver, and `HEADERS_MIDDLEWARE` to the middleware that entrypoint names.
 Rejected: making the entrypoint name a defaults key (it would invite renaming a name that every
 consumer label uses).
 
@@ -152,11 +152,13 @@ consumer label uses).
 **2.3 Drift.** The file has drifted when it exists and an owned key is missing or differs from
 `consumer_contract(effective)`.
 - `configure` re-syncs it: it always rewrites the owned keys, and `configure --answers <empty file> --yes`
-  does nothing else.
+  does that and rewrites the managed override fields with unchanged values.
 - `tls-edge validate` (exit 2) and the ciu hook (an ERROR finding) refuse, naming the keys:
   `consumer.env TLS_EDGE_DOMAIN differs from the site override; run tls-edge configure to re-sync`.
 - `show` reports drift and exits 0.
 - An absent `consumer.env`, as in a checkout, is not checked.
+- 4.0 upgrade step: a 3.2 `consumer.env` lacks the new keys; run
+  `tls-edge configure --answers <empty> --yes` before `ciu up`.
 
 Why the hook refuses too: a hand edit of `domain` followed by `ciu up` would otherwise drift with no
 message. Rejected: re-syncing from `validate` or `ciu check` (both are read-only; `ciu check` is
@@ -215,6 +217,11 @@ Why drop-only: ciu renders the raw override file (S3.2, S3.3), never `migrate()`
 migration may only drop keys that no 4.0 template reads, or refuse. A rename or a default flip is
 not a migration rule. Rejected: the hook rewriting the override (`ciu check` writes nothing, S13.4a).
 
+The hook validates the migrated effective config, not ciu's raw merged config (which still holds
+`[tls_edge.calls]`). P-edge-06 adds a test through ciu's library render with a 3.1 override carrying
+`[tls_edge.calls] enabled = false, public_port = 8443`: `check` passes and the compose does not
+publish 8443.
+
 ## 4. ACME state for new instances (D7, TE-10)
 
 **Decision:** a ciu hostdir at `<instance root>/shared/acme`, chosen by a new key `acme.store`.
@@ -239,7 +246,8 @@ acme = { path = "", uid = 0, gid = 0, mode = "0700" }
 
 **Compose:** when `acme.volume_name` is set, the external volume is used (unchanged). Otherwise,
 `store = "hostdir"` mounts `{{ tls_edge.traefik.hostdir.acme }}:/var/lib/traefik`, and the
-fallback is `acme-data`.
+fallback is `acme-data`. The top-level `acme-data` volume is declared only when `store = "volume"`
+or `volume_name` is set.
 
 **Owner and mode: `0:0`, `0700`.**
 - Traefik runs as root: `ciu.compose.yml.j2` has no `user:`.
@@ -252,6 +260,9 @@ fallback is `acme-data`.
 **New-instance signal:**
 - Adapter `bootstrap`, which get.py runs only on a first install (`get.py:1653`), creates
   `<root>/shared/acme` as root:root `0700`. `apply` and `rollback` do not create it.
+- `bootstrap` creates `<root>/shared/acme` only when euid is 0. Under `--scope user` it creates
+  nothing, and `store` stays `volume`. Reason: get.py `--scope user` (`get.py:2475`); ciu S6.3
+  needs owner 0:0 here (`engine.py:898-915`).
 - `configure` sets the initial `acme.store` to `hostdir` when that directory exists and the override
   does not set `store` yet. With it, configure writes `traefik.hostdir.acme.path = "../../shared/acme"`.
   That path is relative to `stack/ciu-stack/`, so it keeps working if the instance root moves.
@@ -259,21 +270,27 @@ fallback is `acme-data`.
 
 **Validator** (when `store = "hostdir"`), via a new `stack_dir` keyword of `validate_config`:
 - the path is not empty;
-- the path resolves outside the stack dir;
+- the path resolves outside `stack_dir.parent` (the instance's `stack/`, per D7);
 - uid is 0;
 - `volume_name` is empty;
 - the standalone renderer refuses `hostdir`, because there is no ciu to create the directory.
+
+In `ciu check` the hook receives the hostdir already resolved to an absolute string
+(`deploy.py:3979`, before the hooks at `:4033`), so the uid, empty-path and `volume_name` rules read
+the `load_site` effective config, not ciu's merged config.
 
 With `store = "volume"`, ciu still creates an inert `ciu-stack/vol-traefik-acme` (the S6.1 auto path).
 ciu creates every hostdir it finds declared, and D1's key check needs the key declared in the defaults.
 
 **Checkout** (no instance root, no marker directory): `store = "volume"` uses `acme-data`, as today.
-`hostdir` needs an explicit path outside the stack dir.
+`hostdir` needs an explicit path that passes the validator rules below; without one it is refused.
 
 **Upgrading a 3.1 instance:**
 - Nothing changes on update. The override sets no `store`, so the instance keeps the same `acme-data` volume.
-- To protect it, set `[tls_edge.acme] volume_name = "<exact existing volume name>"`. The volume is
-  then external, so `down -v` cannot remove it. There is no automatic copy.
+- Adoption: set `[tls_edge.acme] volume_name = "<exact existing volume name>"`. `volume_name` makes
+  the volume external, so `down -v` and `--reset` keep it; `ciu clean` still removes a volume compose
+  created for this project (S6.4a item 6); only the hostdir survives `ciu clean`. There is no
+  automatic copy.
 - Moving to the hostdir is an optional manual step in INSTALL section 6: stop the edge, copy
   `acme.json` with one exact-name container, then set `store` and `path`.
 
@@ -294,7 +311,9 @@ Rejected: an adapter-created external volume. Its name `tls-edge-<id>-acme` matc
   - the two defaults keys and the compose branch;
   - the validator rules and the `stack_dir` keyword;
   - the adapter `bootstrap` mkdir;
-  - today's `configure` writing `acme.store` and `path` by the new-instance signal;
+  - `configure` writes `acme.store` explicitly on every run (`volume` or `hostdir`), and `path`
+    by the new-instance signal;
+  - the backlog limitation "acme-data volume loss" stays, reworded to cover `store = "volume"` only;
   - a render test through ciu's library render;
   - INSTALL sections 3 and 6.
 - **P-edge-04:** section 1:
@@ -313,19 +332,16 @@ Rejected: an adapter-created external volume. Its name `tls-edge-<id>-acme` matc
   of the Calls rows. If P-edge-05 has not landed, also drop `test_calls_media_contract.py:119`
   (`edge_config["calls"]`).
 
-## Conflicts
+## Decided conflicts
 
-1. **Adopting a volume may not survive `ciu clean`.** The plan says a 3.1 instance keeps its volume
-   through `acme.volume_name` adoption. That stops `down -v`. By reading, though, ciu clean's
-   compose-label pass (`deploy.py:6346-6392`, S6.4a item 6) can still list and remove a volume that
-   compose created under this same project. It keeps `com.docker.compose.project=<project>` after
-   adoption. Whether CIU-191 owner mode skips it is unverified. So adoption alone may not meet
-   D7's "`ciu clean` cannot delete". P-edge-04b should verify this on r1002 with exact names; the
-   hostdir copy is the safe path.
-2. **3.2.0 is non-breaking, yet P-edge-02 refuses unknown keys.** A 3.1 override that carries a
-   hand-written key missing from the defaults, such as a typo, passed in 3.1 and is refused in
-   3.2.0. Overrides written by 3.1 `configure` pass, because every `_FIELDS` path exists in the
-   defaults (`config.py:309-328`). Decide between a 3.2.0 release-note line and treating it as a fix.
-3. **Explicit writes against a sparse override.** ciu S3.1a clause 2 says an override "SHOULD
-   contain only keys that differ from defaults". Section 1.2's explicit writes go against that
-   SHOULD on purpose, as the keep-list property requires.
+- **(a) Volume adoption and `ciu clean`.** `ciu clean`'s label pass (`deploy.py:6346-6392`, owner
+  verdict `:4592-4613`, external volumes not filtered `:6428-6441`) removes a volume compose created
+  for this project; adoption does not change its labels. P-edge-04b keeps `volume_name` adoption
+  (D7) and documents it, and never claims an adopted volume survives `ciu clean`. Only the hostdir
+  does.
+- **(b) Unknown-key refusal in 3.2.0.** Accepted as a documented validation tightening. CHANGES
+  pending note: "Changed: unknown keys in the site override are refused (`unknown override key
+  tls_edge.<path>`); 3.1 overrides written by `configure` are unaffected."
+- **(c) Explicit writes against a sparse override.** Compatible: ciu S3.1a clause 2 is a SHOULD.
+  INSTALL section 4 gets one sentence: "`configure` writes every managed field explicitly so that a
+  later change to a default never moves a configured instance."
