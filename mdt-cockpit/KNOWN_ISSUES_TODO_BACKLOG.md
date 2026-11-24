@@ -1974,7 +1974,7 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md M3 (SYN
 
 ## MDT-107 - the devcontainer stops when its PID-1 `sleep` child is killed (2026-11-24)
 
-**Status:** PARTLY FIXED (2026-11-24); severity: high. The image `CMD` is fixed (plat-19-pid1-20261124). The `devcontainer.json` flip (`overrideCommand` false, `init` true; branch plat-19-pid1-json-20261124) waits for the image release and a check of its `Config.Cmd`, then an operator-run devcontainer rebuild. Closed once the rebuilt container shows a real init as PID 1.
+**Status:** FIXED-pending-rebuild (2026-11-24); severity: high. The image `CMD` (plat-19-pid1-20261124) is released: mdt-cockpit image `trixie-py3.14-php8.5-20261124`, digest sha256:be8d913f095f35ab62fdcf6c239e707afdcd2b8137d0aac7102f0660fa35762e, `Config.Cmd` confirmed from the registry. The `devcontainer.json` flip (`overrideCommand` false, `init` true) is in. The effect needs an operator-run devcontainer rebuild. The runner cockpit gets the keepalive separately (P-plat-19f, start-cockpit-runner.sh).
 
 **Observed.** Without an `overrideCommand` key the Dev Containers default made PID 1 `/bin/sh -c 'echo Container started; trap "exit 0" 15; exec "$@"; while sleep 1 & wait $!; do :; done' -`. Killing its `sleep` child makes `wait` fail, the loop ends and PID 1 exits 0, which stopped the whole cockpit (measured twice on 2026-11-18, `OOMKilled=false`). The cockpit must survive a killed child, so a pid-signalling test or a stray `pkill` can no longer take it down.
 

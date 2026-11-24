@@ -32,6 +32,7 @@ START_LIMIT = 5.0
 ORPHAN_LIMIT = 15.0  # a scripted shell's own ``sleep 1`` ends by itself well inside this
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+pytestmark = pytest.mark.requires_contained_cgroup
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -258,6 +259,11 @@ def test_holder_the_scan_cannot_see_is_reported_as_another_process(tmp_path, mon
         _kill_quietly(holder)
 
 
+@pytest.mark.estate_allow(
+    "wall-time-assert",
+    reason="The drain deadline itself is the behavior under test.",
+    backlog="CLI-EXT-47",
+)
 def test_drain_ends_the_wait_at_drain_seconds_not_before_and_not_at_eof(tmp_path, reap_orphans):
     """A holder that keeps writing is cut off at the drain deadline; earlier output is kept."""
     pidfile = tmp_path / "holder.pid"
@@ -356,6 +362,11 @@ def test_capture_text_is_strict_like_subprocess_run_and_bytes_mode_keeps_the_byt
     assert raw.stdout == b"ok \xff\xfe end\n\xe2\x82" and raw.returncode == 0
 
 
+@pytest.mark.estate_allow(
+    "wall-time-assert",
+    reason="The bounded completion time is the regression oracle for quadratic copying.",
+    backlog="CLI-EXT-47",
+)
 def test_one_huge_unterminated_line_is_assembled_without_quadratic_copying(tmp_path):
     script = (
         "import sys\n"
@@ -668,6 +679,11 @@ def _handlers() -> dict[int, object]:
     return {s: signal.getsignal(s) for s in (*TERMINATION_SIGNALS, signal.SIGINT)}
 
 
+@pytest.mark.estate_allow(
+    "short-timeout",
+    reason="The short subprocess timeout is the signal and cleanup behavior under test.",
+    backlog="CLI-EXT-47",
+)
 def test_handlers_are_installed_while_running_and_restored_afterwards(tmp_path, default_signals):
     before = _handlers()
     seen: dict[int, object] = {}
@@ -993,6 +1009,11 @@ def test_capture_timeout_reaps_the_group_and_raises_timeout_expired(tmp_path):
         _kill_quietly(holder)
 
 
+@pytest.mark.estate_allow(
+    "wall-time-assert",
+    reason="The elapsed upper bound distinguishes timeout cleanup from waiting for the child.",
+    backlog="CLI-EXT-47",
+)
 def test_capture_timeout_ends_the_call_at_the_timeout_not_when_the_child_ends(tmp_path):
     """A child with a bounded lifetime (25 s): reaping makes the call return long before that."""
     shell_pidfile, holder_pidfile = tmp_path / "shell.pid", tmp_path / "holder.pid"
@@ -1106,6 +1127,11 @@ def test_streaming_pipe_is_closed_exactly_once_on_every_path(tmp_path, monkeypat
         counter.cleanup()
 
 
+@pytest.mark.estate_allow(
+    "short-timeout",
+    reason="Short timeouts deliberately exercise every timeout cleanup path.",
+    backlog="CLI-EXT-47",
+)
 def test_capture_pipes_are_closed_exactly_once_on_every_path(tmp_path, monkeypatch):
     counter = _CloseCounter(monkeypatch)
     try:
