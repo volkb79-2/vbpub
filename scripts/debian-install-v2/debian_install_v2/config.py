@@ -231,6 +231,7 @@ class Config:
 
 
 _SIZE_RE = re.compile(r"^[0-9]+$")
+_SAFE_STATE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
 _GEEKBENCH_VERSION_RE = re.compile(r"^[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DOCKER_LOG_MAX_SIZE_RE =re.compile(r"^[0-9]+[bkmg]?$", re.IGNORECASE)
@@ -449,12 +450,25 @@ def validate_config(config: Config) -> None:
         raise ConfigError("docker_log_max_file must be a positive integer string (e.g. '3')")
     if not config.fresh_install:
         raise ConfigError("v2 install is restricted to fresh_install=true in this release")
-    for name in ("log_dir", "state_dir", "stage2_output"):
+    for name in ("log_dir", "stage2_output"):
         value = getattr(config, name)
         if "\x00" in value:
             raise ConfigError(f"{name} must not contain a NUL character")
         if not value.startswith("/") or value.endswith("/"):
             raise ConfigError(f"{name} must be an absolute path without a trailing slash")
+    if "\x00" in config.state_dir:
+        raise ConfigError(
+            "unsafe_state_path: state_dir must not contain a NUL character"
+        )
+    if (
+        not _SAFE_STATE_DIR_RE.fullmatch(config.state_dir)
+        or ".." in config.state_dir
+        or config.state_dir.endswith("/")
+    ):
+        raise ConfigError(
+            "unsafe_state_path: state_dir must be an absolute path containing only "
+            "[A-Za-z0-9._/-], with no '..' segment and no trailing slash"
+        )
     if config.swap_disk_total_gb is not None and (
         not _SIZE_RE.fullmatch(str(config.swap_disk_total_gb))
         or not 1 <= config.swap_disk_total_gb <= 10240

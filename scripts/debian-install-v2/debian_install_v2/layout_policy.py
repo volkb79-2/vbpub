@@ -147,14 +147,6 @@ BTRFS_ISO_EXCLUDED_MOUNTS = (
     "/var/lib/docker", "/var/lib/containers",
     "/var/lib/postgresql", "/var/lib/mysql", "/usr/local",
 )
-# C9 applies the at-or-above rule to the existing protected system paths as
-# well: an exact protected path or one of its ancestors is refused, while a
-# descendant remains eligible for an explicitly configured data subvolume.
-BTRFS_EXCLUDED_MOUNTS = tuple(sorted({
-    *_RESERVED_MOUNT_TREES,
-    *_RESERVED_MOUNT_POINTS,
-    *BTRFS_ISO_EXCLUDED_MOUNTS,
-}))
 PREPOPULATED_SYSTEM_MOUNTS: frozenset[str] = frozenset()
 MAX_GIB = 10240
 GPT_MAX_PARTITIONS = 128
@@ -373,21 +365,16 @@ def _check_mount(mount: object, what: str) -> str:
 
 
 def _check_subvolume_mount(mount: object, what: str) -> str:
-    """Apply C9's excluded-path rule to a btrfs data-subvolume mount.
+    """Apply v2's mount policy plus C9's ISO-excluded-path rule.
 
-    A mount at an excluded path, or at its ancestor, would cover ISO-owned
-    state. A mount below one is allowed (for example `/srv/cow` below `/srv`).
+    The existing protected-tree and live-service checks stay in force. C9 adds
+    only the ISO exclusion direction: a mount at an excluded path or its
+    ancestor would cover ISO-owned state, while `/srv/cow` remains allowed.
     """
-    if not isinstance(mount, str):
-        raise LayoutPolicyError(f"{what} mount must be an absolute path without a trailing slash")
-    if mount == "/":
-        raise LayoutPolicyError(
-            f"{what} mount '/' is at or above excluded path '/'"
-        )
-    mount = _check_mount_syntax(mount, what)
+    mount = _check_mount(mount, what)
     if mount in PREPOPULATED_SYSTEM_MOUNTS:
         return mount
-    for excluded in BTRFS_EXCLUDED_MOUNTS:
+    for excluded in BTRFS_ISO_EXCLUDED_MOUNTS:
         if mount == excluded or excluded.startswith(mount + "/"):
             raise LayoutPolicyError(
                 f"{what} mount {mount!r} is at or above excluded path {excluded!r}"
@@ -659,33 +646,8 @@ def validate_root_layout(
     root-aware contract; schema 1 remains the legacy ext4 meaning.
     """
     if root_fs == "btrfs":
-        if schema_version != ROOT_AWARE_SCHEMA_VERSION:
-            raise LayoutPolicyError(
-                "btrfs_config_requires_schema_version_2: a btrfs root requires "
-                "schema_version 2; schema_version 1 keeps its legacy ext4 meaning"
-            )
-        if not spec.root.is_star:
-            raise LayoutPolicyError(
-                "btrfs_root_resize_unsupported: a btrfs root requires partitioning.root=\"*\""
-            )
-        if spec.reserve.kind != "gib" or spec.reserve.value != 0:
-            raise LayoutPolicyError(
-                "btrfs_reserve_unsupported: a btrfs root requires partitioning.reserve_gb=0"
-            )
-        if spec.data.kind not in {"none", "subvolumes"}:
-            raise LayoutPolicyError(
-                "btrfs_data_kind_unsupported: a btrfs root accepts only data kind none or subvolumes"
-            )
-        if spec.iobench_raw_gb is not None:
-            raise LayoutPolicyError(
-                "btrfs_iobench_raw_unavailable: a btrfs root has no iobench-raw partition; "
-                "set partitioning.iobench_raw_gb=false"
-            )
-        if swap_policy != "off" or swap_partition_count != 0:
-            raise LayoutPolicyError(
-                "btrfs_swap_needs_p3: btrfs swap needs WP-10 P3; until it lands set "
-                "swap_policy=off and swap_partition_count=0"
-            )
+        # _validate_btrfs_raw_plan() is the one source for every btrfs refusal
+        # and always runs before parsing when this root type is known.
         return
     if root_fs == "ext4":
         if schema_version == LEGACY_SCHEMA_VERSION:
@@ -800,19 +762,6 @@ def disk_spec(
         if schema_version != ROOT_AWARE_SCHEMA_VERSION:
             raise LayoutPolicyError(
                 "subvolumes_require_schema_version_2: data kind subvolumes requires schema_version 2"
-            )
-        if not spec.root.is_star:
-            raise LayoutPolicyError(
-                "btrfs_root_resize_unsupported: btrfs subvolumes require partitioning.root=\"*\""
-            )
-        if spec.reserve.kind != "gib" or spec.reserve.value != 0:
-            raise LayoutPolicyError(
-                "btrfs_reserve_unsupported: btrfs subvolumes require partitioning.reserve_gb=0"
-            )
-        if spec.iobench_raw_gb is not None:
-            raise LayoutPolicyError(
-                "btrfs_iobench_raw_unavailable: a btrfs root has no iobench-raw partition; "
-                "set partitioning.iobench_raw_gb=false"
             )
     if root_fs is not None:
         validate_root_layout(

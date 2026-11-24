@@ -341,7 +341,7 @@ def test_data_none_is_accepted_on_btrfs():
     "/", "/boot", "/etc", "/usr", "/usr/local", "/root", "/tmp", "/proc",
     "/sys", "/dev", "/run", "/bin", "/sbin", "/var", "/var/lib",
     "/var/lib/dpkg", "/var/lib/apt", "/var/lib/systemd", "/var/lib/cloud",
-    "/var/cache/apt", "/srv", "/home", "/var/lib/docker",
+    "/var/cache/apt", "/srv", "/home", "/var/lib/docker", "/var/lib/containerd",
 ])
 def test_subvolume_mount_at_or_above_an_excluded_path_is_refused(mount):
     partitioning = {
@@ -350,7 +350,7 @@ def test_subvolume_mount_at_or_above_an_excluded_path_is_refused(mount):
             {"name": "@cow", "mount": mount},
         ]},
     }
-    with pytest.raises(layout_policy.LayoutPolicyError, match="at or above excluded path"):
+    with pytest.raises(layout_policy.LayoutPolicyError, match="mount"):
         layout_policy.disk_spec(partitioning, root_fs="btrfs", schema_version=2,
                                 swap_policy="off", swap_partition_count=0)
 
@@ -359,13 +359,7 @@ def test_subvolume_mount_at_or_above_an_excluded_path_is_refused(mount):
     "mount",
     [
         "/srv/cow",
-        "/usr/local/cache",
         "/home/alice/data",
-        "/var/lib/docker/volumes/scratch",
-        "/etc/example",
-        "/boot/cache",
-        "/tmp/scratch",
-        "/var/lib/dpkg/cache",
     ],
 )
 def test_subvolume_mount_below_an_excluded_path_is_accepted(mount):
@@ -380,6 +374,29 @@ def test_subvolume_mount_below_an_excluded_path_is_accepted(mount):
         swap_policy="off", swap_partition_count=0,
     )
     assert spec.data.volumes[0].mount == mount
+
+
+@pytest.mark.parametrize("mount", [
+    "/etc/example",
+    "/usr/example",
+    "/boot/cache",
+    "/proc/x",
+    "/var/lib/dpkg/cache",
+    "/var/lib/docker/volumes/scratch",
+    "/var/lib/containerd",
+])
+def test_subvolume_mounts_keep_existing_protected_tree_checks(mount):
+    partitioning = {
+        **VALID_PARTITIONING,
+        "data": {"kind": "subvolumes", "volumes": [
+            {"name": "@cow", "mount": mount},
+        ]},
+    }
+    with pytest.raises(layout_policy.LayoutPolicyError, match="mount"):
+        layout_policy.disk_spec(
+            partitioning, root_fs="btrfs", schema_version=2,
+            swap_policy="off", swap_partition_count=0,
+        )
 
 
 # ---------------------------------------------------------- no disk mutation
@@ -875,3 +892,16 @@ def test_stage2_btrfs_writes_schema_two_completion_marker(tmp_path, monkeypatch)
 def test_invalid_schema_versions_still_fail_config_load():
     with pytest.raises(ConfigError, match="schema_version must be one of 1, 2"):
         load_config(raw_json='{"schema_version":3}')
+
+
+@pytest.mark.parametrize("state_dir", [
+    "/var/lib/v%b",
+    "/var/lib/a b",
+    "/var/lib/a'b",
+    "/var/lib/$b",
+    "/var/lib/*",
+    "/var/lib/../escape",
+])
+def test_state_dir_outside_the_strict_safe_path_pattern_is_refused(state_dir):
+    with pytest.raises(ConfigError, match="unsafe_state_path"):
+        load_config(raw_json=json.dumps({"state_dir": state_dir}))
