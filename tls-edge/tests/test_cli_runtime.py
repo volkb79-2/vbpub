@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import runpy
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -253,7 +254,7 @@ ingress_external = true
 cgroup_parent = "dev-background.slice"
 """)
     assert cli.configure(SimpleNamespace(root=root, answers=answers, dry_run=False), Runtime()) == 0
-    document = __import__("tomllib").loads((root / "stack/ciu-stack/ciu.toml.j2").read_text())
+    document = tomllib.loads((root / "stack/ciu-stack/ciu.toml.j2").read_text())
     settings = document["tls_edge"]
     assert settings["acme"]["dns"] == {"provider": "cloudflare", "wildcard_main": "example.org"}
     assert settings["calls"]["public_port"] == 9443
@@ -270,7 +271,7 @@ static_domains = ["static.example.org"]
 static_source = "volume"
 """)
     assert cli.configure(SimpleNamespace(root=static_root, answers=static_answers, dry_run=False), Runtime()) == 0
-    static_doc = __import__("tomllib").loads((static_root / "stack/ciu-stack/ciu.toml.j2").read_text())
+    static_doc = tomllib.loads((static_root / "stack/ciu-stack/ciu.toml.j2").read_text())
     assert static_doc["tls_edge"]["static"] == {
         "cert_base": "/srv/certs", "domains": ["static.example.org"], "source": "volume"
     }
@@ -293,7 +294,7 @@ def test_configure_repairs_a_cross_field_invalid_current_site(tmp_path: Path):
         SimpleNamespace(root=root, answers=answers, dry_run=False),
         Runtime(),
     ) == 0
-    written = __import__("tomllib").loads(override.read_text(encoding="utf-8"))
+    written = tomllib.loads(override.read_text(encoding="utf-8"))
     assert written["tls_edge"]["schema"] == 1
     assert written["tls_edge"]["tls"]["mode"] == "acme-tls"
 

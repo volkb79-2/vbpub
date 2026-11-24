@@ -208,15 +208,9 @@ Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M4
 
 ### TE-08 — tests exercise the wrong renderer; coverage rule
 
-The suite renders through `render_standalone.py`, not ciu's renderer, so the
-3.0.0 ciu-only ACME mount failure was invisible, no test ties the port plan to
-the rendered ports, and the 100% gate is met partly by tests of private
-helpers, source greps and config literals. Decided: port-plan and
-ciu-versus-standalone render oracles; R1 stays whole-target line and branch at
-100% with `allow_excluded = true`, excluding only lines marked
-`# pragma: no cover -- <class>: <reason>`
-(`os-error`, `main-guard`, `tty-only`), at most 12 excluded lines, enforced by
-`tests/test_coverage_policy.py`; tests drive public boundaries only.
+Remaining: rebase the CLI tests on the CLI boundary and remove the
+private-helper, source-grep and config-literal oracles in P-edge-04. P-edge-03
+covers the standalone/ciu renderer oracles and D10's coverage-exclusion policy.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M5, M6
 

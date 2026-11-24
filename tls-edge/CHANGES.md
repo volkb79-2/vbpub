@@ -25,6 +25,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - `tls-edge configure` now writes `acme.store` explicitly. Existing 3.1 instances and user-scope installs keep
   their `acme-data` volume; `acme.volume_name` adoption is unchanged.
 
+### Testing
+- Added standalone/ciu port-plan and renderer oracles plus D10's classified coverage-exclusion policy.
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
