@@ -239,6 +239,28 @@ def test_configure_keeps_comments_blank_lines_and_unowned_values(
     assert env_path.read_text(encoding="utf-8").startswith(preserved)
 
 
+def test_validate_accepts_operator_owned_consumer_env_lines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers_path = answer_file(tmp_path / "answers.toml", ANSWERS)
+    result, output = _configure(root, answers_path, monkeypatch)
+    assert result == 0, output
+    env_path = root / "stack" / "consumer.env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + "# operator-owned settings\n"
+        + "CUSTOM_CONSUMER_SETTING=keep-me\n",
+        encoding="utf-8",
+    )
+    result, output = run_cli(
+        monkeypatch,
+        ["validate", "--root", str(root)],
+    )
+    assert result == 0, output
+
+
 def test_configure_keeps_the_existing_consumer_env_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
