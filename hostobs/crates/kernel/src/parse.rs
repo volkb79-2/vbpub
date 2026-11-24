@@ -92,13 +92,13 @@ impl core::error::Error for ParseError {}
 
 /// The quality code a parse failure maps to: the fact exists but could not be read.
 ///
-/// It is always [`QualityCode::UNREADABLE`](crate::quality::QualityCode::UNREADABLE): the kernel offered a file and this crate
+/// It is always [`QualityCode::Unreadable`](crate::quality::QualityCode::Unreadable): the kernel offered a file and this crate
 /// could not turn it into a value, which is different from "the controller is absent"
 /// (the caller's `absent` code) and different from "the kernel lacks the feature"
-/// ([`QualityCode::UNSUPPORTED`](crate::quality::QualityCode::UNSUPPORTED)).
+/// ([`QualityCode::Unsupported`](crate::quality::QualityCode::Unsupported)).
 #[must_use]
 pub const fn parse_failure_quality() -> crate::quality::QualityCode {
-    crate::quality::QualityCode::UNREADABLE
+    crate::quality::QualityCode::Unreadable
 }
 
 /// Split a byte buffer into non-empty lines, refusing more than `max_lines` of them.
@@ -456,6 +456,6 @@ mod tests {
         ] {
             assert!(!error.to_string().is_empty(), "{error:?}");
         }
-        assert_eq!(super::parse_failure_quality(), QualityCode::UNREADABLE);
+        assert_eq!(super::parse_failure_quality(), QualityCode::Unreadable);
     }
 }

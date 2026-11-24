@@ -23,7 +23,7 @@
 //!   `/sys/dev/block/<dev>/slaves`; a failed read reused the last answer and a device never
 //!   classified counted as bottom (`collect.rs::is_bottom`). Here the caller supplies
 //!   [`DeviceTopology`], and a device whose topology is unknown makes the aggregate
-//!   [`QualityCode::UNKNOWN_TOPOLOGY`] with no values at all.
+//!   [`QualityCode::UnknownTopology`] with no values at all.
 //! - **Absent vs unsupported vs unreadable are three different codes**, and each reader
 //!   states which one an absence means: a missing `memory.swap.current` is `absent` (a
 //!   controller's file, optional), a missing `cpu.pressure` is `unsupported` (a kernel
@@ -31,7 +31,7 @@
 //!   a guess.
 //! - **A limit file's `max` is a state, never a number.** `memory.max == "max"` means
 //!   "no limit", which is not `-1`, not `0` and not `u64::MAX`: it is
-//!   [`QualityCode::UNSUPPORTED`] (the kernel expresses absence of a limit in words) with
+//!   [`QualityCode::Unsupported`] (the kernel expresses absence of a limit in words) with
 //!   the text kept for a human.
 
 use core::fmt;
@@ -61,8 +61,8 @@ impl Absence {
     #[must_use]
     pub const fn quality(self) -> QualityCode {
         match self {
-            Absence::Controller => QualityCode::ABSENT,
-            Absence::Feature => QualityCode::UNSUPPORTED,
+            Absence::Controller => QualityCode::Absent,
+            Absence::Feature => QualityCode::Unsupported,
         }
     }
 }
@@ -93,10 +93,10 @@ impl KernelError {
     pub fn quality(&self) -> QualityCode {
         match self {
             KernelError::Absent(code) => *code,
-            KernelError::Read(error) => error.quality(QualityCode::ABSENT),
-            KernelError::Parse { .. } => QualityCode::UNREADABLE,
-            KernelError::UnknownTopology => QualityCode::UNKNOWN_TOPOLOGY,
-            KernelError::NotAValue => QualityCode::UNSUPPORTED,
+            KernelError::Read(error) => error.quality(QualityCode::Absent),
+            KernelError::Parse { .. } => QualityCode::Unreadable,
+            KernelError::UnknownTopology => QualityCode::UnknownTopology,
+            KernelError::NotAValue => QualityCode::Unsupported,
         }
     }
 
@@ -272,7 +272,7 @@ pub fn parse_cpu_stat(text: &[u8], bounds: Bounds) -> Result<Readings, KernelErr
         saw_entry = true;
         match parse_u64(value) {
             Ok(raw) => readings.measured(metric, Value::U64(raw)),
-            Err(_) => readings.missing(metric, QualityCode::UNREADABLE),
+            Err(_) => readings.missing(metric, QualityCode::Unreadable),
         }
     }
     if !saw_entry {
@@ -333,7 +333,7 @@ pub fn parse_memory_stat(text: &[u8], bounds: Bounds) -> Result<Readings, Kernel
         let metric = format!("mem.stat.{name}");
         match parse_u64(value) {
             Ok(raw) => readings.measured(metric, Value::U64(raw)),
-            Err(_) => readings.missing(metric, QualityCode::UNREADABLE),
+            Err(_) => readings.missing(metric, QualityCode::Unreadable),
         }
     }
     if readings.is_empty() {
@@ -382,7 +382,7 @@ pub fn parse_memory_events(
         let metric = format!("{prefix}{name}");
         match parse_u64(value) {
             Ok(raw) => readings.measured(metric, Value::U64(raw)),
-            Err(_) => readings.missing(metric, QualityCode::UNREADABLE),
+            Err(_) => readings.missing(metric, QualityCode::Unreadable),
         }
     }
     Ok(readings)
@@ -576,14 +576,14 @@ pub fn parse_io_stat(
     }
     for (slot, metric) in IO_SLOTS.iter().enumerate() {
         if bad {
-            readings.missing(*metric, QualityCode::UNREADABLE);
+            readings.missing(*metric, QualityCode::Unreadable);
         } else {
             readings.measured(*metric, Value::U64(totals[slot]));
         }
     }
     if have_cost && bad_cost {
         for metric in ["io.cost.usage", "io.cost.wait", "io.cost.indelay"] {
-            readings.missing(metric, QualityCode::UNREADABLE);
+            readings.missing(metric, QualityCode::Unreadable);
         }
     } else if have_cost {
         for (index, metric) in ["io.cost.usage", "io.cost.wait", "io.cost.indelay"]
@@ -596,12 +596,12 @@ pub fn parse_io_stat(
         // iocost exists only on devices where it is enabled; that is a feature absence,
         // and the sampler said so with NA_FEATURE.
         for metric in ["io.cost.usage", "io.cost.wait", "io.cost.indelay"] {
-            readings.missing(metric, QualityCode::UNSUPPORTED);
+            readings.missing(metric, QualityCode::Unsupported);
         }
     }
     match vrate {
         Some(rate) => readings.measured("io.cost.vrate", Value::F64(rate)),
-        None => readings.missing("io.cost.vrate", QualityCode::UNSUPPORTED),
+        None => readings.missing("io.cost.vrate", QualityCode::Unsupported),
     }
     Ok(readings)
 }
@@ -614,7 +614,7 @@ pub fn parse_io_stat(
 /// period), `pids.max` and `io.max` all express "no limit" as `max`. The sampler encoded
 /// it as `-1.0`; that is a sentinel a consumer must remember to special-case and is
 /// indistinguishable from a real negative reading, so here it is
-/// [`QualityCode::UNSUPPORTED`] with the text kept in [`Limit::raw`].
+/// [`QualityCode::Unsupported`] with the text kept in [`Limit::raw`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Limit {
     /// The file the limit came from (`memory.max`, `cpu.max`, …).
@@ -632,7 +632,7 @@ impl Limit {
     #[must_use]
     pub fn reading(&self) -> Reading {
         match (self.value, self.quality) {
-            (Some(raw), code) if code == QualityCode::OK => Reading::measured(Value::U64(raw)),
+            (Some(raw), QualityCode::Ok) => Reading::measured(Value::U64(raw)),
             (_, code) => Reading::missing(code).unwrap_or(Reading::from_raw(Value::U64(0), code)),
         }
     }
@@ -650,7 +650,7 @@ pub fn parse_limit(file: &'static str, text: &[u8]) -> Result<Limit, KernelError
             file,
             value: None,
             raw,
-            quality: QualityCode::UNSUPPORTED,
+            quality: QualityCode::Unsupported,
         });
     }
     match parse_u64(&raw) {
@@ -658,7 +658,7 @@ pub fn parse_limit(file: &'static str, text: &[u8]) -> Result<Limit, KernelError
             file,
             value: Some(value),
             raw,
-            quality: QualityCode::OK,
+            quality: QualityCode::Ok,
         }),
         Err(error) => {
             let _ = error;
@@ -790,12 +790,12 @@ pub fn parse_pressure(
             if is_counter {
                 match parse_u64(value) {
                     Ok(raw) => readings.measured(metric, Value::U64(raw)),
-                    Err(_) => readings.missing(metric, QualityCode::UNREADABLE),
+                    Err(_) => readings.missing(metric, QualityCode::Unreadable),
                 }
             } else {
                 match parse_f64(value) {
                     Ok(ratio) => readings.measured(metric, Value::F64(ratio)),
-                    Err(_) => readings.missing(metric, QualityCode::UNREADABLE),
+                    Err(_) => readings.missing(metric, QualityCode::Unreadable),
                 }
             }
         }
@@ -810,7 +810,7 @@ pub fn parse_pressure(
         for suffix in ["avg10", "avg60", "avg300", "total"] {
             readings.missing(
                 format!("psi.{}.full.{suffix}", resource.name()),
-                QualityCode::UNSUPPORTED,
+                QualityCode::Unsupported,
             );
         }
     }
@@ -940,7 +940,7 @@ fn parse_cgroup_file(
             let mut readings = Readings::new();
             match limit.quota_usec {
                 Some(quota) => readings.measured("limit.cpu.max.quota", Value::U64(quota)),
-                None => readings.missing("limit.cpu.max.quota", QualityCode::UNSUPPORTED),
+                None => readings.missing("limit.cpu.max.quota", QualityCode::Unsupported),
             }
             readings.measured("limit.cpu.max.period", Value::U64(limit.period_usec));
             Ok(readings)

@@ -17,7 +17,7 @@ use hostobs_model::quality::QualityError;
 /// [`ProtoError::UnknownQuality`] for a byte outside the closed model vocabulary.
 pub fn from_code(code: u8, row: usize) -> Result<Quality, ProtoError> {
     Quality::from_code(code, row).map_err(|error| match error {
-        QualityError::UnknownCode { code, .. } => ProtoError::UnknownQuality { row, code },
+        QualityError::UnknownCode { code } => ProtoError::UnknownQuality { row, code },
     })
 }
 

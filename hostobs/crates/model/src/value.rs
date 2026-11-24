@@ -21,7 +21,7 @@
 //!   reading, never by converting. Casting `u64` to `f64` above 2<sup>53</sup> loses
 //!   integers, which plan v4 §B.1 refuses; a caller that wants a float says so.
 
-use crate::quality::{Quality, QualityError};
+use crate::quality::Quality;
 
 /// The typed raw reading of one value, matching the column codec's value types.
 #[derive(Clone, Copy, Debug)]
@@ -46,16 +46,6 @@ impl Value {
             _ => false,
         }
     }
-
-    /// The column value-type byte for this variant (plan v4 §B.2).
-    #[must_use]
-    pub const fn type_code(self) -> u8 {
-        match self {
-            Value::U64(_) => 1,
-            Value::I64(_) => 2,
-            Value::F64(_) => 3,
-        }
-    }
 }
 
 impl PartialEq for Value {
@@ -69,17 +59,14 @@ impl PartialEq for Value {
 pub enum SampleError {
     /// [`Quality::Ok`] names a measurement, so it cannot describe an absence.
     MissingCannotBeOk,
-    /// A quality code outside the closed vocabulary.
-    UnknownCode(QualityError),
 }
 
 impl core::fmt::Display for SampleError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             SampleError::MissingCannotBeOk => {
-                f.write_str("quality `ok` marks a measurement, not a missing reading")
+                f.write_str("quality `ok` marks a measurement, not a missing sample")
             }
-            SampleError::UnknownCode(error) => write!(f, "{error}"),
         }
     }
 }
@@ -202,7 +189,7 @@ impl PartialEq for Sample {
 #[cfg(test)]
 mod tests {
     use super::{Sample, SampleError, Value};
-    use crate::quality::{Quality, QualityError, ALL};
+    use crate::quality::{Quality, ALL};
 
     #[test]
     fn a_measurement_reads_back_and_a_missing_sample_does_not() {
@@ -239,7 +226,9 @@ mod tests {
             assert_eq!(sample.quality(), quality);
             assert_eq!(sample.value(), None, "{quality}");
         }
-        assert!(SampleError::MissingCannotBeOk.to_string().contains("ok"));
+        assert!(SampleError::MissingCannotBeOk
+            .to_string()
+            .contains("not a missing sample"));
     }
 
     #[test]
@@ -306,16 +295,9 @@ mod tests {
             Sample::from_wire(Value::U64(5), Quality::Ok),
             "the same bytes with a different quality are different values"
         );
-        assert_eq!(Value::U64(1).type_code(), 1);
-        assert_eq!(Value::I64(1).type_code(), 2);
-        assert_eq!(Value::F64(1.0).type_code(), 3);
         assert_eq!(
             Sample::from_raw(Value::U64(5), Quality::Stale),
             Sample::from_wire(Value::U64(5), Quality::Stale)
-        );
-        assert_eq!(
-            SampleError::UnknownCode(QualityError::UnknownCode { code: 9, row: 0 }).to_string(),
-            "unknown quality code 9"
         );
     }
 }

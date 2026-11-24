@@ -152,7 +152,7 @@ fn an_identity_refusal_maps_to_unreadable_and_never_to_a_value() {
     // A process whose stat could not be turned into an identity is not a process with
     // "identity 0".
     let missing = IdentityError::Read(hostobs_kernel::fs::FsError::NotFound);
-    assert_eq!(missing.quality(), QualityCode::UNREADABLE);
+    assert_eq!(missing.quality(), QualityCode::Unreadable);
 }
 
 // ------------------------------------------------------------------ 2. wall jumps
@@ -353,9 +353,9 @@ fn a_counter_that_went_backwards_is_a_baseline_and_not_a_negative_rate() {
     // is reset; the reader's job is to report that as a reset, so no rate is derived.
     // The sampler's `Collector::counter` reached this answer by never turning a
     // backwards counter into a spike; here the same fact is two quality codes.
-    assert_eq!(QualityCode::RESET.code(), 4);
-    assert!(!QualityCode::RESET.is_measurement());
-    assert_eq!(QualityCode::STALE.code(), 3);
+    assert_eq!(QualityCode::Reset.code(), 4);
+    assert!(!QualityCode::Reset.is_measurement());
+    assert_eq!(QualityCode::Stale.code(), 3);
     // A consumer asks the production classifier; a backwards counter is a reset, not a
     // negative delta and not a rate.
     let previous = 1_000u64;
@@ -380,7 +380,7 @@ fn a_counter_that_went_backwards_is_a_baseline_and_not_a_negative_rate() {
             0,
         )
         .quality(),
-        QualityCode::RESET
+        QualityCode::Reset
     );
 }
 
@@ -542,6 +542,6 @@ fn a_fixture_cgroup_directory_is_read_below_a_root_without_a_path_identity() {
         )
         .unwrap_err()
         .quality(),
-        QualityCode::UNSUPPORTED
+        QualityCode::Unsupported
     );
 }

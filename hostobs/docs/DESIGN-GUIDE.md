@@ -196,7 +196,7 @@ on failure, treating an unclassified device as bottom (`last.get(dev).copied().u
 a failed read therefore summed a stacked device's counters into the cgroup aggregate, and
 the aggregate double-counted. `cgroup::TopologySource` makes the answer an explicit
 three-valued input and an `Unknown` device makes the aggregate
-`QualityCode::UNKNOWN_TOPOLOGY` with **no** values at all. `HOB-20` records the fix, `HOB-21`
+`QualityCode::UnknownTopology` with **no** values at all. `HOB-20` records the fix, `HOB-21`
 the still-missing `/sys` implementation (so every production `io.*` aggregate is
 `unknown-topology` until the probe supplies one — an honest state rather than the bug
 again).
@@ -291,11 +291,13 @@ boundary's worth of a neighbouring tier.
 that disagrees with its kind (`TierKindMismatch`), a record's own envelope kind is checked
 against the segment it lives in (`RecordCorpus`), and the reader refuses either mismatch
 rather than decoding one corpus's bytes with the other's rules. `store` calls
-`hostobs_proto::frame::FrameHeader::parse_fields` for the fixed header fields, then applies
-the two facts its segment format owns: the corpus's exact frame type and SECTIONED flag, and
-the configured payload bound. The storage parser deliberately defers `SECTIONED`'s
-BLOCK-only wire rule because the canonical events segment stores the EVT+SECTIONED shape.
-Quality and values are `model` types; there is no store-local table.
+`hostobs_proto::frame::StoredFrameFields::parse_header` for the fixed header fields, then
+applies its configured payload bound, declared length, corpus frame type, exact SECTIONED flag
+and reserved-word checks in the order its stored format has always used. The storage parser
+deliberately defers `SECTIONED`'s BLOCK-only wire rule because the canonical events segment
+stores the EVT+SECTIONED shape. `proto` and `kernel` use `model`'s quality and value types;
+`store` keeps only wire bytes and quality bytes, has no local quality or value type, and
+declares `model` for the future HOB-39 decoded-row join.
 
 **Eviction is by whole segment, oldest first, and `next_seq` is a water mark.** A tier's
 ring is ordered by `(start_s, seq)` and evicts from the front while the segment's entire span

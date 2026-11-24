@@ -16,7 +16,7 @@
 //!   (`collect.rs::is_bottom`, `last.get(dev).copied().unwrap_or(true)`), so a failed
 //!   topology read silently counted a stacked device's I/O into a cgroup aggregate — and
 //!   the aggregate then double-counted. Here an unknown topology reports
-//!   [`QualityCode::UNKNOWN_TOPOLOGY`](crate::quality::QualityCode::UNKNOWN_TOPOLOGY) on the aggregate and no totals at all.
+//!   [`QualityCode::UnknownTopology`](crate::quality::QualityCode::UnknownTopology) on the aggregate and no totals at all.
 //! - **No path-keyed identity.** A cgroup is `(mount id, inode)` and a process is
 //!   `(boot id, pid, starttime ticks)`; a path is a label. Nothing in this crate derives
 //!   an identity from a path, and a test pins the recycled-inode case.
@@ -60,12 +60,12 @@ pub mod procfs;
 
 /// The model-owned quality vocabulary used by kernel readings.
 pub mod quality {
-    pub use hostobs_model::quality::{Quality as QualityCode, QualityError};
+    pub use hostobs_model::quality::Quality as QualityCode;
 }
 
 /// The model-owned value vocabulary returned by kernel readers.
 pub mod value {
-    pub use hostobs_model::value::{Sample as Reading, SampleError as ReadingError, Value};
+    pub use hostobs_model::value::{Sample as Reading, Value};
 }
 
 /// Every bound a reader is given.

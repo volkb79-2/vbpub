@@ -33,8 +33,8 @@
 //!
 //! # Decisions taken where the plan is open
 //!
-//! * The store shares `model`'s closed quality vocabulary and `proto`'s frame vocabulary;
-//!   there is no store-local copy of either table.
+//! * The store uses `proto`'s frame vocabulary and declares `model` for the HOB-39 decoded-row
+//!   join; it has no local frame, quality or value type.
 //! * The store keeps **raw `u64` counters** and **quality per value** (§C.3/§C.2): it never
 //!   converts a value, never derives a rate and never rounds a reading.
 //! * A record's payload is a `proto` BLOCK frame, so a segment is a sequence of column blocks

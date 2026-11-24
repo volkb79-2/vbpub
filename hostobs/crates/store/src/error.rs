@@ -197,11 +197,6 @@ pub enum StoreError {
         /// The reserved value found.
         found: u16,
     },
-    /// `proto` refused a payload frame header for a reason without a store-specific variant.
-    PayloadFrameHeader {
-        /// The codec's typed refusal.
-        error: hostobs_proto::error::ProtoError,
-    },
     /// A payload is larger than the store's configured bound.
     PayloadTooLarge {
         /// The payload's length.
@@ -483,11 +478,6 @@ pub enum StoreError {
         /// The key it asked to close.
         key: String,
     },
-    /// A quality code outside the closed §C.2 vocabulary.
-    QualityCode {
-        /// The byte found.
-        found: u8,
-    },
     /// A store's in-RAM index holds an id it has not declared (an unknown dictionary entry a
     /// stored payload names).
     UnknownDictionaryEntry {
@@ -531,7 +521,6 @@ impl StoreError {
             StoreError::PayloadFrameLength { .. } => "payload-frame-length",
             StoreError::PayloadFrameFlags { .. } => "payload-frame-flags",
             StoreError::PayloadFrameReserved { .. } => "payload-frame-reserved",
-            StoreError::PayloadFrameHeader { .. } => "payload-frame-header",
             StoreError::PayloadTooLarge { .. } => "payload-too-large",
             StoreError::NotSealed => "not-sealed",
             StoreError::FooterMagic { .. } => "footer-magic",
@@ -574,7 +563,6 @@ impl StoreError {
             StoreError::EventFieldTooLong { .. } => "event-field-too-long",
             StoreError::SpanLimit { .. } => "span-limit",
             StoreError::SpanUnknown { .. } => "span-unknown",
-            StoreError::QualityCode { .. } => "quality-code",
             StoreError::UnknownDictionaryEntry { .. } => "unknown-dictionary-entry",
         }
     }
@@ -612,7 +600,6 @@ impl StoreError {
                 | StoreError::PayloadFrameLength { .. }
                 | StoreError::PayloadFrameFlags { .. }
                 | StoreError::PayloadFrameReserved { .. }
-                | StoreError::PayloadFrameHeader { .. }
                 | StoreError::NotSealed
                 | StoreError::FooterMagic { .. }
                 | StoreError::FooterCrc { .. }
@@ -775,9 +762,6 @@ impl fmt::Display for StoreError {
             StoreError::PayloadFrameReserved { found } => {
                 write!(f, "payload frame reserved field is {found}, not zero")
             }
-            StoreError::PayloadFrameHeader { error } => {
-                write!(f, "payload frame header refused by proto: {error}")
-            }
             StoreError::PayloadTooLarge { len, max } => {
                 write!(f, "payload of {len} bytes exceeds the bound of {max}")
             }
@@ -928,9 +912,6 @@ impl fmt::Display for StoreError {
             StoreError::SpanUnknown { issuer, key } => {
                 write!(f, "issuer {issuer} has no open span keyed {key:?}")
             }
-            StoreError::QualityCode { found } => {
-                write!(f, "quality code {found} is outside the eight-code vocabulary")
-            }
             StoreError::UnknownDictionaryEntry {
                 segment,
                 index,
@@ -1001,7 +982,6 @@ mod tests {
                 issuer: "u".into(),
                 key: "k".into(),
             },
-            StoreError::QualityCode { found: 9 },
             StoreError::UnknownDictionaryEntry {
                 segment: "s".into(),
                 index: 1,

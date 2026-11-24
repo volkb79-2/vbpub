@@ -62,9 +62,10 @@ limits, a torn file after a crash is *detected* and truncated back to its last g
 (or quarantined as `.corrupt` when the bytes at an offset do not hold), and silent loss is
 impossible to represent: a dropped job is a `Submit` report and a counter, and a segment is
 only ever removed when it is this store's own file by both name and header. `store` uses
-`model` for quality and values and `proto` for the fixed payload
-frame fields. The store adds the two facts its segments own — the exact frame type and flag
-policy of the corpus, and the configured payload bound — before accepting a payload.
+`proto` for the fixed payload frame fields and declares `model` for the future HOB-39
+decoded-row join; it has no quality or value table of its own. The store adds the two facts
+its segments own — the exact frame type and flag policy of the corpus, and the configured
+payload bound — before accepting a payload.
 
 The `probe` binary's `main` is still the M0 scaffold; its library (`bins/probe/src`) now holds the
 pure serving functions of P5b-1a (`limits`, `verbs`, `codes`, `args`, `classify`, `encode`, `lines`)

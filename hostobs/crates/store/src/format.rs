@@ -64,16 +64,15 @@
 //!   refusal — a reader never *infers* a record's length from what happens to follow it.
 //! * A payload must be the `proto` frame its corpus requires (BLOCK for history, EVT for
 //!   events), and this module checks it before any byte is stored. The fixed fields come from
-//!   [`hostobs_proto::frame::FrameHeader::parse_fields`], not a second header parser. The
-//!   segment format then applies its corpus frame type and SECTIONED flag and its configured
-//!   payload bound; every question about the block's content remains `proto`'s.
+//!   [`hostobs_proto::frame::StoredFrameFields`], not a second header parser. The segment
+//!   format applies its corpus frame type and SECTIONED flag and its configured payload
+//!   bound; every question about the block's content remains `proto`'s.
 //! * A footer must follow the records it counts, name the header's sequence and generation,
 //!   and end the file exactly.
 
 use core::fmt;
 
-use hostobs_proto::error::ProtoError;
-use hostobs_proto::frame::{FrameHeader, FrameType};
+use hostobs_proto::frame::{FrameType, StoredFrameFields};
 
 use crate::crc::{crc32, crc32_pair};
 use crate::error::StoreError;
@@ -826,12 +825,12 @@ pub struct FrameFacts {
 
 /// Check that `payload` is the `proto` frame its corpus requires, and read its header facts.
 ///
-/// [`FrameHeader::parse_fields`] owns the fixed-header layout. The store adds the facts its
-/// segments own: the configured payload bound and the exact frame type and flags a corpus
-/// requires. Anything inside the frame (section directory, columns, dictionary) is
-/// `proto`'s refusal, checked by its decoder when a consumer reads the payload back. History
-/// stores BLOCK frames and the events store stores EVT frames, both with SECTIONED set, so a
-/// corpus cannot accidentally serve the other's payload.
+/// [`StoredFrameFields`] owns the fixed-header layout. The store checks the facts its segments
+/// own in their established order: the configured payload bound, declared length, exact frame
+/// type, exact flags and reserved word. Anything inside the frame (section directory, columns,
+/// dictionary) is `proto`'s refusal, checked by its decoder when a consumer reads the payload
+/// back. History stores BLOCK frames and the events store stores EVT frames, both with
+/// SECTIONED set, so a corpus cannot accidentally serve the other's payload.
 ///
 /// # Errors
 ///
@@ -857,30 +856,25 @@ pub fn check_payload(
             have: payload.len(),
         });
     }
-    let header = FrameHeader::parse_fields(payload).map_err(|error| match error {
-        ProtoError::Truncated { .. } => StoreError::Truncated {
+    let header_bytes: &[u8; FRAME_HEADER_LEN] = payload
+        .get(..FRAME_HEADER_LEN)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(StoreError::Truncated {
             context: "payload frame header",
             need: FRAME_HEADER_LEN,
             have: payload.len(),
-        },
-        ProtoError::UnknownFrameType(found) => StoreError::PayloadFrameType {
-            expected: expected.frame_type(),
-            found,
-        },
-        ProtoError::UnknownFrameFlags(flags) => StoreError::PayloadFrameFlags { flags },
-        ProtoError::NonZeroReserved(found) => StoreError::PayloadFrameReserved { found },
-        error => StoreError::PayloadFrameHeader { error },
-    })?;
+        })?;
+    let header = StoredFrameFields::parse_header(header_bytes);
     if header.len != len {
         return Err(StoreError::PayloadFrameLength {
             declared: header.len,
             have: payload.len(),
         });
     }
-    if header.frame_type.code() != expected.frame_type() {
+    if header.frame_type != expected.frame_type() {
         return Err(StoreError::PayloadFrameType {
             expected: expected.frame_type(),
-            found: header.frame_type.code(),
+            found: header.frame_type,
         });
     }
     if header.flags != FRAME_FLAG_SECTIONED {
@@ -888,9 +882,14 @@ pub fn check_payload(
             flags: header.flags,
         });
     }
+    if header.reserved != 0 {
+        return Err(StoreError::PayloadFrameReserved {
+            found: header.reserved,
+        });
+    }
     Ok(FrameFacts {
         len: header.len,
-        frame_type: header.frame_type.code(),
+        frame_type: header.frame_type,
         flags: header.flags,
         corr: header.corr,
     })
@@ -1790,6 +1789,56 @@ mod tests {
                 declared: 64,
                 have: 32
             })
+        );
+        let mut length_before_type = wrong_len.clone();
+        length_before_type[4] = 0;
+        assert_eq!(
+            check_payload(&length_before_type, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameLength {
+                declared: 64,
+                have: 32
+            }),
+            "the declared length is the first refusal"
+        );
+        let mut length_before_flags = wrong_len.clone();
+        length_before_flags[5] = 0b11;
+        assert_eq!(
+            check_payload(&length_before_flags, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameLength {
+                declared: 64,
+                have: 32
+            }),
+            "the declared length precedes unknown flags"
+        );
+        let mut length_before_reserved = wrong_len;
+        length_before_reserved[6] = 1;
+        assert_eq!(
+            check_payload(&length_before_reserved, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameLength {
+                declared: 64,
+                have: 32
+            }),
+            "the declared length precedes the reserved word"
+        );
+        let mut type_before_flags_and_reserved = payload.clone();
+        type_before_flags_and_reserved[4] = 1;
+        type_before_flags_and_reserved[5] = 0;
+        type_before_flags_and_reserved[6] = 1;
+        assert_eq!(
+            check_payload(&type_before_flags_and_reserved, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameType {
+                expected: BLOCK_FRAME_TYPE,
+                found: 1,
+            }),
+            "the corpus frame type precedes flags and reserved"
+        );
+        let mut flags_before_reserved = payload.clone();
+        flags_before_reserved[5] = 0;
+        flags_before_reserved[6] = 1;
+        assert_eq!(
+            check_payload(&flags_before_reserved, TierKind::History, 1024),
+            Err(StoreError::PayloadFrameFlags { flags: 0 }),
+            "the exact flags precede the reserved word"
         );
         let mut extra_flag = payload.clone();
         extra_flag[5] = 0b0000_0011;

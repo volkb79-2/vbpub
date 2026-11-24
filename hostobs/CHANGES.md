@@ -15,9 +15,9 @@
   both, with deleted local copies replaced by re-exports or model types.
 - **SP-2**: the kernel evidence now derives rates through `model::derive_rate` instead of a
   test-local arithmetic implementation.
-- **Store payloads**: fixed frame-header fields are parsed by `proto`; the store retains only
-  its corpus frame-type/SECTIONED policy and configured payload bound, with the existing typed
-  refusals unchanged.
+- **Store payloads**: fixed frame-header fields are parsed by `proto`; the store applies its
+  configured payload bound, declared length, corpus frame type, flags and reserved checks in
+  their original order, with the existing typed refusals unchanged.
 - **Probe**: the unused `hostobs-kernel` workspace dependency is removed; the four
   unused registry dependencies (`ruzstd`, `serde`, `serde_json`, `toml`) remain
   until P-hostobs-08 removes them with its image rebuild.

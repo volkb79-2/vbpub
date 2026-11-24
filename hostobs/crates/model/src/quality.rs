@@ -15,11 +15,6 @@
 
 use core::fmt;
 
-/// The model's quality vocabulary as used by collectors and wire clients.
-///
-/// This is an alias, not a second type: every consumer shares [`Quality`].
-pub type QualityCode = Quality;
-
 /// The committed vocabulary fixture shared by the Rust types and the Python decoder.
 pub const VOCABULARY_FIXTURE: &str = include_str!("../../../fixtures/wire/quality.json");
 
@@ -64,15 +59,13 @@ pub enum QualityError {
     UnknownCode {
         /// The offending stored byte.
         code: u8,
-        /// The wire row whose quality column held the byte.
-        row: usize,
     },
 }
 
 impl fmt::Display for QualityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            QualityError::UnknownCode { code, .. } => write!(f, "unknown quality code {code}"),
+            QualityError::UnknownCode { code } => write!(f, "unknown quality code {code}"),
         }
     }
 }
@@ -80,23 +73,6 @@ impl fmt::Display for QualityError {
 impl core::error::Error for QualityError {}
 
 impl Quality {
-    /// The measurement code, in the spelling collectors have historically used.
-    pub const OK: Quality = Quality::Ok;
-    /// The absent code, in the spelling collectors have historically used.
-    pub const ABSENT: Quality = Quality::Absent;
-    /// The unreadable code, in the spelling collectors have historically used.
-    pub const UNREADABLE: Quality = Quality::Unreadable;
-    /// The stale code, in the spelling collectors have historically used.
-    pub const STALE: Quality = Quality::Stale;
-    /// The reset code, in the spelling collectors have historically used.
-    pub const RESET: Quality = Quality::Reset;
-    /// The not-sampled code, in the spelling collectors have historically used.
-    pub const NOT_SAMPLED: Quality = Quality::NotSampled;
-    /// The unsupported code, in the spelling collectors have historically used.
-    pub const UNSUPPORTED: Quality = Quality::Unsupported;
-    /// The unknown-topology code, in the spelling collectors have historically used.
-    pub const UNKNOWN_TOPOLOGY: Quality = Quality::UnknownTopology;
-
     /// The stored byte of this code.
     #[must_use]
     pub const fn code(self) -> u8 {
@@ -119,8 +95,11 @@ impl Quality {
     }
 
     /// Decode a stored code; every code outside the table is an error.
+    ///
+    /// `_row` is retained for the probe's frozen call shape. The model error names only the
+    /// offending code; the wire adapter that owns row context adds the row itself.
     #[allow(clippy::missing_const_for_fn)]
-    pub fn from_code(code: u8, row: usize) -> Result<Quality, QualityError> {
+    pub fn from_code(code: u8, _row: usize) -> Result<Quality, QualityError> {
         match code {
             0 => Ok(Quality::Ok),
             1 => Ok(Quality::Absent),
@@ -130,7 +109,7 @@ impl Quality {
             5 => Ok(Quality::NotSampled),
             6 => Ok(Quality::Unsupported),
             7 => Ok(Quality::UnknownTopology),
-            other => Err(QualityError::UnknownCode { code: other, row }),
+            other => Err(QualityError::UnknownCode { code: other }),
         }
     }
 
@@ -175,7 +154,7 @@ mod tests {
         for code in 8u8..=u8::MAX {
             assert_eq!(
                 Quality::from_code(code, 0),
-                Err(QualityError::UnknownCode { code, row: 0 })
+                Err(QualityError::UnknownCode { code })
             );
         }
         assert_eq!(Quality::from_name(""), None);
@@ -202,7 +181,7 @@ mod tests {
     #[test]
     fn error_text_names_the_offending_code() {
         assert_eq!(
-            QualityError::UnknownCode { code: 42, row: 3 }.to_string(),
+            QualityError::UnknownCode { code: 42 }.to_string(),
             "unknown quality code 42"
         );
     }

@@ -29,6 +29,6 @@ fn the_kernel_table_is_the_shared_wire_table() {
         );
     }
     // The one code the M1 fix added is present and is not a measurement.
-    assert_eq!(QualityCode::UNKNOWN_TOPOLOGY.code(), 7);
-    assert!(!QualityCode::UNKNOWN_TOPOLOGY.is_measurement());
+    assert_eq!(QualityCode::UnknownTopology.code(), 7);
+    assert!(!QualityCode::UnknownTopology.is_measurement());
 }

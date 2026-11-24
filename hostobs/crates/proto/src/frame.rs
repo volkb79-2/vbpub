@@ -502,7 +502,11 @@ impl Block {
     }
 }
 
-/// The parsed frame header.
+/// The parsed frame header of a wire frame.
+///
+/// A value returned by [`FrameHeader::parse`] always carries
+/// `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES`. Stored payloads whose declared length is
+/// governed by their corpus use [`StoredFrameFields`] instead.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameHeader {
     /// The declared length of the whole frame, header included.
@@ -582,22 +586,43 @@ impl FrameHeader {
     pub fn parse(bytes: &[u8]) -> Result<FrameHeader, ProtoError> {
         FrameHeader::parse_with_policy(bytes, true, true)
     }
+}
 
-    /// Parse fixed header fields for a caller that owns its payload bounds and flag policy.
+/// The fixed fields of a stored payload's frame header.
+///
+/// This is deliberately not a [`FrameHeader`]: the segment's corpus owns the frame type,
+/// exact flag policy and payload bound, so the declared length need not satisfy
+/// [`MAX_FRAME_BYTES`] here. The raw fields are exposed so the corpus owner can report
+/// refusals in its own required order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StoredFrameFields {
+    /// The declared length of the whole frame, header included.
+    pub len: u32,
+    /// The frame type byte, before corpus-specific interpretation.
+    pub frame_type: u8,
+    /// The frame flags byte, before corpus-specific interpretation.
+    pub flags: u8,
+    /// The reserved word, which the corpus owner must require to be zero.
+    pub reserved: u16,
+    /// The correlation id.
+    pub corr: u32,
+}
+
+impl StoredFrameFields {
+    /// Parse the fixed little-endian fields from exactly one frame header.
     ///
-    /// Stored payloads use the same frame header, but their corpus owner decides which
-    /// flag combination and payload bound are valid for that record. This parser checks
-    /// the fixed layout, known frame type, defined flag bits, reserved word and correlation
-    /// id. It does not reject `SECTIONED` on a non-BLOCK type or apply [`MAX_FRAME_BYTES`];
-    /// the caller must compare [`FrameHeader::len`] with the stored bytes and apply its own
-    /// bound. Callers that accept wire frames must use [`FrameHeader::parse`] instead.
-    ///
-    /// # Errors
-    ///
-    /// The fixed-field errors documented on [`FrameHeader::parse`]. A defined flag is not
-    /// refused here for a frame type the caller's storage format allows.
-    pub fn parse_fields(bytes: &[u8]) -> Result<FrameHeader, ProtoError> {
-        FrameHeader::parse_with_policy(bytes, false, false)
+    /// The array type proves all twelve bytes are present. Semantic checks stay with the
+    /// stored payload's corpus owner, which can therefore preserve its historical refusal
+    /// order independently of the wire decoder.
+    #[must_use]
+    pub const fn parse_header(bytes: &[u8; FRAME_HEADER_LEN]) -> StoredFrameFields {
+        StoredFrameFields {
+            len: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            frame_type: bytes[4],
+            flags: bytes[5],
+            reserved: u16::from_le_bytes([bytes[6], bytes[7]]),
+            corr: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+        }
     }
 }
 
@@ -1517,8 +1542,9 @@ pub fn decode_block_with(bytes: &[u8], held: Option<&Dictionary>) -> Result<Bloc
 mod tests {
     use super::{
         decode_block, detect_mode, encode_block, encode_frame, hello, Block, BlockHeaderFacts,
-        Column, FrameHeader, FrameType, Mode, Row, Section, SectionKind, TimeBucket, TypedValue,
-        FRAME_HEADER_LEN, HEADER_BODY_LEN, MAGIC, MAX_FRAME_BYTES, PROTO_MAJOR, PROTO_MINOR,
+        Column, FrameHeader, FrameType, Mode, Row, Section, SectionKind, StoredFrameFields,
+        TimeBucket, TypedValue, FRAME_HEADER_LEN, HEADER_BODY_LEN, MAGIC, MAX_FRAME_BYTES,
+        PROTO_MAJOR, PROTO_MINOR,
     };
     use crate::dict::{
         aggregation_from_code, Aggregation, Dictionary, Entry, MetricFacts, MetricKind,
@@ -2500,8 +2526,12 @@ mod tests {
         // format can apply its own corpus policy.
         let mut stored = encode_block(&live_block()).expect("encode");
         stored[4] = FrameType::Evt.code();
-        let fields = FrameHeader::parse_fields(&stored).expect("stored EVT fields");
-        assert_eq!(fields.frame_type, FrameType::Evt);
+        let stored_header: &[u8; FRAME_HEADER_LEN] = stored
+            .get(..FRAME_HEADER_LEN)
+            .and_then(|bytes| bytes.try_into().ok())
+            .expect("encode_block emits a complete header");
+        let fields = StoredFrameFields::parse_header(stored_header);
+        assert_eq!(fields.frame_type, FrameType::Evt.code());
         assert_eq!(fields.flags, super::FLAG_SECTIONED);
         assert_eq!(
             FrameHeader::parse(&stored),
@@ -2511,10 +2541,7 @@ mod tests {
         // A segment's configured payload bound is the storage authority. The storage parser
         // reports the declared length; the strict wire parser still applies this codec's bound.
         let unbounded = header_declaring(u32::MAX);
-        assert_eq!(
-            FrameHeader::parse_fields(&unbounded).map(|header| header.len),
-            Ok(u32::MAX)
-        );
+        assert_eq!(StoredFrameFields::parse_header(&unbounded).len, u32::MAX);
         assert!(matches!(
             FrameHeader::parse(&unbounded),
             Err(ProtoError::OversizedFrame { .. })
