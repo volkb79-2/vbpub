@@ -1045,8 +1045,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   depends on is evaluated BEFORE the directory exists, and the S6.5 helper's own
   preconditions (S6.5) are among them. Each directory is checked on its own
   (the check is per directory, not a two-pass walk): a directory is created only
-  once every precondition of ITS creation and ownership has been evaluated, and a
-  refusal may never leave a directory whose ownership the next run refuses.
+  once every precondition of ITS creation and ownership has been evaluated, so a
+  precondition refusal never leaves a directory whose ownership the next run
+  refuses. A failure after `mkdir` (a helper `docker run` or a seed copy that
+  fails; root without CAP_CHOWN or on a root-squash mount, where no helper is
+  predicted but the helper is then refused) can still leave one: see the CIU-227
+  known limits.
   Directories created earlier in the same walk (their ownership already
   applied) remain and pass the next run. A `--dry-run` creates no hostdir at all: it resolves,
   validates and reports every declaration (including the S6.6 seed check and the
@@ -1789,7 +1793,11 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   rendering so `apply_to_config` updates are visible to configfile
   templates. `--render-toml` stops after step 3. `--dry-run` completes the
   render and preparation steps, including the leak scan, skips the Compose up
-  at step 16, and applies S9.6 to `post_compose` at step 17.
+  at step 16, and applies S9.6 to `post_compose` at step 17. Step 8 is
+  plan-only under `--dry-run` (S6.3, CIU-227): it resolves, validates and
+  reports the hostdirs but creates none, so `pre_secrets` and `pre_compose`
+  hooks, which still run for real, see the rewritten S6.2 path and not a
+  directory.
 
   Step 17 runs **immediately** after `compose up` (step 16) — CIU does not
   implicitly block the whole step on a global health gate. A service-touching
@@ -2215,8 +2223,9 @@ v1 contract.
   when its source contains a literal module-level `DRY_RUN_SAFE = True`
   assignment. CIU inspects the source without importing it; an unmarked hook
   is skipped before import, with a notice naming the declaration that opts it
-  in. The flag does not make dry-run generally side-effect-free: hostdir and
-  pre-hook behavior remains as specified by S8.3.
+  in. The flag does not make dry-run generally side-effect-free: the pre-hooks
+  still run for real, and the hostdir behavior (plan-only, no directory
+  created) is as specified by S8.3 and S6.3.
 
 ## S10 — CLI surface (delta to v1)
 

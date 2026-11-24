@@ -121,7 +121,9 @@ the technical detail below it.
   Step-8 wiring for both a dry run and a real run, and the three remedy texts (plus a bare-message control that fails
   them). `tests/tests/test_ciu_231_implicit_stack_selection.py` covers the
   refusal inside a stack dir, its shipped-stack form, and the three rc-0 cases
-  that stay unchanged. CIU-227 flipped one pinned expectation in
+  that stay unchanged. CIU-227 flipped two pinned expectations: the S6.6 seed-refusal pin in
+  `test_ciu_engine_luna_medium59.py::test_missing_seed_directory_fails_closed_with_typed_error`
+  (the refusal now leaves no directory) and the one in
   `test_spec_contracts.py` (`test_logs_hostdir_is_absolute_physical_path` now
   asserts the rendered S6.2 path and the ABSENT directory, because that run is
   a dry run) and gave

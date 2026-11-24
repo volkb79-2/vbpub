@@ -7226,7 +7226,10 @@ creating: it is a render for a REAL start. Evidence:
 `tests/tests/test_ciu_227_230_hostdir_preconditions.py` (refuse-fix-rerun with no
 manual cleanup; dry-run against a missing and a satisfiable precondition; the
 local-ownership case needing no parent; plan-mode refusals; the Step-8 wiring).
-Two pinned expectations changed with the fix, both named here: `test_spec_contracts
+Three pinned expectations changed with the fix, all named here:
+`test_ciu_engine_luna_medium59.py::test_missing_seed_directory_fails_closed_with_typed_error`
+now asserts the S6.6 seed refusal leaves NO directory (the seed is resolved before
+`mkdir`); `test_spec_contracts
 .py::TestHostdirPhysicalRewrite::test_logs_hostdir_is_absolute_physical_path` now
 asserts the rendered path and the ABSENT directory (that run is a dry run), and
 `test_ciu_engine_deeper6.py::
@@ -7247,7 +7250,15 @@ precondition its foreign ownership now requires before the first directory exist
 - **L3.** A non-root process with an effective CAP_CHOWN, or on a filesystem
   that ignores chown, used to need no helper and is now refused when
   `CGROUP_PARENT_DEV_INTERACTIVE` is unset. By design (known limit); no
-  machinery added.
+  machinery added. The same prediction gap has a residue direction (Opus r2 L1):
+  root without CAP_CHOWN, a root-squash NFS mount or rootless root is predicted
+  to need no helper, so `mkdir` runs, `os.chown` fails, and the helper is then
+  refused; that leaves a runner-owned directory which S6.3 refuses on the next
+  run. Same limit, same follow-up as L1 (remove a directory this call created).
+- **L5 (Opus r2 L3).** The CIU-231 remedy names `ciu up --dir .`; if the
+  operator's invocation also carried `--root-folder`, adding `--dir .` hits
+  CIU-228 (`[no-ciu-root]`). Optional follow-up: print the absolute
+  `--dir <cwd>` in the message instead.
 - **L4.** `tls-edge/docs/INSTALL.md:418` and
   `voice-screen-share/jitsi-server/README.md:42` still describe the CIU-227
   workaround; for the edge controller after the ciu release that carries this
