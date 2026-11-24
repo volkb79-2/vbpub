@@ -237,11 +237,17 @@ you edited in the synced set (not `ciu.toml.j2`, which is not part of it) stop t
 keep host edits in `ciu.toml.j2` or pass `--overwrite-local` (the replaced files are saved under
 `shared/overwritten/<UTC time>/`). The installer does not touch `ciu.toml.j2`, `consumer.env`, `.ciu/`, volumes
 or `shared/acme`. `tls-edge configure` is the supported writer for the site override and domain variable;
-`status` shows the installed tag and any locally modified files.
+`status` shows the installed tag and any locally modified files. A user-scope instance lives under
+`$HOME/.local/share/tls-edge-instance`; its `tls-edge-installer status` also needs the matching scope:
+
+```bash
+tls-edge-installer status --scope user
+```
 
 4.0 upgrade step: a 3.2 `consumer.env` has only `TLS_EDGE_DOMAIN`. Run
 `tls-edge configure --answers <empty file> --yes` after the update and before `ciu up`; otherwise the
-preflight hook refuses the missing contract keys.
+preflight hook refuses the missing contract keys. Run `configure` after every update, before the next `ciu up`,
+so the override is written in the updated schema.
 
 An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
 keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
@@ -334,6 +340,8 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    Run `/srv/tls-edge-instance/bin/tls-edge configure --answers /path/to/live.toml --yes` and
    `/srv/tls-edge-instance/bin/tls-edge validate`. Do **not** run `ciu up` yet. The proposed public set is
    80/tcp, 443/tcp, 443/udp (HTTP/3), and 8443/tcp+udp (Calls); allow these in both firewalls.
+   Do not use `ciu up --skip-check` to move past a refused configuration: CIU creates the hostdir before the
+   hook refuses, so the failed attempt can leave a root-owned `stack/ciu-stack/vol-traefik-acme`.
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
    adopted (`external: true`), never created or removed by the instance.
@@ -372,6 +380,11 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   non-git root (ciu backlog CIU-163; the installer adapter creates it). Do not delete `.git`.
 - `ciu env generate` and `ciu up --dry-run` create/attach a Docker network (CIU-162): run them on the host, not
   from a devcontainer you care about.
+- A non-root CIU run that creates `vol-traefik-acme` through the S6.5 root helper needs
+  `CGROUP_PARENT_DEV_INTERACTIVE=<slice>` exported (CIU-230).
+- `ciu up --dry-run` can create the root-owned `stack/ciu-stack/vol-traefik-acme` (CIU-227).
+- Removing a user-scope instance also encounters that root-owned `stack/ciu-stack/vol-traefik-acme`; delete it
+  with root before removing the instance directory.
 - The release publishes one bundle per interpreter; publishing goes through a project script until cmru has a
   variants handler (cmru KI-115).
 
