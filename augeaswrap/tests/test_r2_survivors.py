@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import Change, Edit, Endpoint, File, GroupRemoval, GroupSpec, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, Tmpfiles, _fs, endpoints, kinds
+from augeaswrap import Change, Edit, Endpoint, File, GroupRemoval, GroupSpec, JsonKey, Plan, PlanRefused, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, Tmpfiles, _fs, endpoints, kinds
 from augeaswrap.check import Check, PathMode
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
 from augeaswrap.json_key import _RestoredJsonKey, _StagedJsonKey
@@ -18,8 +18,11 @@ from augeaswrap import augtool
 from augeaswrap import endpoint as endpoint_module
 from augeaswrap import edit as edit_module
 from augeaswrap import file as file_module
+from augeaswrap import transactions
+from augeaswrap import unit as unit_module
 from augeaswrap.formats.fstab import mount_item, swap_item
 from augeaswrap.shadow import Assignment, Finding, LayerFile, TargetClass, effective_files, analyze
+from augeaswrap.engine import apply, plan
 
 
 def test_public_records_are_frozen():
@@ -94,6 +97,52 @@ def test_kind_registry_records_are_keyword_only():
         kinds.KindSpec("example", lambda raw: None, lambda resource: {}, None)
 
 
+def test_transaction_setup_error_stays_primary_when_cleanup_fails(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    original_ensure = transactions._fs.ensure_directory
+
+    def fail_stage_directory(root_arg, path, **kwargs):
+        if path.name == "stage":
+            raise OSError("no space")
+        return original_ensure(root_arg, path, **kwargs)
+
+    def fail_cleanup(_path, *, ignore_errors=False):
+        if not ignore_errors:
+            raise OSError("cleanup failed")
+
+    monkeypatch.setattr(transactions._fs, "ensure_directory", fail_stage_directory)
+    monkeypatch.setattr(transactions.shutil, "rmtree", fail_cleanup)
+
+    with pytest.raises(OSError, match="no space"):
+        transactions._allocate_txn(root)
+
+
+def test_transaction_discard_error_does_not_replace_stage_refusal(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    planned = plan(
+        Request("cleanup test 1", (File("/etc/example", "present", "managed", "0644"),)),
+        root=root,
+    )
+    cleanup_calls = []
+
+    def fail_stage(_self, _ctx, _change):
+        raise OSError("stage failed")
+
+    def fail_cleanup(_path, *, ignore_errors=False):
+        cleanup_calls.append(ignore_errors)
+        if not ignore_errors:
+            raise OSError("cleanup failed")
+
+    monkeypatch.setattr(File, "stage", fail_stage)
+    monkeypatch.setattr(transactions.shutil, "rmtree", fail_cleanup)
+
+    with pytest.raises(PlanRefused, match="staging failed.*stage failed"):
+        apply(planned)
+    assert cleanup_calls == [True]
+
+
 @pytest.mark.parametrize("priority", [-1, 32767])
 def test_swap_priority_includes_both_documented_boundaries(priority):
     assert swap_item("UUID=swap", priority)["opt"] == ["sw", f"pri={priority}"]
@@ -101,6 +150,8 @@ def test_swap_priority_includes_both_documented_boundaries(priority):
 
 def test_mount_dump_includes_one_as_a_valid_boundary():
     assert mount_item("UUID=data", "/data", "ext4", ["defaults"], "1", "2")["dump"] == "1"
+    with pytest.raises(ValueError, match="at most 1"):
+        mount_item("UUID=data", "/data", "ext4", ["defaults"], "2", "2")
 
 
 def test_shadow_observation_rejects_noncanonical_base64_whitespace():
@@ -257,6 +308,51 @@ def test_stage_file_rejects_non_base64_image_bytes(tmp_path):
         stage_file(ctx, "file:/etc/example", "/etc/example", image)
 
 
+def test_revert_snapshot_rejects_non_base64_before_writing_data(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    txn_dir = root / "var/lib/augeaswrap/txn/20261124T000000Z-0000"
+    txn_dir.mkdir(parents=True)
+    spec = kinds.KindSpec(
+        kind="example",
+        parse=lambda raw: None,
+        to_toml=lambda resource: {},
+        revert=kinds.RevertHooks(
+            snapshot=lambda change, observed: {
+                "data_b64": "?",
+                "sha256": hashlib.sha256(b"").hexdigest(),
+            },
+            restore=lambda address, record, actions: None,
+        ),
+    )
+    monkeypatch.setattr(transactions, "kind_spec", lambda kind: spec)
+
+    with pytest.raises(ValueError):
+        transactions._write_preimage(
+            root,
+            txn_dir,
+            Change("example", "example:test", "change", {}, {}),
+            {},
+        )
+
+    assert list((txn_dir / "pre").glob("*.data")) == []
+
+
+def test_preimage_rejects_json_boolean_schema(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    txn_dir = root / "var/lib/augeaswrap/txn/20261124T000000Z-0000"
+    address = "example:test"
+    transactions._write_json(
+        root,
+        transactions._pre_path(txn_dir, address),
+        {"schema": True, "kind": "example", "address": address},
+    )
+
+    with pytest.raises(PlanRefused, match="wrong schema"):
+        transactions._read_preimage(root, txn_dir, address, "example")
+
+
 def test_commit_file_rejects_non_base64_preimage_bytes_before_writing(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
@@ -332,9 +428,11 @@ def test_restore_file_rejects_non_base64_preimage_bytes():
 
 
 def test_augtool_error_parser_requires_a_real_augeas_error_node():
-    ordinary_tree_value = '/augeas/files/etc/fstab/1/spec = "UUID=data"'
+    informational = '/augeas/version = "1.14.1"'
+    error = "/augeas/files/etc/fstab/error = parse_failed"
 
-    assert augtool._error_text(ordinary_tree_value, "", 0) is None
+    assert augtool._error_text(informational, "", 0) is None
+    assert augtool._error_text(f"{informational}\n{error}", "", 0) == error
 
 
 def test_augtool_private_root_creates_nested_and_root_level_target_parents(tmp_path, monkeypatch):
@@ -343,7 +441,11 @@ def test_augtool_private_root_creates_nested_and_root_level_target_parents(tmp_p
 
     def check_private_target(argv, *, timeout):
         root = Path(argv[1].removeprefix("--root="))
-        assert (root / "nested/deep/fstab").exists() or (root / "fstab").exists()
+        nested = root / "nested/deep/fstab"
+        target = nested if nested.exists() else root / "fstab"
+        assert target.is_file()
+        assert target.parent.stat().st_mode & 0o777 == 0o700
+        assert target.stat().st_mode & 0o777 == 0o600
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(augtool, "_copy_tree", make_lens_dir)
@@ -353,3 +455,33 @@ def test_augtool_private_root_creates_nested_and_root_level_target_parents(tmp_p
     root_level = augtool.run(path="/fstab", lens="Fstab", source=b"", script="load\n")
 
     assert nested.saved is None and root_level.saved is None
+
+
+def test_unit_name_rejects_empty_and_truthy_non_strings():
+    with pytest.raises(ValueError, match="non-empty string"):
+        unit_module._unit_name("")
+    with pytest.raises(ValueError, match="non-empty string"):
+        unit_module._unit_name(42)
+
+
+def test_edit_record_items_reject_truthy_non_iterable_as_a_value_error():
+    with pytest.raises(ValueError, match="array of field maps"):
+        Edit(
+            file="/etc/fstab",
+            lens="Fstab",
+            state="present",
+            ops=({"records": "*", "key": "file", "items": 1, "exclusive": False},),
+            create=False,
+            on_change="none",
+        )
+
+
+def test_tmpfiles_rejects_accept_shadow_path_with_dot_dot_component():
+    with pytest.raises(ValueError, match="exact absolute file"):
+        Tmpfiles(
+            file="60-x.conf",
+            state="present",
+            text="d /var/lib/example 0755 - - -\n",
+            intent="fallback",
+            accept_shadow=(("/etc/../tmpfiles.conf", "KEY"),),
+        )
