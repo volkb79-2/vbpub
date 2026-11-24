@@ -18,6 +18,13 @@ from typing import Callable, Mapping, Protocol, Sequence
 from . import hostside
 from .runner_layout import progress_home_path
 
+_PROFILE_METRIC_KEYS = (
+    "rss_peak_bytes", "memory_peak_bytes", "swap_peak_bytes", "cpu_seconds",
+    "cpu_user_seconds", "cpu_system_seconds", "io_read_bytes", "io_write_bytes",
+    "io_read_ops", "io_write_ops", "psi_memory_some_seconds", "psi_memory_full_seconds",
+    "psi_cpu_some_seconds", "psi_io_some_seconds", "psi_io_full_seconds",
+)
+
 
 class TransportError(RuntimeError):
     """A host operation could not complete through the configured transport."""
@@ -287,9 +294,27 @@ class FakeTransport:
             "emitted_at": emitted_at or f"2030-01-01T00:00:{len(job.progress_records):02d}+00:00",
         }
         if memory_peak_bytes is not None:
-            # The same ``resource-profile/1`` shape Assay writes beside a
-            # candidate event; the observer is the only source of a peak.
-            event["profile"] = {"metrics": {"memory_peak_bytes": memory_peak_bytes}}
+            # Shape from Assay's observer_windows.build_profile() and the
+            # candidate event emitted by mutation.py (_record_candidate).
+            metrics = {key: 0 for key in _PROFILE_METRIC_KEYS}
+            metrics["memory_peak_bytes"] = memory_peak_bytes
+            metrics["rss_peak_bytes"] = memory_peak_bytes
+            event["profile"] = {
+                "schema": "resource-profile/1",
+                "subject": {"tool": "assay", "lane": "r2", "kind": "r2-candidate", "id": candidate_id},
+                "wall_seconds": float(elapsed_seconds),
+                "status": "MEASURED",
+                "reason": None,
+                "observer": {
+                    "name": "cgprofile", "version": None, "contract": 3,
+                    "mode": "cgroup", "window": "w-fake", "sample_interval_seconds": 0.25,
+                },
+                "metrics": metrics,
+                "missing": {},
+                "sources": {"memory_peak_bytes": "memory.peak"},
+                "context": {},
+                "attribution": {},
+            }
         job.progress_records.append(event)
         job.progress_mtime = self.clock()
         host.files[job.progress_path] = host.files.get(job.progress_path, b"") + (

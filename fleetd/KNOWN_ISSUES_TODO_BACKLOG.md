@@ -41,6 +41,8 @@
 | FD-035 | `host-facts/1` validation does not bound a service `MemoryMin`, so an implausible fact is first refused at plan time, not at collect or validate time | P3 | DONE (by design) | 2026-11-15 |
 | FD-037 | Rolling mode keys a candidate by its file's content, so a partial edit re-judges the whole file | P3 | OPEN | 2026-11-15 |
 | FD-038 | Rolling mode's changed candidates share the `slice_size` budget, so heavy per-release churn can defer them and starve the never-judged remainder | P3 | DONE | 2026-11-15 |
+| FD-039 | Host-side probe logic was a Python string and `FakeTransport` reimplemented it | P1 | PART 1 FIXED | 2026-11-24 |
+| FD-040 | The real probe lost the cgprofile `memory_peak_bytes` that the fake returned | P1 | FIXED | 2026-11-24 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -835,3 +837,25 @@ another site.
 only the edited region's candidates while every unedited region keeps its
 marks, and the accounting names the sites that were re-judged and the sites that
 were kept.
+
+## FD-039 Host-side logic is shipped as a real module
+
+**State:** PART 1 FIXED (2026-11-24, `6226a08a1`); installed `fleet host ...`
+verbs remain P-fd-05. **Priority:** P1. **Filed:** 2026-11-24.
+
+`fleetd.hostside` is stdlib-only source shipped through `importlib.resources`;
+the probe and Assay-lane resolution have one implementation. `FakeTransport`
+materializes a temporary host home and calls the same functions. Evidence:
+`test_the_shipped_probe_equals_the_direct_hostside_answer` and
+`test_fake_start_and_probe_resolve_the_declared_assay_lane`.
+
+## FD-040 The real probe loses cgprofile memory peaks
+
+**State:** FIXED (2026-11-24, `6226a08a1`). **Priority:** P1. **Filed:** 2026-11-24.
+
+The shared probe reads `profile.metrics.memory_peak_bytes` from Assay progress
+events, and collection merges a measured duplicate into the first-owned record
+instead of dropping it. Evidence:
+`test_measurement_writes_per_candidate_evidence_from_owner_records`,
+`test_collect_keeps_a_measured_peak_when_the_probe_record_lacks_it`, and
+`test_progress_parser_reads_only_a_positive_profile_memory_peak`.

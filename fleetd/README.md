@@ -125,7 +125,10 @@ exit. Probe matches both that byte range and the job's candidate IDs, then uses
 the job's verdict for Assay-resumed candidates. It resolves the Assay lane from
 the checkout's Run-Gate config and reads its plain-run
 `progress-<assay-lane>.jsonl` file, without relying on the optional instance
-pointer. Probe requests carry file paths rather than candidate arrays.
+pointer. Probe requests carry file paths rather than candidate arrays. The
+shipped probe is stdlib-only `fleetd.hostside` source; `FakeTransport` runs
+that same module against a temporary host home. Measured events include the
+cgprofile `resource-profile/1` memory peak.
 
 State schema 2 stores monotonic and UTC timestamps with the controller boot
 ID. Same-boot deadline calculations use monotonic time; a reboot rebases them
@@ -139,7 +142,10 @@ options such as `--base` and `--carry-over-main` are outside this MVP.
 `fleet collect` fetches available progress and verdict files and writes one
 combined `fleet-campaign-result/1` JSON file plus a Markdown report in the
 state directory. Each candidate has one owner: the earliest finished record
-wins, and later copies are counted as ignored duplicates. Never-started
+wins, and later copies are counted as ignored duplicates; a duplicate carrying
+a measured memory peak fills that field on the owner instead of being discarded.
+When a host returns after loss, its still-running duplicate is stopped once the
+other hosts have finished those candidates. Never-started
 candidates remain `missing` with a distinct reason; zero-progress failed
 batches include the failure reason and exit code when available. Host transport or
 contract errors are shown as `ERROR` in status while other hosts continue to

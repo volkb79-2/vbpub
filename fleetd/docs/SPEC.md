@@ -267,10 +267,10 @@ source checkout's own `scripts/controller/hx.sh` (always made absolute, so the
 launch never searches `PATH`); an installed fleetd with none of them exits 3 with
 one line naming `--hx` and `FLEETD_HX` (FD-023). Exit 3 on a campaign verb therefore
 means "not installed or no hx wrapper"; it is a different condition from the
-stale-cursor exit 3 of `fleet scope`. `FakeTransport` supplies in-memory job tables, files, a fake
-clock, unreachable/slow states, starts, stops, and host restart behavior for
-tests. No SSH keys, addresses, provider credentials, or host aliases are
-stored in fleetd source or tests.
+stale-cursor exit 3 of `fleet scope`. The probe and `FakeTransport` call the
+same stdlib-only `fleetd.hostside` functions; the fake materializes its files
+in a temporary host home. No SSH keys, addresses, provider credentials, or
+host aliases are stored in fleetd source or tests.
 
 The runner job name is
 `<campaign>.<host>.s<slot>.b<n>.<list8>`. `list8` is the first eight hex
@@ -302,7 +302,9 @@ is in that job and their byte range falls between those markers. The job's own
 verdict supplies candidate outcomes resumed from Assay state, including cases
 with no new progress event. Probe returns running/EXIT/missing state, list
 digest, candidate progress count, progress file modification time, per-job
-progress bounds, verdict outcomes, and artifact paths.
+progress bounds, verdict outcomes, and artifact paths. Each measured event also
+carries `profile.metrics.memory_peak_bytes`; collection merges that value into
+the first-owned record when it sees the same event twice.
 
 `fleet status ID` refreshes state and reports per-host reserve bytes, reserve
 source, any services without a positive `MemoryMin`, per-batch state, done/total
@@ -363,7 +365,8 @@ or stalled batch with no finished candidate from its own start becomes
 `FAILED`, is not re-queued, and appears in status and collection with its
 failure reason and exit code when available. Re-queue remains unlimited for batches that made progress. A stalled
 batch that made progress keeps its `STALLED` marker and creates one replacement
-batch. A returning host may finish a duplicate; no lease or renewal is used.
+batch. A returning host's still-running duplicate is stopped once a complete
+refresh proves the candidate finished elsewhere; no lease or renewal is used.
 Known limit: if the lost source host returns and re-adopts a deferred candidate
 (FD-017), and a third, larger host then comes online, the retry excludes only the
 source host's in-flight jobs and may start the candidate there as well; the

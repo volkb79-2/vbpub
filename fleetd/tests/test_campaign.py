@@ -3083,7 +3083,9 @@ def test_measurement_writes_per_candidate_evidence_from_owner_records(tmp_path):
     assert empty["baseline_seconds"] is None
 
 
-def test_collect_keeps_a_measured_peak_when_the_probe_record_lacks_it(tmp_path):
+def test_collect_keeps_a_measured_peak_when_the_probe_record_lacks_it(tmp_path, capsys, monkeypatch):
+    # FakeTransport emits resource-profile/1 as assay/observer_windows.py:478-542
+    # builds it and assay/mutation.py:6993-7006,7242 writes it to progress.
     manager = CampaignManager(tmp_path, FakeTransport())
     manager.run("campaign", _plan(1))
     state = _state(tmp_path)
@@ -3105,7 +3107,11 @@ def test_collect_keeps_a_measured_peak_when_the_probe_record_lacks_it(tmp_path):
         "elapsed_seconds": 4.0, "emitted_at": emitted_at,
     })
     manager._write_state(state)
-    document = manager.measurement("campaign")
+    from fleetd import cli
+
+    monkeypatch.setattr("fleetd.cli._manager", lambda _args: manager)
+    assert cli.main(["measurement", "campaign", "--state-dir", str(tmp_path)]) == 0
+    document = json.loads(capsys.readouterr().out)
     row = next(row for row in document["candidates"] if row["candidate_id"] == candidate_id)
     assert row["memory_peak_bytes"] == 64 * 1024**2
     assert document["summary"]["memory_peak_bytes_median"] == 64 * 1024**2

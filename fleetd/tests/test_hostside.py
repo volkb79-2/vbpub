@@ -1,5 +1,3 @@
-"""Direct contracts for the stdlib-only module shipped to fleet hosts."""
-
 from __future__ import annotations
 
 import json
@@ -23,10 +21,9 @@ def _groups(*specs):
     return hostside.decode_payload(probe_payload({spec.name: spec for spec in specs}))
 
 
-def _pressure_tree(root, memory="some avg10=2.50 avg60=1 avg300=0 total=1\n", io="some avg10=3.00 avg60=2 avg300=0 total=2\n"):
+def _pressure_tree(root, memory="some avg10=2.50\n", io="some avg10=3.00\n"):
     (root / "pressure").mkdir(parents=True)
-    choices = {"memory": memory, "io": io}
-    for resource, content in choices.items():
+    for resource, content in {"memory": memory, "io": io}.items():
         if content is not None:
             (root / "pressure" / resource).write_text(content, encoding="ascii")
     return root
@@ -39,15 +36,7 @@ def test_the_shipped_probe_equals_the_direct_hostside_answer(tmp_path, monkeypat
     script = probe_script({spec.name: spec}, proc_root=str(proc))
     direct = hostside.probe_document(home, _groups(spec), proc, home=home)
     monkeypatch.setenv("HOME", str(home))
-    shipped = subprocess.run(
-        ["bash", "-c", script],
-        cwd=home,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    shipped = subprocess.run(["bash", "-c", script], cwd=home, env=environment, capture_output=True, text=True, timeout=10)
     assert shipped.returncode == 0, shipped.stderr
     assert json.loads(shipped.stdout) == direct
     assert direct["pressure"] == {"memory_some_avg10": 2.5, "io_some_avg10": 3.0}
@@ -81,16 +70,11 @@ def test_probe_reads_a_running_job_progress_without_a_stored_digest(tmp_path):
     assert row["list_digest"] == spec.list_digest
     assert row["progress_count"] == 1
     assert row["progress_path"] == progress_home_path(spec.commit, spec.project, "contract-assay")
-    assert row["records"] == [{
-        "candidate_id": candidate, "outcome_bucket": "killed",
-        "elapsed_seconds": 1.0, "emitted_at": "2030-01-01T00:00:00Z",
-        "memory_peak_bytes": 4096,
-    }]
+    assert row["records"] == [{"candidate_id": candidate, "outcome_bucket": "killed",
+        "elapsed_seconds": 1.0, "emitted_at": "2030-01-01T00:00:00Z", "memory_peak_bytes": 4096}]
     missing_ids = replace(spec, batch=1, candidate_ids=("c" * 64,))
     (home / "jobs" / missing_ids.name).mkdir()
-    missing_rows = hostside.probe_document(
-        home, _groups(spec, missing_ids), proc, home=home
-    )["jobs"]
+    missing_rows = hostside.probe_document(home, _groups(spec, missing_ids), proc, home=home)["jobs"]
     missing_row = next(row for row in missing_rows if row["name"] == missing_ids.name)
     assert missing_row["name"] == missing_ids.name
     assert missing_row["state"] == "UNKNOWN"
@@ -114,18 +98,13 @@ def test_probe_reads_exit_verdicts_baseline_offsets_and_worktree_ready(tmp_path)
     progress = home / progress_home_path(first.commit, first.project, "contract-assay")
     progress.parent.mkdir(exist_ok=True)
     progress.write_text("", encoding="utf-8")
-    verdict = {
-        "claims": [{"rigor": "R2", "mutation": {
-            "budget_exceeded": [{
-                "candidate_id": first.candidate_ids[0],
-                "process_tree_evidence": {"leader_status": "not-started"},
-            }]
-        }}],
-        "judgment": {"r2": {
-            "mutation": {"survived": [{"candidate_id": first.candidate_ids[0]}]},
-            "r2_command": {"r2_baseline": {"wall_s": 12.5}},
-        }},
-    }
+    verdict = {"claims": [{"rigor": "R2", "mutation": {"budget_exceeded": [{
+        "candidate_id": first.candidate_ids[0],
+        "process_tree_evidence": {"leader_status": "not-started"},
+    }]}}], "judgment": {"r2": {
+        "mutation": {"survived": [{"candidate_id": first.candidate_ids[0]}]},
+        "r2_command": {"r2_baseline": {"wall_s": 12.5}},
+    }}}
     verdict_path = home / "campaigns" / f"{first.name}-s1" / "verdict.json"
     verdict_path.parent.mkdir(parents=True)
     verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
@@ -137,14 +116,10 @@ def test_probe_reads_exit_verdicts_baseline_offsets_and_worktree_ready(tmp_path)
     assert rows[first.name]["state"] == "EXIT"
     assert rows[first.name]["baseline_seconds"] == 12.5
     assert rows[first.name]["verdict_records"] == [
-        {
-            "candidate_id": first.candidate_ids[0], "outcome_bucket": "budget_exceeded",
-            "elapsed_seconds": None, "emitted_at": None, "not_started": True,
-        },
-        {
-            "candidate_id": first.candidate_ids[0], "outcome_bucket": "survived",
-            "elapsed_seconds": None, "emitted_at": None, "not_started": False,
-        },
+        {"candidate_id": first.candidate_ids[0], "outcome_bucket": "budget_exceeded",
+         "elapsed_seconds": None, "emitted_at": None, "not_started": True},
+        {"candidate_id": first.candidate_ids[0], "outcome_bucket": "survived",
+         "elapsed_seconds": None, "emitted_at": None, "not_started": False},
     ]
     assert rows[second.name]["checkout_ready"] is True
     assert rows[linked.name]["checkout_ready"] is False
@@ -171,9 +146,7 @@ def test_probe_clamps_bad_offsets_and_turns_bad_artifacts_unknown(tmp_path):
     (other_job / "EXIT").write_text("0\n", encoding="ascii")
     (other_job / "progress-offset").write_text("0\n", encoding="ascii")
     (other_job / "progress-end-offset").write_text("2\n", encoding="ascii")
-    rows = hostside.probe_document(
-        home, _groups(spec, undecodable), _pressure_tree(tmp_path / "proc"), home=home
-    )["jobs"]
+    rows = hostside.probe_document(home, _groups(spec, undecodable), _pressure_tree(tmp_path / "proc"), home=home)["jobs"]
     row = next(row for row in rows if row["name"] == spec.name)
     assert row["exit_code"] is None
     assert row["progress_end_offset"] is None
@@ -196,9 +169,7 @@ def test_probe_reports_null_path_and_unknown_state_for_bad_pid_and_offsets(tmp_p
     (job_dir / "pid").write_text("not-a-pid\n", encoding="ascii")
     (job_dir / "progress-offset").write_text("bad\n", encoding="ascii")
     (job_dir / "progress-end-offset").write_text("-1\n", encoding="ascii")
-    row = hostside.probe_document(
-        runner_home, _groups(spec), _pressure_tree(tmp_path / "proc"), home=home
-    )["jobs"][0]
+    row = hostside.probe_document(runner_home, _groups(spec), _pressure_tree(tmp_path / "proc"), home=home)["jobs"][0]
     assert row["state"] == "UNKNOWN"
     assert row["progress_offset"] is None
     assert row["progress_end_offset"] is None
@@ -230,26 +201,19 @@ def test_resolve_assay_lane_reads_project_then_root_and_refuses_unsafe_names(tmp
         hostside.resolve_assay_lane(checkout, "project", "lane")
 
 
-@pytest.mark.parametrize(
-    ("content", "memory", "io", "expected"),
-    [
-        (None, "some avg10=2.5\n", "some avg10=3.0\n", (2.5, 3.0)),
-        (None, "some avg10=101\n", "some avg10=oops\n", (None, None)),
-        (None, "", None, (None, None)),
-        (None, "full avg10=2.5\n", "some avg60=3.0\n", (None, None)),
-    ],
-)
-def test_pressure_reads_only_valid_some_avg10(tmp_path, content, memory, io, expected):
+@pytest.mark.parametrize(("memory", "io", "expected"), [
+    ("some avg10=2.5\n", "some avg10=3.0\n", (2.5, 3.0)),
+    ("some avg10=101\n", "some avg10=oops\n", (None, None)),
+    ("", None, (None, None)), ("full avg10=2.5\n", "some avg60=3.0\n", (None, None)),
+])
+def test_pressure_reads_only_valid_some_avg10(tmp_path, memory, io, expected):
     proc = tmp_path / "proc"
     (proc / "pressure").mkdir(parents=True)
     if memory is not None:
         (proc / "pressure" / "memory").write_text(memory, encoding="ascii")
     if io is not None:
         (proc / "pressure" / "io").write_text(io, encoding="ascii")
-    assert (
-        hostside.read_pressure(proc, "memory"),
-        hostside.read_pressure(proc, "io"),
-    ) == expected
+    assert (hostside.read_pressure(proc, "memory"), hostside.read_pressure(proc, "io")) == expected
 
 
 def test_progress_records_reject_ranges_and_utf8_and_filter_lines():
@@ -260,68 +224,35 @@ def test_progress_records_reject_ranges_and_utf8_and_filter_lines():
         hostside.progress_records(b"", set(), start_offset=2, end_offset=1)
     with pytest.raises(ValueError, match="not UTF-8"):
         hostside.progress_records(b"\xff", set())
-    content = "\n".join([
-        "not-json",
-        "[]",
-        json.dumps({"event": "heartbeat"}),
-        json.dumps({"event": "candidate", "candidate_id": "b" * 64, "outcome_bucket": "killed"}),
-        json.dumps({
-            "event": "candidate", "candidate_id": candidate,
-            "profile": {"metrics": {"memory_peak_bytes": 42}},
-        }),
-    ])
-    assert hostside.progress_records(content.encode(), {candidate}) == [{
-        "candidate_id": candidate, "memory_peak_bytes": 42,
-    }]
+    content = "\n".join(["not-json", "[]", json.dumps({"event": "heartbeat"}), json.dumps(
+        {"event": "candidate", "candidate_id": "b" * 64, "outcome_bucket": "killed"}), json.dumps(
+        {"event": "candidate", "candidate_id": candidate,
+         "profile": {"metrics": {"memory_peak_bytes": 42}}})])
+    assert hostside.progress_records(content.encode(), {candidate}) == [
+        {"candidate_id": candidate, "memory_peak_bytes": 42}]
 
 
-@pytest.mark.parametrize(
-("baseline", "expected"),
-    [
-        ({"wall_s": 12.5}, 12.5),
-        ({"wall_s": True}, None),
-        ({"wall_s": -1}, None),
-        ({"wall_s": math.inf}, None),
-        ({"wall_s": "bad"}, None),
-        ("bad", None),
-    ],
-)
+@pytest.mark.parametrize(("baseline", "expected"), [
+    ({"wall_s": 12.5}, 12.5), ({"wall_s": True}, None), ({"wall_s": -1}, None),
+    ({"wall_s": math.inf}, None), ({"wall_s": "bad"}, None), ("bad", None),
+])
 def test_verdict_reading_accepts_shapes_and_validates_baseline(baseline, expected):
     candidate = "a" * 64
-    document = {
-        "claims": [
-            None,
-            {"rigor": "R1", "mutation": {}},
-            {"rigor": "R2", "mutation": "bad"},
-            {"rigor": "R2", "mutation": {
-                "killed": "bad",
-                "survived": [None, {}, {"candidate_id": "f" * 64}, {"candidate_id": candidate}],
-            }},
-        ],
-        "judgment": {"r2": {
-            "mutation": "bad",
-            "r2_command": {"r2_baseline": baseline},
-        }},
-    }
+    document = {"claims": [None, {"rigor": "R1", "mutation": {}},
+        {"rigor": "R2", "mutation": "bad"}, {"rigor": "R2", "mutation": {"killed": "bad",
+        "survived": [None, {}, {"candidate_id": "f" * 64}, {"candidate_id": candidate}]}}],
+        "judgment": {"r2": {"mutation": "bad", "r2_command": {"r2_baseline": baseline}}}}
     if not isinstance(baseline, dict):
         document["judgment"] = "bad"
     records, seconds = hostside.verdict_reading(json.dumps(document).encode(), {candidate})
-    assert records == [{
-        "candidate_id": candidate, "outcome_bucket": "survived",
-        "elapsed_seconds": None, "emitted_at": None, "not_started": False,
-    }]
+    assert records == [{"candidate_id": candidate, "outcome_bucket": "survived",
+        "elapsed_seconds": None, "emitted_at": None, "not_started": False}]
     assert seconds == expected
-
-
-@pytest.mark.parametrize(
-    "content",
-    [b"\xff", b"not-json", b"[]", b'{"claims":"bad","judgment":{"r2":"bad"}}'],
-)
-def test_verdict_reading_has_a_closed_refusal_or_empty_shape(content):
-    if content in {b"\xff", b"not-json"}:
-        with pytest.raises(ValueError, match="not UTF-8 JSON"):
-            hostside.verdict_reading(content, set())
-    else:
+    with pytest.raises(ValueError, match="not UTF-8 JSON"):
+        hostside.verdict_reading(b"\xff", set())
+    with pytest.raises(ValueError, match="not UTF-8 JSON"):
+        hostside.verdict_reading(b"not-json", set())
+    for content in (b"[]", b'{"claims":"bad","judgment":{"r2":"bad"}}'):
         assert hostside.verdict_reading(content, set()) == ([], None)
 
 
@@ -332,13 +263,12 @@ def test_payload_and_main_entry_shapes(tmp_path, monkeypatch, capsys):
     home, environment = _real_runner_home(tmp_path, spec)
     proc = _pressure_tree(tmp_path / "proc")
     monkeypatch.setenv("HOME", str(home))
-    assert hostside.main(["resolve-assay", str(home / "checkouts" / spec.commit), spec.project, spec.lane]) == 0
+    checkout = home / "checkouts" / spec.commit
+    assert hostside.main(["resolve-assay", str(checkout), spec.project, spec.lane]) == 0
     assert capsys.readouterr().out.strip() == "contract-assay"
     assert hostside.main(["probe", str(home), probe_payload({spec.name: spec}), str(proc)]) == 0
     assert json.loads(capsys.readouterr().out)["jobs"][0]["name"] == spec.name
-    monkeypatch.setattr(sys, "argv", [
-        "hostside.py", "resolve-assay", str(home / "checkouts" / spec.commit), spec.project, spec.lane,
-    ])
+    monkeypatch.setattr(sys, "argv", ["hostside.py", "resolve-assay", str(checkout), spec.project, spec.lane])
     runpy.run_path(hostside.__file__, run_name="__main__")
     assert capsys.readouterr().out.strip() == "contract-assay"
     with pytest.raises(SystemExit, match="usage"):
