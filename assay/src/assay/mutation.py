@@ -4743,16 +4743,22 @@ def _carry_forward_records(
         payload.pop("window_key", None)
         payload.update(_locus_fields_for_job(job))
         stored_provenance = record_provenance(chosen)
+        provenance_match = match.kind
         if stored_provenance is not None:
             from_candidate_id = stored_provenance["from_candidate_id"]
             from_judge_sha256 = stored_provenance["from_judge_sha256"]
+            provenance_match = max(
+                stored_provenance["match"],
+                provenance_match,
+                key=("exact-id", "locus", "window").index,
+            )
         else:
             from_candidate_id = match.payload["candidate_id"]
             from_judge_sha256 = chosen["judge_sha256"]
         _set_carry_over_provenance(
             payload,
             kind="carried",
-            match=match.kind,
+            match=provenance_match,
             from_candidate_id=str(from_candidate_id),
             from_judge_sha256=str(from_judge_sha256),
             into_judge_sha256=judge,

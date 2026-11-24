@@ -494,6 +494,54 @@ def test_chained_carry_forward_names_the_original_executed_record(
     assert third["provenance"]["from_judge_sha256"] == original_judge
 
 
+def test_locus_carry_stays_locus_across_a_judge_only_change(
+    git_repo: GitRepo, tmp_path: Path
+):
+    _seed_method(git_repo, _BLIND)
+    first_state = git_repo.path / ".assay" / "first"
+    _code, first = _run(git_repo, first_state, tmp_path / "first.jsonl")
+    original = _event(first, "candidate")
+    original_judge = _event(first, "candidates")["judge_sha256"]
+
+    git_repo.write("pkg/flags.py", _METHOD + "\nOTHER = 1\n")
+    git_repo.commit_all("source edit outside the site")
+    second_state = git_repo.path / ".assay" / "second"
+    _code, _second = _run(
+        git_repo,
+        second_state,
+        tmp_path / "second.jsonl",
+        "--carry-forward",
+        str(first_state),
+    )
+    (second,) = _records(second_state)
+    assert second["provenance"]["match"] == "locus"
+    assert second["provenance"]["from_candidate_id"] == original["candidate_id"]
+    assert second["provenance"]["from_judge_sha256"] == original_judge
+
+    git_repo.write("tests/judge.sh", _BLIND + "# judge-only change\n")
+    git_repo.commit_all("change only the judge")
+    third_state = tmp_path / "third"
+    _code, third = _run(
+        git_repo,
+        third_state,
+        tmp_path / "third.jsonl",
+        "--carry-forward",
+        str(second_state),
+    )
+    assert _event(third, "carry_forward")["survivors_carried"] == 1
+    assert _event(third, "candidate") is None
+    (third_record,) = _records(third_state)
+    assert third_record["candidate_id"] == second["candidate_id"]
+    assert third_record["provenance"] == {
+        "kind": "carried",
+        "from_candidate_id": original["candidate_id"],
+        "from_judge_sha256": original_judge,
+        "match": "locus",
+        "reason": mutation.CARRY_FORWARD_REASON,
+    }
+    assert mutation.record_provenance(third_record) == third_record["provenance"]
+
+
 def test_f13_locus_collision_ignores_both_candidates_after_id_dedup(tmp_path: Path):
     source = "def flag():\n    return True\n"
     job = _job(source)
