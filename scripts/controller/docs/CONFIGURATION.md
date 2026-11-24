@@ -31,7 +31,7 @@ Useful settings:
 | `CONTROLLER_GATE_LOCK_DIR` | Optional absolute directory for the lock files of slots 3 to 8, which are `gate3.lock` ... `gate8.lock` there; without it they sit beside `CONTROLLER_GATE_LOCK`. Only read from three slots on. Every slot lock path must differ. |
 | `CONTROLLER_REPO` | Checkout used for status and queue work; repo-local scripts derive it. Set it when the queue is installed under `CONTROLLER_HOME/bin`. |
 | `CODEX_HOME_LUNA`, `CODEX_HOME_DEEPSEEK_VOLKER`, `CODEX_HOME_DEEPSEEK_GITHUB2`, `CODEX_HOME_REVIEW` | Explicit Codex config homes for Luna, the two pinned Open Design accounts, and review. |
-| `CODEX_HOME_OVERRIDE` | Optional home override honoured on the Luna and Sol/review routes. |
+| `CODEX_HOME_OVERRIDE` | Optional home override honoured by `codex-impl.sh` on Luna and an explicit Sol route; `codex-review.sh` deliberately gives `CODEX_HOME_REVIEW` precedence. |
 | `CODEX_SQLITE_HOME` | Shared Codex session database path. |
 | `CODEX_EFFORT` | Optional Codex reasoning effort; DeepSeek routes default to `max`, Luna and Sol to `xhigh`. |
 | `CODEX_AUTO_CONTINUE` | Optional non-negative Codex resume count after a reasoning-only completed turn; defaults to `0` for Luna and `2` for DeepSeek. |

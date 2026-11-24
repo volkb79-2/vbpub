@@ -1578,9 +1578,10 @@ design review.
 The unmerged `ctl-routes-limits-20261118` branch was reviewed as two separable
 changes. Its useful route correction was re-applied by hand: `codex-impl.sh`
 accepts `sol` with the independent review home, Luna defaults to `$HOME/.codex2`,
-`CODEX_HOME_OVERRIDE` wins for Luna and Sol/review, and `codex-review.sh` records
-`CODEX_ROUTE=sol`. The env example, config/consumer docs, and AGENTS.md wording
-now name the wrapper rather than a Codex home.
+and `CODEX_HOME_OVERRIDE` wins for Luna and explicit `CODEX_ROUTE=sol` Codex
+launches. `codex-review.sh` deliberately chooses `CODEX_HOME_REVIEW`, which wins
+for reviews. The env example, config/consumer docs, and AGENTS.md wording now
+name the wrapper rather than a Codex home.
 
 The branch's launch-path limits note, standalone limits reader, reader test, and
 detached reader fix were not carried. Tests `route-home-luna`, `route-home-sol`,

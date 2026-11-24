@@ -173,8 +173,8 @@ PUSH_IMAGE_SCRIPT=${PUSH_IMAGE_SCRIPT:-$SCRIPT_DIR/../push-image.sh}
 CODEX_IMPL_SCRIPT=${CODEX_IMPL_SCRIPT:-$SCRIPT_DIR/../codex-impl.sh}
 OPENCODE_IMPL_SCRIPT=${OPENCODE_IMPL_SCRIPT:-$SCRIPT_DIR/../opencode-impl.sh}
 README_SOURCE=${README_SOURCE:-$SCRIPT_DIR/../README.md}
-contains "$README_SOURCE" "\`CODEX_HOME_OVERRIDE\` is honoured on the luna and sol/review routes." \
-  'README states that CODEX_HOME_OVERRIDE applies to Luna and Sol/review'
+contains "$README_SOURCE" "\`CODEX_HOME_OVERRIDE\` wins on Luna and an explicit \`CODEX_ROUTE=sol\`" \
+  'README states that CODEX_HOME_OVERRIDE applies to Luna and explicit Sol runs'
 
 python3 - "$ROOT/controller/hosts.local.json" "$ROOT/bin" <<'PY'
 import json, pathlib, sys
@@ -1065,9 +1065,10 @@ if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" C
   fail 'unknown Codex route was accepted'
 fi
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
-  CODEX_HOME_REVIEW="$ROOT/codex-review" CODEX_LOG="$CODEX_LOG" \
+  CODEX_HOME_REVIEW="$ROOT/codex-review" CODEX_HOME_OVERRIDE="$ROOT/codex-hijack" CODEX_LOG="$CODEX_LOG" \
   "$SCRIPT_DIR/../codex-review.sh" "$ROOT/worktree" "$ROOT/brief.md" review-run > "$ROOT/review.out" 2>&1; then :; else fail 'Codex review wrapper failed'; fi
 contains "$CODEX_LOG" "HOME=$ROOT/codex-review" 'review uses its separately configured profile'
+not_contains "$CODEX_LOG" "HOME=$ROOT/codex-hijack" 'review ignores a caller CODEX_HOME_OVERRIDE'
 contains "$CODEX_LOG" 'gpt-6-sol' 'review uses the independent review model default'
 contains "$ROOT/controller/runs/review-run.route" sol 'the review wrapper records the sol route'
 

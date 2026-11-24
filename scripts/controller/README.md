@@ -315,8 +315,11 @@ Add a numeric `window_end_epoch` field to an account when recording its
 current weekly window end. The state schema rejects unknown fields so account
 keys cannot be stored there by mistake.
 
-`CODEX_HOME_OVERRIDE` is honoured on the luna and sol/review routes. Luna
-defaults to `$HOME/.codex2` (or `CODEX_HOME_LUNA`); Sol/review defaults to
+`CODEX_HOME_OVERRIDE` wins on Luna and an explicit `CODEX_ROUTE=sol`
+`codex-impl.sh` run. `codex-review.sh` deliberately chooses
+`CODEX_HOME_REVIEW` (default `$HOME/.codex`), which wins for reviews and keeps
+a caller's override from redirecting them. Luna defaults to `$HOME/.codex2`
+(or `CODEX_HOME_LUNA`); an explicit Sol `codex-impl.sh` run defaults to
 `$HOME/.codex` (or `CODEX_HOME_REVIEW`).
 
 ### Pi on Open Design

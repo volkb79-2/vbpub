@@ -286,7 +286,7 @@ mutant("scripts/controller/codex-impl.sh", "codex-unknown-route-fallback.sh",
 mutant("scripts/controller/opencode-impl.sh", "opencode-default-provider.sh",
        'provider=${OPENCODE_PROVIDER:-opendesign_github2}', 'provider=${OPENCODE_PROVIDER:-opendesign}')
 mutant("scripts/controller/README.md", "README-home-override-route.md",
-       '`CODEX_HOME_OVERRIDE` is honoured on the luna and sol/review routes.',
+       '`CODEX_HOME_OVERRIDE` wins on Luna and an explicit `CODEX_ROUTE=sol`',
        '`CODEX_HOME_OVERRIDE` is honoured on every route.')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count < auto_limit )) && reasoning_end',

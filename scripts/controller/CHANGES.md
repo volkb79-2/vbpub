@@ -15,9 +15,11 @@ no separate version number, so entries are grouped by the work that landed.
   `CODEX_EFFORT` and `PI_THINKING` still override it. Codex `.done` appends
   `EFFORT=<value>` after the historical fields.
 - CTL-42 part 1: Codex accepts a `sol` route using `$HOME/.codex`, Luna defaults
-  to `$HOME/.codex2`, `CODEX_HOME_OVERRIDE` wins on Luna and Sol/review,
-  `codex-review.sh` selects Sol, and repository guidance names the wrappers
-  rather than a Codex home. The limits note and reader remain dropped.
+  to `$HOME/.codex2`, and `CODEX_HOME_OVERRIDE` wins on Luna and an explicit
+  `CODEX_ROUTE=sol codex-impl.sh` launch. `codex-review.sh` deliberately gives
+  `CODEX_HOME_REVIEW` precedence, so a caller's override cannot redirect a
+  review. Repository guidance names the wrappers rather than a Codex home. The
+  limits note and reader remain dropped.
 - `gate-run.sh` validates `CONTROLLER_GATE_SLOTS` with explicit ASCII digit
   lists, so a Unicode collation cannot admit a non-ASCII digit.
 
