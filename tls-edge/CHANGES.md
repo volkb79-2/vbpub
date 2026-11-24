@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 ### Breaking
+- The Mattermost Calls preset is removed. `tls-edge` no longer defines a `calls` key, media CLI questions,
+  `mattermost-calls-*` entrypoints, or TCP/UDP media ports.
+- Site overrides use schema 2. Schema 1 records with `[tls_edge.calls] enabled = false` (or no `enabled`) and
+  only the old port keys are migrated by dropping the table silently. `enabled = true` is refused and names
+  `voice-screen-share/mattermost-server`; Mattermost publishes its media port directly on the host.
+- Upgrade step: a tls-edge 3.x edge with its Calls preset enabled holds 8443 on that host, so disable it
+  before `ciu up`; `configure` writes schema 2 and removes a migrated Calls table.
 - `tls-edge configure --answers` now takes a sparse site override in the schema's own shape, such as
   `[tls_edge.http3] enabled = true`. The 3.1 flat answer vocabulary is refused, and each old key names its
   schema-shaped replacement.

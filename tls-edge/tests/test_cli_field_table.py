@@ -12,6 +12,7 @@ import pytest
 from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
 
+from _layout import stack_dir
 from tls_edge_cli import cli
 from tls_edge_cli.fields import Field
 
@@ -42,7 +43,7 @@ class FixedPrompts:
 
 
 def make_root(path: Path) -> Path:
-    root = path / "stack"
+    root = stack_dir(path)
     stack = root / "ciu-stack"
     stack.mkdir(parents=True)
     shutil.copy2(ROOT / "ciu-stack" / "ciu.defaults.toml.j2", stack)
@@ -93,8 +94,6 @@ def flat_target(legacy_key: str) -> str:
         "http_port": "[tls_edge.ports] http",
         "https_port": "[tls_edge.ports] https",
         "http3_enabled": "[tls_edge.http3] enabled",
-        "calls_enabled": "[tls_edge.calls] enabled",
-        "calls_port": "[tls_edge.calls] public_port",
         "bind_ip": "[tls_edge.ports] bind_ip",
         "ingress_external": "[tls_edge] ingress_external",
         "acme_volume_name": "[tls_edge.acme] volume_name",
@@ -163,7 +162,7 @@ enabled = true
     assert "# unrelated site setting" in text
     written = tomllib.loads(text)["tls_edge"]
     assert written == {
-        "schema": 1,
+        "schema": 2,
         "domain": "edge.example.test",
         "tls": {"mode": "acme-tls"},
         "acme": {"email": "", "volume_name": "", "store": "volume"},
@@ -176,7 +175,6 @@ enabled = true
         "http3": {"enabled": True},
         "ingress_external": False,
         "runtime": {"cgroup_parent": ""},
-        "calls": {"enabled": False},
         "traefik": {"log_level": "WARN"},
     }
 
@@ -231,8 +229,6 @@ log_level = "DEBUG"
     "http_port",
     "https_port",
     "http3_enabled",
-    "calls_enabled",
-    "calls_port",
     "bind_ip",
     "ingress_external",
     "acme_volume_name",

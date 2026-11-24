@@ -177,7 +177,7 @@ def main() -> None:
                         help="ignore ciu.toml.j2 and render the default trial tree")
     parser.add_argument("--stamp", action="store_true",
                         help="write a real timestamp into conf.d/certs.yml "
-                             "(used by the certbot deploy hook)")
+                             "instead of the inert default")
     parser.add_argument("--certs-only", action="store_true",
                         help="render only conf.d/certs.yml")
     parser.add_argument("--check", action="store_true",

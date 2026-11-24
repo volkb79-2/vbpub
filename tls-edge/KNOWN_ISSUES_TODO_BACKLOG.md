@@ -4,18 +4,6 @@
 
 ## Known limitations
 
-### Mattermost Calls media requires explicit edge opt-in
-
-**Resolved 2026-11-21:** the generic tls-edge template keeps raw TCP/UDP media
-ports closed by default. When hosting a Mattermost Calls consumer, configure
-the edge with `[tls_edge.calls] enabled = true` and `public_port = 8443`; the Mattermost
-project's own default media port remains 8443. This is an intentional split
-between safe generic edge defaults and an application-specific listener.
-
-`tests/test_calls_defaults_agree.py` pins the shared port numbers while allowing
-the edge listener to remain disabled until an operator opts in. A live Calls
-acceptance check still belongs in the migration checklist.
-
 ### acme-data volume loss triggers certificate re-issuance (`store = "volume"`)
 
 This limitation applies only with `[tls_edge.acme] store = "volume"`. Running
@@ -27,7 +15,7 @@ approximately five duplicate certificates per registered domain per week;
 hitting this limit blocks new issuance for up to a week.
 
 Workaround: use the hostdir storage created for new root-run instances, or
-avoid `-v` on the edge-proxy stack. Before any destructive operation on a
+avoid `-v` on the tls-edge instance. Before any destructive operation on a
 volume-backed edge, back up the volume:
 ```bash
 docker run --rm -v acme-data:/data -v "$(pwd)":/backup alpine \
@@ -50,13 +38,6 @@ stacks (pre-TLS 1.1), and `curl` invocations against the bare IP address.
 
 Workaround: set `sniStrict: false` in `conf.d/options.yml`.  Traefik
 hot-reloads the file via inotify; no container restart is required.
-
----
-
-### One media pair per edge (Calls)
-
-The Calls TCP and UDP entrypoints (8443) can be attached by one consumer only: a second consumer would
-share the public port.  There is no alternate HTTPS port; every HTTPS service needs its own host name.
 
 ---
 
@@ -95,7 +76,7 @@ For providers that do not support `*_FILE`, ciu users have two options: use the
 discouraged as it surfaces the secret in rendered files and container
 environment inspection), or run in standalone `.env` mode by placing the
 credential in the gitignored `edge-proxy/.env` file and relying on Compose
-`env_file` injection.
+`env_file` injection in a generated standalone trial.
 
 ---
 
@@ -120,7 +101,7 @@ network.
 
 ### Single Traefik instance is a single point of failure
 
-The edge-proxy stack runs one Traefik container.  If it crashes or is
+The tls-edge instance runs one Traefik container.  If it crashes or is
 restarting, all public services on the host are unreachable for the duration.
 
 Mitigation: `restart: unless-stopped` ensures Traefik is automatically
@@ -163,19 +144,6 @@ private-helper, source-grep and config-literal oracles in P-edge-04. P-edge-03
 covers the standalone/ciu renderer oracles and D10's coverage-exclusion policy.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M5, M6
-
-### TE-09 — Calls media through Traefik
-
-The Calls preset (`[tls_edge.calls]`, `mattermost-calls-*` entrypoints, port
-8443, its CLI questions and agreement tests) puts an app-specific UDP media
-proxy into the generic edge, while Jitsi JVB publishes its media directly.
-Decided 2026-11-24: Mattermost publishes Calls media directly; the next major
-release deletes the preset, and the schema 2 `migrate()` drops
-`calls.enabled = false` silently and refuses `calls.enabled = true` with a
-pointer to the Mattermost stack. The live cut-over is one window: the edge
-drops its 8443 listeners and Mattermost publishes 8443 itself.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M7
 
 ### TE-11 — docs restate facts
 
@@ -251,7 +219,7 @@ network CIDRs rather than container IPs to survive container restarts.
 
 ### Multiple Traefik instances per trust class
 
-Define a second edge-proxy variant (`edge-proxy-internal` or similar) attached
+Define a second tls-edge variant (`tls-edge-internal` or similar) attached
 to a separate ingress network with different routing policies — for example,
 mTLS enforcement for internal API services while the primary edge handles
 public-facing services.  Requires either additional host ports or an upstream
@@ -268,7 +236,8 @@ sufficient for a searchable, persistent audit trail.
 ### Instance packaging follow-ups (filed 2026-11-04)
 
 - Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
-- Live migration of the hand-made deployment: after TE-04 and TE-09 (see TE-09 for the Calls cut-over).
+- Live migration of the hand-made deployment: after the Calls cut-over described in
+  `docs/INSTALL.md` §8.
 
 ### ciu dev-mode integration: generate dev certs via a pre-compose hook
 

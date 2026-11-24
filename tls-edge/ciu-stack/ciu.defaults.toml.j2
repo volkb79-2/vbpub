@@ -14,9 +14,9 @@
 
 [tls_edge]
 stack_name = "edge-proxy"
-# Site overrides record the schema they were written for. Configure writes 1;
+# Site overrides record the schema they were written for. Configure writes 2;
 # an absent override schema means 1, and newer schemas are refused.
-schema = 1
+schema = 2
 # The operator's base domain (e.g. "example.test").  Every service gets its OWN
 # host name under it (app.<domain>) and its OWN certificate; the edge itself
 # does not need it for routing (routers carry their own Host() rule), so it is
@@ -31,8 +31,8 @@ standalone = false
 # conf.d/.  The standalone renderer overrides this with the physical path of
 # the output directory when running under DooD (devcontainer).  Unused by ciu.
 base_dir = "."
-# Timestamp marker rendered into conf.d/certs.yml; the certbot deploy hook
-# rewrites that line to trigger Traefik's file-provider reload.
+# Timestamp marker rendered into conf.d/certs.yml by a standalone render. The
+# supported certbot hook restarts Traefik and writes no stack file.
 render_stamp = "-"
 # Container name prefix.  In a ciu repo this resolves to
 # "<project>-<environment>" (required by ciu-deploy's health gate, which
@@ -78,21 +78,10 @@ http = 80
 https = 443
 # The edge publishes 80/tcp (HTTP redirect and optionally HTTP-01) and 443/tcp
 # (HTTPS, host-name routing: one host name and one certificate per service).
-# HTTP/3 adds UDP on the configured public HTTPS port when enabled. The
-# optional Calls media preset adds one TCP+UDP pair when enabled.
+# HTTP/3 adds UDP on the configured public HTTPS port when enabled.
 # false drops the :80 listener (TLS-only edge; then tls.mode "acme-http" is
 # refused).
 expose_http = true
-
-[tls_edge.calls]
-# Optional raw TCP+UDP media listeners, currently wired for Mattermost Calls.
-# Disabled by default so a generic edge opens only the web ports it needs.
-# Enable this preset for a Calls consumer and allow the pair through both
-# firewalls. TCP and UDP may share one numeric port; each is a separate socket.
-enabled = false
-public_port = 8443
-tcp_internal_port = 8443
-udp_internal_port = 8443
 
 [tls_edge.http3]
 # HTTP/3 over QUIC on UDP, sharing the public HTTPS port. Traefik keeps its TCP

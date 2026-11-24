@@ -18,10 +18,6 @@ domain = "edge.example.test"
 
 [tls_edge.http3]
 enabled = true
-
-[tls_edge.calls]
-enabled = true
-public_port = 8443
 """
 
 DRIFT_MESSAGE = (
@@ -113,17 +109,19 @@ domains = ["edge.example.test"]
 [tls_edge]
 domain = "edge.example.test"
 
+[tls_edge.tls]
+mode = "acme-dns"
+
+[tls_edge.ports]
+https = 8443
+
 [tls_edge.http3]
 enabled = true
-
-[tls_edge.calls]
-enabled = true
-public_port = 442
 """,
-            "80/tcp,442/tcp,442/udp,443/tcp,443/udp",
+            "80/tcp,8443/tcp,8443/udp",
         ),
     ],
-    ids=["http-before-https", "calls-before-https"],
+    ids=["http-before-https", "https-before-http3-udp"],
 )
 def test_public_ports_sort_by_number_then_tcp_before_udp(
     tmp_path: Path,
@@ -560,7 +558,7 @@ def test_show_json_has_the_exact_envelope_and_in_sync_contract(
     assert payload["kind"] == "tls-edge.show"
     assert payload["format"] == 1
     assert payload["version"] == "0.0.0"
-    assert payload["schema"] == 1
+    assert payload["schema"] == 2
     assert payload["stack_dir"] == str(root / "ciu-stack")
     assert payload["override"] is True
     assert payload["contract"] == _expected_contract(root, ANSWERS)
@@ -568,8 +566,6 @@ def test_show_json_has_the_exact_envelope_and_in_sync_contract(
         {"port": 80, "protocol": "tcp", "purpose": "HTTP redirect and/or HTTP-01"},
         {"port": 443, "protocol": "tcp", "purpose": "HTTPS, HTTP/1.1 and HTTP/2"},
         {"port": 443, "protocol": "udp", "purpose": "HTTP/3 over QUIC"},
-        {"port": 8443, "protocol": "tcp", "purpose": "Calls media"},
-        {"port": 8443, "protocol": "udp", "purpose": "Calls media"},
     ]
     assert payload["consumer_env"] == {"state": "in-sync", "drift": []}
 

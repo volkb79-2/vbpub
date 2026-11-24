@@ -108,9 +108,9 @@ harmless if present, but omitting them keeps labels clean.
 Every service gets its own host name on the shared HTTPS port; the edge has no
 alternate HTTPS entrypoint. Generic defaults publish 80/tcp (optional redirect
 and ACME HTTP-01) and 443/tcp (all HTTPS). HTTP/3 can add UDP on the public
-HTTPS port, and the optional Mattermost Calls preset adds 8443/tcp+udp. Point
-one DNS name per service at the host (a wildcard record is fine) and route by
-`Host()`.
+HTTPS port. Raw TCP/UDP media is published directly by the application and is
+not an edge entrypoint. Point one DNS name per service at the host (a wildcard
+record is fine) and route by `Host()`.
 
 > Only one service can own the combination of hostname + entrypoint.  To
 > share one host name between two services add a path matcher:
@@ -140,8 +140,7 @@ terminates TLS and obtains a certificate for the configured
 The Jitsi Videobridge media path is separate: the `jvb` service publishes UDP
 10000 directly on the host, and advertises the host's public IP to clients.
 Open UDP 10000 in both host and provider firewalls. This traffic does not pass
-through Traefik, and Jitsi does not require the optional Mattermost Calls
-8443/tcp+udp preset.
+through Traefik or tls-edge.
 
 The relevant consumer labels are:
 
@@ -453,8 +452,10 @@ the offline run-gate lane because it needs public DNS, ACME, and UDP/443 access.
 Docker host port collisions (two containers try to `ports: - "443:..."` directly):
 - Docker rejects the second `docker compose up` with an error like:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
-- Only the tls-edge instance should ever publish ports 80, 443 and 8443.
-- Consumer stacks must NOT publish their own ports on those numbers.
+- Only the tls-edge instance should publish HTTP/HTTPS ports 80 and 443.
+- HTTP consumer services must not publish those edge ports. An application
+  that serves raw TCP/UDP media owns and publishes its separate host port
+  pair directly; Mattermost Calls uses TCP/UDP 8443.
 
 Traefik router rule collisions (two services declare the same hostname + entrypoint):
 - Traefik logs a warning and routes to one of them (indeterminate selection).
@@ -558,8 +559,8 @@ certbot certonly \
   --email ops@example.com --agree-tos --no-eff-email \
   -d example.com -d '*.example.com'
 
-# After certbot completes, Traefik reloads via the deploy hook automatically.
-# No container restart needed.
+# After certbot completes, the deploy hook restarts Traefik automatically
+# (about 3 s) so it reads the renewed certificate files.
 ```
 
 > **Tip**: if you later gain API access to your DNS provider, switch to
@@ -580,7 +581,7 @@ or when adding new domains.
 |---|---|---|
 | `traefik.enable=true` | yes | Opt this container into Traefik routing |
 | `traefik.http.routers.<n>.rule` | yes | Routing rule, e.g. `Host(...)` |
-| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443); Calls media uses TCP/UDP `calls` entrypoints (8443), see `consumer-examples/pattern-e-media-udp` |
+| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443) |
 | `traefik.http.services.<n>.loadbalancer.server.port` | yes | Container port to forward to |
 | `traefik.http.routers.<n>.tls=true` | no | TLS is enabled at the entrypoint level — not needed |
 | `traefik.http.routers.<n>.tls.certresolver` | no | Cert resolver is set at the entrypoint level — not needed |
@@ -590,10 +591,9 @@ or when adding new domains.
 `<n>` must be a unique name per router/service **across all containers on the host**.
 Convention: `<stack>-<service>`.
 
-Raw TCP/UDP media forwarding is a separate optional feature; HTTP router labels
-do not carry it. For Mattermost Calls, public TCP and UDP 8443 are routed by
-the L4 labels in the Mattermost CIU template. See
-[`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the port mapping and firewall
+Raw TCP/UDP media is not forwarded by Traefik and HTTP router labels do not
+carry it. The application publishes its own media ports directly. See
+[`docs/CONSUMERS.md`](docs/CONSUMERS.md) for examples and firewall
 requirements.
 
 ---

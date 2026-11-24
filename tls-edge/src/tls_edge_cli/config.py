@@ -16,7 +16,7 @@ from typing import Any
 import jinja2
 
 
-SCHEMA = 1
+SCHEMA = 2
 TLS_MODES = ("acme-tls", "acme-http", "acme-dns", "static", "dev")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
 _PROVIDER = re.compile(r"[a-z0-9][a-z0-9_-]{1,39}")
@@ -29,6 +29,12 @@ _OPEN_OVERRIDE_TABLES = frozenset({
     ("tls_edge", "acme", "dns", "environment"),
     ("tls_edge", "secrets"),
     ("tls_edge", "hooks"),
+})
+_REMOVED_CALLS_KEYS = frozenset({
+    "enabled",
+    "public_port",
+    "tcp_internal_port",
+    "udp_internal_port",
 })
 _REQUIRED_PRE_SECRETS_HOOK = "hooks/validate_edge.py"
 
@@ -66,9 +72,10 @@ def is_installed_stack(stack: Path) -> bool:
 def _check_stack_layout(root: Path) -> None:
     defaults = root / "ciu-stack" / "ciu.defaults.toml.j2"
     if not defaults.is_file():
+        old_stack = root / "stack"
         hint = (
-            f"; pass --root {root / 'stack'}"
-            if (root / "stack" / "ciu-stack").is_dir()
+            f"; pass --root {old_stack}"
+            if (old_stack / "ciu-stack").is_dir()
             else ""
         )
         raise ConfigError(
@@ -143,16 +150,44 @@ def load_site(
     """Load rendered defaults, the sparse override, and their deep merge."""
     stack_dir = Path(stack_dir)
     defaults = render_defaults(stack_dir / "ciu.defaults.toml.j2")
-    overlay = _load_override(stack_dir / "ciu.toml.j2")
+    override_path = stack_dir / "ciu.toml.j2"
+    overlay = migrate(_load_override(override_path), source=override_path)
     effective = deep_merge(defaults, overlay)
     if not isinstance(effective.get("tls_edge"), dict):
         raise ConfigError("tls-edge defaults must contain a [tls_edge] table")
     return defaults, overlay, effective
 
 
-def migrate(overlay: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Migrate an override to the current schema; schema 1 is identity."""
-    return overlay
+def migrate(
+    overlay: Mapping[str, Any],
+    *,
+    source: Path | None = None,
+) -> Mapping[str, Any]:
+    """Drop the schema-1 Calls preset, or refuse an explicitly enabled one."""
+    tls_edge = overlay.get("tls_edge")
+    if not isinstance(tls_edge, Mapping):
+        return overlay
+    schema = tls_edge.get("schema", 1)
+    if schema != 1:
+        return overlay
+    calls = tls_edge.get("calls")
+    if not isinstance(calls, Mapping):
+        return overlay
+    if calls.get("enabled") is True:
+        location = source if source is not None else "the site override"
+        raise ConfigError(
+            "tls_edge.calls.enabled = true: tls-edge 4.0 no longer forwards "
+            "media; publish the media port from the application stack "
+            "(Mattermost Calls: voice-screen-share/mattermost-server publishes "
+            f"TCP+UDP directly), then remove [tls_edge.calls] from {location}"
+        )
+    if calls.get("enabled") is not False and "enabled" in calls:
+        return overlay
+    if set(calls) - _REMOVED_CALLS_KEYS:
+        return overlay
+    migrated = _plain(overlay)
+    del migrated["tls_edge"]["calls"]
+    return migrated
 
 
 def _check_override_table(
@@ -178,6 +213,23 @@ def _check_override_table(
         key_path = (*path, str(key))
         dotted = ".".join(key_path)
         if key not in defaults:
+            if (
+                key_path == ("tls_edge", "calls")
+                and isinstance(value, Mapping)
+                and value
+            ):
+                outside_removed = [
+                    str(item)
+                    for item in value
+                    if str(item) not in _REMOVED_CALLS_KEYS
+                ]
+                enabled = value.get("enabled")
+                if outside_removed:
+                    dotted = f"{dotted}.{outside_removed[0]}"
+                elif "enabled" in value and not isinstance(enabled, bool):
+                    dotted = f"{dotted}.enabled"
+                else:
+                    dotted = f"{dotted}.{next(iter(value))}"
             raise ConfigError(f"unknown override key {dotted}")
         expected = defaults[key]
         if isinstance(value, Mapping) != isinstance(expected, Mapping):
@@ -190,11 +242,9 @@ def _check_override_table(
 def check_override(defaults: Mapping[str, Any], overlay: Mapping[str, Any]) -> None:
     """Refuse unknown keys, shape mismatches, and future override schemas."""
     tls_edge = overlay.get("tls_edge")
-    schema = tls_edge.get("schema", SCHEMA) if isinstance(tls_edge, Mapping) else SCHEMA
-    if isinstance(schema, bool) or not isinstance(schema, int):
-        raise ConfigError("site override tls_edge.schema must be an integer")
-    if schema < 1:
-        raise ConfigError("site override tls_edge.schema must be at least 1")
+    schema = tls_edge.get("schema", 1) if isinstance(tls_edge, Mapping) else 1
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema < 1:
+        raise ConfigError("tls_edge.schema must be an integer from 1 to 2")
     if schema > SCHEMA:
         raise ConfigError(
             f"tls_edge.schema {schema} is newer than this release supports "
@@ -411,7 +461,6 @@ def validate_config(
     tls = _table(config, "tls")
     ports = _table(config, "ports")
     _table(config, "http3")
-    _table(config, "calls")
     acme = _table(config, "acme")
     static = _table(config, "static")
     mode = _required(tls, "mode", "tls.mode")
@@ -534,16 +583,12 @@ def port_plan(config: Mapping[str, Any]) -> list[tuple[int, str, str]]:
     """Return the validated public listeners as structured port-plan rows."""
     ports = _table(config, "ports")
     http3 = _table(config, "http3")
-    calls = _table(config, "calls")
     expose_http = _required(ports, "expose_http", "ports.expose_http")
     h3_enabled = _required(http3, "enabled", "http3.enabled")
-    calls_enabled = _required(calls, "enabled", "calls.enabled")
     if not isinstance(expose_http, bool):
         raise ConfigError("ports.expose_http must be true or false")
     if not isinstance(h3_enabled, bool):
         raise ConfigError("http3.enabled must be true or false")
-    if not isinstance(calls_enabled, bool):
-        raise ConfigError("calls.enabled must be true or false")
 
     http_port = normalize_port(
         _required(ports, "http", "ports.http"), "ports.http"
@@ -560,19 +605,6 @@ def port_plan(config: Mapping[str, Any]) -> list[tuple[int, str, str]]:
     plan.append((https_port, "tcp", "HTTPS, HTTP/1.1 and HTTP/2"))
     if h3_enabled:
         plan.append((https_port, "udp", "HTTP/3 over QUIC"))
-    if calls_enabled:
-        calls_port = normalize_port(
-            _required(calls, "public_port", "calls.public_port"),
-            "calls.public_port",
-        )
-        if expose_http and calls_port == http_port:
-            raise ConfigError("Calls TCP conflicts with the public HTTP TCP port")
-        if calls_port == https_port:
-            raise ConfigError("Calls TCP conflicts with the public HTTPS TCP port")
-        plan.extend((
-            (calls_port, "tcp", "Calls media"),
-            (calls_port, "udp", "Calls media"),
-        ))
     return plan
 
 
@@ -617,6 +649,9 @@ def updated_override(
         original = ""
         mode = 0o644
         document = tomlkit.document()
+    tls_edge = document.get("tls_edge")
+    if _mutable_table(tls_edge) and "calls" in tls_edge:
+        del tls_edge["calls"]
     unknown = sorted(set(values) - MANAGED_KEYS)
     if unknown:
         raise ConfigError(f"unsupported configuration field {unknown[0]!r}")
