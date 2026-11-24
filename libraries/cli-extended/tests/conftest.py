@@ -11,11 +11,16 @@ Linux only: it reads ``/proc`` and uses ``pidfd_open``/``pidfd_send_signal``/``w
 import ctypes
 import os
 import signal
+import sys
 from pathlib import Path
 
 import pytest
 
-pytest_plugins = ["pytester"]
+# cli-extended consumes estate_test_policy from this repository's source, even when a
+# released wheel with the same pytest11 entry point is installed in the image.
+POLICY_SRC = Path(__file__).resolve().parents[3] / "libraries" / "test-policy" / "src"
+sys.path.insert(0, str(POLICY_SRC))
+pytest_plugins = ["pytester", "estate_test_policy.plugin"]
 PR_SET_CHILD_SUBREAPER = 36
 
 
