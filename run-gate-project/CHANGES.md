@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- run-gate: `lanes --check [--project DIR | --all] [--strict] [--json]` applies Run-Gate's budget-margin, canary, Assay-lane and native-R2 shard rules offline (RG-296); the current estate reports RG-307's 16 non-fatal margin warnings.
+
 ### Fixed
 - run-gate: `main()` owns one scratch root per invocation; `doctor --prune` uses owner identity to reclaim SIGKILL/OOM and legacy orphans across projects without containers, reporting partial removals as exit 1 (RG-294/RG-295).
 

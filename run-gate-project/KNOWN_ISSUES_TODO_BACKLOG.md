@@ -186,7 +186,7 @@ SPEC §9.
 | RG-293 | private scratch lane-caps work | Enhancement | WITHDRAWN 2026-11-24 |
 | RG-294 | private scratch directories leak into the repository | Major | FIXED 2026-11-24 (P-core-01) |
 | RG-295 | no owner-side scratch prune | Minor | FIXED 2026-11-24 (P-core-01) |
-| RG-296 | projects restate lane rules instead of checking them | Minor | OPEN 2026-11-24 (Opus design review) |
+| RG-296 | projects restate lane rules instead of checking them | Minor | FIXED IN THIS BRANCH (P-core-08) |
 | RG-297 | run-gate re-validates Assay flags it should forward opaquely | Minor | OPEN 2026-11-24 (Opus design review) |
 | RG-298 | durable R2 store transport is not shipped or re-seeded | Minor | OPEN 2026-11-24 (Opus design review; owner T3/T1, file only) |
 | RG-299 | a signal during scratch cleanup re-raises after the verdict | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
@@ -197,6 +197,7 @@ SPEC §9.
 | RG-304 | prune hygiene: doubled kept counts, flag check, fixture order, stale allowlist | Minor | OPEN 2026-11-24 (P-core-01 review round 2) |
 | RG-305 | `.run-gate` producers that neither own their lifetime nor are known to prune | Major | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
 | RG-306 | run-gate's own assay lanes leave `pytest-of-<user>` in the shared state root | Minor | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
+| RG-307 | 16 assay wrappers have a zero outer-budget margin | Minor | OPEN 2026-11-24 (RG-296 implementation; P-core-08) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9566,10 +9567,13 @@ Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and c
 
 ## RG-296 — projects restate lane rules
 
-**Status:** OPEN 2026-11-24 (Opus design review). Severity: Minor.
+**Status:** FIXED IN THIS BRANCH (P-core-08). Severity: Minor.
 
-Add `run-gate lanes --check [--project DIR]` to validate shardability and
-budget margins (outer >= inner + 5m), then remove the projects' copied rules.
+`run-gate lanes --check [--project DIR | --all] [--strict] [--json]` now
+checks the effective lane set offline: two-tier outer/Assay budget relations,
+canary bounds, Assay-lane existence, and native-R2 shard/merge admission.
+Its project tests are ported to `run-gate-project/tests/test_lanes_check.py`; the
+two restating project tests remain until their own P-core-12 gates.
 Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
 
 ## RG-297 — run-gate re-validates Assay flags
@@ -9715,3 +9719,36 @@ removed at exit. Either run-gate hands Assay lanes a per-run subdirectory as
 `RUN_GATE_TMPDIR`, which fixes it for every consumer, or the lane wraps pytest
 as `selftest` does. Assay's own per-mutant basetemp for R2 must keep working.
 Source: vbpub-main-controller post-prune task (b), 2026-11-24.
+
+## RG-307 — 16 assay wrappers have a zero outer-budget margin
+
+**Status:** OPEN 2026-11-24 (RG-296 implementation; P-core-08). Severity: Minor.
+
+`run-gate lanes --check --all` reports 16 wrappers whose outer budget equals
+the inner Assay lane budget. Container start and the editable Assay install
+consume that same window, so a near-limit run can end as an outer timeout
+instead of Assay's BUDGET verdict. These are `budget-margin` warnings today;
+`--strict` promotes them to failures.
+
+| Project | Run-Gate lane | Outer | Assay lane | Inner |
+|---|---|---|---|---|
+| cgprofile | r2 | 24h | r2 | 24h |
+| ciu | ciu | 8h | ciu | 8h |
+| cmru | assay-first-release-r2 | 7h | cmru-first-release-r2 | 7h |
+| libraries/cowtree | cowtree | 180m | cowtree | 180m |
+| libraries/iobench | r2 | 360m | iobench | 360m |
+| libraries/test-policy | r2 | 120m | test-policy | 120m |
+| libraries/vmscreen | r2 | 120m | vmscreen | 120m |
+| libraries/worktree | worktree | 8h | worktree | 8h |
+| mdt-cockpit | assay-full | 2h | host_setup | 2h |
+| nyxloom | tester-unified | 30m | tester-unified | 30m |
+| nyxloom | session-extract | 10h | session-extract | 10h |
+| pwmcp | r1 | 15m | r1 | 15m |
+| pwmcp | r2 | 4h | r2 | 4h |
+| run-gate-project | assay-r1 | 30m | r1 | 30m |
+| run-gate-project | assay-r2 | 4h | r2 | 4h |
+| vm-lab | r2 | 240m | vm-lab | 240m |
+
+Wanted: each project raises its outer budget by at least 5m on its next touch;
+once none remain, P-core-12 runs the estate lint lane with `--strict`.
+Source: P-core-08's `run-gate lanes --check --all` audit, 2026-11-24.

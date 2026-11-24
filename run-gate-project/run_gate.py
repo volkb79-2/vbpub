@@ -17,7 +17,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 72  # rev 72: RG-294/RG-295 scratch owner files and cross-project prune safety
+__revision__ = 73  # rev 73: RG-296 offline lanes --check rules and budget-margin tiers
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -214,6 +214,7 @@ ASSAY_RIGORS = frozenset({"R0", "R1", "R2", "R3", "R4"})
 ASSAY_IDENTITY_MODES = frozenset({"source", "artifact"})
 DEFAULT_LOCK_WAIT = "10m"
 DEFAULT_ADMISSION_WAIT = "10m"
+LANES_CHECK_BUDGET_MARGIN_SECONDS = 5 * 60
 LOCK_POLL_SECONDS = 0.1
 LANE_KILL_GRACE_SECONDS = 5
 # Evidence capture is best-effort and must never keep a stalled or failed
@@ -9301,7 +9302,8 @@ _INVOCATION_RE = re.compile(
     r"(?:run-gate\.py|(?<![\w./-])run-gate(?![\w.-]))(?:\s+[^&;]*)?")
 _BARE_TOOL_RE = re.compile(r"(?<![\w./-])run-gate(?![\w.-])")
 _RESERVED_POINTER_VERBS = {"doctor", "validate-pointers", "history",
-                           "footprint", "migrate-modes", "admission", "status"}
+                           "footprint", "migrate-modes", "admission", "status",
+                           "lanes"}
 _DISCOVERY_FLAGS = {"--list", "--help", "--check-env"}
 # Fields that are prose BY NAME: a label describes an invocation, it doesn't
 # run one ("label = \"proj: run-gate gate conjunction\"" — found live in
@@ -19701,6 +19703,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "       run-gate status [--worktree PATH] [--json]",
         "         (RG-64/RG-80: read this project's inflight records, host-wide",
         "          exec-runner locks, and the daemon's admission tickets/tombstones)",
+        "       run-gate lanes --check [--project DIR | --all] [--strict] [--json]",
+        "         (RG-296: check Run-Gate's own budget, canary, assay-lane and",
+        "          native-R2 shard rules offline; WARN findings do not fail unless",
+        "          --strict is given)",
         "       run-gate doctor [--worktree PATH]   (RG-9 preflight: docker,",
         "          slices, mountinfo, git, images, the linked-worktree host-lane",
         "          git view (RG-21), unprefixed relative script paths in container",
@@ -19835,6 +19841,13 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    in a short container of its own (RG-26)",
         "  --prune           `doctor` only: remove orphaned private scratch",
         "  --older-than DUR  age in budget grammar; default longest lane budget",
+        "  --check            `lanes` only: run the project lane-rule check;",
+        "                     without it the verb refuses rather than listing lanes",
+        "  --project DIR      `lanes --check`: check DIR instead of the current",
+        "                     project",
+        "  --all              `lanes --check`: check every tracked run-gate.toml",
+        "                     under this checkout's Git toplevel",
+        "  --strict           `lanes --check`: promote WARN findings to FAIL",
         "  --check-env       advisory drift sweep: env references in the project's",
         "                    Python sources covered by neither forward_env nor a",
         "                    lane's required_env (heuristic — warns, never refuses),",
@@ -19851,7 +19864,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    first — by name, disclosed — and runs anew. Refused",
         "                    by name on host and exec lanes, which start no",
         "                    container of run-gate's own",
-        "  --json            `history`/`footprint`/`status`: emit one JSON",
+        "  --json            `history`/`footprint`/`status`/`lanes --check`: emit one JSON",
         "                    document (history has latest + bounded history +",
         "                    duration stats; footprint has the manifest shape;",
         "                    status has its closed verdict/exit code and occupancy).",
@@ -19995,6 +20008,247 @@ def find_project_dir() -> Path | None:
     if (candidate / CONFIG_NAME).is_file():
         return candidate
     return None
+
+
+def _lanes_check_finding(lane: str, rule: str, detail: object,
+                         level: str = "fail") -> dict:
+    return {
+        "lane": lane,
+        "rule": rule,
+        "detail": " ".join(str(detail).split()),
+        "level": level,
+    }
+
+
+def _lanes_check_invalid_options(args: argparse.Namespace) -> list[str]:
+    allowed = {"lane", "check", "project", "all_projects", "strict",
+               "json", "help"}
+    return sorted(
+        name for name, value in vars(args).items()
+        if name not in allowed and value not in (None, False, [])
+    )
+
+
+def _lanes_check_tracked_projects() -> list[tuple[str, Path]]:
+    toplevel = Path(git_out("rev-parse", "--show-toplevel", cwd=Path.cwd()))
+    entries = git_out("ls-files", "-z", cwd=toplevel).split("\0")
+    return sorted(
+        (Path(entry).parent.as_posix(), toplevel / Path(entry).parent)
+        for entry in entries if Path(entry).name == CONFIG_NAME
+    )
+
+
+def _lanes_check_seconds(value: object, where: str) -> int:
+    _validate_budget(value, f"lanes --check {where}")
+    return budget_seconds(value)
+
+
+def _lanes_check_effective_lanes(project_dir: Path) -> tuple[
+        dict, dict, Path, dict, Path | None]:
+    (cfg, cfg_path, central, central_path,
+     _cfg_sha256, _central_sha256) = load_config_snapshot(project_dir)
+    defaults = cfg.get("assay", central.get("assay", {}))
+    declared = dict(central.get("lanes", {}))
+    declared.update(cfg.get("lanes", {}))
+    imported = unresolved_import_placeholders(defaults, declared)
+    lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
+                        cfg_path, central_path, defaults, imported)
+    return lanes, cfg, cfg_path, central, central_path
+
+
+def _lanes_check_assay_table(project_dir: Path) -> tuple[dict, str | None]:
+    path = project_dir / "assay.toml"
+    if not path.is_file():
+        return {}, f"{path} does not exist"
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        fail(f"cannot read {path}: {exc}")
+    return document.get("lanes", {}), None
+
+
+def _lanes_check_r2_args(*, shard: str | None = None,
+                         merge_shards: str | None = None
+                         ) -> argparse.Namespace:
+    return argparse.Namespace(
+        shard=shard, merge_shards=merge_shards, carry_over=[],
+        carry_over_reason=None, merge_state=[], only_candidates=None,
+        exclude_candidates=None)
+
+
+def _lanes_check_budget(lane_name: str, outer: object,
+                        inner_name: str, inner: object) -> dict | None:
+    try:
+        outer_seconds = _lanes_check_seconds(
+            outer, f"[lanes.{lane_name}].budget")
+        inner_seconds = _lanes_check_seconds(
+            inner, f"assay.toml [lanes.{inner_name}].budget")
+    except GateError as exc:
+        return _lanes_check_finding(lane_name, "budget", exc)
+    if outer_seconds < inner_seconds:
+        return _lanes_check_finding(
+            lane_name, "budget",
+            f"outer budget {outer} is less than assay lane {inner_name!r} "
+            f"budget {inner}")
+    if outer_seconds < inner_seconds + LANES_CHECK_BUDGET_MARGIN_SECONDS:
+        return _lanes_check_finding(
+            lane_name, "budget-margin",
+            f"outer budget {outer} leaves {outer_seconds - inner_seconds}s "
+            f"above assay lane {inner_name!r} budget {inner}; require 5m",
+            level="warn")
+    return None
+
+
+def _lanes_check_canary(lane_name: str, inner_name: str,
+                        inner_budget: object, attempt: object) -> dict | None:
+    if attempt is None:
+        return None
+    try:
+        attempt_seconds = _lanes_check_seconds(
+            attempt, f"assay.toml [lanes.{inner_name}] "
+                     "judge.canary.budget_per_attempt")
+        inner_seconds = _lanes_check_seconds(
+            inner_budget, f"assay.toml [lanes.{inner_name}].budget")
+    except GateError as exc:
+        return _lanes_check_finding(lane_name, "canary", exc)
+    if attempt_seconds > inner_seconds:
+        return _lanes_check_finding(
+            lane_name, "canary",
+            f"judge.canary.budget_per_attempt {attempt} exceeds assay lane "
+            f"{inner_name!r} budget {inner_budget}")
+    return None
+
+
+def _lanes_check_shard_findings(lane: dict, lane_name: str, cfg: dict,
+                                cfg_path: Path, central: dict,
+                                central_path: Path | None) -> list[dict]:
+    findings: list[dict] = []
+    try:
+        sharded, instance = attach_r2_flex(
+            lane, lane_name, _lanes_check_r2_args(shard="0/2"))
+        expected = f"{lane_name}.shard0of2"
+        env, _env_source = resolve_environment(
+            lane, lane_name, cfg, central, cfg_path, central_path)
+        refuse_serialized_shard(
+            sharded, lane_name, env, lane_environment_name(lane))
+    except GateError as exc:
+        findings.append(_lanes_check_finding(lane_name, "shard", exc))
+    else:
+        if instance != expected:
+            findings.append(_lanes_check_finding(
+                lane_name, "shard",
+                f"--shard 0/2 produced instance {instance!r}, not {expected!r}"))
+    try:
+        attach_r2_flex(
+            lane, lane_name, _lanes_check_r2_args(merge_shards="2"))
+    except GateError as exc:
+        findings.append(_lanes_check_finding(lane_name, "shard", exc))
+    return findings
+
+
+def _check_lanes_project(project_dir: Path, project_name: str,
+                         strict: bool) -> dict:
+    lanes, cfg, cfg_path, central, central_path = \
+        _lanes_check_effective_lanes(project_dir)
+    findings: list[dict] = []
+    assay_lanes = [
+        (name, lane) for name, lane in sorted(lanes.items())
+        if lane.get("kind") == "assay"
+    ]
+    assay_table, assay_error = (
+        _lanes_check_assay_table(project_dir) if assay_lanes else ({}, None))
+
+    for lane_name, lane in assay_lanes:
+        assay_lane_name = lane["assay_lane"]
+        inner = assay_table.get(assay_lane_name)
+        if not isinstance(inner, dict):
+            findings.append(_lanes_check_finding(
+                lane_name, "assay-lane",
+                assay_error or f"assay lane {assay_lane_name!r} is not "
+                f"declared in {project_dir / 'assay.toml'}"))
+            continue
+
+        outer_budget = lane.get("budget")
+        inner_budget = inner.get("budget")
+        if outer_budget is not None and inner_budget is not None:
+            budget_finding = _lanes_check_budget(
+                lane_name, outer_budget, assay_lane_name, inner_budget)
+            if budget_finding is not None:
+                findings.append(budget_finding)
+
+        judge = inner.get("judge") or {}
+        canary = judge.get("canary") or {}
+        canary_finding = _lanes_check_canary(
+            lane_name, assay_lane_name, inner_budget,
+            canary.get("budget_per_attempt"))
+        if canary_finding is not None:
+            findings.append(canary_finding)
+
+        if "mutation" in judge:
+            findings.extend(_lanes_check_shard_findings(
+                lane, lane_name, cfg, cfg_path, central, central_path))
+
+    if strict:
+        for finding in findings:
+            if finding["level"] == "warn":
+                finding["level"] = "fail"
+    return {
+        "project": project_name,
+        "lanes_checked": len(lanes),
+        "findings": findings,
+    }
+
+
+def _dispatch_lanes_check(args: argparse.Namespace) -> LaneResult:
+    if args.all_projects:
+        projects = _lanes_check_tracked_projects()
+    elif args.project is not None:
+        project_dir = Path(args.project).resolve()
+        projects = [(project_dir.name, project_dir)]
+    else:
+        project_dir = find_project_dir()
+        if project_dir is None:
+            fail(f"no {CONFIG_NAME} found in the current project directory "
+                 f"{Path.cwd()} — `run-gate lanes --check` checks the current "
+                 "project, or use --project DIR / --all")
+        projects = [(project_dir.name, project_dir)]
+
+    checked: list[dict] = []
+    for project_name, project_dir in projects:
+        try:
+            checked.append(_check_lanes_project(
+                project_dir, project_name, args.strict))
+        except GateError as exc:
+            if not args.all_projects:
+                raise
+            checked.append({
+                "project": project_name,
+                "lanes_checked": 0,
+                "findings": [_lanes_check_finding(
+                    CONFIG_NAME, "load", exc)],
+            })
+
+    failures = sum(finding["level"] == "fail"
+                   for project in checked
+                   for finding in project["findings"])
+    warnings = sum(finding["level"] == "warn"
+                   for project in checked
+                   for finding in project["findings"])
+    lane_count = sum(project["lanes_checked"] for project in checked)
+
+    if args.json:
+        print(json.dumps({"projects": checked}, sort_keys=True), flush=True)
+    else:
+        for project in checked:
+            for finding in project["findings"]:
+                marker = "FAIL" if finding["level"] == "fail" else "WARN"
+                print(f"{marker} {project['project']}:{finding['lane']} "
+                      f"{finding['rule']} {finding['detail']}", flush=True)
+        print(f"checked {len(checked)} projects, {lane_count} lanes, "
+              f"{failures} failures, {warnings} warnings", flush=True)
+    if failures:
+        return LaneResult("FAIL", reason="lanes-check-findings")
+    return operation_result(0, "lanes-check-failed")
 
 
 def sequence_leaf_names(name: str, lanes: dict) -> list[str]:
@@ -20482,6 +20736,15 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--version", action="store_true",
                         help="print the installed Run-Gate version and exit")
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--check", action="store_true",
+                        help="`lanes` only: run the lane-rule check")
+    parser.add_argument("--project", metavar="DIR",
+                        help="`lanes --check` only: check this project directory")
+    parser.add_argument("--all", dest="all_projects", action="store_true",
+                        help="`lanes --check` only: check every tracked "
+                             f"{CONFIG_NAME} under the Git toplevel")
+    parser.add_argument("--strict", action="store_true",
+                        help="`lanes --check` only: treat WARN findings as FAIL")
     parser.add_argument("--check-env", action="store_true",
                         help="advisory drift sweep: env references not covered "
                              "by forward_env/required_env")
@@ -20532,8 +20795,8 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--unreadable-policy", choices=("unbudgeted", "refuse"),
                         default=None, help="admission set only: behavior without a readable count")
     parser.add_argument("--json", action="store_true",
-                        help="`history`, `footprint`, and `status` emit one "
-                             "machine-readable JSON document")
+                        help="`history`, `footprint`, `status`, and `lanes "
+                             "--check` emit one machine-readable JSON document")
     parser.add_argument("--write", action="store_true",
                         help="RG-55/R-44: `footprint` only — write "
                              "run-gate.footprint.json next to the effective "
@@ -20686,6 +20949,23 @@ def _dispatch(argv: list[str] | None = None, *,
         if args.version:
             print(f"{PROG} {installed_version()}")
             return LaneResult("PASS")
+        if args.lane == "lanes" and not args.help:
+            if not args.check:
+                fail("`run-gate lanes` requires --check; lane listing is "
+                     "`run-gate --list`")
+            invalid = _lanes_check_invalid_options(args)
+            if invalid:
+                fail("`run-gate lanes --check` accepts only [--project DIR | "
+                     "--all] [--strict] [--json]; refusing "
+                     f"{', '.join('--' + name.replace('_', '-') for name in invalid)}")
+            if args.project is not None and args.all_projects:
+                fail("`run-gate lanes --check` accepts either --project DIR "
+                     "or --all, not both")
+        elif args.lane != "lanes" and not args.help and (
+                args.check or args.project is not None or args.all_projects
+                or args.strict):
+            fail("--check, --project, --all and --strict are honored by "
+                 "`run-gate lanes --check` only")
         admission_wait_text = args.admission_wait or DEFAULT_ADMISSION_WAIT
         _validate_budget(admission_wait_text, "command line", "--admission-wait")
         set_only_options = (args.replace or args.max_concurrent is not None
@@ -20813,6 +21093,8 @@ def _dispatch(argv: list[str] | None = None, *,
                      "(e.g. <proj>/nyxloom-trove/nyxloom.toml)")
             return operation_result(cmd_validate_pointers(
                 Path(args.target), args.root), "pointer-validation-failed")
+        if args.lane == "lanes" and not args.help:
+            return _dispatch_lanes_check(args)
         project_dir = find_project_dir()
         if project_dir is None:
             if args.help or (args.lane is None and not args.list

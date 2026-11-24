@@ -230,6 +230,35 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   exec locks and Docker admission tickets/tombstones (RG-64/RG-80); it is a
   reserved lane name. `doctor --prune [--older-than DUR] [--dry-run]` is the
   scratch-reclamation mode (`R-58`); no other flags and no container start.
+- `R-59` **Offline lane-rule check (`lanes --check`, RG-296).**
+  `run-gate lanes --check [--project DIR | --all] [--strict] [--json]` checks
+  the effective set from `load_config_snapshot()`, unresolved inventory
+  placeholders, and `merge_lanes()`: the current project by default,
+  `--project DIR` explicitly, or every tracked file named exactly `run-gate.toml`
+  below the Git toplevel via `git ls-files -z` with `--all`. Existing project
+  configs load their normal refusals; under `--all`, a load refusal is a `load`
+  finding and checking continues. The verb performs no Assay, Docker, or network
+  work, and `lanes` is a reserved lane name.
+  `lanes` without `--check`, and any option outside the surface above, is a
+  closed usage refusal; lane listing remains `--list`.
+  For each effective `kind = "assay"` lane whose Run-Gate and named
+  `<project>/assay.toml` lanes both declare `budget`, `outer < inner` is a
+  `budget` FAIL and `inner <= outer < inner + 5m` is a `budget-margin` WARN.
+  A declared `judge.canary.budget_per_attempt` must be `<=` that Assay lane's
+  budget. The named Assay lane must exist; every such lane in a project with no
+  `assay.toml` reports that missing file. A native-R2 Assay lane (one that declares
+  `judge.mutation`) must admit `--shard 0/2` as instance `<lane>.shard0of2` and
+  `--merge-shards 2` through `attach_r2_flex()`, while
+  `refuse_serialized_shard()` must not refuse it; a refusal is a `shard` finding
+  with its text. Candidate counts, RAM floors, pids, observers and project-specific
+  lane names are not rules.
+  Text prints one `FAIL|WARN <project>:<lane> <rule> <detail>` line per
+  finding, then `checked P projects, L lanes, F failures, W warnings`.
+  `--json` prints only
+  `{"projects":[{"project","lanes_checked","findings":[...]}]}`, with each
+  finding carrying `lane`, `rule`, `detail`, and `level` (`fail` or `warn`).
+  WARN findings exit 0 unless `--strict` promotes them to FAIL; any FAIL uses
+  the normal closed FAIL exit 1.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking) AND the source of every config
   read. First discover the invoking project as usual, then preserve its path
