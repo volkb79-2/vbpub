@@ -45,9 +45,7 @@ import re
 
 from .contracts import ContractError, dump_json, load_json, parse_memory_bytes, validate_host_facts
 from .facts import DEFAULT_ROOT, collect_host_facts
-from .guard import parse_guard_toml
 from .measurement import load_measurement
-from .merge import load_shard_identity, validate_shard_set
 from .plan import plan_campaign, read_lane_demand_table, render_commands
 from .scope import (
     DEFAULT_SCOPE_MODE,
@@ -149,11 +147,6 @@ def _collect_facts(args: argparse.Namespace, runtime: CliRuntime) -> None:
         runtime.output.primary(document)
     else:
         runtime.output.primary(dump_json(document).rstrip("\n"))
-
-
-def _validate_guard(args: argparse.Namespace, runtime: CliRuntime) -> None:
-    parse_guard_toml(args.file.read_text(encoding="utf-8"))
-    runtime.output.primary("valid guard.toml")
 
 
 def _plan_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
@@ -359,17 +352,6 @@ def _sizing_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
     ))
 
 
-def _merge_check(args: argparse.Namespace, runtime: CliRuntime) -> None:
-    identities = [load_shard_identity(path) for path in args.identity]
-    document = validate_shard_set(identities, require_complete=args.require_complete)
-    _emit(runtime, document)
-    if document["status"] != "ok":
-        raise CliFailure(
-            f"the shard set is {document['status']}; see problems in the document",
-            exit_code=EXIT_STALE_CURSOR,
-        )
-
-
 def _emit(runtime: CliRuntime, document: object) -> None:
     """Write one campaign document: compact JSON under ``--json``, the documented form otherwise."""
 
@@ -458,28 +440,6 @@ def build_facts_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
     return registry.build()
 
 
-def build_guard_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
-    """The ``fleet guard`` group: parse and validate host-owned guard rules."""
-
-    registry = CliRegistry(
-        cli_identity or identity(),
-        prog=f"{PROG} guard",
-        description="Validate host-owned guard rules; the rules are parsed, never applied.",
-        unexpected_exceptions="report",
-    )
-    registry.register(VerbSpec(
-        "validate",
-        description="parse and validate one guard TOML file (including its drop-ins)",
-        group=VerbGroup.EXPLORATION.value,
-        include_json=False,
-        include_progress=False,
-        examples=("fleet guard validate /etc/cgprofile/guard.toml",),
-        arguments=(ArgumentSpec("file", "guard TOML file to validate", metavar="FILE", parser_kwargs={"type": Path}),),
-        handler=_domain(_validate_guard),
-    ))
-    return registry.build()
-
-
 def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
     """The registered ``fleet`` CLI; import-safe (nothing runs until ``.run()``)."""
 
@@ -502,10 +462,6 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
     registry.register(VerbSpec(
         "facts", description="collect or validate host facts",
         group=VerbGroup.EXPLORATION.value, delegate=build_facts_cli(cli_identity),
-    ))
-    registry.register(VerbSpec(
-        "guard", description="validate host-owned guard rules",
-        group=VerbGroup.EXPLORATION.value, delegate=build_guard_cli(cli_identity),
     ))
     registry.register(VerbSpec(
         "plan",
@@ -619,21 +575,6 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                        group="BUDGET", metavar="DURATION", parser_kwargs={"default": "15m"}),
         ),
         handler=_domain(_sizing_campaign),
-    ))
-    registry.register(VerbSpec(
-        "merge-check",
-        description="refuse a shard merge whose shards judged different commits, images or plans",
-        group=VerbGroup.EXPLORATION.value,
-        include_progress=False,
-        examples=("fleet merge-check shard-0.identity.json shard-1.identity.json --require-complete",),
-        arguments=(ArgumentSpec("identity", "fleet-shard-identity/1 files, one per shard", metavar="IDENTITY",
-                                parser_kwargs={"type": Path, "nargs": "+"}),),
-        options=(OptionSpec(
-            ("--require-complete",),
-            "accepted for explicitness; an incomplete shard set is always refused",
-            group="CHECK", parser_kwargs={"action": "store_true", "default": False},
-        ),),
-        handler=_domain(_merge_check),
     ))
     registry.register(VerbSpec(
         "run",

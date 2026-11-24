@@ -18,7 +18,7 @@ this closure"), and the rest of this suite is deliberately Docker-free
 ``engine.execute_docker_compose_with_logs`` -- the exact function CIU-71
 fixes, with the exact ``cwd``/``project``/``repo_root`` shape
 ``main_execution`` passes it -- against a REAL directory tree shaped exactly
-like the dstdns repro (only ``subprocess.Popen`` is stubbed, to CAPTURE the
+like the dstdns repro (only ``procio.run_streaming`` is stubbed, to CAPTURE the
 final argv rather than run it), then applies Compose's own documented
 ``--project-directory`` resolution rule to the captured argv and asserts the
 Dockerfile's COPY source is actually reachable from the resolved build
@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import engine  # noqa: E402
@@ -60,20 +61,13 @@ def _resolved_build_context(cmd: list[str], cwd: Path) -> Path:
     return (project_directory / ".").resolve()
 
 
-def _fake_popen(monkeypatch, captured: dict):
-    class FakeProc:
-        returncode = 0
-        stdout = iter(())
-
-        def wait(self):
-            return 0
-
-    def fake_popen(cmd, **kwargs):
+def _fake_streaming(monkeypatch, captured: dict):
+    def run_streaming(cmd, *, cwd, **_kwargs):
         captured["cmd"] = list(cmd)
-        captured["cwd"] = kwargs.get("cwd")
-        return FakeProc()
+        captured["cwd"] = cwd
+        return SimpleNamespace(returncode=0, warning=None, watchdog=None)
 
-    monkeypatch.setattr(engine.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(engine.procio, "run_streaming", run_streaming)
 
 
 def test_relative_build_context_resolves_against_repo_root_not_stack_dir(
@@ -106,7 +100,7 @@ def test_relative_build_context_resolves_against_repo_root_not_stack_dir(
     # ---- Call the REAL function CIU-71 fixes, exactly as main_execution
     # (and run_shipped) call it: cwd=<stack dir>, repo_root=<repo root>. ----
     captured: dict = {}
-    _fake_popen(monkeypatch, captured)
+    _fake_streaming(monkeypatch, captured)
 
     result = engine.execute_docker_compose_with_logs(
         ["-f", "ciu.compose.yml"],
@@ -157,7 +151,7 @@ def test_shipped_path_also_resolves_against_repo_root(tmp_path, monkeypatch):
     )
 
     captured: dict = {}
-    _fake_popen(monkeypatch, captured)
+    _fake_streaming(monkeypatch, captured)
 
     result = engine.execute_docker_compose_with_logs(
         ["-f", "docker-compose.yml"],

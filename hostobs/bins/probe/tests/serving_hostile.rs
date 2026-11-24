@@ -185,6 +185,15 @@ fn query_for(index: usize, payload: &[u8]) -> Query<'_> {
     } else {
         Mode::Json
     };
+    query_for_mode(index, payload, mode)
+}
+
+fn query_for_mode(index: usize, payload: &[u8], mode: Mode) -> Query<'_> {
+    let level = if mode == Mode::Json {
+        [Level::Observer, Level::Control][(index >> 3) & 1]
+    } else {
+        Level::ALL[(index >> 3) & 3]
+    };
     let phase = if index & 2 == 0 {
         Phase::Ready
     } else {
@@ -205,7 +214,7 @@ fn query_for(index: usize, payload: &[u8]) -> Query<'_> {
         corr,
         mode,
         phase,
-        level: Level::ALL[(index >> 3) & 3],
+        level,
         prefix: Prefix {
             major: 1,
             minor: u16::try_from(index % 3).expect("small"),
@@ -384,10 +393,7 @@ fn the_fatal_set_is_exactly_the_ten_codes() {
 fn the_seeds_themselves_are_in_the_closed_set() {
     for (index, (mode, text)) in seeds().iter().enumerate() {
         for context in 0..64 {
-            let query = Query {
-                mode: *mode,
-                ..query_for(context + index, text.as_bytes())
-            };
+            let query = query_for_mode(context + index, text.as_bytes(), *mode);
             check_outcome(&query);
         }
     }
@@ -410,6 +416,7 @@ fn a_valid_hello_and_status_dispatch_in_their_contexts() {
     let status = "{\"verb\":\"status\",\"args\":{},\"corr\":7}";
     let query = Query {
         mode: Mode::Json,
+        level: Level::Control,
         phase: Phase::Ready,
         payload: status.as_bytes(),
         ..query
@@ -435,10 +442,7 @@ fn two_thousand_mutated_valid_inputs_stay_in_the_closed_set() {
     for index in 0..RUNS {
         let (mode, text) = &seeds[rng.below(seeds.len())];
         let payload = mutate(&mut rng, text.as_bytes());
-        let query = Query {
-            mode: *mode,
-            ..query_for(index, &payload)
-        };
+        let query = query_for_mode(index, &payload, *mode);
         check_outcome(&query);
         check_args(&payload);
     }

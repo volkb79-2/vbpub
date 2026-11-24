@@ -69,6 +69,7 @@ from .records import record
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import Counter
+from types import ModuleType
 from typing import Any, Callable, Literal, Mapping, Sequence, TextIO, TypedDict
 
 from . import __version__
@@ -140,6 +141,7 @@ from .output import (
 )
 from .verdict import (
     MUTATION_BUCKETS,
+    VERDICT_SCHEMA_VERSION,
     CampaignBinding,
     Evidence,
     EvidenceDeclaration,
@@ -175,6 +177,78 @@ __all__ = ["build_parser", "main", "plan_jobs", "resolve_declared_adapters"]
 #: that "git is unavailable" is answered promptly rather than waited out.
 #: Exceeding it is therefore evidence about Git, not about the lane.
 LABEL_GRACE_SECONDS = 2.0
+
+_CAPABILITIES_SCHEMA = "assay-capabilities/1"
+_MUTATION_STORE_POLICIES: Mapping[str, str] = {
+    "--resume": "same-judge",
+    "--merge-state": "same-judge",
+    "--merge-shard-store": "strict-shard",
+    "--carry-over": "import-unverified",
+    "--reuse-from": "hint",
+}
+
+
+def _analysis_cli() -> ModuleType:
+    """(A-478/CD18) The judge's one lazy seam to the required analysis package."""
+    try:
+        from assay_analysis import cli as analysis_cli
+    except ModuleNotFoundError as exc:
+        raise AssayError(
+            f"the required assay_analysis package could not be imported: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        ) from exc
+    return analysis_cli
+
+
+def _subparser(
+    parser: argparse.ArgumentParser, command: str
+) -> argparse.ArgumentParser:
+    """Select one child parser by walking the argparse parser tree."""
+    action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    return action.choices[command]
+
+
+def _long_options(parser: argparse.ArgumentParser) -> list[str]:
+    """Return the sorted long options accepted by *parser*, including ``--help``."""
+    options = [
+        option
+        for action in parser._actions
+        for option in action.option_strings
+    ]
+    return sorted(filter(lambda option: option.startswith("--"), options))
+
+
+def capabilities_document() -> dict[str, object]:
+    """Build the closed, versioned capability document from live parser objects."""
+    parser = build_parser()
+    analyze_parser = _analysis_cli().build_parser()
+    command_parsers = {
+        "run": _subparser(parser, "run"),
+        "plan": _subparser(parser, "plan"),
+        "verify": _subparser(parser, "verify"),
+        "lanes": _subparser(parser, "lanes"),
+        "analyze campaign": _subparser(analyze_parser, "campaign"),
+    }
+    commands = {
+        name: _long_options(command_parser)
+        for name, command_parser in command_parsers.items()
+    }
+    policies = {
+        flag: _MUTATION_STORE_POLICIES[flag]
+        for flag in set(_MUTATION_STORE_POLICIES) & set(commands["run"])
+    }
+    return {
+        "schema": _CAPABILITIES_SCHEMA,
+        "assay_version": __version__,
+        "verdict_schema_version": VERDICT_SCHEMA_VERSION,
+        "commands": commands,
+        "mutation_store_policies": policies,
+    }
 
 
 def _add_request_base_argument(subparser: argparse.ArgumentParser) -> None:
@@ -265,6 +339,20 @@ def build_parser() -> argparse.ArgumentParser:
             "exactly like the text form; a lane file that fails to load "
             "exits 2 with no JSON on stdout."
         ),
+    )
+
+    capabilities = subparsers.add_parser(
+        "capabilities",
+        help="print the machine-readable capability document",
+        description=(
+            "Print one versioned JSON object describing the flags and mutation-store "
+            "policies this assay build supports. Reads no project files."
+        ),
+    )
+    capabilities.add_argument(
+        "--json",
+        action="store_true",
+        help="the machine-readable form; it is also the default output",
     )
 
     run = subparsers.add_parser(
@@ -415,6 +503,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--carry-forward",
+        action="append",
+        default=None,
+        type=Path,
+        metavar="DIR",
+        help=(
+            "(B561/WP3a) with --resume: find earlier-judge records by exact id, "
+            "function locus, then kill-only line window. Survivors are carried "
+            "pessimistically; kills run in full. Same-judge exact-id records "
+            "are left to resume/merge-state. DIR must be "
+            "inside the checkout. Repeatable; cannot be combined with "
+            "--carry-over or --carry-over-reason."
+        ),
+    )
+    run.add_argument(
         "--merge-state",
         action="append",
         default=None,
@@ -525,6 +628,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="SHA256",
         help="(B531) with --list-pending: count only records of this judge identity",
+    )
+    plan.add_argument(
+        "--carry-forward",
+        action="append",
+        default=None,
+        type=Path,
+        metavar="DIR",
+        help=(
+            "(B561/WP3a) with --list-pending and --judge: append "
+            "carry_forward=<exact-id|locus|window|none> to each pending ID "
+            "for eligible earlier-judge records and report match counts. DIR "
+            "must be inside the checkout; repeatable."
+        ),
     )
     plan.add_argument(
         "--reuse-from",
@@ -667,10 +783,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_analyze(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
-    """(A-478) The only place the judge names assay_analysis; imported only for `analyze`."""
-    from assay_analysis.cli import main as analyze_main
-
-    return analyze_main(argv, stdout=stdout, stderr=stderr)
+    """(A-478) Forward ``analyze`` through the shared lazy analysis seam."""
+    return _analysis_cli().main(argv, stdout=stdout, stderr=stderr)
 
 
 def _termination_signal_handler(signum: int, frame: object) -> None:
@@ -756,14 +870,19 @@ def main(
                 return 2
             signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     raw = list(sys.argv[1:] if argv is None else argv)
-    # Analysis owns its record-command separator. Lane argv appending belongs
-    # to the existing lane commands and must not consume the recorded command.
-    if raw[:1] == ["analyze"]:
-        return _run_analyze(raw[1:], out, err)
-    cli_argv, appended = _split_appended_argv(raw)
-    args = build_parser().parse_args(cli_argv)
     try:
-        if args.command == "lanes":
+        # Analysis owns its record-command separator. Lane argv appending belongs
+        # to the existing lane commands and must not consume the recorded command.
+        if raw[:1] == ["analyze"]:
+            return _run_analyze(raw[1:], out, err)
+        cli_argv, appended = _split_appended_argv(raw)
+        args = build_parser().parse_args(cli_argv)
+        if args.command == "capabilities":
+            print(
+                json.dumps(capabilities_document(), indent=2, sort_keys=True),
+                file=out,
+            )
+        elif args.command == "lanes":
             lane_file = _resolve_lane_file(args.file)
             for lane in lane_file.lanes.values():
                 _emit_lane_validation_warnings(lane_file, lane, err)
@@ -2213,6 +2332,28 @@ def parse_candidate_list(path: Path, *, flag: str) -> frozenset[str]:
     return frozenset(ids)
 
 
+def _resolve_carry_forward_sources(
+    raws: Sequence[Any], project_root: Path, *, flag: str = "--carry-forward"
+) -> tuple[Path, ...]:
+    """Resolve existing carry-forward stores and keep them in this checkout."""
+    root = project_root.resolve()
+    found: list[Path] = []
+    for raw in raws:
+        source = Path(os.path.abspath(os.path.expanduser(os.fspath(raw))))
+        if not source.is_dir():
+            raise LaneConfigError(f"{flag} {raw}: is not an existing directory")
+        resolved = source.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise LaneConfigError(
+                f"{flag} {raw}: must resolve inside the checkout {root}"
+            ) from exc
+        if resolved not in found:
+            found.append(resolved)
+    return tuple(found)
+
+
 def _resolve_flex_options(
     args: argparse.Namespace,
     lane: Lane,
@@ -2222,6 +2363,7 @@ def _resolve_flex_options(
 ) -> "mutation.FlexOptions | None":
     """(B529-B531) Validate the flexible-campaign flags before any work."""
     carry = list(getattr(args, "carry_over", None) or ())
+    carry_forward = list(getattr(args, "carry_forward", None) or ())
     merges = list(getattr(args, "merge_state", None) or ())
     shard_stores = list(getattr(args, "merge_shard_store", None) or ())
     reason = getattr(args, "carry_over_reason", None)
@@ -2229,6 +2371,7 @@ def _resolve_flex_options(
     exclude_path = getattr(args, "exclude_candidates", None)
     requested = (
         bool(carry)
+        or bool(carry_forward)
         or bool(merges)
         or bool(shard_stores)
         or reason is not None
@@ -2238,17 +2381,37 @@ def _resolve_flex_options(
     if requested:
         if not native_r2:
             raise LaneConfigError(
-                "--carry-over/--only-candidates/--exclude-candidates require a "
+                "--carry-over/--carry-forward/--only-candidates/--exclude-candidates require a "
                 "native R2 mutation lane"
             )
-        if getattr(args, "candidates_file", None) is not None:
+        if carry and carry_forward:
+            raise LaneConfigError(
+                "--carry-forward cannot be combined with --carry-over"
+            )
+        if carry_forward and reason is not None:
+            raise LaneConfigError(
+                "--carry-forward cannot be combined with --carry-over-reason"
+            )
+        if getattr(args, "candidates_file", None) is not None and (
+            carry
+            or merges
+            or shard_stores
+            or reason is not None
+            or only_path is not None
+            or exclude_path is not None
+        ):
             raise LaneConfigError(
                 "--candidates-file (pilot) cannot be combined with --carry-over, "
                 "--merge-state, --only-candidates or --exclude-candidates"
             )
-    if (carry or merges or shard_stores) and not getattr(args, "resume", False):
+    if (
+        (carry or carry_forward or merges or shard_stores)
+        and not getattr(args, "resume", False)
+    ):
+        # Carry-forward consumes prior state, so it is inherently a resume operation.
         raise LaneConfigError(
-            "--carry-over, --merge-state and --merge-shard-store require --resume"
+            "--carry-over, --carry-forward, --merge-state and "
+            "--merge-shard-store require --resume"
         )
     if shard_stores and (
         getattr(args, "shard", None) is not None
@@ -2271,6 +2434,11 @@ def _resolve_flex_options(
         return tuple(found)
 
     sources = _directories(carry, "--carry-over")
+    carry_forward_sources = (
+        _resolve_carry_forward_sources(carry_forward, lane_file.project_root)
+        if carry_forward
+        else ()
+    )
     merge_sources = _directories(merges, "--merge-state")
     strict_stores: list[Path] = []
     for raw in shard_stores:
@@ -2289,6 +2457,7 @@ def _resolve_flex_options(
         return mutation.FlexOptions(
             lane_file_name=Path(lane_file.path).name,
             carry_over_sources=sources,
+            carry_forward_sources=carry_forward_sources,
             carry_over_reason=reason,
             merge_sources=merge_sources,
             shard_stores=tuple(strict_stores),
@@ -3419,6 +3588,19 @@ def _run_reserved(
         _emit_verdict_written(verdict)
         if args.verdict_json != "-":
             _print_run_summary(verdict, out)
+            flex = getattr(args, "flex_options", None)
+            if flex is not None and flex.carry_forward_sources:
+                store = (
+                    state_dir
+                    if state_dir is not None
+                    else mutation.default_state_root(lane_file.project_root)
+                )
+                if mutation.carried_survivor_count(store):
+                    print(
+                        "note: carried survivors stay carried until "
+                        "--rejudge-carried (or a WP4 replay) runs",
+                        file=out,
+                    )
         return verdict.exit_code
 
     def _deliver_refusal(exc: AssayError) -> int:
@@ -4326,6 +4508,7 @@ def _print_pending(
     err: TextIO | None,
     *,
     deadline_check: Callable[[], float],
+    carry_forward_sources: tuple[Path, ...] = (),
 ) -> int:
     """(B531) ``assay plan --list-pending``: ids without a finished record.
 
@@ -4338,7 +4521,7 @@ def _print_pending(
     if judge is not None and re.fullmatch(r"[0-9a-f]{64}", judge) is None:
         raise LaneConfigError("--judge must be a 64-character lowercase SHA-256 digest")
     done_total = 0
-    pending: list[str] = []
+    pending: list[tuple[str, Any]] = []
     for job in jobs:
         deadline_check()
         identity = mutation.candidate_id(job)
@@ -4353,14 +4536,40 @@ def _print_pending(
         if done:
             done_total += 1
         else:
-            pending.append(identity)
-    for identity in pending:
-        out.write(identity + "\n")
-    if err is not None:
-        err.write(
-            f"assay plan --list-pending: {len(pending)} pending, {done_total} done, "
-            f"{len(jobs)} planned{' (shard ' + args.shard + ')' if args.shard else ''}\n"
+            pending.append((identity, job))
+    match_kinds: dict[str, str] = {}
+    ambiguous_loci_ignored = 0
+    if carry_forward_sources:
+        assert judge is not None
+        match_kinds, ambiguous_loci_ignored = mutation.carry_forward_match_kinds(
+            [job for _identity, job in pending],
+            carry_forward_sources,
+            judge=judge,
+            deadline_check=deadline_check,
         )
+    kind_counts: Counter[str] = Counter()
+    for identity, _job in pending:
+        kind = match_kinds.get(identity, "none")
+        kind_counts[kind] += 1
+        out.write(
+            f"{identity} carry_forward={kind}\n"
+            if carry_forward_sources
+            else identity + "\n"
+        )
+    if err is not None:
+        summary = (
+            f"assay plan --list-pending: {len(pending)} pending, {done_total} done, "
+            f"{len(jobs)} planned{' (shard ' + args.shard + ')' if args.shard else ''}"
+        )
+        if carry_forward_sources:
+            summary += (
+                "; carry_forward "
+                f"exact-id={kind_counts['exact-id']}, "
+                f"locus={kind_counts['locus']}, window={kind_counts['window']}, "
+                f"none={kind_counts['none']}, "
+                f"ambiguous_loci_ignored={ambiguous_loci_ignored}"
+            )
+        err.write(summary + "\n")
     return 0
 
 
@@ -4378,8 +4587,25 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             raise LaneConfigError("--list-pending requires --state-dir")
         if getattr(args, "json", False) or getattr(args, "reuse_from", None) is not None:
             raise LaneConfigError("--list-pending cannot be combined with --json or --reuse-from")
-    elif getattr(args, "state_dir", None) is not None or getattr(args, "judge", None) is not None:
-        raise LaneConfigError("--state-dir and --judge apply only to --list-pending")
+        if getattr(args, "carry_forward", None) and getattr(args, "judge", None) is None:
+            # Classification uses the current judge to select earlier evidence.
+            raise LaneConfigError("--list-pending --carry-forward requires --judge")
+    elif (
+        getattr(args, "state_dir", None) is not None
+        or getattr(args, "judge", None) is not None
+        or getattr(args, "carry_forward", None)
+    ):
+        # A store scan has meaning only for the pending-candidate listing.
+        raise LaneConfigError(
+            "--state-dir, --judge and --carry-forward apply only to --list-pending"
+        )
+    carry_forward_sources = (
+        _resolve_carry_forward_sources(
+            getattr(args, "carry_forward", None) or (), lane_file.project_root
+        )
+        if getattr(args, "carry_forward", None)
+        else ()
+    )
     _emit_lane_validation_warnings(lane_file, lane, err or sys.stderr)
     cold_witness = getattr(args, "cold_witness", False)
     if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
@@ -4504,7 +4730,14 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         )
         deadline_check()
         if getattr(args, "list_pending", False):
-            return _print_pending(args, jobs, out, err, deadline_check=deadline_check)
+            return _print_pending(
+                args,
+                jobs,
+                out,
+                err,
+                deadline_check=deadline_check,
+                carry_forward_sources=carry_forward_sources,
+            )
         if (
             _has_native_r2(lane)
             and not candidate_limit_exceeded

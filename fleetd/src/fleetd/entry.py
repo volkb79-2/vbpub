@@ -2,8 +2,8 @@
 
 ``fleetd.cli`` is a registered cli-extended CLI, so ``cli-extended`` is a real
 wheel dependency (never vendored, never put on ``sys.path``). A managed host
-that runs ``fleet facts collect`` or ``fleet guard validate`` therefore needs
-the fleetd wheel, which installs cli-extended with it. This module imports
+that runs ``fleet facts collect`` therefore needs the fleetd wheel, which
+installs cli-extended with it. This module imports
 nothing outside the standard library: it is the first thing an entry point
 executes, and it turns a missing dependency into one actionable line naming the
 install step instead of a bare ``ModuleNotFoundError`` traceback.

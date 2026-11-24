@@ -23,19 +23,11 @@ def test_facts_validate_cli_reports_valid_record(capsys):
     assert capsys.readouterr().out == "valid host-facts/1\n"
 
 
-def test_guard_validate_cli_reports_valid_file(capsys):
-    status = main(["guard", "validate", str(FIXTURES / "guard.valid.toml")])
-    assert status == 0
-    assert capsys.readouterr().out == "valid guard.toml\n"
-
-
 @pytest.mark.parametrize(
     "argv",
     [
         ["facts", "validate", str(FIXTURES / "work-request.valid.json")],
         ["facts", "validate", str(FIXTURES / "missing.json")],
-        ["guard", "validate", str(FIXTURES / "missing.toml")],
-        ["guard", "validate", str(FIXTURES / "work-request.valid.json")],
     ],
 )
 def test_cli_validation_errors_are_reported_with_nonzero_status(argv, capsys):
@@ -46,12 +38,7 @@ def test_cli_validation_errors_are_reported_with_nonzero_status(argv, capsys):
     assert capsys.readouterr().err.startswith("[ERROR] ")
 
 
-def test_non_utf8_guard_file_and_oversized_integers_are_input_errors_not_tracebacks(tmp_path, capsys):
-    binary = tmp_path / "guard.toml"
-    binary.write_bytes(b"\xff\xfe")
-    assert main(["guard", "validate", str(binary)]) == 2
-    assert capsys.readouterr().err.startswith("[ERROR] ")
-
+def test_oversized_integers_are_input_errors_not_tracebacks(tmp_path, capsys):
     # A candidate memory figure too large for float arithmetic is refused with exit 2.
     candidates = tmp_path / "candidates.json"
     candidates.write_text(

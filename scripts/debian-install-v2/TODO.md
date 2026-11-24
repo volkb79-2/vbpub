@@ -494,3 +494,11 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 **Acceptance idea.** A fake-root install test renders the service text and asserts the chosen behaviour for both a host with and a host without the shim endpoint; removing the guard (or the `-` prefix) makes it fail.
 
 **Close when.** A fresh install shows `systemctl is-failed vbpub-docker-cleanup.service` false after one timer run on a host with the mdt shim, and the unit text and its test are in the repo.
+
+## OPEN (DIV2-BL-15, 2026-11-24): the `MemoryMin` readback must accept a host-setup raise
+
+**Source.** `mdt-cockpit/host-setup/docs/DESIGN-DEDICATED-DEV-MEMORY.md` section 10 ("Cross-tool interplay"), review r1 finding 12c; the note calls this the DI2 backlog item.
+
+**Finding.** DIV2-BL-08 applies control-plane `MemoryMin` only on hosts without host-setup. DI2's exact-equality `MemoryMin` readback (`installer.py:1167-1172`) fails after a host-setup raise.
+
+**Do.** Accept `>=` when a `95-mdt-memory-min.conf` is in `DropInPaths`. New floor rows go to DI2's table first; check them in `tools/hotset.py`.

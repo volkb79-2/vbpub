@@ -177,7 +177,7 @@ def _host_with_cli_extended(directory: Path, version: str) -> Path:
 def test_a_host_importing_an_old_cli_extended_switches_to_the_authoritative_environment(
     installed_env, tmp_path,
 ):
-    """The host imports cli_extended 0.2.0 fine, but CMRU declares >=0.3.0."""
+    """The host imports cli_extended 0.2.0 fine, but CMRU declares >=0.8.0."""
     bindir, log = installed_env
     host = _host_with_cli_extended(tmp_path, "0.2.0")
     interpreter = _fake_interpreter(bindir, log)  # the installed CMRU environment (>= floor)
@@ -193,7 +193,7 @@ def test_a_host_importing_an_old_cli_extended_switches_to_the_authoritative_envi
 
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
-    assert "has cli-extended 0.2.0 installed, which does not satisfy cli-extended>=0.3.0" in result.stderr
+    assert "has cli-extended 0.2.0 installed, which does not satisfy cli-extended>=0.8.0" in result.stderr
     assert str(host) in result.stderr and str(launcher.resolve()) in result.stderr
     # Probe first (it reports the installed version), then the same script, with -I -B.
     assert log.read_text(encoding="utf-8").splitlines() == [PROBE, f"-I -B {SCRIPT.resolve()} --help"]
@@ -211,7 +211,7 @@ def test_a_below_floor_authoritative_environment_is_refused_before_the_controlle
     assert result.returncode == 1
     assert result.stdout == ""  # the controller never started
     assert f"the interpreter {host} named by the installed cmru launcher" in result.stderr
-    assert "has cli-extended 0.2.0 installed, which does not satisfy cli-extended>=0.3.0" in result.stderr
+    assert "has cli-extended 0.2.0 installed, which does not satisfy cli-extended>=0.8.0" in result.stderr
     assert "pip install --no-index --find-links <wheelhouse> cmru" in result.stderr
     assert "cannot import" not in result.stderr  # it imports fine; the VERSION is the refusal
     assert not log.exists()
@@ -229,14 +229,14 @@ def test_a_below_floor_runtime_reported_interpreter_is_refused_not_replaced(inst
 
     assert result.returncode == 1
     assert "provided by the CMRU release runtime" in result.stderr
-    assert "does not satisfy cli-extended>=0.3.0" in result.stderr
+    assert "does not satisfy cli-extended>=0.8.0" in result.stderr
     assert not log.exists()  # no fallback to the PATH launcher
 
 
 def test_the_floor_itself_is_accepted_by_the_start_interpreter(installed_env, tmp_path):
     """The negative of the 0.2.0 oracle: a host at exactly the floor does not switch."""
     bindir, log = installed_env
-    host = _host_with_cli_extended(tmp_path, "0.3.0")
+    host = _host_with_cli_extended(tmp_path, "0.8.0")
     _launcher(bindir, _fake_interpreter(bindir, log))
 
     result = _run_gate_script(bindir, "--help", flags=("-I", "-B"), python=host)
@@ -429,7 +429,7 @@ def test_the_switch_execs_the_same_script_with_isolation_flags_and_a_one_shot_ma
     def fake_run(argv, **_kwargs):
         probes.append(argv)
         return subprocess.CompletedProcess(
-            argv, 0, stdout="cli-extended=0.3.0\n", stderr="",
+            argv, 0, stdout="cli-extended=0.8.0\n", stderr="",
         )
 
     monkeypatch.setattr(run_release_gate.subprocess, "run", fake_run)
@@ -463,7 +463,7 @@ def test_the_runtime_reported_interpreter_is_exec_ed_verbatim_and_beats_the_path
     monkeypatch.setattr(
         run_release_gate.subprocess, "run",
         lambda argv, **_kw: probes.append(argv) or subprocess.CompletedProcess(
-            argv, 0, "cli-extended=0.3.0\n", "",
+            argv, 0, "cli-extended=0.8.0\n", "",
         ),
     )
     monkeypatch.setattr(run_release_gate.os, "execv", lambda path, argv: execs.append((path, argv)))
@@ -480,7 +480,7 @@ def test_the_runtime_reported_interpreter_is_exec_ed_verbatim_and_beats_the_path
 def test_the_marker_is_consumed_so_it_never_reaches_the_lane_subprocesses(monkeypatch):
     monkeypatch.setenv(REEXEC_ENV, "1")
     monkeypatch.setattr(run_release_gate.importlib.util, "find_spec", lambda _name: object())
-    monkeypatch.setattr(run_release_gate, "_installed_version", lambda _name: "0.3.0")
+    monkeypatch.setattr(run_release_gate, "_installed_version", lambda _name: "0.8.0")
 
     run_release_gate._ensure_gate_environment([])
 
@@ -520,18 +520,18 @@ def test_an_unusable_launcher_is_named_in_the_refusal(tmp_path, monkeypatch, she
 
 def test_the_shipped_declaration_yields_the_cli_extended_import():
     declared = dict(run_release_gate._declared_dependencies())
-    assert declared == {"cli-extended>=0.3.0": "cli_extended"}  # pyproject.toml's own list
+    assert declared == {"cli-extended>=0.8.0": "cli_extended"}  # pyproject.toml's own list
 
 
 def test_every_declared_requirement_is_mapped_to_its_import_name(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "x"\ndependencies = ["cli-extended>=0.3.0", "Some.Pkg[extra]>=1"]\n',
+        '[project]\nname = "x"\ndependencies = ["cli-extended>=0.8.0", "Some.Pkg[extra]>=1"]\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(run_release_gate, "PROJECT_ROOT", tmp_path)
 
     assert run_release_gate._declared_dependencies() == [
-        ("cli-extended>=0.3.0", "cli_extended"), ("Some.Pkg[extra]>=1", "some_pkg"),
+        ("cli-extended>=0.8.0", "cli_extended"), ("Some.Pkg[extra]>=1", "some_pkg"),
     ]
 
 
@@ -566,13 +566,13 @@ def test_the_registered_gate_lanes_name_no_host_specific_interpreter():
 
 
 @pytest.mark.parametrize("installed, expected", [
-    ("0.2.0", False), ("0.2.99", False), ("0.3.0.dev1", False), ("0.3.0rc1", False), ("0.3.0a2", False),
-    ("0.3.0", True), ("0.3", True), ("0.3.0+bootstrap.source", True), ("0.3.1", True),
-    ("0.10.0", True), ("1", True), ("0.3.0.post1", True),
+    ("0.7.0", False), ("0.7.99", False), ("0.8.0.dev1", False), ("0.8.0rc1", False), ("0.8.0a2", False),
+    ("0.8.0", True), ("0.8", True), ("0.8.0+bootstrap.source", True), ("0.8.1", True),
+    ("0.10.0", True), ("1", True), ("0.8.0.post1", True),
     ("not-a-version", False), ("", False),
 ])
 def test_the_declared_floor_is_decided_by_version_not_by_importability(installed, expected):
-    assert run_release_gate._requirement_satisfied("cli-extended>=0.3.0", installed) is expected
+    assert run_release_gate._requirement_satisfied("cli-extended>=0.8.0", installed) is expected
 
 
 @pytest.mark.parametrize("requirement, installed, expected", [
@@ -616,14 +616,14 @@ def test_an_importable_but_below_floor_host_switches_to_an_authoritative_interpr
     tmp_path, monkeypatch, capsys,
 ):
     probes, execs = _switching_fakes(
-        monkeypatch, tmp_path, host_version="0.2.0", authoritative_stdout="cli-extended=0.3.0\n",
+        monkeypatch, tmp_path, host_version="0.2.0", authoritative_stdout="cli-extended=0.8.0\n",
     )
 
     run_release_gate._ensure_gate_environment(["--worktree", "/w"])
 
     assert len(probes) == 1 and len(execs) == 1  # probed once, then switched once
     assert execs[0][1][:4] == ["/opt/env/bin/python3", "-I", "-B", str(SCRIPT.resolve())]
-    assert "has cli-extended 0.2.0 installed, which does not satisfy cli-extended>=0.3.0" in (
+    assert "has cli-extended 0.2.0 installed, which does not satisfy cli-extended>=0.8.0" in (
         capsys.readouterr().err
     )
     assert os.environ[REEXEC_ENV] == "1"
@@ -666,7 +666,7 @@ def test_an_authoritative_interpreter_that_cannot_run_the_probe_is_refused(tmp_p
 
 def test_a_host_that_meets_the_floor_neither_probes_nor_switches(tmp_path, monkeypatch):
     probes, execs = _switching_fakes(
-        monkeypatch, tmp_path, host_version="0.3.0", authoritative_stdout="",
+        monkeypatch, tmp_path, host_version="0.8.0", authoritative_stdout="",
     )
 
     run_release_gate._ensure_gate_environment(["--worktree", "/w"])
@@ -678,7 +678,7 @@ def test_an_importable_module_without_distribution_metadata_does_not_count_as_in
     tmp_path, monkeypatch, capsys,
 ):
     _probes, execs = _switching_fakes(
-        monkeypatch, tmp_path, host_version=None, authoritative_stdout="cli-extended=0.3.0\n",
+        monkeypatch, tmp_path, host_version=None, authoritative_stdout="cli-extended=0.8.0\n",
     )
 
     run_release_gate._ensure_gate_environment([])
@@ -691,7 +691,7 @@ def test_an_importable_module_without_distribution_metadata_does_not_count_as_in
 
 def test_a_second_below_floor_failure_after_the_switch_is_refused_not_looped(tmp_path, monkeypatch):
     _probes, execs = _switching_fakes(
-        monkeypatch, tmp_path, host_version="0.2.0", authoritative_stdout="cli-extended=0.3.0\n",
+        monkeypatch, tmp_path, host_version="0.2.0", authoritative_stdout="cli-extended=0.8.0\n",
     )
     monkeypatch.setenv(REEXEC_ENV, "1")
 

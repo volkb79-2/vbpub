@@ -37,6 +37,15 @@ no separate version number, so entries are grouped by the work that landed.
   (warning event in the log), and the "weigh the three things" sentence is back
   in every note that tells a role to decide. 5 more hand mutants.
 
+### Suite budget and remote-gate OOM classification (P-plat-23)
+- `run-gate.toml` `[lanes.suite]` budget 30m -> 90m (measured 29m57s wall on r1002, 34m59s and 55m14s on v1001; slowest x 1.6).
+- `remote-gate.sh`: classification reads runner- or run-gate-written evidence only.
+  A run-gate `BUDGET_EXCEEDED` verdict (run-gate exits 4), read from run-gate's own
+  verdict line for the lane anchored at the line start, is never `INCONCLUSIVE-OOM`
+  and keeps its code. rc 76 needs a slice oom_kill delta above 0. Words in the lane's
+  own output (`OOMKilled`, `oom-kill`, `Killed`, `exit 137`, `BUDGET_EXCEEDED`, e.g.
+  from tests that print them) no longer decide anything.
+
 ### Launcher must-fixes (CTL-38, CTL-42 part 1)
 - CTL-38: every Codex exec path — new, manual resume, and automatic
   continuation — now derives `<run>.last.txt` from the last completed
@@ -62,6 +71,7 @@ no separate version number, so entries are grouped by the work that landed.
   lists, so a Unicode collation cannot admit a non-ASCII digit.
 
 ### Added
+- `remote-gate.sh`: forwards `--collect-store <rel>` (repeatable), `--seed-store <local dir>=<rel>` (repeatable; the local side is made absolute) and `--store-max-mib <n>` to `remote-gate.py run`, one argv word per value, accepted in any order with `--base` and before `--`, with the runner's own refusals (including a `.git` path component) applied before a slot is taken (RG-298; semantics in `scripts/netcup/runner/README.md`). Test: `tests/test-remote-gate.sh`.
 - `gate-run.sh`: after it holds a slot and before it starts `run-gate`, it waits while memory PSI `full` avg10 is >= 3 (CTL-57): one line a minute, bounded by `CONTROLLER_GATE_PSI_WAIT_S` (default 1800), then exit 75 "not admitted ... nothing ran" (never a lane verdict). An unreadable PSI file exits 75 at once. `CONTROLLER_GATE_PSI_FILE` is the test seam. Same rule as `dev` host-admission/1. Tests in `tests/test-gate-slots.sh` (the other gate-run tests run against a quiet PSI file); 9 new hand mutants.
 - `rules.md`: "House rules for every implementer brief" (CTL-50): remote dev container before each commit (interim `hostobs/tools/dev` for Rust), no direct `hx.sh`/`ssh`/`docker` and no tests in the devcontainer, contract plus target size with at most 2 review rounds, explicit launch effort, unique run names with resumed runs verified from git, DONE/PARTIAL/BLOCKED with a finalization. `BRIEF-TEMPLATE.md`, `finisher-generic.md` and the README point to it; the README records the bash freeze (CTL-40).
 - `remote-gate.sh`: `CONTROLLER_REMOTE_GATE_WORKROOT` sets where the per-run throwaway worktree lives (default unchanged: `$CONTROLLER_HOME/remote-gate-work`). A workroot under an IDE workspace folder makes the editor's Git extension adopt every scratch worktree as a repository ("too many active changes" popup) and lets language servers index it; point it outside every workspace folder.

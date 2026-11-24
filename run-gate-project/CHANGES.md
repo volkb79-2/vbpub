@@ -9,16 +9,51 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.8.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=0b374018822e6b898dc85963afabc16e3721e122 -->
+
+### Added
+- feat(run-gate): add offline lanes check (RG-296) (ef65a6048)
+- feat(run-gate): run the R3 canary in the release receipt image (e8c5b856f)
+
+### Fixed
+- fix(run-gate): complete RG-296 review round 1 (16518b395)
+- fix(run-gate): close RG-296 selftest failures (e026c44c9)
+- fix(run-gate): align release gate contracts after P10c review (48e97d929)
+
+### Changed
+- RG-294/RG-295: complete private allocation branch coverage (21396f412)
+- RG-294/RG-295: cover scratch error boundaries (b282b26fd)
+- RG-294/RG-295: prove review fixes and guard mutations (5dc67f6fa)
+- RG-294/RG-295: harden scratch ownership and prune (77d53b482)
+- RG-294/RG-295: own scratch lifetime and add prune (896f9e23f)
+
+### Documentation
+- docs(run-gate): file RG-309..311 (P-core-08 review round 2 follow-ups) (9dbbffd1c)
+- docs(run-gate): file RG-301..306 (P-core-01 r2 NITs, .run-gate producer lifetimes) (4035ca187)
+- docs(tester-unified): rebuild the image after every Run-Gate release (checklist) (6d6212754)
+
+### Testing
+- test(run-gate): define the receipt-image release canary (13fdfd51c)
+- test(run-gate): the exec-mode refusal oracle judges instruction text, not the checkout path (RG-290) (5f64e8b5a)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- run-gate: `lanes --check [--project DIR | --all] [--strict] [--json]` applies Run-Gate's budget-margin, canary, Assay-lane and native-R2 shard rules offline (RG-296); the current estate reports RG-307's 16 non-fatal margin warnings.
+
 ### Fixed
 - run-gate: `main()` owns one scratch root per invocation; `doctor --prune` uses owner identity to reclaim SIGKILL/OOM and legacy orphans across projects without containers, reporting partial removals as exit 1 (RG-294/RG-295).
 
 ### Changed
 - the release gate now also runs the R3 canary in the receipt image; no action needed for consumers
+- run-gate: `--check` now names the new `lanes --check` mode, so the former abbreviation of `--check-env` is no longer accepted; spell `--check-env` in full.
 
 ### Testing
 - no action needed: tests and documentation only (RG-290 and the image rebuild rule)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.7.0] - 2026-11-18
 <!-- cmru: generated -->

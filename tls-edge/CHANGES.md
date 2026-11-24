@@ -5,6 +5,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+### Breaking
+- `tls-edge configure --answers` now takes a sparse site override in the schema's own shape, such as
+  `[tls_edge.http3] enabled = true`. The 3.1 flat answer vocabulary is refused, and each old key names its
+  schema-shaped replacement.
+
+### Changed
+- `tls-edge configure` now uses one field table for prompts, answers, explicit override writes and the proposed
+  merge. Shipped defaults come only from the rendered defaults file.
+- Schema-shaped answers may set any non-open, validated leaf; unmanaged leaves are written explicitly.
+- `consumer.env` now carries the six-key rendered consumer contract from the effective configuration. Existing
+  lines are kept, duplicate owned lines are removed, and the file remains the contract consumers import.
+- `tls-edge validate` and the CIU preflight hook refuse a drifted existing `consumer.env`; `tls-edge show`
+  reports drift without failing, and `tls-edge configure` re-syncs it.
+- `tls_edge.ingress_network` must be a valid Docker network name.
+- `$` is refused in `tls_edge.traefik.hostdir.acme.path` (ciu expands `$VAR`; the validator sees it raw).
+
+### Added
+- `tls-edge show --json` emits the effective contract, structured public-port plan and
+  `consumer_env` state in a versioned `tls-edge.show` envelope.
+
+### Operator notes
+- 4.0 upgrade step: run `tls-edge configure --answers <empty file> --yes` after updating and before
+  `ciu up`, so the new contract keys are added to the 3.2 `consumer.env`.
 
 <!-- cmru: pending release notes end -->
 

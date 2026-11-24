@@ -480,8 +480,8 @@ loaded `tester-base:local` (mdt-cockpit MDT-049).
 
 ## Install fleetd for host facts
 
-`fleetd` owns the read-only `fleet facts collect` and `fleet guard validate`
-commands a managed host runs, and its wheel declares `cli-extended` as a real
+`fleetd` owns the read-only `fleet facts collect` command a managed host runs,
+and its wheel declares `cli-extended` as a real
 dependency, so both wheels are installed together. Debian 13 refuses
 `pip install` into the system Python (PEP 668), so `install-fleetd.sh` installs
 into a versioned venv, verifies both wheel hashes first, and publishes
@@ -1049,6 +1049,51 @@ would name a cause nobody observed). The verdict is decided from the job log's *
 not from the phrase "memory admission" appearing anywhere: a lane that was admitted and then exited 75 for its own
 reason is not a memory refusal either. Neither refusal started the lane, so nothing was cleaned up and no container
 exists.
+
+## Collecting and seeding a run's store directory (remote-gate `--collect-store` / `--seed-store`, RG-298)
+
+A remote run's checkout is throwaway: the job removes it on exit, so a directory the lane filled inside it (for example an
+Assay shard store under `<project>/.run-gate/assay-shards/...`) was lost. `--collect-store <rel>` (repeatable) packs that
+directory **before** the checkout is removed:
+
+```bash
+remote-gate.py run v1001 <worktree> assay --detach --name r1 \
+    --collect-store scripts/netcup/.run-gate/assay-shards --store-max-mib 512
+remote-gate.py collect r1    # fetches assay-store.tgz + assay-store.tgz.sha256 into <out-dir>/r1/ and verifies the checksum
+```
+
+- `<rel>` is relative to the **repository root of the run's own host checkout** and normalised (`a//b/./c/` is `a/b/c`).
+  An absolute path, `..`, a `.git` component (collect and seed), the root itself, a character outside `A-Za-z0-9._@+=,:-` or a symlinked component is refused
+  with exit 2 before anything is sent (the local worktree is checked, and the host job checks its own tree again and
+  reports `STORE-COLLECT-FAILED <rel> symlink`). Each run has its own checkout, so concurrent runs never share a store.
+- After the lane exits, per path: absent gives one `STORE-ABSENT <rel>` job-log line and no archive; a tree holding anything but
+  regular files and directories (symlink, fifo, device) gives `STORE-COLLECT-FAILED <rel> special-file` and is not packed; more than
+  `--store-max-mib` (default 512) **uncompressed tar bytes** gives `STORE-TOO-LARGE <rel> <bytes>` and nothing is packed;
+  any packing failure gives `STORE-COLLECT-FAILED <rel> <reason>`; success logs `STORE-COLLECTED <rels>`. None of
+  these changes the lane's verdict or the job's exit code. `collect` echoes these lines before the verdict line.
+- Archive layout (one choice, for all paths): **one** `assay-store.tgz` per run whose members keep their `<rel>/` prefix
+  (`tar -xzf assay-store.tgz -C <dir>` recreates `<dir>/<rel>/...`), plus `assay-store.tgz.sha256` in `sha256sum` format.
+  A path that was absent, too large or refused is simply not in it. If the archive itself cannot be written, every path
+  that would have gone into it gets its own `STORE-COLLECT-FAILED` line and no archive is left behind.
+- `collect` verifies the fetched archive against the host's sha256. A mismatch prints `STORE-CHECKSUM-MISMATCH ...`,
+  renames the file to `assay-store.tgz.rejected` (a corrupt archive never keeps its usable name) and makes `collect`
+  exit 77 when the lane's own exit code was 0; a lane that failed keeps its own exit code. `result.json` and the
+  final `lane ... verdict ...` line are never changed by a store problem.
+- `--seed-store <local dir>=<rel>` (repeatable; exactly one `=`, the target rules are the ones above) goes the other way: the local
+  directory must exist and contain only regular files and directories (a symlink, hardlink or device is refused locally, exit
+  2), and its uncompressed tar bytes must fit `--store-max-mib` (the same bound in both directions). It is uploaded as
+  `assay-seed-<n>.tgz` + `.sha256` (one archive per seed, members named `<rel>/...`) over the bundle's transport, with the
+  same post-upload `sha256sum` check (mismatch: exit 3). The host job, after the checkout is prepared, after the run-gate admission
+  check and before memory admission and the lane, verifies the checksum, re-checks the size bound on the decompressed stream, refuses special members and members
+  outside `<rel>/` (including `..`), refuses a target that holds tracked files, removes the target and unpacks. Any refusal logs
+  `STORE-SEED-FAILED <rel> <reason>` and ends the job with **exit 78** (verdict `STORE_SEED_FAILED`, never a lane verdict; the
+  lane is not started and the checkout is removed as usual). Success logs `STORE-SEEDED <rels>`.
+- `scripts/controller/remote-gate.sh` forwards `--collect-store`, `--seed-store` and `--store-max-mib` (in any order with
+  `--base`, before `--`), one argv word per value, validated with the same refusals before a slot is taken; the local side of
+  a seed is made absolute by the wrapper (the runner runs from a throwaway worktree). The wrapper runs the `remote-gate.py` of
+  `CONTROLLER_REMOTE_GATE_PY_REF` (default `origin/main`), so the options work through it once this change is on that ref.
+- A run cancelled with `cancel` (TERM) is not collected: the job stops before the packing step. Never `/tmp`; the archive
+  is written under the run's own `~/rg/<name>/` directory.
 
 ## Cached tool copies and concurrent launches (CTL-12)
 
