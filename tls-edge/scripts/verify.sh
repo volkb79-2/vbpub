@@ -136,13 +136,8 @@ fi
 echo
 echo "$(_bold "2. docker compose config")"
 
-if [[ -f "$COMPOSE_FILE" ]]; then
-    COMPOSE_TO_CHECK="$COMPOSE_FILE"
-    COMPOSE_KIND="rendered CIU compose"
-else
-    COMPOSE_TO_CHECK="$COMPOSE_FILE"
-    COMPOSE_KIND="rendered CIU compose"
-fi
+COMPOSE_TO_CHECK="$COMPOSE_FILE"
+COMPOSE_KIND="rendered CIU compose"
 if [[ ! -f "$COMPOSE_TO_CHECK" ]]; then
     fail "$COMPOSE_KIND file is missing: $COMPOSE_TO_CHECK"
 elif docker compose -f "$COMPOSE_TO_CHECK" config -q 2>&1 | sed 's/^/   /'; then

@@ -315,8 +315,9 @@ tls-edge-v2.1.0-py313.tar.xz
 tls-edge-v2.1.0-py313.tar.xz.sha256
 ```
 
-The tarball contains a single top-level directory `tls-edge-v<ver>/` so
-`tar -xJf … --strip-components=1` extracts cleanly to any target path.
+The tarball contains cmru's single staging directory as its top-level directory,
+`bundle/`, so `tar -xJf … --strip-components=1` still extracts cleanly to any
+target path.
 
 ---
 

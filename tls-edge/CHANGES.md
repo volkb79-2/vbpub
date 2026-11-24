@@ -36,7 +36,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   reports drift without failing, and `tls-edge configure` re-syncs it.
 - `tls_edge.ingress_network` must be a valid Docker network name.
 - `$` is refused in `tls_edge.traefik.hostdir.acme.path` (ciu expands `$VAR`; the validator sees it raw).
-- Bundles are built by `cmru handler bundle-build`; maintainer scripts no longer ship in the instance and archives are reproducible.
+- Bundles are built by `cmru handler bundle-build`; maintainer scripts no longer ship in the
+  instance, and archives are byte-identical for identical inputs. `ciu` and `cli-extended`
+  track their latest release unless `TLS_EDGE_CIU_VERSION` / `TLS_EDGE_CLI_EXTENDED_VERSION`
+  pin them.
+- `scripts/verify.sh` check 1 now runs the bundled `<root>/ciu check` instead of the
+  standalone renderer and SKIPs when the ciu stub is absent.
 
 ### Added
 - `tls-edge show --json` emits the effective contract, structured public-port plan and

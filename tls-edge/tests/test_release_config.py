@@ -49,6 +49,19 @@ def test_the_3_x_to_4_0_installer_adoption_step_is_documented_everywhere_require
     assert migration in breaking
 
 
+def test_operator_docs_name_the_bundle_root_and_reproducibility_inputs():
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    assert "single staging directory as its top-level directory, `bundle/`" in readme
+    assert "`tar -xJf … --strip-components=1` still extracts cleanly" in readme
+
+    changed = _markdown_section(ROOT / "CHANGES.md", "### Changed")
+    assert "archives are byte-identical for identical inputs" in changed
+    assert "`ciu` and `cli-extended` track their latest release" in changed
+    assert "`TLS_EDGE_CIU_VERSION` / `TLS_EDGE_CLI_EXTENDED_VERSION` pin them" in changed
+    assert "`scripts/verify.sh` check 1 now runs the bundled `<root>/ciu check`" in changed
+    assert "SKIPs when the ciu stub is absent" in changed
+
+
 def test_push_step_is_the_cmru_variants_handler_not_a_project_script():
     argv = _publish_argv()
     assert argv[:3] == ["cmru", "handler", "tarball-publish"]
