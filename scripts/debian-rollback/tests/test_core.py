@@ -39,7 +39,7 @@ class FakeRunner:
             if operation == "create":
                 Path(argv[1]).touch()
                 self.environment = ""
-                return Completed()
+                return Completed(0, "", "")
             if operation == "list":
                 if self.fail_grubenv:
                     return Completed(1, "", "simulated unreadable grubenv")
@@ -57,7 +57,7 @@ class FakeRunner:
                 self.environment = "".join(
                     f"{name}={current[name]}\n" for name in sorted(current)
                 )
-                return Completed()
+                return Completed(0, "", "")
         return Completed(64, "", f"unsupported fake program: {argv}")
 
 
@@ -251,6 +251,23 @@ class CoreTest(_support.TemporaryRootTest):
         boot = GrubBoot(self.paths, self.storage, runner)
         return self.context(runner=runner, boot=boot)
 
+    def production_grub_context(self, environment: str) -> tuple[Context, FakeRunner]:
+        self.paths.esp_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.esp_marker.write_text("grub\n", encoding="utf-8")
+        self.paths.esp_grubenv.touch()
+        runner = FakeRunner()
+        runner.environment = environment
+        context = make_context(
+            self.paths,
+            storage=self.storage,
+            runner=runner,
+            clock=lambda: datetime(2026, 11, 18, 14, 0, tzinfo=UTC),
+            env={"GRUBEDITENV_STATE": "unused"},
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+        return context, runner
+
     def assert_snapshot_survives_publication_failure(
         self,
         error: Exception,
@@ -391,6 +408,58 @@ class CoreTest(_support.TemporaryRootTest):
                 ("delete", self.apt.name, "--yes"),
             )
         self.assertEqual(self.events, [])
+
+    def test_dr_state_none_only_escapes_snapshot_prune_and_delete(self) -> None:
+        self.storage.running_name = self.apt.name
+        context = self.grub_context("")
+        context.env = {"DR_STATE": "none"}
+
+        self.assertEqual(execute(context, ("list",)), 0)
+        self.assertIn(f"{self.apt.name} (running) kernel=", context.stdout.getvalue())
+        self.assertEqual(execute(context, ("gen-menu",)), 0)
+        self.assertEqual(
+            context.runner.environment,
+            f"saved_entry={self.apt.name}\n",
+        )
+
+    def test_production_context_preserves_configured_default(self) -> None:
+        self.storage.running_name = self.install.name
+        context, runner = self.production_grub_context(
+            f"saved_entry={self.apt.name}\n"
+        )
+        self.assertIsNone(context.boot)
+
+        self.assertEqual(
+            execute(context, ("snapshot", "--reason", "before-upgrade")),
+            0,
+        )
+        self.assertEqual(
+            runner.environment,
+            f"saved_entry={self.apt.name}\n",
+        )
+        self.assertTrue(
+            (self.paths.top / make_state(3, 14, "manual-before-upgrade").name).is_dir()
+        )
+        self.assertEqual(execute(context, ("gen-menu",)), 0)
+        self.assertEqual(
+            runner.environment,
+            f"saved_entry={self.apt.name}\n",
+        )
+        self.assertEqual(execute(context, ("list",)), 0)
+        self.assertIn(
+            f"{self.apt.name} (default) kernel=",
+            context.stdout.getvalue(),
+        )
+        self.assertEqual(execute(context, ("show", self.apt.name)), 0)
+        self.assertIn("status: default", context.stdout.getvalue())
+
+    def test_snapshot_note_can_be_the_json_literal(self) -> None:
+        context = self.context()
+        self.assertEqual(execute(context, ("snapshot", "--note", "--json")), 0)
+        target = make_state(3, 14, "manual")
+        sidecar = metadata.load_sidecar(metadata.sidecar_path(self.paths, target))
+        self.assertIsNotNone(sidecar)
+        self.assertEqual(sidecar.note, "--json")
 
     def test_delete_publishes_the_shrunken_menu_before_storage_delete(self) -> None:
         self.storage.running_name = self.apt.name

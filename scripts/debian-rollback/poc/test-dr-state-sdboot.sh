@@ -1673,7 +1673,8 @@ fi
 
 boot_agnostic_cases() { # TAG BINARY MARKER
   local tag=$1 binary=$2 marker=$3 prior_dr=$DR prior_marker=$FIXTURE_BOOT
-  local root created required rc snapshots apt_state apt_input
+  local root created created_again deleted_exists required rc snap_rc selected_before \
+    selected_after snapshots apt_state apt_input
   DR=$binary
   FIXTURE_BOOT=$marker
 
@@ -1743,9 +1744,32 @@ boot_agnostic_cases() { # TAG BINARY MARKER
       workflow_run "$root" 999999999 4096 snapshot --reason before-upgrade \
       >"$WORK/out" 2>"$WORK/err"; rc=$?
     created_again=$(find "$root/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000003-*-*Z-manual-before-upgrade' -printf '%f\n' | head -n 1)
+    if [ -e "$root/top/$created" ]; then deleted_exists=yes; else deleted_exists=no; fi
     if [ "$rc" != 0 ] || [ -z "$created_again" ] \
       || [ -e "$root/top/$created" ]; then
-      bad "workflow-sequence-not-reused-after-delete: rc=$rc created='$created_again' ($(tr '\n' ' ' <"$WORK/err"))"
+      bad "workflow-sequence-not-reused-after-delete: rc=$rc created='$created_again' deleted='$created' deleted-exists=$deleted_exists ($(tr '\n' ' ' <"$WORK/err"))"
+    fi
+  fi
+
+  if [ "$tag" = python ]; then
+    # A configured GRUB default must survive the next snapshot's publication.
+    root="$WORK/bag-$tag-configured-default"
+    workflow_fixture "$root" full
+    workflow_two_states "$root"
+    install_fake_maintenance_btrfs "$root"
+    case_count=$((case_count + 1))
+    DR_STATE=@os-000001-20261118-120000Z-install PATH="$root/btrfs-bin:$PATH" \
+      workflow_run "$root" 999999999 4096 set-default @os-000002-20261118-120100Z-apt \
+      >"$WORK/out" 2>"$WORK/err"; rc=$?
+    selected_before=$(cat "$root/grub-editenv.state" 2>/dev/null)
+    DR_STATE=@os-000001-20261118-120000Z-install PATH="$root/btrfs-bin:$PATH" \
+      workflow_run "$root" 999999999 4096 snapshot --reason before-upgrade \
+      >"$WORK/out" 2>"$WORK/err"; snap_rc=$?
+    selected_after=$(cat "$root/grub-editenv.state" 2>/dev/null)
+    if [ "$rc" != 0 ] || [ "$snap_rc" != 0 ] \
+      || [ "$selected_before" != @os-000002-20261118-120100Z-apt ] \
+      || [ "$selected_after" != "$selected_before" ]; then
+      bad "workflow-set-default-survives-snapshot: set-default=$rc snapshot=$snap_rc before='$selected_before' after='$selected_after' ($(tr '\n' ' ' <"$WORK/err"))"
     fi
   fi
 

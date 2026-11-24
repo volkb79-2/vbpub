@@ -225,15 +225,20 @@ def _pinned(context: Context, states: Iterable[ids.StateId]) -> frozenset[str]:
 
 
 def _running(context: Context) -> tuple[str | None, bool]:
-    if context.env.get("DR_STATE", "") == "none":
-        return None, True
     value = context.storage.running()
     if value is None:
         value = context.env.get("DR_STATE", "")
+    if value == "none":
+        return None, True
     return value or None, False
 
 
 def _running_for_required_verb(context: Context, verb: str) -> str:
+    if context.env.get("DR_STATE", "") == "none":
+        raise Refused(
+            f"{verb}: refusing with DR_STATE=none "
+            "(the running state would not be protected)"
+        )
     running, none_requested = _running(context)
     if none_requested:
         raise Refused(
@@ -354,11 +359,24 @@ def _update_apt_actions(
     )
 
 
+def _label_boot(context: Context) -> Boot | None:
+    if context.boot is not None:
+        return context.boot
+    try:
+        marker = marker_value(context.paths)
+    except DrStateError:
+        return None
+    if marker == "grub":
+        return GrubBoot(context.paths, context.storage, context.runner)
+    return None
+
+
 def _default_state(context: Context, *, strict: bool) -> Selector | None:
-    if context.boot is None:
+    boot = _label_boot(context)
+    if boot is None:
         return None
     try:
-        return context.boot.default(strict=strict)
+        return boot.default(strict=strict)
     except DrStateError:
         if strict:
             raise
@@ -366,9 +384,10 @@ def _default_state(context: Context, *, strict: bool) -> Selector | None:
 
 
 def _oneshot_state(context: Context, *, strict: bool) -> Selector | None:
-    if context.boot is None:
+    boot = _label_boot(context)
+    if boot is None:
         return None
-    return context.boot.oneshot(strict=strict)
+    return boot.oneshot(strict=strict)
 
 
 def _targets(
@@ -422,7 +441,14 @@ def _publish(
         )
 
     running, _ = _running(context)
-    configured = _default_state(context, strict=False)
+    try:
+        configured = boot.default(strict=False)
+    except DrStateError:
+        configured = None
+    try:
+        boot.oneshot(strict=False)
+    except DrStateError:
+        pass
     configured_name = configured.state if configured is not None else None
     if requested is not None:
         chosen_name = requested.name
@@ -584,6 +610,9 @@ def _snapshot(
     note: str,
     apt_actions: str,
 ) -> int:
+    if context.env.get("DR_STATE", "") == "none":
+        context.err("dr-state: DR_STATE=none, snapshot skipped")
+        return 0
     running, none_requested = _running(context)
     if none_requested:
         context.err("dr-state: DR_STATE=none, snapshot skipped")

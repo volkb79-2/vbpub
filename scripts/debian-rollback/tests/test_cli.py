@@ -88,7 +88,7 @@ class ExitTranslationTest(unittest.TestCase):
         dispatch = mock.Mock()
         for argv in (
             ("--json", "list"),
-            ("show", "@os-000001-20261118-120000Z-install", "--json"),
+            ("list", "--json"),
         ):
             with self.subTest(argv=argv):
                 stderr = io.StringIO()
@@ -98,6 +98,21 @@ class ExitTranslationTest(unittest.TestCase):
                     "dr-state: JSON output is not supported in this runtime\n",
                 )
         dispatch.assert_not_called()
+
+    def test_json_after_note_is_the_note_value(self) -> None:
+        seen: list[cli.Invocation] = []
+
+        def dispatch(invocation: cli.Invocation) -> int:
+            seen.append(invocation)
+            return 0
+
+        stderr = io.StringIO()
+        self.assertEqual(
+            cli.run(("snapshot", "--note", "--json"), dispatch, stderr=stderr),
+            0,
+        )
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(seen[0].command, ("snapshot", "--note", "--json"))
 
     def test_global_json_without_a_command_is_unsupported(self) -> None:
         stderr = io.StringIO()

@@ -76,7 +76,16 @@ def run(
         debug = os.environ.get("DR_STATE_DEBUG") == "1"
     try:
         invocation = parse_invocation(argv)
-        if invocation.json or "--json" in invocation.command:
+        json_option = any(
+            argument == "--json"
+            and not (
+                index > 0
+                and invocation.command[index - 1]
+                in ("--note", "--reason", "--apt-actions")
+            )
+            for index, argument in enumerate(invocation.command)
+        )
+        if invocation.json or json_option:
             raise Unsupported("JSON output is not supported in this runtime")
         if not invocation.command:
             raise UsageError("a command is required")
