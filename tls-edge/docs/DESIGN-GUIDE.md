@@ -1,37 +1,29 @@
-# tls-edge design: Mattermost Calls media
+# tls-edge design: HTTPS edge, application-published media
 
 The feature surface is listed in the [README](../README.md). The
-[consumer guide](CONSUMERS.md) explains which labels and network ports a
-consumer needs.
+[consumer guide](CONSUMERS.md) explains HTTP routing and direct media
+publication.
 
-## Why Calls uses a separate L4 route
+## Why raw media bypasses Traefik
 
-Traefik's existing HTTP routers terminate HTTPS for Mattermost on TCP 443.
-Calls media is raw WebRTC media traffic, so it cannot use an HTTP router or
-the TLS certificate entrypoint. The Mattermost service therefore advertises
-and exposes its own Calls listener, while Traefik's TCP and UDP routers
-forward the two transports on the shared ingress network.
+Traefik's HTTP routers terminate HTTPS on TCP 443. WebRTC media is opaque
+TCP/UDP traffic, so it cannot use an HTTP router or the TLS certificate
+entrypoint. The application owns that listener and publishes it directly on
+the host, then advertises the same public endpoint to its clients.
 
-UDP 8443 is the preferred media transport; TCP 8443 is the fallback. Both
-protocols use the same public port and the same container port: the Calls TCP
-entrypoint listens on container TCP 8443 and the Calls UDP entrypoint on
-container UDP 8443. There is no alternate HTTPS port, so nothing else uses 8443
-and there is no TCP/UDP collision.
-
-The listener is an optional tls-edge feature (`[tls_edge.calls] enabled =
-true, public_port = 8443`) and is disabled in generic defaults. Enable it with
-`tls-edge configure` when the edge serves this Mattermost Calls consumer; the
-consumer's app settings and the edge's TCP+UDP port must agree.
+This keeps application-specific ports and protocols out of the generic edge.
+Jitsi Videobridge uses this model for UDP 10000, and Mattermost publishes its
+Calls listener directly on TCP+UDP 8443. The edge has no TCP/UDP media
+entrypoints and does not forward layer-4 traffic.
 
 ## Privacy and operating boundary
 
-The edge routes only the Calls media packets to the Mattermost container.
-This does not deploy a third-party media server. Mattermost's integrated
-Calls mode is self-hosted; use a TURN relay only when user networks cannot
-reach the media service directly, and operate that relay under the same
-privacy requirements if one is added later.
+The application, not Traefik, accepts the media packets. This does not deploy
+a third-party media server. A self-hosted media service should add a TURN relay
+only when user networks cannot reach the application directly, and operate
+that relay under the same privacy requirements.
 
-An inbound allow rule for public TCP and UDP 8443 is needed in any host or
-provider firewall that filters Docker-published traffic. The exact rule must
-match the host's existing firewall backend and Docker forwarding policy. Do
-not assume a host `OUTPUT` rule filters traffic forwarded by Docker.
+The host and provider firewalls must allow each application's published media
+ports. The exact rule must match the host's firewall backend and Docker
+forwarding policy. Do not assume a host `OUTPUT` rule filters traffic forwarded
+by Docker.

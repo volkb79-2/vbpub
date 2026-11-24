@@ -24,10 +24,16 @@ files=(
   "$SCRIPT_DIR/../remote-gate.sh"
   "$SCRIPT_DIR/../chain-run.sh"
   "$SCRIPT_DIR/../ctl-doctor.sh"
+  "$SCRIPT_DIR/../ctl-hygiene.sh"
   "$SCRIPT_DIR/../ctl-state-backup.sh"
   "$SCRIPT_DIR/../release-from-wt.sh"
   "$SCRIPT_DIR/../push-image.sh"
+  "$SCRIPT_DIR/../dev"
+  "$REPO_ROOT/hostobs/tools/dev"
   "$SCRIPT_DIR/../skills-sync.sh"
+  "$SCRIPT_DIR/../clear-resume.sh"
+  "$SCRIPT_DIR/../compact-resume.sh"
+  "$SCRIPT_DIR/../resume-lib.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
   "$REPO_ROOT/scripts/netcup/runner/remote-gate-cache.sh"
   "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"
@@ -43,16 +49,25 @@ files=(
   "$SCRIPT_DIR/test-remote-gate.sh"
   "$SCRIPT_DIR/test-chain-run.sh"
   "$SCRIPT_DIR/test-ctl-doctor.sh"
+  "$SCRIPT_DIR/test-ctl-hygiene.sh"
   "$SCRIPT_DIR/test-ctl-state-backup.sh"
+  "$SCRIPT_DIR/test-clear-resume.sh"
+  "$SCRIPT_DIR/test-compact-resume.sh"
   "$SCRIPT_DIR/run-suite.sh"
   "$queue_test"
 )
 for file in "${files[@]}"; do bash -n "$file" || exit $?; done
+for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/test_dev.py"; do
+  python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
+done
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck "${files[@]}" || exit $?
 else
   echo 'INFO: shellcheck is not installed in this tester image'
 fi
+# the generic remote dev tool: fakes only (no host, docker or ssh); first so a break shows in a minute, not after the long suites
+: "${TESTER_VENV:?run-suite.sh runs in the tester-unified gate container, which sets TESTER_VENV}"
+"$TESTER_VENV/bin/python" -m pytest -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py" || exit $?
 bash "$SCRIPT_DIR/test-ctl-status.sh" || exit $?
 bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
@@ -64,7 +79,10 @@ bash "$SCRIPT_DIR/test-skills-sync.sh" || exit $?
 bash "$SCRIPT_DIR/test-remote-gate.sh" || exit $?
 bash "$SCRIPT_DIR/test-chain-run.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-doctor.sh" || exit $?
+bash "$SCRIPT_DIR/test-ctl-hygiene.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-state-backup.sh" || exit $?
+bash "$SCRIPT_DIR/test-clear-resume.sh" || exit $?
+bash "$SCRIPT_DIR/test-compact-resume.sh" || exit $?
 bash "$queue_test" || exit $?
 bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?

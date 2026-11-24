@@ -931,7 +931,7 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
     esac
   done <<<"$_ded_mem"
   _ded_ignored=""
-  # gates and background are derived/pinned above (dev.slice minus the protected tiers' MemoryLow); the
+  # gates and background are derived/pinned above (= dev.slice's own MemoryMax since P-plat-19h); the
   # interactive and BuildKit tiers carry no ceiling of their own.
   for _ded_tier_key in \
     DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX; do

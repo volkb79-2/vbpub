@@ -274,7 +274,7 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   "root": "*" | "keep" | 160 | "40%",
   "reserve_gb": 0 | 25 | "*",
   "iobench_raw_gb": 8 | 16 | false,
-  "data": {"kind": "partitions" | "lvm", "vg": "vg_data", "pv_size": "*" | 200 | "60%",
+  "data": {"kind": "none" | "partitions" | "lvm" | "subvolumes", "vg": "vg_data", "pv_size": "*" | 200 | "60%",
            "vg_free_gib": 0,
            "volumes": [{"name": "cow", "size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}
 ```
@@ -315,6 +315,11 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   `none`). LV sizes: `N` GiB (`-L`), `"P%"` of the whole VG (`-l` extents) or `"*"`
   (`-l 100%FREE`, created last whatever the config order). `vg_free_gib` (default 0) is kept
   free in the VG for `lvextend`; without a `"*"` LV the rest of the VG stays free.
+- **`data.kind = "subvolumes"`** is the ISO-installed btrfs-root mode described
+  below. Each volume is `{name, mount, nocow}`. Names are top-level `@...`
+  children of `/.top` (subvolume 5), outside every `@os-*` state. `nocow`
+  defaults to false and is applied with `chattr +C` while the new subvolume is
+  still empty.
 - **Numbering follows disk position**: partitions after root ascend with their start sector,
   root, then the data partitions in config order, then the swaps. Pre-root partitions keep
   the numbers they have (a cloud image has root = 1 and 14/15 before it). Find volumes by
@@ -323,7 +328,7 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   writes `vbpub-swap<N>` (or `vbpub-swap-pre<N>` for retained swaps), and
   `/etc/fstab` binds each partition by `PARTUUID`. The plan preview's
   `Identifier` column and `tools/swap-bench-window.sh` use those same two facts.
-- **Mount policy**: exact mounts on `/`, `/var`, `/var/lib`, `/srv`, or `/home`
+- **Mount policy (partition/LVM data)**: exact mounts on `/`, `/var`, `/var/lib`, `/srv`, or `/home`
   are refused. A mount equal to, inside, or above a protected OS-state tree is
   also refused: `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`,
   `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/lib32`, `/libx32`,
@@ -340,6 +345,15 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   and nested planned mounts are refused. See
   [Data mount safety](docs/DESIGN-GUIDE.md#data-mount-safety) for the rationale.
 
+  The btrfs-root `subvolumes` mode keeps this complete mount policy and adds
+  C9's ISO exclusion rule on top. A subvolume mount at, inside, or above a
+  protected OS-state tree remains refused; a path intersecting the live
+  Docker/containerd stores remains refused; and a path at or above
+  `/var`, `/var/lib`, `/srv`, or `/home` remains refused. C9 additionally
+  refuses a mount at or above any ISO-excluded path. Descendants of an
+  excluded path are accepted unless another mount rule protects them, so
+  `/srv/cow` is the supported CoW-area mount and `/srv` itself is not.
+
   With `/var/log/journal` selected, the install-time journal remains on the
   root filesystem and is hidden when stage two mounts the new filesystem over
   that path. The mounted directory will not show those earlier files.
@@ -349,8 +363,10 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   persistent writes on the mounted filesystem is **not verified** by the current
   tests. Verify that behavior in the `r1-vm-real-commit` lane before claiming
   recovery.
-- **Not supported**: `fs: zfs` as a managed filesystem (refused with a clear message; deferred),
-  btrfs `subvol`.
+- **Not supported**: `fs: zfs` as a managed partition/LVM filesystem (refused
+  with a clear message; deferred), and the legacy partition/LVM `subvol`
+  option. Top-level data subvolumes are supported only by the
+  `data.kind = "subvolumes"` btrfs-root mode.
 - **Safety**: `mkfs`/`pvcreate` only touch a BLANK device (the same filesystem again is kept, any
   other signature is refused); fstab uses `UUID=` and `nofail` (btrfs `noatime,user_subvol_rm_allowed`); another
   device with the same label is refused; a `blkid` failure other than "no signature" is never
@@ -405,6 +421,117 @@ Swap is the last allocation on disk. The planner leaves backup-GPT metadata
 room and aligns boundaries to 1 MiB. Number 128 is the GPT partition-number
 limit; config load refuses a statically oversized plan, and offline/live
 planning also checks the actual root number before any table write.
+
+### Btrfs root installed by the dr ISO
+
+This mode configures a host whose root is already a **single-device btrfs
+filesystem created by the rollback ISO installer**. v2 discovers the root
+with `findmnt -n -o SOURCE,FSTYPE --nofsroot /`; the root type is a host fact,
+never a configuration key. It does not write a partition table, grow, shrink
+or otherwise resize the root, and it skips the ext4 cloud-init/growroot guards.
+Multi-device btrfs is refused as `root_multi_device`. ZFS roots are detected
+and refused as `root_fs_unsupported`; v2 ZFS-root support is IC-M6.
+
+Schema 2 is the root-aware schema. Existing schema-1 configurations still load
+and keep their legacy ext4 meaning. A btrfs root therefore requires
+`schema_version: 2`; an ext4 root keeps working with schema 1, and schema 2 on
+ext4 retains the existing ext4 behavior.
+
+On btrfs, `layout_policy.disk_spec` accepts only `partitioning.root: "*"`,
+`reserve_gb: 0`, `data.kind: "none"` or `"subvolumes"`, and
+`iobench_raw_gb: false`. IC-M1a also requires `swap_policy: "off"` and
+`swap_partition_count: 0`. The named refusals are
+`btrfs_config_requires_schema_version_2`,
+`btrfs_root_resize_unsupported`, `btrfs_reserve_unsupported`,
+`btrfs_data_kind_unsupported`, `btrfs_iobench_raw_unavailable`, and
+`btrfs_swap_needs_p3`.
+Config load also refuses `unsafe_state_path` on every root, ext4 included:
+`state_dir` must be absolute and contain only `[A-Za-z0-9._/-]`, with no
+`..` segment and no trailing slash.
+
+Example for the r1002 CoW area, `@cow` at `/srv/cow`:
+
+```json
+{
+  "schema_version": 2,
+  "swap_policy": "off",
+  "swap_partition_count": 0,
+  "run_io_benchmark": false,
+  "partitioning": {
+    "root": "*",
+    "reserve_gb": 0,
+    "iobench_raw_gb": false,
+    "data": {
+      "kind": "subvolumes",
+      "volumes": [
+        {"name": "@cow", "mount": "/srv/cow", "nocow": false}
+      ]
+    }
+  }
+}
+```
+
+`/.top` must be the mounted top-level subvolume (`subvolid=5`) on the same
+btrfs backing partition as `/`. v2 creates each direct child, verifies
+`/.top` first, refuses a same-path object with different properties, and sets
+NOCOW with `chattr +C` immediately after creation, before any file can be
+written. When an existing empty subvolume lacks `+C`, v2 reapplies it; a
+non-empty one keeps the named property refusal. The fstab entry uses the root
+entry's source and option set plus `user_subvol_rm_allowed` and
+`subvol=<name>`. The ISO already owns the excluded data subvolumes
+(`@home`, `@root`, `@srv`, `@www`, `@log`, `@docker`, `@containers`,
+`@postgresql`, `@mysql`, `@usr-local`) and every `@os-*` state; those names
+and the rollback-layer names are reserved. Data mounts at or above one of the
+excluded paths are refused, while mounts below them (for example
+`/srv/cow`) are allowed. v2's existing mount policy still applies on top:
+mounts at, below, or above `/boot`, `/etc`, `/usr`, `/proc`, `/var/lib/dpkg`
+and the other protected trees are refused, except the documented
+`/var/log/journal` subtree; `/var/lib/containerd` and `/var/lib/docker`
+cannot be covered at any depth.
+
+IC-M1a keeps `user_subvol_rm_allowed` on each data-subvolume fstab row as the
+package contract requires. Btrfs applies most options per filesystem, so
+putting the effective option on the root mount's option set belongs to
+IC-M1b (`install-btrfs.sh` `OPTS`), with the live mount-option check in
+IC-M1c. The data row remains harmless and continues to document the intent.
+
+When the cloud-init package is absent, a requested cleanup is a named no-op,
+not an error. When `/usr/local/sbin/dr-state` exists and reports a managed
+running `@os-*` state, stage two writes `phase=done` and `stage2_done` before
+exactly one `dr-state snapshot --reason host-setup`; the snapshot is the last
+change to the OS state and captures a completed stage two. A snapshot failure
+removes `stage2_done` and fails stage two.
+If the layer is absent or reports an unmanaged root, no snapshot is taken and
+the summary says why. A stage-two re-run after the completion marker exists
+plans nothing and takes no second snapshot. Both v2 stage paths export
+`DR_STATE=none`; only the final snapshot call clears it for its own invocation.
+
+The stage-two unit removes the C4 first-boot bundle only after the completion
+marker exists, with exactly:
+
+```text
+ExecStartPost=/bin/sh -c 'if [ -e <state>/stage2_done ]; then exec /usr/bin/rm -f -- /root/.vbpub/firstboot.json /root/.vbpub/firstboot.started; fi'
+```
+
+The placeholder above is the configured absolute state directory in the
+rendered unit; the two bundle paths are literal and no glob or symlink
+following is used. v2's existing install guard is unchanged and still refuses
+replay when the marker or a done/success state exists.
+
+That guard cannot protect a rollback to the pre-v2 initial state: its marker
+and done/success state live under `/var/lib` inside the OS state and roll back
+with it. C4's deletion of `/root/.vbpub/firstboot.json` and
+`/root/.vbpub/firstboot.started`, which live in `@root` outside every state,
+is what prevents v2's install from replaying on that rollback.
+
+Not in IC-M1a: swapping on btrfs (`btrfs_swap_needs_p3`), raw-benchmark import
+for io.cost (`iobench_raw_unavailable_on_btrfs`), and IC-M1b/c items (the dr
+first-boot hook and ISO netcup option, `/.top` mode 0700, the btrfs VM lane,
+and the runner's btrfs CoW mount). The old C6 `@swap` swapfile design is
+superseded by WP-10 P3, and the old C9 swap row does not apply. No swapfile or
+permanent `iobench-raw` partition is created by this package. On btrfs the
+benchmark is reported skipped and io.cost remains unconfigured until the Q-A
+import follow-up.
 
 ### zswap
 

@@ -71,12 +71,12 @@ Related: KI-182 (DinD row), KI-191 (tester-gate), KI-194/P-core-12, KI-141 part 
     owns none of it (KI-194). The check is pure text, and the move ends the "engine-too-old"
     false FAIL.
 17. **`gate_snapshot` gets its closeout lanes from the installed run-gate CLI: the `assay_lane`
-    of each lane `_plan_gate` can select (`assay`, `FIRST_RELEASE_ASSAY_LANE`), read from
+    of each lane `_plan_gate` can select (now only `assay`), read from
     `run-gate --list --json` (R-55, `run-gate-list/1`) in `cmru/`.** `cmru/run-gate.toml` is
     "parsed ONLY by the installed run-gate CLI" (D-110), so a second parser is out. A named lane
     that is missing or is not `kind = "assay"` refuses the gate; the list never silently
-    shrinks. KI-141 part 7 still edits `run_release_gate.py` (the constant and the `_plan_gate`
-    branch), but no longer `gate_snapshot.py`.
+    shrinks. KI-141 part 7 has landed: `_plan_gate` selects only `assay`, so the closeout
+    set is `("cmru",)`.
 18. **The generic runner lives in `release_preconditions.py`.** It is already a `cmru/assay.toml`
     target, so no T3-owned edit is needed.
 
@@ -240,10 +240,10 @@ their argv, cwd and env outside the export.
 8. `run_release_gate.py --preflight --json`: each former regex branch yields its remedy from the
    raise site. Docker unavailable is SKIPPED in `dry-run` mode and FAIL in `release` mode.
 9. The gate snapshot, with a fake `run-gate --list --json`. If the inventory lacks
-   `assay-first-release`, the gate refuses before any lane runs. If it maps that lane to
-   `cmru-fr2`, `validate_lane_outputs` refuses a lane that leaves
-   `cmru/.assay/campaign-cmru-first-release.json` as unapproved output, and
-   `campaign-cmru-fr2.json` is copied back.
+   `assay`, the gate refuses before any lane runs. If it maps that lane to
+   `cmru-fr2`, `validate_lane_outputs` refuses a lane that leaves the formerly hard-coded
+   `cmru/.assay/campaign-cmru.json` as unapproved output (proving the set is derived from the
+   inventory, not from `_ASSAY_CLOSEOUT_LANES`), and `campaign-cmru-fr2.json` is copied back.
 10. An unchanged revision-5 project without the step loads, passes `cmru standards` and gets
     only the built-in rows.
 11. A multi-family release where family B's preflight FAILs: exit 4, and no family dispatches,
@@ -285,9 +285,8 @@ edits, a template revision bump, scaffold examples.
 1. **T3 (vbpub-assay)** confirms:
    - `campaign-<assay_lane>.{exit,json,txt,err}` is Assay's stable closeout naming;
    - `cmru-first-release-r2` writes no closeout files into the release gate;
-   - whether KI-141 part 7 lands first. Either order works, provided part 7 deletes the lane and
-     `FIRST_RELEASE_ASSAY_LANE` in one commit (D17 refuses a constant that has no lane), and the
-     P-core-13 fixtures then do not name the first-release lane;
+   - KI-141 part 7 has landed: `_plan_gate` selects only `assay` and the first-release
+     closeout set is gone, so the P-core-13 fixtures do not name the first-release lane;
    - that neither the smaller `release_preconditions.py` nor the deleted survivor tests
      (`test_r2_survivors_s1.py:326-341`, `:354-385`, `:388-480`) need a `cmru/assay.toml` change;
    - The question about reading `assay_lane` through `run-gate --list --json` moved to the run-gate
@@ -333,5 +332,6 @@ changes a decision.
   - cmru's gate must not import `estate_test_policy` unless `tester-unified` ships it.
 - F7 (Tests). In `tests/test_r2_survivors_s1.py`, everything from `_fake_git` (:315) to the end
   of the file (475 lines) goes. List the deletions by test name in the implementation, not by line.
-- F8 (Docs). `docs/DESIGN-GUIDE.md:1066-1067` hard-codes `campaign-cmru` and
-  `campaign-cmru-first-release`; update it with D17.
+- F8 (Docs). `docs/DESIGN-GUIDE.md:1066-1067` hard-codes `campaign-cmru` and a
+  first-release closeout basename; update it with D17. KI-141 part 7 has landed, so only
+  `campaign-cmru{...}` remains.

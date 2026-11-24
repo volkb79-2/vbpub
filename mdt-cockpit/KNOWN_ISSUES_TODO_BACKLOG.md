@@ -2012,3 +2012,51 @@ Follow-up P-plat-19d (2026-11-24): `mdt-host-check.sh` FAILs when oomd can still
 - **Finding 10 (memory.peak).** 4.1's per-unit `memory.peak` is not sampled (`accept-run.sh` `ucols`, `:111-116`); no criterion uses it.
 - **F5/F7 (notes).** `swap_used` (`accept-run.sh:134`) feeds no criterion (any OOM FAILs, conservative); optionally cross-check `tested.maximum` against the manifest's `memory.max:dev.slice` (`accept-eval.py:146`).
 - **F6 (tests).** `tests/test_accept_kit.py:366` asserts a prefix of an append-only log (vacuous): use `assertEqual(self.calls(), before)`; the `frac >= 0.5` half of the load rule (`accept-eval.py:112-118`) is untested: add a run whose `dev.max_local` rises on one tick only and expect rc 4.
+
+**Addendum OPEN 2026-11-24 (unexplained flakes, from P-plat-19g/19e runs).**
+
+- **SIGHUP subtest.** `tests/test_accept_kit.py::test_int_term_and_hup_remove_both_probes_by_exact_name` (`:347-355`) failed once on r1002 in the
+  SIGHUP subtest (`:348`); the log tail read "rm bg, rm bg" and the cause is unexplained. Investigate whether a HUP arriving during
+  `start_probe` / sampling (`tools/accept/accept-run.sh:87-97`) can skip the removal of the gates probe (the tail shows `rm bg` twice, which suggests the
+  gates removal was not reached or was logged under the wrong name). Add a subtest that sends HUP before the second probe exists. Note that `finish()` already removes both names
+  unconditionally (`:67`, trap armed at `:74` before `start_probe`), so also check whether a late fake-docker append from the
+  previous subtest (the log is reset at `test_accept_kit.py:350`) or an out-of-order append explains the extra `rm bg`.
+- **dev-cache.slice flake.** `tests/test-render.sh` hit a `dev-cache.slice` flake once (smoke run 2 at `8b3361f73`; the dev-cache.slice assertions are at
+  `:186-190`), not reproduced. Record the failing assertion when it recurs.
+
+## MDT-111 - the `_fifo_file` fixture in `test_io_governance.py` races and times out under load (2026-11-24)
+
+**Status:** FIXED 2026-11-24 (P-mdt-111, fix commit `a37ab07a0`); Minor. Same fixture as MDT-022 (FIXED, orphaned readers); this is a different defect. Source: `.controller-state/platform/reviews/plat-19d-r1-opus.md`, "# Round 2".
+
+**Fix.** A counted serve alone does not cure it (the first reader can still receive the content twice and eat the next serve), and a regular file cannot
+report size 0, so `_fifo_file` now serves every read from a fresh FIFO inode: once a reader has the current one open, a new FIFO is renamed over the path
+before the content is written, so a reopen can never reach a reader that has not yet seen EOF. The thread polls with `O_NONBLOCK`, is stopped and joined on cleanup.
+**Evidence.** New lane `io-governance-stress` (`run-gate.toml`: both tests, 50 repetitions on one CPU with a competing busy loop, first failure fails the lane),
+run on r1002: unfixed fixture (lane-only commit `c7ebd99a3`) FAIL on repetition 1 (`TimeoutExpired` 30 s, run `rgw-io-governance-stress-20261124T164729-r1002`);
+fix head `a37ab07a0` PASS, 139 s (run `rgw-io-governance-stress-20261124T164918-r1002`); final head `557966c7d` stress PASS, 143 s (run
+`rgw-io-governance-stress-20261124T165229-r1002`) and `smoke` 3x PASS on r1002 (runs `rgw-smoke-20261124T165546-r1002`, `rgw-smoke-20261124T165833-r1002`,
+`rgw-smoke-20261124T170148-r1002`). Follow-ups from the Opus r1 review (P-mdt-111b): budget 4m, blocking write fd, serving-thread-ended assertion, one-reader-at-a-time docstring.
+
+`host-setup/tests/test_io_governance.py:569-582` (`_fifo_file`) serves a named pipe from a daemon thread whose `serve()` loop reopens the FIFO for writing as
+soon as the previous writer closes. If the reopen beats the reader (`cat`) to EOF, the reader receives the content a second time and never sees EOF.
+The failing run's captured stdout showed the `dev.slice vda` row twice. `test_it_lists_limits_from_files_that_report_size_zero_with_effective_values`
+(`:601`) and `test_systemd_mode_prints_properties_and_drop_in_paths` (`:614`) time out under host load; the retry passed, so the cause is the fixture
+race and not pure slowness (contention-agnostic rule: a verdict must not depend on load). Fix: serve each FIFO once per expected read (a counted
+loop), or use regular files plus a size-0 shim. Close when both tests pass 50 repetitions under `taskset` to one CPU with a competing busy loop.
+
+## MDT-112 - check.sh WARNs about the runner's deliberate `oom_score_adj=-500`, and no rebuild clears it (2026-11-24)
+
+**Status:** OPEN (filed 2026-11-24); Minor. Source: main controller request 2026-11-24 (platform STATE.md, Queued).
+
+`host-setup/scripts/check.sh:422-425` WARNs "a dev-interactive container (...) runs at oom_score_adj=-500: rebuild the devcontainer so it gets -900"
+for every container in `dev-interactive.slice` whose score is above -900. The netcup runner's cockpit container is such a container, and its launcher
+keeps `-500` deliberately (`scripts/netcup/runner/start-cockpit-runner.sh:16`, `COCKPIT_OOM_SCORE_ADJ`, P-plat-19e note 5.2; design section 5.2), so
+no rebuild removes the WARN. Fix: the check accepts the value of `COCKPIT_OOM_SCORE_ADJ` for the runner container (match its container name or read
+the runner.env value), or the WARN names the runner.env knob (`scripts/netcup/runner/runner.env.example:43`) instead of "rebuild the devcontainer".
+Close when check.sh on a runner host reports no WARN for the runner's cockpit and still WARNs for a devcontainer above -900.
+
+## MDT-113 - a `-` or `0` pin of a tier MemoryMax renders `max` on dedicated-dev (2026-11-24)
+
+**Status:** OPEN. Found by the P-plat-19h r1 review (F7); predates that package, which sets the derived tier Max to dev.slice's.
+
+On `HOST_ROLE=dedicated-dev`, `DEV_{GATES,BACKGROUND}_MEMORY_MAX=-` or `0` goes through `pick` (`host-setup/mdt_capacity.py:565`, called at `:623`) to `None`; install.sh then renders an empty `MemoryMax=` and the kernel shows `max`. check.sh accepts it (`want=max`, `scripts/check.sh:351`) and the accept kit refuses such a tier (`tools/accept/accept-run.sh:37`). dev.slice stays finite, so the effect today equals the derived value (tier Max = dev Max), but it is a path to a tier without a MemoryMax and the estate rule is never `MemoryMax=infinity`. Fix: on dedicated-dev, refuse `-`/`0` for the two tier MAX pins in `dedicated_memory` (omitting one has no purpose now that the derived value equals dev's), with a test, and make check.sh FAIL a tier `max` on this role.

@@ -2,6 +2,15 @@
 
 Use this guide to publish and consume host endpoint facts. The normative record contract is in [SPEC.md](../SPEC.md#endpoint-records); the command surface is in [CLI-SPEC.md](CLI-SPEC.md).
 
+## Installing the command on a host
+
+A netcup runner host gets `augeaswrap` from `scripts/netcup/runner/install-augeaswrap.sh`, run as root. The script uses that host's runner `lib.sh` identity check. It is an offline install:
+- it verifies the SHA-256 of the augeaswrap and cli-extended release wheels you supply;
+- it installs them with `pip install --no-index --no-deps` into `/opt/augeaswrap/<version>/venv`;
+- it links `/usr/local/bin/augeaswrap`.
+
+The steps are in [scripts/netcup CONSUMERS.md](../../scripts/netcup/CONSUMERS.md#install-augeaswrap-for-host-setup). `mdt host-setup` (`install.sh`, `check.sh`) refuses without the command and names that procedure. To remove the command, delete the `/usr/local/bin/augeaswrap` symlink and that version's directory, `/opt/augeaswrap/<version>`. Then delete `/opt/augeaswrap` too if it is now empty. The installer writes nothing outside these paths, apart from creating `/usr/local/bin` if it was missing.
+
 ## Host endpoint records
 
 `augeaswrap.endpoints` stores host facts supplied by their owner. The

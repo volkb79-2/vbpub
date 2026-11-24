@@ -32,7 +32,7 @@ class _Actions(FakeHostActions):
 
     def __init__(self) -> None:
         super().__init__()
-        self.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+        self.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
         self.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(case_b.DISK_GIB * 1024 ** 3)
         self.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = case_b.CASE_B_DUMP
         self.outputs[("/usr/sbin/dumpe2fs", "-h", "/dev/vda3")] = case_b.DUMPE2FS_OUTPUT

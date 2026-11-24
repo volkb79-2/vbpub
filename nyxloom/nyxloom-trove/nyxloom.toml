@@ -89,7 +89,10 @@ phase = "implementation"
 # it there is a separate future schema change, not this package. Omitted
 # deliberately, not forgotten.
 asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]
-timeout_seconds = 1800
+# RG-307 (P-core-RG307): the lane budget rose 30m -> 35m, so this consumer
+# timeout must rise with it -- R-32/R-59 pair them, and 2100s is the smallest
+# value that still covers the whole 35m lane (TestEstateBudgetTimeoutPairing).
+timeout_seconds = 2100
 environment = "tester-unified"
 
 [policy]

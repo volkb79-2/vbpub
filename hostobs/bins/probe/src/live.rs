@@ -179,3 +179,9 @@ fn matches_selector(selector: &Sel, inc: u64, label: &str) -> bool {
         Sel::All => true,
     }
 }
+
+impl crate::backend::Turn for ProbeBackend {
+    fn begin_turn(&mut self, now_ns: u64) -> bool {
+        ProbeBackend::begin_turn(self, now_ns)
+    }
+}

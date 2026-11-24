@@ -187,7 +187,13 @@ def _make_resume_installer(runtime: Any) -> Installer:
         config = _stage2_config(state_dir)
     except StateError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
-    return Installer(config, HostActions(dry_run=runtime.dry_run))
+    installer = Installer(
+        config,
+        HostActions(dry_run=runtime.dry_run),
+        inspect_host=False,
+    )
+    installer._inspect_on_resume = True
+    return installer
 
 
 def _render_status(status: dict[str, Any]) -> str:
@@ -232,6 +238,21 @@ def _render_plan(plan: dict[str, Any]) -> str:
             "Assumptions:",
             *(f"  - {item}" for item in plan["assumptions"]),
         ))
+    if plan.get("root_fs") == "btrfs":
+        lines = [
+            f"Release: {plan['release']}",
+            f"Root device: {plan['root_device']} (btrfs, ISO layout retained)",
+            "Root policy: untouched; no partition table, root growth or root shrink",
+            "Swap policy: off; btrfs swap is deferred to WP-10 P3",
+            "Data subvolumes:",
+        ]
+        lines.extend(
+            f"  {volume['name']} -> {volume['mount']} (nocow={'yes' if volume['nocow'] else 'no'})"
+            for volume in plan["data_subvolumes"]
+        )
+        if not plan["data_subvolumes"]:
+            lines.append("  none")
+        return "\n".join(lines)
     lines = [
         f"Release: {plan['release']}",
         f"Root device: {plan['root_device']}",
@@ -259,6 +280,21 @@ def _render_plan(plan: dict[str, Any]) -> str:
 
 def _planned_actions(actions: HostActions) -> list[dict[str, Any]]:
     return [asdict(action) for action in actions.planned]
+
+
+def _install_intro(plan: dict[str, Any]) -> str:
+    if plan.get("root_fs") == "btrfs":
+        return (
+            "This fresh install will configure data subvolumes on the existing "
+            "btrfs root. It will not write a partition table, resize the root, "
+            "or change the swap layout.\n"
+            + _render_plan(plan)
+        )
+    return (
+        "This fresh install will modify the root disk and create the configured "
+        "swap layout.\n"
+        + _render_plan(plan)
+    )
 
 
 def _wizard(args: Any, runtime: Any) -> int:
@@ -292,8 +328,7 @@ def _install(args: Any, runtime: Any) -> int:
     if not actions.dry_run:
         runtime.output.emit(
             "info",
-            "This fresh install will modify the root disk and create the configured swap layout.\n"
-            + _render_plan(plan),
+            _install_intro(plan),
             force=True,
         )
         if not runtime.confirm("Start this Debian host installation?"):
@@ -309,6 +344,11 @@ def _install(args: Any, runtime: Any) -> int:
 
 def _resume(args: Any, runtime: Any) -> int:
     installer = _make_resume_installer(runtime)
+    if getattr(installer, "stage2_complete", False):
+        runtime.output.info(
+            "Stage two already complete (stage2_done); nothing to do."
+        )
+        return 0
     if not installer.actions.dry_run and not runtime.confirm(
         "Resume stage two and apply the remaining host changes?"
     ):

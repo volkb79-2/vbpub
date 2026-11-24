@@ -14,7 +14,7 @@ info(){ printf '  INFO %s\n' "$*"; }   # neither pass nor fail -- disclosure onl
 check_host_setup_endpoint_record() {
   local command_name="${AUGEASWRAP_BIN:-augeaswrap}" result
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    fail "mdt-host-setup endpoint record cannot be checked: augeaswrap is missing; install the augeaswrap wheel and make '$command_name' available on PATH"
+    fail "mdt-host-setup endpoint record cannot be checked: augeaswrap is missing; install the augeaswrap wheel and make '$command_name' available on PATH (procedure: scripts/netcup/CONSUMERS.md#install-augeaswrap-for-host-setup)"
     return
   fi
   if [ ! -f /etc/host-endpoints.d/mdt-host-setup.env ]; then
@@ -341,7 +341,7 @@ if [ -d "$DEV_PATH" ]; then
         if [ "$eff" = "$want" ]; then ok "dev.slice $prop=$eff matches the HOST_ROLE=dedicated-dev derivation"
         else fail "dev.slice $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (DEV_HOST_MEMORY_KEEP / pins). Re-run install.sh."; fi
       done
-      # MDT-TESTHOST-MEM-2: dev-gates / dev-background yield first: MemoryHigh/Max = dev.slice's minus the protected tiers' MemoryLow.
+      # MDT-TESTHOST-MEM-2: dev-gates / dev-background yield first: MemoryMax = dev.slice's own (P-plat-19h), no MemoryHigh.
       for _tier_label in "dev-gates.slice:GATES" "dev-background.slice:BACKGROUND"; do
         _tier_unit="${_tier_label%%:*}"; _tier_key="${_tier_label#*:}"; _tier_dir="$(_slice_path "$_tier_unit")"
         [ -d "$_tier_dir" ] || continue
@@ -349,10 +349,10 @@ if [ -d "$DEV_PATH" ]; then
           prop="${prop_label%%:*}"; want="$(printf '%s\n' "$_ded_mem" | sed -n "s/^DEDICATED_${_tier_key}_${prop_label#*:}=//p")"
           eff="$(cat "$_tier_dir/$prop" 2>/dev/null)"
           [ -n "$want" ] || want=max
-          if [ "$eff" = "$want" ]; then ok "$_tier_unit $prop=$eff matches the HOST_ROLE=dedicated-dev derivation (dev.slice MemoryMax minus the protected tiers' MemoryLow; no MemoryHigh)"
+          if [ "$eff" = "$want" ]; then ok "$_tier_unit $prop=$eff matches the HOST_ROLE=dedicated-dev derivation (dev.slice's own MemoryMax; no MemoryHigh)"
           elif [ "$prop" = memory.high ] && printf ' %s ' "$_psi_owned" | grep -Fq " $_tier_unit/memory.high "; then
             info "$_tier_unit memory.high=$eff is owned by psi-guard right now (the converge never writes it)"
-          else fail "$_tier_unit $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (dev.slice minus the protected tiers' MemoryLow, or a DEV_${_tier_key}_MEMORY_${prop_label#*:} pin). Re-run install.sh."; fi
+          else fail "$_tier_unit $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (dev.slice's own MemoryMax, or a DEV_${_tier_key}_MEMORY_${prop_label#*:} pin). Re-run install.sh."; fi
         done
         # AD2-0: memory.max = dev.slice memory.high (checked above), memory.swap.max = dev.slice's minus the protected Lows' sum.
         _d_swap="$(cat "$DEV_PATH/memory.swap.max" 2>/dev/null)"; _t_swap="$(cat "$_tier_dir/memory.swap.max" 2>/dev/null)"
@@ -458,7 +458,7 @@ if [ -d "$GATES_PATH" ]; then
     eff="$(cat "$GATES_PATH/$prop" 2>/dev/null)"
     cfg="${!var:-}"
     if [ "$(_mdt_host_role)" = dedicated-dev ]; then
-      # HOST_ROLE=dedicated-dev: gates' value is derived (dev.slice minus the protected tiers' Low) and checked in the dev.slice block above.
+      # HOST_ROLE=dedicated-dev: gates' value is derived (= dev.slice's MemoryMax) and checked in the dev.slice block above.
       info "dev-gates.slice $prop=$eff (HOST_ROLE=dedicated-dev: derived, verified against the derivation under dev.slice)"
       continue
     fi

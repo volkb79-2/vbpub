@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlsplit
 from debian_install_v2.config import (
     CLOUD_INIT_CLEANUP_MODES,
     SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
     Config,
     load_config,
 )
@@ -47,7 +48,7 @@ def test_all_documented_config_examples_use_the_current_loader_and_schema():
     for path in DOCS:
         for example in _markdown_config_examples(path):
             count += 1
-            assert example.get("schema_version") == SCHEMA_VERSION, path
+            assert example.get("schema_version") in SUPPORTED_SCHEMA_VERSIONS, path
             load_config(raw_json=json.dumps(example))
     assert count >= 2
 

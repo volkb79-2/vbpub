@@ -62,7 +62,7 @@ class DerivationTests(unittest.TestCase):
         m = cap.dedicated_memory({"DEV_INTERACTIVE_MEMORY_LOW": "2.5G"}, mem_total=8320679936, swap_total=63 * GIB)
         self.assertEqual(m.keep, 1129316352)
         self.assertEqual(m.maximum, 7191363584)  # 6858.22 MiB
-        self.assertEqual((m.gates_max, m.background_max), (4507009024, 4507009024))  # 4298.22 MiB
+        self.assertEqual((m.gates_max, m.background_max), (7191363584, 7191363584))  # P-plat-19h: = dev.slice's own Max, 6858.22 MiB
         self.assertEqual(m.dev_min, 536870912)
         self.assertEqual((m.gates_high, m.background_high, m.high), (None, None, None))  # no MemoryHigh anywhere
         self.assertEqual(cap.load_tier_swap(62 * GIB, m.protected), 62 * GIB - 2560 * MIB)  # AD2-0 unchanged
@@ -135,18 +135,22 @@ class DerivationTests(unittest.TestCase):
 
     LOWS = {"DEV_INTERACTIVE_MEMORY_LOW": "512M", "DEV_BUILDKITD_MEMORY_LOW": "256M"}
 
-    def test_load_tiers_sit_below_dev_max_by_the_protected_lows_and_carry_no_high(self) -> None:
+    def test_load_tiers_equal_dev_max_whatever_the_protected_lows_and_carry_no_high(self) -> None:
+        # P-plat-19h regression guard: the tier MemoryMax is dev.slice's own; a minus-P subtraction must fail here
         m = cap.dedicated_memory(self.LOWS, **HOST)
-        self.assertEqual(m.protected, 768 * MIB)
+        self.assertEqual(m.protected, 768 * MIB)  # P still exists: it sizes the swap ceiling and the Low protection
         for tier in ("gates", "background"):
-            self.assertEqual(getattr(m, f"{tier}_max"), m.maximum - 768 * MIB)
+            self.assertEqual(getattr(m, f"{tier}_max"), m.maximum)
             self.assertIsNone(getattr(m, f"{tier}_high"))
+        big = cap.dedicated_memory({"DEV_INTERACTIVE_MEMORY_LOW": "2.5G"}, mem_total=8320679936, swap_total=63 * GIB)
+        self.assertEqual((big.gates_max, big.background_max), (big.maximum, big.maximum))
+        self.assertNotEqual(big.gates_max, big.maximum - big.protected)
         m0 = cap.dedicated_memory({"DEV_GATES_MEMORY_LOW": "1G"}, **HOST)  # a load tier's own Low is not protected
         self.assertEqual((m0.gates_max, m0.background_max), (m0.maximum, m0.maximum))
 
-    def test_cache_low_counts_in_the_subtraction_and_defaults_to_zero(self) -> None:
+    def test_cache_low_counts_in_the_protected_sum_and_defaults_to_zero(self) -> None:
         m = cap.dedicated_memory({**self.LOWS, "DEV_CACHE_MEMORY_LOW": "256M"}, **HOST)
-        self.assertEqual((m.protected, m.gates_max), (GIB, m.maximum - GIB))
+        self.assertEqual((m.protected, m.gates_max), (GIB, m.maximum))
         for off in ("", "-"):
             self.assertEqual(cap.dedicated_memory({**self.LOWS, "DEV_CACHE_MEMORY_LOW": off}, **HOST).protected, 768 * MIB)
         with self.assertRaises(cap.CapacityError):
@@ -159,9 +163,9 @@ class DerivationTests(unittest.TestCase):
         self.assertEqual(cap.load_tier_swap(128 * MIB, 768 * MIB), 128 * MIB)  # never above dev.slice's
         self.assertEqual(cap.load_tier_swap(8 * GIB, 0), 8 * GIB)
 
-    def test_load_tier_floor_cap_omission_and_pins(self) -> None:
+    def test_load_tier_cap_omission_and_pins(self) -> None:
         m = cap.dedicated_memory({**self.LOWS, "DEV_INTERACTIVE_MEMORY_MIN": "-", "DEV_MEMORY_MAX": "1500M"}, **HOST)
-        self.assertEqual(m.gates_max, GIB)  # 1500M - 768M = 732M, floored at 1G
+        self.assertEqual(m.gates_max, 1500 * MIB)  # dev's own Max: no minus-P, so no 1G floor is needed either
         tiny = cap.dedicated_memory({"DEV_INTERACTIVE_MEMORY_LOW": "4G", "DEV_INTERACTIVE_MEMORY_MIN": "-", "DEV_MEMORY_MAX": "512M"}, **HOST)
         self.assertEqual(tiny.gates_max, 512 * MIB)  # never above dev.slice's own
         pinned = cap.dedicated_memory({**self.LOWS, "DEV_GATES_MEMORY_MAX": "3G", "DEV_BACKGROUND_MEMORY_MAX": "-"}, **HOST)
@@ -296,7 +300,7 @@ class CliTests(unittest.TestCase):
             out = dict(line.split("=", 1) for line in r.stdout.splitlines())
             self.assertEqual(out["DEDICATED_PROTECTED_LOW"], str(GIB))
             self.assertEqual(out["DEDICATED_LOAD_SWAP"], str(cap.load_tier_swap(swap_gib * GIB, GIB)))
-            self.assertEqual(out["DEDICATED_GATES_MAX"], str(int(out["DEDICATED_MEM_MAX"]) - GIB))
+            self.assertEqual(out["DEDICATED_GATES_MAX"], out["DEDICATED_MEM_MAX"])
             self.assertEqual(out["DEDICATED_GATES_HIGH"], "")
         self.assertNotIn("DEDICATED_LOAD_SWAP", self.run_cli(env, "dedicated-memory", "--meminfo", mi).stdout)
 
@@ -405,10 +409,10 @@ echo "HIGH=${{DEV_MEMORY_HIGH:-}} MAX=${{DEV_MEMORY_MAX:-}} MIN=${{DEV_MEMORY_MI
         self.assertIn("DEV_MEMORY_HIGH=7G", r.stderr)
         self.assertIn("DEV_GATES_MEMORY_HIGH=4G", r.stderr)
 
-    def test_gates_and_background_are_derived_below_dev_max_by_the_protected_lows(self) -> None:
+    def test_gates_and_background_are_derived_equal_to_dev_max_despite_the_protected_lows(self) -> None:
         r = self.run_pre("HOST_ROLE=dedicated-dev\nDEV_INTERACTIVE_MEMORY_LOW=512M\nDEV_BUILDKITD_MEMORY_LOW=256M\n")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(f"GATES_HIGH= GATES_MAX={8 * GIB - K - 768 * MIB} ", r.stdout)
+        self.assertIn(f"GATES_HIGH= GATES_MAX={8 * GIB - K} ", r.stdout)
 
     def test_floors_sum_slices_and_a_foreign_raise_reaches_the_system_slice(self) -> None:
         plain = self.run_pre("HOST_ROLE=dedicated-dev\n")
@@ -697,14 +701,14 @@ echo "RC=$MDT_RC"
         f = self.cgfile("memory.max", "7191363584")
         self.cgfile("memory.current", str(GIB))
         self.cgfile("memory.reclaim", "")
-        self.converge("MemoryMax", "4507009024", "memory.max")
-        self.assertEqual(f.read_text().strip(), "4507009024")
+        self.converge("MemoryMax", "6684901376", "memory.max")
+        self.assertEqual(f.read_text().strip(), "6684901376")
         g = self.cgfile("memory.max", "max")  # from unlimited to a finite value is a lowering too
-        self.cgfile("memory.current", "4500000000")  # above target - 64M
-        r = self.converge("MemoryMax", "4507009024", "memory.max")
+        self.cgfile("memory.current", "6650000000")  # above target - 64M (6684901376 - 67108864 = 6617792512)
+        r = self.converge("MemoryMax", "6684901376", "memory.max")
         self.assertEqual(g.read_text().strip(), "max")
         self.assertIn("deferred", r.stdout)
-        self.assertIn("dev.slice 4507009024", (self.tmp / "reconcile" / "memory-deferred").read_text())
+        self.assertIn("dev.slice 6684901376", (self.tmp / "reconcile" / "memory-deferred").read_text())
 
     def test_a_deferred_dev_slice_lowering_reclaims_the_load_tiers_never_dev_slice_itself(self) -> None:
         # P-plat-19e review F3: the cockpit lives in dev.slice; only dev-gates and dev-background are reclaimed
@@ -716,7 +720,7 @@ echo "RC=$MDT_RC"
             (self.cg / "dev.slice" / tier).mkdir()
             tiers.append((self.cg / "dev.slice" / tier / "memory.reclaim"))
             tiers[-1].write_text("")
-        r = self.converge("MemoryMax", "4507009024", "memory.max")
+        r = self.converge("MemoryMax", "6684901376", "memory.max")
         self.assertIn("deferred", r.stdout)
         self.assertEqual(dev_reclaim.read_text().strip(), "")  # the old code wrote 256M here
         for f in tiers:
@@ -827,7 +831,7 @@ class TemplateAndDocsTests(unittest.TestCase):
         self.assertFalse(hasattr(cap, "DEDICATED_MEMORY_KEEP_DEFAULT"))
 
     def test_check_sh_expects_no_tier_ceiling_on_dedicated_dev(self) -> None:
-        # buildkitd still has none; gates/background are verified against the derivation (dev.slice Max minus the protected Lows)
+        # buildkitd still has none; gates/background are verified against the derivation (= dev.slice's Max since P-plat-19h)
         self.assertEqual(CHECK_SH.count("HOST_ROLE=dedicated-dev means no per-tier memory ceiling"), 1)
         self.assertIn("dedicated-memory", CHECK_SH)
         self.assertIn("DEDICATED_${_tier_key}_", CHECK_SH)

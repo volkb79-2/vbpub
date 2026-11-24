@@ -157,7 +157,7 @@ SPEC §9.
 | RG-255 | `TestRg109InterruptedClient` couples client completion to stdout-pipe EOF and a fixed 60 s deadline; the immediate process-lifecycle neighbours repeat the pattern | Minor | FIXED 2026-11-10; file-backed capture, process-event waits, ready/release stdout-holder and controlled-clock regressions; next ID after main RG-254 |
 | RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
 | RG-262 | no per-lane secret-file mounts; one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner | Medium | OPEN 2026-11-11 |
-| RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11 |
+| RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11; addendum OPEN 2026-11-24 (docs-only diff reports FAIL exit 5 NO_MUTANTS; should be NOT_APPLICABLE) |
 | RG-264 | native R2 worker/resource identity semantics vary by Assay generation and the user docs need an explicit version boundary | Major | RESOLVED 2026-11-11 (Assay B529; versioned docs) |
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
@@ -197,11 +197,14 @@ SPEC §9.
 | RG-304 | prune hygiene: doubled kept counts, flag check, fixture order, stale allowlist | Minor | OPEN 2026-11-24 (P-core-01 review round 2) |
 | RG-305 | `.run-gate` producers that neither own their lifetime nor are known to prune | Major | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
 | RG-306 | run-gate's own assay lanes leave `pytest-of-<user>` in the shared state root | Minor | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
-| RG-307 | 16 assay wrappers have a zero outer-budget margin | Minor | OPEN 2026-11-24 (RG-296 implementation; P-core-08) |
-| RG-308 | runtime Assay-budget warning conflicts with R-59, and argparse accepts ambiguous option prefixes | Minor | OPEN 2026-11-24 (P-core-08 review) |
+| RG-307 | 16 assay wrappers had a zero outer-budget margin | Minor | FIXED IN THIS BRANCH (P-core-RG307); all raised to inner + 5m, `--strict` clean |
+| RG-308 | runtime Assay-budget warning conflicts with R-59 (a), and argparse accepts ambiguous option prefixes (b) | Minor | (a) FIXED IN THIS BRANCH (P-core-RG307); (b) OPEN 2026-11-24 (P-core-08 review) |
 | RG-309 | `lanes --check` treats an Assay-accepted canary budget spelling as a hard `canary` FAIL | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-310 | the new `lanes --check` options break more option abbreviations than CHANGES and RG-308(b) record | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
 | RG-311 | `lanes --check` test and wording follow-ups: real-repository test pins every finding to `budget-margin`, plus five nits | Minor | OPEN 2026-11-24 (P-core-08 review round 2) |
+| RG-312 | R-59 does not cover enclosing `kind = "command"` lanes or consumer timeouts; P-core-RG307 r1 follow-ups | Minor | OPEN 2026-11-24 (P-core-RG307 review r1; the two known enclosing budgets were fixed forward) |
+| RG-313 | `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record` asserts "no direct child left" immediately after the client exits, racing the fake `docker logs -f` shell's 0.2 s `sleep` window | Minor | OPEN 2026-11-24 (rg307b gate-full on v1001, assay-r1 R0; passed in the selftest lane on the same sha) |
+| RG-314 | `lanes --check` does not warn when a lane's env value contains `{worktree}` AND the same variable is in the Assay lane's `env_passthrough`: Assay folds passthrough values into `judge_sha256`, so every remote-gate throwaway checkout rejects a seeded resume | Minor | OPEN 2026-11-24 (rollback `rgw-r2-20261124T162538-r1002`, `rejected_total=14`, Assay B577) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -7739,7 +7742,7 @@ value appears in the refusal text in a table test. (c) The dstdns pilot lane run
 
 ## RG-155 — the lane header prints `budget 300m (hard limit)` while an Assay lane's own `budget` in `assay.toml` ends each attempt (LANE_TIMEOUT)
 
-**Status:** PARTIAL 2026-11-04 (fix-rg-154-20261104): header and exec/bare paths print the Assay lane budget with its source and warn when it is below the run-gate budget; the warning against the plan's estimated wall time is OPEN (needs `assay plan --json`, assay B213). Filed 2026-11-04. Severity: Minor.
+**Status:** PARTIAL 2026-11-04 (fix-rg-154-20261104; RG-308a, P-core-RG307): header and exec/bare paths print the Assay lane budget with its source and warn when the run-gate wrapper budget is below `inner + 5m` (the R-59 margin; `outer < inner` gets the stronger wording). The warning against the plan's estimated wall time is OPEN (needs `assay plan --json`, assay B213). Filed 2026-11-04. Severity: Minor.
 
 **Observed.** `inf_events_obs_r2` declares `budget = "3m"` in dstdns's `assay.toml` and its plan estimates 2880 s serial. Run-Gate printed
 `run-gate: budget 300m (hard limit; clock starts after admission and lock waits)` (its own wrapper limit) and the first attempt ended
@@ -8417,6 +8420,8 @@ commit.
 **Priority.** Medium. The cost is already measured and grows with full-suite per-candidate campaigns, while the generic preflight prevents both wasted work and hidden base drift.
 
 **Close when.** Delegating mutation lanes disclose the resolved commits, source scope, and changed-file count before baseline; an empty source diff stops early with a distinct planning refusal; unavailable scope and unresolved refs fail closed; and the non-delegating/control lanes plus documentation pass on a clean final commit.
+
+**Addendum OPEN 2026-11-24 (docs-only diff reports FAIL, not a not-applicable verdict).** Second measured case, this time on a diff with no code at all (docs only). A remote-gate run of nyxloom's `session-extract` mutation lane with `--base 54f9d5cd7` at head `16ee4d550` ran the whole baseline and ended `run-gate: lane 'session-extract' verdict FAIL; exit_code 5; reason NO_MUTANTS` (run-gate 25.7.0; evidence `/workspaces/vbpub/.controller-state/platform/logs/plat-22d0-nyxloom-session-extract-base-v1001-132519.log`, lines 21-22). A lane whose base..head diff has nothing to mutate is not a failed gate: the controller has to read the log to learn that the FAIL is vacuous. Fix, in addition to the pre-baseline `NO_SOURCE_CHANGES` refusal above: when the diff has no files in the lane's source scope (or Assay reports `NO_MUTANTS` with `planned=0` for a request base), run-gate reports `NOT_APPLICABLE` (preferred; exit code distinct from FAIL) or a disclosed vacuous PASS, never FAIL exit 5. Acceptance: a docs-only `--base` run on a mutation lane yields the not-applicable verdict and the verdict JSON names base, head and zero in-scope files; a code diff whose mutants all fail to plan (Assay B552 case) stays `INCONCLUSIVE/NO_MUTANTS`, not not-applicable.
 
 ## RG-264 — native R2 worker/resource identity semantics vary by Assay generation
 
@@ -9724,50 +9729,68 @@ removed at exit. Either run-gate hands Assay lanes a per-run subdirectory as
 as `selftest` does. Assay's own per-mutant basetemp for R2 must keep working.
 Source: vbpub-main-controller post-prune task (b), 2026-11-24.
 
-## RG-307 — 16 assay wrappers have a zero outer-budget margin
+## RG-307 — 16 assay wrappers had a zero outer-budget margin
 
-**Status:** OPEN 2026-11-24 (RG-296 implementation; P-core-08). Severity: Minor.
+**Status:** FIXED IN THIS BRANCH (P-core-RG307): all 16 outer budgets raised
+to `inner + 5m`, so `run-gate lanes --check --all --strict` now exits 0 with
+zero findings estate-wide. Severity: Minor.
 
-`run-gate lanes --check --all` reports 16 wrappers whose outer budget equals
-the inner Assay lane budget. Container start and the editable Assay install
+`run-gate lanes --check --all` used to report 16 wrappers whose outer budget
+equalled the inner Assay lane budget. Container start and the editable Assay install
 consume that same window, so a near-limit run can end as an outer timeout
-instead of Assay's BUDGET verdict. These are `budget-margin` warnings today;
-`--strict` promotes them to failures.
+instead of Assay's BUDGET verdict. These WERE `budget-margin` warnings; RG-307 raised them
+and the real-repository test now asserts zero findings.
 
-| Project | Run-Gate lane | Outer | Assay lane | Inner |
-|---|---|---|---|---|
-| cgprofile | r2 | 24h | r2 | 24h |
-| ciu | ciu | 8h | ciu | 8h |
-| cmru | assay-first-release-r2 | 7h | cmru-first-release-r2 | 7h |
-| libraries/cowtree | cowtree | 180m | cowtree | 180m |
-| libraries/iobench | r2 | 360m | iobench | 360m |
-| libraries/test-policy | r2 | 120m | test-policy | 120m |
-| libraries/vmscreen | r2 | 120m | vmscreen | 120m |
-| libraries/worktree | worktree | 8h | worktree | 8h |
-| mdt-cockpit | assay-full | 2h | host_setup | 2h |
-| nyxloom | tester-unified | 30m | tester-unified | 30m |
-| nyxloom | session-extract | 10h | session-extract | 10h |
-| pwmcp | r1 | 15m | r1 | 15m |
-| pwmcp | r2 | 4h | r2 | 4h |
-| run-gate-project | assay-r1 | 30m | r1 | 30m |
-| run-gate-project | assay-r2 | 4h | r2 | 4h |
-| vm-lab | r2 | 240m | vm-lab | 240m |
+| Project | Run-Gate lane | Old outer | New outer | Assay lane | Inner |
+|---|---|---|---|---|---|
+| cgprofile | r2 | 24h | 1445m | r2 | 24h |
+| ciu | ciu | 8h | 485m | ciu | 8h |
+| cmru | assay-first-release-r2 | 7h | 425m | cmru-first-release-r2 | 7h |
+| libraries/cowtree | cowtree | 180m | 185m | cowtree | 180m |
+| libraries/iobench | r2 | 360m | 365m | iobench | 360m |
+| libraries/test-policy | r2 | 120m | 125m | test-policy | 120m |
+| libraries/vmscreen | r2 | 120m | 125m | vmscreen | 120m |
+| libraries/worktree | worktree | 8h | 485m | worktree | 8h |
+| mdt-cockpit | assay-full | 2h | 125m | host_setup | 2h |
+| nyxloom | tester-unified | 30m | 35m | tester-unified | 30m |
+| nyxloom | session-extract | 10h | 605m | session-extract | 10h |
+| pwmcp | r1 | 15m | 20m | r1 | 15m |
+| pwmcp | r2 | 4h | 245m | r2 | 4h |
+| run-gate-project | assay-r1 | 30m | 35m | r1 | 30m |
+| run-gate-project | assay-r2 | 4h | 245m | r2 | 4h |
+| vm-lab | r2 | 240m | 245m | vm-lab | 240m |
 
-Wanted: each project raises its outer budget by at least 5m on its next touch;
-once none remain, P-core-12 runs the estate lint lane with `--strict`.
-Source: P-core-08's `run-gate lanes --check --all` audit, 2026-11-24.
+Wanted (now done): each project raised its outer budget by at least 5m; the
+estate lint lane can run with `--strict` from now on. The raises above went in
+as one package (P-core-RG307), with two one-line pinned follow-ups: cgprofile's
+`tests/test_docs.py` restated the `r2` budget (`24h` -> `1445m`), and
+nyxloom's consumer gate timeout kept covering the whole lane
+(`nyxloom/nyxloom-trove/nyxloom.toml`: `timeout_seconds` 1800 -> 2100 for the
+new 35m budget, R-32's pairing rule). Oracle: `lanes --check --all --strict`
+exits 0 with zero findings, and `tests/test_lanes_check.py`'s real-repository
+test asserts exactly that, so a new zero-margin wrapper turns it red on the
+commit that introduces it.
+Source: P-core-08's `run-gate lanes --check --all` audit, 2026-11-24;
+fixed by P-core-RG307, 2026-11-24.
 
 ## RG-308 — Assay-budget warning and argparse prefix ambiguity
 
-**Status:** OPEN 2026-11-24 (P-core-08 review). Severity: Minor.
+**Status:** (a) FIXED IN THIS BRANCH (P-core-RG307); (b) still OPEN
+2026-11-24 (P-core-08 review). Severity: Minor.
 
-(a) `assay_lane_budget_lines()` warns whenever the inner Assay budget is below
-the outer Run-Gate budget. R-59 now requires the outer budget to be at least
-the inner budget plus five minutes, so each project that fixes its RG-307
-margin starts warning on every run. Reconcile the warning policy with R-59
-(for example, warn only when the outer budget is less than twice the inner
-budget) or remove the warning. This is filed only; runtime behavior is
-unchanged in P-core-08.
+(a) `assay_lane_budget_lines()` used to warn whenever the inner Assay budget
+was below the outer Run-Gate budget. R-59 requires the outer budget to be at
+least the inner budget plus five minutes, so once RG-307 raised the estate's
+wrappers every fixed lane would have warned on every run. The warning now
+follows R-59 exactly: silent from `inner + LANES_CHECK_BUDGET_MARGIN_SECONDS`
+(5m) up; a margin wording naming both budgets, the required margin and the
+remedy in the band `inner <= outer < inner + 5m`; and a stronger BELOW wording
+for `outer < inner`, where the container is killed before Assay can close its
+verdict. The "effective per-attempt bound" line is unchanged, and an
+unreadable inner budget behaves as before. Oracles:
+`test_wrapper_budget_warning_follows_r59` (four cases) and
+`test_margin_warning_names_the_margin_and_the_remedy`; SPEC R-59 states the
+run-time rule next to the offline one.
 
 (b) `RunGateArgumentParser` keeps argparse's default `allow_abbrev=True`, so
 new prefixes such as `--proj` and `--str` are accepted silently. The new exact
@@ -9811,9 +9834,9 @@ Source: `~/core-runs/P-core-08-review-r2.md`.
 
 **Status:** OPEN 2026-11-24 (P-core-08 review round 2, L2 and NITs). Severity: Minor.
 
-- The real-repository test asserts that every finding is `budget-margin`, as the
-  budget-tier ruling asked. A project that adopts a valid Assay spelling would
-  then break Run-Gate's own selftest; assert "all WARN, no FAIL" only.
+- (Bullet 1 superseded by P-core-RG307: the real-repository test now asserts
+  ZERO findings and `--strict` exit 0. A future valid Assay-only duration
+  spelling would turn it red for a non-defect; reconcile with RG-309.)
 - The RG-296 body says the rules were "ported to tests/test_lanes_check.py";
   they live in `run_gate.py` and the project tests remain.
 - `budget-unreadable` fires even when there is no outer budget or canary to
@@ -9822,3 +9845,43 @@ Source: `~/core-runs/P-core-08-review-r2.md`.
 - A broken `assay.toml` in single-project mode can exit 1 or 2 depending on the
   error kind.
 Source: `~/core-runs/P-core-08-review-r2.md`.
+
+## RG-312 — R-59 does not check enclosing command lanes or consumer timeouts
+
+**Status:** OPEN 2026-11-24 (P-core-RG307 Opus review r1: M1, M2, L2, NITs). Severity: Minor.
+
+- **Enclosing command lanes (M1).** `lanes --check` compares a wrapper `budget` with its inner Assay budget only. A `kind = "command"` lane that runs other lanes in sequence (`run-gate-project` `gate-full` = selftest 20m + assay-r1 + assay-r3 15m; `vm-lab` `gate` = r0-r1 20m + wheel 10m + r2) has a hard budget that must stay above the SUM of its steps. RG-307 raised `assay-r1` 30m -> 35m and `vm-lab` `r2` 240m -> 245m, which made both enclosing lanes too short (70m vs 1h; 275m vs 270m); fixed forward in P-core-RG307 (75m, 280m). Wanted: a check that parses `run-gate <lane>` steps out of a command lane's argv and warns when the budget is below the sum, plus an estate-wide review of other command lanes that chain wrapped lanes.
+- **Consumer timeouts have no headroom (M2).** `nyxloom/nyxloom-trove/nyxloom.toml` `[gates.tester-unified]` `timeout_seconds = 2100` equals the 35m lane budget exactly (main's ruling, the smallest value that satisfies `TestEstateBudgetTimeoutPairing`). Nyxloom's clock also counts run-gate admission and lock waits. topos has the same 1800 vs 30m pairing. Wanted: the pairing test requires headroom (for example `timeout >= budget + 300`), then raise nyxloom (>= 2400) and topos.
+- **L2.** No test covers a lane with a valid inner Assay budget but no wrapper `budget`; removing that guard in `assay_lane_budget_lines()` would crash such lanes unnoticed.
+- **NIT 1.** The margin warning prints a false equation: `(100s + 5m = 7m)` when the remedy is rounded up; say "raise to at least 7m".
+- **NIT 2.** `tests/test_run_gate.py` `assert run_gate.budget_seconds("7m") >= 100 + 300` compares two constants and cannot fail.
+- **NIT 3.** The R-59 sentence in `SPEC.md` (~:256) needs a wording pass (two issues named in the review).
+- **NIT 4.** The header line and the BELOW warning contradict each other when outer < inner (pre-existing): the header still names the inner budget as the effective bound.
+- **NIT 5.** The margin branch's "+ 5m" text is not asserted; a mutant on `margin_s // 60` in the margin wording survives.
+- **NIT 7.** The nyxloom.toml comment says "R-32/R-59 pair them"; only R-32 pairs consumer timeouts (R-59 is wrapper vs inner).
+
+Source: vbpub-core, P-core-RG307 Opus review r1 (`~/core-runs/rg307b-review-r1.md`).
+
+## RG-313 — SIGTERM client test races the fake `docker logs -f` shell exit
+
+**Status:** OPEN 2026-11-24 (found by the rg307b gate-full on v1001, lane `assay-r1` R0, run `rgw-gate-full-20261124T144400-v1001`, head 1193575c2). Severity: Minor, a test defect (flaky red, no product defect).
+
+- **Test.** `tests/test_run_gate.py:19501`
+  `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record`. The leak assertion is `assert leaked_children == []` (`:19554`), taken from `_direct_child_pids()` (`:119`) straight after `_wait_for_captured_process()` returns. The test makes itself a child subreaper (`_set_child_subreaper(True)`, `:105`), so the fake Docker shell is adopted by the test process when the client dies.
+- **Evidence.** The failing run printed `SIGTERM cleanup left the fake docker logs process tree behind: [(17377, 'docker')]`. The 3510-test `selftest` lane on the SAME sha passed this test, and the branch does not touch it or its helpers (last change 886452561, 2026-10-28, "reap SIGTERM fake docker sleeper"). The leaked pid is the fake `docker` shell itself (`comm` is `docker`), not a `sleep`.
+- **Probable cause (read from the shim, not reproduced).** The fake `logs -f` shim (`:19136-19148`) polls `sleep 0.2` in the foreground under `trap '__stop_logs' TERM INT`. A POSIX shell runs the trap only after the current foreground command ends, so after SIGTERM the shell lives for up to 0.2 s more. If the client exits and the test reads `/proc/self/task/*/children` inside that window, the shell is still a live (or not yet reaped) direct child. The window is a sleep, so the verdict depends on host load.
+- **Fix direction.** Wait on the child, not on a sleep window: replace the one-shot `_direct_child_pids()` read by a bounded wait that reaps adopted children (`os.waitpid(pid, 0)` per pid, with the same deadline style as `_kill_and_reap_direct_children`, `:138`) and only then asserts that NONE of them survived the deadline; or make the shim's wait end on the signal itself (`sleep 0.2 & wait $!` so the trap runs at once, and kill the sleeper in the trap). Either gives an explicit synchronisation point. Do not widen the sleep or add a fixed `time.sleep`. Any sibling test that reads `_direct_child_pids()` once after a SIGTERM (`tests/test_run_gate.py:19675`, `:22423`, `:22618`, `:32287` at 1193575c2) has the same race; fix them together.
+- **Close when.** The test passes under a loaded host without a fixed delay, and a hand mutation that makes the shim ignore TERM still fails it.
+
+Source: vbpub-core, rg307b gate-full failure 2026-11-24 (`~/controller/remote-gates/rgw-gate-full-20261124T144400-v1001/`), main's ruling "file RG-313 now" (load-independent testing rule).
+
+## RG-314 — a `{worktree}` env value that is also passed through to Assay breaks every seeded resume
+
+**Status:** OPEN 2026-11-24 (reported by vbpub-rollback from the R2 run `rgw-r2-20261124T162538-r1002`: `rejected_total=14`, Assay B577). Severity: Minor, a lane-authoring trap with a lint gap (no product defect).
+
+- **Mechanism.** Assay folds the values of the variables named in a lane's `env_passthrough` into `judge_sha256` (B142). A remote gate checks the sha out into a throwaway directory, so a lane env value that embeds `{worktree}` renders to a different path on every run. The same variable listed in the Assay lane's `env_passthrough` therefore changes the judge hash on every run, and a seeded (carried-over) resume is rejected as a judge mismatch for every mutant (14 rejected in the run above).
+- **Where it was found.** `scripts/debian-install-v2/run-gate.toml:78` exports `PYTHONPATH={worktree}/assay/src:...`, and `scripts/debian-install-v2/assay.toml:35` has `env_passthrough = ["PATH", "PYTHONPATH"]`. Many `run-gate.toml` files put `{worktree}` into `PYTHONPATH` (a rough grep finds more than a dozen); the only other `assay.toml` that passes `PYTHONPATH` through is the `ciu/docs/v8-dstdns-demo` example, which is not a gated lane. The pairing is therefore currently live only in debian-install-v2. The pairing is easy to create by accident and nothing reports it.
+- **Wanted.** `run-gate lanes --check` warns (not fails) for a lane whose env or argv sets a variable to a value containing `{worktree}` when the Assay config the lane runs lists that variable in `env_passthrough`, and names both files and the remedy: keep the path out of the passed-through variable (set it inside the lane command only, or use a worktree-relative value), or drop the variable from `env_passthrough` if the judge does not need it. A test pins the warning with a lane that has both, and a lane with only one of the two stays silent.
+- **Close when.** `lanes --check` warns for the debian-install-v2 pairing before it is fixed, and a seeded resume across two throwaway checkouts is accepted once the pairing is removed.
+
+Source: vbpub-core, filed on vbpub-rollback's report 2026-11-24.

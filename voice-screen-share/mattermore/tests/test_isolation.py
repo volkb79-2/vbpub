@@ -16,8 +16,8 @@ GLOBAL = PROJECT / "ciu.global.defaults.toml.j2"
 MM_DEFAULTS = PROJECT.parent / "mattermost-server" / "ciu.defaults.toml.j2"
 MM_GLOBAL = PROJECT.parent / "mattermost-server" / "ciu.global.defaults.toml.j2"
 
-# Public/live edge ports the tryout must never take.
-LIVE_EDGE_PORTS = {80, 443, 8443, 8444, 9443}
+# Public/live service ports the tryout must never take.
+LIVE_SERVICE_PORTS = {80, 443, 8443, 8444, 9443}
 
 
 def _cfg() -> dict:
@@ -47,12 +47,11 @@ def test_no_host_ports_by_default() -> None:
 
 def test_published_media_port_is_never_a_live_edge_port() -> None:
     port = _cfg()["tryout"]["media_host_port"]
-    assert port not in LIVE_EDGE_PORTS
+    assert port not in LIVE_SERVICE_PORTS
 
 
-def test_no_tls_edge_calls_routers_or_ingress_by_default() -> None:
+def test_no_traefik_l4_routers_or_ingress_by_default() -> None:
     text = COMPOSE.read_text(encoding="utf-8")
-    assert "mattermost-calls-tcp" not in text and "mattermost-calls-udp" not in text
     assert "traefik.tcp" not in text and "traefik.udp" not in text
     # the only router name is distinct from the live Mattermost's
     assert "nyxloom-mattermost" not in text

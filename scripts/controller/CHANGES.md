@@ -6,6 +6,37 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Changed
+- `hooks/ctx-hooks.py` is now a drop-in replacement for the untracked live hook
+  `.controller-state/hooks/ctx.py` (CTL-43; wiring and deleting `ctx.py` are the
+  controller's step): only the command path in `.claude/settings.local.json`
+  changes. The pressure ladder reads its ceiling from
+  `~/.claude/settings.json` (`modelSettings.<model>.autoCompactWindow` of the
+  transcript's model, else the top-level `autoCompactWindow`, else 500000) and
+  prints the live hook's growth marker ("calls to the Nk ceiling"). One soft
+  threshold per kind: `CTX_SOFT_CONTROLLER` (alias `CTX_CONTROLLER_SOFT`, default
+  650000) and `CTX_SOFT_AGENT` (default 200000). A controller below its threshold
+  persists and keeps working; at or past it, it is told to write the handover
+  (controller-handover skill), sync the plan, set READY and end the turn
+  (operator 2026-11-18: auto-compaction is not a safe handover). An agent gets
+  the marker only until its threshold, then finish-or-PARTIAL. `CTX_HOOK_ROLE`
+  is honoured. Ported from the live hook: the stale-HANDOFF warning (older than
+  15 min, controller past 200k), the growth line, the PreCompact "merges since"
+  list. `session-start` prints the READ FIRST list of the newest `RESUME HERE #N`
+  block of HANDOFF.md instead of a hard-coded order. New `CTX_REPO_ROOT` and
+  `CTX_HANDOFF_FILE`; the default state directory is the nearest
+  `.controller-state` above the hook's `cwd` (else the repo holding the script,
+  else nothing is written). The pressure state file is keyed by session id as
+  well and lives in `<state>/hooks/`. 12 new hand mutants.
+- `hooks/ctx-hooks.py` review round 1 (P-plat-05): readback files and state are
+  per session (`readback-<session_id>-N.md`, `readback-state-<session_id>.json`),
+  `session-start` names a readback only when that session's own last build
+  succeeded and prints the live hook's role rule before the main controller's
+  list (`CTX_MAIN_CONTROLLER` names it), `CTX_HOOK_ROLE=agent` skips the
+  pre-compact build, the handover note fires at `min(soft, ceiling - 50000)`
+  (warning event in the log), and the "weigh the three things" sentence is back
+  in every note that tells a role to decide. 5 more hand mutants.
+
 ### Suite budget and remote-gate OOM classification (P-plat-23)
 - `run-gate.toml` `[lanes.suite]` budget 30m -> 90m (measured 29m57s wall on r1002, 34m59s and 55m14s on v1001; slowest x 1.6).
 - `remote-gate.sh`: classification reads runner- or run-gate-written evidence only.
@@ -14,6 +45,9 @@ no separate version number, so entries are grouped by the work that landed.
   and keeps its code. rc 76 needs a slice oom_kill delta above 0. Words in the lane's
   own output (`OOMKilled`, `oom-kill`, `Killed`, `exit 137`, `BUDGET_EXCEEDED`, e.g.
   from tests that print them) no longer decide anything.
+
+### Hygiene notifier (P-plat-22b part C)
+- `ctl-hygiene.sh` (new, report-only, always exit 0): `HYGIENE <rule> <path>: <value> (threshold <t>)` lines for MEMORY.md size/stale markers/dead links (M1-M3), handoff and STATE block counts and size (H1, H2), stale or non-programme `handovers/` files (S1) and closed-entry share of tracked backlogs (B1). B1 follows the R2-4 review: the entry heading accepts `B001` and `IOB-BL-40` style IDs (any ID part with a digit), a status word in the heading's parentheses closes an entry, and a file with Status lines but no parsable entry is reported as `unparsed`. `ctl-doctor.sh` appends the lines to its report (`hygiene` array in `--json`), never changing the exit status. Tests: `tests/test-ctl-hygiene.sh` (fake trees, pinned date) and a hygiene case in `tests/test-ctl-doctor.sh`; both wired into `tests/run-suite.sh`. Each rule group runs in its own guard (an exception becomes a `HYGIENE error <group>` line, later groups still run). Hand mutants: `ctl-hygiene-state-default`, `ctl-hygiene-heading-paren`, `ctl-doctor-hygiene-default` (the doctor test and `test-ctl-hygiene.sh` also run the production defaults: doctor to hygiene script, main-checkout state dir from a linked worktree, memory dir under HOME). `ctl-doctor.sh --help` stops at the header. Follow-ups: CTL-63, CTL-64.
 
 ### Launcher must-fixes (CTL-38, CTL-42 part 1)
 - CTL-38: every Codex exec path — new, manual resume, and automatic
@@ -40,6 +74,10 @@ no separate version number, so entries are grouped by the work that landed.
   lists, so a Unicode collation cannot admit a non-ASCII digit.
 
 ### Added
+- `dev`, `dev_profile.py`, `dev-profiles.toml`, `docs/DEV.md` (P-plat-02, CTL-52): the generic remote dev tool. `dev -p <project> <verb>` syncs the worktree (committed head as a bundle, plus patch and untracked files up to 20 MiB) to a gate host and runs the project's test, lint, build or shell verbs in the capped, network-less container of its run-gate environment; ten profiles (hostobs, run-gate-project, cmru, libraries/cli-extended, fleetd, assay, tls-edge, ciu, scripts/controller, scripts/netcup). Host admission `host-admission/1` (wait while memory PSI full avg10 >= 3, one start at a time, exit 75 when not admitted), `dev gc` for stale host state. Not gate evidence: banner on the first and last stderr line. `tests/test_dev.py` runs first in the `suite` lane; 8 new hand mutants (`dev-*`). `hostobs/tools/dev` is now a shim over it.
+- `dev` review round 1 (P-plat-02): tty mode (`shell`, interactive `gdb`) exports `D`/`W` into the inner bash (it could not start a container); batch mode waits on a backgrounded docker client so a trapped signal removes the container at once (ssh drop without a signal documented as the remaining window); image refs, project key and mount paths are allow-listed (host-side injection) and the read-only `.git` mount is the tool's own, never a profile key; the patch ignores the cockpit's git config and a failed host sync step is exit 3 naming the step; the tool refuses (exit 2) to run from another worktree and the banner names the worktree; `docker inspect --type container`, user exactly 1003:1003, the container starts from the preflight's host image id. 3 more hand mutants (`dev-tty-env`, `dev-git-ro`, `dev-profile-image-regex`).
+- `compact-resume.sh <pane> <guidance-file> <prompt-file> <log>` (P-plat-21 r1): the DEFAULT successor restart, productized from the gitignored original (wait for idle, `/compact <guidance>`, wait for the compaction to finish, type the prompt file; context kept as a summary, background work survives; measured 442k -> ~60k in ~46 s). Exit codes 0, 2 (bad arguments or no pane), 3 (never idle), 4 (compaction unfinished), 5 (the input line never emptied: before every typed send the pane must be idle AND the input row, the last line starting with `❯`, empty), 6 (a send-keys call failed; text is sent after `--`, so a prompt starting with `-` survives). The input-row check ignores Claude Code's dim prompt suggestion (capture with `-e`, dim runs dropped with `perl`; a plain capture made every idle pane look as if text was typed). The footer markers, idle polling and log/pane checks moved into the sourced `resume-lib.sh`, which `clear-resume.sh` (the `/clear` clean-slate option) uses too. New `tests/test-compact-resume.sh` (stub `tmux`, `COMPACT_RESUME_*` seams); AGENTS.md, the `controller-handover` skill and the agctl DESIGN (verb `agctl successor <pane> <prompt-file> [--clear]`) updated.
+- `clear-resume.sh <pane> <prompt-file> <log>` (P-plat-21): the proven successor-restart helper for an interactive Claude Code session in tmux (wait for idle, `/clear`, wait for `ctx ?`, type the prompt file, Enter), from the gitignored program-directory original. Adds argument validation with a usage line, documented exit codes (0 sent; 2 bad arguments or no pane; 3 never idle, nothing sent; 5 input line never emptied; 6 a send-keys call failed), `set -u`, the footer markers as named variables (tied to Claude Code 2.1.331) and `CLEAR_RESUME_*` test seams. New `tests/test-clear-resume.sh` drives it against a stub `tmux`. Documented in AGENTS.md, the `controller-handover` skill and the agctl DESIGN (future verb `agctl successor`).
 - `remote-gate.sh`: forwards `--collect-store <rel>` (repeatable), `--seed-store <local dir>=<rel>` (repeatable; the local side is made absolute) and `--store-max-mib <n>` to `remote-gate.py run`, one argv word per value, accepted in any order with `--base` and before `--`, with the runner's own refusals (including a `.git` path component) applied before a slot is taken (RG-298; semantics in `scripts/netcup/runner/README.md`). Test: `tests/test-remote-gate.sh`.
 - `gate-run.sh`: after it holds a slot and before it starts `run-gate`, it waits while memory PSI `full` avg10 is >= 3 (CTL-57): one line a minute, bounded by `CONTROLLER_GATE_PSI_WAIT_S` (default 1800), then exit 75 "not admitted ... nothing ran" (never a lane verdict). An unreadable PSI file exits 75 at once. `CONTROLLER_GATE_PSI_FILE` is the test seam. Same rule as `dev` host-admission/1. Tests in `tests/test-gate-slots.sh` (the other gate-run tests run against a quiet PSI file); 9 new hand mutants.
 - `rules.md`: "House rules for every implementer brief" (CTL-50): remote dev container before each commit (interim `hostobs/tools/dev` for Rust), no direct `hx.sh`/`ssh`/`docker` and no tests in the devcontainer, contract plus target size with at most 2 review rounds, explicit launch effort, unique run names with resumed runs verified from git, DONE/PARTIAL/BLOCKED with a finalization. `BRIEF-TEMPLATE.md`, `finisher-generic.md` and the README point to it; the README records the bash freeze (CTL-40).

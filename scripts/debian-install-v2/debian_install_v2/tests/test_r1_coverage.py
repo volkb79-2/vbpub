@@ -576,7 +576,7 @@ def test_resume_removes_controller_ssh_key_only_after_stage2_done_marker(tmp_pat
         credential_mode="systemd",
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
     monkeypatch.setattr(installer, "_stage2", lambda: None)
@@ -608,7 +608,7 @@ def test_resume_loads_credentials_and_thread(tmp_path, monkeypatch):
     (cred_dir / "telegram_chat_id").write_text("456\n")
     monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(cred_dir))
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
     (state_dir / "telegram_thread_id").write_text("789\n")
@@ -631,7 +631,7 @@ def test_resume_failure_records_state(tmp_path, monkeypatch):
         credential_mode="systemd",
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
 
@@ -648,7 +648,7 @@ def test_resume_failure_records_state(tmp_path, monkeypatch):
 def test_discover_root_rejects_non_block(tmp_path):
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "overlay\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "overlay overlay\n"
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
@@ -660,7 +660,7 @@ def test_discover_root_rejects_non_block(tmp_path):
 def test_discover_root_rejects_malformed(tmp_path):
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/mystery\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/mystery ext4\n"
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
@@ -674,7 +674,7 @@ def test_detect_release_unsupported(tmp_path, monkeypatch):
     fake_content = 'PRETTY_NAME="Debian GNU/Linux 99"\nVERSION_CODENAME=notreal\n'
     monkeypatch.setattr("pathlib.Path.read_text", lambda self, **kw: fake_content)
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
@@ -699,7 +699,7 @@ def test_disk_facts_missing_root(tmp_path):
         auto_reboot_after_stage1=False,
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
     actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = "label: gpt\ndevice: /dev/vda\n\n"
     installer = Installer(config, actions)
@@ -723,7 +723,7 @@ def test_preflight_rejects_unexpected_mounts(tmp_path):
         auto_reboot_after_stage1=False,
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
         "/dev/vda3 / ext4\n/dev/vda4 /mnt ext4\n"
     )
@@ -755,7 +755,7 @@ def test_preflight_allows_high_numbered_boot_partition_physically_before_root(tm
         auto_reboot_after_stage1=False,
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
         "/dev/vda15 /boot/efi vfat\n/dev/vda1 / ext4\n"
     )
@@ -785,7 +785,7 @@ def test_preflight_rejects_mounted_partition_physically_after_root(tmp_path):
         auto_reboot_after_stage1=False,
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda1\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda1 ext4\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
         "/dev/vda15 /boot/efi vfat\n/dev/vda1 / ext4\n/dev/vda2 /mnt ext4\n"
     )
@@ -813,7 +813,7 @@ def test_preflight_rejects_holders(tmp_path, monkeypatch):
         auto_reboot_after_stage1=False,
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = "/dev/vda3 / ext4\n"
     installer = Installer(config, actions)
     monkeypatch.setattr("pathlib.Path.is_dir", lambda self, **kw: True)
@@ -867,7 +867,7 @@ def _make_with_pubkey(tmp_path, pubkey=""):
         controller_ssh_pubkey=pubkey,
     )
     actions = _FakeActionsWithSSH()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     StateStore(config.state_dir).save_new(StateStore.new(config))
     return Installer(config, actions), actions
 
