@@ -85,9 +85,10 @@ same network at all.
 - `expose:` documents that a port is available but does NOT publish it.
   It is only reachable from containers on the same Docker network.
 
-**Implication**: only the edge proxy should use `ports:` for public HTTPS and
-optional media listeners. Consumer services use `expose:` so Traefik can route
-to them without publishing their own host ports.
+**Implication**: the edge proxy uses `ports:` for public HTTP/HTTPS. HTTP
+consumer services use `expose:` so Traefik can route to them without publishing
+their own host ports. An application that serves raw TCP/UDP media publishes
+that media port pair directly on the host.
 
 ### `127.0.0.1` is per-network-namespace, not per-host
 
@@ -510,12 +511,8 @@ ambiguous.  At least one discriminator is required.
 One HTTP/TLS Traefik entrypoint carries all HTTPS: `websecure` on port 443.
 Every service gets its own host name; there is no alternate HTTPS port.
 Generic defaults publish 80/tcp and 443/tcp only. HTTP/3 optionally adds UDP
-on the configured public HTTPS port; the optional Calls media preset adds
-8443/tcp and 8443/udp.
-
-When Mattermost Calls support is enabled, two raw L4 entrypoints are added:
-one TCP and one UDP, both on public (and container) port 8443. They are
-distinct protocol sockets, so the same numeric port is safe.
+on the configured public HTTPS port. Raw media stays outside Traefik: the
+application publishes its own TCP/UDP ports directly.
 
 Path-based routing can be layered on top by adding `&& PathPrefix(...)` to the
 router rule.
@@ -803,8 +800,9 @@ If two containers attempt to publish the same host port (e.g., both `ports: - "4
 - Docker rejects the second `docker compose up` with:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
 - The first stack retains the binding; the second fails to start.
-- **Rule**: only the `edge-proxy` stack may publish host HTTPS, optional HTTP,
-  and explicitly configured L4 media ports. Consumer stacks use `expose:` only.
+- **Rule**: only the `edge-proxy` stack may publish host HTTP/HTTPS ports.
+  HTTP consumer stacks use `expose:` only; an application serving raw media
+  owns and publishes that separate host port pair itself.
 
 ### Traefik router rule collision (proxy level)
 

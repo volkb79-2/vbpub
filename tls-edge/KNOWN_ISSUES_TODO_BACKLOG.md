@@ -4,18 +4,6 @@
 
 ## Known limitations
 
-### Mattermost Calls media requires explicit edge opt-in
-
-**Resolved 2026-11-21:** the generic tls-edge template keeps raw TCP/UDP media
-ports closed by default. When hosting a Mattermost Calls consumer, configure
-the edge with `[tls_edge.calls] enabled = true` and `public_port = 8443`; the Mattermost
-project's own default media port remains 8443. This is an intentional split
-between safe generic edge defaults and an application-specific listener.
-
-`tests/test_calls_defaults_agree.py` pins the shared port numbers while allowing
-the edge listener to remain disabled until an operator opts in. A live Calls
-acceptance check still belongs in the migration checklist.
-
 ### acme-data volume loss triggers certificate re-issuance (`store = "volume"`)
 
 This limitation applies only with `[tls_edge.acme] store = "volume"`. Running
@@ -50,13 +38,6 @@ stacks (pre-TLS 1.1), and `curl` invocations against the bare IP address.
 
 Workaround: set `sniStrict: false` in `conf.d/options.yml`.  Traefik
 hot-reloads the file via inotify; no container restart is required.
-
----
-
-### One media pair per edge (Calls)
-
-The Calls TCP and UDP entrypoints (8443) can be attached by one consumer only: a second consumer would
-share the public port.  There is no alternate HTTPS port; every HTTPS service needs its own host name.
 
 ---
 
@@ -136,8 +117,8 @@ deployment.
 ### TE-03 — four deployment paths
 
 The README offers plain compose on the committed `edge-proxy/`,
-`scripts/install.sh` (a stale third override writer without HTTP/3 or Calls
-fields), manual wildcard, dev and a ciu checkout, and the CLI accepts only an
+`scripts/install.sh` (a stale third override writer), manual wildcard, dev and
+a ciu checkout, and the CLI accepts only an
 instance root. Decided: the get.py instance with ciu is the one supported path;
 `install.sh` is deleted; the CLI takes a stack dir (the directory containing
 `ciu-stack/`, `consumer.env` optional) so it serves a checkout too;
@@ -188,9 +169,8 @@ the domain is exported in `consumer.env`, written apart from the override.
 Decided: `consumer_contract(effective)` renders `consumer.env` and
 `tls-edge show --json` (`TLS_EDGE_DOMAIN`, `TLS_EDGE_NETWORK`,
 `TLS_EDGE_HTTPS_ENTRYPOINT`, `TLS_EDGE_HEADERS_MIDDLEWARE`, `TLS_EDGE_HTTP3`,
-`TLS_EDGE_PUBLIC_PORTS`), and consumer tests import it from `tls-edge/src`. The
-red voice-screen-share Mattermost Calls test is fixed on the consumer side by
-P-edge-01.
+`TLS_EDGE_PUBLIC_PORTS`), and consumer tests import it from `tls-edge/src` when
+the checkout includes both projects.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M4
 
@@ -201,19 +181,6 @@ private-helper, source-grep and config-literal oracles in P-edge-04. P-edge-03
 covers the standalone/ciu renderer oracles and D10's coverage-exclusion policy.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M5, M6
-
-### TE-09 — Calls media through Traefik
-
-The Calls preset (`[tls_edge.calls]`, `mattermost-calls-*` entrypoints, port
-8443, its CLI questions and agreement tests) puts an app-specific UDP media
-proxy into the generic edge, while Jitsi JVB publishes its media directly.
-Decided 2026-11-24: Mattermost publishes Calls media directly; the next major
-release deletes the preset, and the schema 2 `migrate()` drops
-`calls.enabled = false` silently and refuses `calls.enabled = true` with a
-pointer to the Mattermost stack. The live cut-over is one window: the edge
-drops its 8443 listeners and Mattermost publishes 8443 itself.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M7
 
 ### TE-11 — docs restate facts
 
@@ -306,7 +273,7 @@ sufficient for a searchable, persistent audit trail.
 ### Instance packaging follow-ups (filed 2026-11-04)
 
 - Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
-- Live migration of the hand-made deployment: after TE-04 and TE-09 (see TE-09 for the Calls cut-over).
+- Live migration of the hand-made deployment: after TE-04.
 
 ### ciu dev-mode integration: generate dev certs via a pre-compose hook
 

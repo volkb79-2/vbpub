@@ -28,7 +28,8 @@ All examples use `example.test`, a reserved placeholder; use your own domain.
 Containers started by `ciu up` are `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy`; `<id>` is derived from
 the path `/srv/tls-edge-instance/stack`, which is why that path is stable. The compose service name `traefik`
 stays a DNS name on the networks. Generic defaults publish **80/tcp and 443/tcp**. HTTP/3 optionally adds
-UDP on the same public HTTPS port; the optional Mattermost Calls preset adds its own TCP+UDP pair on 8443.
+UDP on the same public HTTPS port. Raw TCP/UDP media is published directly by the application; examples
+include Jitsi JVB on UDP 10000 and Mattermost Calls on TCP+UDP 8443.
 
 ## 2. Requirements
 
@@ -57,7 +58,7 @@ sudo ./ciu up
 
 The install command pins the same release tag used to fetch `get.py`. `get.py` bootstraps the instance and installs the bundled CLI;
 it does not collect site settings. `tls-edge configure` then asks for the domain, certificate mode, public ports,
-HTTP/3, optional Calls media, network/volume adoption, and runtime placement. It displays the exact changes and
+HTTP/3, network/volume adoption, and runtime placement. It displays the exact changes and
 inbound firewall ports before writing the instance override and `consumer.env`.
 
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
@@ -182,10 +183,9 @@ site override after running the CLI; secret references are intentionally kept ou
 
 **Port 80** is on by default (redirect and HTTP-01). Set `[tls_edge.ports] expose_http = false` to turn it off;
 `acme-http` then cannot work. **HTTP/3**: set `[tls_edge.http3] enabled = true` to publish UDP on the public
-HTTPS port; keep TCP open for HTTP/1.1 and HTTP/2 clients and fallback. **Calls**: set
-`[tls_edge.calls] enabled = true` and configure `public_port` only when the host has a Calls consumer. Enable
-the corresponding UDP/TCP rules in both firewalls. Use `tls-edge show` to print the configured inbound port
-plan.
+HTTPS port; keep TCP open for HTTP/1.1 and HTTP/2 clients and fallback. **Raw media** stays outside
+tls-edge: the application publishes its own TCP/UDP ports directly and advertises that endpoint to clients.
+Use `tls-edge show` to print the edge's configured inbound port plan.
 
 ## 5. Add a consumer
 
@@ -198,9 +198,9 @@ docker compose --env-file /srv/tls-edge-instance/stack/consumer.env config   # o
 docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d
 ```
 
-Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), no published ports
-80/443/8443 on the consumer. Mattermost Calls media attaches with the TCP and UDP routers of `pattern-e-media-udp`
-(one media pair per edge).
+Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), and no
+published HTTP ports 80/443 on the consumer. Raw TCP/UDP media is published directly by the application
+on its own host port pair, as demonstrated by `pattern-e-media-udp`.
 
 ## 6. Update
 
@@ -268,8 +268,10 @@ roll forward again to reuse it.
 State of the live host today (read only): compose project `edge-proxy` from `/root/tls-edge-LIVE`, containers
 `edge-traefik` and `edge-dockerproxy`, volume `edge-proxy_acme-data` (holds `acme.json`: the ACME account and every
 issued certificate), network `ingress_public` with consumers attached, `traefik_internal`, `cgroup_parent: edge.slice`,
-ports 80, 443, and 8443 tcp+udp plus the alternate HTTPS port being removed. HTTP/3 is not currently enabled.
-The replacement can optionally enable HTTP/3 on UDP 443; allow that port through both firewalls before doing so.
+and edge ports 80 and 443 plus the alternate HTTPS port being removed. Mattermost publishes its Calls media
+pair directly on 8443. HTTP/3 is not currently enabled. The replacement can optionally enable HTTP/3 on UDP
+443; allow that port through both firewalls before doing so. A tls-edge 3.x edge with its Calls preset enabled
+holds 8443 on that host; disable it before `ciu up` so it cannot conflict with Mattermost's direct publication.
 The two edges cannot run together because both need TCP 443, so the cut-over is a stop plus start of about
 15 to 30 seconds.
 
@@ -296,17 +298,14 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    [tls_edge.http3]
    enabled = true
 
-   [tls_edge.calls]
-   enabled = true
-   public_port = 8443
-
    [tls_edge.runtime]
    cgroup_parent = "edge.slice"
    ```
 
    Run `/srv/tls-edge-instance/bin/tls-edge configure --answers /path/to/live.toml --yes` and
-   `/srv/tls-edge-instance/bin/tls-edge validate`. Do **not** run `ciu up` yet. The proposed public set is
-   80/tcp, 443/tcp, 443/udp (HTTP/3), and 8443/tcp+udp (Calls); allow these in both firewalls.
+   `/srv/tls-edge-instance/bin/tls-edge validate`. Do **not** run `ciu up` yet. The proposed edge port set is
+   80/tcp, 443/tcp, and 443/udp (HTTP/3); allow these in both firewalls. Mattermost's direct media pair on
+   8443/tcp+udp is separate from the edge.
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
    adopted (`external: true`), never created or removed by the instance.
@@ -322,7 +321,7 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    `cd /srv/tls-edge-instance/stack && sudo ./ciu up`. Traefik re-reads `acme.json`: no re-issuance.
 6. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
-   a Calls test from outside on 8443 tcp and udp, and one real call.
+   and a Mattermost media test from outside on its directly published 8443 tcp and udp ports.
 7. **Rollback (any failure in 6).** `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`). `ciu down`
    only stops containers; to remove them as well, use `docker compose -p <project> down` (never `-v`), where
    `<project>` comes from `docker inspect <container_prefix>-traefik --format '{{index .Config.Labels "com.docker.compose.project"}}'`
@@ -350,10 +349,9 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
 
 ### Releasing tls-edge (maintainers)
 
-- **Version 3.0.0 was released on 2026-11-04.** For the next release, select
-  the version explicitly to account for the changed generic Calls default and
-  mark breaking changes with `!` or a `BREAKING CHANGE:` footer so conventional
-  versioning can identify them.
+- The Calls preset removal is a major-version change. Mark breaking changes with
+  `!` or a `BREAKING CHANGE:` footer so conventional versioning can identify
+  them, and select the target version explicitly when releasing.
 - Stage the bundled ciu reproducibly: `TLS_EDGE_CIU_VERSION=<x.y.z>` (or `scripts/stage-wheels.py --ciu-version`)
   refuses any other ciu release; without it the newest stable ciu is bundled. The staged ciu version and sha256 are
   printed: copy them into the release notes. PyPI wheels are resolved with pip's `--uploaded-prior-to P14D` cutoff,

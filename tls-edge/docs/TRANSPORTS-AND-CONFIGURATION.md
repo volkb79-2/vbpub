@@ -2,9 +2,8 @@
 
 This guide records the transport choices discussed for `tls-edge`, shows how
 consumer stacks opt in with Traefik labels, and explains where each setting is
-owned. `tls-edge` is a reusable template. Its current Mattermost Calls example
-and defaults are preconfiguration, not a requirement that every deployment
-must serve Mattermost.
+owned. `tls-edge` is a reusable HTTPS edge. Raw TCP/UDP media is published by
+the application directly, outside Traefik.
 
 ## Current shape
 
@@ -25,13 +24,9 @@ explicitly configured to use HTTPS.
 
 The generic shipped public port set is 80/TCP (HTTP redirect and, when
 selected, HTTP-01) and 443/TCP (HTTPS). Enabling HTTP/3 adds 443/UDP by default.
-Enabling the Calls preset adds 8443/TCP+UDP. Every HTTP consumer shares the
-same HTTPS listener and Traefik selects the app by host name.
-
-The templates contain an optional Mattermost Calls preset: a raw TCP and UDP
-media pair on public port 8443, disabled by default. Enable it only for a Calls
-consumer. It is separate from HTTPS and does not change how HTTP consumers are
-routed.
+Every HTTP consumer shares the same HTTPS listener and Traefik selects the app
+by host name. A consumer that also serves raw media publishes a separate host
+port pair itself; tls-edge has no L4 media listeners or routes.
 
 With HTTP/3 enabled, the request path becomes:
 
@@ -91,8 +86,7 @@ ports:
 
 The configuration derives `http3.advertisedPort` from the public HTTPS port.
 This supports a host mapping such as public UDP 9443 to Traefik's internal 443.
-The CLI checks conflicts between TCP and UDP listeners before writing changes;
-for example, a Calls pair on 9443 cannot share the public HTTPS port 9443.
+The CLI checks conflicts between HTTP listener ports before writing changes.
 
 Traefik advertises HTTP/3 through `Alt-Svc` responses when HTTP/3 is enabled.
 For a browser with no cached alternative and no usable HTTPS DNS record, the
@@ -239,8 +233,8 @@ HTTP/3 is transparent to this consumer. It keeps the same labels whether the
 browser arrives over HTTP/1.1, HTTP/2, or HTTP/3. WebSocket and SSE endpoints
 can also use the same HTTP router; they do not need separate TCP/UDP router
 labels. The existing [consumer examples](../consumer-examples/README.md) show
-public routing, middleware labels, and the distinct raw TCP/UDP labels needed
-only for non-HTTP media traffic.
+public routing, middleware labels, and an application publishing raw TCP/UDP
+media directly on the host.
 
 ## Server-originated events
 
@@ -286,7 +280,7 @@ Traefik/Compose templates consume the merged values.
 | Domain, TLS/ACME mode, ACME email, DNS provider, wildcard, static cert paths | `tls-edge configure` writes supported fields to instance `ciu-stack/ciu.toml.j2`; defaults/schema live in `ciu-stack/ciu.defaults.toml.j2`. Secrets use CIU's secret mechanism. | Rendered Traefik static config, certificate resolver, mounts, or dynamic cert file. Listener/certificate-resolver changes require CIU rendering and a container restart. |
 | Public HTTP/HTTPS ports, bind IP, port 80 on/off | `tls-edge configure` writes `[tls_edge.ports]` values in the site override; templates are `ciu-stack/traefik.yml.j2` and `ciu-stack/ciu.compose.yml.j2`. | Traefik listeners and Compose host port publications. Update host and provider firewall rules to match. |
 | HTTP/3 / UDP on the public HTTPS port | `tls-edge configure` writes `[tls_edge.http3] enabled = true`; the public UDP port and Traefik Alt-Svc advertised port derive from `ports.https`. | Enables QUIC on shared `websecure`, publishes UDP, and includes it in the firewall plan. TCP remains enabled for HTTP/1.1 and HTTP/2 fallback. |
-| Calls media preset | `tls-edge configure` writes `[tls_edge.calls]`; it is disabled by default. | Adds/removes the separate TCP/UDP entrypoints and Compose port publications, currently 8443. A consumer also needs app-specific TCP/UDP labels and its own advertised media address. |
+| Direct TCP/UDP media | The application's Compose stack owns the host publication and advertised media address. | tls-edge has no L4 media keys, entrypoints, or ports. Allow the application's media ports in the host and provider firewalls. |
 | Default TLS options and secure-header policy | `ciu-stack/conf.d/options.yml` and `ciu-stack/conf.d/middlewares.yml`. | The file-provider contents are watched and hot-reloaded. Changing `[tls_edge.headers] enabled` also attaches/detaches the middleware in static `traefik.yml.j2`, so that toggle requires render and restart. Consumer-specific middleware can instead be declared with labels. |
 | Docker network integration and migration | `[tls_edge] ingress_network`, `ingress_external`, and `join_workspace_network` in the site override. | Controls which shared/workspace networks Traefik joins and whether it creates or adopts the public ingress network. Consumer stacks still own their external network declarations. |
 | Runtime and diagnostics | `[tls_edge.traefik]`, `[tls_edge.runtime]`, `[tls_edge.health]`, and `[tls_edge.logging]` in the site override. | Sets Traefik log/dashboard behavior, cgroup parent, health-check timing, and bounded container logs. Static Traefik settings need a render/restart; Compose-only settings need a Compose update. |
@@ -311,8 +305,8 @@ persistent site override and updates only `TLS_EDGE_DOMAIN` in
 and `sudo ./ciu up --dry-run`, then apply from `/srv/tls-edge-instance/stack`
 with `sudo ./ciu up`.
 
-An instance that opts into both optional media and HTTP/3 could have a sparse
-override like this. Generic defaults leave both listeners disabled.
+An instance that enables HTTP/3 could have a sparse override like this.
+Generic defaults leave HTTP/3 disabled.
 
 ```toml
 [tls_edge]
@@ -327,9 +321,6 @@ email = "ops@example.test"
 [tls_edge.ports]
 expose_http = true
 https = 443
-
-[tls_edge.calls]
-enabled = true
 
 [tls_edge.http3]
 enabled = true
@@ -367,8 +358,8 @@ supports unattended configuration. CIU rendering and deployment remain an
 explicit next step.
 
 The CLI supports certificate mode and ACME settings, wildcard/static
-certificates, public HTTP/HTTPS ports, bind address, HTTP/3, optional Calls
-media, adoption of an ingress network and ACME volume, and cgroup parent. It
+certificates, public HTTP/HTTPS ports, bind address, HTTP/3, adoption of an
+ingress network and ACME volume, and cgroup parent. It
 does not collect secret values: DNS credentials belong in CIU secrets. The
 interactive Questionary dependency is bundled for terminal configuration;
 non-interactive commands such as `show` and `validate` do not load it.

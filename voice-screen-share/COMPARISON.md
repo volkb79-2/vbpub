@@ -118,7 +118,7 @@ Row notes:
 
 | Solution | Ports and UDP need | RAM/CPU class | Services | ciu effort | tls-edge change | Key risks |
 |---|---|---|---|---|---|---|
-| Mattermost TE (+Calls) | 443 HTTPS; Calls media **8443 TCP+UDP**; live edge also has alt HTTPS 9443 | ~1 GB, medium | 2 (app + postgres) | exists (S, moved into this area) | none; Calls entrypoints already live | 3-party limit unresolved; major-version upgrade path |
+| Mattermost TE (+Calls) | 443 HTTPS through tls-edge; Calls media **8443 TCP+UDP published directly by the app**; no alternate HTTPS port | ~1 GB, medium | 2 (app + postgres) | exists (S, moved into this area) | none; tls-edge has no media entrypoints | 3-party limit unresolved; major-version upgrade path |
 | Mattermore | same as Mattermost; media 8443 needed but tryout publishes none | ~1 GB | 2 | tryout skeleton exists (S to start) | none for HTTPS; media must not share 8443 with live Calls | single maintainer; v12 data not compatible with live 11.10.1 DB: separate DB only |
 | Mumble | **64738 TCP+UDP**, own TLS, no HTTP | ~50 MB, tiny | 1 | **S** | new TCP+UDP entrypoints or direct publish | no chat/screen; UDP firewall |
 | Jitsi | web 443 behind edge; **JVB 10000/udp** (+4443/tcp fallback); `JVB_ADVERTISE_IPS=<public-ip>` | ~1.5-2 GB, JVB scales with participants | 4 (web, prosody, jicofo, jvb) | **M** | HTTP none; UDP 10000 entrypoint | RC needs Electron on both ends; Linux/Wayland untested; env option names partly recall |
@@ -199,7 +199,8 @@ Coverage uses ✓/partial/✗ against R1-R6.
 
 ## 8. Port plan for the voice-screen-share area
 
-Today's edge: 80/443 HTTP(S), **9443/tcp alt HTTPS**, **8443/tcp and 8443/udp Mattermost Calls** (media pair 8444 internal).
+tls-edge: 80/443 HTTP(S), with optional HTTP/3 on 443/udp. Mattermost publishes **8443/tcp and
+8443/udp Calls media** directly from the application.
 Reserve numbers once, for all projects.
 
 | Service | Port | Proto | Exposure | Route | Collision check |

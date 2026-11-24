@@ -4,13 +4,13 @@ tls-edge provides TLS termination as a shared host service: one hardened
 Traefik v3 container handles HTTPS (port 443, one host name per service; port 80
 for the redirect and ACME HTTP-01) for Docker Compose stacks on a host. HTTP/2
 and HTTP/1.1 use the shared TCP listener; HTTP/3 over QUIC/UDP is an optional
-instance-wide feature. The Mattermost Calls TCP+UDP media preset is also
-optional and disabled by default.
+instance-wide feature. Raw TCP+UDP media (for example Jitsi JVB or Mattermost
+Calls) is published directly by the application, outside Traefik.
 Consumers join the shared `ingress_public` network and declare labels — TLS
 certificates are handled by the edge, including automatic issuance and
 zero-downtime renewal via Let's Encrypt. A docker-socket-proxy (POST denied)
 shields the Docker API from Traefik. See the
-[Calls design guide](docs/DESIGN-GUIDE.md) and
+[direct-media design guide](docs/DESIGN-GUIDE.md) and
 [consumer instructions](docs/CONSUMERS.md), plus the [transport and instance
 configuration guide](docs/TRANSPORTS-AND-CONFIGURATION.md) for HTTP/2, HTTP/3,
 QUIC, server events, and where operators configure the shared endpoint. The
@@ -100,7 +100,7 @@ tls-edge/
   consumer-examples/          ← ready-to-copy example stacks
     pattern-a-public-only/
     pattern-d-guarded/          ← basicAuth per-route guard (labels only; no edge changes)
-    pattern-e-media-udp/        ← HTTPS host + TCP and UDP media routers (Mattermost Calls)
+    pattern-e-media-udp/        ← HTTPS host + application-published TCP and UDP media
     README.md                   ← label-by-label explanation
 
   ARCHITECTURE.md             ← design rationale, tradeoffs, rejected alternatives
@@ -357,7 +357,7 @@ only `live/` causes silent TLS failure inside the container.
 | Check | What it verifies |
 |---|---|
 | Stack health | Both containers report healthy (`docker inspect`) |
-| Port binding | Configured HTTP/HTTPS ports and any enabled HTTP/3 or Calls sockets are bound on the expected interface |
+| Port binding | Configured HTTP/HTTPS ports and any enabled HTTP/3 socket are bound on the expected interface |
 | TLS handshake | `openssl s_client` against the host FQDN; cert loaded (not the Traefik default self-signed) |
 | ACME volume | `acme.json` exists, is non-empty, and has mode 0600 |
 | Network | `ingress_public` network exists and Traefik is attached |
@@ -433,9 +433,9 @@ The tarball contains a single top-level directory `tls-edge-v<ver>/` so
 - **ARCHITECTURE.md** — full design rationale: network model, TLS strategy,
   proxy selection, socket security, container hardening, renewal mechanisms,
   future options.
-- **docs/DESIGN-GUIDE.md** — rationale for the optional TCP/UDP Calls listener.
-- **docs/CONSUMERS.md** — how to route a service's raw media protocols through
-  tls-edge and which firewall ports are needed.
+- **docs/DESIGN-GUIDE.md** — rationale for application-published TCP/UDP media.
+- **docs/CONSUMERS.md** — HTTP routing plus direct application media publication
+  and the firewall ports each path needs.
 - **CONSUMER_GUIDE.md** — step-by-step onboarding for service teams: label
   reference, consumer patterns (A/B/C), verification commands.
 - **KNOWN_ISSUES_TODO_BACKLOG.md** — current limitations, workarounds, and roadmap items.
