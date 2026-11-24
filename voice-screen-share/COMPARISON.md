@@ -118,14 +118,14 @@ Row notes:
 
 | Solution | Ports and UDP need | RAM/CPU class | Services | ciu effort | tls-edge change | Key risks |
 |---|---|---|---|---|---|---|
-| Mattermost TE (+Calls) | 443 HTTPS; Calls media **8443 TCP+UDP**; live edge also has alt HTTPS 9443 | ~1 GB, medium | 2 (app + postgres) | exists (S, moved into this area) | none; Calls entrypoints already live | 3-party limit unresolved; major-version upgrade path |
+| Mattermost TE (+Calls) | 443 HTTPS through tls-edge; Calls media **8443 TCP+UDP published directly by the app**; no alternate HTTPS port | ~1 GB, medium | 2 (app + postgres) | exists (S, moved into this area) | none; tls-edge has no media entrypoints | 3-party limit unresolved; major-version upgrade path |
 | Mattermore | same as Mattermost; media 8443 needed but tryout publishes none | ~1 GB | 2 | tryout skeleton exists (S to start) | none for HTTPS; media must not share 8443 with live Calls | single maintainer; v12 data not compatible with live 11.10.1 DB: separate DB only |
-| Mumble | **64738 TCP+UDP**, own TLS, no HTTP | ~50 MB, tiny | 1 | **S** | new TCP+UDP entrypoints or direct publish | no chat/screen; UDP firewall |
-| Jitsi | web 443 behind edge; **JVB 10000/udp** (+4443/tcp fallback); `JVB_ADVERTISE_IPS=<public-ip>` | ~1.5-2 GB, JVB scales with participants | 4 (web, prosody, jicofo, jvb) | **M** | HTTP none; UDP 10000 entrypoint | RC needs Electron on both ends; Linux/Wayland untested; env option names partly recall |
-| RustDesk | **21115/tcp, 21116/tcp+udp, 21117/tcp** (+21118/21119 web client) | ~50-128 MB | 2 (hbbs, hbbr) or 1 (s6 image) | **S** | raw TCP/UDP entrypoints (UDP has no hostname match) or direct publish | key file loss breaks every client; no OSS web console |
-| Matrix stack | 443 HTTP routes; **LiveKit 7881/tcp, 7882/udp**; WS 7880 behind edge | ~2-3 GB | 5-6 (synapse, postgres, element/cinny, livekit, lk-jwt-service) | **L** | UDP 7882 + TCP 7881 entrypoints | cross-client call compatibility; MatrixRTC flags and versions must align; no RC |
-| Fluxer | 80/443/7881 TCP, 443/7882 UDP (or behind-proxy 127.0.0.1:8080 + 7881/7882) | 2 cores / 4 GB minimum [V docs.fluxer.com/operator] | compose bundle, many | **L** (own proxy assumptions) | UDP 443 and 7882 collide with edge/Matrix: trial alone | young; calls do not work over an HTTP-only tunnel; needs TURN reachable by clients |
-| Stoat | caddy 80/443; LiveKit 7881/tcp + 50000-50100/udp | ~12 services + mongo, valkey, rabbitmq, minio | ~12-15 | **L** | UDP range entrypoints | thin docs; voice-button patch reports [S]; heavy |
+| Mumble | **64738 TCP+UDP**, own TLS, no HTTP | ~50 MB, tiny | 1 | **S** | none; application publishes 64738 TCP+UDP directly | no chat/screen; UDP firewall |
+| Jitsi | web 443 behind edge; **JVB 10000/udp** (+4443/tcp fallback); `JVB_ADVERTISE_IPS=<public-ip>` | ~1.5-2 GB, JVB scales with participants | 4 (web, prosody, jicofo, jvb) | **M** | HTTP none; JVB publishes UDP 10000 directly | RC needs Electron on both ends; Linux/Wayland untested; env option names partly recall |
+| RustDesk | **21115/tcp, 21116/tcp+udp, 21117/tcp** (+21118/21119 web client) | ~50-128 MB | 2 (hbbs, hbbr) or 1 (s6 image) | **S** | none; application publishes raw TCP/UDP ports directly | key file loss breaks every client; no OSS web console |
+| Matrix stack | 443 HTTP routes; **LiveKit 7881/tcp, 7882/udp**; WS 7880 behind edge | ~2-3 GB | 5-6 (synapse, postgres, element/cinny, livekit, lk-jwt-service) | **L** | HTTP none; LiveKit publishes 7881/7882 directly | cross-client call compatibility; MatrixRTC flags and versions must align; no RC |
+| Fluxer | 80/443/7881 TCP, 443/7882 UDP (or behind-proxy 127.0.0.1:8080 + 7881/7882) | 2 cores / 4 GB minimum [V docs.fluxer.com/operator] | compose bundle, many | **L** (own proxy assumptions) | own HTTP proxy plus direct media; UDP 443 and 7882 collide when run together | young; calls do not work over an HTTP-only tunnel; needs TURN reachable by clients |
+| Stoat | caddy 80/443; LiveKit 7881/tcp + 50000-50100/udp | ~12 services + mongo, valkey, rabbitmq, minio | ~12-15 | **L** | own HTTP proxy plus direct LiveKit media | thin docs; voice-button patch reports [S]; heavy |
 | Zulip | 443 | 2-4 GB | 4-6 | M | none | no voice of its own |
 | MeshCentral | 443 behind proxy (`REVERSE_PROXY` / `TLSOffload`) | small Node | 1 | S-M | none | admin/fleet oriented, heavier ceremony than RustDesk |
 | Rocket.Chat | 443 | 2-4 GB + mongo | 2-3 | M | none | licence not fully OSS; no voice |
@@ -199,7 +199,8 @@ Coverage uses ✓/partial/✗ against R1-R6.
 
 ## 8. Port plan for the voice-screen-share area
 
-Today's edge: 80/443 HTTP(S), **9443/tcp alt HTTPS**, **8443/tcp and 8443/udp Mattermost Calls** (media pair 8444 internal).
+tls-edge: 80/443 HTTP(S), with optional HTTP/3 on 443/udp. Mattermost publishes **8443/tcp and
+8443/udp Calls media** directly from the application.
 Reserve numbers once, for all projects.
 
 | Service | Port | Proto | Exposure | Route | Collision check |
@@ -207,16 +208,16 @@ Reserve numbers once, for all projects.
 | Mattermost / Mattermore app | 8065 | TCP | internal | Traefik Host rule on 443 | none |
 | Mattermost Calls media | 8443 | TCP+UDP | public | direct publish (see README port plan) | taken: no other service on 8443 |
 | Mattermore tryout media | any free port, never 8443/8444/9443 | TCP+UDP | LAN trial only | direct publish | do not run beside live Calls on 8443 |
-| Mumble | 64738 | TCP+UDP | public | own TLS: edge TCP `HostSNI(*)` passthrough + UDP entrypoint, or direct publish | free |
-| RustDesk hbbs | 21115 | TCP | public | raw entrypoint or direct publish | free |
-| RustDesk hbbs | 21116 | TCP+UDP | public | UDP: one backend per port, no hostname match | free |
-| RustDesk hbbr | 21117 | TCP | public | raw entrypoint or direct publish | free |
+| Mumble | 64738 | TCP+UDP | public | direct publish; application owns TLS | free |
+| RustDesk hbbs | 21115 | TCP | public | direct publish | free |
+| RustDesk hbbs | 21116 | TCP+UDP | public | direct publish | free |
+| RustDesk hbbr | 21117 | TCP | public | direct publish | free |
 | RustDesk web client (optional) | 21118, 21119 | TCP (WS) | public | only if web client wanted | free |
 | Jitsi web | 80 behind edge | TCP | internal | Host rule on 443 | none |
-| Jitsi JVB | 10000 | UDP | public | new UDP entrypoint or direct publish; `JVB_ADVERTISE_IPS=<public-ip>` | free; keep out of Matrix range |
-| Jitsi JVB fallback | 4443 | TCP | public (optional) | entrypoint or publish | free |
-| LiveKit (Matrix trial) | 7881 | TCP | public | entrypoint | clashes with Fluxer/Stoat LiveKit if run together |
-| LiveKit (Matrix trial) | 7882 | UDP | public | entrypoint | same clash; Fluxer also uses 7882/udp |
+| Jitsi JVB | 10000 | UDP | public | direct publish; `JVB_ADVERTISE_IPS=<public-ip>` | free; keep out of Matrix range |
+| Jitsi JVB fallback | 4443 | TCP | public (optional) | direct publish | free |
+| LiveKit (Matrix trial) | 7881 | TCP | public | direct publish | clashes with Fluxer/Stoat LiveKit if run together |
+| LiveKit (Matrix trial) | 7882 | UDP | public | direct publish | same clash; Fluxer also uses 7882/udp |
 | LiveKit WS | 7880 | TCP | internal | Traefik `/livekit/sfu` | none |
 | lk-jwt-service | 8080 | TCP | internal | Traefik `/livekit/jwt` | none |
 | Synapse | 8008 | TCP | internal | Traefik `/_matrix`, `/.well-known/matrix/client` | none |
@@ -225,8 +226,8 @@ Reserve numbers once, for all projects.
 | coturn (only if needed) | 3478 UDP/TCP, 5349 TLS, relay range | | public | direct | try LiveKit built-in TURN first |
 
 Rules:
-- Decide once: tls-edge media entrypoints (cleanest, but an edge change + release + host firewall + provider firewall) versus direct
-  publish of ONE port per service for the trial (breaks the "no host ports on app containers" convention, trial only).
+- Decided: raw TCP/UDP media is published directly by the application on one host port pair per service.
+  tls-edge owns only its HTTP/HTTPS surface and never forwards L4 media.
 - Every media port must be open in both firewall layers and advertised as the public address.
 - Never use host networking to cure a container start problem.
 - Run Fluxer or Stoat alone, never beside Matrix/Jitsi.
@@ -359,5 +360,5 @@ option names, NoMachine terms, resource figures marked `~`, Rocket.Chat/Mattermo
 
 Next steps:
 1. Run trial 0 (3-account Mattermost call) and settle the Mattermore question.
-2. Create the Mumble and RustDesk ciu projects, then Jitsi; decide the tls-edge entrypoint versus direct-publish approach once.
+2. Create the Mumble and RustDesk ciu projects, then Jitsi; test each application's direct media publication.
 3. Run the section 10 checks, fill section 11, then record the scenario decision here.

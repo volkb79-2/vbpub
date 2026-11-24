@@ -20,6 +20,15 @@ Cases (each asserts a specific outcome, so the check cannot pass by being noisy)
 * an `.rs` file that does not exist in the real tree, planted in `crates/store/src/`,
   with a write — refused: the rule is about *location*, not about a list of known files;
 * `#[mutants::skip]` — refused everywhere, including `fsio.rs`.
+* an `allow(dead_code, unsafe_code)` list in another kernel file — refused;
+* `expect(unsafe_code)` in another kernel file — refused;
+* whitespace around `allow ( unsafe_code )` — refused;
+* a crate-level `warn(unsafe_code)` — refused;
+* a bare `unsafe {}` in a kernel integration test — refused;
+* a second `unsafe {}` in `activation.rs` — refused;
+* a second `allow(unsafe_code)` in `activation.rs` itself — refused;
+* kernel `lib.rs` restored to `#![forbid(unsafe_code)]` instead of the one audited
+  `deny` allowance — refused.
 
 Usage: `python3 tools/check-lints-mutation.py [WORKSPACE]` (default: this repository).
 """
@@ -169,15 +178,121 @@ def main() -> int:
         )
         expect_refusal(case, "mutants::skip in fsio.rs", "uses forbidden #[mutants::skip]")
 
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/parse.rs",
+            "use core::fmt;",
+            "use core::fmt;\n#[allow(dead_code, unsafe_code)] fn _list_allowance() {}\n",
+        )
+        expect_refusal(
+            case,
+            "list unsafe allowance in kernel",
+            "allow(unsafe_code) must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/procfs.rs",
+            "use core::fmt;",
+            "use core::fmt;\n#[expect(unsafe_code)] fn _expect_allowance() {}\n",
+        )
+        expect_refusal(
+            case,
+            "expect(unsafe_code) in kernel",
+            "allow(unsafe_code) must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/clock.rs",
+            "use core::fmt;",
+            "use core::fmt;\n#[allow ( unsafe_code )] fn _spaced_allowance() {}\n",
+        )
+        expect_refusal(
+            case,
+            "spaced unsafe allowance in kernel",
+            "allow(unsafe_code) must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/lib.rs",
+            "#![deny(unsafe_code)]",
+            "#![deny(unsafe_code)]\n#![warn(unsafe_code)]",
+        )
+        expect_refusal(
+            case,
+            "warn(unsafe_code) in kernel",
+            "allow(unsafe_code) must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/tests/kernel_refusals.rs",
+            "use hostobs_kernel::cgroup::{Absence, KernelError, Limit, Readings};",
+            "use hostobs_kernel::cgroup::{Absence, KernelError, Limit, Readings};\n\
+             fn _bare_unsafe() { unsafe {} }\n",
+        )
+        expect_refusal(
+            case,
+            "bare unsafe in kernel integration test",
+            "unsafe expression must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/activation.rs",
+            "let owned = unsafe { OwnedFd::from_raw_fd(fd) };",
+            "let owned = unsafe { OwnedFd::from_raw_fd(fd) };\n    let _second = unsafe { 0 };",
+        )
+        expect_refusal(
+            case,
+            "second unsafe expression in activation",
+            "unsafe expression must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/activation.rs",
+            "#[allow(unsafe_code)]",
+            "#[allow(unsafe_code)]\n#[allow(dead_code, unsafe_code)]",
+        )
+        expect_refusal(
+            case,
+            "two unsafe allowances in activation",
+            "allow(unsafe_code) must occur exactly once outside crates/act",
+        )
+
+        case = fresh()
+        insert(
+            case,
+            "crates/kernel/src/lib.rs",
+            "#![deny(unsafe_code)]",
+            "#![forbid(unsafe_code)]",
+        )
+        expect_refusal(
+            case,
+            "kernel lib.rs lost deny(unsafe_code)",
+            "must contain #![deny(unsafe_code)]",
+        )
+
         # The allowed module stays allowed, and the allowed directory too.
         case = fresh()
         expected = (case / "crates/store/src/fsio.rs").read_text(encoding="utf-8")
         assert ".write(true)" in expected, "fsio.rs must be the writer this check exercises"
         expect_ok(case, "fsio.rs as the allowed write path")
     print(
-        "lint mutation check: 13 refusals, 2 allowances, all as expected "
+        "lint mutation check: 21 refusals, 2 allowances, all as expected "
         "(write outside fsio, mkdir, Command::new, planted file, mutants::skip, "
-        "eight further filesystem-mutating forms; fsio.rs and crates/act allowed)"
+        "eight further filesystem-mutating forms, six unsafe-lint forms, a second "
+        "activation allowance, a missing kernel deny; fsio.rs and crates/act allowed)"
     )
     return 0
 

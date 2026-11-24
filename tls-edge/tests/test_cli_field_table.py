@@ -12,6 +12,7 @@ import pytest
 from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
 
+from _layout import instance_stack_dir
 from tls_edge_cli import cli
 from tls_edge_cli.fields import Field
 
@@ -42,10 +43,12 @@ class FixedPrompts:
 
 
 def make_root(path: Path) -> Path:
-    stack = path / "stack" / "ciu-stack"
+    root = instance_stack_dir(path)
+    stack = root / "ciu-stack"
     stack.mkdir(parents=True)
     shutil.copy2(ROOT / "ciu-stack" / "ciu.defaults.toml.j2", stack)
-    return path
+    (root.parent / "current").symlink_to(root.parent / "releases" / "tls-edge")
+    return root
 
 
 def run_cli(
@@ -70,7 +73,7 @@ def run_cli(
 
 
 def write_override(root: Path, text: str) -> Path:
-    path = root / "stack" / "ciu-stack" / "ciu.toml.j2"
+    path = root / "ciu-stack" / "ciu.toml.j2"
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -91,8 +94,6 @@ def flat_target(legacy_key: str) -> str:
         "http_port": "[tls_edge.ports] http",
         "https_port": "[tls_edge.ports] https",
         "http3_enabled": "[tls_edge.http3] enabled",
-        "calls_enabled": "[tls_edge.calls] enabled",
-        "calls_port": "[tls_edge.calls] public_port",
         "bind_ip": "[tls_edge.ports] bind_ip",
         "ingress_external": "[tls_edge] ingress_external",
         "acme_volume_name": "[tls_edge.acme] volume_name",
@@ -161,7 +162,7 @@ enabled = true
     assert "# unrelated site setting" in text
     written = tomllib.loads(text)["tls_edge"]
     assert written == {
-        "schema": 1,
+        "schema": 2,
         "domain": "edge.example.test",
         "tls": {"mode": "acme-tls"},
         "acme": {"email": "", "volume_name": "", "store": "volume"},
@@ -174,7 +175,6 @@ enabled = true
         "http3": {"enabled": True},
         "ingress_external": False,
         "runtime": {"cgroup_parent": ""},
-        "calls": {"enabled": False},
         "traefik": {"log_level": "WARN"},
     }
 
@@ -229,8 +229,6 @@ log_level = "DEBUG"
     "http_port",
     "https_port",
     "http3_enabled",
-    "calls_enabled",
-    "calls_port",
     "bind_ip",
     "ingress_external",
     "acme_volume_name",
@@ -340,7 +338,7 @@ schema = 1
 domain = "edge.example.test"
 """,
     )
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.write_text("TLS_EDGE_DOMAIN=edge.example.test\nOTHER=keep\n", encoding="utf-8")
     before_override = override.read_bytes()
     before_env = env_path.read_bytes()
@@ -370,7 +368,7 @@ def test_answers_mode_uses_a_nonempty_default_for_static_lineages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    defaults = root / "stack/ciu-stack/ciu.defaults.toml.j2"
+    defaults = root / "ciu-stack/ciu.defaults.toml.j2"
     defaults.write_text(
         defaults.read_text(encoding="utf-8").replace(
             "domains = []",
@@ -401,7 +399,7 @@ mode = "static"
     )
     assert result == 0, output
     written = tomllib.loads(
-        (root / "stack" / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
+        (root / "ciu-stack" / "ciu.toml.j2").read_text(encoding="utf-8")
     )
     assert written["tls_edge"]["static"]["domains"] == ["default.example.test"]
 
@@ -442,7 +440,7 @@ def test_configure_reports_a_consumer_env_config_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = make_root(tmp_path / "instance")
-    env_path = root / "stack" / "consumer.env"
+    env_path = root / "consumer.env"
     env_path.symlink_to(tmp_path / "unrelated-target")
     answers = write_answers(
         tmp_path / "answers.toml",

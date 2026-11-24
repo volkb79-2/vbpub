@@ -209,7 +209,7 @@ else
     echo "──────────────────────────────────────────────────────────────────────────────"
     echo "  Certificates signed by your mkcert local CA."
     echo "  If you have not trusted the mkcert CA yet, run: mkcert -install"
-    echo "  (Note: install.sh does not run this automatically.)"
+    echo "  (Install the local CA separately; tls-edge does not modify the host trust store.)"
     MKCERT_CA="$(mkcert -CAROOT 2>/dev/null)/rootCA.pem" || true
     if [[ -n "$MKCERT_CA" && -f "$MKCERT_CA" ]]; then
         echo "  CA location: $MKCERT_CA"

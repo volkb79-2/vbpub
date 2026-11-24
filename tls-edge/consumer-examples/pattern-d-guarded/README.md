@@ -1,7 +1,7 @@
 # Pattern D — per-route basicAuth guard
 
 Protects a Traefik route with HTTP Basic Authentication declared entirely in
-Docker Compose labels.  No changes to the shared edge-proxy stack are required.
+Docker Compose labels.  No changes to the shared tls-edge instance are required.
 Traefik auto-discovers the middleware from the container's labels.
 
 ---

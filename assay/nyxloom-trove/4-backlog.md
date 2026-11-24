@@ -225,6 +225,8 @@ items:
   - {id: B573, title: "tooling-tests misses new tests/core files", type: bugfix, component: gate, context_estimate: small}
   - {id: B574, title: "Carry-forward aborts on a stored hint match", type: bugfix, component: mutation, context_estimate: small}
   - {id: B575, title: "Carry-forward review notes (WP3a, out of contract)", type: feature, component: mutation, context_estimate: small}
+  - {id: B576, title: "mutation_store contract-test gaps (P-assay-11 review)", type: bugfix, component: gate, context_estimate: small}
+  - {id: B577, title: "A resume that rejects every record does not say why", type: feature, component: mutation, context_estimate: small}
 ---
 
 # assay — backlog
@@ -15963,3 +15965,36 @@ The single error is at `descendants[0]`, so the only difference between an accep
 3. **Plan and run can disagree.** The `plan --list-pending --carry-forward` labels (`src/assay/cli.py:640`, `:4555`) skip the WP2 record validation, so a malformed record can be labelled `exact-id` while the run ignores it.
 4. **Untested CONSUMERS claim.** `docs/CONSUMERS.md` says carry-forward composes with `--only-candidates`/`--exclude-candidates`; no test covers it.
 **Wanted.** Fold 1-3 into P-assay-12 (one store-combine) or P-assay-13, where the carry-forward matcher is reworked; add the test for 4 there. **Close when.** Each item is fixed with a test or closed as by design in its package's hand-over. Source: `.controller-state/assay/reviews/wp3a-opus-review.md` (r1 and r2 "Out of contract").
+
+## B576 — mutation_store contract-test gaps (P-assay-11 review)
+
+**Status: OPEN (filed 2026-11-24 from the P-assay-11 Opus r1 review, merged as q248 ba15e8dda); severity: low.** Two findings outside the P-assay-11 contract, neither with any effect today:
+1. **The store import contract misses two import forms.** `tests/core/test_import_contracts.py:150-180` enforces "`mutation_store` never imports `mutation` at runtime". It catches the relative forms and `import assay.mutation`. It misses `from assay import mutation` and `importlib.import_module("assay.mutation")`. Extend the AST walk to both, with one negative fixture each.
+2. **One contract key is misplaced.** In `dataclass-contract.json:802` the key `assay.mutation_store.FlexOptions` sits among the `assay.mutation.*` keys. The lookup is dict-based, so this is cosmetic. Move it into sorted position when the file is next regenerated.
+
+**Close when.** Item 1 is fixed with its two fixtures, and item 2 is sorted or closed as cosmetic in that package's hand-over. Source: `.controller-state/assay/reviews/p11-opus-review.md` (items 2 and 3).
+
+## B577 — A resume that rejects every record does not say why
+
+**Status: OPEN (filed 2026-11-24 from a rollback (T6) report); severity: medium (operational).**
+
+**Symptom.** A seeded remote-gate resume (scripts/debian-install-v2, lane r2, head 2ea1912ca, r1002, run-gate 25.7.0, image dcaf4222) rejected every prior record.
+- Chunk 1, rgw-r2-20261124T155402-r1002, collected 14 killed records.
+- Chunk 2, rgw-r2-20261124T162538-r1002, was seeded with them (STORE-SEEDED). Its `resume` event read `rejected_total: 14, resumed_total: 0`, it re-ran candidates 0-13, and it hit the budget again at candidate 13.
+- The stores are kept at `.controller-state/rollback/gates/icm1a-r2-store-c{1,2}`.
+
+**Cause (verified by the assay controller).** The same candidate record differs between the two chunks only in `judge_sha256` (`bf64c0b6…` vs `7e34b992…`) and in timings.
+- The lane exports `PYTHONPATH={worktree}/assay/src:…` (`scripts/debian-install-v2/run-gate.toml:78`), and `{worktree}` is a fresh throwaway checkout per remote run (`…/.worktrees/rg-<run-id>-<sha>`).
+- `PYTHONPATH` is in the lane's `env_passthrough` (`scripts/debian-install-v2/assay.toml:35`).
+- `judge_sha256` (`src/assay/mutation.py:1531`) folds the SHA-256 of every present passthrough value, so every run has a new judge.
+- This is assay working as designed (B142; its docstring states "changed per-worktree paths … cause a safe cache miss"), not a remote-gate defect.
+- The consumer fix is a checkout-independent value: a relative `PYTHONPATH` (the command already `cd`s into the project), or a declared `env` entry.
+- cmru's and assay's own R2 lanes pass through `PATH` only, so the cross-host backfill (P-assay-08) is not affected by this. Its pilots compare `judge_sha256` across hosts to confirm it.
+
+**Gap (the assay part).** Nothing tells the operator why. `resume` counts `rejected_total`, but neither the event nor the log names which judge component moved. Diagnosing this took a manual record diff and reading the judge docstring.
+
+**Wanted.**
+1. When a resume rejects records for a judge mismatch, report the judge-identity components that differ between the stored records and this run: tree, argv, declared env, passthrough names and values (by name only, value fingerprints never printed), cwd/prefix, link paths, tool version and fingerprints. For this, the judge's component digests must be stored in the store (for example, beside the store manifest), not only their combined hash.
+2. In CONSUMERS, the env_passthrough section: one paragraph stating that a passthrough value that embeds a checkout path makes every remote-gate run a new judge, so resume, carry-forward and the shard merge across runs never match. Name the relative-path fix.
+
+**Close when.** A test proves that a mismatch caused by a single passthrough value names that variable in the resume event and on stderr, and the CONSUMERS paragraph is in place. Source: vbpub-rollback's message to vbpub-assay at ~16:58Z; record diff by vbpub-assay.

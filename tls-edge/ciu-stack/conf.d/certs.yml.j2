@@ -4,9 +4,8 @@
 # Certificates are provided as files (mode: {{ tls_edge.tls.mode }}) and
 # mounted under /certs (live/ + archive/ parents, symlink-safe).
 #
-# Renewal: the certbot deploy hook rewrites the "rendered:" stamp at the
-# bottom of this file ON THE HOST; the bind mount propagates the change and
-# Traefik's file watcher reloads the certificates with zero downtime.
+# Renewal: the certbot deploy hook restarts the resolved Traefik container
+# (about 3 s), so the rendered static certificate store is read again.
 tls:
   stores:
     default:

@@ -11,6 +11,22 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [25.9.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=b31dc08c84a7766bd032b025ac4a55b40117d519 -->
+
+### Fixed
+- fix(run-gate): P-core-RG307 r1 fix-forward: raise the two enclosing command lanes (gate-full 75m, vm-lab gate 280m), correct the RG-311 docstring, file RG-312 (1193575c2)
+
+### Changed
+- run-gate: the run-time Assay-budget warning follows R-59 (RG-308a) (80e886952)
+- run-gate: raise the 14 estate assay-wrapper budgets to inner + 5m (RG-307) (892d86ffa)
+
+### Documentation
+- docs(run-gate): file RG-313, SIGTERM client test races the fake docker logs shell exit (5f8dc5b56)
+- docs(run-gate): record RG-307 and RG-308(a) (rev 74) (456002611)
+
+
 ## [25.8.0] - 2026-11-24
 <!-- cmru: generated -->
 <!-- cmru: source-end=0b374018822e6b898dc85963afabc16e3721e122 -->

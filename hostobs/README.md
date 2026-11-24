@@ -67,11 +67,16 @@ decoded-row join; it has no quality or value table of its own. The store adds th
 its segments own — the exact frame type and flag policy of the corpus, and the configured
 payload bound — before accepting a payload.
 
-The `probe` binary's `main` is still the M0 scaffold; its library (`bins/probe/src`) now holds the
-pure serving functions of P5b-1a (`limits`, `verbs`, `codes`, `args`, `classify`, `encode`, `lines`)
-and the sans-IO serving core of P5b-1b (`backend`, `conn` the connection state machine, `server` the
-`Server` that owns the one send hub, the connections and the per-level and per-uid counters); the
-drivers are the next packages (`docs/P5B-SERVER-DESIGN.md`). The proven topos sampler
+The `probe` binary is now the activated process: `hostobs-probe --config <path>` adopts exactly
+the named `LISTEN_FDS` sockets configured in `[probe] levels`, starts the sampler, and serves the
+sans-IO `Server` from one bounded non-blocking poll loop. It never binds, spawns or installs a
+signal handler; `SIGTERM` keeps its default action. `hostobs-probe --version` prints the
+package name and version. The installed config path supplied explicitly by the unit is
+`/etc/hostobs/hostobsd.toml`; a start-up refusal is one stderr line and exit 2. The library
+(`bins/probe/src`) holds the pure serving functions of P5b-1a (`limits`, `verbs`, `codes`,
+`args`, `classify`, `encode`, `lines`), the sans-IO serving core (`backend`, `conn`, `server`),
+the P-10 sampler and live backend, and `main.rs` owns the thin process wiring plus `config` and
+`driver`. The proven topos sampler
 (tag `archive/topos-sampler-poc-20261105`, commit `193bf601f`, path `topos/sampler/`) is the
 behavioural source the `kernel` collectors were ported from: its scheduling around a stalled
 `/proc/<pid>/cmdline` read is deliberately not ported, and the parts plan v4 requires to
@@ -125,7 +130,7 @@ interactive shell in a capped, network-less, unprivileged container that shares 
 toolchain and offline crate cache. It runs on a gate host, `v1001` by default (your worktree, including
 uncommitted changes up to 20 MiB, is synced there per call); local mode is refused. Try
 `tools/dev --dry-run test -p hostobs-store` to see the plan. A green dev run is **not** gate evidence;
-only the lanes below on a committed head are. The dev image (`tester-unified-rust-dev:rs-20261124`) exists
+only the lanes below on a committed head are. The dev image (`tester-unified-rust-dev:rs-20261124b`) exists
 and the dev tool runs remotely on the gate host (measured 2026-11-24 with the pre-shim tool:
 `test -p hostobs-model`, 53 tests, 79 s wall). Guide:
 [`../scripts/controller/docs/DEV.md`](../scripts/controller/docs/DEV.md); the Rust dev image (build,
@@ -133,8 +138,13 @@ toolchain, debugging): [`../tester-unified-rust/docs/DEV.md`](../tester-unified-
 
 ## Gates
 
-The registered default lanes are `lint`, `selftest`, `assay-r1` and `conformance` (the hand-run `assay-r2` is registered too, see below; the Python reference
-decoders, fixture checks and `hostobs_client` tests, standard library only; `HOB-4`). Run them through the estate's
+The registered default lanes are `lint`, `selftest`, `assay-r1` and `conformance` (the hand-run
+`assay-r2` is registered too, see below). `conformance` builds the probe offline, reads the
+cargo target directory from locked offline metadata, exports `HOSTOBS_PROBE_BIN`, checks it is
+executable, and runs the Python reference decoders, fixture
+checks, `hostobs_client` tests and the real-socket probe test, standard library only; `HOB-4`.
+An unset or non-executable `HOSTOBS_PROBE_BIN` fails the real-socket test rather than skipping
+it. Run the lanes through the estate's
 gate wrappers, not a bare `run-gate` (which skips slot admission and refuses container lanes
 on the main checkout). Locally, from this directory in a **linked worktree**:
 
@@ -156,12 +166,12 @@ executing host; see [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
 
 Cargo is offline and locked, and each Cargo invocation checks the mounted `Cargo.lock`
 against the image's registry-set identity and cache manifest first (workspace-member lock
-edits do not change that identity; the Rust lanes run on `tester-unified-rust:rs-20261124`,
+edits do not change that identity; the Rust lanes run on `tester-unified-rust:rs-20261124b`,
 which carries it). `selftest` is the workspace's own
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
-same `lcov.info` and judges the 56 declared `src` files of the six functional packages (the five crates and
+same `lcov.info` and judges the 61 declared `src` files of the six functional packages (the five crates and
 `bins/probe`) against
 a 95.0% line floor (the floor was derived from 96.04% measured over the first 33 files and
 floored one point down; the later lanes measure 96.7% to 96.9% — derivation in
