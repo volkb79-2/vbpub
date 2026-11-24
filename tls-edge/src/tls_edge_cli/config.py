@@ -458,6 +458,11 @@ def validate_config(
                 'tls_edge.traefik.hostdir.acme.path is required when '
                 'tls_edge.acme.store = "hostdir"'
             )
+        if "$" in path:
+            raise ConfigError(
+                "tls_edge.traefik.hostdir.acme.path must not contain '$'; "
+                "ciu expands environment variables in hostdir paths"
+            )
         if stack_dir is not None:
             candidate = Path(path)
             if not candidate.is_absolute():

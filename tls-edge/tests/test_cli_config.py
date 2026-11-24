@@ -377,6 +377,13 @@ def test_validate_config_hostdir_rules_and_modes(tmp_path: Path):
     assert config.validate_config(value, stack_dir=stack_dir)
     assert config.validate_config(value)  # no containment check without stack context
 
+    value["traefik"]["hostdir"]["acme"]["path"] = "../../shared/$EDGE/acme"
+    with pytest.raises(
+        config.ConfigError,
+        match=r"must not contain '\$'",
+    ):
+        config.validate_config(value, stack_dir=stack_dir)
+
     value["acme"]["store"] = "archive"
     with pytest.raises(config.ConfigError, match="acme.store must be volume or hostdir"):
         config.validate_config(value)
