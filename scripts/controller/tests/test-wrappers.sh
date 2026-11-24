@@ -231,6 +231,39 @@ check_ctl38_last_text_all_paths() {
     || fail 'CTL-38 left a stale last.txt for a stream with no final text'
   [[ $(cat "$runs/ctl38-empty.done") == 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0 EFFORT=xhigh' ]] \
     || fail 'CTL-38 changed the done outcome for a no-text stream'
+
+  # A signalled resume must not expose the previous invocation's text beside the
+  # fresh marker. The fake child publishes its pid after the stream is open and
+  # holds until the check signals the wrapper's private process group.
+  local signal_launcher signal_pgid signal_rc
+  printf 'FINAL-A' > "$runs/ctl38-signal.last.txt"
+  printf 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0 EFFORT=xhigh\n' > "$runs/ctl38-signal.done"
+  rm -f -- "$ROOT/ctl38-signal.hold.pid" "$ROOT/ctl38-signal.release"
+  setsid --wait env \
+    PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/ctl38-signal.log" CODEX_AUTO_CONTINUE=0 \
+    FAKE_CODEX_HOLD_UNTIL="$ROOT/ctl38-signal.release" FAKE_CODEX_HOLD_PID="$ROOT/ctl38-signal.hold.pid" \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" ctl38-signal resume ctl38-signal-thread \
+    > "$ROOT/ctl38-signal.out" 2>&1 &
+  signal_launcher=$!
+  for _ in {1..2000}; do
+    [[ -s $ROOT/ctl38-signal.hold.pid ]] && break
+    kill -0 "$signal_launcher" 2>/dev/null || break
+    sleep 0.05
+  done
+  [[ -s $ROOT/ctl38-signal.hold.pid ]] \
+    || { cat "$ROOT/ctl38-signal.out" >&2; fail 'CTL-38 signalled resume child never started'; }
+  signal_pgid=$(ps -o pgid= -p "$(cat "$ROOT/ctl38-signal.hold.pid")" | tr -d '[:space:]')
+  [[ $signal_pgid =~ ^[0-9]+$ ]] || fail 'CTL-38 signalled resume published no process group'
+  kill -TERM -- "-$signal_pgid" || fail 'CTL-38 signalled resume process group was already gone'
+  wait "$signal_launcher" 2>/dev/null
+  signal_rc=$?
+  (( signal_rc != 0 )) || fail 'CTL-38 signalled resume unexpectedly exited zero'
+  [[ $(cat "$runs/ctl38-signal.done") == 'EXIT=143 OUTCOME=CODE-EXIT AUTORESUME=0 EFFORT=xhigh' ]] \
+    || fail 'CTL-38 signalled resume did not write its own done marker'
+  [[ ! -e $runs/ctl38-signal.last.txt ]] \
+    || fail 'CTL-38 signalled resume left the previous final text beside its done marker'
 }
 check_ctl38_last_text_all_paths
 

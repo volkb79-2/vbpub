@@ -103,13 +103,18 @@ codex_finish() {
   # Every exit path (normal, child failure, bookkeeping failure, an error path
   # after the claim) states the run's outcome and drops the name. The marker is
   # written once: the normal path below writes the full one, and this fills it in
-  # only when the wrapper exits through some other path.
+  # only when the wrapper exits through some other path. A launched child's
+  # stream is also authoritative here, so a signal exit replaces or removes the
+  # previous invocation's text before the fresh marker becomes readable.
   local status=$?
   # Only a launched child can exit: before the launch the wrapper states no
   # child outcome at all, and an unlaunched name keeps its "no .done" state.
-  if (( codex_launched == 1 )) && [[ ! -e $out/$name.done ]]; then
-    printf 'EXIT=%s OUTCOME=CODE-EXIT AUTORESUME=%s EFFORT=%s\n' \
-      "$status" "$auto_count" "$effort" > "$out/$name.done"
+  if (( codex_launched == 1 )); then
+    codex_extract_last_text "$out/$name.jsonl" "$out/$name.last.txt"
+    if [[ ! -e $out/$name.done ]]; then
+      printf 'EXIT=%s OUTCOME=CODE-EXIT AUTORESUME=%s EFFORT=%s\n' \
+        "$status" "$auto_count" "$effort" > "$out/$name.done"
+    fi
   fi
   controller_run_release
 }
@@ -264,10 +269,10 @@ printf '%s\n' "$route_record" > "$out/$name.route"
 
 if [[ $mode == resume ]]; then
   # A resume of a name that already completed must not leave the PREVIOUS
-  # run's `.done` readable while this child works: the marker is this
-  # invocation's evidence, so it starts absent. The stream needs no such
+  # run's `.done` or `.last.txt` readable while this child works: both are this
+  # invocation's evidence, so they start absent. The stream needs no such
   # removal because the launch below truncates it.
-  rm -f -- "$out/$name.done"
+  rm -f -- "$out/$name.done" "$out/$name.last.txt"
   codex_launched=1
   # The name lock belongs to THIS wrapper. The child must not inherit its open
   # descriptor: a Codex agent can outlive a killed wrapper by hours, and that
