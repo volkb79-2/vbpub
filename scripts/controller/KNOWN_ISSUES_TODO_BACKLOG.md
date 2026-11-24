@@ -60,7 +60,7 @@ together.
 | CTL-49 | agctl DESIGN behind the operator | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-50 | Brief house rules | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-51 | Three tree-shipping transports | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
-| CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-52 | Dev container is hostobs-only and admits one job host-wide | Must-fix | FIXED 2026-11-24 (P-plat-02: generic `scripts/controller/dev`) |
 | CTL-53 | Worktree sprawl | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-54 | Backlogs and SPECs are append-only | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | OPEN 2026-11-24 |
@@ -1630,9 +1630,9 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md H4; SYNTHESIS.md T1
 
 ## CTL-52 — dev container is hostobs-only and admits one job host-wide
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED 2026-11-24 (package P-plat-02; guide `scripts/controller/docs/DEV.md`).
 
-Generic `scripts/controller/dev` with Python and Rust profiles. Host-local weighted admission with a bounded wait. `gc`, a NOT-EVIDENCE banner, and the hostobs shim.
+Generic `scripts/controller/dev` with Python and Rust profiles (`scripts/controller/dev-profiles.toml`). Admission is host-local and memory-PSI-only (host-admission/1: memory `full` avg10 >= 3 waits, bounded by `AGENT_DEV_WAIT_S`, then exit 75); RAM overcommit (finite MemoryMax, large swap) is by design. `gc`, a NOT-EVIDENCE banner, and the hostobs shim.
 
 Source: .controller-state/design-review-2026-11-24/hostobs.md F4; operator 2026-11-24
 

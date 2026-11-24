@@ -7,10 +7,12 @@ below disagrees, this block wins.
 
 1. **Compile and test remotely before every commit, serially.** Use
    `scripts/controller/dev -p <project> <verb> …` (the remote capped dev
-   container). Until that tool exists: hostobs (Rust) via `hostobs/tools/dev`;
-   anything else is not run before the commit, only through its registered
-   lane. On exit 75 (host busy), or exit 3 from `hostobs/tools/dev` naming
-   another dev call in progress, retry once, then report it. A dev run is never
+   container; profiles in `scripts/controller/dev-profiles.toml`, guide in
+   `scripts/controller/docs/DEV.md`; `hostobs/tools/dev` is a shim onto it).
+   A project without a profile is not run before the commit, only through its
+   registered lane. On exit 75 (not admitted: host memory pressure) or exit 3
+   (transport failure, or another dev call on the same worktree in progress),
+   retry once, then report it. A dev run is never
    gate evidence: evidence is only a registered lane on the exact final head.
 2. **Never use `hx.sh`, `ssh` or `docker` directly, and never run `pytest`,
    `cargo` or a project test script in the devcontainer** (it is cockpit-only;
