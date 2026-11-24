@@ -669,6 +669,15 @@ def test_endpoint_help_does_not_advertise_unavailable_progress_option():
     assert "--progress" not in out
 
 
+def test_root_help_offers_no_global_progress_option():
+    # cli-extended adds a root --progress when any verb sets include_progress;
+    # every augeaswrap verb, including the delegated `endpoints`, opts out (AW-BL-43).
+    _status, out, err = run("--help")
+
+    assert "journal" in out + err
+    assert "--progress" not in out + err
+
+
 def test_journal_pending_text_output_and_missing_journal_warning(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     status, out, err = run("journal", "--pending", "--root", str(root))
