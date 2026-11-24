@@ -184,13 +184,19 @@ SPEC §9.
 | RG-291 | the release gate ran only `selftest`, so it did not prove R3 canary rejection in the exact receipt-specific tester image before tagging | Major | FIXED 2026-11-18 (P10c-rg) |
 | RG-292 | `tools/canary-run.sh` treats any non-zero pytest exit as the expected canary rejection, so a broken image or collection failure would be reported as a successful rejection | Minor | OPEN 2026-11-18 (P10c-rg review) |
 | RG-293 | private scratch lane-caps work | Enhancement | WITHDRAWN 2026-11-24 |
-| RG-294 | private scratch directories leak into the repository | Major | FIXED IN THIS BRANCH (P-core-01) |
-| RG-295 | no owner-side scratch prune | Minor | FIXED IN THIS BRANCH (P-core-01) |
+| RG-294 | private scratch directories leak into the repository | Major | FIXED 2026-11-24 (P-core-01) |
+| RG-295 | no owner-side scratch prune | Minor | FIXED 2026-11-24 (P-core-01) |
 | RG-296 | projects restate lane rules instead of checking them | Minor | OPEN 2026-11-24 (Opus design review) |
 | RG-297 | run-gate re-validates Assay flags it should forward opaquely | Minor | OPEN 2026-11-24 (Opus design review) |
 | RG-298 | durable R2 store transport is not shipped or re-seeded | Minor | OPEN 2026-11-24 (Opus design review; owner T3/T1, file only) |
 | RG-299 | a signal during scratch cleanup re-raises after the verdict | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
 | RG-300 | `doctor --prune` ignores `--worktree` and imported lane budgets | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
+| RG-301 | `doctor --prune` from a linked worktree scans the wrong store | Minor | OPEN 2026-11-24 (P-core-01 review round 2) |
+| RG-302 | prune never reclaims a root whose owner liveness is unknown | Minor | OPEN 2026-11-24 (P-core-01 review round 2) |
+| RG-303 | `doctor --prune --older-than 0s` is accepted | Minor | OPEN 2026-11-24 (P-core-01 review round 2) |
+| RG-304 | prune hygiene: doubled kept counts, flag check, fixture order, stale allowlist | Minor | OPEN 2026-11-24 (P-core-01 review round 2) |
+| RG-305 | `.run-gate` producers that neither own their lifetime nor are known to prune | Major | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
+| RG-306 | run-gate's own assay lanes leave `pytest-of-<user>` in the shared state root | Minor | OPEN 2026-11-24 (core, after the 2026-11-24 prune) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9599,3 +9605,113 @@ Source: P-core-01 review round 1, 2026-11-24.
 not contribute to the default `--older-than`. Filed only; no behavior change
 in this round.
 Source: P-core-01 review round 1, 2026-11-24.
+
+## RG-301 — `doctor --prune` from a linked worktree scans the wrong store
+
+**Status:** OPEN 2026-11-24 (P-core-01 review round 2). Severity: Minor. Related: RG-300.
+
+`cmd_doctor_prune` takes the repository from `git rev-parse --show-toplevel`,
+so a prune started in a linked worktree `W` scans `W/.run-gate`. Lanes write to
+the store of `resolve_repo_and_worktree(project_dir, None)`, which is the main
+checkout's `.run-gate`. The prune reports success and removes nothing that
+matters.
+
+Wanted: take the repository from `resolve_repo_and_worktree(project_dir, None)`,
+with one test that runs the prune from a linked worktree. Until then, run prune
+from the main checkout.
+Source: P-core-01 review round 2 (F1), 2026-11-24.
+
+## RG-302 — prune never reclaims a root whose owner liveness is unknown
+
+**Status:** OPEN 2026-11-24 (P-core-01 review round 2). Severity: Minor.
+
+Owner liveness is "unknown" when the boot_id differs, when the PID namespace
+differs, or when `owner_start` or `pid_ns` is null. An unknown root is kept for
+ever, so the orphans of a devcontainer restart or a host reboot are never
+reclaimed.
+
+Wanted:
+- A boot_id mismatch is provably dead, so treat it as dead.
+- A namespace mismatch may use a long age cap instead of "keep for ever".
+Source: P-core-01 review round 2 (F2), 2026-11-24.
+
+## RG-303 — `doctor --prune --older-than 0s` is accepted
+
+**Status:** OPEN 2026-11-24 (P-core-01 review round 2). Severity: Minor.
+
+A zero age is accepted. With it, a concurrent prune can hit the window between
+a root's `mkdir` and its owner write, and it removes live legacy (ownerless)
+dirs.
+
+Wanted: refuse an age below 1 minute, with a closed refusal message.
+Source: P-core-01 review round 2 (F5), 2026-11-24.
+
+## RG-304 — prune hygiene: doubled kept counts, flag check, fixture order, stale allowlist
+
+**Status:** OPEN 2026-11-24 (P-core-01 review round 2). Severity: Minor.
+
+- F4: when `TMPDIR == <repo>/.run-gate`, the repo-direct pass and the
+  system-temp pass scan the same directory, so the kept counts are doubled.
+  Cosmetic. Wanted: scan each resolved path once.
+- F7: the `doctor --prune` flag check tests every other argparse attribute for
+  truthiness, so a future option with a truthy default silently breaks
+  `--prune`. Wanted: name the conflicting options explicitly.
+- F6: `isolate_scratch_run` tears down before the monkeypatch undo, which
+  leaves a WARN and a root inside the basetemp in
+  `test_prune_live_state_and_cleanup_edges`. Harmless. Wanted: reorder the
+  fixtures.
+- F8: the stdlib-import allowlist in `tests/test_run_gate.py` still lists
+  `atexit`, with a stale comment. Wanted: drop it if unused.
+Source: P-core-01 review round 2 (F4, F6, F7, F8), 2026-11-24.
+
+## RG-305 — `.run-gate` producers that neither own their lifetime nor are known to prune
+
+**Status:** OPEN 2026-11-24 (core, after the 2026-11-24 prune). Severity: Major.
+
+RG-294 gave run-gate's own scratch roots an owner record, and RG-295 added
+`doctor --prune` for them. Other producers also write into the shared state
+root `<repo>/.run-gate`. They do so through `TMPDIR`/`RUN_GATE_TMPDIR`, or by
+mounting a subdirectory into a container. Each leaves dirs that no one removes.
+
+Observed after the 2026-11-24 prune, which removed 85,626 dirs and took the
+store from 11G to 9.9G. The rest of the 9.9G was outside the prune contract:
+- `pf-ciu{,2,3}-20261118`: 1.0G of ciu pytest tmp from containers that mounted
+  them as `/tmp/rgtmp`. Removed by hand.
+- `pf-ciu{4,5,6}-20261118` and `pf-p13-*`: about 50M.
+- `pytest-of-tester`: 390M (RG-306).
+- `assay-liveness-*`, `assay-mutation-witness*`, `assay-state*` and `failed/`:
+  Assay-side, about 120M left after vbpub-assay's cleanup.
+
+Wanted, one of these for every producer:
+- (a) The producer owns its lifetime: an owner record as in RG-294, or its own
+  trap/cleanup. Or
+- (b) `doctor --prune` knows its prefix and an age rule for it.
+
+Unknown top-level entries are listed by `doctor --prune` as "foreign, kept",
+with their size, so that new producers become visible.
+
+Acceptance: a test plants one dir per known prefix plus one unknown dir. Prune
+removes the known, expired ones and reports the unknown one with its size.
+Source: vbpub-main-controller post-prune task (c), 2026-11-24; prune log
+`~/core-runs/prune-real-main-13h.log`.
+
+## RG-306 — run-gate's own assay lanes leave `pytest-of-<user>` in the shared state root
+
+**Status:** OPEN 2026-11-24 (core, after the 2026-11-24 prune). Severity: Minor. Related: RG-305.
+
+`run-gate-project/assay.toml` lanes `r1` and `r2` map
+`TMPDIR = "required-env:RUN_GATE_TMPDIR"`, which is the shared state root, and
+run pytest without `--basetemp`. pytest therefore creates its default
+`$TMPDIR/pytest-of-tester/pytest-N`. It keeps the newest three, so nothing ever
+removes the directory.
+
+Observed: `/workspaces/vbpub/.run-gate/pytest-of-tester`, 390M, dated
+2026-11-18. `pytest-1609` had 5,699 entries: 3,445 `run-gate-locks*` and
+run-gate test names. The `selftest` lane is not affected, because it uses a
+per-run `mktemp -d` with `--basetemp` and a trap.
+
+Wanted: the assay lanes get a per-run TMPDIR or basetemp under a root that is
+removed at exit. Either run-gate hands Assay lanes a per-run subdirectory as
+`RUN_GATE_TMPDIR`, which fixes it for every consumer, or the lane wraps pytest
+as `selftest` does. Assay's own per-mutant basetemp for R2 must keep working.
+Source: vbpub-main-controller post-prune task (b), 2026-11-24.
