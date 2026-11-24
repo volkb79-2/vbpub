@@ -63,6 +63,16 @@ holds the full bodies.
 | HOB-71 | Budget lattice above workload | Minor | OPEN (2026-11-24 Opus design review) |
 | HOB-72 | JSON mode only at observer/control | Minor | OPEN (2026-11-24 Opus design review) |
 | HOB-73 | Hub fixtures over-layered | Minor | OPEN (2026-11-24 Opus design review) |
+| HOB-74 | The sampler walk still lists every cgroup past the row cap | Minor | OPEN (P-hostobs-10 review) |
+| HOB-75 | Incarnation ids churn for rows at the row-cap boundary | Minor | OPEN (P-hostobs-10 review) |
+| HOB-76 | The sampler reads cgroup and host files whose facts are never published | Minor | OPEN (P-hostobs-10 review) |
+| HOB-77 | `hello.epoch` exceeds 2^53 after about 104 days of uptime | Minor | OPEN (P-hostobs-10 review) |
+| HOB-78 | A missing or unreadable `cgroup_root` looks like an empty tree | Major | OPEN (P-hostobs-09 start-up check) |
+| HOB-79 | A metric's value type is derived from its name, not carried by the registry | Minor | OPEN (P-hostobs-10 review) |
+| HOB-80 | Registered metrics without a producer have no explicit unsupported state | Minor | OPEN (P-hostobs-10 review) |
+| HOB-81 | The reverse-index rebuild holds memory at the configured bound, not the live set | Minor | OPEN (P-hostobs-10 review) |
+| HOB-82 | Cgroups with non-UTF-8 names can never be published | Minor | OPEN (P-hostobs-10 review) |
+| HOB-83 | Sampler hygiene: skip double-count, `Tick::new` duplicate rows, shared test harness | Minor | OPEN (P-hostobs-10 review) |
 
 ---
 
@@ -885,3 +895,105 @@ Rust table tests; the Python reference becomes an encoder only.
 byte-for-byte Python check, and leaves the Python reference as the fixture encoder.
 
 Source: .controller-state/design-review-2026-11-24/hostobs.md F12 (Over-layered test oracles for Rust-only components, and a third Python decoder)
+
+## HOB-74 — The sampler walk still lists every cgroup past the row cap
+
+**Where:** `bins/probe/src/sampler.rs`, the cgroup tree walk.
+
+Cgroups beyond `max_rows + 1` are still listed and pushed on the DFS stack. Per-tick walk time is therefore O(all cgroups) rather than O(cap), and the stack can hold depth × 4,096 `(PathBuf, String)` pairs. A delegated, unprivileged subtree (a systemd user delegation) can inflate both.
+
+**Exit criteria.** The walk stops descending once the cap is reached, and `probe.cgroups_skipped` reports a lower bound ("at least N"), documented in WIRE.
+
+Source: `.controller-state/hostobs/reviews/p10-r1-26db62e8c.md` backlog 1.
+
+## HOB-75 — Incarnation ids churn for rows at the row-cap boundary
+
+**Where:** `bins/probe/src/sampler.rs` (rows beyond the cap are never observed) and `crates/model/src/identity.rs`.
+
+A cgroup that falls past the cap for two ticks retires and is re-minted with a new `inc` when a sibling disappears, so `inc` near the cap is unstable.
+
+**Exit criteria.** Keep observing rows that were cut (identity only, no samples), or define the cap so that boundary rows are stable. Add a test for a cgroup crossing the cap and coming back.
+
+Source: `reviews/p10-r1-26db62e8c.md` backlog 2.
+
+## HOB-76 — The sampler reads cgroup and host files whose facts are never published
+
+**Where:** `bins/probe/src/sampler.rs` `read_cgroup` / `read_host`.
+
+`read_cgroup` reads `cpu.max`, `cpu.weight`, `memory.max` and `pids.max` (4 of its 11 files) only to drop them. `read_host` reads `/proc/pressure/*`, `meminfo` and `vmstat` every tick, although the root row no longer publishes host PSI (P-hostobs-10 r1 F1). Together that is about a third of the per-tick reads, wasted.
+
+**Exit criteria.** Read only the files that feed a registered metric, or register the facts. The report's dropped-facts list is empty, or each remaining entry is justified.
+
+Source: `reviews/p10-r1-26db62e8c.md` backlog 3; `reviews/p10-r2-8d6316a8a.md` backlog.
+
+## HOB-77 — `hello.epoch` exceeds 2^53 after about 104 days of uptime
+
+**Where:** `docs/WIRE.md` D-W54 (the epoch is `CLOCK_BOOTTIME` ns at probe start).
+
+The Python client compares the epoch exactly (`conn.py`), but any JSON consumer that parses numbers as doubles (JS, `jq`) loses exactness once the epoch exceeds 2^53 ns.
+
+**Exit criteria.** WIRE states "consumers compare `epoch` as an exact u64", or the JSON form carries it as a string. Add a fixture with an epoch above 2^53.
+
+Source: `reviews/p10-r1-26db62e8c.md` backlog 4.
+
+## HOB-78 — A missing or unreadable `cgroup_root` looks like an empty tree
+
+**Where:** `bins/probe/src/sampler.rs` and the probe's start-up path (`main.rs`, P-hostobs-09).
+
+A wrong `cgroup_root` yields ticks with zero rows forever. That is indistinguishable from an empty selection, because the `probe.*` metrics live on the root row, which is then absent.
+
+**Exit criteria.** P-hostobs-09's start-up check refuses a root that is not a readable cgroup2 directory (exit 2, one stderr line), or each tick carries a status bit that a client can see. A test covers each case.
+
+Source: `reviews/p10-r1-26db62e8c.md` backlog 5.
+
+## HOB-79 — A metric's value type is derived from its name, not carried by the registry
+
+**Where:** `bins/probe/src/sampler.rs` `value_type`, and `crates/model/src/metric.rs`.
+
+`value_type` is a match on metric names, so a newly registered metric can get the wrong type silently.
+
+**Exit criteria.** The model metric table carries the value type, and the sampler reads it from there. A test proves every registered metric has one.
+
+Source: `reviews/p10-r1-26db62e8c.md` backlog 6 (the implementer's candidate too).
+
+## HOB-80 — Registered metrics without a producer have no explicit unsupported state
+
+**Where:** `crates/model/src/metric.rs` and the sampler.
+
+`derived.cpu_pct`, `cpu.busy_pct`, `memevl.oom_kill`, `probe.resets` and the zswap/KSM metrics are registered, but nothing produces them.
+
+**Exit criteria.** Each one either has a producer or is published as an explicit `unsupported` column, documented in WIRE.
+
+Source: `reviews/p10-r1-26db62e8c.md` backlog 7; `.controller-state/hostobs/runs/p10-sampler.report.md`.
+
+## HOB-81 — The reverse-index rebuild holds memory at the configured bound, not the live set
+
+**Where:** `crates/model/src/identity.rs` `IncarnationRegistry::end_round`.
+
+After every round that retires anything, the reverse index is rebuilt with `try_reserve(max_active)`. At the 65,536 default that is about 3 MiB per rebuild, held even when only a few cgroups are live. The rebuild exists to satisfy the long-churn capacity assertion; `shrink_to_fit` and `shrink_to` both failed that test.
+
+**Exit criteria.** Size the rebuild from the live set with headroom (or rebuild only when tombstones dominate), and adjust the churn assertion to bound capacity by the live peak. The cost docs and CHANGES are updated to match.
+
+Source: `reviews/p10-r2-8d6316a8a.md` FF1/backlog; the P-hostobs-10 FF2 correction `da253e494`.
+
+## HOB-82 — Cgroups with non-UTF-8 names can never be published
+
+**Where:** `bins/probe/src/sampler.rs` (path labels are `String`).
+
+A cgroup directory whose name is not valid UTF-8 is skipped, so it and its whole subtree can never be published.
+
+**Exit criteria.** Define a lossless escape for path labels in WIRE (for example a percent-encoding of the invalid bytes) and publish such rows, or count them under `probe.cgroups_skipped` with a documented reason.
+
+Source: `reviews/p10-r2-8d6316a8a.md` backlog.
+
+## HOB-83 — Sampler hygiene: skip double-count, `Tick::new` duplicate rows, shared test harness
+
+**Where:** `bins/probe/src/sampler.rs`, `bins/probe/tests/live_backend.rs`.
+
+- `probe.cgroups_skipped` counts a vanished cgroup, or one past the row cap, twice when its listing also fails (r2 N4).
+- `Tick::new` is public. For a hand-built tick with duplicate rows, an exact lookup returns the first row while a prefix scan returns both (r2 N5).
+- The request, frame, drain and selection-JSON helpers in `live_backend.rs` are generic; a `tests/support` module would let P-hostobs-09 and P-hostobs-11 reuse them (r1 size cut 5).
+
+**Exit criteria.** Each case is counted once; `Tick::new` refuses duplicate keys or is made crate-private; the helpers live in one shared module.
+
+Source: `reviews/p10-r2-8d6316a8a.md` N4/N5; `reviews/p10-r1-26db62e8c.md` size cut 5.
