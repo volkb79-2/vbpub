@@ -294,7 +294,7 @@ os.environ.update(CTX_INFORM_AT="150000", CTX_URGE_AT="x", CTX_FORCE_AT="-5", CT
 assert module.controller_limits() == (150_000, 250_000, 300_000, 0)   # bad values keep the default; grace 0 is legal
 # nit2: the three thresholds are kept in order (inform <= urge <= force), so an inverted pair
 # cannot produce contradictory wording.
-os.environ.update(CTX_INFORM_AT="260000", CTX_URGE_AT="200000", CTX_FORCE_AT="250000")
+os.environ.update(CTX_INFORM_AT="260000", CTX_URGE_AT="200000", CTX_FORCE_AT="250000", CTX_FORCE_GRACE="5")
 assert module.controller_limits() == (260_000, 260_000, 260_000, 5), module.controller_limits()
 os.environ.update(CTX_INFORM_AT="200000", CTX_URGE_AT="240000", CTX_FORCE_AT="210000")
 assert module.controller_limits() == (200_000, 240_000, 240_000, 5), module.controller_limits()
@@ -957,7 +957,7 @@ is_denied || fail 'a null file_path was allowed'
 pt "$ROOT/pt-hi.jsonl" s1 Write '{}'
 is_denied || fail 'a write with no file_path was allowed'
 pt "$ROOT/pt-hi.jsonl" s1 Bash 'not-an-object'
-is_denied || fail 'a non-dict tool_input was allowed'
+is_allowed || fail 'stdio that is not hook JSON must deny nothing (the fail-open)'
 [[ ! -s $ROOT/pt-garbage.out ]] || fail 'a null tool_input was denied (the fail-open must hold)'
 [[ ! -s $ROOT/pt-garbage2.out ]] || fail 'garbage stdin was denied (the fail-open must hold)'
 
