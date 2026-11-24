@@ -928,6 +928,20 @@ pub fn sampler_baseline() -> Result<MetricRegistry, MetricError> {
     )?;
     // the probe's own bookkeeping.
     registry.declare(
+        "probe.cgroups_skipped",
+        MetricKind::Gauge,
+        Unit::Count,
+        Scope::Daemon,
+        Source::Probe,
+    )?;
+    registry.declare(
+        "probe.ticks_skipped",
+        MetricKind::Counter,
+        Unit::Count,
+        Scope::Daemon,
+        Source::Probe,
+    )?;
+    registry.declare(
         "probe.resets",
         MetricKind::Counter,
         Unit::Count,
@@ -1377,6 +1391,29 @@ mod tests {
             registry.get("probe.resets").map(|m| m.source()),
             Ok(Source::Probe),
             "the sampler's own counters are the probe's, not host facts"
+        );
+        assert_eq!(
+            registry.get("probe.cgroups_skipped").map(|m| (
+                m.kind(),
+                m.unit(),
+                m.scope(),
+                m.source()
+            )),
+            Ok((MetricKind::Gauge, Unit::Count, Scope::Daemon, Source::Probe))
+        );
+        assert_eq!(
+            registry.get("probe.ticks_skipped").map(|m| (
+                m.kind(),
+                m.unit(),
+                m.scope(),
+                m.source()
+            )),
+            Ok((
+                MetricKind::Counter,
+                Unit::Count,
+                Scope::Daemon,
+                Source::Probe
+            ))
         );
     }
 
