@@ -443,6 +443,24 @@ def test_standalone_check_requires_a_site_domain(tmp_path: Path):
     assert "domain is required" in result.stdout + result.stderr
 
 
+def test_ciu_check_accepts_a_valid_hostdir_site(tmp_path: Path) -> None:
+    """ciu rewrites hostdir tables to absolute paths before it calls the hook.
+
+    The hook validates ciu's merged config but restores the declared
+    [tls_edge.traefik.hostdir] table, so a valid outside-stack hostdir passes.
+    """
+    root, _ = _case_root(
+        tmp_path,
+        _override(
+            '[tls_edge.acme]\nstore = "hostdir"\n'
+            '[tls_edge.traefik.hostdir]\n'
+            'acme = { path = "../../shared/acme", uid = 0, gid = 0, mode = "0700" }\n'
+        ),
+    )
+
+    assert _run_ciu_check(root) == 0
+
+
 def test_standalone_refuses_hostdir_acme_storage(tmp_path: Path):
     _, stack_dir = _case_root(
         tmp_path,
