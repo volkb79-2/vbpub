@@ -692,6 +692,7 @@ entries.
 | CIU-231 | `ciu up` with no `--dir` inside a stack dir of a multi-stack root is a silent rc-0 no-op; `down --dir <relative>` from the root refuses `[no-ciu-root]` | Medium | OPEN 2026-11-24 |
 | CIU-232 | procio's signal scope replaced the foreground one-shot's SIGTERM/SIGHUP forwarding handlers during `run_cmd` | Minor | FIXED IN THIS BRANCH (P-core-10 fix round 1) |
 | CIU-233 | Seventeen deferred direct `subprocess.run(capture_output=True)` sites still have no bounded post-exit drain | Minor | OPEN 2026-11-24 (P-core-10 review) |
+| CIU-234 | `procutil.run_cmd`'s helper-thread branch leaves the child running when a main-thread `KeyboardInterrupt` or `SystemExit` interrupts `worker.join()` | Minor | OPEN 2026-11-24 (P-core-10 review r2, M2) |
 
 
 The approved milestone decisions and serial package order are in
@@ -7256,11 +7257,11 @@ Evidence: `.controller-state/edge/reports/r1002-drain-20261124.md` (Bring-up sec
 
 **Observed.** CIU-141's foreground one-shot installs recording SIGTERM/SIGHUP handlers in `oneshot.py` around lines 1202-1295 and forwards the first signal to the container. P-core-10 made every captured `procutil.run_cmd` enter `procio._SignalScope`, which replaces any non-`SIG_IGN` SIGTERM/SIGHUP handler, even a caller's Python callable; a signal during the one-shot's docker inspect/kill calls raised `SystemExit(143/129)` and force-removed the container without the grace period.
 
-**Measured repro.** The controller ran `/tmp/sigprobe.py <ciu-root> <cli-extended-src>`: a recording SIGTERM handler plus `run_cmd(["sh", "-c", "kill -TERM $PPID; sleep 0.3; echo ok"])` called the handler and returned rc 0 on origin/main; on the P-core-10 head the handler was skipped and `run_cmd` raised `SystemExit(143)`. Root cause in `cli-extended.procio._SignalScope` is controller-filed as CLI-EXT-47 (leave any non-default SIGTERM/SIGHUP handler alone); that upstream item owns the permanent correction.
+**Measured repro.** The controller ran `/tmp/sigprobe.py <ciu-root> <cli-extended-src>`: a recording SIGTERM handler plus `run_cmd(["sh", "-c", "kill -TERM $PPID; sleep 0.3; echo ok"])` called the handler and returned rc 0 on origin/main; on the P-core-10 head the handler was skipped and `run_cmd` raised `SystemExit(143)`. Root cause in `cli-extended.procio._SignalScope` is controller-filed as CLI-EXT-51 (leave any non-default SIGTERM/SIGHUP handler alone); that upstream item owns the permanent correction.
 
-**Resolution.** In `procutil.run_cmd`'s capture branch, when the call is on the main thread and either termination signal has a Python-callable handler, CIU runs `procio.run_capture` in a joined helper thread. procio installs its signal scope only on the main thread, so CIU's handler remains active; timeout enforcement and process-group reaping stay inside procio. The behavioral tests use a real child that signals its parent for SIGTERM and SIGHUP, and the timeout/group-reap oracle runs in both branches. The workaround is removed when CLI-EXT-47 lands; `oneshot.py` is untouched.
+**Resolution.** In `procutil.run_cmd`'s capture branch, when the call is on the main thread and either termination signal has a Python-callable handler, CIU runs `procio.run_capture` in a joined helper thread. procio installs its signal scope only on the main thread, so CIU's handler remains active; timeout enforcement and process-group reaping stay inside procio. The behavioral tests use a real child that signals its parent for SIGTERM and SIGHUP, and the timeout/group-reap oracle runs in both branches. The workaround is removed when CLI-EXT-51 lands; `oneshot.py` is untouched.
 
-**Close when.** CLI-EXT-47 is released, CIU removes the helper-thread branch and keeps the SIGTERM/SIGHUP real-child tests green.
+**Close when.** CLI-EXT-51 is released, CIU removes the helper-thread branch and keeps the SIGTERM/SIGHUP real-child tests green.
 
 ## CIU-233 — deferred captured subprocess readers still lack a bounded drain
 
@@ -7271,3 +7272,15 @@ Evidence: `.controller-state/edge/reports/r1002-drain-20261124.md` (Bring-up sec
 **Wanted.** Migrate each captured site to `procutil.run_cmd`/`procio.run_capture`, or retain an explicit exception with a separately justified non-pipe contract; preserve caller-visible output, timeout, and error precedence. Two stale floor statements remain outside this item's allowed files: `ciu/assay.toml:45` and `ciu/docs/RUNBOOK-CIU-215-LIVE-PROBE.md:170` still say `cli-extended>=0.5.0`, and both move to 0.8.0 with this item.
 
 **Close when.** No unbounded captured reader remains, or every remaining exception names a non-pipe or bounded reason, and the stale floor statements agree with `pyproject.toml`.
+
+## CIU-234 — the helper-thread branch of `run_cmd` leaves its child running on a main-thread interrupt
+
+**Status:** OPEN (filed 2026-11-24, from the P-core-10 round-2 review, finding M2); severity: Minor, latent.
+
+**Observed.** When a caller has a Python SIGTERM/SIGHUP handler installed, `procutil.run_cmd` runs `procio.run_capture` in a joined helper thread (`ciu/src/ciu/procutil.py:55-62`, CIU-232). If a `KeyboardInterrupt` or `SystemExit` is raised in the main thread while it waits in `worker.join()` (`procutil.py:61`), the exception leaves `run_cmd` and the helper thread plus its child keep running. With the default `timeout=None` nothing reaps them, so ciu hangs at exit until the docker command ends. The code before CIU-232 killed the child in that case.
+
+**Not reachable today.** `oneshot.py`'s handler never raises and traps SIGINT too, so the foreground one-shot cannot hit it; no other caller installs a raising handler around a captured `run_cmd`.
+
+**Wanted.** In the helper-thread branch, catch `BaseException` around `worker.join()`, terminate the child's process group through procio's own reap path, join the worker, then re-raise; one real-child test with a handler that raises. Moot once CLI-EXT-51 is released and the branch is removed.
+
+**Close when.** The branch reaps its child on a main-thread interrupt with a pinning test, or CLI-EXT-51 is released and the helper-thread branch is deleted.

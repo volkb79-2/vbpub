@@ -48,7 +48,7 @@ def _caller_has_python_signal_handler() -> bool:
 
 
 def _run_capture_without_replacing_callers_signals(**kwargs: Any) -> procio.CaptureResult:
-    """Run procio off-main-thread, leaving ciu's forwarding handlers armed (CLI-EXT-47)."""
+    """Run procio off-main-thread, leaving ciu's forwarding handlers armed (CLI-EXT-51)."""
     outcome: dict[str, Any] = {}
 
     def capture() -> None:

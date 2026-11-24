@@ -175,6 +175,26 @@ def python_child_env(environ: Mapping[str, str] | None = None) -> dict[str, str]
 os.environ[CIU_TEST_SUITE_ENV] = "1"
 
 
+def _disable_git_auto_maintenance_in_env() -> None:
+    """Turn git's automatic maintenance off for every git process the suite spawns.
+
+    A git command that runs ``gc --auto`` or ``maintenance run --auto`` detaches a
+    child that outlives the test; the test-policy plugin makes pytest the
+    subreaper, so that child becomes a direct child of pytest and the CIU-223
+    guard fails the test (observed with git 2.56.1). The settings travel as
+    ``GIT_CONFIG_COUNT`` entries (appended after any the caller already set),
+    never as a global git config.
+    """
+    count = int(os.environ.get("GIT_CONFIG_COUNT", "0") or "0")
+    for offset, (key, value) in enumerate((("gc.auto", "0"), ("maintenance.auto", "false"))):
+        os.environ[f"GIT_CONFIG_KEY_{count + offset}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{count + offset}"] = value
+    os.environ["GIT_CONFIG_COUNT"] = str(count + 2)
+
+
+_disable_git_auto_maintenance_in_env()
+
+
 def _ensure_ciu_distribution_metadata() -> None:
     """Give a source-mode run the installed-distribution metadata ``ciu`` resolves its version from.
 

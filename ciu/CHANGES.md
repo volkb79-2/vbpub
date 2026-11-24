@@ -46,7 +46,7 @@ the technical detail below it.
 - CIU-220: malformed UTF-8 in streamed command output is replaced with
   `U+FFFD` instead of failing a command that otherwise exited successfully.
 - CIU-232: captured `run_cmd` calls on the main thread preserve a caller's
-  installed SIGTERM/SIGHUP handlers until cli-extended CLI-EXT-47 lands.
+  installed SIGTERM/SIGHUP handlers until cli-extended CLI-EXT-51 lands.
 
 ### Testing
 - CIU-223: the CIU-215 tests now disable git's automatic gc and maintenance per process, and an autouse test fixture reports any direct child left under pytest without signalling it. Tests only; no consumer action.
