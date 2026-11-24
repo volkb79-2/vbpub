@@ -70,7 +70,7 @@ use crate::encode::{
     closing_evt, current_result, end_error, end_ok, error_line, push_string, rep_error, rep_ok,
     rep_ok_line, server_prefix, subscribe_result, unknown_mode_line, EndReason, UNSUBSCRIBE_RESULT,
 };
-use crate::limits::{Level, Limits};
+use crate::limits::{ConnLimits, Level};
 use crate::lines::{LineError, LineFeed, LineReader};
 use crate::registry::{SelId, SelectionCaps, SelectionStreams, SubKey};
 use crate::selection::Selection;
@@ -169,7 +169,7 @@ fn push_array<'a>(out: &mut String, items: impl Iterator<Item = &'a str>) {
 }
 
 /// The `hello` result of WIRE.md section 4.4: `minor` is the negotiated N.
-fn hello_result(level: Level, minor: u16, identity: &Identity, limits: &Limits) -> String {
+fn hello_result(level: Level, minor: u16, identity: &Identity, limits: &ConnLimits) -> String {
     let mut out = format!("{{\"proto\":{{\"major\":{SERVER_MAJOR},\"minor\":{minor}}}");
     out.push_str(",\"level\":");
     push_string(&mut out, level.name());
@@ -247,7 +247,7 @@ pub struct Conn {
     id: ConnId,
     level: Level,
     peer: Peer,
-    limits: Limits,
+    limits: ConnLimits,
     state: State,
     detect: ModeDetect,
     timers: ConnTimers,
@@ -263,11 +263,11 @@ pub struct Conn {
 
 impl Conn {
     /// A connection accepted at `now_ns`: `Undecided`, the hello deadline armed. `id` is the
-    /// hub's `add(peer.uid, now_ns)`; `peer` is stored once and never re-read (R23).
+    /// hub's `add(now_ns)`; `peer` is stored once and never re-read (R23).
     #[must_use]
-    pub fn new(id: ConnId, level: Level, peer: Peer, limits: &Limits, now_ns: u64) -> Conn {
-        let hello_ns = ms_to_ns(limits.hello_deadline_ms);
-        let mut timers = ConnTimers::new(hello_ns, ms_to_ns(limits.idle_ms));
+    pub fn new(id: ConnId, level: Level, peer: Peer, limits: &ConnLimits, now_ns: u64) -> Conn {
+        let hello_ns = ms_to_ns(limits.level.hello_deadline_ms);
+        let mut timers = ConnTimers::new(hello_ns, ms_to_ns(limits.level.idle_ms));
         timers.on_accept(now_ns);
         Conn {
             id,
@@ -564,7 +564,7 @@ impl Conn {
     }
 
     fn reply_bytes(&self, corr: u32, result: &str) -> Vec<u8> {
-        let cap = self.limits.max_reply_bytes;
+        let cap = self.limits.level.max_reply_bytes;
         if self.is_json() {
             rep_ok_line(corr, result, cap)
         } else {
@@ -625,8 +625,13 @@ impl Conn {
                 self.finish_close(hub, Some(Code::UnknownMode), Some(line));
             }
             Detect::Json { at } => {
-                let completion = ms_to_ns(self.limits.request_deadline_ms);
-                let reader = LineReader::new(self.limits.max_request_bytes, completion);
+                if self.level.serves_blocks() {
+                    let line = error_line(0, Code::BinaryRequired, &Detail::Empty);
+                    self.finish_close(hub, Some(Code::BinaryRequired), Some(line));
+                    return;
+                }
+                let completion = ms_to_ns(self.limits.level.request_deadline_ms);
+                let reader = LineReader::new(self.limits.level.max_request_bytes, completion);
                 self.reader = Reader::Lines(reader);
                 self.state = State::JsonNoHello;
                 let rest = bytes.get(at..).unwrap_or_default();
@@ -660,8 +665,8 @@ impl Conn {
         }
         self.client_prefix = Prefix { major, minor };
         self.minor = minor.min(SERVER_MINOR);
-        let completion = ms_to_ns(self.limits.request_deadline_ms);
-        let reader = FrameReader::new(self.limits.max_request_bytes, completion);
+        let completion = ms_to_ns(self.limits.level.request_deadline_ms);
+        let reader = FrameReader::new(self.limits.level.max_request_bytes, completion);
         self.reader = Reader::Frames(reader);
         self.state = State::AwaitHello;
         self.prefix_queued = true;
@@ -805,16 +810,22 @@ impl Conn {
                     self.budget(dispatch.corr, Pool::Query, now_ns, hub);
                     return;
                 }
-                let result = current_result(self.limits.tick_ms);
+                let result = current_result(self.limits.probe.tick_ms);
                 let bytes = self.reply_bytes(dispatch.corr, &result);
                 self.push(hub, bytes, now_ns);
                 if self.is_closed() {
                     return;
                 }
-                let QueryOutcome::Queued = hub.push_query(self.id, dispatch.corr, block, now_ns)
-                else {
-                    unreachable!("query_room was true immediately before push_query")
-                };
+                let outcome = hub.push_query(self.id, dispatch.corr, block, now_ns);
+                debug_assert!(
+                    matches!(&outcome, QueryOutcome::Queued),
+                    "query_room was true immediately before push_query"
+                );
+                if let QueryOutcome::Backpressure(_) = outcome {
+                    let bytes = end_error(dispatch.corr, 0, 0, Code::Internal, &Detail::Empty);
+                    self.push(hub, bytes, now_ns);
+                    return;
+                }
                 let counts = hub.end_stream(self.id, dispatch.corr);
                 let bytes = end_ok(
                     dispatch.corr,
@@ -826,14 +837,15 @@ impl Conn {
                 return;
             }
             Call::Subscribe(args) => {
-                let cap = usize::try_from(self.limits.max_subscriptions).unwrap_or(usize::MAX);
+                let cap =
+                    usize::try_from(self.limits.level.max_subscriptions).unwrap_or(usize::MAX);
                 if self.subs.len() >= cap {
                     self.budget(dispatch.corr, Pool::Subscriptions, now_ns, hub);
                     return;
                 }
                 let every = args
                     .interval_ms
-                    .checked_div(self.limits.tick_ms)
+                    .checked_div(self.limits.probe.tick_ms)
                     .filter(|value| *value > 0);
                 let Some(every) = every else {
                     let bytes = self.error_bytes(dispatch.corr, Code::Internal, &Detail::Empty);
@@ -841,8 +853,8 @@ impl Conn {
                     return;
                 };
                 let caps = SelectionCaps {
-                    per_uid: self.limits.max_uid_selections,
-                    per_probe: self.limits.max_selections,
+                    per_uid: self.limits.level.max_uid_selections,
+                    per_probe: self.limits.level.max_selections,
                 };
                 let key = SubKey {
                     conn: self.id,
@@ -918,7 +930,7 @@ impl Conn {
                 corr,
                 call: Call::Subscribe(crate::args::SubscribeArgs {
                     selection,
-                    interval_ms: self.limits.tick_ms,
+                    interval_ms: self.limits.probe.tick_ms,
                 }),
             },
             now_ns,
@@ -939,7 +951,7 @@ impl Conn {
         backend: &dyn Backend,
     ) -> Result<Arc<[u8]>, (Code, Detail)> {
         let data = backend
-            .current(selection, self.limits.max_rows)
+            .current(selection, self.limits.probe.max_rows)
             .map_err(|error| {
                 let detail = Detail::Pool(Pool::Rows);
                 match error {
@@ -948,8 +960,8 @@ impl Conn {
                 }
             })?;
         let bounds = BlockBounds {
-            max_rows: self.limits.max_rows,
-            max_block_bytes: self.limits.max_block_bytes,
+            max_rows: self.limits.probe.max_rows,
+            max_block_bytes: self.limits.probe.max_block_bytes,
         };
         query_block(data, bounds).map_err(|error| error.refusal())
     }
@@ -975,7 +987,7 @@ mod tests {
     use crate::encode::{
         closing_evt, control_frame, error_line, rep_error, server_prefix, unknown_mode_line,
     };
-    use crate::limits::{Level, Limits};
+    use crate::limits::{ConnLimits, Level, LevelLimits, ProbeLimits};
     use crate::registry::{Delivery, SelectionStreams, StreamLimits};
     use crate::selection::{Sel, Selection};
     use crate::tick::BlockBounds;
@@ -1076,21 +1088,8 @@ mod tests {
         text(body).contains(&format!("\"code\":\"{}\"", code.name()))
     }
 
-    fn queue_limits(limits: &Limits) -> QueueLimits {
-        let size = |value: u32| usize::try_from(value).unwrap_or(usize::MAX);
-        let client = size(limits.client_queue_bytes);
-        let query = size(limits.query_queue_bytes);
-        QueueLimits {
-            client_queue_bytes: client,
-            uid_live_bytes: client.saturating_mul(2),
-            global_live_bytes: client.saturating_mul(4),
-            query_queue_bytes: query,
-            uid_query_bytes: query,
-            global_query_bytes: query.saturating_mul(4),
-            control_queue_bytes: size(limits.control_queue_bytes),
-            stall_ns: u64::from(limits.stall_ms) * MS,
-            frame_completion_ns: u64::from(limits.frame_completion_ms) * MS,
-        }
+    fn queue_limits(limits: &ConnLimits) -> QueueLimits {
+        limits.queue_limits()
     }
 
     fn drain_hub(hub: &mut SendHub, id: ConnId, now_ns: u64) -> Vec<u8> {
@@ -1139,26 +1138,26 @@ mod tests {
         conn: Conn,
         backend: FixedBackend,
         streams: SelectionStreams,
-        limits: Limits,
+        limits: ConnLimits,
         now: u64,
         out: Vec<u8>,
     }
 
     impl Rig {
         fn new(level: Level) -> Rig {
-            Rig::with(level, Limits::for_level(level))
+            Rig::with(
+                level,
+                ConnLimits::new(level, LevelLimits::for_level(level), ProbeLimits::new()),
+            )
         }
 
-        fn with(level: Level, limits: Limits) -> Rig {
+        fn with(level: Level, limits: ConnLimits) -> Rig {
             let mut hub = SendHub::new(queue_limits(&limits));
-            let id = hub.add(1000, 0);
+            let id = hub.add(0);
             let peer = Peer { uid: 1000, pid: 7 };
             let conn = Conn::new(id, level, peer, &limits, 0);
             let streams = SelectionStreams::new(StreamLimits {
-                bounds: BlockBounds {
-                    max_rows: limits.max_rows,
-                    max_block_bytes: limits.max_block_bytes,
-                },
+                bounds: limits.probe.block_bounds(),
             });
             Rig {
                 hub,
@@ -1286,6 +1285,10 @@ mod tests {
         }
     }
 
+    fn limits(level: Level) -> ConnLimits {
+        ConnLimits::new(level, LevelLimits::for_level(level), ProbeLimits::new())
+    }
+
     fn ready_bin(level: Level) -> Rig {
         let mut rig = Rig::new(level);
         let mut input = client_prefix(1);
@@ -1328,7 +1331,7 @@ mod tests {
 
     #[test]
     fn conn_row_2_brace_selects_json_and_the_first_line_is_the_hello() {
-        let mut rig = Rig::new(Level::Observe);
+        let mut rig = Rig::new(Level::Control);
         rig.send(b"{");
         assert_eq!(rig.conn.state(), State::JsonNoHello);
         rig.send(&line(1, "hello", HELLO_ARGS)[1..]);
@@ -1338,6 +1341,33 @@ mod tests {
         assert!(out.starts_with(head));
         assert!(out.contains("\"minor\":1}") && out.ends_with("}\n"));
         assert_eq!(rig.conn.minor(), 1);
+    }
+
+    #[test]
+    fn conn_dw51_json_is_refused_exactly_at_the_block_levels() {
+        let input = line(1, "hello", HELLO_ARGS);
+        for level in Level::ALL {
+            let mut rig = Rig::new(level);
+            rig.send(b"{");
+            if level.serves_blocks() {
+                let expected = error_line(0, Code::BinaryRequired, &Detail::Empty);
+                assert!(rig.conn.is_closed(), "{}", level.name());
+                assert_eq!(rig.conn.close_code(), Some(Code::BinaryRequired));
+                assert_eq!(rig.finish(), expected, "{}", level.name());
+                assert!(rig.queue_empty(), "{}", level.name());
+            } else {
+                assert_eq!(rig.conn.state(), State::JsonNoHello, "{}", level.name());
+                assert!(rig.queue_empty(), "{}", level.name());
+                assert_eq!(rig.conn.take_final(), None, "{}", level.name());
+                rig.send(&input[1..]);
+                assert_eq!(rig.conn.state(), State::Ready, "{}", level.name());
+                assert_eq!(rig.conn.close_code(), None);
+                assert_eq!(rig.conn.take_final(), None);
+                let reply = text(&rig.finish());
+                assert_eq!(reply.lines().count(), 1, "{}", level.name());
+                assert!(reply.starts_with("{\"ok\":true,\"corr\":1,"));
+            }
+        }
     }
 
     #[test]
@@ -1390,7 +1420,7 @@ mod tests {
         both.extend_from_slice(&expected);
         assert_eq!(unwritten.conn.close_code(), Some(Code::Deadline));
         assert_eq!(unwritten.conn.take_final(), Some(both));
-        let mut json = Rig::new(Level::Observe);
+        let mut json = Rig::new(Level::Control);
         json.send(b"{");
         json.tick(deadline + 1);
         let line = error_line(0, Code::Deadline, &Detail::Empty);
@@ -1467,7 +1497,7 @@ mod tests {
 
     #[test]
     fn conn_row_8_json_first_line_is_handled_as_a_request_and_ends_the_hello_wait() {
-        let mut rig = Rig::new(Level::Observe);
+        let mut rig = Rig::new(Level::Control);
         rig.send(&line(3, "status", "{}"));
         assert_eq!(rig.conn.state(), State::Ready);
         assert_eq!(rig.conn.minor(), 0);
@@ -1481,7 +1511,7 @@ mod tests {
         let wrong = "\"corr\":4,\"error\":{\"code\":\"bad-request\"";
         assert!(out.contains(wrong));
         assert!(out.contains("\"detail\":{\"key\":\"verb\"}"));
-        let mut garbage = Rig::new(Level::Observe);
+        let mut garbage = Rig::new(Level::Control);
         garbage.send(b"{x\n");
         assert_eq!(garbage.conn.state(), State::Ready);
         garbage.tick(5_001 * MS);
@@ -1490,7 +1520,7 @@ mod tests {
         let reply = text(&garbage.finish());
         let key = "\"corr\":0,\"error\":{\"code\":\"bad-request\"";
         assert!(reply.contains(key));
-        let mut major = Rig::new(Level::Observe);
+        let mut major = Rig::new(Level::Control);
         let skew = r#"{"client":"t","proto":{"major":2,"minor":1}}"#;
         major.send(&line(1, "hello", skew));
         let expected = error_line(1, Code::UnsupportedVersion, &Detail::Empty);
@@ -1511,7 +1541,7 @@ mod tests {
         assert!(body.contains(queues));
         assert!(body.contains("\"clients\":{}"));
         assert!(body.contains("\"tiers\":[]"));
-        let mut json = ready_json(Level::Observe);
+        let mut json = ready_json(Level::Control);
         json.send(&line(9, "status", "{}"));
         let out = text(&json.finish());
         let head = "{\"ok\":true,\"corr\":9,\"result\":{\"server\"";
@@ -1531,10 +1561,6 @@ mod tests {
         assert!(parsed[2].2.contains("\"code\":\"unknown-verb\""));
         assert!(parsed[3].2.contains("\"key\":\"verb\""));
         assert_eq!(rig.conn.state(), State::Ready);
-        let mut json = ready_json(Level::Observe);
-        json.send(&line(2, "current", "{}"));
-        let reply = text(&json.finish());
-        assert!(reply.contains("\"code\":\"binary-required\""));
     }
 
     #[test]
@@ -1546,7 +1572,7 @@ mod tests {
         assert!(rig.conn.is_closed());
         assert_eq!(rig.conn.close_code(), Some(Code::Idle));
         assert_eq!(rig.conn.take_final(), Some(closing_evt(Code::Idle)));
-        let mut json = ready_json(Level::Observe);
+        let mut json = ready_json(Level::Control);
         json.tick(300_000 * MS + 1);
         assert_eq!(json.conn.close_code(), Some(Code::Idle));
         let expected = error_line(0, Code::Idle, &Detail::Empty);
@@ -1583,7 +1609,7 @@ mod tests {
         assert_eq!(rig.conn.close_code(), None);
         assert_eq!(rig.conn.take_final(), None);
         assert_eq!(frames(&rig.out).len(), 1);
-        let mut empty = ready_json(Level::Observe);
+        let mut empty = ready_json(Level::Control);
         empty.eof();
         assert!(empty.conn.is_closed());
         let mut late = ready_bin(Level::Observe);
@@ -1600,7 +1626,7 @@ mod tests {
         let mut undecided = Rig::new(Level::Observe);
         undecided.send(b"HO");
         let mut await_hello = await_rig();
-        let mut json = Rig::new(Level::Observe);
+        let mut json = Rig::new(Level::Control);
         json.send(b"{\"corr\":1");
         let mut inside = ready_bin(Level::Observe);
         inside.send(&req(2, "status")[..14]);
@@ -1630,7 +1656,7 @@ mod tests {
         assert_eq!(whole.conn.close_code(), Some(Code::ShuttingDown));
         assert_eq!(whole.conn.take_final(), Some(evt));
         assert_eq!(whole.conn.take_final(), None);
-        let mut json = ready_json(Level::Observe);
+        let mut json = ready_json(Level::Control);
         json.conn.close_for(Code::SlowClient, &mut json.hub);
         let expected = error_line(0, Code::SlowClient, &Detail::Empty);
         assert_eq!(json.conn.close_code(), Some(Code::SlowClient));
@@ -1649,7 +1675,7 @@ mod tests {
             assert!(bin.conn.is_closed() && bin.queue_empty());
             assert_eq!(bin.conn.close_code(), Some(code));
             assert_eq!(bin.conn.take_final(), Some(closing_evt(code)));
-            let mut json = ready_json(Level::Observe);
+            let mut json = ready_json(Level::Control);
             json.conn.close_for(code, &mut json.hub);
             assert_eq!(json.conn.close_code(), Some(code));
             let expected = error_line(0, code, &Detail::Empty);
@@ -1725,7 +1751,7 @@ mod tests {
         assert!(rig.queue_empty());
         assert_eq!(rig.finish(), rep_error(0, Code::BadFrame, &Detail::Empty));
         assert_eq!(rig.conn.close_code(), Some(Code::BadFrame));
-        let mut json = ready_json(Level::Observe);
+        let mut json = ready_json(Level::Control);
         let mut input = line(3, "hello", HELLO_ARGS);
         input.extend_from_slice(&line(4, "status", "{}"));
         json.send(&input);
@@ -1741,8 +1767,10 @@ mod tests {
         let expected = rep_error(0, Code::FrameTooLarge, &Detail::Empty);
         assert_eq!(big.conn.close_code(), Some(Code::FrameTooLarge));
         assert_eq!(big.conn.take_final(), Some(expected));
-        let mut line_big = ready_json(Level::Observe);
-        line_big.send(&vec![b'a'; 40_000]);
+        let mut line_big = ready_json(Level::Observer);
+        let line_max = usize::try_from(LevelLimits::for_level(Level::Observer).max_request_bytes)
+            .expect("line bound");
+        line_big.send(&vec![b'a'; line_max.saturating_add(1)]);
         let expected = error_line(0, Code::FrameTooLarge, &Detail::Empty);
         assert_eq!(line_big.conn.close_code(), Some(Code::FrameTooLarge));
         assert_eq!(line_big.conn.take_final(), Some(expected));
@@ -1760,8 +1788,8 @@ mod tests {
 
     #[test]
     fn conn_control_queue_overflow_is_slow_client_with_the_prefix_kept() {
-        let mut limits = Limits::for_level(Level::Observe);
-        limits.control_queue_bytes = 600;
+        let mut limits = limits(Level::Observe);
+        limits.level.control_queue_bytes = 600;
         let mut rig = Rig::with(Level::Observe, limits);
         let mut input = client_prefix(1);
         input.extend_from_slice(&req(1, "hello"));
@@ -1780,11 +1808,11 @@ mod tests {
         binary.extend_from_slice(&req(2, "status"));
         let mut json = line(1, "hello", HELLO_ARGS);
         json.extend_from_slice(&line(2, "status", "{}"));
-        for input in [binary, json] {
-            let mut whole = Rig::new(Level::Operator);
+        for (level, input) in [(Level::Operator, binary), (Level::Control, json)] {
+            let mut whole = Rig::new(level);
             whole.send(&input);
             let expected = whole.finish();
-            let mut slow = Rig::new(Level::Operator);
+            let mut slow = Rig::new(level);
             for byte in &input {
                 slow.send(&[*byte]);
                 slow.pump(usize::MAX);
@@ -1959,13 +1987,13 @@ mod tests {
             let parsed = frames(&out[8..]);
             let result = member(&parsed[0].2, "result");
             assert_eq!(member(&result, "proto"), proto);
-            let mut json = Rig::new(Level::Observe);
+            let mut json = Rig::new(Level::Control);
             json.send(&line(1, "hello", &args));
             assert_eq!(json.conn.minor(), negotiated);
             let reply = text(&json.finish());
             assert_eq!(member(&member(&reply, "result"), "proto"), proto);
         }
-        let mut bare = Rig::new(Level::Observe);
+        let mut bare = Rig::new(Level::Control);
         bare.send(&line(1, "status", "{}"));
         assert_eq!(bare.conn.state(), State::Ready);
         assert_eq!(bare.conn.minor(), 0);
@@ -1975,18 +2003,18 @@ mod tests {
         TickData::example(seq, &[1], &["m"])
     }
 
-    fn current_rig(limits: Limits, selection: Selection, data: TickData) -> Rig {
+    fn current_rig(limits: ConnLimits, selection: Selection, data: TickData) -> Rig {
         let mut rig = Rig::with(Level::Observe, limits);
         rig.backend.current.insert(selection, Ok(data));
         rig
     }
 
-    fn query_len(limits: &Limits, data: &TickData) -> usize {
+    fn query_len(limits: &ConnLimits, data: &TickData) -> usize {
         crate::tick::query_block(
             data.clone(),
             BlockBounds {
-                max_rows: limits.max_rows,
-                max_block_bytes: limits.max_block_bytes,
+                max_rows: limits.probe.max_rows,
+                max_block_bytes: limits.probe.max_block_bytes,
             },
         )
         .expect("query block")
@@ -1996,11 +2024,7 @@ mod tests {
     #[test]
     fn conn_current_queued_replies_block_and_complete_in_fifo_order() {
         let sel = selection(1);
-        let mut rig = current_rig(
-            Limits::for_level(Level::Observe),
-            sel.clone(),
-            current_data(5),
-        );
+        let mut rig = current_rig(limits(Level::Observe), sel.clone(), current_data(5));
         rig.current(2, sel);
         let out = rig.finish();
         let raw = raw_frames(&out);
@@ -2028,8 +2052,8 @@ mod tests {
 
     #[test]
     fn conn_current_rows_budget_queues_no_block() {
-        let mut limits = Limits::for_level(Level::Observe);
-        limits.max_rows = 1;
+        let mut limits = limits(Level::Observe);
+        limits.probe.max_rows = 1;
         let sel = selection(1);
         let data = TickData::example(5, &[1, 2], &["m"]);
         let mut rig = current_rig(limits, sel.clone(), data);
@@ -2043,8 +2067,8 @@ mod tests {
 
     #[test]
     fn conn_current_oversize_is_internal_before_the_rep() {
-        let mut limits = Limits::for_level(Level::Observe);
-        limits.max_block_bytes = 128;
+        let mut limits = limits(Level::Observe);
+        limits.probe.max_block_bytes = 128;
         let sel = selection(1);
         let mut rig = current_rig(limits, sel.clone(), current_data(5));
         rig.current(2, sel);
@@ -2058,17 +2082,17 @@ mod tests {
     fn conn_current_query_budget_is_refused_before_the_rep() {
         let sel = selection(1);
         let data = current_data(5);
-        let mut limits = Limits::for_level(Level::Observe);
+        let mut limits = limits(Level::Observe);
         let need = query_len(&limits, &data);
         let queue = u32::try_from(need).expect("query length");
-        limits.query_queue_bytes = queue;
-        limits.max_block_bytes = queue;
+        limits.probe.query_queue_bytes = queue;
+        limits.probe.max_block_bytes = queue;
         let mut rig = current_rig(limits, sel.clone(), data);
         rig.ready();
         let blockers: Vec<ConnId> = [1, 2, 3, 4]
             .into_iter()
             .map(|uid| {
-                let id = rig.hub.add(uid, rig.now);
+                let id = rig.hub.add(rig.now);
                 let block = Arc::from(vec![0u8; need]);
                 assert_eq!(
                     rig.hub.push_query(id, uid, block, rig.now),
@@ -2106,9 +2130,9 @@ mod tests {
             .len(),
         )
         .expect("length");
-        let mut limits = Limits::for_level(Level::Observe);
-        limits.max_block_bytes = need;
-        limits.query_queue_bytes = need;
+        let mut limits = limits(Level::Observe);
+        limits.probe.max_block_bytes = need;
+        limits.probe.query_queue_bytes = need;
         let mut rig = current_rig(limits, sel.clone(), data);
         rig.current(2, sel);
         let raw = raw_frames(&rig.finish());
@@ -2148,8 +2172,8 @@ mod tests {
 
     #[test]
     fn conn_subscribe_uid_and_probe_budgets_use_the_requesting_level() {
-        let mut uid_limits = Limits::for_level(Level::Observe);
-        uid_limits.max_uid_selections = 1;
+        let mut uid_limits = limits(Level::Observe);
+        uid_limits.level.max_uid_selections = 1;
         let mut uid = Rig::with(Level::Observe, uid_limits);
         uid.subscribe(2, selection(1), 1_000);
         uid.subscribe(3, selection(2), 1_000);
@@ -2157,8 +2181,8 @@ mod tests {
         assert!(is_error(&raw[1].2, Code::Budget));
         assert!(text(payload(&raw[1].2)).contains("\"pool\":\"uid-selections\""));
 
-        let mut probe_limits = Limits::for_level(Level::Observe);
-        probe_limits.max_selections = 1;
+        let mut probe_limits = limits(Level::Observe);
+        probe_limits.level.max_selections = 1;
         let mut probe = Rig::with(Level::Observe, probe_limits);
         probe.subscribe(2, selection(1), 1_000);
         probe.subscribe(3, selection(2), 1_000);
@@ -2169,16 +2193,16 @@ mod tests {
 
     #[test]
     fn conn_subscribe_does_no_block_or_backend_work_before_the_next_tick() {
-        let limits = Limits::for_level(Level::Observe);
+        let limits = limits(Level::Observe);
         let mut hub = SendHub::new(queue_limits(&limits));
-        let id = hub.add(1000, 0);
+        let id = hub.add(0);
         let peer = Peer { uid: 1000, pid: 7 };
         let mut conn = Conn::new(id, Level::Observe, peer, &limits, 0);
         let backend = CountingBackend::new();
         let mut streams = SelectionStreams::new(StreamLimits {
             bounds: BlockBounds {
-                max_rows: limits.max_rows,
-                max_block_bytes: limits.max_block_bytes,
+                max_rows: limits.probe.max_rows,
+                max_block_bytes: limits.probe.max_block_bytes,
             },
         });
         let mut input = client_prefix(1);
@@ -2324,7 +2348,7 @@ mod tests {
 
     #[test]
     fn conn_unsubscribe_is_not_found_in_json_mode() {
-        let mut rig = ready_json(Level::Observe);
+        let mut rig = ready_json(Level::Control);
         rig.execute(3, Call::Unsubscribe(2));
         let out = text(&rig.finish());
         assert!(out.contains("\"corr\":3"));
@@ -2366,10 +2390,10 @@ mod tests {
         let sel = selection(1);
         let data = current_data(5);
         let need = {
-            let limits = Limits::for_level(Level::Observe);
+            let limits = limits(Level::Observe);
             query_len(&limits, &data)
         };
-        let mut rig = current_rig(Limits::for_level(Level::Observe), sel, data);
+        let mut rig = current_rig(limits(Level::Observe), sel, data);
         rig.ready();
         let current = String::from(
             "{\"verb\":\"current\",\"args\":{\"selection\":{\"entities\":[{\"inc\":1}],\
@@ -2401,8 +2425,8 @@ mod tests {
 
     #[test]
     fn conn_closed_stops_every_push_path() {
-        let mut limits = Limits::for_level(Level::Observe);
-        limits.control_queue_bytes = 1;
+        let mut limits = limits(Level::Observe);
+        limits.level.control_queue_bytes = 1;
         let mut rig = Rig::with(Level::Observe, limits);
         let sub_selection = selection(1);
         rig.send(&client_prefix(1));
@@ -2597,12 +2621,12 @@ mod tests {
         let proto = member(&result, "proto");
         let expected = want(&[("major", "1"), ("minor", "1")]);
         assert_eq!(pairs(&proto), expected);
-        let limits = member(&result, "limits");
-        let announced = Limits::for_level(Level::Observe).hello_json();
-        assert_eq!(pairs(&limits), pairs(&announced));
-        assert_eq!(member(&limits, "idle_ms"), "300000");
-        assert_eq!(member(&limits, "hello_deadline_ms"), "5000");
-        let names = keys_of(&limits);
+        let announced_limits = member(&result, "limits");
+        let announced = limits(Level::Observe).hello_json();
+        assert_eq!(pairs(&announced_limits), pairs(&announced));
+        assert_eq!(member(&announced_limits, "idle_ms"), "300000");
+        assert_eq!(member(&announced_limits, "hello_deadline_ms"), "5000");
+        let names = keys_of(&announced_limits);
         assert_eq!(names.len(), 19);
         assert_eq!(names.first().map(String::as_str), Some("max_frame_bytes"));
         assert_eq!(names.last().map(String::as_str), Some("tick_ms"));
@@ -2718,7 +2742,7 @@ mod tests {
     }
 
     fn bounded(rig: &Rig) {
-        let max = usize::try_from(rig.limits.max_request_bytes).unwrap_or(0);
+        let max = usize::try_from(rig.limits.level.max_request_bytes).unwrap_or(0);
         let held = match &rig.conn.reader {
             Reader::Frames(reader) => reader.buffered_capacity(),
             Reader::Lines(reader) => reader.buffered_capacity(),

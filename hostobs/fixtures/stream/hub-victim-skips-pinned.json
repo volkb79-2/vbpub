@@ -3,21 +3,14 @@
   "doc": "global cap: a connection holding only a pinned head and Query bytes is not a victim; with no victim the push is dropped",
   "limits": {
     "client_queue_bytes": 1000,
-    "uid_live_bytes": 2000,
     "global_live_bytes": 1200,
     "query_queue_bytes": 1000,
-    "uid_query_bytes": 1000,
     "global_query_bytes": 4000,
     "control_queue_bytes": 500,
     "stall_ms": 5000,
     "frame_completion_ms": 5000
   },
-  "conns": [
-    1,
-    2,
-    3,
-    4
-  ],
+  "conns": 4,
   "steps": [
     {
       "t_ms": 0,
