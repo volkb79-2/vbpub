@@ -937,7 +937,9 @@ esac
 
 echo "== packages =="
 # fio/pv: dependencies of the shared io.cost baseline benchmark.
-# systemd-oomd is retained for host policy; no dev slice opts into ManagedOOM*.
+# systemd-oomd stays installed because the nyxloom/infra/slices/nyxloom*.slice units carry their own
+# ManagedOOMMemoryPressure=kill. host-setup gives oomd NO dev-tier policy: no dev slice opts into
+# ManagedOOM* (PSI is the dev tier's only stop signal); scripts/check.sh FAILs if oomd acts on it anyway.
 apt-get update -qq || echo "WARN: apt-get update failed — install may use a stale index"
 apt-get install -y --no-install-recommends fio pv systemd-oomd \
   || echo "WARN: apt install failed — install fio + pv + systemd-oomd manually"
