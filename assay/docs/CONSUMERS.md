@@ -15,7 +15,8 @@ has Python.
 
 `assay capabilities --json` prints one closed JSON object without reading any project
 file, so it also works outside a repository. `--json` is accepted for explicitness;
-the same document is the default output. The fields are:
+the same document is the default output. It requires the `assay_analysis` package
+shipped in the complete assay wheel and zipapp, and has no degraded mode. The fields are:
 
 - `schema`: the document schema, currently `"assay-capabilities/1"`.
 - `assay_version`: the running assay version.

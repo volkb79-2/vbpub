@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from contextlib import redirect_stderr, redirect_stdout
 
 import pytest
@@ -69,8 +70,10 @@ def test_run_flags_match_help_and_policy_flags_are_real(monkeypatch, tmp_path):
         main(["run", "--help"])
     assert exited.value.code == 0
     assert help_err.getvalue() == ""
+    help_text = help_out.getvalue()
     assert all(
-        flag in help_out.getvalue() for flag in document["commands"]["run"]
+        re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", help_text)
+        for flag in document["commands"]["run"]
     )
     assert set(document["mutation_store_policies"]) <= set(
         document["commands"]["run"]

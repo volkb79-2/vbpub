@@ -54,8 +54,8 @@ Retained design records: [load-independent verdict design](docs/ASSAY-DESIGN-OPU
 evidence. It ships in the same wheel and standalone zipapp as `assay run`
 and `assay verify`, and adds no runtime dependencies. The code lives in its own
 top-level package, `assay_analysis` (`analysis/src/assay_analysis/`), which the
-CLI loads only when you run `assay analyze`; the judge (`src/assay`) never
-imports it, and B105 scores only `src/assay`. The analysis package has its own
+CLI loads only for `assay analyze` and `assay capabilities`; B105 scores only
+`src/assay`. The analysis package has its own
 R0+R1 lane and tests (`analysis/tests/`), plus a separate native `analysis-r2`
 lane and a registered `analysis-r2-pilot` gate. The pilot targets a sample of up to 40
 mutants across candidate-bearing file/operator strata and includes every

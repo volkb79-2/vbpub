@@ -69,6 +69,7 @@ from .records import record
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import Counter
+from types import ModuleType
 from typing import Any, Callable, Literal, Mapping, Sequence, TextIO, TypedDict
 
 from . import __version__
@@ -187,6 +188,19 @@ _MUTATION_STORE_POLICIES: Mapping[str, str] = {
 }
 
 
+def _analysis_cli() -> ModuleType:
+    """(A-478/CD18) The judge's one lazy seam to the required analysis package."""
+    try:
+        from assay_analysis import cli as analysis_cli
+    except ModuleNotFoundError as exc:
+        raise AssayError(
+            f"the required assay_analysis package could not be imported: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        ) from exc
+    return analysis_cli
+
+
 def _subparser(
     parser: argparse.ArgumentParser, command: str
 ) -> argparse.ArgumentParser:
@@ -212,9 +226,7 @@ def _long_options(parser: argparse.ArgumentParser) -> list[str]:
 def capabilities_document() -> dict[str, object]:
     """Build the closed, versioned capability document from live parser objects."""
     parser = build_parser()
-    from assay_analysis.cli import build_parser as build_analyze_parser
-
-    analyze_parser = build_analyze_parser()
+    analyze_parser = _analysis_cli().build_parser()
     command_parsers = {
         "run": _subparser(parser, "run"),
         "plan": _subparser(parser, "plan"),
@@ -743,10 +755,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_analyze(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
-    """(A-478) The only place the judge names assay_analysis; imported only for `analyze`."""
-    from assay_analysis.cli import main as analyze_main
-
-    return analyze_main(argv, stdout=stdout, stderr=stderr)
+    """(A-478) Forward ``analyze`` through the shared lazy analysis seam."""
+    return _analysis_cli().main(argv, stdout=stdout, stderr=stderr)
 
 
 def _termination_signal_handler(signum: int, frame: object) -> None:
@@ -832,13 +842,13 @@ def main(
                 return 2
             signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     raw = list(sys.argv[1:] if argv is None else argv)
-    # Analysis owns its record-command separator. Lane argv appending belongs
-    # to the existing lane commands and must not consume the recorded command.
-    if raw[:1] == ["analyze"]:
-        return _run_analyze(raw[1:], out, err)
-    cli_argv, appended = _split_appended_argv(raw)
-    args = build_parser().parse_args(cli_argv)
     try:
+        # Analysis owns its record-command separator. Lane argv appending belongs
+        # to the existing lane commands and must not consume the recorded command.
+        if raw[:1] == ["analyze"]:
+            return _run_analyze(raw[1:], out, err)
+        cli_argv, appended = _split_appended_argv(raw)
+        args = build_parser().parse_args(cli_argv)
         if args.command == "capabilities":
             print(
                 json.dumps(capabilities_document(), indent=2, sort_keys=True),
