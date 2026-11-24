@@ -704,7 +704,7 @@ echo "RC=$MDT_RC"
         self.converge("MemoryMax", "6684901376", "memory.max")
         self.assertEqual(f.read_text().strip(), "6684901376")
         g = self.cgfile("memory.max", "max")  # from unlimited to a finite value is a lowering too
-        self.cgfile("memory.current", "4500000000")  # above target - 64M
+        self.cgfile("memory.current", "6650000000")  # above target - 64M (6684901376 - 67108864 = 6617792512)
         r = self.converge("MemoryMax", "6684901376", "memory.max")
         self.assertEqual(g.read_text().strip(), "max")
         self.assertIn("deferred", r.stdout)
