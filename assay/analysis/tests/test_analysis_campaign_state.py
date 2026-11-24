@@ -143,82 +143,96 @@ def test_b530_the_text_closeout_names_imported_results(tmp_path, monkeypatch):
     )
     assert (code, err) == (0, ""), out
     assert (
-        "carry-over: 1 counted result(s) were imported from another judge identity"
+        "carry-over: 1 counted result(s) were IMPORTED from another judge identity"
     ) in out
     assert f'from={{"{J_X1}": 1}}' in out
     assert 'reasons=["assay upgrade cannot change outcomes"]' in out
 
 
-def _carry_over_v2(from_judge, into_judge):
+def _carry_over_v2(into_judge, *, reason="schema-2 provenance"):
     return {
         "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION_V2,
-        "from_judge_sha256": from_judge,
         "into_judge_sha256": into_judge,
         "source": "/prior/store",
-        "reason": "schema-2 provenance",
+        "reason": reason,
         "imported_at": "2026-11-18T00:00:00Z",
         "importer_version": "12.3.0",
-        "locus_match": "exact-id",
     }
 
 
-@pytest.mark.parametrize(
-    ("record_judge", "from_judge", "import_count", "from_counts"),
-    [
-        (J_X1, J_X, 0, {}),          # current-judge replay: judge B, from A, into B
-        (J_X, J_X, 1, {J_X: 1}),     # true import: judge A executes, into B
-        (J_X1, J_X1, 1, {J_X1: 1}),  # same-judge import (deadline binding change): reported, never hidden
-    ],
-)
-def test_schema_two_carry_over_reports_the_from_judge(
-    tmp_path, monkeypatch, record_judge, from_judge, import_count, from_counts
-):
-    root, head, rows = _synthetic(tmp_path, monkeypatch, 1)
-    progress = tmp_path / "progress.jsonl"
-    support.write_records(
-        progress,
-        support.run_records(head, rows, executed=[rows[0]["id"]], judge=J_X1),
-    )
-    carry = _carry_over_v2(from_judge, J_X1)
-    state = support.write_state(tmp_path / "state", [
-        support.state_record(rows[0], "killed", record_judge, carry_over=carry),
-    ])
-    code, _err, document = _analyze(root, head, progress, extra=("--state-dir", str(state)))
-
-    assert code == 3
-    imported = document["state"]["imported"]
-    assert imported["count"] == import_count
-    assert imported["from_judge_sha256_counts"] == from_counts
-    assert document["state"]["judge_sha256_counts"] == {J_X1: 1}
+def _provenance(kind, candidate_id, from_judge, *, reason="schema-2 provenance"):
+    value = {
+        "kind": kind,
+        "from_candidate_id": candidate_id,
+        "from_judge_sha256": from_judge,
+        "match": "exact-id" if kind != "replayed" else "hint",
+        "reason": reason,
+    }
+    if kind == "replayed":
+        value["replay_node_id"] = "node-1"
+    return value
 
 
-def test_imported_counts_exclude_schema_two_replays_but_include_both_import_schemas(
+def test_campaign_classifies_fresh_imported_carried_and_replayed_from_provenance(
     tmp_path, monkeypatch
 ):
-    root, head, rows = _synthetic(tmp_path, monkeypatch, 3)
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 5)
     progress = tmp_path / "progress.jsonl"
     support.write_records(
         progress,
         support.run_records(head, rows, executed=[row["id"] for row in rows], judge=J_X1),
     )
-    schema_two_import = _carry_over_v2(J_X, J_X1)
     schema_one_import = {
-        key: value for key, value in schema_two_import.items() if key != "locus_match"
+        "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION,
+        "from_judge_sha256": J_X,
+        "into_judge_sha256": J_X1,
+        "source": "/prior/store",
+        "reason": "schema-1 provenance",
+        "imported_at": "2026-11-17T00:00:00Z",
+        "importer_version": "12.2.0",
     }
-    schema_one_import["schema_version"] = mutation.CARRY_OVER_SCHEMA_VERSION
     state = support.write_state(tmp_path / "state", [
-        support.state_record(rows[0], "killed", J_X1, carry_over=_carry_over_v2(J_X, J_X1)),
-        support.state_record(rows[1], "killed", J_X, carry_over=schema_two_import),
-        support.state_record(rows[2], "killed", J_X, carry_over=schema_one_import),
+        support.state_record(rows[0], "killed", J_X1),
+        support.state_record(
+            rows[1],
+            "killed",
+            J_X,
+            carry_over=_carry_over_v2(J_X1),
+            provenance=_provenance("imported", rows[1]["id"], J_X),
+        ),
+        support.state_record(
+            rows[2],
+            "killed",
+            J_X,
+            carry_over=_carry_over_v2(J_X1, reason="carried"),
+            provenance=_provenance("carried", rows[2]["id"], J_X, reason="carried"),
+        ),
+        support.state_record(
+            rows[3],
+            "killed",
+            J_X1,
+            provenance=_provenance("replayed", rows[3]["id"], J_X),
+        ),
+        support.state_record(rows[4], "killed", J_X, carry_over=schema_one_import),
     ])
 
     code, _err, document = _analyze(root, head, progress, extra=("--state-dir", str(state)))
 
     assert code == 3
-    assert document["state"]["counted"] == 3
+    assert document["state"]["counted"] == 5
     assert document["state"]["imported"]["count"] == 2
     assert document["state"]["imported"]["from_judge_sha256_counts"] == {J_X: 2}
-    assert document["state"]["judge_sha256_counts"] == {J_X1: 3}
+    assert document["state"]["imported"]["reasons"] == [
+        "schema-1 provenance",
+        "schema-2 provenance",
+    ]
+    assert document["state"]["provenance_kind_counts"] == {
+        "fresh": 1,
+        "imported": 2,
+        "carried": 1,
+        "replayed": 1,
+    }
+    assert document["state"]["judge_sha256_counts"] == {J_X1: 5}
 
 
 def test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused(

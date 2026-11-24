@@ -1047,31 +1047,22 @@ def _state_entry(record: dict, stem: str) -> dict:
     judge = record.get("judge_sha256")
     if not isinstance(judge, str) or not _SHA256_RE.fullmatch(judge):
         raise ValueError("judge_sha256 is not a SHA-256 digest")
-    # A true import was executed by its from-judge. Schema-2 current-judge
-    # replays were executed by into-judge and remain ordinary current-judge
-    # records, not imports.
     effective = mutation.record_effective_judge(record)
     if effective is None:
-        raise ValueError("carry_over provenance is malformed")
+        raise ValueError("record provenance is malformed")
+    provenance = mutation.record_provenance(record)
+    provenance_kind = None if provenance is None else provenance["kind"]
     return {
         "id": stem,
         "record": record,
         "bucket": bucket,
         "judge": effective,
         "mode": mode,
-        # `judge_sha256` is the executing judge. Only records executed by
-        # from_judge are imports; schema-2 replays executed by into_judge are
-        # included in the current judge's counts, but not in state.imported.
+        "provenance": provenance,
+        "provenance_kind": provenance_kind,
         "imported_from": (
-            record["carry_over"]["from_judge_sha256"]
-            if "carry_over" in record
-            and record["judge_sha256"] == record["carry_over"]["from_judge_sha256"]
-            # A schema-2 record with from == into == executing judge is
-            # ambiguous: `--carry-over` writes one when only the campaign
-            # deadline binding changed (a real same-judge import), a replay
-            # of an identical judge would look the same. It is reported as an
-            # import: visible in the closeout, never hidden. A later schema
-            # disambiguates replays explicitly.
+            provenance["from_judge_sha256"]
+            if provenance_kind == "imported"
             else None
         ),
     }
@@ -1269,15 +1260,24 @@ def _reconcile_state(
             "judge_sha256_current": current,
             "judge_sha256_source": source,
             "judge_sha256_counts": dict(sorted(Counter(e["judge"] for e in entries).items())),
+            "provenance_kind_counts": {
+                kind: sum(
+                    1
+                    for entry in counted.values()
+                    if (entry["provenance_kind"] or "fresh") == kind
+                )
+                for kind in ("fresh", "imported", "carried", "replayed")
+            },
             "imported": {
                 "count": sum(1 for entry in counted.values() if entry["imported_from"]),
                 "from_judge_sha256_counts": dict(sorted(Counter(
                     entry["imported_from"] for entry in counted.values() if entry["imported_from"]
                 ).items())),
                 "reasons": sorted({
-                    entry["record"]["carry_over"]["reason"]
-                    for entry in counted.values() if entry["imported_from"]
-                })[:10],
+                    entry["provenance"].get("reason")
+                    for entry in counted.values()
+                    if entry["imported_from"]
+                } - {None})[:10],
             },
         },
         "counted": counted,
@@ -1854,11 +1854,10 @@ def campaign(
     limit: int = 100,
 ) -> dict:
     """Build one deterministic closeout; all paths are explicit inputs."""
-    # state.imported reports only counted carry-over records executed by
-    # from_judge_sha256 (schema-1 and schema-2 imports). A schema-2 replay
-    # executed by into_judge_sha256 is counted under the current judge in
-    # judge_sha256_counts, but the closed schema-3 report has no separate
-    # replay field or replay count.
+    # state.imported reports counted records whose canonical provenance kind is
+    # imported (schema-2 directly, schema-1 by derivation). Carried and
+    # replayed records are separate kind counts, never inferred from judge
+    # equality.
     stage.name = "arguments"
     evidence._report_commit(expected_commit)
     if command_exit is not None and (
@@ -2404,7 +2403,7 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
         imported = (result.get("state") or {}).get("imported") or {}
         if imported.get("count"):
             print(
-                f"  carry-over: {imported['count']} counted result(s) were imported "
+                f"  carry-over: {imported['count']} counted result(s) were IMPORTED "
                 f"from another judge identity; "
                 f"from={json.dumps(imported['from_judge_sha256_counts'], sort_keys=True)} "
                 f"reasons={json.dumps(imported['reasons'])}",
