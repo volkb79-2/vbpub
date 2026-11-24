@@ -4,6 +4,7 @@ ciu-stack/ciu.toml
 ciu-stack/ciu.toml.j2
 ciu-stack/ciu.compose.yml
 ciu-stack/traefik.yml
+/consumer.env
 
 # ── un-ignore committed docker-compose.yml files (repo-root .gitignore blocks
 #    **/docker-compose.yml because ciu renders to that name) ──────────────────

@@ -46,6 +46,7 @@ def make_root(path: Path) -> Path:
     stack = root / "ciu-stack"
     stack.mkdir(parents=True)
     shutil.copy2(ROOT / "ciu-stack" / "ciu.defaults.toml.j2", stack)
+    (root.parent / "current").symlink_to(root.parent / "releases" / "tls-edge")
     return root
 
 

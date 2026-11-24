@@ -47,7 +47,7 @@ def locate_instance_root(explicit: Path | None = None) -> Path:
     release = venv.parent
     for parent in release.parents:
         current = parent / "current"
-        if current.is_symlink() and current.resolve() == release:
+        if is_installed_stack(parent / "stack") and current.resolve() == release:
             stack = parent / "stack"
             _check_stack_layout(stack)
             return stack
@@ -55,6 +55,11 @@ def locate_instance_root(explicit: Path | None = None) -> Path:
         "cannot locate the installed tls-edge stack from this executable; "
         "pass --root PATH"
     )
+
+
+def is_installed_stack(stack: Path) -> bool:
+    """Tell an instance stack from a checkout using the installer's layout."""
+    return (stack.parent / "current").is_symlink()
 
 
 def _check_stack_layout(root: Path) -> None:

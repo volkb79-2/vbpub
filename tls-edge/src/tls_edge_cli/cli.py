@@ -27,6 +27,7 @@ from .config import (
     deep_merge,
     load_answers,
     load_site,
+    is_installed_stack,
     locate_instance_root,
     migrate,
     port_plan,
@@ -271,17 +272,21 @@ def _render_config(
     values: dict[str, Any],
     extra: Mapping[str, Any],
     contract: Mapping[str, str],
-) -> tuple[Path, str, int, Path, str, int]:
+) -> tuple[Path, str, int, tuple[Path, str, int] | None]:
+    env_path = root / "consumer.env"
     try:
         override_path, override_text, override_mode = updated_override(
             root,
             values,
             extra,
         )
-        env_path, env_text, env_mode = updated_consumer_env(root, contract)
+        if is_installed_stack(root) or os.path.lexists(env_path):
+            env = updated_consumer_env(root, contract)
+        else:
+            env = None
     except (OSError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
-    return override_path, override_text, override_mode, env_path, env_text, env_mode
+    return override_path, override_text, override_mode, env
 
 
 def _diff(path: Path, old: str, new: str) -> str:
@@ -309,16 +314,18 @@ def configure(args: Any, runtime: CliRuntime) -> int:
             allow_prompt=args.answers is None,
             source=f"answers file {args.answers}",
         )
-        override_path, override_text, override_mode, env_path, env_text, env_mode = (
+        override_path, override_text, override_mode, env = (
             _render_config(root, values, extra, contract)
         )
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
 
     original_override = override_path.read_text(encoding="utf-8") if override_path.exists() else ""
-    original_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     changes = _diff(override_path, original_override, override_text)
-    changes += _diff(env_path, original_env, env_text)
+    if env is not None:
+        env_path, env_text, env_mode = env
+        original_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        changes += _diff(env_path, original_env, env_text)
     if not changes:
         runtime.output.primary("Configuration already matches these answers.")
         return 0
@@ -336,16 +343,25 @@ def configure(args: Any, runtime: CliRuntime) -> int:
         runtime.output.primary("Configuration was not changed.")
         return 0
 
+    managed_paths = (
+        f"{override_path} and {env[0]}"
+        if env is not None
+        else str(override_path)
+    )
     try:
         atomic_write(override_path, override_text, override_mode)
-        atomic_write(env_path, env_text, env_mode)
+        if env is not None:
+            atomic_write(env_path, env_text, env_mode)
     except OSError as exc:
         raise CliFailure(
-            f"could not finish writing configuration: {exc}; inspect {override_path} "
-            f"and {env_path} before retrying",
+            f"could not finish writing configuration: {exc}; inspect "
+            f"{managed_paths} before retrying",
             exit_code=2,
         ) from exc
-    runtime.output.primary(f"Saved {override_path} and {env_path}.")
+    if env is None:
+        runtime.output.primary(f"Saved {override_path}.")
+    else:
+        runtime.output.primary(f"Saved {override_path} and {env_path}.")
     runtime.output.primary(
         f"Next: cd {root} && sudo ./ciu check && sudo ./ciu up --dry-run; "
         "review the rendered config, then deploy with CIU."

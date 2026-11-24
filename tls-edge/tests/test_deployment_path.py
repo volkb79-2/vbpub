@@ -67,6 +67,17 @@ def _tracked(root: Path, *paths: str) -> list[str]:
     return result.stdout.splitlines()
 
 
+def _git_ignore(relative: str) -> str:
+    result = subprocess.run(
+        ["git", "check-ignore", "-v", "--", relative],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
 def _copy_tracked_stack(destination: Path) -> Path:
     """Create a checkout-shaped stack dir from tracked ciu-stack files only."""
     for relative in _tracked(ROOT, "ciu-stack"):
@@ -160,12 +171,10 @@ def test_install_script_is_untracked_and_unnamed_by_live_docs() -> None:
 
 def test_generated_tree_is_not_tracked_and_ignored() -> None:
     assert _tracked(ROOT, GENERATED_DIR) == []
-    ignored = {
-        line.strip()
-        for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-    assert f"/{GENERATED_DIR}/" in ignored
+    assert _git_ignore(f"tls-edge/{GENERATED_DIR}/probe").startswith(
+        "tls-edge/.gitignore:"
+    )
+    assert _git_ignore("tls-edge/consumer.env").startswith("tls-edge/.gitignore:")
 
 
 def test_standalone_trial_render_has_full_tree_and_stamp(tmp_path: Path) -> None:
@@ -242,6 +251,96 @@ def test_checkout_configure_dry_run_works_without_consumer_env(
     assert result == 0, output
     assert "Dry run: no files were changed." in output
     assert not (stack / "consumer.env").exists()
+
+
+def test_checkout_configure_yes_creates_no_consumer_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stack = _copy_tracked_stack(tmp_path / "checkout")
+    answers = tmp_path / "answers.toml"
+    answers.write_text(
+        '[tls_edge]\ndomain = "edge.example.test"\n',
+        encoding="utf-8",
+    )
+    result, output = _run_cli(
+        monkeypatch,
+        [
+            "configure",
+            "--root",
+            str(stack),
+            "--answers",
+            str(answers),
+            "--yes",
+        ],
+    )
+    assert result == 0, output
+    assert (stack / "ciu-stack" / "ciu.toml.j2").is_file()
+    assert not (stack / "consumer.env").exists()
+    assert "consumer.env" not in output
+
+
+def test_checkout_configure_updates_an_existing_consumer_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stack = _copy_tracked_stack(tmp_path / "checkout")
+    env_path = stack / "consumer.env"
+    env_path.write_text(
+        "TLS_EDGE_DOMAIN=stale.example.test\nCUSTOM_SETTING=keep\n",
+        encoding="utf-8",
+    )
+    answers = tmp_path / "answers.toml"
+    answers.write_text(
+        '[tls_edge]\ndomain = "edge.example.test"\n',
+        encoding="utf-8",
+    )
+    result, output = _run_cli(
+        monkeypatch,
+        [
+            "configure",
+            "--root",
+            str(stack),
+            "--answers",
+            str(answers),
+            "--yes",
+        ],
+    )
+    assert result == 0, output
+    text = env_path.read_text(encoding="utf-8")
+    assert "TLS_EDGE_DOMAIN=edge.example.test" in text
+    assert "CUSTOM_SETTING=keep" in text
+
+
+def test_instance_configure_creates_a_new_consumer_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stack = _copy_tracked_stack(tmp_path / "instance" / "stack")
+    (stack.parent / "current").symlink_to(
+        stack.parent / "releases" / "tls-edge",
+        target_is_directory=True,
+    )
+    answers = tmp_path / "answers.toml"
+    answers.write_text(
+        '[tls_edge]\ndomain = "edge.example.test"\n',
+        encoding="utf-8",
+    )
+    result, output = _run_cli(
+        monkeypatch,
+        [
+            "configure",
+            "--root",
+            str(stack),
+            "--answers",
+            str(answers),
+            "--yes",
+        ],
+    )
+    assert result == 0, output
+    assert (stack / "consumer.env").read_text(encoding="utf-8").startswith(
+        "TLS_EDGE_DOMAIN=edge.example.test\n"
+    )
 
 
 def test_cli_refuses_a_directory_without_ciu_stack(
