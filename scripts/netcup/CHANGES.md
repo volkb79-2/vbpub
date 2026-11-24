@@ -5,6 +5,11 @@ All notable changes to scripts/netcup are recorded here.
 ## [Unreleased]
 
 ### Fixed
+- `runner/remote-gate.py` ships the controller checkout's `origin/main` (after `git fetch -q origin main`), not its local `main` branch, and the
+  host job creates both `refs/remotes/origin/main` and `refs/heads/main` at it (NC-66). A lane with `base = "origin/main"` failed in 4 s with
+  GIT_FAILED on every host, and `base = "main"` lanes judged against a local main that was 36 commits behind. A failed fetch warns and uses the
+  existing origin/main; an assay lane whose declared `judge.base` does not resolve is refused locally (exit 2) before anything is shipped.
+  Tests: `tests/test_remote_gate_seams.py`.
 - `runner/lib.sh` `load_host_endpoints` accepts `MDT_BUILDKIT_GID` equal to `MDT_HOST_DOCKER_GID` (NC-43): mdt-buildkitd
   hands its socket to group docker, so on a real host the two are the same GID and `start-cockpit-runner.sh` refused
   to start (r1002, 2026-11-12 and again 2026-11-24). cgprofile and topos GIDs must still differ from docker and from

@@ -315,8 +315,14 @@ def local_state(ctx: Ctx, wt: str, base: Optional[str]) -> dict:
             raise GateError(f"--base {base!r} does not resolve")
         base_sha = r.out.strip()
     prefix = git(ctx, wt, "rev-parse", "--show-prefix").out.strip().rstrip("/")
-    # the local `main` branch: lanes that declare `base = "main"` resolve that name inside the throwaway checkout, which has no branches
-    main = git(ctx, top_path, "for-each-ref", "--format=%(objectname)", "refs/heads/main").out.strip()
+    # `main` on the host means origin/main (never the controller's local branch, which can lag by dozens of commits): lanes that declare
+    # `base = "main"` or `"origin/main"` resolve those names inside the throwaway checkout, which has no branches
+    fetched = git(ctx, top_path, "fetch", "-q", "origin", "main")
+    main = git(ctx, top_path, "for-each-ref", "--format=%(objectname)", "refs/remotes/origin/main").out.strip()
+    if fetched.rc != 0:
+        ctx.say(f"WARNING: `git fetch origin main` failed ({fetched.err.strip()[:120] or 'rc ' + str(fetched.rc)}); using the existing origin/main {main or '(none)'}")
+    elif not SHA_RE.match(main):
+        ctx.say("WARNING: no origin/main after the fetch; lanes with base = main or origin/main will not resolve on the host")
     return {"top": top_path, "sha": sha, "base": base_sha, "prefix": prefix, "main": main if SHA_RE.match(main) else None}
 
 
@@ -356,15 +362,23 @@ def lane_checks(ctx: Ctx, st: dict, proj: str, lane: str, base_given: bool, allo
         if project or central:
             ctx.say(f"WARNING: lane {lane!r} is not declared in {proj}/run-gate.toml or run-gate.root.toml; run-gate will report an unknown lane")
         return
-    if base_given and decl.get("kind") == "assay":
+    if decl.get("kind") == "assay":
         alane = decl.get("assay_lane", lane)
         judge = ((_toml(top / proj / "assay.toml").get("lanes") or {}).get(alane) or {}).get("judge") or {}
         src = judge.get("base_source") or ("declared" if judge.get("base") else None)
-        if src == "declared":
+        if base_given and src == "declared":
             raise GateError(
                 f"--base refused: assay lane {alane!r} (run-gate lane {lane!r}) declares its comparison base "
                 f"(judge.base = {judge.get('base', '?')!r}, base_source 'declared') and assay refuses --request-base; "
                 "drop --base (or set judge.base_source = \"request\" in assay.toml)", 2)
+        if src == "declared" and not base_given and judge.get("base"):  # an unresolvable declared base fails on the host after the upload
+            ref = str(judge["base"])
+            host_main = ref in ("main", "origin/main") and "main" in st and not st["main"]  # origin/main is what the host gets as main
+            if host_main or git(ctx, st["top"], "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").rc != 0:
+                raise GateError(
+                    f"refused: assay lane {alane!r} (run-gate lane {lane!r}) declares judge.base = {ref!r}, which does not resolve in this "
+                    "checkout" + (" (no origin/main after the fetch)" if host_main else "") + "; the host would fail it with GIT_FAILED. "
+                    "Fix the ref, fetch it, or run `git fetch origin main`", 2)
     if allow_exec:
         return
     seen: set = set()
@@ -428,7 +442,7 @@ def build_bundle(ctx: Ctx, st: dict, have: list, dest: str) -> Optional[str]:
             need = int(n) if n.isdigit() else 1
         if need == 0:
             return best[1]  # HEAD, the base and every tagged commit already reachable from an existing checkout: no bundle needed
-    refs = ["HEAD"] + (["refs/heads/main"] if st.get("main") else []) + [f"refs/tags/{t[1]}" for t in tags]
+    refs = ["HEAD"] + (["refs/remotes/origin/main"] if st.get("main") else []) + [f"refs/tags/{t[1]}" for t in tags]
     base_ref = ""
     if st.get("base"):
         # git bundle only carries named refs (a bare sha is silently dropped), so name the base for the duration of the build
@@ -638,9 +652,9 @@ if [[ -f $D/in.bundle ]]; then
   if [[ -n $BASE_SHA ]] && git ls-remote "$D/in.bundle" refs/remote-gate/base | grep -q .; then
     git -C "$CKDIR" fetch -q "$D/in.bundle" refs/remote-gate/base || log "base fetch from the bundle failed"
   fi
-  # the controller's local main (lanes declaring `base = "main"`); its commits ride the bundle as the head refs/heads/main
-  if [[ -n $MAIN_SHA ]] && git ls-remote "$D/in.bundle" refs/heads/main | grep -q .; then
-    git -C "$CKDIR" fetch -q "$D/in.bundle" refs/heads/main || log "main fetch from the bundle failed"
+  # the controller's origin/main (lanes declaring `base = "main"` or "origin/main"); its commits ride the bundle as the head refs/remotes/origin/main
+  if [[ -n $MAIN_SHA ]] && git ls-remote "$D/in.bundle" refs/remotes/origin/main | grep -q .; then
+    git -C "$CKDIR" fetch -q "$D/in.bundle" refs/remotes/origin/main || log "main fetch from the bundle failed"
   fi
   # release tags from the bundle (annotated ones intact); tags the host already has are left alone
   git -C "$CKDIR" fetch -q "$D/in.bundle" 'refs/tags/*:refs/tags/*' || log "tag fetch from the bundle failed; falling back to the tag list"
@@ -658,11 +672,13 @@ git -C "$CKDIR" checkout -q --detach "$SHA" || { rc=71; exit 71; }
 if [[ -n $BASE_SHA ]]; then git -C "$CKDIR" cat-file -e "$BASE_SHA^{commit}" || { log "base $BASE_SHA missing on the host"; rc=72; exit 72; }; fi
 log "checkout $CKDIR at $SHA"
 if [[ -n $MAIN_SHA ]]; then
-  # a local `main` branch (the checkout is detached, so it is not checked out): `--base main` and `base = "main"` resolve like on the controller
+  # origin/main and a local `main` branch, both at the controller's origin/main (the checkout is detached, so main is not checked out):
+  # `--base main`, `base = "main"` and `base = "origin/main"` all resolve to the current origin/main
   if git -C "$CKDIR" cat-file -e "$MAIN_SHA^{commit}" 2>/dev/null; then
+    git -C "$CKDIR" update-ref refs/remotes/origin/main "$MAIN_SHA" && log "origin/main -> $MAIN_SHA"
     git -C "$CKDIR" update-ref refs/heads/main "$MAIN_SHA" && log "local main -> $MAIN_SHA"
   else
-    log "local main $MAIN_SHA is missing on the host; lanes declaring base = main will not resolve it"
+    log "origin/main $MAIN_SHA is missing on the host; lanes declaring base = main or origin/main will not resolve it"
   fi
 fi
 

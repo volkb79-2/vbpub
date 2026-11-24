@@ -1957,3 +1957,31 @@ section 10 ("Cross-tool interplay"), whose placeholder `NC-nn` this entry resolv
 on docker-.scope and `OOMScoreAdjust=-900` on ssh.service. Follow-up: skip the slice and scope halves when host-setup's
 `dev-gates.slice` fragment exists, and drop ssh from the -900 list (sessions inherit it). Sequence this item before
 host-setup lands on any runner host; `check.sh` WARNs meanwhile (design section 7).
+
+## NC-66 — remote-gate shipped the controller's local `main`; nothing created `origin/main` on the host
+
+**Status:** FIXED by P-plat-24 (2026-11-24). Source: vbpub-rollback run `rgw-r2-20261124T144053-v1001`.
+
+`runner/remote-gate.py` bundled `refs/heads/main` of the controller checkout and the job only set the host's local `main`. A lane with
+`base = "origin/main"` failed in 4 s with GIT_FAILED (`git rev-parse origin/main^{commit}`: "Needed a single revision"), and `base = "main"`
+lanes judged against a local main that was 36 commits behind origin/main. Fix: `git fetch -q origin main` in the controller checkout, bundle
+`refs/remotes/origin/main`, create both `refs/remotes/origin/main` and `refs/heads/main` on the host; a failed fetch warns and uses the
+existing origin/main; an assay lane whose declared `judge.base` does not resolve locally is refused with exit 2 (a host-side check of every
+declared ref would need the base passed into the job; not done, so a base that resolves locally but is not main, a tag or HEAD still fails on the host).
+**Where.** `runner/remote-gate.py` (`local_state`, `lane_checks`, `build_bundle`, job script), `CONSUMERS.md`, `CHANGES.md`.
+
+## NC-67 — the runner records no container `State.OOMKilled` in result.json
+
+**Status:** OPEN (filed 2026-11-24); Should-fix.
+
+`job.sh` only inspects containers for cleanup, so an OOM kill inside a lane container leaves no field in `result.json`;
+`scripts/controller/remote-gate.sh` can classify an OOM only from the slice delta. Proposal: the runner writes an `oom_killed` field
+(from `docker inspect --format '{{.State.OOMKilled}}'` before the container is removed) that remote-gate.sh uses besides the slice delta.
+
+## NC-68 — HAZARD: `verdict_of()` in remote-gate.py is unanchored and takes the last match
+
+**Status:** OPEN (filed 2026-11-24); Must-fix (a lane can fake its own verdict).
+
+`verdict_of()` (`runner/remote-gate.py`, `VERDICT_RE`) matches `lane '?X'? verdict Y` anywhere in the text and takes the last match, so a
+lane's free output (test stderr quoting "lane X verdict Y") can fake the `result.json` verdict. Proposal: anchor it as
+`scripts/controller/remote-gate.sh` does since P-plat-23 (q246): line start, exact lane.
