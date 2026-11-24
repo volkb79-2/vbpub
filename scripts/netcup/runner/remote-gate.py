@@ -497,17 +497,20 @@ collect_stores() {
 # STORE-SEED-FAILED <rel> <reason> and exit 78 (a transport error; the lane never starts and no lane verdict exists).
 seed_fail() { log "STORE-SEED-FAILED $1 $2"; rc=78; exit 78; }
 seed_stores() {
-  local i=0 rel f bytes
+  local i=0 rel f bytes want have lst
   (( ${#SEEDS[@]} )) || return 0
   for rel in "${SEEDS[@]}"; do
     f=$D/assay-seed-$i.tgz
     store_rel_check "$rel" || seed_fail "$rel" "$STORE_WHY"
     [[ -s $f && -s $f.sha256 ]] || seed_fail "$rel" missing-archive
-    ( cd "$D" && sha256sum -c --status "assay-seed-$i.tgz.sha256" ) 2>/dev/null || seed_fail "$rel" checksum
+    want=$(awk '{print $1; exit}' "$f.sha256" 2>/dev/null); have=$(sha256sum -- "$f" 2>/dev/null | awk '{print $1}')
+    [[ -n $want && $want == "$have" ]] || seed_fail "$rel" checksum
     if ! bytes=$(gzip -dc -- "$f" 2>/dev/null | wc -c); then seed_fail "$rel" unreadable-archive; fi
     (( bytes <= STORE_MAX_BYTES )) || seed_fail "$rel" "too-large $bytes"
-    # only regular files and directories, every member inside <rel>/
-    if tar -tvzf "$f" 2>/dev/null | cut -c1 | grep -qv '[-d]'; then seed_fail "$rel" special-member; fi
+    # only regular files and directories, every member inside <rel>/. The WHOLE listing is read (a reader that stops at its first
+    # match dies of SIGPIPE on a long listing and, under pipefail, the check would fail open).
+    lst=$(tar -tvzf "$f" 2>/dev/null) || seed_fail "$rel" unreadable-archive
+    if printf '%s\n' "$lst" | awk 'substr($0, 1, 1) !~ /[-d]/ {b = 1} END {exit !b}'; then seed_fail "$rel" special-member; fi
     tar -tzf "$f" 2>/dev/null | awk -v r="$rel" '$0 !~ /(^|\/)\.\.(\/|$)/ && ($0 == r || index($0, r "/") == 1) {next} {bad=1} END {exit bad}' || seed_fail "$rel" member-outside-path
     if [[ -n $(git -C "$CKDIR" ls-files -- "$rel" 2>/dev/null) ]]; then seed_fail "$rel" tracked-files; fi
     rm -rf -- "${CKDIR:?}/$rel"

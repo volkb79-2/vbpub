@@ -384,6 +384,22 @@ def _missing(d):
     (d / "assay-seed-0.tgz").unlink()
 
 
+def _special_late(d):
+    """A symlink as member 2 of a ~5000-member listing: a reader that stops at its first match dies of SIGPIPE on it."""
+    make_raw_seed(d, [("s", "dir", ""), ("s/l", "symlink", "/etc")] + [(f"s/{'d' * 40}-{k:05d}", "file", "x") for k in range(5000)])
+
+
+def _big(d):
+    make_seed(d, "s", {"zeros.bin": "\0" * 200_000})  # gzip makes this about 300 bytes: a bound between the two sizes pins the UNCOMPRESSED one
+
+
+def _hash_names_another_file(d):
+    """The .sha256 names (and correctly hashes) a different file while the seed archive itself is corrupted."""
+    (d / "other.tgz").write_bytes((d / "assay-seed-0.tgz").read_bytes())
+    (d / "assay-seed-0.tgz.sha256").write_text(f"{hashlib.sha256((d / 'other.tgz').read_bytes()).hexdigest()}  other.tgz\n")
+    _corrupt(d)
+
+
 @pytest.mark.parametrize("prep,rel,why,max_bytes", [
     (_corrupt, "s", "checksum", 10 ** 9),
     (_special, "s", "special-member", 10 ** 9),
@@ -391,6 +407,9 @@ def _missing(d):
     (_dotdot, "s", "member-outside-path", 10 ** 9),
     (_missing, "s", "missing-archive", 10 ** 9),
     (lambda d: None, "s", "too-large", 100),
+    (_big, "s", "too-large", 100_000),
+    (_special_late, "s", "special-member", 10 ** 9),
+    (_hash_names_another_file, "s", "checksum", 10 ** 9),
     (lambda d: make_seed(d, "tracked", {"f": "1"}), "tracked", "tracked-files", 10 ** 9),
     (lambda d: None, "../s", "invalid-path", 10 ** 9),
     (lambda d: None, "/abs", "invalid-path", 10 ** 9),
