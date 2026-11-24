@@ -165,6 +165,40 @@ Safety and result
 EOF
 }
 
+# Checkout-set preflight (P-plat-19d item 7). install.sh reads files OUTSIDE host-setup/: the io.cost and CPU
+# benchmark tools from scripts/debian-install-v2/tools/ and the BuildKit builder from mdt-cockpit/scripts/. A host
+# checkout of mdt-cockpit/ alone used to abort at "== scripts ==" AFTER the units were already rendered. This is
+# the ONE list of those files (paths relative to host-setup/); every one must be here. It runs before any host
+# change and refuses naming the missing paths.
+preflight_checkout_set() {
+  local rel missing=() root
+  local needed=(
+    ../scripts/mdt_buildkit_builder.py
+    ../../scripts/debian-install-v2/tools/iocost_coef_gen.py
+    ../../scripts/debian-install-v2/tools/iocost_plausibility.py
+    ../../scripts/debian-install-v2/tools/cpu_benchmark.py
+    ../../scripts/debian-install-v2/tools/cpu_benchmark.py.sha256
+    ../../scripts/debian-install-v2/tools/cpu_benchmark.pins.json
+  )
+  for rel in "${needed[@]}"; do
+    [ -f "$HERE/$rel" ] || missing+=("$(realpath -m "$HERE/$rel")")
+  done
+  if [ "${#missing[@]}" -eq 0 ]; then
+    # Presence is not enough: install_cpu_benchmark_helper refuses a tool that does not match its pin, and it runs
+    # after the units are rendered. Run the same check here.
+    (cd "$HERE/../../scripts/debian-install-v2/tools" && sha256sum --check --status cpu_benchmark.py.sha256) && return 0
+    echo "ERROR: scripts/debian-install-v2/tools/cpu_benchmark.py does not match cpu_benchmark.py.sha256 (a modified or partial checkout); refusing before changing the host" >&2
+    return 1
+  fi
+  root="$(realpath -m "$HERE/../..")"
+  {
+    echo "ERROR: this checkout is incomplete; install.sh needs files outside host-setup/ and refuses before changing the host. Missing:"
+    printf '  %s\n' "${missing[@]}"
+    echo "Required checkout set under $root: mdt-cockpit/ AND scripts/debian-install-v2/tools/ (a checkout of mdt-cockpit/ alone is not enough). See host-setup/README.md."
+  } >&2
+  return 1
+}
+
 # HB-3: install the per-host CPU benchmark helper. The measuring tool is the ONE shared
 # scripts/debian-install-v2/tools/cpu_benchmark.py, pinned by its .sha256 (verified here against the
 # checkout BEFORE it is copied, and again by the wrapper before every run); the pins file carries the
@@ -294,6 +328,11 @@ fi
 if [ "$RESET" = 1 ] && [ "$WIZARD" != 1 ]; then
   echo "ERROR: --reset requires --wizard; refusing to re-seed an unvalidated example" >&2
   exit 2
+fi
+
+# Every mode from here on installs units and scripts (--apply-protection only writes drop-ins and needs none of it).
+if [ "$APPLY_PROTECTION" != 1 ]; then
+  preflight_checkout_set || exit 2
 fi
 
 DOCKER_BIN=/usr/bin/docker
@@ -643,6 +682,14 @@ fi
 if [ "$(_mdt_host_role)" = unset ]; then
   echo "NOTICE: HOST_ROLE is not set in $CONFIG_PATH — treated as shared-prod (conservative static limits). On a sole-tenant dev/test host set HOST_ROLE=dedicated-dev so dev.slice uses the MEASURED device limits (install.sh --wizard asks)." >&2
 fi
+# MDT-108: these keys drove the removed systemd-oomd kill on the dev tiers and are now ignored. Never fatal.
+_retired_oomd_keys=()
+for _retired_oomd_k in DEV_GATES_OOM_PRESSURE_LIMIT DEV_BACKGROUND_OOM_PRESSURE_LIMIT MDT_MEMORY_POLICY; do
+  if [ -n "${!_retired_oomd_k+x}" ]; then _retired_oomd_keys+=("$_retired_oomd_k"); fi
+done
+if [ "${#_retired_oomd_keys[@]}" -gt 0 ]; then
+  echo "WARN: ${_retired_oomd_keys[*]} in $CONFIG_PATH are retired (MDT-108: no systemd-oomd kill on the dev tiers) and are ignored; delete the line(s)" >&2
+fi
 DEV_STATIC_RBW="$MDT_STATIC_RBPS"; DEV_STATIC_WBW="$MDT_STATIC_WBPS"
 DEV_STATIC_RIOPS="$MDT_STATIC_RIOPS"; DEV_STATIC_WIOPS="$MDT_STATIC_WIOPS"
 _mdt_io_pin_notice >&2
@@ -909,7 +956,6 @@ elif [ "${_host_swap_bytes:-}" = 0 ]; then
 else
   echo "WARN: could not read /proc/meminfo's SwapTotal — MemorySwapMax auto-detect skipped; set DEV_SWAP_MAX and the *_MEMORY_SWAP_MAX values explicitly if this host has swap"
 fi
-
 # Tree cache plan (AD2-2, MDT-074): gid lookup, the half-of-RAM bound and path rules live in make_plan, not in
 # the wizard validators, so they are evaluated here, before the commit point (a refusal changes nothing).
 if [ "$MDT_DEDICATED_MEM" = 1 ]; then _tree_role=dedicated-dev; else _tree_role=other; fi
@@ -938,8 +984,9 @@ esac
 
 echo "== packages =="
 # fio/pv: dependencies of the shared io.cost baseline benchmark.
-# systemd-oomd: without it every ManagedOOM*
-# setting in dev-background.slice is a silent no-op (separate package on Debian).
+# systemd-oomd stays installed because the nyxloom/infra/slices/nyxloom*.slice units carry their own
+# ManagedOOMMemoryPressure=kill. host-setup gives oomd NO dev-tier policy: no dev slice opts into
+# ManagedOOM* (PSI is the dev tier's only stop signal); scripts/check.sh FAILs if oomd acts on it anyway.
 apt-get update -qq || echo "WARN: apt-get update failed — install may use a stale index"
 apt-get install -y --no-install-recommends fio pv systemd-oomd \
   || echo "WARN: apt install failed — install fio + pv + systemd-oomd manually"
@@ -983,10 +1030,10 @@ DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_CPU_Q
 DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITEBACK \
 DEV_BACKGROUND_MEMORY_MIN DEV_BACKGROUND_MEMORY_LOW DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
 DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_CPU_QUOTA DEV_BACKGROUND_IO_WEIGHT \
-DEV_BACKGROUND_OOM_PRESSURE_LIMIT DEV_BACKGROUND_ZSWAP_WRITEBACK \
+DEV_BACKGROUND_ZSWAP_WRITEBACK \
 DEV_MEMORY_MIN_GUARANTEED_CEILING DEV_MEMORY_MIN_GUARANTEED_LOW DEV_MEMORY_MIN_GUARANTEED_HIGH DEV_MEMORY_MIN_GUARANTEED_MAX \
 DEV_GATES_MEMORY_MIN DEV_GATES_MEMORY_LOW DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
-DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESSURE_LIMIT \
+DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT \
 DEV_GATES_ZSWAP_WRITEBACK \
 DEV_BUILDKITD_MEMORY_MIN DEV_BUILDKITD_MEMORY_LOW DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
 DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE DEV_BUILDKITD_CACHE \

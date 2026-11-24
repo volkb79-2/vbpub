@@ -18,12 +18,8 @@ edition = "2021"
 publish = false
 
 [workspace.dependencies]
-# These are caret floors carried forward from the sampler's lock and 14-day
-# policy, measured on 2026-11-05. Cargo.lock remains the resolved authority.
-ruzstd = "0.9.1"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-toml = "0.9.8"
+# P-hostobs-08: rustix 1.1.6 = the newest release at least 14 days old on 2026-11-24 (released 2026-10-27).
+rustix = { version = "1.1.6", default-features = false, features = ["std", "event", "net", "time"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

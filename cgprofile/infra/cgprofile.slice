@@ -52,10 +52,11 @@ MemoryMin=128M
 MemoryHigh=768M
 MemoryMax=1G
 
-# No ManagedOOM directive here on purpose (contrast mdt's `dev-gates.slice`,
-# P8, which DOES carry a pressure kill for the lanes it contains) — this
-# slice's whole job is protecting the singleton watcher from being killed,
-# so an oomd policy that could kill it would contradict D-29 outright.
+# No ManagedOOM directive here on purpose (mdt's `dev-gates.slice` carries none
+# either since MDT-108: the dev tiers are bounded by finite MemoryMax + swap,
+# with PSI the only stop signal) — this slice's whole job is protecting the
+# singleton watcher from being killed, so an oomd policy that could kill it
+# would contradict D-29 outright.
 
 CPUWeight=100
 IOWeight=50

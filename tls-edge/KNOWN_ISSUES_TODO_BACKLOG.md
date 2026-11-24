@@ -130,20 +130,6 @@ deployment.
 
 ## Roadmap
 
-### TE-01 — validation never runs on the ciu path
-
-`tls_edge_cli.config.validate_config` and `scripts/render_standalone.py`
-`validate` are two copies, and `ciu check` / `ciu up` render `ciu-stack/` with
-no tls-edge check, so a hand-edited override deploys unchecked. Unknown override
-keys are silently ignored and no schema version is recorded. Decided: one
-validator in `tls_edge_cli.config`, run by a `ciu-stack/hooks/` hook
-(`validate_config` preflight plus `run` under `[tls_edge.hooks] pre_secrets`),
-by `render_standalone.py` and by the CLI; unknown keys refused (open tables:
-`acme.dns.environment`, `secrets`, `hooks`); `[tls_edge] schema = 1`, newer
-refused, older migrated by `migrate()`.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` H1, H3
-
 ### TE-02 — config schema exists three times
 
 Besides the defaults file, `_FIELDS` and `_ANSWER_KEYS` in `config.py` and the
@@ -337,7 +323,7 @@ sufficient for a searchable, persistent audit trail.
 ### Instance packaging follow-ups (filed 2026-11-04)
 
 - Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
-- Live migration of the hand-made deployment: after TE-01, TE-10, TE-04, TE-09 (see TE-09 for the Calls cut-over).
+- Live migration of the hand-made deployment: after TE-10, TE-04, TE-09 (see TE-09 for the Calls cut-over).
 
 ### ciu dev-mode integration: generate dev certs via a pre-compose hook
 

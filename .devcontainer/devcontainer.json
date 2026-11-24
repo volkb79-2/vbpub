@@ -210,6 +210,10 @@
   },
 
   // ─── 8. Docker runtime arguments ──────────────────────────────────────────────
+  // MDT-107: run the image CMD (keepalive loop) under a real init; needs an image with that CMD,
+  // see DEVCONTAINER-LIFECYCLE.md.
+  "overrideCommand": false,
+  "init": true,
   "runArgs": [
     "--hostname", "mdt-cockpit-${localEnv:USER}-${localWorkspaceFolderBasename}",
 

@@ -610,7 +610,9 @@ candidate that occupied a worker, `budget_exceeded` and `hung` ones at their
 bound. A candidate the cgprofile
 observer could not measure keeps `null`, never `0`, and the summary reports
 `memory_measured_candidates`, so you can see how much of the number is
-observed. Pass that file to `fleet sizing --measurement` next time.
+observed. The probe and collector preserve this peak from the real progress
+record through duplicate ownership. Pass that file to
+`fleet sizing --measurement` next time.
 
 ## Check that the shards can be merged
 

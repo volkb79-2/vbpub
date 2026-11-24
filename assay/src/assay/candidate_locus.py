@@ -138,6 +138,7 @@ class _Segment(NamedTuple):
 
 class _SourceIndex(NamedTuple):
     line_starts: tuple[int, ...]
+    segment_starts: tuple[int, ...]
     segments: tuple[_Segment, ...]
 
 
@@ -228,25 +229,32 @@ def _collect_segments(tree: ast.Module, source: bytes) -> tuple[_Segment, ...]:
     for qualname, _start, _end, digest in provisional:
         pair = (qualname, digest)
         counts[pair] = counts.get(pair, 0) + 1
-    return tuple(
-        _Segment(
-            qualname=qualname,
-            start_byte=start,
-            end_byte=end,
-            segment_sha256=digest,
-            ambiguous=counts[(qualname, digest)] > 1,
-        )
-        for qualname, start, end, digest in provisional
-    )
+    return tuple(sorted(
+        (
+            _Segment(
+                qualname=qualname,
+                start_byte=start,
+                end_byte=end,
+                segment_sha256=digest,
+                ambiguous=counts[(qualname, digest)] > 1,
+            )
+            for qualname, start, end, digest in provisional
+        ),
+        key=lambda segment: (segment.start_byte, segment.end_byte),
+    ))
 
 
 def _parse_source(source: bytes) -> _SourceIndex | None:
+    if _has_bare_cr(source):
+        return None
     try:
         text = source.decode("utf-8")
         tree = ast.parse(text)
+        segments = _collect_segments(tree, source)
         return _SourceIndex(
             line_starts=_line_starts(source),
-            segments=_collect_segments(tree, source),
+            segment_starts=tuple(segment.start_byte for segment in segments),
+            segments=segments,
         )
     except Exception:  # noqa: BLE001 -- malformed byte input must fail closed
         # This is the byte-input trust boundary: invalid UTF-8 and malformed
@@ -271,14 +279,13 @@ def _source_index(path: str, source: bytes) -> _SourceIndex | None:
 def _containing_segment(
     index: _SourceIndex, start_byte: int, end_byte: int
 ) -> _Segment | None:
-    containing = tuple(
-        segment
-        for segment in index.segments
-        if segment.start_byte <= start_byte and end_byte <= segment.end_byte
-    )
-    if len(containing) != 1:
+    position = bisect_right(index.segment_starts, start_byte)
+    if position == 0:
         return None
-    return containing[0]
+    segment = index.segments[position - 1]
+    if segment.start_byte <= start_byte and end_byte <= segment.end_byte:
+        return segment
+    return None
 
 
 def _locus_key(
@@ -324,8 +331,6 @@ def locus_for_site(
         or not _is_sha256(replacement_sha256)
         or not _valid_span(source, start_byte, end_byte)
     ):
-        return None
-    if _has_bare_cr(source):
         return None
     index = _source_index(path, source)
     if index is None:
@@ -394,8 +399,6 @@ def window_key_for_site(
         or isinstance(lines, bool)
         or lines < 0
     ):
-        return None
-    if _has_bare_cr(source):
         return None
     index = _source_index(path, source)
     if index is None:

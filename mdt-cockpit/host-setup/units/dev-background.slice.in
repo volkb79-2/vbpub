@@ -42,12 +42,10 @@ IOWeight=@DEV_BACKGROUND_IO_WEIGHT@
 # swap, no per-tier IOPS sub-ceiling for this tier either — that's only on
 # dev-gates.slice/dev-buildkitd.slice, see those units.)
 
-# systemd-oomd: under sustained pressure, kill inside this tier first.
-# Silent no-op unless systemd-oomd is installed and running (install.sh
-# installs it; ManagedOOM* settings do nothing without the daemon).
-ManagedOOMMemoryPressure=kill
-ManagedOOMMemoryPressureLimit=@DEV_BACKGROUND_OOM_PRESSURE_LIMIT@
-ManagedOOMSwap=kill
+# No systemd-oomd ManagedOOM* directives on any dev tier (operator directive
+# 2026-11-24). The finite MemoryMax plus the large MemorySwapMax above are the
+# overcommit design: cgroup v2 reclaims to swap before an OOM kill. Fleetd,
+# not host-setup, owns the freeze at host memory PSI full avg10 >= 3.
 
 # Cold background pages MAY be written back to disk, which is the point of
 # the tier. NOTE: this is a per-cgroup toggle, NOT inherited from

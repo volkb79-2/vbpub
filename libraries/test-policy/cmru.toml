@@ -41,5 +41,5 @@ commands = [
 [steps.push]
 quiet = true
 commands = [
-  { label = "test-policy: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "test-policy", "--cwd", ".", "--notes-env", "TEST_POLICY_RELEASE_NOTES"], cwd = "." },
+  { label = "test-policy: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "test-policy", "--glob", "estate_test_policy-*.whl", "--cwd", ".", "--notes-env", "TEST_POLICY_RELEASE_NOTES"], cwd = "." },
 ]

@@ -43,6 +43,65 @@ import pytest
 # collection time; a module-attribute patch made against one loaded copy
 # would not reach a different copy's own module-global lookups.
 _LOCK_DIR_ENV_VAR = "RUN_GATE_LOCK_DIR"
+_TOOL_INVOKE_ENV_VAR = "RUN_GATE_TEST_TOOL_INVOKE"
+_TEST_TMP_ENV_VAR = "RUN_GATE_TEST_TMP_PATH"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolate_tool_invoke(tmp_path_factory):
+    """Give every test module one pytest-owned CLI shim path."""
+    invoke_dir = tmp_path_factory.mktemp("run-gate-test-invoke")
+    invoke = invoke_dir / "run_gate.py"
+    invoke.symlink_to(Path(__file__).resolve().parent.parent / "run_gate.py")
+    old = os.environ.get(_TOOL_INVOKE_ENV_VAR)
+    os.environ[_TOOL_INVOKE_ENV_VAR] = str(invoke)
+    try:
+        yield invoke
+    finally:
+        if old is None:
+            os.environ.pop(_TOOL_INVOKE_ENV_VAR, None)
+        else:
+            os.environ[_TOOL_INVOKE_ENV_VAR] = old
+
+
+@pytest.fixture(autouse=True)
+def isolate_shim_root(tmp_path, monkeypatch):
+    """Every per-test PATH shim belongs to this test's pytest directory."""
+    monkeypatch.setenv(_TEST_TMP_ENV_VAR, str(tmp_path))
+
+
+def _loaded_run_gate_modules():
+    seen = set()
+    for module in tuple(sys.modules.values()):
+        if module is None or id(module) in seen:
+            continue
+        needed = ("_begin_scratch_run", "_active_scratch_run",
+                  "_scratch_root", "_cleanup_scratch_run")
+        if all(callable(getattr(module, name, None)) for name in needed):
+            seen.add(id(module))
+            yield module
+
+
+@pytest.fixture(autouse=True)
+def isolate_scratch_run(tmp_path):
+    """Open one real scratch run per loaded run-gate module copy."""
+    scratch_temp = tmp_path / "run-gate-test-scratch"
+    scratch_temp.mkdir(mode=0o700)
+    states = []
+    for module in _loaded_run_gate_modules():
+        state = module._begin_scratch_run()
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(module, "physical_path",
+                          lambda path, **_kwargs: Path(path))
+            patch.setattr(module.tempfile, "gettempdir",
+                          lambda: str(scratch_temp))
+            module._scratch_root(tmp_path / "fixture-repo", state)
+        states.append((module, state))
+    yield
+    for module, state in reversed(states):
+        module._cleanup_scratch_run(state)
+        if module._active_scratch_run() is state:
+            module._end_scratch_run()
 
 
 @pytest.fixture(autouse=True)

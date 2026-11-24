@@ -122,7 +122,9 @@ echo
 # ─── check 1: render pipeline + drift ─────────────────────────────────────────
 echo "$(_bold "1. Render pipeline + drift")"
 
-if "$SCRIPT_DIR/render.sh" --check 2>&1 | sed 's/^/   /'; then
+if [[ -z "$DOMAIN" ]]; then
+    skip "no domain — skipping render.sh --check (it requires a domain)"
+elif "$SCRIPT_DIR/render.sh" --check 2>&1 | sed 's/^/   /'; then
     pass "render.sh --check succeeded"
 else
     fail "render.sh --check failed"
