@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Release contract: the `push` step publishes `estate_test_policy-*.whl` (explicit `--glob`). The tag prefix
+  `test-policy` differs from the distribution name, so cmru's prefix-derived default matched nothing and the first
+  0.1.0 attempt failed at publish (cmru KI-201). `tests/test_release_contract.py` guards it.
 - TP-10(a): the pytest entry point now defaults to `off`; projects opt in through ini `estate_policy =
   off|warn|fail`, and an explicit `--estate-policy` wins over the ini value. Installing the wheel no longer
   enforces policy in an unopted-in project.
