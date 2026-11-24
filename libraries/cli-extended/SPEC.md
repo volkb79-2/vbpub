@@ -596,22 +596,24 @@ hard-wrapping all prose at `80` columns. Long option descriptions should wrap
 at word boundaries and preserve indentation.
 
 Colours are optional presentation. Automatic colour must be disabled when
-the destination stream is not a TTY, when `NO_COLOR` is set, or when the CLI
-provides `--no-color`. Generated terminal help follows this policy just like
-diagnostics and progress; the automatic check uses stdout for help and stderr
-for diagnostics/progress. Semantic meaning must remain available in plain
-text. If both explicit colour controls are exposed, `--no-color` disables
-automatic colour and `--color` may explicitly override `NO_COLOR`; JSON,
-version output, and primary result data never use ANSI colour. Supplying both
-explicit controls is an invocation error rather than a last-option-wins rule.
+the destination stream is not a TTY, when `NO_COLOR` is non-empty (its value
+does not matter; an empty value is unset, as no-color.org specifies), when
+`TERM` is `dumb`, or when the CLI provides `--no-color`. Generated terminal
+help follows this policy just like diagnostics and progress; the automatic
+check uses stdout for help and stderr for diagnostics/progress. Semantic
+meaning must remain available in plain text. If both explicit colour controls
+are exposed, `--no-color` disables automatic colour and `--color` explicitly
+overrides both automatic environmental conditions; JSON, version output, and
+primary result data never use ANSI colour. Supplying both explicit controls is
+an invocation error rather than a last-option-wins rule.
 
 `CliOutput.color_enabled(stream)` is the public stream-specific query for a
-consumer-owned renderer. With no explicit switch it reports TTY plus
-`NO_COLOR`; `--color` forces true and `--no-color` forces false. The result
-does not override the plain-output requirement: a consumer that emits JSON or
-another machine-readable result must keep it free of ANSI, including when
-`--color` was supplied. Query the actual destination stream because stdout
-and stderr can have different terminal states.
+consumer-owned renderer. With no explicit switch it reports TTY plus non-empty
+`NO_COLOR` and `TERM=dumb`; `--color` forces true and `--no-color` forces
+false. The result does not override the plain-output requirement: a consumer
+that emits JSON or another machine-readable result must keep it free of ANSI,
+including when `--color` was supplied. Query the actual destination stream
+because stdout and stderr can have different terminal states.
 
 ### Progress
 
@@ -1526,8 +1528,8 @@ control flag raises `ValueError`; and `fail_exit_code: int = 1` (see item 7).
 
 ## 16. Child-process supervision (`cli_extended.procio`)
 
-`cli_extended.procio` is the one bounded subprocess reader for the estate. It
-adds no CLI control, no registry entry and no manifest content, so
+`cli_extended.procio` is the one bounded subprocess reader for CLI tools in the
+estate. It adds no CLI control, no registry entry and no manifest content, so
 `CONTRACT_VERSION` and the surface schema are unchanged. It uses only the
 standard library and reads `/proc` (Linux). It never prints: every WARN and
 ERROR text is returned as data for the caller's own logger.
@@ -1538,13 +1540,26 @@ credential helper, a build client, an ssh master) keeps it open after the
 child has exited, and the caller hangs without a message. Nothing else
 bounds the wait, and nothing watches for silence.
 
+**Supervision tiers.** CLI tools that run a child and stream or capture it use
+this module. The module imports nothing from the rest of `cli_extended`, so it
+can become its own wheel without an API change. Judges (assay and run-gate)
+keep their own supervision by decision, called "judge independence": a judge
+must not depend on the library it judges. Test suites prove they left no
+descendants with `estate_test_policy` (TP-12), not with `procio`.
+
 **Public API.**
 
 - `run_streaming(argv, *, cwd, env, on_line, drain_seconds=2.0,
   no_progress_seconds, progress_paths=(), term_grace_seconds=5.0) ->
   StreamResult`.
-- `run_capture(argv, *, cwd, env, input=None, timeout=None, text=True,
-  drain_seconds=2.0) -> CaptureResult` (a `subprocess.CompletedProcess`).
+- `run_capture(argv, *, cwd, env, input=None, stdin=None, timeout=None,
+  text=True, drain_seconds=2.0) -> CaptureResult` (a
+  `subprocess.CompletedProcess`).
+- `StreamResult` exposes `returncode`, `outcome: Outcome`, `abandoned: bool`,
+  `abandoned_holders`, `warning`, `last_line` and `watchdog`.
+  `CaptureResult` exposes the completed-process fields plus `abandoned: bool`,
+  `abandoned_holders` and `warning`. `Outcome` is the exported
+  `Literal["exited", "watchdog"]` alias.
 - `terminate_as_exit()`, `reap_process_group(proc, grace)`,
   `pipe_holder_pids(inode)` and `process_tree(pid)`.
 
@@ -1557,17 +1572,18 @@ bounds the wait, and nothing watches for silence.
    terminal (an interactive `docker exec -it`) must not use this module.
 2. *Bounded drain.* Reading stops `drain_seconds` after the child has exited,
    with the output read so far kept. The result's `returncode` is always the
-   child's own. If a pipe was still open then, `abandoned_holders` lists the
-   pids found through `/proc/<pid>/fd` (`()` when none was found, `None` when
-   the scan failed) and `warning` holds the one-line text
+   child's own. `abandoned` is true exactly when a pipe was still open then,
+   whether or not holders were found. `abandoned_holders` lists the pids found
+   through `/proc/<pid>/fd` (`()` when none was found, `None` when the scan
+   failed) and `warning` holds the one-line text
    `'<argv0>' exited with code N but its output pipe is still held open by
    pid(s) P; stopped reading after Ns and kept the exit code.` (`another
    process` replaces the pids when there are none). Holders are named, never
-   killed. Otherwise `abandoned_holders == ()` and `warning is None`.
-   `abandoned_holders == ()` is therefore ambiguous on its own (nothing was
-   abandoned, or something was abandoned and the scan found no pid, for
-   example a holder owned by another user or in another pid namespace): only
-   `warning is not None` says that the pipe was abandoned.
+   killed. Otherwise `abandoned is False`, `abandoned_holders == ()` and
+   `warning is None`. `abandoned_holders == ()` is therefore ambiguous on its
+   own (nothing was abandoned, or something was abandoned and the scan found
+   no pid, for example a holder owned by another user or in another pid
+   namespace): use `abandoned`, not the holder tuple, for that fact.
 3. *Selector, not `select(2)`.* Reading uses `selectors.DefaultSelector`, so
    descriptors at or above 1024 work.
 4. *Decoding.* Text uses the locale encoding (UTF-8 under UTF-8 mode) with
@@ -1591,23 +1607,28 @@ bounds the wait, and nothing watches for silence.
    expiry the live process tree is captured first (`process_tree`, one
    `pid ppid state argv` line per process, argv cut to 200 characters), then
    SIGTERM goes to the child's own group and, after `term_grace_seconds`,
-   SIGKILL. `outcome` is `"watchdog"` (closed set `OUTCOMES = ("exited",
-   "watchdog")`) and `watchdog` is a `WatchdogReport` (`limit_seconds`,
-   `last_line`, `process_tree`, `escaped_pids`, `render(setting)` for
-   `'<argv0>' produced no output for Ns (<setting> = N); last output line:
-   <line>`). A tree member outside the group (`setsid`) is listed in
-   `escaped_pids` and never killed. The limit of that naming: the tree is built
-   from ppid links, so a process that left the group AND was reparented away
-   from the child (its parent exited, or it double-forked) is in neither
-   `process_tree` nor `escaped_pids`; the watchdog then neither names nor kills
-   it. An output pipe that closes while the child
+   SIGKILL. `outcome` is `"watchdog"` (the `Outcome` alias has exactly
+   `Literal["exited", "watchdog"]`; the runtime tuple is
+   `OUTCOMES = ("exited", "watchdog")`) and `watchdog` is a
+   `WatchdogReport` (`limit_seconds`, `last_line`, `process_tree`,
+   `escaped_pids`, `render(setting)` for `'<argv0>' produced no output for Ns
+   (<setting> = N); last output line: <line>`). A tree member outside the
+   group (`setsid`) is listed in `escaped_pids` and never killed. The limit of
+   that naming: the tree is built from ppid links, so a process that left the
+   group AND was reparented away from the child (its parent exited, or it
+   double-forked) is in neither `process_tree` nor `escaped_pids`; the watchdog
+   then neither names nor kills it. An output pipe that closes while the child
    lives does not end the wait: the watchdog still applies.
 6. *`run_capture`.* Stdout and stderr share one selector (no deadlock when one
    fills while the other is idle), `input` is written without blocking (a
    child that stops reading it is not an error), and the same drain applies.
    With `timeout`, expiry reaps the group (SIGTERM, then SIGKILL after 5 s)
    and raises `subprocess.TimeoutExpired` with the partial output as bytes.
-   `input=None` leaves stdin inherited.
+   `stdin=None` leaves stdin inherited when `input` is also `None`; `input`
+   opens a pipe instead. `stdin=subprocess.DEVNULL` gives the child immediate
+   EOF. The surface is deliberately closed: any other `stdin` value raises
+   `ValueError`, as does `input` together with `stdin=subprocess.DEVNULL`;
+   both errors are raised before spawning.
 7. *Signals.* Both functions convert SIGTERM and SIGHUP to `SystemExit(128 +
    signum)` and SIGINT (only while it still has Python's default handler) to
    `KeyboardInterrupt` for their duration, main thread only, and reap the

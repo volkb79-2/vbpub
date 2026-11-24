@@ -37,6 +37,11 @@ class _TTYInput(io.StringIO):
         return True
 
 
+class _TTYStream(io.StringIO):
+    def isatty(self):
+        return True
+
+
 @pytest.mark.parametrize("value", ("TRACE", "", "notice"))
 def test_log_level_parse_rejects_unknown_values(value):
     with pytest.raises(ValueError, match="invalid log level"):
@@ -92,7 +97,9 @@ def test_colorized_help_covers_identity_sections_usage_verbs_options_and_tags():
 
 
 @pytest.mark.parametrize("stream", (object(),))
-def test_non_tty_probe_without_isatty_is_safe(stream):
+def test_non_tty_probe_without_isatty_is_safe(stream, monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
     output = CliOutput(IDENTITY, stdin=stream, stdout=stream, stderr=stream)
     assert not output.color_enabled()
     assert not output.is_interactive
@@ -107,13 +114,10 @@ def test_tty_probe_oserror_is_treated_as_noninteractive():
     assert not output.is_interactive
 
 
-def test_public_color_policy_is_stream_specific_and_honors_explicit_switches(monkeypatch):
-    class TTY(io.StringIO):
-        def isatty(self):
-            return True
-
+def test_public_color_policy_is_stream_specific(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
-    tty = TTY()
+    monkeypatch.setenv("TERM", "xterm")
+    tty = _TTYStream()
     redirected = io.StringIO()
     output = CliOutput(IDENTITY, stdout=tty, stderr=redirected)
 
@@ -121,28 +125,66 @@ def test_public_color_policy_is_stream_specific_and_honors_explicit_switches(mon
     assert output.color_enabled(redirected) is False
     assert output.color_enabled() is False
 
-    monkeypatch.setenv("NO_COLOR", "")
-    assert output.color_enabled(tty) is False
-    assert CliOutput(IDENTITY, color=True).color_enabled(redirected) is True
-    assert CliOutput(IDENTITY, color=False).color_enabled(tty) is False
+
+@pytest.mark.parametrize("no_color", [None, "", "1", "0", "false"])
+@pytest.mark.parametrize("term", [None, "dumb", "xterm"])
+def test_automatic_color_requires_tty_nonempty_no_color_and_non_dumb_term(
+    monkeypatch, no_color, term,
+):
+    if no_color is None:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    else:
+        monkeypatch.setenv("NO_COLOR", no_color)
+    if term is None:
+        monkeypatch.delenv("TERM", raising=False)
+    else:
+        monkeypatch.setenv("TERM", term)
+
+    expected = no_color in (None, "") and term != "dumb"
+    assert CliOutput(IDENTITY).color_enabled(_TTYStream()) is expected
+
+
+@pytest.mark.parametrize(
+    ("color", "no_color", "term", "tty"),
+    [
+        (True, "1", "dumb", False),
+        (True, None, "xterm", True),
+        (False, "1", "dumb", False),
+        (False, None, "xterm", True),
+    ],
+)
+def test_explicit_color_switch_wins_over_disabling_and_enabling_environment(
+    monkeypatch, color, no_color, term, tty,
+):
+    if no_color is None:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    else:
+        monkeypatch.setenv("NO_COLOR", no_color)
+    monkeypatch.setenv("TERM", term)
+    stream = _TTYStream() if tty else io.StringIO()
+
+    assert CliOutput(IDENTITY, color=color).color_enabled(stream) is color
 
 
 def test_help_redacts_tokens_and_uses_destination_stream_for_auto_color(monkeypatch):
-    class TTY(io.StringIO):
-        def isatty(self):
-            return True
-
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
     output = CliOutput(IDENTITY, secrets=("token-value",))
     text = output.format_help(
-        f"{IDENTITY.headline}\n\n--token token-value\n", stream=TTY()
+        f"{IDENTITY.headline}\n\n--token token-value\n", stream=_TTYStream()
     )
     assert "token-value" not in text
     assert "<redacted>" in text
     assert "\033[" in text
 
     monkeypatch.setenv("NO_COLOR", "")
-    assert "\033[" not in output.format_help(f"{IDENTITY.headline}\n", stream=TTY())
+    assert "\033[" in output.format_help(f"{IDENTITY.headline}\n", stream=_TTYStream())
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert "\033[" not in output.format_help(f"{IDENTITY.headline}\n", stream=_TTYStream())
+    monkeypatch.delenv("NO_COLOR")
+    monkeypatch.setenv("TERM", "dumb")
+    assert "\033[" not in output.format_help(f"{IDENTITY.headline}\n", stream=_TTYStream())
     forced = CliOutput(IDENTITY, color=True)
     assert "\033[" in forced.format_help(f"{IDENTITY.headline}\n", stream=io.StringIO())
 

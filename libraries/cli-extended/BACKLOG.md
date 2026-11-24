@@ -671,8 +671,9 @@ no-progress watchdog; contract in [SPEC section 16](SPEC.md#16-child-process-sup
 
 **Open (R2):** the module is listed in `assay.toml` targets, but the mutation
 campaign has not been run for it; the owner runs the `r2` lane before release.
-Adoption in cmru, mdt-cockpit `build-push.py`, ciu and nyxloom follows the release,
-one package each, with the floor raised to the first release that ships `procio`.
+Adoption order is CLI-EXT-43, then cmru P7, ciu CIU-220, nyxloom NL-83 and
+mdt MDT-104; each package raises its floor to the first release with the
+required `procio` API.
 
 **Finding (2026-11-18, fixed):** the gate lane failed once on
 `test_pipe_holder_scan_names_holders_and_skips_what_it_cannot_inspect` (`[228] == [228, 229]`).
@@ -687,7 +688,8 @@ the listing. The scan now skips only the vanished descriptor. Regression test:
 `test_pipe_holder_scan_survives_a_descriptor_closing_mid_scan`. Report:
 `artifacts/release-program-20261027/reports/procio-flake-REPORT.md`.
 
-**Finding (2026-11-18, fixed, tests only; package P11):** the R2 of 0.7.0 ended after 4 minutes
+**Finding (2026-11-18, fixed, tests only; package P11; the guard moves to
+estate_test_policy TP-12):** the R2 of 0.7.0 ended after 4 minutes
 with `ERROR/EXEC_FAILED`, `leaked-process-tree: ... comm=sleep` (24 entries). All were zombies:
 assay makes the pytest leader a child subreaper, so when a `procio` test killed a shell group,
 the `sleep` the scripted shell had running was orphaned onto pytest and nobody `wait()`ed for it
@@ -729,7 +731,8 @@ identically.
 
 ## CLI-EXT-36 — highlight paths, URLs, hashes, and branch names in line output
 
-**Status:** OPEN. **Type:** Feature. **Area:** Output and terminal rendering.
+**Status:** Deferred (no consumer, 2026-11-24 review M3)
+**Type:** Feature. **Area:** Output and terminal rendering.
 
 **Observed.** The shared output API has no inline highlighters for file paths,
 URLs, commit-like hashes, or branch names.
@@ -749,7 +752,8 @@ hyperlink.
 
 ## CLI-EXT-37 — render the agreed inline Markdown subset on a TTY
 
-**Status:** OPEN. **Type:** Feature. **Area:** Output and terminal rendering.
+**Status:** Deferred (no consumer, 2026-11-24 review M3)
+**Type:** Feature. **Area:** Output and terminal rendering.
 
 **Observed.** Human text currently has no shared inline rendering for
 `` `code` ``, `**bold**`, or link syntax using a `[text]` label followed by a
@@ -807,7 +811,8 @@ contains no independent severity parser or ANSI renderer.
 
 ## CLI-EXT-40 — migrate CMRU output call sites incrementally
 
-**Status:** OPEN. **Type:** Migration. **Area:** CMRU adoption and output.
+**Status:** Closed — rule: touched call sites use the renderer
+**Type:** Migration. **Area:** CMRU adoption and output.
 
 **Observed.** CMRU has many output call sites, so converting them in one
 rewrite would broaden review and regression risk.
@@ -850,3 +855,61 @@ measured on the native lane.
 **Provenance:** release program package P12 (filed as CLI-EXT-35 on the branch;
 renumbered to CLI-EXT-41 at the merge because the line-stream renderer packages
 took CLI-EXT-35 to CLI-EXT-40 first).
+
+## CLI-EXT-42 — colour policy contradicts no-color.org and cmru/ciu
+
+**Status:** FIXED by this branch. **Type:** Bug. **Area:** Output and terminal policy.
+
+`CliOutput.color_enabled()` treated the presence of `NO_COLOR`, including an
+empty value, as a disable signal and ignored `TERM=dumb`. That contradicted
+no-color.org and the policies CMRU and CIU already implement. Automatic colour
+is now on only for a TTY with `NO_COLOR` unset or empty and `TERM` not `dumb`;
+explicit `--color` and `--no-color` still win. Only cli-extended's
+`color_enabled` was wrong: cmru and ciu already treated an empty `NO_COLOR` as
+unset and `TERM=dumb` as colour off.
+
+Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` M3
+
+## CLI-EXT-43 — procio 0.8 API polish
+
+**Status:** FIXED by this branch. **Type:** API polish. **Area:** Child-process supervision.
+
+`StreamResult` and `CaptureResult` now carry `abandoned: bool`, true exactly
+when reading was abandoned even if no holder pid was found.
+`StreamResult.outcome` uses the exported `Outcome = Literal["exited",
+"watchdog"]` alias with unchanged string values. `run_capture` accepts
+`stdin=None` or `subprocess.DEVNULL`; the latter gives the child immediate
+EOF. `input` with `DEVNULL`, and every other `stdin` value, raises
+`ValueError` before spawning.
+
+Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` L3
+
+## CLI-EXT-44 — record the three supervision tiers
+
+**Status:** FIXED by this branch. **Type:** Documentation and guard. **Area:** Child-process supervision.
+
+SPEC section 16 now records the three tiers: CLI tools use
+`cli_extended.procio`; judges keep their own supervision for judge
+independence; test suites use `estate_test_policy` TP-12 descendant checks.
+The stdlib-only import test also rejects relative imports and any
+`cli_extended` import.
+
+Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` H1
+
+## CLI-EXT-45 — `tests/test_r2_lane_contract.py` restates run-gate
+
+**Status:** OPEN. **Type:** Test debt. **Area:** R2 gate.
+
+`tests/test_r2_lane_contract.py` duplicates run-gate's own lane-contract
+coverage. Delete it after run-gate RG-296 provides `run-gate lanes --check`.
+
+Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` M5
+
+## CLI-EXT-46 — per-run scratch helper
+
+**Status:** OPEN. **Type:** Feature. **Area:** Process scratch lifecycle.
+
+Add a per-run scratch helper whose directory the parent removes in `finally`,
+plus `prune(root, live_ids, older_than)`. It waits for a consumer (T1 agctl).
+
+Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` SYNTHESIS T3

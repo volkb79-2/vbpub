@@ -214,14 +214,16 @@ class CliOutput:
             return False
 
     def color_enabled(self, stream: TextIO | None = None) -> bool:
-        """Resolve explicit colour, TTY detection, and ``NO_COLOR``."""
+        """Resolve explicit colour, TTY detection, ``NO_COLOR``, and ``TERM=dumb``."""
 
         stream = stream if stream is not None else self.stderr
         if self.color is False:
             return False
         if self.color is True:
             return True
-        return self._is_tty(stream) and "NO_COLOR" not in os.environ
+        no_color = os.environ.get("NO_COLOR", "")
+        term = os.environ.get("TERM", "")
+        return self._is_tty(stream) and not no_color and term.lower() != "dumb"
 
     def format_help(
         self,

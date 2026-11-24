@@ -7,6 +7,27 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### Unreleased — adoption blockers (CLI-EXT-42, CLI-EXT-43, CLI-EXT-44)
+
+- **Colour policy (CLI-EXT-42).** `CliOutput.color_enabled()` now follows
+  no-color.org and the cmru/ciu policy: an empty `NO_COLOR` is unset, and
+  `TERM=dumb` disables automatic colour. This is behaviour-visible: a TTY with
+  `NO_COLOR=""` now receives colour, while a TTY with `TERM=dumb` no longer
+  does. Explicit `--color`/`--no-color` still win.
+- **`procio` 0.8 API polish (CLI-EXT-43).** `StreamResult` and `CaptureResult`
+  have `abandoned: bool`, true exactly when reading was abandoned regardless
+  of whether holder pids were found. `StreamResult.outcome` is the exported
+  `Outcome = Literal["exited", "watchdog"]`; its values are unchanged.
+  `run_capture` accepts only `stdin=None` (today's inherit/input-pipe
+  behaviour) or `stdin=subprocess.DEVNULL` (immediate child EOF). Combining
+  `input` with `DEVNULL`, or passing any other `stdin` value, raises
+  `ValueError` before spawning.
+- **Supervision tiers (CLI-EXT-44).** SPEC section 16 now records that CLI
+  tools use `procio`, judges keep independent supervision, and test suites
+  prove descendant cleanup with `estate_test_policy` TP-12 rather than
+  `procio`. The stdlib-only import guard now rejects relative and
+  `cli_extended` imports as well as non-stdlib imports.
+
 ### Unreleased — `cli_extended.procio`: one bounded subprocess reader
 
 Library contract version remains 1 and the surface manifest schema remains 7;

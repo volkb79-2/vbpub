@@ -306,12 +306,14 @@ markdown = app.catalog.render(output_format="markdown")
 ```
 
 For an executable, generated terminal help uses the same color policy as
-diagnostics. Color is automatic only when the destination stream is a TTY and
-`NO_COLOR` is unset; `--color` forces it, while `--no-color` disables it.
-Explicit `--color` may override `NO_COLOR`, but supplying both switches is an
-invocation error. This applies to bare-invocation help, `--help`, `help VERB`,
-and help accompanying parser/runtime refusals. Markdown help, version output,
-and primary results remain plain; JSON is never decorated with ANSI. The CLI
+diagnostics. Color is automatic only when the destination stream is a TTY,
+`NO_COLOR` is unset or empty, and `TERM` is not `dumb`; any non-empty
+`NO_COLOR` disables it. `--color` forces it, while `--no-color` disables it.
+Explicit `--color` may override `NO_COLOR` and `TERM=dumb`, but supplying both
+switches is an invocation error. This applies to bare-invocation help, `--help`,
+`help VERB`, and help accompanying parser/runtime refusals. Markdown help,
+version output, and primary results remain plain; JSON is never decorated with
+ANSI. The CLI
 boundary applies the policy, so use `app.run()` rather than printing parser
 help directly. Consumers should use `runtime.output.info/warn/error/hint()` for
 diagnostics and should not add ANSI sequences or a second color library for
