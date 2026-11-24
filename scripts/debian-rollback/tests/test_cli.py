@@ -63,7 +63,7 @@ class ExitTranslationTest(unittest.TestCase):
         self.assertIn("Traceback (most recent call last)", stderr)
         self.assertEqual(self.run_error(errors.Refused("unsafe"), debug=True), (3, "dr-state: unsafe\n"))
 
-    def test_dispatch_and_core_only_main_outcomes(self) -> None:
+    def test_dispatch_and_missing_command_outcomes(self) -> None:
         stderr = io.StringIO()
         self.assertEqual(cli.run(("list",), lambda invocation: 0, stderr=stderr), 0)
         self.assertEqual(stderr.getvalue(), "")
@@ -71,11 +71,9 @@ class ExitTranslationTest(unittest.TestCase):
         try:
             cli.sys.stderr = stderr
             self.assertEqual(cli.main(("--json",)), 2)
-            self.assertEqual(cli.main(("list", "--json")), 2)
         finally:
             cli.sys.stderr = original
         self.assertIn("command is required", stderr.getvalue())
-        self.assertIn("implementation is not installed", stderr.getvalue())
 
 
 if __name__ == "__main__":

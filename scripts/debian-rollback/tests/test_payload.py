@@ -33,7 +33,7 @@ class PayloadTest(unittest.TestCase):
             / "dr-state"
             / "dr_state"
         )
-        for module in (
+        files = (
             "__init__",
             "paths",
             "errors",
@@ -43,9 +43,16 @@ class PayloadTest(unittest.TestCase):
             "apt",
             "retention",
             "cli",
-        ):
+            "core",
+            "storage/__init__",
+            "storage/btrfs",
+            "boot/__init__",
+            "boot/grub",
+        )
+        for module in files:
             with self.subTest(module=module):
-                self.assertTrue((package / f"{module}.py").is_file())
+                path = package / f"{module}.py"
+                self.assertTrue(path.is_file())
 
 
 if __name__ == "__main__":
