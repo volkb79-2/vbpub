@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-207 | OPEN (filed 2026-11-24, KI-141 parts 6+7 review: three stale "first release" / "asynchronous R2" comments) | — |
+| KI-206 | BY DESIGN (filed 2026-11-24, the `release-gate` lane needs GitHub auth: local or release transaction only, never a remote-gate lane) | — |
 | KI-205 | OPEN (filed 2026-11-24, P-core-06 review follow-ups: watchdog escaped PIDs unprinted, SystemExit(143) swallowed by refusal handlers, test gaps, stale 0.3.0 prose) | — |
 | KI-204 | OPEN (filed 2026-11-24, tester-unified/build-image.sh by hand: undeclared env and builder assumptions) | — |
 | KI-203 | OPEN (filed 2026-11-24, operator challenge: promotion refuses a clean merge when main touched the project) | — |
@@ -4305,3 +4307,22 @@ Source: vbpub-core, P-core-05 image build, 2026-11-24.
 9. **Size note:** P-core-06 added +1425 lines against the brief's +1400 stop; the controller accepted it at merge. No code change.
 
 **Close when:** items 1 and 2 are fixed with tests; items 3-8 are done or dispositioned here; the `0.3.0` grep over `cmru/` and `tester-unified/` finds only intentional history.
+
+## KI-206 - the `release-gate` lane needs GitHub auth: local or release-only
+
+**Status:** BY DESIGN (filed 2026-11-24); severity: low. The `release-gate` lane (`run-gate release-gate`, also the release transaction's gate step in `cmru.toml`) queries the GitHub origin, which needs `gh` auth. The test hosts (v1001, r1002) carry no GitHub credentials by design. So `remote-gate.sh <host> cmru release-gate <sha>` always fails there: rgw-release-gate-20261124T151645-v1001 failed with exit 2 on KI-141's head, whose r0-r1 passed. That FAIL says nothing about the code.
+
+**Rule.** The `release-gate` verdict for a cmru change comes from the devcontainer: from `cmru release`'s own transaction, or from a local `run-gate release-gate`. Remote gates for cmru are `r0-r1` and the R2 lanes. No credentials go onto test hosts for this.
+
+**Close when:** never as a code fix. Close it if a later change gives the lane an offline mode.
+
+## KI-207 - stale "first release" / "asynchronous R2" comments after KI-141 parts 6+7
+
+**Status:** OPEN (filed 2026-11-24); severity: low. Source: the Opus review of KI-141 parts 6+7, item 5 (merged as q253, 0f9489ac5). Parts 6+7 retired the first-release lanes and fixed `follow_up_lane` to `assay-first-release-r2`, but three comments still describe the old model:
+1. `cmru.toml:47-48` says the full gate lane "remains available for the asynchronous R2 run".
+2. `run-gate.toml:55-58` is the comment above `[lanes.assay-first-release-r2]`. It says "for the first release" and "changed-source baseline cannot exist until after the first release".
+3. `assay.toml:199-200` is the comment above `[lanes.cmru-first-release-r2]`. It says "Run after the first stable CMRU tag has been published".
+
+The lanes under items 2 and 3 must stay byte-identical, because the whole-source backfill (PLAN-assay P-assay-08) runs at one fixed commit. Before editing either comment, check whether the assay judge identity or a run-gate lane digest hashes the config file's bytes; if it does, the edit waits for the next intended lane change (P-assay-18).
+
+**Close when:** the three comments describe the whole-source R2 lane as it is now, with the judge identity unchanged.
