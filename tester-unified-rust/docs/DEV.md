@@ -94,7 +94,7 @@ The controller gives the go; a controller-run implementer or the controller does
    Options: `--tag IMAGE` (default `tester-unified-rust-dev:local`), `--base IMAGE` (default
    `tester-unified-rust:local`), `--builder NAME` (default `default`; precedence option, then
    `TESTER_UNIFIED_RUST_BUILDER`, then the default), `--record FILE`. Use as `--base` the image the
-   lanes name in `run-gate.root.toml` (`tester-unified-rust:rs-20261118`); the default `:local`
+   lanes name in `run-gate.root.toml` (`tester-unified-rust:rs-20261124`); the default `:local`
    is that image only while `:local` has not been moved back to an older whole-lock image (a
    rollback of the tag would silently put the dev layer on the old image: the label
    `org.vbpub.tester-unified-rust-dev.base-image-id` shows which id it was built on). The default builder is the
