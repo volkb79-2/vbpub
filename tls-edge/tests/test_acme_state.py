@@ -50,12 +50,12 @@ def _copy_stack(stack_dir: Path) -> None:
 
 
 def _instance(tmp_path: Path, *, marker: bool) -> tuple[Path, Path]:
-    root = tmp_path / "instance"
-    stack_dir = root / "stack" / "ciu-stack"
+    root = tmp_path / "instance" / "stack"
+    stack_dir = root / "ciu-stack"
     _copy_stack(stack_dir)
-    shutil.copy2(ROOT / "ciu.global.defaults.toml.j2", root / "stack")
+    shutil.copy2(ROOT / "ciu.global.defaults.toml.j2", root)
     if marker:
-        (root / "shared" / "acme").mkdir(parents=True, mode=0o700)
+        (root.parent / "shared" / "acme").mkdir(parents=True, mode=0o700)
     return root, stack_dir
 
 
@@ -107,8 +107,8 @@ def test_new_instance_uses_hostdir_outside_the_stack(tmp_path: Path) -> None:
 
     compose = _render_compose(stack_dir)
     source = Path(_acme_mount(compose).removesuffix(":/var/lib/traefik"))
-    assert source == (root / "shared" / "acme").resolve()
-    assert not source.is_relative_to((root / "stack").resolve())
+    assert source == (root.parent / "shared" / "acme").resolve()
+    assert not source.is_relative_to(root.resolve())
     assert "acme-data" not in (compose.get("volumes") or {})
 
 

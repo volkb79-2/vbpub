@@ -181,8 +181,8 @@ def _propose(
     proposed_overlay = deep_merge(overlay, answers)
     values: dict[str, Any] = {}
     layout = Layout(
-        root=root,
-        stack_dir=root / "stack" / "ciu-stack",
+        root=root.parent,
+        stack_dir=root / "ciu-stack",
         overlay=overlay,
         edge={},
     )
@@ -226,7 +226,7 @@ def _propose(
     proposed = deep_merge(defaults, proposed_overlay)
     plan = validate_config(
         proposed["tls_edge"],
-        stack_dir=root / "stack" / "ciu-stack",
+        stack_dir=root / "ciu-stack",
     )
     return values, plan
 
@@ -234,7 +234,7 @@ def _propose(
 def _load_checked_site(
     root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    stack_dir = root / "stack" / "ciu-stack"
+    stack_dir = root / "ciu-stack"
     defaults, overlay, effective = load_site(stack_dir)
     overlay = migrate(overlay)
     check_override(defaults, overlay)
@@ -246,7 +246,7 @@ def _load_validated_site(
     *,
     require_domain: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
-    stack_dir = root / "stack" / "ciu-stack"
+    stack_dir = root / "ciu-stack"
     _, config, _ = _load_checked_site(root)
     return config, validate_config(
         config,
@@ -335,7 +335,7 @@ def configure(args: Any, runtime: CliRuntime) -> int:
         ) from exc
     runtime.output.primary(f"Saved {override_path} and {env_path}.")
     runtime.output.primary(
-        f"Next: cd {root / 'stack'} && sudo ./ciu check && sudo ./ciu up --dry-run; "
+        f"Next: cd {root} && sudo ./ciu check && sudo ./ciu up --dry-run; "
         "review the rendered config, then deploy with CIU."
     )
     return 0
@@ -351,11 +351,11 @@ def show(args: Any, runtime: CliRuntime) -> int:
             config,
             require_domain=False,
             require_certificates=False,
-            stack_dir=root / "stack" / "ciu-stack",
+            stack_dir=root / "ciu-stack",
         )
     except ConfigError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
-    runtime.output.primary(f"Instance: {root}")
+    runtime.output.primary(f"Stack dir: {root}")
     runtime.output.primary(f"Site override: {'present' if has_override else 'not configured'}")
     runtime.output.primary(f"Base domain: {value_at(config, 'domain') or '(unset)'}")
     runtime.output.primary(f"Certificate mode: {mode}")
@@ -390,7 +390,8 @@ def build_cli() -> Any:
     identity = _identity()
     root_option = OptionSpec(
         ("--root",),
-        "tls-edge instance root (normally detected from this installed CLI)",
+        "tls-edge stack directory containing ciu-stack/ "
+        "(normally detected from this installed CLI)",
         metavar="PATH",
         parser_kwargs={"type": Path, "default": None},
     )

@@ -3,8 +3,8 @@
 #   ciu v2     : a regular stack package (`ciu` run inside this directory);
 #                ciu renders it through its S3.2 pipeline.
 #   standalone : scripts/render.sh reads the same file (plus an optional
-#                gitignored ciu.toml.j2 override) and renders the plain
-#                docker-compose.yml / traefik.yml into ../edge-proxy/.
+#                gitignored ciu.toml.j2 override) and renders a trial
+#                docker-compose.yml / traefik.yml tree into --out DIR.
 #
 # To change values, create a gitignored ciu.toml.j2 NEXT TO this file with the
 # same schema and only the keys you want to override.  Do not edit defaults.
@@ -157,7 +157,7 @@ wildcard_main = ""
 # ciu mode: point *_FILE variables at /run/secrets/<name> and declare the
 #           matching secret in [tls_edge.secrets] (see below).
 # standalone mode: leave this empty and put the plain variables in the
-#           gitignored edge-proxy/.env instead (loaded via env_file).
+#           generated trial .env instead (loaded via env_file).
 [tls_edge.acme.dns.environment]
 # CF_DNS_API_TOKEN_FILE = "/run/secrets/dns_api_token"
 

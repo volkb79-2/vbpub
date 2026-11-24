@@ -42,8 +42,7 @@ entryPoints:
 
   # Port 80 / HTTP entrypoint disabled (ports.expose_http = false): the edge
   # is TLS-only and there is no HTTP->HTTPS redirect — clients must use
-  # https:// URLs.  Enable via ciu.toml.j2 + re-render, or install.sh
-  # --enable-port-80.
+  # https:// URLs.  Enable via ciu.toml.j2 + re-render.
 {% endif %}
 
   # Primary HTTPS entrypoint — subdomain-based routing (preferred).

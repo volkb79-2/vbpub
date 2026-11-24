@@ -53,7 +53,7 @@ done
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 ROOT="$(readlink -f "$SCRIPT_DIR/..")"
 STACK_DIR="$ROOT/ciu-stack"
-EDGE_PROXY="$ROOT/edge-proxy"
+COMPOSE_FILE="$STACK_DIR/ciu.compose.yml"
 
 # Container and volume names.  Plain-compose deployments use edge-traefik /
 # edge-dockerproxy / edge-proxy_acme-data; a ciu instance (get.py install)
@@ -61,12 +61,12 @@ EDGE_PROXY="$ROOT/edge-proxy"
 # EDGE_* variables, or let the ciu names be discovered from the compose labels.
 _discover() {  # $1 = compose service name
     docker ps --filter "label=com.docker.compose.service=$1" \
-        --filter "name=edge-$1" --format '{{.Names}}' 2>/dev/null | head -n1
+        --filter "name=edge-$1" --format '{{.Names}}' 2>/dev/null | sed -n '1p'
     docker ps --filter "label=com.docker.compose.service=$1" \
-        --filter "name=tls-edge-.*-$1" --format '{{.Names}}' 2>/dev/null | head -n1
+        --filter "name=tls-edge-.*-$1" --format '{{.Names}}' 2>/dev/null | sed -n '1p'
 }
-EDGE_TRAEFIK="${EDGE_TRAEFIK:-$(_discover traefik | head -n1)}"
-EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-$(_discover dockerproxy | head -n1)}"
+EDGE_TRAEFIK="${EDGE_TRAEFIK:-$(_discover traefik | sed -n '1p')}"
+EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-$(_discover dockerproxy | sed -n '1p')}"
 EDGE_TRAEFIK="${EDGE_TRAEFIK:-edge-traefik}"
 EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-edge-dockerproxy}"
 EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/traefik"}}{{.Name}}{{end}}{{end}}' "$EDGE_TRAEFIK" 2>/dev/null || true)}"
@@ -119,8 +119,8 @@ echo "   expose_http: $EXPOSE_HTTP"
 echo "   domain     : ${DOMAIN:-(none — domain-dependent checks will SKIP)}"
 echo
 
-# ─── check 1: render pipeline + drift ─────────────────────────────────────────
-echo "$(_bold "1. Render pipeline + drift")"
+# ─── check 1: generated trial render ──────────────────────────────────────────
+echo "$(_bold "1. Standalone trial render")"
 
 if [[ -z "$DOMAIN" ]]; then
     skip "no domain — skipping render.sh --check (it requires a domain)"
@@ -134,58 +134,37 @@ TMPDIR_RENDER="$(mktemp -d)"
 cleanup_tmp() { rm -rf "$TMPDIR_RENDER"; }
 trap cleanup_tmp EXIT
 
-DRIFT_HINT=""
 DRIFT_RC=0
 if [[ -f "$OVERRIDE_FILE" ]]; then
-    # Local override exists — render with it (no --defaults-only) and diff
+    # Local override exists — render it to a temporary trial tree.
     python3 "$SCRIPT_DIR/render_standalone.py" --out "$TMPDIR_RENDER" || DRIFT_RC=$?
-    DRIFT_HINT="scripts/render.sh"
 else
-    # No override — compare committed defaults
+    # No override — render the shipped defaults.
     python3 "$SCRIPT_DIR/render_standalone.py" --out "$TMPDIR_RENDER" --defaults-only || DRIFT_RC=$?
-    DRIFT_HINT="scripts/update-rendered.sh"
 fi
 if [[ $DRIFT_RC -ne 0 ]]; then
-    fail "drift check: renderer exited $DRIFT_RC"
+    fail "trial render exited $DRIFT_RC"
 fi
 
 for RFILE in docker-compose.yml traefik.yml conf.d/certs.yml conf.d/options.yml conf.d/middlewares.yml; do
     RENDERED="$TMPDIR_RENDER/$RFILE"
-    COMMITTED="$EDGE_PROXY/$RFILE"
     if [[ ! -f "$RENDERED" ]]; then
-        [[ $DRIFT_RC -eq 0 ]] && fail "drift check: rendered $RFILE not produced"
+        [[ $DRIFT_RC -eq 0 ]] && fail "trial render: $RFILE not produced"
         continue
     fi
-    if [[ ! -f "$COMMITTED" ]]; then
-        fail "drift check: $RFILE missing from edge-proxy/ (run $DRIFT_HINT)"
-        continue
-    fi
-    if diff -I '^# rendered:' -q "$RENDERED" "$COMMITTED" >/dev/null 2>&1; then
-        pass "no drift: $RFILE"
-    else
-        fail "drift detected in $RFILE — run $DRIFT_HINT"
-        diff -I '^# rendered:' "$RENDERED" "$COMMITTED" 2>/dev/null | head -20 | sed 's/^/     /' || true
-    fi
+    pass "rendered: $RFILE"
 done
 
 # ─── check 2: compose config validation ───────────────────────────────────────
 echo
 echo "$(_bold "2. docker compose config")"
 
-_ENV_CREATED=false
-if [[ ! -f "$EDGE_PROXY/.env" ]] && grep -q 'env_file' "$EDGE_PROXY/docker-compose.yml" 2>/dev/null; then
-    touch "$EDGE_PROXY/.env"
-    _ENV_CREATED=true
-fi
-
-if docker compose -f "$EDGE_PROXY/docker-compose.yml" config -q 2>&1 | sed 's/^/   /'; then
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+    fail "rendered CIU compose file is missing: $COMPOSE_FILE"
+elif docker compose -f "$COMPOSE_FILE" config -q 2>&1 | sed 's/^/   /'; then
     pass "docker compose config -q succeeded"
 else
     fail "docker compose config -q failed"
-fi
-
-if [[ "$_ENV_CREATED" == true ]]; then
-    rm -f "$EDGE_PROXY/.env"
 fi
 
 # ─── check if containers are running ──────────────────────────────────────────

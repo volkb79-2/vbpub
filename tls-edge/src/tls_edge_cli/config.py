@@ -37,10 +37,10 @@ class ConfigError(ValueError):
 
 
 def locate_instance_root(explicit: Path | None = None) -> Path:
-    """Resolve the installed instance, or use an explicit root for local work."""
+    """Resolve the installed stack dir, or use an explicit stack dir."""
     if explicit is not None:
         root = explicit.expanduser().absolute()
-        _check_instance_layout(root)
+        _check_stack_layout(root)
         return root
 
     venv = Path(sys.prefix).resolve()
@@ -48,20 +48,20 @@ def locate_instance_root(explicit: Path | None = None) -> Path:
     for parent in release.parents:
         current = parent / "current"
         if current.is_symlink() and current.resolve() == release:
-            _check_instance_layout(parent)
-            return parent
+            stack = parent / "stack"
+            _check_stack_layout(stack)
+            return stack
     raise ConfigError(
-        "cannot locate the installed tls-edge instance from this executable; "
+        "cannot locate the installed tls-edge stack from this executable; "
         "pass --root PATH"
     )
 
 
-def _check_instance_layout(root: Path) -> None:
-    stack = root / "stack"
-    defaults = stack / "ciu-stack" / "ciu.defaults.toml.j2"
-    if not stack.is_dir() or not defaults.is_file():
+def _check_stack_layout(root: Path) -> None:
+    defaults = root / "ciu-stack" / "ciu.defaults.toml.j2"
+    if not root.is_dir() or not defaults.is_file():
         raise ConfigError(
-            f"{root} is not a tls-edge instance root (expected {defaults})"
+            f"{root} is not a tls-edge stack directory (expected {defaults})"
         )
 
 
@@ -85,11 +85,10 @@ def deep_merge(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, An
 
 
 def instance_paths(root: Path) -> tuple[Path, Path, Path]:
-    stack = root / "stack"
     return (
-        stack / "ciu-stack" / "ciu.defaults.toml.j2",
-        stack / "ciu-stack" / "ciu.toml.j2",
-        stack / "consumer.env",
+        root / "ciu-stack" / "ciu.defaults.toml.j2",
+        root / "ciu-stack" / "ciu.toml.j2",
+        root / "consumer.env",
     )
 
 

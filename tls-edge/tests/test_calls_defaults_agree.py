@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from conftest import defaults_config, render_to
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = ROOT / "ciu-stack" / "ciu.defaults.toml.j2"
 COMPOSE_J2 = ROOT / "ciu-stack" / "ciu.compose.yml.j2"
 TRAEFIK_J2 = ROOT / "ciu-stack" / "traefik.yml.j2"
-EDGE_COMPOSE = ROOT / "edge-proxy" / "docker-compose.yml"
-EDGE_TRAEFIK = ROOT / "edge-proxy" / "traefik.yml"
 
 
 def _tls_edge() -> dict:
@@ -32,29 +32,43 @@ def test_calls_media_pair_is_8443() -> None:
     assert calls["tcp_internal_port"] == 8443
 
 
-def test_no_alternate_https_port_by_default() -> None:
+@pytest.fixture
+def rendered_edge(tmp_path: Path) -> Path:
+    return render_to(tmp_path, defaults_config())
+
+
+def test_no_alternate_https_port_by_default(rendered_edge: Path) -> None:
     t = _tls_edge()
     assert "https_alt" not in t["ports"]
-    for path in (TRAEFIK_J2, COMPOSE_J2, EDGE_COMPOSE, EDGE_TRAEFIK):
+    for path in (
+        TRAEFIK_J2,
+        COMPOSE_J2,
+        rendered_edge / "docker-compose.yml",
+        rendered_edge / "traefik.yml",
+    ):
         text = path.read_text(encoding="utf-8")
         assert "websecure-alt" not in text and "https_alt" not in text, path
 
 
-def test_default_public_ports_are_web_only() -> None:
+def test_default_public_ports_are_web_only(rendered_edge: Path) -> None:
     """The generic edge opens HTTP and HTTPS; optional listeners stay closed."""
     assert _tls_edge()["http3"]["enabled"] is False
-    published = re.findall(r'^\s*- "(?:\{\{.*?\}\})?([^"]+)"', EDGE_COMPOSE.read_text(), re.M)
+    published = re.findall(
+        r'^\s*- "(?:\{\{.*?\}\})?([^"]+)"',
+        (rendered_edge / "docker-compose.yml").read_text(),
+        re.M,
+    )
     ports = sorted(p for p in published if re.fullmatch(r"\d+:\d+(/(tcp|udp))?", p))
     assert ports == ["443:443/tcp", "80:80/tcp"]
 
 
-def test_static_edge_proxy_publishes_the_same_pair() -> None:
+def test_static_edge_proxy_publishes_the_same_pair(rendered_edge: Path) -> None:
     calls = _tls_edge()["calls"]
-    text = EDGE_COMPOSE.read_text(encoding="utf-8")
+    text = (rendered_edge / "docker-compose.yml").read_text(encoding="utf-8")
     assert calls["enabled"] is False
     assert "8443:8443/tcp" not in text
     assert "8443:8443/udp" not in text
-    traefik = EDGE_TRAEFIK.read_text(encoding="utf-8")
+    traefik = (rendered_edge / "traefik.yml").read_text(encoding="utf-8")
     assert "mattermost-calls-tcp:" not in traefik
     assert "mattermost-calls-udp:" not in traefik
 
