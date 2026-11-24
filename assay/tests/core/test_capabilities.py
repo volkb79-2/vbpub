@@ -36,12 +36,13 @@ def test_document_is_closed_and_has_pinned_schema(monkeypatch, tmp_path):
     assert list(tmp_path.iterdir()) == before
     assert list(document) == [
         "assay_version",
+        "combine_policies",
         "commands",
         "mutation_store_policies",
         "schema",
         "verdict_schema_version",
     ]
-    assert document["schema"] == "assay-capabilities/1"
+    assert document["schema"] == "assay-capabilities/2"
     assert document["assay_version"] == __version__
     assert document["verdict_schema_version"] == VERDICT_SCHEMA_VERSION
     assert list(document["commands"]) == [
@@ -80,11 +81,20 @@ def test_run_flags_match_help_and_policy_flags_are_real(monkeypatch, tmp_path):
     )
     assert document["mutation_store_policies"] == {
         "--carry-over": "import-unverified",
+        "--carry-forward": "carry-forward",
+        "--merge-manifest": "owner-manifest",
         "--merge-shard-store": "strict-shard",
         "--merge-state": "same-judge",
         "--resume": "same-judge",
         "--reuse-from": "hint",
     }
+    assert document["combine_policies"] == [
+        "same-judge",
+        "strict-shard",
+        "owner-manifest",
+        "import-unverified",
+        "carry-forward",
+    ]
 
 
 def test_output_is_byte_identical_across_calls():

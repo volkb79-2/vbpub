@@ -43,7 +43,7 @@ from .candidate_locus import LocusIndex
 from .candidate_locus import from_record as _locus_from_record
 from .candidate_locus import locus_for_site as _locus_for_site
 from .candidate_locus import window_key_for_site as _window_key_for_site
-from .errors import AssayError, Outcome, ReasonCode
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .guards import is_nonempty_str
 from .process_tree import ProcessTreeEvidence
 from .records import record
@@ -66,6 +66,36 @@ if TYPE_CHECKING:  # pragma: no cover -- annotation-only imports; importing at r
     from .runner import CommandResult
 
 _CANDIDATE_ID_RE = re.compile(r"[0-9a-f]{64}")
+
+MERGE_MANIFEST_SCHEMA = "assay-merge-manifest/1"
+MERGE_MANIFEST_LIMIT = 16 * 1024 * 1024
+_MERGE_MANIFEST_KEYS = frozenset({"schema", "judge_sha256", "stores"})
+_MERGE_MANIFEST_STORE_KEYS = frozenset({"path", "candidates"})
+
+CombinePolicy = Literal[
+    "same-judge",
+    "strict-shard",
+    "owner-manifest",
+    "import-unverified",
+    "carry-forward",
+]
+COMBINE_POLICIES: tuple[CombinePolicy, ...] = (
+    "same-judge",
+    "strict-shard",
+    "owner-manifest",
+    "import-unverified",
+    "carry-forward",
+)
+STORE_FLAG_POLICIES: Mapping[str, str] = {
+    "--resume": "same-judge",
+    "--merge-state": "same-judge",
+    "--merge-shard-store": "strict-shard",
+    "--merge-manifest": "owner-manifest",
+    "--carry-over": "import-unverified",
+    "--carry-forward": "carry-forward",
+    "--reuse-from": "hint",
+}
+ProgressWriter = Callable[[Mapping[str, Any]], None]
 
 MUTATION_STATE_RECORD_LIMIT = 1024 * 1024
 #: NOT bumped by B088, deliberately. `judge_sha256` is an ADDITIVE field
@@ -155,9 +185,257 @@ class InvalidCandidateSelectionError(AssayError):
         )
 
 
+class InvalidRejudgeIdError(AssayError):
+    """(B091/D-23, P7 A5) A rejudge selection cannot match this run's plan."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+
+def _reject_unknown_rejudge_ids(
+    rejudge_ids: frozenset[str], current_ids: set[str]
+) -> None:
+    unknown_rejudge_ids = rejudge_ids - current_ids
+    if unknown_rejudge_ids:
+        raise InvalidRejudgeIdError(
+            "--rejudge named a candidate id not present in "
+            "this run's selected candidate set (unknown, stale "
+            "because source bytes changed, or excluded by the selected "
+            "operators/shard -- B088's own 'an identity that "
+            "no longer matches current reality must not be "
+            "silently trusted' principle): "
+            f"{sorted(unknown_rejudge_ids)}"
+        )
+
+
 class ShardStoreMergeError(InvalidCandidateSelectionError):
     """(RG-265 review B1) ``--merge-shard-store`` inputs are not exactly one
     complete store per shard of the current plan and judge."""
+
+
+class MergeManifestError(InvalidCandidateSelectionError):
+    """An owner manifest cannot prove the whole current plan and judge."""
+
+
+@record
+class MergeManifestStore:
+    path: Path
+    candidates: tuple[str, ...]
+
+
+@record
+class MergeManifest:
+    path: Path
+    judge_sha256: str
+    stores: tuple[MergeManifestStore, ...]
+
+
+@record
+class _MergeManifestProblem:
+    token: str
+    identity: str
+    detail: str
+
+
+@record
+class _MergeManifestResult:
+    owners: int
+    non_owner_duplicates: int
+    unplanned_records: int
+    target_replaced: int
+
+
+def _merge_manifest_message(problems: Sequence[_MergeManifestProblem]) -> str:
+    """Render the deterministic, bounded refusal every manifest failure uses."""
+    ordered = sorted(
+        problems,
+        key=lambda problem: (problem.token, problem.identity, problem.detail),
+    )
+    rendered = "; ".join(
+        f"{problem.token}: {problem.detail}" for problem in ordered[:20]
+    )
+    return f"merge manifest refused: {rendered}"
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate object key {key!r}")
+        value[key] = item
+    return value
+
+
+def _reject_non_json_constant(value: str) -> None:
+    raise ValueError(f"non-JSON numeric constant {value!r}")
+
+
+def load_merge_manifest(path: Path) -> MergeManifest:
+    """Read and validate one bounded ``assay-merge-manifest/1`` document.
+
+    The document is parsed before any lane work. Ownership is proved later,
+    against the current plan and judge, because those facts do not exist yet.
+    """
+    manifest_path = Path(path).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = Path(os.path.abspath(manifest_path))
+    identity = str(manifest_path)
+    problems: list[_MergeManifestProblem] = []
+
+    def malformed(detail: str) -> None:
+        problems.append(
+            _MergeManifestProblem(
+                token="malformed-manifest",
+                identity=identity,
+                detail=detail,
+            )
+        )
+
+    try:
+        raw = safeio.read_bounded_input(
+            manifest_path.parent,
+            manifest_path.name,
+            limit=MERGE_MANIFEST_LIMIT,
+        )
+    except AssayError as exc:
+        malformed(str(exc))
+        raw = None
+    if raw is None:
+        if not problems:
+            malformed("the manifest file does not exist")
+        raise LaneConfigError(_merge_manifest_message(problems))
+    try:
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_non_json_constant,
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        malformed(f"invalid UTF-8 JSON: {exc}")
+        raise LaneConfigError(_merge_manifest_message(problems)) from exc
+    if not isinstance(document, dict) or set(document) != _MERGE_MANIFEST_KEYS:
+        malformed(
+            "the top-level object must contain exactly "
+            f"{sorted(_MERGE_MANIFEST_KEYS)}"
+        )
+        raise LaneConfigError(_merge_manifest_message(problems))
+    if (
+        not isinstance(document["schema"], str)
+        or document["schema"] != MERGE_MANIFEST_SCHEMA
+    ):
+        malformed(f"schema must be {MERGE_MANIFEST_SCHEMA!r}")
+    judge = document["judge_sha256"]
+    if (
+        not isinstance(judge, str)
+        or _CANDIDATE_ID_RE.fullmatch(judge) is None
+    ):
+        malformed("judge_sha256 must be a 64-character lowercase hexadecimal digest")
+    stores_document = document["stores"]
+    if not isinstance(stores_document, list):
+        malformed("stores must be an array")
+        raise LaneConfigError(_merge_manifest_message(problems))
+
+    manifest_directory = manifest_path.parent
+    stores: list[MergeManifestStore] = []
+    resolved_paths: dict[Path, str] = {}
+    owners: dict[str, MergeManifestStore] = {}
+    for store_index, raw_store in enumerate(stores_document):
+        if (
+            not isinstance(raw_store, dict)
+            or set(raw_store) != _MERGE_MANIFEST_STORE_KEYS
+        ):
+            malformed(
+                f"stores[{store_index}] must contain exactly "
+                f"{sorted(_MERGE_MANIFEST_STORE_KEYS)}"
+            )
+            continue
+        spelling = raw_store["path"]
+        candidates_document = raw_store["candidates"]
+        if (
+            not isinstance(spelling, str)
+            or not spelling
+            or "\0" in spelling
+        ):
+            malformed(f"stores[{store_index}].path must be non-empty text")
+            continue
+        if not isinstance(candidates_document, list):
+            malformed(f"stores[{store_index}].candidates must be an array")
+            continue
+        candidate_path = Path(spelling)
+        store_path = (
+            candidate_path
+            if candidate_path.is_absolute()
+            else manifest_directory / candidate_path
+        )
+        store_path = store_path.resolve()
+        if store_path in resolved_paths:
+            problems.append(
+                _MergeManifestProblem(
+                    token="duplicate-store",
+                    identity=str(store_path),
+                    detail=f"{spelling}: also named by an earlier store entry",
+                )
+            )
+            continue
+        resolved_paths[store_path] = spelling
+        if not store_path.is_dir():
+            problems.append(
+                _MergeManifestProblem(
+                    token="missing-store",
+                    identity=str(store_path),
+                    detail=f"{spelling}: not an existing directory",
+                )
+            )
+            continue
+        candidates: list[str] = []
+        for candidate_index, candidate in enumerate(candidates_document):
+            if (
+                not isinstance(candidate, str)
+                or _CANDIDATE_ID_RE.fullmatch(candidate) is None
+            ):
+                malformed(
+                    f"stores[{store_index}].candidates[{candidate_index}] is not "
+                    "a 64-character lowercase hexadecimal candidate id"
+                )
+                continue
+            if candidate in candidates:
+                problems.append(
+                    _MergeManifestProblem(
+                        token="duplicate-owner",
+                        identity=candidate,
+                        detail=f"{store_path}: candidate is listed twice",
+                    )
+                )
+                continue
+            if candidate in owners:
+                problems.append(
+                    _MergeManifestProblem(
+                        token="duplicate-owner",
+                        identity=candidate,
+                        detail=(
+                            f"{owners[candidate].path}: candidate is also owned "
+                            f"by {store_path}"
+                        ),
+                    )
+                )
+                continue
+            candidates.append(candidate)
+        store = MergeManifestStore(path=store_path, candidates=tuple(candidates))
+        stores.append(store)
+        for candidate in candidates:
+            owners[candidate] = store
+
+    if problems:
+        raise LaneConfigError(_merge_manifest_message(problems))
+    return MergeManifest(
+        path=manifest_path,
+        judge_sha256=str(judge),
+        stores=tuple(stores),
+    )
 
 
 def _locus_fields_for_job(job: MutantJob) -> dict[str, object]:
@@ -387,6 +665,10 @@ class FlexOptions:
       one store per shard ``0..N-1`` of the current plan, each written by
       ``--shard K/N`` under the current judge and complete. Refused, by
       name, before anything runs otherwise (:func:`_validate_shard_stores`).
+    * *merge_manifest* -- the owner manifest (B544): one file designates the
+      sole owner of every candidate's flat record. Its proof and owner
+      materialization run before ordinary resume, so an owner record wins
+      over a differing target record (D3).
     """
 
     lane_file_name: str | None = None
@@ -397,6 +679,27 @@ class FlexOptions:
     only_candidates: frozenset[str] | None = None
     exclude_candidates: frozenset[str] | None = None
     carry_forward_sources: tuple[Path, ...] = ()
+    merge_manifest: Path | None = None
+
+    def store_sources(self) -> tuple[StoreSource, ...]:
+        """The explicitly named stores in their fixed policy/CLI order."""
+        return (
+            *(StoreSource(path=path, policy="same-judge") for path in self.merge_sources),
+            *(StoreSource(path=path, policy="strict-shard") for path in self.shard_stores),
+            *(
+                (StoreSource(path=self.merge_manifest, policy="owner-manifest"),)
+                if self.merge_manifest is not None
+                else ()
+            ),
+            *(
+                StoreSource(path=path, policy="import-unverified")
+                for path in self.carry_over_sources
+            ),
+            *(
+                StoreSource(path=path, policy="carry-forward")
+                for path in self.carry_forward_sources
+            ),
+        )
 
     def __post_init__(self) -> None:
         if self.lane_file_name is not None and (
@@ -425,6 +728,16 @@ class FlexOptions:
             raise ValueError(
                 "a strict shard merge cannot be combined with a candidate selection"
             )
+        if self.merge_manifest is not None and not isinstance(self.merge_manifest, Path):
+            raise ValueError("FlexOptions.merge_manifest must be a path or None")
+        if self.merge_manifest is not None and self.shard_stores:
+            raise ValueError(
+                "an owner manifest cannot be combined with a strict shard merge"
+            )
+        if self.merge_manifest is not None and self.selection_active:
+            raise ValueError(
+                "an owner manifest cannot be combined with a candidate selection"
+            )
         for name in ("only_candidates", "exclude_candidates"):
             value = getattr(self, name)
             if value is None:
@@ -442,6 +755,7 @@ class FlexOptions:
             or self.carry_forward_sources
             or self.merge_sources
             or self.shard_stores
+            or self.merge_manifest is not None
         )
 
     @property
@@ -452,6 +766,64 @@ class FlexOptions:
     @property
     def selection_active(self) -> bool:
         return self.only_candidates is not None or self.exclude_candidates is not None
+
+
+@record
+class StoreSource:
+    """One explicitly named mutation store and the policy that reads it."""
+
+    path: Path
+    policy: CombinePolicy
+
+
+@record
+class CombineRequest:
+    """Every fact the four combine stages share during one mutation run."""
+
+    jobs: Sequence[MutantJob]
+    judge: str | None
+    state_root: Path | None
+    state_root_fd: int | None
+    state_root_guard: Callable[[], None] | None
+    campaign_deadline_sha256: str | None
+    context: RecordContext
+    resume: bool
+    rejudge_ids: frozenset[str]
+    rejudge_outcomes: frozenset[str]
+    resource_sha256: str | None
+    carry_over_reason: str | None
+    clock: Clock
+    deadline_check: Callable[[], float]
+    write_progress: ProgressWriter | None
+    total: int
+
+
+@record
+class Hint:
+    """Prior kill evidence retained for P-assay-13's isolated replay."""
+
+    candidate_id: str
+    node_id: str
+    source: Literal["verdict", "store"]
+    source_ref: str
+    from_candidate_id: str
+    from_judge_sha256: str | None
+    match: Literal["exact-id", "locus", "window"]
+
+
+@record
+class CombineResult:
+    """The records and telemetry produced by :func:`combine`."""
+
+    records: tuple[Mapping[str, Any], ...]
+    rejected_total: int
+    rejudged_total: int
+    resource_rejudged_total: int
+    promoted_total: int
+    imported_total: int
+    locus_unavailable_total: int
+    rejudged_candidate_ids: frozenset[str]
+    hints: tuple[Hint, ...]
 
 
 def _provenance_record(
@@ -2447,6 +2819,17 @@ class _CarryOverResult:
 
 
 @record
+class _OwnStoreResult:
+    records: tuple[Mapping[str, Any], ...]
+    rejected_total: int
+    rejudged_total: int
+    resource_rejudged_total: int
+    promoted_total: int
+    locus_unavailable_total: int
+    rejudged_candidate_ids: frozenset[str]
+
+
+@record
 class _CarryForwardRecord:
     payload: Mapping[str, Any]
     raw: bytes
@@ -2485,6 +2868,7 @@ class _CarryForwardResult:
     from_judges: int
     same_judge_resume: int
     invalid_records: int
+    hints: tuple[Hint, ...]
 
 
 def _carry_forward_record_paths(source: Path) -> tuple[str, ...]:
@@ -2964,6 +3348,7 @@ def _carry_forward_records(
     counts: collections.Counter[str] = collections.Counter()
     survivors_carried = 0
     kills_requeued = 0
+    hints: list[Hint] = []
     unmatched = 0
     considered_total = 0
     same_judge_resume = 0
@@ -3029,6 +3414,32 @@ def _carry_forward_records(
             match, _chosen = min(kills, key=lambda item: _carry_forward_match_rank(item[0]))
             counts[match.kind] += 1
             kills_requeued += 1
+            witness = execution_from_state_record(_chosen).witness
+            if witness is not None:
+                stored_provenance = record_provenance(match.payload)
+                hint_match = match.kind
+                if stored_provenance is not None:
+                    from_candidate_id = stored_provenance["from_candidate_id"]
+                    from_judge_sha256 = stored_provenance["from_judge_sha256"]
+                    hint_match = max(
+                        stored_provenance["match"],
+                        hint_match,
+                        key=("exact-id", "locus", "window").index,
+                    )
+                else:
+                    from_candidate_id = match.payload["candidate_id"]
+                    from_judge_sha256 = match.payload["judge_sha256"]
+                hints.append(
+                    Hint(
+                        candidate_id=identity,
+                        node_id=witness.node_id,
+                        source="store",
+                        source_ref=str(match.source),
+                        from_candidate_id=str(from_candidate_id),
+                        from_judge_sha256=str(from_judge_sha256),
+                        match=hint_match,
+                    )
+                )
             continue
 
         survivors = [
@@ -3121,6 +3532,7 @@ def _carry_forward_records(
         from_judges=from_judge_count,
         same_judge_resume=same_judge_resume,
         invalid_records=invalid_records + len(invalid_match_records),
+        hints=tuple(hints),
     )
 
 
@@ -3524,6 +3936,592 @@ def _carry_over_records(
         refused=tuple(refused),
         from_judge_counts=dict(from_judges),
         locus_unavailable=locus_unavailable,
+    )
+
+
+def _canonical_state_record_bytes(payload: Mapping[str, Any]) -> bytes:
+    """The exact reserialization :func:`_write_mutation_state_record` publishes."""
+    return (
+        json.dumps(dict(payload), sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+
+
+def _parse_flat_state_record(raw: bytes) -> Mapping[str, Any] | None:
+    """Decode just enough of a flat record to classify a manifest refusal."""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _scan_store(path: Path):
+    """The one owner-store walk the manifest counter can be tested through."""
+    return os.scandir(path)
+
+
+def validate_merge_manifest(
+    manifest: MergeManifest, request: CombineRequest
+) -> _MergeManifestResult:
+    """Prove the owner manifest and materialize its flat records into the target.
+
+    The plan proof precedes every record read. Only after every current
+    candidate has one valid owner record are those records written into the
+    target, before own-store resume. Generations are deliberately never read:
+    the manifest names the flat record that owns the candidate.
+    """
+    assert request.judge is not None
+    assert request.state_root is not None
+    judge = request.judge
+    state_root = request.state_root
+    current_ids = tuple(candidate_id(job) for job in request.jobs)
+    owners = {
+        candidate: store
+        for store in manifest.stores
+        for candidate in store.candidates
+    }
+    problems: list[_MergeManifestProblem] = []
+    if manifest.judge_sha256 != judge:
+        problems.append(
+            _MergeManifestProblem(
+                token="judge-mismatch",
+                identity=str(manifest.path),
+                detail=(
+                    f"manifest judge {manifest.judge_sha256[:12]} does not match "
+                    f"this run's judge {judge[:12]}"
+                ),
+            )
+        )
+    for candidate in sorted(set(owners) - set(current_ids)):
+        problems.append(
+            _MergeManifestProblem(
+                token="unknown-candidate",
+                identity=candidate,
+                detail=(
+                    f"manifest owns candidate {candidate} outside the current plan"
+                ),
+            )
+        )
+    for candidate in sorted(set(current_ids) - set(owners)):
+        problems.append(
+            _MergeManifestProblem(
+                token="unowned-candidate",
+                identity=candidate,
+                detail=f"current candidate {candidate} has no manifest owner",
+            )
+        )
+    if problems:
+        raise MergeManifestError(_merge_manifest_message(problems))
+
+    owned_records: list[tuple[str, MergeManifestStore, Mapping[str, Any]]] = []
+    for job in request.jobs:
+        request.deadline_check()
+        identity = candidate_id(job)
+        owner = owners[identity]
+        try:
+            raw = safeio.read_bounded_input(
+                owner.path,
+                mutation_state_record_name(identity),
+                limit=MUTATION_STATE_RECORD_LIMIT,
+            )
+        except AssayError as exc:
+            problems.append(
+                _MergeManifestProblem(
+                    token="invalid-owner-record",
+                    identity=identity,
+                    detail=f"{owner.path}: record is unreadable: {exc}",
+                )
+            )
+            continue
+        if raw is None:
+            problems.append(
+                _MergeManifestProblem(
+                    token="missing-owner-record",
+                    identity=identity,
+                    detail=(
+                        f"{owner.path}: no flat "
+                        f"{mutation_state_record_name(identity)}"
+                    ),
+                )
+            )
+            continue
+        parsed = _parse_flat_state_record(raw)
+        if parsed is None:
+            problems.append(
+                _MergeManifestProblem(
+                    token="invalid-owner-record",
+                    identity=identity,
+                    detail=f"{owner.path}: flat record is not a UTF-8 JSON object",
+                )
+            )
+            continue
+        effective = record_effective_judge(parsed)
+        if effective is not None and effective != judge:
+            problems.append(
+                _MergeManifestProblem(
+                    token="judge-mismatch",
+                    identity=identity,
+                    detail=(
+                        f"{owner.path}: record is effective for {effective}, "
+                        f"this run judges {judge}"
+                    ),
+                )
+            )
+            continue
+        try:
+            record = _load_validated_state_record(
+                state_root,
+                job,
+                judge=judge,
+                campaign_deadline_sha256=request.campaign_deadline_sha256,
+                raw_override=raw,
+                context=request.context,
+            )
+        except MutationStateError as exc:
+            problems.append(
+                _MergeManifestProblem(
+                    token="invalid-owner-record",
+                    identity=identity,
+                    detail=f"{owner.path}: record is invalid: {exc}",
+                )
+            )
+            continue
+        if record is None or record is _RECORD_REJECTED:
+            problems.append(
+                _MergeManifestProblem(
+                    token="invalid-owner-record",
+                    identity=identity,
+                    detail=(
+                        f"{owner.path}: record does not resume under this run "
+                        "and campaign"
+                    ),
+                )
+            )
+            continue
+        assert not isinstance(record, str)
+        owned_records.append((identity, owner, record))
+    if problems:
+        raise MergeManifestError(_merge_manifest_message(problems))
+
+    # Count records the manifest deliberately ignores. The owner map, not a
+    # source's age or mtime, decides which spelling is a duplicate.
+    planned_ids = frozenset(current_ids)
+    unplanned_records = 0
+    non_owner_duplicates = 0
+    for store in manifest.stores:
+        request.deadline_check()
+        try:
+            entries = _scan_store(store.path)
+        except OSError:
+            # Every owner record above already proved this directory readable.
+            # A second walk that loses it contributes no ignored-record counts.
+            continue
+        with entries:
+            for entry in entries:
+                if re.fullmatch(r"[0-9a-f]{64}\.json", entry.name) is None:
+                    continue
+                identity = entry.name[:-5]
+                if identity not in planned_ids:
+                    unplanned_records += 1
+                elif owners[identity] is not store:
+                    non_owner_duplicates += 1
+
+    target_replaced = 0
+    for identity, _owner, record in owned_records:
+        request.deadline_check()
+        try:
+            existing = _read_state_record_bytes(
+                state_root, identity, state_root_fd=request.state_root_fd
+            )
+        except MutationStateError:
+            existing = None
+        if existing is not None:
+            previous = _parse_flat_state_record(existing)
+            if (
+                previous is not None
+                and record_effective_judge(previous) == judge
+                and _canonical_state_record_bytes(previous)
+                != _canonical_state_record_bytes(record)
+            ):
+                target_replaced += 1
+        _write_mutation_state_record(
+            state_root,
+            record,
+            state_root_fd=request.state_root_fd,
+            commit_guard=request.deadline_check,
+        )
+        request.deadline_check()
+
+    return _MergeManifestResult(
+        owners=len(owned_records),
+        non_owner_duplicates=non_owner_duplicates,
+        unplanned_records=unplanned_records,
+        target_replaced=target_replaced,
+    )
+
+
+def _resume_own_store(request: CombineRequest) -> _OwnStoreResult:
+    """Apply D5's verbatim own-store resume to this run's selected jobs."""
+    records: list[Mapping[str, Any]] = []
+    rejudged_candidate_ids: set[str] = set()
+    rejected_total = 0
+    rejudged_total = 0
+    resource_rejudged_total = 0
+    promoted_total = 0
+    locus_unavailable_total = 0
+    if not request.resume:
+        return _OwnStoreResult(
+            records=(),
+            rejected_total=0,
+            rejudged_total=0,
+            resource_rejudged_total=0,
+            promoted_total=0,
+            locus_unavailable_total=0,
+            rejudged_candidate_ids=frozenset(),
+        )
+    assert isinstance(request.state_root, Path)
+    assert request.judge is not None
+    state_root = request.state_root
+    judge = request.judge
+    if request.state_root_guard is not None:
+        request.state_root_guard()
+    # (B091/D-23, P7 A5) `--rejudge <id>[,...]` refuses BEFORE any
+    # record is even loaded, the moment a named id does not match
+    # ANY of this run's own current candidate identities. Candidate
+    # ids fold in the mutant's own source bytes by construction
+    # (B066), so an id whose source has since changed simply no
+    # longer appears in `current_ids` -- indistinguishable, at the
+    # id level, from a typo or a stale id copied from a different
+    # run. Either way, silently ignoring it (treating "not found"
+    # as "nothing to do") would let a consumer believe a rejudge
+    # happened when it did not -- exactly the B088 principle this
+    # item cross-references: an identity that no longer matches
+    # current reality must not be silently trusted.
+    if request.rejudge_ids:
+        _reject_unknown_rejudge_ids(
+            request.rejudge_ids, {candidate_id(job) for job in request.jobs}
+        )
+    for job in request.jobs:
+        if request.state_root_guard is not None:
+            request.state_root_guard()
+        flat_locus_status: list[bool] = []
+        record = _load_validated_state_record(
+            state_root,
+            job,
+            judge=judge,
+            campaign_deadline_sha256=request.campaign_deadline_sha256,
+            context=request.context,
+            state_root_fd=request.state_root_fd,
+            locus_status=flat_locus_status,
+        )
+        locus_unavailable_total += sum(flat_locus_status)
+        if record is _RECORD_REJECTED or record is None:
+            # (B527) The flat name may hold another judge's record
+            # (archived generations live under `judges/<judge>/`).
+            # A generation of THIS judge resumes and is promoted back
+            # to the flat name; the displaced record is archived.
+            generation_locus_status: list[bool] = []
+            generation = _load_validated_state_record(
+                state_root,
+                job,
+                judge=judge,
+                campaign_deadline_sha256=request.campaign_deadline_sha256,
+                context=request.context,
+                raw_override=_read_generation_record_bytes(
+                    state_root,
+                    candidate_id(job),
+                    judge,
+                    state_root_fd=request.state_root_fd,
+                ),
+                locus_status=generation_locus_status,
+            )
+            locus_unavailable_total += sum(generation_locus_status)
+            if generation is not None and generation is not _RECORD_REJECTED:
+                assert not isinstance(generation, str)
+                _write_mutation_state_record(
+                    state_root, generation, state_root_fd=request.state_root_fd
+                )
+                promoted_total += 1
+                record = generation
+        if record is _RECORD_REJECTED:
+            rejected_total += 1
+        elif record is not None:
+            assert not isinstance(record, str)
+            # (B091/D-23, P7 A5) A record matching EITHER selection
+            # is dropped here, before it ever reaches
+            # `resumed_records` -- the exact same effect as a
+            # candidate with no record at all, so it falls straight
+            # through to `pending_jobs` below and genuinely
+            # re-executes against the CURRENT judging suite, never
+            # replaying the old verdict.
+            if (
+                candidate_id(job) in request.rejudge_ids
+                or record.get("outcome_bucket") in request.rejudge_outcomes
+            ):
+                rejudged_total += 1
+                rejudged_candidate_ids.add(candidate_id(job))
+                continue
+            if (
+                request.resource_sha256 is not None
+                and record.get("outcome_bucket") in RESOURCE_SENSITIVE_BUCKETS
+                and record.get("resource_sha256") != request.resource_sha256
+            ):
+                # (B529) Resource settings left the judge identity,
+                # so an outcome that can depend on them is re-executed
+                # when they changed; killed/survived are reused.
+                resource_rejudged_total += 1
+                rejudged_candidate_ids.add(candidate_id(job))
+                continue
+            records.append(record)
+    return _OwnStoreResult(
+        records=tuple(records),
+        rejected_total=rejected_total,
+        rejudged_total=rejudged_total,
+        resource_rejudged_total=resource_rejudged_total,
+        promoted_total=promoted_total,
+        locus_unavailable_total=locus_unavailable_total,
+        rejudged_candidate_ids=frozenset(rejudged_candidate_ids),
+    )
+
+
+def _flex_from_sources(
+    sources: Sequence[StoreSource], *, carry_over_reason: str | None
+) -> FlexOptions:
+    """Project source records into the legacy exact-id/carry-forward helpers."""
+    for source in sources:
+        if source.policy not in COMBINE_POLICIES:
+            raise ValueError(f"unknown combine policy {source.policy!r}")
+        if not isinstance(source.path, Path):
+            raise ValueError("combine source paths must be Path objects")
+    manifests = tuple(
+        source.path for source in sources if source.policy == "owner-manifest"
+    )
+    if len(manifests) > 1:
+        raise ValueError("combine accepts at most one owner manifest")
+    return FlexOptions(
+        merge_sources=tuple(
+            source.path for source in sources if source.policy == "same-judge"
+        ),
+        shard_stores=tuple(
+            source.path for source in sources if source.policy == "strict-shard"
+        ),
+        merge_manifest=manifests[0] if manifests else None,
+        carry_over_sources=tuple(
+            source.path
+            for source in sources
+            if source.policy == "import-unverified"
+        ),
+        carry_over_reason=carry_over_reason,
+        carry_forward_sources=tuple(
+            source.path for source in sources if source.policy == "carry-forward"
+        ),
+    )
+
+
+def combine(
+    sources: Sequence[StoreSource], request: CombineRequest
+) -> CombineResult:
+    """Apply the fixed same-judge → shard → owner-manifest → import →
+    carry-forward pipeline.
+    """
+    if request.judge is None:
+        if request.resume or sources:
+            raise ValueError("mutation store combine requires a judge identity")
+        return CombineResult(
+            records=(),
+            rejected_total=0,
+            rejudged_total=0,
+            resource_rejudged_total=0,
+            promoted_total=0,
+            imported_total=0,
+            locus_unavailable_total=0,
+            rejudged_candidate_ids=frozenset(),
+            hints=(),
+        )
+    if not request.resume and sources:
+        raise ValueError("mutation store combine requires resume=True")
+
+    exact = _flex_from_sources(
+        sources, carry_over_reason=request.carry_over_reason
+    )
+    state_root = request.state_root
+    judge = request.judge
+
+    if exact.shard_stores:
+        assert state_root is not None
+
+        def _strict_record(job: MutantJob, raw: bytes) -> Any:
+            return _load_validated_state_record(
+                state_root,
+                job,
+                judge=judge,
+                raw_override=raw,
+                context=request.context,
+            )
+
+        shard_counts = _validate_shard_stores(
+            exact.shard_stores,
+            jobs=request.jobs,
+            judge=judge,
+            campaign_deadline_sha256=request.campaign_deadline_sha256,
+            load_record=_strict_record,
+        )
+        if request.write_progress is not None:
+            request.write_progress(
+                {
+                    "event": "shard_merge",
+                    "candidate_total": request.total,
+                    "shard_count": len(exact.shard_stores),
+                    "records_per_store": shard_counts,
+                }
+            )
+
+    if exact.merge_manifest is not None:
+        assert state_root is not None
+        try:
+            manifest = load_merge_manifest(exact.merge_manifest)
+        except LaneConfigError as exc:
+            raise MergeManifestError(str(exc)) from exc
+        if request.rejudge_ids:
+            # The manifest is the only combine stage that writes before own
+            # resume. Decide this later refusal now, so a refused run leaves
+            # every target record byte-identical.
+            _reject_unknown_rejudge_ids(
+                request.rejudge_ids,
+                {candidate_id(job) for job in request.jobs},
+            )
+        manifest_result = validate_merge_manifest(manifest, request)
+        if request.write_progress is not None:
+            request.write_progress(
+                {
+                    "event": "merge_manifest",
+                    "candidate_total": request.total,
+                    "owners": manifest_result.owners,
+                    "non_owner_duplicates": manifest_result.non_owner_duplicates,
+                    "unplanned_records": manifest_result.unplanned_records,
+                    "target_replaced": manifest_result.target_replaced,
+                }
+            )
+
+    own = _resume_own_store(request)
+    resumed_records = list(own.records)
+    imported_total = 0
+    locus_unavailable_total = own.locus_unavailable_total
+    hints: list[Hint] = []
+
+    if exact.reads_carry_over_stores:
+        assert state_root is not None
+        resumed_ids = {
+            record["candidate_id"] for record in resumed_records
+        }
+        carry = _carry_over_records(
+            exact,
+            jobs=[
+                job
+                for job in request.jobs
+                if candidate_id(job) not in resumed_ids
+                and candidate_id(job) not in request.rejudge_ids
+            ],
+            judge=judge,
+            state_root=state_root,
+            state_root_fd=request.state_root_fd,
+            state_root_guard=request.state_root_guard,
+            campaign_deadline_sha256=request.campaign_deadline_sha256,
+            context=request.context,
+            rejudge_outcomes=request.rejudge_outcomes,
+            resource_sha256=request.resource_sha256,
+            clock=request.clock,
+        )
+        resumed_records.extend(carry.records)
+        if request.write_progress is not None:
+            request.write_progress(
+                {
+                    "event": "carry_over",
+                    "candidate_total": request.total,
+                    "imported_total": carry.imported_total,
+                    "copied_total": carry.copied_total,
+                    "refused_total": len(carry.refused),
+                    "refused_sample": [
+                        {"candidate_id": identity, "reason": reason}
+                        for identity, reason in carry.refused[:10]
+                    ],
+                    "from_judge_counts": dict(
+                        sorted(carry.from_judge_counts.items())
+                    ),
+                    "sources": [
+                        str(path) for path in exact.carry_over_sources
+                    ],
+                    "merge_sources": [
+                        str(path) for path in exact.merge_sources
+                    ],
+                    "shard_stores": [str(path) for path in exact.shard_stores],
+                    "reason": exact.carry_over_reason,
+                }
+            )
+        imported_total = carry.imported_total
+        locus_unavailable_total += carry.locus_unavailable
+
+    if exact.carry_forward_sources:
+        assert state_root is not None
+        resumed_ids_before_carry = frozenset(
+            record["candidate_id"] for record in resumed_records
+        )
+        carry_forward = _carry_forward_records(
+            exact,
+            jobs=[
+                job
+                for job in request.jobs
+                if candidate_id(job) not in request.rejudge_ids
+            ],
+            skip_candidate_ids=resumed_ids_before_carry,
+            judge=judge,
+            state_root=state_root,
+            state_root_fd=request.state_root_fd,
+            state_root_guard=request.state_root_guard,
+            campaign_deadline_sha256=request.campaign_deadline_sha256,
+            context=request.context,
+            rejudge_outcomes=request.rejudge_outcomes,
+            clock=request.clock,
+            deadline_check=request.deadline_check,
+        )
+        resumed_records.extend(carry_forward.records)
+        imported_total += carry_forward.survivors_carried
+        hints.extend(carry_forward.hints)
+        if request.write_progress is not None:
+            request.write_progress(
+                {
+                    "event": "carry_forward",
+                    "candidate_total": request.total,
+                    "considered_total": carry_forward.considered_total,
+                    "exact_id": carry_forward.exact_id,
+                    "locus": carry_forward.locus,
+                    "window": carry_forward.window,
+                    "survivors_carried": carry_forward.survivors_carried,
+                    "kills_requeued": carry_forward.kills_requeued,
+                    "ambiguous_loci_ignored": (
+                        carry_forward.ambiguous_loci_ignored
+                    ),
+                    "unmatched": carry_forward.unmatched,
+                    "from_judges": carry_forward.from_judges,
+                    "same_judge_resume": carry_forward.same_judge_resume,
+                    "invalid_records": carry_forward.invalid_records,
+                    "sources": [
+                        str(path) for path in exact.carry_forward_sources
+                    ],
+                    "reason": CARRY_FORWARD_REASON,
+                }
+            )
+
+    return CombineResult(
+        records=tuple(resumed_records),
+        rejected_total=own.rejected_total,
+        rejudged_total=own.rejudged_total,
+        resource_rejudged_total=own.resource_rejudged_total,
+        promoted_total=own.promoted_total,
+        imported_total=imported_total,
+        locus_unavailable_total=locus_unavailable_total,
+        rejudged_candidate_ids=own.rejudged_candidate_ids,
+        hints=tuple(hints),
     )
 
 

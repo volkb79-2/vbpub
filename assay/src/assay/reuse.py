@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .errors import AssayError, Outcome, ReasonCode
+from .mutation_store import Hint
 
 MAX_REUSE_ARTIFACT_BYTES = 16 * 1024 * 1024
 LEGACY_COLD_START_VERSIONS = frozenset({12, 13, 14, 15})
@@ -164,16 +165,40 @@ def eligible_witnesses(
     source: ReuseSource, *, sequential_pytest_supported: bool
 ) -> dict[str, tuple[str, str]]:
     """Map eligible candidate IDs to (source digest, exact prior witness node)."""
+    return {
+        hint.candidate_id: (hint.source_ref, hint.node_id)
+        for hint in hints_from_verdict(
+            source,
+            sequential_pytest_supported=sequential_pytest_supported,
+        )
+    }
+
+
+def hints_from_verdict(
+    source: ReuseSource, *, sequential_pytest_supported: bool
+) -> tuple[Hint, ...]:
+    """Return eligible prior-verdict kills as the one P-assay-13 hint shape."""
     if not sequential_pytest_supported or not source.complete_unsharded_native:
-        return {}
-    eligible: dict[str, tuple[str, str]] = {}
-    for candidate in source.candidate_ids:
+        return ()
+    hints: list[Hint] = []
+    for candidate in sorted(source.candidate_ids):
         label, node_or_reason = classify_candidate(
             source, candidate, sequential_pytest_supported=True
         )
-        if label == "witness-replay" and node_or_reason is not None:
-            eligible[candidate] = (source.sha256, node_or_reason)
-    return eligible
+        if label != "witness-replay" or node_or_reason is None:
+            continue
+        hints.append(
+            Hint(
+                candidate_id=candidate,
+                node_id=node_or_reason,
+                source="verdict",
+                source_ref=source.sha256,
+                from_candidate_id=candidate,
+                from_judge_sha256=None,
+                match="exact-id",
+            )
+        )
+    return tuple(hints)
 
 
 def prior_only_candidates(source: ReuseSource, current: Sequence[str]) -> list[str]:
