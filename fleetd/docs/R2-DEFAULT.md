@@ -3,26 +3,24 @@
 Multi-host, multi-instance R2 is the default way mutation judging runs: one
 lane, several worker instances on each of the two test hosts, and shards whose
 budgets derive from measured per-candidate cost instead of a hand-written
-`12h`. Four pieces make that a mechanism instead of a per-tool script (they are
-verbs of the `fleet` CLI, which declares `cli-extended>=0.5.0` as a wheel
-dependency):
+`12h`. Three fleetd pieces make that a mechanism instead of a per-tool script
+(they are verbs of the `fleet` CLI, which declares `cli-extended>=0.5.0` as a
+wheel dependency):
 
 | piece | command | what it replaces |
 |---|---|---|
 | scope producer | `fleet scope` | a hand-prepared `--only-candidates` file regenerated ad hoc |
 | sizing | `fleet sizing` | a fixed `cpus = "3"` container and an `11h`/`12h` budget pair |
 | measurement recorder | `fleet measurement` | nobody ever recording what a candidate actually cost |
-| merge check | `fleet merge-check` | trusting that every shard judged the same tree |
-
 Each piece is a pure function over versioned documents, so Run-Gate, cmru and a
 fleetd campaign can all call the same committed code. The fleetd CLI is the
-reference caller; none of these commands contacts a host.
+reference caller; none of these commands contacts a host. Assay owns strict
+shard merging through `--merge-shards` and B565's `strict-shard` policy.
 
 The documents these commands read and write are `fleet-r2-scope/1`,
 `fleet-r2-scope-cursor/2` (`fleet-r2-scope-cursor/1` is refused with its
-migration), `fleet-r2-sizing/1`, `fleet-r2-measurement/1`,
-`fleet-shard-identity/1` and `fleet-shard-identity-set/1`. `fleet scope` exits
-`0` for a scope, `3` for a stale cursor and a refused merge, and `4` for
+migration), `fleet-r2-sizing/1`, and `fleet-r2-measurement/1`. `fleet scope` exits
+`0` for a scope, `3` for a stale cursor, and `4` for
 `nothing-to-judge`; those non-zero exits still print their document on stdout,
 so the reason is never lost. A bad argument or a side-effect refusal
 (`--out`/`--write-cursor`) exits `2` with the reason on stderr and writes
@@ -235,31 +233,15 @@ campaign's budgets too small. `memory_peak_bytes` is the cgprofile observer's
 The next campaign passes that file to `fleet sizing --measurement` and the
 `basis` becomes `measured`.
 
-## Merge check: same commit, same image, same plan
-
-```sh
-fleet merge-check shard-0.identity.json shard-1.identity.json --require-complete
-```
-
-Each shard writes one `fleet-shard-identity/1` document stating the lane,
-host, full commit, tester image digest, plan digest and its `index`/`count`.
-The merge check compares every shard against the first: a differing commit,
-image, lane or plan is `mismatched` and the set is refused (exit 3). A
-duplicated index is a disagreement about which slice a store holds — also a
-refusal. A missing index is reported as `incomplete` and is refused too
-(exit 3; `--require-complete` is accepted and changes nothing), because a
-merge over a missing shard silently reports its candidates as absent work.
-
-The image digest is optional in `fleet-plan-execution/1`
-(`execution.image_digest`): a campaign may run without naming its tester
-image, and its shards then cannot be merged. Two unknown image identities are
-exactly the mixed-image merge this check exists to refuse, so it never guesses
-one.
+Strict shard merging is assay-owned through `--merge-shards` and B565's
+`strict-shard` policy. Fleetd copies stores for collection but does not compare
+shard identities or produce a merge document.
 
 ## What is not covered
 
-- The merge check validates *identity documents*; it does not merge Assay
-  stores. Strict `--merge-manifest` merging remains FD-008/B544/RG-277.
+- `assay-merge-manifest/1` owner validation and strict store combination are
+  assay's B544/B565 policy; fleetd does not validate the manifest or merge
+  stores.
 - `fleet scope` reads the candidate list from `assay plan <lane> --json`; it
   does not derive which lines Assay would mutate, so a candidate Assay would
   not plan is never invented here.

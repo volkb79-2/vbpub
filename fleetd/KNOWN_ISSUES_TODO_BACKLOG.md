@@ -43,7 +43,7 @@
 | FD-038 | Rolling mode's changed candidates share the `slice_size` budget, so heavy per-release churn can defer them and starve the never-judged remainder | P3 | DONE | 2026-11-15 |
 | FD-039 | Host-side probe logic was a Python string and `FakeTransport` reimplemented it | P1 | PART 1 FIXED | 2026-11-24 |
 | FD-040 | The real probe lost the cgprofile `memory_peak_bytes` that the fake returned | P1 | FIXED | 2026-11-24 |
-| FD-041 | Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`; assay owns `assay-merge-manifest/1` | P1 | OPEN | 2026-11-24 |
+| FD-041 | Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`; assay owns `assay-merge-manifest/1` | P1 | FIXED IN THIS BRANCH (P-fd-02) | 2026-11-24 |
 | FD-042 | Two schedulers book v1001: host-local weighted admission in the shared runner | P1 | OPEN | 2026-11-24 |
 | FD-043 | Campaign unit = assay shard range per host | P2 | OPEN | 2026-11-24 |
 | FD-044 | Rolling scope frozen; delete it after B561 carry-forward | P2 | OPEN | 2026-11-24 |
@@ -51,6 +51,7 @@
 | FD-046 | Facts tables and one lane-cost store | P2 | OPEN | 2026-11-24 |
 | FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
 | FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
+| FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | OPEN | 2026-11-24 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -274,6 +275,8 @@ refuses missing or conflicting owner records, ignores and counts non-owner
 duplicates, and merges only same-judge final records. Run-Gate forwards the
 manifest without interpreting it. Dependencies: Assay B544 and Run-Gate
 RG-277.
+Fleetd's own `assay-merge-manifest/1` validation and owner-record selection
+were deleted in P-fd-02; this moved item remains assay-owned.
 
 ## FD-009 Restricted host enrollment
 
@@ -879,7 +882,7 @@ duplicate into the first-owned record instead of dropping it:
 
 ## FD-041 Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
+**State:** FIXED IN THIS BRANCH (P-fd-02). **Priority:** P1. **Filed:** 2026-11-24.
 
 fleetd: delete `fleet merge-check` now (assay strict merge owns it); assay owns `assay-merge-manifest/1`. Drop guard.toml validation (owner: thrashguard/TG-1); FD-012 becomes job registration on the thrashguard socket. Also delete `fleet-shard-identity/1` (fd-H5 Direction).
 
@@ -960,3 +963,14 @@ r2 review finding B.
 
 Nit (r2 finding C): `returned_after_loss` is set on every refresh while pending and
 nothing reads it except tests. Document it as a status marker or drop it.
+
+## FD-049 host-facts/2: guard_present reshape together with FD-012
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-24.
+
+Replace the current `host-facts/1` guard block with `guard_present` plus the
+owner's own runtime state. FD-012 becomes registration of each started
+campaign job on thrashguard's registrant socket when present; fleetd does not
+validate or enforce guard rules.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md M1; FD-012

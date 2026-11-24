@@ -63,8 +63,8 @@ installed (`pip install -e .`).
 
 ### What a managed host needs
 
-A host that runs only `fleet facts collect` or `fleet guard validate` needs
-these two wheels and nothing from this repository. `fleet facts collect` reads
+A host that runs only `fleet facts collect` needs these two wheels and nothing
+from this repository. `fleet facts collect` reads
 `/etc/fleetd/facts.toml` and the host's own `/proc`, `/sys`, `systemctl`
 service properties and Geekbench record; all of those are host-owned and
 absolute (see [the facts config below](#collect-and-validate-host-facts)).
@@ -113,7 +113,7 @@ audit is mechanical; the two `manual` rows are judgements recorded here.
 | AC-14 output and `--json` | pass | `runtime.output`; every read verb declares `include_json` |
 | AC-15 progress/colour | pass | no long operation renders progress; the library colour policy applies |
 | AC-16 surface configured | pass | `[tool.cli-extended.clis]` in `pyproject.toml` |
-| AC-17 surface check | pass | `cli-extended surface check` exits 0 (manifest, spec region, 94 reviewed cases, no open finding) |
+| AC-17 surface check | pass | `cli-extended surface check` exits 0 (manifest, spec region, 130 reviewed cases, no open finding) |
 | AC-18 syntax complete | pass | `syntax_complete: true` in `docs/cli-surface.json` |
 | AC-19 skills packaged | pass | `fleetd/skills/fleetd-campaigns` as package data, no checkout install tree (`tests/test_cli_skills.py`) |
 | AC-20 doctor | **manual, deferred** | needs a doctor only when it has an environment to verify. `facts collect` already *is* the environment report for a host (it emits `host-facts/1` with a reason for every unavailable leaf), and the controller's environment is the runner checkout it already refuses to guess. A separate `fleet doctor` would duplicate both; revisit if a third environment appears. |
@@ -376,10 +376,11 @@ unreachable results pause stall time; identity-check and guard refusals (exit
 
 MVP-B-lite collects candidate verdicts but does not combine remote Assay state
 stores into a strict whole-lane verdict. Use the manual state-copy and
-Run-Gate closeout below when that merged store is required. `--merge-manifest`
-support, baseline reuse, the restricted forced-command host entry, daemon, and
-active guard are tracked for MVP-C (Assay B544, B542; Run-Gate RG-277; CIU-218;
-fleetd FD-008/FD-009; cgprofile CP-64).
+Run-Gate closeout below when that merged store is required. Assay owns the
+manifest and strict store combination (B544/B565) and the baseline cache
+(B542); Run-Gate's pass-through is RG-277. The restricted forced-command host
+entry (CIU-218), daemon (FD-009/FD-011), and thrashguard job registration
+(TG-1/FD-012) remain follow-up work.
 
 After all host sections finish, copy each host's whole same-judge Assay state
 store to its own directory beneath the final checkout's ignored
@@ -614,38 +615,8 @@ observed. The probe and collector preserve this peak from the real progress
 record through duplicate ownership. Pass that file to
 `fleet sizing --measurement` next time.
 
-## Check that the shards can be merged
-
-Each shard writes one `fleet-shard-identity/1` document:
-
-```json
-{
-  "schema": "fleet-shard-identity/1",
-  "lane": "assay-r2",
-  "host": "runner-a",
-  "commit": "<full lowercase Git object id>",
-  "image_digest": "sha256:<64 lowercase hex digits>",
-  "plan_sha256": "<64 lowercase hex digits>",
-  "shard": {"index": 0, "count": 2}
-}
-```
-
-```sh
-fleet merge-check shard-0.json shard-1.json --require-complete
-```
-
-Exit `0` means every shard agrees on lane, commit, image, plan and shard
-count, and every index is present. `mismatched` and a duplicated index exit
-`3`; a missing index is reported as `incomplete` and also exits `3`
-(`--require-complete` is accepted and changes nothing). Name the tester image in the plan
-(`execution.image_digest`) to have one: a campaign without it can run, but
-its shards cannot be merged, and the check never invents an image identity.
-
-## Validate guard rules
-
-```sh
-fleet guard validate /etc/cgprofile/guard.toml
-```
-
-This validates one rule file. It does not load drop-ins, signal cgprofiled,
-freeze cgroups, or reclaim memory.
+Strict shard merging belongs to assay: use `--merge-shards` with B565's
+`strict-shard` policy. Fleetd copies shard stores but does not compare
+identities or synthesize a merge document. Guard rule validation belongs to
+thrashguard (TG-1); fleetd only reports the guard's merged `enabled` flag,
+configuration digest and owner-emitted runtime state in `host-facts/1`.

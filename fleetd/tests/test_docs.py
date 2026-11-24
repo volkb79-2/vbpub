@@ -20,7 +20,6 @@ from fleetd.contracts import (
 )
 from fleetd.plan import RESERVE_SOURCES
 from fleetd.facts import load_facts_config
-from fleetd.merge import IDENTITY_SCHEMA, IDENTITY_SET_SCHEMA
 from fleetd.measurement import MEASUREMENT_SCHEMA
 from fleetd.scope import (
     CURSOR_SCHEMA,
@@ -102,10 +101,16 @@ def test_public_doc_links_and_anchors_resolve():
 
 def test_docs_keep_the_first_week_boundary_and_closed_vocabularies_visible():
     combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
-    for value in ("candidate", "worker", "run", "report", "enforce", "least-progress-per-ram", "host-facts/1", "work-request/1", "assay-merge-manifest/1"):
+    for value in ("candidate", "worker", "run", "host-facts/1", "work-request/1", "assay-merge-manifest/1"):
         assert value in combined
     assert "no daemon" in combined.lower()
     assert "--only-candidates FILE" in combined
+
+
+def test_public_docs_do_not_advertise_the_removed_fleet_owned_surfaces():
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
+    for value in ("fleet merge-check", "fleet-shard-identity/1", "fleet-shard-identity-set/1", "fleet guard validate"):
+        assert value not in combined, value
 
 
 def test_docs_name_every_default_r2_capability_and_value_a_consumer_types():
@@ -118,12 +123,10 @@ def test_docs_name_every_default_r2_capability_and_value_a_consumer_types():
         CURSOR_SCHEMA,
         SIZING_SCHEMA,
         MEASUREMENT_SCHEMA,
-        IDENTITY_SCHEMA,
-        IDENTITY_SET_SCHEMA,
     ):
         assert value in combined, value
     assert str(EXIT_STALE_CURSOR) in combined and str(EXIT_NOTHING_TO_JUDGE) in combined
-    for command in ("fleet scope", "fleet sizing", "fleet measurement", "fleet merge-check"):
+    for command in ("fleet scope", "fleet sizing", "fleet measurement"):
         assert command in combined, command
     for key in ("worker_memory", "worker_cpu", "instance_cpu", "image_digest", "slice_size"):
         assert key in combined, key
@@ -211,7 +214,7 @@ def test_the_spec_has_one_generated_surface_region():
     assert spec.index("<!-- cli-extended-surface:start -->") < spec.index("<!-- cli-extended-surface:end -->")
 
 
-@pytest.mark.parametrize("verb", ["facts", "guard", "plan", "run", "status", "tick", "collect", "skills"])
+@pytest.mark.parametrize("verb", ["facts", "plan", "run", "status", "tick", "collect", "skills"])
 def test_every_registered_verb_is_documented(verb):
     """A capability nobody can find is not shipped: each verb appears in the guides."""
 

@@ -93,6 +93,12 @@ All notable changes to this project are recorded here.
 
 ### Changed
 
+- `host-facts/1.guard.enabled` is now a plain read of the merged top-level
+  `enabled`: a boolean is reported as itself, while a missing or non-boolean
+  value is `null` with a reason naming what was found. Rule validation is
+  gone; runtime `state` remains the owner-emitted value from the configured
+  state source. A historical rules-invalid state remains accepted for schema
+  compatibility but can no longer be produced by fleetd.
 - Rewrite the rolling whole-target sweep so an edit no longer restarts it
   (FD-033). The `fleet-r2-scope-cursor/1` cursor resumed at an offset into a
   candidate-id list whose ids fold in the source-file hash, so nearly every
@@ -159,6 +165,14 @@ All notable changes to this project are recorded here.
 - The package version comes from `CliIdentity.resolve(distribution="fleetd")`
   instead of a literal. An uninstalled source checkout refuses (exit 3) rather
   than inventing a version.
+
+### Removed
+
+- Remove `fleet merge-check`, the fleet-owned `fleet-shard-identity/1` and
+  `fleet-shard-identity-set/1` documents, `assay-merge-manifest/1` validation,
+  `fleet guard validate`, and the guard rule schema. Assay owns the manifest
+  and the `owner-manifest`/`strict-shard` policies (B544/B565); thrashguard
+  owns guard rules (TG-1).
 
 ### Added
 
