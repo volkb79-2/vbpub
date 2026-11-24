@@ -15,6 +15,8 @@ no separate version number, so entries are grouped by the work that landed.
   `CODEX_EFFORT` and `PI_THINKING` still override it. Codex `.done` appends
   `EFFORT=<value>` after the historical fields; that field is Codex-only and
   Pi records no thinking level in its `.done` marker.
+- `CODEX_EFFORT` accepts only `minimal`, `low`, `medium`, `high`, `xhigh` or
+  `max`; another value exits 2 before the owner record or child launch.
 - CTL-42 part 1: Codex accepts a `sol` route using `$HOME/.codex`, Luna defaults
   to `$HOME/.codex2`, and `CODEX_HOME_OVERRIDE` wins on Luna and an explicit
   `CODEX_ROUTE=sol codex-impl.sh` launch. `codex-review.sh` deliberately gives

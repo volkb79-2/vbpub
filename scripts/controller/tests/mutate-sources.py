@@ -208,6 +208,9 @@ mutant("scripts/controller/codex-impl.sh", "codex-run-name-claim.sh",
 mutant("scripts/controller/codex-impl.sh", "codex-resume-stale-marker.sh",
        '  rm -f -- "$out/$name.done"\n  codex_launched=1',
        '  codex_launched=1')
+mutant("scripts/controller/codex-impl.sh", "codex-effort-vocabulary.sh",
+       'case $effort in\n  minimal|low|medium|high|xhigh|max) ;;\n  *)\n    echo \'CODEX_EFFORT must be one of minimal, low, medium, high, xhigh, max\' >&2\n    exit 2\n    ;;\nesac',
+       ': # CODEX_EFFORT vocabulary is not validated')
 # CTL-14 (blocker 2): the Codex child inherits the wrapper's ownership
 # descriptor, and a SIGKILLed wrapper then strands its run name while the agent
 # (or a daemon the agent left) keeps the flock. Both launch paths must close it.

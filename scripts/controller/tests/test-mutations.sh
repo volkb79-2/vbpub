@@ -85,6 +85,8 @@ expect_killed codex-run-name-claim \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-claim.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-resume-stale-marker \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-stale-marker.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-effort-vocabulary \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-effort-vocabulary.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-run-name-child-close \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-child-close/codex-impl.sh" \
     bash "$SCRIPT_DIR/test-wrappers.sh"

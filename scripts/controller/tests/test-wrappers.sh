@@ -339,6 +339,36 @@ check_codex_route_homes_and_override() {
 }
 check_codex_route_homes_and_override
 
+check_codex_effort_vocabulary() {
+  local value rc
+  for value in minimal low medium high xhigh max; do
+    PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+      CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+      CODEX_LOG="$ROOT/effort-$value.log" CODEX_EFFORT="$value" FAKE_CODEX_MODE=clean \
+      "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "effort-$value" > "$ROOT/effort-$value.out" 2>&1 \
+      || fail "valid CODEX_EFFORT value was rejected: $value"
+    contains "$ROOT/controller/runs/effort-$value.done" "EFFORT=$value" \
+      "CODEX_EFFORT=$value is recorded in the done marker"
+  done
+  if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+    CODEX_LOG="$ROOT/invalid-effort.log" CODEX_EFFORT='max high' \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" invalid-effort > "$ROOT/invalid-effort.out" 2>&1; then
+    fail 'invalid CODEX_EFFORT was accepted'
+  else
+    rc=$?
+    [[ $rc == 2 ]] || fail "invalid CODEX_EFFORT exit was $rc, expected 2"
+  fi
+  contains "$ROOT/invalid-effort.out" \
+    'CODEX_EFFORT must be one of minimal, low, medium, high, xhigh, max' \
+    'invalid CODEX_EFFORT names the allowed values'
+  [[ ! -e $ROOT/invalid-effort.log ]] || fail 'Codex ran with invalid CODEX_EFFORT'
+  [[ ! -s $ROOT/controller/runs/invalid-effort.lock ]] \
+    || fail 'invalid CODEX_EFFORT wrote an owner record before the child launch'
+  [[ ! -e $ROOT/controller/runs/invalid-effort.done ]] || fail 'invalid CODEX_EFFORT wrote a done marker'
+}
+check_codex_effort_vocabulary
+
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_RC=7 \
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" codex-fail > "$ROOT/codex.out" 2>&1; then

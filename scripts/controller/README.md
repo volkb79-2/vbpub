@@ -130,7 +130,8 @@ Use this order for each implementation task.
    turn; the default is two for DeepSeek and zero for Luna. The `.done` marker
    records `EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k> EFFORT=<value>`, and the
    `EFFORT` field is Codex-only; Pi records no thinking level in its `.done`
-   marker. The attempt log is `<run>.autoresume.log`. A new run name with an existing `<run>.done`,
+   marker. `CODEX_EFFORT` accepts only `minimal`, `low`, `medium`, `high`,
+   `xhigh` or `max`. The attempt log is `<run>.autoresume.log`. A new run name with an existing `<run>.done`,
    `<run>.jsonl`, or `<run>.err` record is refused before the child starts and
    all existing paths are printed. `CONTROLLER_RUN_FORCE=1` permits replacing
    evidence for a new run that was intentionally abandoned or failed. Resume

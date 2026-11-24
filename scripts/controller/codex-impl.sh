@@ -200,6 +200,13 @@ fi
 export CODEX_SQLITE_HOME=${CODEX_SQLITE_HOME:-"$HOME/.codex/sqlite-shared"}
 model=${CODEX_MODEL:-$default_model}
 effort=${CODEX_EFFORT:-$default_effort}
+case $effort in
+  minimal|low|medium|high|xhigh|max) ;;
+  *)
+    echo 'CODEX_EFFORT must be one of minimal, low, medium, high, xhigh, max' >&2
+    exit 2
+    ;;
+esac
 
 if [[ -n $od_start_kind ]]; then
   volker_home=${CODEX_HOME_DEEPSEEK_VOLKER:-"$HOME/.codex-opendesign-volker"}
