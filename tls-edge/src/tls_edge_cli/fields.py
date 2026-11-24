@@ -257,7 +257,7 @@ def legacy_answers_message(key: str) -> str:
     target = LEGACY_ANSWER_KEYS[key]
     if target is None:
         return (
-            "the Calls preset was removed in 4.0; delete this key "
+            f"the Calls preset was removed in 4.0; delete {key} "
             "(Mattermost publishes media directly)"
         )
     table, separator, leaf = target.rpartition(".")

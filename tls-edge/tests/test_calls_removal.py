@@ -454,7 +454,7 @@ def test_removed_calls_flat_answer_key_is_refused(
         if line.startswith("[ERROR] ")
     ]
     assert errors == [
-        "the Calls preset was removed in 4.0; delete this key "
+        f"the Calls preset was removed in 4.0; delete {key} "
         "(Mattermost publishes media directly)"
     ]
 
