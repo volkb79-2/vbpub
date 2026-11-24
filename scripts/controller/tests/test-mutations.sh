@@ -425,9 +425,10 @@ expect_killed ctx-hooks-subagent-skip \
   env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-subagent-skip.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 expect_killed ctx-hooks-crash-log \
   env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-crash-log.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
-for ctx_mutant in ceiling-model ceiling-top subagent-path stale-check stale-age soft-handover agent-soft soft-alias \
-                  role-env read-order-newest merges-window state-walkup role-env-skip sid-state effective-soft \
-                  pressure-dir state-fallback; do
+for ctx_mutant in subagent-path stale-check stale-age urge-wording agent-soft \
+                  role-env read-order-newest merges-window state-walkup role-env-skip sid-state \
+                  pressure-dir state-fallback force-at force-grace force-below force-agent allow-chain allow-root \
+                  prune-keep prune-age first-action legacy-state; do
   expect_killed "ctx-hooks-$ctx_mutant" \
     env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-$ctx_mutant.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 done

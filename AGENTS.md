@@ -655,7 +655,10 @@ operator's `/compact`. On a pressure note it persists its working state at the n
 semantic boundary and CONTINUES; the compaction happens when the harness or the operator
 makes it happen, and the recovery files plus the readback are what survive it. (This rule
 exists because a controller read "stop at a semantic boundary" as an instruction to stand
-still until the operator compacted, and lost hours in which work was ready to run.)
+still until the operator compacted, and lost hours in which work was ready to run.) From 200k
+the ladder below asks it to compact ITSELF at a good compaction point, by launching
+`compact-resume.sh` on its own pane (operator 2026-11-24); it still never idles waiting for
+someone else's compaction.
 
 Before it ends a turn it keeps one monitor armed over every running job, so a job cannot
 finish or fail unnoticed while the session sits idle.
@@ -729,21 +732,27 @@ some other way on a harness that has no such channel. The ladder is a rule about
 and cadence.
 
 - **From 100k on**: a note every 50k tokens of context.
-- **Below 200k**: the wording prefers finishing the current unit of work.
-- **From 200k on**: the wording names the next semantic boundary, and differs by role (below).
+- **Below 200k** (controller): the wording prefers finishing the current unit of work, persisting
+  state at semantic boundaries and planning a voluntary stop for compaction from 200k on.
+- **From 200k on**: the wording differs by role (below).
 
 The hook (`scripts/controller/hooks/ctx-hooks.py`) sends one wording per role (an Agent-tool
 subagent has `agent_id` in the hook input, and `CTX_HOOK_ROLE=agent|controller` overrides the
-detection for a spawned top-level session). Each role has one soft threshold (controller
-`CTX_SOFT_CONTROLLER`, default 650k; agent `CTX_SOFT_AGENT`, default 200k); the note fires at
-`min(soft, ceiling - 50k)`, the ceiling being the model's `autoCompactWindow` in
-`~/.claude/settings.json`:
+detection for a spawned top-level session). The thresholds are named values, no ceiling and no
+`autoCompactWindow` enters them (operator 2026-11-24; the 500k/650k tiers are gone): controller
+`CTX_INFORM_AT` 200k, `CTX_URGE_AT` 250k, `CTX_FORCE_AT` 300k with `CTX_FORCE_GRACE` 5 tool calls;
+agent `CTX_SOFT_AGENT` 200k:
 
-- **Controller / interactive session**: below its soft threshold, at the next semantic boundary
-  persist state to the plan and handoff files and CONTINUE; never stop, stand still or wait for a
-  compaction. At or past it, write the handover (controller-handover skill), sync the plan, set
-  READY, then end the turn (auto-compaction is not a safe handover). The controller decides how its
-  agents are guided.
+- **Controller / interactive session**: at 200k INFORM: reach a voluntary stop for compaction at
+  the next semantic boundary (a good compaction point): write the handover (controller-handover
+  skill), sync the plan, launch `scripts/controller/compact-resume.sh` DETACHED on your own pane
+  (see "Successor restart" above) and end the turn. At 250k the same reminder, with a stronger
+  urge. At 300k the yield is FORCED: after a grace of `CTX_FORCE_GRACE` (5) more tool calls a
+  PreToolUse hook DENIES every tool call except the handover itself (Write/Edit of a file under
+  `.controller-state/`, `plan.yaml`, and a Bash call that is only the launch of
+  `compact-resume.sh`/`clear-resume.sh`), until the context is below 300k again. The deny
+  message tells the session to write the handover, launch compact-resume and end the turn. The
+  controller decides how its agents are guided.
 - **Agent session**: marker only below its soft threshold. From it, follow the dispatch brief's
   context rule if it has one; otherwise decide at the next semantic boundary: a small remainder is
   finished and reported; a large one ends the session with a report that is the handoff (done and
@@ -814,11 +823,22 @@ remains for Codex run finals.
 
 Per-harness situations (interactive, headless, opencode, pi, Codex) with what builds a readback, what makes a session ingest it, whether each row is tested, and the command lines: [docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md](docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md).
 
-The compaction prompt, and the recovery hook after a compaction, name this read order and
-nothing else: (0) `plan.yaml`, (1) `operator-decisions.md`, (2) the newest `readback-N.md`
-IN FULL, (3) the `RESUME HERE` section of `HANDOFF.md`; older material only by grep. After
-the compaction, check reality before acting (job status, `git worktree list`, host
-campaigns) and re-arm the watches.
+The recovery hook after a compaction (`SessionStart`) prints ONE first command,
+`scripts/controller/resume-read.sh <role>` (`main`, or the topic: platform, core, assay,
+hostobs, edge, rollback). It prints, in one tool call and each slice under a header with its
+size and cap, exactly what a restarted session needs and nothing else: for `main` the
+programme `PRIME-main-controller.md`, the newest `RESUME HERE #N` block of `HANDOFF.md` with
+its `(#N ...)` update lines, the last 40 lines of `PROGRAM.md` section 8, the last 3 sections
+of `operator-decisions.md`, `git log --oneline -8 origin/main` and the worktree count; for a
+topic its `STATE.md` (platform and assay also the newest RESUME block of their `HANDOFF.md`),
+its successor handover only when newer than `STATE.md`, `PRIME-<topic>.md`, and the
+`PROGRAM.md` section 1-3 headings plus the section 8 tail. It is read-only and offline; a
+missing file is a `MISSING` header, not a failure. The hook then prints the handover's
+`FIRST ACTION` and `READ FIRST` lines (main controller only) and the session's own readback
+`readback-<session_id>-N.md` (read IN FULL after the slices; the state is in
+`.controller-state/hooks/readback-state-<session_id>.json`; the newest 3 readbacks per session
+stay). After the compaction, check reality before acting (job status, `git worktree list`,
+host campaigns) and re-arm the watches.
 
 ### Harness support matrix (measured 2026-11-14; X6 measured 2026-11-15; UNTESTED stated per row)
 
@@ -852,7 +872,7 @@ readback is worth building at all.
 - **`.controller-state/`** holds `HANDOFF.md` (append-only ticks with real `date -u`
   timestamps and, before a compaction, a `RESUME HERE #n` section: standing rules, what
   is merged, in flight, hosts, next priorities, lessons), `operator-decisions.md`
-  (EVERY operator turn and interview answer, VERBATIM) and `readback-N.md`.
+  (EVERY operator turn and interview answer, VERBATIM) and `readback-<session_id>-N.md`.
 - **Read-back recipe:** built per [Readback after a compaction or resume](#readback-after-a-compaction-or-resume).
 - **Plan consistency** is checked by a validator in the controller kit
   (`scripts/controller`, planned: parses `plan.yaml`, checks schema and states, flags items

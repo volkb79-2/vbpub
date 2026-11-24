@@ -6,7 +6,35 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Added
+- `resume-read.sh <role>` (P-plat-22a): one read-only call prints the slices a restarted
+  session needs (main: PRIME, the newest `RESUME HERE #N` block + its `(#N ...)` lines, the
+  section 8 tail, the last 3 operator-decision sections, `git log -8 origin/main`, the worktree
+  count; a topic: STATE.md, platform/assay HANDOFF block, a newer successor handover,
+  PRIME-<topic>, PROGRAM.md sections 1-3 headings + section 8 tail), each under a header with
+  size and cap, cut at its cap with a visible marker, `MISSING` for an absent file, exit 2 for an
+  unknown role. Test: `tests/test-resume-read.sh` (wired into `run-suite.sh`).
+
 ### Changed
+- `hooks/ctx-hooks.py` context policy (P-plat-22a, operator 2026-11-24): the controller is
+  INFORMed at 200k to reach a voluntary stop for compaction (write the handover, launch
+  `compact-resume.sh` detached), reminded more urgently at 250k, and at 300k the yield is
+  FORCED: new mode `pre-tool-use` lets `CTX_FORCE_GRACE` (5) tool calls pass, then denies every
+  call except Write/Edit under the state directory or of `plan.yaml` and a Bash call that is only
+  the `compact-resume.sh`/`clear-resume.sh` launch (fail open without a readable fill or state;
+  never for agents). The 500k/650k ceilings, `CTX_SOFT_CONTROLLER`/`CTX_CONTROLLER_SOFT` and the
+  `autoCompactWindow` lookup are removed; the growth marker counts calls to the forced yield.
+  A NEW `PreToolUse` entry is needed in `.claude/settings.local.json`. The session-start text
+  names `resume-read.sh <role>` as the one first command, keeps the live hook's pointers (PRIME,
+  PROGRAM.md sections 1-3 and the section 8 tail, ListAgents, write your state file) and prints
+  the block's `FIRST ACTION` line (P-plat-05 r2 nit 4).
+- P-plat-05b (r2 nits): the tests run against a throwaway default state directory
+  (`CTX_STATE_DIR`), so a run from the main checkout never writes the live hook log;
+  `readback-state-<sid>.json` moved to `<state>/hooks/` (the old location is still read);
+  pre-compact prunes (newest 3 readbacks per session, pressure/force/readback-state files
+  untouched for 14 days); AGENTS.md and HARNESS-COMPACTION-CHECKLIST.md name
+  `readback-<sid>-N.md`. Mutants: ceiling/soft-alias/effective-soft/soft-handover removed, 11
+  added for the thresholds, the grace, the allow-list, prune, FIRST ACTION and the legacy state.
 - `dev-profiles.toml:57` (hostobs profile): `dev_image` is now
   `tester-unified-rust-dev:rs-20261124b`, moved by q266 (hostobs P-hostobs-09,
   vbpub@2d2e1a566); recorded here, the file itself is unchanged by this entry.

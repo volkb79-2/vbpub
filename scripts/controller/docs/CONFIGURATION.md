@@ -73,7 +73,8 @@ Useful settings:
 | `CTX_STATE_DIR` | Optional controller state directory for `hooks/ctx-hooks.py`; defaults to the nearest `.controller-state` at or above the hook input's `cwd` (else `cwd/.controller-state`). |
 | `CTX_REPO_ROOT` | The checkout whose `git log` lists the merges since the last HANDOFF.md write (PreCompact note); defaults to the state directory's parent. |
 | `CTX_HANDOFF_FILE` | The controller handover file (stale-state warning, read order, PreCompact note); defaults to `<state dir>/HANDOFF.md`. |
-| `CTX_SOFT_CONTROLLER` | Controller soft threshold in tokens (alias `CTX_CONTROLLER_SOFT`; the canonical name wins); default `650000`. Below it the controller is told to persist and keep working; at or past it, to write the handover, sync the plan, set READY and end the turn. An invalid value uses the default. |
+| `CTX_INFORM_AT`, `CTX_URGE_AT`, `CTX_FORCE_AT` | Controller thresholds in tokens; defaults `200000`, `250000`, `300000`. Below INFORM the controller persists and plans a voluntary stop; from INFORM (stronger from URGE) it is asked to write the handover and launch `compact-resume.sh` detached; from FORCE `pre-tool-use` denies all but the handover writes and that launch, after the grace. An invalid or non-positive value uses the default. `CTX_SOFT_CONTROLLER` / `CTX_CONTROLLER_SOFT` are gone. |
+| `CTX_FORCE_GRACE` | Tool calls that still pass once FORCE is reached; default `5`; `0` denies at once. |
 | `CTX_SOFT_AGENT` | Agent soft threshold in tokens; default `200000`. Below it an agent gets only the context marker; from it, finish or return PARTIAL with a handoff report. |
 | `CTX_HOOK_ROLE` | `agent` or `controller`: the live hook's name for the session-kind override (`--session-kind` and `CTX_SESSION_KIND` win). |
 | `CTX_EXTRACT_CMD` | The extract command `hooks/ctx-hooks.py` runs; defaults to `nyxloom-harness` on `PATH`. |
