@@ -796,6 +796,7 @@ def load_config(
         with project_config_path.open("rb") as handle:
             document = tomllib.load(handle)
         project_raw = document["project"]
+        runner_raw = document.get("runner", {})
         steps_raw = document["steps"]
         project_root = project_config_path.parent.resolve()
         try:
@@ -813,7 +814,10 @@ def load_config(
         }
         runner_steps = {
             step_name: replace(
-                _runner_parse_step({"steps": steps_raw}, step_name),
+                _runner_parse_step(
+                    {"runner": runner_raw, "steps": steps_raw},
+                    step_name,
+                ),
                 registries=list(forge.targets.registry),
             )
             for step_name in steps_raw
@@ -2209,6 +2213,13 @@ def cleanup_project_step(
         # resolved credential is the authority for this clean step.
         step_env["GITHUB_PUSH_PAT"] = publisher_token
     step = _build_step_config("clean", project.steps["clean"])
+    parsed_clean = (project.runner_steps or {}).get("clean")
+    if parsed_clean is not None:
+        step = replace(
+            step,
+            no_progress_timeout_seconds=parsed_clean.no_progress_timeout_seconds,
+            no_progress_timeout_source=parsed_clean.no_progress_timeout_source,
+        )
     from cmru.runner import execute_step
     protected_env: dict[str, Optional[str]] = {
         "CMRU_RELEASE_COMMIT": None,

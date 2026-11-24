@@ -233,11 +233,11 @@ supplies the whole-source line-and-branch qualification.
 
 3. **Release `cli-extended` first, then rebuild the tester image from the
    released bytes.** Its initial stable version must satisfy CMRU's declared
-   `cli-extended>=0.3.0` floor:
+   `cli-extended>=0.8.0` floor, where the shared `procio` supervisor first ships:
 
    ```bash
    RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:bootstrap)" \
-     cmru release cli-extended --set-version 0.3.0
+     cmru release cli-extended --set-version 0.8.0
    ```
 
    This release is gated with the source-built `cli-extended` wheel above. The

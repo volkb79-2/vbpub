@@ -38,6 +38,8 @@ mode = "whole_target"
 targets = [
   "src/tls_edge_cli/cli.py",
   "src/tls_edge_cli/config.py",
+  "src/tls_edge_cli/contract.py",
+  "src/tls_edge_cli/fields.py",
 ]
 fail_under = 100.0
 # D10.2-3: only os-error/main-guard/tty-only with a reason; coverage-counted exclusions <=12; raising the budget needs package reviewer approval; enforced by tests/test_coverage_policy.py

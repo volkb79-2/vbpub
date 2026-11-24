@@ -82,7 +82,7 @@ Rejected: a separate answers vocabulary (two names for every setting, H2).
 
 **1.4 3.1 flat keys.** Any top-level answers key other than `tls_edge` is refused. The 18 names
 of 3.1 are kept in a frozen `LEGACY_ANSWER_KEYS` map, which is used only to build the refusal
-message: `answers key 'http_enabled' is the 3.1 flat form; write [tls_edge.ports] expose_http`.
+message: `answers key 'http_enabled' is the 3.1 flat form; write [tls_edge.ports] expose_http (answers file P)`.
 Other top-level keys get the message `unknown answers key 'x'; answers use the site-override shape [tls_edge.<table>]`.
 Rejected: accepting both forms for one release (that keeps H2's second vocabulary alive).
 

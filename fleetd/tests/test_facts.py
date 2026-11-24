@@ -89,9 +89,11 @@ def test_facts_collector_reads_only_injected_root_and_emits_design_facts():
             "systemd service MemoryMin/load-state facts were not queried for this facts root"
         ),
     }
-    assert facts["guard"]["enabled"] is True
-    assert facts["guard"]["config_digest"].startswith("sha256:")
-    assert facts["guard"]["state"] == "idle"
+    assert facts["guard"] == {
+        "enabled": True,
+        "config_digest": "sha256:00c5197fb5c817ca6758385dbc5afb8ef18c4cbeaa55a2b51e4c33edcbbf66e9",
+        "state": "idle",
+    }
     assert facts["policy"] == {
         "host_role": "dedicated-dev", "psi_refuse_some_avg10": 25.0, "max_lane_containers": 8,
     }
@@ -684,7 +686,7 @@ def test_systemd_load_state_reader_uses_systemctl_show_and_reports_failures(monk
     assert value is None and "unavailable" in reason
 
 
-def test_guard_dropins_override_rules_and_change_digest(tmp_path):
+def test_guard_dropins_override_enabled_and_change_digest(tmp_path):
     root = _root(tmp_path)
     before = collect_host_facts(root)["guard"]["config_digest"]
     dropin = root / "etc/cgprofile/guard.toml.d/20-disabled.toml"
@@ -699,10 +701,10 @@ def test_guard_without_dropin_directory_uses_main_config_only(tmp_path):
     shutil.rmtree(root / "etc/cgprofile/guard.toml.d")
     guard = collect_host_facts(root)["guard"]
     assert guard["enabled"] is True
-    assert guard["config_digest"].startswith("sha256:")
+    assert guard["config_digest"] == "sha256:37f357c9df40c3755c983fd24dcf4f6401ceaac640b0be16cf0b93c74d3bc128"
 
 
-def test_guard_invalid_dropin_toml_or_rule_is_reasoned(tmp_path):
+def test_guard_invalid_dropin_toml_is_reasoned_and_rule_fields_are_ignored(tmp_path):
     root = _root(tmp_path)
     bad = root / "etc/cgprofile/guard.toml.d/99-bad.toml"
     bad.write_text("enabled = [", encoding="utf-8")
@@ -710,10 +712,30 @@ def test_guard_invalid_dropin_toml_or_rule_is_reasoned(tmp_path):
     assert parse_error["enabled"] is None
     assert "invalid" in parse_error["enabled_reason"]
     bad.write_text("unknown = true\n", encoding="utf-8")
-    rule_error = collect_host_facts(root)["guard"]
-    assert rule_error["enabled"] is None
-    assert "unknown" in rule_error["enabled_reason"]
-    assert rule_error["config_digest"].startswith("sha256:")
+    ignored_rule = collect_host_facts(root)["guard"]
+    assert ignored_rule["enabled"] is True
+    assert "enabled_reason" not in ignored_rule
+    assert ignored_rule["config_digest"].startswith("sha256:")
+
+
+@pytest.mark.parametrize(("literal", "kind"), [('"true"', "str"), ("1", "int")])
+def test_guard_non_boolean_enabled_reports_the_type_found(tmp_path, literal, kind):
+    root = _root(tmp_path)
+    (root / "etc/cgprofile/guard.toml").write_text(f"enabled = {literal}\n", encoding="utf-8")
+    guard = collect_host_facts(root)["guard"]
+    assert guard["enabled"] is None
+    assert guard["enabled_reason"] == f"guard configuration enabled is {kind}, expected bool"
+    assert guard["config_digest"].startswith("sha256:")
+    assert guard["state"] == "idle"
+
+
+def test_guard_missing_top_level_enabled_is_reasoned(tmp_path):
+    root = _root(tmp_path)
+    (root / "etc/cgprofile/guard.toml").write_text('mode = "report"\n', encoding="utf-8")
+    guard = collect_host_facts(root)["guard"]
+    assert guard["enabled"] is None
+    assert guard["enabled_reason"] == "guard configuration has no top-level enabled value"
+    assert guard["config_digest"].startswith("sha256:")
 
 
 def test_guard_dropin_read_error_refuses_a_partial_digest(tmp_path, monkeypatch):

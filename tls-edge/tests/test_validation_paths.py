@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -162,37 +163,42 @@ def _override(body: str = "") -> str:
             "acme-tls-non-443",
             _override('[tls_edge.tls]\nmode = "acme-tls"\n'
                       "[tls_edge.ports]\nhttps = 8443\n"),
-            'tls_mode = "acme-tls"\nhttps_port = 8443\n',
+            '[tls_edge.tls]\nmode = "acme-tls"\n'
+            "[tls_edge.ports]\nhttps = 8443\n",
             "acme-tls requires the public HTTPS port to be 443",
         ),
         (
             "calls-conflicts-with-https",
             _override("[tls_edge.calls]\nenabled = true\npublic_port = 443\n"),
-            "https_port = 443\ncalls_enabled = true\ncalls_port = 443\n",
+            "[tls_edge.ports]\nhttps = 443\n"
+            "[tls_edge.calls]\nenabled = true\npublic_port = 443\n",
             "Calls TCP conflicts with the public HTTPS TCP port",
         ),
         (
             "static-without-lineages",
             _override('[tls_edge.tls]\nmode = "static"\n'),
-            'tls_mode = "static"\nstatic_domains = []\n',
+            '[tls_edge.tls]\nmode = "static"\n'
+            "[tls_edge.static]\ndomains = []\n",
             "requires at least one static certificate lineage",
         ),
         (
             "unknown-http3-key",
             _override("[tls_edge.http3]\nenable = true\n"),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             "unknown override key tls_edge.http3.enable",
         ),
         (
             "newer-schema",
             '[tls_edge]\nschema = 99\ndomain = "edge.example.test"\n',
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             "tls_edge.schema 99 is newer than this release supports (maximum 1)",
         ),
         (
             "good",
             _override(),
-            'domain = "edge.example.test"\ntls_mode = "acme-tls"\nhttps_port = 443\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n'
+            '[tls_edge.tls]\nmode = "acme-tls"\n'
+            "[tls_edge.ports]\nhttps = 443\n",
             None,
         ),
         (
@@ -202,7 +208,7 @@ def _override(body: str = "") -> str:
                 '[tls_edge.traefik.hostdir]\n'
                 'acme = { path = "", uid = 0, gid = 0, mode = "0700" }\n'
             ),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             'tls_edge.traefik.hostdir.acme.path is required when '
             'tls_edge.acme.store = "hostdir"',
         ),
@@ -213,7 +219,7 @@ def _override(body: str = "") -> str:
                 '[tls_edge.traefik.hostdir]\n'
                 'acme = { path = "./vol-traefik-acme", uid = 0, gid = 0, mode = "0700" }\n'
             ),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             "tls_edge.traefik.hostdir.acme.path must resolve outside stack/",
         ),
         (
@@ -223,7 +229,7 @@ def _override(body: str = "") -> str:
                 '[tls_edge.traefik.hostdir]\n'
                 'acme = { path = "../../shared/acme", uid = 1000, gid = 0, mode = "0700" }\n'
             ),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             'tls_edge.traefik.hostdir.acme.uid must be 0 when '
             'tls_edge.acme.store = "hostdir"',
         ),
@@ -235,7 +241,7 @@ def _override(body: str = "") -> str:
                 '[tls_edge.traefik.hostdir]\n'
                 'acme = { path = "../../shared/acme", uid = 0, gid = 0, mode = "0700" }\n'
             ),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             'tls_edge.acme.volume_name and tls_edge.acme.store = "hostdir" '
             "are mutually exclusive",
         ),
@@ -461,6 +467,34 @@ def test_ciu_check_accepts_a_valid_hostdir_site(tmp_path: Path) -> None:
     assert _run_ciu_check(root) == 0
 
 
+def test_ciu_hooks_preflight_invokes_validate_edge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ciu import hooks_runner
+
+    root, _ = _case_root(tmp_path, _override())
+    calls: list[Path] = []
+    original = hooks_runner.load_hook_for_check
+
+    def recording_loader(path: Path):
+        run_fn, validate_fn = original(path)
+        if Path(path).name != "validate_edge.py" or validate_fn is None:
+            return run_fn, validate_fn
+
+        def recording_validate(config: dict, ctx: Any) -> list[str]:
+            calls.append(Path(path))
+            return validate_fn(config, ctx)
+
+        return run_fn, recording_validate
+
+    monkeypatch.setattr(hooks_runner, "load_hook_for_check", recording_loader)
+    assert _run_ciu_check(root) == 0
+    assert calls == [
+        root / "stack" / "ciu-stack" / "hooks" / "validate_edge.py"
+    ]
+
+
 def test_standalone_refuses_hostdir_acme_storage(tmp_path: Path):
     _, stack_dir = _case_root(
         tmp_path,
@@ -513,6 +547,39 @@ def test_hook_run_rechecks_the_sparse_override(tmp_path: Path) -> None:
     (stack_dir / "ciu.toml.j2").write_text(_override(), encoding="utf-8")
     _, _, effective = config.load_site(stack_dir)
     assert hook.run(effective, None) == {}
+
+
+def test_hook_reports_consumer_env_drift_as_an_error_finding(
+    tmp_path: Path,
+) -> None:
+    from tls_edge_cli.contract import consumer_contract, render_env
+
+    root, stack_dir = _case_root(tmp_path, _override())
+    _, _, effective = config.load_site(stack_dir)
+    env_path = root / "stack" / "consumer.env"
+    env_path.write_text(
+        render_env(consumer_contract(effective["tls_edge"])),
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8").replace(
+            "TLS_EDGE_DOMAIN=edge.example.test",
+            "TLS_EDGE_DOMAIN=hand-edited.example.test",
+        ),
+        encoding="utf-8",
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        "validate_edge_drift_hook",
+        stack_dir / "hooks" / "validate_edge.py",
+    )
+    assert spec is not None and spec.loader is not None
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    assert hook.validate_config(effective, None) == [
+        "consumer.env TLS_EDGE_DOMAIN differs from the site override; "
+        "run tls-edge configure to re-sync"
+    ]
 
 
 def test_configure_writes_schema_one(

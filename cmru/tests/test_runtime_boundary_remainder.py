@@ -135,11 +135,11 @@ def test_transaction_discard_build_workspace_validates_managed_path_and_dry_run(
 
 def test_version_tag_strategies_report_tag_failures_without_claiming_success(tmp_path):
     failed = SimpleNamespace(returncode=2, stdout="")
-    with patch.object(version.subprocess, "run", return_value=failed):
+    with patch.object(version, "run_process", return_value=failed):
         with pytest.raises(SystemExit) as scm_error:
             version._apply_strategy_scm(tmp_path, "demo-v", "1.0.0")
         assert scm_error.value.code == 1
-    with patch.object(version.subprocess, "run", side_effect=[SimpleNamespace(returncode=0, stdout=""), failed]):
+    with patch.object(version, "run_process", side_effect=[SimpleNamespace(returncode=0, stdout=""), failed]):
         with pytest.raises(SystemExit) as counter_error:
             version._apply_strategy_counter(tmp_path, "demo-v", "1.0.0")
         assert counter_error.value.code == 1

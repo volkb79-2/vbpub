@@ -1753,6 +1753,15 @@ Schema 2 stores only import metadata beside that object, and schema-1 blocks are
 Malformed provenance makes the candidate re-judge without failing the lane; malformed locus metadata is dropped, counted, and exact-id resume continues.
 See [the consumer contract and field table](CONSUMERS.md#carry-finished-records-across-a-judge-change-b530).
 
+### Carry forward earlier-judge records (B561/WP3a)
+
+Carry-forward is a conservative lookup across whole-tree judge changes:
+survivors are carried with canonical provenance, while every prior kill is
+re-run in full. Locus matching is advisory, so ambiguity falls back to fresh
+execution and can only add work, never hide a survivor. Shards apply the lookup
+to their own jobs and the strict merge preserves the provenance.
+See [the consumer contract](CONSUMERS.md#carry-forward-earlier-judge-results-b561wp3a).
+
 ### Serial tail retries for native R2 (B179)
 
 After the first sweep, Assay retries once, serially, each candidate executed in

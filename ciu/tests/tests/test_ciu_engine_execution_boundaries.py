@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -179,14 +180,12 @@ def test_prepare_stack_creates_declared_hostdirs_by_default(tmp_path, monkeypatc
 
 def test_compose_runner_returns_nonzero_status_and_streamed_output(tmp_path, monkeypatch):
     """S8.1: compose failure is a structured failure, retaining visible output."""
-    class FailedProcess:
-        returncode = 17
-        stdout = iter(("creating api\n", "api failed\n"))
+    def failed_compose(_argv, *, on_line, **_kwargs):
+        for line in ("creating api\n", "api failed\n"):
+            on_line(line)
+        return SimpleNamespace(returncode=17, warning=None, watchdog=None)
 
-        def wait(self):
-            return self.returncode
-
-    monkeypatch.setattr(engine.subprocess, "Popen", lambda *args, **kwargs: FailedProcess())
+    monkeypatch.setattr(engine.procio, "run_streaming", failed_compose)
 
     result = engine.execute_docker_compose_with_logs(
             ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
@@ -205,24 +204,17 @@ def test_compose_runner_checks_managed_network_immediately_before_launch(
 ):
     events: list[str] = []
 
-    class SuccessfulProcess:
-        returncode = 0
-        stdout = iter(())
-
-        def wait(self):
-            return self.returncode
-
     monkeypatch.setattr(
         engine,
         "verify_workspace_runtime_network",
         lambda root: events.append(f"verify:{Path(root).resolve()}"),
     )
 
-    def popen(*args, **kwargs):
+    def run_streaming(*_args, **_kwargs):
         events.append("compose")
-        return SuccessfulProcess()
+        return SimpleNamespace(returncode=0, warning=None, watchdog=None)
 
-    monkeypatch.setattr(engine.subprocess, "Popen", popen)
+    monkeypatch.setattr(engine.procio, "run_streaming", run_streaming)
 
     result = engine.execute_docker_compose_with_logs(
         ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
@@ -244,8 +236,8 @@ def test_compose_runner_refuses_when_final_network_verification_fails(
         ),
     )
     monkeypatch.setattr(
-        engine.subprocess,
-        "Popen",
+        engine.procio,
+        "run_streaming",
         lambda *_args, **_kwargs: pytest.fail("Compose must not launch"),
     )
 
@@ -266,7 +258,7 @@ def test_compose_runner_missing_docker_is_structured_failure(tmp_path, monkeypat
     def _missing(*args, **kwargs):
         raise FileNotFoundError("docker")
 
-    monkeypatch.setattr(engine.subprocess, "Popen", _missing)
+    monkeypatch.setattr(engine.procio, "run_streaming", _missing)
 
     result = engine.execute_docker_compose_with_logs(
             ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
@@ -278,35 +270,12 @@ def test_compose_runner_missing_docker_is_structured_failure(tmp_path, monkeypat
     assert "docker not available" in result["message"]
 
 
-def test_keyboard_interrupt_terminates_then_kills_unresponsive_compose(tmp_path, monkeypatch):
-    """S8.1: Ctrl-C first terminates compose and force-kills only if it hangs."""
-    calls: list[str] = []
+def test_keyboard_interrupt_preserves_the_interrupted_result(tmp_path, monkeypatch):
+    """S8.1: Ctrl-C is reported after procio reaps the Compose group."""
+    def interrupted(*_args, **_kwargs):
+        raise KeyboardInterrupt
 
-    class InterruptingStdout:
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            raise KeyboardInterrupt
-
-    class InterruptedProcess:
-        returncode = None
-
-        @property
-        def stdout(self):
-            return InterruptingStdout()
-
-        def wait(self, **kwargs):
-            calls.append("wait")
-            raise TimeoutError("still stopping")
-
-        def terminate(self):
-            calls.append("terminate")
-
-        def kill(self):
-            calls.append("kill")
-
-    monkeypatch.setattr(engine.subprocess, "Popen", lambda *args, **kwargs: InterruptedProcess())
+    monkeypatch.setattr(engine.procio, "run_streaming", interrupted)
 
     result = engine.execute_docker_compose_with_logs(
             ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
@@ -315,7 +284,6 @@ def test_keyboard_interrupt_terminates_then_kills_unresponsive_compose(tmp_path,
 
     assert result["status"] == "interrupted"
     assert result["message"] == "User interrupted execution"
-    assert calls == ["terminate", "wait", "kill"]
 
 
 @pytest.mark.parametrize(

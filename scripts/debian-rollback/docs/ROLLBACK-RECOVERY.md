@@ -192,7 +192,7 @@ guest-verified (DR-85, DR-97).
 | Item | Location |
 |---|---|
 | Guest acceptance driver | `poc/dr-serial.py`, scenarios `s2-s3`, `recovery-kernel`, `recovery-library`, and `recovery-dependency` |
-| State deletion, pruning, and boot-menu generation | `poc/dr-state` |
+| State deletion, pruning, and boot-menu generation | `files/usr/local/sbin/dr-state` and `files/usr/local/lib/dr-state/dr_state/` |
 | Offline deletion and selector safety coverage | `poc/test-dr-state-sdboot.sh` |
 | Serial/QMP and scenario contract coverage | `poc/test-dr-serial.py` |
 | Registered gate | `run-gate offline` from `scripts/debian-rollback/` |

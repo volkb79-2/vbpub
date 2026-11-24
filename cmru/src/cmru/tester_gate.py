@@ -30,9 +30,9 @@ from cli_extended import (
     VerbGroup,
     VerbSpec,
 )
+from cli_extended.procio import terminate_as_exit as _terminate_as_exit
 from cmru import exit_codes
 from cmru.cli_support import cmru_registry
-from cmru.runner import _terminate_as_exit  # SIGTERM/SIGHUP -> SystemExit; shared with run_command
 
 
 def _unescape_mountinfo(value: str) -> str:

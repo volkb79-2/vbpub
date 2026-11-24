@@ -5,16 +5,19 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import _support
 
-_FILES = _support._PROJECT / "files" / "usr" / "local"
+_PAYLOAD_ROOT = _support._PROJECT / "files"
+_FILES = _PAYLOAD_ROOT / "usr" / "local"
 LAUNCHER = _FILES / "sbin" / "dr-state"
 
 
@@ -48,9 +51,21 @@ class PayloadTest(unittest.TestCase):
             "storage/btrfs",
             "boot/__init__",
             "boot/grub",
+            "boot/sdboot",
         ):
             with self.subTest(module=module):
                 self.assertTrue((package / f"{module}.py").is_file())
+
+    def test_d27_hook_files_and_modes(self) -> None:
+        for relative, mode in (
+            ("etc/apt/apt.conf.d/80dr-state", 0o644),
+            ("etc/kernel/postinst.d/zz-dr-state", 0o755),
+            ("etc/kernel/postrm.d/zz-dr-state", 0o755),
+        ):
+            with self.subTest(path=relative):
+                path = _PAYLOAD_ROOT / relative
+                self.assertTrue(path.is_file())
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), mode)
 
     def test_launcher_runs_isolated_and_reaches_the_error_translation(self) -> None:
         # With the real dispatcher (P-20b) `list` on an empty sysroot is refused
@@ -84,6 +99,44 @@ class PayloadTest(unittest.TestCase):
             exec(code, {"__file__": str(LAUNCHER), "__name__": "__main__"})
         self.assertEqual(raised.exception.code, 70)
         self.assertIn("requires Python 3.13 or newer (found 3.12)", stderr.getvalue())
+
+    def test_launcher_suppresses_bytecode_without_an_external_B_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            installed = temporary_root / "usr" / "local"
+            shutil.copytree(_FILES, installed)
+            launcher = installed / "sbin" / "dr-state"
+            sysroot = temporary_root / "sysroot"
+            sysroot.mkdir()
+            environment = os.environ.copy()
+            environment.pop("PYTHONDONTWRITEBYTECODE", None)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(launcher),
+                    "--sysroot",
+                    str(sysroot),
+                    "list",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+                env=environment,
+            )
+            self.assertIn(result.returncode, (1, 3, 4), result.stderr)
+            bytecode = [
+                path
+                for path in installed.rglob("*")
+                if (
+                    path.is_dir()
+                    and path.name == "__pycache__"
+                    or path.is_file()
+                    and path.suffix in (".pyc", ".pyo")
+                )
+            ]
+            self.assertEqual(bytecode, [])
 
 
 if __name__ == "__main__":

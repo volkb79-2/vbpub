@@ -480,8 +480,8 @@ loaded `tester-base:local` (mdt-cockpit MDT-049).
 
 ## Install fleetd for host facts
 
-`fleetd` owns the read-only `fleet facts collect` and `fleet guard validate`
-commands a managed host runs, and its wheel declares `cli-extended` as a real
+`fleetd` owns the read-only `fleet facts collect` command a managed host runs,
+and its wheel declares `cli-extended` as a real
 dependency, so both wheels are installed together. Debian 13 refuses
 `pip install` into the system Python (PEP 668), so `install-fleetd.sh` installs
 into a versioned venv, verifies both wheel hashes first, and publishes

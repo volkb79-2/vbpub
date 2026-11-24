@@ -37,6 +37,33 @@ agctl owns controller identity and handover, the run registry, routes, agent fin
 - **Readers** take an id or a label (label → newest run): `agctl status` (a row per run); `agctl check` (job-check's evidence half: trailer, report, clean tree, reviewed head vs run.json head as a field compare; flags direct `hx.sh`/docker/pytest/cargo in implementer streams, CTL-46); `agctl limits` (read-only, covers pi).
 - **One-release transition:** readers also read legacy flat `<name>.*` files in `[runs] legacy_dirs` (agctl.toml), default `CONTROLLER_RUNS_DIR`, `$CONTROLLER_HOME/runs` (flat files) and `~/c5-runs`; `runs/` subdirs without a valid `run.json` are ignored. `codex-impl.sh`, `pi-impl.sh` and `codex-review.sh` become shims, switched in 12b with the readers. Shim map: `CODEX_ROUTE`/`PI_ROUTE` → `--route` (defaults `luna`/`deepseek-pi`); `codex-review.sh` → `--route sol`; run name → `--label`; `--report`/`PI_REPORT` → `--report`; `CODEX_MODEL|CODEX_EFFORT|PI_MODEL|PI_THINKING|CONTROLLER_RUN_FORCE` ignored with one stderr line (CTL-39); `resume <thread>` → `--resume <thread>`. Limit: `job-status`, `ctl-status` and `resume-usage-limited` see legacy runs only; limited runs are resumed by the controller with `agctl run --resume`.
 
+## 4a. Estate-wide state (operator 2026-11-24, P-plat-22d0)
+
+agctl state must answer estate-wide questions, not only questions about one implementer's run:
+- what runs where;
+- which package is in which state, across sub-controllers and hosts.
+
+**`agctl estate [--json]`** is read-only. It prints one row per package:
+- the id and the owning sub-controller;
+- the plan state (the §3 map);
+- the worktree branch and head, and whether that head is merged into `origin/main`;
+- its runs: id, route, state or outcome, live context, and the yield chain (`<run>-y<N>`, from the E-021 `YIELD`/`READY` lines in `last.txt`);
+- its gates: host, lane, slots held or free, result.
+
+Every row names the source of each field and its mtime. Inputs are aggregated in place, never copied:
+- **Plans and state:** each sub-controller's `.controller-state/<name>/STATE.md` (assay, core, edge, hostobs, platform, rollback today) and its `.controller-state/PROGRAM-2026-11-24/PLAN-<name>.md`. After the §3 migration the input is `~/controller-state/<name>/plan.yaml`, the machine source. Until then STATE.md is prose: agctl shows only the lines that name a package id, marked `unverified`.
+- **Runs:** the legacy flat records `$CONTROLLER_RUNS_DIR/<name>.{done,live,wt,route,thread,last.txt}`, plus `runs/<id>/run.json` and `live.json` (§4). A free lock on a run that has not ended reads as DIED.
+- **Gates:** `$CONTROLLER_HOME/remote-gate-locks/` (`remote-gate.sh:180`) and `$CONTROLLER_HOME/remote-gates/` (results, `:221`).
+  - The locks are bare flocks (`<host>.admit`, `<host>.slot<N>`, `:184-191`) and record no holder, so agctl can probe only held or free.
+  - Follow-up: remote-gate.sh writes a holder line (run or session, lane, start) beside each slot it takes.
+- **Git:** `git worktree list --porcelain` and `git branch --merged origin/main`.
+
+**Join key: the package id.** Branch names carry it already. Run labels must also start with it, which is a label convention that `agctl run` warns about.
+
+**Hosts.** The run registry is per devcontainer. Remote-host state comes only from the gate records; agctl reaches no host directly until the fleetd transport (§1) exists.
+
+**Relation to the estate header.** The estate header (§8 1d) is the compact, injected-on-change view of the same aggregation, so both share one reader module.
+
 ## 5. Routes
 
 - **Tracked `agctl/src/agctl/routes.toml` (package data) plus overlay `$CONTROLLER_HOME/routes.local.toml`**; an overlay-only table is a new route or model. The overlay replaces whole field values (lists too), and `[alias]` entries likewise. Load fails with exit 2 naming file, route and field on an unknown field or model, or on a selected route missing a required one (a Codex route needs `home`). (H2: a route took nine edits.)
