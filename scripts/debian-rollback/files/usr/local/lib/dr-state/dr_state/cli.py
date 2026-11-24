@@ -22,7 +22,13 @@ class _Parser(argparse.ArgumentParser):
 
 @dataclass(frozen=True, slots=True)
 class Invocation:
-    """Global options plus the untouched command argv."""
+    """Global options plus the untouched command argv.
+
+    ``json`` is only the ``--json`` given before the verb. D25 also spells
+    ``show S --json`` and ``check --json``, so every verb that supports JSON
+    accepts its own ``--json`` and ORs it with this field. Options after the
+    verb are never read here, so a ``--note --json`` value stays the verb's.
+    """
 
     paths: Paths
     json: bool

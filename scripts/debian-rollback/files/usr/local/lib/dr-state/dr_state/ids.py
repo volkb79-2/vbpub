@@ -14,6 +14,9 @@ _STATE_RE = re.compile(
 )
 _COUNTING_SUFFIX_RE = re.compile(r"\+[0-9]+(-[0-9]+)?$")
 _MANUAL_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
+_DASH_RUN_RE = re.compile(r"-{2,}")
+_MANUAL_SLUG_SHAPE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*[a-z0-9]")
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,12 +86,21 @@ def slug(source: str, reason: str) -> str | None:
         return "install"
     if source != "manual":
         return None
-    normalized = _MANUAL_SLUG_RE.sub("-", reason.lower()).strip("-_")
+    # The bash pipeline, step by step: ASCII-only lowering (``LC_ALL=C tr``),
+    # every other character run to one ``-`` with all ``-`` runs squeezed
+    # (``tr -cs``), and only ``-`` stripped at both ends (``_`` stays).
+    lowered = reason.translate(_ASCII_LOWER)
+    normalized = _DASH_RUN_RE.sub("-", _MANUAL_SLUG_RE.sub("-", lowered)).strip("-")
     if not normalized:
         return None
     if normalized != "manual" and not normalized.startswith("manual-"):
         normalized = "manual-" + normalized
-    return normalized[:64].rstrip("-_")
+    cut = normalized[:64]
+    if cut.endswith("-"):
+        cut = cut[:-1]
+    # Like bash, a slug that does not start and end with a letter or digit
+    # (for example a trailing ``_``) is refused rather than repaired.
+    return cut if _MANUAL_SLUG_SHAPE_RE.fullmatch(cut) else None
 
 
 def entry_id(state: StateId) -> str:

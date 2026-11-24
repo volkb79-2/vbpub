@@ -77,12 +77,21 @@ class SlugAndClassificationTest(unittest.TestCase):
             (" Manual! ", "manual"),
             ("manual-rollback", "manual-rollback"),
             ("Manual Rollback", "manual-rollback"),
+            # bash `tr -cs` squeezes `-` runs that were already in the reason.
+            ("fix - kernel", "manual-fix-kernel"),
+            ("a--b", "manual-a-b"),
+            ("--a---b--", "manual-a-b"),
+            # Only `-` is stripped at the ends; a leading `_` stays, as in bash.
+            ("_foo", "manual-_foo"),
+            # Lowering is ASCII only (LC_ALL=C): the Kelvin sign is not `k`.
+            ("Kelvin", "manual-elvin"),
         ):
             with self.subTest(reason=reason):
                 self.assertEqual(ids.slug("manual", reason), wanted)
 
     def test_manual_reason_with_no_usable_characters_is_refused(self) -> None:
-        for reason in ("", "...", "  ", "-_-"):
+        # A trailing `_` is refused like bash's final shape check, not repaired.
+        for reason in ("", "...", "  ", "-_-", "foo_", "manual_"):
             with self.subTest(reason=reason):
                 self.assertIsNone(ids.slug("manual", reason))
 
