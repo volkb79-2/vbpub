@@ -433,7 +433,7 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
     - `etc/apt/apt.conf.d/80dr-state`;
     - `etc/kernel/{postinst.d,postrm.d}/zz-dr-state`.
   - **Timing.** The runtime tree lands in P-rollback-20, but installs switch to it only in P-rollback-21, for both
-    variants at once (D33). The hooks leave the heredocs in P-rollback-25.
+    variants at once (D33). The runtime tree and target hooks now ship as files (P-rollback-21 and P-rollback-25).
   - **Installer.** `install-btrfs.sh` packs `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into a tar
     archive whose members are explicitly owned `0:0`, then extracts it as root with `--same-owner`. It omits directory
     members that already exist at the destination, so `/`, `/usr`, `/usr/local` and every other pre-existing target

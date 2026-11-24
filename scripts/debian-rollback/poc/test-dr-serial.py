@@ -10,6 +10,7 @@ import errno
 import hashlib
 import io
 import inspect
+import os
 import re
 import socket
 import subprocess
@@ -18,6 +19,7 @@ import tarfile
 import tempfile
 import threading
 from pathlib import Path
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("drs", Path(__file__).with_name("dr-serial.py"))
 drs = importlib.util.module_from_spec(spec)
@@ -228,11 +230,21 @@ def main() -> int:
 
     original_payload_root = drs.PAYLOAD_ROOT
     with tempfile.TemporaryDirectory() as temporary:
-        payload = Path(temporary) / "usr" / "local"
-        (payload / "sbin").mkdir(parents=True)
-        (payload / "lib" / "dr-state" / "dr_state").mkdir(parents=True)
-        launcher_path = payload / "sbin" / "dr-state"
-        core_path = payload / "lib" / "dr-state" / "dr_state" / "core.py"
+        payload = Path(temporary) / "files"
+        runtime = payload / "usr" / "local"
+        (runtime / "sbin").mkdir(parents=True)
+        (runtime / "lib" / "dr-state" / "dr_state").mkdir(parents=True)
+        for relative in (
+            "etc/apt/apt.conf.d/80dr-state",
+            "etc/kernel/postinst.d/zz-dr-state",
+            "etc/kernel/postrm.d/zz-dr-state",
+        ):
+            path = payload / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{relative} v1\n", encoding="utf-8")
+        launcher_path = runtime / "sbin" / "dr-state"
+        core_path = runtime / "lib" / "dr-state" / "dr_state" / "core.py"
+        hook_path = payload / "etc" / "apt" / "apt.conf.d" / "80dr-state"
         launcher_path.write_text("launcher\n", encoding="utf-8")
         core_path.write_text("core v1\n", encoding="utf-8")
         drs.PAYLOAD_ROOT = payload
@@ -240,14 +252,21 @@ def main() -> int:
             before = drs.payload_manifest_digest()
             launcher_hash = hashlib.sha256(launcher_path.read_bytes()).hexdigest()
             core_path.write_text("core v2\n", encoding="utf-8")
-            after = drs.payload_manifest_digest()
+            after_core = drs.payload_manifest_digest()
+            hook_path.write_text("hook v2\n", encoding="utf-8")
+            after_hook = drs.payload_manifest_digest()
+            hook_config_exact = drs.current_apt_hook_config() == b"hook v2\n"
             launcher_unchanged = (
                 hashlib.sha256(launcher_path.read_bytes()).hexdigest() == launcher_hash
             )
         finally:
             drs.PAYLOAD_ROOT = original_payload_root
-    if before == after:
+    if before == after_core:
         failures.append("payload digest ignored a core.py change")
+    if after_core == after_hook:
+        failures.append("payload digest ignored an APT hook byte change")
+    if not hook_config_exact:
+        failures.append("current_apt_hook_config() did not read the hook from PAYLOAD_ROOT/files")
     if not launcher_unchanged:
         failures.append("payload digest fixture changed the launcher unexpectedly")
 
@@ -269,10 +288,97 @@ def main() -> int:
     for required in (
         "--same-owner",
         "chown -R 0:0 /usr/local/sbin/dr-state /usr/local/lib/dr-state",
-        "find sbin/dr-state lib/dr-state -type f -print0",
+        "Hot-patching is dev-only: acceptance runs on freshly built disks",
     ):
         if required not in driver_source:
             failures.append(f"serial driver lost its Python payload contract {required!r}")
+    installed_digest_command = drs.installed_payload_digest_command()
+    for required in (
+        "usr/local/sbin/dr-state",
+        "usr/local/lib/dr-state",
+        "etc/apt/apt.conf.d/80dr-state",
+        "etc/kernel/postinst.d/zz-dr-state",
+        "etc/kernel/postrm.d/zz-dr-state",
+        "-type f -print0",
+    ):
+        if required not in installed_digest_command:
+            failures.append(f"installed payload digest command omits {required!r}")
+
+    def unscripted(command):
+        raise AssertionError(f"guest command sent during DR_ACCEPTANCE refusal: {command}")
+
+    hot_patch_calls = (
+        ("install_current_dr_state", lambda guest, log: drs.install_current_dr_state(guest, log)),
+        ("install_current_apt_hook", lambda guest, log: drs.install_current_apt_hook(guest, log)),
+        ("_update_dr_state", lambda guest, log: drs._update_dr_state(guest, log)),
+    )
+    with mock.patch.dict(os.environ, {"DR_ACCEPTANCE": "1"}, clear=False):
+        for label, call in hot_patch_calls:
+            guest = ScriptedGuest(unscripted)
+            helper_log = io.StringIO()
+            result, helper_fails, helper_raised = capture_scenario(
+                lambda call=call, guest=guest, helper_log=helper_log: call(guest, helper_log)
+            )
+            expected = f"{label} refused: {drs.HOT_PATCH_REFUSAL}"
+            if (
+                result is not False
+                or helper_raised is not None
+                or guest.commands
+                or not any(expected in failure for failure in helper_fails)
+            ):
+                failures.append(
+                    f"DR_ACCEPTANCE refusal for {label}: result={result!r} "
+                    f"fails={helper_fails!r} raised={helper_raised!r} commands={guest.commands!r}"
+                )
+
+    apt_hook_payload = drs.current_apt_hook_config()
+    apt_hook_digest = hashlib.sha256(apt_hook_payload).hexdigest()
+
+    def apt_hook_responder(command):
+        match = re.search(r"<<'APT_HOOK_B64'\n(.*?)APT_HOOK_B64\n", command, re.S)
+        if match is None:
+            raise AssertionError("APT hook helper did not delimit its payload")
+        decoded = base64.b64decode("".join(match.group(1).split()), validate=True)
+        if decoded != apt_hook_payload:
+            raise AssertionError("APT hook helper did not send the files/ hook bytes")
+        return 0, f"APTHOOK_SHA:{apt_hook_digest}\nAPTHOOK_INSTALL_RC:0\n"
+
+    apt_hook_guest = ScriptedGuest(apt_hook_responder)
+    with mock.patch.dict(os.environ, {}, clear=True):
+        _, apt_fails, apt_raised = capture_scenario(
+            lambda: drs.install_current_apt_hook(apt_hook_guest, io.StringIO())
+        )
+    if apt_raised is not None or apt_fails or len(apt_hook_guest.commands) != 1:
+        failures.append(
+            f"APT hook helper without DR_ACCEPTANCE: fails={apt_fails!r} "
+            f"raised={apt_raised!r} commands={apt_hook_guest.commands!r}"
+        )
+
+    def update_responder(command):
+        required = (
+            "mount -o ro /dev/sr0 /mnt/seed",
+            "/mnt/seed/poc/files/usr/local/sbin/dr-state",
+            "/mnt/seed/poc/files/usr/local/lib/dr-state",
+            "chown -R 0:0 /usr/local/sbin/dr-state /usr/local/lib/dr-state",
+        )
+        missing = [fragment for fragment in required if fragment not in command]
+        if missing:
+            raise AssertionError(f"seed update command missing {missing}: {command}")
+        return 0, (
+            "MNTRC:0\nINSRC:0\nOWNRC:0\n"
+            f"DRSTATE_SHA:{drs.payload_manifest_digest()}\n"
+        )
+
+    update_guest = ScriptedGuest(update_responder)
+    with mock.patch.dict(os.environ, {}, clear=True):
+        _, update_fails, update_raised = capture_scenario(
+            lambda: drs._update_dr_state(update_guest, io.StringIO())
+        )
+    if update_raised is not None or update_fails or len(update_guest.commands) != 1:
+        failures.append(
+            f"seed update helper without DR_ACCEPTANCE: fails={update_fails!r} "
+            f"raised={update_raised!r} commands={update_guest.commands!r}"
+        )
 
     default_state_cases = (
         ("running-default", "@os-000001-20261118-120000Z-install (running, default) kernel=6.12.107\n", "@os-000001-20261118-120000Z-install"),
@@ -1458,7 +1564,6 @@ def main() -> int:
 
     # QMP: greeting, capabilities, an event before the reply, then the reply
     import json
-    import os
 
     with tempfile.TemporaryDirectory() as tmp:
         qpath = os.path.join(tmp, "qmp.sock")
@@ -1601,9 +1706,10 @@ def main() -> int:
         return 0, f"DRSTATE_SHA:{dr_state_sha}\nDRSTATE_INSTALL_RC:0\n"
 
     dr_state_installer = ScriptedGuest(dr_state_install_responder)
-    _, install_fails, install_raised = capture_scenario(
-        lambda: drs.install_current_dr_state(dr_state_installer, io.StringIO())
-    )
+    with mock.patch.dict(os.environ, {}, clear=True):
+        _, install_fails, install_raised = capture_scenario(
+            lambda: drs.install_current_dr_state(dr_state_installer, io.StringIO())
+        )
     if install_raised is not None or install_fails or len(dr_state_installer.commands) != 1:
         failures.append(
             f"recovery guest dr-state install: fails={install_fails!r} raised={install_raised!r}"

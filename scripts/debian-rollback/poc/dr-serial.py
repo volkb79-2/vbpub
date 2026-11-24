@@ -13,6 +13,7 @@ apt hook's dedupe window (dr-state, default 900 s) is another reason: a second a
 window takes no snapshot, so scenarios that count new snapshots need a guest without a recent one. The guest must be running (vm-lab start --plain-host) with a
 login prompt on ttyS0 and root password "root" (the PoC installer default). The log is a plain transcript
 and is the evidence; the PASS/FAIL lines are a convenience. Exit status is non-zero when any check fails.
+Hot-patching is dev-only: acceptance runs on freshly built disks and refuses these helpers with DR_ACCEPTANCE=1.
 
 How output is read (the echoed command line is part of what comes back on a tty, so nothing may be matched
 against it):
@@ -49,7 +50,8 @@ LOGIN_PROMPT_RE = re.compile(rb"(?im)^[^\n]*\blogin:[ \t]*$")
 SHELL_PROMPT_RE = re.compile(
     rb"(?m)^[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9_.-]+(?::[^\n]*)?[#$][ \t]*$"
 )
-PAYLOAD_ROOT = Path(__file__).resolve().parent.parent / "files" / "usr" / "local"
+PAYLOAD_ROOT = Path(__file__).resolve().parent.parent / "files"
+HOT_PATCH_REFUSAL = "dev-only: acceptance runs on freshly built disks"
 
 
 def console_prompt_kind(data):
@@ -1221,7 +1223,7 @@ def recovery_precondition(g, log):
 
 
 def payload_files() -> tuple[Path, ...]:
-    """Return every bytecode-free regular file in the runtime payload."""
+    """Return every bytecode-free regular file in the complete files payload."""
 
     if not PAYLOAD_ROOT.is_dir():
         raise ValueError(f"files payload {PAYLOAD_ROOT} is missing")
@@ -1240,7 +1242,7 @@ def payload_files() -> tuple[Path, ...]:
 
 
 def payload_manifest_digest() -> str:
-    """Hash the relative names and bytes of the complete installed runtime tree."""
+    """Hash the relative names and bytes of the complete installed files payload."""
 
     manifest = hashlib.sha256()
     for path in payload_files():
@@ -1254,8 +1256,11 @@ def installed_payload_digest_command() -> str:
     """Return the guest shell expression matching payload_manifest_digest()."""
 
     return (
-        "cd /usr/local && "
-        "find sbin/dr-state lib/dr-state -type f -print0 "
+        "cd / && "
+        "find usr/local/sbin/dr-state usr/local/lib/dr-state "
+        "etc/apt/apt.conf.d/80dr-state "
+        "etc/kernel/postinst.d/zz-dr-state etc/kernel/postrm.d/zz-dr-state "
+        "-type f -print0 "
         "| LC_ALL=C sort -z "
         "| xargs -0 sha256sum "
         "| sha256sum "
@@ -1264,7 +1269,7 @@ def installed_payload_digest_command() -> str:
 
 
 def payload_archive() -> bytes:
-    """Return the complete runtime tree as a root-owned, mode-preserving tar archive."""
+    """Return the runtime tree as a root-owned, mode-preserving tar archive."""
 
     def normalized(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         parts = PurePosixPath(member.name).parts
@@ -1278,13 +1283,24 @@ def payload_archive() -> bytes:
 
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
-        for child in sorted(PAYLOAD_ROOT.iterdir(), key=lambda item: item.name):
+        runtime_root = PAYLOAD_ROOT / "usr" / "local"
+        for child in sorted(runtime_root.iterdir(), key=lambda item: item.name):
             archive.add(child, arcname=child.name, filter=normalized)
     return output.getvalue()
 
 
+def _hot_patch_refused(log, helper: str) -> bool:
+    """Record and refuse a dev-only hot patch in acceptance mode."""
+    if os.environ.get("DR_ACCEPTANCE") != "1":
+        return False
+    check(log, f"{helper} refused: {HOT_PATCH_REFUSAL}", False, "DR_ACCEPTANCE=1")
+    return True
+
+
 def install_current_dr_state(g, log):
-    """Upload the files/usr/local runtime tree and verify the complete installed payload."""
+    """Dev-only: upload the runtime tree and verify the complete installed payload."""
+    if _hot_patch_refused(log, "install_current_dr_state"):
+        return False
     try:
         payload = payload_archive()
         digest = payload_manifest_digest()
@@ -1316,7 +1332,7 @@ def verify_current_dr_state(g, log):
     """Reject a guest base whose installed rollback runtime differs from this driver's source tree."""
     try:
         digest = payload_manifest_digest()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         check(log, "current dr-state source is readable by the guest driver", False, repr(exc))
         return False
     _, out = g.run(f"echo DRSTATE_SHA:$({installed_payload_digest_command()})")
@@ -1326,24 +1342,18 @@ def verify_current_dr_state(g, log):
 
 
 def current_apt_hook_config():
-    """Read the exact APT hook config installed by install-btrfs.sh."""
-    path = Path(__file__).with_name("install-btrfs.sh")
-    source = path.read_text(encoding="utf-8")
-    match = re.search(
-        r"(?ms)^  cat >\"\$T/etc/apt/apt\.conf\.d/80dr-state\" <<'EOF'\n(.*?)^EOF$",
-        source,
-    )
-    if match is None:
-        raise ValueError(f"could not find the 80dr-state heredoc in {path}")
-    return match.group(1).encode("utf-8")
+    """Read the exact APT hook config from the files payload."""
+    return (PAYLOAD_ROOT / "etc" / "apt" / "apt.conf.d" / "80dr-state").read_bytes()
 
 
 def install_current_apt_hook(g, log):
-    """Install the exact APT hook config emitted by install-btrfs.sh into the disposable guest."""
+    """Dev-only: install the exact APT hook config into the disposable guest."""
+    if _hot_patch_refused(log, "install_current_apt_hook"):
+        return False
     try:
         payload = current_apt_hook_config()
-    except (OSError, UnicodeError, ValueError) as exc:
-        check(log, "current APT hook config is readable from the installer source", False, repr(exc))
+    except OSError as exc:
+        check(log, "current APT hook config is readable from the files payload", False, repr(exc))
         return False
     digest = hashlib.sha256(payload).hexdigest()
     encoded = base64.encodebytes(payload).decode("ascii")
@@ -1359,7 +1369,7 @@ def install_current_apt_hook(g, log):
         "else printf 'APTHOOK_INSTALL_RC:1\\n'; fi"
     )
     _, out = g.run(command, 300)
-    return check(log, "guest uses the exact APT hook config from install-btrfs.sh",
+    return check(log, "guest uses the exact APT hook config from the files payload",
                  tag(out, "APTHOOK_INSTALL_RC") == "0" and tag(out, "APTHOOK_SHA") == digest,
                  f"rc={tag(out, 'APTHOOK_INSTALL_RC')} sha={tag(out, 'APTHOOK_SHA')} expected={digest}")
 
@@ -1986,7 +1996,9 @@ def _precondition(g, log):
 
 
 def _update_dr_state(g, log, what="Python runtime"):
-    """Install the complete files payload from the seed ISO (mounted at /dev/sr0)."""
+    """Dev-only: install the runtime tree from the seed ISO (mounted at /dev/sr0)."""
+    if _hot_patch_refused(log, "_update_dr_state"):
+        return False
     digest = payload_manifest_digest()
     _, out = g.run(
         "mkdir -p /mnt/seed; mount -o ro /dev/sr0 /mnt/seed; echo MNTRC:$?; "
