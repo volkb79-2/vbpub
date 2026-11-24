@@ -93,7 +93,7 @@ def _typecheck(field: Field, value: Any, source: str) -> Any:
             raise ConfigError(
                 f"{label} must be one of {', '.join(field.choices)} ({source})"
             )
-    elif field.kind == "list":
+    else:
         if not isinstance(value, list):
             raise ConfigError(f"{label} must be a list ({source})")
     if field.check is not None:

@@ -13,7 +13,7 @@ from cli_extended import identity as identity_module
 from cli_extended import prompts as prompts_module
 
 from tls_edge_cli import cli, config
-from tls_edge_cli.fields import FIELDS
+from tls_edge_cli.fields import FIELDS, Field
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,6 +111,14 @@ def dotted_get(config_table: dict, key: str) -> object:
         assert part in current, (key, current)
         current = current[part]
     return current
+
+
+def test_field_rejects_an_unknown_kind_at_construction() -> None:
+    with pytest.raises(
+        ValueError,
+        match="unsupported field kind 'mystery' for tls_edge.domain",
+    ):
+        Field("domain", "mystery", None)
 
 
 def test_sparse_answers_change_one_key_and_preserve_override_comments(

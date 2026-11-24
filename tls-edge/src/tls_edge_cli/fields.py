@@ -23,6 +23,8 @@ from .config import (
     normalize_volume_name,
 )
 
+FIELD_KINDS = frozenset({"bool", "port", "text", "choice", "list"})
+
 
 def _always(_edge: Mapping[str, Any]) -> bool:
     return True
@@ -71,6 +73,12 @@ class Field:
     check: Callable[[Any], Any] | None = None
     required: bool = False
     initial: Callable[[Layout], Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in FIELD_KINDS:
+            raise ValueError(
+                f"unsupported field kind {self.kind!r} for tls_edge.{self.key}"
+            )
 
 
 def _static_domains(value: Any) -> list[str]:
