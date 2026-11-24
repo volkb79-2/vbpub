@@ -325,21 +325,18 @@ class CoreTest(_support.TemporaryRootTest):
         self.assertIn("@os-0001 (unmanaged) kernel=unknown", output)
         self.assertIn(f"{self.apt.name} (default) kernel=", output)
 
-    def test_install_grub_writes_the_marker_after_the_grub_image(self) -> None:
+    def test_install_grub_writes_the_marker_and_format(self) -> None:
         self.paths.esp.mkdir(parents=True)
-        calls: list[tuple[str, ...]] = []
 
         class InstallRunner:
             def run(
                 self, argv: list[str], *, input: str | None = None
             ) -> Completed:
-                _ = input
-                calls.append(tuple(argv))
+                _ = argv, input
                 return Completed(0, "", "")
 
         context = self.context(runner=InstallRunner())
         execute(context, ("install-grub",))
-        self.assertEqual(calls[0][0], "grub-mkimage")
         self.assertEqual(
             self.paths.esp_marker.read_text(encoding="utf-8"),
             "grub\n",

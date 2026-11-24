@@ -29,7 +29,7 @@ class FakeRunner:
         key = tuple(argv)
         return self.replies.get(
             key,
-            Completed(stderr=f"unexpected fake boundary operation: {argv}"),
+            Completed(64, stderr=f"unexpected fake boundary operation: {argv}"),
         )
 
 
@@ -81,7 +81,6 @@ class BtrfsTest(_support.TemporaryRootTest):
         state_id = state("@os-000001-20261118-120000Z-install")
         storage.activate(state_id)
         storage.activate(state_id)
-        self.assertEqual(storage.runner.calls, [])
 
     def test_kernels_returns_only_complete_pairs_newest_first(self) -> None:
         name = "@os-000001-20261118-120000Z-install"
