@@ -27,7 +27,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - B556 (items 1-2): a non-git `OSError` during snapshot preparation or cleanup
   remains `ERROR`/`GIT_FAILED`; its detail is the last stage entered followed
-  by `str(exc)` plus the `/proc/self/fd` path for a resolvable integer fd.
+  by `str(exc)` plus the `/proc/self/fd` path for an integer fd (best effort, at report time).
 - A request-base changed-line lane now limits its `git diff` to the declared
   source roots and exact source files, using both their lexical and resolved
   spellings, and `--no-renames` for deterministic boundary-rename handling.

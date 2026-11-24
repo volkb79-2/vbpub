@@ -225,7 +225,7 @@ __all__ = [
 #: Last higher-rigor stage entered, best effort. It follows the synchronous
 #: call stack without widening the shared snapshot engine's API. Cleanup
 #: during unwinding can retain the stage that raised first; R2/R3 snapshot
-#: materialisation intentionally reports the enclosing `lane command`.
+#: materialisation reports `lane command` or the previous unit's last mark.
 _LANE_PHASE: ContextVar[str] = ContextVar("assay_lane_phase", default="seed/snapshot")
 
 
@@ -516,7 +516,7 @@ def _probe_refusal_terminal(
 
 
 def _lane_oserror(exc: OSError, *, phase: str) -> AssayError:
-    """Keep the existing refusal pair and add the fd's path when it is known."""
+    """Keep the refusal pair; name an fd's path as resolved at REPORT time (an fd closed during unwinding, e.g. by rmtree, reads unresolvable; a reused fd number could name another path)."""
     message = f"{phase}: {exc}"
     if isinstance(exc.filename, int):
         try:
