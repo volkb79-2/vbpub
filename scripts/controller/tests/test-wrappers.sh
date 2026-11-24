@@ -173,8 +173,18 @@ PUSH_IMAGE_SCRIPT=${PUSH_IMAGE_SCRIPT:-$SCRIPT_DIR/../push-image.sh}
 CODEX_IMPL_SCRIPT=${CODEX_IMPL_SCRIPT:-$SCRIPT_DIR/../codex-impl.sh}
 OPENCODE_IMPL_SCRIPT=${OPENCODE_IMPL_SCRIPT:-$SCRIPT_DIR/../opencode-impl.sh}
 README_SOURCE=${README_SOURCE:-$SCRIPT_DIR/../README.md}
+RULES_SOURCE=${RULES_SOURCE:-$SCRIPT_DIR/../rules.md}
+CHANGES_SOURCE=${CHANGES_SOURCE:-$SCRIPT_DIR/../CHANGES.md}
+BACKLOG_SOURCE=${BACKLOG_SOURCE:-$SCRIPT_DIR/../KNOWN_ISSUES_TODO_BACKLOG.md}
 contains "$README_SOURCE" "\`CODEX_HOME_OVERRIDE\` wins on Luna and an explicit \`CODEX_ROUTE=sol\`" \
   'README states that CODEX_HOME_OVERRIDE applies to Luna and explicit Sol runs'
+contains "$RULES_SOURCE" 'normal and signal exits' \
+  'rules state that final text is derived on normal and signal exits'
+not_contains "$RULES_SOURCE" 'may be stale' 'rules no longer describe stale resumed final text'
+contains "$CHANGES_SOURCE" 'unique run names with resumed runs verified from git' \
+  'changelog preserves the historical CTL-50 rule'
+contains "$BACKLOG_SOURCE" 'resumed runs verified from git until CTL-38' \
+  'backlog preserves the historical CTL-50 rule'
 
 python3 - "$ROOT/controller/hosts.local.json" "$ROOT/bin" <<'PY'
 import json, pathlib, sys

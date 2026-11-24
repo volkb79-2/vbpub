@@ -164,6 +164,8 @@ expect_killed codex-bookkeeping-exit-overwrite \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-bookkeeping-exit-overwrite.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed docs-codex-home-override-route \
   env README_SOURCE="$ROOT/mutants/scripts/controller/README-home-override-route.md" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed docs-rules-stale-last-text \
+  env RULES_SOURCE="$ROOT/mutants/scripts/controller/RULES-stale-last-text.md" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed opencode-default-provider \
   env OPENCODE_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/opencode-default-provider.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 for pi_case in \

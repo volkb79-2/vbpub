@@ -288,6 +288,9 @@ mutant("scripts/controller/opencode-impl.sh", "opencode-default-provider.sh",
 mutant("scripts/controller/README.md", "README-home-override-route.md",
        '`CODEX_HOME_OVERRIDE` wins on Luna and an explicit `CODEX_ROUTE=sol`',
        '`CODEX_HOME_OVERRIDE` is honoured on every route.')
+mutant("scripts/controller/rules.md", "RULES-stale-last-text.md",
+       'Every Codex exec path derives `.last.txt` from that invocation\'s stream on\n   normal and signal exits; verify the result from git before publication.',
+       'A\n   resumed Codex run\'s `.last.txt` may be stale: verify its result from git.')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count < auto_limit )) && reasoning_end',
        'while (( auto_count <= auto_limit )) && reasoning_end')

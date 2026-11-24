@@ -1659,7 +1659,7 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md M6
 
 **Status:** OPEN (filed 2026-11-24).
 
-Compile and test via the remote dev container before each commit; contract plus target size; at most 2 review rounds; explicit launch effort until CTL-39; unique run names.
+Compile and test via the remote dev container before each commit; contract plus target size; at most 2 review rounds; explicit launch effort until CTL-39; unique run names; resumed runs verified from git until CTL-38.
 
 Source: .controller-state/design-review-2026-11-24/hostobs.md F4; SYNTHESIS.md T14
 
