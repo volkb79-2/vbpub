@@ -228,6 +228,7 @@ items:
   - {id: B576, title: "mutation_store contract-test gaps (P-assay-11 review)", type: bugfix, component: gate, context_estimate: small}
   - {id: B577, title: "A resume that rejects every record does not say why", type: feature, component: mutation, context_estimate: small}
   - {id: B578, title: "A kill with rc!=0 and no failing test named is still counted as killed", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B579, title: "release-gate.sh needs a host, a hosts file and an output dir that nothing supplies", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -16021,3 +16022,24 @@ The single error is at `descendants[0]`, so the only difference between an accep
 3. Count these records in the verdict, so a campaign shows how many kills are unattributed.
 
 **Close when.** A fixture with a mutant that makes the suite exit non-zero without any test failing is not bucketed `killed`, and a real failure under the lane's real pytest options always records its test id. The backfill campaign's unattributed-kill count is reported at the 64/64 combine. Source: vbpub-assay record diff of the shard-1 pilots, ~19:35Z.
+
+## B579 — release-gate.sh needs a host, a hosts file and an output dir that nothing supplies
+
+**Status: OPEN (filed 2026-11-24 from the assay 12.3.0 release, txn cmru-release-20261124_204217-assay-tmmlup); severity: medium (every release stalls).**
+
+**What happened.** The cmru release transaction ran the release gate (`cmru.toml:29-34`, `tools/release-gate.sh <lane>`), and it stopped twice before it started:
+1. `ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002` (`tools/release-gate.sh:24-25`). No default, and neither cmru.toml nor the release docs say who sets it.
+2. `release-gate.sh` drives `../scripts/netcup/runner/remote-gate.py` directly, so it inherits that tool's defaults:
+   - the hosts file `~/.config/remote-gate/hosts.json`, which is absent on the cockpit (`remote-gate.py:38`);
+   - the output dir `DEFAULT_OUT=/home/vscode/vbpub-release-program-20261027/remote-gates` (`:37`).
+   The estate's configured values live with the controller wrapper `scripts/controller/remote-gate.sh`: `$CONTROLLER_HOSTS_FILE` (= `~/vbpub-release-program-20261027/logs/host-sat-hosts.json`) and `$CONTROLLER_HOME/remote-gates` (`:102-103`, `:225`).
+
+The main controller resumed with `ASSAY_RELEASE_GATE_HOST=v1001 REMOTE_GATE_HOSTS=~/vbpub-release-program-20261027/logs/host-sat-hosts.json REMOTE_GATE_OUT=~/controller/remote-gates`.
+
+**Wanted (pick one at the right boundary, not a local workaround).**
+- (a) Preferred: `release-gate.sh` resolves its hosts file and output dir the way `scripts/controller/remote-gate.sh` does, from the controller's config when it is present: one source of truth.
+  - It refuses up front, before any work, with one message naming all three settings when any is unresolvable.
+  - The host default is documented: for example, any host in `CONTROLLER_REMOTE_GATE_HOSTS`, or an explicit refusal naming that list.
+- (b) Minimum: a precheck at the top of `release-gate.sh` that reports all three missing or unreadable settings at once (today it is one per attempt), plus a "Release gate environment" paragraph in the assay release docs. The cmru release step could set them from cmru.toml `[steps.release_gate] env`, if cmru supports that.
+
+**Close when.** A release transaction from a fresh cockpit shell runs the gate without hand-set variables, or refuses in one step naming every missing setting. A test of `release-gate.sh` pins the refusal text. Source: main controller's message to vbpub-assay, ~20:45Z.
