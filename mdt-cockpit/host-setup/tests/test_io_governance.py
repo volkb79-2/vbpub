@@ -565,21 +565,45 @@ class ListingToolTests(unittest.TestCase):
             r = run_lister(["dev.slice"], {**os.environ, "CGROUP_ROOT": str(root), "MDT_CG_READ_TIMEOUT": "1"}, timeout=20)
             self.assertIn("timed out after 1s", r.stdout)
 
-    @staticmethod
-    def _fifo_file(path: Path, content: str) -> None:
+    def _fifo_file(self, path: Path, content: str) -> None:
+        """A file that reports size 0 and serves `content` once to EACH reader (MDT-111).
+
+        Every serve uses a fresh FIFO inode: the moment a reader has the current one open, a new FIFO is renamed over
+        `path` BEFORE the content is written. A writer that reopened the same inode could attach to the previous reader
+        before that reader had seen EOF and feed it the content twice (the reader then never finished). The next reader
+        opens the new inode, so no reopen can reach an old reader, whatever the scheduling. The thread polls with
+        O_NONBLOCK, so it ends when the fixture is stopped or its directory is gone (no orphan, MDT-022) and is joined."""
         os.mkfifo(path)
+        spare = path.with_name(path.name + ".next")
+        stop = threading.Event()
 
         def serve() -> None:
-            while True:
+            while not stop.is_set():
                 try:
-                    with open(path, "w") as handle:
+                    fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)  # ENXIO until a reader has this inode open
+                except FileNotFoundError:
+                    return  # the fixture directory is gone
+                except OSError:
+                    stop.wait(0.005)
+                    continue
+                try:
+                    os.mkfifo(spare)
+                    os.rename(spare, path)  # the next reader gets a fresh inode
+                    with os.fdopen(fd, "w") as handle:
+                        fd = -1
                         handle.write(content)
                 except BrokenPipeError:
-                    continue  # a reader that closed early; serve the next one
+                    continue  # a reader that closed early; the next one gets the fresh inode
                 except OSError:
-                    return  # the fixture directory is gone
+                    return
+                finally:
+                    if fd >= 0:
+                        os.close(fd)
 
-        threading.Thread(target=serve, daemon=True).start()
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 10)
+        self.addCleanup(stop.set)
 
     def _tree(self, tmp: str) -> Path:
         root = Path(tmp)
