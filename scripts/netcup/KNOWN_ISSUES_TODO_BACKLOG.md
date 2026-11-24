@@ -48,7 +48,7 @@ docs landed together.
 | NC-40 | R2 supervisor counts re-reported kills as progress and misses a stalled resume | Major | OPEN |
 | NC-41 | The R2 supervisor does not record the selected worker count and has no sustained under-utilisation advisory for a campaign consuming little of its CPU allocation | Should-fix | OPEN 2026-11-11 |
 | NC-42 | The R2 supervisor runs one lane container per host, so a host with spare RAM cannot run several shard instances, split a campaign with another host or restart across a judge change | Enhancement | FIXED in `netcup-r2-instances-20261111` |
-| NC-43 | The runner endpoint loader forbids `MDT_BUILDKIT_GID` from equalling the Docker GID, while host-setup always makes the BuildKit socket Docker-group accessible | Should-fix | OPEN 2026-11-12 |
+| NC-43 | The runner endpoint loader forbids `MDT_BUILDKIT_GID` from equalling the Docker GID, while host-setup always makes the BuildKit socket Docker-group accessible | Should-fix | FIXED 2026-11-24 (P-plat-19g) |
 | NC-44 | The reinstall runbook does not explain the post-wipe root wrapper or link the guarded `pre-reinstall.py --yes` flow into the ordered runner bring-up | Minor | OPEN 2026-11-12 |
 | NC-45 | The R2 supervisor hard-codes commit checkouts under /workspaces/<commit>, while the assay full-qualification driver accepts only the /workspaces/vbpub worktree family | Should-fix | OPEN 2026-11-12 |
 | NC-46 | Bundle filenames become lane-container repository names, so exact-name selection depends on the uploaded bundle name | Minor | OPEN 2026-11-12 |
@@ -803,8 +803,10 @@ repeated evidence rows.
 
 ## NC-43 — the runner endpoint loader rejects the BuildKit/Docker GID identity that host-setup produces
 
-**Status:** OPEN (filed 2026-11-12); priority should-fix, fresh-host launch blocker. Source: r1002 reinstall
-execution record 2026-11-12.
+**Status:** FIXED 2026-11-24 (package P-plat-19g; seen again on r1002 2026-11-24). `load_host_endpoints` accepts
+`MDT_BUILDKIT_GID == MDT_HOST_DOCKER_GID` (docker-group membership is already root-equivalent, so a separate
+BuildKit group adds no isolation); cgprofile/topos must still differ from docker and pairwise. Filed 2026-11-12,
+should-fix, fresh-host launch blocker. Source: r1002 reinstall execution record 2026-11-12.
 
 **Problem.** `scripts/netcup/runner/lib.sh` loads the published host endpoints and requires each level GID
 (`CGPROFILE_CONTROL_GID`, `TOPOS_OBSERVE_GID`, `MDT_BUILDKIT_GID`) to differ from `MDT_HOST_DOCKER_GID`,

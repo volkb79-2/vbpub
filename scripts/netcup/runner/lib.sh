@@ -176,7 +176,10 @@ load_host_endpoints() {
       echo "host endpoints: $name must be a positive decimal GID without leading zeros" >&2
       return 2
     }
-    [[ $value != "$docker_gid" ]] || {
+    # MDT_BUILDKIT_GID may equal the docker GID: mdt-buildkitd.service hands its socket to group docker
+    # (ExecStartPost chgrp docker), and docker-group membership is already root-equivalent, so a separate
+    # BuildKit group would add no isolation (P-plat-19g, operator: keep simple). The observer levels stay distinct.
+    [[ $value != "$docker_gid" || $name == MDT_BUILDKIT_GID ]] || {
       echo "host endpoints: $name must differ from MDT_HOST_DOCKER_GID" >&2
       return 2
     }
