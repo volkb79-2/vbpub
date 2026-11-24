@@ -7,11 +7,10 @@ Covers:
   guard_legacy_compose_project  abort vs CIU_ADOPT_LEGACY_PROJECT=1 migration
   execute_docker_compose_with_logs  -p injection into the compose argv
 
-No real docker calls: procutil.run_cmd and subprocess.Popen are monkeypatched.
+No real docker calls: procutil.run_cmd and procio.run_streaming are monkeypatched.
 """
 from __future__ import annotations
 
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -111,18 +110,12 @@ class TestComposeUpProjectArg:
     def _run(self, monkeypatch, tmp_path, project, *, repo_root=None):
         captured: dict = {}
 
-        class FakeProc:
-            returncode = 0
-            stdout = iter(())
-
-            def wait(self):
-                return 0
-
-        def fake_popen(cmd, **kwargs):
+        def fake_streaming(cmd, *, cwd, **_kwargs):
             captured["cmd"] = list(cmd)
-            return FakeProc()
+            captured["cwd"] = cwd
+            return types.SimpleNamespace(returncode=0, warning=None, watchdog=None)
 
-        monkeypatch.setattr(engine.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(engine.procio, "run_streaming", fake_streaming)
         engine.execute_docker_compose_with_logs(
             ["-f", "ciu.compose.yml"], cwd=tmp_path, project=project,
             repo_root=repo_root if repo_root is not None else tmp_path,
