@@ -912,6 +912,14 @@ def _first_differences(
     return [] if left == right else [(path, left, right)]
 
 
+# What a real run MEASURES on its host (cgroup profile, observer windows,
+# timings, process-tree and resource-limit evidence): run evidence that varies
+# between two runs of the same judge, never part of the judgement itself.
+_MEASURED_KEYS = frozenset(
+    {"profile", "resources", "resource_limit_evidence", "process_tree_evidence"}
+)
+
+
 def _verdict_semantics(path: Path) -> dict[str, object]:
     document = json.loads(path.read_text(encoding="utf-8"))
 
@@ -921,6 +929,7 @@ def _verdict_semantics(path: Path) -> dict[str, object]:
                 key: without_timing(item)
                 for key, item in value.items()
                 if key not in {"started", "ended"}
+                and key not in _MEASURED_KEYS
                 and not key.endswith("_at")
                 and not key.endswith("_seconds")
             }
@@ -1030,17 +1039,26 @@ def test_a_real_run_is_unchanged_when_store_hints_are_present(
         path.name: path.read_bytes() for path in sorted(hinted_target.glob("*.json"))
     }
     assert len(no_hint_records) == 2
+    assert sorted(no_hint_records) == sorted(hinted_records)
+    # Hints must change none of the judgement: every record key except the
+    # host-measured run evidence (_MEASURED_KEYS) must be identical.
+    def judgement(raw: bytes) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in json.loads(raw).items()
+            if key not in _MEASURED_KEYS
+        }
+
     record_differences = [
         difference
         for name in sorted(no_hint_records)
         for difference in _first_differences(
-            json.loads(no_hint_records[name]),
-            json.loads(hinted_records[name]),
+            judgement(no_hint_records[name]),
+            judgement(hinted_records[name]),
             (name,),
         )
     ]
     assert not record_differences, record_differences
-    assert no_hint_records == hinted_records
     assert _verdict_semantics(no_hint_verdict) == _verdict_semantics(hinted_verdict)
 
 
