@@ -2026,7 +2026,14 @@ Follow-up P-plat-19d (2026-11-24): `mdt-host-check.sh` FAILs when oomd can still
 
 ## MDT-111 - the `_fifo_file` fixture in `test_io_governance.py` races and times out under load (2026-11-24)
 
-**Status:** OPEN (filed 2026-11-24); Minor. Same fixture as MDT-022 (FIXED, orphaned readers); this is a different defect. Source: `.controller-state/platform/reviews/plat-19d-r1-opus.md`, "# Round 2".
+**Status:** FIXED 2026-11-24 (P-mdt-111, fix commit `a37ab07a0`); Minor. Same fixture as MDT-022 (FIXED, orphaned readers); this is a different defect. Source: `.controller-state/platform/reviews/plat-19d-r1-opus.md`, "# Round 2".
+
+**Fix.** A counted serve alone does not cure it (the first reader can still receive the content twice and eat the next serve), and a regular file cannot
+report size 0, so `_fifo_file` now serves every read from a fresh FIFO inode: once a reader has the current one open, a new FIFO is renamed over the path
+before the content is written, so a reopen can never reach a reader that has not yet seen EOF. The thread polls with `O_NONBLOCK`, is stopped and joined on cleanup.
+**Evidence.** New lane `io-governance-stress` (`run-gate.toml`: both tests, 50 repetitions on one CPU with a competing busy loop, first failure fails the lane),
+run on r1002: unfixed fixture (lane-only commit `c7ebd99a3`) FAIL on repetition 1 (`TimeoutExpired` 30 s, run `rgw-io-governance-stress-20261124T164729-r1002`);
+fix head `a37ab07a0` PASS, 139 s (run `rgw-io-governance-stress-20261124T164918-r1002`).
 
 `host-setup/tests/test_io_governance.py:569-582` (`_fifo_file`) serves a named pipe from a daemon thread whose `serve()` loop reopens the FIFO for writing as
 soon as the previous writer closes. If the reopen beats the reader (`cat`) to EOF, the reader receives the content a second time and never sees EOF.
