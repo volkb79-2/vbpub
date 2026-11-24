@@ -24,7 +24,8 @@
 //!   has no write operation, every read takes a byte bound and every listing an entry
 //!   bound. `activation::adopt_raw` is the crate's only `unsafe` item: it claims a
 //!   systemd-owned fd after the checks in [`activation`]. The crate carries the
-//!   `unsafe_code` deny lint, and the sole allowance is on that function.
+//!   `unsafe_code` deny lint, and the sole allowance is on that function. Absolute
+//!   `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` readings use rustix's safe `time` API.
 //! - **An injectable clock** ([`Clock`](crate::clock::Clock), [`ManualClock`](crate::clock::ManualClock)) so no test depends on host
 //!   speed, load or the wall clock.
 //!

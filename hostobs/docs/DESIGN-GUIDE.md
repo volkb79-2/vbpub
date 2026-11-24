@@ -216,7 +216,8 @@ process is a typed `Missing` rather than an empty string.
 
 **Clock injection instead of the host clock.** `ManualClock` makes every assertion about a
 wall jump, a monotonic interval or a reboot deterministic; `SystemClock` is the only
-non-test clock and reads `Instant`/`SystemTime` without `unsafe`.
+non-test clock and reads absolute `CLOCK_MONOTONIC`, `CLOCK_BOOTTIME` and `CLOCK_REALTIME`
+through rustix's safe `time` API without adding another `unsafe` item.
 
 **A field is named by the kernel's own field number, and the index is derived.** `/proc`
 files are positional: `/proc/<pid>/stat` has no names at all, and `statm`, `loadavg` and

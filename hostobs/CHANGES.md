@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- **Added (P-hostobs-09):** `kernel::activation` adopts systemd's named `LISTEN_FDS` sockets exactly once, validates each as an open non-blocking listening `AF_UNIX` stream, and replaces the kernel's lint forbid with one audited `adopt_raw` allowance.
+- **Added (probe process):** `hostobs-probe --config <path>` reads and strictly validates the required TOML configuration, maps the adopted socket names to levels, and serves the sans-IO `Server` from one bounded non-blocking poll loop; `--version` reports the package identity and start-up refusals exit 2.
+- **Changed (probe checks):** `tools/check-lints.py` and its mutation suite require exactly one audited unsafe override and one unsafe expression outside `crates/act`, reject list/expect/warn and whitespace variants, and refuse a bare unsafe expression in kernel integration tests.
+- **Build (P-hostobs-09):** `toml` 1.2.1 and `serde` 1.0.229 return as probe-only workspace dependencies for the strict configuration parser; the Rust lanes and `tools/dev` move to `tester-unified-rust(-dev):rs-20261124b` carrying the updated offline crate cache.
+- **Added (probe conformance):** the `conformance` lane builds the probe, exports `HOSTOBS_PROBE_BIN`, and runs a real activated-socket Python test covering hello/current/subscribe, the default `SIGTERM` action, a refused `control` name and a missing `--config`; an unset binary path fails rather than skips.
 - **Changed (P-hostobs-07, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live + retired · log live) `end_round`, plus one O(`max_active`) reverse-index rebuild after a round that retires, about 3 MiB at the 65,536 default; model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
 - **Added (probe sampler):** `hostobs-sampler` walks the configured cgroup tree under the kernel/policy bounds, publishes immutable quality-bearing `Tick`s, coalesces wakeups through eventfd, and reports walk cuts through `probe.cgroups_skipped`.
 - **Added (probe live backend):** `ProbeBackend` answers `current`, `status` and `identity` from one published tick per turn, with selector de-duplication, row budgets, zero-row success and no I/O or publication lock in the backends.
