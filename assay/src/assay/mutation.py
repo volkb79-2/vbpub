@@ -2583,6 +2583,13 @@ def run_mutation(
                 "run_mutation shard_stores is the whole-lane merge; it cannot be "
                 "combined with a shard or a pilot candidate_selection"
             )
+        if flex.merge_manifest is not None and (
+            shard_specified or selection_specified
+        ):
+            raise ValueError(
+                "run_mutation merge_manifest is the whole-lane merge; it cannot "
+                "be combined with a shard or a pilot candidate_selection"
+            )
     unknown_rejudge_outcomes = rejudge_outcomes - frozenset(MUTATION_BUCKETS)
     if unknown_rejudge_outcomes:
         raise ValueError(

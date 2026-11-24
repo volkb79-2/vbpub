@@ -2222,7 +2222,8 @@ Parse-time refusals are `malformed-manifest`, `missing-store`,
 `missing-owner-record`, and `invalid-owner-record`. All nine are
 `ERROR`/`BAD_LANE_CONFIG`, exit 2, rendered as
 `merge manifest refused: <token>: <detail>`, sorted and capped at 20
-problems.
+problems. A flat owner record without a usable judge identity is
+`invalid-owner-record`, not `judge-mismatch`.
 
 ### Run a targeted candidate set (B531)
 
