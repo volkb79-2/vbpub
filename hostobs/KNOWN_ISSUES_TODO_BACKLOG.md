@@ -73,14 +73,14 @@ holds the full bodies.
 | HOB-81 | The reverse-index rebuild holds memory at the configured bound, not the live set | Minor | OPEN (P-hostobs-10 review) |
 | HOB-82 | Cgroups with non-UTF-8 names can never be published | Minor | OPEN (P-hostobs-10 review) |
 | HOB-83 | Sampler hygiene: skip double-count, `Tick::new` duplicate rows, shared test harness | Minor | OPEN (P-hostobs-10 review) |
-| HOB-84 | `tools/dev` admission on v1001 has no queue and no ETA while neighbours hold the slice charge | Major | OPEN (P-hostobs-09 report; fix is platform-owned) |
+| HOB-84 | `tools/dev` admission on v1001 refused P-hostobs-09's runs while neighbours loaded the host | Major | OPEN (P-hostobs-09 report; fix is platform-owned) |
 | HOB-85 | `check-lints` misses `#[no_mangle]`, `#[export_name]` and `#[link_section]` in kernel sources and tests | Minor | OPEN (P-hostobs-09 review) |
 | HOB-86 | Kernel coverage sits 0.36 points above its declared floor | Minor | OPEN (P-hostobs-09 report) |
 | HOB-87 | The conformance lane prints a Python traceback when `cargo metadata` yields no JSON line | Minor | OPEN (P-hostobs-09 r2) |
 | HOB-88 | The image-contract test checks `--locked`/`--offline` only on build and metadata lines | Minor | OPEN (P-hostobs-09 r2) |
 | HOB-89 | The conformance lane's 10-minute budget was never measured on a complete cold run | Minor | OPEN (P-hostobs-09 r1/r2) |
 | HOB-90 | rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible | Major | OPEN (P-hostobs-09 report; constraint documented) |
-| HOB-91 | `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,170 rows | Minor | OPEN (P-hostobs-09 report) |
+| HOB-91 | `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,200 rows | Minor | OPEN (P-hostobs-09 report) |
 | HOB-92 | `SIGTERM` keeps its default action; the graceful stop path is required before P-16 | Major | OPEN (P-hostobs-09 decision) |
 | HOB-93 | P-hostobs-09 residual doc and test nits | Minor | OPEN (P-hostobs-09 r2) |
 
@@ -1008,18 +1008,17 @@ Source: `reviews/p10-r2-8d6316a8a.md` backlog.
 
 Source: `reviews/p10-r2-8d6316a8a.md` N4/N5; `reviews/p10-r1-26db62e8c.md` size cut 5.
 
-## HOB-84 — `tools/dev` admission on v1001 has no queue and no ETA while neighbours hold the slice charge
+## HOB-84 — `tools/dev` admission on v1001 refused P-hostobs-09's runs while neighbours loaded the host
 
 **Where:** `scripts/controller/dev` (platform-owned; the generic remote dev tool behind `hostobs/tools/dev`). hostobs is the reporter. The fix lives in the platform tool, and this entry tracks it from the hostobs side.
 
-During P-hostobs-09 the admission check on v1001 refused every attempt, and one implementer turn ended with nothing committed (17 files modified, one new). The measured slice charge was 3,595 to 4,297 MiB against a 3,584 MiB cap. The resume measured 3,983, 4,040, 4,167, 4,098, 4,239 and 4,022 MiB, and the charge stayed over the cap after P-09's own target volume and checkout were removed. Every refusal exited 75 before any command ran. The charge includes page cache and belongs to other jobs, so the caller can neither wait it out with a known bound nor tell which job holds it. The package finished only because main moved its gates to r1002.
+During P-hostobs-09 the admission check on v1001 refused every attempt, and one implementer turn ended with nothing committed (17 files modified, one new). The implementer measured a neighbour-held charge of 3,595 to 4,297 MiB against a 3,584 MiB cap (the resume read 3,983, 4,040, 4,167, 4,098, 4,239 and 4,022 MiB), and the figure stayed over the cap after P-09's own target volume and checkout were removed. Every refusal exited 75 before any command ran, and the package finished only because main moved its gates to r1002.
 
-**Exit criteria.** Platform files and closes a matching item in its own backlog (`scripts/controller`) citing this entry. The tool must then do all of the following, each covered by a test with a fake cgroup tree:
-- the refusal line prints the measured charge, the cap and the part of the charge that is reclaimable page cache;
-- a charge made only of reclaimable cache above the cap does not refuse, or the tool reclaims it before deciding;
-- a bounded wait (`AGENT_DEV_WAIT_S`) reports the last measured charge when it expires, still with exit 75.
+These refusals came from the tool before the generic-dev merge (`261710f62`). At this commit the tool no longer uses a slice-charge model: `scripts/controller/docs/DEV.md` step 3 and `scripts/controller/KNOWN_ISSUES_TODO_BACKLOG.md` CTL-52 say admission is host-memory-PSI-only (memory `full` avg10 >= 3 waits), prints progress every 60 s and exits 75 after `AGENT_DEV_WAIT_S` (900). Whether the starvation survives that change is unmeasured. CTL-62 there (remote-gate admission, PSI-only, observed on v1001 in a hostobs run) is the nearest open item, but it covers the remote-gate path, not `dev`.
 
-Source: `runs/p09-driver.report.md` Backlog candidates 5; `STATE.md` "P-09 B, 14:25Z".
+**Exit criteria.** Platform re-measures admission on the current PSI-based tool under the same neighbour load. A refusal line prints the measured PSI and the wait duration, and the exit-75 message names the holder if known. Then platform files the result in its own backlog or closes this entry.
+
+Source: `runs/p09-driver.report.md` Backlog candidates 5; `STATE.md` "P-09 B, 14:25Z". Also: the controller forwarded the missing `scripts/controller/CHANGES.md` line for the hostobs profile's `dev_image` change (`rs-20261124` to `rs-20261124b`, `reviews/p09-r2-3bc01d21f.md`) to vbpub-platform.
 
 ## HOB-85 — `check-lints` misses `#[no_mangle]`, `#[export_name]` and `#[link_section]`
 
@@ -1037,7 +1036,7 @@ Source: `reviews/p09-r1-26c204d42.md` Backlog candidates; `runs/p09-driver.repor
 
 The diagnostic selftest measured kernel line coverage at 92.36% (2,854 of 3,090 lines) against a 92.00% floor, and region coverage at 93.71% against 93.00%. The next edit to the activation code that is not matched by a proportional test addition fails the selftest.
 
-**Exit criteria.** Tests for the uncovered kernel lines (about 30 lines is one point) bring the selftest's kernel line coverage to at least 93.00% and region coverage to at least 94.00%, with the floors unchanged. The new figures are recorded in CHANGES.
+**Exit criteria.** Tests for the uncovered kernel lines (about 30 lines is one point) bring the selftest's kernel line coverage to at least 93.00% and region coverage to at least 94.00%, with the floors unchanged. These two targets are chosen margins, not figures taken from the sources. The new figures are recorded in CHANGES.
 
 Source: `reviews/p09-r1-26c204d42.md` Backlog candidates; `runs/p09-driver.report.md` Backlog candidates 8.
 
@@ -1067,7 +1066,7 @@ Source: `reviews/p09-r2-3bc01d21f.md` Nit 1.
 
 The lane now builds the probe before the Python tests. The only timings are from dirty-tree diagnostics: a cold probe build took 9.22 s, one run took about 21 s to reach a metadata failure, and the green run ran 204 tests in 1.765 s. No complete cold run on a committed head recorded its total duration, so the budget is neither confirmed nor tightened.
 
-**Exit criteria.** The total duration of a complete cold conformance run on a committed head (for example `rgw-conformance-20261124T170039-r1002`, from run-gate history) is recorded in this entry or in CHANGES. The `budget` is then either kept with that figure noted, or set to a stated multiple of it.
+**Exit criteria.** Read the total duration of `rgw-conformance-20261124T170039` (r1002, `3bc01d21f`) from run-gate history and record it in this entry or in CHANGES, stating whether it was a cold build. If it exceeded half the budget, raise the budget or split the build.
 
 Source: `reviews/p09-r1-26c204d42.md` and `reviews/p09-r2-3bc01d21f.md` Backlog candidates; `runs/p09-driver.report.md` Backlog candidates 7.
 
@@ -1085,11 +1084,11 @@ Until then §(d) stays as the only protection.
 
 Source: `runs/p09-driver.report.md` Backlog candidates 1; `reviews/p09-r1-26c204d42.md` BC1.
 
-## HOB-91 — `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,170 rows
+## HOB-91 — `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,200 rows
 
 **Where:** `bins/probe/src/config.rs` (`(1..=4_096).contains(&max_rows)`), `bins/probe/src/limits.rs`, `docs/WIRE.md`.
 
-`limits.rs::worst_case_query_ram_is_derived_from_the_encoder_helpers` pins 1,024 rows at 890,624 bytes. Scaled with the same row shape, the default 1 MiB `max_block_bytes` is reached near 1,170 rows. A configuration with `max_rows = 4096` and the default block size is therefore accepted at start-up and refused later, at block build time.
+`limits.rs::worst_case_query_ram_is_derived_from_the_encoder_helpers` pins 1,024 rows at 890,624 bytes. Scaled with the same row shape, the default 1 MiB `max_block_bytes` is reached at about 1,200 rows (the report says 1,170). A configuration with `max_rows = 4096` and the default block size is therefore accepted at start-up and refused later, at block build time.
 
 **Exit criteria.** The relation is enforced at start-up: a configuration whose `max_rows` worst-case block exceeds `max_block_bytes` exits 2 with one line naming both keys, using the same encoder helpers as the limits test, or the allowed `max_rows` range is derived from `max_block_bytes`. WIRE or the config docs state the relation. Tests: `max_rows = 4096` with the default block size is refused at start-up, and `max_rows = 1024` is accepted.
 
@@ -1101,7 +1100,7 @@ Source: `runs/p09-driver.report.md` Backlog candidates 2.
 
 By decision the probe installs no signal handler. `SIGTERM` kills the process, the kernel closes every socket, and clients see EOF or `ECONNRESET`. The internal stop path (a drop guard sets the stop flag, the loop calls `Server::shutdown()`, and each client gets `closing shutting-down`) exists and is exercised by sampler panic and return, but nothing connects `SIGTERM` to it. That is acceptable while there is no store writer to drain. P-16 spawns the writer, so a kill then loses buffered store data. rustix 1.1.6 has no safe `sigprocmask` or `signalfd`. `libc` 0.2.191 is already locked and image-cached, so a `signalfd` module needs audited `unsafe` calls but no image rebuild.
 
-**Exit criteria.** `SIGTERM` is wired to the internal stop path through a signalfd (or equivalent) in the existing poll loop. A real-process Python test sends `SIGTERM` to an activated probe with a connected client. The client reads `closing shutting-down`, and the process exits 0 within a stated number of turns. The conformance case that now asserts the default `SIGTERM` action is replaced by it. The new `unsafe` sites are audited in `check-lints.py` (`expected_uses`) and in PROBE-PROCESS §(e), and §(f) drops the "filed backlog item" wording. This lands before P-16 spawns the store writer.
+**Exit criteria.** `SIGTERM` is wired to the internal stop path through a signalfd (or equivalent) in the existing poll loop. A real-process Python test sends `SIGTERM` to an activated probe with a connected client. The client reads `closing shutting-down`, and the process exits 0 within 2 × `tick_ms` of the signal. The conformance case that now asserts the default `SIGTERM` action is replaced by it. The new `unsafe` sites are audited in `check-lints.py` (`expected_uses`) and in PROBE-PROCESS §(e), and §(f) drops the "filed backlog item" wording. This lands before P-16 spawns the store writer.
 
 Source: `runs/p09-driver.report.md` Backlog candidates 3; `docs/PROBE-PROCESS.md` §(f); `STATE.md` accepted design decisions.
 
@@ -1112,7 +1111,8 @@ Source: `runs/p09-driver.report.md` Backlog candidates 3; `docs/PROBE-PROCESS.md
 - `parse_refusal` asserts `text.contains(key)` on the whole refusal text. Today the serde messages never contain field names, so the test still fails on the regression, but `contains(&format!("key {key}:"))` pins the key slot exactly.
 - §(d) is stricter than the kernel requires. A client in a descendant PID namespace is visible to the probe. The exact rule is that the probe's namespace must be the same as, or an ancestor of, every client's. "One shared namespace" stays as the simple form.
 - The README sentence names `rs-20261124b` but keeps the "79 s" figure measured earlier with the pre-shim tool on the old image.
+- Two edits left awkward line wraps: `README.md:144` ("…decoders, fixture") and `PROBE-PROCESS.md:276` ("Python suite. The test sends").
 
-**Exit criteria.** `parse_refusal` asserts the exact `key <name>:` slot and every existing refusal case passes. §(d) states the ancestor rule beside the simple one. The README figure is replaced by a measurement taken on `rs-20261124b` (the P-09 round 3 `tools/dev test -p hostobs-probe` took 30.1 s), or the sentence names the image it was measured on.
+**Exit criteria.** `parse_refusal` asserts the exact `key <name>:` slot and every existing refusal case passes. §(d) states the ancestor rule beside the simple one. The README figure is replaced by a measurement taken on `rs-20261124b` (the P-09 round 3 `tools/dev test -p hostobs-probe` took 30.1 s), or the sentence names the image it was measured on. Both wrapped passages are re-flowed so no line breaks mid-phrase.
 
-Source: `reviews/p09-r2-3bc01d21f.md` Nits 2, 3, 4.
+Source: `reviews/p09-r2-3bc01d21f.md` Nits 2, 3, 4, 5.
