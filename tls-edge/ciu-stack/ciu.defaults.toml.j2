@@ -139,8 +139,11 @@ ca_server = "https://acme-v02.api.letsencrypt.org/directory"
 #   ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"
 resolver_name = "letsencrypt"
 # Name of an EXISTING docker volume holding acme.json to adopt (migration);
-# "" lets the stack create and own its own acme-data volume.
+# "" lets the selected storage below own it.
 volume_name = ""
+# volume : the compose-owned acme-data volume (3.1 behaviour).
+# hostdir: the ciu hostdir declared under [tls_edge.traefik.hostdir].
+store = "volume"
 
 [tls_edge.acme.dns]
 # lego provider code: cloudflare | hetzner | route53 | desec | rfc2136 | ...
@@ -201,6 +204,13 @@ pre_secrets = ["hooks/validate_edge.py"]
 # Keep the validator reachable to `ciu check` even when an override empties
 # pre_secrets; check_override then refuses the missing required hook.
 pre_compose = ["hooks/validate_edge.py"]
+
+[tls_edge.traefik.hostdir]
+# New system-scope instances use ../../shared/acme (relative to this stack dir).
+# For that value, reset/down -v/clean cannot remove it: it is outside stack/,
+# owner 0:0, mode 0700. The shipped empty default instead resolves to
+# ciu-stack/vol-traefik-acme, which --reset removes.
+acme = { path = "", uid = 0, gid = 0, mode = "0700" }
 
 # ─── ciu configfile mounts (S5; ignored by the standalone renderer, which
 #     bind-mounts ./traefik.yml and ./conf.d instead) ──────────────────────────
