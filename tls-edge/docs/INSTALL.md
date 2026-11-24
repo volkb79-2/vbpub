@@ -442,6 +442,8 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   committed `VERSION` file, clears stale `dist/` output first and fails if the
   variable is absent. `TLS_EDGE_CIU_VERSION=<x.y.z>` and
   `TLS_EDGE_CLI_EXTENDED_VERSION=<x.y.z>` optionally pin the GitHub-only first-party wheels.
+  Build release bundles only from a clean tree (`cmru release` does); a dirty checkout's untracked
+  files under `ciu-stack/` and `consumer-examples/` would be bundled.
   `python3 tools/bundle_wheels.py requirements` resolves the third-party closure under the
   14-day upload buffer and writes exact pins to `requirements-bundle.txt`; cmru vendors
   that lock for each declared interpreter.

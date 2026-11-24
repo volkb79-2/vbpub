@@ -61,6 +61,12 @@ def test_operator_docs_name_the_bundle_root_and_reproducibility_inputs():
     assert "`scripts/verify.sh` check 1 now runs the bundled `<root>/ciu check`" in changed
     assert "SKIPs when the ciu stub is absent" in changed
 
+    install = " ".join((ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8").split())
+    assert (
+        "Build release bundles only from a clean tree (`cmru release` does); a dirty checkout's "
+        "untracked files under `ciu-stack/` and `consumer-examples/` would be bundled."
+    ) in install
+
 
 def test_push_step_is_the_cmru_variants_handler_not_a_project_script():
     argv = _publish_argv()
