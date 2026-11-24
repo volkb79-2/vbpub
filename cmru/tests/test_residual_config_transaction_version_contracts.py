@@ -156,9 +156,13 @@ def test_transaction_delete_and_discard_refuse_unsafe_state(tmp_path):
 
 
 def test_version_counter_success_and_external_prepare_value_are_observable(tmp_path):
-    with patch.object(version, "run_process", side_effect=[SimpleNamespace(returncode=0, stdout=""), SimpleNamespace(returncode=0)]) as run:
+    zero = SimpleNamespace(returncode=0, stdout="", stderr="")
+    with patch.object(version, "run_process", return_value=zero) as list_tags, patch(
+        "cmru.git_auth.run_process", return_value=zero,
+    ) as tag:
         assert version._apply_strategy_counter(tmp_path, "demo-v", "1.0.0") == "demo-v1.0.0-r1"
-    assert run.call_count == 2
+    assert list_tags.call_count == 1
+    assert tag.call_count == 1
 
     root = repo(tmp_path); (root / "demo" / "cmru.vars").write_text("VERSION=2.3.4\n")
     git(root, "add", "demo/cmru.vars"); git(root, "commit", "-q", "-m", "prepare version")

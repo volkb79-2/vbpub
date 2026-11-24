@@ -1538,8 +1538,8 @@ def test_abandon_refuses_remote_branch_state_that_disagrees_with_markers(
         if remote_present:
             stdout += "a" * 40 + "\trefs/heads/" + candidate.branch + "\n"
         stdout += "b" * 40 + "\trefs/heads/main\n"
-    monkeypatch.setattr(
-        cli.subprocess, "run",
+    _install_cli_process_seam(
+        monkeypatch,
         lambda argv, **_kw: subprocess.CompletedProcess(
             argv, remote_code, stdout, "offline" if remote_code else "",
         ),

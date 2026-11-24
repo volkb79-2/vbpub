@@ -25,8 +25,11 @@ def _policy_source() -> Path:
     raise RuntimeError("cannot locate libraries/test-policy/src from cmru tests")
 
 
-sys.path.insert(0, str(_policy_source()))
+_POLICY_SRC = _policy_source()
+sys.path.insert(0, str(_POLICY_SRC))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from estate_test_policy import policy as _estate_policy  # noqa: E402
 
 from cmru.process_guard import (
     DescendantGuard,
@@ -34,6 +37,25 @@ from cmru.process_guard import (
     enable_child_subreaper,
     restore_child_subreaper,
 )
+
+_ORIGINAL_ESTATE_ANALYZE = _estate_policy.analyze_source
+
+
+def _analyze_test_source(source: str, **kwargs):
+    """Strip the test function's own indentation without moving string literals.
+
+    libraries/test-policy TP-18 (controller files it): analyze_source fails on
+    a method with column-0 string-literal lines; remove the shim when it lands.
+    """
+    indent = source[: len(source) - len(source.lstrip())]
+    normalized = "".join(
+        line[len(indent):] if indent and line.startswith(indent) else line
+        for line in source.splitlines(keepends=True)
+    )
+    return _ORIGINAL_ESTATE_ANALYZE(normalized, **kwargs)
+
+
+_estate_policy.analyze_source = _analyze_test_source
 
 pytest_plugins = ["cli_extended.pytest_plugin", "estate_test_policy.plugin"]
 
@@ -80,7 +102,7 @@ def process_run_seam(monkeypatch):
             monkeypatch.setattr(module, "run_process", adapted_run_process)
         if hasattr(module, "subprocess"):
             monkeypatch.setattr(module.subprocess, "run", replacement)
-        if module.__name__ in {"cmru.cli", "cmru.transaction"}:
+        if module.__name__ in {"cmru.cli", "cmru.transaction", "cmru.version"}:
             monkeypatch.setattr(git_auth, "run_process", adapted_run_process)
 
     return install
