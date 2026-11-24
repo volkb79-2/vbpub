@@ -29,10 +29,11 @@
 //!
 //! # Why this is not `model::IncarnationRegistry`
 //!
-//! `store` may not depend on `model` (a path dependency rewrites `Cargo.lock`, and the lane
-//! image bakes that lock — `HOB-27`), so the index lives here with its own small entry type and
-//! the shared quality/vocabulary fixtures stay the cross-crate contract. The M2 probe owns the
-//! merge of the two (plan v4 §A.3: `bins/probe` is where the registry and the store meet).
+//! The model registry mints from `(mount id, inode)` keys and retires only after consecutive
+//! scan rounds; this index is the epoch's stored-id table and retires against segment
+//! reachability. They answer different state-machine questions even though both ultimately
+//! issue incarnation ids. The M2 probe owns the boundary between the two (plan v4 §A.3:
+//! `bins/probe` is where the registry and the store meet).
 
 use std::collections::{BTreeMap, BTreeSet};
 

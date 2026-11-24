@@ -1,5 +1,5 @@
 //! Byte-level shape checks of the JSON payloads of REQ, REP, END and EVT frames
-//! (WIRE.md §2.2, §4.1, §8.2) without a JSON library: `proto` stays dependency-free.
+//! (WIRE.md §2.2, §4.1, §8.2) without a JSON library.
 //!
 //! A check validates the payload's **text** as far as the envelope needs it (UTF-8, one object,
 //! no BOM, no trailing byte, string escapes, number grammar, nesting depth at most 8, no

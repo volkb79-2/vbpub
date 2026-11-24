@@ -1,7 +1,6 @@
 """Offline guards for the jitsi-server project: render, compose validation,
 no credentials/domains in tracked files, port-plan agreement, edge consumer
-shape, pinned images. No network; docker is used only for `compose config`
-(skipped when absent).
+shape, pinned images. No network; docker is used only for `compose config`.
 """
 from __future__ import annotations
 
@@ -9,13 +8,12 @@ import datetime as dt
 import importlib.util
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
-import pytest
+import jinja2
 import yaml
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -24,8 +22,6 @@ DEFAULTS = PROJECT / "ciu.defaults.toml.j2"
 COMPOSE = PROJECT / "ciu.compose.yml.j2"
 GLOBAL = PROJECT / "ciu.global.defaults.toml.j2"
 README_AREA = AREA / "README.md"
-
-jinja2 = pytest.importorskip("jinja2")
 
 ENV = {"PUBLIC_FQDN": "example.test", "PUBLIC_IP": "203.0.113.7"}
 LIVE_EDGE_PORTS = {80, 443, 8443, 8444, 9443}
@@ -53,14 +49,11 @@ def _compose_text() -> str:
 
 
 def _tracked_files() -> list[Path]:
-    try:
-        out = subprocess.run(
-            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "."],
-            cwd=PROJECT, capture_output=True, check=True,
-        ).stdout.decode().split("\0")
-        files = [PROJECT / f for f in out if f]
-    except (OSError, subprocess.CalledProcessError):
-        files = [p for p in PROJECT.rglob("*") if p.is_file() and ".ciu" not in p.parts]
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "."],
+        cwd=PROJECT, capture_output=True, check=True,
+    ).stdout.decode().split("\0")
+    files = [PROJECT / f for f in out if f]
     return [f for f in files if f.is_file() and "__pycache__" not in f.parts]
 
 
@@ -78,7 +71,6 @@ def test_domain_is_configurable_not_hardcoded() -> None:
     assert other["public_host"] == "jitsi.other.test"
 
 
-@pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not available")
 def test_rendered_compose_validates(tmp_path: Path) -> None:
     f = tmp_path / "compose.yml"
     f.write_text(_compose_text(), encoding="utf-8")
@@ -101,8 +93,6 @@ def test_rendered_compose_validates(tmp_path: Path) -> None:
         ["docker", "compose", "-f", str(f), "-f", str(over), "config", "-q"],
         capture_output=True, text=True, env=env, timeout=60,
     )
-    if "docker daemon" in proc.stderr.lower() and proc.returncode != 0:
-        pytest.skip("docker compose unavailable")
     assert proc.returncode == 0, proc.stderr
 
 
@@ -138,18 +128,31 @@ def test_secret_store_is_gitignored_and_secrets_are_0600() -> None:
     for name, spec in cfg["secrets"].items():
         assert spec["directive"].startswith("GEN_LOCAL:jitsi/"), name
         assert spec["mode"] == "0600", name
-    if shutil.which("git"):
-        for rel in (".ciu/secrets/jitsi/user_admin", ".ciu/credentials.txt"):
-            r = subprocess.run(["git", "check-ignore", "-q", rel], cwd=PROJECT, capture_output=True)
-            assert r.returncode == 0, f"{rel} is not gitignored"
+    for rel in (".ciu/secrets/jitsi/user_admin",):
+        r = subprocess.run(["git", "check-ignore", "-q", rel], cwd=PROJECT, capture_output=True)
+        assert r.returncode == 0, f"{rel} is not gitignored"
 
 
-def test_every_user_has_a_declared_hook_secret() -> None:
+def test_rendered_users_and_password_declarations_are_exactly_three_hook_secrets() -> None:
     cfg = _cfg()
-    assert 3 <= len(cfg["users"]) <= 5
-    assert any(u["name"] == "admin" for u in cfg["users"])
-    for u in cfg["users"]:
-        assert cfg["secrets"][u["secret"]]["consumed_by"] == "hook"
+    assert [u["name"] for u in cfg["users"]] == ["admin", "alice", "bob"]
+    assert "dummy_users" not in cfg["auth"]
+    assert all("dummy" not in u for u in cfg["users"])
+
+    expected = {
+        "user_admin",
+        "user_alice",
+        "user_bob",
+        "jicofo_auth_password",
+        "jvb_auth_password",
+        "jicofo_component_secret",
+    }
+    assert set(cfg["secrets"]) == expected
+    for username in ("admin", "alice", "bob"):
+        spec = cfg["secrets"][f"user_{username}"]
+        assert spec["directive"] == f"GEN_LOCAL:jitsi/user_{username}"
+        assert spec["mode"] == "0600"
+        assert spec["consumed_by"] == "hook"
     assert cfg["hooks"]["post_compose"] == ["hooks/post_compose_users.py"]
     assert (PROJECT / "hooks" / "post_compose_users.py").is_file()
 
@@ -282,10 +285,8 @@ def test_images_pinned_by_digest_and_at_least_14_days_old() -> None:
     assert len({cfg[s]["image_tag"].split("@")[0] for s in ("web", "prosody", "jicofo", "jvb")}) == 1
 
 
-def test_dummy_users_are_opt_in_and_hostdirs_are_not_group_writable() -> None:
+def test_hostdirs_are_not_group_writable() -> None:
     cfg = _cfg()
-    assert cfg["auth"]["dummy_users"] is False
-    assert [u["name"] for u in cfg["users"] if not u.get("dummy")] == ["admin"]
     # web has no hostdir: its /config is the rendered, read-only custom-config.js mount
     assert "hostdir" not in cfg["web"]
     for svc in ("prosody", "jicofo", "jvb"):

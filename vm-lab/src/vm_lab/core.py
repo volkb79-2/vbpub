@@ -41,7 +41,7 @@ import tempfile
 import time
 import tty
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from . import console as vm_lab_console
 from . import text as vm_lab_text
@@ -67,10 +67,13 @@ MAX_GUEST_MEMORY_MIB = 8192
 MIN_GUEST_CPUS = 1
 MAX_GUEST_CPUS = 4
 MAX_FORWARDS = 8
+BOOT_ORDERS = ("c", "dc")
+PLAIN_HOST_FIXED_NETWORKS = ("bridge", "host", "none")
 QCOW2_MAGIC = b"QFI\xfb"
 BASE_FORMATS = ("auto", "qcow2", "raw")
 RAW_DISK_NAME = "disk.raw"
 QCOW2_OVERLAY_NAME = "disk-overlay.qcow2"
+CONFIG_DISK_CONTAINER_PATH = "/media/config.img"
 # A full copy of a large base can take long; the default 30 s runner timeout is for Docker queries.
 COPY_TIMEOUT_SECONDS = 3600
 # Recorded for a raw guest as information; a resume does not compare them.
@@ -284,6 +287,8 @@ MAX_MEMORY_PSI_FULL_AVG10 = 1.0
 MAX_EXTRA_DISKS = 8
 INSPECTOR_CGROUP_MOUNT = "/sys/fs/cgroup"
 INSPECTOR_DBUS_MOUNT = "/run/dbus/system_bus_socket"
+HOST_CGROUP_ROOT = Path("/sys/fs/cgroup")
+HOST_PROC_ROOT = Path("/proc")
 SYSTEMD_UNREADABLE_UINT64 = 2**64 - 1  # systemd reports an unreadable counter as UINT64_MAX.
 # busctl get-property output per D-Bus type tag: `s "text"` and `t 123`.
 BUSCTL_VALUE_PATTERNS = {"s": r's\s+"([^"]*)"', "t": r"t\s+([0-9]+)"}
@@ -468,6 +473,39 @@ def console_ctl_keys(value: str) -> str:
 def validate_slice_name(value: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9_.@:-]+\.slice", value):
         raise RunnerError(f"invalid cgroup slice name {value!r}; expected a systemd .slice unit")
+
+
+def validate_plain_host_slice_name(value: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@-]*\.slice", value):
+        raise RunnerError(
+            f"invalid cgroup slice name {value!r}; expected a plain systemd *.slice unit name"
+        )
+
+
+def validate_boot_order(value: str, *, has_readonly_media: bool) -> None:
+    if value not in BOOT_ORDERS:
+        raise RunnerError("--boot-order must be c or dc")
+    if value == "dc" and not has_readonly_media:
+        raise RunnerError("--boot-order dc requires --readonly-media, --iso, or --seed-iso")
+
+
+def validate_plain_host_network(value: str) -> None:
+    if value in PLAIN_HOST_FIXED_NETWORKS or value.startswith("container:"):
+        raise RunnerError(
+            f"plain-host --network must name a dedicated user-defined Docker network, not {value!r}"
+        )
+
+
+def validate_plain_host_network_identity(value: str, network_name: str, driver: str) -> None:
+    if network_name != value:
+        raise RunnerError(
+            f"plain-host --network {value!r} resolved to Docker network {network_name!r}; "
+            "pass the exact network name, not an ID or prefix"
+        )
+    if driver != "bridge":
+        raise RunnerError(
+            f"plain-host --network {value!r} must use Docker bridge driver, not {driver!r}"
+        )
 
 
 def validate_max_concurrent_guests(value: int, maximum: int) -> None:
@@ -824,6 +862,11 @@ def systemd_unit_object_path(inspector: str, unit_name: str) -> str:
 def systemd_control_group(inspector: str, object_path: str, unit_name: str, interface: str) -> str:
     """Read and validate a systemd unit's cgroup path."""
     control_group = busctl_value(inspector, object_path, interface, "ControlGroup", "s")
+    return validate_systemd_control_group(control_group, unit_name)
+
+
+def validate_systemd_control_group(control_group: str, unit_name: str) -> str:
+    """Return a systemd cgroup path only when it is absolute and has no ascent."""
     if not control_group.startswith("/") or ".." in PurePosixPath(control_group).parts:
         raise RunnerError(f"systemd returned an unsafe cgroup path for {unit_name}: {control_group!r}")
     return control_group
@@ -860,15 +903,29 @@ def cgroup_file(inspector: str, control_group: str, name: str) -> str | None:
     raise RunnerError(f"cannot read host cgroup file {path}: {result.stderr.strip()}")
 
 
-def cgroup_levels(inspector: str, control_group: str) -> list[dict[str, int | float | None]]:
+def local_cgroup_file(control_group: str, name: str) -> str | None:
+    """Read one cgroup-v2 file directly on the Docker host."""
+    path = HOST_CGROUP_ROOT / control_group.lstrip("/") / name
+    try:
+        return path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RunnerError(f"cannot read host cgroup file {path}: {exc}") from exc
+
+
+def _cgroup_levels(
+    control_group: str,
+    read_file: Callable[[str, str], str | None],
+) -> list[dict[str, int | float | None]]:
     levels: list[dict[str, int | float | None]] = []
     current_path = control_group
     while True:
-        cpu_raw = cgroup_file(inspector, current_path, "cpu.max")
-        high_raw = cgroup_file(inspector, current_path, "memory.high")
-        max_raw = cgroup_file(inspector, current_path, "memory.max")
-        current_raw = cgroup_file(inspector, current_path, "memory.current")
-        psi_raw = cgroup_file(inspector, current_path, "memory.pressure")
+        cpu_raw = read_file(current_path, "cpu.max")
+        high_raw = read_file(current_path, "memory.high")
+        max_raw = read_file(current_path, "memory.max")
+        current_raw = read_file(current_path, "memory.current")
+        psi_raw = read_file(current_path, "memory.pressure")
         psi_some, psi_full = parse_memory_psi(psi_raw) if psi_raw is not None else (None, None)
         levels.append(
             {
@@ -885,6 +942,17 @@ def cgroup_levels(inspector: str, control_group: str) -> list[dict[str, int | fl
             break
         current_path = posixpath.dirname(current_path.rstrip("/")) or "/"
     return levels
+
+
+def cgroup_levels(inspector: str, control_group: str) -> list[dict[str, int | float | None]]:
+    return _cgroup_levels(
+        control_group,
+        lambda path, name: cgroup_file(inspector, path, name),
+    )
+
+
+def local_cgroup_levels(control_group: str) -> list[dict[str, int | float | None]]:
+    return _cgroup_levels(control_group, local_cgroup_file)
 
 
 def cgroup_preflight(
@@ -904,8 +972,71 @@ def cgroup_preflight(
     return inspector, levels, control_group
 
 
+def plain_host_systemd_property(unit_name: str, prop: str) -> str:
+    """Read one systemd property from the local Docker host."""
+    result = docker_run(
+        ["systemctl", "show", "--property", prop, "--value", unit_name],
+        check=False,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise RunnerError(f"cannot read systemd property {prop} of {unit_name}: {detail}")
+    value = result.stdout.strip()
+    if not value:
+        raise RunnerError(f"systemd returned no {prop} value for {unit_name}")
+    return value
+
+
+def plain_host_systemd_slice_path(slice_name: str) -> str:
+    """Resolve a loaded slice's cgroup path directly on the Docker host."""
+    validate_plain_host_slice_name(slice_name)
+    load_state = plain_host_systemd_property(slice_name, "LoadState")
+    if load_state != "loaded":
+        raise RunnerError(
+            f"systemd slice {slice_name} has LoadState={load_state!r}; refusing auto-created slices"
+        )
+    transient = plain_host_systemd_property(slice_name, "Transient")
+    if transient != "no":
+        fragment_path = plain_host_systemd_property(slice_name, "FragmentPath")
+        if not fragment_path:
+            raise RunnerError(
+                f"systemd slice {slice_name} has Transient={transient!r} and no FragmentPath; "
+                "refusing an auto-created slice"
+            )
+    control_group = plain_host_systemd_property(slice_name, "ControlGroup")
+    return validate_systemd_control_group(control_group, slice_name)
+
+
+def plain_host_cgroup_preflight(
+    slice_name: str,
+    *,
+    requested_cpus: float,
+    max_memory_psi_full_avg10: float = MAX_MEMORY_PSI_FULL_AVG10,
+) -> tuple[list[dict[str, int | float | None]], str]:
+    control_group = plain_host_systemd_slice_path(slice_name)
+    levels = local_cgroup_levels(control_group)
+    validate_memory_headroom(
+        levels,
+        requested_cpus=requested_cpus,
+        max_memory_psi_full_avg10=max_memory_psi_full_avg10,
+    )
+    return levels, control_group
+
+
 def host_pid_cgroup(inspector: str, pid: int) -> str:
     raw = inspector_exec(inspector, ["cat", f"/hostproc/{pid}/cgroup"])
+    return parse_host_cgroup(raw)
+
+
+def local_pid_cgroup(pid: int) -> str:
+    """Read the unified cgroup of a local host PID."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
+        raise RunnerError(f"Docker returned an invalid host PID: {pid!r}")
+    path = HOST_PROC_ROOT / str(pid) / "cgroup"
+    try:
+        raw = path.read_text()
+    except OSError as exc:
+        raise RunnerError(f"cannot read host process cgroup {path}: {exc}") from exc
     return parse_host_cgroup(raw)
 
 
@@ -925,7 +1056,7 @@ def verify_running_container(
     state_dir_hash: str,
     network: str,
     cgroup_parent: str,
-    inspector: str,
+    inspector: str | None,
     expected_cgroup_path: str,
 ) -> dict[str, Any]:
     memory_bytes = profile.container_memory_bytes
@@ -943,17 +1074,28 @@ def verify_running_container(
         raise RunnerError(
             f"Docker did not apply the requested {memory_bytes / 1024**3:g} GiB memory and no-swap limits"
         )
+    if host_config.get("NetworkMode") != network:
+        raise RunnerError(
+            f"container {name!r} has unexpected Docker network mode "
+            f"{host_config.get('NetworkMode')!r}; expected {network!r}"
+        )
     if network not in (item.get("NetworkSettings", {}).get("Networks") or {}):
         raise RunnerError(f"container {name!r} is not attached to required network {network!r}")
     if not item.get("State", {}).get("Running"):
         raise RunnerError(f"container {name!r} exited during startup; inspect with `docker logs {name}`")
     container_id = item.get("Id", "")
-    actual_cgroup = systemd_scope_path(inspector, container_id)
+    if inspector is None:
+        actual_cgroup = local_pid_cgroup(item.get("State", {}).get("Pid"))
+    else:
+        actual_cgroup = systemd_scope_path(inspector, container_id)
     if actual_cgroup != expected_cgroup_path and not actual_cgroup.startswith(expected_cgroup_path.rstrip("/") + "/"):
         raise RunnerError(
             f"Docker container {name!r} scope is in {actual_cgroup!r}, outside selected slice {expected_cgroup_path!r}"
         )
-    leaf = cgroup_levels(inspector, actual_cgroup)[0]
+    if inspector is None:
+        leaf = local_cgroup_levels(actual_cgroup)[0]
+    else:
+        leaf = cgroup_levels(inspector, actual_cgroup)[0]
     if (
         leaf.get("memory_max") != memory_bytes
         or leaf.get("cpu_max") is None
@@ -1313,6 +1455,15 @@ def validate_name(value: str) -> None:
         raise RunnerError(f"invalid Docker VM name {value!r}")
 
 
+def validate_plain_host_name(value: str) -> None:
+    validate_name(value)
+    if "-" not in value:
+        raise RunnerError(
+            f"invalid plain-host Docker VM name {value!r}; include at least one hyphen so "
+            "an all-hex Docker ID prefix cannot select an unrelated container"
+        )
+
+
 def validate_port(value: int, label: str) -> None:
     if not 1 <= value <= 65535:
         raise RunnerError(f"{label} must be between 1 and 65535")
@@ -1338,8 +1489,20 @@ def extra_disk_sizes_bytes(values: list[str]) -> list[int]:
     return [parse_extra_disk_size(value) for value in values]
 
 
-def inspect_network(name: str) -> None:
-    docker_run(["docker", "network", "inspect", name])
+def inspect_network(name: str) -> tuple[str, str]:
+    """Return Docker's exact resolved network name and driver."""
+    result = docker_run(
+        ["docker", "network", "inspect", name, "--format", "{{.Name}} {{.Driver}}"]
+    )
+    lines = result.stdout.splitlines()
+    if len(lines) != 1:
+        raise RunnerError(
+            f"Docker network inspect {name!r} returned {len(lines)} records; expected exactly one"
+        )
+    fields = lines[0].split()
+    if len(fields) != 2:
+        raise RunnerError(f"Docker returned malformed network identity for {name!r}: {lines[0]!r}")
+    return fields[0], fields[1]
 
 
 def image_exists(name: str) -> None:
@@ -1549,8 +1712,11 @@ def runner_manifest(
     cgroup_parent: str,
     host_ports: Mapping[str, int],
     readonly_media: Path | None = None,
+    config_disk: Path | None = None,
     extra_disk_sizes: list[int] | None = None,
     disk_format: str = "qcow2",
+    cpu_shares: int | None = None,
+    boot_order: str = "c",
 ) -> dict[str, Any]:
     """Identity record of a guest; resume refuses when any recorded value differs.
 
@@ -1563,6 +1729,11 @@ def runner_manifest(
     copy source: its path and size are recorded, not an identity the guest still
     depends on).
     """
+    if cpu_shares is not None and (
+        isinstance(cpu_shares, bool) or not isinstance(cpu_shares, int) or cpu_shares < 1
+    ):
+        raise RunnerError("CPU shares must be a positive integer")
+    validate_boot_order(boot_order, has_readonly_media=readonly_media is not None)
     if set(host_ports) != {forward.name for forward in profile.forwards}:
         raise RunnerError("host ports must name exactly the profile's port forwards")
     if disk_format not in ("qcow2", "raw"):
@@ -1602,6 +1773,12 @@ def runner_manifest(
             manifest[f"{forward.name}_guest_port"] = forward.guest_port
     if readonly_media is not None:
         manifest["readonly_media"] = file_identity(readonly_media)
+    if config_disk is not None:
+        manifest["config_disk"] = file_identity(config_disk)
+    if cpu_shares is not None:
+        manifest["cpu_shares"] = cpu_shares
+    if boot_order != "c":
+        manifest["boot_order"] = boot_order
     if extra_disk_sizes:
         manifest["extra_disk_sizes_bytes"] = list(extra_disk_sizes)
     return manifest
@@ -1635,8 +1812,12 @@ def check_runner_manifest(
         raise RunnerError(f"cannot read runner identity file {path}: {exc}") from exc
     # How the last start wired the serial port is a record, not an identity: it may differ on resume.
     expected = {k: v for k, v in expected.items() if k != SERIAL_CONSOLE_KEY}
+    expected.setdefault("cpu_shares", None)
+    expected.setdefault("boot_order", "c")
     if isinstance(actual, dict):
         actual = {k: v for k, v in actual.items() if k != SERIAL_CONSOLE_KEY}
+        actual.setdefault("cpu_shares", None)
+        actual.setdefault("boot_order", "c")
         # A guest recorded before raw bases existed has no disk_format: it is qcow2.
         recorded_format = actual.get("disk_format", "qcow2")
         requested_format = expected.get("disk_format", "qcow2")
@@ -1785,7 +1966,12 @@ def _replace_once(script: str, old: str, new: str) -> str:
     return script.replace(old, new)
 
 
-def host_command_script(profile: VmProfile, disk_format: str = "qcow2") -> str:
+def host_command_script(
+    profile: VmProfile,
+    disk_format: str = "qcow2",
+    boot_order: str = "c",
+    config_disk: bool = False,
+) -> str:
     """The shell script that runs inside the container and execs QEMU.
 
     The default (``qcow2``) is the historical script, unchanged. ``raw`` boots
@@ -1794,16 +1980,21 @@ def host_command_script(profile: VmProfile, disk_format: str = "qcow2") -> str:
     assert profile.guest_memory_mib is not None and profile.cpus is not None
     if disk_format not in ("qcow2", "raw"):
         raise RunnerError(f"unknown disk format {disk_format!r}")
+    if boot_order not in BOOT_ORDERS:
+        raise RunnerError("boot order must be c or dc")
     hostfwd = ",".join(
         f"hostfwd=tcp:0.0.0.0:${{{forward.env_name}}}-:{forward.guest_port}" for forward in profile.forwards
     )
+    config_disk_script = _CONFIG_DISK_SCRIPT if config_disk else ""
     script = (
         _HOST_SCRIPT_TEMPLATE
+        .replace("@@CONFIG_DISK@@", config_disk_script)
         .replace("@@DRIVE_PREFIX@@", profile.extra_disk_drive_prefix)
         .replace("@@SERIAL_PREFIX@@", profile.extra_disk_serial_prefix)
         .replace("@@CPUS@@", str(profile.cpus))
         .replace("@@MEMORY_MIB@@", str(profile.guest_memory_mib))
         .replace("@@HOSTFWD@@", hostfwd)
+        .replace("@@BOOT_ORDER@@", boot_order)
     )
     if disk_format == "raw":
         script = _replace_once(script, _QCOW2_DISK_SETUP, _RAW_DISK_SETUP)
@@ -1866,7 +2057,7 @@ if [ -n "${VM_READONLY_MEDIA:-}" ]; then
   test -s "$VM_READONLY_MEDIA"
   set -- "$@" -cdrom "$VM_READONLY_MEDIA"
 fi
-if [ "${VM_VNC_CONSOLE:-0}" = "1" ]; then
+@@CONFIG_DISK@@if [ "${VM_VNC_CONSOLE:-0}" = "1" ]; then
   set -- "$@" -vnc unix:/state/vnc.sock
 else
   set -- "$@" -display none
@@ -1889,10 +2080,19 @@ exec qemu-system-x86_64 \
   -drive file=/state/disk-overlay.qcow2,if=virtio,format=qcow2,cache=unsafe \
   -netdev "user,id=net0,@@HOSTFWD@@" \
   -device virtio-net-pci,netdev=net0 \
-  -boot order=c,menu=on \
+  -boot order=@@BOOT_ORDER@@,menu=on \
   -monitor none \
   "$@" \
   -qmp unix:/state/qmp.sock,server=on,wait=off
+'''
+
+
+_CONFIG_DISK_SCRIPT = '''if [ -n "${VM_CONFIG_DISK:-}" ]; then
+  test -s "$VM_CONFIG_DISK"
+  set -- "$@" \
+    -drive "file=$VM_CONFIG_DISK,if=none,id=@@DRIVE_PREFIX@@cfg,format=raw,readonly=on" \
+    -device "virtio-blk-pci,drive=@@DRIVE_PREFIX@@cfg,serial=@@SERIAL_PREFIX@@CFG,addr=0x6"
+fi
 '''
 
 
@@ -1979,6 +2179,9 @@ def docker_create_argv(
     disk_sizes_bytes: list[int],
     image: str,
     disk_format: str = "qcow2",
+    cpu_shares: int | None = None,
+    boot_order: str = "c",
+    host_config_disk: str | None = None,
 ) -> list[str]:
     """The `docker run` argv for one guest.
 
@@ -1991,11 +2194,18 @@ def docker_create_argv(
     """
     if disk_format == "qcow2" and host_base is None:
         raise RunnerError("a qcow2 guest needs the host path of its base image")
+    if cpu_shares is not None and (
+        isinstance(cpu_shares, bool) or not isinstance(cpu_shares, int) or cpu_shares < 1
+    ):
+        raise RunnerError("CPU shares must be a positive integer")
+    validate_boot_order(boot_order, has_readonly_media=host_media is not None)
     memory_bytes = profile.container_memory_bytes
+    cpu_share_argv = ["--cpu-shares", str(cpu_shares)] if cpu_shares is not None else []
     create_argv = [
         "docker", "run", "--detach", "--init", "--name", name,
         "--cgroup-parent", slice_name,
         "--cpus", f"{float(profile.cpus):g}",
+        *cpu_share_argv,
         "--memory", str(memory_bytes),
         "--memory-swap", str(memory_bytes),
         "--pids-limit", "128",
@@ -2027,31 +2237,57 @@ def docker_create_argv(
             "--mount", f"type=bind,src={host_media},dst={profile.readonly_media_path},readonly",
             "--env", f"VM_READONLY_MEDIA={profile.readonly_media_path}",
         ])
+    if host_config_disk is not None:
+        create_argv.extend([
+            "--mount", f"type=bind,src={host_config_disk},dst={CONFIG_DISK_CONTAINER_PATH},readonly",
+            "--env", f"VM_CONFIG_DISK={CONFIG_DISK_CONTAINER_PATH}",
+        ])
     create_argv.extend([
         "--entrypoint", "/bin/sh",
         image,
-        "-eu", "-c", host_command_script(profile, disk_format),
+        "-eu", "-c",
+        host_command_script(
+            profile,
+            disk_format,
+            boot_order,
+            config_disk=host_config_disk is not None,
+        ),
     ])
     return create_argv
 
 
 def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
-    validate_name(args.name)
+    plain_host = bool(getattr(args, "plain_host", False))
+    if plain_host:
+        validate_plain_host_name(args.name)
+    else:
+        validate_name(args.name)
     require_registered_profile(profile)
     validate_max_concurrent_guests(args.max_concurrent_guests, profile.max_concurrent_guests)
     host_ports = host_ports_from_args(profile, args)
     validate_host_ports(profile, host_ports)
 
-    slice_name = args.cgroup_parent or os.environ.get("CGROUP_PARENT_DEV_BACKGROUND", "")
+    slice_name = (
+        args.cgroup_parent
+        if args.cgroup_parent is not None
+        else os.environ.get("CGROUP_PARENT_DEV_BACKGROUND", "")
+    )
     if not slice_name:
-        raise RunnerError("CGROUP_PARENT_DEV_BACKGROUND is unset; refusing an unplaced VM")
-    validate_slice_name(slice_name)
+        raise RunnerError(
+            "pass --cgroup-parent UNIT or set CGROUP_PARENT_DEV_BACKGROUND; refusing an unplaced VM"
+        )
+    if plain_host:
+        validate_plain_host_slice_name(slice_name)
+    else:
+        validate_slice_name(slice_name)
     network = args.network or os.environ.get("DOCKER_NETWORK_INTERNAL", "")
     if not network:
         raise RunnerError(
             "DOCKER_NETWORK_INTERNAL is unset; it comes from the ciu stack environment or the devcontainer "
             "(`ciu env print` shows it); pass --network explicitly or set it"
         )
+    if plain_host:
+        validate_plain_host_network(network)
     image = resolve_qemu_image(profile, args.image)
 
     requested_base_format = getattr(args, "base_format", None)
@@ -2076,6 +2312,10 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     readonly_media = Path(args.readonly_media).resolve(strict=True) if args.readonly_media else None
     if readonly_media is not None and not readonly_media.is_file():
         raise RunnerError(f"read-only media is not a regular file: {readonly_media}")
+    validate_boot_order(args.boot_order, has_readonly_media=readonly_media is not None)
+    config_disk = Path(args.config_disk).resolve(strict=True) if args.config_disk else None
+    if config_disk is not None and not config_disk.is_file():
+        raise RunnerError(f"config disk is not a regular file: {config_disk}")
     disk_sizes_bytes = extra_disk_sizes_bytes(args.data_disk_size)
     state_dir = Path(args.state_dir).resolve(strict=True)
     if not state_dir.is_dir():
@@ -2086,20 +2326,37 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         pass
     state_hash = state_identity(state_dir)
 
-    inspect_network(network)
+    network_identity = inspect_network(network)
+    if plain_host:
+        validate_plain_host_network_identity(network, *network_identity)
     selected_image_id = image_id(image)
-    _, current = inspect_current_container()
-    mounts = current.get("Mounts", [])
-    # A raw base is only a copy source on this host; the container never mounts it.
-    host_base = resolve_docker_path(base_disk, mounts, writable=False) if disk_format == "qcow2" else None
-    host_state = resolve_docker_path(state_dir, mounts, writable=True)
-    if "," in host_state or (host_base is not None and "," in host_base):
-        raise RunnerError("Docker bind paths containing commas are unsupported; choose a state/base path without commas")
-    host_media = resolve_docker_path(readonly_media, mounts, writable=False) if readonly_media else None
-    if host_media is not None and "," in host_media:
-        raise RunnerError(
-            "Docker bind paths containing commas are unsupported; choose a media path without commas"
+    if plain_host:
+        # The local Docker daemon sees the same namespace as this process.
+        host_base = str(base_disk) if disk_format == "qcow2" else None
+        host_state = str(state_dir)
+        host_media = str(readonly_media) if readonly_media is not None else None
+        host_config_disk = str(config_disk) if config_disk is not None else None
+        inspector: str | None = None
+    else:
+        _, current = inspect_current_container()
+        mounts = current.get("Mounts", [])
+        # A raw base is only a copy source on this host; the container never mounts it.
+        host_base = resolve_docker_path(base_disk, mounts, writable=False) if disk_format == "qcow2" else None
+        host_state = resolve_docker_path(state_dir, mounts, writable=True)
+        host_media = resolve_docker_path(readonly_media, mounts, writable=False) if readonly_media else None
+        host_config_disk = (
+            resolve_docker_path(config_disk, mounts, writable=False) if config_disk is not None else None
         )
+    for description, path in (
+        ("state", host_state),
+        ("base", host_base),
+        ("read-only media", host_media),
+        ("config disk", host_config_disk),
+    ):
+        if path is not None and "," in path:
+            raise RunnerError(
+                f"Docker bind path for the {description} contains a comma; choose a path without commas"
+            )
     expected_manifest = runner_manifest(
         profile,
         name=args.name,
@@ -2111,8 +2368,11 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         cgroup_parent=slice_name,
         host_ports=host_ports,
         readonly_media=readonly_media,
+        config_disk=config_disk,
         extra_disk_sizes=disk_sizes_bytes,
         disk_format=disk_format,
+        cpu_shares=args.cpu_shares,
+        boot_order=args.boot_order,
     )
     expected_manifest[SERIAL_CONSOLE_KEY] = bool(args.serial_console)
     manifest_path = state_dir / "runner.json"
@@ -2125,11 +2385,18 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     elif any(state_dir.iterdir()):
         raise RunnerError(f"state directory is not empty; use a fresh directory or --resume: {state_dir}")
 
-    inspector, levels, control_group = cgroup_preflight(
-        slice_name,
-        requested_cpus=float(profile.cpus),
-        max_memory_psi_full_avg10=args.memory_psi_full_avg10_limit,
-    )
+    if plain_host:
+        levels, control_group = plain_host_cgroup_preflight(
+            slice_name,
+            requested_cpus=float(profile.cpus),
+            max_memory_psi_full_avg10=args.memory_psi_full_avg10_limit,
+        )
+    else:
+        inspector, levels, control_group = cgroup_preflight(
+            slice_name,
+            requested_cpus=float(profile.cpus),
+            max_memory_psi_full_avg10=args.memory_psi_full_avg10_limit,
+        )
     print_preflight(
         slice_name,
         levels,
@@ -2205,6 +2472,7 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         print(f"[container] host base mount={host_base} host state mount={host_state}", flush=True)
     print(
         f"[limits] cgroup-parent={slice_name} cpus={float(profile.cpus):g} "
+        f"cpu-shares={args.cpu_shares} "
         f"memory={profile.container_memory_bytes} "
         f"memory-swap={profile.container_memory_bytes} guest-RAM={profile.guest_memory_mib}MiB network={network}",
         flush=True,
@@ -2224,6 +2492,7 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         host_base=host_base,
         host_state=host_state,
         host_media=host_media,
+        host_config_disk=host_config_disk,
         host_ports=host_ports,
         resume=args.resume,
         vnc_console=args.vnc_console,
@@ -2231,6 +2500,8 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         disk_sizes_bytes=disk_sizes_bytes,
         image=image,
         disk_format=disk_format,
+        cpu_shares=args.cpu_shares,
+        boot_order=args.boot_order,
     )
     try:
         docker_run(create_argv, timeout=DOCKER_START_TIMEOUT_SECONDS)
@@ -2258,7 +2529,12 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     except (RunnerError, OSError, ValueError) as exc:
         cleanup = cleanup_failed_start(args.name, state_dir)
         raise RunnerError(f"{exc}; startup cleanup: {cleanup}") from exc
-    result = {**verified, "qmp_status": vm_status, "state_dir": str(state_dir)}
+    result = {
+        **verified,
+        "mode": "plain-host" if plain_host else "cockpit",
+        "qmp_status": vm_status,
+        "state_dir": str(state_dir),
+    }
     if disk_format == "raw":
         result.update({"disk_format": "raw", "disk": str(overlay)})
     else:
@@ -2552,6 +2828,15 @@ def _promote_locked(
     return digest, image
 
 
+class _SingleReadOnlyMediaAction(argparse.Action):
+    """Store one CD-ROM source while refusing two aliases in the same command."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error("specify only one of --readonly-media, --iso, and --seed-iso")
+        setattr(namespace, self.dest, values)
+
+
 def build_parser(
     profile: VmProfile,
     *,
@@ -2668,6 +2953,26 @@ def build_parser(
     )
     start.add_argument("--network", help="Docker network; defaults to DOCKER_NETWORK_INTERNAL")
     start.add_argument("--cgroup-parent", help="systemd slice; defaults to CGROUP_PARENT_DEV_BACKGROUND")
+    start.add_argument(
+        "--plain-host",
+        action="store_true",
+        help=(
+            "run directly on the local Docker host: skip cockpit self-inspection and use local paths "
+            "plus direct systemd/cgroup checks"
+        ),
+    )
+    start.add_argument(
+        "--cpu-shares",
+        type=positive_integer,
+        default=None,
+        help="Docker relative CPU shares; omitted means Docker's default",
+    )
+    start.add_argument(
+        "--boot-order",
+        choices=BOOT_ORDERS,
+        default="c",
+        help="QEMU boot order: c is disk; dc is CD-ROM then disk (dc requires read-only media)",
+    )
     start.add_argument("--lock-dir", metavar="DIR", help=LOCK_DIR_HELP)
     if not profile.sizing_from_cli:
         for forward in profile.forwards:
@@ -2690,7 +2995,15 @@ def build_parser(
     )
     start.add_argument(
         "--readonly-media",
-        help="optional ISO attached as a read-only CD-ROM",
+        "--iso",
+        "--seed-iso",
+        action=_SingleReadOnlyMediaAction,
+        default=None,
+        help="optional ISO attached as a read-only CD-ROM (--iso and --seed-iso are aliases)",
+    )
+    start.add_argument(
+        "--config-disk",
+        help="optional raw config image attached read-only as a virtio disk at /media/config.img",
     )
     start.add_argument(
         "--data-disk-size",

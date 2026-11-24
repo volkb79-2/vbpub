@@ -61,20 +61,22 @@ failure, RAM growth is bounded by `writer_queue_bytes` / `dict_active_max` / a q
 limits, a torn file after a crash is *detected* and truncated back to its last good record
 (or quarantined as `.corrupt` when the bytes at an offset do not hold), and silent loss is
 impossible to represent: a dropped job is a `Submit` report and a counter, and a segment is
-only ever removed when it is this store's own file by both name and header. `store` does not
-depend on `proto`/`model` (a path dependency would rewrite the locked `Cargo.lock`, `HOB-27`), so
-it validates the four payload frame-header facts itself and binds its quality table to
-`fixtures/wire/quality.json` instead of to a type.
+only ever removed when it is this store's own file by both name and header. `store` uses
+`proto` for the fixed payload frame fields and declares `model` for the future HOB-39
+decoded-row join; it has no quality or value table of its own. The store adds the two facts
+its segments own — the exact frame type and flag policy of the corpus, and the configured
+payload bound — before accepting a payload.
 
 The `probe` binary's `main` is still the M0 scaffold; its library (`bins/probe/src`) now holds the
 pure serving functions of P5b-1a (`limits`, `verbs`, `codes`, `args`, `classify`, `encode`, `lines`)
 and the sans-IO serving core of P5b-1b (`backend`, `conn` the connection state machine, `server` the
 `Server` that owns the one send hub, the connections and the per-level and per-uid counters); the
-drivers are the next packages (`docs/P5B-SERVER-DESIGN.md`). The proven topos sampler (`topos-sampler-poc-20261105`, `topos/sampler/`) is the
+drivers are the next packages (`docs/P5B-SERVER-DESIGN.md`). The proven topos sampler
+(tag `archive/topos-sampler-poc-20261105`, commit `193bf601f`, path `topos/sampler/`) is the
 behavioural source the `kernel` collectors were ported from: its scheduling around a stalled
 `/proc/<pid>/cmdline` read is deliberately not ported, and the parts plan v4 requires to
 change were changed (crate docs, `docs/DESIGN-GUIDE.md` §"Collecting the host", and
-`HOB-17`/`HOB-20`).
+`HOB-20`).
 
 Golden fixtures under `fixtures/` are shared by two independent implementations: the Rust
 tests in `crates/model/tests`, `crates/proto/tests` and `crates/store/tests`, and a
@@ -106,14 +108,14 @@ Open items found while building these packages are in
 `HOB-42` and `HOB-43` are FIXED by the P0 bug fold-in, `HOB-55` … `HOB-58` by the P0b store
 follow-ups, `HOB-46` … `HOB-48` and `HOB-50` … `HOB-53` by the P2a1 wire codec; `HOB-54` is the
 open stream-layer work for P2, P3 and P5b, specified in [`docs/WIRE.md`](docs/WIRE.md), and
-`HOB-49` is a citation fix in the Python reference): the sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
-own value and quality types until the path-dependency refactor lands; the lane image's
-registry-set identity now allows it), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
-reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
-payload, not decoded `model` rows — the join waits for the `HOB-27` refactor), `HOB-45` (Rust R2/R3 are
-unregistered) and `HOB-30` (no session spools, which are out of this package's scope). `HOB-26` states the SP-2 limit plainly: the
-kernel-side rate arithmetic is a test-local helper, because `kernel` cannot depend on `model`
-(`HOB-17`).
+`HOB-49` is a citation fix in the Python reference): the sharpest still-open ones are
+`HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check reads the mount
+table rather than `statfs`), `HOB-39` (a store range answer is still the stored payload, not
+decoded `model` rows; the dependency exists, but decoding remains the caller's step), `HOB-45`
+(Rust R2/R3 are unregistered) and `HOB-30` (no session spools, which are out of this package's
+scope). Workspace unification removes the duplication behind `HOB-3`/`HOB-10`/`HOB-17`/`HOB-26`/`HOB-27`:
+there is one model quality/value vocabulary, `proto` derives its metric codes from `model`, and
+SP-2 calls `model::derive_rate`.
 
 ## Developing and debugging
 
@@ -123,7 +125,8 @@ the gate image's exact toolchain and offline crate cache. It runs on the gate ho
 (your worktree, including uncommitted changes up to 20 MiB, is synced there per call); local
 mode is refused by default. Try `tools/dev --dry-run test -p hostobs-store` to see the plan.
 A green dev run is **not** gate evidence; only the lanes below on a committed head are. The
-image is built on a host only on the controller's go and does not exist yet. See
+dev image exists, and `tools/dev` runs remotely on the gate host (measured 2026-11-24:
+`test -p hostobs-model`, 53 tests, 79 s wall). See
 [`../tester-unified-rust/docs/DEV.md`](../tester-unified-rust/docs/DEV.md).
 
 ## Gates

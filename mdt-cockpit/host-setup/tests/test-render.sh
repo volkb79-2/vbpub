@@ -44,8 +44,10 @@
 #      never a silent mis-compare -- for anything not byte-comparable
 #      (a percentage, garbage) (round-2 review B7).
 #  10. the default render matches the checked-in checksum fixture byte-for-byte,
-#      every dev tier renders no ManagedOOM directive, and a finite MemoryMax
-#      plus a large MemorySwapMax remain the overcommit design.
+#      every dev tier renders no ManagedOOM directive and no `=infinity`
+#      MemoryMax/MemorySwapMax. (That the dedicated-dev derivation still gives
+#      dev-gates and dev-background a finite MemoryMax is asserted in
+#      test_testhost_mem.py, InstallBlockTests.)
 #
 # Extracts install.sh's OWN render() function + RENDER_VARS list, and
 # check.sh's OWN _bytes_of function, verbatim (byte range, not a
@@ -310,12 +312,7 @@ else
   grep -q '^MemorySwapMax=' "$GATES_OUT" \
     && fail "dev-gates.slice rendered MemorySwapMax with the shipped auto-detect value empty"
 fi
-# No dev tier opts into systemd-oomd. A regression that re-adds a kill line
-# must fail here, independently of the all-template check above.
-if grep -Hn '^ManagedOOM' "$TMP"/dev*.slice; then
-  fail "a dev-tier template rendered a ManagedOOM directive"
-fi
-pass "dev-gates.slice renders required DEV_GATES_* values and drops auto-detected MemorySwapMax; no dev tier opts into oomd"
+pass "dev-gates.slice renders required DEV_GATES_* values and drops auto-detected MemorySwapMax"
 
 # --- (3) dev.slice / dev-memory_min_guaranteed.slice: no MemoryMin line -----
 # (DEV_MEMORY_MIN_GUARANTEED_CEILING ships unset in the example -- evidence

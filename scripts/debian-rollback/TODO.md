@@ -13,6 +13,8 @@ guide; work packages are tracked below.
 - **M2 target ISO variants:** GRUB-target and systemd-boot-target are done;
   both are covered by the [M2 results](docs/RESULTS-SDBOOT-M2-2026-11-22.md).
 
+2026-11-24: `poc/dr-qemu.sh` retired in favour of `vm-lab start --plain-host` (vm-lab VML-BL-07); source at `a5802b837:scripts/debian-rollback/poc/dr-qemu.sh`
+
 ## ZFS
 
 ZFS is paused for the core split (D28, DR-84, DR-96). PoC evidence is archived

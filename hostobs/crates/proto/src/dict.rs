@@ -38,6 +38,11 @@ use crate::error::ProtoError;
 use crate::read::Cursor;
 use crate::write::Writer;
 
+pub use hostobs_model::metric::{
+    Aggregation, MetricKind, Scope as MetricScope, Source as MetricSource, Unit as MetricUnit,
+    ALL_AGGREGATIONS,
+};
+
 /// Largest dictionary entry text in bytes (plan v4 §B.3).
 pub const MAX_ENTRY_TEXT: usize = 256;
 
@@ -70,138 +75,6 @@ pub enum MetricValueType {
     F64 = 3,
 }
 
-/// The stable stored code of a metric's arithmetic kind (§B.2 `kind`).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[repr(u8)]
-pub enum MetricKind {
-    /// A point-in-time gauge.
-    Gauge = 0,
-    /// A cumulative counter, stored raw (§C.3).
-    Counter = 1,
-    /// A closed state code.
-    State = 2,
-}
-
-/// The metric's unit, as the dictionary declares it (plan v4 §A.3/§B.3).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[repr(u8)]
-pub enum MetricUnit {
-    /// Dimensionless.
-    None = 0,
-    /// Microseconds.
-    Microseconds = 1,
-    /// Milliseconds.
-    Milliseconds = 2,
-    /// Nanoseconds.
-    Nanoseconds = 3,
-    /// Bytes.
-    Bytes = 4,
-    /// A count of objects.
-    Count = 5,
-    /// A ratio or percentage.
-    Ratio = 6,
-    /// Volts.
-    Volts = 7,
-    /// Degrees Celsius.
-    Celsius = 8,
-}
-
-/// The scope a metric is measured in (plan v4 §C.3).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[repr(u8)]
-pub enum MetricScope {
-    /// A host-wide fact.
-    Host = 0,
-    /// One cgroup (inclusive of its descendants).
-    Cgroup = 1,
-    /// One process.
-    Process = 2,
-    /// The probe itself.
-    Daemon = 3,
-}
-
-/// The reader a metric comes from (plan v4 §A.3).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[repr(u8)]
-pub enum MetricSource {
-    /// A cgroupfs file.
-    CgroupFs = 0,
-    /// A `/proc` file.
-    ProcFs = 1,
-    /// A `/sys` file.
-    SysFs = 2,
-    /// The probe's own bookkeeping.
-    Probe = 3,
-    /// Derived by `model` from another metric.
-    Derived = 4,
-}
-
-/// An aggregation a stored series may use (§B.2 `agg`, §B.3 permitted aggregation).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[repr(u8)]
-pub enum Aggregation {
-    /// The raw reading.
-    Raw = 0,
-    /// The value at the end of a bucket.
-    Last = 1,
-    /// A counter difference over the covered interval.
-    Delta = 2,
-    /// A sample-weighted mean.
-    Mean = 3,
-    /// A bucket minimum.
-    Min = 4,
-    /// A bucket maximum.
-    Max = 5,
-}
-
-/// Every aggregation, in code order.
-pub const ALL_AGGREGATIONS: [Aggregation; 6] = [
-    Aggregation::Raw,
-    Aggregation::Last,
-    Aggregation::Delta,
-    Aggregation::Mean,
-    Aggregation::Min,
-    Aggregation::Max,
-];
-
-impl Aggregation {
-    /// The bit this aggregation uses in a metric entry's permitted-aggregation mask.
-    #[must_use]
-    pub const fn bit(self) -> u16 {
-        1 << (self as u16)
-    }
-
-    /// Decode the stored `agg` byte of a history bucket.
-    ///
-    /// # Errors
-    ///
-    /// [`ProtoError::UnknownAggregation`].
-    pub const fn from_code(code: u8) -> Result<Aggregation, ProtoError> {
-        match code {
-            0 => Ok(Aggregation::Raw),
-            1 => Ok(Aggregation::Last),
-            2 => Ok(Aggregation::Delta),
-            3 => Ok(Aggregation::Mean),
-            4 => Ok(Aggregation::Min),
-            5 => Ok(Aggregation::Max),
-            other => Err(ProtoError::UnknownAggregation(other)),
-        }
-    }
-
-    /// The stable lower-case name used by fixtures and operator output.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Aggregation::Raw => "raw",
-            Aggregation::Last => "last",
-            Aggregation::Delta => "delta",
-            Aggregation::Mean => "mean",
-            Aggregation::Min => "min",
-            Aggregation::Max => "max",
-        }
-    }
-}
-
 impl MetricValueType {
     /// Decode a column's `type` byte.
     ///
@@ -228,143 +101,63 @@ impl MetricValueType {
     }
 }
 
-impl MetricKind {
-    /// Decode a column's `kind` byte.
-    ///
-    /// # Errors
-    ///
-    /// [`ProtoError::UnknownColumnKind`].
-    pub const fn from_code(code: u8) -> Result<MetricKind, ProtoError> {
-        match code {
-            0 => Ok(MetricKind::Gauge),
-            1 => Ok(MetricKind::Counter),
-            2 => Ok(MetricKind::State),
-            other => Err(ProtoError::UnknownColumnKind(other)),
-        }
-    }
-
-    /// The stable lower-case name used by fixtures.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            MetricKind::Gauge => "gauge",
-            MetricKind::Counter => "counter",
-            MetricKind::State => "state",
-        }
-    }
-
-    /// The aggregation mask this kind permits (§B.3).
-    #[must_use]
-    pub const fn aggregation_mask(self) -> u16 {
-        match self {
-            MetricKind::Counter => {
-                Aggregation::Raw.bit() | Aggregation::Last.bit() | Aggregation::Delta.bit()
-            }
-            MetricKind::Gauge => {
-                Aggregation::Last.bit()
-                    | Aggregation::Mean.bit()
-                    | Aggregation::Min.bit()
-                    | Aggregation::Max.bit()
-            }
-            MetricKind::State => Aggregation::Last.bit(),
-        }
+/// Decode a dictionary unit with its entry index in the refusal.
+///
+/// # Errors
+///
+/// [`ProtoError::DictionaryEntryUnknownCode`].
+pub fn metric_unit_from_code(code: u8, index: usize) -> Result<MetricUnit, ProtoError> {
+    match MetricUnit::from_code(code) {
+        Ok(unit) => Ok(unit),
+        Err(_) => Err(ProtoError::DictionaryEntryUnknownCode { index, code }),
     }
 }
 
-impl MetricUnit {
-    /// The stable lower-case name used by fixtures.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            MetricUnit::None => "none",
-            MetricUnit::Microseconds => "usec",
-            MetricUnit::Milliseconds => "msec",
-            MetricUnit::Nanoseconds => "nsec",
-            MetricUnit::Bytes => "bytes",
-            MetricUnit::Count => "count",
-            MetricUnit::Ratio => "ratio",
-            MetricUnit::Volts => "volts",
-            MetricUnit::Celsius => "celsius",
-        }
-    }
-
-    /// Decode a stored unit code.
-    ///
-    /// # Errors
-    ///
-    /// [`ProtoError::DictionaryEntryUnknownCode`] carries the entry index; a unit outside
-    /// the table is a corrupt dictionary entry.
-    pub const fn from_code(code: u8, index: usize) -> Result<MetricUnit, ProtoError> {
-        match code {
-            0 => Ok(MetricUnit::None),
-            1 => Ok(MetricUnit::Microseconds),
-            2 => Ok(MetricUnit::Milliseconds),
-            3 => Ok(MetricUnit::Nanoseconds),
-            4 => Ok(MetricUnit::Bytes),
-            5 => Ok(MetricUnit::Count),
-            6 => Ok(MetricUnit::Ratio),
-            7 => Ok(MetricUnit::Volts),
-            8 => Ok(MetricUnit::Celsius),
-            _ => Err(ProtoError::DictionaryEntryUnknownCode { index, code }),
-        }
+/// Decode a dictionary scope with its entry index in the refusal.
+///
+/// # Errors
+///
+/// [`ProtoError::DictionaryEntryUnknownCode`].
+pub fn metric_scope_from_code(code: u8, index: usize) -> Result<MetricScope, ProtoError> {
+    match MetricScope::from_code(code) {
+        Ok(scope) => Ok(scope),
+        Err(_) => Err(ProtoError::DictionaryEntryUnknownCode { index, code }),
     }
 }
 
-impl MetricScope {
-    /// The stable lower-case name used by fixtures.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            MetricScope::Host => "host",
-            MetricScope::Cgroup => "cgroup",
-            MetricScope::Process => "process",
-            MetricScope::Daemon => "daemon",
-        }
-    }
-
-    /// Decode a stored scope code.
-    ///
-    /// # Errors
-    ///
-    /// [`ProtoError::DictionaryEntryUnknownCode`].
-    pub const fn from_code(code: u8, index: usize) -> Result<MetricScope, ProtoError> {
-        match code {
-            0 => Ok(MetricScope::Host),
-            1 => Ok(MetricScope::Cgroup),
-            2 => Ok(MetricScope::Process),
-            3 => Ok(MetricScope::Daemon),
-            _ => Err(ProtoError::DictionaryEntryUnknownCode { index, code }),
-        }
+/// Decode a dictionary source with its entry index in the refusal.
+///
+/// # Errors
+///
+/// [`ProtoError::DictionaryEntryUnknownCode`].
+pub fn metric_source_from_code(code: u8, index: usize) -> Result<MetricSource, ProtoError> {
+    match MetricSource::from_code(code) {
+        Ok(source) => Ok(source),
+        Err(_) => Err(ProtoError::DictionaryEntryUnknownCode { index, code }),
     }
 }
 
-impl MetricSource {
-    /// The stable lower-case name used by fixtures.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            MetricSource::CgroupFs => "cgroupfs",
-            MetricSource::ProcFs => "procfs",
-            MetricSource::SysFs => "sysfs",
-            MetricSource::Probe => "probe",
-            MetricSource::Derived => "derived",
-        }
+/// Decode a metric-kind byte.
+///
+/// # Errors
+///
+/// [`ProtoError::UnknownColumnKind`].
+pub fn metric_kind_from_code(code: u8) -> Result<MetricKind, ProtoError> {
+    match MetricKind::from_code(code) {
+        Ok(kind) => Ok(kind),
+        Err(_) => Err(ProtoError::UnknownColumnKind(code)),
     }
+}
 
-    /// Decode a stored source code.
-    ///
-    /// # Errors
-    ///
-    /// [`ProtoError::DictionaryEntryUnknownCode`].
-    pub const fn from_code(code: u8, index: usize) -> Result<MetricSource, ProtoError> {
-        match code {
-            0 => Ok(MetricSource::CgroupFs),
-            1 => Ok(MetricSource::ProcFs),
-            2 => Ok(MetricSource::SysFs),
-            3 => Ok(MetricSource::Probe),
-            4 => Ok(MetricSource::Derived),
-            _ => Err(ProtoError::DictionaryEntryUnknownCode { index, code }),
-        }
+/// Decode a history bucket's aggregation byte.
+///
+/// # Errors
+///
+/// [`ProtoError::UnknownAggregation`].
+pub fn aggregation_from_code(code: u8) -> Result<Aggregation, ProtoError> {
+    match Aggregation::from_code(code) {
+        Ok(aggregation) => Ok(aggregation),
+        Err(_) => Err(ProtoError::UnknownAggregation(code)),
     }
 }
 
@@ -831,10 +624,10 @@ impl Dictionary {
                     }
                 }
                 1 => {
-                    let unit = MetricUnit::from_code(cursor.u8()?, index)?;
-                    let kind = MetricKind::from_code(cursor.u8()?)?;
-                    let scope = MetricScope::from_code(cursor.u8()?, index)?;
-                    let source = MetricSource::from_code(cursor.u8()?, index)?;
+                    let unit = metric_unit_from_code(cursor.u8()?, index)?;
+                    let kind = metric_kind_from_code(cursor.u8()?)?;
+                    let scope = metric_scope_from_code(cursor.u8()?, index)?;
+                    let source = metric_source_from_code(cursor.u8()?, index)?;
                     let mask = cursor.u16()?;
                     // The mask is *derived* from the kind (§B.3), so it must equal the
                     // derived mask exactly: an extra bit and a missing bit are both a
@@ -916,8 +709,10 @@ impl Eq for Dictionary {}
 #[cfg(test)]
 mod tests {
     use super::{
-        Aggregation, Dictionary, Entry, EntryKind, MetricFacts, MetricKind, MetricScope,
-        MetricSource, MetricUnit, MetricValueType, DEFAULT_ACTIVE_MAX, MAX_ENTRY_TEXT,
+        aggregation_from_code, metric_kind_from_code, metric_scope_from_code,
+        metric_source_from_code, metric_unit_from_code, Aggregation, Dictionary, Entry, EntryKind,
+        MetricFacts, MetricKind, MetricScope, MetricSource, MetricUnit, MetricValueType,
+        DEFAULT_ACTIVE_MAX, MAX_ENTRY_TEXT,
     };
     use crate::error::ProtoError;
     use crate::quality::Quality;
@@ -1334,11 +1129,11 @@ mod tests {
             (4, Aggregation::Min),
             (5, Aggregation::Max),
         ] {
-            assert_eq!(Aggregation::from_code(code), Ok(expected));
+            assert_eq!(aggregation_from_code(code), Ok(expected));
         }
         for code in 6u8..=u8::MAX {
             assert_eq!(
-                Aggregation::from_code(code),
+                aggregation_from_code(code),
                 Err(ProtoError::UnknownAggregation(code))
             );
         }
@@ -1351,11 +1146,11 @@ mod tests {
             (1, MetricKind::Counter),
             (2, MetricKind::State),
         ] {
-            assert_eq!(MetricKind::from_code(code), Ok(expected));
+            assert_eq!(metric_kind_from_code(code), Ok(expected));
         }
         for code in 3u8..=u8::MAX {
             assert_eq!(
-                MetricKind::from_code(code),
+                metric_kind_from_code(code),
                 Err(ProtoError::UnknownColumnKind(code))
             );
         }
@@ -1416,7 +1211,7 @@ mod tests {
         ] {
             assert_eq!(unit.name(), name);
             assert_eq!(unit as u8, code);
-            assert_eq!(MetricUnit::from_code(code, 0), Ok(unit));
+            assert_eq!(metric_unit_from_code(code, 0), Ok(unit));
         }
         for (scope, name, code) in [
             (MetricScope::Host, "host", 0u8),
@@ -1426,7 +1221,7 @@ mod tests {
         ] {
             assert_eq!(scope.name(), name);
             assert_eq!(scope as u8, code);
-            assert_eq!(MetricScope::from_code(code, 0), Ok(scope));
+            assert_eq!(metric_scope_from_code(code, 0), Ok(scope));
         }
         for (source, name, code) in [
             (MetricSource::CgroupFs, "cgroupfs", 0u8),
@@ -1437,23 +1232,23 @@ mod tests {
         ] {
             assert_eq!(source.name(), name);
             assert_eq!(source as u8, code);
-            assert_eq!(MetricSource::from_code(code, 0), Ok(source));
+            assert_eq!(metric_source_from_code(code, 0), Ok(source));
         }
         for code in 9u8..=u8::MAX {
             assert_eq!(
-                MetricUnit::from_code(code, 3),
+                metric_unit_from_code(code, 3),
                 Err(ProtoError::DictionaryEntryUnknownCode { index: 3, code })
             );
         }
         for code in 4u8..=u8::MAX {
             assert_eq!(
-                MetricScope::from_code(code, 3),
+                metric_scope_from_code(code, 3),
                 Err(ProtoError::DictionaryEntryUnknownCode { index: 3, code })
             );
         }
         for code in 5u8..=u8::MAX {
             assert_eq!(
-                MetricSource::from_code(code, 3),
+                metric_source_from_code(code, 3),
                 Err(ProtoError::DictionaryEntryUnknownCode { index: 3, code })
             );
         }
@@ -1593,6 +1388,9 @@ mod tests {
     fn a_quality_code_from_the_shared_table_is_usable_in_a_column() {
         let mut dictionary = Dictionary::new(1);
         dictionary.intern(metric("mem.current")).expect("intern");
-        assert_eq!(Quality::from_code(Quality::Ok.code(), 0), Ok(Quality::Ok));
+        assert_eq!(
+            crate::quality::from_code(Quality::Ok.code(), 0),
+            Ok(Quality::Ok)
+        );
     }
 }

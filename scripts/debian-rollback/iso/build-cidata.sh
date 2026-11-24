@@ -4,7 +4,7 @@
 # Make the config medium the installer looks for first: a small image whose volume label is CIDATA holding
 # dr-install.conf. For a physical host, write it to a USB stick yourself (`dd`, careful with the device name: this script
 # never writes to a device and refuses a /dev path). For the guest tests it is attached read-only as a virtio disk
-# (poc/dr-qemu.sh --config-disk). ISO9660 (Rock Ridge) is used so that no root and no mount are needed to build it;
+# (`vm-lab start --plain-host --config-disk`). ISO9660 (Rock Ridge) is used so that no root and no mount are needed to build it;
 # dr-autoinstall mounts any device labelled CIDATA read-only, whatever its filesystem.
 # The config is validated with dr-plan --check-config first (unknown keys, bad characters and duplicates are refused).
 set -euo pipefail

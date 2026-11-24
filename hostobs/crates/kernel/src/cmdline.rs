@@ -96,9 +96,9 @@ impl CmdlineError {
         match self {
             // A kernel thread genuinely has an empty command line; that is an absence,
             // not a failure.
-            CmdlineError::Missing => QualityCode::ABSENT,
-            CmdlineError::Read(_) => QualityCode::UNREADABLE,
-            CmdlineError::BoundZero => QualityCode::NOT_SAMPLED,
+            CmdlineError::Missing => QualityCode::Absent,
+            CmdlineError::Read(_) => QualityCode::Unreadable,
+            CmdlineError::BoundZero => QualityCode::NotSampled,
         }
     }
 }
@@ -738,8 +738,8 @@ mod tests {
             ),
             Err(CmdlineError::Missing)
         );
-        assert_eq!(CmdlineError::Missing.quality(), QualityCode::ABSENT);
-        assert_eq!(CmdlineError::BoundZero.quality(), QualityCode::NOT_SAMPLED);
+        assert_eq!(CmdlineError::Missing.quality(), QualityCode::Absent);
+        assert_eq!(CmdlineError::BoundZero.quality(), QualityCode::NotSampled);
         assert_eq!(CmdlineBound::new(0), Err(CmdlineError::BoundZero));
         // The two refusals render different texts.
         assert_ne!(
