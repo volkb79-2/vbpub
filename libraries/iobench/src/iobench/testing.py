@@ -536,6 +536,7 @@ class FakeHost:
         self.exclusive_device_conflicts: set[str] = set()  # injected O_EXCL busy result; does not model ordinary open descriptors
         self.claims: dict[str, TargetRef] = {}
         self.claim_fds: dict[str, int] = {}
+        self.raw_handles: list[FakeHandle] = []
         self.process_launches: list[tuple[list[str], tuple[int, ...]]] = []
         self.discard_requests: list[list[str]] = []
         self.discard_hook: Callable[[FakeHost, int, int], None] | None = None
@@ -990,6 +991,8 @@ class FakeHost:
             dev.written.add(offset, offset + (length if job.random else min(length, done)))
 
         handle.on_finish = finish
+        if target.kind == "device":
+            self.raw_handles.append(handle)
         return handle
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
@@ -1061,11 +1064,15 @@ class FakeHost:
     def release_claim(self) -> str | None:
         if not self.claims:
             return None
+        active = [str(handle.start) for handle in self.raw_handles if handle.poll() is None]
+        if active:
+            return f"raw_claim_child_unreaped: raw writer handle(s) {', '.join(active)} still hold the claim"
         if self.unreaped_children:
             return f"raw_claim_child_unreaped: child pid(s) {', '.join(map(str, sorted(self.unreaped_children)))} still hold the claim"
         for path in list(self.claims):
             self.claims.pop(path)
             self.claim_fds.pop(path)
+        self.raw_handles.clear()
         return None
 
     def _claim_fd_for(self, target: TargetRef, *, write: bool | None = None) -> int:

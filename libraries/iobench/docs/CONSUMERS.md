@@ -6,7 +6,7 @@ parser in `--dry-run` mode. WHAT is in the [README](../README.md); WHY in the [D
 ## 0. Install
 
 The measurement core needs only Python 3 and `fio` >= 3.30 for JSON `clat_ns` percentiles; startup also checks that the installed fio documents `--allow_mounted_write` exactly. Device jobs are always passed
-`--allow_mounted_write=0` as an additional mounted-device guard. Raw-partition writes and discards are opt-in with `--allow-raw-write` and run under one held kernel `O_EXCL` claim; file targets need no opt-in. The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
+`--allow_mounted_write=0` for argv parity and fio's own option semantics. Raw-partition writes and discards are opt-in with `--allow-raw-write` and run under one held kernel `O_EXCL` claim; after the `/dev/fd/N` launch rewrite, that claim, not the option, is the mounted-device guard. File targets need no opt-in. The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
 library on `PYTHONPATH` (or installed). In this repo:
 
 ```bash
@@ -28,7 +28,7 @@ iobench target show /dev/vda7 --json
 ```
 
 `target init` refuses a whole disk, dm/md/loop device, a mounted target (in the caller's or PID 1's mount namespace), a swap-active, signature-bearing (`blkid -p`) or root-disk target. A raw target must be a real partition with a PARTUUID; serial-only identity is refused. The override requires `--i-own-this-device`
-**and** the matching `--expect-size` and `--expect-partuuid`. Mounted, swap and root refusals can never be overridden. Initialization takes `O_RDWR|O_EXCL|O_CLOEXEC` and writes the marker through that held descriptor. A later raw run needs `--allow-raw-write`; without it, every raw write or discard keeps the word-for-word `raw_device_write_unsupported` refusal. With it, S0 takes the same claim before the first raw stage and holds it until every child is reaped. Fio plans `--filename=PATH`, but launches with `/dev/fd/N` and inherits that descriptor; discards issue `BLKDISCARD` on the held descriptor in chunks of at most 1 GiB. The claim blocks mount, swapon, md/dm setup and other exclusive openers, not ordinary non-exclusive openers. Every generated device fio job still carries `--allow_mounted_write=0` as an additional mounted-device guard. `written_bytes` and `unwritten_bytes` are `null` for a raw device because it has no file extent map.
+**and** the matching `--expect-size` and `--expect-partuuid`. Mounted, swap and root refusals can never be overridden. Initialization takes `O_RDWR|O_EXCL|O_CLOEXEC` as its own short-lived claim and writes the marker through that held descriptor. A later raw run needs `--allow-raw-write`; without it, every raw write or discard keeps the word-for-word `raw_device_write_unsupported` refusal. With it, S0 takes a separate run claim before the first raw stage and holds it until every child is reaped. Fio plans `--filename=PATH`, but launches with `/dev/fd/N` and inherits that descriptor; discards issue `BLKDISCARD` on the held descriptor in chunks of at most 1 GiB. The claim blocks mount, swapon, md/dm setup and other exclusive openers, not ordinary non-exclusive openers. Every generated device fio job still carries `--allow_mounted_write=0` for argv parity and fio's own semantics; fio cannot match `/dev/fd/N` against the mount table, so the claim is the runtime mounted-device guard. `written_bytes` and `unwritten_bytes` are `null` for a raw device because it has no file extent map.
 
 Prepare a file target on an existing persistent filesystem for the runnable examples below:
 
@@ -274,15 +274,18 @@ A few more refusals you may meet (each names its condition and a remedy; all exi
 * `holder_active` (an md/dm holder), `path_colon`, `exists_without_sidecar` (the sidecar must match the file's inode, size and filesystem UUID), `dry_run_rate_other_target` / `dry_run_rate_unusable`
   (`--dry-run` plans only with `--assume-r-est` or the current calibration of the same target).
 * `fio_option_unsupported`: the installed fio does not document `allow_mounted_write`, and the refusal names the installed fio version. Device jobs use
-  `--allow_mounted_write=0`, so fio aborts destructive I/O if the target appears mounted. `raw_device_write_unsupported` means the run did not pass
+  `--allow_mounted_write=0` for argv parity and fio's own semantics; because the launch path is `/dev/fd/N`, the kernel claim is the
+  mounted-device guard. `raw_device_write_unsupported` means the run did not pass
   `--allow-raw-write`, so no kernel claim was taken; the word-for-word refusal names the write or discard stage. `device_in_use` means the held
   `O_EXCL` claim could not be taken because the target is mounted, swap-active, held through md/dm, or exclusively opened by another process. The
-  claim is held across the marker, every raw fio child and every discard, and it is released only after those children are reaped. A released claim
-  does not exclude ordinary non-exclusive openers, so keep the confirmed quiet window and the mounted-write guard.
+  run's claim is held across every raw fio child and every discard, and it is released only after those children are reaped. Marker initialization uses
+  its own short-lived claim. A released claim does not exclude ordinary non-exclusive openers, so keep the confirmed quiet window.
 * `raw_target_not_partition`, `raw_target_dm`, `raw_target_md`, `raw_target_loop`: the named target is a whole disk or a virtual block device rather
   than a dedicated physical partition. `raw_target_partuuid_required` means the partition has no PARTUUID; a serial, including a serial supplied with
   `--expect-serial`, is never sufficient identity. `raw_target_size_changed`, `raw_target_devno_changed` and `raw_target_partuuid_changed` mean the
-  claimed or freshly checked device no longer equals the identity named at `target init`; rerun the guard against the intended partition.
+  claimed or freshly checked device no longer equals the identity named at `target init`; rerun the guard against the intended partition. These raw-target
+  refusals apply when `--allow-raw-write` authorizes mutation. A historical marker on a whole disk, dm/md/loop device or serial-only partition remains
+  readable by `target show`, result identity and read-only stages, but cannot authorize a raw write or discard.
 * A dry run is a plan, not an acceptance: its output says `preflight: not_run`; the same invocation without `--dry-run` may still be refused.
 * `check --section writeback --calibration` is a usage error (a calibration carries no writeback); `check` exit 5 also covers `damaged_proposals` and a `schema_minor` newer than the installed iobench.
 

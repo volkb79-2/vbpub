@@ -33,6 +33,10 @@ SEEK_EXTENT_FILESYSTEMS = frozenset(("ext4", "xfs", "btrfs"))
 RAW_DISCARD_CHUNK_BYTES = 1 << 30
 BLKGETSIZE64 = 0x80081272
 BLKDISCARD = 0x1277
+SUPERVISOR_UNREAPED_STATUS = 254
+SUPERVISOR_UNREAPED_PREFIX = "IOBENCH-SUPERVISOR-UNREAPED-CHILDREN="
+SUPERVISOR_REAP_TIMEOUT_S = 2.0
+SUPERVISOR_EXIT_TIMEOUT_S = 10.0
 
 
 class HostError(RuntimeError):
@@ -340,24 +344,47 @@ import subprocess
 import sys
 import time
 
+UNREAPED_STATUS = 254
+UNREAPED_PREFIX = "IOBENCH-SUPERVISOR-UNREAPED-CHILDREN="
+
 libc = ctypes.CDLL(None, use_errno=True)
 PR_SET_CHILD_SUBREAPER = 36  # Linux <linux/prctl.h>
 if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
     error = ctypes.get_errno()
     raise OSError(error, os.strerror(error))
 
+def _direct_children():
+    pids = set()
+    try:
+        tasks = os.listdir(f"/proc/{os.getpid()}/task")
+        for task in tasks:
+            with open(f"/proc/{os.getpid()}/task/{task}/children", encoding="ascii") as fh:
+                pids.update(int(value) for value in fh.read().split())
+    except OSError:
+        return None
+    return tuple(sorted(pids))
+
 def _reap_adopted_children():
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + __REAP_TIMEOUT__
     while True:
         try:
             pid, _status = os.waitpid(-1, os.WNOHANG)
         except ChildProcessError:
-            return
+            return ()
         if pid > 0:
             continue
+        remaining = _direct_children()
+        if remaining == ():
+            return ()
         if time.monotonic() >= deadline:
-            return
+            return remaining
         time.sleep(0.01)
+
+def _exit_with_unreaped(remaining):
+    detail = "unknown" if remaining is None else ",".join(str(pid) for pid in remaining)
+    sys.stderr.write(f"{UNREAPED_PREFIX}{detail}\\n")
+    sys.stderr.flush()
+    sys.exit(UNREAPED_STATUS)
 
 child = None
 parent_died = False
@@ -391,11 +418,15 @@ except BaseException:
     except ProcessLookupError:
         pass
     child.wait()
-    _reap_adopted_children()
+    remaining = _reap_adopted_children()
+    if remaining != ():
+        _exit_with_unreaped(remaining)
     raise
-_reap_adopted_children()
+remaining = _reap_adopted_children()
+if remaining != ():
+    _exit_with_unreaped(remaining)
 sys.exit(status)
-"""
+""".replace("__REAP_TIMEOUT__", repr(SUPERVISOR_REAP_TIMEOUT_S))
 
 
 REAP_TIMEOUT_S = 5.0
@@ -419,6 +450,9 @@ class _ProcHandle:
             )
         self._on_unreaped = on_unreaped
         self.unreaped_pid: int | None = None
+        self.unreaped_pids: tuple[int, ...] = ()
+        self._noted_unreaped: set[int] = set()
+        self._closed = False
         self._out = tempfile.TemporaryFile("w+")
         self._err = tempfile.TemporaryFile("w+")
         # The supervisor is the direct child with a parent-death signal. It
@@ -428,29 +462,70 @@ class _ProcHandle:
         self._p = subprocess.Popen(command, stdout=self._out, stderr=self._err, text=True, start_new_session=True,
                                    pass_fds=tuple(pass_fds), preexec_fn=lambda parent=os.getpid(): _arm_parent_death(parent))
 
+    @property
+    def pid(self) -> int:
+        return self._p.pid
+
+    def _record_unreaped(self, pids: Sequence[int]) -> None:
+        normalised = tuple(sorted(set(pids))) or (self._p.pid,)
+        if not self.unreaped_pids:
+            self.unreaped_pids = normalised
+        for pid in normalised:
+            if pid in self._noted_unreaped:
+                continue
+            self._noted_unreaped.add(pid)
+            if self.unreaped_pid is None:
+                self.unreaped_pid = pid
+            if self._on_unreaped is not None:
+                self._on_unreaped(pid)
+
+    def _inspect_stderr(self, returncode: int) -> str:
+        if self._closed:
+            return ""
+        self._err.seek(0)
+        stderr = self._err.read()
+        if returncode == SUPERVISOR_UNREAPED_STATUS:
+            for line in stderr.splitlines():
+                if not line.startswith(SUPERVISOR_UNREAPED_PREFIX):
+                    continue
+                detail = line.partition("=")[2].strip()
+                try:
+                    pids = tuple(int(pid) for pid in detail.split(",") if pid != "unknown")
+                except ValueError:
+                    pids = ()
+                self._record_unreaped(pids)
+        return stderr
+
     def poll(self) -> int | None:
-        return self._p.poll()
+        returncode = self._p.poll()
+        if returncode is not None:
+            self._inspect_stderr(returncode)
+        return returncode
 
     def wait(self) -> RunResult:
         rc = self._p.wait()
         self._out.seek(0)
-        self._err.seek(0)
-        return RunResult(rc, self._out.read(), self._err.read())
+        return RunResult(rc, self._out.read(), self._inspect_stderr(rc))
 
     def kill(self) -> None:
+        if self._closed:
+            return
         if self._p.poll() is None:
             try:
                 self._p.send_signal(signal.SIGTERM)
             except ProcessLookupError:
                 pass
         try:
-            self._p.wait(timeout=5)  # reap; a process stuck in D state is left to the kernel rather than blocking the restore
+            # The supervisor's bounded adopted-child reap is shorter than this wait, so a normal sentinel exit is
+            # observed before the parent's fallback timeout. A supervisor stuck behind an unreapable direct child
+            # still falls through to the timeout and is named.
+            rc = self._p.wait(timeout=SUPERVISOR_EXIT_TIMEOUT_S)
+            self._inspect_stderr(rc)
         except subprocess.TimeoutExpired:
-            self.unreaped_pid = self._p.pid
-            if self._on_unreaped is not None:
-                self._on_unreaped(self._p.pid)
+            self._record_unreaped((self._p.pid,))
         self._out.close()  # the abort path never calls wait(): do not leave the temporary files to the garbage collector (IOB-BL-14)
         self._err.close()
+        self._closed = True
 
 
 class RealHost:
@@ -461,6 +536,7 @@ class RealHost:
         self._claim_fd: int | None = None
         self._claim_target: TargetRef | None = None
         self._unreaped_children: set[int] = set()
+        self._raw_handles: list[Handle] = []
         self._signal: str | None = None
         self._escalated = False  # a second signal arrived while the first was still pending
         self.scratch_roots: list[str] = []  # the directories an unbound argv may name (the run's log dir, the verified work dir)
@@ -737,7 +813,9 @@ class RealHost:
             launch = [f"--filename=/dev/fd/{fd}" if t == f"--filename={target.path}" else t for t in argv]
             if launch.count(f"--filename=/dev/fd/{fd}") != 1:
                 raise HostError(f"{target.path}: the planned fio argv does not name the claimed target exactly once")
-            return _ProcHandle(launch, pass_fds=(fd,), on_unreaped=self._unreaped_children.add)
+            handle = _ProcHandle(launch, pass_fds=(fd,), on_unreaped=self._unreaped_children.add)
+            self._raw_handles.append(handle)
+            return handle
         return _ProcHandle(argv)
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
@@ -808,6 +886,15 @@ class RealHost:
         """Close the claim after its consumers are gone; keep it when a child could not be reaped."""
         if self._claim_fd is None:
             return None
+        active = []
+        for handle in self._raw_handles:
+            try:
+                if handle.poll() is None:
+                    active.append(str(getattr(handle, "pid", "<unknown>")))
+            except Exception as exc:  # noqa: BLE001 -- an unobservable child cannot prove that the claim is safe to close
+                return f"raw_claim_release_failed: a raw writer handle could not be inspected ({type(exc).__name__}: {exc})"
+        if active:
+            return f"raw_claim_child_unreaped: raw writer handle(s) {', '.join(active)} still hold the claim"
         if self._unreaped_children:
             return f"raw_claim_child_unreaped: child pid(s) {', '.join(map(str, sorted(self._unreaped_children)))} still hold the claim"
         try:
@@ -815,6 +902,7 @@ class RealHost:
         except OSError as exc:
             return f"raw_claim_release_failed: closing {self._claim_target.path if self._claim_target else 'the raw-device'} claim failed ({exc.strerror or exc})"
         self._claim_fd, self._claim_target = None, None
+        self._raw_handles.clear()
         return None
 
     def _claim_fd_for(self, target: TargetRef, *, write: bool) -> int:

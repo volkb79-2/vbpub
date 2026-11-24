@@ -129,9 +129,11 @@ def test_iob_bl_28_realhost_claims_and_launches_through_the_inherited_descriptor
             return real_close(fd)
         closes.append(fd)
 
+    finished_handle = SimpleNamespace(pid=5151, poll=lambda: 0)
+
     def make_handle(argv, **kwargs):
         launches.append((argv, kwargs))
-        return "handle"
+        return finished_handle
 
     monkeypatch.setattr(host_mod.os, "open", exclusive_open)
     monkeypatch.setattr(host_mod.os, "close", tracked_close)
@@ -149,7 +151,7 @@ def test_iob_bl_28_realhost_claims_and_launches_through_the_inherited_descriptor
     assert host.claim(ref) == 71
     handle = host.write_range(job.argv(), ref, 0, 1 << 20)
     launch, kwargs = launches[-1]
-    assert handle == "handle" and launch.count("--filename=/dev/fd/71") == 1 and kwargs["pass_fds"] == (71,)
+    assert handle is finished_handle and launch.count("--filename=/dev/fd/71") == 1 and kwargs["pass_fds"] == (71,)
     assert host.release_claim() is None
     assert closes == [71]
     assert len(open_calls) == 2

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import dataclasses
 import errno
+import io
 import json
 import os
+import signal
 import stat
 import struct
 import sys
@@ -14,11 +16,12 @@ import pytest
 from helpers import INVERSION, config, job, make_host, target_ref
 from helpers import calibrate as run_calibration
 
-from iobench import calibrate, cli, devio, guard, restore, stages
+from iobench import calibrate, cli, devio, guard, restore, result, stages
 from iobench import host as host_mod
 from iobench.errors import Aborted, Refusal
 from iobench.host import HostError, RealHost, TargetRef
-from iobench.testing import GIB, R1002_PARTUUID, R1002_SIZE, FakeHost, standard_host
+from iobench.series import IntegrityError
+from iobench.testing import GIB, R1002_PARTUUID, R1002_SIZE, FakeDevice, FakeHost, standard_host
 
 DEV = "/dev/vda7"
 CREATED = "2026-10-21T03:00:00Z"
@@ -41,6 +44,45 @@ def claimed_write_job(*, name: str = "claim-write") -> devio.FioJob:
 
 def cleaned(host: FakeHost) -> None:
     assert host.claims == {} and host.claim_fds == {} and host.locks == {}
+
+
+def legacy_marked_target(case: str) -> tuple[FakeHost, str, str]:
+    """A marker the pre-claim guard accepted, before raw mutation became the gate."""
+    host = standard_host()
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = (
+        lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    )
+    size = 4 * GIB
+    if case == "whole-disk":
+        serial = "LEGACY-WHOLE-DISK"
+        host.add_disk("vdb", 8, size, serial=serial)
+        dev = FakeDevice("/dev/vdb", size, devno="8:0", serial=serial, disk="vdb")
+        host.devices[dev.path] = dev
+        dev.marker = guard.marker_text(size, None, serial, CREATED)
+        return host, dev.path, "raw_target_not_partition"
+    if case == "serial-only":
+        serial = "LEGACY-SERIAL-ONLY"
+        host.add_disk("vdb", 8, size, serial=serial)
+        dev = host.add_partition("vdb", "vdb1", 8, 1, size, None)
+        dev.marker = guard.marker_text(size, None, serial, CREATED)
+        return host, dev.path, "raw_target_partuuid_required"
+    disk, name, major, condition = {
+        "dm": ("dm-0", "dm-0p1", 253, "raw_target_dm"),
+        "md": ("md0", "md0p1", 9, "raw_target_md"),
+        "loop": ("loop0", "loop0p1", 7, "raw_target_loop"),
+    }[case]
+    host.add_disk(disk, major, size + 6 * GIB)
+    dev = host.add_partition(disk, name, major, 1, size, f"legacy-{case}-partuuid")
+    dev.marker = guard.marker_text(size, dev.partuuid, None, CREATED)
+    return host, dev.path, condition
+
+
+class _PrimaryOutput:
+    def __init__(self) -> None:
+        self.primary_lines: list[object] = []
+
+    def primary(self, value: object) -> None:
+        self.primary_lines.append(value)
 
 
 class RealClaim:
@@ -110,6 +152,15 @@ class LifecycleRunner(stages.Runner):
             raise Refusal("test_refusal", "the lifecycle test refused after taking the claim", "none")
         if self.action == "exception":
             raise RuntimeError("the lifecycle test raised after taking the claim")
+        if self.action == "refusal-unreaped":
+            self.host.unreaped_children.add(4242)
+            raise Refusal("test_refusal", "the lifecycle test refused after taking the claim", "none")
+        if self.action == "exception-unreaped":
+            self.host.unreaped_children.add(4242)
+            raise RuntimeError("the lifecycle test raised after taking the claim")
+        if self.action == "base-exception-unreaped":
+            self.host.unreaped_children.add(4242)
+            raise KeyboardInterrupt("the lifecycle test was interrupted after taking the claim")
         if self.action == "first-signal":
             writer = self.job("first-signal", "randwrite", 4096, 1, 10, 0, GIB, io_size=4096)
             self.allowed_writes.add(0, GIB)
@@ -277,8 +328,22 @@ def test_tgt_12_target_init_reports_a_claim_release_problem_and_keeps_the_claim(
     host.claim_fds.clear()
 
 
-def test_tgt_12_refuses_serial_only_identity_and_load_uses_the_same_rule():
+def test_tgt_12_signature_remedy_never_offers_serial_only_identity():
     host = standard_host()
+    host.devices[DEV].signatures.append("ext4")
+    with pytest.raises(Refusal) as err:
+        guard.init_device(host, DEV, own=False, expect_size=R1002_SIZE, expect_partuuid=R1002_PARTUUID,
+                          expect_serial=None, created=CREATED)
+    assert err.value.condition == "signature"
+    assert "or --expect-serial" not in err.value.remedy
+    assert "--expect-partuuid" in err.value.remedy
+
+
+def test_tgt_12_refuses_serial_only_init_but_keeps_the_old_marker_readable_until_raw_mutation():
+    host = standard_host()
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = (
+        lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    )
     host.add_disk("vdb", 8, 10 * GIB, serial="SERIAL-ONLY")
     dev = host.add_partition("vdb", "vdb1", 8, 1, 4 * GIB, None)
     with pytest.raises(Refusal) as err:
@@ -287,10 +352,52 @@ def test_tgt_12_refuses_serial_only_identity_and_load_uses_the_same_rule():
     assert err.value.condition == "raw_target_partuuid_required"
     assert "serial alone" in str(err.value)
     dev.marker = guard.marker_text(dev.size, None, "SERIAL-ONLY", CREATED)
-    with pytest.raises(Refusal) as loaded:
-        guard.load_target(host, dev.path)
-    assert loaded.value.condition == "raw_target_partuuid_required"
-    assert host.claims == {}
+    loaded = guard.load_target(host, dev.path)
+    assert loaded.partuuid is None and loaded.serial == "SERIAL-ONLY"
+    runner = calibrate.Calibrator(host, config(target=dev.path, raw_write=True))
+    try:
+        with pytest.raises(Refusal) as raw:
+            runner.s0(need_workdir=False)
+        assert raw.value.condition == "raw_target_partuuid_required"
+        assert host.claims == {}
+    finally:
+        runner.safety.release()
+    cleaned(host)
+
+
+@pytest.mark.parametrize("case", ("whole-disk", "dm", "md", "loop", "serial-only"))
+def test_tgt_12_old_marker_kinds_stay_readable_but_require_claimable_identity_for_raw_mutation(case):
+    host, path, condition = legacy_marked_target(case)
+    target = guard.load_target(host, path)
+    assert target.path == path
+    runtime = SimpleNamespace(dry_run=False, json_mode=True, output=_PrimaryOutput())
+    assert cli._target_show(SimpleNamespace(path=path), runtime, lambda: host) == 0
+    assert runtime.output.primary_lines[0]["target"] == path
+    live_identity = result.live_identity(host, {"target": {"path": path}, "disk_scope": None})
+    assert live_identity is not None and live_identity["target"]["path"] == path
+
+    runner = calibrate.Calibrator(host, config(target=path, raw_write=False))
+    try:
+        runner.s0(need_workdir=False)
+        read = runner.job(f"legacy-{case}-read", "randread", 4096, 1, 1, 0, 4096, filename=path)
+        runner.read_extent.add(0, 4096)
+        host.devices[path].written.add(0, 4096)
+        out = runner.fio(read)
+        assert out.stats is not None and host.fio_spawns > 0
+    finally:
+        runner.cleanup("complete", "", 0)
+    cleaned(host)
+
+    raw_host, raw_path, raw_condition = legacy_marked_target(case)
+    raw_runner = calibrate.Calibrator(raw_host, config(target=raw_path, raw_write=True))
+    try:
+        with pytest.raises(Refusal) as err:
+            raw_runner.s0(need_workdir=False)
+        assert err.value.condition == raw_condition == condition
+        assert raw_host.claims == {}
+    finally:
+        raw_runner.safety.release()
+    cleaned(raw_host)
 
 
 @pytest.mark.parametrize(
@@ -437,6 +544,20 @@ def test_tgt_12_claim_table_reports_unreaped_children_and_keeps_the_claim():
     cleaned(host)
 
 
+def test_tgt_12_fake_claim_refuses_to_close_under_an_active_raw_handle():
+    host = make_host(cache=INVERSION)
+    ref = target_ref(host)
+    host.claim(ref)
+    writer = claimed_write_job(name="active-fake-handle")
+    handle = host.write_range(writer.argv(), ref, 0, writer.size)
+    problem = host.release_claim()
+    assert problem is not None and problem.startswith("raw_claim_child_unreaped")
+    assert host.claims[DEV] == ref
+    handle.kill()
+    assert host.release_claim() is None
+    cleaned(host)
+
+
 def test_tgt_12_real_claim_has_the_exact_exclusive_open_and_identity_checks(monkeypatch):
     real = RealClaim(monkeypatch)
     assert real.claim() == 71
@@ -480,6 +601,143 @@ def test_tgt_12_real_claim_rechecks_descriptor_identity_and_closes_on_refusal(mo
         real.claim()
     assert err.value.condition == condition
     assert real.closed == [71] and real.host._claim_fd is None
+
+
+def test_tgt_12_realhost_default_write_and_discard_refusals_never_launch(monkeypatch):
+    real = RealClaim(monkeypatch)
+    process_calls: list[object] = []
+    ioctl_calls: list[object] = []
+    monkeypatch.setattr(host_mod, "_ProcHandle", lambda *_args, **_kwargs: process_calls.append(object()))
+    monkeypatch.setattr(host_mod.fcntl, "ioctl", lambda *_args, **_kwargs: ioctl_calls.append(object()))
+    writer = claimed_write_job(name="real-default-refusal")
+    with pytest.raises(Refusal) as write_error:
+        real.host.write_range(writer.argv(), real.ref, 0, writer.size)
+    assert str(write_error.value) == WRITE_REFUSAL
+    with pytest.raises(Refusal) as discard_error:
+        real.host.discard_range(devio.blkdiscard_argv(DEV, 0, writer.size), real.ref, 0, writer.size)
+    assert str(discard_error.value) == DISCARD_REFUSAL
+    assert process_calls == [] and ioctl_calls == []
+    assert real.host._claim_fd is None
+
+
+def test_tgt_12_real_claim_rejects_file_and_different_targets_before_open(monkeypatch):
+    host = RealHost()
+    with pytest.raises(HostError, match="only a block device"):
+        host.claim(TargetRef("file", "/bench/target.img", 4 * GIB, inode=12, fs_uuid="uuid"))
+    ref = TargetRef("device", DEV, R1002_SIZE, devno="254:7", partuuid=R1002_PARTUUID)
+    monkeypatch.setattr(host_mod.os, "open", lambda *_args, **_kwargs: 71)
+    monkeypatch.setattr(host_mod.os, "fstat", lambda _fd: SimpleNamespace(
+        st_mode=stat.S_IFBLK, st_rdev=os.makedev(254, 7), st_size=0))
+    monkeypatch.setattr(host_mod.fcntl, "ioctl", RealClaim.ioctl_size)
+    monkeypatch.setattr(host, "_verify_live", lambda _target: None)
+    monkeypatch.setattr(host_mod.os, "close", lambda _fd: None)
+    assert host.claim(ref) == 71
+    with pytest.raises(HostError, match="another raw target"):
+        host.claim(TargetRef("device", "/dev/vdb7", R1002_SIZE, devno="254:9", partuuid=R1002_PARTUUID))
+
+
+def test_tgt_12_real_devno_parser_refuses_the_invalid_shape():
+    with pytest.raises(HostError, match="invalid device number"):
+        host_mod._devno_pair(TargetRef("device", DEV, R1002_SIZE, devno="not-a-major-minor"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "condition"),
+    (
+        ("devno", "254:8", "raw_target_devno_changed"),
+        ("size_bytes", R1002_SIZE + 1, "raw_target_size_changed"),
+        ("partuuid", "different-partuuid", "raw_target_partuuid_changed"),
+        ("serial", "different-serial", "raw_target_claim_mismatch"),
+    ),
+)
+def test_tgt_12_real_held_claim_refuses_every_identity_mismatch(monkeypatch, field, value, condition):
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    changed = dataclasses.replace(real.ref, **{field: value})
+    with pytest.raises(Refusal) as err:
+        real.host._claim_fd_for(changed, write=True)
+    assert err.value.condition == condition
+    assert real.closed == []
+
+
+def test_tgt_12_real_held_claim_without_a_target_identity_is_refused(monkeypatch):
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    real.host._claim_target = None
+    with pytest.raises(HostError, match="no target identity"):
+        real.host._claim_fd_for(real.ref, write=False)
+    assert real.host.release_claim() is None
+    assert real.closed == [71]
+
+
+def test_tgt_12_real_duplicate_launch_filename_is_refused_before_proc_handle(monkeypatch):
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    writer = claimed_write_job(name="real-duplicate-filename")
+    argv = [*writer.argv(), f"--filename={DEV}"]
+    process_calls: list[object] = []
+    monkeypatch.setattr(host_mod, "check_argv", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host_mod, "_ProcHandle", lambda *_args, **_kwargs: process_calls.append(object()))
+    with pytest.raises(HostError, match="exactly once"):
+        real.host.write_range(argv, real.ref, 0, writer.size)
+    assert process_calls == []
+    assert real.host.release_claim() is None
+
+
+def test_tgt_12_real_release_keeps_the_claim_for_unreaped_children_and_close_errors(monkeypatch):
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    real.host._unreaped_children.update({99, 4242})
+    problem = real.host.release_claim()
+    assert problem == "raw_claim_child_unreaped: child pid(s) 99, 4242 still hold the claim"
+    assert real.closed == []
+    real.host._unreaped_children.clear()
+
+    def fail_close(fd: int) -> None:
+        assert fd == 71
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    monkeypatch.setattr(host_mod.os, "close", fail_close)
+    problem = real.host.release_claim()
+    assert problem == "raw_claim_release_failed: closing /dev/vda7 claim failed (Input/output error)"
+    assert real.host._claim_fd == 71
+
+
+@pytest.mark.parametrize(
+    ("case", "condition"),
+    (
+        ("devno", "raw_target_devno_changed"),
+        ("size", "raw_target_size_changed"),
+        ("partuuid", "raw_target_partuuid_changed"),
+    ),
+)
+def test_tgt_12_real_verify_live_refuses_devno_size_and_partuuid_drift(monkeypatch, case, condition):
+    host = RealHost()
+    target = TargetRef("device", DEV, R1002_SIZE, devno="254:7", partuuid=R1002_PARTUUID)
+    live_rdev = os.makedev(254, 8) if case == "devno" else os.makedev(254, 7)
+    live_size = R1002_SIZE + 512 if case == "size" else R1002_SIZE
+    live_partuuid = "different-partuuid" if case == "partuuid" else R1002_PARTUUID
+    blkid_calls: list[list[str]] = []
+    real_open = open
+
+    monkeypatch.setattr(host_mod.os, "stat", lambda _path: SimpleNamespace(st_rdev=live_rdev))
+    monkeypatch.setattr("builtins.open", lambda path, *args, **kwargs: (
+        io.StringIO(str(live_size // 512) + "\n") if "/sys/dev/block/" in str(path)
+        else real_open(path, *args, **kwargs)
+    ))
+
+    def run(argv, **_kwargs):
+        blkid_calls.append(list(argv))
+        return SimpleNamespace(returncode=0 if live_partuuid else 2,
+                               stdout=f"PART_ENTRY_UUID={live_partuuid}\n" if live_partuuid else "", stderr="")
+
+    monkeypatch.setattr(host_mod.subprocess, "run", run)
+    with pytest.raises(Refusal) as err:
+        host._verify_live(target)
+    assert err.value.condition == condition
+    assert blkid_calls == ([] if case in ("devno", "size") else [[
+        "blkid", "-p", "-o", "export", DEV
+    ]])
 
 
 def test_tgt_12_real_marker_pwrite_uses_the_claim_descriptor(monkeypatch):
@@ -612,6 +870,19 @@ def test_tgt_12_fio_device_preamble_is_a_warning_not_a_parse_failure():
     cleaned(host)
 
 
+def test_tgt_12_fio_job_error_is_a_named_failure_even_with_a_preamble_and_rc_zero():
+    host = standard_host()
+    read = devio.FioJob("error-job", DEV, "randread", 4096, 1, 1, 0, 4096,
+                        prefix="/run/iobench/error-job")
+    sim = host.fio.simulate(read, host.now(), host.devices[DEV])
+    rendered, rate_log, _hist = host.fio.render(read, sim)
+    document = json.loads(rendered)
+    document["jobs"][0]["error"] = 13
+    host.put(read.log_path, rate_log)
+    with pytest.raises(IntegrityError, match=r"IOB-PLA-20: fio job error-job reported error 13"):
+        devio.collect(host, read, host_mod.RunResult(0, f"{PREAMBLE}\n{json.dumps(document)}", ""), host.now())
+
+
 def test_tgt_12_fio_output_split_requires_json_and_preserves_blank_preamble_lines():
     with pytest.raises(json.JSONDecodeError, match="no JSON object"):
         devio.parse_fio_json("not JSON", "read")
@@ -636,6 +907,40 @@ class _PopenStub:
         return None
 
 
+class _KillTimeoutPopen(_PopenStub):
+    timeout: float | None = None
+
+    def poll(self) -> None:
+        return None
+
+    def wait(self, timeout=None) -> int:
+        self.timeout = timeout
+        raise host_mod.subprocess.TimeoutExpired(["true"], timeout)
+
+
+class _SentinelPopen(_PopenStub):
+    def poll(self) -> int:
+        return host_mod.SUPERVISOR_UNREAPED_STATUS
+
+    def wait(self, timeout=None) -> int:
+        return host_mod.SUPERVISOR_UNREAPED_STATUS
+
+
+class _RawHandleStub:
+    def __init__(self) -> None:
+        self.pid = 5151
+        self.active = True
+
+    def poll(self) -> int | None:
+        return None if self.active else 0
+
+    def wait(self) -> host_mod.RunResult:
+        return host_mod.RunResult(0, "", "")
+
+    def kill(self) -> None:
+        self.active = False
+
+
 def test_tgt_12_proc_handle_selects_close_and_inherits_the_claim_fd(monkeypatch):
     seen: list[_PopenStub] = []
 
@@ -651,6 +956,47 @@ def test_tgt_12_proc_handle_selects_close_and_inherits_the_claim_fd(monkeypatch)
     assert "--filename=/dev/fd/31" in seen[0].argv
     handle.kill()
     assert handle._out.closed and handle._err.closed
+
+
+def test_tgt_12_proc_handle_kill_timeout_sets_and_reports_the_unreaped_pid(monkeypatch):
+    seen: list[int] = []
+    monkeypatch.setattr(host_mod.subprocess, "Popen", _KillTimeoutPopen)
+    monkeypatch.setattr(host_mod, "_PRCTL", object())
+    handle = host_mod._ProcHandle(["true"], on_unreaped=seen.append)
+    handle.kill()
+    assert handle.unreaped_pid == 4242 and seen == [4242]
+    assert handle._p.timeout == host_mod.SUPERVISOR_EXIT_TIMEOUT_S
+    assert handle._out.closed and handle._err.closed
+
+
+def test_tgt_12_proc_handle_poll_reports_the_supervisor_unreaped_sentinel(monkeypatch):
+    seen: list[int] = []
+    monkeypatch.setattr(host_mod.subprocess, "Popen", _SentinelPopen)
+    monkeypatch.setattr(host_mod, "_PRCTL", object())
+    handle = host_mod._ProcHandle(["true"], on_unreaped=seen.append)
+    handle._err.write(f"{host_mod.SUPERVISOR_UNREAPED_PREFIX}6001,6002\n")
+    handle._err.flush()
+    assert handle.poll() == host_mod.SUPERVISOR_UNREAPED_STATUS
+    assert handle.unreaped_pid == 6001 and seen == [6001, 6002]
+    assert handle.poll() == host_mod.SUPERVISOR_UNREAPED_STATUS and seen == [6001, 6002]
+    handle.kill()
+    assert handle._out.closed and handle._err.closed
+
+
+def test_tgt_12_real_release_keeps_the_claim_under_a_registered_active_raw_handle(monkeypatch):
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    raw_handle = _RawHandleStub()
+    monkeypatch.setattr(host_mod, "_ProcHandle", lambda _argv, **_kwargs: raw_handle)
+    writer = claimed_write_job(name="registered-active-raw-handle")
+    returned = real.host.write_range(writer.argv(), real.ref, 0, writer.size)
+    assert returned is raw_handle
+    problem = real.host.release_claim()
+    assert problem == "raw_claim_child_unreaped: raw writer handle(s) 5151 still hold the claim"
+    assert real.closed == [] and real.host._claim_fd == 71
+    raw_handle.active = False
+    assert real.host.release_claim() is None
+    assert real.closed == [71]
 
 
 @pytest.mark.skipif(host_mod._PRCTL is None, reason="PR_SET_PDEATHSIG is unavailable")
@@ -673,6 +1019,86 @@ def test_tgt_12_supervisor_passes_the_claim_fd_to_fio():
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+@pytest.mark.skipif(host_mod._PRCTL is None, reason="PR_SET_PDEATHSIG is unavailable")
+@pytest.mark.parametrize("exit_path", ("normal", "kill"))
+def test_tgt_12_supervisor_reports_an_adopted_grandchild_on_every_exit_path(monkeypatch, tmp_path, exit_path):
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    claim_read, claim_write = os.pipe()
+    ready_read, ready_write = os.pipe()
+    pid_file = tmp_path / "grandchild.pid"
+    script = (
+        "import os, signal, sys, time\n"
+        "claim_fd=int(sys.argv[1].rsplit('/',1)[1])\n"
+        "ready_fd=int(sys.argv[2].rsplit('/',1)[1])\n"
+        "pid_path=sys.argv[3]\n"
+        "os.fstat(claim_fd)\n"
+        "r,w=os.pipe()\n"
+        "child=os.fork()\n"
+        "if child == 0:\n"
+        "    os.close(r)\n"
+        "    os.close(ready_fd)\n"
+        "    os.setsid()\n"
+        "    os.write(w, str(os.getpid()).encode())\n"
+        "    os.close(w)\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    time.sleep(60)\n"
+        "    os._exit(0)\n"
+        "os.close(w)\n"
+        "grandchild=int(os.read(r, 32))\n"
+        "os.close(r)\n"
+        "with open(pid_path, 'w', encoding='ascii') as fh:\n"
+        "    fh.write(str(grandchild))\n"
+        "os.write(ready_fd, b'1')\n"
+        "os.close(ready_fd)\n"
+    )
+    seen: list[int] = []
+    handle = host_mod._ProcHandle(
+        [sys.executable, "-c", script, f"--filename=/dev/fd/{claim_read}",
+         f"--filename=/dev/fd/{ready_write}", str(pid_file)],
+        pass_fds=(claim_read, ready_write), on_unreaped=real.host._unreaped_children.add,
+    )
+    grandchild: int | None = None
+    try:
+        assert os.read(ready_read, 1) == b"1"
+        if exit_path == "normal":
+            result = handle.wait()
+            assert result.returncode == host_mod.SUPERVISOR_UNREAPED_STATUS
+            assert host_mod.SUPERVISOR_UNREAPED_PREFIX in result.stderr
+        else:
+            handle.kill()
+        grandchild = int(pid_file.read_text(encoding="ascii"))
+        problem = real.host.release_claim()
+        assert problem is not None and problem.startswith("raw_claim_child_unreaped")
+        assert real.closed == [] and real.host._claim_fd == 71
+        assert handle.unreaped_pid is not None
+        assert real.host._unreaped_children
+        if exit_path == "normal":
+            assert handle.unreaped_pid == grandchild
+        seen.extend(real.host._unreaped_children)
+        assert seen
+    finally:
+        handle.kill()
+        if grandchild is None and pid_file.exists():
+            grandchild = int(pid_file.read_text(encoding="ascii"))
+        if grandchild is not None:
+            try:
+                os.kill(grandchild, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(grandchild, 0)
+            except ChildProcessError:
+                pass
+        real.host._unreaped_children.clear()
+        if real.host._claim_fd is not None:
+            real.host.release_claim()
+        os.close(ready_read)
+        os.close(ready_write)
+        os.close(claim_read)
+        os.close(claim_write)
 
 
 @pytest.mark.parametrize(
@@ -701,6 +1127,25 @@ def test_tgt_12_claim_is_released_when_the_body_refuses_or_raises(action):
     assert host.claims == {} and host.locks == {}
 
 
+@pytest.mark.parametrize(("action", "expected"), (
+    ("refusal-unreaped", Refusal),
+    ("exception-unreaped", RuntimeError),
+    ("base-exception-unreaped", KeyboardInterrupt),
+))
+def test_tgt_12_refusal_and_base_exception_paths_attach_the_claim_cleanup_problem(action, expected):
+    host = make_host(cache=INVERSION)
+    runner = LifecycleRunner(host, config(raw_write=True), action)
+    with pytest.raises(expected) as err:
+        runner.execute()
+    notes = "\n".join(getattr(err.value, "__notes__", ()))
+    assert "raw_claim_child_unreaped" in notes
+    if expected is not KeyboardInterrupt:
+        assert "raw_claim_child_unreaped" in str(err.value)
+    assert host.claims[DEV] == target_ref(host) and host.locks == {}
+    host.unreaped_children.clear()
+    host.release_claim()
+
+
 def test_tgt_12_unreaped_child_keeps_the_claim_and_fails_the_run():
     host = make_host(cache=INVERSION)
     runner = LifecycleRunner(host, config(raw_write=True), "unreaped")
@@ -709,6 +1154,26 @@ def test_tgt_12_unreaped_child_keeps_the_claim_and_fails_the_run():
     assert result.message == "raw_claim_child_unreaped: child pid(s) 4242 still hold the claim"
     assert host.claims[DEV] == target_ref(host)
     assert host.locks == {}
+
+
+def test_tgt_12_cleanup_preserves_verification_failure_and_claim_problem(monkeypatch):
+    from iobench.errors import VerificationFailure
+
+    host = make_host(cache=INVERSION)
+    runner = LifecycleRunner(host, config(raw_write=True), "normal")
+
+    def verification() -> None:
+        raise VerificationFailure("io.max changed after restore")
+
+    monkeypatch.setattr(runner.safety, "verify_io_max", verification)
+    monkeypatch.setattr(host, "release_claim", lambda: "raw_claim_release_failed: synthetic close failure")
+    result = runner.execute()
+    assert result.status == "failed" and result.exit_code == VerificationFailure.exit_code == 9
+    assert "io.max changed after restore" in result.message
+    assert "raw_claim_release_failed: synthetic close failure" in result.message
+    assert host.claims[DEV] == target_ref(host) and host.locks == {}
+    host.claims.clear()
+    host.claim_fds.clear()
 
 
 def test_tgt_12_claim_release_errors_are_named_and_the_lock_is_still_dropped(monkeypatch):

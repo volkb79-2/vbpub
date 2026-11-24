@@ -203,11 +203,11 @@ def test_tgt_03_reserved_tail_one_per_writer_type():
     overlap = size - TAIL_BYTES - 4096
     host.claim(ref)
     try:
-        with pytest.raises(HostError):  # a fio job, rejected by the Host extent binding before launch
+        with pytest.raises(HostError, match="overlaps the reserved tail"):  # the fio model reaches the tail rule before launch
             host.write_range(job("randwrite", off=overlap, size=8192, name="w").argv(), ref, overlap, 8192)
         with pytest.raises(TailViolation):  # a discard range
             host.discard_range(devio.blkdiscard_argv(DEV, overlap, 8192), ref, overlap, 8192)
-        with pytest.raises(HostError):  # a fill job, rejected by the Host extent binding before launch
+        with pytest.raises(HostError, match="overlaps the reserved tail"):  # the fill model also reaches the tail rule
             f = job("write", off=0, size=size, bs=1 << 20, qd=16, name="fill", metric="bw")
             host.write_range(f.argv(), ref, 0, size)
         with pytest.raises(TailViolation):  # a marker rewrite whose extent leaves the tail

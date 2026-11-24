@@ -42,7 +42,7 @@ class FioJob:
     fsync: int | None = None
     numjobs: int = 1
     prefix: str = ""
-    device_guard: bool = False  # device targets: pin fio's mounted-write refusal beneath the run's held kernel O_EXCL claim
+    device_guard: bool = False  # device targets: retain the planned mounted-write option for argv parity; the /dev/fd/N claim is the runtime guard
 
     @property
     def writes(self) -> bool:
@@ -145,7 +145,7 @@ def require_fio_option(host: Host, option: str, version: tuple[int, int]) -> Non
         if unknown or res.returncode == 0:
             raise Refusal(
                 "fio_option_unsupported",
-                f"{version_text} does not document the option {option!r}; iobench includes it as an additional mounted-device guard",
+                f"{version_text} does not document the option {option!r}; iobench retains it as a fixed device-job argv token for argv parity and fio's own semantics",
                 "install a fio build that documents --allow_mounted_write; fio >= 3.30 is independently required for clat_ns percentiles",
             )
         raise Refusal(
@@ -264,7 +264,11 @@ def split_fio_output(text: str) -> tuple[str, tuple[str, ...]]:
 
 def _parse_fio_document(text: str, ddir: str) -> FioStats:
     doc = json.loads(text)
-    job = doc["jobs"][0][ddir]
+    job_entry = doc["jobs"][0]
+    error = job_entry.get("error", 0)
+    if error != 0:
+        raise IntegrityError(f"IOB-PLA-20: fio job {job_entry.get('jobname', '<unnamed>')} reported error {error}")
+    job = job_entry[ddir]
     clat = job["clat_ns"]
     clat_mean_us = float(clat["mean"]) / 1000.0
     slat = (job.get("slat_ns") or {}).get("mean")
