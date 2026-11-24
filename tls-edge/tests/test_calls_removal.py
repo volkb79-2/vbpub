@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import io
-import os
 import re
 import subprocess
 import sys
@@ -98,8 +97,6 @@ def _run_cli(
 
 
 def _run_standalone(stack_dir: Path, out_dir: Path) -> subprocess.CompletedProcess[str]:
-    environment = dict(os.environ)
-    environment["TLS_EDGE_PHYSICAL_DIR"] = str(ROOT)
     return subprocess.run(
         [
             sys.executable,
@@ -112,7 +109,6 @@ def _run_standalone(stack_dir: Path, out_dir: Path) -> subprocess.CompletedProce
         capture_output=True,
         text=True,
         check=False,
-        env=environment,
     )
 
 
