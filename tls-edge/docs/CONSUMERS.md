@@ -71,9 +71,10 @@ deployment") it still runs host-level Docker Compose from `/root/tls-edge-LIVE`,
 ## Network/firewall requirements
 
 Allow every value in `TLS_EDGE_PUBLIC_PORTS`, plus any port an application
-publishes directly (Jitsi's JVB UDP 10000 and, while the Calls preset is enabled,
-Mattermost's TCP/UDP 8443). Use `tls-edge show --json` for the authoritative
-list. A provider firewall and a host firewall can both filter the traffic;
+publishes directly (Jitsi's JVB UDP 10000 and, when Mattermost publishes Calls
+media directly (tls-edge Calls preset off), its TCP/UDP 8443). Use `tls-edge
+show --json` for the authoritative list. A provider firewall and a host
+firewall can both filter the traffic;
 check both layers. Docker-published traffic follows the host's forwarding
 rules, so an egress or ingress rule for host processes alone may not cover it.
 
