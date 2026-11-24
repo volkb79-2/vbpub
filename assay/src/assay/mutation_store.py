@@ -4026,7 +4026,7 @@ def validate_merge_manifest(
             )
             continue
         effective = record_effective_judge(parsed)
-        if effective != judge:
+        if effective is not None and effective != judge:
             problems.append(
                 _MergeManifestProblem(
                     "judge-mismatch",
@@ -4287,7 +4287,9 @@ def _flex_from_sources(
 def combine(
     sources: Sequence[StoreSource], request: CombineRequest
 ) -> CombineResult:
-    """Apply the fixed same-judge → shard → import → carry-forward pipeline."""
+    """Apply the fixed same-judge → shard → owner-manifest → import →
+    carry-forward pipeline.
+    """
     if request.judge is None:
         if request.resume or sources:
             raise ValueError("mutation store combine requires a judge identity")
