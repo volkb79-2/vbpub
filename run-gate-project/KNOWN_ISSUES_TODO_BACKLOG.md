@@ -183,6 +183,12 @@ SPEC §9.
 | RG-290 | `TestExecMode::test_exec_mode_declared_name_refusal_prescribes_project_authority` asserted `"ciu" not in proc.stderr`, but the refusal quotes the lane-config path, so a checkout whose path contains `ciu` (for example a `ciu worktree` named `ciu-...`) failed the whole selftest | Minor | FIXED 2026-11-18 (test only) |
 | RG-291 | the release gate ran only `selftest`, so it did not prove R3 canary rejection in the exact receipt-specific tester image before tagging | Major | FIXED 2026-11-18 (P10c-rg) |
 | RG-292 | `tools/canary-run.sh` treats any non-zero pytest exit as the expected canary rejection, so a broken image or collection failure would be reported as a successful rejection | Minor | OPEN 2026-11-18 (P10c-rg review) |
+| RG-293 | private scratch lane-caps work | Enhancement | WITHDRAWN 2026-11-24 |
+| RG-294 | private scratch directories leak into the repository | Major | FIXED IN THIS BRANCH (P-core-01) |
+| RG-295 | no owner-side scratch prune | Minor | FIXED IN THIS BRANCH (P-core-01) |
+| RG-296 | projects restate lane rules instead of checking them | Minor | OPEN 2026-11-24 (Opus design review) |
+| RG-297 | run-gate re-validates Assay flags it should forward opaquely | Minor | OPEN 2026-11-24 (Opus design review) |
+| RG-298 | durable R2 store transport is not shipped or re-seeded | Minor | OPEN 2026-11-24 (Opus design review; owner T3/T1, file only) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9520,3 +9526,56 @@ may count as a successful R3 rejection.
 
 **Close when.** The canary distinguishes a gate-rejection exit from an
 infrastructure failure and a controlled-wrong image fails the lane.
+
+## RG-293 — private scratch lane-caps work
+
+**Status:** WITHDRAWN 2026-11-24.
+
+WITHDRAWN 2026-11-24: superseded by TP-13 (operator Q4); work archived at tag archive/run-gate-p7a-caps-20261122 (dc47f99e2), not merged.
+Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
+
+## RG-294 — private scratch directories leak into the repository
+
+**Status:** FIXED 2026-11-24 (P-core-01). Severity: Major.
+
+**Observed.** The main checkout held 79,301 `run-gate-gitcfg-*` directories,
+approximately 4.7k `run-gate-test-bin-*` and 253 `run-gate-test-invoke-*`
+directories; `/tmp` held another 216. `atexit` could not run after SIGKILL,
+OOM or container-budget termination.
+
+**Fix.** Every `main()` invocation owns one lazy 0700 scratch root under a run
+id, removes it in `try/finally`, and records that id in inflight state.
+Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
+
+## RG-295 — no owner-side scratch prune
+
+**Status:** FIXED 2026-11-24 (P-core-01). Severity: Minor.
+
+`run-gate doctor --prune [--older-than DUR] [--dry-run]` now removes only old,
+non-live matching entries under the repository scratch store and system temp.
+It starts no container.
+Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
+
+## RG-296 — projects restate lane rules
+
+**Status:** OPEN 2026-11-24 (Opus design review). Severity: Minor.
+
+Add `run-gate lanes --check [--project DIR]` to validate shardability and
+budget margins (outer >= inner + 5m), then remove the projects' copied rules.
+Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
+
+## RG-297 — run-gate re-validates Assay flags
+
+**Status:** OPEN 2026-11-24 (Opus design review). Severity: Minor.
+
+Forward Assay flags opaquely after `--`, check only mounts and shard names, and
+use `assay capabilities --json`. This waits for Assay P-assay-10/12 (T3).
+Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
+
+## RG-298 — durable R2 store transport
+
+**Status:** OPEN 2026-11-24 (Opus design review; owner T3/T1, file only).
+Severity: Minor.
+
+Ship and re-seed `.assay/r2-store/<lane>/` with remote-gate artifacts.
+Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)

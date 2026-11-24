@@ -228,7 +228,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the RG-80 daemon-wide count-cap interface. `status [--worktree PATH]
   [--json]` reports selected-tree inflight records plus host-wide internal
   exec locks and Docker admission tickets/tombstones (RG-64/RG-80); it is a
-  reserved lane name.
+  reserved lane name. `doctor --prune [--older-than DUR] [--dry-run]` is the
+  scratch-reclamation mode (`R-58`); no other flags and no container start.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking) AND the source of every config
   read. First discover the invoking project as usual, then preserve its path
@@ -691,6 +692,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   container only: admission and observer probes keep their independently
   declared argv. `--network none` does not prevent a bind-mounted Unix socket
   such as cgprofile's observer socket from being used.
+
+- `R-58` **Scratch lifetime (RG-294/RG-295).** Every `main()` invocation has
+  one lazy run id (pid, start time, random suffix) and one 0700 root: host-
+  visible `<tempdir>/run-gate-<run-id>/`, else
+  `<repo>/.run-gate/tmp/<run-id>/` (creating a fresh `.run-gate`). Private
+  children live inside it. The parent removes it in `try/finally` on normal
+  return, FAIL, SIGTERM/`SystemExit`, `KeyboardInterrupt` or an uncaught
+  exception; there is no atexit owner, and removal errors only WARN. Inflight
+  records carry `scratch_run_id` when one exists. SIGKILL/OOM bypasses Python,
+  so `doctor --prune` is the owner-side backstop.
+
 - `R-16` **Inner command** (both kinds) starts `set -euo pipefail`, injects
   `safe.directory=*` through Git's `GIT_CONFIG_COUNT` environment interface,
   then runs the lane body. It does not write a global Git config file. Command
@@ -795,8 +807,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   infrastructure ERROR and a remedy: it prints no clean result, answers
   nothing partially and writes no manifest. Selecting an imported lane with an
   unavailable judge is the same ERROR. A malformed inventory remains an
-  error, never an empty import. The table shape matches CIU v8 S16.3's import
-  object.
+  error, never an empty import. The one exception is `doctor --prune`, which
+  (`R-30d`/`R-58`) starts no container and therefore does not resolve the
+  inventory; it says the import was not queried. The table shape matches
+  CIU v8 S16.3's import object.
 - `R-50` **Daemon-wide gate count admission (RG-80, CIU v8 S21 count mode).**
   `[admission]` is project-local, has closed keys `enabled` (default false),
   `ticket_image` (required when enabled; already local; must run `/bin/true`),
@@ -1202,6 +1216,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   preflight that tracebacks on exactly the machine that needs it defeats
   its purpose (git/docker absent → FAIL lines, never a traceback).
   Read-scope under `--worktree` (RG-30) is `R-37`.
+
+- **`R-30d` `doctor --prune` (RG-295).** Exclusive: no container probe or
+  container starts. It removes only the prefixes and bases in `R-58`; the
+  default age is the longest declared lane `budget`, or a documented 24h
+  fallback. `--older-than DUR` uses the `budget` grammar. It reports removed,
+  kept-live and kept-young counts per prefix; `--dry-run` deletes nothing.
+  Symlinks/non-matches are untouched, and an unreadable inflight record fails
+  closed before deletion.
 
 - `R-34` **Assay-lane toolchain fitness (RG-25).** For every `kind = "assay"`
   lane whose environment resolves, `doctor` and `--check-env` ask the JUDGE

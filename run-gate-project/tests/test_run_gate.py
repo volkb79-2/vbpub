@@ -53,10 +53,26 @@ _TEST_VERSION = importlib_metadata.version("run-gate")
 
 # The suite invokes from a neutral directory so each fixture's current working
 # directory selects its project config as the installed CLI contract requires.
-_TOOL_INVOKE_DIR = tempfile.mkdtemp(prefix="run-gate-test-invoke-")
-_TOOL_INVOKE = Path(_TOOL_INVOKE_DIR) / "run_gate.py"
-_TOOL_INVOKE.symlink_to(_TOOL)
-atexit.register(shutil.rmtree, _TOOL_INVOKE_DIR, ignore_errors=True)
+_TOOL_INVOKE_DIR = _TOOL_INVOKE = _CURRENT_TMP_PATH = None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_tool_invoke(tmp_path_factory):
+    """Put pytest's basetemp, not process-lifetime /tmp, behind the CLI shim."""
+    global _TOOL_INVOKE_DIR, _TOOL_INVOKE
+    _TOOL_INVOKE_DIR = tmp_path_factory.mktemp("run-gate-test-invoke")
+    _TOOL_INVOKE = _TOOL_INVOKE_DIR / "run_gate.py"
+    _TOOL_INVOKE.symlink_to(_TOOL)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shim_root(tmp_path):
+    """Every PATH shim belongs to this test's pytest-owned directory."""
+    global _CURRENT_TMP_PATH
+    _CURRENT_TMP_PATH = tmp_path
+    yield
+    _CURRENT_TMP_PATH = None
 
 import importlib.util  # noqa: E402
 
@@ -728,9 +744,11 @@ def shim_dir_of(monkeypatch) -> Path:
     # (the old "first writable PATH entry" rule replaced the developer's real
     # `assay` with a PASS-fabricating fake). Every shim goes to a private
     # per-test directory that is PREPENDED to PATH.
-    private = Path(tempfile.mkdtemp(prefix="run-gate-test-bin-"))
+    assert _CURRENT_TMP_PATH is not None
+    private = (_CURRENT_TMP_PATH
+               / f"run-gate-test-bin-{len(_TEST_OWNED_SHIM_DIRS)}")
+    private.mkdir(mode=0o700)
     _TEST_OWNED_SHIM_DIRS.add(str(private))
-    atexit.register(shutil.rmtree, private, ignore_errors=True)
     monkeypatch.setenv("PATH", f"{private}:{os.environ['PATH']}")
     return private
 
