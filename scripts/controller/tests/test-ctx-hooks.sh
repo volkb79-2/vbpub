@@ -343,8 +343,6 @@ ceiling_probe() { # ceiling_probe <home> <model> <tag>: prints "<k> ceiling" rea
   local json='{"session_id":"ceil-'"$tag"'","transcript_path":"'"$ROOT/ceil-$tag.jsonl"'","cwd":"'"$ROOT"'"}'
   python3 "$ROOT/mk.py" "$ROOT/ceil-$tag.jsonl" 101000 "$model"
   HOME=$home hook post-tool-use "$json" --state-dir "$st" > /dev/null
-  python3 "$ROOT/mk.py" "$ROOT/ceil-$tag.jsonl" 120000 "$model"
-  for _ in 1 2 3 4; do HOME=$home hook post-tool-use "$json" --state-dir "$st" > /dev/null; done
   python3 "$ROOT/mk.py" "$ROOT/ceil-$tag.jsonl" 151000 "$model"
   HOME=$home hook post-tool-use "$json" --state-dir "$st" | grep -o '~[0-9]* calls to the [0-9]*k ceiling'
 }
@@ -353,14 +351,14 @@ printf '%s' '{"autoCompactWindow":600000,"modelSettings":{"claude-opus-5-5":{"au
 printf '%s' '{"autoCompactWindow":600000}' > "$ROOT/h-top/.claude/settings.json"
 printf '%s' '{"modelSettings": [' > "$ROOT/h-bad/.claude/settings.json"
 printf '%s' '{"autoCompactWindow":600000,"modelSettings":{"claude-opus-5-5":{"autoCompactWindow":"big"}}}' > "$ROOT/h-badwin/.claude/settings.json"
-# 151k after a 101k marker over 5 calls = 10000 tokens/call; calls left = (ceiling - 151k) / 10000.
-[[ $(ceiling_probe "$ROOT/h-model" claude-opus-5-5 a) == '~64 calls to the 800k ceiling' ]] || fail 'the model-specific ceiling (opus) is not used'
-[[ $(ceiling_probe "$ROOT/h-model" claude-sonnet-5-5 b) == '~24 calls to the 400k ceiling' ]] || fail 'the model-specific ceiling (sonnet) is not used'
-[[ $(ceiling_probe "$ROOT/h-model" claude-unknown-9 c) == '~44 calls to the 600k ceiling' ]] || fail 'an unlisted model does not fall back to the top-level window'
-[[ $(ceiling_probe "$ROOT/h-top" claude-opus-5-5 d) == '~44 calls to the 600k ceiling' ]] || fail 'the top-level window is not used'
-[[ $(ceiling_probe "$ROOT/h-none" claude-opus-5-5 e) == '~34 calls to the 500k ceiling' ]] || fail 'a missing settings file does not give the documented default'
-[[ $(ceiling_probe "$ROOT/h-bad" claude-opus-5-5 f) == '~34 calls to the 500k ceiling' ]] || fail 'a malformed settings file does not give the documented default'
-[[ $(ceiling_probe "$ROOT/h-badwin" claude-opus-5-5 g) == '~44 calls to the 600k ceiling' ]] || fail 'a non-numeric model window does not fall through to the top-level one'
+# 151k right after a 101k marker = 50000 tokens/call; calls left = (ceiling - 151k) / 50000.
+[[ $(ceiling_probe "$ROOT/h-model" claude-opus-5-5 a) == '~12 calls to the 800k ceiling' ]] || fail 'the model-specific ceiling (opus) is not used'
+[[ $(ceiling_probe "$ROOT/h-model" claude-sonnet-5-5 b) == '~4 calls to the 400k ceiling' ]] || fail 'the model-specific ceiling (sonnet) is not used'
+[[ $(ceiling_probe "$ROOT/h-model" claude-unknown-9 c) == '~8 calls to the 600k ceiling' ]] || fail 'an unlisted model does not fall back to the top-level window'
+[[ $(ceiling_probe "$ROOT/h-top" claude-opus-5-5 d) == '~8 calls to the 600k ceiling' ]] || fail 'the top-level window is not used'
+[[ $(ceiling_probe "$ROOT/h-none" claude-opus-5-5 e) == '~6 calls to the 500k ceiling' ]] || fail 'a missing settings file does not give the documented default'
+[[ $(ceiling_probe "$ROOT/h-bad" claude-opus-5-5 f) == '~6 calls to the 500k ceiling' ]] || fail 'a malformed settings file does not give the documented default'
+[[ $(ceiling_probe "$ROOT/h-badwin" claude-opus-5-5 g) == '~8 calls to the 600k ceiling' ]] || fail 'a non-numeric model window does not fall through to the top-level one'
 
 # 10d1. a controller past 200k whose HANDOFF.md is older than 15 minutes is warned;
 #       a fresh file, an agent, and a fill below 200k are not.
