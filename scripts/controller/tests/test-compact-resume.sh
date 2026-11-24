@@ -41,6 +41,7 @@ case $1 in
       [[ $(cat "$s/nsent" 2>/dev/null || echo 0) -eq 1 ]] && echo compact >"$s/phase"
     fi ;;
 esac
+exit 0
 SH
 chmod +x "$ROOT/bin/tmux"
 

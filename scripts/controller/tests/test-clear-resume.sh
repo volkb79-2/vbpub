@@ -34,6 +34,7 @@ case $1 in
       printf '%s' "$t" >"$s/sent.txt"; echo "send-keys $3 -l <text>" >>"$s/calls.log"
     else echo "send-keys $3 $4${5:+ $5}" >>"$s/calls.log"; [[ $4 == /clear ]] && echo cleared >"$s/phase"; fi ;;
 esac
+exit 0
 SH
 chmod +x "$ROOT/bin/tmux"
 
