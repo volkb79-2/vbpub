@@ -448,10 +448,10 @@ def test_the_source_check_would_catch_a_reader(tmp_path: Path):
 
 
 def test_the_removed_resource_readers_and_keys_are_gone():
-    from assay import liveness, mutation
+    from assay import liveness, mutation, mutation_store
 
     for name in ("process_rss_bytes", "tree_sample", "TreeSample", "_pid_io_write_bytes", "_ResourceTally"):
         assert not hasattr(liveness, name), name
     assert not hasattr(mutation, "_measured_resources")
-    runner_fields = set(mutation._MutantRun.__dataclass_fields__)
+    runner_fields = set(mutation_store._MutantRun.__dataclass_fields__)
     assert not runner_fields & {"cpu_seconds", "peak_rss_bytes", "write_bytes", "judge_rss_bytes"}

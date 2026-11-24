@@ -35,7 +35,7 @@ from conftest import (
     zero_resource_limit_evidence_dict,
 )
 
-from assay import mutation
+from assay import mutation, mutation_store
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import (
     MutationTarget,
@@ -44,6 +44,7 @@ from assay.mutation import (
     collect_mutation_sites,
 )
 from assay.process_tree import ProcessTreeDescendant
+from assay.resource_limits import CounterDelta
 from assay.verdict import MutantOutcome, UnderlyingOutcome
 
 OPERATORS = ("python:compare-swap",)
@@ -309,7 +310,7 @@ def _record(job=None, **overrides):
     job = _job() if job is None else job
     source = job.original_text.encode()
     payload = {
-        "schema_version": mutation.MUTATION_STATE_SCHEMA_VERSION,
+        "schema_version": mutation_store.MUTATION_STATE_SCHEMA_VERSION,
         "candidate_id": mutation.candidate_id(job),
         "path": job.path,
         "replacement_sha256": hashlib.sha256(job.site.replacement).hexdigest(),
@@ -375,7 +376,7 @@ def test_failed_commit_with_a_previous_record_restores_it_and_drops_the_backup(t
     # guard call 2 runs after the backup link exists and before the replace
     guard = _GuardOnCall(2, _boom)
     with pytest.raises(RuntimeError, match="guard rejected"):
-        mutation._write_mutation_state_record(tmp_path, _record(description="new"), commit_guard=guard)
+        mutation_store._write_mutation_state_record(tmp_path, _record(description="new"), commit_guard=guard)
     assert json.loads(_dest(tmp_path).read_text())["description"] == "previous"
     assert [p.name for p in tmp_path.iterdir()] == [_dest(tmp_path).name]
 
@@ -384,7 +385,7 @@ def test_failed_post_publish_commit_tolerates_the_record_vanishing_before_rollba
     dest = _dest(tmp_path)
     guard = _GuardOnCall(3, lambda: (dest.unlink(), _boom()))
     with pytest.raises(RuntimeError, match="guard rejected"):
-        mutation._write_mutation_state_record(tmp_path, _record(), commit_guard=guard)
+        mutation_store._write_mutation_state_record(tmp_path, _record(), commit_guard=guard)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -397,7 +398,7 @@ def test_unrecoverable_rollback_is_reported_as_a_state_error(tmp_path):
         _boom()
 
     with pytest.raises(mutation.MutationStateError, match="could not roll back") as caught:
-        mutation._write_mutation_state_record(tmp_path, _record(), commit_guard=_GuardOnCall(3, sabotage))
+        mutation_store._write_mutation_state_record(tmp_path, _record(), commit_guard=_GuardOnCall(3, sabotage))
     assert isinstance(caught.value.__cause__, OSError)
 
 
@@ -415,7 +416,7 @@ def test_backup_removal_failure_after_acceptance_keeps_the_accepted_record(tmp_p
 
     monkeypatch.setattr(mutation.os, "unlink", flaky)
     with pytest.raises(OSError, match="cannot unlink backup"):
-        mutation._write_mutation_state_record(tmp_path, _record(description="new"))
+        mutation_store._write_mutation_state_record(tmp_path, _record(description="new"))
     monkeypatch.undo()
     assert json.loads(_dest(tmp_path).read_text())["description"] == "new"
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".state-backup-")]
@@ -436,7 +437,7 @@ def test_directory_sync_failure_after_backup_removal_keeps_the_accepted_record(t
 
     monkeypatch.setattr(mutation._durable, "fsync", flaky)
     with pytest.raises(OSError, match="cannot sync directory"):
-        mutation._write_mutation_state_record(tmp_path, _record(description="new"))
+        mutation_store._write_mutation_state_record(tmp_path, _record(description="new"))
     monkeypatch.undo()
     assert json.loads(_dest(tmp_path).read_text())["description"] == "new"
     assert [p.name for p in tmp_path.iterdir()] == [_dest(tmp_path).name]
@@ -462,26 +463,26 @@ def test_state_read_refuses_a_symlinked_record(tmp_path, state_fd):
     (tmp_path / "elsewhere").write_text("{}")
     (tmp_path / _name()).symlink_to("elsewhere")
     with pytest.raises(mutation.MutationStateError, match="could not be opened safely"):
-        mutation._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
+        mutation_store._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
 
 
 def test_state_read_refuses_a_non_regular_record(tmp_path, state_fd):
     os.mkfifo(tmp_path / _name())
     with pytest.raises(mutation.MutationStateError, match="is not a regular file"):
-        mutation._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
+        mutation_store._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
 
 
 def test_state_read_refuses_an_oversize_record_by_size(tmp_path, state_fd, monkeypatch):
-    monkeypatch.setattr(mutation, "MUTATION_STATE_RECORD_LIMIT", 8)
+    monkeypatch.setattr(mutation_store, "MUTATION_STATE_RECORD_LIMIT", 8)
     (tmp_path / _name()).write_bytes(b"x" * 9)
     with pytest.raises(mutation.MutationStateError, match="exceeds the 8-byte limit"):
-        mutation._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
+        mutation_store._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
 
 
 def test_state_read_refuses_a_record_that_grows_past_the_limit_while_being_read(
     tmp_path, state_fd, monkeypatch
 ):
-    monkeypatch.setattr(mutation, "MUTATION_STATE_RECORD_LIMIT", 8)
+    monkeypatch.setattr(mutation_store, "MUTATION_STATE_RECORD_LIMIT", 8)
     target = tmp_path / _name()
     target.write_bytes(b"x" * 20)
     real_fstat = os.fstat
@@ -498,7 +499,7 @@ def test_state_read_refuses_a_record_that_grows_past_the_limit_while_being_read(
 
     monkeypatch.setattr(mutation.os, "fstat", small_record)
     with pytest.raises(mutation.MutationStateError, match="exceeds the 8-byte limit"):
-        mutation._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
+        mutation_store._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
 
 
 def test_state_read_reports_an_io_error_as_a_state_error(tmp_path, state_fd, monkeypatch):
@@ -517,7 +518,7 @@ def test_state_read_reports_an_io_error_as_a_state_error(tmp_path, state_fd, mon
 
     monkeypatch.setattr(mutation.os, "read", broken)
     with pytest.raises(mutation.MutationStateError, match="could not be read safely"):
-        mutation._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
+        mutation_store._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
 
 
 # --------------------------------------------------------------------------
@@ -593,13 +594,13 @@ _OBSERVED_LIMITS = mutation.ResourceLimitEvidence.from_dict(
 )
 def test_terminal_matcher_raises_for_malformed_present_evidence(payload, message):
     with pytest.raises(ValueError, match=message):
-        mutation._terminal_result_matches_bucket(payload, process_tree_evidence=_tree())
+        mutation_store._terminal_result_matches_bucket(payload, process_tree_evidence=_tree())
 
 
 def test_terminal_matcher_refuses_a_budget_terminal_with_a_non_timeout_reason():
     payload = _terminal(outcome="BUDGET_EXCEEDED", reason="COMMAND_FAILED", returncode=None)
     with pytest.raises(ValueError, match="BUDGET_EXCEEDED terminal_result requires a timeout reason"):
-        mutation._terminal_result_matches_bucket(payload)
+        mutation_store._terminal_result_matches_bucket(payload)
 
 
 _KILL_OK = {"artifact": "k", "present": True}
@@ -636,7 +637,7 @@ def test_terminal_matcher_cache_decisions(payload, kwargs, expected):
         "resource_limit_evidence": _OBSERVED_LIMITS,
         **kwargs,
     }
-    assert mutation._terminal_result_matches_bucket(payload, **kwargs) is expected
+    assert mutation_store._terminal_result_matches_bucket(payload, **kwargs) is expected
 
 
 def test_terminal_matcher_refuses_a_non_call_witness_as_corruption():
@@ -648,7 +649,7 @@ def test_terminal_matcher_refuses_a_non_call_witness_as_corruption():
     )
 
     with pytest.raises(ValueError, match="failed call-phase report"):
-        mutation._terminal_result_matches_bucket(
+        mutation_store._terminal_result_matches_bucket(
             payload,
             process_tree_evidence=_tree(),
             resource_limit_evidence=_OBSERVED_LIMITS,
@@ -660,7 +661,7 @@ def test_terminal_matcher_maps_a_judgeable_nonexited_leader_to_crashed():
     payload = _terminal(
         outcome="PASS", reason=None, returncode=0, bucket="crashed"
     )
-    assert mutation._terminal_result_matches_bucket(
+    assert mutation_store._terminal_result_matches_bucket(
         payload, process_tree_evidence=_tree("timeout-killed")
     )
 
@@ -669,7 +670,7 @@ def test_terminal_matcher_does_not_reuse_a_pass_with_a_signaled_leader_as_surviv
     payload = _terminal(
         outcome="PASS", reason=None, returncode=0, bucket="survived"
     )
-    assert not mutation._terminal_result_matches_bucket(
+    assert not mutation_store._terminal_result_matches_bucket(
         payload, process_tree_evidence=_tree("signaled")
     )
 
@@ -677,7 +678,7 @@ def test_terminal_matcher_does_not_reuse_a_pass_with_a_signaled_leader_as_surviv
 def test_terminal_matcher_rejects_unobserved_bare_failure_credit():
     payload = _terminal(execution={"mode": "full"})
 
-    assert not mutation._terminal_result_matches_bucket(
+    assert not mutation_store._terminal_result_matches_bucket(
         payload, process_tree_evidence=_tree()
     )
 
@@ -685,7 +686,7 @@ def test_terminal_matcher_rejects_unobserved_bare_failure_credit():
 def test_terminal_matcher_accepts_unobserved_failure_with_clean_report_receipt():
     payload = _terminal(execution={"mode": "full", "witness": _GOOD_WITNESS})
 
-    assert mutation._terminal_result_matches_bucket(
+    assert mutation_store._terminal_result_matches_bucket(
         payload, process_tree_evidence=_tree()
     )
 
@@ -696,7 +697,7 @@ def test_terminal_matcher_rejects_shell_wrapped_signal_even_with_stale_receipt()
         execution={"mode": "full", "witness": _GOOD_WITNESS},
     )
 
-    assert not mutation._terminal_result_matches_bucket(
+    assert not mutation_store._terminal_result_matches_bucket(
         payload, process_tree_evidence=_tree()
     )
 
@@ -707,7 +708,7 @@ def test_terminal_matcher_rejects_shell_wrapped_signal_even_with_stale_receipt()
 
 
 def _load(root, **kwargs):
-    return mutation._load_validated_state_record(root, _job(), judge="j" * 64, **kwargs)
+    return mutation_store._load_validated_state_record(root, _job(), judge="j" * 64, **kwargs)
 
 
 def _drop(payload, key):
@@ -796,7 +797,7 @@ def test_budget_timeout_record_missing_a_required_field_is_rejected(
     del payload[missing_field]
     _put(tmp_path, payload)
 
-    assert _load(tmp_path) is mutation._RECORD_REJECTED
+    assert _load(tmp_path) is mutation_store._RECORD_REJECTED
 
 
 def test_budget_timeout_record_with_a_stale_mutated_file_digest_is_corruption(
@@ -833,7 +834,7 @@ def test_load_record_refuses_malformed_unobserved_resource_marker(
 
 def test_load_record_without_process_tree_evidence_is_a_rejected_cache_miss(tmp_path):
     _put(tmp_path, _drop(_record(), "process_tree_evidence"))
-    assert _load(tmp_path) == mutation._RECORD_REJECTED
+    assert _load(tmp_path) == mutation_store._RECORD_REJECTED
 
 
 def _completed_leak_record(**overrides):
@@ -874,7 +875,7 @@ def test_pre_b251_completed_leak_record_is_rejected_as_a_cache_miss(tmp_path):
     payload["judge_sha256"] = "a" * 64
     _put(tmp_path, payload)
 
-    assert _load(tmp_path) is mutation._RECORD_REJECTED
+    assert _load(tmp_path) is mutation_store._RECORD_REJECTED
 
 
 def test_a_carry_over_read_cannot_bypass_the_pre_b251_rejection(tmp_path):
@@ -885,7 +886,7 @@ def test_a_carry_over_read_cannot_bypass_the_pre_b251_rejection(tmp_path):
     payload["judge_sha256"] = "a" * 64
     _put(tmp_path, payload)
 
-    assert _load(tmp_path, accept_any_judge=True) is mutation._RECORD_REJECTED
+    assert _load(tmp_path, accept_any_judge=True) is mutation_store._RECORD_REJECTED
 
 
 def test_a_carry_over_read_still_refuses_a_current_completed_leak_corruption(tmp_path):
@@ -976,7 +977,7 @@ def test_cold_witness_survivor_without_evidence_is_corruption(tmp_path):
         ),
     )
     with pytest.raises(mutation.MutationStateError, match="missing required evidence"):
-        _load(tmp_path, cold_witness=True)
+        _load(tmp_path, context=mutation_store.RecordContext(cold_witness=True))
 
 
 # --------------------------------------------------------------------------
@@ -997,7 +998,7 @@ def _legacy(**changes):
 
 
 def test_legacy_resource_evidence_recognition_returns_false_for_other_shapes():
-    check = mutation._is_valid_legacy_b145_resource_limit_evidence
+    check = mutation_store._is_valid_legacy_b145_resource_limit_evidence
     assert check(_legacy()) is True
     assert check({"cgroup_version": 2}) is False
     assert check(_legacy(memory_events={"oom": dict(_DELTA)})) is False
@@ -1014,11 +1015,11 @@ def test_legacy_resource_evidence_recognition_returns_false_for_other_shapes():
 )
 def test_legacy_resource_evidence_refuses_malformed_counters(raw, message):
     with pytest.raises(ValueError, match=message):
-        mutation._is_valid_legacy_b145_resource_limit_evidence(raw)
+        mutation_store._is_valid_legacy_b145_resource_limit_evidence(raw)
 
 
 def test_witness_cold_execution_is_restored_with_its_witness():
-    execution = mutation._execution_from_state_record(
+    execution = mutation_store._execution_from_state_record(
         {"execution": {"mode": "witness-cold", "witness": _GOOD_WITNESS}}
     )
     assert execution.mode == "witness-cold"
@@ -1527,7 +1528,7 @@ def test_a_resource_limit_event_during_a_failed_command_stops_the_claim(tmp_path
     _counters_sequence(monkeypatch, zero, zero)
     hit, _changes = mutation.ResourceLimitEvidence.between(zero, zero)
     hit = mutation._dataclass_replace(
-        hit, pids_events_max=mutation.CounterDelta(before=0, after=1, delta=1)
+        hit, pids_events_max=CounterDelta(before=0, after=1, delta=1)
     )
     monkeypatch.setattr(
         mutation, "_candidate_resource_limit_evidence", lambda *_a: (hit, None, ())
@@ -1631,7 +1632,7 @@ def test_candidate_outcome_error_is_durable_and_identical_after_state_resume(
     assert stored["outcome_bucket"] == "crashed"
     assert stored["candidate_error"] == result.crashed[0].candidate_error.to_dict()
 
-    validated = mutation._load_validated_state_record(
+    validated = mutation_store._load_validated_state_record(
         state_root, jobs[0], judge="j" * 64
     )
     assert isinstance(validated, dict)
@@ -1657,7 +1658,7 @@ def test_candidate_error_is_final_before_its_first_state_write(tmp_path, monkeyp
         original_post_init(self)
 
     monkeypatch.setattr(MutantOutcome, "__post_init__", fail_first_outcome)
-    original_write = mutation._write_mutation_state_record
+    original_write = mutation_store._write_mutation_state_record
     write_calls = 0
 
     def interrupt_second_write(*args, **kwargs):
@@ -1667,7 +1668,9 @@ def test_candidate_error_is_final_before_its_first_state_write(tmp_path, monkeyp
             raise RuntimeError("simulated interruption before candidate_error rewrite")
         return original_write(*args, **kwargs)
 
-    monkeypatch.setattr(mutation, "_write_mutation_state_record", interrupt_second_write)
+    monkeypatch.setattr(
+        mutation_store, "_write_mutation_state_record", interrupt_second_write
+    )
     state_root = tmp_path / "state"
     interruption = None
     result = None
@@ -1697,7 +1700,7 @@ def test_candidate_error_is_final_before_its_first_state_write(tmp_path, monkeyp
     assert stored["candidate_error"] == result.crashed[0].candidate_error.to_dict()
     assert result.crashed[0].candidate_error.reason_code is ReasonCode.EXEC_FAILED
 
-    validated = mutation._load_validated_state_record(
+    validated = mutation_store._load_validated_state_record(
         state_root, jobs[0], judge="j" * 64
     )
     assert isinstance(validated, dict)
@@ -1846,7 +1849,7 @@ def test_a_non_mapping_process_tree_proof_never_reaches_a_recorded_bucket(tmp_pa
 def test_state_records_refuse_an_equivalent_bucket_without_matching_evidence(
     tmp_path, monkeypatch, classifier, kwargs, message
 ):
-    monkeypatch.setattr(mutation, classifier, lambda *a, **k: "equivalent")
+    monkeypatch.setattr(mutation_store, classifier, lambda *a, **k: "equivalent")
     with pytest.raises(mutation.MutationStateError, match=message):
         _execute(
             tmp_path,
@@ -1970,7 +1973,7 @@ def test_cold_failure_proof_does_not_override_a_non_kill_classifier_result(
     receipts.cold_proof = (_GOOD, 1, 0)
     receipts.facts[0] = _facts(_SHA_R2)
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_equivalence_bucket",
         lambda *_args, **_kwargs: "equivalent",
     )

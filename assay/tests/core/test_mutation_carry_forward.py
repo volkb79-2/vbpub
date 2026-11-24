@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from assay.resource_limits import ResourceLimitCounters
 from conftest import GitRepo
 from test_flex_r2_campaigns import _RUN_GATE, _event, _run
 
-from assay import mutation
+from assay import mutation, mutation_store
 
 _LANE = """\
 schema_version = 2
@@ -112,9 +113,9 @@ def _minimal_record(
     judge: str,
     bucket: str,
 ) -> dict:
-    fields = mutation._locus_fields_for_job(job)
+    fields = mutation_store._locus_fields_for_job(job)
     record = {
-        "schema_version": mutation.MUTATION_STATE_SCHEMA_VERSION,
+        "schema_version": mutation_store.MUTATION_STATE_SCHEMA_VERSION,
         **mutation.candidate_identity_fields(job),
         "candidate_id": candidate or mutation.candidate_id(job),
         "judge_sha256": judge,
@@ -273,7 +274,7 @@ def test_survivor_is_carried_pessimistically_and_keeps_the_r2_claim_failing(
     final_state = mutation.default_state_root(git_repo.path)
     record = json.loads(next(final_state.glob("*.json")).read_text(encoding="utf-8"))
     assert record["judge_sha256"] == judge
-    assert set(record["carry_over"]) == mutation._CARRY_OVER_V2_KEYS
+    assert set(record["carry_over"]) == mutation_store._CARRY_OVER_V2_KEYS
     assert record["carry_over"]["into_judge_sha256"] != judge
     assert record["outcome_bucket"] == "survived"
     assert record["carry_over"]["schema_version"] == 2
@@ -283,7 +284,7 @@ def test_survivor_is_carried_pessimistically_and_keeps_the_r2_claim_failing(
         "from_candidate_id": prior_record["candidate_id"],
         "from_judge_sha256": judge,
         "match": "exact-id",
-        "reason": mutation.CARRY_FORWARD_REASON,
+        "reason": mutation_store.CARRY_FORWARD_REASON,
     }
     assert mutation.record_provenance(record) == record["provenance"]
     assert (
@@ -404,7 +405,7 @@ def test_same_judge_locus_record_is_not_a_cross_judge_match(tmp_path: Path):
         _minimal_record(prior, judge=judge, bucket="survived"),
     )
 
-    matches, ambiguous = mutation._carry_forward_lookup(
+    matches, ambiguous = mutation_store._carry_forward_lookup(
         [job], (store,), judge=judge
     )
     assert matches == {}
@@ -443,7 +444,7 @@ def test_locus_survivor_is_rewritten_for_the_current_candidate(
         "from_candidate_id": old_id,
         "from_judge_sha256": _event(first, "candidates")["judge_sha256"],
         "match": "locus",
-        "reason": mutation.CARRY_FORWARD_REASON,
+        "reason": mutation_store.CARRY_FORWARD_REASON,
     }
     assert record["outcome_bucket"] == "survived"
     r2 = next(
@@ -537,7 +538,7 @@ def test_locus_carry_stays_locus_across_a_judge_only_change(
         "from_candidate_id": original["candidate_id"],
         "from_judge_sha256": original_judge,
         "match": "locus",
-        "reason": mutation.CARRY_FORWARD_REASON,
+        "reason": mutation_store.CARRY_FORWARD_REASON,
     }
     assert mutation.record_provenance(third_record) == third_record["provenance"]
 
@@ -562,16 +563,16 @@ def test_f13_locus_collision_ignores_both_candidates_after_id_dedup(tmp_path: Pa
         json.dumps(first_record), encoding="utf-8"
     )
 
-    index = mutation._carry_forward_source_index(source_dir)
+    index = mutation_store._carry_forward_source_index(source_dir)
     assert len(index.records) == 3
 
-    matches, ignored = mutation._carry_forward_lookup(
+    matches, ignored = mutation_store._carry_forward_lookup(
         [job], (source_dir,), judge="c" * 64
     )
 
     assert matches == {}
     assert ignored == 1
-    exact, exact_ignored = mutation._carry_forward_lookup(
+    exact, exact_ignored = mutation_store._carry_forward_lookup(
         [first_prior], (source_dir,), judge="c" * 64
     )
     assert exact[mutation.candidate_id(first_prior)].kind == "exact-id"
@@ -582,10 +583,10 @@ def test_carry_forward_identity_validation_rejects_malformed_records():
     job = _job("def flag():\n    return True\n")
     candidate = mutation.candidate_id(job)
     valid = _minimal_record(job, judge="a" * 64, bucket="survived")
-    assert mutation._valid_carry_forward_identity(valid, candidate) is True
+    assert mutation_store._valid_carry_forward_identity(valid, candidate) is True
 
     no_locus = {k: v for k, v in valid.items() if k not in {"locus", "window_key"}}
-    assert mutation._valid_carry_forward_identity(no_locus, candidate) is True
+    assert mutation_store._valid_carry_forward_identity(no_locus, candidate) is True
 
     def changed(**value):
         return {**valid, **value}
@@ -602,8 +603,8 @@ def test_carry_forward_identity_validation_rejects_malformed_records():
     ]
 
     for payload in malformed:
-        assert mutation._valid_carry_forward_identity(payload, candidate) is False
-    assert mutation._valid_carry_forward_identity(valid, "0" * 64) is False
+        assert mutation_store._valid_carry_forward_identity(payload, candidate) is False
+    assert mutation_store._valid_carry_forward_identity(valid, "0" * 64) is False
 
 
 def test_same_candidate_flat_and_generation_records_are_deduplicated(tmp_path: Path):
@@ -623,16 +624,16 @@ def test_same_candidate_flat_and_generation_records_are_deduplicated(tmp_path: P
     )
     (store / "not-a-candidate.json").write_text("{}", encoding="utf-8")
 
-    paths = mutation._carry_forward_record_paths(store)
-    index = mutation._carry_forward_source_index(store)
-    matches, ignored = mutation._carry_forward_lookup(
+    paths = mutation_store._carry_forward_record_paths(store)
+    index = mutation_store._carry_forward_source_index(store)
+    matches, ignored = mutation_store._carry_forward_lookup(
         [job], (store,), judge="a" * 64
     )
     assert len(paths) == 2
     assert len(index.records) == 2
     assert ignored == 0
     assert matches[mutation.candidate_id(job)].kind == "exact-id"
-    same_judge, same_judge_ignored = mutation._carry_forward_lookup(
+    same_judge, same_judge_ignored = mutation_store._carry_forward_lookup(
         [job], (store,), judge=judge
     )
     assert same_judge == {}
@@ -670,27 +671,27 @@ def test_source_scan_skips_malformed_and_ineligible_records(tmp_path: Path, monk
     (store / f"{'8' * 64}.json").write_bytes(b"\xff")
     (store / f"{'4' * 64}.json").write_bytes(b"[" * 2048 + b"]" * 2048)
     oversized = store / f"{'f' * 64}.json"
-    oversized.write_bytes(b" " * (mutation.MUTATION_STATE_RECORD_LIMIT + 1))
+    oversized.write_bytes(b" " * (mutation_store.MUTATION_STATE_RECORD_LIMIT + 1))
     symlink = store / f"{'9' * 64}.json"
     symlink.symlink_to(store / f"{'d' * 64}.json")
     (store / "judges").write_text("not a directory", encoding="utf-8")
 
-    index = mutation._carry_forward_source_index(store)
+    index = mutation_store._carry_forward_source_index(store)
     assert index.records == ()
     assert index.invalid_records >= 7
-    assert mutation._carry_forward_record_paths(tmp_path / "absent") == ()
+    assert mutation_store._carry_forward_record_paths(tmp_path / "absent") == ()
 
     def absent_read(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(mutation.safeio, "read_bounded_input", absent_read)
-    assert mutation._carry_forward_source_index(store).records == ()
+    assert mutation_store._carry_forward_source_index(store).records == ()
 
     def rejected_read(*_args, **_kwargs):
         raise mutation.MutationStateError("unsafe source")
 
     monkeypatch.setattr(mutation.safeio, "read_bounded_input", rejected_read)
-    assert mutation._carry_forward_source_index(store).records == ()
+    assert mutation_store._carry_forward_source_index(store).records == ()
 
 
 def test_unreadable_generation_keeps_other_carry_forward_records(
@@ -716,7 +717,7 @@ def test_unreadable_generation_keeps_other_carry_forward_records(
         return real_scandir(path)
 
     monkeypatch.setattr(mutation.os, "scandir", guarded_scandir)
-    paths = mutation._carry_forward_record_paths(store)
+    paths = mutation_store._carry_forward_record_paths(store)
     assert f"{blocked.relative_to(store)}/{record['candidate_id']}.json" not in paths
     assert f"{other.relative_to(store)}/{record['candidate_id']}.json" in paths
     assert f"{record['candidate_id']}.json" in paths
@@ -732,13 +733,13 @@ def test_carry_forward_lookup_honors_deadline_and_rejudge_outcomes(tmp_path: Pat
     def deadline_check() -> float:
         return 1.0
 
-    assert mutation._carry_forward_lookup(
+    assert mutation_store._carry_forward_lookup(
         [job], (store,), judge="b" * 64,
         rejudge_outcomes=frozenset({"survived"}),
         deadline_check=deadline_check,
     )[0] == {}
     with pytest.raises(RuntimeError, match="expired"):
-        mutation._carry_forward_lookup(
+        mutation_store._carry_forward_lookup(
             [job], (store,), judge="b" * 64,
             deadline_check=lambda: (_ for _ in ()).throw(RuntimeError("expired")),
         )
@@ -751,7 +752,7 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
     source = tmp_path / "source"
     source.mkdir()
     flex = mutation.FlexOptions(carry_forward_sources=(source,))
-    matched = mutation._CarryForwardMatch(
+    matched = mutation_store._CarryForwardMatch(
         kind="exact-id",
         source=source,
         payload={
@@ -763,7 +764,7 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
         effective_judge="x" * 64,
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_carry_forward_match_candidates",
         lambda *_args, **_kwargs: (
             {mutation.candidate_id(job): (matched,)},
@@ -773,13 +774,13 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
         ),
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_load_validated_state_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             mutation.MutationStateError("bad exact record")
         ),
     )
-    bad_exact = mutation._carry_forward_records(
+    bad_exact = mutation_store._carry_forward_records(
         flex,
         jobs=[job],
         judge="j" * 64,
@@ -787,28 +788,27 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
         state_root_fd=None,
         state_root_guard=None,
         campaign_deadline_sha256=None,
-        cold_witness=False,
-        equivalence_artifact=None,
-        baseline_equivalence=b"baseline",
-        kill_signal_artifact=None,
+        context=mutation_store.RecordContext(
+            baseline_equivalence_sha256=hashlib.sha256(b"baseline").hexdigest()
+        ),
         rejudge_outcomes=frozenset(),
         clock=lambda: datetime.now(timezone.utc),
     )
     assert bad_exact.unmatched == 1
 
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_validate_carry_forward_match",
         lambda match, *_args, **_kwargs: match.payload,
     )
-    matched = mutation._CarryForwardMatch(
+    matched = mutation_store._CarryForwardMatch(
         kind="window",
         source=source,
         payload={"candidate_id": mutation.candidate_id(job), "outcome_bucket": "survived"},
         effective_judge="x" * 64,
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_carry_forward_match_candidates",
         lambda *_args, **_kwargs: (
             {mutation.candidate_id(job): (matched,)},
@@ -817,7 +817,7 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
             1,
         ),
     )
-    window_survivor = mutation._carry_forward_records(
+    window_survivor = mutation_store._carry_forward_records(
         flex,
         jobs=[job],
         judge="j" * 64,
@@ -825,23 +825,20 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
         state_root_fd=None,
         state_root_guard=None,
         campaign_deadline_sha256=None,
-        cold_witness=False,
-        equivalence_artifact=None,
-        baseline_equivalence=None,
-        kill_signal_artifact=None,
+        context=mutation_store.RecordContext(),
         rejudge_outcomes=frozenset(),
         clock=lambda: datetime.now(timezone.utc),
     )
     assert window_survivor.unmatched == 1
 
-    nonfinal = mutation._CarryForwardMatch(
+    nonfinal = mutation_store._CarryForwardMatch(
         kind="locus",
         source=source,
         payload={"candidate_id": mutation.candidate_id(job), "outcome_bucket": "crashed"},
         effective_judge="x" * 64,
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_carry_forward_match_candidates",
         lambda *_args, **_kwargs: (
             {mutation.candidate_id(job): (nonfinal,)},
@@ -850,7 +847,7 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
             1,
         ),
     )
-    refused_bucket = mutation._carry_forward_records(
+    refused_bucket = mutation_store._carry_forward_records(
         flex,
         jobs=[job],
         judge="j" * 64,
@@ -858,10 +855,7 @@ def test_carry_forward_import_rejects_invalid_and_nonfinal_matches(
         state_root_fd=None,
         state_root_guard=None,
         campaign_deadline_sha256=None,
-        cold_witness=False,
-        equivalence_artifact=None,
-        baseline_equivalence=None,
-        kill_signal_artifact=None,
+        context=mutation_store.RecordContext(),
         rejudge_outcomes=frozenset(),
         clock=lambda: datetime.now(timezone.utc),
     )
@@ -887,12 +881,12 @@ def test_carry_forward_skips_resumed_jobs_with_or_without_matches(
         return match.payload
 
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_validate_carry_forward_match",
         validate,
     )
 
-    result = mutation._carry_forward_records(
+    result = mutation_store._carry_forward_records(
         mutation.FlexOptions(carry_forward_sources=(source,)),
         jobs=[unmatched_job, invalid_job, valid_job],
         skip_candidate_ids=frozenset(
@@ -907,10 +901,7 @@ def test_carry_forward_skips_resumed_jobs_with_or_without_matches(
         state_root_fd=None,
         state_root_guard=None,
         campaign_deadline_sha256=None,
-        cold_witness=False,
-        equivalence_artifact=None,
-        baseline_equivalence=None,
-        kill_signal_artifact=None,
+        context=mutation_store.RecordContext(),
         rejudge_outcomes=frozenset(),
         clock=lambda: datetime.now(timezone.utc),
     )
@@ -927,23 +918,23 @@ def test_locus_and_window_kills_are_both_left_pending(
     job = _job("def flag():\n    return True\n")
     source = tmp_path / "source"
     source.mkdir()
-    match = mutation._CarryForwardMatch(
+    match = mutation_store._CarryForwardMatch(
         kind=kind,
         source=source,
         payload={"candidate_id": "a" * 64, "outcome_bucket": "killed"},
         effective_judge="x" * 64,
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_carry_forward_match_candidates",
         lambda *_args, **_kwargs: ({mutation.candidate_id(job): (match,)}, 0, 0, 0),
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_validate_carry_forward_match",
         lambda *_args, **_kwargs: match.payload,
     )
-    result = mutation._carry_forward_records(
+    result = mutation_store._carry_forward_records(
         mutation.FlexOptions(carry_forward_sources=(source,)),
         jobs=[job],
         judge="j" * 64,
@@ -951,10 +942,7 @@ def test_locus_and_window_kills_are_both_left_pending(
         state_root_fd=None,
         state_root_guard=None,
         campaign_deadline_sha256=None,
-        cold_witness=False,
-        equivalence_artifact=None,
-        baseline_equivalence=None,
-        kill_signal_artifact=None,
+        context=mutation_store.RecordContext(),
         rejudge_outcomes=frozenset(),
         clock=lambda: datetime.now(timezone.utc),
     )
@@ -973,7 +961,7 @@ def test_carry_forward_revalidates_before_publishing(tmp_path: Path, monkeypatch
         "outcome_bucket": "survived",
         "judge_sha256": "x" * 64,
     }
-    match = mutation._CarryForwardMatch(
+    match = mutation_store._CarryForwardMatch(
         kind="exact-id",
         source=source,
         payload=chosen,
@@ -981,7 +969,7 @@ def test_carry_forward_revalidates_before_publishing(tmp_path: Path, monkeypatch
         effective_judge="x" * 64,
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_carry_forward_match_candidates",
         lambda *_args, **_kwargs: ({mutation.candidate_id(job): (match,)}, 0, 0, 0),
     )
@@ -994,8 +982,8 @@ def test_carry_forward_revalidates_before_publishing(tmp_path: Path, monkeypatch
             return chosen
         raise mutation.MutationStateError("revalidation failed")
 
-    monkeypatch.setattr(mutation, "_load_validated_state_record", loader)
-    result = mutation._carry_forward_records(
+    monkeypatch.setattr(mutation_store, "_load_validated_state_record", loader)
+    result = mutation_store._carry_forward_records(
         flex,
         jobs=[job],
         judge="j" * 64,
@@ -1003,10 +991,7 @@ def test_carry_forward_revalidates_before_publishing(tmp_path: Path, monkeypatch
         state_root_fd=None,
         state_root_guard=lambda: None,
         campaign_deadline_sha256=None,
-        cold_witness=False,
-        equivalence_artifact=None,
-        baseline_equivalence=None,
-        kill_signal_artifact=None,
+        context=mutation_store.RecordContext(),
         rejudge_outcomes=frozenset(),
         clock=lambda: datetime.now(timezone.utc),
     )
@@ -1025,19 +1010,19 @@ def test_carried_record_keeps_the_campaign_deadline(
     written = []
 
     monkeypatch.setattr(
-        mutation, "_validate_carry_forward_match", lambda *_args, **_kwargs: record
+        mutation_store, "_validate_carry_forward_match", lambda *_args, **_kwargs: record
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_load_validated_state_record",
         lambda _root, _job, *, raw_override, **_kwargs: json.loads(raw_override),
     )
     monkeypatch.setattr(
-        mutation,
+        mutation_store,
         "_write_mutation_state_record",
         lambda _root, payload, **_kwargs: written.append(payload),
     )
-    result = mutation._carry_forward_records(
+    result = mutation_store._carry_forward_records(
         mutation.FlexOptions(carry_forward_sources=(source,)),
         jobs=[job],
         judge="j" * 64,
@@ -1045,10 +1030,7 @@ def test_carried_record_keeps_the_campaign_deadline(
         state_root_fd=None,
         state_root_guard=None,
         campaign_deadline_sha256=deadline,
-        cold_witness=False,
-        equivalence_artifact=None,
-        baseline_equivalence=None,
-        kill_signal_artifact=None,
+        context=mutation_store.RecordContext(),
         rejudge_outcomes=frozenset(),
         clock=lambda: datetime.now(timezone.utc),
     )
@@ -1084,24 +1066,24 @@ def test_window_lookup_is_kill_only_across_judges(tmp_path: Path):
         "    return True\n"
     )
     job = _job(source)
-    current_fields = mutation._locus_fields_for_job(job)
+    current_fields = mutation_store._locus_fields_for_job(job)
     prior_kill = _job(source.replace("marker = 1", "marker = 2"))
     prior_survivor = _job(source.replace("marker = 1", "marker = 3"))
-    kill_fields = mutation._locus_fields_for_job(prior_kill)
-    survivor_fields = mutation._locus_fields_for_job(prior_survivor)
+    kill_fields = mutation_store._locus_fields_for_job(prior_kill)
+    survivor_fields = mutation_store._locus_fields_for_job(prior_survivor)
     assert kill_fields["window_key"] == current_fields["window_key"]
     assert kill_fields["locus"]["key"] != current_fields["locus"]["key"]
     assert survivor_fields["window_key"] == current_fields["window_key"]
     survivor = _minimal_record(prior_survivor, judge="a" * 64, bucket="survived")
     store = tmp_path / "prior"
     _write_records(store, survivor)
-    matches, _ignored = mutation._carry_forward_lookup(
+    matches, _ignored = mutation_store._carry_forward_lookup(
         [job], (store,), judge="j" * 64
     )
     assert matches == {}
     kill = _minimal_record(prior_kill, judge="b" * 64, bucket="killed")
     _write_records(store, kill)
-    matches, _ignored = mutation._carry_forward_lookup(
+    matches, _ignored = mutation_store._carry_forward_lookup(
         [job], (store,), judge="j" * 64
     )
     assert matches[mutation.candidate_id(job)].kind == "window"
@@ -1117,14 +1099,14 @@ def test_duplicate_method_segments_have_no_locus_and_keep_exact_id_lookup(
         "    def value(self):\n        return True\n"
     )
     job = _job(source)
-    assert mutation._locus_fields_for_job(job) == {}
+    assert mutation_store._locus_fields_for_job(job) == {}
     edited = _job(source + "\nOTHER = 1\n")
     store = tmp_path / "exact"
     _write_records(
         store,
         _minimal_record(edited, judge="a" * 64, bucket="killed"),
     )
-    matches, _ignored = mutation._carry_forward_lookup(
+    matches, _ignored = mutation_store._carry_forward_lookup(
         [job], (store,), judge="b" * 64
     )
     assert matches == {}
@@ -1135,7 +1117,7 @@ def test_duplicate_method_segments_have_no_locus_and_keep_exact_id_lookup(
         bucket="killed",
     )
     _write_records(store, exact)
-    matches, _ignored = mutation._carry_forward_lookup(
+    matches, _ignored = mutation_store._carry_forward_lookup(
         [job], (store,), judge="b" * 64
     )
     assert matches[mutation.candidate_id(job)].kind == "exact-id"
@@ -1149,7 +1131,7 @@ def test_module_and_class_body_candidates_have_no_subfile_lookup(
     source: str, tmp_path: Path
 ):
     job = _job(source)
-    assert mutation._locus_fields_for_job(job) == {}
+    assert mutation_store._locus_fields_for_job(job) == {}
     prior = _job(source + "\nOTHER = 1\n")
     store = tmp_path / "unused"
     match = _minimal_record(
@@ -1158,7 +1140,7 @@ def test_module_and_class_body_candidates_have_no_subfile_lookup(
         bucket="killed",
     )
     _write_records(store, match)
-    matches, _ignored = mutation._carry_forward_lookup(
+    matches, _ignored = mutation_store._carry_forward_lookup(
         [job], (store,), judge="b" * 64
     )
     assert matches == {}
@@ -1355,7 +1337,7 @@ def test_carry_forward_finds_same_candidate_id_from_an_earlier_judge(tmp_path: P
     )
     store = tmp_path / "foreign"
     _write_records(store, foreign)
-    matches, _ignored = mutation._carry_forward_lookup(
+    matches, _ignored = mutation_store._carry_forward_lookup(
         [job], (store,), judge="b" * 64
     )
     assert matches[mutation.candidate_id(job)].kind == "exact-id"
@@ -1481,7 +1463,7 @@ def test_f17_carry_forward_shards_merge_with_provenance_intact(
     _code, _first = _run(git_repo, source_store, tmp_path / "first.jsonl")
     prior_records = _records(source_store)
     assert {record["outcome_bucket"] for record in prior_records} == {"survived"}
-    assert len(mutation._carry_forward_record_paths(source_store)) == 4
+    assert len(mutation_store._carry_forward_record_paths(source_store)) == 4
     source_ids = tuple(record["candidate_id"] for record in prior_records)
 
     git_repo.write("tests/judge.sh", _BLIND + "# whole-tree judge change\n")
@@ -1633,7 +1615,7 @@ def test_carried_survivor_count_ignores_unusable_and_noncarried_records(
             judge="a" * 64,
             bucket=bucket,
         )
-        mutation._set_carry_over_provenance(
+        mutation_store._set_carry_over_provenance(
             record, kind=kind, match="exact-id",
             from_candidate_id=record["candidate_id"],
             from_judge_sha256="a" * 64, into_judge_sha256="d" * 64,
@@ -1674,19 +1656,19 @@ def test_carried_survivor_count_ignores_unusable_and_noncarried_records(
     symlink = store / f"{'4' * 64}.json"
     symlink.symlink_to(store / f"{valid['candidate_id']}.json")
 
-    assert mutation.carried_survivor_count(store) == 1
-    assert mutation.carried_survivor_count(tmp_path / "absent") == 0
+    assert mutation_store.carried_survivor_count(store) == 1
+    assert mutation_store.carried_survivor_count(tmp_path / "absent") == 0
 
     monkeypatch.setattr(
         mutation.safeio, "read_bounded_input", lambda *_args, **_kwargs: None
     )
-    assert mutation.carried_survivor_count(store) == 0
+    assert mutation_store.carried_survivor_count(store) == 0
 
     def rejected_read(*_args, **_kwargs):
         raise LaneConfigError("unreadable")
 
     monkeypatch.setattr(mutation.safeio, "read_bounded_input", rejected_read)
-    assert mutation.carried_survivor_count(store) == 0
+    assert mutation_store.carried_survivor_count(store) == 0
 
 
 def test_equal_matches_choose_lexicographically_smallest_judge_independent_of_write_order(
@@ -1716,9 +1698,9 @@ def test_equal_matches_choose_lexicographically_smallest_judge_independent_of_wr
         def capture_record(_root, record, *, imported=imported, **_kwargs):
             imported.append(record)
 
-        monkeypatch.setattr(mutation, "_load_validated_state_record", load_record)
-        monkeypatch.setattr(mutation, "_write_mutation_state_record", capture_record)
-        result = mutation._carry_forward_records(
+        monkeypatch.setattr(mutation_store, "_load_validated_state_record", load_record)
+        monkeypatch.setattr(mutation_store, "_write_mutation_state_record", capture_record)
+        result = mutation_store._carry_forward_records(
             mutation.FlexOptions(carry_forward_sources=(store,)),
             jobs=[job],
             judge="c" * 64,
@@ -1726,10 +1708,7 @@ def test_equal_matches_choose_lexicographically_smallest_judge_independent_of_wr
             state_root_fd=None,
             state_root_guard=None,
             campaign_deadline_sha256=None,
-            cold_witness=False,
-            equivalence_artifact=None,
-            baseline_equivalence=None,
-            kill_signal_artifact=None,
+            context=mutation_store.RecordContext(),
             rejudge_outcomes=frozenset(),
             clock=lambda: datetime.now(timezone.utc),
         )

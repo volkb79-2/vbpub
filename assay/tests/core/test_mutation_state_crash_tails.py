@@ -49,10 +49,10 @@ from conftest import (
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
 from assay.mutation import (
-    MUTATION_STATE_RECORD_LIMIT,
     MutationTarget,
     run_mutation,
 )
+from assay.mutation_store import MUTATION_STATE_RECORD_LIMIT
 from assay.runner import COMMAND_TAIL_BYTES, CommandResult, execute_command
 
 #: The message the original investigation had to reproduce by hand. Postgres
