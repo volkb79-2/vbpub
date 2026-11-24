@@ -23,31 +23,24 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
-## [7.27.0] - 2026-11-24
+## [7.28.0] - 2026-11-24
 <!-- cmru: generated -->
-<!-- cmru: source-end=14a43edb2e11c5a65f6b8508b3143275ed88c494 -->
+<!-- cmru: source-end=c45dd7393d469cda84ee280e302fec9a58683e91 -->
 
 ### Fixed
-- fix(ciu): P-core-10 r2 fix-forward: disable git auto-maintenance in the suite env (M1), CLI-EXT-47 -> CLI-EXT-51 in the three ciu references (M3), file CIU-234 (M2) (6a154c358)
-- fix(ciu): close P-core-10 review round 1 (11d17f969)
-- fix(ciu): adopt shared renderer and bounded procio (CIU-220, CIU-224) (f7cd47d51)
+- fix(ciu): CIU-227 r2 fix-forward: flip the luna_medium59 seed-refusal pin (no directory is left), reword SPEC S6.3 absolute sentence, correct S8.3/S9.6 and a test docstring on --dry-run, note the root-squash residue and the CIU-231/CIU-228 remedy limit (2a920e6df)
+- fix(ciu): CIU-227 review r1 fix-forward: S6.6 seed refused before mkdir, once-resolved helper tier test, real-run Step-8 wiring test, SPEC S6.3 wording, stale dry-run hostdir claims, DESIGN-GUIDE edit dropped, follow-ups filed (52b7114d1)
+- fix(ciu): CIU-227 hostdirs only after the S6.5 preconditions; CIU-230 refusal remedy; CIU-231 empty-selection refusal (09253513c)
+
+### Changed
+- run-gate: raise the 14 estate assay-wrapper budgets to inner + 5m (RG-307) (892d86ffa)
 
 ### Documentation
-- docs(ciu): file CIU-230/231; amend CIU-227 (second dry-run hostdir specimen) and CIU-229 (git-created worktree rm) (c4d9e21e9)
-- docs(ciu): file CIU-224..229; amend CIU-220 (procio design) and CIU-162 (d01efbfdd)
-- docs(ciu): record CIU-223 pathlib-fake follow-up and leak scan (e697de42a)
-- docs(ciu): record CIU-223 test-process fix (tests only) (cd6014365)
-- docs(ciu): CIU-222 review fixes (code locations in the worktree library, verified-once wording, evidence reference without host name) (98f2bb3e6)
-- docs(ciu): CIU-222 lists all four measured requirements of a standalone instance dir (04a5a6fbe)
-- docs(ciu): file CIU-222 (ciu up in a standalone non-git instance dir aborts at the S16.3 git requirement) (166c43dd7)
+- docs(ciu): CIU-227/230/231 in CHANGES, backlog, SPEC S6.3/S6.5, CONSUMERS 14 and the DESIGN-GUIDE (811347637)
 
 ### Testing
-- test(ciu): make pytester child cleanup load-independent (fcac9a4ac)
-- test(ciu): reap pytester probe children before inner exit (53eb3ea86)
-- test(ciu): release pytester children through an inherited pipe (9dd0080f0)
-- test(ciu): prove the CIU-223 guard and add its opt-out (758367fb9)
-- test(ciu): keep CIU-223 guard independent of pathlib test fakes (d4c4d5f09)
-- test(ciu): keep CIU-215 git calls from leaving maintenance children (CIU-223) (132f7bebb)
+- test(ciu): cover the existing-compatible-hostdir early return (ciu-gate coverage 99.98% on 14d8f4157) (9acb108e6)
+- test(ciu): CIU-227/230/231 focused tests (preconditions-before-hostdir, remedy text, empty-selection refusal) (a4be59c2a)
 
 <!-- cmru: pending release notes begin -->
 ### Changed
@@ -58,31 +51,8 @@ the technical detail below it.
   (`ciu up --dir .` in that directory). A profile that genuinely selects nothing,
   an invocation at the root, and a directory that is not a stack keep the
   previous rc-0 no-op.
-- CIU-220: `procutil.run_cmd(capture=True)` now delegates to
-  `cli_extended.procio.run_capture`, preserving the existing
-  `CompletedProcess` and timeout shapes while bounding the post-exit drain and
-  reaping a timed-out child group. UTF-8 replacement decoding also translates
-  universal newlines, and a held output pipe produces one PID-naming `[WARN]`
-  on stderr. Compose-up now delegates to
-  `procio.run_streaming`: it keeps the child's exit code, drains for at most
-  two seconds, warns once with the PIDs still holding the pipe, uses the
-  exported 1800-second no-progress watchdog, and prints the pre-signal process
-  tree when that watchdog expires. The 17 unbounded captured direct subprocess
-  sites are explicit, justified guard-test exceptions owned by CIU-233.
-- CIU-224: severity presentation is now a thin adapter over the shared
-  cli-extended `LineStreamRenderer`. Prefixes and the
-  `CIU_LOG_PREFIX_TIME_SHORT` timestamp remain unchanged; each line is
-  classified independently. `NO_COLOR` (when non-empty) and `TERM=dumb` keep
-  output plain, and input-origin terminal escapes are removed when ciu decorates
-  the stream. Unterminated text is emitted on `flush()`.
-- The `cli-extended` floor is now `>=0.8.0`, the release carrying the shared
-  renderer and bounded process readers.
 
 ### Fixed
-- CIU-220: malformed UTF-8 in streamed command output is replaced with
-  `U+FFFD` instead of failing a command that otherwise exited successfully.
-- CIU-232: captured `run_cmd` calls on the main thread preserve a caller's
-  installed SIGTERM/SIGHUP handlers until cli-extended CLI-EXT-51 lands.
 - CIU-227: the S6.5 root helper's own preconditions are now evaluated BEFORE the
   first hostdir is created, and `--dry-run` creates no hostdir at all. A refused
   `ciu up` therefore leaves the filesystem untouched instead of leaving the
@@ -112,7 +82,6 @@ the technical detail below it.
   silently.
 
 ### Testing
-- CIU-223: the CIU-215 tests now disable git's automatic gc and maintenance per process, and an autouse test fixture reports any direct child left under pytest without signalling it. Tests only; no consumer action.
 - CIU-227/230/231: `tests/tests/test_ciu_227_230_hostdir_preconditions.py`
   covers the ownership-need derivation, the refuse-fix-rerun sequence with no
   manual cleanup, the plan-only (dry-run) mode against both a missing and a
@@ -129,11 +98,6 @@ the technical detail below it.
   a dry run) and gave
   `test_ciu_engine_deeper6.py::test_hostdir_permission_fallback_targets_physical_path`
   the S6.5 precondition its foreign ownership now requires.
-- CIU-220/CIU-224: estate test policy is loaded from source in warn mode;
-  process-signalling oracles carry `requires_contained_cgroup`, and the new
-  behavioral tests cover bounded draining, group reaping, holder warnings,
-  replacement decoding, multi-line severity rendering and the full direct
-  subprocess exception inventory.
 
 ### Adoption / Migration Notes
 - `ciu up --dry-run` no longer creates hostdirs. A dry run that used to leave
@@ -148,6 +112,71 @@ the technical detail below it.
 - The S6.5 root helper still requires `CGROUP_PARENT_DEV_INTERACTIVE`; what
   changed is that a missing value is refused BEFORE any hostdir exists, and the
   refusal now says what to export and how to find a loaded slice.
+<!-- cmru: pending release notes end -->
+
+## [7.27.0] - 2026-11-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=14a43edb2e11c5a65f6b8508b3143275ed88c494 -->
+
+### Fixed
+- fix(ciu): P-core-10 r2 fix-forward: disable git auto-maintenance in the suite env (M1), CLI-EXT-47 -> CLI-EXT-51 in the three ciu references (M3), file CIU-234 (M2) (6a154c358)
+- fix(ciu): close P-core-10 review round 1 (11d17f969)
+- fix(ciu): adopt shared renderer and bounded procio (CIU-220, CIU-224) (f7cd47d51)
+
+### Documentation
+- docs(ciu): file CIU-230/231; amend CIU-227 (second dry-run hostdir specimen) and CIU-229 (git-created worktree rm) (c4d9e21e9)
+- docs(ciu): file CIU-224..229; amend CIU-220 (procio design) and CIU-162 (d01efbfdd)
+- docs(ciu): record CIU-223 pathlib-fake follow-up and leak scan (e697de42a)
+- docs(ciu): record CIU-223 test-process fix (tests only) (cd6014365)
+- docs(ciu): CIU-222 review fixes (code locations in the worktree library, verified-once wording, evidence reference without host name) (98f2bb3e6)
+- docs(ciu): CIU-222 lists all four measured requirements of a standalone instance dir (04a5a6fbe)
+- docs(ciu): file CIU-222 (ciu up in a standalone non-git instance dir aborts at the S16.3 git requirement) (166c43dd7)
+
+### Testing
+- test(ciu): make pytester child cleanup load-independent (fcac9a4ac)
+- test(ciu): reap pytester probe children before inner exit (53eb3ea86)
+- test(ciu): release pytester children through an inherited pipe (9dd0080f0)
+- test(ciu): prove the CIU-223 guard and add its opt-out (758367fb9)
+- test(ciu): keep CIU-223 guard independent of pathlib test fakes (d4c4d5f09)
+- test(ciu): keep CIU-215 git calls from leaving maintenance children (CIU-223) (132f7bebb)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- CIU-220: `procutil.run_cmd(capture=True)` now delegates to
+  `cli_extended.procio.run_capture`, preserving the existing
+  `CompletedProcess` and timeout shapes while bounding the post-exit drain and
+  reaping a timed-out child group. UTF-8 replacement decoding also translates
+  universal newlines, and a held output pipe produces one PID-naming `[WARN]`
+  on stderr. Compose-up now delegates to
+  `procio.run_streaming`: it keeps the child's exit code, drains for at most
+  two seconds, warns once with the PIDs still holding the pipe, uses the
+  exported 1800-second no-progress watchdog, and prints the pre-signal process
+  tree when that watchdog expires. The 17 unbounded captured direct subprocess
+  sites are explicit, justified guard-test exceptions owned by CIU-233.
+- CIU-224: severity presentation is now a thin adapter over the shared
+  cli-extended `LineStreamRenderer`. Prefixes and the
+  `CIU_LOG_PREFIX_TIME_SHORT` timestamp remain unchanged; each line is
+  classified independently. `NO_COLOR` (when non-empty) and `TERM=dumb` keep
+  output plain, and input-origin terminal escapes are removed when ciu decorates
+  the stream. Unterminated text is emitted on `flush()`.
+- The `cli-extended` floor is now `>=0.8.0`, the release carrying the shared
+  renderer and bounded process readers.
+
+### Fixed
+- CIU-220: malformed UTF-8 in streamed command output is replaced with
+  `U+FFFD` instead of failing a command that otherwise exited successfully.
+- CIU-232: captured `run_cmd` calls on the main thread preserve a caller's
+  installed SIGTERM/SIGHUP handlers until cli-extended CLI-EXT-51 lands.
+
+### Testing
+- CIU-223: the CIU-215 tests now disable git's automatic gc and maintenance per process, and an autouse test fixture reports any direct child left under pytest without signalling it. Tests only; no consumer action.
+- CIU-220/CIU-224: estate test policy is loaded from source in warn mode;
+  process-signalling oracles carry `requires_contained_cgroup`, and the new
+  behavioral tests cover bounded draining, group reaping, holder warnings,
+  replacement decoding, multi-line severity rendering and the full direct
+  subprocess exception inventory.
+
+### Adoption / Migration Notes
 - ciu now requires cli-extended 0.8.0 or newer. Install cli-extended before
   ciu; `get.py` already hoists the matching wheel from a release bundle. No
   configuration changes are required. When a descendant keeps the output pipe
