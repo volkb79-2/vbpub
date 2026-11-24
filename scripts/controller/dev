@@ -114,10 +114,11 @@ fi
 wait_s=${AGENT_DEV_WAIT_S-900}
 [[ $wait_s =~ ^[0-9]{1,6}$ ]] && (( 10#$wait_s <= 86400 )) || die 2 "AGENT_DEV_WAIT_S must be 0..86400, got '$wait_s'"
 wait_s=$((10#$wait_s))
-mem_mib() { [[ $2 =~ ^([0-9]{1,6})([mg])$ ]] || die 2 "$1 must look like 3g or 2048m, got '$2'"; local m=$((10#${BASH_REMATCH[1]})); [[ ${BASH_REMATCH[2]} == g ]] && m=$((m * 1024)); echo "$m"; }
+mem_mib() { local m; [[ $1 =~ ^([0-9]{1,6})([mg])$ ]] || return 1; m=$((10#${BASH_REMATCH[1]})); if [[ ${BASH_REMATCH[2]} == g ]]; then m=$((m * 1024)); fi; echo "$m"; }
 if [[ $sub != gc && $sub != status && $sub != stop ]]; then
   memory=${AGENT_DEV_MEMORY-$memory}; cpus=${AGENT_DEV_CPUS-$cpus}; pids=${AGENT_DEV_PIDS-$pids}; max_s=${AGENT_DEV_MAX_S-$max_s}
-  r=$(mem_mib AGENT_DEV_MEMORY "$memory"); x=$(mem_mib memory_max "$memory_max")
+  r=$(mem_mib "$memory") || die 2 "the memory reservation must look like 3g or 2048m, got '$memory'"
+  x=$(mem_mib "$memory_max") || die 2 "memory_max must look like 8g or 2048m, got '$memory_max'"
   (( r >= 512 && r <= 8192 )) || die 2 "the memory reservation must be between 512m and 8g, got '$memory'"
   (( x >= 1024 && x <= 16384 && x >= r )) || die 2 "memory_max must be between 1g and 16g and not below the reservation, got '$memory_max'"
   [[ $cpus =~ ^[0-9]{1,3}(\.[0-9]{1,3})?$ ]] && awk -v c="$cpus" 'BEGIN { exit !(c + 0 > 0 && c + 0 <= 3) }' || die 2 "cpus must be above 0 and at most 3, got '$cpus'"
@@ -391,7 +392,7 @@ hx_call() {   # $1 = script; stdin is passed through. hx.sh exit codes 97 (ident
   local rc=0
   "$hx" "$host" "$1" || rc=$?
   case $rc in
-    97|98|255) printf 'dev: transport or identity failure talking to %s (exit %s)\n' "$host" "$rc" >&2; own_exit=1; return 3 ;;
+    97|98|255) printf 'dev: transport or identity failure talking to %s (exit %s)\ndev: exit 3\n' "$host" "$rc" >&2; return 3 ;;
   esac
   return "$rc"
 }
@@ -483,7 +484,7 @@ simple_run() {   # status, stop, gc
 }
 
 run_remote() {
-  local rc=0 out hassha=0 have='' seeds=() valid=() line f s files=() run mounted_src
+  local rc=0 out hassha=0 have='' seeds=() valid=() line f s files=() run mounted_src mark
   # shellcheck disable=SC2016 # $HOME is expanded on the host, not here
   mounted_src='$HOME/agent-dev/'"$worktree_hex"'/work'
   upload_id=$(printf '%s%s%s' "$$" "$(date +%s%N)" "$RANDOM" | sha256sum | cut -c1-16)
@@ -498,7 +499,8 @@ run_remote() {
     printf 'DOCKER-ARGV-BEGIN\n'; printf '%s\n' "${dargv[@]}"; printf 'DOCKER-ARGV-END\n'
     return 0
   fi
-  banner="AGENT-DEV $project $host ${sync_sha:0:12}$([[ $dirty == 1 ]] && echo +dirty): NOT GATE EVIDENCE"
+  mark=''; if (( dirty )); then mark=+dirty; fi
+  banner="AGENT-DEV $project $host ${sync_sha:0:12}$mark: NOT GATE EVIDENCE"
   printf '%s\n' "$banner" >&2
   out=$(hx_call "$(preflight_script)" </dev/null) || exit $?
   check_images "$out"
