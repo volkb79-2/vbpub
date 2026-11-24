@@ -7,6 +7,7 @@ import runpy
 import shutil
 import sys
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -31,11 +32,15 @@ class FixedPrompts:
         *,
         confirm_value: bool = True,
         select_value: str | None = None,
+        text_responses: Mapping[str, str] | None = None,
     ) -> None:
         self.confirm_value = confirm_value
         self.select_value = select_value
+        self.text_responses = dict(text_responses or {})
 
-    def text(self, _message, *, default=None, required=True):
+    def text(self, message, *, default=None, required=True):
+        if message in self.text_responses:
+            return self.text_responses[message]
         return default if default is not None else "edge.example.test"
 
     def password(self, _message, *, required=True):
@@ -72,6 +77,7 @@ def run_cli(
     confirm_value: bool = True,
     version_lookup=None,
     select_value: str | None = None,
+    text_responses: Mapping[str, str] | None = None,
 ) -> tuple[int, str]:
     stdin = TTYBuffer()
     stdout = TTYBuffer()
@@ -91,6 +97,7 @@ def run_cli(
             lambda *_args, **_kwargs: FixedPrompts(
                 confirm_value=confirm_value,
                 select_value=select_value,
+                text_responses=text_responses,
             ),
         )
         result = cli.main(argv)
@@ -290,6 +297,63 @@ def test_interactive_configure_and_cross_field_repair(
     assert written["tls_edge"]["tls"]["mode"] == "acme-tls"
 
 
+def test_interactive_prompt_refuses_a_non_decimal_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    result, output = run_cli(
+        monkeypatch,
+        ["configure", "--root", str(root), "--dry-run", "--yes"],
+        text_responses={"Public HTTP port": "not-a-port"},
+    )
+    assert result == 2, output
+    assert "tls_edge.ports.http must be an integer from 1 through 65535" in output
+    assert "(interactive prompt)" in output
+
+
+def test_interactive_static_lineages_are_parsed_from_the_list_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    result, output = run_cli(
+        monkeypatch,
+        ["configure", "--root", str(root), "--dry-run", "--yes"],
+        select_value="static",
+        text_responses={
+            "Certificate lineage directory names, comma separated": (
+                "one.example.test, two.example.test"
+            )
+        },
+    )
+    assert result == 0, output
+    assert "Dry run: no files were changed." in output
+
+
+def test_configure_reports_a_failure_after_the_override_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers = answer_file(
+        tmp_path / "answers.toml",
+        '[tls_edge]\ndomain = "edge.example.test"\n',
+    )
+    stack = root / "stack"
+    stack.chmod(0o500)
+    try:
+        result, output = run_cli(
+            monkeypatch,
+            ["configure", "--root", str(root), "--answers", str(answers), "--yes"],
+        )
+    finally:
+        stack.chmod(0o700)
+    assert result == 2, output
+    assert "could not finish writing configuration" in output
+    assert "inspect" in output
+
+
 @pytest.mark.parametrize(
     ("answers", "message"),
     [
@@ -297,6 +361,10 @@ def test_interactive_configure_and_cross_field_repair(
             '[tls_edge]\ndomain = "edge.example.test"\n'
             '[tls_edge.http3]\nenabled = "yes"\n',
             "tls_edge.http3.enabled must be true or false",
+        ),
+        (
+            '[tls_edge]\ndomain = "bad domain"\n',
+            "tls_edge.domain is not a valid DNS name",
         ),
         (
             "[tls_edge]\ndomain = 12\n",

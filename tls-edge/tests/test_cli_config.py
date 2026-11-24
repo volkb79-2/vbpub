@@ -245,10 +245,14 @@ def test_normalizers_accept_empty_and_valid_scalars() -> None:
     ("normalize", "value"),
     [
         (config.normalize_email, 3),
+        (config.normalize_provider, 3),
         (config.normalize_provider, "bad/provider"),
+        (config.normalize_volume_name, 3),
         (config.normalize_volume_name, "bad/name"),
         (config.normalize_bind_ip, 3),
+        (config.normalize_cgroup_parent, 3),
         (config.normalize_cgroup_parent, "x/../y"),
+        (config.normalize_cert_base, 3),
         (config.normalize_cert_base, "relative"),
         (config.normalize_static_domains, "edge.example.test"),
         (config.normalize_static_domains, [""]),
@@ -258,6 +262,18 @@ def test_normalizers_accept_empty_and_valid_scalars() -> None:
 def test_normalizers_refuse_invalid_values(normalize, value) -> None:
     with pytest.raises(config.ConfigError):
         normalize(value)
+
+
+def test_validate_config_refuses_missing_tables_and_required_keys() -> None:
+    value = valid_config()
+    del value["http3"]
+    with pytest.raises(config.ConfigError, match="tls_edge.http3 must be a TOML table"):
+        config.validate_config(value)
+
+    value = valid_config()
+    del value["ports"]["http"]
+    with pytest.raises(config.ConfigError, match="ports.http is required"):
+        config.validate_config(value)
 
 
 def test_validate_config_builds_default_and_optional_port_plans():
@@ -436,3 +452,12 @@ def test_atomic_write_sets_mode(tmp_path: Path):
     config.atomic_write(path, "hello\n", 0o640)
     assert path.read_text(encoding="utf-8") == "hello\n"
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_atomic_write_removes_the_temporary_file_when_replace_fails(tmp_path: Path):
+    target = tmp_path / "target"
+    target.mkdir()
+    with pytest.raises(OSError):
+        config.atomic_write(target, "replacement\n", 0o640)
+    assert target.is_dir()
+    assert list(tmp_path.glob(".target.*.tmp")) == []

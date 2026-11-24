@@ -80,10 +80,7 @@ def _static_domains(value: Any) -> list[str]:
 def _initial_acme_store(layout: Layout) -> str:
     if layout.edge["acme"]["volume_name"]:
         return "volume"
-    if (
-        (layout.root / "shared" / "acme").is_dir()
-        and _overlay_value(layout.overlay, ("tls_edge", "acme", "store")) is None
-    ):
+    if (layout.root / "shared" / "acme").is_dir():
         return "hostdir"
     return str(layout.edge["acme"]["store"])
 
@@ -99,15 +96,6 @@ def _initial_static_domains(layout: Layout) -> list[str]:
     if domains:
         return list(domains)
     return [str(layout.edge["domain"])]
-
-
-def _overlay_value(config: Mapping[str, Any], path: tuple[str, ...]) -> Any:
-    current: Any = config
-    for part in path:
-        if not isinstance(current, Mapping) or part not in current:
-            return None
-        current = current[part]
-    return current
 
 
 FIELDS: tuple[Field, ...] = (

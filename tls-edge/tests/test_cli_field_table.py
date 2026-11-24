@@ -289,3 +289,99 @@ enabled = true
     assert "Dry run: no files were changed." in output
     assert override.read_bytes() == before_override
     assert env_path.read_bytes() == before_env
+
+
+def test_answers_mode_uses_a_nonempty_default_for_static_lineages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    defaults = root / "stack/ciu-stack/ciu.defaults.toml.j2"
+    defaults.write_text(
+        defaults.read_text(encoding="utf-8").replace(
+            "domains = []",
+            'domains = ["default.example.test"]',
+        ),
+        encoding="utf-8",
+    )
+    answers = write_answers(
+        tmp_path / "answers.toml",
+        """\
+[tls_edge]
+domain = "edge.example.test"
+
+[tls_edge.tls]
+mode = "static"
+""",
+    )
+    result, output = run_cli(
+        monkeypatch,
+        [
+            "configure",
+            "--root",
+            str(root),
+            "--answers",
+            str(answers),
+            "--dry-run",
+            "--yes",
+        ],
+    )
+    assert result == 0, output
+
+
+def test_hostdir_without_a_new_instance_marker_requires_a_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    answers = write_answers(
+        tmp_path / "answers.toml",
+        """\
+[tls_edge]
+domain = "edge.example.test"
+
+[tls_edge.acme]
+store = "hostdir"
+""",
+    )
+    result, output = run_cli(
+        monkeypatch,
+        [
+            "configure",
+            "--root",
+            str(root),
+            "--answers",
+            str(answers),
+            "--dry-run",
+            "--yes",
+        ],
+    )
+    assert result == 2, output
+    assert "tls_edge.traefik.hostdir.acme.path is required" in output
+
+
+def test_configure_reports_a_consumer_env_config_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_root(tmp_path / "instance")
+    env_path = root / "stack" / "consumer.env"
+    env_path.symlink_to(tmp_path / "unrelated-target")
+    answers = write_answers(
+        tmp_path / "answers.toml",
+        '[tls_edge]\ndomain = "edge.example.test"\n',
+    )
+    result, output = run_cli(
+        monkeypatch,
+        [
+            "configure",
+            "--root",
+            str(root),
+            "--answers",
+            str(answers),
+            "--dry-run",
+            "--yes",
+        ],
+    )
+    assert result == 2, output
+    assert "consumer environment must be a regular file" in output

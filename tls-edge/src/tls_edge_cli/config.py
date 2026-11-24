@@ -549,16 +549,12 @@ def _set_path(document: Any, path: tuple[str, ...], value: Any) -> None:
 
     current = document
     for part in path[:-1]:
-        if not _mutable_table(current):
-            raise ConfigError(f"cannot update {'.'.join(path)}: parent is not a TOML table")
         if part not in current:
             current[part] = tomlkit.table()
         child = current[part]
         if not _mutable_table(child):
             raise ConfigError(f"cannot update {'.'.join(path)}: {part!r} is not a table")
         current = child
-    if not _mutable_table(current):
-        raise ConfigError(f"cannot update {'.'.join(path)}: parent is not a TOML table")
     current[path[-1]] = value
 
 
@@ -638,8 +634,5 @@ def atomic_write(path: Path, text: str, mode: int) -> None:
         finally:
             os.close(directory_fd)
     except BaseException:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        temporary.unlink(missing_ok=True)
         raise

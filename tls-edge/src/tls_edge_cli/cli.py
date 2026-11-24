@@ -62,15 +62,6 @@ def _contains(config: Mapping[str, Any], path: tuple[str, ...]) -> bool:
     return True
 
 
-def _plain_get(config: Mapping[str, Any], path: tuple[str, ...]) -> Any:
-    current: Any = config
-    for part in path:
-        if not isinstance(current, Mapping) or part not in current:
-            raise ConfigError(f"{'.'.join(path)} is missing from the effective configuration")
-        current = current[part]
-    return current
-
-
 def _plain_set(config: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
     current = config
     for part in path[:-1]:
@@ -187,9 +178,7 @@ def _propose(
                 )
             continue
         if from_answers:
-            raw = _plain_get(
-                proposed_overlay, ("tls_edge", *field.key.split("."))
-            )
+            raw = value_at(proposed_overlay["tls_edge"], field.key)
         elif allow_prompt and field.prompt is not None:
             raw = _prompt_value(runtime, field, value_at(edge, field.key))
             field_source = f"interactive prompt for tls_edge.{field.key}"
