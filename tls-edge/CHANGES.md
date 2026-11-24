@@ -9,11 +9,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - `tls-edge configure --answers` now takes a sparse site override in the schema's own shape, such as
   `[tls_edge.http3] enabled = true`. The 3.1 flat answer vocabulary is refused, and each old key names its
   schema-shaped replacement.
+- The standalone installer is removed. The generated `edge-proxy/` tree is no longer committed; use
+  `scripts/render_standalone.py --out DIR --defaults-only` only for a disposable trial.
+- `tls-edge configure/show/validate --root` now names a stack directory containing `ciu-stack/` (the instance's
+  `stack/` directory or a repository checkout). `consumer.env` is optional for a checkout.
+- In static mode the certbot deploy hook now discovers the instance's Traefik container and restarts it
+  (`docker restart --time 5`), taking about 3 seconds. It writes no synced stack file.
 
 ### Changed
 - `tls-edge configure` now uses one field table for prompts, answers, explicit override writes and the proposed
   merge. Shipped defaults come only from the rendered defaults file.
 - Schema-shaped answers may set any non-open, validated leaf; unmanaged leaves are written explicitly.
+
+### Upgrade
+- Anyone who used the removed standalone installer or plain Compose on the committed `edge-proxy/` tree must
+  install a get.py instance and run its bundled CIU stack. Follow `docs/INSTALL.md`; do not migrate by copying
+  the old rendered tree. From a repository checkout, pass `--root <checkout>`, and from an installed instance,
+  pass `--root <instance>/stack`.
 
 <!-- cmru: pending release notes end -->
 
