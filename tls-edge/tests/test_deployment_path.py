@@ -139,7 +139,11 @@ def _fake_docker(tmp_path: Path, name: str = "") -> tuple[Path, Path]:
         """\
 #!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
-if [[ "$1" == "ps" && -n "${FAKE_DOCKER_NAME:-}" ]]; then
+args="$*"
+if [[ "${1:-}" == "ps" \
+    && "$args" == *"--filter label=com.docker.compose.service=traefik"* \
+    && "$args" == *"--filter name=tls-edge-.*-traefik"* \
+    && -n "${FAKE_DOCKER_NAME:-}" ]]; then
     printf '%s\\n' "$FAKE_DOCKER_NAME"
 fi
 exit 0
@@ -397,6 +401,7 @@ def test_certbot_hook_restarts_detected_container_without_tree_writes(
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "FAKE_DOCKER_LOG": str(log),
         "FAKE_DOCKER_NAME": "tls-edge-example-traefik",
+        "TRAEFIK_CONTAINER": "",
     }
     result = subprocess.run(
         ["bash", str(script)],
@@ -407,6 +412,12 @@ def test_certbot_hook_restarts_detected_container_without_tree_writes(
     )
     assert result.returncode == 0, result.stdout + result.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
+    assert [call for call in calls if call.startswith("ps ")] == [
+        "ps --filter label=com.docker.compose.service=traefik "
+        "--filter name=edge-traefik --format {{.Names}}",
+        "ps --filter label=com.docker.compose.service=traefik "
+        "--filter name=tls-edge-.*-traefik --format {{.Names}}",
+    ]
     assert "restart --time 5 tls-edge-example-traefik" in calls
     assert before == _tree_digest(stack)
 
@@ -426,6 +437,7 @@ def test_certbot_hook_without_a_container_is_a_noop(tmp_path: Path) -> None:
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "FAKE_DOCKER_LOG": str(log),
+        "TRAEFIK_CONTAINER": "",
     }
     result = subprocess.run(
         ["bash", str(script)],
