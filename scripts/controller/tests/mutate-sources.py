@@ -479,9 +479,43 @@ mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pattern-leak.py",
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-spawned-goal.py",
        '        or kind == "spawned"\n', '        or False\n')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-subagent-skip.py",
-       '        if hook.get("agent_id") and not explicit:', '        if False:')
+       '        if (hook.get("agent_id") or role_env == "agent") and not explicit:', '        if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-role-env-skip.py",
+       '(hook.get("agent_id") or role_env == "agent") and not explicit:', 'hook.get("agent_id") and not explicit:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-sid-state.py",
+       'return state / f"readback-state-{session}.json"', 'return state / "readback-state-x.json"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-effective-soft.py",
+       'return max(ARM_AT, min(soft, ceiling - STEP))', 'return soft')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pressure-dir.py",
+       'state / "hooks" / f"pressure-{safe}.json"', 'state / f"pressure-{safe}.json"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-state-fallback.py",
+       'return own if own.is_dir() else None', 'return own')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-crash-log.py",
        'log(ACTIVE_LOG, {"ev": "hook-error"', 'log(None, {"ev": "hook-error"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-ceiling-model.py",
+       'value = window(entry.get("autoCompactWindow")) if isinstance(entry, dict) else None', 'value = None')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-ceiling-top.py",
+       'value = window(data.get("autoCompactWindow"))', 'value = None')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-subagent-path.py",
+       '/ "subagents" / (', '/ "subagent" / (')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-stale-check.py",
+       'if age and age[1] >= STALE_MIN:', 'if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-stale-age.py",
+       'if age and age[1] >= STALE_MIN:', 'if age:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-soft-handover.py",
+       '    if fill >= soft:\n        note = (', '    if False:\n        note = (')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-agent-soft.py",
+       '        if fill < soft:\n            return marker', '        if True:\n            return marker')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-soft-alias.py",
+       'env_int("CTX_CONTROLLER_SOFT", CONTROLLER_SOFT_DEFAULT)', 'CONTROLLER_SOFT_DEFAULT')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-role-env.py",
+       'role = (os.environ.get("CTX_HOOK_ROLE") or "").strip().lower()', 'role = ""')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-read-order-newest.py",
+       'block = text[heads[-1].start():] if heads else ""', 'block = text[heads[0].start():] if heads else ""')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-merges-window.py",
+       'f"--since={minutes + 1} minutes ago"', 'f"--since={minutes + 10000} minutes ago"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-state-walkup.py",
+       'if (parent / ".controller-state").is_dir():', 'if False:')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",
        "[[ $psi_limit =~ ^[0-9]+([.][0-9]+)?$ && $poll_seconds =~ ^[0-9]+$ ]] || {\n  echo 'RELEASE_PSI_LIMIT must be numeric and RELEASE_PSI_POLL_SECONDS must be integer seconds' >&2; exit 2;\n}",
        ': # removed PSI input validation')
@@ -1198,6 +1232,10 @@ mutant("scripts/controller/remote-gate.sh", "remote-gate-weight-min.sh",
        '    w = min(cands)', '    w = max(cands)')
 mutant("scripts/controller/remote-gate.sh", "remote-gate-oom-delta.sh",
        '(( oomd > 0 ))', '(( oomd > 5 ))')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-budget-verdict.sh",
+       '[[ $rg_verdict != BUDGET_EXCEEDED ]]', 'true')
+mutant("scripts/controller/remote-gate.sh", "remote-gate-verdict-anchor.sh",
+       "index($0, p) == 1 { l = $0 }", "index($0, p) >= 1 { l = substr($0, index($0, p)) }")
 mutant("scripts/controller/remote-gate.sh", "remote-gate-commit-binding.sh",
        'if [[ ${checked:-0} -ge 1 ]]; then', 'if false; then')
 mutant("scripts/controller/remote-gate.sh", "remote-gate-slot-descriptors.sh",
@@ -1385,3 +1423,22 @@ for _name, _before, _after in (
     ("hardlink-targets",'"flags=rh;s,^\\./,,;s,^,$label/,"', '"flags=r;s,^\\./,,;s,^,$label/,"'),
 ):
     mutant("scripts/controller/ctl-state-backup.sh", f"ctl-state-backup-{_name}.sh", _before, _after)
+
+# the generic remote dev tool (tests/test_dev.py reads DEV_SCRIPT): one hand mutant per guard
+for name, before, after in (
+    ("ticket-hold", "( exec 9>&-; sleep 20 ) >/dev/null 2>&1 </dev/null &", ":"),
+    ("psi-threshold", "exit !(m + 0 >= 3)", "exit !(m + 0 > 3)"),
+    ("psi-file", '"$PSI_DIR/memory" 2>/dev/null', '"$PSI_DIR/io" 2>/dev/null'),
+    ("psi-full-line", "/^full/ { sub", "/^some/ { sub"),
+    ("image-id", 'elif [[ $lid != "$hid" ]]; then', "elif false; then"),
+    ("quoting", "printf '%q' \"$a\"; done; }", "printf '%s' \"$a\"; done; }"),
+    # not a TERM-trap mutant: bash runs the EXIT trap on an untrapped SIGTERM too (that mutant survived suite gate 2: equivalent)
+    ("cleanup-by-cid", 'docker rm -f "$(cat "$D/cid")" >/dev/null 2>&1 7>&- 8>&- 9>&-', 'docker rm -f "$NAME" >/dev/null 2>&1 7>&- 8>&- 9>&-'),
+    ("banner-dirty", "mark=''; if (( dirty )); then mark=+dirty; fi", "mark=+dirty"),
+    ("tty-env", "printf 'export D W\\nSHELL=/bin/bash script", "printf 'SHELL=/bin/bash script"),
+    ("git-ro", """mnt+=' -v "$W/.git:/work/.git:ro"'""", """mnt+=' -v "$W/.git:/work/.git"'"""),
+):
+    mutant("scripts/controller/dev", f"dev-{name}", before, after)
+# the profile resolver is the host-injection gate (tests/test_dev.py reads DEV_PROFILE_SCRIPT)
+mutant("scripts/controller/dev_profile.py", "dev-profile-image-regex", 'IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:@-]*$")', 'IMAGE = re.compile(r"(?s).*")')
+mutant("scripts/controller/dev_profile.py", "dev-profile-work-mount", 'if mount.startswith("{work}:") and dest != "/work":', 'if False:')

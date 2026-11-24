@@ -124,15 +124,17 @@ SP-2 calls `model::derive_rate`.
 
 ## Developing and debugging
 
-[`tools/dev`](tools/dev) runs `build`, `check`, `test`, `clippy`, `fmt`, `example`, `gdb`,
-`strace` and an interactive shell in a capped, network-less, unprivileged container that shares
-the gate image's exact toolchain and offline crate cache. It runs on the gate host `v1001`
-(your worktree, including uncommitted changes up to 20 MiB, is synced there per call); local
-mode is refused by default. Try `tools/dev --dry-run test -p hostobs-store` to see the plan.
-A green dev run is **not** gate evidence; only the lanes below on a committed head are. The
-dev image exists, and `tools/dev` runs remotely on the gate host (measured 2026-11-24:
-`test -p hostobs-model`, 53 tests, 79 s wall). See
-[`../tester-unified-rust/docs/DEV.md`](../tester-unified-rust/docs/DEV.md).
+`scripts/controller/dev -p hostobs <verb>` (the generic remote dev tool; [`tools/dev`](tools/dev) is a
+shim for it) runs `build`, `check`, `test`, `clippy`, `fmt`, `example`, `gdb`, `strace` and an
+interactive shell in a capped, network-less, unprivileged container that shares the gate image's exact
+toolchain and offline crate cache. It runs on a gate host, `v1001` by default (your worktree, including
+uncommitted changes up to 20 MiB, is synced there per call); local mode is refused. Try
+`tools/dev --dry-run test -p hostobs-store` to see the plan. A green dev run is **not** gate evidence;
+only the lanes below on a committed head are. The dev image (`tester-unified-rust-dev:rs-20261124`) exists
+and the dev tool runs remotely on the gate host (measured 2026-11-24 with the pre-shim tool:
+`test -p hostobs-model`, 53 tests, 79 s wall). Guide:
+[`../scripts/controller/docs/DEV.md`](../scripts/controller/docs/DEV.md); the Rust dev image (build,
+toolchain, debugging): [`../tester-unified-rust/docs/DEV.md`](../tester-unified-rust/docs/DEV.md).
 
 ## Gates
 

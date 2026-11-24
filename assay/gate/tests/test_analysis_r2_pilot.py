@@ -19,7 +19,8 @@ import pytest
 
 from assay import observer_windows
 from assay.candidate_identity import candidate_id_from_fields
-from assay.mutation import MUTATION_BUCKETS, MUTATION_STATE_SCHEMA_VERSION
+from assay.mutation import MUTATION_BUCKETS
+from assay.mutation_store import MUTATION_STATE_SCHEMA_VERSION
 from assay.process_tree import ProcessTreeEvidence
 from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from gate.tests.support import PROJECT_ROOT

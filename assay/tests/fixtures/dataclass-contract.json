@@ -799,7 +799,7 @@
         "weakref_slot": false
       }
     },
-    "assay.mutation.FlexOptions": {
+    "assay.mutation_store.FlexOptions": {
       "fields": {},
       "params": {
         "eq": true,
@@ -878,7 +878,26 @@
         "weakref_slot": false
       }
     },
-    "assay.mutation._CarryForwardMatch": {
+    "assay.mutation_store.RecordContext": {
+      "fields": {
+        "cold_witness": {
+          "default": false
+        }
+      },
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation_store._CarryForwardMatch": {
       "fields": {},
       "params": {
         "eq": true,
@@ -893,7 +912,7 @@
         "weakref_slot": false
       }
     },
-    "assay.mutation._CarryForwardRecord": {
+    "assay.mutation_store._CarryForwardRecord": {
       "fields": {},
       "params": {
         "eq": true,
@@ -908,7 +927,7 @@
         "weakref_slot": false
       }
     },
-    "assay.mutation._CarryForwardResult": {
+    "assay.mutation_store._CarryForwardResult": {
       "fields": {},
       "params": {
         "eq": true,
@@ -923,7 +942,7 @@
         "weakref_slot": false
       }
     },
-    "assay.mutation._CarryForwardSourceIndex": {
+    "assay.mutation_store._CarryForwardSourceIndex": {
       "fields": {},
       "params": {
         "eq": true,
@@ -938,7 +957,7 @@
         "weakref_slot": false
       }
     },
-    "assay.mutation._CarryOverResult": {
+    "assay.mutation_store._CarryOverResult": {
       "fields": {},
       "params": {
         "eq": true,
@@ -953,7 +972,7 @@
         "weakref_slot": false
       }
     },
-    "assay.mutation._MutantRun": {
+    "assay.mutation_store._MutantRun": {
       "fields": {},
       "params": {
         "eq": true,

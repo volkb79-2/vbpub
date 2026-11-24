@@ -410,7 +410,8 @@ compaction itself. So every path exits 0, the extract runs under a 15 s
 default / **20 s hard cap**, and a failure is made visible in two safe places
 instead: one log line, and (on `session-start`) the exact command to build the
 readback by hand. A failure is also recorded durably in
-`readback-state.json`, because the next session reads that state, not the log.
+`readback-state-<session_id>.json` (state is per session), because the next
+session reads that state, not the log.
 - **The whole session is the goal anchor's source, but the anchor is opt-in.**
 `pre-compact` runs the preset WITHOUT `--goal-prompt`: a controller session's
 anchor is its `plan.yaml`, and its goal shifts (AGENTS.md). A SPAWNED session
@@ -421,12 +422,25 @@ fired inside a subagent builds nothing unless a kind is named (it would renumber
 and re-mark the controller's state). `--redact-pattern` /
 `CTX_READBACK_REDACT_PATTERNS` reach the extract, but a pattern can itself be a
 secret, so the hook logs, stores and prints only a `<REGEX>` placeholder.
+- **One hook, one threshold per kind, no number compiled in.** The tracked hook
+replaced an untracked 203-line copy that told the controller "auto-compaction is
+the only limit: never stop" (it contradicts the operator's 2026-11-18 handover
+decision: auto-compaction is not a safe handover) and hard-coded a 500k ceiling.
+The ceiling is the model's `autoCompactWindow` from `~/.claude/settings.json`
+(model entry, else top-level, else a documented default), read from the
+session's own transcript model. The soft threshold is the one place the wording
+changes: below it the controller keeps working and persists at boundaries, at or
+past it the controller writes the handover, syncs the plan, sets READY and ends
+the turn; an agent finishes or returns PARTIAL from its own threshold. The read
+order after a compaction is the READ FIRST line of the newest handover block,
+so a handover edit needs no hook edit.
 - **State, not a checkout path.** The state directory comes from a flag, then
-`CTX_STATE_DIR`, then the hook input's own `cwd/.controller-state`. No
+`CTX_STATE_DIR`, then the nearest `.controller-state` at or above the hook
+input's `cwd` (a controller that `cd`s into a worktree keeps its state). No
 repository path, transcript path or 30000/10000 budget is compiled in; the
 budgets are flags/env with those documented defaults.
-- **The numbering is crash-safe.** `readback-N.md` takes one past the highest
-number ON DISK, not one past a counter in a state file, so a state file lost to
+- **The numbering is crash-safe.** `readback-<session_id>-N.md` takes one past
+the session's highest number ON DISK, not one past a counter in a state file, so a state file lost to
 a crash cannot make a later readback overwrite an earlier one. The previous
 readback's marker is read from state and passed as `--since`, which is what
 makes two consecutive readbacks never duplicate each other.

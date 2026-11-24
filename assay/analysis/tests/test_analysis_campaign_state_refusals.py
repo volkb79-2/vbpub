@@ -131,7 +131,9 @@ def test_every_state_directory_refusal_names_the_state_source(tmp_path, monkeypa
 
 
 def test_a_state_record_over_the_size_limit_is_refused(tmp_path, monkeypatch):
-    monkeypatch.setattr(campaign_api.mutation, "MUTATION_STATE_RECORD_LIMIT", 10)
+    monkeypatch.setattr(
+        campaign_api.mutation_store, "MUTATION_STATE_RECORD_LIMIT", 10
+    )
     document, rows = _refuse(
         tmp_path, monkeypatch,
         lambda state, rows: (state / f"{rows[0]['id']}.json").write_text(json.dumps(_valid(rows[0]))),

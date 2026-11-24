@@ -975,7 +975,7 @@ def _assert_complete(real: dict, expected: dict) -> None:
                 assert evidence["group_signalled_before_reap"] is False
                 # A lane-deadline `budget_exceeded` candidate may be recorded
                 # before its leader was registered ("not-started"); both are
-                # valid per assay.mutation._terminal_result_matches_bucket.
+                # valid per assay.mutation_store._terminal_result_matches_bucket.
                 # A hung candidate must still be timeout-killed.
                 allowed_leader_statuses = {
                     "hung": {"timeout-killed"},

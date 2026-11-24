@@ -1,0 +1,121 @@
+# Profiles of the remote dev tool (scripts/controller/dev); the contract is docs/design/agent-dev/DESIGN.md
+# section 2. Key = the project directory `dev -p` takes. `lane` is the project's main run-gate lane: its
+# environment (which owns the image), its workdir and, for kind="assay" lanes, its env and interpreter are read
+# from the project's run-gate.toml / assay.toml at call time; a profile may only ADD keys to them. Every `setup`,
+# `env` and `partial_args` word below must occur verbatim in that lane (tests/test_dev.py checks it).
+schema_version = 1
+
+# Container properties (design section 8). `dev` applies them after bounds checks and always adds the safety invariants
+# itself (network none, cap-drop ALL, no-new-privileges, private PID namespace, --init, exact names, dev-gates.slice,
+# the time limit); a profile key that names one of them is refused. Memory is overcommitted by design: `memory` is the
+# soft reservation (memory.low), `memory_max` a ceiling with swap allowed; RAM shortage never refuses a start.
+[defaults]
+memory = "1g"
+memory_max = "8g"
+cpus = "2"
+pids = 1024
+max_s = 3600
+user = "1003:1003"
+stop_timeout = 10
+ulimits = ["core=0:0"]
+mounts = ["{work}:/work"]   # `dev` adds {work}/.git:/work/.git:ro itself; a profile mount of /work/.git is refused
+prefix = ["nice", "-n", "10", "ionice", "-c3"]
+
+[kinds.python]
+python = "/opt/tester-venv/bin/python"
+[kinds.python.verbs]
+test = ["{python}", "-m", "pytest", "{partial}", "{args}"]   # setup first; partial_args only when args are given
+lint = ["bash", "-c", "set -eu; export PYTHONPYCACHEPREFIX=/tmp/pyc; {python} -m compileall -q .; if command -v shellcheck >/dev/null 2>&1; then git ls-files -z '*.sh' | xargs -0 -r shellcheck; fi", "dev"]
+run = ["{args}"]
+shell = ["bash"]
+
+[kinds.rust]
+memory = "3g"
+env = ["CARGO_NET_OFFLINE=true", "RUST_BACKTRACE=1", "RUST_LIB_BACKTRACE=1"]
+[kinds.rust.verbs]
+build = ["tools/cargo-offline.sh", "build", "--offline", "--locked", "{args}"]
+check = ["tools/cargo-offline.sh", "check", "--offline", "--locked", "{args}"]
+clippy = ["tools/cargo-offline.sh", "clippy", "--offline", "--locked", "{args}"]
+fmt = ["tools/cargo-offline.sh", "fmt", "--all", "{args}"]
+test = ["tools/cargo-offline.sh", "nextest", "run", "--offline", "--locked", "{args}"]
+test-plain = ["tools/cargo-offline.sh", "test", "--offline", "--locked", "{args}"]   # `test --no-nextest`
+example = ["tools/cargo-offline.sh", "run", "--offline", "--locked", "-p", "{1}", "--example", "{2}", "{rest}"]
+gdb = ["rust-gdb", "-iex", "set cwd /home/gate/.cache/hostobs-target", "-iex", "set disable-randomization off", "{args}"]
+strace = ["strace", "{args}"]
+run = ["{args}"]
+shell = ["bash"]
+[kinds.rust.caps]
+gdb = ["SYS_PTRACE"]
+strace = ["SYS_PTRACE"]
+[kinds.rust.default_args]
+clippy = ["--workspace", "--all-targets", "--", "-D", "warnings"]
+
+[profiles.hostobs]
+kind = "rust"
+lane = "selftest"
+environment = "tester-unified-rust"
+dev_image = "tester-unified-rust-dev:rs-20261124"
+workdir = "hostobs"
+cache = "/home/gate/.cache/hostobs-target"
+
+[profiles.run-gate-project]
+kind = "python"
+lane = "selftest"
+environment = "tester-unified"
+workdir = "run-gate-project"
+
+[profiles.cmru]
+kind = "python"
+lane = "assay"
+environment = "tester-unified"
+workdir = "cmru"
+setup = [["/opt/tester-venv/bin/python", "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-input", "--no-deps", "--no-build-isolation", "--editable", "../assay"]]
+partial_args = ["--cli-case-partial"]
+
+[profiles."libraries/cli-extended"]
+kind = "python"
+lane = "r0-r1"
+environment = "tester-unified"
+workdir = "libraries/cli-extended"
+env = ["PYTHONPATH=src", "PYTHONDONTWRITEBYTECODE=1"]
+
+[profiles.fleetd]
+kind = "python"
+lane = "r0-r1"
+environment = "tester-unified"
+workdir = "fleetd"
+env = ["PYTHONPATH=src", "PYTHONDONTWRITEBYTECODE=1"]
+partial_args = ["--cli-case-partial"]
+
+[profiles.assay]
+kind = "python"
+lane = "tooling-tests"
+environment = "tester-unified"
+workdir = "assay"
+env = ["PYTHONPATH=analysis/src:../libraries/cowtree/src", "PYTHONDONTWRITEBYTECODE=1"]
+
+[profiles.tls-edge]
+kind = "python"
+lane = "tests"
+environment = "tester-unified"
+workdir = "tls-edge"
+env = ["TLS_EDGE_REQUIRE_TOOLS=1", "PYTHONDONTWRITEBYTECODE=1"]
+
+[profiles.ciu]
+kind = "python"
+lane = "ciu"
+environment = "tester-unified"
+workdir = "ciu"
+
+[profiles."scripts/controller"]
+kind = "python"
+lane = "suite"
+environment = "tester-unified"
+workdir = "scripts/controller"
+
+[profiles."scripts/netcup"]
+kind = "python"
+lane = "suite"
+environment = "tester-unified"
+workdir = "scripts/netcup"
+env = ["PYTHONPATH=../../libraries/cli-extended/src"]

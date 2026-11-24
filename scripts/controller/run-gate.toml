@@ -5,11 +5,13 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/scripts/controller && bash tests/run-suite.sh"]
 # Measured need, not a safety margin for flakiness: the registered lane run on
-# the controller-import branch (354 hand mutants, each one a full focused test
-# run, plus the unit-level suites) took about 15 min wall on a lightly loaded
-# host, against the previous 15m budget, i.e. no margin at all. The budget is
-# the measured time x 1.6 (about 24 min, rounded up to 30m because the review
-# fixes of that branch add mutants and test blocks on top of the measured 354).
-# A run that needs more than that would be a real regression in the campaign's
-# cost and should be investigated, not absorbed here.
-budget = "30m"
+# the platform docs branch (plat-docs-20261124 @271581e89, 2026-11-24) took
+# 29m57s wall on r1002, against the previous 30m budget, i.e. no margin at all;
+# four later branches then ended in BUDGET_EXCEEDED. The P-plat-23 branch itself
+# took 34m59s on v1001 (@1bda40257) and 55m14s on v1001 under a fuller gate
+# load (@78f398bf5, 2026-11-24). The budget is the slowest measured time x 1.6
+# (about 88 min, rounded up to 90m). The earlier
+# figure (about 15 min for the 354-mutant controller-import branch) is the old
+# measurement. A run that needs more than this would be a real regression in the
+# suite's cost and should be investigated, not absorbed here.
+budget = "90m"

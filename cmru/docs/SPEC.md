@@ -2051,9 +2051,8 @@ and is owed on the latest release. The registered `release-gate` lane implements
 it runs every lane of the full `gate` conjunction except `mutation`. No release version is
 compared against a window and none is refused for its number. The recognised deferral tracking
 id is `KI-79` (the id value is kept because retained markers and manifests record it), and
-`FIRST-RELEASE-R2` is recognised only for a first release with no published stable tag. Both
-require a dated prepared changelog heading, whose version is recorded as the marker's
-`target_version`. Any other id, or a missing or undated prepared heading, refuses before a lane
+it is the only recognised id. A release requires a dated prepared changelog heading, whose
+version is recorded as the marker's `target_version`. Any other id, or a missing or undated prepared heading, refuses before a lane
 runs.
 
 A gate that deliberately defers the mutation lane (`--postpone-mutation`, `release-gate`)
@@ -2063,10 +2062,9 @@ exits 0 after every required non-mutation lane and the final canary pass, and re
   (a full gate records `"passed"`; any other outcome `"failed"`, `"interrupted"` or
   `"incomplete"`), and `deferred_lanes` is a list whose entries are `{lane: "mutation",
   tracking_id, reason, follow_up_lane, follow_up_prerequisites: [{id, requirement}]}`. It is
-  `[]` for every state other than `"provisional"`. `follow_up_lane` is `gate` (the full
-  Run-Gate `gate`: the standalone `mutation` lane refuses to run without the baseline facts only
-  the aggregate gate prepares) or, for a first release with no published stable tag,
-  `assay-first-release-r2`.
+  `[]` for every state other than `"provisional"`. `follow_up_lane` is
+  `assay-first-release-r2` for every release, first or not: the native whole-target lane is the one
+  surviving R2 path (KI-199).
 - `cmru/.assay/mutation-postponed-cmru.json` (`schema_version` 3): the earlier fields plus
   `result: "provisional"` and `follow_up_prerequisites`. It is deleted when a valid new gate
   starts and written only after the canary succeeds, so a failed gate leaves none.
@@ -2079,7 +2077,7 @@ check the manifest state rather than the marker alone.
 Success is decided only after cleanup succeeds. Snapshot finalization (planted-canary removal
 and lease release) runs after the lanes; if either fails after a claimed `passed` or
 `provisional`, the gate rewrites the manifest as `failed` with `deferred_lanes: []`, deletes
-the marker and exits non-zero. Input validation (tracking id, release-version, first-release and
+the marker and exits non-zero. Input validation (tracking id, release-version and
 Run-Gate-identity checks) runs before any evidence is touched, so an invocation refused there
 leaves the previous valid run's marker and manifest exactly as they were; a valid new gate
 removes the stale marker before its first lane.
@@ -3666,7 +3664,7 @@ action, reviewed like any other source change before it is committed.
 CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
 the full CMRU test suite. R1 judges `whole_target` coverage over every
 executable production module, requires 100% line and branch coverage, and
-forbids excluded source. The `cmru`, `cmru-r0-r1`, and first-release lanes
+forbids excluded source. The `cmru`, `cmru-r0-r1`, and `cmru-first-release-r2` lanes
 share one target list, checked against the executable source inventory by
 `tests/test_assay_lane_inventory.py`. R1 has no release-tag base; merging a
 candidate onto `origin/main` cannot make its measurement range empty. R3 runs

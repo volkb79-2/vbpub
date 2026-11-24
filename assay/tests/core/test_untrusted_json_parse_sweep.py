@@ -245,7 +245,7 @@ def test_no_trusted_entry_is_stale():
         ("result_reports/vitest_json.py", "read"),
         # Resume records can be corrupted independently of their writer;
         # RG-49 B9/B11 now guard this decoder and retire its exemption.
-        ("mutation.py", "_load_validated_state_record"),
+        ("mutation_store.py", "_load_validated_state_record"),
     ],
 )
 def test_each_known_untrusted_site_is_still_present_and_guarded(identity):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,23 @@ from debian_install_v2 import bootstrap
 from debian_install_v2.config import Config
 from debian_install_v2.layout_policy import GPT_LAST_USABLE_OFFSET, IOBENCH_PARTLABEL
 from debian_install_v2.plan_preview import PlanPreviewError, disk_size_bytes, format_table, resolve_plan
+
+
+BTRFS_SUBVOLUME_CONFIG = Config(
+    schema_version=2,
+    partitioning={
+        "root": "*",
+        "reserve_gb": 0,
+        "iobench_raw_gb": False,
+        "data": {
+            "kind": "subvolumes",
+            "volumes": [{"name": "@cow", "mount": "/srv/cow", "nocow": False}],
+        },
+    },
+    swap_policy="off",
+    swap_partition_count=0,
+    run_io_benchmark=False,
+)
 
 
 def test_disk_size_parser_accepts_binary_gib_and_tib_units():
@@ -146,6 +164,53 @@ def test_disabling_raw_partition_removes_it_from_the_resolved_table():
     assert [row["entry"] for row in result["plan_table"]] == ["root"]
 
 
+def test_offline_preview_accepts_schema_two_subvolumes():
+    result = resolve_plan(BTRFS_SUBVOLUME_CONFIG, disk_size="512GiB")
+
+    assert result["partitioning"] == BTRFS_SUBVOLUME_CONFIG.partitioning
+    assert [row["entry"] for row in result["plan_table"]] == ["root"]
+
+
+def test_btrfs_plan_and_install_intro_do_not_describe_disk_or_swap_changes():
+    plan = {
+        "release": "trixie",
+        "root_fs": "btrfs",
+        "root_device": "/dev/vda2",
+        "new_root_size_sectors": 0,
+        "data_subvolumes": [
+            {"name": "@cow", "mount": "/srv/cow", "nocow": False},
+        ],
+    }
+
+    rendered = bootstrap._render_plan(plan)
+    intro = bootstrap._install_intro(plan)
+
+    assert "New root size: 0 sectors" not in rendered
+    assert "modify the root disk and create the configured swap layout" not in intro
+    assert "existing btrfs root" in intro
+    assert "no partition table, root growth or root shrink" in intro
+
+
+def test_cli_resume_reports_a_completed_stage_two_noop(monkeypatch):
+    class Output:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, message):
+            self.messages.append(message)
+
+    runtime = SimpleNamespace(output=Output())
+    completed = SimpleNamespace(stage2_complete=True)
+    monkeypatch.setattr(
+        bootstrap, "_make_resume_installer", lambda _runtime: completed,
+    )
+
+    assert bootstrap._resume(SimpleNamespace(), runtime) == 0
+    assert runtime.output.messages == [
+        "Stage two already complete (stage2_done); nothing to do."
+    ]
+
+
 def test_offline_resolver_accepts_partition_128_and_refuses_129():
     def config(data_count: int) -> Config:
         volumes = [
@@ -244,3 +309,54 @@ def test_live_plan_failure_diagnostic_uses_detected_root_number(monkeypatch):
     with pytest.raises(bootstrap.CliFailure, match="test diagnostic path"):
         bootstrap._plan(args, runtime)
     assert observed["root_number"] == 3
+
+
+def test_cli_plan_inspects_a_completed_ext4_host(tmp_path, monkeypatch):
+    from debian_install_v2.installer import Installer
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+
+    config = Config(
+        state_dir=str(tmp_path / "state"),
+        log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="",
+        telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+        swap_disk_total_gb=32,
+        swap_partition_count=8,
+        partitioning={"root": "keep", "reserve_gb": "*"},
+    )
+    marker = Path(config.state_dir) / "stage2_done"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+    actions = FakeHostActions()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = (
+        "/dev/vda3 ext4\n"
+    )
+    actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
+        "/dev/vda3 / ext4\n"
+    )
+    actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
+    monkeypatch.setattr(Installer, "_detect_release", lambda _self: "trixie")
+    installer = Installer(config, actions)
+    installer._root_used_bytes = lambda: 8 * 1024 ** 3
+    monkeypatch.setattr(
+        bootstrap, "_make_installer", lambda _args, _runtime: installer,
+    )
+
+    class Output:
+        def primary(self, value):
+            self.value = value
+
+    output = Output()
+    runtime = SimpleNamespace(json_mode=True, output=output)
+    args = SimpleNamespace(disk_size=None)
+
+    assert bootstrap._plan(args, runtime) == 0
+    assert output.value["root_device"] == "/dev/vda3"
+    assert (
+        "/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/",
+    ) in [action.argv for action in actions.planned]
+    assert (
+        "/usr/sbin/blockdev", "--getsize64", "/dev/",
+    ) not in [action.argv for action in actions.planned]

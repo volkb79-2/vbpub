@@ -34,6 +34,7 @@ from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snap
 from assay.adapters.python import PythonAdapter
 from assay import isolation as isolation_module, liveness
 from assay import mutation as mutation_module, runner as runner_module
+from assay import mutation_store
 from assay import _window_host
 from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from assay.process_tree import ProcessTreeError
@@ -1323,7 +1324,7 @@ def test_deadline_expiring_during_candidate_classification_emits_no_progress(
     one_target = (
         MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
     )
-    classify = mutation_module._bucket_for_run
+    classify = mutation_store._bucket_for_run
     progress_events = []
 
     def classify_then_expire(run, **kwargs):
@@ -1331,7 +1332,7 @@ def test_deadline_expiring_during_candidate_classification_emits_no_progress(
         now[0] = 11.0
         return bucket
 
-    monkeypatch.setattr(mutation_module, "_bucket_for_run", classify_then_expire)
+    monkeypatch.setattr(mutation_store, "_bucket_for_run", classify_then_expire)
     with pytest.raises(AssayError) as caught:
         _run_queue_case(
             tmp_path,
@@ -1357,7 +1358,7 @@ def test_deadline_expiring_during_final_bucket_does_not_return_completed_result(
     one_target = (
         MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
     )
-    classify = mutation_module._bucket_for_run
+    classify = mutation_store._bucket_for_run
     calls = 0
 
     def classify_then_expire(run, **kwargs):
@@ -1368,7 +1369,7 @@ def test_deadline_expiring_during_final_bucket_does_not_return_completed_result(
             now[0] = 11.0
         return bucket
 
-    monkeypatch.setattr(mutation_module, "_bucket_for_run", classify_then_expire)
+    monkeypatch.setattr(mutation_store, "_bucket_for_run", classify_then_expire)
     with pytest.raises(AssayError) as caught:
         _run_queue_case(
             tmp_path,
@@ -1393,7 +1394,7 @@ def test_termination_during_final_bucket_does_not_return_completed_result(
     one_target = (
         MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
     )
-    classify = mutation_module._bucket_for_run
+    classify = mutation_store._bucket_for_run
     calls = 0
 
     def classify_then_request_termination(run, **kwargs):
@@ -1408,7 +1409,7 @@ def test_termination_during_final_bucket_does_not_return_completed_result(
         runner_module, "termination_requested", lambda: termination[0]
     )
     monkeypatch.setattr(
-        mutation_module,
+        mutation_store,
         "_bucket_for_run",
         classify_then_request_termination,
     )
@@ -1565,7 +1566,7 @@ def test_candidate_state_and_progress_wait_for_the_index_ordered_commit_boundary
     one_completed = threading.Event()
     progress_events: list[dict] = []
     state_root = tmp_path / "queue-state"
-    real_write = mutation_module._write_mutation_state_record
+    real_write = mutation_store._write_mutation_state_record
     writes: list[tuple[int, int]] = []
     candidate_threads: set[int] = set()
     jobs = collect_mutation_sites(
@@ -1593,7 +1594,7 @@ def test_candidate_state_and_progress_wait_for_the_index_ordered_commit_boundary
         real_write(root, payload, **kwargs)
 
     monkeypatch.setattr(
-        mutation_module,
+        mutation_store,
         "_write_mutation_state_record",
         record_writer_thread,
     )

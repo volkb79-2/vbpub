@@ -1,6 +1,6 @@
 """B091/RW-33, P7 A3 -- the `hung` bucket's own classification and closed-
-vocabulary threading: :func:`~assay.mutation._bucket_for_run` and
-:func:`~assay.mutation._equivalence_bucket` must map a
+vocabulary threading: :func:`~assay.mutation_store._bucket_for_run` and
+:func:`~assay.mutation_store._equivalence_bucket` must map a
 `BUDGET_EXCEEDED` result with `reason_code = CANDIDATE_HUNG` to `"hung"`, and
 `LANE_TIMEOUT` (or any other `BUDGET_EXCEEDED` reason) to the unchanged
 `"budget_exceeded"` -- the exact `LivenessHungExpired`-vs-plain-
@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from conftest import make_lane, make_plan
 
 from assay.errors import Outcome, ReasonCode
-from assay.mutation import (
+from assay.mutation_store import (
     _MutantRun,
     _bucket_for_run,
     _equivalence_bucket,

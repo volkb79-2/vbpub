@@ -232,6 +232,8 @@ class EndpointPublicationTests(EndpointPublisher, unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("requires augeaswrap 0.1.0", result.stderr)
         self.assertIn("install the augeaswrap wheel", result.stderr)
+        self.assertIn("scripts/netcup/CONSUMERS.md#install-augeaswrap-for-host-setup", result.stderr)
+        self.assertIn("scripts/netcup/runner/install-augeaswrap.sh", result.stderr)
         self.assertFalse(self.capture.exists())
 
 
@@ -271,6 +273,7 @@ class EndpointCheckLine(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("FAIL mdt-host-setup endpoint record cannot be checked", result.stdout)
         self.assertIn("install the augeaswrap wheel", result.stdout)
+        self.assertIn("scripts/netcup/CONSUMERS.md#install-augeaswrap-for-host-setup", result.stdout)
 
     def test_present_clean_record_renders_one_success_line(self) -> None:
         self.fragment.write_text("fixture\n", encoding="utf-8")

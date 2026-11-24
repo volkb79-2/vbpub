@@ -63,7 +63,7 @@ def make_case_b_installer(tmp_path: Path, **config_overrides) -> tuple[Installer
         **defaults,
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = "/dev/vda3 / ext4\n"
     actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(DISK_GIB * 1024 ** 3)
     actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = CASE_B_DUMP
@@ -87,7 +87,7 @@ def make_case_a_installer(tmp_path: Path) -> tuple[Installer, FakeHostActions]:
         swap_partition_count=8,
     )
     actions = FakeHostActions()
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))

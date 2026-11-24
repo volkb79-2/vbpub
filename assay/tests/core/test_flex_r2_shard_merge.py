@@ -24,7 +24,7 @@ from test_flex_r2_campaigns import (
     _stable_resource_counters,
 )
 
-from assay import mutation
+from assay import mutation, mutation_store
 from assay.cli import main
 
 _AUTOUSE = (_stable_resource_counters,)
@@ -252,7 +252,7 @@ def test_the_strict_merge_needs_resume(git_repo: GitRepo, tmp_path: Path):
 
 
 def _validate(stores, jobs=()):
-    return mutation._validate_shard_stores(
+    return mutation_store._validate_shard_stores(
         stores,
         jobs=list(jobs),
         judge="a" * 64,

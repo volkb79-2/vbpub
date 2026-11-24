@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Changed (P-plat-02):** `tools/dev` is now a thin shim over the generic remote dev tool `scripts/controller/dev -p hostobs` (guide `scripts/controller/docs/DEV.md`): `HOSTOBS_DEV_{HOST,MEMORY,CPUS,PIDS,MAX_S}` map to `AGENT_DEV_*`, any other `HOSTOBS_DEV_*` exits 2, `clean [--checkout]` is `gc --this`; admission is the host-memory-PSI wait (`host-admission/1`), exit 75 when the host stays busy; the host state is `~/agent-dev/<hex>` and `agent-dev-cache-hostobs-<hex>` (the old `hostobs-dev-*` state is removed by `dev gc`).
 - **Fixed (P-hostobs-06b):** the serving core has no production panic in `accept`; frame-level tests cover the D-W53 shared-uid Query regression and D-W52's clamped `current` size refusal, an accept-level test covers observe's level cap, `classify` asserts in debug builds that JSON never reaches a block level, and retired JSON block-level cells are gone.
 - **Added (P-hostobs-09):** `kernel::activation` adopts systemd's named `LISTEN_FDS` sockets exactly once, validates each as an open non-blocking listening `AF_UNIX` stream, and replaces the kernel's lint forbid with one audited `adopt_raw` allowance.
 - **Added (probe process):** `hostobs-probe --config <path>` reads and strictly validates the required TOML configuration, maps the adopted socket names to levels, and serves the sans-IO `Server` from one bounded non-blocking poll loop; `--version` reports the package identity and start-up refusals exit 2.

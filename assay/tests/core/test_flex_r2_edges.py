@@ -27,7 +27,7 @@ from test_flex_r2_campaigns import (
     _stable_resource_counters,
 )
 
-from assay import _judge_projection, cli, mutation
+from assay import _judge_projection, cli, mutation, mutation_store
 from assay.cli import main
 from assay.errors import LaneConfigError
 
@@ -145,12 +145,12 @@ def test_generation_directories_require_a_digest_and_may_be_absent(tmp_path: Pat
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with pytest.raises(ValueError, match="SHA-256 digest"):
-            mutation._open_generation_dir(fd, "j" * 64, create=False)
-        assert mutation._open_generation_dir(fd, _A, create=False) is None
-        created = mutation._open_generation_dir(fd, _A, create=True)
+            mutation_store._open_generation_dir(fd, "j" * 64, create=False)
+        assert mutation_store._open_generation_dir(fd, _A, create=False) is None
+        created = mutation_store._open_generation_dir(fd, _A, create=True)
         assert created is not None
         os.close(created)
-        again = mutation._open_generation_dir(fd, _A, create=True)
+        again = mutation_store._open_generation_dir(fd, _A, create=True)
         assert again is not None
         os.close(again)
     finally:
@@ -160,7 +160,7 @@ def test_generation_directories_require_a_digest_and_may_be_absent(tmp_path: Pat
 
 def test_reading_a_generation_tolerates_absence_and_non_directories(tmp_path: Path):
     identity = _C
-    read = mutation._read_generation_record_bytes
+    read = mutation_store._read_generation_record_bytes
     assert read(tmp_path / "missing", identity, _A, state_root_fd=None) is None
     assert read(tmp_path, identity, "not-a-digest", state_root_fd=None) is None
     assert read(tmp_path, identity, _A, state_root_fd=None) is None
@@ -171,7 +171,7 @@ def test_reading_a_generation_tolerates_absence_and_non_directories(tmp_path: Pa
 def _archive(tmp_path: Path, name: str, new_judge: str | None) -> bool:
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        return mutation._archive_foreign_generation(fd, name, new_judge)
+        return mutation_store._archive_foreign_generation(fd, name, new_judge)
     finally:
         os.close(fd)
 
@@ -193,7 +193,7 @@ def test_archiving_skips_what_it_cannot_attribute_to_another_judge(
     assert _archive(tmp_path, "fake-judge.json", _B) is False
     (tmp_path / "same.json").write_bytes(_record(_C, _B))
     assert _archive(tmp_path, "same.json", _B) is False
-    monkeypatch.setattr(mutation, "MUTATION_STATE_RECORD_LIMIT", 4)
+    monkeypatch.setattr(mutation_store, "MUTATION_STATE_RECORD_LIMIT", 4)
     (tmp_path / "big.json").write_bytes(_record(_C, _A))
     assert _archive(tmp_path, "big.json", _B) is False
     assert not (tmp_path / "judges").exists()
@@ -243,9 +243,9 @@ def test_terminal_record_judges_skips_everything_it_cannot_read(tmp_path: Path):
 
 
 def test_carry_over_candidates_without_generations(tmp_path: Path):
-    assert mutation._carry_over_candidates(tmp_path, "x.json") == ["x.json"]
+    assert mutation_store._carry_over_candidates(tmp_path, "x.json") == ["x.json"]
     (tmp_path / "judges").write_text("file", encoding="utf-8")
-    assert mutation._carry_over_candidates(tmp_path, "x.json") == ["x.json"]
+    assert mutation_store._carry_over_candidates(tmp_path, "x.json") == ["x.json"]
 
 
 # --------------------------------------------------------------------------
@@ -380,19 +380,21 @@ def test_an_import_that_would_not_resume_is_refused(
     _run(git_repo, old, tmp_path / "o.jsonl")
     git_repo.write("tests/judge.sh", _BLIND + "# changed\n")
     git_repo.commit_all("judge change")
-    real = mutation._load_validated_state_record
+    real = mutation_store._load_validated_state_record
 
     def reject_the_rebuilt_import(*args, **kwargs):
-        raw = kwargs.get("raw_override", mutation._READ_FROM_STORE)
+        raw = kwargs.get("raw_override", mutation_store._READ_FROM_STORE)
         if (
             isinstance(raw, bytes)
             and not kwargs.get("accept_any_judge")
             and b'"carry_over"' in raw
         ):
-            return mutation._RECORD_REJECTED
+            return mutation_store._RECORD_REJECTED
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(mutation, "_load_validated_state_record", reject_the_rebuilt_import)
+    monkeypatch.setattr(
+        mutation_store, "_load_validated_state_record", reject_the_rebuilt_import
+    )
     code, events = _run(
         git_repo,
         tmp_path / "new",
