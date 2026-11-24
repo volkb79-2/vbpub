@@ -7,7 +7,8 @@ branch into the shared main checkout.
 
 ## 1. Goal and non-goals
 
-State one concrete outcome and name the changes that are out of scope.
+State one concrete outcome and name the changes that are out of scope. State
+the target size (changed lines, files) and the explicit launch effort.
 
 ## 2. Checkout and files
 
@@ -38,13 +39,16 @@ any survivor.
 
 ## 6. Binding rules
 
+- Paste the six house rules from [`rules.md`](rules.md) ("House rules for
+  every implementer brief", CTL-50) verbatim here. They win over any rule
+  below that disagrees.
 - Read the repo `AGENTS.md`, the project guidance, and the controller
   [`rules.md`](rules.md).
 - Keep external working notes as scratch. Anything reusable, cited, or decided
   belongs in the repository.
-- Use project-owned workflows. Run tests only through a registered
-  `tester-unified` `run-gate` lane, under the shared gate lock. Run one lane at
-  a time.
+- Use project-owned workflows. Gate evidence comes only from a registered
+  `tester-unified` `run-gate` lane, under the shared gate lock, one lane at a
+  time; pre-commit runs follow house rule 1.
 - Optional test dependencies FAIL, never skip; no `--skip-gates`; no
   screenshots or binaries in the repository; docs stay agnostic of host, server
   and container names. Third-party dependencies must be at least 14 days past
