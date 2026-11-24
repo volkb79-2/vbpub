@@ -3,13 +3,14 @@
 Status: r2, proposed 2026-11-24. Binding input: operator answers of 2026-11-24 ~10:35Z
 (`.controller-state/operator-decisions.md`). Read on `80e4947bf`. `v2/` = `scripts/debian-install-v2/`, `dr/` =
 `scripts/debian-rollback/`, `nc/` = `scripts/netcup/`, `py/` = `dr/files/usr/local/lib/dr-state/dr_state/`. Until
-r2 is accepted, P-21, P-22 and P-25 go on and M1 stays unstarted.
+r2 is accepted, P-21, P-22 and P-25 go on and IC-M1 stays unstarted. Milestones are IC-M1.. (not
+`MILESTONES-2026-11-18.md`'s); P-27a/b/c are new packages, to be added to PLAN-rollback.
 
 Amends D7 (`dr/docs/DESIGN-GUIDE.md:34`): enrolling an existing btrfs or ZFS root is in scope; ext4 conversion stays
-out. Amends D8 (`:35`): no cloud image is built (Q-B), and the swap rule (`:194-195`) for btrfs (C6). Core
+out. Amends D8 (`:35`): cloud image deferred (backlog, Q-B), and the swap rule (`:194-195`) for btrfs (C6). Core
 `install()` "install time only" (`DESIGN-CORE-SPLIT.md:158`) becomes "install or enrollment". Restores D19 (`:46`),
-F9 and DR-06 (`WORK-PACKAGES.md:80`, `:291-294`) and the layout owner row (`MILESTONES-2026-11-18.md:68`). Keeps D4,
-D18, core D2, D27, D32.
+F9 and DR-06 (`WORK-PACKAGES.md:80`, `:291-294`) and the layout owner row (`MILESTONES-2026-11-18.md:68`); its clause
+"v2 not changed or run in M1 or M2" is superseded (C4, C9). Keeps D4, D18, core D2, D27, D32.
 
 ## 1. Boundaries and the one layout creator
 
@@ -25,19 +26,23 @@ KVM, TrueNAS and Proxmox guests and bare metal. `install-btrfs.sh` stays; P-21 a
   waits for poweroff, detaches the ISO and restores the boot order (`:798-810`).
 - Custom cloud-init: no user-data. Image setup takes only a `customScript` string (`nc/netcup-scp-openapi.json`,
   `POST /api/v1/servers/{serverId}/image`), run by the provider's cloud-init on its own image, which then restarts the
-  host (`nc/README.md:4-7`, `:767-773`). That image's root is ext4 (`v2/debian_install_v2/installer.py:2651-2672`).
-- Custom disk image: the API snapshot (2026.1015) contradicts the operator's belief. It has user image upload (`POST
-  /api/v1/users/{userId}/images/{key}`) and setup (`POST /api/v1/servers/{serverId}/user-image`, `userImageName`,
-  `diskName`). `nc/scp-api.py` implements neither; format, size and UEFI handling are unverified (U8). The ISO stays
-  the medium, because it serves every target (Q-B).
+  host (`nc/README.md:4-7`, `:767-773`). That image's root is ext4, observed on netcup hosts
+  (`nc/KNOWN_ISSUES_TODO_BACKLOG.md:228`).
+- Custom disk image: the API snapshot (2026.1015) has user image endpoints (Q-B), contrary to the operator's belief;
+  `nc/scp-api.py` implements neither; format, size and UEFI handling are unverified (U8). The ISO stays (Q6).
 
 **C4.** The handoff to v2 is a generic first-boot hook in `dr/files/`: a oneshot unit that runs one given command once
-after network-online, guarded by `ConditionPathExists=` on its command file. For v2 the command is the `customScript`
-from `build-customscript` (`v2/debian_install_v2/customscript.py:123-190`). The installer writes it to
-`/root/.vbpub/firstboot.json` (0600, in `@root`, outside every state); the unit deletes it once v2's
-`completionMarker` exists. Reason: ISO hosts have no cloud-init, no secret enters an OS state, and a rollback to the
-pre-v2 initial state cannot re-run v2's fresh install. v2's own guard (`installer.py:518-530`) cannot protect that
-case: its marker (`:99`) is in `/var/lib`, inside the state.
+after network-online. For v2 the command is the `customScript` from `build-customscript`
+(`v2/debian_install_v2/customscript.py:123-190`), written by the installer to `/root/.vbpub/firstboot.json` (0600,
+in `@root`, outside every state). `ConditionPathExists=` names that unstarted file; the unit's first action renames
+it to `firstboot.started`; the bundle is deleted when v2's `completionMarker` appears (`ExecStartPost=` on v2's
+stage-two unit). So the boot between stage one and two does not re-run `customScript`: v2's guard
+(`installer.py:518-544`) refuses only on its marker or a state of phase done or status success. On failure the unit
+fails visibly, keeps the bundle, no auto-retry. Retry: rename it back, `dr-state set-default <initial>`,
+reboot. The bundle comes embedded in the ISO (secrets then sit in provider ISO storage up to 48 h: delete the
+ISO after install) or fetched with `dr.config=https` (needs an auth design). Reason: no cloud-init on ISO hosts,
+no secret in an OS state, and a rollback to the pre-v2 initial state cannot re-run v2's install, which v2's guard
+cannot prevent: its marker (`:99`) is in `/var/lib`, inside the state.
 
 ## 2. What the ISO installer creates
 
@@ -49,13 +54,16 @@ case: its marker (`:99`) is in `/var/lib`, inside the state.
 | Kernels | in each state's `/boot`, no `/boot` partition | in each BE |
 | Excluded | D18 + `@usr-local`, NOCOW on docker, containers, postgresql, mysql (`install-btrfs.sh:75-77`), plus C14 | `rpool/DATA/*` |
 | Swap | `@swap` at `/swap`, NOCOW, never snapshotted (C6) | none (`ZFS-POC-PLAN.md:182`) |
-| Control | `/.top` = `subvolid=5`, mode 0700 (`install-btrfs.sh:141`; `py/paths.py:38-39`) | `rpool/DR-META` |
+| Control | `/.top` = `subvolid=5` (`install-btrfs.sh:141`; `py/paths.py:38-39`); mode 0700: IC-M1 change, `chmod 0700` on the subvolume-5 root after mounting (no code sets it) | `rpool/DR-META` |
 | fstab | one option set for all btrfs mounts, `/` without `subvol=` (`install-btrfs.sh:132-143`) | no `/` line |
 | Packages | `+python3` (core D2, `DESIGN-CORE-SPLIT.md:12-15`; missing at `install-btrfs.sh:117`) | + ZFS set (`ZFS-POC-PLAN.md:158-161`) |
 | Network | systemd-networkd, DHCP on a given MAC, optional static IPv6; replaces ifupdown on `eth0` (`install-btrfs.sh:154-158`) | same |
 
 **C5.** One filesystem holds OS states, D18 data and Docker; `@docker` is NOCOW and its storage driver is measured in
-M1 (U6). States' old blocks share the free space; P-22's capacity rule prunes states, data growth is not limited.
+IC-M1 (U6). States' old blocks share the free space; P-22's capacity rule prunes states, but data growth is not
+limited: cowtree admits by `statvfs` alone (`libraries/cowtree/src/cowtree/space.py:86-100`, `gc.py:331`).
+**Open decision**, recommended: btrfs simple quotas on `@cow` and `@docker` if IC-M1 measures them cheap, else a
+cowtree free-space floor that reserves space for OS states.
 
 **C6.** btrfs swap is a swapfile in `@swap`, made by v2 (C10) with `btrfs filesystem mkswapfile` (U7). The rules:
 NOCOW, uncompressed, fully allocated, one-device filesystem; a subvolume with an active swapfile cannot be
@@ -78,7 +86,7 @@ enrollable later. Per boot path:
 - **ZFS + ZBM: off allowed.** ZBM finds BEs itself; `dr-state install-zfsbootmenu` stays the one ESP writer
   (`ZFS-POC-PLAN.md:142`).
 
-**C8.** The kernel command line becomes target configuration before M4. It is hard-coded as `net.ifnames=0
+**C8.** The kernel command line becomes target configuration before IC-M4. It is hard-coded as `net.ifnames=0
 console=tty0 console=ttyS0,115200` (`dr-state:296`, `:998`; `py/boot/grub.py:107`), and the ISO entries end with
 `console=ttyS0,115200n8` (`build-iso.sh:89`, `:93`). The last `console=` is `/dev/console`; netcup's console is VNC
 only (`RESEARCH-2026-11.md:37`), so emergency shells and the no-config ERASE prompt (`dr-autoinstall:172`) never
@@ -88,9 +96,8 @@ netcup, `ttyS0` last in vm-lab), and the ISO gets a netcup build option. A new D
 ## 3. What v2 needs on a btrfs or ZFS root
 
 **C9.** On a btrfs or ZFS root v2 writes no partition table and resizes no filesystem. It detects the root type at
-start and accepts only `partitioning.root: "*"`, `reserve_gb: 0`, data `none` or `subvolumes`, and per Q-A
-`iobench_raw_gb: false`; anything else is refused at load (`layout_policy.disk_spec`,
-`v2/debian_install_v2/layout_policy.py:550`). `schema_version` 2 (`config.py:27`).
+start and accepts only `partitioning.root: "*"`, `reserve_gb: 0`, data `none` or `subvolumes`; anything else is
+refused at load (`layout_policy.disk_spec`, `v2/debian_install_v2/layout_policy.py:550`). `schema_version` 2 (`config.py:27`).
 
 | Change | Where |
 |---|---|
@@ -111,9 +118,10 @@ Unchanged: the next-boot kernel is the highest `/boot/vmlinuz-*` (`installer.py:
 **C10.** v2 owns swap size and data subvolumes (host tuning); the installer owns `@swap` and the excluded set (layout).
 
 **C11.** r1002's `MDT_COW` partition (`nc/examples/debian-install-v2/r1002.json:9-13`) becomes data subvolume `@cow`
-at `/srv/cow`. v2's btrfs option `user_subvol_rm_allowed` (`installer.py:3731`) joins the root's option set; `/.top`
-at 0700 keeps states out of users' reach. The runner finds the CoW area by `PARTLABEL=MDT_COW`
-(`nc/runner/provision-runner.sh:70-90`) and must accept a btrfs mount at the path (an `nc` change in M1).
+at `/srv/cow` (growth limit: C5). v2's btrfs option `user_subvol_rm_allowed` (`installer.py:3731`) joins the root's
+option set; `/.top` at 0700 (IC-M1, section 2) keeps states out of users' reach. The runner finds the CoW area by
+`PARTLABEL=MDT_COW` (`nc/runner/provision-runner.sh:70-90`) and must accept a btrfs mount at the path (an `nc`
+change in IC-M1).
 
 ## 4. The rollback add-on: `dr-state enroll`
 
@@ -123,16 +131,19 @@ at 0700 keeps states out of users' reach. The runner finds the CoW area by `PART
 of the fresh case (`py/core.py:959-975`).
 
 **C13.** Minimal requirements, each a refusal:
-- Debian 13 or later, `python3` >= 3.13 with full stdlib (core D1, D2), UEFI.
+- Debian 13 or later, `python3` >= 3.13 with full stdlib (core D1, D2), UEFI, Secure Boot off (`mokutil
+  --sb-state`; dr's GRUB image is unsigned, D27).
 - Root on btrfs or ZFS, one device, not on LUKS, LVM or md (Q10).
 - ESP vfat, GPT partition 1 of the boot disk (`dr-state:606`); >= 512 MiB free for systemd-boot (ready layouts only).
 - Kernel and initramfs in the root's `/boot`; a separate `/boot` partition is folded into the new state and left
-  unused.
+  unused. For an ext `/boot`, which the source's entry still reads, `install-grub` adds `ext2` (absent at
+  `dr-state:607-608`), else the case is refused.
 - btrfs free space: estimated free >= max(2 GiB, 5 %) plus every path copied into a NOCOW subvolume, since btrfs
   refuses clones between COW and NOCOW files (proposal, U9). ZFS: the size of every copied path (U10).
 - No `@os-*` except a ready layout's one state; `/.top`, if mounted, is `subvolid=5`; no active swapfile in the
-  source (`swapoff` first); no dpkg run; for a copy, docker, containerd, postgresql and mariadb/mysql stopped, or
-  enrollment from the Live ISO (`dr.mode=enroll`). Excluded paths on other filesystems keep their fstab lines.
+  source (`swapoff` first); no dpkg run; for a copy, prepare stops docker, containerd, postgresql and mariadb/mysql
+  and runtime-masks them until reboot (`systemctl mask --runtime`), or enrollment runs from the Live ISO
+  (`dr.mode=enroll`). Excluded paths on other filesystems keep their fstab lines.
 
 | Source layout | Handling |
 |---|---|
@@ -141,7 +152,7 @@ of the fresh case (`py/core.py:959-975`).
 | Root in subvolume 5 | snapshot of 5; the old top-level entries go into `.dr-enroll-old/` at `finish` |
 | Default subvolume not 5 | refused unless it is the source; `commit` sets 5 |
 | Nested root, snapper layout | refused |
-| ZFS `rpool/ROOT/<be>`, `/boot` in the BE | M6 (C16) |
+| ZFS `rpool/ROOT/<be>`, `/boot` in the BE | IC-M6 (C16) |
 | ZFS root at the pool root, Ubuntu `bpool`, TrueNAS `boot-pool` | refused: no BE container, kernels outside the BE, or an appliance (D1) |
 | Proxmox `rpool/ROOT/pve-1` | refused for now: `proxmox-boot-tool` is a second ESP writer (U11); use our ISO plus `nc/pve-on-debian.sh` |
 
@@ -154,56 +165,69 @@ excluded path; outside the base, a dpkg-owned regular file below it (`/var/lib/d
 in `.dr-state/layout.json`, versioned like the D26 formats. Changing it later is a later item.
 
 **C15.** btrfs foreign enrollment, all under the one `/.top` mount. Each step checks its postcondition first, so a
-re-run resumes; `.dr-state/enroll.json` records the source, its generation and every object created; a re-run against
-another source refuses.
+re-run resumes; `.dr-state/enroll.json` records the source, its generation and every object created, each with a
+completion entry written after `sync` by write-then-rename; an object without one is deleted and redone. A re-run
+against another source refuses.
 1. C13 checks; mount `/.top`; journal.
 2. Read-only snapshot `@dr-enroll-src`; record its generation.
 3. Writable snapshot `@os-000001-<UTC>-enroll` from it.
 4. Each excluded path without a subvolume: create it (`chattr +C` while empty for NOCOW), copy with `cp -a
-   --reflink=auto`, empty the path in the new state. Nested subvolumes below a copied path are refused (U6).
-5. Fold `/boot`; new fstab (the ISO form plus the source's other-filesystem lines, no old swap line); empty `@swap`.
+   --preserve=all,xattr --reflink=auto`, empty the path in the new state. Nested subvolumes below a copied path are
+   refused (U6).
+5. Fold `/boot`; new fstab (the ISO form plus the source's other-filesystem and swap-partition lines; no
+   swapfile from the source root); empty `@swap`; `update-initramfs -u -k all` inside the new state with
+   `RESUME=none` or the new resume target.
 6. `files/` into `@usr-local`, and without hooks into the source's `/usr/local`, so `abort` runs there.
-7. Back up the ESP and NVRAM entries into `.dr-state/enroll-esp/`; `install-grub`; menu default = an unmanaged entry
-   booting the source where it keeps its kernel, one-shot = the new state; remove `EFI/debian` and its NVRAM entry so
-   the firmware takes `EFI/BOOT/BOOTX64.EFI` (U3).
+7. Back up the ESP and NVRAM entries into `.dr-state/enroll-esp/`; `install-grub`, new ESP files written to a temp
+   name, then renamed; dr's menu holds the new state and an unmanaged entry booting the source where it
+   keeps its kernel. The stock `EFI/debian` entry stays; a new NVRAM entry for dr's image is armed with `efibootmgr
+   --bootnext` (a GRUB one-shot with the source as default only without writable NVRAM).
 8. Verify, then print "reboot": `findmnt --verify --tab-file` on the new fstab, every source resolves; a
    vmlinuz/initrd pair with matching `/lib/modules`; btrfs in the initramfs; `dr-state check --sysroot` (P-24); both
    menu entries with the right `rootflags=`; the GRUB image hash.
 9. Reboot; the one-shot boots the new state. `enroll commit` there: running state = new state (`/proc/cmdline`),
-   excluded paths mounted from their subvolumes. `btrfs subvolume find-new` from the recorded generation lists late
-   writes in the source: under excluded paths, files changed only in the source are copied and conflicts make
-   `commit` refuse; elsewhere (an apt run) `commit` refuses; `--discard-late` overrides. Then the install sidecar
-   (kind `enroll`), `set-default`, C7's neutralisation with its check, `gen-menu`.
+   excluded paths mounted from their subvolumes. Late writes: a second read-only source snapshot, diffed by `btrfs
+   send --no-data -p @dr-enroll-src <snap2> | btrfs receive --dump` (`find-new` misses unlinks, renames, metadata).
+   `commit` refuses only on a change under `/usr`, `/boot` or `/var/lib/dpkg` (`status`: an apt run) or in a
+   stopped service's path (databases, docker); under other excluded paths changed files are copied to
+   `.dr-enroll-late/<path>`, never merged file by file; all else (random-seed, timer stamps, logrotate, leases,
+   `system.journal`) is listed in the journal; `--discard-late` overrides. Then the install sidecar (kind
+   `enroll`), `set-default`, C7's neutralisation with its check (removes `EFI/debian` and its NVRAM entry; U3),
+   `gen-menu`.
 10. If the new state fails, a reset boots the source; `enroll abort` there restores ESP and NVRAM, re-runs stock
-    `grub-install` and deletes exactly the journal's objects.
+    `grub-install` and deletes exactly the journal's objects. Rebooted into the source before `commit`: re-running
+    `enroll` re-arms the one-shot.
 11. `enroll finish`, later: deletes `@dr-enroll-src`, the source (or `.dr-enroll-old/`) and its menu entry.
 
 Ready layouts run 1, 6, 7 without source entry or one-shot, `initialize-state`, `gen-menu --default <initial>`,
 `check` and C7's neutralisation; no reboot.
 
-**C16.** ZFS (M6, after P-42): snapshot the source BE, clone to `rpool/ROOT/os-000001-…-enroll` with local
-`canmount=noauto`, `mountpoint=/`, `org.zfsbootmenu:commandline`, then promote; excluded paths become `rpool/DATA/*`
-by copy; `bootfs` moves only at `commit` (no one-shot: a failed boot needs ZBM's console menu); late writes via
-`zfs diff`.
+**C16.** ZFS (IC-M6, after P-42): snapshot the source BE, clone to `rpool/ROOT/os-000001-…-enroll` with local
+`canmount=noauto`, `mountpoint=/`, `org.zfsbootmenu:commandline`, then promote; the source then depends on the clone,
+so `abort` re-promotes it first. Excluded paths become `rpool/DATA/*` by copy; `bootfs` moves only at
+`commit` (no one-shot: a failed boot needs ZBM's console menu); late writes via `zfs diff`. D25's later
+swap-partition experiment may revise C6's ZFS no-swap rule.
 
 ## 5. Milestone path
 
-| M | Content | Order | Acceptance (vm-lab OVMF guest) |
+| IC-M | Content | Order | Acceptance (vm-lab OVMF guest) |
 |---|---|---|---|
-| M1 | ISO btrfs + GRUB, layer on; v2 via C4; section 2, C8, section 3, C11 | after r2 acceptance, P-21, P-25, P-31b; v2 code may start at acceptance | boots from the disk alone; `rootflags=subvol=@os-000001-…`; default subvolume 5; D18 and `@cow` mounted; swapfile on; v2 stage two marker; `host-setup` snapshot; bundle gone; GRUB upgrade leaves ESP and NVRAM unchanged; v2 `r0-r1`, `r1-vm-iso-btrfs`, dr `offline` PASS |
-| P-40 | release matrix | Depends 22-26, 33, M1 (C17) | as PLAN-rollback P-40 |
-| M2 | P-27a enroll, ready layouts; P-27b foreign btrfs | 27a after P-22, P-24; 27b after 27a | `offline` covers refusals and re-runs; guests: `ROLLBACK=off` then enroll; `@rootfs`, subvolume-5 and `@`/`@home` guests; an injected boot failure falls back to the source and `abort` restores it; no `EFI/debian` after a GRUB upgrade |
-| M4 | r1002 reinstall (C18) | after M1, P-40, C8 | boots, SSH, v2 stage two, runner finds `/srv/cow`, restore list applied; apt snapshot, older state via the console, `set-default` back |
-| M5 | v1001 | the controller's call (Q12) | as M4 |
-| M6 | ZFS: P-42, P-43, v2 ZFS root, P-27c, P-44 | P-43 after P-42 | P-44 on an ISO-built disk at 2048 MiB |
+| IC-M1 | ISO btrfs + GRUB, layer on; v2 via C4; section 2, C8, section 3, C11 | after r2 acceptance, P-21, P-25, P-31b; v2 code may start at acceptance | boots from the disk alone; `rootflags=subvol=@os-000001-…`; default subvolume 5; D18 and `@cow` mounted; swapfile on; v2 stage two marker; `host-setup` snapshot; bundle gone; GRUB upgrade leaves ESP and NVRAM unchanged; v2 `r0-r1`, `r1-vm-iso-btrfs`, dr `offline` PASS |
+| P-40 | release matrix | Depends 22-26, 33, IC-M1 (C17) | as PLAN-rollback P-40 |
+| IC-M2 | P-27a enroll, ready layouts; P-27b foreign btrfs | 27a after P-22, P-24; 27b after 27a | `offline` covers refusals and re-runs; guests: `ROLLBACK=off` then enroll; `@rootfs`, subvolume-5 and `@`/`@home` guests; an injected boot failure falls back to the source and `abort` restores it; no `EFI/debian` after a GRUB upgrade |
+| IC-M4 | r1002 reinstall (C18) | after IC-M1, P-40 or C17 subset, C8 | boots, SSH, v2 stage two, runner finds `/srv/cow`, restore list applied; apt snapshot, older state via the console, `set-default` back |
+| IC-M5 | v1001 | the controller's call (Q12) | as IC-M4 |
+| IC-M6 | ZFS: P-42, P-43, v2 ZFS root, P-27c, P-44 | P-43 after P-42 | P-44 on an ISO-built disk at 2048 MiB |
 
-**C17. Proposed P-40 order.** P-40 runs after M1, so the release matrix binds to the installer r1002 gets. If M1 is
-not merged when P-22..P-26 and P-33 are, P-40 runs on the current ISO and M1's acceptance adds boot-check, s2-s3 and
-recovery-kernel on M1's ISO. M2 is not a P-40 dependency: enrollment has its own acceptance.
+**C17. Proposed P-40 order.** P-40 runs after IC-M1, so the release matrix binds to the installer r1002 gets. If
+IC-M1 is not merged when P-22..P-26 and P-33 are, P-40 runs on the current ISO and IC-M1's acceptance adds the subset
+boot-check, s2-s3 and recovery-kernel on IC-M1's ISO, for GRUB and systemd-boot (IC-M1 changes networkd, python3 and
+swap for both). IC-M2 is not a P-40 dependency: enrollment has its own acceptance.
 
 **C18. r1002 preconditions (Q11).** A complete fresh reinstall with `nc/install-restore-iso.py install` and the dr
 ISO, only after:
-1. M1 PASS in vm-lab and P-40 PASS (Q5); C8 merged with the netcup console order.
+1. IC-M1 PASS in vm-lab, and P-40 PASS on IC-M1's ISO or the C17 subset PASS on IC-M1's ISO (Q5); C8 merged with
+   the netcup console order.
 2. The P-44 ZFS base disk (`/root/jobs/debrollback-zbm-20261123`) and all rollback evidence in the P-rollback-01
    off-host archive, SHA-256 verified there.
 3. A read-only inventory of what to restore (runner registration and env, secrets), copied off-host and verified.
@@ -211,28 +235,30 @@ ISO, only after:
 4. The main controller's lease; U5 settled from the inventory.
 
 P-43 stays whole in dr (ZFS ISO, `dr-zfs-autoinstall`, `fetch-zbm-efi.sh`, `install-zfs.sh`: the ZFS layout
-creator); v2's ZFS-root support is its own v2 package in M6. One guest at a time; leases and merges via the main
+creator); v2's ZFS-root support is its own v2 package in IC-M6. One guest at a time; leases and merges via the main
 controller.
 
 ## 6. Unknowns
 
-- U1: stock `update-grub` adds `rootflags=subvol=` for a subvolume root (expected, not read). M2.
-- U2: when `grub-efi-amd64`'s postinst re-runs `grub-install`, and whether it honours the presets. M1, M2.
+- U1: stock `update-grub` adds `rootflags=subvol=` for a subvolume root (expected, not read). IC-M2.
+- U2: when `grub-efi-amd64`'s postinst re-runs `grub-install`, and whether it honours the presets. IC-M1, IC-M2.
 - U3: firmware fallback to `EFI/BOOT/BOOTX64.EFI` without the Debian NVRAM entry: expected on OVMF, unknown on
-  netcup and bare metal. M2; M4 observes netcup.
+  netcup and bare metal. IC-M2; IC-M4 observes netcup.
 - U5: r1002 network (DHCPv4; IPv6 by RA or static); a wrong config loses the host to the console.
-- U6: Docker's storage driver on NOCOW `@docker` (btrfs driver with nested subvolumes, or overlay2). M1.
-- U7: `btrfs filesystem mkswapfile` in Debian 13's btrfs-progs. M1.
+- U6: Docker's storage driver on NOCOW `@docker` (btrfs driver with nested subvolumes, or overlay2). IC-M1.
+- U7: `btrfs filesystem mkswapfile` in Debian 13's btrfs-progs. IC-M1.
 - U8: netcup user image format, size, UEFI, and whether setup runs provider cloud-init. Untested.
-- U9: btrfs free-space margin for enrollment. M2.
-- U10: OpenZFS block cloning across datasets on Debian 13. M6.
+- U9: btrfs free-space margin for enrollment. IC-M2.
+- U10: OpenZFS block cloning across datasets on Debian 13. IC-M6.
 - U11: `proxmox-boot-tool` beside dr-state. Not planned.
 
 ## 7. Operator questions
 
 - **Q-A. Raw benchmark partition.** v2 benchmarks a raw `iobench-raw` partition (`installer.py:3493-3501`) and skips
   io.cost without a result (`:1907-1920`); r1002 has it (`r1002.json:8`). (a) strictly one partition, no io.cost;
-  (b) the ISO adds an 8 GiB raw `iobench-raw` partition at the disk end when the config asks, v2 unchanged.
-  **Recommended (b):** io.cost matters on the shared hosts; the partition holds no filesystem.
-- **Q-B. netcup user image.** (a) ISO only; (b) a backlog item: upload a vm-lab-built disk as a netcup user image
-  after U8. **Recommended (a) now, (b) as backlog:** the ISO serves every target; an image only helps netcup.
+  (b) an exception to Q8: the ISO adds an 8 GiB raw `iobench-raw` partition at the disk end, v2 unchanged; (c) the
+  Live ISO runs iobench on the p2 range before `mkfs`, writes the result to `@root` or `/var/lib/vbpub`, and v2
+  imports it. **Recommended (c):** io.cost matters on the shared hosts, and Q8's one partition stays.
+- **Q-B (information).** netcup has user image endpoints (spec 2026.1015: `POST
+  /users/{userId}/images/{key}`, `POST /servers/{serverId}/user-image`), not implemented in `nc/`. The ISO stays the
+  medium (Q6). Backlog item: netcup user images, after U8.
