@@ -952,9 +952,6 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_BUILDKITD_IO_WEIGHT",
     ):
         validators[key] = validate_weight
-    for key in ("DEV_BACKGROUND_OOM_PRESSURE_LIMIT", "DEV_GATES_OOM_PRESSURE_LIMIT"):
-        validators[key] = validate_systemd_pct_1_100
-
     for key in (
         "DEV_MEMORY_HIGH",
         "DEV_MEMORY_MAX",
@@ -1582,19 +1579,6 @@ def validate_pct_1_100(value: str) -> str | None:
         return f"{value!r} is not an integer percentage (give a bare number, e.g. 80 -- no '%' sign)"
     if pct < 1 or pct > 100:
         return f"{pct} is outside 1-100"
-    return None
-
-
-def validate_systemd_pct_1_100(value: str) -> str | None:
-    """Validate systemd's percentage form, including its required ``%``."""
-    if not value:
-        return "a percentage is required (an integer followed by '%', 1-100)"
-    match = re.fullmatch(r"(\d+)%", value)
-    if not match:
-        return f"{value!r} is not a systemd percentage (use an integer followed by '%', e.g. '75%')"
-    pct = int(match.group(1))
-    if not 1 <= pct <= 100:
-        return f"{pct}% is outside 1-100%"
     return None
 
 
@@ -3001,13 +2985,6 @@ def step_slice_first_resources(
             "  MemoryZSwapWriteback", f"{prefix}_ZSWAP_WRITEBACK",
             cfg_current, example_defaults,
         )
-        if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
-            out("  systemd-oomd may act at this pressure percentage; it is separate from MemoryMax.")
-            values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key(
-                "  ManagedOOMMemoryPressureLimit (systemd percentage, e.g. 75%)",
-                f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults,
-                validate=validate_systemd_pct_1_100,
-            )
         if prefix == "DEV_BUILDKITD":
             out("  The host-managed rootless worker is the only approved normal BuildKit worker. Solver parallelism limits simultaneous RUN/cache operations inside this daemon; it does not limit the number of client builds and is separate from release REPACK_JOBS and REPACK_CONCURRENCY.")
             values["DEV_BUILDKITD_IMAGE"] = walk_key(

@@ -527,6 +527,24 @@ class CheckShTests(unittest.TestCase):
 
 
 class TemplateAndDocsTests(unittest.TestCase):
+    def test_dev_tiers_document_no_systemd_oomd_kill(self) -> None:
+        readme = (ROOT / "README.md").read_text()
+        notes = (ROOT / "CGROUP-NOTES.md").read_text()
+        for text, name in ((readme, "README"), (notes, "CGROUP-NOTES")):
+            text = " ".join(text.lower().split())
+            for phrase in (
+                "finite `memorymax`",
+                "large `memoryswapmax`",
+                "overcommit design",
+                "reclaims",
+                "operator directive 2026-11-24",
+                "full avg10 >= 3",
+                "fleetd",
+            ):
+                self.assertIn(phrase, text, f"{name} does not document {phrase!r}")
+        for text, name in ((readme, "README"), (notes, "CGROUP-NOTES"), (EXAMPLE.read_text(), "env example")):
+            self.assertNotIn("MDT_MEMORY_POLICY", text, name)
+
     def test_the_dedicated_role_blanks_tier_ceilings_that_shared_prod_still_renders(self) -> None:
         # behavioural: the pre-flight block empties the tier variables on dedicated-dev only (InstallBlockTests), while the
         # templates still carry the directive for shared-prod

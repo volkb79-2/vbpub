@@ -99,35 +99,21 @@ enabled = true
 type = "internal"
 guests = false
 xmpp_domain = "meet.jitsi"
-# Register the `dummy = true` test accounts too (default false, see users below).
-dummy_users = false
 
 # ── Users (registered by hooks/post_compose_users.py on every `ciu up`) ─────
 # Each `secret` is a GEN_LOCAL file under .ciu/secrets/jitsi/ (mode 0600,
 # gitignored). To rotate one: delete the file, `ciu up` (USERS.md).
-# Entries marked `dummy = true` are test accounts: they are registered ONLY when
-# `jitsi.auth.dummy_users` is true (default false: a production host gets the admin
-# account only). Their secret files may still be generated, but nothing
-# registers them, so they grant no access.
-# (the key sits in [jitsi.auth], above)
 [[jitsi.users]]
 name = "admin"
 secret = "user_admin"
 
 [[jitsi.users]]
-name = "dummy1"
-secret = "user_dummy1"
-dummy = true
+name = "alice"
+secret = "user_alice"
 
 [[jitsi.users]]
-name = "dummy2"
-secret = "user_dummy2"
-dummy = true
-
-[[jitsi.users]]
-name = "dummy3"
-secret = "user_dummy3"
-dummy = true
+name = "bob"
+secret = "user_bob"
 
 # ── Secrets (S4) ─────────────────────────────────────────────────────────────
 # The Jitsi images take these three ONLY from env (no *_FILE form), so they use
@@ -140,9 +126,8 @@ jicofo_auth_password = { directive = "GEN_LOCAL:jitsi/jicofo_auth_password", mod
 jvb_auth_password = { directive = "GEN_LOCAL:jitsi/jvb_auth_password", mode = "0600", expose_env = "JITSI_JVB_AUTH_PASSWORD" }
 jicofo_component_secret = { directive = "GEN_LOCAL:jitsi/jicofo_component_secret", mode = "0600", expose_env = "JITSI_JICOFO_COMPONENT_SECRET" }
 user_admin = { directive = "GEN_LOCAL:jitsi/user_admin", mode = "0600", consumed_by = "hook" }
-user_dummy1 = { directive = "GEN_LOCAL:jitsi/user_dummy1", mode = "0600", consumed_by = "hook" }
-user_dummy2 = { directive = "GEN_LOCAL:jitsi/user_dummy2", mode = "0600", consumed_by = "hook" }
-user_dummy3 = { directive = "GEN_LOCAL:jitsi/user_dummy3", mode = "0600", consumed_by = "hook" }
+user_alice = { directive = "GEN_LOCAL:jitsi/user_alice", mode = "0600", consumed_by = "hook" }
+user_bob = { directive = "GEN_LOCAL:jitsi/user_bob", mode = "0600", consumed_by = "hook" }
 
 # ── Dark theme (templates/theme-dark.css.j2) ────────────────────────────────
 # Served as /static/theme/theme-dark.css and linked on every page by the

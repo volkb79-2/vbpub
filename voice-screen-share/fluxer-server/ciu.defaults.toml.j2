@@ -151,18 +151,25 @@ max_file = "3"
 # ── Accounts (provisioned by hooks/post_compose_accounts.py) ───────────────
 # Sign-in method is "username" (FLUXER_ACCOUNT_IDENTITY): username + password,
 # no e-mail. The first account is created with the setup token and becomes
-# the instance administrator; the setup is then marked configured so the dummy
-# users can register. Passwords are generated once into
-# .ciu/secrets/accounts.json (0600, gitignored); see USERS.md.
+# the instance administrator; the setup is then marked configured so the regular
+# users can register. Each password is a GEN_LOCAL secret under
+# .ciu/secrets/fluxer/ (0600, gitignored), read by the account hook; USERS.md
+# gives the exact operator read commands.
 [fluxer.accounts]
 admin = "fx_admin"
-users = ["fx_alice", "fx_bob", "fx_carol"]
+users = ["fx_alice", "fx_bob"]
 date_of_birth = "1990-01-01"
 # Registration mode enforced after the accounts exist: "closed" (default),
 # "approval" or "open". Fluxer's own default is open, which would let anyone
 # sign up on a public host.
 registration_mode_after = "closed"
 
+[fluxer.secrets]
+account_fx_admin = { directive = "GEN_LOCAL:fluxer/account_fx_admin", mode = "0600", consumed_by = "hook" }
+account_fx_alice = { directive = "GEN_LOCAL:fluxer/account_fx_alice", mode = "0600", consumed_by = "hook" }
+account_fx_bob = { directive = "GEN_LOCAL:fluxer/account_fx_bob", mode = "0600", consumed_by = "hook" }
+
 [fluxer.hooks]
+pre_secrets = ["hooks/pre_secrets_migrate_accounts.py"]
 pre_compose = ["hooks/pre_compose_secrets.py"]
 post_compose = ["hooks/post_compose_accounts.py"]
