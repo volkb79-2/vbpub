@@ -334,7 +334,7 @@ while preserving other site overrides and comments.
 The supported deployment edits the instance's `stack/ciu-stack/ciu.toml.j2`
 through `tls-edge configure`, then runs ciu from `stack/`. For a disposable
 trial, put the sparse override at `ciu-stack/ciu.toml.j2` in a checkout and run
-`scripts/render.sh --out DIR`. The generated tree is ignored and may be
+`tools/render.sh --out DIR` (maintainer-only; not shipped in an instance). The generated tree is ignored and may be
 overwritten by the next render; it is not a deployment.
 
 The tracked file that carries default values is not the normal place for a

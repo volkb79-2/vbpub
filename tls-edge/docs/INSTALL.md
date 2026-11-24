@@ -61,6 +61,11 @@ it does not collect site settings. `tls-edge configure` then asks for the domain
 HTTP/3, network/volume adoption, and runtime placement. It displays the exact changes and
 inbound firewall ports before writing the instance override and `consumer.env`.
 
+A host that already runs a tls-edge instance older than 4.0 has no in-place path to 4.0: such an instance cannot
+update to 4.0 through the installer, so 4.0 is installed fresh as this section describes. `get.py install` on a root
+that already holds an instance runs an update instead, so stop the old edge (it holds ports 80 and 443) and move its
+instance root aside, or install into the other scope, before the fresh install.
+
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
 does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
 `[tls_edge.acme] volume_name` is set: an adopted volume keeps `store = "volume"`, and `ciu clean` can still remove
@@ -171,7 +176,8 @@ and a newer schema is refused. Unknown keys are refused by their full dotted pat
 are `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]`. An override that sets
 `[tls_edge.hooks] pre_secrets` must keep `hooks/validate_edge.py` in that list, or it is refused.
 
-`ciu check`, the automatic `ciu up` static preflight, `scripts/render_standalone.py --check`, `tls-edge validate`,
+`ciu check`, the automatic `ciu up` static preflight, the maintainer-only
+`tools/render_standalone.py --check`, `tls-edge validate`,
 and `tls-edge configure --dry-run` all run this same validation. Limit: ciu runs the validator because the shipped
 defaults declare it under `[tls_edge.hooks]` `pre_secrets` and `pre_compose`. An override that empties both lists
 removes it from `ciu check` and `ciu up`, so keep the shipped entries (tracked upstream as ciu CIU-226).
@@ -200,10 +206,8 @@ certbot renew --dry-run
 After a renewal the hook finds the Traefik container by its Compose service label and installed-instance name
 pattern, then runs `docker restart --time 5 <name>`. Expect about 3 seconds of edge downtime. It does not write
 or rewrite any file in the instance; when no matching container is running it prints a message and exits 0.
-The stable symlink follows the hook shipped in `stack/scripts/`. Reinstall it after updating a 3.x instance that
-used the old copied hook. A static-mode 3.x instance whose old hook ran must pass `--overwrite-local` to the 4.0
-update because the old hook rewrote `stack/edge-proxy/conf.d/certs.yml`, which the 4.0 bundle no longer ships;
-the replaced original is saved under `shared/overwritten/`.
+The stable symlink follows the hook shipped in `stack/scripts/`: a 4.x `update` refreshes the file it points at,
+so later instance updates take effect without another copied hook.
 
 **Staging CA** while testing: `[tls_edge.acme] ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"`
 (switch back and remove the ACME volume contents before going live, or the staging account is reused).
@@ -248,6 +252,10 @@ its host port pair must be disjoint from `TLS_EDGE_PUBLIC_PORTS`, as in `pattern
 
 ## 6. Update
 
+`bin/tls-edge-installer` is a copy of the release's `get.py`, so `update` targets `/srv/tls-edge-instance` by
+default; pass `--scope user` for a user-scope instance. It reuses the installed interpreter variant; pass
+`--variant py313` or `--variant py314` only to override that selection.
+
 ```bash
 printf '' > /tmp/tls-edge-empty.toml
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
@@ -267,18 +275,16 @@ or `shared/acme`. `tls-edge configure` is the supported writer for the site over
 tls-edge-installer status --scope user
 ```
 
-4.0 upgrade step: a 3.2 `consumer.env` has only `TLS_EDGE_DOMAIN`. Run
-`tls-edge configure --answers <empty file> --yes` after the update and before `ciu up`; otherwise the
-preflight hook refuses the missing contract keys. Run `configure` after every update, before the next `ciu up`,
-so the override is written in the updated schema.
-A tls-edge 3.x edge with its Calls preset enabled holds 8443 on that host; disable it before running
-Mattermost's `ciu up`, which publishes Calls media directly.
+Run `tls-edge configure --answers <empty file> --yes` after every update, before the next `ciu up`; otherwise
+the preflight hook refuses a `consumer.env` that lacks an owned contract key. `configure` also rewrites the
+managed override fields, so the override is written in the schema of the installed release.
+An edge that still runs its Calls preset holds 8443 on that host; disable that preset before Mattermost's
+`ciu up` publishes Calls media directly (see 8).
 
-An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
-keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
-`acme.volume_name` names an existing external volume, that volume is still used unchanged. `down -v` and
-`ciu --reset` preserve an external volume, but `ciu clean` may remove it when it carries this project's labels;
-only the hostdir is guaranteed to survive `ciu clean`.
+An instance whose override adopts an existing volume keeps it: `acme.volume_name` names that exact external
+volume and `configure` writes `store = "volume"` explicitly. `down -v` and `ciu --reset` preserve an external
+volume, but `ciu clean` may remove it when it carries this project's labels; only the hostdir is guaranteed to
+survive `ciu clean`.
 
 To move an existing instance to the durable hostdir manually:
 
@@ -419,20 +425,30 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   ciu; see its backlog).
 - Removing a user-scope instance also encounters that root-owned `stack/ciu-stack/vol-traefik-acme`; delete it
   with root before removing the instance directory.
-- The release publishes one bundle per interpreter; publishing goes through a project script until cmru has a
-  variants handler (cmru KI-115).
+- The release publishes one bundle per interpreter through `cmru handler bundle-build` and
+  `cmru handler tarball-publish --variant`.
 
 ### Releasing tls-edge (maintainers)
 
 - The Calls preset removal is a major-version change. Mark breaking changes with
   `!` or a `BREAKING CHANGE:` footer so conventional versioning can identify
   them, and select the target version explicitly when releasing.
-- Stage the bundled ciu reproducibly: `TLS_EDGE_CIU_VERSION=<x.y.z>` (or `scripts/stage-wheels.py --ciu-version`)
-  refuses any other ciu release; without it the newest stable ciu is bundled. The staged ciu version and sha256 are
-  printed: copy them into the release notes. PyPI wheels are resolved with pip's `--uploaded-prior-to P14D` cutoff,
-  then checked against PyPI upload timestamps. Staging fails before replacing existing wheels if its selected pip
-  lacks the cutoff option. If a new minimum dependency is not yet old enough, wait for an eligible release or use
-  `--allow-fresh`, which omits the cutoff and age check; justify it in the release notes.
+- Build with `cmru handler bundle-build --bundle-config bundle.toml --cmru-config
+  ../cmru.orchestration.toml --name tls-edge --variant all`. The archive names, file allowlist, installer
+  manifest and deterministic `xztar` writer come from `bundle.toml`; the first-party fetcher is
+  `tools/bundle_wheels.py`. The build step derives `TLS_EDGE_VERSION` from the
+  committed `VERSION` file, clears stale `dist/` output first and fails if the
+  variable is absent. `TLS_EDGE_CIU_VERSION=<x.y.z>` and
+  `TLS_EDGE_CLI_EXTENDED_VERSION=<x.y.z>` optionally pin the GitHub-only first-party wheels.
+  Build release bundles only from a clean tree (`cmru release` does); a dirty checkout's untracked
+  files under `ciu-stack/` and `consumer-examples/` would be bundled.
+  `python3 tools/bundle_wheels.py requirements` resolves the third-party closure under the
+  14-day upload buffer and writes exact pins to `requirements-bundle.txt`; cmru vendors
+  that lock for each declared interpreter.
+- CMRU's archive writer uses the runner's `SOURCE_DATE_EPOCH` and normalised owner, mode and
+  ordering. Identical inputs and epoch produce byte-identical archives. The upload-age policy
+  applies once, when the committed lock is generated, so a bundle build resolves no floating
+  third-party versions.
 - Tests: `run-gate tls-edge tests` (lane `tests` in `run-gate.toml`, tester-unified). A missing cmru/jinja2/docker
   fails the lane; only `TLS_EDGE_ALLOW_INSTALLER_SKIP=1` skips the installer test, deliberately, outside the lane.
 

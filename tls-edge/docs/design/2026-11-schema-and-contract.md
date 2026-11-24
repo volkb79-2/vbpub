@@ -157,8 +157,8 @@ consumer label uses).
   `consumer.env TLS_EDGE_DOMAIN differs from the site override; run tls-edge configure to re-sync`.
 - `show` reports drift and exits 0.
 - An absent `consumer.env`, as in a checkout, is not checked.
-- 4.0 upgrade step: a 3.2 `consumer.env` lacks the new keys; run
-  `tls-edge configure --answers <empty> --yes` before `ciu up`.
+- A release that owns a new `consumer.env` key leaves an existing file short of it;
+  `tls-edge configure --answers <empty> --yes` adds it before the next `ciu up`.
 
 Why the hook refuses too: a hand edit of `domain` followed by `ciu up` would otherwise drift with no
 message. Rejected: re-syncing from `validate` or `ciu check` (both are read-only; `ciu check` is
@@ -287,9 +287,9 @@ ciu creates every hostdir it finds declared, and D1's key check needs the key de
 **Checkout** (no instance root, no marker directory): `store = "volume"` uses `acme-data`, as today.
 `hostdir` needs an explicit path that passes the validator rules below; without one it is refused.
 
-**Upgrading a 3.1 instance:**
-- Nothing changes on update. The override sets no `store`, so the instance keeps the same `acme-data` volume.
-- Adoption: set `[tls_edge.acme] volume_name = "<exact existing volume name>"`. `volume_name` makes
+**Adopting an existing ACME volume:**
+- An override that sets no `store` keeps the `acme-data` volume.
+- To keep an existing volume explicitly, set `[tls_edge.acme] volume_name = "<exact existing volume name>"`; `volume_name` makes
   the volume external, so `down -v` and `--reset` keep it; `ciu clean` still removes a volume compose
   created for this project (S6.4a item 6); only the hostdir survives `ciu clean`. There is no
   automatic copy.

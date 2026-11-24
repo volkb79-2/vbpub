@@ -45,6 +45,10 @@ rollback and migrating a hand-made deployment are all in
 
 ### Update
 
+`bin/tls-edge-installer update` targets the system instance by default, accepts
+`--scope user` for a user instance, and reuses the installed interpreter variant
+unless `--variant` overrides it.
+
 ```bash
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
@@ -83,12 +87,18 @@ tls-edge/
       certs.yml.j2            ← static cert store (acme-tls: empty; static/dev: populated)
 
   scripts/
-    render.sh                 ← standalone renderer (wraps render_standalone.py)
-    render_standalone.py      ← Jinja2+TOML render engine; DooD-aware path handling
     verify.sh                 ← post-install verification checks
     dev-certs.sh              ← self-signed CA + cert generation for dev mode
     gen-guard-secret.sh       ← generate bcrypt/APR1 hash for Pattern D basicAuth guard
+    certbot-deploy-hook.sh    ← restart Traefik after a certbot renewal
+    verify-external.sh        ← live HTTP/2 + HTTP/3 acceptance probe
+
+  tools/                      ← maintainer-only; never copied into a bundle
+    render.sh                 ← standalone renderer wrapper
+    render_standalone.py      ← Jinja2+TOML render engine; DooD-aware paths
     update-rendered.sh        ← regenerate ignored edge-proxy/ trial output
+    bundle_wheels.py          ← generated requirements + the one first-party wheel fetcher
+    release.sh                ← thin CMRU release entry point
 
   consumer-examples/          ← ready-to-copy example stacks
     pattern-a-public-only/
@@ -116,7 +126,7 @@ rate-limit notices from Let's Encrypt); see the note below.
 
 # 2. Generate the trial tree.
 cd tls-edge
-python3 scripts/render_standalone.py --out "$PWD/edge-proxy" --defaults-only
+python3 tools/render_standalone.py --out "$PWD/edge-proxy" --defaults-only
 
 # 3. Start the trial stack.
 cd edge-proxy
@@ -247,10 +257,14 @@ bash scripts/verify.sh
 
 ## Cutting a release
 
-`scripts/release.sh` is a thin project-local entry point to CMRU's complete
-source-first transaction: isolated worktree, generated history, gate, `VERSION`
-commit, tag, tarball build, checksum publication, and cleanup. It does not carry
-a second tag/build/publish implementation.
+tls-edge's `cmru.toml` calls `cmru handler bundle-build` for both interpreter
+variants. `bundle.toml` allowlists the operator files and vendors the exact
+third-party closure generated from the ciu + cli-extended + tls-edge-cli
+declarations under the estate's 14-day upload buffer. The three first-party
+wheels come through one stage module. The maintainer scripts are not part of
+the instance bundle.
+The build step derives `TLS_EDGE_VERSION` from the committed `VERSION` file,
+clears stale `dist/` output first and requires the version variable to be set.
 
 The build retains `dist/VERSION` beside the tarball. CMRU uses that retained
 copy when publishing a completed local build, so publication reads the version
@@ -259,10 +273,13 @@ from the exact build record after its worktree has been removed.
 CMRU resolves credentials from `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` or this project's
 ignored `cmru.secret.toml [github].token`; a committed credential is rejected.
 
+CMRU's `xztar` writer sorts members, normalises ownership and modes, and uses
+`SOURCE_DATE_EPOCH`; two builds with identical inputs and epoch are byte-identical.
+
 ### Standalone (simplest)
 
 ```bash
-bash tls-edge/scripts/release.sh 0.2.0
+bash tls-edge/tools/release.sh 0.2.0
 # → isolated CMRU transaction: gate, commits VERSION + CHANGES, tags, builds,
 #   publishes, and synchronises main
 ```
@@ -296,8 +313,9 @@ tls-edge-v2.1.0-py313.tar.xz
 tls-edge-v2.1.0-py313.tar.xz.sha256
 ```
 
-The tarball contains a single top-level directory `tls-edge-v<ver>/` so
-`tar -xJf … --strip-components=1` extracts cleanly to any target path.
+The tarball contains cmru's single staging directory as its top-level directory,
+`bundle/`, so `tar -xJf … --strip-components=1` still extracts cleanly to any
+target path.
 
 ---
 

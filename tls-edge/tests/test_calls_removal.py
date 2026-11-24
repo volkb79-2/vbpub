@@ -100,7 +100,7 @@ def _run_standalone(stack_dir: Path, out_dir: Path) -> subprocess.CompletedProce
     return subprocess.run(
         [
             sys.executable,
-            str(ROOT / "scripts" / "render_standalone.py"),
+            str(ROOT / "tools" / "render_standalone.py"),
             "--stack-dir",
             str(stack_dir),
             "--out",

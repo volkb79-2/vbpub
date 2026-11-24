@@ -643,7 +643,7 @@ configfile overlay mounts (`[tls_edge.traefik.configfile.*]`) to inject
 The Traefik service key in the compose template must remain `traefik` (ciu spec
 S5.3); renaming it silently detaches the configfile mounts.
 
-**Trial (standalone)** (`scripts/render.sh`):
+**Trial (standalone)** (`tools/render.sh`, maintainer-only and not shipped in an instance):
 Reads `ciu.defaults.toml.j2` and optionally a gitignored `ciu-stack/ciu.toml.j2`
 override, then writes a generated tree to the `--out` directory. This output is
 never committed and exists only for inspection or a disposable trial.
@@ -1018,6 +1018,6 @@ a second gate that is harder to satisfy accidentally.
 | App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh` |
 | Single Traefik instance is a SPOF | If Traefik crashes, all public services are unreachable | `restart: unless-stopped` mitigates transient failures; HA Traefik requires Swarm or Kubernetes |
 | `ingress_public` east-west visibility | Containers on ingress can attempt connections to each other | Keep ingress membership minimal; add DOCKER-USER rules for strict isolation |
-| Static config changes (log level, entrypoints, ACME) require re-render + restart | No live override via env vars once config file is mounted | Re-render via `scripts/render.sh` or ciu, then `docker compose restart traefik` |
+| Static config changes (log level, entrypoints, ACME) require re-render + restart | No live override via env vars once config file is mounted | Re-render via ciu (or `tools/render.sh` for a maintainer trial), then `docker compose restart traefik` |
 
 Additional known issues and open items are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md`.

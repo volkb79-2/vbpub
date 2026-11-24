@@ -35,3 +35,4 @@ budget = "30m"
 [lanes.release-gate.resources]
 cpus = "1"
 memory = "1g"
+

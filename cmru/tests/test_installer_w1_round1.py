@@ -515,7 +515,7 @@ class TestTlsEdgeBundle:
         files = {
             "VERSION": tag.encode() + b"\n",
             "get.py": b"# shipped get.py\n",
-            "scripts/render.sh": b"#!/bin/sh\necho hi\n",
+            "scripts/certbot-deploy-hook.sh": b"#!/bin/sh\necho hi\n",
             "ciu-stack/ciu.toml.j2": conf,
             "ciu-stack/conf.d/options.yml": b"a: 1\n",
             "edge-proxy/compose.yml": b"services: {}\n",
@@ -524,7 +524,7 @@ class TestTlsEdgeBundle:
             path = stage / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
-        os.chmod(stage / "scripts" / "render.sh", 0o755)
+        os.chmod(stage / "scripts" / "certbot-deploy-hook.sh", 0o755)
         return stage
 
     def _build(self, tmp_path, stage: Path) -> Path:
@@ -568,7 +568,7 @@ class TestTlsEdgeBundle:
         install(ns, version=self.TAG)
         tree = root_of(ns) / "current" / "tree"
         assert (tree / "VERSION").read_text() == self.TAG + "\n"
-        assert os.access(tree / "scripts" / "render.sh", os.X_OK)
+        assert os.access(tree / "scripts" / "certbot-deploy-hook.sh", os.X_OK)
         update(ns, version=self.TAG2)  # the preserved + hashed conf is linked into shared
         conf = root_of(ns) / "current" / "tree" / "ciu-stack" / "ciu.toml.j2"
         assert conf.is_symlink() and conf.read_text() == "default conf\n"
@@ -584,10 +584,10 @@ class TestTlsEdgeBundle:
         self._build(tmp_path, stage)
         manifest = json.loads((stage / "manifest.json").read_text())
         files = manifest["files"]
-        assert set(files) == {"VERSION", "get.py", "scripts/render.sh",
+        assert set(files) == {"VERSION", "get.py", "scripts/certbot-deploy-hook.sh",
                               "ciu-stack/ciu.toml.j2", "ciu-stack/conf.d/options.yml",
                               "edge-proxy/compose.yml"}
-        entry = files["scripts/render.sh"]
+        entry = files["scripts/certbot-deploy-hook.sh"]
         assert entry["sha256"] == sha(b"#!/bin/sh\necho hi\n")
         assert entry["size"] == len(b"#!/bin/sh\necho hi\n") and entry["mode"] == 0o755
         assert manifest["schema_version"] == 1 and manifest["tag"] == self.TAG
@@ -648,18 +648,6 @@ class TestTlsEdgeBundle:
         cmd_bundle_manifest(args_ns(**monkey))  # a re-run over its own output
         files = json.loads((stage / "manifest.json").read_text())["files"]
         assert "manifest.json" not in files and "VERSION" in files
-
-    def test_build_artifact_script_calls_the_builder_after_clamping(self):
-        if not (REPO / "tls-edge" / "scripts" / "build-artifact.sh").exists():
-            pytest.skip("tls-edge not present")
-        script = (REPO / "tls-edge" / "scripts" / "build-artifact.sh").read_text()
-        # The per-variant script writes the manifest through its own helper (which builds
-        # it with cmru's builder); it must run after the mtime clamp and before the pack.
-        call = script.index("write-bundle-manifest.py")
-        assert script.rindex("touch -t", 0, call) < call < script.index("tar -C")
-        helper = (REPO / "tls-edge" / "scripts" / "write-bundle-manifest.py").read_text()
-        assert "build_bundle_manifest" in helper or "bundle-manifest" in helper
-
 
 def args_ns(**kw):
     import argparse

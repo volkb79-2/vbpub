@@ -676,7 +676,7 @@ def test_the_estate_scan_actually_finds_the_project_contracts():
 def test_the_estate_scan_covers_the_shell_scripts_that_call_cmru():
     scripts = {path.relative_to(REPO_ROOT).as_posix() for path in _estate_shell_scripts()}
     callers = {
-        "tls-edge/scripts/release.sh", "game_stuff/empyrion/run-full-workflow.sh",
+        "tls-edge/tools/release.sh", "game_stuff/empyrion/run-full-workflow.sh",
     }
     for caller in callers:
         if (REPO_ROOT / caller).is_file():
