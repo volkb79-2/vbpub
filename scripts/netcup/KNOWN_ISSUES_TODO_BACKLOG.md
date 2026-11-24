@@ -1967,10 +1967,10 @@ host-setup lands on any runner host; `check.sh` WARNs meanwhile (design section 
 **Addendum OPEN 2026-11-24 (main ruling 12:20Z).** `provision-gates-limits.sh` must not re-render `dev-gates.slice.d/20-memory-policy.conf`
 at all on a `HOST_ROLE=dedicated-dev` host (the role host-setup governs; `mdt-cockpit/host-setup/host-setup.env.example:448-449`). The
 script writes it unconditionally (`slice_dropin`, `runner/provision-gates-limits.sh:478`, rendered at `:752`), so the next runner
-provisioning brings the file back and with it `check.sh`'s tier `memory.max` FAIL
-(`mdt-cockpit/host-setup/scripts/check.sh:417` WARNs on the file today and names the placeholder `NC-nn`; it becomes a FAIL once this lands
-unfixed). Fix: detect the role (the host-setup env's `HOST_ROLE`, or host-setup's own `dev-gates.slice` fragment) and, on dedicated-dev, skip
-the slice file, remove an existing `20-memory-policy.conf` this script owns (marker line), and report that host-setup owns the policy.
+provisioning brings the file back and with it `check.sh`'s tier `memory.max` FAIL: the drop-in's `MemoryMax=6656M` no longer
+matches the dedicated-dev derivation (`mdt-cockpit/host-setup/scripts/check.sh:345-355`). Separately, `check.sh:417` WARNs on the file
+itself, names the placeholder `NC-nn` (now NC-65), and says it becomes a FAIL once this follow-up lands. Fix: detect the role (the host-setup env's `HOST_ROLE`, or host-setup's own `dev-gates.slice` fragment) and, on dedicated-dev, skip
+the slice file, retire an existing `20-memory-policy.conf` this script owns (marker line) through the existing `retire_paths` mechanism, and report that host-setup owns the policy.
 This is the same change as the slice half above; the role test is its trigger. Close when a test renders on a dedicated-dev fixture and
 no `20-memory-policy.conf` exists afterwards, and a shared host still gets it.
 
@@ -1984,7 +1984,7 @@ lanes judged against a local main that was 36 commits behind origin/main. Fix: `
 `refs/remotes/origin/main`, create both `refs/remotes/origin/main` and `refs/heads/main` on the host; a failed fetch warns and uses the
 existing origin/main; an assay lane whose declared `judge.base` does not resolve locally is refused with exit 2 (a host-side check of every
 declared ref would need the base passed into the job; not done, so a declared base that names a branch other than main, or a non-release tag
-(only `refs/tags/*-v[0-9]*` tags and HEAD travel in the bundle), passes the local check and still fails on the host).
+(only HEAD, origin/main (set on the host as both `origin/main` and `main`), the `--base` commit and release tags `refs/tags/*-v[0-9]*` travel in the bundle; `remote-gate.py:422`, `:457`), passes the local check and still fails on the host).
 `--base main` / `origin/main` now resolve to the fetched origin/main (not the stale local branch). A host checkout cloned from a seed starts with the
 seed's own `main` and `origin/main`; the job overwrites them, and deletes both when there is no origin/main to set, so nothing stale survives (r1 review F1-F5).
 **Where.** `runner/remote-gate.py` (`local_state`, `lane_checks`, `build_bundle`, job script), `CONSUMERS.md`, `CHANGES.md`.
@@ -2010,7 +2010,7 @@ lane's free output (test stderr quoting "lane X verdict Y") can fake the `result
 **Status:** OPEN (filed 2026-11-24); Should-fix. Pre-existing (not introduced by P-plat-24). Source: `.controller-state/platform/reviews/plat-24-r2-opus.md`, N5.
 
 `runner/remote-gate.py` names the temporary bundle head for the `--base` commit with the constant `BASE_REF = "refs/remote-gate/base"` (`:433`;
-used at `:455-466`). Linked worktrees share every ref outside `refs/worktree/*`, so every run from one controller repository writes the same
+used at `:458-470`, cleanup `:469-470`). Linked worktrees share every ref outside `refs/worktree/*`, so every run from one controller repository writes the same
 ref: run A sets it to X, run B sets it to Y, A's `bundle create` ships Y, and A's host lacks X and ends rc 72 "base ... missing on the host"
 (`JOB_REASON_RE`, `:1150`). Also A's `finally` deletes the ref while B still needs it. With `--base main` both runs now usually map to the same fetched
 sha, so P-plat-24 did not make it worse, but any two runs with different bases collide. Fix: a per-run ref name, `refs/remote-gate/base-<run name>`,
@@ -2021,7 +2021,7 @@ and asserts each bundle carries its own base.
 
 **Status:** OPEN (filed 2026-11-24); Minor. Source: `.controller-state/platform/reviews/plat-24-r2-opus.md`, N1-N4 (N5 is NC-69, N6 was corrected in NC-66).
 
-- **N1 (follow-up).** `MAIN_NAMES` (`runner/remote-gate.py:300`, tested at `:328`) is an exact-match tuple, so only `main`, `origin/main`,
+- **N1 (follow-up).** `MAIN_NAMES` (`runner/remote-gate.py:300`, checked at `:328`) is an exact-match tuple, so only `main`, `origin/main`,
   `refs/heads/main` and `refs/remotes/origin/main` map to the fetched origin/main. `--base main~1`, `main^` or `main@{1}` fall through to
   `rev-parse --verify` (`:331-336`) in the controller checkout and resolve against local `refs/heads/main`, which was 36 commits behind in the
   incident: the gate judges a base 37 commits back and nothing warns. The same holds for a declared `judge.base = "main~1"` (`:386-390`):
