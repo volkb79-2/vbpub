@@ -1,3 +1,6 @@
+#[cfg_attr(not(test), allow(dead_code))]
+mod config;
+
 fn main() {
     let _ = hostobs_probe::package_name();
 }
