@@ -17,7 +17,7 @@ a later move into a crate).
   no allocation by an untrusted length.
 - **`Server`**: owns ONE `SendHub` (§5.3), the conns keyed by `ConnId`, the per-level and per-uid
   counters, and the backend (`B: Backend`, methods `&self` in P5b-1). A single-threaded `poll(2)`
-  driver needs no mutex (WIRE §5.3's "one mutex" is not needed; recorded as a deviation).
+  driver needs no mutex *(historical deviation: WIRE.md §5.3 now rules and says so)*.
 - **`Backend`** (trait): P5b-1 needs only `identity() -> Identity {server, boot_id, epoch, features}`
   and `status() -> StatusInfo`. `Server` fills `clients` per level and `queues.queued_bytes` (from
   `hub.global_pools()`); `queues.dropped_blocks` is 0 in P5b-1 (a hub counter arrives in P5b-2).
@@ -69,7 +69,8 @@ and the driver takes `take_final` and makes ONE non-blocking write, abandoning a
 and the server prefix was queued (the `conn-prefix-surplus` shape: prefix + a bad REQ in one read), the
 final bytes are the 8 prefix bytes followed by the final frame; 1..7 written means `head_partial` is
 already true and nothing more is written. A major-version mismatch: the final bytes are the prefix alone.
-**R3 Superseded by P5b-2c + P5b-2d (unreachable in P5b-1):** `too-many-requests` and "corr already
+**R3 Superseded by P5b-2c + P5b-2d (unreachable in P5b-1)** *(historical: no request stays
+outstanding; WIRE.md §4.2 steps 2 and 10 and §5.1 now rule)*: `too-many-requests` and "corr already
 in use" need a request that stays outstanding; `hello`/`status` are synchronous, so outstanding is 0
 whenever the next request arrives in P5b-1. P5b-2c supplies the outstanding `current` and
 subscription state, and P5b-2d serves the block verbs; their position in the precedence list (R11)
@@ -93,7 +94,7 @@ fix the row or the rule in P5b-1b, together with the connection state machine.
 **R7 `hello.proto`** must equal the CLIENT's own prefix (major 1, minor C), not the negotiated N. The
 result carries N = min(C, server minor). (The Rust client sends `PROTO_MINOR` in `hello` and checks
 `result.proto.minor == N`.)
-**R8 JSON-mode `hello`:** negotiation N = min(C, S_minor); a major other than 1 is `unsupported-version`
+**R8 JSON-mode `hello`:** *(observer and control only; WIRE.md §1.3 now rules)* negotiation N = min(C, S_minor); a major other than 1 is `unsupported-version`
 (fatal; the only wire place the code is reachable); `hello` is accepted only as the first line; a second
 `hello` in `Ready`, either mode, is `bad-request` with `detail.key` `"verb"`.
 **R9 `AwaitHello` row pinned:** `corr == 0` -> `bad-frame` `corr=0` (§2.3 first); verb other than `hello`
@@ -105,9 +106,9 @@ request owed); EOF mid-line in JSON mode: close without reply (mirrors §5.2 `tr
 (binary), or (P5b-2) `corr` in use: `bad-frame`, fatal; (3) `check_req`: `bad-request`; (4) `AwaitHello` gate;
 (5) verb not in the table or reserved (§4.13): `unknown-verb`; (6) level: `forbidden`; (7) `hello` when the
 connection is `Ready` (either mode): `bad-request` `{"key":"verb"}` (R8); (8) JSON mode and a block verb:
-`binary-required`; (9) known but not served in this package: `unknown-verb` (last of the table checks, so
+`binary-required` *(historical: retired, WIRE.md §4.2 now rules)*; (9) known but not served in this package: `unknown-verb` (last of the table checks, so
 `forbidden`, the second-hello check and `binary-required` still come from the full table); (10) (P5b-2)
-`max_outstanding`: `too-many-requests`; (11) args schema: `bad-request`; (12) (P5b-3) verb-level feature
+`max_outstanding`: `too-many-requests` *(historical: WIRE.md §4.2 step 10 now rules)*; (11) args schema: `bad-request`; (12) (P5b-3) verb-level feature
 `unsupported-feature`; (13) execute. So duplicate keys inside an UNKNOWN verb's args are never inspected
 (state it in §4.2). Known M2 verbs not served yet answer `unknown-verb` and are absent from
 `hello.verbs`; `forbidden` and `binary-required` stay testable. Never `internal` for them.
@@ -149,7 +150,7 @@ driver's read size: P5b-4 fixes one read size (<= 64 KiB).
 connection cases ran in P5b-1 except `conn-reply-page-truncated` (uses `events`, M3: retarget to
 `procs` in P5b-3), `conn-not-idle-with-subscription`, `conn-dribbling-reader`, the END half of
 `conn-half-close`, `conn-corr-in-use-sub`, `conn-corr-in-use-pending` and
-`conn-too-many-requests`. P5b-2c supplies the connection state and P5b-2d delivers ticks, retries
+`conn-too-many-requests` *(historical: WIRE.md §11.4 now rules; the pending case is retired)*. P5b-2c supplies the connection state and P5b-2d delivers ticks, retries
 and the served block verbs; those cases now run against the in-memory `Conn`/`Server`.
 "In-process socketpair" becomes the sans-IO core under test; the socketpair runs move to P5b-4
 (deviation note in §11.4). See `P5B2-LIVE-STREAMS-DESIGN.md` S31.
@@ -197,5 +198,5 @@ outcome discarded; no unbounded buffer growth (`buffered_capacity` bounds) under
 §4.2 request precedence (R11) and the digits-only integer rule (R16); §4.4 `hello.proto` = client prefix
 (R7) and JSON-mode negotiation (R8), the block-key list (R18); §5.2/§5.4 final-frame rule and the new rows
 (R1, R2, R6, R9, R10) with a decision D-W28; §8.1 line rules (R13), JSON `corr` recovery (R12); §11.4
-`events` -> `procs` retarget and socketpair -> P5b-4 (R21); §5.3 "no mutex" note (R27); §5.1 control-queue
+`events` -> `procs` retarget and socketpair -> P5b-4 (R21); §5.3 "no mutex" note (R27; done, WIRE.md §5.3 now rules); §5.1 control-queue
 memory per R28 once decided.
