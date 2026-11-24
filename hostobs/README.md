@@ -154,7 +154,7 @@ executing host; see [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
 
 Cargo is offline and locked, and each Cargo invocation checks the mounted `Cargo.lock`
 against the image's registry-set identity and cache manifest first (workspace-member lock
-edits do not change that identity; the Rust lanes run on `tester-unified-rust:rs-20261118`,
+edits do not change that identity; the Rust lanes run on `tester-unified-rust:rs-20261124`,
 which carries it). `selftest` is the workspace's own
 R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
 

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - **Changed (model identity, `HOB-7`):** `IncarnationRegistry` now stores only live incarnations (O(live) `end_round`, model-owned default `dict_active_max` 65,536, configurable hard bound with typed `RegistryFull`, and no live eviction); store's dictionary re-uses that default.
+- **Build (P-hostobs-08):** rustix 1.1.6 (`std`, `event`, `net`, `time`, no default features) is a workspace dependency of `kernel` and `probe`. The probe's unused `ruzstd`, `serde`, `serde_json` and `toml` are gone. The Rust lanes and `tools/dev` run on `tester-unified-rust(-dev):rs-20261124`, which carries the new lock's registry set; `rs-20261118` stays tagged for rollback.
 - **Docs (P-hostobs-19, closes `HOB-74`):** `docs/CONSUMERS.md` gets a "Boundaries" section with the four consumer rules (cgprofile frozen, span emission is one JSON line on the observer socket, act never writes `io.cost`/`io.weight`/sysctl, iogovmon reads hostobs only after M3); cgprofile's freeze is filed as `CP-66`.
 - The hostobs backlog now lists only open items; fixed and closed entries are archived one per line in `archive/2026-Q4.md`, with HOB-62..74 filed and HOB-49's WIRE citation corrected.
 - **Changed (WIRE.md, P-hostobs-03, `HOB-65`/`HOB-71`/`HOB-72` spec):** no request waits (D-W49, D-W50; D-W30 retired), JSON mode only at observer/control (D-W51), probe-wide keys with `max_rows` 1,024, Query 1/4 MiB, `max_block_bytes` 1 MiB and history 2/8 (D-W52), no per-uid pools and per-uid caps equal to the level caps at observe (D-W20, D-W53); code follows in P-hostobs-05/06 (V-21).
