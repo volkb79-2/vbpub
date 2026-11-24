@@ -189,6 +189,8 @@ def _dockerfile(path: Path, url: str, sha: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "FROM scratch\n"
+        "ARG ESTATE_TEST_POLICY_WHEEL_URL=https://example.invalid/estate_test_policy-9.9.9-py3-none-any.whl\n"
+        f"ARG ESTATE_TEST_POLICY_WHEEL_SHA256={'c' * 64}\n"
         "ARG CLI_EXTENDED_RESOLVE=pinned\n"
         f"ARG CLI_EXTENDED_WHEEL_URL={url}\n"
         f"ARG CLI_EXTENDED_WHEEL_SHA256={sha}\n",
@@ -358,6 +360,7 @@ def test_the_real_dockerfile_pin_is_readable_by_the_check(tmp_path):
     text = DOCKERFILE.read_text(encoding="utf-8")
     pinned = re.search(r"^ARG CLI_EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$", text, re.MULTILINE).group(1)
     url = re.search(r"^ARG CLI_EXTENDED_WHEEL_URL=(\S+)$", text, re.MULTILINE).group(1)
+    assert "cli-extended-v0.8.0/cli_extended-0.8.0-py3-none-any.whl" in url
     _pointer(tmp_path / "latest.json", pinned, url)
 
     values = _parse(_identity(

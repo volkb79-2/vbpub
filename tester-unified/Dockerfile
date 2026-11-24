@@ -159,6 +159,15 @@ RUN apt-get update \
  && test "$(dpkg -S /usr/bin/xorriso | cut -d: -f1)" = xorriso \
  && /usr/bin/xorriso -version \
  && rm -rf /var/lib/apt/lists/*
+#  * systemd-boot-tools (T6): debian-rollback's rollback lane invokes bootctl.
+#    Keep the real client next to the other Debian userland tools, before any
+#    project/dependency COPY layer.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends systemd-boot-tools \
+ && test -x /usr/bin/bootctl \
+ && test "$(dpkg -S /usr/bin/bootctl | cut -d: -f1)" = systemd-boot-tools \
+ && /usr/bin/bootctl --version \
+ && rm -rf /var/lib/apt/lists/*
 #  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
 #    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
 #    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
@@ -225,7 +234,7 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 # COPYed source, in a throwaway venv holding only its pinned build backends
 # (`--no-index --no-deps --no-build-isolation`), and installed from that local
 # wheel, whose local version segment (+tester.unified) no PyPI release can have.
-# PINNED BY DEFAULT (D-3): the two WHEEL args below name the released 0.3.0 asset
+# PINNED BY DEFAULT (D-3): the two WHEEL args below name the released 0.8.0 asset
 # and its sha256 IN THIS REPOSITORY, so the digest is an independent pin and not
 # something `latest.json` can vouch for over the same TLS channel. Because the pin
 # is build-arg text, a changed pin is a changed RUN layer: no stale cache. TO BUMP:
@@ -256,13 +265,19 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 #           the default and fails by itself when the pinned release is missing.
 ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
-ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.5.0/cli_extended-0.5.0-py3-none-any.whl
-ARG CLI_EXTENDED_WHEEL_SHA256=755c6f4919b587bbada9f9988a7bd677428513e93a040b4d3561fd76316ac951
+ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.8.0/cli_extended-0.8.0-py3-none-any.whl
+ARG CLI_EXTENDED_WHEEL_SHA256=8df21b7e85cf2eddc4a5787688b78eead86ec405d117e30b4bed0c612734f1c1
 # CLI_EXTENDED_WHEEL_SHA256 is, in EVERY mode, the digest the installed wheel must
 # have: the repository pin (pinned), the supplied digest (local) or the published
 # digest the caller names (latest, which refuses to resolve without it). The label
 # records it, and the install RUN below verifies the actual wheel file against it.
 LABEL org.vbpub.cli-extended.wheel-sha256="${CLI_EXTENDED_WHEEL_SHA256}"
+# estate-test-policy is the pytest plugin every opted-in lane resolves through
+# `required_plugins`. It is a first-party release wheel, not part of the
+# index-bound requirements closure; pin both the asset and the bytes here.
+ARG ESTATE_TEST_POLICY_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/test-policy-v0.1.0/estate_test_policy-0.1.0-py3-none-any.whl
+ARG ESTATE_TEST_POLICY_WHEEL_SHA256=be23c07a7264faef0c37141cfe688d950778d2071e9633435016673de92ff70f
+LABEL org.vbpub.estate-test-policy.wheel-sha256="${ESTATE_TEST_POLICY_WHEEL_SHA256}"
 # Exact identity of the Run-Gate wheel supplied through the named build context.
 # The image installs those exact wheel bytes; the version and digest are
 # independently checked before installation and against installed metadata.
@@ -300,7 +315,14 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
     fi \
  && set -- /tmp/cli-extended-release/cli_extended-*.whl \
  && [ "$#" -eq 1 ] && [ -f "$1" ] \
- && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -
+ && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c - \
+ && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
+      --distribution estate-test-policy --dest /tmp/estate-test-policy-release \
+      --min-version 0.1.0 \
+      --wheel-url "${ESTATE_TEST_POLICY_WHEEL_URL}" --sha256 "${ESTATE_TEST_POLICY_WHEEL_SHA256}" \
+ && set -- /tmp/estate-test-policy-release/estate_test_policy-*.whl \
+ && [ "$#" -eq 1 ] && [ -f "$1" ] \
+ && echo "${ESTATE_TEST_POLICY_WHEEL_SHA256}  $1" | sha256sum -c -
 
 # `venv` preserves existing contents. Start with empty environments so files
 # or `.pth` configuration inherited from a changed base image cannot affect
@@ -322,6 +344,8 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" --upgrade pip \
  && /opt/tester-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" -r /tmp/tester-requirements.txt \
  && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/cli-extended-release/*.whl \
+ && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/estate-test-policy-release/*.whl \
+ && /opt/tester-venv/bin/python -c 'import importlib.metadata as m; assert m.version("estate-test-policy") == "0.1.0"' \
  && /usr/local/bin/python3.14 -m venv /tmp/internal-build-venv \
  && /tmp/internal-build-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" -r /tmp/internal-build-requirements.txt
 
@@ -374,7 +398,7 @@ RUN rm -rf /tmp/internal-wheels \
     /tmp/internal-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
       -w /tmp/internal-wheels /src/cmru
 RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
- && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release \
+ && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release /tmp/estate-test-policy-release \
  && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, tomlkit, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgprofile report tier OK')"
 

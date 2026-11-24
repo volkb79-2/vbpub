@@ -18,6 +18,10 @@ The image includes Debian trixie's `xorriso` package for debian-rollback's
 registered offline lane, which builds NoCloud seed ISOs and extracts their
 bootloader markers. The lane fails if the real ISO packing tool is missing.
 
+The image includes Debian trixie's `systemd-boot-tools` package for T6
+(`debian-rollback`), which invokes `/usr/bin/bootctl`. The build proves the
+binary is executable, is owned by the package, and answers `bootctl --version`.
+
 The image is built FROM `tester-base` (the minimal gate base: `python:3.14-trixie` +
 docker client + minisign + shellcheck; see `tester-base/README.md`), through
 `ARG TESTER_UNIFIED_BASE_IMAGE` (default `tester-base:local` until tester-base has a CMRU
@@ -202,6 +206,11 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   Every image carries `org.vbpub.cli-extended.wheel-sha256`, the digest of the wheel it
   installed (the Dockerfile pin, the `local` digest, or the `latest` digest), verified
   against the installed file during the build and re-read by `build-image.sh` afterwards.
+  The image also installs the released `estate-test-policy` 0.1.0 wheel from its
+  `ESTATE_TEST_POLICY_WHEEL_URL` + `ESTATE_TEST_POLICY_WHEEL_SHA256` pin after pytest is
+  present, again with `--no-index --no-deps`, so a project's
+  `required_plugins = estate-test-policy` resolves in every opted-in lane. Its
+  `org.vbpub.estate-test-policy.wheel-sha256` label records the verified digest.
   A separate source-backed test exception covers cgprofile's `augeaswrap>=0.1.0` edge:
   the generator excludes it from the PyPI closure, and `cgprofile/tools/gate.sh`
   places the bound checkout's `augeaswrap/src` on `PYTHONPATH`. The endpoint

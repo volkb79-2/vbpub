@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Fetch the RELEASED cli-extended wheel for the tester-unified image, sha256-verified.
+"""Fetch a RELEASED first-party wheel for the tester-unified image, sha256-verified.
 
-``cli-extended`` is published to GitHub Releases only (never PyPI: the bare name is
-unclaimed there, a dependency-confusion hole, CX-D2).  cmru declares it as a real
-dependency, so the image installs it from the release, by digest, BEFORE cmru:
+``cli-extended`` is the default; ``--distribution estate-test-policy`` selects
+the policy plugin. Both are published to GitHub Releases only:
 
 * default: read the thin ``cli-extended-latest/latest.json`` pointer (``version``,
   ``asset``, ``sha256``, ``url``), download the asset it names;
@@ -12,7 +11,7 @@ dependency, so the image installs it from the release, by digest, BEFORE cmru:
 Either way the sha256 is MANDATORY and compared before the file is written to its final
 name; the script prints the wheel path.  Stdlib only (it runs under the image's system
 python before any venv exists).  The caller installs the result with
-``pip install --no-index --no-deps <wheel>``; no index is ever queried for this name.
+``pip install --no-index --no-deps <wheel>``; no index is queried.
 """
 from __future__ import annotations
 
@@ -34,7 +33,10 @@ ALLOWED_URL_PREFIX = "https://github.com/volkb79-2/vbpub/releases/download/"
 POINTER_URL = ALLOWED_URL_PREFIX + "cli-extended-latest/latest.json"
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_WHEEL = re.compile(r"cli_extended-(?P<version>[0-9][0-9A-Za-z.]*)-py3-none-any\.whl")
+_DISTRIBUTION_MODULE = {
+    "cli-extended": "cli_extended",
+    "estate-test-policy": "estate_test_policy",
+}
 
 
 class FetchError(SystemExit):
@@ -42,6 +44,16 @@ class FetchError(SystemExit):
 
     def __init__(self, message: str) -> None:
         super().__init__(f"fetch-cli-extended: {message}")
+
+
+def _wheel_pattern(distribution: str) -> re.Pattern[str]:
+    module = _DISTRIBUTION_MODULE.get(distribution)
+    if module is None:
+        raise FetchError(f"unsupported distribution {distribution!r}")
+    return re.compile(rf"{module}-(?P<version>[0-9][0-9A-Za-z.]*)-py3-none-any\.whl")
+
+
+_WHEEL = _wheel_pattern("cli-extended")
 
 
 #: Hosts a release download may be redirected to (GitHub serves release assets from
@@ -147,7 +159,7 @@ def _digest(value: object, what: str) -> str:
 
 def resolve(
     pointer_url: str, wheel_url: str | None, sha256: str | None,
-    fetch: Callable[[str], bytes],
+    fetch: Callable[[str], bytes], distribution: str = "cli-extended",
 ) -> tuple[str, str]:
     """Return ``(wheel_url, expected_sha256)`` from a pin or from the pointer."""
     if wheel_url or sha256:
@@ -166,7 +178,7 @@ def resolve(
     name = url.rsplit("/", 1)[-1]
     if pointer.get("asset") != name:
         raise FetchError(f"the release pointer asset {pointer.get('asset')!r} is not the url's file name {name!r}")
-    named = _WHEEL.fullmatch(name)
+    named = _wheel_pattern(distribution).fullmatch(name)
     if named is not None and pointer.get("version") != named["version"]:
         raise FetchError(
             f"the release pointer version {pointer.get('version')!r} is not the wheel's {named['version']!r}"
@@ -177,10 +189,10 @@ def resolve(
 def fetch_wheel(
     pointer_url: str, wheel_url: str | None, sha256: str | None, dest: Path,
     min_version: str, fetch: Callable[[str], bytes] | None = None,
-    expect_sha256: str | None = None,
+    expect_sha256: str | None = None, distribution: str = "cli-extended",
 ) -> Path:
     fetch = fetch or _urlopen_bytes
-    url, expected = resolve(pointer_url, wheel_url, sha256, fetch)
+    url, expected = resolve(pointer_url, wheel_url, sha256, fetch, distribution)
     if expect_sha256 is not None:
         # The caller already knows the published digest (the release identity
         # check). A pointer or pin naming any other bytes is refused BEFORE the
@@ -191,9 +203,11 @@ def fetch_wheel(
                 f"the resolved wheel names sha256 {expected}, not the expected {wanted}"
             )
     name = url.rsplit("/", 1)[-1]
-    match = _WHEEL.fullmatch(name)
+    match = _wheel_pattern(distribution).fullmatch(name)
     if match is None:
-        raise FetchError(f"{name!r} is not a cli_extended py3-none-any wheel file name")
+        article = "an" if distribution.startswith("estate") else "a"
+        module = _DISTRIBUTION_MODULE[distribution]
+        raise FetchError(f"{name!r} is not {article} {module} py3-none-any wheel file name")
     if not _at_least(match["version"], min_version):
         raise FetchError(f"{name} is older than the declared floor {min_version}")
     try:
@@ -209,8 +223,10 @@ def fetch_wheel(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dest", type=Path, required=True)
+    parser.add_argument("--distribution", choices=tuple(_DISTRIBUTION_MODULE),
+                        default="cli-extended")
     parser.add_argument("--min-version", required=True,
-                        help="the floor cmru declares (pyproject cli-extended>=X)")
+                        help="the declared minimum release version")
     parser.add_argument("--pointer-url", default=POINTER_URL)
     parser.add_argument("--wheel-url", default=None)
     parser.add_argument("--sha256", default=None)
@@ -220,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     wheel = fetch_wheel(
         args.pointer_url, args.wheel_url or None, args.sha256 or None,
         args.dest, args.min_version, expect_sha256=args.expect_sha256 or None,
+        distribution=args.distribution,
     )
     sys.stdout.write(f"{wheel}\n")
     return 0
