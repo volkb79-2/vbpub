@@ -464,8 +464,8 @@ mod tests {
     };
     use crate::backend::{Backend, BackendError, Identity, StatusInfo, TickData};
     use crate::codes::{Code, Detail, Pool};
+    use crate::limits::ProbeLimits;
     use crate::selection::{Sel, Selection};
-    use crate::tick::BlockBounds;
 
     fn selection(inc: u64) -> Selection {
         Selection::new(vec![Sel::Inc(inc)], vec!["m".to_string()]).expect("selection")
@@ -480,10 +480,7 @@ mod tests {
 
     fn registry() -> SelectionStreams {
         SelectionStreams::new(StreamLimits {
-            bounds: BlockBounds {
-                max_rows: 4_096,
-                max_block_bytes: 4 << 20,
-            },
+            bounds: ProbeLimits::new().block_bounds(),
         })
     }
 

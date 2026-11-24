@@ -23,7 +23,7 @@ from hostobs_client.envelope import EnvelopeError  # noqa: E402
 from hostobs_client.wire import ConnectionLost, ServerError, WireError  # noqa: E402
 
 DOCUMENTED_FATAL = frozenset(
-    ("unknown-mode", "unsupported-version", "hello-required", "bad-frame", "frame-too-large", "deadline",
+    ("unknown-mode", "binary-required", "unsupported-version", "hello-required", "bad-frame", "frame-too-large", "deadline",
      "idle", "slow-client", "shutting-down")
 )
 SELECTION = {"entities": [{"all": True}], "metrics": ["cpu.usage_usec"]}
@@ -57,6 +57,21 @@ class Handshake(RigCase):
 
     def test_negotiated_minor_zero(self) -> None:
         self.assertEqual(self.connect(minor=0).minor, 0)
+
+    def test_fake_probe_models_probe_wide_block_limits_by_level(self) -> None:
+        observe = hello_result(level="observe")["limits"]
+        operator = hello_result(level="operator")["limits"]
+        self.assertEqual(observe, operator)
+        self.assertEqual(observe["max_rows"], 1024)
+        self.assertEqual(observe["query_queue_bytes"], 1024 * 1024)
+        self.assertEqual(observe["max_block_bytes"], 1024 * 1024)
+        for level in ("observer", "control"):
+            limits = hello_result(level=level)["limits"]
+            for key in (
+                "max_subscriptions", "client_queue_bytes", "query_queue_bytes", "max_block_bytes",
+                "max_rows", "max_block_buckets", "max_page_blocks", "min_interval_ms", "tick_ms",
+            ):
+                self.assertEqual(limits[key], 0, f"{key} at {level}")
 
     def test_server_major_two_is_unsupported_version_and_closes(self) -> None:
         self.probe.prefix_reply(2, 9)

@@ -1,21 +1,16 @@
 {
   "case": "hub-query-backpressure",
-  "doc": "query_room and push_query refuse a full connection pool and then a full global pool; nothing waits or is dropped, and reading a block restores room for a new request",
+  "doc": "query_room and push_query first refuse over the connection pool while the global pool still fits, then refuse over the global pool alone; nothing is queued or dropped, and reading a block restores room",
   "limits": {
     "client_queue_bytes": 1000,
-    "uid_live_bytes": 2000,
     "global_live_bytes": 8000,
     "query_queue_bytes": 1000,
-    "uid_query_bytes": 1000,
     "global_query_bytes": 1500,
     "control_queue_bytes": 500,
     "stall_ms": 5000,
     "frame_completion_ms": 5000
   },
-  "conns": [
-    1,
-    2
-  ],
+  "conns": 2,
   "steps": [
     {
       "t_ms": 0,

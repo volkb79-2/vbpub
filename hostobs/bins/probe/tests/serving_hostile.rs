@@ -2,8 +2,8 @@
 //! style of the client's 2,000 + 2,000 runs): `classify`, the argument reader, the JSON
 //! `LineReader` and the encoders, over random and mutated inputs with a fixed seed.
 //!
-//! The closed outcome set: a request is dispatched or refused with one of the seven codes
-//! `classify` can produce, the refusal is fatal exactly for the nine fatal codes, a `detail`
+//! The closed outcome set: a request is dispatched or refused with one of the six codes
+//! `classify` can produce, the refusal is fatal exactly for the ten fatal codes, a `detail`
 //! key is bounded and made of schema characters, every encoder output parses back with the
 //! protocol crate's own checkers, and the line reader never holds more than its bound.
 
@@ -34,17 +34,16 @@ const CURRENT_ARGS: &str = "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics
 const VERBS: [&str; 5] = ["hello", "status", "current", "events", "annotate"];
 
 /// The codes `classify` may refuse with.
-const REFUSALS: [Code; 7] = [
+const REFUSALS: [Code; 6] = [
     Code::BadFrame,
     Code::HelloRequired,
     Code::UnknownVerb,
     Code::Forbidden,
     Code::BadRequest,
-    Code::BinaryRequired,
     Code::UnsupportedVersion,
 ];
 
-const FATAL: [Code; 9] = [
+const FATAL: [Code; 10] = [
     Code::UnknownMode,
     Code::UnsupportedVersion,
     Code::HelloRequired,
@@ -54,6 +53,7 @@ const FATAL: [Code; 9] = [
     Code::Idle,
     Code::SlowClient,
     Code::ShuttingDown,
+    Code::BinaryRequired,
 ];
 
 const ALPHABET: &[u8] = b"{}[]\":,\\ 0123456789-+.eEtrufalsnvbhcpgmoi\n\r\t";
@@ -374,7 +374,7 @@ fn argument_seeds() -> Vec<(usize, Vec<u8>)> {
 }
 
 #[test]
-fn the_fatal_set_is_exactly_the_nine_codes() {
+fn the_fatal_set_is_exactly_the_ten_codes() {
     let fatal: Vec<Code> = Code::ALL.into_iter().filter(|c| c.fatal()).collect();
     assert_eq!(fatal, FATAL);
     assert!(REFUSALS.iter().all(|code| Code::ALL.contains(code)));
@@ -625,9 +625,6 @@ fn expected(case: &Case) -> (Option<Code>, u32) {
     if hello && case.phase == Phase::Ready {
         return (Some(Code::BadRequest), corr);
     }
-    if !binary && matches!(case.verb, "current" | "snapshot_at") {
-        return (Some(Code::BinaryRequired), corr);
-    }
     if !matches!(case.verb, "hello" | "status" | "current") {
         return (Some(Code::UnknownVerb), corr);
     }
@@ -655,6 +652,9 @@ fn the_grid_of_valid_requests_matches_the_hand_derived_r11_table() {
     for mode in [Mode::Binary, Mode::Json] {
         for phase in [Phase::BeforeHello, Phase::Ready] {
             for level in Level::ALL {
+                if mode == Mode::Json && level.serves_blocks() {
+                    continue;
+                }
                 for verb in GRID_VERBS {
                     for corr in [0u32, 1, 5] {
                         let case = Case {
@@ -694,7 +694,7 @@ fn the_grid_of_valid_requests_matches_the_hand_derived_r11_table() {
             }
         }
     }
-    assert_eq!(runs, 336);
+    assert_eq!(runs, 252);
 }
 
 #[test]
@@ -1343,7 +1343,6 @@ fn server_hostile_2000_steps_with_block_verbs() {
     assert_eq!(server.streams().live_selections(), 0);
     assert_eq!(server.streams().subscribers(), 0);
     for uid in [1u32, 2] {
-        assert_eq!(server.hub().uid_pools(uid), Pools::default());
         assert_eq!(server.streams().uid_selections(uid), 0);
     }
     assert!(server.hub().poll(u64::MAX).is_empty());

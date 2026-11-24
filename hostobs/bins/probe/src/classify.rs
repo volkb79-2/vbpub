@@ -13,7 +13,6 @@
 //! 5. the verb is not in the table or is reserved: `unknown-verb`;
 //! 6. the level does not know the verb: `forbidden`;
 //! 7. `hello` when the connection is `Ready` (either mode): `bad-request`, key `verb` (R8);
-//! 8. JSON mode and a block verb: `binary-required`;
 //! 9. the verb is known but not served by this package: `unknown-verb`;
 //! 10. a one-block verb (`current`, `snapshot_at`) while the connection's Query pool holds
 //!     unwritten blocks: `too-many-requests` (other verbs are never refused by it);
@@ -33,7 +32,7 @@ use crate::args::{self, bounded_key, HelloArgs, SubscribeArgs};
 use crate::codes::{Code, Detail};
 use crate::limits::{IntervalRule, Level};
 use crate::selection::Selection;
-use crate::verbs::{find, Shape, Verb};
+use crate::verbs::{find, Verb};
 
 /// The only protocol major version the probe serves.
 pub const SERVER_MAJOR: u16 = 1;
@@ -231,9 +230,6 @@ fn verb_gate(query: &Query<'_>, corr: u32, name: &[u8]) -> Result<&'static Verb,
     if hello && query.phase == Phase::Ready {
         return Err(refuse_key(Code::BadRequest, corr, "verb"));
     }
-    if !binary && verb.shape == Shape::Block {
-        return Err(refuse(Code::BinaryRequired, corr));
-    }
     Ok(verb)
 }
 
@@ -298,8 +294,9 @@ fn one_block(verb: &Verb) -> bool {
     matches!(verb.name, "current" | "snapshot_at")
 }
 
-/// Step 10 after the served check. A one-block request waits for the client to read the
-/// connection's previous query block; subscriptions and JSON-shaped requests remain answerable.
+/// Step 10 after the served check. A one-block request is refused with `too-many-requests`
+/// while the connection's Query pool holds unwritten blocks; subscriptions and JSON-shaped
+/// requests remain answerable.
 fn call_after_served(
     query: &Query<'_>,
     corr: u32,
@@ -765,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn step_5_beats_step_6_and_step_8() {
+    fn step_5_beats_step_6() {
         let text = req("gc", "{}");
         assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         let text = line("export", "{}", 6);
@@ -803,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn step_6_beats_step_8_step_9_and_step_10() {
+    fn step_6_beats_step_9_and_step_10() {
         let text = line("current", "{}", 8);
         let query = Query {
             level: Level::Observer,
@@ -834,28 +831,6 @@ mod tests {
         assert_refusal(&binary(text.as_bytes()), Code::BadRequest, 5, &key("verb"));
         let text = line("hello", &hello_with(2, 1), 6);
         assert_refusal(&json(text.as_bytes()), Code::BadRequest, 6, &key("verb"));
-    }
-
-    // ---- step 8: block verbs in JSON mode
-
-    #[test]
-    fn step_8_a_block_verb_in_json_mode_is_binary_required() {
-        for verb in ["current", "subscribe", "snapshot_at", "series_batch"] {
-            let text = line(verb, "{}", 3);
-            assert_plain(&json(text.as_bytes()), Code::BinaryRequired, 3);
-        }
-    }
-
-    #[test]
-    fn step_8_beats_step_10_for_a_block_verb() {
-        let text = line("current", "{\"a\":1,\"a\":2}", 3);
-        assert_plain(&json(text.as_bytes()), Code::BinaryRequired, 3);
-        let text = req("current", "{}");
-        let refusal = refused(&binary(text.as_bytes()));
-        assert_eq!(
-            (refusal.code, refusal.corr, refusal.detail),
-            (Code::BadRequest, 5, key("selection"))
-        );
     }
 
     // ---- step 9: known but not served
@@ -1128,8 +1103,6 @@ mod tests {
         );
         let unknown = req("nope", "{}");
         assert_plain(&binary(unknown.as_bytes()), Code::UnknownVerb, 5);
-        let line = line("current", "{}", 6);
-        assert_plain(&json(line.as_bytes()), Code::BinaryRequired, 6);
         assert_eq!(current.shape, Shape::Block);
     }
 
@@ -1228,7 +1201,6 @@ mod tests {
         let unknown_text = req("nope", "{}");
         let hello_required_text = req("status", "{}");
         let wrong_hello_corr_text = req("hello", HELLO_ARGS);
-        let json_current_text = line("current", "{}", 3);
         let ready_hello_text = req("hello", HELLO_ARGS);
         let observer_status_text = req("status", "{}");
         let unsupported_hello_text = line("hello", &hello_with(2, 1), 2);
@@ -1283,7 +1255,6 @@ mod tests {
             corr: 2,
             ..before_hello(wrong_hello_corr_text.as_bytes())
         };
-        let json_current = json(json_current_text.as_bytes());
         let ready_hello = binary(ready_hello_text.as_bytes());
         let observer_status = Query {
             level: Level::Observer,
@@ -1438,15 +1409,6 @@ mod tests {
                 },
             ),
             (
-                json_current,
-                OldOutcome::Refusal {
-                    code: Code::BinaryRequired,
-                    corr: 3,
-                    detail: Detail::Empty,
-                    fatal: false,
-                },
-            ),
-            (
                 ready_hello,
                 OldOutcome::Refusal {
                     code: Code::BadRequest,
@@ -1595,7 +1557,6 @@ mod tests {
             Code::Forbidden,
             Code::UnknownVerb,
             Code::BadRequest,
-            Code::BinaryRequired,
             Code::UnsupportedVersion,
         ];
         for query in queries {
