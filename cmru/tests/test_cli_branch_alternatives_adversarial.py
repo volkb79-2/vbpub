@@ -15,14 +15,16 @@ def test_release_env_handles_missing_owner_or_repo_without_inventing_values(monk
     assert __import__("os").environ["GITHUB_USERNAME"] == "owner"
 
 
-def test_delete_release_http_error_and_remote_tag_malformed_ref_fails_closed(monkeypatch, tmp_path):
+def test_delete_release_http_error_and_remote_tag_malformed_ref_fails_closed(
+    monkeypatch, tmp_path, process_run_seam,
+):
     monkeypatch.setattr(cli, "http_request", lambda *args: (500, "bad", {}))
     with pytest.raises(RuntimeError, match="Failed to delete release 4"):
         cli.delete_release("o", "r", "t", 4, False)
     class Result:
         returncode = 0
         stdout = "a" * 40 + "\trefs/not-tags/v1\n"
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: Result())
+    process_run_seam(cli, lambda *args, **kwargs: Result())
     with pytest.raises(RuntimeError, match="invalid object ID or tag ref"):
         cli.list_remote_tags_matching(tmp_path, "v*")
 

@@ -8,7 +8,7 @@
 
 **Resolved 2026-11-21:** the generic tls-edge template keeps raw TCP/UDP media
 ports closed by default. When hosting a Mattermost Calls consumer, configure
-the edge with `calls_enabled = true` and `calls_port = 8443`; the Mattermost
+the edge with `[tls_edge.calls] enabled = true` and `public_port = 8443`; the Mattermost
 project's own default media port remains 8443. This is an intentional split
 between safe generic edge defaults and an application-specific listener.
 
@@ -133,18 +133,6 @@ deployment.
 
 ## Roadmap
 
-### TE-02 — config schema exists three times
-
-Besides the defaults file, `_FIELDS` and `_ANSWER_KEYS` in `config.py` and the
-hand-built `proposed` dict in `cli.py` map the same fields again, `value_at(...,
-default=...)` fallbacks repeat the defaults, and answer keys use a second
-vocabulary (`http_enabled` vs `ports.expose_http`). Decided: one field table
-drives prompts, answers, override writing and the proposed merge; `--answers`
-takes a sparse override in schema shape; defaults come only from the rendered
-defaults file.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` H2
-
 ### TE-03 — four deployment paths
 
 The README offers plain compose on the committed `edge-proxy/`,
@@ -191,20 +179,6 @@ INSTALL.md carries no release history; bundled versions come from the
 manifest (cmru KI-197).
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M2
-
-### TE-07 — implicit consumer contract
-
-Consumers learn the network, entrypoint, middleware and domain by reading
-tls-edge's defaults files and importing `scripts/render_standalone.py`, and only
-the domain is exported in `consumer.env`, written apart from the override.
-Decided: `consumer_contract(effective)` renders `consumer.env` and
-`tls-edge show --json` (`TLS_EDGE_DOMAIN`, `TLS_EDGE_NETWORK`,
-`TLS_EDGE_HTTPS_ENTRYPOINT`, `TLS_EDGE_HEADERS_MIDDLEWARE`, `TLS_EDGE_HTTP3`,
-`TLS_EDGE_PUBLIC_PORTS`), and consumer tests import it from `tls-edge/src`. The
-red voice-screen-share Mattermost Calls test is fixed on the consumer side by
-P-edge-01.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M4
 
 ### TE-08 — tests exercise the wrong renderer; coverage rule
 

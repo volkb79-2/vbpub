@@ -66,8 +66,10 @@ together.
 | CTL-55 | `test-pi-impl.sh` `check_live_snapshot` waits a fixed ~10 s of wall clock for the live sidecar, so the suite fails under host load | Should-fix | FIXED 2026-11-24 |
 | CTL-56 | P-plat-04 r1 leftovers: locale oracle, interim-message fake, misplaced Pi mutant reference, Unicode continuation digits | Should-fix | OPEN 2026-11-24 |
 | CTL-57 | `gate-run.sh` local admission only queues on the slot locks; it starts a gate while the cockpit is at the memory-PSI stop signal | Must-fix | FIXED 2026-11-24 |
+| CTL-58 | `push-image.sh` destroys the host's rollback image: `docker load` untags the old `<image:tag>` and no `:prev-*` tag is kept | Should-fix | OPEN 2026-11-24 |
 | CTL-59 | P-plat-02 r2 leftovers (dev tool) | Nice-to-have | OPEN 2026-11-24 (Opus r2 review) |
 | CTL-60 | P-plat-20 r1 leftovers: fourth-snapshot assertion, never-started sidecar reported as inconclusive, no-PSI host refused with 75, chain-run shows 75 as STOPPED-ON-FAIL | Should-fix | OPEN 2026-11-24 |
+| CTL-62 | remote-gate admission holds the admit ticket while waiting, is not PSI-only, and lets an identical live launch through | Must-fix | OPEN 2026-11-24 |
 
 ---
 
@@ -1742,6 +1744,16 @@ controller.
 
 Source: vbpub-main-controller, 2026-11-24 07:50Z (cockpit PSI 3-6 with 4 local gates).
 
+## CTL-58 — push-image.sh destroys the host's rollback image
+
+**Status:** OPEN (filed 2026-11-24, routed from vbpub-core / T2 via the main controller).
+
+`scripts/controller/push-image.sh <host> <image:tag>` streams the image and runs `docker load` on the host. When the tag already exists there, docker untags the old image ("The image tester-unified:local already exists, renaming the old one with ID sha256:04ad9c4010f4… to empty string"), and the host keeps no `:prev-*` tag, so a host-side rollback is impossible without re-pushing the old image from the cockpit. Seen 2026-11-24 pushing tester-unified:local = dcaf4222c68d to v1001 and r1002; on the cockpit, `tester-unified/promote-image.sh` kept `tester-unified:prev-20261124b`, the hosts have no such tag.
+
+Wanted: before `docker load`, retag the host's current `<image:tag>` as `<image>:prev-<date>`, never overwriting an existing prev tag (the same rule as `tester-unified/promote-image.sh`); print the kept image id. Test at a fake docker boundary (current tag present / absent / prev tag already present).
+
+Interim rollback path: push `tester-unified:prev-20261124b` from the cockpit.
+
 ## CTL-59 — P-plat-02 r2 leftovers (dev tool)
 
 **Status:** OPEN (filed 2026-11-24, from the Opus r2 review of `scripts/controller/dev`, bound to aaa56b27e).
@@ -1757,9 +1769,17 @@ Six small items, none of which blocks the tool:
 
 ## CTL-60 — P-plat-20 r1 leftovers
 
-**Status:** OPEN (filed 2026-11-24, from the P-plat-20 round-1 Opus review; CTL-56 here is P-plat-04's; plat-docs-20261124 holds an older, different CTL-56..59 set that needs renumbering when it merges).
+**Status:** OPEN (filed 2026-11-24, from the P-plat-20 round-1 Opus review; CTL-56 here is P-plat-04's; the older plat-docs-20261124 CTL-56 (remote-gate admission) is now CTL-62 and its duplicate CTL-55/CTL-57 were dropped).
 
 1. `check_live_snapshot` asserts on the third distinct snapshot only; a `tool_in_flight` that decays on idle ticks is caught only by the fourth, the first guaranteed idle tick. Also assert on it (about 1 s).
 2. A sidecar that never starts, dies at once or writes to the wrong `--out` is reported after 300 s as `inconclusive: no sidecar progress`. Detect that the held marker exists, the wrapper lives and no pi-live child is left, and fail with a definite message.
 3. A host without PSI (`CONFIG_PSI` off, `psi=0`) makes every local `gate-run.sh` exit 75, "retry later" for a permanent condition. ctl-doctor should report PSI readability and the docs should say what to do.
 4. `chain-run.sh` reports a `gate-run.sh` exit 75 ("not admitted, nothing ran") as `STOPPED-ON-FAIL: lane exited 75`, which reads like a lane verdict. It needs its own marker.
+
+## CTL-62 — remote-gate admission: ticket held while waiting, not PSI-only, duplicate launches
+
+**Status:** OPEN (filed 2026-11-24; package P-plat-14b; renumbered from CTL-56 when plat-docs-20261124 merged, because CTL-56 is P-plat-04's).
+
+Wanted: the admit ticket is never held while waiting; admission is memory-PSI-only (programme rule: memory `full` avg10 >= 3 waits), so `CONTROLLER_REMOTE_SLOTS` / `CONTROLLER_REMOTE_BUDGET_MB` become no-ops, `remote-gate.py` `mem_admit_ok` becomes PSI-only, and its host-side `psi_high` / `--wait-psi` check (today memory `some` > 25 or io `full` > 25) moves to memory `full` avg10 >= 3; the anti-starvation ticket design in the `remote-gate.sh` header is retired with it; a second identical live launch (host + project + lane + sha + args digest) is refused with exit 2; the run name (today second-resolution and fixed before the host-side wait) gets a pid/random suffix so it is unique, and a refused run prints REFUSED, never another run's result.
+
+Source: P-plat-14b plan; observations in runs rgw-assay-first-release-r2-20261124T054814-v1001 (vbpub-assay) and rgw-r0-r1-20261124T060903-v1001 (vbpub-hostobs).

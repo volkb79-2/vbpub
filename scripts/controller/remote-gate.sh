@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run ONE registered run-gate lane on a remote gate worker through the host table.
 #
-# usage: remote-gate.sh <host-alias> <project-dir-relative-to-repo> <lane> <commit-or-branch> [--base <ref>] [-- extra run-gate args...]
+# usage: remote-gate.sh <host-alias> <project-dir-relative-to-repo> <lane> <commit-or-branch> [--base <ref>]
+#                       [--collect-store <rel>]... [--seed-store <local dir>=<rel>]... [--store-max-mib <n>] [-- extra run-gate args...]
 #
 # In order:
 #   1. Resolve <commit-or-branch> to a full commit in the controller repo (a branch may be given as `x` or `origin/x`).
@@ -14,7 +15,11 @@
 #   5. Writes $CONTROLLER_LOGS_DIR/<run-name>.log (lane log + a binding line `run-gate.commit=<full sha>`), copies the
 #      verdict JSON files next to it, prints the final verdict line and the commit binding, exits with the lane's code.
 # Exit codes: the lane's exit code; 2 usage/refusal; 3 identity or transport failure; 75 PSI refused or slots busy;
-# 76 INCONCLUSIVE-OOM (an OOM kill in the host's gate slice during the run: not a lane FAIL).
+# 76 INCONCLUSIVE-OOM (an OOM kill in the host's gate slice during the run, measured by the slice oom_kill delta: not a lane
+#    FAIL). A run-gate verdict BUDGET_EXCEEDED (run-gate exits 4) is never 76: it keeps the lane's code. Both are decided
+#    from runner- or run-gate-written evidence only: the slice delta, and run-gate's own verdict line for this lane anchored
+#    at the line start. The lane's free output (test stderr in lane.log) never decides: it may print OOMKilled, Killed,
+#    exit 137 or BUDGET_EXCEEDED anywhere.
 # Never prints secrets. Host, SSH key, pin and identity command come only from the private host table (README, docs/CONFIGURATION.md).
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -33,13 +38,38 @@ for renamed in REMOTE_GATE_V1001_SLOTS:CONTROLLER_REMOTE_SLOTS REMOTE_GATE_V1001
   [[ -z ${!old_name:-} ]] || echo "remote-gate.sh: WARNING: $old_name is set but not read here (not mapped); use ${renamed#*:}" >&2
 done
 
-[[ $# -ge 4 ]] || die 'usage: remote-gate.sh <host-alias> <project-dir> <lane> <commit-or-branch> [--base <ref>] [-- extra run-gate args...]'
+[[ $# -ge 4 ]] || die 'usage: remote-gate.sh <host-alias> <project-dir> <lane> <commit-or-branch> [--base <ref>] [--collect-store <rel>]... [--seed-store <dir>=<rel>]... [--store-max-mib <n>] [-- extra run-gate args...]'
 host=$1 pdir=$2 lane=$3 ref=$4; shift 4
 base=''
-if [[ ${1:-} == --base ]]; then
-  [[ $# -ge 2 && -n $2 ]] || die '--base needs a ref'
-  base=$2; shift 2
-fi
+store_args=()   # --collect-store REL / --store-max-mib N, forwarded to remote-gate.py as separate argv words (RG-298)
+store_max=''
+while [[ ${1:-} == --base || ${1:-} == --collect-store || ${1:-} == --store-max-mib || ${1:-} == --seed-store ]]; do
+  opt=$1
+  [[ $# -ge 2 && -n $2 ]] || die "$opt needs a value"
+  case $opt in
+    --base) [[ -z $base ]] || die '--base given twice'; base=$2 ;;
+    --collect-store)
+      # the same refusals remote-gate.py makes (it normalises and checks symlinks), here before any slot is taken
+      [[ $2 != /* && $2 =~ ^[A-Za-z0-9._@+=,:/-]+$ ]] || die "--collect-store '$2' must be a relative path of A-Za-z0-9._@+=,:/- characters"
+      [[ /$2/ != */../* ]] || die "--collect-store '$2' must stay inside the repository (no '..')"
+      [[ /$2/ != */.git/* ]] || die "--collect-store '$2' must not have a '.git' component"
+      store_args+=(--collect-store "$2") ;;
+    --seed-store)
+      # <local dir>=<rel>: the runner runs from a throwaway worktree, so the local side is made absolute HERE (the caller's cwd)
+      [[ $2 == *=* && $2 != *=*=* ]] || die "--seed-store '$2' must be <local dir>=<relative path> (exactly one '=')"
+      seed_local=${2%%=*} seed_rel=${2#*=}
+      [[ -n $seed_local && -d $seed_local ]] || die "--seed-store '$2': the local side is not an existing directory"
+      [[ $seed_rel != /* && $seed_rel =~ ^[A-Za-z0-9._@+,:/-]+$ && /$seed_rel/ != */../* ]] || die "--seed-store '$2': the target must be a relative path inside the repository"
+      [[ /$seed_rel/ != */.git/* ]] || die "--seed-store '$2': the target must not have a '.git' component"
+      seed_local=$(cd -- "$seed_local" && pwd -P) || die "--seed-store '$2': cannot resolve the local directory"
+      store_args+=(--seed-store "$seed_local=$seed_rel") ;;
+    --store-max-mib)
+      [[ -z $store_max ]] || die '--store-max-mib given twice'
+      [[ $2 =~ ^[1-9][0-9]{0,6}$ ]] || die "--store-max-mib '$2' must be a positive whole number of MiB"
+      store_max=$2; store_args+=(--store-max-mib "$2") ;;
+  esac
+  shift 2
+done
 extra=()
 if [[ ${1:-} == -- ]]; then shift; extra=("$@"); elif [[ $# -gt 0 ]]; then die "unexpected argument '$1' (extra run-gate arguments go after --)"; fi
 # The old pass-through spelling `-- --base <ref>` (or `--base=<ref>`) reaches the same effect as the --base option: only
@@ -229,6 +259,7 @@ fi
 run_args=(--hosts-file "$hosts_file" --out-dir "$out" run "$host" . "$lane" --project-dir "$pdir")
 run_args+=(--repo "${CONTROLLER_REMOTE_REPO_NAME:-vbpub}")   # this IS the vbpub repo: the checkout directory name must not decide
 [[ -z $base ]] || run_args+=(--base "$base")
+run_args+=(${store_args[@]+"${store_args[@]}"})
 run_args+=(--name "$name" --wait-psi "${CONTROLLER_REMOTE_WAIT_PSI:-120}")
 tmp=$(mktemp "$CONTROLLER_HOME/.rgw-XXXXXX.out")
 ( close_slots; cd "$wt" && "$py" "$rg" "${run_args[@]}" ${extra[@]+-- "${extra[@]}"} ) 2>&1 | ( close_slots; exec tee "$tmp" >&2 )
@@ -255,7 +286,13 @@ if [[ ${checked:-0} -ge 1 ]]; then
 fi
 oom1=$(oom_kill)
 oomd=-1; [[ $oom0 =~ ^[0-9]+$ && $oom1 =~ ^[0-9]+$ ]] && oomd=$(( oom1 - oom0 ))
-vline=$(grep -E '^\s*run-gate:\s*lane\b.*\bverdict\s+[A-Z_]+' "$final" | tail -1)
+# run-gate's own verdict line for THIS lane: the last line of lane.log that STARTS with the exact prefix. A substring
+# anywhere (test output quoting a verdict) is never read as the verdict.
+rg_prefix="run-gate: lane '$lane' verdict "
+rg_line=$(awk -v p="$rg_prefix" 'index($0, p) == 1 { l = $0 } END { if (l != "") print l }' "$run_dir/lane.log" 2>/dev/null)
+rg_verdict=''
+if [[ -n $rg_line ]]; then rg_verdict=${rg_line#"$rg_prefix"}; rg_verdict=${rg_verdict%%[;[:space:]]*}; fi
+vline=${rg_line:-$(grep -E '^\s*run-gate:\s*lane\b.*\bverdict\s+[A-Z_]+' "$final" | tail -1)}
 echo '----'
 echo "log:      $final"
 echo "verdicts: $n JSON file(s) copied to $logs/$name.verdict-*.json"
@@ -263,7 +300,9 @@ echo "commit:   run-gate.commit=$sha  (checkout verified on host: ${checked:-0} 
 echo "verdict:  ${vline:-NO VERDICT LINE (see the log and $run_dir/result.json)}"
 echo "admission: weight=${weight}MiB slots=${#held[@]}/$slots slice_oom_kill_delta=$oomd"
 echo "remote-gate: admission weight=${weight}MiB slots=${#held[@]}/$slots slice_oom_kill_delta=$oomd" >> "$final"
-if (( rc != 0 )) && { (( oomd > 0 )) || grep -q -E 'OOMKilled|oom-kill|exit(_code)? 137|Killed' "$run_dir/lane.log" 2>/dev/null; }; then
+# A budget verdict is run-gate's own kill: its anchored verdict line wins over the exit code and the slice delta. OOM
+# evidence is the runner-measured slice delta only; no word in the lane's output counts.
+if (( rc != 0 )) && [[ $rg_verdict != BUDGET_EXCEEDED ]] && (( oomd > 0 )); then
   echo 'verdict:  INCONCLUSIVE-OOM (an OOM kill happened in the host gate slice during this run; NOT a lane FAIL, retry with fewer neighbours)'
   echo 'remote-gate: INCONCLUSIVE-OOM' >> "$final"
   exit 76

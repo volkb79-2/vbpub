@@ -146,8 +146,8 @@ def test_every_registered_handler_is_wrapped_so_no_verb_bypasses_the_mapping():
         for name, handler in delegate.handlers.items():
             assert getattr(handler, "__wrapped__", None) is not None, (group, name)
             checked += 1
-    assert checked == 12
-    assert set(app.delegates) == {"facts", "guard", "skills"}
+    assert checked == 10
+    assert set(app.delegates) == {"facts", "skills"}
     assert app.skills_package == ("fleetd", "skills")
 
 

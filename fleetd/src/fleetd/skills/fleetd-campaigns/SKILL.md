@@ -57,9 +57,6 @@ beneath `DIR`, which is how you collect from a fixture tree without querying
 systemd. A missing or incomplete facts config is a refusal (exit 2), not a
 partial record.
 
-`fleet guard validate FILE` parses the host-owned guard rules (including
-drop-ins). It parses only: fleetd does not apply guard policy.
-
 ## Plan, then dispatch
 
 ```bash

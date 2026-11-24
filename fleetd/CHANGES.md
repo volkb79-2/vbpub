@@ -93,6 +93,11 @@ All notable changes to this project are recorded here.
 
 ### Changed
 
+- `host-facts/1.guard.enabled` is now a plain read of the merged top-level
+  `enabled`: a boolean is reported as itself, while a missing or non-boolean
+  value is `null` with a reason naming what was found. Rule validation is
+  gone; runtime `state` is, as before, the owner-emitted string from the
+  configured state source, and rule validation never fed it.
 - Rewrite the rolling whole-target sweep so an edit no longer restarts it
   (FD-033). The `fleet-r2-scope-cursor/1` cursor resumed at an offset into a
   candidate-id list whose ids fold in the source-file hash, so nearly every
@@ -160,6 +165,14 @@ All notable changes to this project are recorded here.
   instead of a literal. An uninstalled source checkout refuses (exit 3) rather
   than inventing a version.
 
+### Removed
+
+- Remove `fleet merge-check`, the fleet-owned `fleet-shard-identity/1` and
+  `fleet-shard-identity-set/1` documents, `assay-merge-manifest/1` validation,
+  `fleet guard validate`, and the guard rule schema. Assay owns the manifest
+  and the `owner-manifest`/`strict-shard` policies (B544/B565); thrashguard
+  owns guard rules (TG-1).
+
 ### Added
 
 - Surface lifecycle for the registered CLI: `docs/cli-surface.json`, the
@@ -175,8 +188,8 @@ All notable changes to this project are recorded here.
   `tests/test_cli_entry.py`) and packaging/skill tests
   (`tests/test_cli_skills.py`).
 - Scaffold the standalone `fleetd` project and its R0/R1 gate.
-- Add versioned host facts, work request, Assay merge manifest, and guard TOML
-  contracts with strict validators and fixtures.
+- Add versioned host facts and work request contracts with strict validators
+  and fixtures.
 - Add a read-only, injectable-root host-facts collector with strict host-owned
   config, PSI/cgroup/KSM/control-plane facts, and privacy-filtered Geekbench
   records.
@@ -218,14 +231,10 @@ All notable changes to this project are recorded here.
   elapsed seconds and observer memory peaks plus medians over killed and
   survived candidates; a missing number stays `null`, never zero, and the
   collector now carries the cgprofile `resource-profile/1` peak per candidate.
-- Add `fleet merge-check`, which refuses shard sets whose lane, commit, tester
-  image, plan digest or shard count differ, refuses a duplicated shard index,
-  and reports a missing index as incomplete and refuses it (`--require-complete` is accepted and changes nothing).
 - Accept an optional `execution.image_digest` in plans so a shard can state the
-  tester image it judged under; a campaign without one runs but cannot be
-  merged.
+  tester image it judged under, as measurement evidence.
 - Add `docs/R2-DEFAULT.md` and consumer, README, SPEC and design-guide sections
-  for the four commands, plus a docs test that every closed value a consumer
+  for the three commands, plus a docs test that every closed value a consumer
   types (`changed-lines`, `rolling-whole-target`, the four document schemas and
   the scope exit statuses) appears, every TOML example parses with the shipped
   loader, and every cross-document anchor resolves.

@@ -20,7 +20,7 @@ All examples use `example.test`, a reserved placeholder; use your own domain.
     ciu                            stub: execs the ciu pinned by `current`
     ciu-stack/                     templates (synced from the release)
       ciu.toml.j2                  YOUR site override (written by `tls-edge configure`)
-    consumer.env                   TLS_EDGE_DOMAIN=<your domain>, written by the CLI
+    consumer.env                   six effective consumer-contract keys, written by the CLI
     .git, .gitignore               a one-commit repository so ciu can run (see 9)
     .ciu/                          ciu state (survives updates)
 ```
@@ -67,7 +67,10 @@ it (see §6). For the hostdir, `configure` writes `[tls_edge.traefik.hostdir.acm
 That source is outside `stack/`: `ciu --reset`, `docker compose down -v`, and `ciu clean` do not remove it. A
 `--scope user` install cannot create a root-owned directory, so it keeps the volume behaviour.
 
-For unattended configuration, prepare a TOML file and pass it to the CLI:
+For unattended configuration, prepare a sparse site override in the schema's own shape and pass it to the
+CLI. `--answers` changes only the keys named in the file; `configure` still writes every managed field
+explicitly. Schema keys that no field row manages are also accepted and written explicitly; the open
+`environment`, `secrets`, and `hooks` tables remain refused:
 
 ```bash
 sudo /srv/tls-edge-instance/bin/tls-edge configure --answers edge.toml --yes
@@ -76,23 +79,34 @@ sudo /srv/tls-edge-instance/bin/tls-edge validate
 
 ```toml
 # edge.toml. Unspecified values keep the currently rendered/default value.
+[tls_edge]
 domain = "example.test"
-tls_mode = "acme-tls"
-acme_email = "ops@example.test"
-http_enabled = true
-http_port = 80
-https_port = 443
-http3_enabled = true
-calls_enabled = false
-bind_ip = ""
-ingress_external = false
-acme_volume_name = ""
-cgroup_parent = ""
+ingress_external = true
+
+[tls_edge.tls]
+mode = "acme-tls"
+
+[tls_edge.acme]
+email = "ops@example.test"
+volume_name = "<existing ACME volume>"
+
+[tls_edge.ports]
+expose_http = true
+http = 80
+https = 443
+
+[tls_edge.http3]
+enabled = true
+
+[tls_edge.runtime]
+cgroup_parent = "<slice>.slice"
 ```
 
-For `acme-dns`, add `dns_provider` and optionally `dns_wildcard`. For `static` or `dev`, add
-`static_cert_base`, `static_domains = ["example.test"]`, and `static_source = "bind"` or `"volume"`. The CLI
-never asks for or stores DNS credentials; configure those through CIU secrets as described below.
+For `acme-dns`, set `[tls_edge.tls] mode = "acme-dns"` and add `[tls_edge.acme.dns] provider` and optionally
+`wildcard_main`. For `static` or `dev`, set the mode and add `[tls_edge.static] cert_base`,
+`domains = ["example.test"]`, and `source = "bind"` or `"volume"`. A 3.1 flat answers file is refused; each old
+name is reported with its schema-shaped replacement. The CLI never asks for or stores DNS credentials;
+configure those through CIU secrets as described below.
 
 `get.py` verifies the bundle SHA-256 and the manifest (every file, every wheel), installs the wheels offline
 with `--require-hashes`, runs the bootstrap adapter, and only then switches `current`. Do not pipe `get.py` into
@@ -113,9 +127,36 @@ sudo ./scripts/verify.sh --domain app.example.test
 ## 4. Configure listeners and certificates
 
 Use `/srv/tls-edge-instance/bin/tls-edge configure` for supported settings. It preserves unrelated site
-configuration and comments, and updates only `TLS_EDGE_DOMAIN` in `consumer.env`. Use `--dry-run` to review a
-change without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full
-schema and shipped defaults are in `ciu.defaults.toml.j2`.
+configuration and comments. In `consumer.env`, it rewrites the six tls-edge-owned keys and keeps every other
+line, including operator-owned values; missing keys are appended in contract order and duplicate owned lines
+are removed. An existing file keeps its mode, while a new file is `0644`. Use `--dry-run` to review a change
+without writing files. Advanced settings can still be edited in `stack/ciu-stack/ciu.toml.j2`; the full schema
+and shipped defaults are in `ciu.defaults.toml.j2`.
+
+The six keys are `TLS_EDGE_DOMAIN`, `TLS_EDGE_NETWORK`, `TLS_EDGE_HTTPS_ENTRYPOINT`,
+`TLS_EDGE_HEADERS_MIDDLEWARE`, `TLS_EDGE_HTTP3` and `TLS_EDGE_PUBLIC_PORTS`. Their values are defined once in
+[CONSUMERS.md](CONSUMERS.md#rendered-consumer-contract). Read the deployed values with
+`tls-edge show --json`; do not infer them from templates.
+
+`tls-edge validate` and the CIU preflight hook refuse an existing `consumer.env` when an owned key is missing
+or differs from the effective site configuration:
+
+```text
+consumer.env TLS_EDGE_DOMAIN differs from the site override; run tls-edge configure to re-sync
+```
+
+`tls-edge show` reports the drift without failing, and `tls-edge configure` re-syncs it. An absent file is not
+checked. To re-sync without changing any answer, use an empty answers file:
+
+```bash
+printf '' > /tmp/tls-edge-empty.toml
+sudo /srv/tls-edge-instance/bin/tls-edge configure --answers /tmp/tls-edge-empty.toml --yes
+```
+
+`configure` writes every managed field whose mode applies to the proposed configuration. This keep-list makes
+a later change to a shipped default harmless for a configured instance. Prompt defaults are the current
+effective values from the rendered defaults plus the site override; there is no second source of literal
+defaults.
 
 The site override is plain TOML and is never templated. A `{{`, `{%`, or `{#` marker in it is refused with the
 override path. `tls-edge configure` records `[tls_edge] schema = 1`; an override without the key means schema 1,
@@ -161,11 +202,12 @@ CF_DNS_API_TOKEN_FILE = "/run/secrets/dns_api_token"
 `ciu` asks for the token on `ciu up` (or reads `CF_DNS_API_TOKEN` from the environment). Add this block to the
 site override after running the CLI; secret references are intentionally kept out of wizard answers.
 
-**Port 80** is on by default (redirect and HTTP-01). `http_enabled = false` turns it off; `acme-http` then
-cannot work. **HTTP/3**: set `http3_enabled = true` to publish UDP on the public HTTPS port; keep TCP open for
-HTTP/1.1 and HTTP/2 clients and fallback. **Calls**: set `calls_enabled = true` and `calls_port = 8443` only
-when the host has a Calls consumer. Enable the corresponding UDP/TCP rules in both firewalls. Use
-`tls-edge show` to print the configured inbound port plan.
+**Port 80** is on by default (redirect and HTTP-01). Set `[tls_edge.ports] expose_http = false` to turn it off;
+`acme-http` then cannot work. **HTTP/3**: set `[tls_edge.http3] enabled = true` to publish UDP on the public
+HTTPS port; keep TCP open for HTTP/1.1 and HTTP/2 clients and fallback. **Calls**: set
+`[tls_edge.calls] enabled = true` and configure `public_port` only when the host has a Calls consumer. Enable
+the corresponding UDP/TCP rules in both firewalls. Use `tls-edge show` to print the configured inbound port
+plan.
 
 ## 5. Add a consumer
 
@@ -178,14 +220,16 @@ docker compose --env-file /srv/tls-edge-instance/stack/consumer.env config   # o
 docker compose --env-file /srv/tls-edge-instance/stack/consumer.env up -d
 ```
 
-Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), no published ports
-80/443/8443 on the consumer. Mattermost Calls media attaches with the TCP and UDP routers of `pattern-e-media-udp`
-(one media pair per edge).
+Rules: one host name per service, globally unique router/service names (`<stack>-<service>`), and published
+application ports disjoint from `TLS_EDGE_PUBLIC_PORTS`. Mattermost Calls media attaches with the TCP and UDP
+routers of `pattern-e-media-udp` (one media pair per edge).
 
 ## 6. Update
 
 ```bash
+printf '' > /tmp/tls-edge-empty.toml
 sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
+sudo /srv/tls-edge-instance/bin/tls-edge configure --answers /tmp/tls-edge-empty.toml --yes
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
@@ -194,7 +238,17 @@ you edited in the synced set (not `ciu.toml.j2`, which is not part of it) stop t
 keep host edits in `ciu.toml.j2` or pass `--overwrite-local` (the replaced files are saved under
 `shared/overwritten/<UTC time>/`). The installer does not touch `ciu.toml.j2`, `consumer.env`, `.ciu/`, volumes
 or `shared/acme`. `tls-edge configure` is the supported writer for the site override and domain variable;
-`status` shows the installed tag and any locally modified files.
+`status` shows the installed tag and any locally modified files. A user-scope instance lives under
+`$HOME/.local/share/tls-edge-instance`; its `tls-edge-installer status` also needs the matching scope:
+
+```bash
+tls-edge-installer status --scope user
+```
+
+4.0 upgrade step: a 3.2 `consumer.env` has only `TLS_EDGE_DOMAIN`. Run
+`tls-edge configure --answers <empty file> --yes` after the update and before `ciu up`; otherwise the
+preflight hook refuses the missing contract keys. Run `configure` after every update, before the next `ciu up`,
+so the override is written in the updated schema.
 
 An upgraded 3.1 instance has no `shared/acme` marker and its override normally has no `acme.store`. It therefore
 keeps the same `acme-data` volume as before; `configure` writes `store = "volume"` explicitly. If
@@ -257,23 +311,38 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    answers file with the live domain and ACME email and these settings, replacing `example.test` and the email:
 
    ```toml
+   [tls_edge]
    domain = "example.test"
-   tls_mode = "acme-tls"
-   acme_email = "ops@example.test"
-   http_enabled = true
-   http_port = 80
-   https_port = 443
-   http3_enabled = true
-   calls_enabled = true
-   calls_port = 8443
    ingress_external = true
-   acme_volume_name = "edge-proxy_acme-data"
+
+   [tls_edge.tls]
+   mode = "acme-tls"
+
+   [tls_edge.acme]
+   email = "ops@example.test"
+   volume_name = "edge-proxy_acme-data"
+
+   [tls_edge.ports]
+   expose_http = true
+   http = 80
+   https = 443
+
+   [tls_edge.http3]
+   enabled = true
+
+   [tls_edge.calls]
+   enabled = true
+   public_port = 8443
+
+   [tls_edge.runtime]
    cgroup_parent = "edge.slice"
    ```
 
    Run `/srv/tls-edge-instance/bin/tls-edge configure --answers /path/to/live.toml --yes` and
    `/srv/tls-edge-instance/bin/tls-edge validate`. Do **not** run `ciu up` yet. The proposed public set is
    80/tcp, 443/tcp, 443/udp (HTTP/3), and 8443/tcp+udp (Calls); allow these in both firewalls.
+   Do not use `ciu up --skip-check` to move past a refused configuration: CIU creates the hostdir before the
+   hook refuses, so the failed attempt can leave a root-owned `stack/ciu-stack/vol-traefik-acme`.
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
    adopted (`external: true`), never created or removed by the instance.
@@ -312,6 +381,12 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   non-git root (ciu backlog CIU-163; the installer adapter creates it). Do not delete `.git`.
 - `ciu env generate` and `ciu up --dry-run` create/attach a Docker network (CIU-162): run them on the host, not
   from a devcontainer you care about.
+- A non-root CIU run that creates `vol-traefik-acme` through the S6.5 root helper needs
+  `CGROUP_PARENT_DEV_INTERACTIVE=<slice>` exported (CIU-230; filed with ciu; see its backlog).
+- `ciu up --dry-run` can create the root-owned `stack/ciu-stack/vol-traefik-acme` (CIU-227; filed with
+  ciu; see its backlog).
+- Removing a user-scope instance also encounters that root-owned `stack/ciu-stack/vol-traefik-acme`; delete it
+  with root before removing the instance directory.
 - The release publishes one bundle per interpreter; publishing goes through a project script until cmru has a
   variants handler (cmru KI-115).
 
