@@ -5,6 +5,7 @@ All notable changes to scripts/netcup are recorded here.
 ## [Unreleased]
 
 ### Fixed
+- `run-gate.toml` `[lanes.suite]` budget 5m -> 11m (P-plat-25): measured need, not a flakiness margin. Of 22 registered runs on 2026-11-24 before this change, 17 completed in 127-289 s and 5 on v1001 ended BUDGET_EXCEEDED at 300 s at 75-88% of their tests (slowest extrapolated need about 390 s); 11m = that need x 1.6, rounded up.
 - `runner/remote-gate.py` ships the controller checkout's `origin/main` (after `git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main`; `--base main` resolves to it too), not its local `main` branch, and the
   host job creates both `refs/remotes/origin/main` and `refs/heads/main` at it (NC-66). A lane with `base = "origin/main"` failed in 4 s with
   GIT_FAILED on every host, and `base = "main"` lanes judged against a local main that was 36 commits behind. A failed fetch warns and uses the
