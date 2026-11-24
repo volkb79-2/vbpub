@@ -1743,8 +1743,10 @@ boot_agnostic_cases() { # TAG BINARY MARKER
       workflow_run "$root" 999999999 4096 snapshot --reason before-upgrade \
       >"$WORK/out" 2>"$WORK/err"; rc=$?
     created_again=$(find "$root/top" -mindepth 1 -maxdepth 1 -type d -name '@os-000003-*-*Z-manual-before-upgrade' -printf '%f\n' | head -n 1)
-    [ "$rc" = 0 ] && [ -n "$created_again" ] \
-      || bad "workflow-sequence-not-reused-after-delete: rc=$rc created='$created_again' ($(tr '\n' ' ' <"$WORK/err"))"
+    if [ "$rc" != 0 ] || [ -z "$created_again" ] \
+      || [ -e "$root/top/$created" ]; then
+      bad "workflow-sequence-not-reused-after-delete: rc=$rc created='$created_again' ($(tr '\n' ' ' <"$WORK/err"))"
+    fi
   fi
 
   # Fresh initialization and its idempotent repeat.

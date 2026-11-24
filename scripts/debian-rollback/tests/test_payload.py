@@ -66,7 +66,7 @@ class PayloadTest(unittest.TestCase):
                 check=False,
                 timeout=60,
             )
-        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn(result.returncode, (1, 3, 4), result.stderr)
         self.assertEqual(result.stdout, "")
         lines = result.stderr.splitlines()
         self.assertEqual(len(lines), 1, result.stderr)
