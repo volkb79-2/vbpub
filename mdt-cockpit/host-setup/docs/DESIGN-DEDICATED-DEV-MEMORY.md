@@ -332,12 +332,14 @@ formula reads "gates MemoryMax (dedicated-dev) or MemoryHigh", so the memory ter
 2. Copy, then delete, only the memory and oomd runtime files of dev.slice, dev-gates, dev-background and
    system.slice under `/run/systemd/system.control/`. Never `systemctl revert`; **no daemon-reload by hand**
    (install.sh renders first, then reloads).
-3. `/etc/mdt/host-setup.env`: delete the HIGH/MAX pins and `DEV_HOST_MEMORY_KEEP`; leave `DEV_HOST_MEMORY_MIN` and
-   `DEV_HOST_MEMORY_MARGIN` empty; keep `MDT_PSI_GUARD=report`; delete `DOCKER_SCOPE_BACKSTOP_MEMORY_MAX` (or set
-   8G), otherwise r1002 keeps its 12G pin.
-4. `sudo ./install.sh`: renders, reloads, converges. dev 7.5 → 6.70 GiB and tiers 5.5 → 4.20 GiB go through the
-   lowering predicate (6.2) and may defer with a NOTE while lanes run; the timer finishes. Slices and containers
-   are not restarted, so `memory.events` counters are kept.
+   **Step 0 (impl review r1 F2):** drain the lanes first; dev.slice `memory.current` <= 7124254720 and each load tier
+   <= 4439900160 before install.sh.
+3. `/etc/mdt/host-setup.env`: SET the HIGH/MAX pins and `DOCKER_SCOPE_BACKSTOP_MEMORY_MAX` (or `8G`) to empty
+   (`KEY=`); never delete those lines (install.sh refuses a missing declared key; F1). `DEV_HOST_MEMORY_KEEP=` empty;
+   leave `DEV_HOST_MEMORY_MIN` and `DEV_HOST_MEMORY_MARGIN` empty; keep `MDT_PSI_GUARD=report`.
+4. `sudo ./install.sh`: renders, reloads, converges. dev 7.5 → 6.70 GiB and tiers 5.5 → 4.20 GiB: the 64M predicate
+   (6.2) guards only the reconcile's own write; a reload can make systemd itself write the lower `memory.max`, so
+   step 0 is what makes this safe. Slices and containers are not restarted, so `memory.events` counters are kept.
 5. Rebuild the cockpit devcontainer when convenient (`--oom-score-adj` runArg; check.sh WARNs until then).
    `mdt-host-check.sh`: no FAIL.
 6. **Acceptance and measurement run** (r1 5): the 4.1 load and window on r1002 under the new limits, passing the

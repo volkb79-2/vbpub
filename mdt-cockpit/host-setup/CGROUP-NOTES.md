@@ -44,7 +44,8 @@ Max it pages into swap) and have no `MemoryMax` of their own. `dev-gates.slice` 
 at it and only an OOM follows when reclaim makes no progress (swap.max reached,
 protected or unreclaimable memory, pages in writeback). Writing `memory.max` below
 `memory.current` loops reclaim and then OOM-kills in that cgroup, which is why the
-reconcile lowers it only with 64M of headroom. Never hand-set memory properties
+reconcile lowers it only with 64M of headroom (that guards only the reconcile's own write: a
+daemon-reload can make systemd itself write the lower value, so a lowering is done with the lanes drained). Never hand-set memory properties
 (`set-property`, `systemctl revert`): see README "Memory of the dedicated-dev role".
 `mdt-host-check.sh` FAILs if systemd-oomd manages any dev tier or the root slice.
 

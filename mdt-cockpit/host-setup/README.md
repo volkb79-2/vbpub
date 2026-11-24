@@ -1192,17 +1192,23 @@ Admission's memory term keeps existing: on this role `gates_memory_ceiling()` re
 **Converge.** `mdt-dev-governance-reconcile.sh` (run by install.sh after the reload, and by the timer) makes the kernel agree with systemd's properties for dev.slice, its
 tiers, system.slice, user.slice and the floored units: it writes the cgroup file directly, reads it back, never `set-property`, never touches a docker scope, and skips
 a key psi-guard owns. A lower `memory.max` is written only when `memory.current` is at least 64M below it; otherwise `memory.reclaim` runs (chunks of 256M, at most 8 per
-run) and the lowering is deferred (`/run/mdt/reconcile/memory-deferred`; the timer retries).
+run; for dev.slice the load tiers dev-gates and dev-background are reclaimed, never dev.slice itself, because the cockpit lives there) and the lowering is deferred
+(`/run/mdt/reconcile/memory-deferred`; the timer retries). The 64M rule protects only the reconcile's own write: a `systemctl daemon-reload` (install.sh's, the IO reload, an
+apt hook) can make systemd itself write the lower `memory.max` below `memory.current`, and the kernel then reclaims and OOM-kills in that cgroup. That is why a lowering
+is only done with the lanes drained (see the migration below).
 
 **Do not hand-set memory properties.** No `systemctl set-property` (runtime files under `/run/systemd/system.control/` outrank `/etc`), no `systemctl revert` for
 memory or oomd keys on system.slice, user.slice or the dev slices: `mdt-host-check.sh` FAILs on such files on this role (WARN elsewhere) and on a foreign memory
 drop-in (`90-vbpub-memory-min.conf`, MemoryMin only, is allowed; the runner's `20-memory-policy.conf` is a WARN naming `provision-gates-limits.sh`).
 
-**Migrating an installed host** (main controller, root; r1002): (1) `mdt-host-check.sh` and `grep -rs ManagedOOM /etc/systemd/system/{system,dev*}.slice.d/`: nothing may
+**Migrating an installed host** (main controller, root; r1002): (0) drain the lanes, then check dev.slice `memory.current` <= 7124254720 and dev-gates and dev-background
+each <= 4439900160 (a reload may apply the lower `memory.max` itself); (1) `mdt-host-check.sh` and `grep -rs ManagedOOM /etc/systemd/system/{system,dev*}.slice.d/`: nothing may
 set `kill`; (2) copy aside, then delete, only the memory and oomd runtime files of dev.slice, dev-gates, dev-background and system.slice under `/run/systemd/system.control/`
-(never `systemctl revert`, no hand daemon-reload); (3) in `/etc/mdt/host-setup.env` delete the HIGH/MAX pins and `DEV_HOST_MEMORY_KEEP`, leave `DEV_HOST_MEMORY_MIN` and
-`DEV_HOST_MEMORY_MARGIN` empty, keep `MDT_PSI_GUARD=report`, delete `DOCKER_SCOPE_BACKSTOP_MEMORY_MAX` (or set 8G); (4) `sudo ./install.sh`; the lowering of dev (7.5 to 6.70 GiB)
-and the tiers (5.5 to 4.20 GiB) may defer while lanes run and the timer finishes it; (5) rebuild the cockpit devcontainer when convenient; (6) the acceptance and measurement
+(never `systemctl revert`, no hand daemon-reload); (3) in `/etc/mdt/host-setup.env` SET `DEV_MEMORY_HIGH=`, `DEV_MEMORY_MAX=`, `DEV_GATES_MEMORY_HIGH=`, `DEV_GATES_MEMORY_MAX=`,
+`DEV_BACKGROUND_MEMORY_HIGH=`, `DEV_BACKGROUND_MEMORY_MAX=` and `DOCKER_SCOPE_BACKSTOP_MEMORY_MAX=` (or `8G`) to empty and never delete those lines (install.sh refuses an env that lacks a
+declared key; an old example's `DEV_BACKGROUND_MEMORY_MAX=8G` is refused and its `DEV_GATES_MEMORY_MAX=1.5G` would silently pin the gates), empty `DEV_HOST_MEMORY_KEEP=`, leave
+`DEV_HOST_MEMORY_MIN` and `DEV_HOST_MEMORY_MARGIN` empty, keep `MDT_PSI_GUARD=report`; (4) `sudo ./install.sh`; the dev (7.5 to 6.70 GiB) and tier (5.5 to 4.20 GiB) lowering is
+safe because of step 0; the converge defers its own write if a lane is still above the target and the timer finishes it; (5) rebuild the cockpit devcontainer when convenient; (6) the acceptance and measurement
 run of the design note (section 4.1 load and window, then write the measured floors, `DEV_HOST_MEMORY_MARGIN` and `DEV_HOST_MEMORY_MEASURED`, re-run install.sh; on failure pin
 `DEV_HOST_MEMORY_KEEP=1280M` and file the result). `mdt-host-check.sh` NOTEs while `DEV_HOST_MEMORY_MEASURED` is empty.
 

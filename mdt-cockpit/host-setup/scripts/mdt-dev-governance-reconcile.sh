@@ -328,9 +328,12 @@ _mdt_converge_prop() { # <unit> <cgroup dir> <Property> <file>
   [ "$cur" = "$want" ] && return 0
   if [ "$file" = memory.max ] && [ "$want" != max ] && { [ "$cur" = max ] || [ "$want" -lt "$cur" ]; }; then
     now=$(cat "$dir/memory.current" 2>/dev/null || echo 0)
+    # reclaim the load tiers, never dev.slice itself: the cockpit (dev-interactive) lives there (design r2 caveat a)
+    local rdir rdirs="$dir"
+    [ "$unit" = dev.slice ] && rdirs="$dir/dev-gates.slice $dir/dev-background.slice"
     for _ in 1 2 3 4 5 6 7 8; do
       [ "$now" -le $(( want - 67108864 )) ] && break
-      echo 256M > "$dir/memory.reclaim" 2>/dev/null || true
+      for rdir in $rdirs; do echo 256M > "$rdir/memory.reclaim" 2>/dev/null || true; done
       now=$(cat "$dir/memory.current" 2>/dev/null || echo 0)
     done
     if [ "$now" -gt $(( want - 67108864 )) ]; then

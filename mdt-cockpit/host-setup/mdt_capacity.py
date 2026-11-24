@@ -584,6 +584,12 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int,
         if (values.get(key, "") or "").strip() not in ("", "-", "0")
     )
     high, high_source = None, "none (no MemoryHigh on this role)"
+    # the note's single ceiling: an unlimited dev tree would be the only path to a host-wide OOM (P-plat-19e review B1)
+    if (values.get("DEV_MEMORY_MAX", "") or "").strip().lower() in ("-", "0", "max", "infinity"):
+        raise CapacityError(
+            f"DEV_MEMORY_MAX={(values.get('DEV_MEMORY_MAX', '') or '').strip()!r} would leave dev.slice without a MemoryMax; "
+            "empty derives it (RAM minus the host keep K), or give a size"
+        )
     maximum, max_source = pick("DEV_MEMORY_MAX", max_ceiling)
     if maximum is not None and maximum > max_ceiling:
         raise CapacityError(
