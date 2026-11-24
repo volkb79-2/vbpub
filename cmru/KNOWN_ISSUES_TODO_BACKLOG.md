@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-202 | OPEN (filed 2026-11-24, repo-wide GitHub "Latest" follows the last cmru release) | — |
+| KI-201 | OPEN (filed 2026-11-24, test-policy-v0.1.0 push failure) | — |
 | KI-200 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-199 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-198 | OPEN (filed 2026-11-24, Opus design review) | — |
@@ -54,7 +56,7 @@
 | KI-177 | FIXED 2026-11-18 (same mechanism as KI-161; the mdt-cockpit ADVISORY comment shape is a regression test) | `7b3364a7b` (merged into main by `5f862034b`) |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-159 | FIXED 2026-11-18 (the per-minor KI-79 window is removed; standing release rule, operator decision 2026-11-18) | `0e6e28f8b` |
-| KI-141 | OPEN (R2 owed on the latest release at all times; ledger entry, no version upper bound after KI-159) | — |
+| KI-141 | OPEN (pointer since 2026-11-24: R2 owed on the latest release at all times, tracked in the T3 ledger via KI-199 and assay B562; no version upper bound after KI-159) | — |
 | KI-79 | FIXED 2026-11-18 (`gate-provisional` renamed `release-gate`; no version window; R2 owed asynchronously, recorded by marker, manifest and KI-141) | `0e6e28f8b` |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | `4d36980b8d6f3ed7533da2f900b955c06075cb1f` |
@@ -3245,6 +3247,10 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-141 - record a full R2 run on the latest provisional CMRU release (KI-79)
 
+**Pointer (2026-11-24):** the R2 debt of cmru is tracked in ONE place, the T3 ledger: KI-199 (one R2 path: native `assay-first-release-r2` with `--carry-forward` from the store of record `cmru/.assay/r2-store/cmru-first-release-r2/`, `assay/docs/DESIGN-R2-STORE-OF-RECORD.md`) and assay B562 (whole-source backfill). This entry keeps only the history below and the part-6/7 amendment. The Constraint, Fix and Close-when paragraphs below are superseded history; the ledger of what is owed is the T3 ledger, not this entry. The owed whole-source R2 runs as `assay-first-release-r2` (whole-target, no diff base), not as the retiring `r2` lane or `run-gate --base cmru-v6.1.0 r2`. KI-141 closes when a T3 ledger PASS row records `assay-first-release-r2` at the latest release tag with every candidate killed and no survivors (the original Close-when bar, on the surviving lane), that is, when the B562 backfill is complete in the store of record. Interim measure on the way to the backfill: the P2 heavy-last test order (`CMRU_TEST_ORDER=heavy-last`, `cmru/tests/conftest.py`), to be replaced by assay's generic `judge.mutation.test_order = "fast-first"` (assay B568).
+
+**P2 measurement (2026-11-24, v1001, 2 workers, shard 1/64 of `assay-first-release-r2` at `546373a81`, first 18 of 75 candidates, run `rgw-assay-first-release-r2-20261124T062801-v1001`):** kills (n=15) mean 69 s, median 50 s (P1 n=15: 182 s / 76 s); survivors (n=3) mean 678 s (P1 n=6: 608 s). The overall mean fell from 304 s (P1, fail-fast only, 21 candidates) to 170 s (18 candidates), but the two samples have different survivor shares (6/21 against 3/18); at P1's mix the P2 rates give about 243 s. The saving is all on kills, as designed; survivors still run the whole suite. Raw stream: `.controller-state/assay/p2-measure-20261124/` (controller state, not in git).
+
 **Status:** OPEN (filed 2026-11-09); severity: major (mutation evidence gap, tracking entry). `cmru-v7.2.4` shipped on 2026-11-08 through `gate-provisional` under the KI-79 window `>= 7.2.0`, `< 7.3.0` (operator decision 2026-11-04, R2 waived for releases). The mutation lane did not run for it; the retained marker `.assay/mutation-postponed-cmru.json` is deferral evidence, not a pass. By the 2026-11-12 decision, the 7.3.x line also ships provisionally and its T3 R2 campaign is owed after the latest release.
 
 **State of the owed R2.** The whole-source campaign is sharded; recorded so far: s4 (KI-133: 21 survivors, KI-134: 1 `budget_exceeded`), s12 (KI-135: 136 survivors, 1 crashed, `EXEC_FAILED`), s13 (KI-138: 3 survivors) and the earlier s1 (KI-129). Shards not named here, and one aggregate judgment over the current whole-source tree, have no recorded result in this file.
@@ -3257,7 +3263,7 @@ The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six fail
 
 **Close when.** A T3 ledger PASS row records cmru `r2` at the latest release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated R2 debt of every provisional release up to it.
 
-**Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
+**Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "assay-first-release-r2"` (AMENDED 2026-11-24, agreed T2/T3: the native whole-target lane is the one surviving R2 path; the `r2`/`mutation` command lanes retire with KI-199). Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch; `assay-first-release-r2` stays. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
 
 **Window policy.** KI-159 (FIXED 2026-11-18) removed the per-minor window allowlist: the standing release rule above replaced KI-79's bounded windows, so this entry no longer waits on any window design.
 
@@ -3766,7 +3772,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Keep-entry grammar.** SPEC S9.4 requires an exact bundle-relative POSIX file path and explicitly rejects glob syntax, absolute paths, and traversal, but it does not spell out backslashes, drive-style prefixes, control characters, empty values, or trailing separators. The public config path rejects those forms and accepts spaces (the list reader rejects empty strings before the validator sees them); the regression table pins those current results and exact error text. Clarify the remaining grammar explicitly in S9.4 when the next SPEC edit is made.
 
-**Assay lane cost.** Before 2026-11-18 the `assay-first-release-r2` Run-Gate lane did not set `candidate_fail_fast`; each candidate ran the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other, so the measured 4,890-candidate target projected to about 202 hours across two hosts. The lane now sets `candidate_fail_fast = true` (comment in `assay.toml` corrected). Measured 2026-11-18 on the v1001 host (one shard of the lane, two workers, 21 candidates, all `full` execution mode): mean 304 s per candidate (15 kills: mean 182 s, median 76 s; 6 survivors: mean 608 s, which is 57% of the total time), peak container memory 1.24 GiB of 4 GiB, peak CPU 201%. A whole-source run of about 5,000 candidates at this rate still needs about 9 days of two-worker wall time; the remaining reductions are test ordering (heavy end-to-end files last), reusing earlier results for unchanged code (assay B561) and the delta lane.
+**Assay lane cost.** Before 2026-11-18 the `assay-first-release-r2` Run-Gate lane did not set `candidate_fail_fast`; each candidate ran the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other, so the measured 4,890-candidate target projected to about 202 hours across two hosts. The lane now sets `candidate_fail_fast = true` (comment in `assay.toml` corrected). Measured 2026-11-18 on the v1001 host (one shard of the lane, two workers, 21 candidates, all `full` execution mode): mean 304 s per candidate (15 kills: mean 182 s, median 76 s; 6 survivors: mean 608 s, which is 57% of the total time), peak container memory 1.24 GiB of 4 GiB, peak CPU 201%. The eight known heavy files now run last in both the baseline and candidate runs; the post-ordering measurement (2026-11-24, kills mean 69 s, median 50 s) is recorded in KI-141. A whole-source run of about 5,000 candidates at this rate still needs about 9 days of two-worker wall time; the remaining reductions are reusing earlier results for unchanged code (assay B561) and the delta lane.
 
 **Close when.** S9.4 explicitly defines the tested keep-entry grammar, and the lane's fail-fast policy is either enabled with its comment and acceptance evidence updated or recorded as an intentional cost with a reason. The selected-subset verdict follow-up is tracked in KI-134; the missing-tag sync failure is tracked by netcup NC-56.
 
@@ -3843,6 +3849,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Status:** OPEN (filed 2026-11-18); severity: low.
 
 **Amended 2026-11-24 (Opus design review):** Solved by KI-190 (declared preflight), not by widening the cmru-only rows.
+
+**Amended 2026-11-24 (P-core-13 design):** `docs/DESIGN-DECLARED-PREFLIGHT.md` D3 and D13. The preflight runs for every project in scope. The wheel-builder, probe and DinD rows become built-in rows keyed on cmru's own verbs, each evaluated against that project's own config: wheel-builder on `cmru handler wheel-build`; probe on `cmru handler wheel-build` or `cmru tester-gate`, because wheel-build starts the probe with `--pull=never`; DinD on `--enable-docker`.
 
 **Observed.** `_release_gate_preconditions_before_dispatch` and its rows (Run-Gate image identity, Bootstrap, `Wheel-builder image`, `Cgroup probe image`) run only when `cmru` is in the release scope. A release of any other project (`cmru release ciu`) skips them, although its gate and wheel build use the same `--pull=never` probe image and the wheel builder. The DinD row (KI-182) is the only image row that already runs per project.
 
@@ -4075,6 +4083,8 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H3
 
 **Status:** OPEN (filed 2026-11-24); severity: medium.
 
+**Amended 2026-11-24 (P-core-13 design):** Decisions in `docs/DESIGN-DECLARED-PREFLIGHT.md`: `[steps.preflight]` is a reserved one-command step, run before dispatch in a `git archive` export of the release revision; stdout is one JSON document (`format` 1, statuses `PASS`/`FAIL`/`SKIPPED`), and malformed output fails closed with exit 4; the bootstrap literal check moves to a `libraries/test-policy` estate lane; the closeout lanes come from `run-gate --list --json`, and a missing lane refuses; implementation follows P-core-06 and P-core-12 M0.
+
 `release_preconditions.py` runs `exec()` on `cmru/tools/run_release_gate.py` read from a git blob, calls its private `_current_run_gate_identity`, hard-codes project `cmru`, `tester-unified` and `run-gate.root.toml`, and derives remedies by regex over error prose. A shell snippet must match a block in `docs/BOOTSTRAP-FROM-ZERO.md` (a documentation drift check that blocks releases). `gate_snapshot.py` has `_ASSAY_CLOSEOUT_LANES = ("cmru", "cmru-first-release")`. KI-183 is a direct symptom.
 **Wanted.** An optional declared `[steps.preflight]` in the project grammar, run by the generic runner for every project in scope before dispatch, printing JSON rows `{check, status, detail, remedy}` (cmru's own `cmru.toml` declares `python tools/run_release_gate.py --preflight --json`). Remove the exec/regex identity check. The bootstrap-literal check moves to the owning project's own lane, or to a lane of `libraries/test-policy` (`estate_test_policy`) if it is genuinely estate-wide (see KI-194). `gate_snapshot` takes its lanes from config. The release path needs one real dry-run to prove it.
 
@@ -4084,6 +4094,8 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H4
 ## KI-191 - tester-gate is a second gate runner
 
 **Status:** OPEN (filed 2026-11-24); severity: medium.
+
+**Amended 2026-11-24 (P-core-13 design):** `cmru handler wheel-build` also starts the cgroup probe (`handlers.py:651` → `tester_gate.check_slice_unit` → `_run_probe`, `--pull=never`). Removing tester-gate must keep `check_slice_unit` and the probe preflight row for wheel-build; only the DinD row goes with it (`docs/DESIGN-DECLARED-PREFLIGHT.md` D13).
 
 `cmru tester-gate` (`tester_gate.py`, 1,120 lines: DinD sidecar, cgroup probe, device throttles) duplicates Run-Gate's job of container placement, caps and DinD. Only `ciu/cmru.toml` (two lanes, one with `--enable-docker`) and `topos/cmru.toml` (one command lane) still use it.
 **Wanted.** Migrate ciu (CIU-225; the DinD lane is the real work) and topos to run-gate lanes. Deprecate `tester-gate` in the next minor and remove it in the next major, together with the DinD preflight (KI-182). Until then it is frozen: no P6c slice and no P7.2 changes beyond keeping it importable.
@@ -4180,3 +4192,37 @@ On-touch structure work, no big-bang rewrite:
 - closed KIs move to a `KNOWN_ISSUES_CLOSED.md` archive; design notes carry decisions and contracts only.
 
 Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M7, M8, M9
+
+## KI-201 - wheel-publish glob is derived from the tag prefix and the dry run never checks it
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+`cmru handler wheel-publish` without `--glob` matches `<prefix with - as _>-*.whl` (`handlers._wheel_glob`), taken from the tag prefix rather than from the distribution the build produced. For test-policy (prefix `test-policy`, distribution `estate-test-policy`), the first release `test-policy-v0.1.0` built `estate_test_policy-0.1.0-py3-none-any.whl`. It then failed at the push step with `No artifact in .../libraries/test-policy/dist (glob: test_policy-*.whl)`, after the tag was already on origin. The preceding `--dry-run` passed, because it never resolves the publish glob against the build's output. Recovery was post-publication: delete the tag by exact object, abandon, and re-release.
+
+**Wanted.**
+- `wheel-publish` defaults its glob to the built distribution's escaped name, from the build-output record or `[project] scm_dist`. The prefix is never used.
+- `cmru release --dry-run` (or the config validation) refuses when a `wheel-publish` glob cannot match the wheel name the build will produce.
+- Tests: a project whose prefix differs from its distribution publishes with no `--glob`, and a mismatched explicit `--glob` fails before the tag is pushed.
+
+The immediate fix is the explicit `--glob` in `libraries/test-policy/cmru.toml`, with `libraries/test-policy/tests/test_release_contract.py` as its guard. Every other wheel project's prefix matches its distribution name (checked 2026-11-24).
+
+Review notes for the implementation (2026-11-24):
+- The `--glob` help text at `handlers.py:1247` says `default: <prefix>-*.whl`, but the real default turns `-` into `_`.
+- The `_wheel_glob` docstring calls this "PEP 503 dist-name normalisation", which is wrong; it is the wheel-spec escaping.
+- `scm_dist` is optional (`truenas/tnt/cmru.toml` has none), so a derived default needs a fallback.
+- `libraries/test-policy/tests/test_release_contract.py` pairs argv items by position; walk the argv instead.
+
+## KI-202 - every cmru release becomes the repository-wide GitHub "Latest"
+
+**Status:** OPEN (filed 2026-11-24); severity: medium.
+
+`release.GitHubAPI.create_release` (`release.py:219`) posts `{tag_name, name, body[, target_commitish]}` with no `make_latest` field. GitHub defaults `make_latest` to `true` for a non-draft, non-prerelease release, so every cmru release, including the thin `<prefix>-latest` pointer releases, takes over the repo-global Latest badge and the `releases/latest` endpoint. On 2026-11-24 `gh api repos/volkb79-2/vbpub/releases/latest` returned `test-policy-latest`. In a monorepo with per-tool tag prefixes, "Latest" is meaningless and misleads anything that follows it: docs links, install one-liners, and third-party tooling that defaults to `releases/latest`. cmru's own resolution is not affected: `resolve_latest` scans `<prefix>-v*` across pages.
+
+A second, related limit is in the generated installer `templates/get.py.tmpl` (rendered into `ciu/get.py`, `pwmcp/get.py` and `tls-edge/get.py`). `resolve_latest_tag` reads ONE page (`?per_page=100`) and filters by prefix. Once more than 100 newer releases of other tools exist, a tool's newest release falls off that page: the installer then picks an older version, or fails with "No ... releases found".
+
+**Wanted.**
+- `create_release` sends `"make_latest": "false"` for every release, or an explicit config names the single project that may hold "Latest" and only its versioned release sets it. The pointer releases never set it. Existing releases need one manual PATCH to clear the badge, given as a documented command.
+- The installer template pages through releases (like `resolve_latest`), or reads the project's own `<prefix>-latest/latest.json` pointer, which cmru already publishes.
+- Tests at the fake HTTP boundary: the create payload carries `make_latest: "false"`; an installer listing whose matching tag sits only on page 2 still resolves it.
+
+Source: vbpub-edge, via the main controller (get.py investigation), 2026-11-24.

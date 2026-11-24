@@ -15,6 +15,9 @@
 
 use core::fmt;
 
+/// The committed vocabulary fixture shared by the Rust types and the Python decoder.
+pub const VOCABULARY_FIXTURE: &str = include_str!("../../../fixtures/wire/quality.json");
+
 /// Quality code of a value (plan v4 §C.2, append-only).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u8)]
@@ -53,13 +56,16 @@ pub const ALL: [Quality; 8] = [
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QualityError {
     /// The code is outside the closed vocabulary of plan v4 §C.2.
-    UnknownCode(u8),
+    UnknownCode {
+        /// The offending stored byte.
+        code: u8,
+    },
 }
 
 impl fmt::Display for QualityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            QualityError::UnknownCode(code) => write!(f, "unknown quality code {code}"),
+            QualityError::UnknownCode { code } => write!(f, "unknown quality code {code}"),
         }
     }
 }
@@ -89,8 +95,11 @@ impl Quality {
     }
 
     /// Decode a stored code; every code outside the table is an error.
+    ///
+    /// `_row` is retained for the probe's frozen call shape. The model error names only the
+    /// offending code; the wire adapter that owns row context adds the row itself.
     #[allow(clippy::missing_const_for_fn)]
-    pub fn from_code(code: u8) -> Result<Quality, QualityError> {
+    pub fn from_code(code: u8, _row: usize) -> Result<Quality, QualityError> {
         match code {
             0 => Ok(Quality::Ok),
             1 => Ok(Quality::Absent),
@@ -100,7 +109,7 @@ impl Quality {
             5 => Ok(Quality::NotSampled),
             6 => Ok(Quality::Unsupported),
             7 => Ok(Quality::UnknownTopology),
-            other => Err(QualityError::UnknownCode(other)),
+            other => Err(QualityError::UnknownCode { code: other }),
         }
     }
 
@@ -125,7 +134,7 @@ impl fmt::Display for Quality {
 
 #[cfg(test)]
 mod tests {
-    use super::{Quality, QualityError, ALL};
+    use super::{Quality, QualityError, ALL, VOCABULARY_FIXTURE};
 
     #[test]
     fn every_code_round_trips_through_its_byte() {
@@ -135,7 +144,7 @@ mod tests {
                 position,
                 "code order is the stored table order"
             );
-            assert_eq!(Quality::from_code(quality.code()), Ok(quality));
+            assert_eq!(Quality::from_code(quality.code(), 0), Ok(quality));
             assert_eq!(Quality::from_name(quality.name()), Some(quality));
         }
     }
@@ -144,8 +153,8 @@ mod tests {
     fn codes_outside_the_table_are_refused_in_both_directions() {
         for code in 8u8..=u8::MAX {
             assert_eq!(
-                Quality::from_code(code),
-                Err(QualityError::UnknownCode(code))
+                Quality::from_code(code, 0),
+                Err(QualityError::UnknownCode { code })
             );
         }
         assert_eq!(Quality::from_name(""), None);
@@ -172,8 +181,28 @@ mod tests {
     #[test]
     fn error_text_names_the_offending_code() {
         assert_eq!(
-            QualityError::UnknownCode(42).to_string(),
+            QualityError::UnknownCode { code: 42 }.to_string(),
             "unknown quality code 42"
         );
+    }
+
+    #[test]
+    fn the_table_is_the_shared_fixture_the_python_decoder_also_checks() {
+        assert!(VOCABULARY_FIXTURE.contains("\"case\": \"quality-vocabulary\""));
+        let missing: Vec<String> = ALL
+            .iter()
+            .flat_map(|quality| {
+                [
+                    format!("\"code\": {},", quality.code()),
+                    format!("\"name\": \"{}\"", quality.name()),
+                ]
+            })
+            .filter(|needle| !VOCABULARY_FIXTURE.contains(needle.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the shared fixture is missing {missing:?}"
+        );
+        assert_eq!(ALL.len(), 8, "the vocabulary is closed at eight codes");
     }
 }

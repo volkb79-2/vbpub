@@ -23,8 +23,8 @@
 #   `encode.rs`, `lib.rs`, `limits.rs`, `lines.rs`, `main.rs` and `verbs.rs`, 55 since P5b-1b
 #   added and declared `bins/probe/src/backend.rs` and `conn.rs`, 56 since P5b-1b part 2
 #   added and declared `bins/probe/src/server.rs`, 58 since P5b-2b added and declared
-#   `bins/probe/src/registry.rs` and `tick.rs`; the
-#   measurements below are of the 33)
+#   `bins/probe/src/registry.rs` and `tick.rs`, 56 now after P4 deleted `kernel/src/quality.rs`,
+#   `kernel/src/value.rs` and `store/src/quality.rs`; the measurements below are the historical 33)
 #   coverage:   15100 / 15723 executable lines = 96.0377 %
 #               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
 #               kernel 93.52 % (2627/2809), store 94.71 % (7015/7407)
@@ -161,8 +161,6 @@ targets = [
   "crates/kernel/src/lib.rs",
   "crates/kernel/src/parse.rs",
   "crates/kernel/src/procfs.rs",
-  "crates/kernel/src/quality.rs",
-  "crates/kernel/src/value.rs",
   "crates/model/src/identity.rs",
   "crates/model/src/metric.rs",
   "crates/model/src/quality.rs",
@@ -184,7 +182,6 @@ targets = [
   "crates/store/src/events.rs",
   "crates/store/src/format.rs",
   "crates/store/src/fsio.rs",
-  "crates/store/src/quality.rs",
   "crates/store/src/queue.rs",
   "crates/store/src/segment.rs",
   "crates/store/src/store.rs",

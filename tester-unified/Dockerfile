@@ -159,6 +159,15 @@ RUN apt-get update \
  && test "$(dpkg -S /usr/bin/xorriso | cut -d: -f1)" = xorriso \
  && /usr/bin/xorriso -version \
  && rm -rf /var/lib/apt/lists/*
+#  * systemd-boot-tools (T6): debian-rollback's rollback lane invokes bootctl.
+#    Keep the real client next to the other Debian userland tools, before any
+#    project/dependency COPY layer.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends systemd-boot-tools \
+ && test -x /usr/bin/bootctl \
+ && test "$(dpkg -S /usr/bin/bootctl | cut -d: -f1)" = systemd-boot-tools \
+ && /usr/bin/bootctl --version \
+ && rm -rf /var/lib/apt/lists/*
 #  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
 #    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
 #    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
@@ -225,7 +234,7 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 # COPYed source, in a throwaway venv holding only its pinned build backends
 # (`--no-index --no-deps --no-build-isolation`), and installed from that local
 # wheel, whose local version segment (+tester.unified) no PyPI release can have.
-# PINNED BY DEFAULT (D-3): the two WHEEL args below name the released 0.3.0 asset
+# PINNED BY DEFAULT (D-3): the two WHEEL args below name the released 0.8.0 asset
 # and its sha256 IN THIS REPOSITORY, so the digest is an independent pin and not
 # something `latest.json` can vouch for over the same TLS channel. Because the pin
 # is build-arg text, a changed pin is a changed RUN layer: no stale cache. TO BUMP:
@@ -256,8 +265,8 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 #           the default and fails by itself when the pinned release is missing.
 ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
-ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.5.0/cli_extended-0.5.0-py3-none-any.whl
-ARG CLI_EXTENDED_WHEEL_SHA256=755c6f4919b587bbada9f9988a7bd677428513e93a040b4d3561fd76316ac951
+ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.8.0/cli_extended-0.8.0-py3-none-any.whl
+ARG CLI_EXTENDED_WHEEL_SHA256=8df21b7e85cf2eddc4a5787688b78eead86ec405d117e30b4bed0c612734f1c1
 # CLI_EXTENDED_WHEEL_SHA256 is, in EVERY mode, the digest the installed wheel must
 # have: the repository pin (pinned), the supplied digest (local) or the published
 # digest the caller names (latest, which refuses to resolve without it). The label

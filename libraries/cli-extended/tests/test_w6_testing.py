@@ -236,6 +236,11 @@ def test_home_is_required_and_must_not_be_empty(tmp_path):
         invoke_module("json.tool", [], home="")
 
 
+@pytest.mark.estate_allow(
+    "short-timeout",
+    reason="The timeout values are recorded fake-call data and no process waits on them.",
+    backlog="CLI-EXT-47",
+)
 def test_invocation_shape_python_override_and_failsafe_timeout(tmp_path, monkeypatch):
     calls = []
 

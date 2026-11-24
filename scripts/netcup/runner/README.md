@@ -212,6 +212,16 @@ brings `mdt-cockpit-runner` back automatically, so the host-sat queue can launch
 `docker start`. If the cockpit was deliberately stopped before the reboot, it stays stopped; `unless-stopped` does not
 override an explicit `docker stop`.
 
+### Cockpit PID 1 and the image keepalive CMD
+
+The cockpit runs under `--init`, so PID 1 is tini and the process it keeps alive is the image's own CMD: since MDT-107 the
+cockpit image's CMD is a keepalive loop that survives a killed `sleep`. `start-cockpit-runner.sh` reads
+`docker image inspect -f '{{json .Config.Cmd}}' "$COCKPIT_IMAGE"` before it removes the old cockpit; when the CMD holds that
+loop it starts the container with no trailing command. An image without it (older than MDT-107) still gets
+`sleep infinity` and one `WARN image <ref> has no keepalive CMD (MDT-107); using sleep infinity` line on stderr: there a
+killed `sleep` makes tini exit and every lane inside the cockpit dies with the restart, so move the runner to a current
+image. A failed inspect (image missing locally) stops the launcher with exit 2 and leaves the running cockpit untouched.
+
 Inspect the live policy with:
 
 ```bash

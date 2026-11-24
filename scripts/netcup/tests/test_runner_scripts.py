@@ -87,10 +87,24 @@ def test_provisioning_installs_the_runner_scripts_into_the_documented_directory(
     assert "~/runner-scripts/setup-cockpit-run-gate.sh" in (RUNNER.parent / "CONSUMERS.md").read_text()
 
 
-def _docker_run_argv(launcher: Path, tmp_path: Path) -> list[str]:
+# What `docker image inspect -f '{{json .Config.Cmd}}'` prints for the MDT-107 image (mdt-cockpit/Dockerfile; Go's json escapes
+# `&` as \u0026, which is why the launcher matches the loop text and not the whole JSON) and for a pre-MDT-107 one.
+KEEPALIVE_CMD_JSON = '["/bin/sh","-c","trap \'exit 0\' TERM; while :; do sleep 3600 \\u0026 wait $!; done"]'
+OLD_IMAGE_CMD_JSON = '["/bin/bash"]'
+
+
+def _docker_run_argv(launcher: Path, tmp_path: Path, inspect_stdout: str = KEEPALIVE_CMD_JSON) -> list[str]:
+    run, calls = _launch(launcher, tmp_path, inspect_stdout=inspect_stdout)
+    assert run.returncode == 0, run.stderr
+    return [call for call in calls if call[0] == "run"][0]
+
+
+def _launch(launcher: Path, tmp_path: Path, *, inspect_stdout: str = KEEPALIVE_CMD_JSON, inspect_rc: int = 0):
+    """Run the launcher's real inspect-and-run text (extracted, not restated) against a fake `docker` that records every
+    call and answers `image inspect` from the fixture. Returns the finished process and the recorded argv lists."""
     text = launcher.read_text()
     start = text.index("docker run ")
-    end_marker = ' "$COCKPIT_IMAGE" sleep infinity\n'
+    end_marker = ' "$COCKPIT_IMAGE" ${cockpit_cmd[@]+"${cockpit_cmd[@]}"}\n'
     end = text.index(end_marker, start) + len(end_marker)
     command = text[start:end]
 
@@ -103,12 +117,17 @@ def _docker_run_argv(launcher: Path, tmp_path: Path) -> list[str]:
         "import json, os, sys\n"
         "with open(os.environ['DOCKER_ARGV_LOG'], 'a', encoding='utf-8') as fh:\n"
         "    fh.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:3] == ['image', 'inspect']:\n"
+        "    sys.stdout.write(os.environ['INSPECT_STDOUT'])\n"
+        "    sys.exit(int(os.environ['INSPECT_RC']))\n"
     )
     fake_docker.chmod(fake_docker.stat().st_mode | stat.S_IXUSR)
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
         "DOCKER_ARGV_LOG": str(argv_log),
+        "INSPECT_STDOUT": inspect_stdout,
+        "INSPECT_RC": str(inspect_rc),
         "COCKPIT_NAME": "mdt-cockpit-runner",
         "COCKPIT_HOME_DIR": "/home/runner/cockpit-home",
         "COCKPIT_TMP_DIR": "/home/runner/cockpit-tmp",
@@ -140,8 +159,8 @@ def _docker_run_argv(launcher: Path, tmp_path: Path) -> list[str]:
     prelude = ("set -Eeuo pipefail\n"
                "cfg=$COCKPIT_CONFIG_DIR\nhome=$COCKPIT_HOME_DIR\ntmpd=$COCKPIT_TMP_DIR\n") + validation
     run = subprocess.run(["bash", "-c", prelude + command], env=env, capture_output=True, text=True)
-    assert run.returncode == 0, run.stderr
-    return json.loads(argv_log.read_text().strip())
+    calls = [json.loads(line) for line in argv_log.read_text().splitlines()] if argv_log.exists() else []
+    return run, calls
 
 
 @pytest.mark.parametrize("launcher", START_LAUNCHERS, ids=lambda path: path.name)
@@ -181,7 +200,7 @@ def test_cockpit_launcher_oom_score_can_be_overridden_but_not_to_an_unsafe_value
 def test_cockpit_launcher_validates_its_oom_score_override(tmp_path, value, rc):
     """The check runs on the real script text (extracted, not restated): an override outside -1000..1000 must be refused."""
     text = (RUNNER / "start-cockpit-runner.sh").read_text()
-    block = text[text.index("oom_adj=${COCKPIT_OOM_SCORE_ADJ:--500}"):text.index("docker rm -f")]
+    block = text[text.index("oom_adj=${COCKPIT_OOM_SCORE_ADJ:--500}"):text.index("# PID 1 is tini")]
     log = tmp_path / "score"
     script = f'set -Eeuo pipefail\n{block}\nprintf "%s\\n" "$oom_adj" > {str(log)}\n'
     run = subprocess.run(["bash", "-c", script], env={**os.environ, "COCKPIT_OOM_SCORE_ADJ": value}, capture_output=True, text=True)
@@ -190,6 +209,42 @@ def test_cockpit_launcher_validates_its_oom_score_override(tmp_path, value, rc):
         assert log.read_text().strip() == value
     else:
         assert "between -1000 and 1000" in run.stderr
+
+
+def test_cockpit_launcher_uses_the_image_keepalive_cmd_without_a_trailing_command(tmp_path):
+    """MDT-107: under `--init` a trailing `sleep infinity` overrides the image's keepalive CMD, so a killed sleep makes tini exit and
+    every lane inside the cockpit dies with the restart. An image that carries the loop is started with no command at all."""
+    launcher = RUNNER / "start-cockpit-runner.sh"
+    run, calls = _launch(launcher, tmp_path)
+    assert run.returncode == 0, run.stderr
+    assert "WARN" not in run.stderr
+    argv = [call for call in calls if call[0] == "run"][0]
+    assert argv[-1] == "mdt-cockpit:test"  # the image is the last word: no command follows it
+    assert "sleep" not in argv and "infinity" not in argv
+    assert [call for call in calls if call[:2] == ["image", "inspect"]] == [
+        ["image", "inspect", "-f", "{{json .Config.Cmd}}", "mdt-cockpit:test"]]
+
+
+@pytest.mark.parametrize("cmd_json", [OLD_IMAGE_CMD_JSON, "null", '["sleep","infinity"]', ""], ids=["bash", "null", "sleep", "empty"])
+def test_cockpit_launcher_keeps_sleep_infinity_and_warns_for_an_image_without_the_keepalive_cmd(tmp_path, cmd_json):
+    run, calls = _launch(RUNNER / "start-cockpit-runner.sh", tmp_path, inspect_stdout=cmd_json)
+    assert run.returncode == 0, run.stderr
+    assert run.stderr.splitlines() == [
+        "start-cockpit-runner: WARN image mdt-cockpit:test has no keepalive CMD (MDT-107); using sleep infinity"]
+    argv = [call for call in calls if call[0] == "run"][0]
+    assert argv[-3:] == ["mdt-cockpit:test", "sleep", "infinity"]
+
+
+def test_cockpit_launcher_refuses_when_the_image_cannot_be_inspected_and_never_runs_docker_run(tmp_path):
+    run, calls = _launch(RUNNER / "start-cockpit-runner.sh", tmp_path, inspect_stdout=KEEPALIVE_CMD_JSON, inspect_rc=1)
+    assert run.returncode == 2
+    assert "cannot inspect image mdt-cockpit:test" in run.stderr
+    assert [call[0] for call in calls] == ["image"]  # no `run` (and the real script's `rm -f` sits after the inspect too)
+
+
+def test_cockpit_launcher_inspects_the_image_before_removing_the_running_cockpit():
+    text = (RUNNER / "start-cockpit-runner.sh").read_text()
+    assert text.index("docker image inspect") < text.index('docker rm -f "$COCKPIT_NAME"') < text.index("docker run ")
 
 
 def test_cockpit_launcher_binds_vbpub_checkout_at_assay_workspace_path(tmp_path):
