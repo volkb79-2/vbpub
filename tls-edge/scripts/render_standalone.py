@@ -62,17 +62,6 @@ def render_toml(path: Path, context: dict) -> dict:
         sys.exit(f"error: {path}: invalid TOML after render: {exc}")
 
 
-def deep_merge(base: dict, override: dict) -> dict:
-    """Dicts merge recursively; scalars and lists replace (ciu S3.3)."""
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
 def physical_path(logical: Path) -> Path:
     """Map a path inside this container to the host path the daemon sees.
 
@@ -124,16 +113,19 @@ def load_config(stack_dir: Path, defaults_only: bool) -> dict:
     return config["tls_edge"]
 
 
-def validate(cfg: dict) -> None:
+def _validate(cfg: dict, *, require_domain: bool) -> None:
     try:
-        # Standalone history validates the shipped defaults before a domain is
-        # configured, but it still enforces certificate lineages and all ports.
-        edge_config.validate_config(cfg, require_domain=False)
+        edge_config.validate_config(cfg, require_domain=require_domain)
     except edge_config.ConfigError as exc:
         sys.exit(f"error: {exc}")
     if cfg.get("secrets"):
         sys.exit("error: [tls_edge.secrets] directives require ciu; in standalone "
                  "mode put credentials in the gitignored edge-proxy/.env instead")
+
+
+def validate(cfg: dict) -> None:
+    """Validate as the Jitsi consumer calls it, before a site domain exists."""
+    _validate(cfg, require_domain=False)
 
 
 def render_outputs(stack_dir: Path, out_dir: Path, cfg: dict,
@@ -193,7 +185,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.stack_dir, args.defaults_only)
-    validate(cfg)
+    _validate(cfg, require_domain=args.check)
     cfg["standalone"] = True
     if args.stamp:
         cfg["render_stamp"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")

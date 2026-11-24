@@ -6,23 +6,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
-try:
-    from tls_edge_cli.config import (
-        ConfigError,
-        check_override,
-        load_site,
-        migrate,
-        validate_config as validate_edge_config,
-    )
-except ImportError:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-    from tls_edge_cli.config import (
-        ConfigError,
-        check_override,
-        load_site,
-        migrate,
-        validate_config as validate_edge_config,
-    )
+_CHECKOUT_SRC = Path(__file__).resolve().parents[2] / "src"
+if (_CHECKOUT_SRC / "tls_edge_cli").is_dir():
+    sys.path.insert(0, str(_CHECKOUT_SRC))
+
+from tls_edge_cli.config import (
+    ConfigError,
+    check_override,
+    load_site,
+    migrate,
+    validate_config as validate_edge_config,
+)
 
 
 STACK_DIR = Path(__file__).resolve().parents[1]

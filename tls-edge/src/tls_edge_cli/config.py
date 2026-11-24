@@ -29,6 +29,7 @@ _OPEN_OVERRIDE_TABLES = frozenset({
     ("tls_edge", "secrets"),
     ("tls_edge", "hooks"),
 })
+_REQUIRED_PRE_SECRETS_HOOK = "hooks/validate_edge.py"
 _ANSWER_KEYS = {
     "domain", "tls_mode", "acme_email", "dns_provider", "dns_wildcard",
     "http_enabled", "http_port", "https_port", "http3_enabled", "calls_enabled",
@@ -154,6 +155,18 @@ def _check_override_table(
     path: tuple[str, ...] = (),
 ) -> None:
     if path in _OPEN_OVERRIDE_TABLES:
+        if (
+            path == ("tls_edge", "hooks")
+            and "pre_secrets" in overlay
+            and (
+                not isinstance(overlay["pre_secrets"], list)
+                or _REQUIRED_PRE_SECRETS_HOOK not in overlay["pre_secrets"]
+            )
+        ):
+            raise ConfigError(
+                "tls_edge.hooks.pre_secrets must contain "
+                f"{_REQUIRED_PRE_SECRETS_HOOK}"
+            )
         return
     for key, value in overlay.items():
         key_path = (*path, str(key))
@@ -173,6 +186,8 @@ def check_override(defaults: Mapping[str, Any], overlay: Mapping[str, Any]) -> N
     schema = value_at(overlay, "tls_edge", "schema", default=SCHEMA)
     if isinstance(schema, bool) or not isinstance(schema, int):
         raise ConfigError("site override tls_edge.schema must be an integer")
+    if schema < 1:
+        raise ConfigError("site override tls_edge.schema must be at least 1")
     if schema > SCHEMA:
         raise ConfigError(
             f"tls_edge.schema {schema} is newer than this release supports "

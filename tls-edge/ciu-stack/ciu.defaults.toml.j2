@@ -198,6 +198,9 @@ max_file = "3"
 # CIU static preflight and pre_secrets execution use the same tls-edge validator
 # as `tls-edge validate` and the standalone renderer.
 pre_secrets = ["hooks/validate_edge.py"]
+# Keep the validator reachable to `ciu check` even when an override empties
+# pre_secrets; check_override then refuses the missing required hook.
+pre_compose = ["hooks/validate_edge.py"]
 
 # ─── ciu configfile mounts (S5; ignored by the standalone renderer, which
 #     bind-mounts ./traefik.yml and ./conf.d instead) ──────────────────────────

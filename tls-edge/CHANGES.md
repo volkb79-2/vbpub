@@ -11,7 +11,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   tls-edge validation, including the same refusal messages.
 
 ### Changed
-- Site overrides are plain TOML: Jinja markers and unknown keys are refused, while
+- Unknown keys in the site override are refused (`unknown override key tls_edge.<path>`); 3.1 overrides written by `configure` are unaffected.
+- Site overrides are plain TOML: Jinja markers are refused, while
   `[tls_edge.acme.dns.environment]`, `[tls_edge.secrets]`, and `[tls_edge.hooks]` remain open tables.
 
 <!-- cmru: pending release notes end -->

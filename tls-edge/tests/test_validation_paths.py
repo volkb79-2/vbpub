@@ -156,35 +156,45 @@ def _override(body: str = "") -> str:
 
 
 @pytest.mark.parametrize(
-    ("case_id", "override", "expected_message"),
+    ("case_id", "override", "configure_answers", "expected_message"),
     [
         (
             "acme-tls-non-443",
             _override('[tls_edge.tls]\nmode = "acme-tls"\n'
                       "[tls_edge.ports]\nhttps = 8443\n"),
+            'tls_mode = "acme-tls"\nhttps_port = 8443\n',
             "acme-tls requires the public HTTPS port to be 443",
         ),
         (
             "calls-conflicts-with-https",
             _override("[tls_edge.calls]\nenabled = true\npublic_port = 443\n"),
+            "https_port = 443\ncalls_enabled = true\ncalls_port = 443\n",
             "Calls TCP conflicts with the public HTTPS TCP port",
         ),
         (
             "static-without-lineages",
             _override('[tls_edge.tls]\nmode = "static"\n'),
+            'tls_mode = "static"\nstatic_domains = []\n',
             "requires at least one static certificate lineage",
         ),
         (
             "unknown-http3-key",
             _override("[tls_edge.http3]\nenable = true\n"),
+            'domain = "edge.example.test"\n',
             "unknown override key tls_edge.http3.enable",
         ),
         (
             "newer-schema",
             '[tls_edge]\nschema = 99\ndomain = "edge.example.test"\n',
+            'domain = "edge.example.test"\n',
             "tls_edge.schema 99 is newer than this release supports (maximum 1)",
         ),
-        ("good", _override(), None),
+        (
+            "good",
+            _override(),
+            'domain = "edge.example.test"\ntls_mode = "acme-tls"\nhttps_port = 443\n',
+            None,
+        ),
     ],
 )
 def test_every_validation_path_refuses_the_same_site_failure(
@@ -193,6 +203,7 @@ def test_every_validation_path_refuses_the_same_site_failure(
     monkeypatch: pytest.MonkeyPatch,
     case_id: str,
     override: str,
+    configure_answers: str,
     expected_message: str | None,
 ) -> None:
     root, stack_dir = _case_root(tmp_path / case_id, override)
@@ -230,9 +241,14 @@ def test_every_validation_path_refuses_the_same_site_failure(
             f"message={expected_message in validate_output if expected_message else True}"
         )
 
+    answers_path = root / "configure-answers.toml"
+    answers_path.write_text(configure_answers, encoding="utf-8")
     configure_rc, configure_output = _run_cli_with_prompts(
         monkeypatch,
-        ["configure", "--root", str(root), "--dry-run", "--yes"],
+        [
+            "configure", "--root", str(root), "--answers", str(answers_path),
+            "--dry-run", "--yes",
+        ],
     )
     if configure_rc != expected_rc or (
         expected_message is not None and expected_message not in configure_output
@@ -297,6 +313,90 @@ def test_override_schema_must_be_an_integer(tmp_path: Path):
     defaults, overlay, _ = config.load_site(stack_dir)
     with pytest.raises(config.ConfigError, match="tls_edge.schema must be an integer"):
         config.check_override(defaults, overlay)
+
+
+def test_override_schema_must_be_at_least_one(tmp_path: Path):
+    _, stack_dir = _case_root(
+        tmp_path,
+        '[tls_edge]\nschema = 0\ndomain = "edge.example.test"\n',
+    )
+    defaults, overlay, _ = config.load_site(stack_dir)
+    with pytest.raises(config.ConfigError, match="tls_edge.schema must be at least 1"):
+        config.check_override(defaults, overlay)
+
+
+@pytest.mark.parametrize(
+    "pre_secrets",
+    (
+        [],
+        ["hooks/other.py"],
+        "hooks/validate_edge.py",
+    ),
+)
+def test_override_pre_secrets_must_include_the_validator(
+    tmp_path: Path,
+    pre_secrets: object,
+) -> None:
+    value = repr(pre_secrets)
+    _, stack_dir = _case_root(
+        tmp_path,
+        _override(f"[tls_edge.hooks]\npre_secrets = {value}\n"),
+    )
+    defaults, overlay, _ = config.load_site(stack_dir)
+    with pytest.raises(
+        config.ConfigError,
+        match="tls_edge.hooks.pre_secrets must contain hooks/validate_edge.py",
+    ):
+        config.check_override(defaults, overlay)
+
+
+def test_override_open_hooks_table_accepts_the_validator(tmp_path: Path) -> None:
+    _, stack_dir = _case_root(
+        tmp_path,
+        _override(
+            "[tls_edge.hooks]\n"
+            'pre_secrets = ["hooks/audit.py", "hooks/validate_edge.py"]\n'
+        ),
+    )
+    defaults, overlay, effective = config.load_site(stack_dir)
+    config.check_override(defaults, overlay)
+    assert effective["tls_edge"]["hooks"]["pre_secrets"] == [
+        "hooks/audit.py",
+        "hooks/validate_edge.py",
+    ]
+
+
+def test_removing_validator_hook_is_refused_by_ciu_and_validate(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _ = _case_root(
+        tmp_path,
+        _override("[tls_edge.hooks]\npre_secrets = []\n"),
+    )
+    message = "tls_edge.hooks.pre_secrets must contain hooks/validate_edge.py"
+
+    ciu_rc = _run_ciu_check(root)
+    ciu_output = "".join(capsys.readouterr())
+    assert ciu_rc == 2
+    assert message in ciu_output
+
+    validate_rc, validate_output = _run_cli_with_prompts(
+        monkeypatch, ["validate", "--root", str(root)]
+    )
+    assert validate_rc == 2
+    assert message in validate_output
+
+
+def test_standalone_check_requires_a_site_domain(tmp_path: Path):
+    _, stack_dir = _case_root(
+        tmp_path,
+        '[tls_edge]\nschema = 1\ndomain = ""\n',
+    )
+    result = _run_standalone(stack_dir)
+    assert result.returncode != 0
+    assert "domain is required" in result.stdout + result.stderr
 
 
 def test_override_rejects_non_utf8_text(tmp_path: Path):

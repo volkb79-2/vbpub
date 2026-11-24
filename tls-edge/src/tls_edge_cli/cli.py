@@ -310,15 +310,19 @@ def _port_plan(config: dict[str, Any]) -> list[str]:
     return validate_config(config)
 
 
+def _load_checked_site(root: Path) -> dict[str, Any]:
+    defaults, overlay, effective = load_site(root / "stack" / "ciu-stack")
+    overlay = migrate(overlay)
+    check_override(defaults, overlay)
+    return effective["tls_edge"]
+
+
 def _load_validated_site(
     root: Path,
     *,
     require_domain: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
-    defaults, overlay, effective = load_site(root / "stack" / "ciu-stack")
-    overlay = migrate(overlay)
-    check_override(defaults, overlay)
-    config = effective["tls_edge"]
+    config = _load_checked_site(root)
     return config, validate_config(config, require_domain=require_domain)
 
 
@@ -342,7 +346,7 @@ def _diff(path: Path, old: str, new: str) -> str:
 def configure(args: Any, runtime: CliRuntime) -> int:
     root = _root(args)
     try:
-        current, _ = _load_validated_site(root, require_domain=False)
+        current = _load_checked_site(root)
         answers = load_answers(args.answers)
         values = _collect_values(
             current, runtime, answers, allow_prompt=args.answers is None
@@ -440,10 +444,9 @@ def show(args: Any, runtime: CliRuntime) -> int:
     runtime.output.primary(
         f"Calls media: {'enabled' if value_at(config, 'calls', 'enabled', default=False) else 'disabled'}"
     )
-    if ports:
-        runtime.output.primary("Inbound ports:")
-        for item in ports:
-            runtime.output.primary(f"  {item}")
+    runtime.output.primary("Inbound ports:")
+    for item in ports:
+        runtime.output.primary(f"  {item}")
     if not value_at(config, "domain", default=""):
         runtime.output.primary("Run `tls-edge configure` to complete the instance settings.")
     return 0
