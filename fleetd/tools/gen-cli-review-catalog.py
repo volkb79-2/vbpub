@@ -52,7 +52,6 @@ RATIONALE = {
 # reviewed case must not have.
 ROUTE_REQUIRED_POSITIONALS = {
     "route:entrypoint:fleet/facts/validate": "@host-facts.valid.json",
-    "route:entrypoint:fleet/guard/validate": "@guard.valid.toml",
     "route:entrypoint:fleet/run": "@invalid-plan.json",
 }
 ROUTE_FORCED_OPTIONS = {

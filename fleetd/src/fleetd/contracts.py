@@ -119,31 +119,6 @@ class WorkRequest:
         return dict(self.data)
 
 
-@dataclass(frozen=True)
-class AssayMergeManifest:
-    """Validated ``assay-merge-manifest/1`` ownership table."""
-
-    planned_ids: tuple[str, ...]
-    owners: Mapping[str, str]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema": "assay-merge-manifest/1",
-            "planned_ids": list(self.planned_ids),
-            "owners": dict(self.owners),
-        }
-
-
-@dataclass(frozen=True)
-class GuardConfig:
-    """Validated host-owned guard rule table."""
-
-    data: Mapping[str, Any]
-
-    def to_dict(self) -> dict[str, Any]:
-        return dict(self.data)
-
-
 def _object(
     value: object,
     where: str,
@@ -586,46 +561,6 @@ def validate_work_request(value: object) -> WorkRequest:
         _string(carry_obj["source"], "work-request/1.carry_over.source")
         _string(carry_obj["reason"], "work-request/1.carry_over.reason")
     return WorkRequest(root)
-
-
-def validate_assay_merge_manifest(value: object) -> AssayMergeManifest:
-    root = _object(value, "assay-merge-manifest/1", {"schema", "planned_ids", "owners"})
-    if root["schema"] != "assay-merge-manifest/1":
-        raise ContractError("assay-merge-manifest/1.schema: expected 'assay-merge-manifest/1'")
-    planned = _candidate_ids(root["planned_ids"], "assay-merge-manifest/1.planned_ids")
-    owners = root["owners"]
-    if not isinstance(owners, dict):
-        raise ContractError("assay-merge-manifest/1.owners: expected object")
-    for candidate_id, store in owners.items():
-        _candidate_id(candidate_id, "assay-merge-manifest/1.owners candidate ID")
-        _string(store, f"assay-merge-manifest/1.owners.{candidate_id}")
-    if set(owners) != set(planned):
-        missing = sorted(set(planned) - set(owners))
-        extra = sorted(set(owners) - set(planned))
-        details = []
-        if missing:
-            details.append(f"missing owners: {', '.join(missing)}")
-        if extra:
-            details.append(f"owners outside planned_ids: {', '.join(extra)}")
-        raise ContractError("assay-merge-manifest/1: " + "; ".join(details))
-    return AssayMergeManifest(planned, owners)
-
-
-def select_owner_records(
-    manifest: AssayMergeManifest,
-    stores: Mapping[str, Mapping[str, Any]],
-) -> dict[str, Any]:
-    """Select each candidate's declared owner record; non-owner copies are ignored."""
-    selected: dict[str, Any] = {}
-    for candidate_id in manifest.planned_ids:
-        store_name = manifest.owners[candidate_id]
-        store = stores.get(store_name)
-        if store is None or candidate_id not in store:
-            raise ContractError(
-                f"assay-merge-manifest/1: owner store {store_name!r} has no record for {candidate_id!r}"
-            )
-        selected[candidate_id] = store[candidate_id]
-    return selected
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

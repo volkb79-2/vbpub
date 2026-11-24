@@ -114,7 +114,7 @@ def test_retain_outputs_rolls_back_when_destination_setup_fails(tmp_path):
     assert not (root / "demo" / "artifacts" / "tag").exists()
 
 
-def test_promote_fails_closed_on_a_non_fast_forward(tmp_path):
+def test_promote_fails_closed_on_a_non_fast_forward(tmp_path, process_run_seam):
     workspace = SimpleNamespace(repo_root=tmp_path, path=tmp_path, branch="cmru/release/x")
     # The rejection is classified by fetching origin/main: when origin/main is
     # already contained in the candidate the push failed for another reason and
@@ -126,9 +126,12 @@ def test_promote_fails_closed_on_a_non_fast_forward(tmp_path):
         SimpleNamespace(returncode=0, stderr="", stdout=""),
     ])
     commands = []
-    with patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kwargs: commands.append(argv) or next(responses)):
-        with pytest.raises(RuntimeError, match="candidate was not promoted"):
-            transaction.promote_workspace(workspace)
+    process_run_seam(
+        transaction,
+        lambda argv, **kwargs: commands.append(argv) or next(responses),
+    )
+    with pytest.raises(RuntimeError, match="candidate was not promoted"):
+        transaction.promote_workspace(workspace)
     assert commands == [
         ["git", "push", "origin", "HEAD:refs/heads/main"],
         ["git", "fetch", "--prune", "origin", "main"],
@@ -137,7 +140,9 @@ def test_promote_fails_closed_on_a_non_fast_forward(tmp_path):
     ]
 
 
-def test_sync_local_main_creates_missing_local_main_from_origin(tmp_path):
+def test_sync_local_main_creates_missing_local_main_from_origin(
+    tmp_path, process_run_seam,
+):
     commands = []
     def fake_git(_root, *args, **kwargs):
         if args[:2] == ("branch", "--show-current"):
@@ -147,9 +152,12 @@ def test_sync_local_main_creates_missing_local_main_from_origin(tmp_path):
         raise AssertionError(args)
 
     empty_worktree_inventory = SimpleNamespace(list_git_worktrees=lambda _root: [])
+    process_run_seam(
+        transaction,
+        lambda argv, **kwargs: commands.append(argv) or SimpleNamespace(returncode=0),
+    )
     with patch.object(transaction, "_shared_worktree", return_value=empty_worktree_inventory), \
-         patch.object(transaction, "_git", side_effect=fake_git), \
-         patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kwargs: commands.append(argv) or SimpleNamespace(returncode=0)):
+         patch.object(transaction, "_git", side_effect=fake_git):
         assert transaction.sync_local_main(tmp_path) is True
     assert commands == [
         ["git", "fetch", "--prune", "origin", "main"],

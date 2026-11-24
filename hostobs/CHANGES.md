@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Fixed (P-hostobs-06b):** the serving core has no production panic in `accept`; frame-level tests cover the D-W53 shared-uid Query regression and D-W52's clamped `current` size refusal, an accept-level test covers observe's level cap, `classify` asserts in debug builds that JSON never reaches a block level, and retired JSON block-level cells are gone.
 - **Added (P-hostobs-09):** `kernel::activation` adopts systemd's named `LISTEN_FDS` sockets exactly once, validates each as an open non-blocking listening `AF_UNIX` stream, and replaces the kernel's lint forbid with one audited `adopt_raw` allowance.
 - **Added (probe process):** `hostobs-probe --config <path>` reads and strictly validates the required TOML configuration, maps the adopted socket names to levels, and serves the sans-IO `Server` from one bounded non-blocking poll loop; `--version` reports the package identity and start-up refusals exit 2.
 - **Changed (probe checks):** `tools/check-lints.py` and its mutation suite require exactly one audited unsafe override and one unsafe expression outside `crates/act`, reject list/expect/warn and whitespace variants, and refuse a bare unsafe expression in kernel integration tests.

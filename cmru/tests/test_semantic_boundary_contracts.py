@@ -171,7 +171,9 @@ def test_removed_backup_marker_creates_its_scope_directory(tmp_path):
     assert transaction.backup_was_removed(repo, workspace)
 
 
-def test_abandon_uses_explicit_return_code_handling_for_all_remote_mutations(monkeypatch, tmp_path):
+def test_abandon_uses_explicit_return_code_handling_for_all_remote_mutations(
+    monkeypatch, tmp_path, process_run_seam,
+):
     monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
     branch = "cmru-release-20260927_120000-alpha-ab12cd"
@@ -192,7 +194,7 @@ def test_abandon_uses_explicit_return_code_handling_for_all_remote_mutations(mon
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(transaction.subprocess, "run", run)
+    process_run_seam(transaction, run)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
     monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
     monkeypatch.setattr(transaction, "mark_backup_removed", lambda *_: None)
@@ -503,7 +505,9 @@ def test_abandon_preserves_remote_inspection_error_detail(monkeypatch, tmp_path,
     assert "network unreachable" in capsys.readouterr().out
 
 
-def test_abandon_preview_lists_the_remote_candidate_ref(monkeypatch, tmp_path, capsys):
+def test_abandon_preview_lists_the_remote_candidate_ref(
+    monkeypatch, tmp_path, capsys, process_run_seam,
+):
     monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
     workspace = _abandon_workspace(tmp_path)
@@ -527,7 +531,7 @@ def test_abandon_preview_lists_the_remote_candidate_ref(monkeypatch, tmp_path, c
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(argv)
 
-    monkeypatch.setattr(cli.subprocess, "run", run)
+    process_run_seam(cli, run)
     result = cli._abandon(
         SimpleNamespace(branch=workspace.branch, dry_run=True, yes=False),
         SimpleNamespace(confirm=lambda _prompt: pytest.fail("dry-run prompted")),

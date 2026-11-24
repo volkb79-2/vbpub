@@ -282,7 +282,7 @@ Traefik/Compose templates consume the merged values.
 
 | Concern | Operator input / source | What it affects |
 |---|---|---|
-| Base domain for consumer Compose files | `tls-edge configure` writes `TLS_EDGE_DOMAIN` to instance `consumer.env`. | Consumer Host rules and DNS names. It is not itself the Traefik listener configuration. |
+| Base domain for consumer Compose files | `tls-edge configure` writes `TLS_EDGE_DOMAIN` to instance `consumer.env`; see the [rendered consumer contract](CONSUMERS.md#rendered-consumer-contract). | Consumer Host rules and DNS names. It is not itself the Traefik listener configuration. |
 | Domain, TLS/ACME mode, ACME email, DNS provider, wildcard, static cert paths | `tls-edge configure` writes supported fields to instance `ciu-stack/ciu.toml.j2`; defaults/schema live in `ciu-stack/ciu.defaults.toml.j2`. Secrets use CIU's secret mechanism. | Rendered Traefik static config, certificate resolver, mounts, or dynamic cert file. Listener/certificate-resolver changes require CIU rendering and a container restart. |
 | Public HTTP/HTTPS ports, bind IP, port 80 on/off | `tls-edge configure` writes `[tls_edge.ports]` values in the site override; templates are `ciu-stack/traefik.yml.j2` and `ciu-stack/ciu.compose.yml.j2`. | Traefik listeners and Compose host port publications. Update host and provider firewall rules to match. |
 | HTTP/3 / UDP on the public HTTPS port | `tls-edge configure` writes `[tls_edge.http3] enabled = true`; the public UDP port and Traefik Alt-Svc advertised port derive from `ports.https`. | Enables QUIC on shared `websecure`, publishes UDP, and includes it in the firewall plan. TCP remains enabled for HTTP/1.1 and HTTP/2 fallback. |
@@ -306,10 +306,11 @@ HTTP/3 for individual host names.
 
 For the released `get.py` installation, use
 `/srv/tls-edge-instance/bin/tls-edge configure`. The command writes the
-persistent site override and updates only `TLS_EDGE_DOMAIN` in
-`/srv/tls-edge-instance/stack/consumer.env`. Review with `tls-edge validate`
-and `sudo ./ciu up --dry-run`, then apply from `/srv/tls-edge-instance/stack`
-with `sudo ./ciu up`.
+persistent site override and rewrites the six tls-edge-owned keys in
+`/srv/tls-edge-instance/stack/consumer.env` (see the
+[rendered consumer contract](CONSUMERS.md#rendered-consumer-contract)). Review
+with `tls-edge validate` and `sudo ./ciu up --dry-run`, then apply from
+`/srv/tls-edge-instance/stack` with `sudo ./ciu up`.
 
 An instance that opts into both optional media and HTTP/3 could have a sparse
 override like this. Generic defaults leave both listeners disabled.

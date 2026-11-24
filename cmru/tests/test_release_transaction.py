@@ -2034,7 +2034,9 @@ def test_tester_gate_main_refuses_to_launch_without_an_explicit_image(monkeypatc
     assert tester_gate.main(["--cwd", "cmru", "--", "true"]) != 0
 
 
-def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
+def test_run_child_marks_process_as_transaction_child(
+    tmp_path, monkeypatch, process_run_seam,
+):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "b" * 40)
     observed = {}
 
@@ -2044,7 +2046,7 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
         observed["env"] = kwargs["env"]
         return SimpleNamespace(returncode=17)
 
-    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+    process_run_seam(transaction, fake_run)
     assert transaction.run_child(workspace, ["alpha"]) == 17
     assert observed["command"][-2:] == ["release", "alpha"]
     assert observed["command"][0].endswith("cmru")
@@ -2054,7 +2056,7 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
 
 
 def test_run_child_passes_launcher_controller_identity_to_transaction(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, process_run_seam,
 ):
     workspace = transaction.ReleaseWorkspace(
         tmp_path, tmp_path / "release", "cmru-release-identity", "b" * 40,
@@ -2070,7 +2072,7 @@ def test_run_child_passes_launcher_controller_identity_to_transaction(
         observed.update(kwargs["env"])
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+    process_run_seam(transaction, fake_run)
     assert transaction.run_child(
         workspace, ["demo"], controller_identity=identity,
     ) == 0
@@ -2229,7 +2231,9 @@ def test_promote_workspace_leaves_candidate_and_checkpoint_unchanged_on_race():
         assert _git("merge-base", new_checkpoint, "HEAD", cwd=workspace_path) == new_checkpoint
 
 
-def test_promote_workspace_raises_immediately_for_a_non_race_push_failure(monkeypatch, tmp_path):
+def test_promote_workspace_raises_immediately_for_a_non_race_push_failure(
+    monkeypatch, tmp_path, process_run_seam,
+):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
     monkeypatch.setattr(transaction, "read_release_progress", lambda *_a, **_k: None)
     calls = []
@@ -2238,7 +2242,7 @@ def test_promote_workspace_raises_immediately_for_a_non_race_push_failure(monkey
         calls.append(argv)
         return SimpleNamespace(returncode=1, stdout="", stderr="fatal: could not read Password\n")
 
-    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+    process_run_seam(transaction, fake_run)
 
     with pytest.raises(RuntimeError, match="could not read Password"):
         transaction.promote_workspace(workspace)
@@ -2246,7 +2250,9 @@ def test_promote_workspace_raises_immediately_for_a_non_race_push_failure(monkey
     assert len(calls) == 1  # not a race signature — no retry attempted
 
 
-def test_promote_workspace_attempts_exactly_once_on_non_fast_forward(monkeypatch, tmp_path):
+def test_promote_workspace_attempts_exactly_once_on_non_fast_forward(
+    monkeypatch, tmp_path, process_run_seam,
+):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
     rejected = SimpleNamespace(returncode=1, stdout="", stderr="! [rejected]  HEAD -> main (non-fast-forward)\n")
     calls = []
@@ -2257,7 +2263,7 @@ def test_promote_workspace_attempts_exactly_once_on_non_fast_forward(monkeypatch
             return rejected
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+    process_run_seam(transaction, fake_run)
 
     with pytest.raises(RuntimeError, match="candidate was not promoted"):
         transaction.promote_workspace(workspace)
@@ -2331,7 +2337,9 @@ def test_resume_refuses_legacy_progress_outside_the_candidate_history():
         assert transaction._shared_worktree().find_workspace(common, retained) is None
 
 
-def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_path, monkeypatch):
+def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(
+    tmp_path, monkeypatch, process_run_seam,
+):
     monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     """KI-15: a successful push MUST be recorded as this transaction's own
     state (mark_backup_pushed) -- that record is what later tells cleanup
@@ -2347,7 +2355,7 @@ def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_p
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return real_run(argv, **kwargs)  # the internal git-common-dir lookup mark_backup_pushed makes
 
-    monkeypatch.setattr(transaction.subprocess, "run", spy)
+    process_run_seam(transaction, spy)
 
     transaction.push_backup_branch(workspace)
 
@@ -2358,7 +2366,9 @@ def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_p
     assert transaction.backup_was_pushed(tmp_path, workspace) is True
 
 
-def test_remove_backup_branch_is_a_true_no_op_when_never_pushed(tmp_path, monkeypatch):
+def test_remove_backup_branch_is_a_true_no_op_when_never_pushed(
+    tmp_path, monkeypatch, process_run_seam,
+):
     """KI-15, direction 2 -- the paired must-succeed control: a transaction
     that never called push_backup_branch (dry run, "nothing to release", or a
     refused release plan) must not even ATTEMPT a delete. A spy proves the
@@ -2374,14 +2384,16 @@ def test_remove_backup_branch_is_a_true_no_op_when_never_pushed(tmp_path, monkey
         calls.append(argv)
         return real_run(argv, **kwargs)
 
-    monkeypatch.setattr(transaction.subprocess, "run", spy)
+    process_run_seam(transaction, spy)
 
     transaction.remove_backup_branch(workspace)  # must not raise
 
     assert not any("--delete" in call for call in calls)
 
 
-def test_remove_backup_branch_still_attempts_delete_when_pushed_best_effort(tmp_path, monkeypatch):
+def test_remove_backup_branch_still_attempts_delete_when_pushed_best_effort(
+    tmp_path, monkeypatch, process_run_seam,
+):
     """KI-15, direction 1: when THIS transaction DID push a backup, cleanup
     must still attempt the delete -- tracking push-state must never become an
     excuse to skip a delete that is actually owed, or a real backup branch is
@@ -2400,7 +2412,7 @@ def test_remove_backup_branch_still_attempts_delete_when_pushed_best_effort(tmp_
             return SimpleNamespace(returncode=1, stdout="", stderr="error: unable to delete\n")
         return real_run(argv, **kwargs)  # the internal git-common-dir lookup backup_was_pushed makes
 
-    monkeypatch.setattr(transaction.subprocess, "run", spy)
+    process_run_seam(transaction, spy)
 
     transaction.remove_backup_branch(workspace)  # must not raise even though the mock "fails"
 
@@ -2608,7 +2620,9 @@ def test_rebase_in_progress_is_unknown_when_either_layout_cannot_be_inspected(
     assert transaction._rebase_in_progress(tmp_path) is None
 
 
-def test_sync_local_main_refuses_clean_checkout_with_existing_rebase(monkeypatch):
+def test_sync_local_main_refuses_clean_checkout_with_existing_rebase(
+    monkeypatch, process_run_seam,
+):
     with _OriginAndClone() as h:
         monkeypatch.setattr(transaction, "_rebase_in_progress", lambda _root: True)
         calls: list[list[str]] = []
@@ -2618,7 +2632,7 @@ def test_sync_local_main_refuses_clean_checkout_with_existing_rebase(monkeypatch
             calls.append(list(argv))
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+        process_run_seam(transaction, spy_run)
 
         result = transaction._sync_local_main_result(h.repo_root)
 
@@ -2628,7 +2642,9 @@ def test_sync_local_main_refuses_clean_checkout_with_existing_rebase(monkeypatch
         assert not any(argv[1:2] == ["rebase"] for argv in calls)
 
 
-def test_sync_local_main_refuses_dirty_current_main_without_rebase(monkeypatch):
+def test_sync_local_main_refuses_dirty_current_main_without_rebase(
+    monkeypatch, process_run_seam,
+):
     """A dirty caller must not let cleanup invoke rebase or rebase-abort."""
     with _OriginAndClone() as h:
         (h.repo_root / "README.md").write_text("dirty caller edit\n")
@@ -2649,7 +2665,7 @@ def test_sync_local_main_refuses_dirty_current_main_without_rebase(monkeypatch):
             calls.append(list(argv))
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+        process_run_seam(transaction, spy_run)
 
         assert transaction.sync_local_main(h.repo_root) is False
         assert not any(argv[1:2] == ["rebase"] for argv in calls)
@@ -2689,7 +2705,9 @@ def test_rel13_sync_local_main_ignores_ordinary_ignored_files(monkeypatch):
         assert (h.repo_root / "cache" / "blob").read_text() == "keep me too\n"
 
 
-def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(monkeypatch):
+def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(
+    monkeypatch, process_run_seam,
+):
     """Ignored local content must survive when rebase would make its path tracked."""
     with _OriginAndClone() as h:
         (h.repo_root / ".gitignore").write_text("ignored-local.txt\nignored-dir/\n")
@@ -2713,7 +2731,7 @@ def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(monkeyp
             calls.append(list(argv))
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+        process_run_seam(transaction, spy_run)
 
         result = transaction._sync_local_main_result(h.repo_root)
 
@@ -2726,7 +2744,9 @@ def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(monkeyp
         assert (h.repo_root / "ignored-dir" / "nested.txt").read_text() == "also survives\n"
 
 
-def test_sync_local_main_does_not_call_abort_or_claim_conflict_for_other_rebase_failure(monkeypatch):
+def test_sync_local_main_does_not_call_abort_or_claim_conflict_for_other_rebase_failure(
+    monkeypatch, process_run_seam,
+):
     """A failed hook is not a content conflict and needs no post-hoc guess."""
     with _OriginAndClone() as h:
         (h.repo_root / "local.txt").write_text("local\n")
@@ -2750,7 +2770,7 @@ def test_sync_local_main_does_not_call_abort_or_claim_conflict_for_other_rebase_
             calls.append(list(argv))
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+        process_run_seam(transaction, spy_run)
         result = transaction._sync_local_main_result(h.repo_root)
 
         assert result.ok is False
@@ -2761,7 +2781,9 @@ def test_sync_local_main_does_not_call_abort_or_claim_conflict_for_other_rebase_
         assert _git("status", "--porcelain", cwd=h.repo_root) == ""
 
 
-def test_sync_local_main_reports_indeterminate_state_when_rebase_state_is_unknown(monkeypatch):
+def test_sync_local_main_reports_indeterminate_state_when_rebase_state_is_unknown(
+    monkeypatch, process_run_seam,
+):
     with _OriginAndClone() as h:
         (h.repo_root / "local.txt").write_text("local\n")
         _git("add", "local.txt", cwd=h.repo_root)
@@ -2787,7 +2809,7 @@ def test_sync_local_main_reports_indeterminate_state_when_rebase_state_is_unknow
             calls.append(list(argv))
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+        process_run_seam(transaction, spy_run)
 
         result = transaction._sync_local_main_result(h.repo_root)
 
@@ -2798,7 +2820,7 @@ def test_sync_local_main_reports_indeterminate_state_when_rebase_state_is_unknow
 
 
 def test_sync_local_main_reports_indeterminate_state_when_ls_files_cannot_be_inspected(
-    monkeypatch,
+    monkeypatch, process_run_seam,
 ):
     with _OriginAndClone() as h:
         (h.repo_root / "local.txt").write_text("local\n")
@@ -2829,7 +2851,7 @@ def test_sync_local_main_reports_indeterminate_state_when_ls_files_cannot_be_ins
             calls.append(list(argv))
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+        process_run_seam(transaction, spy_run)
 
         result = transaction._sync_local_main_result(h.repo_root)
 
@@ -2860,7 +2882,9 @@ def test_sync_local_main_aborts_cleanly_on_real_conflict():
         assert "dirty" not in reason
 
 
-def test_sync_local_main_reports_conflict_when_abort_fails(monkeypatch):
+def test_sync_local_main_reports_conflict_when_abort_fails(
+    monkeypatch, process_run_seam,
+):
     with _OriginAndClone() as h:
         (h.repo_root / "README.md").write_text("local edit\n")
         _git("add", "README.md", cwd=h.repo_root)
@@ -2881,7 +2905,7 @@ def test_sync_local_main_reports_conflict_when_abort_fails(monkeypatch):
                 return SimpleNamespace(returncode=1)
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", fail_abort)
+        process_run_seam(transaction, fail_abort)
 
         result = transaction._sync_local_main_result(h.repo_root)
 
@@ -3063,7 +3087,9 @@ def test_sync_local_main_does_not_force_move_a_diverged_non_current_main():
         assert _git("rev-parse", "main", cwd=h.repo_root) == stale_main
 
 
-def test_sync_local_main_reports_failure_to_update_non_current_main(monkeypatch):
+def test_sync_local_main_reports_failure_to_update_non_current_main(
+    monkeypatch, process_run_seam,
+):
     with _OriginAndClone() as h:
         _git("checkout", "-q", "-b", "other-branch", cwd=h.repo_root)
 
@@ -3083,7 +3109,7 @@ def test_sync_local_main_reports_failure_to_update_non_current_main(monkeypatch)
                 return SimpleNamespace(returncode=1)
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", fail_branch_update)
+        process_run_seam(transaction, fail_branch_update)
 
         result = transaction._sync_local_main_result(h.repo_root)
 
@@ -4134,7 +4160,9 @@ def test_abandon_workspace_removes_only_recorded_local_release_tag_attempt():
 
 
 
-def test_abandon_keeps_local_evidence_when_remote_candidate_deletion_fails(monkeypatch):
+def test_abandon_keeps_local_evidence_when_remote_candidate_deletion_fails(
+    monkeypatch, process_run_seam,
+):
     with _OriginAndClone() as h:
         workspace_path = h.add_worktree("cmru/release/retained")
         base = _git("rev-parse", "HEAD", cwd=workspace_path)
@@ -4155,7 +4183,7 @@ def test_abandon_keeps_local_evidence_when_remote_candidate_deletion_fails(monke
                 return subprocess.CompletedProcess(argv, 1, "", "permission denied")
             return real_run(argv, *args, **kwargs)
 
-        monkeypatch.setattr(transaction.subprocess, "run", reject_remote_delete)
+        process_run_seam(transaction, reject_remote_delete)
 
         with pytest.raises(RuntimeError, match="local worktree and transaction metadata were retained"):
             transaction.abandon_workspace(h.repo_root, workspace)

@@ -32,7 +32,7 @@
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
 | FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | DONE | 2026-11-14 |
 | FD-026 | A host that stays in ERROR has no loss timer | P3 | DONE | 2026-11-14 |
-| FD-029 | Nothing wires `fleet scope`/`fleet sizing`/`fleet merge-check` into a release or campaign workflow | P2 | OPEN | 2026-11-15 |
+| FD-029 | Nothing wires `fleet scope`/`fleet sizing`/`fleet measurement` into a release or campaign workflow | P2 | OPEN | 2026-11-15 |
 | FD-030 | The new per-worker demand keys are not accepted inside `run-gate.toml` | P2 | OPEN | 2026-11-15 |
 | FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | DONE | 2026-11-15 |
 | FD-032 | `fleet scope` reads a checkout it never checks for uncommitted or untracked work | P3 | DONE | 2026-11-15 |
@@ -43,7 +43,7 @@
 | FD-038 | Rolling mode's changed candidates share the `slice_size` budget, so heavy per-release churn can defer them and starve the never-judged remainder | P3 | DONE | 2026-11-15 |
 | FD-039 | Host-side probe logic was a Python string and `FakeTransport` reimplemented it | P1 | PART 1 FIXED | 2026-11-24 |
 | FD-040 | The real probe lost the cgprofile `memory_peak_bytes` that the fake returned | P1 | FIXED | 2026-11-24 |
-| FD-041 | Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`; assay owns `assay-merge-manifest/1` | P1 | OPEN | 2026-11-24 |
+| FD-041 | Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`; assay owns `assay-merge-manifest/1` | P1 | FIXED IN THIS BRANCH (P-fd-02) | 2026-11-24 |
 | FD-042 | Two schedulers book v1001: host-local weighted admission in the shared runner | P1 | OPEN | 2026-11-24 |
 | FD-043 | Campaign unit = assay shard range per host | P2 | OPEN | 2026-11-24 |
 | FD-044 | Rolling scope frozen; delete it after B561 carry-forward | P2 | OPEN | 2026-11-24 |
@@ -51,6 +51,7 @@
 | FD-046 | Facts tables and one lane-cost store | P2 | OPEN | 2026-11-24 |
 | FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
 | FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
+| FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | OPEN | 2026-11-24 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -274,6 +275,8 @@ refuses missing or conflicting owner records, ignores and counts non-owner
 duplicates, and merges only same-judge final records. Run-Gate forwards the
 manifest without interpreting it. Dependencies: Assay B544 and Run-Gate
 RG-277.
+Fleetd's own `assay-merge-manifest/1` validation and owner-record selection
+were deleted in P-fd-02; this moved item remains assay-owned.
 
 ## FD-009 Restricted host enrollment
 
@@ -620,21 +623,21 @@ threshold keeps its batches; SPEC and design guide state the rule.
 
 **State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15.
 
-`fleet scope`, `fleet sizing`, `fleet measurement` and `fleet merge-check` are
-committed, tested producers, but nothing calls them yet: a release step does
-not regenerate the candidate-id file, a campaign does not size its shards from
-the plan, and a shard does not write its `fleet-shard-identity/1` document.
+`fleet scope`, `fleet sizing` and `fleet measurement` are committed, tested
+producers, but nothing calls them yet: a release step does not regenerate the
+candidate-id file and a campaign does not size its shards from the plan.
+(`fleet merge-check` and the shard identity document were deleted by FD-041;
+strict shard merging is assay's, B565 `strict-shard`.)
 Today an operator runs each command by hand and passes the results on. The
 intended callers are the Run-Gate campaign client (RG-276) and the Assay
 supervisor (`--shard`, `--instances`), and neither has the wiring yet.
 
 **Wanted.** Decide which owner calls each producer and at which step: the
 changed-lines id file at the release step (cmru release), the sizing document
-at campaign start, the measurement recorder after collection, and the identity
-document at shard start with the merge check before any merged verdict. **Close
-when.** One end-to-end invocation of a real campaign runs all four without an
-operator retyping a path, and a test pins that a stale id file or a mismatched
-shard stops the flow instead of being noticed later.
+at campaign start, and the measurement recorder after collection. **Close
+when.** One end-to-end invocation of a real campaign runs all three without an
+operator retyping a path, and a test pins that a stale id file stops the flow
+instead of being noticed later.
 
 ## FD-030 The per-worker demand keys are not accepted inside `run-gate.toml`
 
@@ -879,7 +882,7 @@ duplicate into the first-owned record instead of dropping it:
 
 ## FD-041 Delete `fleet merge-check`, `fleet-shard-identity/1` and `fleet guard validate`
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
+**State:** FIXED IN THIS BRANCH (P-fd-02). **Priority:** P1. **Filed:** 2026-11-24.
 
 fleetd: delete `fleet merge-check` now (assay strict merge owns it); assay owns `assay-merge-manifest/1`. Drop guard.toml validation (owner: thrashguard/TG-1); FD-012 becomes job registration on the thrashguard socket. Also delete `fleet-shard-identity/1` (fd-H5 Direction).
 
@@ -960,3 +963,14 @@ r2 review finding B.
 
 Nit (r2 finding C): `returned_after_loss` is set on every refresh while pending and
 nothing reads it except tests. Document it as a status marker or drop it.
+
+## FD-049 host-facts/2: guard_present reshape together with FD-012
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-24.
+
+Replace the current `host-facts/1` guard block with `guard_present` plus the
+owner's own runtime state. FD-012 becomes registration of each started
+campaign job on thrashguard's registrant socket when present; fleetd does not
+validate or enforce guard rules.
+
+Source: .controller-state/design-review-2026-11-24/fleetd.md M1; FD-012
