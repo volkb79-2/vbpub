@@ -11,6 +11,24 @@ the wheel or the matching zipapp from one immutable `assay-v*` GitHub Release. T
 the normal integration; the zipapp is the zero-install option for a gate image that already
 has Python.
 
+## Capability document
+
+`assay capabilities --json` prints one closed JSON object without reading any project
+file, so it also works outside a repository. `--json` is accepted for explicitness;
+the same document is the default output. The fields are:
+
+- `schema`: the document schema, currently `"assay-capabilities/1"`.
+- `assay_version`: the running assay version.
+- `verdict_schema_version`: the verdict schema version this build emits and verifies.
+- `commands`: long options for `run`, `plan`, `verify`, `lanes`, and `analyze campaign`,
+  derived from the live argparse parsers and sorted (`--help` included).
+- `mutation_store_policies`: mutation-store flags supported by `run`, mapped to
+  `same-judge`, `strict-shard`, `import-unverified`, or `hint` semantics.
+
+The document is closed. A new key, dropped key, or changed meaning requires a new
+`schema` value. Consumers must know every key they accept instead of silently ignoring
+unknown keys, and must refuse an unrecognized `schema`.
+
 ## What `assay.toml` is, and what it is not (B009)
 
 **`assay.toml` is an adapter and judgment-policy file for a project that has
