@@ -102,7 +102,7 @@ def _assert_nothing_installed(tmp_path, actions, posts, cause):
 
 def test_root_not_a_block_device_is_an_identity_refusal_post_only(tmp_path, host, capsys):
     actions, posts = host
-    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "tmpfs\n"
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "tmpfs tmpfs\n"
     assert main(["install", "--config", _write(tmp_path), "--yes"]) != 0
     _assert_nothing_installed(tmp_path, actions, posts, "not a plain block-device mount")
 

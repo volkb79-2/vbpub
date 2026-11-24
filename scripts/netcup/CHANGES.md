@@ -12,6 +12,7 @@ All notable changes to scripts/netcup are recorded here.
   existing origin/main; an assay lane whose declared `judge.base` does not resolve is refused locally (exit 2) before anything is shipped.
   Tests: `tests/test_remote_gate_seams.py`.
 - The `install-fleetd.sh` examples in `runner/README.md` and `CONSUMERS.md` name the published wheels (fleetd 0.1.0, cli-extended 0.8.0) instead of the `0.3.0`/`0.5.0` placeholders (P-fd-03). fleetd 0.1.0 was installed with it on v1001 and r1002 on 2026-11-24 (hash-verified from the published release assets; `fleet --version` = 0.1.0 as the runner user).
+- The `install-augeaswrap.sh` examples in `runner/README.md` and `CONSUMERS.md` name cli-extended 0.8.0 (the version installed on v1001 and r1002) instead of 0.6.0; the first P-fd-03 pass fixed only the `install-fleetd.sh` blocks (found by the assay AW-2 reviewer). augeaswrap 0.2.0 requires `cli-extended>=0.5.3`, so 0.8.0 satisfies it. `tests/test_install_augeaswrap.py` keeps its own 0.6.0 fixture wheel names on purpose (fixtures, not the documented example).
 - `runner/lib.sh` `load_host_endpoints` accepts `MDT_BUILDKIT_GID` equal to `MDT_HOST_DOCKER_GID` (NC-43): mdt-buildkitd
   hands its socket to group docker, so on a real host the two are the same GID and `start-cockpit-runner.sh` refused
   to start (r1002, 2026-11-12 and again 2026-11-24). cgprofile and topos GIDs must still differ from docker and from

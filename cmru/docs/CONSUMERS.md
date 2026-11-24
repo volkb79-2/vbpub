@@ -1017,7 +1017,7 @@ rather than a cockpit pytest command:
 ```sh
 run-gate --list
 run-gate release-preconditions  # changelog preflight and release-start preconditions
-run-gate survivor-regressions   # s1 regression oracles and first-release Assay target inventory
+run-gate survivor-regressions   # s1 regression oracles and the whole-target Assay target inventory
 run-gate gate
 ```
 
@@ -1062,9 +1062,9 @@ therefore has no mutation event evidence. Read its result from
 `cmru/.assay/release-gate-snapshot.json`: `"state": "provisional"` with a `deferred_lanes`
 entry for `mutation` (never `"passed"`), for example
 `jq '{state, deferred_lanes: [.deferred_lanes[] | {lane, tracking_id, follow_up_lane}]}'`.
-The later mutation campaign needs a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU). Run `run-gate
-gate` when full R2 evidence is required (the recorded `follow_up_lane` is `gate`); that lane
-includes the mutation campaign. If cleanup fails after the lanes pass, the gate exits non-zero and
+The later mutation campaign needs a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU). The recorded `follow_up_lane` is
+`assay-first-release-r2` for every release, first or not; the full `gate` lane
+remains runnable for a tag-based R2 but is no longer the recorded follow-up. If cleanup fails after the lanes pass, the gate exits non-zero and
 leaves `"state": "failed"` with an empty `deferred_lanes` and no marker; an invocation refused
 before a new gate starts leaves the previous run's marker and manifest untouched.
 
@@ -1116,10 +1116,10 @@ explains how these checks share the gate's own rules.
 
 For a CMRU repository with no published stable `cmru-vX.Y.Z` tag, the
 protected `release-gate` release workflow first verifies that origin was
-successfully queried and found empty. It then substitutes the whole-source
-`cmru-first-release` lane for the ordinary whole-target `assay` lane. The
-first-release marker identifies `run-gate assay-first-release-r2` as the
-pending mutation campaign. Run it against the released source commit after the
+successfully queried and found empty. It then runs the ordinary whole-target
+`assay` lane, exactly as for a tagged release. The marker identifies
+`run-gate assay-first-release-r2` as the pending mutation campaign. Run it
+against the released source commit after the
 first tag exists:
 
 ```sh
@@ -1128,15 +1128,15 @@ run-gate assay-first-release-r2
 ```
 
 This follow-up uses a literal whole-source target list, so it requires no
-previous CMRU tag. An inaccessible origin is an error and never selects this
-path. The automated choice and its exact-commit restriction are described in
+previous CMRU tag. An inaccessible origin is an error, never an empty release history.
+The whole-source R2 follow-up is described in
 the [first-release design](DESIGN-GUIDE.md#first-release-has-no-historical-diff-baseline).
 
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0
 (full tests), R1 (100% line and branch coverage over every executable CMRU
 production module), and R3 (import-break canary). R1 uses `whole_target`, the
-same explicit source inventory as `cmru-r0-r1` and both first-release lanes,
+same explicit source inventory as `cmru-r0-r1` and the whole-source R2 lane,
 so it has no release-tag base. The `gate` lane supplies R2 through its separate
 changed-source mutation campaign, based on a published `cmru-v*` tag in the
 candidate's full ancestry;
@@ -1312,8 +1312,8 @@ extra-mount variables removed. See the
 [gate credential design](DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
 Run-Gate's Assay closeout files are retained beside the verdict when produced:
 `.assay/campaign-cmru.exit`, `.assay/campaign-cmru.json`,
-`.assay/campaign-cmru.txt` and `.assay/campaign-cmru.err`. A first-release run
-uses the same four suffixes with the `campaign-cmru-first-release` basename.
+`.assay/campaign-cmru.txt` and `.assay/campaign-cmru.err`. No other Assay lane's
+closeout basename is retained.
 The JSON and text files are the analysis reports; the exit file records both
 analysis statuses, and the error file records diagnostics or a skipped
 closeout.

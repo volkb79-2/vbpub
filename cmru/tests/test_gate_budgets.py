@@ -18,7 +18,6 @@ PROJECT = Path(__file__).resolve().parents[1]
 PAIRS = (
     ("assay", "cmru"),
     ("assay-r0-r1", "cmru-r0-r1"),
-    ("assay-first-release", "cmru-first-release"),
 )
 MARGIN_SECONDS = 5 * 60
 
@@ -83,13 +82,6 @@ def test_an_outer_budget_equal_to_the_inner_is_reported():
     assert any("run-gate [assay]" in v and "+ 5m" in v for v in violations(assay_doc, wrong))
 
 
-def test_an_outer_budget_below_the_inner_is_reported_for_the_first_release_pair_too():
-    assay_doc, gate_doc = _load()
-    wrong = copy.deepcopy(gate_doc)
-    wrong["lanes"]["assay-first-release"]["budget"] = "20m"
-    assert any("assay-first-release" in v for v in violations(assay_doc, wrong))
-
-
 def test_an_outer_budget_below_the_inner_is_reported_for_the_t1_pair_too():
     assay_doc, gate_doc = _load()
     wrong = copy.deepcopy(gate_doc)
@@ -107,7 +99,7 @@ def test_a_canary_attempt_longer_than_the_lane_is_reported():
 def test_a_miswired_assay_lane_is_reported():
     assay_doc, gate_doc = _load()
     wrong = copy.deepcopy(gate_doc)
-    wrong["lanes"]["assay"]["assay_lane"] = "cmru-first-release"
+    wrong["lanes"]["assay"]["assay_lane"] = "cmru-r0-r1"
     assert any("not 'cmru'" in v for v in violations(assay_doc, wrong))
 
 

@@ -334,6 +334,10 @@ def test_writer_length_boundary_and_empty_publish_policy(tmp_path):
     root = fake_root(tmp_path)
     assert endpoints._writer_message("verb " + "x" * 251) is None
     assert endpoints._writer_message("verb " + "x" * 252) is not None
+    default_problems = endpoints._preflight_unlocked(root, "mine", {})
+    assert any("at least one endpoint entry" in problem.message for problem in default_problems)
+    allowed_problems = endpoints._preflight_unlocked(root, "mine", {}, allow_empty=True)
+    assert all("at least one endpoint entry" not in problem.message for problem in allowed_problems)
     with pytest.raises(CliFailure, match="at least one endpoint entry"):
         endpoints.publish("mine", {}, writer="service install 1", root=root)
     assert endpoints.withdraw("mine", root=root) is False

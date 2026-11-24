@@ -1031,8 +1031,8 @@ The installed `run-gate` wheel is the canonical test entrypoint. From the
 focused `run-gate release-preconditions` lane covers the changelog preflight,
 the dry-run's waiver, image-identity, and bootstrap-version checks. The focused
 `run-gate survivor-regressions` lane covers the s1 survivor oracles and keeps
-the whole-target Assay inventories for `cmru`, `cmru-r0-r1`, and both
-first-release lanes aligned with executable source modules; see the
+the whole-target Assay inventories for `cmru`, `cmru-r0-r1`, and the whole-source
+`cmru-first-release-r2` lane aligned with executable source modules; see the
 [inventory design](docs/DESIGN-GUIDE.md#whole-target-assay-inventories-list-executable-modules). The
 aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later;
 development and local build suffixes are rejected. Its preflight
@@ -1136,18 +1136,19 @@ retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) 
 tracking id, follow-up lane and prerequisites, and the marker
 `.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or snapshot check
 leaves neither record, and a full `gate` records `state: "passed"` with an empty
-`deferred_lanes` and removes any stale marker. The recorded follow-up lane is `gate`
-(the standalone `mutation` lane cannot run without the aggregate gate's baseline facts).
+`deferred_lanes` and removes any stale marker. The recorded follow-up lane is
+`assay-first-release-r2` for every release, first or not: the native whole-target lane is the one
+surviving R2 path (KI-199).
 Success is decided only after cleanup: if removing the planted canary or releasing the
 snapshot fails after every lane passed, the gate exits non-zero, the marker is removed and the
 manifest says `failed`. An invocation refused before a new gate starts (for example an
 unauthorized tracking id) leaves the previous run's evidence untouched. The follow-up needs
 a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU).
 If origin has no published stable CMRU tag, the same protected provisional
-release workflow instead runs the explicit whole-source `assay-first-release`
-lane. It does not fabricate a diff base. The gate records that whole-source R2
-is still due and names `run-gate assay-first-release-r2` as its follow-up; a
-failed or inaccessible origin query is an error, never an empty release history.
+release workflow runs the ordinary `assay` lane, because `_plan_gate` selects no
+special lane for a first release; the gate records that whole-source R2 is still
+due and names `run-gate assay-first-release-r2` as its follow-up; a failed or
+inaccessible origin query is an error, never an empty release history.
 See the [first-release design](docs/DESIGN-GUIDE.md#first-release-has-no-historical-diff-baseline)
 and [release steps](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
 The registered `gate` lane queries every CMRU release tag on origin through
@@ -1254,6 +1255,5 @@ successful full-suite run still executes all tests. `.assay/` verdict, result,
 and progress artifacts are retained as gate evidence, along with Run-Gate's
 campaign closeout files `.assay/campaign-cmru.exit`,
 `.assay/campaign-cmru.json`, `.assay/campaign-cmru.txt` and
-`.assay/campaign-cmru.err`. The first-release Assay lane uses the same four
-suffixes with the `campaign-cmru-first-release` basename.
+`.assay/campaign-cmru.err`. No other Assay lane's closeout basename is retained.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

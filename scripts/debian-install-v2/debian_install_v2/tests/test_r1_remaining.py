@@ -39,7 +39,7 @@ def make_installer(tmp_path, *, dry_run=True, **config_overrides):
     )
     actions = FakeHostActions() if not dry_run else HostActions(dry_run=True)
     if not dry_run:
-        actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+        actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
         actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
@@ -421,7 +421,7 @@ def test_docker_aarch64_dry_run(tmp_path, monkeypatch):
 
 def test_health_gate_failures(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
-    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = ""
     installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = ""
 
@@ -446,7 +446,7 @@ def test_health_gate_failures(tmp_path, monkeypatch):
 
 def test_activate_swap_partitions_real(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
-    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
     for num in range(5, 9):
         p = f"/dev/vda{num}"
@@ -475,7 +475,7 @@ def test_install_stage2_systemd_credentials(tmp_path):
         telegram_bot_token="123:token", telegram_chat_id="456",
         credential_mode="systemd",
     )
-    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer.actions.outputs[("/usr/bin/systemctl", "daemon-reload")] = ""
     installer.actions.outputs[("/usr/bin/systemctl", "enable", "vbpub-bootstrap-stage2.service")] = ""
     installer._install_stage2()
@@ -503,7 +503,7 @@ def test_reboot_real(tmp_path):
     detached reboot via systemd-run instead of calling `systemctl reboot`
     directly -- see _reboot()'s own docstring/comment for the full story."""
     installer = make_installer(tmp_path, dry_run=False, auto_reboot_after_stage1=True, never_reboot=False)
-    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     reboot_argv = (
         "/usr/bin/systemd-run", "--on-active", "60", "--", "/usr/bin/systemctl", "reboot",
     )
@@ -531,7 +531,7 @@ def test_module_main_block():
 
 def test_activate_swap_missing_partuuid(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
-    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
     installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = ""
     with pytest.raises(RuntimeError, match="no PARTUUID"):
@@ -540,7 +540,7 @@ def test_activate_swap_missing_partuuid(tmp_path):
 
 def test_activate_swap_partuuid_disappears(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
-    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
     installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = "uuid5"
     installer.actions.outputs[("/usr/sbin/mkswap", "/dev/vda5")] = ""
@@ -590,7 +590,7 @@ def test_configure_zswap_starts_units_this_boot_not_just_enables_them(tmp_path):
 def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 8 * 1024 ** 3)
-    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE,FSTYPE", "--nofsroot", "/")] = "/dev/vda3 ext4\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = (
         "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(5, 9))
     )

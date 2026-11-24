@@ -1046,11 +1046,13 @@ OnFailure={failed_unit}
 [Service]
 Type=oneshot
 EnvironmentFile=-{env_file}
+Environment=DR_STATE=none
 {load_credential_lines}WorkingDirectory={working_directory}
 # ONE launch path: the installed entrypoint puts the cli-extended wheel beside
 # it on sys.path. `python3 -m debian_install_v2...` bypasses that and crashes
 # with ModuleNotFoundError: cli_extended (live v1001 2026-10-06).
 ExecStart={python} {entrypoint} resume --yes
+ExecStartPost=/bin/sh -c 'if [ -e {completion_marker} ]; then exec /usr/bin/rm -f -- /root/.vbpub/firstboot.json /root/.vbpub/firstboot.started; fi'
 TimeoutStartSec=infinity
 StandardOutput=append:{output}
 StandardError=append:{output}
