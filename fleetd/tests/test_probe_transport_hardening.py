@@ -70,6 +70,9 @@ def test_probe_payload_groups_by_checkout_and_derives_each_ids_path_from_the_nam
     for group in groups:
         for name in group["names"]:
             assert group["ids_template"].replace("@NAME@", name) == jobs[name].candidate_file_home_path
+            assert (group["commit"], group["project"], group["lane"]) == (
+                jobs[name].commit, jobs[name].project, jobs[name].lane
+            )
     # One table entry per (campaign, host, commit, project, lane), not per job.
     assert probe_payload(jobs) != probe_payload(first)
     transport = FakeTransport()

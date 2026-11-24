@@ -31,14 +31,51 @@ def _pressure_tree(root, memory="some avg10=2.50\n", io="some avg10=3.00\n"):
 
 def test_the_shipped_probe_equals_the_direct_hostside_answer(tmp_path, monkeypatch):
     spec = _spec_for_project(".")
+    missing = replace(spec, batch=1, candidate_ids=("c" * 64,))
     home, environment = _real_runner_home(tmp_path, spec)
+    job_dir = home / "jobs" / spec.name
+    job_dir.mkdir()
+    (job_dir / "EXIT").write_text("0\n", encoding="ascii")
+    (job_dir / "list.sha256").write_text(f"{spec.list_digest}\n", encoding="ascii")
+    (job_dir / "progress-offset").write_text("0\n", encoding="ascii")
+    progress = home / progress_home_path(spec.commit, spec.project, "contract-assay")
+    progress.parent.mkdir(parents=True)
+    progress.write_text(json.dumps({
+        "event": "candidate",
+        "candidate_id": spec.candidate_ids[0],
+        "outcome_bucket": "killed",
+        "elapsed_seconds": 4.0,
+        "emitted_at": "2030-01-01T00:00:00Z",
+        "profile": {"metrics": {"memory_peak_bytes": 8192}},
+    }) + "\n", encoding="utf-8")
+    (job_dir / "progress-end-offset").write_text(f"{len(progress.read_bytes())}\n", encoding="ascii")
+    verdict = {
+        "claims": [{"rigor": "R2", "mutation": {
+            "survived": [{"candidate_id": spec.candidate_ids[0]}],
+        }}],
+        "judgment": {"r2": {"r2_command": {"r2_baseline": {"wall_s": 12.5}}}},
+    }
+    verdict_path = home / "campaigns" / f"{spec.name}-s1" / "verdict.json"
+    verdict_path.parent.mkdir(parents=True)
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
     proc = _pressure_tree(tmp_path / "proc")
-    script = probe_script({spec.name: spec}, proc_root=str(proc))
-    direct = hostside.probe_document(home, _groups(spec), proc, home=home)
+    jobs = {spec.name: spec, missing.name: missing}
+    script = probe_script(jobs, proc_root=str(proc))
+    direct = hostside.probe_document(home, _groups(spec, missing), proc, home=home)
     monkeypatch.setenv("HOME", str(home))
     shipped = subprocess.run(["bash", "-c", script], cwd=home, env=environment, capture_output=True, text=True, timeout=10)
     assert shipped.returncode == 0, shipped.stderr
     assert json.loads(shipped.stdout) == direct
+    rows = {row["name"]: row for row in direct["jobs"]}
+    assert rows[spec.name]["state"] == "EXIT"
+    assert rows[spec.name]["list_digest"] == spec.list_digest
+    assert rows[spec.name]["progress_offset"] == 0
+    assert rows[spec.name]["progress_end_offset"] == len(progress.read_bytes())
+    assert rows[spec.name]["records"][0]["memory_peak_bytes"] == 8192
+    assert rows[spec.name]["verdict_records"][0]["outcome_bucket"] == "survived"
+    assert rows[spec.name]["baseline_seconds"] == 12.5
+    assert rows[missing.name]["state"] == "MISSING"
+    assert rows[missing.name]["checkout_ready"] is True
     assert direct["pressure"] == {"memory_some_avg10": 2.5, "io_some_avg10": 3.0}
 
 
