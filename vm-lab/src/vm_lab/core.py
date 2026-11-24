@@ -502,9 +502,9 @@ def validate_plain_host_network_identity(value: str, network_name: str, driver: 
             f"plain-host --network {value!r} resolved to Docker network {network_name!r}; "
             "pass the exact network name, not an ID or prefix"
         )
-    if driver in ("host", "null"):
+    if driver != "bridge":
         raise RunnerError(
-            f"plain-host --network {value!r} uses forbidden Docker network driver {driver!r}"
+            f"plain-host --network {value!r} must use Docker bridge driver, not {driver!r}"
         )
 
 
@@ -1455,6 +1455,15 @@ def validate_name(value: str) -> None:
         raise RunnerError(f"invalid Docker VM name {value!r}")
 
 
+def validate_plain_host_name(value: str) -> None:
+    validate_name(value)
+    if "-" not in value:
+        raise RunnerError(
+            f"invalid plain-host Docker VM name {value!r}; include at least one hyphen so "
+            "an all-hex Docker ID prefix cannot select an unrelated container"
+        )
+
+
 def validate_port(value: int, label: str) -> None:
     if not 1 <= value <= 65535:
         raise RunnerError(f"{label} must be between 1 and 65535")
@@ -2248,12 +2257,15 @@ def docker_create_argv(
 
 
 def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
-    validate_name(args.name)
+    plain_host = bool(getattr(args, "plain_host", False))
+    if plain_host:
+        validate_plain_host_name(args.name)
+    else:
+        validate_name(args.name)
     require_registered_profile(profile)
     validate_max_concurrent_guests(args.max_concurrent_guests, profile.max_concurrent_guests)
     host_ports = host_ports_from_args(profile, args)
     validate_host_ports(profile, host_ports)
-    plain_host = bool(getattr(args, "plain_host", False))
 
     slice_name = (
         args.cgroup_parent

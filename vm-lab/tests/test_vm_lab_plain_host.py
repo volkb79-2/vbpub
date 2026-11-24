@@ -83,6 +83,21 @@ ALLOWED_DOCKER_OPTIONS = {
     "--entrypoint",
 }
 
+ALLOWED_MOUNT_DESTINATIONS = {
+    "/state",
+    "/base/disk.qcow2",
+    "/media/vm-lab-readonly.iso",
+    "/media/config.img",
+}
+
+SINGLE_VALUE_DOCKER_OPTIONS = [
+    "--network",
+    "--cgroup-parent",
+    "--user",
+    "--pids-limit",
+    "--entrypoint",
+]
+
 FORBIDDEN_DOCKER_OPTIONS = {
     "--pid",
     "--ipc",
@@ -324,31 +339,66 @@ def docker_options(argv: list[str]) -> dict[str, list[str]]:
     return options
 
 
+def docker_mounts(configuration: dict[str, object]) -> dict[str, dict[str, str]]:
+    """Parse bind mounts by destination and reject duplicate or unexpected fields."""
+    parsed: dict[str, dict[str, str]] = {}
+    for value in configuration["mounts"]:
+        fields: dict[str, str] = {}
+        for item in value.split(","):
+            key, separator, field_value = item.partition("=")
+            assert key in {"type", "src", "dst", "readonly"}, value
+            assert key not in fields, f"duplicate {key} in mount {value!r}"
+            if key == "readonly" and not separator:
+                field_value = "true"
+            else:
+                assert separator, f"{key} has no value in mount {value!r}"
+            fields[key] = field_value
+        assert fields.get("type") == "bind", value
+        destination = fields.get("dst")
+        assert destination is not None, value
+        assert destination not in parsed, f"duplicate mount destination {destination!r}"
+        parsed[destination] = fields
+    return parsed
+
+
+def bind_mount(source: str, destination: str, *, readonly: bool = False) -> dict[str, str]:
+    mount = {"type": "bind", "src": source, "dst": destination}
+    if readonly:
+        mount["readonly"] = "true"
+    return mount
+
+
+def one_docker_option(options: dict[str, list[str]], option: str) -> str:
+    values = options.get(option, [])
+    assert len(values) == 1, f"{option} must occur exactly once"
+    return values[0]
+
+
 def docker_configuration(argv: list[str]) -> dict[str, object]:
     options = docker_options(argv)
     environment = dict(value.split("=", 1) for value in options.get("--env", []))
     return {
-        "name": options["--name"][0],
-        "cgroup_parent": options["--cgroup-parent"][0],
-        "cpus": options["--cpus"][0],
+        "name": one_docker_option(options, "--name"),
+        "cgroup_parent": one_docker_option(options, "--cgroup-parent"),
+        "cpus": one_docker_option(options, "--cpus"),
         "cpu_shares": options.get("--cpu-shares", []),
-        "memory": options["--memory"][0],
-        "memory_swap": options["--memory-swap"][0],
-        "pids_limit": options["--pids-limit"][0],
+        "memory": one_docker_option(options, "--memory"),
+        "memory_swap": one_docker_option(options, "--memory-swap"),
+        "pids_limit": one_docker_option(options, "--pids-limit"),
         "cap_drop": options["--cap-drop"],
         "cap_add": options.get("--cap-add", []),
         "security_opts": options["--security-opt"],
         "read_only": "--read-only" in options,
         "tmpfs": options["--tmpfs"],
-        "network": options["--network"][0],
-        "user": options["--user"][0],
+        "network": one_docker_option(options, "--network"),
+        "user": one_docker_option(options, "--user"),
         "mounts": options["--mount"],
         "environment": environment,
         "pid_namespace": options.get("--pid", []),
         "privileged": "--privileged" in options,
         "devices": options.get("--device", []),
         "publish": options.get("--publish", []) + options.get("-p", []),
-        "entrypoint": options["--entrypoint"][0],
+        "entrypoint": one_docker_option(options, "--entrypoint"),
         "guest_script": one_value(argv, "-c"),
         "options": options,
     }
@@ -358,8 +408,15 @@ def assert_common_hardening(configuration: dict[str, object]) -> None:
     options = configuration["options"]
     assert set(options) == ALLOWED_DOCKER_OPTIONS
     assert not (set(options) & FORBIDDEN_DOCKER_OPTIONS)
+    for option in SINGLE_VALUE_DOCKER_OPTIONS:
+        one_docker_option(options, option)
     for option in FORBIDDEN_DOCKER_OPTIONS - {"--privileged"}:
         assert options.get(option, []) == []
+    mounts = docker_mounts(configuration)
+    assert set(mounts) <= ALLOWED_MOUNT_DESTINATIONS
+    assert "readonly" not in mounts["/state"]
+    for destination in set(mounts) - {"/state"}:
+        assert mounts[destination]["readonly"] == "true"
     assert configuration["cap_drop"] == ["ALL"]
     assert configuration["cap_add"] == []
     assert configuration["security_opts"] == ["no-new-privileges"]
@@ -385,12 +442,15 @@ def test_plain_host_start_places_a_hardened_guest_in_the_named_slice(monkeypatch
     assert configuration["memory_swap"] == configuration["memory"]
     assert configuration["user"] == f"{os.getuid()}:{os.getgid()}"
     assert_common_hardening(configuration)
-    assert f"type=bind,src={tmp_path.resolve() / 'state'},dst=/state" in configuration["mounts"]
-    base_mount = (
-        f"type=bind,src={tmp_path.resolve() / 'base.qcow2'},"
-        "dst=/base/disk.qcow2,readonly"
-    )
-    assert base_mount in configuration["mounts"]
+    root = tmp_path.resolve()
+    assert docker_mounts(configuration) == {
+        "/state": bind_mount(str(root / "state"), "/state"),
+        "/base/disk.qcow2": bind_mount(
+            str(root / "base.qcow2"),
+            "/base/disk.qcow2",
+            readonly=True,
+        ),
+    }
     assert "VM_CONFIG_DISK" not in configuration["environment"]
     assert "vmlabdatacfg" not in configuration["guest_script"]
 
@@ -459,6 +519,15 @@ def test_plain_host_start_uses_real_preflight_and_post_start_verification(
     configuration = docker_configuration(boundary.create_argv)
     assert configuration["cgroup_parent"] == "dev-gates.slice"
     assert_common_hardening(configuration)
+    root = tmp_path.resolve()
+    assert docker_mounts(configuration) == {
+        "/state": bind_mount(str(root / "state"), "/state"),
+        "/base/disk.qcow2": bind_mount(
+            str(root / "base.qcow2"),
+            "/base/disk.qcow2",
+            readonly=True,
+        ),
+    }
     assert boundary.systemctl_units
     assert set(boundary.systemctl_units) == {"dev-gates.slice"}
     started_line = [
@@ -481,12 +550,14 @@ def test_cockpit_mode_resolves_local_mounts_through_self_inspection(monkeypatch,
     assert result == 1  # the fake boundary stops at `docker run`
     configuration = docker_configuration(argv)
     root = tmp_path.resolve()
-    assert f"type=bind,src=/host{root / 'state'},dst=/state" in configuration["mounts"]
-    base_mount = (
-        f"type=bind,src=/host{root / 'base.qcow2'},"
-        "dst=/base/disk.qcow2,readonly"
-    )
-    assert base_mount in configuration["mounts"]
+    assert docker_mounts(configuration) == {
+        "/state": bind_mount(f"/host{root / 'state'}", "/state"),
+        "/base/disk.qcow2": bind_mount(
+            f"/host{root / 'base.qcow2'}",
+            "/base/disk.qcow2",
+            readonly=True,
+        ),
+    }
     assert configuration["cgroup_parent"] == "dev-gates.slice"
     assert configuration["cpu_shares"] == ["64"]
     assert configuration["user"] == f"{os.getuid()}:{os.getgid()}"
@@ -533,6 +604,16 @@ def test_explicit_empty_slice_refuses_instead_of_falling_back(monkeypatch, tmp_p
     assert "refusing an unplaced VM" in capsys.readouterr().err
 
 
+def test_plain_host_start_refuses_a_name_without_a_hyphen_before_docker(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(vm_lab, "docker_run", ForbiddenDocker())
+    monkeypatch.setattr(vm_lab, "vm_start_lock_path", lambda: tmp_path.resolve() / "admission.lock")
+    arguments = start_arguments(tmp_path, "--name", "dead") + ["--plain-host"]
+    assert vm_lab.main(GENERIC_PROFILE, arguments) == 1
+    assert "include at least one hyphen" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("network", ["bridge", "host", "none", "container:peer"])
 def test_plain_host_start_refuses_a_fixed_network_before_docker(monkeypatch, tmp_path, capsys, network):
     monkeypatch.setattr(vm_lab, "docker_run", ForbiddenDocker())
@@ -551,15 +632,16 @@ def test_plain_host_start_refuses_a_network_id_that_resolves_to_host(monkeypatch
     assert "resolved to Docker network 'host'" in capsys.readouterr().err
 
 
-def test_plain_host_start_refuses_a_host_driver_even_with_an_exact_name(
-    monkeypatch, tmp_path, capsys
+@pytest.mark.parametrize("driver", ["host", "null", "macvlan", "ipvlan", "overlay"])
+def test_plain_host_start_refuses_a_non_bridge_driver_even_with_an_exact_name(
+    monkeypatch, tmp_path, capsys, driver
 ):
     monkeypatch.setattr(vm_lab, "docker_run", ForbiddenDocker())
     monkeypatch.setattr(vm_lab, "vm_start_lock_path", lambda: tmp_path.resolve() / "admission.lock")
-    monkeypatch.setattr(vm_lab, "inspect_network", lambda name: (name, "host"))
+    monkeypatch.setattr(vm_lab, "inspect_network", lambda name: (name, driver))
     arguments = start_arguments(tmp_path) + ["--plain-host"]
     assert vm_lab.main(GENERIC_PROFILE, arguments) == 1
-    assert "forbidden Docker network driver 'host'" in capsys.readouterr().err
+    assert f"must use Docker bridge driver, not {driver!r}" in capsys.readouterr().err
 
 
 def test_plain_host_start_requires_the_network_argument_to_be_the_exact_name(
@@ -702,8 +784,26 @@ def test_plain_host_start_uses_the_local_daemon_namespace(monkeypatch, tmp_path)
         "--data-disk-size", "8589934592",
     )
     configuration = docker_configuration(argv)
-    assert f"type=bind,src={media.resolve()},dst=/media/vm-lab-readonly.iso,readonly" in configuration["mounts"]
-    assert f"type=bind,src={config.resolve()},dst=/media/config.img,readonly" in configuration["mounts"]
+    root = tmp_path.resolve()
+    assert_common_hardening(configuration)
+    assert docker_mounts(configuration) == {
+        "/state": bind_mount(str(root / "state"), "/state"),
+        "/base/disk.qcow2": bind_mount(
+            str(root / "base.qcow2"),
+            "/base/disk.qcow2",
+            readonly=True,
+        ),
+        "/media/vm-lab-readonly.iso": bind_mount(
+            str(media.resolve()),
+            "/media/vm-lab-readonly.iso",
+            readonly=True,
+        ),
+        "/media/config.img": bind_mount(
+            str(config.resolve()),
+            "/media/config.img",
+            readonly=True,
+        ),
+    }
     assert configuration["environment"]["VM_READONLY_MEDIA"] == "/media/vm-lab-readonly.iso"
     assert configuration["environment"]["VM_CONFIG_DISK"] == "/media/config.img"
     assert configuration["environment"]["VM_EXTRA_DISK_SIZES_BYTES"] == "8589934592"
@@ -723,11 +823,21 @@ def _start_with_media_alias(monkeypatch, tmp_path, option: str) -> dict[str, obj
 @pytest.mark.parametrize("option", ["--readonly-media", "--iso", "--seed-iso"])
 def test_every_cdrom_alias_attaches_the_same_read_only_media(monkeypatch, tmp_path, option):
     configuration = _start_with_media_alias(monkeypatch, tmp_path, option)
-    media_mount = (
-        f"type=bind,src={(tmp_path / 'seed.iso').resolve()},"
-        "dst=/media/vm-lab-readonly.iso,readonly"
-    )
-    assert media_mount in configuration["mounts"]
+    root = tmp_path.resolve()
+    assert_common_hardening(configuration)
+    assert docker_mounts(configuration) == {
+        "/state": bind_mount(str(root / "state"), "/state"),
+        "/base/disk.qcow2": bind_mount(
+            str(root / "base.qcow2"),
+            "/base/disk.qcow2",
+            readonly=True,
+        ),
+        "/media/vm-lab-readonly.iso": bind_mount(
+            str((tmp_path / "seed.iso").resolve()),
+            "/media/vm-lab-readonly.iso",
+            readonly=True,
+        ),
+    }
     assert configuration["environment"]["VM_READONLY_MEDIA"] == "/media/vm-lab-readonly.iso"
 
 
