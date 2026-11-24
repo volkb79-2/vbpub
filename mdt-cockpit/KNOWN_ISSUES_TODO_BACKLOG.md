@@ -2052,3 +2052,9 @@ keeps `-500` deliberately (`scripts/netcup/runner/start-cockpit-runner.sh:16`, `
 no rebuild removes the WARN. Fix: the check accepts the value of `COCKPIT_OOM_SCORE_ADJ` for the runner container (match its container name or read
 the runner.env value), or the WARN names the runner.env knob (`scripts/netcup/runner/runner.env.example:43`) instead of "rebuild the devcontainer".
 Close when check.sh on a runner host reports no WARN for the runner's cockpit and still WARNs for a devcontainer above -900.
+
+## MDT-113 - a `-` or `0` pin of a tier MemoryMax renders `max` on dedicated-dev (2026-11-24)
+
+**Status:** OPEN. Found by the P-plat-19h r1 review (F7); predates that package, which sets the derived tier Max to dev.slice's.
+
+On `HOST_ROLE=dedicated-dev`, `DEV_{GATES,BACKGROUND}_MEMORY_MAX=-` or `0` goes through `pick` (`host-setup/mdt_capacity.py:565`, called at `:623`) to `None`; install.sh then renders an empty `MemoryMax=` and the kernel shows `max`. check.sh accepts it (`want=max`, `scripts/check.sh:351`) and the accept kit refuses such a tier (`tools/accept/accept-run.sh:37`). dev.slice stays finite, so the effect today equals the derived value (tier Max = dev Max), but it is a path to a tier without a MemoryMax and the estate rule is never `MemoryMax=infinity`. Fix: on dedicated-dev, refuse `-`/`0` for the two tier MAX pins in `dedicated_memory` (omitting one has no purpose now that the derived value equals dev's), with a test, and make check.sh FAIL a tier `max` on this role.
