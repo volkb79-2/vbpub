@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The hostobs backlog now lists only open items; fixed and closed entries are archived one per line in `archive/2026-Q4.md`, with HOB-62..74 filed and HOB-49's WIRE citation corrected.
+
 ### Added (P5b-2d server: tick delivery, retries, served verbs and reachable §11.4 cases; `HOB-54` stays open)
 
 - **`bins/probe/src/server.rs`**: `Server::on_tick(now_ns)` pulls one shared delivery set from the
