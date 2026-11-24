@@ -6,6 +6,37 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Changed
+- `hooks/ctx-hooks.py` is now a drop-in replacement for the untracked live hook
+  `.controller-state/hooks/ctx.py` (CTL-43; wiring and deleting `ctx.py` are the
+  controller's step): only the command path in `.claude/settings.local.json`
+  changes. The pressure ladder reads its ceiling from
+  `~/.claude/settings.json` (`modelSettings.<model>.autoCompactWindow` of the
+  transcript's model, else the top-level `autoCompactWindow`, else 500000) and
+  prints the live hook's growth marker ("calls to the Nk ceiling"). One soft
+  threshold per kind: `CTX_SOFT_CONTROLLER` (alias `CTX_CONTROLLER_SOFT`, default
+  650000) and `CTX_SOFT_AGENT` (default 200000). A controller below its threshold
+  persists and keeps working; at or past it, it is told to write the handover
+  (controller-handover skill), sync the plan, set READY and end the turn
+  (operator 2026-11-18: auto-compaction is not a safe handover). An agent gets
+  the marker only until its threshold, then finish-or-PARTIAL. `CTX_HOOK_ROLE`
+  is honoured. Ported from the live hook: the stale-HANDOFF warning (older than
+  15 min, controller past 200k), the growth line, the PreCompact "merges since"
+  list. `session-start` prints the READ FIRST list of the newest `RESUME HERE #N`
+  block of HANDOFF.md instead of a hard-coded order. New `CTX_REPO_ROOT` and
+  `CTX_HANDOFF_FILE`; the default state directory is the nearest
+  `.controller-state` above the hook's `cwd` (else the repo holding the script,
+  else nothing is written). The pressure state file is keyed by session id as
+  well and lives in `<state>/hooks/`. 12 new hand mutants.
+- `hooks/ctx-hooks.py` review round 1 (P-plat-05): readback files and state are
+  per session (`readback-<session_id>-N.md`, `readback-state-<session_id>.json`),
+  `session-start` names a readback only when that session's own last build
+  succeeded and prints the live hook's role rule before the main controller's
+  list (`CTX_MAIN_CONTROLLER` names it), `CTX_HOOK_ROLE=agent` skips the
+  pre-compact build, the handover note fires at `min(soft, ceiling - 50000)`
+  (warning event in the log), and the "weigh the three things" sentence is back
+  in every note that tells a role to decide. 5 more hand mutants.
+
 ### Suite budget and remote-gate OOM classification (P-plat-23)
 - `run-gate.toml` `[lanes.suite]` budget 30m -> 90m (measured 29m57s wall on r1002, 34m59s and 55m14s on v1001; slowest x 1.6).
 - `remote-gate.sh`: classification reads runner- or run-gate-written evidence only.

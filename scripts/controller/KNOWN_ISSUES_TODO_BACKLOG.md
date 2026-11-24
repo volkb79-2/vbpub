@@ -51,7 +51,7 @@ together.
 | CTL-40 | agctl package; bash frozen | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-41 | ctl-clean treats the symptom | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-42 | Limit note on the launch path | Should-fix | PARTIAL 2026-11-24 (0c366bf2fa11743281cf4bbcddb0cc981ebba5d1; sol + wrapper wording fixed; limits-reader and OD ordering remain OPEN) |
-| CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | OPEN 2026-11-24 (Opus design review) |
+| CTL-43 | Live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY | Must-fix | FIXED-pending-wiring 2026-11-24 (P-plat-05: tracked `hooks/ctx-hooks.py`) |
 | CTL-44 | HANDOFF is an append-only log | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-45 | Launcher twins | Should-fix | OPEN 2026-11-24 (Opus design review) |
 | CTL-46 | Four readers of run records | Nice-to-have | OPEN 2026-11-24 (Opus design review) |
@@ -1616,7 +1616,7 @@ Source: .controller-state/design-review-2026-11-24/controller-tooling.md H5
 
 ## CTL-43 — live ctx hook untracked, contradicts AG-HANDOVER-PRIORITY
 
-**Status:** OPEN (filed 2026-11-24).
+**Status:** FIXED-pending-wiring 2026-11-24 (package P-plat-05): `scripts/controller/hooks/ctx-hooks.py` is a drop-in for the untracked `.controller-state/hooks/ctx.py`. Remaining controller steps: the operator swaps the five hook paths in `.claude/settings.local.json` (path only, mode words unchanged); `.controller-state/hooks/ctx.py` is deleted after one clean day. AGENTS.md "Context pressure ladder" and the controller-handover skill step 7 now name `ctx-hooks.py` (review r1 fix). Swapping drops the live `state-*.json` cadence state, so each live session gets one extra note at its current step.
 
 Wire `hooks/ctx-hooks.py` and delete the copy. Ceiling per model; past the soft threshold, handover, READY, end of turn.
 

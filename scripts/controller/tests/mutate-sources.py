@@ -479,9 +479,43 @@ mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pattern-leak.py",
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-spawned-goal.py",
        '        or kind == "spawned"\n', '        or False\n')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-subagent-skip.py",
-       '        if hook.get("agent_id") and not explicit:', '        if False:')
+       '        if (hook.get("agent_id") or role_env == "agent") and not explicit:', '        if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-role-env-skip.py",
+       '(hook.get("agent_id") or role_env == "agent") and not explicit:', 'hook.get("agent_id") and not explicit:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-sid-state.py",
+       'return state / f"readback-state-{session}.json"', 'return state / "readback-state-x.json"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-effective-soft.py",
+       'return max(ARM_AT, min(soft, ceiling - STEP))', 'return soft')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pressure-dir.py",
+       'state / "hooks" / f"pressure-{safe}.json"', 'state / f"pressure-{safe}.json"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-state-fallback.py",
+       'return own if own.is_dir() else None', 'return own')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-crash-log.py",
        'log(ACTIVE_LOG, {"ev": "hook-error"', 'log(None, {"ev": "hook-error"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-ceiling-model.py",
+       'value = window(entry.get("autoCompactWindow")) if isinstance(entry, dict) else None', 'value = None')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-ceiling-top.py",
+       'value = window(data.get("autoCompactWindow"))', 'value = None')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-subagent-path.py",
+       '/ "subagents" / (', '/ "subagent" / (')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-stale-check.py",
+       'if age and age[1] >= STALE_MIN:', 'if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-stale-age.py",
+       'if age and age[1] >= STALE_MIN:', 'if age:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-soft-handover.py",
+       '    if fill >= soft:\n        note = (', '    if False:\n        note = (')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-agent-soft.py",
+       '        if fill < soft:\n            return marker', '        if True:\n            return marker')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-soft-alias.py",
+       'env_int("CTX_CONTROLLER_SOFT", CONTROLLER_SOFT_DEFAULT)', 'CONTROLLER_SOFT_DEFAULT')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-role-env.py",
+       'role = (os.environ.get("CTX_HOOK_ROLE") or "").strip().lower()', 'role = ""')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-read-order-newest.py",
+       'block = text[heads[-1].start():] if heads else ""', 'block = text[heads[0].start():] if heads else ""')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-merges-window.py",
+       'f"--since={minutes + 1} minutes ago"', 'f"--since={minutes + 10000} minutes ago"')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-state-walkup.py",
+       'if (parent / ".controller-state").is_dir():', 'if False:')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",
        "[[ $psi_limit =~ ^[0-9]+([.][0-9]+)?$ && $poll_seconds =~ ^[0-9]+$ ]] || {\n  echo 'RELEASE_PSI_LIMIT must be numeric and RELEASE_PSI_POLL_SECONDS must be integer seconds' >&2; exit 2;\n}",
        ': # removed PSI input validation')
