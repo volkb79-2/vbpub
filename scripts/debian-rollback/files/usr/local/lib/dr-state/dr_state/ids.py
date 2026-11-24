@@ -182,8 +182,11 @@ def compare_versions(left: str, right: str) -> int:
     result = _verrevcmp(left_prefix, right_prefix)
     if result:
         return result
-    # filevercmp compares the complete names byte-for-byte after an equal
-    # prefix key. Kernel versions are ASCII, so UTF-8 bytes equal strcmp.
+    # gnulib filevercmp makes a second verrevcmp pass on the complete names
+    # before falling back to byte comparison.
+    result = _verrevcmp(left, right)
+    if result:
+        return result
     left_bytes = left.encode("utf-8")
     right_bytes = right.encode("utf-8")
     return (left_bytes > right_bytes) - (left_bytes < right_bytes)

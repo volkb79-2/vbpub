@@ -878,7 +878,7 @@ def cmd_delete(context: Context, command: Sequence[str]) -> int:
     default = boot.default(strict=True)
     if default is None:
         raise Refused(
-            f"{boot.name} has no readable saved_entry; "
+            f"{boot.name} has no readable configured default; "
             "refusing delete without a known configured default"
         )
     _refuse_targeted_selector(
@@ -951,7 +951,7 @@ def cmd_prune(context: Context, command: Sequence[str]) -> int:
     boot = _require_boot(context)
     default = boot.default(strict=True)
     oneshot = boot.oneshot(strict=True)
-    if default is None:
+    if default is None and boot.name == "systemd-boot":
         raise Refused(
             f"{boot.name} has no readable configured default; refusing prune"
         )

@@ -186,6 +186,8 @@ class VersionOrderTest(unittest.TestCase):
     SORT_V_ASCENDING = (
         "6.1.0-9-amd64",
         "6.12.0.custom",
+        "6.12.0.rc9",
+        "6.12.0.rc10",
         "6.12.0-1",
         "6.12.0.1",
         "6.12.1a-amd64",
@@ -226,6 +228,7 @@ class VersionOrderTest(unittest.TestCase):
             ids.newest_first(versions),
             ("6.12.0.1", "6.12.0-1", "6.12.0.custom"),
         )
+        self.assertLess(ids.compare_versions("6.12.0.rc9", "6.12.0.rc10"), 0)
 
 
 if __name__ == "__main__":

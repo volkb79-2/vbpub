@@ -694,6 +694,20 @@ class CoreTest(_support.TemporaryRootTest):
         self.assertFalse((self.paths.top / third.name).exists())
         self.assertFalse((self.paths.top / fourth.name).exists())
 
+    def test_prune_with_empty_grub_saved_entry_keeps_bash_parity(self) -> None:
+        third = self.add_state(3, 14)
+        fourth = self.add_state(4, 15)
+        context = self.grub_context("")
+        self.assertEqual(execute(context, ("prune", "--keep", "0")), 0)
+        self.assertTrue((self.paths.top / self.install.name).is_dir())
+        self.assertFalse((self.paths.top / self.apt.name).exists())
+        self.assertFalse((self.paths.top / third.name).exists())
+        self.assertFalse((self.paths.top / fourth.name).exists())
+        self.assertEqual(
+            context.runner.environment,
+            f"saved_entry={self.install.name}\n",
+        )
+
     def test_prune_protects_running_default_and_oneshot_separately(self) -> None:
         third = self.add_state(3, 14)
         fourth = self.add_state(4, 15)
@@ -733,9 +747,19 @@ class CoreTest(_support.TemporaryRootTest):
 
     def test_prune_refuses_an_absent_default_before_any_change(self) -> None:
         self.boot.default_name = None
+        self.boot.name = "systemd-boot"
         context = self.context()
         with self.assertRaisesRegex(Refused, "no readable configured default"):
             execute(context, ("prune", "--keep", "0"))
+        self.assertEqual(self.events, [])
+
+    def test_delete_absent_default_message_is_backend_neutral(self) -> None:
+        self.storage.running_name = self.apt.name
+        self.boot.name = "systemd-boot"
+        self.boot.default_name = None
+        with self.assertRaisesRegex(Refused, "no readable configured default") as raised:
+            execute(self.context(), ("delete", self.install.name, "--yes"))
+        self.assertNotIn("saved_entry", str(raised.exception))
         self.assertEqual(self.events, [])
 
     def test_prune_fails_closed_when_the_default_is_unreadable(self) -> None:

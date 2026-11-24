@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import _support
-from dr_state import ids
+from dr_state import core, ids
 from dr_state.boot import BootTarget
 from dr_state.boot.sdboot import (
     CAPACITY_MARGIN,
@@ -20,6 +21,9 @@ from dr_state.boot.sdboot import (
     ONESHOT_EFIVAR,
     Filesystem,
     SdbootBoot,
+    _Entry,
+    _Inventory,
+    _Pair,
     _entry_refs,
     _pair_id,
 )
@@ -50,18 +54,47 @@ class FakeRunner:
 class FakeStorage:
     name = "btrfs"
 
-    def __init__(self, states: list[ids.StateId]) -> None:
+    def __init__(self, states: list[ids.StateId], paths: Path) -> None:
         self.states = states
+        self.paths = paths
 
     def list(self) -> list[Stored]:
         return [Stored(state.name, None, None) for state in self.states]
 
     def running(self) -> str | None:
-        return None
+        return self.states[0].name if self.states else None
 
     def kernels(self, state: str) -> list[KernelPair]:
+        boot = self.paths.top / state / "boot"
+        pairs: dict[str, tuple[Path, Path]] = {}
+        for kernel in boot.glob("vmlinuz-*"):
+            version = kernel.name.removeprefix("vmlinuz-")
+            initrd = boot / f"initrd.img-{version}"
+            if kernel.is_file() and initrd.is_file():
+                pairs[version] = (kernel, initrd)
+        return [
+            KernelPair(
+                version=version,
+                vmlinuz=pairs[version][0],
+                initrd=pairs[version][1],
+                fs_vmlinuz=f"/{state}/boot/vmlinuz-{version}",
+                fs_initrd=f"/{state}/boot/initrd.img-{version}",
+            )
+            for version in ids.newest_first(pairs)
+        ]
+
+    def activate(self, state: ids.StateId) -> None:
         _ = state
-        return []
+
+    def locator(self, state: ids.StateId) -> str:
+        _ = state
+        return "11111111-2222-3333-4444-555555555555"
+
+    def root_args(self, state: ids.StateId) -> str:
+        return (
+            "root=UUID=11111111-2222-3333-4444-555555555555 "
+            f"rootflags=subvol={state.name}"
+        )
 
 
 class FakeSpaceFilesystem(Filesystem):
@@ -141,7 +174,7 @@ class SdbootTest(_support.TemporaryRootTest):
         self.states = [self.install, self.apt]
         self.add_state(self.install, kernel=b"install-kernel\n", initrd=b"install-initrd\n")
         self.add_state(self.apt, kernel=b"apt-kernel\n", initrd=b"apt-initrd\n")
-        self.storage = FakeStorage(self.states)
+        self.storage = FakeStorage(self.states, self.paths)
         self.runner = FakeRunner()
         self.warnings: list[str] = []
         self.boot = self.make_boot()
@@ -451,6 +484,55 @@ class SdbootTest(_support.TemporaryRootTest):
             expected,
         )
 
+    def test_real_backend_selection_fit_is_refused_one_byte_early_and_published_at_equality(
+        self,
+    ) -> None:
+        shared_kernel = b"shared kernel payload\n" * 4096
+        shared_initrd = b"shared initrd payload\n" * 1024
+        self.add_state(self.install, kernel=shared_kernel, initrd=shared_initrd)
+        self.add_state(self.apt, kernel=shared_kernel, initrd=shared_initrd)
+        self.paths.loader_conf.write_text(
+            f"default {ids.entry_id(self.install)}\ntimeout 5\n",
+            encoding="utf-8",
+        )
+        filesystem = FakeSpaceFilesystem()
+        self.boot = self.make_boot(filesystem=filesystem)
+        context = core.Context(
+            paths=self.paths,
+            storage=self.storage,
+            runner=self.runner,
+            clock=lambda: datetime(2026, 11, 18, 14, tzinfo=UTC),
+            env={},
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            boot=self.boot,
+        )
+        need = len(shared_kernel) + len(shared_initrd) + 2 * ENTRY_BYTES
+        filesystem.free = CAPACITY_MARGIN + need - 1
+        with self.assertRaisesRegex(CapacityError, "cannot fit"):
+            core._publish(context)
+        self.assertFalse(self.entry(self.install).exists())
+        self.assertFalse(self.entry(self.apt).exists())
+
+        filesystem.free = CAPACITY_MARGIN + need
+        core._publish(context)
+        published_pairs = [
+            path
+            for path in self.paths.esp_kernel_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".dr-state.tmp.")
+        ]
+        self.assertEqual(len(published_pairs), 1)
+        self.assertEqual(
+            (published_pairs[0] / "vmlinuz").stat().st_size,
+            len(shared_kernel),
+        )
+        self.assertEqual(
+            (published_pairs[0] / "initrd.img").stat().st_size,
+            len(shared_initrd),
+        )
+        self.assertTrue(self.entry(self.install).is_file())
+        self.assertTrue(self.entry(self.apt).is_file())
+
     def test_foreign_entry_keeps_referenced_pair_during_shrink(self) -> None:
         self.publish((self.install, self.apt), self.install)
         protected_pair = self.pair_path(self.apt)
@@ -677,10 +759,184 @@ class SdbootTest(_support.TemporaryRootTest):
             f"6.12.117+deb13-amd64-{pair}",
         )
 
+    def test_pair_id_refuses_each_unsafe_input(self) -> None:
+        kernel = "a" * 64
+        initrd = "b" * 64
+        cases = (
+            ("missing initrd hash", ("6.12.0", kernel)),
+            ("missing kernel hash", ("6.12.0", None, initrd)),
+            (
+                "bad kernel hash",
+                ("6.12.0", "a" * 63 + "g", initrd),
+            ),
+            (
+                "bad initrd hash",
+                ("6.12.0", kernel, "b" * 63 + "g"),
+            ),
+            (
+                "uppercase hash",
+                ("6.12.0", "A" * 64, initrd),
+            ),
+            ("bad kernel version", ("6.12/evil", kernel, initrd)),
+            ("empty kernel version", ("", kernel, initrd)),
+            ("vfat component too long", ("a" * 191, kernel, initrd)),
+        )
+        for label, arguments in cases:
+            with self.subTest(label=label):
+                with self.assertRaises(BootError):
+                    _pair_id(*arguments)
 
-class SdbootPayloadBoundaryTest(unittest.TestCase):
-    def test_payload_reports_dedupe_keys_and_full_pair_bytes(self) -> None:
-        self.assertEqual(ENTRY_BYTES, 4096)
+    def test_entry_text_refuses_an_unsafe_uuid_and_kernel_id_mismatch(self) -> None:
+        kernel = "a" * 64
+        initrd = "b" * 64
+        unsafe_uuid = replace(
+            self.target(self.install),
+            locator="not/a-uuid",
+        )
+        with self.assertRaisesRegex(BootError, "root locator"):
+            self.boot._entry_text(
+                unsafe_uuid,
+                _pair_id("6.12.117+deb13-amd64", kernel, initrd),
+            )
+        mismatch = _pair_id("6.12.107+deb13-amd64", kernel, initrd)
+        with self.assertRaisesRegex(BootError, "does not name version"):
+            self.boot._entry_text(self.target(self.install), mismatch)
+
+    def test_entry_refs_cover_empty_dedupe_multi_case_and_crlf(self) -> None:
+        pair_a = f"6.12.0-{'a' * 64}"
+        pair_b = f"6.12.0-{'b' * 64}"
+        pair_c = f"6.12.0-{'c' * 64}"
+        mixed_pair = f"6.12.0-{'ABCDEF012345' * 5 + 'ABCD'}"
+        cases = (
+            ("empty", "title only\n", frozenset()),
+            (
+                "dedupe",
+                f"linux /EFI/dr/kernels/{pair_a}/vmlinuz\n"
+                f"initrd /EFI/dr/kernels/{pair_a}/initrd.img\n",
+                frozenset({pair_a.casefold()}),
+            ),
+            (
+                "multi-path",
+                f"linux /EFI/dr/kernels/{pair_a}/vmlinuz "
+                f"/EFI/dr/kernels/{pair_b}/vmlinuz\n"
+                f"initrd /EFI/dr/kernels/{pair_b}/initrd.img "
+                f"/EFI/dr/kernels/{pair_c}/initrd.img\n",
+                frozenset(
+                    {pair_a.casefold(), pair_b.casefold(), pair_c.casefold()}
+                ),
+            ),
+            (
+                "vfat-case",
+                f"LINUX /eFi/DR/KeRnElS/{mixed_pair}/vmlinuz\n"
+                f"INITRD /EFI/dr/kernels/{mixed_pair.casefold()}/INITRD.IMG\n",
+                frozenset({mixed_pair.casefold()}),
+            ),
+            (
+                "crlf-single",
+                f"linux /EFI/dr/kernels/{pair_a}/vmlinuz\r\n"
+                f"initrd /EFI/dr/kernels/{pair_b}/initrd.img\r\n",
+                frozenset({pair_a.casefold(), pair_b.casefold()}),
+            ),
+            (
+                "crlf-multi",
+                f"linux /EFI/dr/kernels/{pair_a}/vmlinuz\r\n"
+                f"initrd /EFI/dr/kernels/{pair_a}/initrd.img "
+                f"/EFI/dr/kernels/{pair_b}/initrd.img\r\n",
+                frozenset({pair_a.casefold(), pair_b.casefold()}),
+            ),
+        )
+        for label, text, expected in cases:
+            with self.subTest(label=label):
+                self.assertEqual(_entry_refs(text.encode()), expected)
+
+    def test_pair_payload_keys_casefold_dedupe_and_use_full_bytes(self) -> None:
+        shared_kernel = b"shared kernel\n"
+        shared_initrd = b"shared initrd\n"
+        self.add_state(self.install, kernel=shared_kernel, initrd=shared_initrd)
+        self.add_state(self.apt, kernel=shared_kernel, initrd=shared_initrd)
+        lower = self.target(self.install)
+        upper = self.target(self.apt)
+        upper = replace(
+            upper,
+            kernel=replace(upper.kernel, version="6.12.117+DEB13-AMD64"),
+        )
+        lower_payload = self.boot.payload(lower)
+        upper_payload = self.boot.payload(upper)
+        expected_pair_bytes = (
+            lower.kernel.vmlinuz.stat().st_size
+            + lower.kernel.initrd.stat().st_size
+        )
+        self.assertEqual(lower_payload[0][0], lower_payload[0][0].casefold())
+        self.assertEqual(upper_payload[0][0], upper_payload[0][0].casefold())
+        self.assertEqual(lower_payload[0][0], upper_payload[0][0])
+        self.assertEqual(lower_payload[0][1], expected_pair_bytes)
+        self.assertEqual(upper_payload[0][1], expected_pair_bytes)
+        self.assertEqual(lower_payload[1][1], ENTRY_BYTES)
+        self.assertEqual(upper_payload[1][1], ENTRY_BYTES)
+
+    def test_shrink_orphan_cases_preserve_references_and_vfat_case(self) -> None:
+        def materialize(
+            label: str,
+            name: str,
+            refs: frozenset[str],
+        ) -> tuple[_Pair, _Entry]:
+            pair_path = self.paths.esp_kernel_dir / name
+            pair_path.mkdir()
+            (pair_path / "vmlinuz").write_bytes(b"kernel\n")
+            (pair_path / "initrd.img").write_bytes(b"initrd\n")
+            entry_path = self.paths.entry_dir / f"{label}.conf"
+            data = (
+                f"linux /EFI/dr/kernels/{name}/vmlinuz\n"
+                f"initrd /EFI/dr/kernels/{name}/initrd.img\n"
+            ).encode()
+            entry_path.write_bytes(data)
+            return (
+                _Pair(pair_path, name, "6.12.0"),
+                _Entry(entry_path, entry_path.name, data, False, None, refs),
+            )
+
+        keep = f"6.12.0-{'a' * 64}"
+        orphan_b = f"6.12.0-{'b' * 64}"
+        orphan_c = f"6.12.0-{'c' * 64}"
+        pair_keep, entry_keep = materialize("foreign", keep, frozenset({keep}))
+        pair_orphan_b, entry_orphan_b = materialize(
+            "foreign-b", orphan_b, frozenset()
+        )
+        pair_orphan_c, entry_orphan_c = materialize(
+            "foreign-c", orphan_c, frozenset()
+        )
+        self.boot._shrink(
+            _Inventory(
+                (entry_keep, entry_orphan_b, entry_orphan_c),
+                (pair_keep, pair_orphan_b, pair_orphan_c),
+            ),
+            target_entries=frozenset(),
+            target_pairs=frozenset(),
+        )
+        self.assertTrue(pair_keep.path.is_dir())
+        self.assertFalse(pair_orphan_b.path.exists())
+        self.assertFalse(pair_orphan_c.path.exists())
+
+        mixed = f"6.12.0-{'ABCDEF012345' * 5 + 'A' * 4}"
+        pair_mixed, entry_mixed = materialize(
+            "foreign-mixed",
+            mixed,
+            frozenset({mixed.casefold()}),
+        )
+        self.boot._shrink(
+            _Inventory((entry_mixed,), (pair_mixed,)),
+            target_entries=frozenset(),
+            target_pairs=frozenset(),
+        )
+        self.assertTrue(pair_mixed.path.is_dir())
+
+        no_pairs = self.paths.esp_kernel_dir / orphan_b
+        self.boot._shrink(
+            _Inventory((entry_orphan_b,), ()),
+            target_entries=frozenset(),
+            target_pairs=frozenset(),
+        )
+        self.assertFalse(no_pairs.exists())
 
 
 if __name__ == "__main__":
