@@ -162,37 +162,42 @@ def _override(body: str = "") -> str:
             "acme-tls-non-443",
             _override('[tls_edge.tls]\nmode = "acme-tls"\n'
                       "[tls_edge.ports]\nhttps = 8443\n"),
-            'tls_mode = "acme-tls"\nhttps_port = 8443\n',
+            '[tls_edge.tls]\nmode = "acme-tls"\n'
+            "[tls_edge.ports]\nhttps = 8443\n",
             "acme-tls requires the public HTTPS port to be 443",
         ),
         (
             "calls-conflicts-with-https",
             _override("[tls_edge.calls]\nenabled = true\npublic_port = 443\n"),
-            "https_port = 443\ncalls_enabled = true\ncalls_port = 443\n",
+            "[tls_edge.ports]\nhttps = 443\n"
+            "[tls_edge.calls]\nenabled = true\npublic_port = 443\n",
             "Calls TCP conflicts with the public HTTPS TCP port",
         ),
         (
             "static-without-lineages",
             _override('[tls_edge.tls]\nmode = "static"\n'),
-            'tls_mode = "static"\nstatic_domains = []\n',
+            '[tls_edge.tls]\nmode = "static"\n'
+            "[tls_edge.static]\ndomains = []\n",
             "requires at least one static certificate lineage",
         ),
         (
             "unknown-http3-key",
             _override("[tls_edge.http3]\nenable = true\n"),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             "unknown override key tls_edge.http3.enable",
         ),
         (
             "newer-schema",
             '[tls_edge]\nschema = 99\ndomain = "edge.example.test"\n',
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             "tls_edge.schema 99 is newer than this release supports (maximum 1)",
         ),
         (
             "good",
             _override(),
-            'domain = "edge.example.test"\ntls_mode = "acme-tls"\nhttps_port = 443\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n'
+            '[tls_edge.tls]\nmode = "acme-tls"\n'
+            "[tls_edge.ports]\nhttps = 443\n",
             None,
         ),
         (
@@ -202,7 +207,7 @@ def _override(body: str = "") -> str:
                 '[tls_edge.traefik.hostdir]\n'
                 'acme = { path = "", uid = 0, gid = 0, mode = "0700" }\n'
             ),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             'tls_edge.traefik.hostdir.acme.path is required when '
             'tls_edge.acme.store = "hostdir"',
         ),
@@ -213,7 +218,7 @@ def _override(body: str = "") -> str:
                 '[tls_edge.traefik.hostdir]\n'
                 'acme = { path = "./vol-traefik-acme", uid = 0, gid = 0, mode = "0700" }\n'
             ),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             "tls_edge.traefik.hostdir.acme.path must resolve outside stack/",
         ),
         (
@@ -223,7 +228,7 @@ def _override(body: str = "") -> str:
                 '[tls_edge.traefik.hostdir]\n'
                 'acme = { path = "../../shared/acme", uid = 1000, gid = 0, mode = "0700" }\n'
             ),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             'tls_edge.traefik.hostdir.acme.uid must be 0 when '
             'tls_edge.acme.store = "hostdir"',
         ),
@@ -235,7 +240,7 @@ def _override(body: str = "") -> str:
                 '[tls_edge.traefik.hostdir]\n'
                 'acme = { path = "../../shared/acme", uid = 0, gid = 0, mode = "0700" }\n'
             ),
-            'domain = "edge.example.test"\n',
+            '[tls_edge]\ndomain = "edge.example.test"\n',
             'tls_edge.acme.volume_name and tls_edge.acme.store = "hostdir" '
             "are mutually exclusive",
         ),

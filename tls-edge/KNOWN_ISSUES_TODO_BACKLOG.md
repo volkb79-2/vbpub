@@ -133,18 +133,6 @@ deployment.
 
 ## Roadmap
 
-### TE-02 — config schema exists three times
-
-Besides the defaults file, `_FIELDS` and `_ANSWER_KEYS` in `config.py` and the
-hand-built `proposed` dict in `cli.py` map the same fields again, `value_at(...,
-default=...)` fallbacks repeat the defaults, and answer keys use a second
-vocabulary (`http_enabled` vs `ports.expose_http`). Decided: one field table
-drives prompts, answers, override writing and the proposed merge; `--answers`
-takes a sparse override in schema shape; defaults come only from the rendered
-defaults file.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` H2
-
 ### TE-03 — four deployment paths
 
 The README offers plain compose on the committed `edge-proxy/`,

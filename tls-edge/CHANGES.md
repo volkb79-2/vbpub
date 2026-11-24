@@ -5,6 +5,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+### Breaking
+- `tls-edge configure --answers` now takes a sparse site override in the schema's own shape, such as
+  `[tls_edge.http3] enabled = true`. The 3.1 flat answer vocabulary is refused, and each old key names its
+  schema-shaped replacement.
+
 ### Added
 - Site overrides now record `[tls_edge] schema = 1`; absent means schema 1 and newer schemas are refused.
 - `tls-edge configure`, `tls-edge validate`, the standalone renderer, `ciu check`, and `ciu up` use the same
@@ -24,6 +29,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   override that replaced the list is refused until the entry is added back.
 - `tls-edge configure` now writes `acme.store` explicitly. Existing 3.1 instances and user-scope installs keep
   their `acme-data` volume; `acme.volume_name` adoption is unchanged.
+- `tls-edge configure` now uses one field table for prompts, answers, explicit override writes and the proposed
+  merge. Shipped defaults come only from the rendered defaults file.
 
 ### Testing
 - Added standalone/ciu port-plan and renderer oracles plus D10's classified coverage-exclusion policy.

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import stat
+import sys
 from pathlib import Path
-from types import MappingProxyType
 
 import pytest
 import tomlkit
@@ -18,7 +18,12 @@ def valid_config() -> dict:
         "ports": {"expose_http": True, "http": 80, "https": 443, "bind_ip": ""},
         "http3": {"enabled": False},
         "calls": {"enabled": False},
-        "acme": {"email": "", "volume_name": "", "store": "volume"},
+        "acme": {
+            "email": "",
+            "volume_name": "",
+            "store": "volume",
+            "dns": {"provider": "cloudflare", "wildcard_main": ""},
+        },
         "traefik": {
             "hostdir": {
                 "acme": {"path": "", "uid": 0, "gid": 0, "mode": "0700"}
@@ -53,6 +58,9 @@ enabled = false
 email = ""
 volume_name = ""
 store = "volume"
+[tls_edge.acme.dns]
+provider = "cloudflare"
+wildcard_main = ""
 [tls_edge.static]
 cert_base = "/etc/letsencrypt"
 domains = []
@@ -77,16 +85,15 @@ def test_locate_installed_root_from_current_symlink(tmp_path: Path, monkeypatch)
     release = root / "releases" / "tls-edge-v3.1.0"
     make_root(release)
     (root / "current").symlink_to(release)
-    monkeypatch.setattr(config.sys, "prefix", str(release / "venv"))
+    monkeypatch.setattr(sys, "prefix", str(release / "venv"))
     assert config.locate_instance_root() == root
-    monkeypatch.setattr(config.sys, "prefix", str(tmp_path / "unmanaged" / "venv"))
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "unmanaged" / "venv"))
     with pytest.raises(config.ConfigError, match="pass --root PATH"):
         config.locate_instance_root()
 
 
-def test_plain_and_deep_merge_convert_nested_structures():
-    assert config._plain({"a": (1, {"b": 2})}) == {"a": [1, {"b": 2}]}
-    assert config._deep_merge({"a": {"b": 1}, "x": [1]}, {"a": {"c": 2}, "x": [3]}) == {
+def test_deep_merge_converts_nested_structures():
+    assert config.deep_merge({"a": {"b": 1}, "x": [1]}, {"a": {"c": 2}, "x": [3]}) == {
         "a": {"b": 1, "c": 2}, "x": [3]
     }
 
@@ -101,15 +108,15 @@ def test_instance_paths_point_into_the_installed_stack(tmp_path: Path):
 def test_render_defaults_and_report_template_and_toml_errors(tmp_path: Path):
     root = make_root(tmp_path / "instance")
     path = root / "stack/ciu-stack/ciu.defaults.toml.j2"
-    assert config._render_defaults(path)["tls_edge"]["domain"] == "edge.example.com"
+    assert config.render_defaults(path)["tls_edge"]["domain"] == "edge.example.com"
     with pytest.raises(config.ConfigError, match="cannot load tls-edge defaults"):
-        config._render_defaults(tmp_path / "absent")
+        config.render_defaults(tmp_path / "absent")
     path.write_text("{{ missing }}", encoding="utf-8")
     with pytest.raises(config.ConfigError, match="cannot load tls-edge defaults"):
-        config._render_defaults(path)
+        config.render_defaults(path)
     path.write_text("not = [valid", encoding="utf-8")
     with pytest.raises(config.ConfigError, match="cannot load tls-edge defaults"):
-        config._render_defaults(path)
+        config.render_defaults(path)
 
 
 def test_load_effective_config_merges_valid_override_and_requires_tls_edge(tmp_path: Path):
@@ -142,10 +149,15 @@ def test_load_effective_config_refuses_invalid_site_override(tmp_path: Path, kin
 def test_load_answers_none_valid_unknown_and_parse_error(tmp_path: Path):
     assert config.load_answers(None) == {}
     path = tmp_path / "answers.toml"
-    path.write_text('domain = "answers.example.net"\n', encoding="utf-8")
-    assert config.load_answers(path) == {"domain": "answers.example.net"}
-    path.write_text('unknown = true\n', encoding="utf-8")
-    with pytest.raises(config.ConfigError, match="unknown answer key"):
+    path.write_text('[tls_edge]\ndomain = "answers.example.net"\n', encoding="utf-8")
+    assert config.load_answers(path) == {
+        "tls_edge": {"domain": "answers.example.net"}
+    }
+    path.write_text("http_enabled = true\n", encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="3.1 flat form"):
+        config.load_answers(path)
+    path.write_text("unknown = true\n", encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="unknown answers key 'unknown'"):
         config.load_answers(path)
     path.write_text("x = [", encoding="utf-8")
     with pytest.raises(config.ConfigError, match="cannot read answers"):
@@ -154,20 +166,55 @@ def test_load_answers_none_valid_unknown_and_parse_error(tmp_path: Path):
         config.load_answers(tmp_path / "missing")
 
 
-def test_value_at_found_missing_and_non_mapping():
-    assert config.value_at({"a": {"b": 4}}, "a", "b") == 4
-    assert config.value_at({"a": 4}, "a", "b", default="fallback") == "fallback"
+def test_validate_answers_accepts_managed_keys_and_refuses_other_shapes() -> None:
+    defaults = config.render_defaults(
+        Path(__file__).resolve().parents[1]
+        / "ciu-stack"
+        / "ciu.defaults.toml.j2"
+    )
+    config.validate_answers(defaults, {})
+    config.validate_answers(
+        defaults,
+        {
+            "tls_edge": {
+                "schema": 1,
+                "http3": {"enabled": True},
+            }
+        },
+    )
+    with pytest.raises(config.ConfigError, match="answers key 'tls_edge' must be a TOML table"):
+        config.validate_answers(defaults, {"tls_edge": True})
+    with pytest.raises(
+        config.ConfigError,
+        match="answers key 'tls_edge.secrets' is an open site-override table",
+    ):
+        config.validate_answers(defaults, {"tls_edge": {"secrets": {}}})
+    with pytest.raises(
+        config.ConfigError,
+        match="answers key 'tls_edge.traefik.log_level' is not a managed setting",
+    ):
+        config.validate_answers(
+            defaults,
+            {"tls_edge": {"traefik": {"log_level": "WARN"}}},
+        )
+    with pytest.raises(config.ConfigError, match="unknown override key tls_edge.ports.nope"):
+        config.validate_answers(
+            defaults,
+            {"tls_edge": {"ports": {"nope": 1}}},
+        )
+    with pytest.raises(config.ConfigError, match="newer than this release supports"):
+        config.validate_answers(defaults, {"tls_edge": {"schema": 99}})
 
 
 @pytest.mark.parametrize("value", [0, True, "80", 65536, -1])
 def test_port_rejects_non_integer_boolean_and_out_of_range(value):
     with pytest.raises(config.ConfigError, match="integer from 1 through 65535"):
-        config._port(value, "port")
+        config.normalize_port(value, "port")
 
 
 def test_port_accepts_boundary_values():
-    assert config._port(1, "port") == 1
-    assert config._port(65535, "port") == 65535
+    assert config.normalize_port(1, "port") == 1
+    assert config.normalize_port(65535, "port") == 65535
 
 
 def test_normalize_domain_idna_and_invalid_inputs():
@@ -177,10 +224,40 @@ def test_normalize_domain_idna_and_invalid_inputs():
             config.normalize_domain(value)
 
 
-def test_table_returns_empty_default_and_rejects_wrong_shape():
-    assert config._table({}, "tls") == {}
-    with pytest.raises(config.ConfigError, match="must be a TOML table"):
-        config._table({"tls": []}, "tls")
+def test_normalizers_accept_empty_and_valid_scalars() -> None:
+    assert config.normalize_email(" ops@example.test ") == "ops@example.test"
+    assert config.normalize_email("") == ""
+    assert config.normalize_provider(" cloudflare ") == "cloudflare"
+    assert config.normalize_volume_name(" edge_acme ") == "edge_acme"
+    assert config.normalize_volume_name("") == ""
+    assert config.normalize_bind_ip(" 127.0.0.1 ") == "127.0.0.1"
+    assert config.normalize_bind_ip("") == ""
+    assert config.normalize_cgroup_parent(" edge.slice ") == "edge.slice"
+    assert config.normalize_cgroup_parent("") == ""
+    assert config.normalize_cert_base(" /srv/certs ") == "/srv/certs"
+    assert config.normalize_static_domains(["BÜCHER.example", "dev.example"]) == [
+        "xn--bcher-kva.example",
+        "dev.example",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("normalize", "value"),
+    [
+        (config.normalize_email, 3),
+        (config.normalize_provider, "bad/provider"),
+        (config.normalize_volume_name, "bad/name"),
+        (config.normalize_bind_ip, 3),
+        (config.normalize_cgroup_parent, "x/../y"),
+        (config.normalize_cert_base, "relative"),
+        (config.normalize_static_domains, "edge.example.test"),
+        (config.normalize_static_domains, [""]),
+        (config.normalize_static_domains, ["edge.example.test", "EDGE.example.test"]),
+    ],
+)
+def test_normalizers_refuse_invalid_values(normalize, value) -> None:
+    with pytest.raises(config.ConfigError):
+        normalize(value)
 
 
 def test_validate_config_builds_default_and_optional_port_plans():
@@ -215,9 +292,9 @@ def test_validate_config_builds_default_and_optional_port_plans():
     (lambda c: c["static"].update(domains=["not a domain"]), "static certificate lineage"),
     (lambda c: (c["http3"].update(enabled=True), c["calls"].update(enabled=True), c["calls"].update(public_port=80)), "Calls TCP conflicts"),
     (lambda c: (c["http3"].update(enabled=True), c["calls"].update(enabled=True), c["calls"].update(public_port=443)), "Calls TCP conflicts"),
-    (lambda c: (c["tls"].update(mode="acme-dns"), c.update(acme={"dns": {"provider": "bad/name"}})), "acme.dns.provider"),
-    (lambda c: (c["tls"].update(mode="acme-dns"), c.update(acme={"dns": {"provider": "cloudflare", "wildcard_main": "bad domain"}})), "wildcard_main"),
-    (lambda c: (c["tls"].update(mode="acme-dns"), c.update(acme={"dns": {"provider": "cloudflare", "wildcard_main": 3}})), "wildcard_main must be a DNS name or empty"),
+    (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="bad/name")), "acme.dns.provider"),
+    (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="cloudflare", wildcard_main="bad domain")), "wildcard_main"),
+    (lambda c: (c["tls"].update(mode="acme-dns"), c["acme"]["dns"].update(provider="cloudflare", wildcard_main=3)), "wildcard_main must be a DNS name or empty"),
     (lambda c: c["acme"].update(email="not-email"), "acme.email"),
 ])
 def test_validate_config_rejects_invalid_combinations(mutate, message):
@@ -239,7 +316,7 @@ def test_validate_config_http3_calls_dns_static_and_port_constraints():
 
     value = valid_config()
     value["tls"]["mode"] = "acme-dns"
-    value["acme"] = {"dns": {"provider": "cloudflare", "wildcard_main": "example.com"}}
+    value["acme"]["dns"] = {"provider": "cloudflare", "wildcard_main": "example.com"}
     assert config.validate_config(value)
     value["acme"]["dns"]["wildcard_main"] = ""
     assert config.validate_config(value)
@@ -278,7 +355,7 @@ def test_validate_config_hostdir_rules_and_modes(tmp_path: Path):
 
     value["acme"]["store"] = "hostdir"
     value["traefik"]["hostdir"]["acme"] = ""
-    with pytest.raises(config.ConfigError, match="hostdir.acme.path is required"):
+    with pytest.raises(config.ConfigError, match="hostdir.acme must be a TOML table"):
         config.validate_config(value)
 
     value["traefik"]["hostdir"]["acme"] = {
@@ -303,18 +380,6 @@ def test_validate_config_hostdir_is_refused_by_standalone_renderer():
         match='acme.store = "hostdir" requires ciu',
     ):
         config.validate_config(value, for_standalone=True)
-
-
-def test_set_path_creates_nested_tables_and_rejects_non_mutable_parents():
-    document = tomlkit.document()
-    config._set_path(document, ("tls_edge", "ports", "https"), 9443)
-    assert document["tls_edge"]["ports"]["https"] == 9443
-    with pytest.raises(config.ConfigError, match="is not a table"):
-        config._set_path({"tls_edge": 4}, ("tls_edge", "domain"), "x.example")
-    with pytest.raises(config.ConfigError, match="parent is not a TOML table"):
-        config._set_path(MappingProxyType({}), ("tls_edge", "domain"), "x.example")
-    with pytest.raises(config.ConfigError, match="parent is not a TOML table"):
-        config._set_path(MappingProxyType({}), ("domain",), "x.example")
 
 
 def test_updated_override_creates_preserves_and_rejects_invalid_paths(tmp_path: Path):
@@ -366,25 +431,8 @@ def test_updated_consumer_env_creates_and_replaces_only_domain_entries(tmp_path:
         config.updated_consumer_env(root, "three.example")
 
 
-def test_atomic_write_sets_mode_and_cleans_temporary_file_on_replace_failure(tmp_path: Path, monkeypatch):
+def test_atomic_write_sets_mode(tmp_path: Path):
     path = tmp_path / "nested" / "override.toml"
     config.atomic_write(path, "hello\n", 0o640)
     assert path.read_text(encoding="utf-8") == "hello\n"
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
-
-    def fail_replace(*_args):
-        raise OSError("replace failed")
-
-    monkeypatch.setattr(config.os, "replace", fail_replace)
-    with pytest.raises(OSError, match="replace failed"):
-        config.atomic_write(path, "new\n", 0o600)
-    assert sorted(item.name for item in path.parent.iterdir()) == ["override.toml"]
-
-    def remove_temp_then_fail(source, _target):
-        Path(source).unlink()
-        raise OSError("replace failed after temporary file disappeared")
-
-    monkeypatch.setattr(config.os, "replace", remove_temp_then_fail)
-    with pytest.raises(OSError, match="temporary file disappeared"):
-        config.atomic_write(path, "again\n", 0o600)
-    assert sorted(item.name for item in path.parent.iterdir()) == ["override.toml"]

@@ -206,6 +206,8 @@ def test_ciu_and_standalone_render_the_same_traefik_config(
     standalone_doc = yaml.safe_load(
         (standalone_dir / "traefik.yml").read_text(encoding="utf-8")
     )
+    assert isinstance(ciu_doc, dict) and ciu_doc
+    assert isinstance(standalone_doc, dict) and standalone_doc
 
     normalized_ciu = normalize_traefik_paths(
         ciu_doc,

@@ -30,12 +30,6 @@ _OPEN_OVERRIDE_TABLES = frozenset({
     ("tls_edge", "hooks"),
 })
 _REQUIRED_PRE_SECRETS_HOOK = "hooks/validate_edge.py"
-_ANSWER_KEYS = {
-    "domain", "tls_mode", "acme_email", "dns_provider", "dns_wildcard",
-    "http_enabled", "http_port", "https_port", "http3_enabled", "calls_enabled",
-    "calls_port", "bind_ip", "ingress_external", "acme_volume_name", "cgroup_parent",
-    "static_cert_base", "static_domains", "static_source",
-}
 
 
 class ConfigError(ValueError):
@@ -79,11 +73,12 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def _deep_merge(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+def deep_merge(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge tables recursively and replace scalars and lists (CIU S3.3)."""
     result = dict(base)
     for key, value in overlay.items():
         if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
-            result[key] = _deep_merge(dict(result[key]), value)
+            result[key] = deep_merge(dict(result[key]), value)
         else:
             result[key] = _plain(value)
     return result
@@ -98,7 +93,8 @@ def instance_paths(root: Path) -> tuple[Path, Path, Path]:
     )
 
 
-def _render_defaults(path: Path) -> dict[str, Any]:
+def render_defaults(path: Path) -> dict[str, Any]:
+    """Render and parse the shipped TOML defaults."""
     try:
         source = path.read_text(encoding="utf-8")
         rendered = jinja2.Environment(
@@ -136,9 +132,9 @@ def load_site(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Load rendered defaults, the sparse override, and their deep merge."""
     stack_dir = Path(stack_dir)
-    defaults = _render_defaults(stack_dir / "ciu.defaults.toml.j2")
+    defaults = render_defaults(stack_dir / "ciu.defaults.toml.j2")
     overlay = _load_override(stack_dir / "ciu.toml.j2")
-    effective = _deep_merge(defaults, overlay)
+    effective = deep_merge(defaults, overlay)
     if not isinstance(effective.get("tls_edge"), dict):
         raise ConfigError("tls-edge defaults must contain a [tls_edge] table")
     return defaults, overlay, effective
@@ -183,7 +179,8 @@ def _check_override_table(
 
 def check_override(defaults: Mapping[str, Any], overlay: Mapping[str, Any]) -> None:
     """Refuse unknown keys, shape mismatches, and future override schemas."""
-    schema = value_at(overlay, "tls_edge", "schema", default=SCHEMA)
+    tls_edge = overlay.get("tls_edge")
+    schema = tls_edge.get("schema", SCHEMA) if isinstance(tls_edge, Mapping) else SCHEMA
     if isinstance(schema, bool) or not isinstance(schema, int):
         raise ConfigError("site override tls_edge.schema must be an integer")
     if schema < 1:
@@ -203,6 +200,7 @@ def load_effective_config(root: Path) -> tuple[dict[str, Any], bool]:
 
 
 def load_answers(path: Path | None) -> dict[str, Any]:
+    """Parse a sparse answers file in the site-override shape."""
     if path is None:
         return {}
     try:
@@ -210,22 +208,83 @@ def load_answers(path: Path | None) -> dict[str, Any]:
             answers = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"cannot read answers file {path}: {exc}") from exc
-    unknown = sorted(set(answers) - _ANSWER_KEYS)
-    if unknown:
-        raise ConfigError(f"unknown answer key(s) in {path}: {', '.join(unknown)}")
+    from .fields import LEGACY_ANSWER_KEYS, legacy_answers_message
+
+    top_level = sorted(set(answers) - {"tls_edge"})
+    if top_level:
+        key = top_level[0]
+        if key in LEGACY_ANSWER_KEYS:
+            raise ConfigError(legacy_answers_message(key))
+        raise ConfigError(
+            f"unknown answers key {key!r}; answers use the site-override shape "
+            "[tls_edge.<table>]"
+        )
     return answers
 
 
-def value_at(config: Mapping[str, Any], *path: str, default: Any = None) -> Any:
-    current: Any = config
-    for part in path:
-        if not isinstance(current, Mapping) or part not in current:
-            return default
-        current = current[part]
-    return current
+def validate_answers(defaults: Mapping[str, Any], answers: Mapping[str, Any]) -> None:
+    """Refuse answers that name anything but one of the managed schema keys."""
+    from .fields import FIELD_BY_KEY
+
+    if not answers:
+        return
+    tls_edge = answers.get("tls_edge")
+    if not isinstance(tls_edge, Mapping):
+        raise ConfigError("answers key 'tls_edge' must be a TOML table")
+
+    managed_paths = {f"tls_edge.{key}" for key in FIELD_BY_KEY}
+    try:
+        check_override(defaults, answers)
+    except ConfigError as exc:
+        message = str(exc)
+        prefix = "unknown override key "
+        if not message.startswith(prefix):
+            raise
+        dotted = message.removeprefix(prefix)
+        siblings = sorted(
+            key for key in managed_paths
+            if key.rpartition(".")[0] == dotted.rpartition(".")[0]
+        )
+        hint = f"; did you mean {siblings[0]}?" if len(siblings) == 1 else ""
+        raise ConfigError(f"{message}{hint}") from exc
+    for path in _all_paths(tls_edge, ("tls_edge",)):
+        dotted = ".".join(path)
+        if dotted == "tls_edge.schema":
+            continue
+        if any(path[: len(open_path)] == open_path for open_path in _OPEN_OVERRIDE_TABLES):
+            raise ConfigError(
+                f"answers key {dotted!r} is an open site-override table; "
+                "answers may set only managed fields"
+            )
+        if dotted in managed_paths:
+            continue
+        if any(key.startswith(dotted + ".") for key in managed_paths):
+            continue
+        siblings = sorted(
+            key for key in managed_paths
+            if key.rpartition(".")[0] == dotted.rpartition(".")[0]
+        )
+        hint = f"; did you mean {siblings[0]}?" if len(siblings) == 1 else ""
+        raise ConfigError(
+            f"answers key {dotted!r} is not a managed setting{hint}"
+        )
 
 
-def _port(value: Any, label: str) -> int:
+def _all_paths(
+    value: Mapping[str, Any],
+    path: tuple[str, ...],
+) -> list[tuple[str, ...]]:
+    found: list[tuple[str, ...]] = []
+    for key, item in value.items():
+        child = (*path, str(key))
+        found.append(child)
+        if isinstance(item, Mapping):
+            found.extend(_all_paths(item, child))
+    return found
+
+
+def normalize_port(value: Any, label: str = "port") -> int:
+    """Validate a public port."""
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
         raise ConfigError(f"{label} must be an integer from 1 through 65535")
     return value
@@ -256,11 +315,89 @@ def normalize_domain(value: Any, label: str = "domain") -> str:
     raise ConfigError(f"{label} must be a DNS name, not an IP address")
 
 
+def normalize_email(value: Any, label: str = "acme.email") -> str:
+    if not isinstance(value, str):
+        raise ConfigError(f"{label} must be a valid email address or empty")
+    text = value.strip()
+    if text and not _EMAIL.fullmatch(text):
+        raise ConfigError(f"{label} must be a valid email address or empty")
+    return text
+
+
+def normalize_provider(value: Any, label: str = "acme.dns.provider") -> str:
+    if not isinstance(value, str):
+        raise ConfigError(f"{label} must be a valid lego provider name")
+    text = value.strip()
+    if not _PROVIDER.fullmatch(text):
+        raise ConfigError(f"{label} must be a valid lego provider name")
+    return text
+
+
+def normalize_volume_name(value: Any, label: str = "acme.volume_name") -> str:
+    if not isinstance(value, str):
+        raise ConfigError(f"{label} must be a valid Docker volume name or empty")
+    text = value.strip()
+    if text and not _VOLUME.fullmatch(text):
+        raise ConfigError(f"{label} must be a valid Docker volume name or empty")
+    return text
+
+
+def normalize_bind_ip(value: Any, label: str = "ports.bind_ip") -> str:
+    if not isinstance(value, str):
+        raise ConfigError(f"{label} must be an IP address or an empty string")
+    text = value.strip()
+    if text:
+        try:
+            ipaddress.ip_address(text)
+        except ValueError as exc:
+            raise ConfigError(f"{label} must be a valid IP address") from exc
+    return text
+
+
+def normalize_cgroup_parent(value: Any, label: str = "runtime.cgroup_parent") -> str:
+    if not isinstance(value, str):
+        raise ConfigError(f"{label} contains unsupported characters")
+    text = value.strip()
+    if text and (not _CGROUP_PARENT.fullmatch(text) or ".." in text):
+        raise ConfigError(f"{label} contains unsupported characters")
+    return text
+
+
+def normalize_cert_base(value: Any, label: str = "static.cert_base") -> str:
+    if not isinstance(value, str):
+        raise ConfigError(f"{label} must be a simple absolute path")
+    text = value.strip()
+    if (
+        not _ABSOLUTE_MOUNT_PATH.fullmatch(text)
+        or ".." in text.split("/")
+    ):
+        raise ConfigError(f"{label} must be a simple absolute path")
+    return text
+
+
+def normalize_static_domains(value: Any, label: str = "static.domains") -> list[str]:
+    if not isinstance(value, list):
+        raise ConfigError(f"{label} must be an array of certificate lineages")
+    domains: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(f"{label} must contain non-empty certificate lineage names")
+        domains.append(normalize_domain(item, "static certificate lineage"))
+    if len(set(domains)) != len(domains):
+        raise ConfigError(f"{label} must not contain duplicates")
+    return domains
+
+
 def _table(config: Mapping[str, Any], name: str) -> Mapping[str, Any]:
-    value = config.get(name, {})
-    if not isinstance(value, Mapping):
+    if name not in config or not isinstance(config[name], Mapping):
         raise ConfigError(f"tls_edge.{name} must be a TOML table")
-    return value
+    return config[name]
+
+
+def _required(table: Mapping[str, Any], key: str, label: str) -> Any:
+    if key not in table:
+        raise ConfigError(f"{label} is required")
+    return table[key]
 
 
 def validate_config(
@@ -278,19 +415,19 @@ def validate_config(
     calls = _table(config, "calls")
     acme = _table(config, "acme")
     static = _table(config, "static")
-    mode = tls.get("mode")
+    mode = _required(tls, "mode", "tls.mode")
     if mode not in TLS_MODES:
         raise ConfigError(f"tls.mode must be one of {', '.join(TLS_MODES)}")
 
-    domain = config.get("domain", "")
+    domain = _required(config, "domain", "domain")
     if require_domain:
         normalize_domain(domain)
     elif domain:
         normalize_domain(domain)
 
-    expose_http = ports.get("expose_http")
-    h3_enabled = http3.get("enabled")
-    calls_enabled = calls.get("enabled")
+    expose_http = _required(ports, "expose_http", "ports.expose_http")
+    h3_enabled = _required(http3, "enabled", "http3.enabled")
+    calls_enabled = _required(calls, "enabled", "calls.enabled")
     if not isinstance(expose_http, bool):
         raise ConfigError("ports.expose_http must be true or false")
     if not isinstance(h3_enabled, bool):
@@ -298,8 +435,12 @@ def validate_config(
     if not isinstance(calls_enabled, bool):
         raise ConfigError("calls.enabled must be true or false")
 
-    http_port = _port(ports.get("http"), "ports.http")
-    https_port = _port(ports.get("https"), "ports.https")
+    http_port = normalize_port(
+        _required(ports, "http", "ports.http"), "ports.http"
+    )
+    https_port = normalize_port(
+        _required(ports, "https", "ports.https"), "ports.https"
+    )
     if expose_http and http_port == https_port:
         raise ConfigError("HTTP and HTTPS cannot publish the same TCP port")
     if mode == "acme-tls" and https_port != 443:
@@ -307,19 +448,11 @@ def validate_config(
     if mode == "acme-http" and (not expose_http or http_port != 80):
         raise ConfigError("acme-http requires the public HTTP listener on port 80")
 
-    bind_ip = ports.get("bind_ip", "")
-    if not isinstance(bind_ip, str):
-        raise ConfigError("ports.bind_ip must be an IP address or an empty string")
-    if bind_ip:
-        try:
-            ipaddress.ip_address(bind_ip)
-        except ValueError as exc:
-            raise ConfigError("ports.bind_ip must be a valid IP address") from exc
+    normalize_bind_ip(_required(ports, "bind_ip", "ports.bind_ip"))
 
-    volume_name = acme.get("volume_name", "")
-    if not isinstance(volume_name, str) or (volume_name and not _VOLUME.fullmatch(volume_name)):
-        raise ConfigError("acme.volume_name must be a valid Docker volume name or empty")
-    store = acme.get("store", "volume")
+    volume_name = _required(acme, "volume_name", "acme.volume_name")
+    volume_name = normalize_volume_name(volume_name)
+    store = _required(acme, "store", "acme.store")
     if not isinstance(store, str) or store not in ("volume", "hostdir"):
         raise ConfigError("acme.store must be volume or hostdir")
     if store == "hostdir":
@@ -327,11 +460,10 @@ def validate_config(
         hostdirs = _table(traefik, "hostdir")
         entry = hostdirs.get("acme")
         if isinstance(entry, Mapping):
-            path = entry.get("path", "")
-            uid = entry.get("uid", 0)
+            path = _required(entry, "path", "tls_edge.traefik.hostdir.acme.path")
+            uid = _required(entry, "uid", "tls_edge.traefik.hostdir.acme.uid")
         else:
-            path = ""
-            uid = None
+            raise ConfigError("tls_edge.traefik.hostdir.acme must be a TOML table")
         if not isinstance(path, str) or not path:
             raise ConfigError(
                 'tls_edge.traefik.hostdir.acme.path is required when '
@@ -361,34 +493,30 @@ def validate_config(
                 'tls_edge.acme.store = "hostdir" requires ciu; '
                 'the standalone renderer only supports "volume"'
             )
-    cgroup_parent = value_at(config, "runtime", "cgroup_parent", default="")
-    if not isinstance(cgroup_parent, str) or (
-        cgroup_parent and (
-            not _CGROUP_PARENT.fullmatch(cgroup_parent) or ".." in cgroup_parent
+    cgroup_parent = normalize_cgroup_parent(
+        _required(
+            _table(config, "runtime"),
+            "cgroup_parent",
+            "runtime.cgroup_parent",
         )
-    ):
-        raise ConfigError("runtime.cgroup_parent contains unsupported characters")
-    cert_base = static.get("cert_base", "/etc/letsencrypt")
-    if (
-        not isinstance(cert_base, str)
-        or not _ABSOLUTE_MOUNT_PATH.fullmatch(cert_base)
-        or ".." in cert_base.split("/")
-    ):
-        raise ConfigError("static.cert_base must be a simple absolute path")
-    if static.get("source", "bind") not in ("bind", "volume"):
+    )
+    cert_base = _required(static, "cert_base", "static.cert_base")
+    normalize_cert_base(cert_base)
+    if _required(static, "source", "static.source") not in ("bind", "volume"):
         raise ConfigError("static.source must be bind or volume")
-    static_domains = static.get("domains", [])
-    if not isinstance(static_domains, list):
-        raise ConfigError("static.domains must be an array of certificate lineages")
-    for item in static_domains:
-        normalize_domain(item, "static certificate lineage")
+    static_domains = normalize_static_domains(
+        _required(static, "domains", "static.domains")
+    )
 
     inbound = [f"{http_port}/tcp (HTTP redirect and/or HTTP-01)"] if expose_http else []
     inbound.append(f"{https_port}/tcp (HTTPS, HTTP/1.1 and HTTP/2)")
     if h3_enabled:
         inbound.append(f"{https_port}/udp (HTTP/3 over QUIC)")
     if calls_enabled:
-        calls_port = _port(calls.get("public_port"), "calls.public_port")
+        calls_port = normalize_port(
+            _required(calls, "public_port", "calls.public_port"),
+            "calls.public_port",
+        )
         if expose_http and calls_port == http_port:
             raise ConfigError("Calls TCP conflicts with the public HTTP TCP port")
         if calls_port == https_port:
@@ -396,19 +524,19 @@ def validate_config(
         inbound.extend((f"{calls_port}/tcp (Calls media)", f"{calls_port}/udp (Calls media)"))
 
     if mode == "acme-dns":
-        provider = value_at(config, "acme", "dns", "provider", default="")
-        if not isinstance(provider, str) or not _PROVIDER.fullmatch(provider):
-            raise ConfigError("acme.dns.provider must be a valid lego provider name")
-        wildcard = value_at(config, "acme", "dns", "wildcard_main", default="")
+        provider = normalize_provider(
+            _required(_table(acme, "dns"), "provider", "acme.dns.provider")
+        )
+        wildcard = _required(
+            _table(acme, "dns"), "wildcard_main", "acme.dns.wildcard_main"
+        )
         if not isinstance(wildcard, str):
             raise ConfigError("acme.dns.wildcard_main must be a DNS name or empty")
         if wildcard:
             normalize_domain(wildcard, "acme.dns.wildcard_main")
     if mode in ("static", "dev") and require_certificates and not static_domains:
         raise ConfigError(f"tls.mode {mode} requires at least one static certificate lineage")
-    email = acme.get("email", "")
-    if not isinstance(email, str) or (email and not _EMAIL.fullmatch(email)):
-        raise ConfigError("acme.email must be a valid email address or empty")
+    normalize_email(_required(acme, "email", "acme.email"))
     return inbound
 
 
@@ -434,32 +562,10 @@ def _set_path(document: Any, path: tuple[str, ...], value: Any) -> None:
     current[path[-1]] = value
 
 
-_FIELDS: dict[str, tuple[str, ...]] = {
-    "domain": ("tls_edge", "domain"),
-    "tls_mode": ("tls_edge", "tls", "mode"),
-    "acme_email": ("tls_edge", "acme", "email"),
-    "dns_provider": ("tls_edge", "acme", "dns", "provider"),
-    "dns_wildcard": ("tls_edge", "acme", "dns", "wildcard_main"),
-    "http_enabled": ("tls_edge", "ports", "expose_http"),
-    "http_port": ("tls_edge", "ports", "http"),
-    "https_port": ("tls_edge", "ports", "https"),
-    "http3_enabled": ("tls_edge", "http3", "enabled"),
-    "calls_enabled": ("tls_edge", "calls", "enabled"),
-    "calls_port": ("tls_edge", "calls", "public_port"),
-    "bind_ip": ("tls_edge", "ports", "bind_ip"),
-    "ingress_external": ("tls_edge", "ingress_external"),
-    "acme_volume_name": ("tls_edge", "acme", "volume_name"),
-    "acme_store": ("tls_edge", "acme", "store"),
-    "acme_path": ("tls_edge", "traefik", "hostdir", "acme", "path"),
-    "cgroup_parent": ("tls_edge", "runtime", "cgroup_parent"),
-    "static_cert_base": ("tls_edge", "static", "cert_base"),
-    "static_domains": ("tls_edge", "static", "domains"),
-    "static_source": ("tls_edge", "static", "source"),
-}
-
-
 def updated_override(root: Path, values: Mapping[str, Any]) -> tuple[Path, str, int]:
+    """Apply managed values, in field-table order, to the comment-preserving override."""
     import tomlkit
+    from .fields import FIELDS, MANAGED_KEYS
 
     _, override_path, _ = instance_paths(root)
     if os.path.lexists(override_path) and (override_path.is_symlink() or not override_path.is_file()):
@@ -475,11 +581,17 @@ def updated_override(root: Path, values: Mapping[str, Any]) -> tuple[Path, str, 
         original = ""
         mode = 0o644
         document = tomlkit.document()
+    unknown = sorted(set(values) - MANAGED_KEYS)
+    if unknown:
+        raise ConfigError(f"unsupported configuration field {unknown[0]!r}")
     _set_path(document, ("tls_edge", "schema"), SCHEMA)
-    for name, value in values.items():
-        if name not in _FIELDS:
-            raise ConfigError(f"unsupported configuration field {name!r}")
-        _set_path(document, _FIELDS[name], value)
+    for field in FIELDS:
+        if field.key in values:
+            _set_path(
+                document,
+                ("tls_edge", *field.key.split(".")),
+                values[field.key],
+            )
     return override_path, tomlkit.dumps(document), mode
 
 
