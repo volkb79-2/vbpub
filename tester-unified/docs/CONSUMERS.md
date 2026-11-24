@@ -210,7 +210,7 @@ developer `run-gate-project/dist` wheel can never pass it.
    (`ghcr.io/volkb79-2/tester-base@sha256:<digest>`, as reported by `cmru`): the `ARG TESTER_UNIFIED_BASE_IMAGE=`
    default in `tester-unified/Dockerfile`, the `ARG WHEEL_BUILDER_BASE_IMAGE=` default in
    `wheel-builder/Dockerfile` and `[environments.host].image` in `run-gate.root.toml`; run
-   `cmru/tests/test_tester_unified_image.py` and `tester-base/tests/test_docs_in_sync.py` and commit that on its own.
+   `tester-unified/tests/test_tester_unified_image.py` and `tester-base/tests/test_docs_in_sync.py` and commit that on its own.
 2. Export the supported builder's environment (the values are those of `cmru.orchestration.toml`):
    `BUILDX_BUILDER=default` (only the docker-driver builder sees a local base; not needed for a registry base),
    `CGROUP_PARENT_DEV_GATES`, `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,
@@ -300,7 +300,7 @@ step for the non-cmru consumers; this runbook is its only record.
   never meets an aged pip: cli-extended and the Run-Gate wheel are fetched as published releases and installed
   `--no-index --no-deps`, cmru is built and installed offline from the copied source, `gen-requirements.py` refuses
   every first-party name on the index-bound path, tester-base runs no pip, and wheel-builder's two aged installs
-  are `pip` and `build`. `cmru/tests/test_tester_unified_image.py::test_the_age_window_never_applies_to_a_first_party_package`
+  are `pip` and `build`. `tester-unified/tests/test_tester_unified_image.py::test_the_age_window_never_applies_to_a_first_party_package`
   fails if any of that changes.
 - An exact `==` pin in a project's pyproject (assay's `packaging`, `hypothesis` and `pytest-cov`, nyxloom's
   `questionary`) that is younger than the window fails the build. That is the policy applied, not a builder fault.

@@ -29,7 +29,8 @@ assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
 environment = "tester-unified"
 # 60m (was 20m, 2026-10-21): the outer bound of the lane container. The binding deadline is assay.toml
 # [lanes.cmru] budget (50m, baseline + canary). Rule: outer >= assay lane budget + 10m, for the container
-# start and the editable assay install (tests/test_gate_budgets.py enforces at least +5m).
+# start and the editable assay install. The margin is enforced by `run-gate lanes --check --all --strict`
+# (the estate-lint lane); tests/test_gate_budgets.py keeps the exact assay lane pairing.
 budget = "60m"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the

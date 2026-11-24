@@ -874,8 +874,11 @@ as one container for the whole window. The lane is now `kind = "assay"` with
 `assay_lane = "cli-extended"`, `jobs = "auto"` (ceiling `jobs_max = 3`; B157 is
 closed), `candidate_ram = "300m"` against the measured 256 MiB RSS maximum, and
 `resource_observer = "cgprofile"`. The sharded run is documented in the README
-("Run the R2 mutation campaign sharded"). Guard:
-`tests/test_r2_lane_contract.py`.
+("Run the R2 mutation campaign sharded"). Guards: `/opt/tester-venv/bin/python3
+-m pytest tests/test_r2_lane_contract.py` for the lane contract facts
+`run-gate lanes --check` does not decide (CLI-EXT-45), and the `estate-lint`
+lane's `run-gate lanes --check --all --strict` for the budget, canary and shard
+shape rules.
 
 **Open (first run):** the owner runs the baseline preflight and the first sharded
 campaign; the worker count `auto` picks and the per-shard wall time are not yet
@@ -929,10 +932,25 @@ Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` H1
 
 ## CLI-EXT-45 — `tests/test_r2_lane_contract.py` restates run-gate
 
-**Status:** OPEN. **Type:** Test debt. **Area:** R2 gate.
+**Status:** PARTLY DONE 2026-11-24 (P-core-12). **Type:** Test debt. **Area:** R2 gate.
 
-`tests/test_r2_lane_contract.py` duplicates run-gate's own lane-contract
-coverage. Delete it after run-gate RG-296 provides `run-gate lanes --check`.
+`tests/test_r2_lane_contract.py` duplicated run-gate's own lane-contract
+coverage. `run-gate lanes --check --all --strict` now runs in the `estate-lint`
+lane, so the groups it decides were removed here: the shard instance shape
+(`r2.shard0of2` + `refuse_serialized_shard`), `merge_shards` acceptance and the
+outer-budget margin.
+
+**Kept, because `lanes --check` does not decide them** (each test names the rule
+it guards in a comment; the controller files the run-gate follow-up):
+
+- `test_run_gate_loads_the_project_config_and_resolves_r2_as_a_native_assay_lane`
+  — r2 is `kind = "assay"`, `assay_lane = "cli-extended"`, environment ephemeral.
+- `test_a_sharded_r2_lane_names_its_own_artifact_lane` — `assay_artifact_lane`.
+- `test_run_gate_accepts_the_carry_over_request_for_the_r2_lane` — `--carry-over`.
+- `test_run_gate_would_refuse_the_old_command_lane` — a command-kind r2 refused by `attach_r2_flex`.
+- `test_run_gate_picks_three_workers_per_shard_with_cheap_clone_and_one_without` — `select_r2_jobs`.
+- `test_candidate_ram_covers_the_measured_rss_maximum` — `candidate_ram` >= 256 MiB.
+- `test_r2_keeps_the_observer_and_clean_tree_declarations_of_the_sibling_native_lanes` — `resource_observer`, `clean_tree`, `pids`, no `argv`.
 
 Source: `.controller-state/design-review-2026-11-24/cmru-cli-extended.md` M5
 

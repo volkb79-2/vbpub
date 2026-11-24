@@ -27,7 +27,7 @@
 | KI-197 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-196 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-195 | OPEN (filed 2026-11-24, Opus design review) | — |
-| KI-194 | OPEN (filed 2026-11-24, Opus design review) | — |
+| KI-194 | FIXED IN THIS BRANCH (P-core-12: image suite moved to `tester-unified/tests`, estate checks to `estate-lint/`, budget tests slimmed to what `lanes --check` does not decide) | P-core-12 |
 | KI-193 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-192 | OPEN (filed 2026-11-24, Opus design review) | — |
 | KI-191 | OPEN (filed 2026-11-24, Opus design review) | — |
@@ -4091,7 +4091,7 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H3
 **Amended 2026-11-24 (P-core-13 design):** Decisions in `docs/DESIGN-DECLARED-PREFLIGHT.md`: `[steps.preflight]` is a reserved one-command step, run before dispatch in a `git archive` export of the release revision; stdout is one JSON document (`format` 1, statuses `PASS`/`FAIL`/`SKIPPED`), and malformed output fails closed with exit 4; the bootstrap literal check moves to a `libraries/test-policy` estate lane; the closeout lanes come from `run-gate --list --json`, and a missing lane refuses; implementation follows P-core-06 and P-core-12 M0.
 
 `release_preconditions.py` runs `exec()` on `cmru/tools/run_release_gate.py` read from a git blob, calls its private `_current_run_gate_identity`, hard-codes project `cmru`, `tester-unified` and `run-gate.root.toml`, and derives remedies by regex over error prose. A shell snippet must match a block in `docs/BOOTSTRAP-FROM-ZERO.md` (a documentation drift check that blocks releases). `gate_snapshot.py` now has `_ASSAY_CLOSEOUT_LANES = ("cmru",)` (KI-141 part 7 retired the first-release closeout set). KI-183 is a direct symptom.
-**Wanted.** An optional declared `[steps.preflight]` in the project grammar, run by the generic runner for every project in scope before dispatch, printing JSON rows `{check, status, detail, remedy}` (cmru's own `cmru.toml` declares `python tools/run_release_gate.py --preflight --json`). Remove the exec/regex identity check. The bootstrap-literal check moves to the owning project's own lane, or to a lane of `libraries/test-policy` (`estate_test_policy`) if it is genuinely estate-wide (see KI-194). `gate_snapshot` takes its lanes from config. The release path needs one real dry-run to prove it.
+**Wanted.** An optional declared `[steps.preflight]` in the project grammar, run by the generic runner for every project in scope before dispatch, printing JSON rows `{check, status, detail, remedy}` (cmru's own `cmru.toml` declares `python tools/run_release_gate.py --preflight --json`). Remove the exec/regex identity check. The bootstrap-literal check moves to the owning project's own lane, or to `estate-lint` (the top-level estate checks) if it is genuinely estate-wide (see KI-194; P-core-13 moves it). `gate_snapshot` takes its lanes from config. The release path needs one real dry-run to prove it.
 
 Closes KI-183.
 Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md H4
@@ -4127,10 +4127,18 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M2
 
 ## KI-194 - cmru suite judges other projects
 
-**Status:** OPEN (filed 2026-11-24); severity: medium.
+**Status:** FIXED IN THIS BRANCH (P-core-12); filed 2026-11-24, severity: medium.
 
-`tests/test_tester_unified_image.py` (5,441 lines, the tester-unified Dockerfile and `gen-requirements.py`), `test_dependency_levels_pyproject.py::TestRealEstate` and the bootstrap-order tests judge other projects; the P6b final gate failed on 13 such tests when tls-edge was added to the tester PROJECTS list. `tests/test_gate_budgets.py` restates Run-Gate's budget rule.
+Originally: `tests/test_tester_unified_image.py` (5,441 lines, the tester-unified Dockerfile and `gen-requirements.py`), `test_dependency_levels_pyproject.py::TestRealEstate` and the bootstrap-order tests judge other projects; the P6b final gate failed on 13 such tests when tls-edge was added to the tester PROJECTS list. `tests/test_gate_budgets.py` restates Run-Gate's budget rule.
 **Wanted.** Cross-project checks move to the project they check (the tester-unified checks to tester-unified's own lanes); anything genuinely estate-wide becomes a lane of `libraries/test-policy` (`estate_test_policy`). There is no new top-level estate-lint directory. `test_gate_budgets.py` is deleted after RG-296. cmru's gate then judges cmru.
+
+**Amended 2026-11-24 (P-core-12; supersedes the "Estate-wide" and "There is no new top-level estate-lint directory" sentences in the `Wanted` paragraph above, kept for the record).** The layout is a new top-level **`estate-lint/`** with its own `run-gate.toml`; a `libraries/test-policy` estate lane was rejected because test-policy owns the test *policy* plugin, not estate facts. What moved:
+
+- `tests/test_tester_unified_image.py` -> `tester-unified/tests/` (pure move, no body edit), judged by the new `tester-unified/suite` command lane; cmru no longer reads `gen-requirements.py` `PROJECTS`, so adding a project turns only `tester-unified/suite` red.
+- `test_dependency_levels_pyproject.py::TestRealEstate` and the bootstrap-doc order tests -> `estate-lint/tests/test_estate_dependency_levels.py`; the `estate-lint/suite` lane runs that suite AND `run-gate lanes --check --all --strict` over the estate.
+- `tests/test_gate_budgets.py` keeps only what `lanes --check` does not decide (exact lane pairing, cmru's canary policy, the mutation lane's `--timeout-seconds` floor); the margin and canary-budget groups are gone. The file is not deleted: RG-296's check does not cover those three groups, so deleting it would drop them silently.
+
+No enforcing project registry exists (no guard test fails for an unregistered directory), so `estate-lint/` is a directory plus a lane plus a README, not a registry entry. Out of scope here: `run-gate-project/tests/test_lanes_check.py::test_real_repository_all_has_no_findings` duplicates the new estate-lint step.
 
 Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M5/M6
 

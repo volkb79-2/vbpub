@@ -168,6 +168,10 @@ nyxloom/      project-neutral workflow control-plane design/pilot
 scripts/         shared ops scripts (netcup, debian-install, …; see
                   Python dependency installs below)
 docs/            release tooling, versioning, plans; includes the [2026-11-12 persistence inventory](docs/persistence/PERSISTENCE-INVENTORY-2026-11-12.md)
+estate-lint/     checks that judge every project at once: the real release graph,
+                  the bootstrap doc's order, and `run-gate lanes --check`
+tester-unified/  the shared gate image (`Dockerfile`, generator) and, in `tests/`,
+                  its own suite plus `run-gate.toml` lane
 cmru.orchestration.toml  cmru/build-initial-standalone.sh
                          estate release-toolchain configuration and bootstrap
 ```
