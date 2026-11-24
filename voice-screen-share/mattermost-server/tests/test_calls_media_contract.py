@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -97,8 +98,10 @@ def test_no_public_calls_media_without_both_flags(
             expose_public=expose_public,
         )
     )
-    calls_ports = {(8443, 8443, "tcp"), (8443, 8443, "udp")}
-    assert not calls_ports & set(normalize_ports(service.get("ports")))
+    # The service publishes nothing but Calls media, so any published port here
+    # (including a container-only one that Docker maps to a random host port)
+    # would be Calls media leaking out without public exposure.
+    assert normalize_ports(service.get("ports")) == []
     assert not {
         key for key in service_environment(service) if key.startswith("MM_CALLS_")
     }
@@ -117,8 +120,6 @@ def test_calls_ports_do_not_collide_with_tls_edge_without_calls_preset(
     edge_config["ports"]["expose_http"] = True
 
     source = str(edge / "src")
-    import sys
-
     if source not in sys.path:
         sys.path.insert(0, source)
     from tls_edge_cli.config import validate_config

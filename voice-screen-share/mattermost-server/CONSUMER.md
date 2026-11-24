@@ -21,14 +21,11 @@ read from) nyxloom's Mattermost instance — `scripts/netcup` /
 
 ## Calls cut-over
 
-From this revision, Mattermost publishes Calls media on host TCP+UDP 8443
-itself. Do not run `ciu up` for Mattermost from this revision while the live
-hand-made edge still holds 8443. Remove the edge's 8443 listeners in the same
-maintenance window as the tls-edge live cut-over.
+Mattermost publishes Calls media on host TCP+UDP 8443 itself. A tls-edge 3.x
+edge with its Calls preset enabled (`[tls_edge.calls] enabled = true`) also binds
+8443 on its host, so on such a host:
 
-Order in that window:
-
-1. Stop or reconfigure the edge so it no longer binds 8443.
+1. Disable the edge's Calls preset (or stop that edge) so it no longer binds 8443.
 2. Run `ciu up` for Mattermost, which publishes the Calls media pair directly.
 
 ## Current producer accounts

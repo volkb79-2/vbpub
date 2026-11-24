@@ -37,6 +37,10 @@ ciu env generate --root-folder /workspaces/vbpub/voice-screen-share/mattermost-s
 ciu up --dir voice-screen-share/mattermost-server --yes
 ```
 
+Calls publishes host TCP+UDP 8443 directly. On a host whose tls-edge still has
+the 3.x Calls preset enabled, follow [Calls cut-over](MIGRATION.md#calls-cut-over)
+before `ciu up`.
+
 (The flag is `--root-folder`; ciu 7.15 has no `--define-root`. This root declares
 no deployment profile, so a bare `ciu up` selects nothing: always pass `--dir`.)
 

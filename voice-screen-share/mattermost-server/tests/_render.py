@@ -11,7 +11,6 @@ from typing import Any
 STACK = Path(__file__).resolve().parents[1]
 DEFAULTS = STACK / "ciu.defaults.toml.j2"
 COMPOSE = STACK / "ciu.compose.yml.j2"
-TLS_DEFAULTS = Path("tls-edge/ciu-stack/ciu.defaults.toml.j2")
 
 # A synthetic identity keeps the render independent of a live ciu.toml.j2.
 ENVIRON = {"PUBLIC_FQDN": "example.test"}
