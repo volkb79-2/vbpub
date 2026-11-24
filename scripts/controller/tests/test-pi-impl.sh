@@ -101,7 +101,10 @@ PY
 # A deterministic hold: the fake agent keeps working until the CHECK creates
 # this file. A `sleep N` would make every case that needs "the agent is still
 # running" a race against how loaded the host is.
+# FAKE_PI_HELD_MARKER appears once the whole stream is out and the fake agent is holding: the check's "the stream is
+# complete" event.
 if [[ -n ${FAKE_PI_HOLD_UNTIL:-} ]]; then
+  [[ -z ${FAKE_PI_HELD_MARKER:-} ]] || : > "$FAKE_PI_HELD_MARKER"
   waited=0
   while [[ ! -e $FAKE_PI_HOLD_UNTIL ]]; do
     sleep 0.05
@@ -430,31 +433,61 @@ check_retry_streams_into_run() {
     || fail 'a continuation left a temporary stream behind'
 }
 
+# CTL-55: waits on progress events, never on a clock. The fake agent HOLDS after its whole stream is in the run stream
+# (held marker); the sidecar has then consumed it once it has written a snapshot from a tick that started after the
+# marker. Snapshots are replaced atomically and each tick changes `updated_epoch` (ticks are >= 1 s apart), so the
+# third distinct snapshot seen after the marker is such a tick's. Only a generous hang guard remains, and it is
+# reported as inconclusive, never as the real failure.
+LIVE_HANG_GUARD_S=300
+
+# $1 wrapper pid, $2 hold file: let the held agent finish and reap the wrapper; a wrapper that still lives at the
+# hang guard is killed.
+live_reap() {
+  local wrapper=$1 hold=$2 deadline=$(( $(date +%s) + LIVE_HANG_GUARD_S ))
+  : > "$hold"
+  while kill -0 "$wrapper" 2>/dev/null && (( $(date +%s) < deadline )); do sleep 0.1; done
+  kill -- "$wrapper" 2>/dev/null || true
+  wait "$wrapper" 2>/dev/null || true
+}
+
 check_live_snapshot() {
-  local live=$CONTROLLER_ROOT/runs/live-run.live
-  rm -f "$CONTROLLER_ROOT/runs/live-run.done"
+  local live=$CONTROLLER_ROOT/runs/live-run.live hold=$ROOT/live-run.release held=$ROOT/live-run.held
+  local snap=$ROOT/live-run.snapshot.json
+  rm -f "$CONTROLLER_ROOT/runs/live-run.done" "$live" "$hold" "$held" "$snap"
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     CONTROLLER_OD_STATE="$ROOT/live-state.json" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_SEQUENCE='pi-tool-in-flight' FAKE_PI_COUNTER="$ROOT/live-run.counter" \
     FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
+    FAKE_PI_HOLD_UNTIL="$hold" FAKE_PI_HELD_MARKER="$held" \
     PI_LIVE_INTERVAL_SECONDS=1 PI_EMPTY_RETRY_LIMIT=0 \
     "$SRC" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
   local wrapper=$!
-  local waited=0
-  while (( waited < 100 )) && ! grep -qF '"tool_in_flight": "bash"' "$live" 2>/dev/null; do
-    sleep 0.1
-    waited=$(( waited + 1 ))
+  local deadline=$(( $(date +%s) + LIVE_HANG_GUARD_S )) changes=0 current previous=
+  # Phases: the agent holds with the whole stream written, then three distinct snapshots are seen.
+  while (( changes < 3 )); do
+    if (( $(date +%s) >= deadline )); then
+      live_reap "$wrapper" "$hold"
+      cat "$ROOT/live-run.launch.log" >&2
+      fail 'inconclusive: no sidecar progress within the hang guard'
+    fi
+    if ! kill -0 "$wrapper" 2>/dev/null; then
+      wait "$wrapper" 2>/dev/null || true
+      cat "$ROOT/live-run.launch.log" >&2
+      fail 'the wrapper exited before the check released its agent'
+    fi
+    if [[ -e $held ]]; then
+      current=$(cat "$live" 2>/dev/null || true)
+      if [[ -n $current && $current != "$previous" ]]; then
+        previous=$current
+        changes=$(( changes + 1 ))
+      fi
+    fi
+    sleep 0.05
   done
-  if (( waited >= 100 )); then
-    kill -- "$wrapper" 2>/dev/null || true
-    wait "$wrapper" 2>/dev/null || true
-    cat "$ROOT/live-run.launch.log" >&2
-    fail 'the live sidecar never reported the tool call in flight'
-  fi
-  kill -- "$wrapper" 2>/dev/null || true
-  wait "$wrapper" 2>/dev/null || true
-  python3 - "$live" "$wrapper" <<'PY' || fail 'the live snapshot is missing facts'
+  printf '%s\n' "$current" > "$snap"
+  live_reap "$wrapper" "$hold"
+  python3 - "$snap" <<'PY' || fail 'the live snapshot is missing facts after the stream was consumed'
 import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["run"] == "live-run", body
