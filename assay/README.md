@@ -1658,7 +1658,13 @@ you're changing assay itself:
   `ASSAY_RELEASE_GATE_HOST` setting (`local`, `<host>`, or `<host>`). The CMRU
   release transaction, build, tag, and publish remain on the controller. A
   delegated result is accepted only when the remote run metadata matches
-  `CMRU_RELEASE_GATE_COMMIT` and its verdict is `PASS`. See the
+  `CMRU_RELEASE_GATE_COMMIT` and its verdict is `PASS`. The wrapper resolves its
+  remote-gate host table and output directory from `REMOTE_GATE_HOSTS` /
+  `REMOTE_GATE_OUT`, then from the controller's own configuration, then from
+  `remote-gate.py`'s defaults, and refuses every unusable setting at once before
+  it launches anything. While a remote lane runs it prints one progress line per
+  `ASSAY_RELEASE_GATE_HEARTBEAT_S` seconds (30-1500, default 300), so the CMRU
+  step's no-progress watchdog does not end a lane that is merely quiet. See the
   [release host instructions](docs/CONSUMERS.md#assay-release-gate-host) and
   [design rationale](docs/DESIGN-GUIDE.md#assay-release-gate-delegation).
   The B105 run-gate lanes use the

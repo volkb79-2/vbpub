@@ -673,6 +673,35 @@ The controller keeps its SSH credentials and verifies the collected
 verdict from `result.json`. A failed lane returns its lane exit code. The
 remote run ID includes the candidate commit, lane and compact UTC timestamp.
 
+**Release gate environment.** Besides the required host selector, the wrapper
+needs a remote-gate host table and an output directory. It resolves each from
+the first source that supplies it:
+
+1. `REMOTE_GATE_HOSTS` and `REMOTE_GATE_OUT` when you export them;
+2. the controller's own configuration, read read-only through
+   `scripts/controller/lib.sh`: `CONTROLLER_REMOTE_HOSTS_FILE`, else
+   `CONTROLLER_HOSTS_FILE` (made absolute against `CONTROLLER_HOME`), and
+   `CONTROLLER_REMOTE_OUT`, else `$CONTROLLER_HOME/remote-gates`;
+3. `remote-gate.py`'s own defaults, unchanged from before.
+
+A value you set is never silently replaced when it is unusable: the wrapper
+refuses. A `controller.local.env` it cannot read is likewise a refusal, not a
+fall-through. Before any remote work it checks every setting and, if anything
+is missing or unusable, refuses once (exit 2) with one `  - <problem>` line per
+finding, so a single run names everything that has to be fixed. `HOME` must be
+set because `remote-gate.py` reads `~/.ssh` and its own default host table.
+`ASSAY_RELEASE_GATE_HOST` keeps no default at all: which host takes the load is
+a decision, not a fallback.
+
+While a remote lane runs, the wrapper prints one progress line per interval to
+stderr,
+`assay release-gate: waiting for remote run <run> on <host> (<elapsed>s)`.
+`ASSAY_RELEASE_GATE_HEARTBEAT_S` sets the interval (an integer from 30 to 1500,
+unset meaning 300); anything else is refused with exit 2. The lines keep the
+CMRU step's own no-progress watchdog (1800 s by default) from ending a lane that
+is merely quiet, without changing the lane's exit status: the wrapper still
+returns the remote lane's code and still cancels the remote run on `INT`/`TERM`.
+
 After R0/R1, B148/A-494 applies the same local-first observation rule before
 any selected native candidate starts: a configured observer can satisfy it
 only when the local reader specifically proves ancestors hidden. Without a

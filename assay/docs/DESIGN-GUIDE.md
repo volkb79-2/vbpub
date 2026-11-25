@@ -951,6 +951,37 @@ the runner's `meta.json` SHA matches `CMRU_RELEASE_GATE_COMMIT` and
 `result.json` says `PASS`. A failed lane keeps its own exit code; a mismatched
 commit is an infrastructure refusal.
 
+A delegated lane takes 6-50 minutes and prints nothing on its own while the
+wrapper holds the attached connection, so the wrapper writes progress rather
+than leaving the wait silent: CMRU 7.5.0 ends a step that printed nothing for
+`runner.no_progress_timeout_seconds` (1800 s by default), which killed one
+release's silent 30-minute wait although the lane's budget is 5 h. Moving that
+number would hide the fact that a healthy long lane is indistinguishable from
+a hung one, so the wrapper prints one line per interval and leaves the
+default alone. The interval is a setting (`ASSAY_RELEASE_GATE_HEARTBEAT_S`,
+30-1500 s, default 300 s) with a refusal outside the range rather than a
+silent clamp. The heartbeat must not become a second waiter: it is a separate
+subshell with its own interruptible sleep, the main `wait` keeps reaping the
+child so the exit status still reaches the caller unchanged, and the cancel
+path stops it before it cancels the remote run.
+
+The two non-load settings, the host table and the output directory, had no
+source at all: the wrapper inherited `remote-gate.py`'s cockpit-specific
+defaults (`~/.config/remote-gate/hosts.json`, one programme directory), which
+need not exist, while the estate's real values live in the controller's
+configuration. Resolving them here from that configuration is the choice over
+copying them into `cmru.toml`: the controller file is the one place that
+already owns them (`scripts/controller/remote-gate.sh` reads the same two
+values), so a copy would drift. The controller configuration is read with
+`CONTROLLER_INIT_READONLY=1`, because a release gate must not create or rewrite
+controller state, and an unreadable configuration is reported as its own
+problem instead of falling through to a default. Explicit `REMOTE_GATE_*`
+values win and are refused when unusable: a stated value is a fact, and a
+fallback that silently replaces it would hide the mistake. The host keeps no
+default for the different reason that it is a load decision. All findings are
+reported in one refusal because the earlier behaviour (one refusal per attempt)
+made every missing setting cost a full release attempt.
+
 #### Native R2 cgroup observation (B148/A-494)
 
 B145's full cgroup reader is the capability probe; a shallow check for a

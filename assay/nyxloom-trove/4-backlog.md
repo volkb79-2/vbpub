@@ -16025,7 +16025,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B579 — release-gate.sh needs a host, a hosts file and an output dir that nothing supplies
 
-**Status: OPEN (filed 2026-11-24 from the assay 12.3.0 release, txn cmru-release-20261124_204217-assay-tmmlup); severity: medium (every release stalls).**
+**Status: FIXED 2026-11-25 in `38598081d` (settings) and `58ef72042` (heartbeat), plus the docs/CHANGES/backlog commit on the same branch; severity was medium (every release stalled).**
 
 **What happened.** The cmru release transaction ran the release gate (`cmru.toml:29-34`, `tools/release-gate.sh <lane>`), and it stopped twice before it started:
 1. `ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002` (`tools/release-gate.sh:24-25`). No default, and neither cmru.toml nor the release docs say who sets it.
@@ -16043,3 +16043,7 @@ The main controller resumed with `ASSAY_RELEASE_GATE_HOST=v1001 REMOTE_GATE_HOST
 - (b) Minimum: a precheck at the top of `release-gate.sh` that reports all three missing or unreadable settings at once (today it is one per attempt), plus a "Release gate environment" paragraph in the assay release docs. The cmru release step could set them from cmru.toml `[steps.release_gate] env`, if cmru supports that.
 
 **Close when.** A release transaction from a fresh cockpit shell runs the gate without hand-set variables, or refuses in one step naming every missing setting. A test of `release-gate.sh` pins the refusal text. Source: main controller's message to vbpub-assay, ~20:45Z.
+
+**Fixed (a), and the docs half of (b).** `tools/release-gate.sh` now resolves the host table and the output dir the way `scripts/controller/remote-gate.sh` does, read-only through `CONTROLLER_INIT_READONLY=1`: `REMOTE_GATE_HOSTS`/`REMOTE_GATE_OUT` first, then `CONTROLLER_REMOTE_HOSTS_FILE`/`CONTROLLER_HOSTS_FILE` and `CONTROLLER_REMOTE_OUT`/`CONTROLLER_HOME/remote-gates`, then `remote-gate.py`'s module defaults. Every missing or unusable setting is reported in ONE refusal (exit 2) before any work; `ASSAY_RELEASE_GATE_HOST` still has no default because the host is a load decision. Pinned by `gate/tests/test_release_gate.py::test_release_gate_reports_every_unusable_setting_in_one_refusal` and the three resolution-order tests beside it. The "Release gate environment" paragraph is in `docs/CONSUMERS.md` (`### Assay release-gate host`), with the README and DESIGN-GUIDE sections updated in step.
+
+**Related (heartbeat, cmru 7.5.0 watchdog).** The same wrapper now prints `assay release-gate: waiting for remote run <run> on <host> (<elapsed>s)` every `ASSAY_RELEASE_GATE_HEARTBEAT_S` seconds (30-1500, default 300), so a quiet 6-50 minute lane no longer trips CMRU 7.5.0's 1800 s per-step no-progress watchdog (`cmru/src/cmru/runner.py:43`) the way it killed assay 12.3.0. `cmru.toml` and the cmru setting are unchanged; the lane's exit status and the `INT`/`TERM` cancel path are untouched.
