@@ -254,7 +254,11 @@ class ShellKitBase(unittest.TestCase):
                         MDT_ACCEPT_LOCK=str(self.tmp / "lock"), MDT_ACCEPT_MIN_DISK="1", MDT_ACCEPT_SSH_TARGET="root@127.0.0.1",
                         MDT_ACCEPT_HOTSET_JSON=str(self.fixture), MDT_ACCEPT_HOTSET_EVERY="1",
                         MDT_ACCEPT_DAMON_STAT=str(self.tmp / "damon_stat-N"),
-                        MDT_ACCEPT_DWELL_TICKS="3", MDT_ACCEPT_SETTLE_TICKS="1", MDT_ACCEPT_MAX_TICKS="12",
+                        # 2 ticks per step (one settling, one judged): every tick costs ~40 fake-process spawns plus one
+                        # hot-set sample, and no shell test asserts a per-tick count beyond that. The smoke lane is
+                        # budget-bound (see run-gate.toml), so the fake host runs the shortest ladder that still covers
+                        # the seams (settling row, judged row, probes, hot set, guards, drift readback).
+                        MDT_ACCEPT_DWELL_TICKS="2", MDT_ACCEPT_SETTLE_TICKS="1", MDT_ACCEPT_MAX_TICKS="12",
                         MDT_ACCEPT_UNITS="docker.service=system.slice/docker.service ssh.service=system.slice/docker.service",
                         MDT_ACCEPT_PROBE_CMD_SSHD="true", MDT_ACCEPT_PROBE_CMD_JOURNALD="true",
                         MDT_ACCEPT_PROBE_CMD_DOCKERD="true", MDT_ACCEPT_PROBE_CMD_CONTAINERD="true",
