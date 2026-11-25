@@ -44,16 +44,18 @@ io_sync = "durable"
 #   cpu_cap 3 (environments.tester-unified resources.cpus), oversubscribe 1.0
 #     -> cpu_workers = floor(3 * 1.0) = 3
 #   enforced lane memory 4g -> memory budget 75% of 4g = 3072 MiB
-#   3 MiB..: declared candidate_ram 512 MiB (a FLOOR over the measured p95
-#     391,901,184 bytes = 374 MiB from the 2026-11-02 campaign, whose largest
-#     single candidate peaked at 1,462 MiB) -> memory_workers = 3072 // 512 = 6
+#   declared candidate_ram 512 MiB is a FLOOR over the measured per-candidate
+#     RSS (p95 391,901,184 B = 374 MiB measured over 234 candidate events in
+#     the 2026-11-02 campaign; the largest single candidate there was
+#     1,568,337,920 B = 1.46 GiB) -> memory_workers = 3072 // 512 = 6
 #   assay max_mutants remaining cap is never binding here
 #   jobs = min(jobs_max 4, cpu 3, memory 6, remaining) = 3
 # 3 workers x 512 MiB = 1536 MiB estimated candidate RSS inside a 4096m cap,
 # which leaves the rest of the cap for the baseline (measured 253-270 s) and
-# pytest/coverage overhead. The 2026-11-02 campaign ran N=3 inside the
-# smaller 1536m cap and peaked at 2.67 GiB on the slice, so 4g is the measured
-# shape, not a guess at one worker's need.
+# pytest/coverage overhead. The 2.67 GiB (2,864,095,232 B) peak of the
+# 2026-11-02 campaign at N=3 is the campaign sampler's peak on the gate SLICE,
+# not a lane figure: 2.67 GiB cannot fit in the 1536m LANE cap that campaign
+# ran under, which is why that cap is 4g now. 4g is measured, not a guess.
 #
 # budget = 245m is sized from the measurement in docs/R2-RUNBOOK.md and keeps
 # the 5m margin above the assay lane's own 240m that `run-gate lanes --check`
