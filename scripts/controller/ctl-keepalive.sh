@@ -3,18 +3,18 @@
 set -u
 # ctl-keepalive.sh [--once]
 # Prompt-cache keep-alive watcher for the interactive Claude Code controller panes in tmux. Spec:
-# docs/design/agctl/CONTEXT-ECONOMY.md section 2 (+ review items R2-1/2/3/5). ONE process for all panes, started detached
-# by hand (`setsid nohup ctl-keepalive.sh &`); ctl-doctor reports it running or absent and prints this start command, but
-# never starts it. No controller session owns it. `--once` runs one poll (tests; it pings too).
-# 55-59 min after the last real API request (newest assistant record with usage in the session JSONL) it types
-# one digit-free ping into the pane's EMPTY single-row prompt box, reads it back after 1 s and presses Enter only on
-# an exact match; anything else is cleared (our own text) or left alone (foreign text, dialog, busy) and
+# docs/design/agctl/CONTEXT-ECONOMY.md section 2 (+ review items R2-1/2/3/5). ONE process for all panes, started
+# detached by hand (`setsid nohup ctl-keepalive.sh &`); ctl-doctor reports it running or absent and prints this
+# start command, but never starts it. No controller session owns it. `--once` runs one poll (tests; it pings too).
+# 55-59 min after the last real API request (newest assistant record with usage in the session JSONL) it types one
+# digit-free ping into the pane's EMPTY single-row prompt box, reads it back after 1 s and presses Enter only on an
+# exact match; anything else is cleared (our own text) or left alone (foreign text, dialog, busy) and
 # ~/controller/keepalive/<sessionId>.abort holds the anchor. The count N comes from the JSONL, the cap is
-# KEEPALIVE_MAX, at most one ping per anchor. Every pane check (busy, dialog, prompt box) reads ONE `pane_view` of the
-# capture: all bottom windows are measured from the mode line, and the rows below it (the agents panel) are trimmed
-# only while the mode line carries the unfocused `↓ to manage` hint (a focused panel is not captured yet). Pane lock
-# ~/controller/locks/<%pane_id>.lock is shared with the
-# resume helpers. Files: logs/keepalive.log, keepalive.pid, locks/keepalive.lock. Skips are logged on change only.
+# KEEPALIVE_MAX, at most one ping per anchor. Every pane check (busy, dialog, prompt box) reads ONE `pane_view` of
+# the capture: all bottom windows are measured from the mode line, and the rows below it (the agents panel) are
+# trimmed only while the mode line carries the unfocused `↓ to manage` hint (a focused panel is not captured yet).
+# Pane lock ~/controller/locks/<%pane_id>.lock is shared with the resume helpers. Files: logs/keepalive.log,
+# keepalive.pid, locks/keepalive.lock. Skips are logged on change only.
 #
 # NOTE (DeepSeek / Open Design controllers): no code path until such a controller exists; operator ruling, the
 # constants are recorded here so a future pi/DeepSeek session class has its numbers. Its cache TTL is about
