@@ -6,6 +6,21 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Keep-alive: one trimmed pane view for every ping check (P-plat-22b E fix 1)
+- `ctl-keepalive.sh`: `pane_view` gives the busy, dialog and prompt-box checks ONE capture that is measured from the
+  MODE line (`⏵⏵ bypass permissions on`) instead of the last line of the pane, so the agents panel below it can no
+  longer push `esc to interrupt` or a menu out of the bottom windows and let a ping into a busy pane. The trim happens
+  only while the mode line carries the unfocused hint `↓ to manage` (`BOX_PANEL_HINT`): a focused panel is not
+  captured yet and may look identical, so without the hint nothing is trimmed and the strict box geometry refuses the
+  pane. Built from the real capture (`tests/fixtures/keepalive/idle-agents-panel.ansi` edited per frame): `H1` busy,
+  read-back, dialog and draft refusals plus the `M1` focused-panel refusal; `box_ok` no longer trims on its own.
+  The watch loop is `while (( ! stop ))`, so a TERM during the sleep ends it without one more poll.
+- `ctl-doctor.sh`: the printed start command carries `CONTROLLER_HOME=<path>` when it is not the default
+  `$HOME/controller` (else the watcher would write its pid file elsewhere and the check keeps saying absent), and a
+  pid file without a trailing newline reads as a pid instead of a stale file.
+- `tests/test-entrypoints.sh` fails when `git ls-files` lists no row at all or when `ctl-keepalive.sh` is not among
+  them. `docs/design/agctl/CONTEXT-ECONOMY.md` step 5 describes the mode-line view and the one-label top rule.
+
 ### Keep-alive follow-ups
 - `ctl-keepalive.sh`: break the watch loop immediately after a poll in which SIGTERM/SIGINT set
   `stop`, instead of sleeping once more while holding the singleton lock. The smallest
