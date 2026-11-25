@@ -57,9 +57,11 @@ When you add a project to `cmru.orchestration.toml`, regenerate this block from
 Within a level, `project_order` is the explicit order used by the release
 transaction. The graph captures the release chain: Run-Gate follows CGProfile
 because its full R2 qualification needs the contract-2 observer, and CMRU
-follows Run-Gate because its own gate requires the published wheel. The test
-`cmru/tests/test_dependency_levels_pyproject.py` checks both this level table
-and the CGProfile → Run-Gate → CMRU gate prerequisites.
+follows Run-Gate because its own gate requires the published wheel. The tests
+`estate-lint/tests/test_estate_dependency_levels.py::TestRealEstate` check this
+level table and the CGProfile → Run-Gate → CMRU gate prerequisites, and
+`test_the_bootstrap_doc_order_agrees_with_the_graph` checks the fenced
+`project-order` block above against it.
 
 ## Steps from an empty release set
 
