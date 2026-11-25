@@ -51,16 +51,17 @@ box() { printf 'output\n%s\n%b\n%s\n%b\n' "$RULE" "$1" "$RULE" "${2:-  ctx 41%}"
 BUSYL='  * Thinking (12s . esc to interrupt)'
 MENU=' Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel'
 PANELFIX=$SCRIPT_DIR/fixtures/keepalive/idle-agents-panel.ansi                     # the sanitized REAL idle agents-panel capture
-# panel_frame <dest> <extra panel rows> <busy 0|1>: a temp copy of the REAL capture, with `· esc to interrupt` added to its
-# mode line when busy and N extra panel rows appended.
+# panel_frame <dest> <extra panel rows> <busy 0|1> <unfocused hint 0|1>: a temp copy of the REAL capture, edited line by line:
+# `· esc to interrupt` added to its mode line when busy, ` · ↓ to manage` removed when the panel has focus, N rows appended.
 panel_frame() {
-  local dest=$1 rows=$2 busy=$3 k mode_line
+  local dest=$1 rows=$2 busy=$3 hint=$4 k mode_line
   mode_line=$(grep -nFm1 -- '⏵⏵ bypass permissions on' "$PANELFIX" | cut -d: -f1)
   local esc=$'\033'
   cp -- "$PANELFIX" "$dest"
   # append the busy marker at the END of the mode line's text: the line is captured with colour runs, and appending is what
   # a real busy pane shows (the mode line grows, the rest of the layout does not move)
   if (( busy )); then sed -i "${mode_line}s/${esc}\\[39m$/ · esc to interrupt${esc}\\[39m/" "$dest"; fi
+  if (( ! hint )); then sed -i "${mode_line}s/ · ↓ to manage//" "$dest"; fi
   for ((k = 1; k <= rows; k++)); do printf '  \e[38;5;246m◯ general-purpose\e[39m  \e[38;5;246magent %s running a foreground tool\e[39m\n' "$k" >>"$dest"; done
 }
 # typed_row <dest> <text>: the read-back shape: the capture's EMPTY input row now holds the text
@@ -90,11 +91,12 @@ frame() {
     ROK) box "❯\xc2\xa0$TEXT" >"$f" ;;                                    # read-back: exactly our text, NBSP as the separator
     ROK2) box "❯ $TEXT" >"$f" ;;                                          # ... plain space
     ROK3) box "❯\xc2\xa0\xc2\xa0$TEXT\xc2\xa0 " >"$f" ;;                  # ... NBSP gap doubled, trailing NBSP
-    LID) panel_frame "$f" 3 0 ;;                                        # the REAL idle agents panel plus 3 rows: pingable
-    LB) panel_frame "$f" 6 1 ;;                                         # H1: real frame, `esc to interrupt` in the mode line, 9 panel rows
-    LRB) panel_frame "$f" 6 1; typed_row "$f" "$TEXT" ;;                # H1: the read-back of the ping on such a pane
+    LID) panel_frame "$f" 3 0 1 ;;                                        # the REAL idle agents panel plus 3 rows: pingable
+    LB) panel_frame "$f" 6 1 1 ;;                                         # H1: real frame, `esc to interrupt` in the mode line, 9 panel rows
+    LRB) panel_frame "$f" 6 1 1; typed_row "$f" "$TEXT" ;;                # H1: the read-back of the ping on such a pane
     LMB) menu_frame "$f" 12 ;;                                            # H1: a menu above the box, then the real mode line, then a 15-row panel
-    LMLP) panel_frame "$f" 6 0; draft_row "$f" ;;                       # H1: a draft line under the live row, mode line and panel below
+    LMLP) panel_frame "$f" 6 0 1; draft_row "$f" ;;                       # H1: a draft line under the live row, mode line and panel below
+    LFOC) panel_frame "$f" 0 0 0 ;;                                       # M1: the real frame WITHOUT the unfocused-panel hint (focused panel)
     RPF) box '❯ [keepalive] cache ref' >"$f" ;;                           # only a prefix of our text
     RFO) box "❯ hello $TEXT" >"$f" ;;                                     # foreign text typed by the operator
     RBUSY) { printf '%s\n' "$BUSYL"; box "❯ $TEXT"; } >"$f" ;;            # a turn started: our text, busy
@@ -231,6 +233,14 @@ logged 'skip dialog' || fail "H1: the dialog must be found below a tall panel to
 scenario h1-draft 3400 "LMLP" "ROK"; run
 [[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a draft line under the live row must never be typed into"; }
 logged 'skip input-box-layout' || fail "H1: a draft is refused by the box geometry"
+# 4a2. M1: the trim needs the mode line's unfocused-panel hint (`↓ to manage`); without it the panel may hold the
+#      keyboard focus and the strict box geometry must refuse the pane (nothing is typed into a focused panel)
+scenario m1-focused 3400 "LFOC" "ROK"; run
+[[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "M1: a panel without the unfocused hint may be focused and must not be pinged"; }
+logged 'skip input-box-layout' || fail "M1: the focused-panel frame is refused by the box geometry"
+scenario m1-unfocused 3400 "LID" "ROK"; run
+called 'send-keys %1 Enter' || { calls >&2; fail "M1: the unfocused agents panel (hint present) stays pingable"; }
+
 # 4b. M1: a multi-line draft (box row empty, continuation line below it) is never typed into, and never erased or submitted
 #     when it only shows on the read-back (cursor on the draft line or on the marker row)
 for kind in RML1 RML2; do
@@ -334,12 +344,14 @@ called 'send-keys %1 /clear Enter' || { calls >&2; fail "the helper must send to
 ! called 'send-keys main' || fail "the helper sent to the unresolved target"
 [[ -e $D/home/locks/%1.lock ]] || fail "the helper's lock file is keyed on the resolved pane id"
 
-# 7a. N1 without a signal: a stub poll_once sets stop during the poll, and the watch loop must not enter the sleep
+# 7a. N1 without a signal: a stub poll_once sets stop during the poll, and the watch loop must not enter the sleep.
+# L1: the stub FAILS (exit 43) on a second poll, which it runs in the PARENT shell, so a regression that drops both `stop`
+# checks reports FAIL instead of hanging the gate until the timeout.
 scenario stop-after-poll 3400 "I" "ROK"; prep
 KEEPALIVE_SOURCE_ONLY=1 SLEEP_MARKER=$D/slept bash -c '
   source "$1"
-  stop=0
-  poll_once() { stop=1; }
+  stop=0; polls=0
+  poll_once() { (( ++polls > 1 )) && exit 43; stop=1; }
   sleep() { printf called >"$SLEEP_MARKER"; exit 42; }
   watch_loop
 ' _ "$KA" || fail "the watch loop did not end immediately after stop was set"
