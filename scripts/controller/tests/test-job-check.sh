@@ -177,6 +177,34 @@ contains "$ROOT/pi-402-unknown-check.out" 'USAGE-LIMIT (reset unknown)' 'job-che
 if grep -qF 'EMPTY-RUN' "$ROOT/pi-402-unknown-check.out" || grep -qF 'PI-ERROR' "$ROOT/pi-402-unknown-check.out"; then
   fail 'unknown-reset 402 was obscured by generic error classification'
 fi
+# pi-review.sh APPENDS REVIEW-MODIFIED-TREE after pi-impl.sh's own marker, and a
+# reviewer COMMIT leaves a clean tree plus a present report, so line 1 reads
+# `EXIT=0 OUTCOME=SUCCESS`. The flag must still make the run red, or a tampered
+# review shows as green to every controller that reads job-check.
+cp "$SCRIPT_DIR/fixtures/pi-success.jsonl" "$HOME_ROOT/runs/pi-review-flag.jsonl"
+printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-MODIFIED-TREE\n' > "$HOME_ROOT/runs/pi-review-flag.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-review-flag "$REPO" deepseek-pi-volker > "$ROOT/pi-review-flag.out" 2>&1; then
+  fail 'a REVIEW-MODIFIED-TREE run was accepted as a successful job'
+fi
+contains "$ROOT/pi-review-flag.out" 'REVIEW-MODIFIED-TREE: the reviewer changed the reviewed worktree' \
+  'job-check names the modified-tree flag as the reason the run is red'
+contains "$ROOT/pi-review-flag.out" 'done: EXIT=0 OUTCOME=SUCCESS' 'the pi-impl line is still printed beside the flag'
+if grep -qF 'JOB-CHECK: green' "$ROOT/pi-review-flag.out"; then fail 'a flagged review printed JOB-CHECK: green'; fi
+# The same marker without the flag stays green, so the reader reports the flag
+# rather than turning every review red.
+printf 'EXIT=0 OUTCOME=SUCCESS\n' > "$HOME_ROOT/runs/pi-review-clean.done"
+cp "$SCRIPT_DIR/fixtures/pi-success.jsonl" "$HOME_ROOT/runs/pi-review-clean.jsonl"
+if ! CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-review-clean "$REPO" deepseek-pi-volker > "$ROOT/pi-review-clean.out" 2>&1; then
+  cat "$ROOT/pi-review-clean.out" >&2
+  fail 'an unflagged review with a clean tree was rejected'
+fi
+contains "$ROOT/pi-review-clean.out" 'JOB-CHECK: green' 'an unflagged review still reads green'
+if grep -qF 'REVIEW-MODIFIED-TREE' "$ROOT/pi-review-clean.out"; then
+  fail 'an unflagged review was reported as a modified tree'
+fi
+rm -f -- "$HOME_ROOT/runs/pi-review-flag."* "$HOME_ROOT/runs/pi-review-clean."*
 git -C "$REPO" switch -qc sol-task "$BASE"
 printf 'sol review fix\n' > "$REPO/sol.txt"
 git -C "$REPO" add sol.txt

@@ -567,6 +567,19 @@ check_job_status() {
   }
   grep -qF 'outcome-success: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status.out" \
     || { cat "$ROOT/job-status.out" >&2; fail 'job-status did not report the finished run'; }
+  # pi-review.sh APPENDS REVIEW-MODIFIED-TREE after pi-impl.sh's own marker, and
+  # line 1 can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit. job-status
+  # must report every marker line's verdict, not line 1 alone.
+  printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-MODIFIED-TREE\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-flagged.out" 2>&1 || {
+    cat "$ROOT/job-status-flagged.out" >&2
+    fail 'job-status failed on a flagged review'
+  }
+  grep -qF 'flagged-review: FINISHED' "$ROOT/job-status-flagged.out" \
+    || { cat "$ROOT/job-status-flagged.out" >&2; fail 'job-status did not report the flagged review'; }
+  grep -qF 'REVIEW-MODIFIED-TREE' "$ROOT/job-status-flagged.out" \
+    || { cat "$ROOT/job-status-flagged.out" >&2; fail 'job-status hid the REVIEW-MODIFIED-TREE flag'; }
+  rm -f -- "$CONTROLLER_ROOT/runs/flagged-review.done"
   python3 - "$json" <<'PY'
 import json, sys
 now = 1_800_000_000

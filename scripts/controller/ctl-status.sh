@@ -7,6 +7,19 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 controller_init
 [[ $# == 0 ]] || { echo "usage: $0" >&2; exit 2; }
 
+done_state() {
+  # $1 the run's completion marker. pi-review.sh APPENDS REVIEW-MODIFIED-TREE
+  # after pi-impl.sh's own line 1, which can read `EXIT=0 OUTCOME=SUCCESS` for a
+  # reviewer commit; reading line 1 alone shows a tampered review as green.
+  local marker=$1 first
+  first=$(head -n 1 "$marker" | head -c 70)
+  if grep -qF -- 'REVIEW-MODIFIED-TREE' "$marker"; then
+    printf 'REVIEW-MODIFIED-TREE %s' "$first"
+  else
+    printf '%s' "$first"
+  fi
+}
+
 now=$(date +%s)
 age() {
   local then=${1:-} delta
@@ -68,7 +81,7 @@ PY
     route=$(cat "$CONTROLLER_HOME/runs/$name.route" 2>/dev/null || echo unknown)
     if [[ -f $CONTROLLER_HOME/runs/$name.done ]]; then
       printf '  %s route=%s %s age=%s\n' "$name" "$route" \
-        "$(head -n 1 "$CONTROLLER_HOME/runs/$name.done" | head -c 70)" "$(age "$mtime")"
+        "$(done_state "$CONTROLLER_HOME/runs/$name.done")" "$(age "$mtime")"
     else
       size=$(stat -c %s "$file" 2>/dev/null || echo '?')
       state="RUNNING (last write $(age "$mtime") ago, ${size} bytes)"

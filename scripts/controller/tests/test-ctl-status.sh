@@ -76,8 +76,23 @@ not_contains "$ROOT/status-fresh.out" '--- recent host queue results' 'fresh sta
 printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-stalled.jsonl"
 printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-stalled.route"
 touch -d '@0' "$HOME_ROOT/runs/pi-stalled.jsonl"
+# pi-review.sh APPENDS REVIEW-MODIFIED-TREE after pi-impl.sh's own line 1, which
+# can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit: the run row must
+# carry the flag, or ctl-status shows a tampered review as green.
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-flagged.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-flagged.route"
+printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-MODIFIED-TREE\n' > "$HOME_ROOT/runs/pi-review-flagged.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-clean.jsonl"
+printf 'deepseek-pi-volker\n' > "$HOME_ROOT/runs/pi-review-clean.route"
+printf 'EXIT=0 OUTCOME=SUCCESS\n' > "$HOME_ROOT/runs/pi-review-clean.done"
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-pi.out" 2>&1
 contains "$ROOT/status-pi.out" 'pi-stalled route=deepseek-pi-github2 RUNNING' 'status lists a pi run and its selected route'
 contains "$ROOT/status-pi.out" 'STALLED?' 'a pi stream with an old last event receives the normal stall warning'
+contains "$ROOT/status-pi.out" 'REVIEW-MODIFIED-TREE EXIT=0 OUTCOME=SUCCESS' \
+  'status prints the modified-tree flag beside the pi-impl line instead of hiding it'
+contains "$ROOT/status-pi.out" 'pi-review-clean route=deepseek-pi-volker EXIT=0 OUTCOME=SUCCESS' \
+  'status keeps an unflagged review row unmarked'
 
-echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, pi run stalls, missing config'
+rm -f -- "$HOME_ROOT/runs/pi-review-flagged."* "$HOME_ROOT/runs/pi-review-clean."*
+
+echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, pi run stalls, review flag, missing config'

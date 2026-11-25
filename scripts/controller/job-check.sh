@@ -95,6 +95,14 @@ if [[ -e $done_file ]]; then
   done_status=$(head -n 1 "$done_file")
   printf 'done: %s\n' "$done_status"
   if [[ ! $done_status =~ ^EXIT=0([[:space:]]|$) ]]; then echo "CHILD EXIT IS NOT ZERO: $done_status"; red=1; fi
+  # pi-review.sh appends REVIEW-MODIFIED-TREE AFTER pi-impl.sh's own marker, and
+  # that marker can read `EXIT=0 OUTCOME=SUCCESS` (a reviewer commit leaves a
+  # clean tree and a present report). The flag is the run's verdict, so it is
+  # read from the whole marker: line 1 alone is a false certificate.
+  if grep -qF -- 'REVIEW-MODIFIED-TREE' "$done_file"; then
+    echo "REVIEW-MODIFIED-TREE: the reviewer changed the reviewed worktree (see $done_file)"
+    red=1
+  fi
 else
   # No completion marker. The word RUNNING asserts that a process exists, so it
   # is read from the run name's own owner record (the same `<name>.lock` every
