@@ -219,21 +219,53 @@ consumers get a cmru-released wheel with its sha256 (never PyPI; no zipapp: it c
 
 ### Registered repository gate
 
-The R2 lane is a native Assay lane in `run-gate.toml`, rather than a command
-that assembles `python -m assay.cli run` itself. Native dispatch lets
-Run-Gate apply and record its R2 `jobs` policy, while Assay owns the
-verdict, progress stream and candidate state contract. Run-Gate moves
-resumable state under the checkout's ignored `.run-gate/` area so retries
-through ephemeral worktrees retain the same campaign state.
-The former command lane's state and progress paths are not imported: the
-native lane starts a new campaign state under the Run-Gate storage contract.
+The repository gate is `run-gate r0-r1` and nothing else. Mutation is a
+different event with a different budget, and an owed R2 is settled
+asynchronously on the latest code, so no merge gate is held to a mutation
+verdict. That split is not cosmetic: the whole-target campaign plans 1891
+candidates for this package, and the 2026-11-24 run judged 75 of them in 6 h
+(0.2 cand/min, ETA about 8450 min), so every iobench merge gate ended
+`BUDGET_EXCEEDED`. A gate that cannot finish is not a gate.
 
-The Assay lane declares `jobs_max = 4`; Run-Gate's `jobs = "auto"` policy
-uses measured candidate RSS when available, otherwise a conservative 1 GiB
-estimate, and stays at one worker unless Assay's prepared workspace confirms
-its supported btrfs cheap clone. The old Assay `jobs = 1` key was a legacy
-alias for `jobs_max`, not a per-run worker choice, so leaving it in place
-would have capped the opt-in policy at one.
+The two mutation lanes are named, run by the controller, and one lane cannot
+be both (Assay refuses `judge.base_source` under `mode = "whole_target"` and
+`judge.targets` under `changed_lines`, `assay/src/assay/config.py:2874-2880`,
+`:2894-2899`):
+
+* `r2` (Assay lane `iobench-diff`) is the **diff-scoped** owed lane: only the
+  lines a request base..HEAD diff adds under `src/iobench`, mode
+  `changed_lines`, `rigor = ["R0", "R2"]`, `base_source = "request"`. The plan
+  for the WP-10 P1 change is 98 candidates, about 5 % of the whole-target set.
+  It declares `jobs = 3` EXPLICITLY rather than `"auto"`, so every host gets
+  the same count; that is legal only inside an enforced 4g cap with the
+  counted CPUs and a Cowtree-confirmed btrfs cheap-clone workspace, and a
+  host without that CoW area refuses `--jobs 3` by name instead of silently
+  serialising. `candidate_ram = "512m"` is a declared floor over the measured
+  per-candidate RSS (p95 374 MiB), which is what makes the arithmetic
+  `memory_workers = 3072 // 512 = 6` honest.
+* `r2-whole` is the **periodic whole-package** campaign: the previous lane,
+  unchanged in behaviour (every shipped module, `jobs = "auto"`, 1536m,
+  365m). It remains the only way to judge a file nobody touched in the change
+  under judgement, and it is run deliberately, never as the R2 of one diff.
+
+Both are native Assay lanes in `run-gate.toml`, rather than a command that
+assembles `python -m assay.cli run` itself. Native dispatch lets Run-Gate
+apply and record its R2 `jobs` policy, while Assay owns the verdict, progress
+stream and candidate state contract. Run-Gate moves resumable state under
+the checkout's ignored `.run-gate/` area so retries through ephemeral
+worktrees retain the same campaign state. The former command lane's state and
+progress paths are not imported: the native lane starts a new campaign state
+under the Run-Gate storage contract.
+
+The whole-package lane still opts into `jobs = "auto"`; Assay's lane declares
+`jobs_max = 4`, and Run-Gate's auto policy uses measured candidate RSS when
+available, otherwise a conservative 1 GiB estimate, and stays at one worker
+unless Assay's prepared workspace confirms its supported btrfs cheap clone.
+The old Assay `jobs = 1` key was a legacy alias for `jobs_max`, not a per-run
+worker choice, so leaving it in place would have capped the opt-in policy at
+one. The operator procedure for the diff-scoped lane (two shards, one commit,
+admission, store/resume, reading the binding verdict) is
+[docs/R2-RUNBOOK.md](R2-RUNBOOK.md).
 
 ## 9. Safety design
 
