@@ -240,7 +240,7 @@ Verdict lines (`INFO` is never folded into the verdict). The numbers are **illus
 
 ```
 STEP 0 K=1560M PASS   load real 100%  psi 0.00/0.00/0.00 root 0.00 ssh p95 0.57<=1.13 probes 8/8
-STEP 4 K=1048M FAIL   load real 0%  psi system.some 1.90 > 1.00; probes 6/8 (journald 2 timeout)
+STEP 4 K=1048M FAIL   load real 100%  psi system.some 1.90 > 1.00; probes 6/8 (journald 2 timeout)
 SQUEEZE last pass K=1176M (step 3), first fail K=1048M (step 4): stopped by the psi criterion
 INFO refault (informational, pages): docker.service +1593, systemd-journald.service +53102 (step 4)
 INFO hot set systemd-journald.service 21.4M (DAMON sz_ops_filter_passed p95) -> floor 24M (table 24M, source damon)
