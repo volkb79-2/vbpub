@@ -4,6 +4,10 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed (R2 lane budget)
+- The `r2` budgets are 430m (assay) and 450m (run-gate): the 2026-11-25 run on
+  `814c5129` judged 188 of 194 candidates in 310m and ended `LANE_TIMEOUT`.
+
 ### Added (WP-10 P2, `io_benchmark_profile`)
 - New config key `io_benchmark_profile` next to `run_io_benchmark`, accepted
   values `veryquick`, `quick` and `standard`, default `quick` (operator
