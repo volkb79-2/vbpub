@@ -686,18 +686,37 @@ the first source that supplies it:
 
 A value you set is never silently replaced when it is unusable: the wrapper
 refuses. A `controller.local.env` it cannot read is likewise a refusal, not a
-fall-through. Before any remote work it checks every setting and, if anything
-is missing or unusable, refuses once (exit 2) with one `  - <problem>` line per
-finding, so a single run names everything that has to be fixed. `HOME` must be
-set because `remote-gate.py` reads `~/.ssh` and its own default host table.
+fall-through, and the refusal quotes that file's own last error line. The
+controller configuration is read only while one of `REMOTE_GATE_HOSTS` and
+`REMOTE_GATE_OUT` is unset, so an explicit pair still runs on a machine whose
+controller file is broken.
+
+Before any remote work the wrapper checks every setting and, if anything is
+missing or unusable, refuses once (exit 2) with one `  - <problem>` line per
+finding, so a single run names everything that has to be fixed. Every problem
+names its source -- `REMOTE_GATE_HOSTS`, `CONTROLLER_REMOTE_HOSTS_FILE`,
+`CONTROLLER_HOSTS_FILE`, `CONTROLLER_REMOTE_OUT`, `CONTROLLER_HOME/remote-gates`,
+`remote-gate.py DEFAULT_HOSTS`, `remote-gate.py DEFAULT_OUT` -- as in
+`host table from remote-gate.py DEFAULT_HOSTS is missing: <path>`. `HOME` must
+be set because `remote-gate.py` reads `~/.ssh` and its own default host table.
 `ASSAY_RELEASE_GATE_HOST` keeps no default at all: which host takes the load is
 a decision, not a fallback.
+
+The combined refusal covers the remote host's settings only: the host selector,
+`ASSAY_RELEASE_GATE_HEARTBEAT_S`, the host table, the output directory and
+`HOME`. A local host (`ASSAY_RELEASE_GATE_HOST=local`) execs the ordinary local
+lane and never reads or validates any of them. The CMRU binding
+(`CMRU_RELEASE_GATE_COMMIT` unset or malformed, and a commit that does not match
+the worktree `HEAD`) and a missing `remote-gate.py` stay separate refusals with
+their own exit codes, because they can only be judged after the settings are
+known and they are not one of them.
 
 While a remote lane runs, the wrapper prints one progress line per interval to
 stderr,
 `assay release-gate: waiting for remote run <run> on <host> (<elapsed>s)`.
 `ASSAY_RELEASE_GATE_HEARTBEAT_S` sets the interval (an integer from 30 to 1500,
-unset meaning 300); anything else is refused with exit 2. The lines keep the
+unset meaning 300); anything else is refused with exit 2, and the interval is
+refused in the same combined message as the other settings. The lines keep the
 CMRU step's own no-progress watchdog (1800 s by default) from ending a lane that
 is merely quiet, without changing the lane's exit status: the wrapper still
 returns the remote lane's code and still cancels the remote run on `INT`/`TERM`.

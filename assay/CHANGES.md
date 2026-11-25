@@ -37,12 +37,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   read-only configuration (`CONTROLLER_REMOTE_HOSTS_FILE`/`CONTROLLER_HOSTS_FILE`,
   `CONTROLLER_REMOTE_OUT`/`$CONTROLLER_HOME/remote-gates`), then from
   `remote-gate.py`'s defaults, and reports every missing or unusable setting in
-  one refusal (exit 2) before any work. `ASSAY_RELEASE_GATE_HOST` stays required.
+  one refusal (exit 2) before any work, each line naming the source that
+  supplied the bad value. The controller configuration is read only while
+  `REMOTE_GATE_HOSTS` or `REMOTE_GATE_OUT` is unset, so an explicit pair still
+  runs on a machine whose `controller.local.env` is broken. `ASSAY_RELEASE_GATE_HOST`
+  stays required, and an unset host or HOME is now exit 2 (was 3).
 - The same wrapper prints one progress line per `ASSAY_RELEASE_GATE_HEARTBEAT_S`
   seconds (30-1500, default 300) while a remote release lane runs, so CMRU
   7.5.0's per-step no-progress watchdog (1800 s by default) no longer ends a
-  lane that is merely quiet. The lane's exit status and the `INT`/`TERM`
-  cancellation path are unchanged (B579).
+  lane that is merely quiet. An interval outside 30-1500 is refused in the same
+  combined message as the host settings. The lane's exit status and the
+  `INT`/`TERM` cancellation path are unchanged (B579).
 - B556 (items 1-2): a non-git `OSError` during snapshot preparation or cleanup
   remains `ERROR`/`GIT_FAILED`; its detail is the last stage entered followed
   by `str(exc)` plus the `/proc/self/fd` path for an integer fd (best effort, at report time).

@@ -1662,7 +1662,12 @@ you're changing assay itself:
   remote-gate host table and output directory from `REMOTE_GATE_HOSTS` /
   `REMOTE_GATE_OUT`, then from the controller's own configuration, then from
   `remote-gate.py`'s defaults, and refuses every unusable setting at once before
-  it launches anything. While a remote lane runs it prints one progress line per
+  it launches anything: the host selector, `ASSAY_RELEASE_GATE_HEARTBEAT_S`, the
+  host table, the output directory and `HOME`, each problem naming the setting
+  that supplied the unusable value. A `local` host never reads or validates
+  them. The CMRU commit binding and a missing `remote-gate.py` stay separate
+  refusals with their own exit codes. While a remote lane runs it prints one
+  progress line per
   `ASSAY_RELEASE_GATE_HEARTBEAT_S` seconds (30-1500, default 300), so the CMRU
   step's no-progress watchdog does not end a lane that is merely quiet. See the
   [release host instructions](docs/CONSUMERS.md#assay-release-gate-host) and
