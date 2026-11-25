@@ -185,7 +185,7 @@ Gaps where nothing reports progress today:
 | run-gate lane `budget` | hard stop | **stays**, grammar extended with `unbounded`; `unbounded` is *refused* on a lane whose kind has no watch (RG-8/G1/G2/G3), naming the kind and the missing watch | the refusal is the mechanical form of the rule above; a config file must never be able to declare away the only thing that stops a hung unit |
 | run-gate lane `stall_timeout` | optional | **stays, becomes the primary knob**; auto bound (RG-7) becomes the default on every watchable kind so a lane that declares nothing is still watched | an absent key must not mean "unwatched" |
 | assay lane `budget` | hard | **stays** (`unbounded` already legal, AS-2) | an R0/R1 lane is one command; its only bound is the whole command |
-| `judge.mutation.budget_per_candidate` | hard per candidate | **ignored with one WARN per run** for a candidate that is producing progress; the *only* per-candidate stop becomes AS-4's `CANDIDATE_HUNG`; an explicit value is honoured only as an upper bound on a candidate that has produced no progress signal | operator decision; AS-4 already distinguishes spinning (progress) from hung (idle) |
+| `judge.mutation.budget_per_candidate` | hard per candidate | after P4: never ends a candidate while the no-progress watch (§7.1) is armed for that run (one WARN per run); stays **binding** wherever it is not armed | operator decision; today's AS-4 ends only an idle candidate (§7.1) |
 | `judge.canary.budget_per_attempt` | hard | **stays** until G3 closes | no watch exists |
 | `[profile] admission_wait`, `lock wait` | wait caps | stay | they do not stop a progressing run |
 
@@ -222,11 +222,13 @@ order:
 
 1. **Watch first (run-gate).** Auto-bound arms on every watchable kind; bare-host
    and sequence get a watch; `unbounded` is *not yet* accepted. No cap removed.
-2. **Watch first (assay).** `CANDIDATE_HUNG` extended to the second language
-   runtime; `progress` events carry `elapsed_s` (already `B065`); canary gets a
-   liveness plugin or an honest "unwatched" disclosure.
-3. **Ignored-with-WARN (assay).** `budget_per_candidate` becomes advisory for
-   progressing candidates; verdict records the new semantics.
+2. **Watch first (assay).** The §7.1 no-progress bound and the long-trace fix;
+   `progress` events carry `elapsed_s` (already `B065`); canary gets a liveness
+   plugin or an honest "unwatched" disclosure. Runs without an armed watch
+   (non-pytest, non-Python) keep their budgets; extending the watch to them is
+   not scoped by any package here.
+3. **Ignored-with-WARN (assay).** `budget_per_candidate` stops ending a candidate
+   where the watch is armed for that run; the verdict records which applied.
 4. **`unbounded` accepted (run-gate).** Only kinds proven in step 1; refused
    elsewhere. `lanes --check` gains a `budget-unbounded-unwatched` rule.
 5. **Per-project tomls.** Remove or convert the caps of the long lanes
@@ -287,8 +289,8 @@ shard of nine while its siblings keep the host log moving.
 | P1 | run-gate: auto-bound stall on every watchable kind; bare-host + sequence watches; disclosure of the source | vbpub-core | medium (~300 lines + tests) | a false STALL on a legitimately quiet phase; mitigated by PSI pause and the `max(300, 3×cadence)` floor |
 | P2 | run-gate: `unbounded` accepted, refused on unwatched kinds; `lanes --check` rule | vbpub-core | small | `unbounded` on a lane whose watch is silently inert — refuse by kind, never by key presence |
 | P3 | run-gate: stall reported as `lane-stalled`, then a `STALLED` verdict | vbpub-core + compatibility note | small/medium | closed verdict table change; needs its own release |
-| P4 | assay: `budget_per_candidate` advisory for progressing candidates; WARN; verdict field | vbpub-assay (review) | medium | misclassifying a slow-but-progressing candidate as hung if the progress signal is coarse (`README.md:676-690`) |
-| P5 | assay: canary liveness (or an explicit unwatched disclosure) | vbpub-assay (review) | medium | R3 units stay capped until this ships; do not remove `budget_per_attempt` first |
+| P4 | assay: the no-progress bound of §7.1, long-trace fix, per-run arming with disclosure, rewritten `unbounded` admission rule; only then `budget_per_candidate` stops binding where the watch is armed; new evidence decision ships in the v21 cut (P-assay-17) | vbpub-assay (implements and reviews) | medium/large | a slow single unit mistaken for no progress; old judges reject the new evidence decision |
+| P5 | assay: canary liveness (or an explicit unwatched disclosure) | vbpub-assay (implements and reviews) | medium | R3 units stay capped until this ships; do not remove `budget_per_attempt` first |
 | P6 | runner: fleet driver (`run-gate-r2-fleet`, or a `remote-gate fleet` verb); store collection on cancel/term is vbpub-platform's own small package (§6b), which P6 depends on | scripts/netcup owner | large | a fleet without that collection loses a stopped shard's progress |
 | P7 | (lower priority: rollback converts debian-install-v2's R2 into a native R2 assay lane, which `--shard` already serves) run-gate: `--shard` for command lanes (a command lane's shard = per-shard `--only-candidates`-equivalent or per-shard runner partitioning) | vbpub-core | medium/large | a command lane has no candidate model; naive sharding splits a suite by file and silently changes what a PASS means |
 | P8 | cmru: feed the step watchdog `progress_paths` (build logs, gate progress) | cmru owner | small | watchdog stays, only its silence definition widens |
@@ -355,8 +357,8 @@ before its cap may be dropped.
 
 | lane kind | unit | watch | exists today? | cap may be dropped only after |
 |---|---|---|---|---|
-| native R2 (assay, ephemeral container) | candidate | assay `LivenessRunner` (`CANDIDATE_HUNG`, AS-4) + run-gate `ProgressWatch` on the progress file | **yes** | `budget_per_candidate` becomes advisory only after P4 ships the WARN/advisory semantics; the lane-level bound after P2 |
-| native R2 (exec mode) | candidate | same | **yes** | same; `--shard` stays refused (`:3232-3236`) |
+| native R2 (assay, ephemeral container) | candidate | assay `LivenessRunner` (`CANDIDATE_HUNG`, AS-4) + run-gate `ProgressWatch` on the progress file | **idle stalls only** (§7.1) | `budget_per_candidate` stops binding only after P4, per run where the watch is armed; the lane-level bound after P2 and P4 |
+| native R2 (exec mode) | candidate | same | **idle stalls only** (§7.1) | same; `--shard` stays refused (`:3232-3236`) |
 | assay R0/R1 lane (container) | one command | `ProgressWatch` on `--progress`, heartbeat 60 s | **yes** | lane `budget` may become `unbounded` after P2 |
 | command lane, container | the command | `LogStreamWatch` (RG-41) | **yes**, only if `stall_timeout` is declared | auto-bound must arm first (P1) |
 | command lane, exec mode | the command | `ProgressWatch` only for an assay delegation; a plain command has **no** file | **no** (G5-adjacent) | P1 must add a log/file signal, else cap stays |
@@ -370,31 +372,54 @@ before its cap may be dropped.
 Nothing in this table is a reason to remove a cap today: five rows have no
 watch, and the rule is that the cap stays until the row's package ships.
 
-### 7.1 Hole in the native R2 row: a CPU-busy candidate (controller addendum, verified)
+### 7.1 Hole in the native R2 row: a candidate that never completes a unit
+
+Added by the controller, corrected by the assay-side review of 2026-11-25
+(vbpub-assay; verified there in assay at `17c61bbb0`).
 
 The two native R2 rows say the watch exists. It exists for an **idle** stall
 only. `liveness.py` decides a hang as `idle_for >= bound and not cpu_growing`
-(`idle_hang`; `finish_hang` has the same `not cpu_growing` term) and only with a
-complete resource trace; `cpu_growing` also stays true whenever the resource
-sample is not `clear` (host pressure). So a candidate that produces no event and
-no output but keeps burning CPU (a mutant that turns a loop condition into an
-endless loop) is never ended by liveness. Today the per-candidate budget ends
-it; without that budget only the lane `budget` does, and with
-`budget = "unbounded"` nothing does. The same holds for a candidate under
-pressure that never clears.
+(`finish_hang` has the same term) and only with a complete resource trace;
+`cpu_growing` stays true whenever the resource sample is not `clear`, and new
+stdout/stderr counts as progress. So these candidates are never ended by
+liveness: one that spins on CPU (a mutant that makes a loop endless), one that
+loops while logging, and one under pressure that never clears. After 1024
+resource samples without progress (about 17 minutes) the trace is marked
+incomplete, so even a candidate that goes idle later is no longer `hung`.
+Today the per-candidate budget hides all of this.
 
-Rule that follows: **CPU time is not progress.** P4 must not make
-`budget_per_candidate` advisory until assay ends a candidate that completes no
-unit. Recommendation (assay, P4): progress is a completed plugin event or new
-output; CPU growth defers the hang only up to a no-progress bound calibrated
-from the baseline's worst event gap (a multiple of it), after which the
-candidate is `CANDIDATE_HUNG`. Pressure samples pause that clock and do not
-reset it. This bounds the absence of progress, not total work. Until it ships,
-a lane should keep a per-candidate bound of about three times its measured
-baseline suite time as the no-progress bound for a spinning candidate, because
-with `"none"` one such candidate runs until the lane budget and ends the whole
-lane `BUDGET_EXCEEDED` (main controller ruling, 2026-11-25; ciu applies it in
-CIU-235).
+Rules P4 implements (assay):
+
+- **Progress is a completed plugin event.** Neither CPU time nor output is
+  progress for this bound (output may keep deferring the idle rule).
+- **The no-progress bound is CPU time:** the candidate process tree's
+  CPU-seconds since its last completed event (before and after the first one),
+  starting value `max(3 x baseline_wall, baseline_wall + 60 s)` CPU-seconds.
+  CPU accrues only when the candidate runs, so pressure needs no pause rule.
+  The kill is bucket `hung` / `CANDIDATE_HUNG`, never `killed`, with a new
+  resource-evidence decision `cpu-without-progress` (`mutation_store.py`
+  accepts only the two idle decisions today, so it ships in the v21 cut).
+  UNVERIFIED, P4 must test: that `candidate_cpu_s` stays monotonic when
+  children exit.
+- A blocked candidate that uses no CPU stays with the idle rule. If pressure
+  never clears for it, only the lane or fleet watch can see it; disclosed.
+- The long resource trace is decimated or summarised, not declared incomplete.
+- **Armed per run, not per lane kind.** Liveness is injected only for some runs
+  (`runner.py:6043-6062`): non-pytest argv, non-Python and plugin-less runs use
+  the plain runner, and an incomplete resource source can never certify `hung`.
+  There `budget_per_candidate` stays binding (or the lane is refused by name),
+  and the verdict states which applied.
+- The `budget = "unbounded"` admission rule (`config.py`
+  `_refuse_unbounded_without_unit_bounds`) assumes each candidate is bounded;
+  P4 rewrites it on "the no-progress watch is armed".
+- Required P4 tests: spin without output; spin with output; spin under
+  never-clearing pressure samples; idle after more than 1024 samples; one slow
+  test below the CPU bound survives; a plugin-inactive run keeps the budget.
+
+Until P4 ships, a lane keeps an explicit per-candidate budget of about three
+times its measured baseline suite time. With `"none"` one spinning mutant runs
+until the finite lane budget and ends the whole lane `BUDGET_EXCEEDED` (main
+controller ruling, 2026-11-25; ciu applies it in CIU-235).
 
 ## 8. Open operator questions
 
