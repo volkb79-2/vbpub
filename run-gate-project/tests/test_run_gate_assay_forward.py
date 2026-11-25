@@ -103,42 +103,42 @@ def _inventory(version: str = "12.2.0") -> str:
 @pytest.mark.parametrize("flag", ["--state-dir", "--progress",
                                   "--progress-heartbeat", "--verdict-json",
                                   "--file", "--request-base"])
-def test_every_flag_run_gate_injects_is_refused_by_name(flag):
+def test_every_flag_run_gate_injects_is_refused_by_name(flag, tmp_path):
     with pytest.raises(run_gate.GateError,
                        match=f"{flag} is injected by Run-Gate"):
-        run_gate.parse_assay_forward([flag, "x"])
+        run_gate.parse_assay_forward([flag, "x"], tmp_path)
 
 
 @pytest.mark.parametrize("flag", ["--jobs", "--shard", "--merge-shards"])
-def test_every_flag_run_gate_owns_itself_is_refused_by_name(flag):
+def test_every_flag_run_gate_owns_itself_is_refused_by_name(flag, tmp_path):
     with pytest.raises(
             run_gate.GateError,
             match=re.escape(f"{flag} is owned by Run-Gate: give it before "
                             "'--' (or drop it)")):
-        run_gate.parse_assay_forward([flag, "x"])
+        run_gate.parse_assay_forward([flag, "x"], tmp_path)
 
 
-def test_the_owned_rule_also_sees_the_equals_spelling():
+def test_the_owned_rule_also_sees_the_equals_spelling(tmp_path):
     with pytest.raises(run_gate.GateError,
                        match="--verdict-json is injected by Run-Gate"):
-        run_gate.parse_assay_forward(["--verdict-json=x.json"])
+        run_gate.parse_assay_forward(["--verdict-json=x.json"], tmp_path)
     with pytest.raises(run_gate.GateError,
                        match="--jobs is owned by Run-Gate"):
-        run_gate.parse_assay_forward(["--jobs=4"])
+        run_gate.parse_assay_forward(["--jobs=4"], tmp_path)
 
 
-def test_a_leading_bare_token_is_refused_rather_than_guessed():
+def test_a_leading_bare_token_is_refused_rather_than_guessed(tmp_path):
     with pytest.raises(run_gate.GateError,
                        match="can only be the value of the preceding flag"):
-        run_gate.parse_assay_forward(["extra"])
+        run_gate.parse_assay_forward(["extra"], tmp_path)
 
 
 @pytest.mark.parametrize("tokens", [["--merge-state"],
                                     ["--merge-state="],
                                     ["--merge-manifest", "--rejudge"]])
-def test_a_path_flag_without_a_value_is_refused(tokens):
+def test_a_path_flag_without_a_value_is_refused(tokens, tmp_path):
     with pytest.raises(run_gate.GateError, match="requires a value"):
-        run_gate.parse_assay_forward(tokens)
+        run_gate.parse_assay_forward(tokens, tmp_path)
 
 
 def test_both_spellings_are_kept_and_path_values_are_made_absolute(tmp_path):
@@ -149,7 +149,7 @@ def test_both_spellings_are_kept_and_path_values_are_made_absolute(tmp_path):
         f"--merge-manifest={manifest}",
         "--carry-forward", str(store),
         "--rejudge", "a,b",
-    ])
+    ], tmp_path)
     assert tokens == ["--merge-state", str(store),
                       f"--merge-manifest={manifest}",
                       "--carry-forward", str(store),
@@ -159,15 +159,26 @@ def test_both_spellings_are_kept_and_path_values_are_made_absolute(tmp_path):
                      ("--carry-forward", str(store))]
 
 
-def test_a_relative_path_value_is_made_absolute(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _tokens, pairs = run_gate.parse_assay_forward(["--merge-state", "./store"])
-    assert pairs == [("--merge-state", str(tmp_path / "store"))]
+def test_a_relative_value_resolves_against_the_lane_cwd_not_the_invokers(
+        tmp_path, monkeypatch):
+    """Review M1: the judge resolves a relative value against the project
+    directory the lane script `cd`s into, so the host must resolve the same
+    one. Run-Gate never `chdir`s, so the invoking cwd is routinely a
+    different tree (a monorepo root, `--worktree`)."""
+    invoking = tmp_path / "repo"
+    project = invoking / "proj"
+    (project / ".run-gate").mkdir(parents=True)
+    (invoking / ".run-gate").mkdir()
+    monkeypatch.chdir(invoking)
+    tokens, pairs = run_gate.parse_assay_forward(
+        ["--merge-state", ".run-gate/store"], project)
+    assert tokens == ["--merge-state", ".run-gate/store"]  # token as given
+    assert pairs == [("--merge-state", str(project / ".run-gate" / "store"))]
 
 
 def test_a_bare_token_may_be_a_flag_value(tmp_path):
     tokens, pairs = run_gate.parse_assay_forward(
-        ["--carry-over-reason", "-abc"])
+        ["--carry-over-reason", "-abc"], tmp_path)
     assert tokens == ["--carry-over-reason", "-abc"] and pairs == []
 
 
@@ -176,11 +187,18 @@ def test_a_bare_token_may_be_a_flag_value(tmp_path):
 
 def _inner(tmp_path, tokens, *, flex_args=None, capabilities=_VALID,
            capacity_exit: int = 0, judge_help="--merge-shard-store "
-           "--carry-over", lane_name="r2"):
+           "--carry-over", lane_name="r2", base_dir="project",
+           refusal_marker=None):
     """Build an assay inner for a lane whose forwarded tokens are `tokens`.
 
     `capabilities` is the document the fake judge prints for
     `capabilities --json`; `None` prints nothing (the released-12.2.0 judge).
+    `refusal_marker` makes the fake judge print that line on stderr and exit
+    `capacity_exit` INSTEAD of printing a document, the shape of a judge that
+    refuses `capabilities` itself (Assay before 12.3.0, or a build that cannot
+    import its analysis package).
+    `base_dir` is what the relative path values resolve against ("project":
+    the directory the lane `cd`s into; anything else is passed as the base).
     """
     repo = tmp_path / "repo"
     project = repo / "proj"
@@ -191,14 +209,22 @@ def _inner(tmp_path, tokens, *, flex_args=None, capabilities=_VALID,
     if capabilities is _VALID:
         capabilities = _caps()
     document = "" if capabilities is None else capabilities
+    if refusal_marker is None:
+        capability_branch = (
+            "  *\"capabilities --json\"*) cat <<'JSON'\n"
+            f"{document}\n"
+            "JSON\n"
+            f"     exit {capacity_exit} ;;\n")
+    else:
+        capability_branch = (
+            "  *\"capabilities --json\"*) "
+            f"printf '%s\\n' {shlex.quote(refusal_marker)} >&2; "
+            f"exit {capacity_exit} ;;\n")
     judge.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$*\" >> {shlex.quote(str(log))}\n"
         "case \"$*\" in\n"
-        "  *\"capabilities --json\"*) cat <<'JSON'\n"
-        f"{document}\n"
-        "JSON\n"
-        f"     exit {capacity_exit} ;;\n"
+        f"{capability_branch}"
         "  *\"run --help\"*) "
         f"echo {shlex.quote(judge_help)}; exit 0;;\n"
         "esac\n"
@@ -207,7 +233,8 @@ def _inner(tmp_path, tokens, *, flex_args=None, capabilities=_VALID,
     lane = {**_LANE, "assay_command": [str(judge)]}
     if flex_args is not None:
         lane, _name = run_gate.attach_r2_flex(lane, lane_name, flex_args)
-    forward, pairs = run_gate.parse_assay_forward(list(tokens))
+    base = project if base_dir == "project" else base_dir
+    forward, pairs = run_gate.parse_assay_forward(list(tokens), base)
     lane["_assay_forward"] = forward
     lane["_assay_forward_paths"] = pairs
     inner = run_gate.build_assay_inner(lane, project, repo, worktree=repo,
@@ -327,14 +354,24 @@ def test_the_probe_refuses_an_unusable_capability_document(
 
 
 def test_the_probe_passes_the_judges_own_refusal_through(tmp_path):
+    """A judge that refuses `capabilities` itself keeps ITS OWN line.
+
+    The fake judge here prints a marker on stderr and exits 2, which is what
+    Assay 12.2.0 does; the assertion is that the marker IS in the lane's
+    stderr (not merely that Run-Gate's own wording is absent, which would also
+    hold if nothing at all were passed through) and that the status is the
+    judge's own 2."""
     repo = tmp_path / "repo"
     store = repo / ".run-gate" / "store"
     store.mkdir(parents=True)
+    marker = ("assay: the required assay_analysis package could not be "
+              "imported")
     _repo, project, inner, log = _inner(
-        tmp_path, ["--merge-state", str(store)], capabilities="",
-        capacity_exit=2)
+        tmp_path, ["--merge-state", str(store)],
+        refusal_marker=marker, capacity_exit=2)
     proc = _shell(inner, project)
     assert proc.returncode == 2
+    assert marker in proc.stderr
     assert "did not return a capability document" not in proc.stderr
     assert "(assay capabilities)" not in proc.stderr
     assert _run_call(log) == []
@@ -356,7 +393,7 @@ def test_the_help_probe_still_covers_the_run_gate_own_flags(tmp_path):
 
 
 def _main_project(tmp_path, monkeypatch, *, capabilities=_VALID,
-                  capacity_exit: int = 0):
+                  capacity_exit: int = 0, version: str = "12.3.0"):
     repo = make_repo(tmp_path)
     proj = make_project(repo, _CFG)
     (proj / "assay.toml").write_text("# judged by the fake judge\n")
@@ -374,9 +411,9 @@ def _main_project(tmp_path, monkeypatch, *, capabilities=_VALID,
         #!/bin/sh
         printf '%s\\n' "$*" >> {shlex.quote(str(calls))}
         case "$*" in
-          *"lanes --json"*) printf '%s\\n' {shlex.quote(_inventory())}
+          *"lanes --json"*) printf '%s\\n' {shlex.quote(_inventory(version))}
             exit 0 ;;
-          *--version*) echo "assay 12.2.0"; exit 0 ;;
+          *--version*) echo "assay {version}"; exit 0 ;;
           *"run --help"*) echo "--merge-shard-store --carry-over"; exit 0 ;;
 {capability_branch}        esac
         exit 0
@@ -389,6 +426,23 @@ def _judge_runs(calls: Path) -> list[str]:
         return []
     return [line for line in calls.read_text().splitlines()
             if line.startswith("run unit")]
+
+
+def test_main_refuses_a_judge_below_the_forward_floor(tmp_path, monkeypatch,
+                                                       capfd):
+    """RG-318: forwarded store flags need Assay >= 12.3.0 (inventory floor).
+
+    The floor is read from the judge's OWN inventory version, so the refusal
+    lands before a container starts; the in-lane capability probe remains the
+    check that decides whether the judge really supports the flag."""
+    repo, _proj, calls = _main_project(tmp_path, monkeypatch,
+                                       version="12.2.0")
+    store = repo / ".run-gate" / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    assert run_gate.main(["r2", "--", "--merge-state", str(store)]) == 3
+    err = capfd.readouterr().err
+    assert "requires assay >= 12.3.0" in err, err
+    assert _judge_runs(calls) == []
 
 
 def test_main_forwards_store_flags_and_records_them(tmp_path, monkeypatch,
@@ -443,6 +497,53 @@ def test_main_refuses_own_flags_after_the_separator(tmp_path, monkeypatch,
             in capfd.readouterr().err)
 
 
+def test_a_forwarded_replace_valued_flag_is_refused_when_run_gate_sets_it(
+        tmp_path, monkeypatch, capfd):
+    """Review M5, replace-valued shape: `--rejudge-outcome` is last-wins.
+
+    `run-gate r2 --rejudge-outcome hung -- --rejudge-outcome crashed` would
+    otherwise put TWO copies on the judge's argv, and argparse would run the
+    forwarded selection while the history record names the own one: a verdict
+    describing a selection Run-Gate never recorded."""
+    _repo, _proj, calls = _main_project(tmp_path, monkeypatch)
+    assert run_gate.main(["r2", "--rejudge-outcome", "hung", "--",
+                          "--rejudge-outcome", "crashed"]) == 2
+    assert ("--rejudge-outcome is owned by Run-Gate: give it before '--' "
+            "(or drop it)") in capfd.readouterr().err
+    assert _judge_runs(calls) == []
+
+
+def test_a_forwarded_append_valued_flag_is_refused_when_run_gate_sets_it(
+        tmp_path, monkeypatch, capfd):
+    """Review M5, append-valued shape: a second `--carry-over` would ADD a
+    store next to the one the operator declared, with no record of it."""
+    repo, _proj, calls = _main_project(tmp_path, monkeypatch)
+    first = repo / ".run-gate" / "one"
+    second = repo / ".run-gate" / "two"
+    first.mkdir(parents=True, exist_ok=True)
+    second.mkdir(parents=True, exist_ok=True)
+    assert run_gate.main(["r2", "--carry-over", str(first),
+                          "--carry-over-reason", "why", "--",
+                          "--carry-over", str(second)]) == 2
+    assert ("--carry-over is owned by Run-Gate: give it before '--' "
+            "(or drop it)") in capfd.readouterr().err
+    assert _judge_runs(calls) == []
+
+
+def test_a_forwarded_merge_state_is_refused_when_a_shard_appends_one(
+        tmp_path, monkeypatch, capfd):
+    """`--shard K/N` really puts `--merge-state` on the argv (the main
+    store), so a forwarded one is a duplicate of Run-Gate's own token."""
+    repo, _proj, calls = _main_project(tmp_path, monkeypatch)
+    store = repo / ".run-gate" / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    assert run_gate.main(["r2", "--shard", "0/2", "--",
+                          "--merge-state", str(store)]) == 2
+    assert ("--merge-state is owned by Run-Gate: give it before '--' "
+            "(or drop it)") in capfd.readouterr().err
+    assert _judge_runs(calls) == []
+
+
 def test_rejudge_contaminated_forbids_forwarded_tokens(tmp_path, monkeypatch,
                                                        capfd):
     repo, _proj, calls = _main_project(tmp_path, monkeypatch)
@@ -494,20 +595,9 @@ def test_an_absent_candidate_file_reaches_assay(tmp_path, monkeypatch):
     assert call.endswith(f"--only-candidates {ids}"), call
 
 
-def test_attach_r2_flex_no_longer_checks_the_carry_over_pair():
-    """The removed pairing rule is gone from `attach_r2_flex` itself."""
-    lane, name = run_gate.attach_r2_flex(
-        dict(_LANE), "r2", _args(carry_over=["/store"]))
-    assert name == "r2" and lane["_r2_flex"]["carry_over"] == ["/store"]
-    assert "carry_over_reason" not in lane["_r2_flex"]
-    lane, _name = run_gate.attach_r2_flex(
-        dict(_LANE), "r2", _args(only_candidates="/not/a/file"))
-    assert lane["_r2_flex"]["only_candidates"] == "/not/a/file"
-
-
 def test_rejudge_outcome_without_rejudge_reaches_the_judge_argv(
         tmp_path, monkeypatch):
-    """Assay documents the bucket as a union with the `--rejudge` ids."""
+    """The forwarded form: Run-Gate no longer pairs the bucket with ids."""
     repo, _proj, calls = _main_project(tmp_path, monkeypatch)
     store = repo / ".run-gate" / "store"
     store.mkdir(parents=True, exist_ok=True)
@@ -515,3 +605,21 @@ def test_rejudge_outcome_without_rejudge_reaches_the_judge_argv(
                           "--rejudge-outcome", "killed"]) == 0
     [call] = _judge_runs(calls)
     assert f"--merge-state {store} --rejudge-outcome killed" in call, call
+
+
+def test_the_own_rejudge_outcome_flag_reaches_the_judge_argv(
+        tmp_path, monkeypatch):
+    """Review M4: the OWN flag form the deleted row used to cover.
+
+    `run-gate r2 --rejudge-outcome killed` has no `--` at all, so the flag
+    travels through `_selective_assay` rather than the opaque forwarded
+    path. The old `requires at least one --rejudge ID` refusal is gone (Assay
+    documents the bucket as a union with the ids), and what has to hold now is
+    that the own flag still reaches the judge's argv at all."""
+    repo, _proj, calls = _main_project(tmp_path, monkeypatch)
+    store = repo / ".run-gate" / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    assert run_gate.main(["r2", "--rejudge-outcome", "killed"]) == 0
+    [call] = _judge_runs(calls)
+    assert call.endswith("--rejudge-outcome killed"), call
+    assert call.count("--rejudge-outcome") == 1, call

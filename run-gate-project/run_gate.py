@@ -11029,6 +11029,24 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
                 f"assay lane {lane['assay_lane']!r} has version "
                 f"{assay_version!r}, which cannot be shown to support "
                 f"{flag}; requires assay >= {floor}")
+    if lane.get("_assay_forward"):
+        # RG-318: forwarded store flags need a judge that reports them in its
+        # own `capabilities` document, i.e. Assay >= 12.3.0. The floor is
+        # stated HERE, from the inventory version, so a too-old judge refuses
+        # by name before a container starts; the in-lane capability probe
+        # remains the check that actually decides (an unknown schema or an
+        # unlistable flag is refused there, whatever the version claims).
+        if (not isinstance(assay_version, str)
+                or not assay_inventory_version_meets_floor(
+                    assay_version, ASSAY_FORWARD_ASSAY_FLOOR)):
+            floor = ".".join(str(part)
+                             for part in ASSAY_FORWARD_ASSAY_FLOOR)
+            raise GateNotRunError(
+                "judge-floor",
+                f"assay lane {lane['assay_lane']!r} has version "
+                f"{assay_version!r}, which cannot be shown to accept "
+                f"arguments after '--'; requires assay >= {floor} "
+                f"(RG-318)")
     if entry.get("base_source") != "request":
         if base_flag:
             fail(f"--base {base_flag!r} was given but assay lane "
@@ -14648,8 +14666,16 @@ def git_safe_directory_setup() -> list[str]:
 # through and gives each shard its own lane instance.
 R2_SHARD_MAX = 64
 R2_FLEX_ASSAY_FLAG = "--merge-shard-store"
-#: Review B2: the flexible-campaign flags need this judge (B529-B531).
-R2_FLEX_ASSAY_FLOOR = (12, 2, 0)  # the help token proving judge support
+#: Review B2: the flexible-campaign flags need this judge (B529-B531);
+#: the help token proving judge support.
+R2_FLEX_ASSAY_FLOOR = (12, 2, 0)
+#: RG-318: the FIRST assay release whose judge reports a `capabilities`
+#: document and accepts the forwarded store flags Run-Gate passes after `--`.
+#: A lane that forwards arguments is held to it by the inventory version, the
+#: same way the RG-265 flexible flags are held to 12.2.0 above; the run-time
+#: capability probe stays the check (a judge that answers it is accepted on
+#: its own document -- an older build can never answer it).
+ASSAY_FORWARD_ASSAY_FLOOR = (12, 3, 0)
 
 
 def r2_flex_flags_given(args: argparse.Namespace) -> bool:
@@ -14779,16 +14805,67 @@ ASSAY_FORWARD_PATH_FLAGS = ("--merge-state", "--merge-shard-store",
                             "--candidates-file")
 
 
-def parse_assay_forward(tokens: list[str]) -> tuple[list[str], list[tuple[str,
-                                                                           str]]]:
+def assay_forward_owned_names(args: argparse.Namespace) -> set[str]:
+    """The Assay flag NAMES this invocation's own options already put on the
+    judge's argv.
+
+    A forwarded flag with the same name is not a second spelling of the same
+    request: `argparse` is last-wins for a replace-valued flag, so the judge
+    would run a selection Run-Gate never recorded, and an append-valued flag
+    would silently ADD a store next to the one the operator declared. Both
+    are refused by name instead (RG-297 review M5).
+
+    `--shard K/N` contributes `--merge-state` because that is what it really
+    adds to the judge's argv (the main store it reuses finished records
+    from), not as a convenience alias."""
+    names: set[str] = set()
+    if args.carry_over:
+        names.add("--carry-over")
+    if args.carry_over_reason is not None:
+        names.add("--carry-over-reason")
+    if args.merge_state:
+        names.add("--merge-state")
+    if args.shard is not None:
+        names.update(("--shard", "--merge-state"))
+    if args.merge_shards is not None:
+        names.add("--merge-shard-store")
+    for value, flag in ((args.only_candidates, "--only-candidates"),
+                        (args.exclude_candidates, "--exclude-candidates")):
+        if value is not None:
+            names.add(flag)
+    if args.reuse_from is not None:
+        names.add("--reuse-from")
+    if args.rejudge:
+        names.add("--rejudge")
+    if args.rejudge_outcome is not None:
+        names.add("--rejudge-outcome")
+    return names
+
+
+def parse_assay_forward(tokens: list[str], base_dir: Path | str,
+                        own_names: set[str] | None = None
+                        ) -> tuple[list[str], list[tuple[str,
+                                                          str]]]:
     """Split Run-Gate's own rules out of an assay lane's `--` arguments.
 
     Pure: no I/O, no manifest is opened. Returns the tokens verbatim (in
     order, either spelling kept as given) and the `(flag, value)` pairs whose
-    value is a host path, made absolute. Everything else -- including which
-    values combine, what a candidate file holds, whether a manifest is
-    consistent -- is ASSAY's rule, refused by Assay."""
+    value is a host path, made absolute AGAINST `base_dir`. Everything else --
+    including which values combine, what a candidate file holds, whether a
+    manifest is consistent -- is ASSAY's rule, refused by Assay.
+
+    `base_dir` is the project directory the generated lane script `cd`s into:
+    the SAME directory the judge resolves a relative value against. Resolving
+    against Run-Gate's own cwd instead would bless a path the lane never
+    opens -- Run-Gate never `chdir`s, so in a monorepo (or under
+    `--worktree`) that cwd is routinely a different tree. The token keeps the
+    caller's exact string; only the VALUE CHECKED is absolute.
+
+    `own_names` are the flag names this invocation's own options already put
+    on the argv (`assay_forward_owned_names`): forwarding one of them is
+    refused rather than handed to the judge as a duplicate."""
     owned = set(ASSAY_FORWARD_INJECTED) | set(ASSAY_FORWARD_OWNED)
+    own_names = own_names or set()
     path_flags = set(ASSAY_FORWARD_PATH_FLAGS)
     forwarded: list[str] = []
     pairs: list[tuple[str, str]] = []
@@ -14810,6 +14887,12 @@ def parse_assay_forward(tokens: list[str]) -> tuple[list[str], list[tuple[str,
                 fail(f"{flag} is injected by Run-Gate")
             fail(f"{flag} is owned by Run-Gate: give it before '--' "
                  "(or drop it)")
+        if flag in own_names:
+            # Already on this invocation's argv from a Run-Gate option: a
+            # second copy would be last-wins (replace-valued) or silently
+            # additive (append-valued) at the judge.
+            fail(f"{flag} is owned by Run-Gate: give it before '--' "
+                 "(or drop it)")
         if flag not in path_flags:
             forwarded.append(token)
             index += 1
@@ -14826,7 +14909,13 @@ def parse_assay_forward(tokens: list[str]) -> tuple[list[str], list[tuple[str,
             raw = tokens[index + 1]
             forwarded.extend([token, raw])
             index += 2
-        pairs.append((flag, os.path.abspath(os.path.expanduser(raw))))
+        value = os.path.expanduser(raw)
+        if not os.path.isabs(value):
+            # Relative to the directory the lane RUNS in, never to the
+            # invoking cwd (see the docstring: they differ across a monorepo
+            # and under --worktree).
+            value = os.path.join(str(base_dir), value)
+        pairs.append((flag, os.path.abspath(value)))
     return forwarded, pairs
 
 
@@ -14879,6 +14968,11 @@ for flag in {wanted}:
               "(assay capabilities)", file=sys.stderr)
         sys.exit(2)
 """
+    # The `printf` that feeds the parser MUST stay the LAST command of this
+    # group: the group is the left operand of the caller's `&&` chain, where
+    # bash ignores `errexit`, so the group's status is whatever its last
+    # command returned. Appending anything after it (a `:`, a `cd`, a cleanup)
+    # would hand the chain that command's status instead of the refusal.
     return (
         "{ __rg_fw_out=$(" + command + " capabilities --json 2>&1); "
         "__rg_fw_rc=$?; "
@@ -21596,7 +21690,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 # (carry-over pairing, candidate files, manifests, buckets)
                 # stays Assay's rule.
                 lane = copy.deepcopy(lane)
-                forward, forward_paths = parse_assay_forward(list(lane_args))
+                # The forwarded path values resolve against `project_dir`,
+                # the directory the lane will `cd` into (already relocated
+                # under --worktree), never this invocation's cwd.
+                forward, forward_paths = parse_assay_forward(
+                    list(lane_args), project_dir,
+                    assay_forward_owned_names(args))
                 lane["_assay_forward"] = forward
                 lane["_assay_forward_paths"] = forward_paths
             else:
