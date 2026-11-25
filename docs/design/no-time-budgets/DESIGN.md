@@ -367,6 +367,29 @@ before its cap may be dropped.
 Nothing in this table is a reason to remove a cap today: five rows have no
 watch, and the rule is that the cap stays until the row's package ships.
 
+### 7.1 Hole in the native R2 row: a CPU-busy candidate (controller addendum, verified)
+
+The two native R2 rows say the watch exists. It exists for an **idle** stall
+only. `liveness.py` decides a hang as `idle_for >= bound and not cpu_growing`
+(`idle_hang`; `finish_hang` has the same `not cpu_growing` term) and only with a
+complete resource trace; `cpu_growing` also stays true whenever the resource
+sample is not `clear` (host pressure). So a candidate that produces no event and
+no output but keeps burning CPU (a mutant that turns a loop condition into an
+endless loop) is never ended by liveness. Today the per-candidate budget ends
+it; without that budget only the lane `budget` does, and with
+`budget = "unbounded"` nothing does. The same holds for a candidate under
+pressure that never clears.
+
+Rule that follows: **CPU time is not progress.** P4 must not make
+`budget_per_candidate` advisory until assay ends a candidate that completes no
+unit. Recommendation (assay, P4): progress is a completed plugin event or new
+output; CPU growth defers the hang only up to a no-progress bound calibrated
+from the baseline's worst event gap (a multiple of it), after which the
+candidate is `CANDIDATE_HUNG`. Pressure samples pause that clock and do not
+reset it. This bounds the absence of progress, not total work. Until it ships,
+a lane that declares `budget_per_candidate = "none"` keeps a finite lane
+`budget` as its only stop for such a candidate.
+
 ## 8. Open operator questions
 
 1. **`BUDGET_EXCEEDED` for a stopped shard.** When a fleet shard stalls and is
