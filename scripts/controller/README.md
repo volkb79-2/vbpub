@@ -399,6 +399,10 @@ from `<run>.route` when that pins one (`deepseek-pi-volker|github2`,
 the implementer's own account. `--account volker|github2` pins the review
 account directly, for an implementer run that names none; it prints one line
 saying that the caller is asserting the reviewer is not the implementer.
+`--implementer-run` names the run whose COMMITS are under review, not the whole
+task history: a resumed run has its own name (`<run>-resumed`), so a series that
+used both accounts cannot be described by one record — name the run that owns
+the commits and say the rest in the review prompt.
 
 **The changed worktree is DETECTED, not prevented.** Before and after the
 launch the wrapper records, and compares, exactly these worktree-scoped values:

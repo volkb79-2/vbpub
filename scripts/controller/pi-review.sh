@@ -168,9 +168,12 @@ else
     deepseek-pi-volker | deepseek-volker) implementer_account=volker ;;
     deepseek-pi-github2 | deepseek-github2) implementer_account=github2 ;;
     *)
-      # A route that pins no account (`deepseek-pi`/`deepseek` selected one at
-      # start without recording it as a pin; `luna`/`sol`/`opencode` name no
-      # Open Design account): ask the shared thread record instead.
+      # A route that names no Open Design account in its own record: `luna`,
+      # `sol` and `opencode` never do, and a `.route` that is missing or garbled
+      # answers nothing. (Every current writer DOES record the resolved account
+      # -- pi-impl.sh:220,289 and codex-impl.sh:248 -- so the thread fallback
+      # exists for the states those writers do not produce, and for the
+      # defensive case of an unreadable record.) Ask the shared thread record.
       [[ ! -r $thread_file ]] || thread_id=$(<"$thread_file")
       if [[ -n $thread_id ]]; then
         lookup_rc=0
