@@ -143,7 +143,14 @@ def _assert_recent_verdict_migrations_are_documented(
     )
 
 
-def _assert_current_verdict_schema_is_documented(changes: str, version: int) -> None:
+def _current_changes_text(changes: str) -> str:
+    """The text a current-release check may read: [Unreleased] plus the newest release.
+
+    cmru folds [Unreleased] into the new release section before the release gate
+    runs, so a check that reads [Unreleased] alone fails in the release tree. Reading
+    these two sections only still refuses an entry that survives solely in an OLDER
+    release, so a stale entry cannot mask a missing one.
+    """
     headings = list(re.finditer(
         r"^## \[([^\]]+)\](?: - \d{4}-\d{2}-\d{2})?$",
         changes,
@@ -161,8 +168,12 @@ def _assert_current_verdict_schema_is_documented(changes: str, version: int) -> 
     ]
     unreleased = next((body for name, body in sections if name == "Unreleased"), "")
     latest_release = next((body for name, body in sections if name != "Unreleased"), "")
+    return unreleased + latest_release
+
+
+def _assert_current_verdict_schema_is_documented(changes: str, version: int) -> None:
     note = f"verdict schema v{version}"
-    current_sections = unreleased + latest_release
+    current_sections = _current_changes_text(changes)
     if note in current_sections:
         return
     # A release that does not change the verdict schema carries no schema note of its own: the
@@ -222,7 +233,7 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     consumers = CONSUMERS.read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "docs/RUST-METHODOLOGY.md").read_text(encoding="utf-8")
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
-    unreleased = changes.split("## [Unreleased]", 1)[1].split("<!-- cmru: release history -->", 1)[0]
+    current_changes = _current_changes_text(changes)
 
     assert "Rust is supported at **R1 natively; R2 only by ingestion**" in readme
     assert "hostobs keeps" in readme.casefold() and "90% line / 85% region" in readme
@@ -235,8 +246,35 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     assert "run-gate lint" in consumers and "run-gate selftest" in consumers
     assert "Status: R-2 registers the Assay adapter at R1." in methodology
     assert "R3 remains unregistered; Rust R2 only by\ncargo-mutants ingestion (B245)" in methodology
-    assert "R-1 `tester-unified-rust` image" in unreleased
-    assert "Rust R2 is a known issue, not a per-release waiver." in unreleased
+    assert "R-1 `tester-unified-rust` image" in current_changes
+    assert "Rust R2 is a known issue, not a per-release waiver." in current_changes
+
+
+def test_current_changes_text_reads_an_entry_folded_into_the_newest_release():
+    # cmru's release step folds [Unreleased] into the new section before the gate
+    # runs; the Rust baseline entry then lives in the released section below.
+    entry = "R-1 `tester-unified-rust` image and Rust R2 is a known issue, not a per-release waiver."
+    changes = (
+        "## [Unreleased]\n\n"
+        "<!-- cmru: release history -->\n\n"
+        "## [12.3.0] - 2026-11-25\n"
+        f"{entry}\n\n"
+        "## [12.2.0] - 2026-11-12\nOlder release.\n"
+    )
+    assert entry in _current_changes_text(changes)
+
+
+def test_current_changes_text_does_not_read_an_entry_only_an_older_release_holds():
+    # A stale entry in an older release must not mask a missing current one.
+    entry = "R-1 `tester-unified-rust` image and Rust R2 is a known issue, not a per-release waiver."
+    changes = (
+        "## [Unreleased]\n\n"
+        "<!-- cmru: release history -->\n\n"
+        "## [12.3.0] - 2026-11-25\n\n"
+        "## [12.2.0] - 2026-11-12\n"
+        f"{entry}\n"
+    )
+    assert entry not in _current_changes_text(changes)
 
 
 def test_hostobs_changelog_passes_cmru_history_validation():
