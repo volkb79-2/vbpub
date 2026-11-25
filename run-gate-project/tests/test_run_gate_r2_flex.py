@@ -151,10 +151,6 @@ def test_a_bad_shard_spec_is_refused(spec):
         ({"shard": "0/2", "merge_shards": "2"}, "cannot be combined"),
         ({"merge_shards": "0"}, "--merge-shards must be"),
         ({"merge_shards": "65"}, "--merge-shards must be"),
-        ({"carry_over": ["d"]}, "required together"),
-        ({"carry_over_reason": "why"}, "required together"),
-        ({"carry_over": ["d"], "carry_over_reason": "  "}, "non-empty"),
-        ({"only_candidates": "/nonexistent/ids"}, "is not a file"),
     ],
 )
 def test_invalid_flag_combinations_are_refused(over, message):

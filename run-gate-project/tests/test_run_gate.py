@@ -33436,8 +33436,11 @@ class TestDispatchOptionRefusals:
         (["footprint", "--lane", "unit"], "requires footprint --write"),
         (["footprint", "unit", "--write", "--lane", "other"],
          "either the positional footprint query lane"),
-        (["suite", "--rejudge-outcome", "FAIL"],
-         "requires at least one --rejudge ID"),
+        # RG-297: `--rejudge-outcome` without `--rejudge` used to be refused
+        # HERE, before any config lookup. That rule is Assay's now (a bucket
+        # is documented as a union with the `--rejudge` ids), so the case
+        # moved to test_run_gate_assay_forward.py, which asserts the flag
+        # reaches the judge's argv unchanged.
         (["doctor", "--json"], "honored by the `history`/`footprint`/`status"),
         (["suite", "--write"], "honored by the `footprint` verb only"),
         (["doctor", "--lock-wait", "1m"], "applies to a lane run only"),

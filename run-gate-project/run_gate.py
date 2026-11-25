@@ -14692,11 +14692,13 @@ def attach_r2_flex(lane: dict, lane_name: str,
             fail(f"--merge-shards must be 1..{R2_SHARD_MAX} "
                  f"(got {args.merge_shards!r})")
         flex["merge_shards"] = int(args.merge_shards)
-    if bool(args.carry_over) != (args.carry_over_reason is not None):
-        fail("--carry-over and --carry-over-reason are required together")
+    # RG-297 (T12): `--carry-over` paired with a non-empty `--carry-over-reason`
+    # and the EXISTENCE of a candidate file are ASSAY's rules, not Run-Gate's
+    # (mutation_store.py pairs the reason, cli.py's reader opens the file).
+    # Run-Gate only resolves a path and proves it is visible in the lane
+    # (validate_r2_flex_paths); a bad pairing or an absent file is refused by
+    # the judge that owns it, unreworded.
     if args.carry_over_reason is not None:
-        if not args.carry_over_reason.strip() or "\0" in args.carry_over_reason:
-            fail("--carry-over-reason must be non-empty text")
         flex["carry_over_reason"] = args.carry_over_reason
     for key, values in (("carry_over", args.carry_over),
                         ("merge_state", args.merge_state)):
@@ -14705,10 +14707,8 @@ def attach_r2_flex(lane: dict, lane_name: str,
     for key, value in (("only_candidates", args.only_candidates),
                        ("exclude_candidates", args.exclude_candidates)):
         if value is not None:
-            path = os.path.abspath(os.path.expanduser(value))
-            if not os.path.isfile(path):
-                fail(f"--{key.replace('_', '-')} {value!r} is not a file")
-            flex[key] = path
+            # Assay reads the candidate file; Run-Gate only resolves it.
+            flex[key] = os.path.abspath(os.path.expanduser(value))
     lane = copy.deepcopy(lane)
     # Review B3: every shard artifact is keyed by the Run-Gate lane too, so
     # two Run-Gate lanes sharing one Assay lane never share a shard's store,
@@ -21292,10 +21292,10 @@ def _dispatch(argv: list[str] | None = None, *,
         if args.footprint_lanes and args.target:
             fail("use either the positional footprint query lane or repeatable "
                  "--lane for a merged write, not both")
-        if args.rejudge_outcome and not args.rejudge:
-            fail("--rejudge-outcome requires at least one --rejudge ID")
-        if args.rejudge_outcome and not args.rejudge:
-            fail("--rejudge-outcome requires at least one --rejudge ID")
+        # RG-297: `--rejudge-outcome` without `--rejudge` is ASSAY's shape to
+        # refuse, not Run-Gate's -- Assay documents the bucket as a union
+        # with the `--rejudge` ids, and a run that selects by bucket alone
+        # is legal there.
         if args.rejudge_contaminated:
             if args.lane is None or args.lane in (
                     "doctor", "history", "footprint", "validate-pointers",

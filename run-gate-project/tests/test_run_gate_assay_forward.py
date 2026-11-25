@@ -465,3 +465,53 @@ def test_lanes_check_neither_probes_nor_forwards(tmp_path, monkeypatch, capfd):
     logged = calls.read_text().splitlines() if calls.exists() else []
     assert not [line for line in logged if line.startswith("capabilities")]
     assert not [line for line in logged if "merge-manifest" in line]
+
+
+# --- Assay owns three checks Run-Gate used to duplicate (subtask 3) -----------
+
+
+def test_a_carry_over_without_its_reason_reaches_assay(tmp_path, monkeypatch):
+    """Assay pairs `--carry-over` with `--carry-over-reason` (B530).
+
+    Run-Gate used to refuse the pair itself; it now only resolves the path and
+    proves it is visible, so the flag reaches the judge and Assay refuses it
+    there, in its own words."""
+    repo, _proj, calls = _main_project(tmp_path, monkeypatch)
+    store = repo / ".run-gate" / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    assert run_gate.main(["r2", "--", "--carry-over", str(store)]) == 0
+    [call] = _judge_runs(calls)
+    assert call.endswith(f"--carry-over {store}"), call
+
+
+def test_an_absent_candidate_file_reaches_assay(tmp_path, monkeypatch):
+    """Assay opens the candidate file; Run-Gate only resolves its path."""
+    repo, _proj, calls = _main_project(tmp_path, monkeypatch)
+    ids = repo / ".run-gate" / "not-there.txt"
+    assert not ids.exists()
+    assert run_gate.main(["r2", "--", "--only-candidates", str(ids)]) == 0
+    [call] = _judge_runs(calls)
+    assert call.endswith(f"--only-candidates {ids}"), call
+
+
+def test_attach_r2_flex_no_longer_checks_the_carry_over_pair():
+    """The removed pairing rule is gone from `attach_r2_flex` itself."""
+    lane, name = run_gate.attach_r2_flex(
+        dict(_LANE), "r2", _args(carry_over=["/store"]))
+    assert name == "r2" and lane["_r2_flex"]["carry_over"] == ["/store"]
+    assert "carry_over_reason" not in lane["_r2_flex"]
+    lane, _name = run_gate.attach_r2_flex(
+        dict(_LANE), "r2", _args(only_candidates="/not/a/file"))
+    assert lane["_r2_flex"]["only_candidates"] == "/not/a/file"
+
+
+def test_rejudge_outcome_without_rejudge_reaches_the_judge_argv(
+        tmp_path, monkeypatch):
+    """Assay documents the bucket as a union with the `--rejudge` ids."""
+    repo, _proj, calls = _main_project(tmp_path, monkeypatch)
+    store = repo / ".run-gate" / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    assert run_gate.main(["r2", "--", "--merge-state", str(store),
+                          "--rejudge-outcome", "killed"]) == 0
+    [call] = _judge_runs(calls)
+    assert f"--merge-state {store} --rejudge-outcome killed" in call, call
