@@ -80,6 +80,12 @@ def test_bare_and_locked_blocks_carry_their_flags():
     assert entries[1].locked == "by hand"
 
 
+def test_a_damaged_branch_ref_keeps_the_short_name():
+    (entry,) = gitstate.parse_worktree_porcelain("worktree /repo/wt\nHEAD aaaaaaa\nbranch odd-name\n")
+
+    assert entry.branch == "odd-name"
+
+
 def test_a_locked_line_without_reason_still_reads_as_locked():
     (entry,) = gitstate.parse_worktree_porcelain("worktree /repo/wt\nHEAD aaaaaaa\nlocked\n")
 
@@ -274,6 +280,28 @@ def test_discover_root_names_the_directory_it_asked_when_nothing_answers(tmp_pat
     assert detail == f"git rev-parse exited 128 in {start}"
 
 
+def test_discover_root_asks_the_configured_repository_that_is_itself_absent(tmp_path, monkeypatch):
+    start = tmp_path / "start"
+    start.mkdir()
+    configured = tmp_path / "absent-repo"
+    answers: list[str] = []
+
+    def runner(arguments, cwd):
+        answers.append(cwd)
+        return "", 128, "nope"
+
+    monkeypatch.setattr(gitstate, "_run_git", runner)
+    monkeypatch.setenv("CONTROLLER_REPO", str(configured))
+
+    root, detail = gitstate.discover_root(start)
+
+    # Both the start directory and the configured repository's PARENT were asked, and neither
+    # answered; the reason names the last one it tried.
+    assert answers == [str(start), str(tmp_path)]
+    assert root is None
+    assert "nope" in detail
+
+
 def test_discover_root_answers_an_absent_start_without_calling_git(tmp_path, monkeypatch):
     absent = tmp_path / "absent"
     calls: list[str] = []
@@ -290,3 +318,17 @@ def test_discover_root_answers_an_absent_start_without_calling_git(tmp_path, mon
     assert calls == [str(tmp_path)]
     assert root is None
     assert "nope" in detail
+
+
+def test_discover_root_names_a_configured_path_that_is_not_even_a_parent(tmp_path, monkeypatch):
+    start = tmp_path / "start"
+    start.mkdir()
+    monkeypatch.setenv("CONTROLLER_REPO", str(tmp_path / "absent" / "deeper" / "repo"))
+    monkeypatch.setattr(gitstate, "_run_git", lambda arguments, cwd: ("", 128, "nope"))
+
+    root, detail = gitstate.discover_root(start)
+
+    # The configured path and its parent are both absent, so the reason names that rather than
+    # reporting a git failure for a directory nobody could enter.
+    assert root is None
+    assert "is not a directory" in detail

@@ -294,7 +294,7 @@ def test_the_header_says_none_and_unknown_instead_of_omitting_a_section(tmp_path
     text = agg.render_header(agg.rows_from_inputs(view), view)
 
     assert "MERGE 0: none" in text
-    assert "LEASES none" in text
+    assert "LEASES 0: none" in text
     assert "LIVE 0: none" in text
     assert "PEERS: none" in text
     assert "HANDOVER own unknown" in text
@@ -457,3 +457,55 @@ def test_the_handler_reads_the_live_inputs_only_through_the_readers(tmp_path, mo
     assert agg.run(Args(), runtime, config=_config(tmp_path)) == 0
     payload = json.loads(json.dumps(runtime.output.last))
     assert payload["sources"]["gate_slots"] == []
+
+
+def test_a_branch_merged_into_origin_main_reads_as_yes(tmp_path):
+    git = _git(tmp_path, ("plat-19m-acceptkit",), merged=frozenset({"main", "plat-19m-acceptkit"}))
+
+    (row,) = agg.rows_from_inputs(_view(git, _run_set(tmp_path, ())))
+
+    assert row.fields["merged"].value == "yes"
+    assert row.unmerged == ()
+    assert row.fields["merged"].detail == ""
+
+
+def test_a_merge_list_that_is_present_but_does_not_name_the_branch_is_no(tmp_path):
+    git = _git(tmp_path, ("plat-19m-acceptkit",), merged=frozenset({"main"}))
+
+    (row,) = agg.rows_from_inputs(_view(git, _run_set(tmp_path, ())))
+
+    assert row.unmerged == ("plat-19m-acceptkit",)
+    assert "merge candidate" in row.fields["merged"].detail
+
+
+def test_truncation_keeps_whole_lines_and_marks_the_block():
+    truncated = agg._truncate(["a" * 10, "b" * 5000])
+
+    assert truncated.splitlines() == ["a" * 10, agg.HEADER_MARKER]
+    assert len(truncated) <= agg.HEADER_LIMIT
+
+
+def test_truncation_of_a_single_over_long_line_cuts_it_and_marks_it():
+    truncated = agg._truncate(["x" * 6000])
+
+    assert truncated.endswith("\n" + agg.HEADER_MARKER)
+    assert len(truncated) <= agg.HEADER_LIMIT
+
+
+def test_a_live_runs_cell_without_a_context_figure_says_so(tmp_path):
+    git = _git(tmp_path, ("p-x",))
+    records = (_record("p-x-pi", source=str(tmp_path / "runs"), files=("live",), outcome="", tokens=None),)
+
+    (row,) = agg.rows_from_inputs(_view(git, _run_set(tmp_path, records)))
+
+    assert "p-x-pi active" in row.fields["runs"].detail
+    assert "40k" not in row.fields["runs"].detail
+
+
+def test_a_gate_result_with_no_slot_held_says_so(tmp_path):
+    git = _git(tmp_path, ("cmru-x",))
+
+    (row,) = agg.rows_from_inputs(_view(git, _run_set(tmp_path, ()), results=(_result(tmp_path),)))
+
+    assert row.fields["gates"].value.startswith("tests PASS")
+    assert "no gate slot held" in row.fields["gates"].detail

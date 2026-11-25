@@ -36,6 +36,13 @@ def test_proc_locks_lists_flocks_and_posix_locks_by_device_and_inode():
     assert entries[2].inode == 17
 
 
+def test_a_lock_line_with_a_device_field_that_is_not_a_pair_is_skipped():
+    # A 6-field line whose device token is not `major:minor` cannot be matched to a file, so it
+    # is not turned into an entry that would then match the wrong inode.
+    assert ag_sources.parse_proc_locks("8: FLOCK ADVISORY WRITE 1 fd:00 0 EOF\n") == ()
+    assert ag_sources.parse_proc_locks("8: FLOCK ADVISORY WRITE 1 nonsense:1 0 EOF\n") == ()
+
+
 def test_a_short_or_odd_proc_locks_line_is_skipped_not_guessed():
     entries = ag_sources.parse_proc_locks(
         "not a lock line\n8: FLOCK ADVISORY WRITE 0 fd:00:x 0 EOF\n8: FLOCK ADVISORY WRITE notapid fd:00:1 0 EOF\n"
@@ -96,8 +103,7 @@ def test_gate_slots_report_each_lock_file_with_its_own_state(tmp_path):
     locks.mkdir()
     (locks / "r1002.admit").touch()
     (locks / "v1001.slot1").touch()
-    free = locks / "v1001.slot2"
-    free.touch()
+    (locks / "v1001.slot2").touch()
     config = _config(tmp_path)
     with (locks / "r1002.admit").open("r+") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -154,6 +160,17 @@ def _gate_dir(tmp_path: Path, name: str, *, meta: str | None, result: str | None
     if lane_log is not None:
         (directory / "lane.log").write_text(lane_log, encoding="utf-8")
     return directory
+
+
+def test_a_slot_with_a_detail_reports_it_and_one_without_omits_the_key():
+    with_detail = ag_sources.Slot(host="v1001", name="v1001.slot1", kind="slot", state=ag_sources.UNKNOWN,
+                                 holder_pid=None, detail="cannot stat", path="/locks/v1001.slot1")
+    without = ag_sources.Slot(host="v1001", name="v1001.slot2", kind="slot", state=ag_sources.FREE,
+                              holder_pid=None, detail="", path="/locks/v1001.slot2")
+
+    assert with_detail.as_dict()["detail"] == "cannot stat"
+    assert "detail" not in without.as_dict()
+    assert "pid" not in with_detail.text()
 
 
 def test_a_gate_result_prefers_run_gates_own_verdict_line(tmp_path):
@@ -222,6 +239,15 @@ def test_results_are_newest_first_by_directory_mtime(tmp_path):
 
 def test_an_absent_results_directory_has_no_results(tmp_path):
     assert ag_sources.read_results(_config(tmp_path)) == ()
+
+
+def test_a_meta_file_that_is_not_json_and_a_result_file_that_is_not_json_are_unknown(tmp_path):
+    _gate_dir(tmp_path, "rgw-broken", meta="{not json", result="[]", lane_log="")
+
+    (result,) = ag_sources.read_results(_config(tmp_path))
+
+    assert (result.host, result.lane, result.verdict) == (ag_sources.UNKNOWN, ag_sources.UNKNOWN, ag_sources.UNKNOWN)
+    assert result.detail.startswith("meta.json")
 
 
 def test_a_file_in_the_results_directory_is_skipped_and_a_meta_stat_failure_is_tolerated(tmp_path):

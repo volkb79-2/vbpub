@@ -355,3 +355,39 @@ def test_a_registry_state_outside_the_vocabulary_is_not_a_state(tmp_path):
     # With no `.done` and no usable registry state, the record is active — an unknown state is
     # not silently read as either end of the vocabulary.
     assert record.state() == ag_runs.ACTIVE
+
+
+def test_by_id_answers_none_for_a_name_that_is_not_there(tmp_path):
+    _write(tmp_path, "runs", "p.done", "EXIT=0\n")
+
+    assert ag_runs.read(_config(tmp_path)).by_id("absent") is None
+
+
+def test_first_line_of_an_empty_document_is_empty():
+    assert ag_runs._first_line("") == ""
+    assert ag_runs._first_line("\nsecond\n") == ""
+
+
+def test_a_record_whose_live_file_disappeared_still_reads(tmp_path):
+    _write(tmp_path, "runs", "p.live", "{}")
+
+    record_paths = {**ag_runs.read(_config(tmp_path)).by_id("p").paths}
+    missing = tmp_path / "runs" / "p.live"
+    missing.unlink()
+
+    # The stat of a file that vanished between the read and the stat is not a crash: the
+    # record keeps its other fields and reports no live mtime.
+    rebuilt = ag_runs._record("p", str(tmp_path / "runs"), record_paths, None)
+
+    assert rebuilt.tokens is None
+    assert rebuilt.live_mtime is None
+
+
+def test_a_directory_entry_that_is_neither_file_nor_directory_is_ignored(tmp_path):
+    import os
+
+    target = tmp_path / "runs" / "gp.done"
+    target.parent.mkdir(parents=True)
+    os.symlink(tmp_path / "runs" / "nowhere", target)
+
+    assert ag_runs.read(_config(tmp_path)).records == ()

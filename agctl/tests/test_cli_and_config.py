@@ -138,3 +138,14 @@ def test_a_relative_path_with_a_dotdot_is_resolved_to_one_spelling(tmp_path):
 
     (home,) = [path for path in resolved.runs_dirs if path.name == "runs"]
     assert ".." not in str(home)
+
+
+def test_a_toml_without_a_runs_table_contributes_no_legacy_dirs(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ag_config.TOML_NAME).write_text("", encoding="utf-8")
+
+    resolved = ag_config.load({"CONTROLLER_HOME": str(home)}, cwd=tmp_path)
+
+    assert resolved.toml_state == "loaded"
+    assert resolved.toml_legacy_dirs == ()
