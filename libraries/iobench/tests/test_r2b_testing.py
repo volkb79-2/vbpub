@@ -9,12 +9,13 @@ import dataclasses
 import pytest
 
 from iobench import devio, testing
+from iobench.errors import Refusal
 from iobench.host import TAIL_BYTES, HostError, RunResult
 from iobench.testing import (GIB, Bucket, CacheModel, DirScenario, FakeDevice, FakeHandle, FakeHost, Scenario,
                              SweepOutcome, TailViolation, mixture, mode_profile, standard_host)
 
 from conftest import TimeLimitExceeded
-from helpers import job, run_job
+from helpers import job, run_job, target_ref
 
 
 # -- CacheModel ---------------------------------------------------------------------------------------------------
@@ -159,6 +160,34 @@ def test_the_filesystem_of_a_path_is_the_longest_matching_mount():
     assert host._mount_for("/a/b/c") == "/a/b"
     assert host._mount_for("/a/bc") == "/a"
     assert host._mount_for("/other") == "/"
+
+
+def test_a_mount_under_an_iobench_claim_is_refused_by_either_the_device_number_or_the_source():
+    """S5-S7 (testing.py:773, ``==``->``!=`` twice and ``or``->``and``): a claimed device number and a claimed source
+    path each refuse the mount on their own, and only a mount that matches neither is allowed through."""
+    host = standard_host()
+    claim = target_ref(host)
+    other_source = "/dev/somewhere-else"
+    host.claim(claim)
+    try:
+        # (a) the device number is the claimed one, the source is not: the device number alone must refuse.
+        with pytest.raises(Refusal) as error:
+            host.add_mount(claim.devno, "/mnt/same-devno", other_source)
+        assert error.value.condition == "device_in_use"
+        # (b) the source is the claimed path, the device number is not: the source alone must refuse.
+        with pytest.raises(Refusal) as error:
+            host.add_mount("254:9", "/mnt/same-source", claim.path)
+        assert error.value.condition == "device_in_use"
+        # (c) neither matches: an unrelated mount is not blocked by iobench's claim, and it is visible in the table.
+        host.add_mount("254:9", "/mnt/unrelated", "/dev/other-device")
+        assert ("both", "254:9", "/mnt/unrelated", "/dev/other-device", "ext4", "rw,relatime") in host.mounts
+        # (d) and with no claim at all the same device and source mount freely.
+        assert host.release_claim() is None
+        host.add_mount(claim.devno, "/mnt/released", claim.path)
+        assert any(entry[2] == "/mnt/released" for entry in host.mounts)
+    finally:
+        if host.claims:
+            host.release_claim()
 
 
 def test_preallocating_exactly_the_free_space_succeeds_and_one_byte_more_fails():
