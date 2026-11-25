@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""P-plat-19g: judge accept-run.sh evidence (design note 4.1).
+"""P-plat-19m: judge the acceptance squeeze run's evidence (DESIGN-ACCEPT-KIT-V2.md 3, 4, 5, 6).
 
-    accept-eval.py DIR [DIR ...] [--ssh-idle S --ssh-loaded S] [--refault-tol PAGES]
+    accept-eval.py DIR [DIR ...]                 the run's verdict, the DAMON floors, M and the proposed K
+    accept-eval.py --live-step DIR --step N      one step's verdict into DIR/steps/N.env (accept-run.sh's ladder)
 
-Per run: M = p99(U) + p99(init.scope) + W + 64M, per-unit hot-set proxy = max(active_anon + active_file) in the window,
-floor suggestion 1.25 x that, and the 4.1 criteria. Missing data (column, series, probe, manifest) is INCONCLUSIVE and names
-itself, never a pass. A DIR may hold `ssh.txt` ("<idle> <loaded>" seconds) instead of the arguments. Several runs: max of each
-value, worst verdict. The proposed host-setup.env lines are checked through mdt_capacity's own derivation (install.sh's limits)
-and printed commented out unless PASS. Exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE, 2 usage or crash.
+Per step every 3 criterion is PASS/FAIL/INCONCLUSIVE and missing data names itself -- never a pass (v1's rule).
+`cause=` carries the ladder's decision: **only `load_not_real` continues it** (2.5); missing hard data stops it.
+Refaults are INFO only (3.4). The run's verdict derives the DAMON floors (hotset.csv, x1.10, 4.3, and printed only
+when this run proved them), re-checks M over the **deepest passing** step (5) and applies the ONE K rule
+`K_proposed = max(F_new + M, k_last_pass)`. A FAIL is a step-0 FAIL and prints **no K at all**: pinning the K that
+just failed is the one advice that must never appear, and `1280M` appears nowhere. A v1 evidence directory (no
+`kit_version=2`) is refused with exit 2, because v2 criteria on v1 data would turn a missing squeeze into a pass.
+Exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE, 2 usage, a crash or a v1 directory.
 """
 from __future__ import annotations
 
@@ -19,9 +23,17 @@ import sys
 from pathlib import Path
 
 MIB = 1024 ** 2
-REQUIRED_UNITS = {"ssh.service", "docker.service", "containerd.service", "systemd-journald.service", "user.slice"}
-FLOORED = ("ssh.service", "docker.service", "containerd.service", "systemd-journald.service", "mdt-psi-guard.service", "cgprofiled.service")
-try:  # absent when the kit is copied out of the checkout: the install.sh-limit check is then skipped, with a note
+FLOOR_FACTOR = 1.10             # 4.3: one page per region per 400 ms plus merge/split churn
+SQUEEZE_TOLERANCE = 128 * MIB   # 3.5: dev.slice/memory.current >= its own max - 128M
+PRESSURE_LIMIT = 1.0            # 3.1: some and full avg10 on all three slices
+LATENCY_SLACK = 0.5             # 3.2/3.3: max(2 x the step-0 p95, the step-0 p95 + 0.5 s)
+MEM_AVAILABLE_FLOOR = 128 * MIB  # 2.4's guard, judged per step as well
+SLICES = ("system", "user", "cgprofile")   # the col prefix; the design's table names the cgroups
+LIVENESS = ("sshd", "journald", "dockerd", "containerd", "cgprofiled", "psi_guard")
+FLOORED = ("ssh.service", "docker.service", "containerd.service", "systemd-journald.service",
+           "mdt-psi-guard.service", "cgprofiled.service")
+NOT_REFALTED = ("dev-interactive.slice",)   # measured only to size its MemoryMin (4.2), never refault-judged
+try:  # absent when the kit is copied out of the checkout: the install.sh-limit check is then reported, never faked
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     import mdt_capacity as cap
 except Exception:  # pragma: no cover
@@ -32,9 +44,23 @@ class Inconclusive(Exception):
     pass
 
 
-def p99(values: list[float]) -> float:
+class V1Evidence(Exception):
+    pass
+
+
+# ---------- small readers ----------
+
+def pctl(values: list[float], q: float) -> float:
     ordered = sorted(values)
-    return ordered[max(0, math.ceil(0.99 * len(ordered)) - 1)]
+    return ordered[max(0, math.ceil(q * len(ordered)) - 1)]
+
+
+def p95(values: list[float]) -> float:
+    return pctl(values, 0.95)
+
+
+def p99(values: list[float]) -> float:
+    return pctl(values, 0.99)
 
 
 def fnum(row: dict, key: str) -> float | None:
@@ -48,9 +74,9 @@ def series(rows: list[dict], key: str) -> list[float]:
     return [v for v in (fnum(r, key) for r in rows) if v is not None]
 
 
-def delta(rows: list[dict], key: str) -> float:
+def delta(rows: list[dict], key: str) -> float | None:
     vals = series(rows, key)
-    return vals[-1] - vals[0] if vals else 0.0
+    return vals[-1] - vals[0] if len(vals) >= 2 else None
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -63,199 +89,493 @@ def read_env(path: Path) -> dict[str, str]:
     return out
 
 
-def evaluate(path: Path, ssh: tuple[float | None, float | None], tol: float) -> dict:
-    with (path / "samples.csv").open(newline="") as fh:
-        rows = list(csv.DictReader(fh))
-    win = [r for r in rows if r.get("phase") == "window"]
-    if not win:
-        raise Inconclusive(f"{path}: no window rows in samples.csv")
-    man = read_env(path / "manifest.env")
-    out: dict = {"dir": str(path), "criteria": [], "hot": {}, "man": man, "base": read_env(path / "host-setup.env.snapshot")}
-    for key in ("U", "init_current", "W"):
-        if not series(win, key):
-            raise Inconclusive(f"{path}: column {key} has no data in the window")
-    out["M"] = p99(series(win, "U")) + p99(series(win, "init_current")) + max(series(win, "W")) + 64 * MIB
-    units = sorted({k[: -len(".active")] for k in rows[0] if k.endswith(".active")})
-    present = [u for u in units if series(win, f"{u}.active")]
-    out["hot"] = {u: max(series(win, f"{u}.active")) for u in present}
-    crit = out["criteria"]
-
-    def add(name: str, ok: bool | None, detail: str) -> None:
-        crit.append((name, "INCONCLUSIVE" if ok is None else "PASS" if ok else "FAIL", detail))
-
-    def missing(cols: list[str]) -> list[str]:
-        return [c for c in cols if not series(win, c)]
-
-    absent = sorted(REQUIRED_UNITS & set(units) - set(present)) + sorted(REQUIRED_UNITS - set(units))
-    # dev-interactive is measured only to size its MemoryMin (4.1), so it is not a refault subject
-    rcols = [f"{u}.refault_{k}" for u in present if u != "dev-interactive.slice" for k in ("anon", "file")]
-    if absent or missing(rcols):
-        add("refault", None, "no data for " + ", ".join(absent + missing(rcols)))
-    else:
-        bad = {u: delta(win, f"{u}.refault_anon") + delta(win, f"{u}.refault_file") for u in present if u != "dev-interactive.slice"}
-        bad = {u: d for u, d in bad.items() if d > tol}
-        add("refault", not bad, "floored-unit refault delta in the window " + (", ".join(f"{u}=+{d:.0f}" for u, d in bad.items()) or f"<= {tol:.0f} pages"))
-    for sl in ("system", "user"):
-        col = f"{sl}.psi_some_avg10"
-        peak = max(series(win, col), default=None)
-        add(f"{sl}.slice pressure", None if peak is None else peak <= 1.0, f"no data in column {col}" if peak is None else f"memory.pressure some avg10 max {peak:.2f} (limit 1)")
-    idle, loaded = ssh
-    add("ssh latency", None if idle is None or loaded is None else loaded <= 2 * idle,
-        "no --ssh-idle/--ssh-loaded (or ssh.txt): not measured" if idle is None or loaded is None else f"loaded {loaded:g}s vs 2 x idle {2 * idle:g}s")
-    ocols = ["vmstat_oom_kill"] + [f"{t}.{k}" for t in ("dev", "gates", "bg") for k in ("oom", "oom_kill")]
-    if missing(ocols):
-        add("no oom", None, "no data for " + ", ".join(missing(ocols)))
-    else:
-        kills = {"vmstat": delta(rows, "vmstat_oom_kill")}
-        kills.update({t: delta(rows, f"{t}.oom") + delta(rows, f"{t}.oom_kill") for t in ("dev", "gates", "bg")})
-        hit = {k: v for k, v in kills.items() if v > 0}
-        add("no oom", not hit, "oom/oom_kill delta " + (", ".join(f"{k}=+{v:.0f}" for k, v in hit.items()) or "0 in vmstat, dev.slice and both tiers"))
-    # The load was real: dev.slice's LOCAL max events rose (memory.events is hierarchical and counts the probes' own limits) or
-    # dev.slice sat at its ceiling on most window ticks, both probes still ran at the end, and swap writeback reached the disk.
-    if missing(["dev.max_local", "dev.current", "dev.mem_max"]):
-        add("load was real", None, "no data for " + ", ".join(missing(["dev.max_local", "dev.current", "dev.mem_max"])))
-    else:
-        busy = 0
-        for a, b in zip(win, win[1:]):
-            cur, top = fnum(b, "dev.current"), fnum(b, "dev.mem_max")
-            busy += (fnum(b, "dev.max_local") or 0) > (fnum(a, "dev.max_local") or 0) or bool(cur and top and cur >= 0.95 * top)
-        rise, frac = delta(win, "dev.max_local"), busy / max(1, len(win) - 1)
-        alive = [man.get(f"probe_{p}_end") == "true false" for p in ("gates", "bg")]
-        add("load was real", rise > 0 and frac >= 0.5 and all(alive) or None,
-            f"dev.slice local max events +{rise:.0f}, rising or at the ceiling on {frac:.0%} of window ticks; probes at the end: gates={man.get('probe_gates_end', 'unknown')}, bg={man.get('probe_bg_end', 'unknown')}")
-    pout = delta(win, "pswpout") if series(win, "pswpout") else None
-    add("disk swap exercised", None if pout is None else pout > 0 or None,
-        "no pswpout data" if pout is None else f"pswpout +{pout:.0f} pages, zswpout +{delta(win, 'zswpout'):.0f}, zswpwb +{delta(win, 'zswpwb'):.0f} in the window (zswap alone absorbed it if pswpout is 0)")
-    if man.get("kernel_oom_lines", "0") not in ("0", ""):
-        add("kernel oom log", None, f"{man['kernel_oom_lines']} kernel OOM line(s) in kernel-oom.txt: attribute them (probe or another container) before judging")
-    return out
+def read_csv(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    with path.open(newline="") as fh:
+        return list(csv.DictReader(fh))
 
 
 def size(n: float) -> str:
     return f"{math.ceil(n / MIB)}M"
 
 
-def proposal(runs: list[dict], rows: list[str], margin: float, inter: float | None) -> tuple[list[str], str | None, int | None, int | None]:
-    """The env lines, a refusal text when mdt_capacity (install.sh's own derivation) would refuse them, the proposed
-    host keep K in bytes (floors + the measured margin with any KEEP pin of the snapshot dropped, clamped to never be
-    below the tested K) and the tested K (both None when they could not be derived)."""
-    base, man = runs[0]["base"], runs[0]["man"]
-    notes: list[str] = []
-    if cap is None or "mem_total" not in man:
-        return ["# note: mdt_capacity or mem_total missing: the install.sh limits were NOT checked"], None, None, None
-    mt, st = int(man["mem_total"]), int(man.get("swap_total", 0))
+def rows_of(rows: list[dict], step: int, phase: str | None = None) -> list[dict]:
+    out = [r for r in rows if str(r.get("step", "")) == str(step)]
+    return [r for r in out if r.get("phase") == phase] if phase else out
+
+
+def probes_of(probes: list[dict], step: int, name: str | None = None) -> list[dict]:
+    out = [p for p in probes if str(p.get("step", "")) == str(step)]
+    return [p for p in out if p.get("probe") == name] if name else out
+
+
+def seconds_of(probes: list[dict], step: int, name: str) -> list[float]:
+    vals = []
+    for p in probes_of(probes, step, name):
+        try:
+            vals.append(float(p.get("seconds", "")))
+        except (TypeError, ValueError):
+            continue
+    return vals
+
+
+def detail_int(probes: list[dict], step: int, name: str, key: str) -> int | None:
+    for p in reversed(probes_of(probes, step, name)):
+        for token in (p.get("detail") or "").split():
+            if token.startswith(f"{key}="):
+                tail = token[len(key) + 1:]
+                return int(tail) if tail.isdigit() else None
+    return None
+
+
+def ssh_base(probes: list[dict]) -> float | None:
+    """3.2: the max of 3 ssh samples at step 0 before any raise, its slow sample included."""
+    vals = seconds_of(probes, 0, "ssh")[:3]
+    return max(vals) if vals else None
+
+
+def step_base(probes: list[dict]) -> dict[str, float | None]:
+    """3.3: the step-0 p95 of each liveness probe is that probe's latency baseline."""
+    return {name: (vals and p95(vals) or None) for name, vals in
+            ((n, seconds_of(probes, 0, n)) for n in LIVENESS)}
+
+
+def over_limit(vals: list[float], base: float | None, timeout: bool) -> tuple[bool, str]:
+    """3.2/3.3's contention-agnostic rule: >= 2 samples over the limit, or any timeout, or the median over."""
+    if base is None:
+        return timeout, ""
+    limit = max(2 * base, base + LATENCY_SLACK)
+    slow = [v for v in vals if v > limit]
+    med = sorted(vals)[(len(vals) - 1) // 2]
+    bad = len(slow) >= 2 or timeout or med > limit
+    return bad, f"p95 {p95(vals):.2f}s<= {limit:.2f}s (base {base:.2f}s, {len(slow)}/{len(vals)} over, median {med:.2f}s)"
+
+
+# ---------- the per-step judge (3) ----------
+
+def judge_step(rows: list[dict], probes: list[dict], step: int) -> tuple[str, str, str]:
+    """One step's 3 criteria over its judged window. Returns (verdict, cause, detail)."""
+    win = rows_of(rows, step, "judge")
+    if not win:
+        return "INCONCLUSIVE", "missing:samples", f"no judged rows for step {step} in samples"
+    states: dict[str, str] = {}
+    detail: dict[str, str] = {}
+    causes: dict[str, str] = {}
+
+    def put(name: str, state: str, text: str, cause: str = "") -> None:
+        states[name] = state
+        detail[name] = text
+        if cause:
+            causes[name] = cause
+
+    # 3.1 pressure: system.slice, user.slice, cgprofile.slice -- some AND full. The root rows stay INFO (2.4).
+    bad, ptext, gone = [], [], None
+    for sl in SLICES:
+        for mode in ("some", "full"):
+            col = f"{sl}.psi_{mode}_avg10"
+            vals = series(win, col)
+            if not vals:
+                gone = col
+                break
+            peak = max(vals)
+            ptext.append(f"{sl}.{mode} {peak:.2f}")
+            if peak > PRESSURE_LIMIT:
+                bad.append(f"{sl}.{mode} {peak:.2f} > {PRESSURE_LIMIT:.2f}")
+        if gone:
+            break
+    if gone:
+        put("pressure", "INCONCLUSIVE", f"no data in column {gone}")
+    else:
+        put("pressure", "FAIL" if bad else "PASS", "; ".join(bad) or "psi " + "/".join(ptext))
+
+    # 3.2 ssh: the p95 of 10 samples; step 0 sets the baseline (max of its first 3 samples)
+    ssh_vals = seconds_of(probes, step, "ssh")
+    ssh_to = any(p.get("rc") == "timeout" for p in probes_of(probes, step, "ssh"))
+    base = ssh_base(probes)
+    if not ssh_vals:
+        put("ssh", "INCONCLUSIVE", f"no ssh samples for step {step} in probes")
+    elif step == 0 or base is None:
+        put("ssh", "PASS" if not ssh_to else "FAIL",
+            f"ssh p95 {p95(ssh_vals):.2f}s (step 0 sets the baseline)" + (" (a sample hit the timeout)" if ssh_to else ""))
+    else:
+        bad_ssh, text = over_limit(ssh_vals, base, ssh_to)
+        if ssh_to:
+            text += " (a sample hit the timeout)"
+        put("ssh", "FAIL" if bad_ssh else "PASS", "ssh " + text)
+
+    # 3.3 liveness: rc 0 in every sample, the same latency rule, and containerd's NRestarts unchanged
+    bases = step_base(probes)
+    seen, bad_l, unmeasured, absent = [], [], [], []
+    restarts0 = detail_int(probes, 0, "containerd", "nrestarts")
+    for name in LIVENESS:
+        prows = probes_of(probes, step, name)
+        if not prows:
+            absent.append(name)   # 3.5/L-i: a probe that did not run is missing data, never a pass and never a FAIL
+            continue
+        seen.append(name)
+        rcs = [p.get("rc") for p in prows]
+        if "unmeasurable" in rcs:
+            unmeasured.append(name)   # 3.3/L-i: the probe could not measure -> missing data, never a pass
+            continue
+        if any(rc != "0" for rc in rcs):
+            bad_l.append(f"{name} rc {next(rc for rc in rcs if rc != '0')}")
+            continue
+        if name == "containerd":
+            now = detail_int(probes, step, "containerd", "nrestarts")
+            if now is not None and restarts0 is not None and now > restarts0:
+                bad_l.append(f"containerd restarted ({restarts0} -> {now})")
+                continue
+        vals = seconds_of(probes, step, name)
+        if step > 0 and vals:
+            bad_one, _ = over_limit(vals, bases.get(name), False)
+            if bad_one:
+                bad_l.append(f"{name} latency over its step-0 baseline")
+    if not seen:
+        put("probes", "INCONCLUSIVE", f"no liveness rows for step {step} in probes")
+    elif absent or unmeasured:
+        put("probes", "INCONCLUSIVE",
+            f"missing data: " + ", ".join(absent + unmeasured) + " (a probe that did not run is never a pass)")
+    else:
+        put("probes", "FAIL" if bad_l else "PASS",
+            f"probes {len(seen) - len(bad_l)}/{len(LIVENESS)} passed" + (f" ({'; '.join(bad_l)})" if bad_l else ""))
+
+    # no oom (2.4's global counter plus both load tiers)
+    kill_cols = {"vmstat": "vmstat_oom_kill", "dev": "dev.oom", "gates": "gates.oom", "bg": "bg.oom"}
+    hits, missing = {}, []
+    for lbl, col in kill_cols.items():
+        d = delta(rows, col)
+        if d is None:
+            missing.append(col)
+        elif d > 0:
+            hits[lbl] = d
+    if missing:
+        put("no oom", "INCONCLUSIVE", "no data in " + ", ".join(missing))
+    else:
+        put("no oom", "FAIL" if hits else "PASS",
+            "oom/oom_kill delta " + (", ".join(f"{k}=+{v:.0f}" for k, v in hits.items())
+                                     or "0 in vmstat, dev.slice and both tiers"))
+
+    # 3.5 load was real: at the ceiling on >= 80 % of the judged ticks AND MemFree <= 2 x W on >= 50 %. It is the
+    # only INCONCLUSIVE cause that continues the ladder, and such a step can never be k_last_pass.
+    need = ("dev.current", "dev.mem_max", "mem_free", "W")
+    gone = [c for c in need if not series(win, c)]
+    if gone:
+        put("load was real", "INCONCLUSIVE", "no data for " + ", ".join(gone), cause="missing")
+    else:
+        at_top = sum(1 for r in win
+                     if (cur := fnum(r, "dev.current")) is not None
+                     and (top := fnum(r, "dev.mem_max")) is not None and cur >= top - SQUEEZE_TOLERANCE)
+        low_free = sum(1 for r in win
+                       if (free := fnum(r, "mem_free")) is not None
+                       and (w := fnum(r, "W")) is not None and free <= 2 * w)
+        frac, ffrac = at_top / len(win), low_free / len(win)
+        ok = frac >= 0.8 and ffrac >= 0.5
+        put("load was real", "PASS" if ok else "INCONCLUSIVE",
+            f"dev.slice at its ceiling on {frac:.0%} of the judged ticks, MemFree <= 2 x W on {ffrac:.0%}"
+            + ("" if ok else " (needs >= 80 % and >= 50 %: the step is not load-bearing)"),
+            cause="" if ok else "load_not_real")
+
+    # 2.4's MemAvailable guard is a criterion: a breach in the window is a FAIL, not a missing value
+    avail = series(win, "mem_available")
+    if avail and min(avail) < MEM_AVAILABLE_FLOOR:
+        put("mem available", "FAIL", f"MemAvailable fell to {min(avail) / MIB:.0f}M (floor 128M)")
+
+    fails = [k for k, v in states.items() if v == "FAIL"]
+    unknown = [k for k, v in states.items() if v == "INCONCLUSIVE"]
+    if fails:
+        verdict, cause = "FAIL", fails[0].replace(" ", "_")
+    elif unknown:
+        verdict = "INCONCLUSIVE"
+        if unknown == ["load was real"] and causes.get("load was real") == "load_not_real":
+            cause = "load_not_real"     # 2.5: the ONLY cause that continues the ladder
+        else:
+            cause = "missing:" + unknown[0]   # missing hard data stops it (L-i) -- a load row without data is missing
+    else:
+        verdict, cause = "PASS", ""
+    text = " ".join(f"{k} {states.get(k, '?')}: {v};" for k, v in detail.items())
+    return verdict, cause, f"load {states.get('load was real', '?')}: {detail.get('load was real', '')}; {text}".strip()
+
+
+def write_step_env(evidence: Path, step: int, verdict: str, cause: str, text: str) -> None:
+    steps = evidence / "steps"
+    steps.mkdir(parents=True, exist_ok=True)
+    clean = text.replace("\n", " ").replace("\r", " ")
+    (steps / f"{step}.env").write_text(f"verdict={verdict}\ncause={cause}\ndetail={clean}\n")
+
+
+def live_step(evidence: Path, step: int) -> int:
+    verdict, cause, text = judge_step(read_csv(evidence / "samples.csv"), read_csv(evidence / "probes.csv"), step)
+    write_step_env(evidence, step, verdict, cause, text)
+    print(f"accept-eval: step {step} {verdict} cause={cause or '<none>'} {text}")
+    return 0
+
+
+# ---------- the run's verdict (4.3, 5, 6) ----------
+
+def installed_floors(base: dict[str, str]) -> dict[str, int]:
+    rows = dict(cap.DEDICATED_HOST_MEMORY_MIN_DEFAULTS) if cap else {}
+    raw = (base.get("DEV_HOST_MEMORY_MIN") or "").strip()
+    if cap and raw and raw != "-":
+        for row in raw.split():
+            unit, _, val = row.partition("=")
+            parsed = cap.parse_size_bytes(val)
+            if parsed:
+                rows[unit] = parsed
+    return rows
+
+
+def damon_floors(evidence: Path, installed: dict[str, int], passing: set[int]) -> dict[str, dict]:
+    """4.3: H_unit = the p95 of the one-apply values in the judged window, max over the passing steps; floor =
+    ceil(1.10 x H_unit). A floor >= the installed row that passed every step with it in force is **proved**; one
+    genuinely below it was never in force and stays a candidate."""
+    rows = read_csv(evidence / "hotset.csv")
+    out: dict[str, dict] = {}
+    for unit in sorted({r.get("unit", "") for r in rows if r.get("unit")}):
+        hot, steps = 0.0, []
+        for step in sorted(passing):
+            vals = []
+            for r in rows:
+                if str(r.get("step")) == str(step) and r.get("unit") == unit:
+                    try:
+                        vals.append(float(r["sz_filter_passed_one_apply"]))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+            if vals:
+                hot, steps = max(hot, p95(vals)), steps + [step]
+        if not steps:
+            continue
+        floor = (int(hot) * 11 + 9) // 10   # ceil(1.10 x H) in integer bytes: no float ulp (400M -> 440M, not 441M)
+        out[unit] = {"hot": hot, "floor": floor, "steps": steps, "installed": installed.get(unit, 0),
+                     "proved": floor >= installed.get(unit, 0)}
+    return out
+
+
+def margin(rows: list[dict], step: int) -> float | None:
+    """5: M = p99(U) + p99(init.scope) + W + 64M over the step's judged window, never below 64M."""
+    win = rows_of(rows, step, "judge")
+    u, i, w = series(win, "U"), series(win, "init_current"), series(win, "W")
+    if not u or not i or not w:
+        return None
+    return max(p99(u) + p99(i) + max(w) + 64 * MIB, 64 * MIB)
+
+
+def hotset_refusal(evidence: Path, unit: str) -> str | None:
+    marker = evidence / "hotset-refused"
+    if marker.is_file() and unit in marker.read_text().split():
+        return "sz_ops_filter_passed 0"
+    return None
+
+
+def read_steps(evidence: Path) -> dict[int, dict[str, str]]:
+    out: dict[int, dict[str, str]] = {}
+    for f in sorted((evidence / "steps").glob("*.env")):
+        if f.stem.isdigit():
+            out[int(f.stem)] = read_env(f)
+    return out
+
+
+def run_verdict(run: dict) -> str:
+    """3.5/2.5: PASS iff >= 1 step passed (F, M and K are checked by `proposal`); FAIL iff a hard criterion failed
+    at step 0; INCONCLUSIVE otherwise -- a step-0 INCONCLUSIVE (missing data, load not real) included."""
+    if run["passed"]:
+        return "PASS"
+    if 0 in run["steps"] and run["steps"][0].get("verdict") == "FAIL":
+        return "FAIL"
+    return "INCONCLUSIVE"
+
+
+def merged_floors(run: dict) -> dict[str, int]:
+    """5: the installed rows with every PROVED raise applied. A candidate row is genuinely below its installed one
+    (4.3), so it never enters -- F_new can only rise, and a floor this run never exercised never lowers K."""
+    merged = dict(run["installed"])
+    for unit, v in run["floors"].items():
+        if v["proved"]:
+            merged[unit] = max(merged.get(unit, 0), v["floor"])
+    return merged
+
+
+def proposal(run: dict) -> tuple[str | None, int | None, int | None, int | None]:
+    """5: F_new = `host_floors` over the INSTALLED rows with the PROVED raises applied (a candidate row never enters
+    it, so F_new >= F_installed); K_proposed = max(F_new + M, k_last_pass). The KEEP pin is dropped from the rows
+    because K is derived again. Returns (refusal text or None, K, F_new, k_last_pass)."""
+    if cap is None:
+        return "mdt_capacity is not importable (the kit was copied out of the checkout)", None, None, None
+    man, base, m = run["man"], run["base"], run["m"]
+    if m is None:
+        return "no M: the deepest passing step has no U/init_current/W data", None, None, None
+    if not man.get("mem_total", "").isdigit():
+        return "manifest.env has no mem_total: F_new cannot be derived", None, None, None
+    rows = dict(base)
+    merged = merged_floors(run)
+    rows["DEV_HOST_MEMORY_MIN"] = " ".join(f"{u}={size(v)}" for u, v in sorted(merged.items()))
+    rows["DEV_HOST_MEMORY_MARGIN"] = str(int(m))   # F_new + the MEASURED M; the printed margin is keep - F_new
+    rows.pop("DEV_HOST_MEMORY_KEEP", None)
     try:
-        tested = cap.dedicated_memory(base, mem_total=mt, swap_total=st)
-        new = dict(base, DEV_HOST_MEMORY_MARGIN=size(margin), DEV_INTERACTIVE_MEMORY_LOW=base.get("DEV_INTERACTIVE_MEMORY_LOW") or "2.5G")
-        if rows:
-            new["DEV_HOST_MEMORY_MIN"] = " ".join(rows)
-        if inter:
-            new["DEV_INTERACTIVE_MEMORY_MIN"] = size(inter)
-        new.pop("DEV_HOST_MEMORY_KEEP", None)   # a KEEP pin in the snapshot would win over floors + margin: the proposal is the unpinned K
-        got = cap.dedicated_memory(new, mem_total=mt, swap_total=st)
-    except cap.CapacityError as exc:
-        return notes, str(exc), None, None
-    # Never below the tested K, whatever the verdict (P-plat-19h r2 N1): under a pin the tested K was the pin, not floors +
-    # tested margin, so floors + the measured margin can come out lower; a lower K is untested.
-    pin = (base.get("DEV_HOST_MEMORY_KEEP") or "").strip()
-    clamped = got.keep < tested.keep
-    final_keep, final_max = (tested.keep, tested.maximum) if clamped else (got.keep, got.maximum)
-    if pin and clamped:
-        notes.append(f"# tested at the pin DEV_HOST_MEMORY_KEEP={pin}; floors + margin alone give {got.keep / MIB:.0f}M, below the tested K: keep the pin")
-    elif pin:
-        notes.append(f"# tested at the pin DEV_HOST_MEMORY_KEEP={pin}; the proposed K below is floors + margin without it: remove the pin to apply these lines")
-    elif clamped:
-        notes.append(f"# floors + margin alone give {got.keep / MIB:.0f}M, below the tested K: the tested K stands")
-    notes.append(f"# K {tested.keep / MIB:.0f}M tested -> {final_keep / MIB:.0f}M proposed, dev.slice MemoryMax {tested.maximum / MIB:.0f}M -> {final_max / MIB:.0f}M")
-    if final_keep > tested.keep:
-        notes.append("# K rose: re-run once at the new K (raise and repeat, design note 4.1)")
-    return notes, None, final_keep, tested.keep
+        got = cap.dedicated_memory(rows, mem_total=int(man["mem_total"]), swap_total=int(man.get("swap_total", 0) or 0))
+    except Exception as exc:
+        return f"install.sh's own derivation would refuse these rows: {exc}", None, None, None
+    k_last = man.get("k_last_pass", "").strip()
+    tested = int(k_last) if k_last.isdigit() else run["tested_k"]
+    keep = got.keep
+    if tested is not None and keep < tested:
+        keep = tested
+    return None, keep, got.floors.floors, tested
+
+
+def evaluate(evidence: Path, tested_k: int | None) -> dict:
+    man = read_env(evidence / "manifest.env")
+    if man.get("kit_version") != "2":
+        raise V1Evidence(str(evidence))
+    rows = read_csv(evidence / "samples.csv")
+    steps = read_steps(evidence)
+    if not steps:
+        raise Inconclusive(f"{evidence}: no steps/*.env: the judge wrote no per-step verdict")
+    base = read_env(evidence / "host-setup.env.snapshot")
+    run: dict = {"dir": evidence, "man": man, "base": base, "rows": rows, "steps": steps,
+                 "passed": sorted(n for n, s in steps.items() if s.get("verdict") == "PASS"),
+                 "failed": sorted(n for n, s in steps.items() if s.get("verdict") == "FAIL"),
+                 "installed": installed_floors(base), "tested_k": tested_k}
+    run["floors"] = damon_floors(evidence, run["installed"], set(run["passed"]))
+    run["m_squeeze"] = margin(rows, max(run["passed"])) if run["passed"] else None
+    run["m_unpressured"] = margin(rows, 0)
+    vals = [v for v in (run["m_squeeze"], run["m_unpressured"]) if v is not None]
+    run["m"] = max(vals) if vals else None
+    return run
+
+
+def refault_info(run: dict) -> list[str]:
+    """3.4: informational only -- one INFO line per step with a rising refault (the evidence that warm pages were
+    paged out, which is the intended result of a squeeze)."""
+    lines = []
+    for step in sorted(run["steps"]):
+        win = rows_of(run["rows"], step, "judge") or rows_of(run["rows"], step)
+        hits = []
+        for unit in sorted(run["installed"]):
+            if unit in NOT_REFALTED:
+                continue
+            a, f = delta(win, f"{unit}.refault_anon"), delta(win, f"{unit}.refault_file")
+            if a is None and f is None:
+                continue
+            total = (a or 0) + (f or 0)
+            if total > 0:
+                hits.append(f"{unit} +{total:.0f}")
+        if hits:
+            lines.append(f"INFO refault (informational, pages): {', '.join(hits)} (step {step})")
+    return lines
+
+
+def print_run(run: dict) -> str:
+    man = run["man"]
+    k0 = int(man["k_tested"]) if man.get("k_tested", "").isdigit() else None
+    step_bytes = int(man["step_bytes"]) if man.get("step_bytes", "").isdigit() else 128 * MIB
+    for n, st in sorted(run["steps"].items()):
+        k = f"K={size(k0 - n * step_bytes)}" if k0 is not None else "K=?"
+        print(f"STEP {n} {k} {st.get('verdict', 'INCONCLUSIVE')} {st.get('detail', '')}")
+    verdict = run_verdict(run)
+    if verdict == "FAIL":
+        who = f"K0={size(k0)}" if k0 is not None else "K0"
+        print(f"FAIL: step 0 failed at the live configuration. pin DEV_HOST_MEMORY_KEEP above the tested {who} "
+              "(step 0 failed at the live configuration); this run measures no value")
+        print("VERDICT FAIL")
+        print("== host-setup.env (NOT to be applied: FAIL; no K is printed at all on a FAIL)")
+        return verdict
+    if run["passed"] and run["failed"]:
+        last, first = max(run["passed"]), max(run["failed"])
+        kp, kf = man.get("k_last_pass", ""), man.get("k_first_fail", "")
+        cause = run["steps"].get(first, {}).get("cause", "")
+        print(f"SQUEEZE last pass K={size(int(kp)) if kp.isdigit() else kp} (step {last}), first fail "
+              f"K={size(int(kf)) if kf.isdigit() else kf} (step {first}): stopped by the {cause} criterion")
+    for line in refault_info(run):
+        print(line)
+    for unit in sorted(run["floors"]):
+        v = run["floors"][unit]
+        if v["proved"]:
+            print(f"FLOOR {unit}={size(v['floor'])} source=damon:{v['hot'] / MIB:.1f}M x{FLOOR_FACTOR:.2f} "
+                  f"tested=every step")
+        else:
+            print(f"FLOOR {unit}={size(v['floor'])} source=damon candidate (installed {size(v['installed'])}, untested)")
+    for unit in FLOORED:
+        if unit in run["floors"]:
+            continue
+        why = hotset_refusal(run["dir"], unit)
+        print(f"FLOOR {unit}={size(run['installed'].get(unit, 0))} source=table candidate "
+              f"(installed {size(run['installed'].get(unit, 0))}, "
+              + (f"DAMON refused: {why})" if why else "no DAMON data)"))
+    refused, keep, f_new, tested = proposal(run)
+    if refused or keep is None or f_new is None:
+        print(f"INCONCLUSIVE proposal: {refused}")
+        print("VERDICT INCONCLUSIVE")
+        return "INCONCLUSIVE"
+    m_s, m_u = run["m_squeeze"], run["m_unpressured"]
+    if m_s is not None and m_u is not None:
+        note = " differ by >= 25 %: the larger is taken" if m_u and abs(m_s - m_u) >= 0.25 * m_u else ""
+        print(f"M measured={m_s / MIB:.0f}M (deepest passing step {max(run['passed'])}) "
+              f"unpressured={m_u / MIB:.0f}M set={run['m'] / MIB:.0f}M{note}")
+    print(f"K proposed={size(keep)} = F {size(f_new)} + M {size(keep - f_new)}"
+          + (f" (>= k_last_pass {size(tested)})" if tested is not None and keep >= tested else ""))
+    print(f"VERDICT {verdict}")
+    pre = "" if verdict == "PASS" else "# "
+    merged = merged_floors(run)
+    rows_txt = " ".join(f"{u}={size(v)}" for u, v in sorted(merged.items()))
+    stamp = f"{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d}"
+    print("== host-setup.env" + ("" if verdict == "PASS" else f" (NOT to be applied: {verdict})"))
+    print(f'{pre}DEV_HOST_MEMORY_MIN="{rows_txt}"')
+    print(f"{pre}DEV_HOST_MEMORY_MARGIN={size(keep - f_new)}   # K proposed - F_new; M itself is {run['m'] / MIB:.0f}M")
+    print(f'{pre}DEV_HOST_MEMORY_MEASURED="{stamp} {run["dir"]}"')
+    return verdict
+
+
+def v1_refusal(evidence: Path) -> int:
+    print(f"accept-eval: {evidence} has no kit_version=2 in manifest.env: this is a v1 acceptance directory. v2 "
+          "criteria applied to v1 data would turn a missing squeeze into a pass, so it is refused; re-run the v2 kit.")
+    return 2
 
 
 def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
-    except Exception as exc:  # a crash is never a verdict about the host
+    except V1Evidence as exc:
+        return v1_refusal(Path(str(exc)))
+    except Inconclusive as exc:
+        print(exc)
+        print("VERDICT INCONCLUSIVE")
+        return 4
+    except SystemExit:
+        raise
+    except Exception as exc:   # a crash is never a verdict about the host
         print(f"accept-eval: internal error {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
 
 def _main(argv: list[str] | None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("dirs", nargs="+", type=Path)
-    ap.add_argument("--ssh-idle", type=float)
-    ap.add_argument("--ssh-loaded", type=float)
-    ap.add_argument("--refault-tol", type=float, default=100.0, help="pages of floored-unit refault allowed in the window (default 100)")
+    ap.add_argument("dirs", nargs="*", type=Path)
+    ap.add_argument("--live-step", type=Path, help="judge one step of this run into DIR/steps/N.env")
+    ap.add_argument("--step", type=int, default=0, help="the step --live-step judges (default 0)")
     try:
         args = ap.parse_args(argv)
     except SystemExit as exc:
         return 2 if exc.code else 0
-    runs, verdict = [], "PASS"
+    if args.live_step is not None:
+        if not (args.live_step / "samples.csv").is_file():
+            print(f"accept-eval: {args.live_step}/samples.csv missing", file=sys.stderr)
+            return 2
+        return live_step(args.live_step, args.step)
+    if not args.dirs:
+        print("accept-eval: no evidence directory and no --live-step", file=sys.stderr)
+        return 2
+    verdict, rc = "PASS", 0
     for d in args.dirs:
         if not (d / "samples.csv").is_file():
             print(f"accept-eval: {d}/samples.csv missing", file=sys.stderr)
             return 2
-        ssh = (args.ssh_idle, args.ssh_loaded)
-        if (d / "ssh.txt").is_file():
-            idle, loaded = (float(x) for x in (d / "ssh.txt").read_text().split())
-            ssh = (idle, loaded)
-        try:
-            runs.append(evaluate(d, ssh, args.refault_tol))
-        except Inconclusive as exc:
-            print(exc)
-            print("VERDICT INCONCLUSIVE")
-            return 4
-    for run in runs:
-        print(f"== {run['dir']}")
-        for name, state, detail in run["criteria"]:
-            print(f"{state:12} {name}: {detail}")
-            if state == "FAIL":
-                verdict = "FAIL"
-            elif state == "INCONCLUSIVE" and verdict != "FAIL":
-                verdict = "INCONCLUSIVE"
-    hot: dict[str, float] = {}
-    for r in runs:
-        for u, h in r["hot"].items():
-            hot[u] = max(hot.get(u, 0), h)
-    table = dict(cap.DEDICATED_HOST_MEMORY_MIN_DEFAULTS) if cap else {}
-    rows = [f"{u}={size(1.25 * h)}" for u, h in sorted(hot.items()) if u in FLOORED and 1.25 * h > table.get(u, 0)]
-    tested_margin = (cap.DEDICATED_MEMORY_MARGIN_DEFAULT if cap else 0)
-    if cap and runs[0]["base"].get("DEV_HOST_MEMORY_MARGIN"):
-        tested_margin = cap.parse_size_bytes(runs[0]["base"]["DEV_HOST_MEMORY_MARGIN"]) or tested_margin
-    measured = max(r["M"] for r in runs)
-    margin = max(measured, tested_margin, 64 * MIB)   # never below the margin the run was made at: a lower K is untested
-    low = (cap.parse_size_bytes(runs[0]["base"].get("DEV_INTERACTIVE_MEMORY_LOW") or "2.5G") or 0) if cap else 0
-    inter = None
-    if "dev-interactive.slice" in hot:
-        want, floor = 1.25 * hot["dev-interactive.slice"], 512 * MIB
-        inter = min(max(want, floor), low) if low else max(want, floor)
-    notes, refused, keep, tested_keep = proposal(runs, rows, margin, inter)
-    if refused:
-        print(f"INCONCLUSIVE proposal: install.sh's derivation would refuse these values: {refused}")
-        verdict = "FAIL" if verdict == "FAIL" else "INCONCLUSIVE"
-    if cap is None:   # table, tested margin and Low would all be 0: the lines could not be checked, so no PASS
-        print("INCONCLUSIVE proposal: mdt_capacity is not importable (kit copied out of the checkout); the env lines are NOT checked against install.sh")
-        verdict = "FAIL" if verdict == "FAIL" else "INCONCLUSIVE"
-    pre = "" if verdict == "PASS" else "# "
-    # P-plat-19h: the pin advice names the proposed K (floors + measured margin, snapshot pin dropped), never a fixed 1280M
-    if keep and tested_keep and keep > tested_keep:
-        pin = f"DEV_HOST_MEMORY_KEEP={size(keep)}, the proposed K (floors + measured margin, never below the tested one)"
-    elif keep:   # the measurement gives no K above the one that was tested (e.g. a pin): no number, never a lower one
-        pin = f"DEV_HOST_MEMORY_KEEP above the tested {size(tested_keep)} (design note 4.1); the measurement does not give a value"
-    else:
-        pin = "DEV_HOST_MEMORY_KEEP at the proposed K (not derivable here: see the notes below)"
-    print("== host-setup.env" + ("" if verdict == "PASS" else f" (NOT to be applied: {verdict}; on FAIL pin {pin}, design note 8)"))
-    for u, h in sorted(hot.items()):
-        print(f"# hot set {u}: {h / MIB:.1f}M -> floor {size(1.25 * h)}" + (f" (table {table[u] // MIB}M)" if u in table else ""))
-    for note in notes:
-        print(note)
-    print(f'{pre}DEV_HOST_MEMORY_MIN="{" ".join(rows)}"' if rows else f"{pre}DEV_HOST_MEMORY_MIN=")
-    if inter:
-        print(f"{pre}DEV_INTERACTIVE_MEMORY_MIN={size(inter)}" + ("   # clamped to DEV_INTERACTIVE_MEMORY_LOW" if low and 1.25 * hot["dev-interactive.slice"] > low else ""))
-    print(f"{pre}DEV_HOST_MEMORY_MARGIN={size(margin)}   # measured M = p99(U) + p99(init.scope) + W + 64M = {measured / MIB:.1f}M")
-    print(f'{pre}DEV_HOST_MEMORY_MEASURED="{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d} {" ".join(str(d) for d in args.dirs)}"')
-    print(f"VERDICT {verdict}")
-    return {"PASS": 0, "FAIL": 1}.get(verdict, 4)
+        v = print_run(evaluate(d, None))
+        if v == "FAIL":
+            verdict, rc = "FAIL", 1
+        elif v == "INCONCLUSIVE" and verdict != "FAIL":
+            verdict, rc = "INCONCLUSIVE", 4
+    return rc
 
 
 if __name__ == "__main__":
