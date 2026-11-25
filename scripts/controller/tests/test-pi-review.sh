@@ -7,6 +7,7 @@ set -uo pipefail
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR PI_LIVE PI_REVIEW_MODEL PI_REVIEW_THINKING
 unset OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2 CONTROLLER_OD_STATE
+unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_POLL_SECONDS PI_REVIEW_KILL_WAIT_SECONDS
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_REVIEW_SCRIPT:-$SCRIPT_DIR/../pi-review.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-review-test.XXXXXX")
@@ -37,6 +38,8 @@ printf 'baseline\n' > "$WORKTREE/tracked.txt"
 git -C "$WORKTREE" add tracked.txt
 git -C "$WORKTREE" commit -qm baseline
 git -C "$WORKTREE" update-ref refs/remotes/origin/main HEAD
+ORIGINAL_BRANCH=$(git -C "$WORKTREE" rev-parse --abbrev-ref HEAD)
+cp -- "$WORKTREE/.git/info/exclude" "$ROOT/exclude.orig"
 
 # A local controller configuration that asks for the AUTOMATIC route: the
 # wrapper's pinned `deepseek-pi-<other>` must win over it, or a review would
@@ -73,26 +76,43 @@ json.dump({
 }, open(sys.argv[1], "w", encoding="utf-8"), sort_keys=True, indent=2)
 PY
 
-# The fake pi: it emits the measured success stream, optionally writes the
-# review report, and optionally performs what a misbehaving reviewer does to
-# the worktree (edit a tracked file, create an untracked one, commit).
+# The fake pi: it emits the measured success stream, records its argv, and
+# optionally performs what a misbehaving reviewer does to the worktree (edit a
+# tracked file, create an untracked one, commit, switch branch, hide an edit
+# behind an index flag, hide a file behind info/exclude).
 cat > "$ROOT/bin/pi" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
 printf '%s\n' "$*" >> "$PI_ARGV_LOG"
+# One argument per NUL-terminated record: a tool list is ONE argv element
+# ("read,grep,find,ls"), and a space-joined log cannot show whether it arrived
+# as one value or as five. The read-only-tool-set checks read this log.
+for arg in "$@"; do printf '%s\0' "$arg"; done >> "$PI_ARGV_LOG0"
 printf '%s' "${!#}" > "$PI_PROMPT_LOG"
 # The wrapper must give pi closed stdin; this returns at EOF.
 while IFS= read -r _line; do :; done
 cat -- "$FAKE_PI_STREAM"
-if [[ -n ${FAKE_PI_REPORT:-} ]]; then printf 'review report\n' > "$FAKE_PI_REPORT"; fi
+if [[ -n ${FAKE_PI_BURST_BYTES:-} ]]; then
+  # A stream that grows past a budget without the run ending: the 3 GB echo
+  # loop shape, at a size the test can afford.
+  head -c "$FAKE_PI_BURST_BYTES" /dev/zero | tr '\0' 'x' >> "${FAKE_PI_BURST_TARGET:-/dev/null}"
+fi
 case ${FAKE_PI_ACTION:-none} in
   none) ;;
   write) printf 'reviewer edit\n' >> "$FAKE_PI_EDIT" ;;
   untracked) printf 'untracked file\n' > "$FAKE_PI_UNTRACKED" ;;
+  untracked-content) printf 'changed after launch\n' > "$FAKE_PI_UNTRACKED" ;;
   commit)
     printf 'reviewer commit\n' >> "$FAKE_PI_EDIT"
     git -C "$FAKE_PI_WORKTREE" commit -qam 'reviewer commit'
     ;;
+  switch) git -C "$FAKE_PI_WORKTREE" switch -qc reviewer-scratch ;;
+  assume-unchanged)
+    printf 'reviewer edit\n' >> "$FAKE_PI_EDIT"
+    git -C "$FAKE_PI_WORKTREE" update-index --assume-unchanged -- tracked.txt
+    ;;
+  exclude) printf 'hidden.txt\n' >> "$FAKE_PI_EXCLUDE" ;;
+  slow) sleep "${FAKE_PI_SLOW_SECONDS:-2}" ;;
   *) echo "unknown FAKE_PI_ACTION=${FAKE_PI_ACTION}" >&2; exit 1 ;;
 esac
 exit "${FAKE_PI_RC:-0}"
@@ -101,19 +121,28 @@ chmod +x "$ROOT/bin/pi"
 
 export CONTROLLER_HOME=$CONTROLLER_ROOT CONTROLLER_REPO=$WORKTREE
 export PI_ARGV_LOG PI_PROMPT_LOG
+PI_ARGV_LOG0=$ROOT/pi-argv0.log
+export PI_ARGV_LOG0
 
 # One review launch. $1 run name, $2 write-the-report 1|0, $3 the fake
 # reviewer's worktree action, the rest the account selector (`--implementer-run
 # <run>` or `--account volker|github2`) and any further wrapper arguments.
 launch() {
-  local run=$1 writes=$2 action=$3
-  shift 3
-  local report=$REPORTS/$run.md fake_report=''
-  (( writes == 1 )) && fake_report=$report
+  local run=$1 action=$2
+  shift 2
+  local report=$REPORTS/$run.md
+  : > "$PI_ARGV_LOG0"
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
-    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_REPORT="$fake_report" \
+    FAKE_PI_STREAM="${FAKE_PI_STREAM_TEST:-$SCRIPT_DIR/fixtures/pi-success.jsonl}" \
+      PI_EXTRA_ARGS="${PI_EXTRA_ARGS_TEST:-}" \
     FAKE_PI_ACTION="$action" FAKE_PI_EDIT="$WORKTREE/tracked.txt" \
+    FAKE_PI_SLOW_SECONDS="${FAKE_PI_SLOW_SECONDS_TEST:-${FAKE_PI_SLOW_SECONDS:-2}}" \
     FAKE_PI_UNTRACKED="$WORKTREE/untracked.txt" FAKE_PI_WORKTREE="$WORKTREE" \
+    FAKE_PI_EXCLUDE="$WORKTREE/.git/info/exclude" \
+    PI_REVIEW_MAX_SECONDS="${PI_REVIEW_MAX_SECONDS_TEST:-1800}" \
+    PI_REVIEW_MAX_STREAM_BYTES="${PI_REVIEW_MAX_STREAM_BYTES_TEST:-268435456}" \
+    PI_REVIEW_POLL_SECONDS="${PI_REVIEW_POLL_SECONDS_TEST:-15}" \
+    PI_REVIEW_KILL_WAIT_SECONDS="${PI_REVIEW_KILL_WAIT_SECONDS_TEST:-10}" \
     "$SRC" "$WORKTREE" "$PROMPT" "$run" --report "$report" "$@" \
     > "$ROOT/$run.launch.log" 2>&1 < /dev/null
 }
@@ -143,7 +172,7 @@ clean_worktree() {
 # A Volker implementation is reviewed on github2.
 check_other_account_for_volker() {
   local rc=0
-  launch rev-from-volker 1 none --implementer-run impl-volker || rc=$?
+  launch rev-from-volker none --implementer-run impl-volker || rc=$?
   if (( rc != 0 )); then
     cat "$ROOT/rev-from-volker.launch.log" >&2
     fail "a clean review of a Volker implementation exited $rc"
@@ -154,6 +183,8 @@ check_other_account_for_volker() {
   argv_has '--thinking max' 'the reviewer runs at the catalog maximum thinking level'
   [[ $(done_line rev-from-volker) == 'EXIT=0 OUTCOME=SUCCESS' ]] \
     || fail 'a clean review with its report is not SUCCESS'
+  contains "$REPORTS/rev-from-volker.md" 'Completed the fixture task.' \
+    'the report is the reviewer final message, saved by the launcher'
   [[ -f $REPORTS/rev-from-volker.md ]] || fail 'the review report is present'
   lacks "$RUNS/rev-from-volker.done" REVIEW-MODIFIED-TREE 'a clean review does not flag the tree'
 }
@@ -161,7 +192,7 @@ check_other_account_for_volker() {
 # A github2 implementation is reviewed on volker.
 check_other_account_for_github2() {
   local rc=0
-  launch rev-from-github2 1 none --implementer-run impl-github2 || rc=$?
+  launch rev-from-github2 none --implementer-run impl-github2 || rc=$?
   if (( rc != 0 )); then
     cat "$ROOT/rev-from-github2.launch.log" >&2
     fail "a clean review of a github2 implementation exited $rc"
@@ -175,7 +206,7 @@ check_other_account_for_github2() {
 # thread; the reviewer must still land on the other one.
 check_other_account_from_thread() {
   local rc=0
-  launch rev-from-thread 1 none --implementer-run impl-thread || rc=$?
+  launch rev-from-thread none --implementer-run impl-thread || rc=$?
   if (( rc != 0 )); then
     cat "$ROOT/rev-from-thread.launch.log" >&2
     fail "a review of a thread-recorded Volker run exited $rc"
@@ -189,7 +220,7 @@ check_other_account_from_thread() {
 check_unknown_implementer_account() {
   local before rc=0
   before=$(pi_invocations)
-  launch refused-luna 1 none --implementer-run impl-luna || rc=$?
+  launch refused-luna none --implementer-run impl-luna || rc=$?
   (( rc == 2 )) || fail "an implementer run naming no account exited $rc, expected 2"
   contains "$ROOT/refused-luna.launch.log" 'cannot determine the Open Design account of implementer run impl-luna' \
     'the unknown implementer account is what refused the review'
@@ -200,7 +231,7 @@ check_unknown_implementer_account() {
 check_unknown_thread_account() {
   local before rc=0
   before=$(pi_invocations)
-  launch refused-thread 1 none --implementer-run impl-thread-unknown || rc=$?
+  launch refused-thread none --implementer-run impl-thread-unknown || rc=$?
   (( rc == 2 )) || fail "an unresolvable implementer thread exited $rc, expected 2"
   contains "$ROOT/refused-thread.launch.log" 'no Open Design account is recorded for implementer thread ghost-session' \
     'the unresolvable thread is what refused the review'
@@ -211,7 +242,7 @@ check_unknown_thread_account() {
 # --account pins the reviewer directly, without any implementer record.
 check_account_pinning() {
   local rc=0
-  launch rev-pinned 1 none --account volker || rc=$?
+  launch rev-pinned none --account volker || rc=$?
   if (( rc != 0 )); then
     cat "$ROOT/rev-pinned.launch.log" >&2
     fail "a clean pinned review exited $rc"
@@ -226,7 +257,7 @@ check_account_pinning() {
 # A reviewer that edits a tracked file is caught, and its edit is NOT reverted.
 check_modified_tracked_file() {
   local rc=0
-  launch rev-write 1 write --implementer-run impl-volker || rc=$?
+  launch rev-write write --implementer-run impl-volker || rc=$?
   (( rc == 4 )) || fail "a reviewer that edited a tracked file exited $rc, expected 4"
   contains "$RUNS/rev-write.done" 'REVIEW-MODIFIED-TREE' 'an edited tracked file is flagged in the completion marker'
   contains "$ROOT/rev-write.launch.log" 'REVIEW-MODIFIED-TREE' 'the flag is printed, not only recorded'
@@ -237,7 +268,7 @@ check_modified_tracked_file() {
 # An untracked file is a change too: the reviewer could leave a scratch tree.
 check_modified_untracked_file() {
   local rc=0
-  launch rev-untracked 1 untracked --implementer-run impl-github2 || rc=$?
+  launch rev-untracked untracked --implementer-run impl-github2 || rc=$?
   (( rc == 4 )) || fail "a reviewer that added an untracked file exited $rc, expected 4"
   contains "$RUNS/rev-untracked.done" 'REVIEW-MODIFIED-TREE' 'an added untracked file is flagged'
   [[ -f $WORKTREE/untracked.txt ]] || fail 'the wrapper removed the untracked file itself'
@@ -248,7 +279,7 @@ check_modified_untracked_file() {
 # own outcome classification calls SUCCESS. Only the HEAD comparison catches it.
 check_modified_head() {
   local rc=0
-  launch rev-commit 1 commit --implementer-run impl-volker || rc=$?
+  launch rev-commit commit --implementer-run impl-volker || rc=$?
   (( rc == 4 )) || fail "a reviewer that committed exited $rc, expected 4"
   [[ $(done_line rev-commit) == 'EXIT=0 OUTCOME=SUCCESS' ]] \
     || fail 'the fixture did not reproduce a reviewer commit that pi-impl.sh calls SUCCESS'
@@ -256,15 +287,6 @@ check_modified_head() {
   contains "$ROOT/rev-commit.launch.log" 'HEAD' 'the printed flag names the moved HEAD'
 }
 
-# A review that writes no review file is pi-impl.sh's NO-REPORT, passed through.
-check_no_report() {
-  local rc=0
-  launch rev-no-report 0 none --implementer-run impl-github2 || rc=$?
-  (( rc == 0 )) || fail "a review that wrote no report exited $rc, expected pi-impl's 0"
-  [[ $(done_line rev-no-report) == 'EXIT=0 OUTCOME=NO-REPORT' ]] \
-    || fail 'a review that wrote no review file is not NO-REPORT'
-  lacks "$RUNS/rev-no-report.done" REVIEW-MODIFIED-TREE 'a NO-REPORT review did not flag the tree'
-}
 
 # A pre-existing dirty change is not charged to the reviewer: the comparison
 # is against the tree's OWN before-state, so only a difference is flagged.
@@ -273,7 +295,7 @@ check_no_report() {
 check_dirty_before_state_allowed() {
   local rc=0
   printf 'pre-existing change\n' >> "$WORKTREE/tracked.txt"
-  launch rev-dirty 1 none --implementer-run impl-volker || rc=$?
+  launch rev-dirty none --implementer-run impl-volker || rc=$?
   (( rc == 0 )) || fail "a review over a pre-existing dirty tree exited $rc, expected 0"
   [[ $(done_line rev-dirty) == 'EXIT=0 OUTCOME=UNCOMMITTED' ]] \
     || fail "a review over a dirty tree did not keep pi-impl's UNCOMMITTED word"
@@ -322,7 +344,7 @@ check_report_inside_worktree() {
 check_account_and_implementer_conflict() {
   local before rc=0
   before=$(pi_invocations)
-  launch refused-both 1 none --implementer-run impl-volker --account volker || rc=$?
+  launch refused-both none --implementer-run impl-volker --account volker || rc=$?
   (( rc == 2 )) || fail "both account selectors exited $rc, expected 2"
   contains "$ROOT/refused-both.launch.log" 'not both' 'two account selectors are refused'
   [[ $(pi_invocations) == "$before" ]] || fail 'a review started with two account selectors'
@@ -331,7 +353,7 @@ check_account_and_implementer_conflict() {
 check_account_required() {
   local before rc=0
   before=$(pi_invocations)
-  launch refused-none 1 none || rc=$?
+  launch refused-none none || rc=$?
   (( rc == 2 )) || fail "a missing account selector exited $rc, expected 2"
   contains "$ROOT/refused-none.launch.log" 'give one of --implementer-run' 'a missing selector is refused'
   [[ $(pi_invocations) == "$before" ]] || fail 'a review started without an account selector'
@@ -340,7 +362,7 @@ check_account_required() {
 check_unknown_account_value() {
   local before rc=0
   before=$(pi_invocations)
-  launch refused-account 1 none --account luna || rc=$?
+  launch refused-account none --account luna || rc=$?
   (( rc == 2 )) || fail "an unknown account value exited $rc, expected 2"
   contains "$ROOT/refused-account.launch.log" 'unknown account: luna' 'an unknown account value is refused'
   [[ $(pi_invocations) == "$before" ]] || fail 'a review started with an unknown account value'
@@ -357,24 +379,393 @@ check_report_required() {
   [[ $(pi_invocations) == "$before" ]] || fail 'a review started without a report path'
 }
 
+# --- the read-only tool set -------------------------------------------------
+
+argv0_elements() {
+  # One argv element per NUL record; an unset log means pi never ran.
+  [[ -s $PI_ARGV_LOG0 ]] || fail "pi never ran (no argv log at $PI_ARGV_LOG0)"
+  mapfile -d '' -t ARGV0 < "$PI_ARGV_LOG0"
+}
+argv0_has() {
+  argv0_elements
+  local element found=0
+  for element in "${ARGV0[@]}"; do [[ $element == "$1" ]] && found=1; done
+  (( found == 1 )) || fail "$2 (argv: ${ARGV0[*]})"
+}
+argv0_lacks() {
+  argv0_elements
+  local element
+  for element in "${ARGV0[@]}"; do
+    [[ $element == "$1" ]] && fail "$2 (argv: ${ARGV0[*]})"
+  done
+  return 0
+}
+argv0_pair() {
+  argv0_elements
+  local i found=0
+  for (( i = 0; i + 1 < ${#ARGV0[@]}; i++ )); do
+    [[ ${ARGV0[i]} == "$1" && ${ARGV0[i + 1]} == "$2" ]] && found=1
+  done
+  (( found == 1 )) || fail "$3 (argv: ${ARGV0[*]})"
+}
+
+# pi's docs: the default tools are read, bash, edit and write, and `--tools` REPLACES
+# the selection. A review must therefore name the whole read-only set as one
+# element and must not name a shell or a writer anywhere in its argv.
+check_read_only_tool_set() {
+  local rc=0
+  launch rev-toolset none --implementer-run impl-volker || rc=$?
+  if (( rc != 0 )); then
+    cat "$ROOT/rev-toolset.launch.log" >&2
+    fail "a review with the read-only tool set exited $rc"
+  fi
+  argv0_pair '--tools' 'read,grep,find,ls' '--tools names exactly the read-only set, as ONE argv element'
+  argv0_pair '--exclude-tools' 'mcp__*' 'MCP tools are excluded for the review'
+  argv0_has '--no-extensions' 'the review loads no extension'
+  argv0_has '--no-mcp' 'the review connects no MCP server'
+  argv0_lacks 'bash' 'the reviewer argv does not name bash'
+  argv0_lacks 'edit' 'the reviewer argv does not name edit'
+  argv0_lacks 'write' 'the reviewer argv does not name write'
+  argv0_lacks 'powershell' 'the reviewer argv does not name powershell'
+}
+
+# A caller's own PI_EXTRA_ARGS must not widen a review back to a shell: the
+# launcher replaces the variable, it does not merge with it.
+check_caller_extra_args_replaced() {
+  local rc=0
+  local PI_EXTRA_ARGS_TEST=$'--tools\nbash,read'
+  launch rev-extrawide none --implementer-run impl-github2 || rc=$?
+  if (( rc != 0 )); then
+    cat "$ROOT/rev-extrawide.launch.log" >&2
+    fail "a review whose caller set PI_EXTRA_ARGS exited $rc"
+  fi
+  argv0_pair '--tools' 'read,grep,find,ls' 'the launcher REPLACES a caller PI_EXTRA_ARGS instead of merging it'
+  argv0_lacks 'bash,read' 'a caller-provided tool list never reaches pi'
+}
+
+# pi-impl.sh refuses the launch contract it owns, before it claims the name.
+check_extra_args_cannot_override_contract() {
+  local before rc=0
+  before=$(pi_invocations)
+  PI_EXTRA_ARGS=$'--model\nluna/x' env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" \
+    CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 PI_ROUTE=deepseek-pi-volker \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    "$SCRIPT_DIR/../pi-impl.sh" "$WORKTREE" "$PROMPT" rev-contract \
+    > "$ROOT/rev-contract.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 2 )) || fail "PI_EXTRA_ARGS naming --model exited $rc, expected pi-impl's 2"
+  contains "$ROOT/rev-contract.launch.log" "PI_EXTRA_ARGS may not set '--model'" \
+    'pi-impl refuses an extra argument that would replace its own model'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a launch ran with a replaced model argument'
+}
+
+# --- the review budget -------------------------------------------------------
+
+# A review that runs past its wall budget is STOPPED and marked REVIEW-BUDGET.
+check_budget_wall_time() {
+  local rc=0
+  PI_REVIEW_MAX_SECONDS_TEST=1 PI_REVIEW_POLL_SECONDS_TEST=1 FAKE_PI_SLOW_SECONDS_TEST=10 \
+    launch rev-budget-wall slow --account volker || rc=$?
+  (( rc == 5 )) || fail "a review over its wall budget exited $rc, expected 5"
+  contains "$ROOT/rev-budget-wall.launch.log" 'REVIEW-BUDGET' 'the budget stop is printed'
+  contains "$ROOT/rev-budget-wall.launch.log" 'wall time' 'the msg names wall time as the reason'
+  contains "$RUNS/rev-budget-wall.done" 'REVIEW-BUDGET' 'the run is marked REVIEW-BUDGET'
+  [[ ! -e $REPORTS/rev-budget-wall.md ]] || fail 'a stopped review wrote a report'
+}
+
+# A stream that grows past its byte budget is the 3 GB echo loop shape.
+check_budget_stream_bytes() {
+  local rc=0
+  PI_REVIEW_MAX_STREAM_BYTES_TEST=1000 PI_REVIEW_POLL_SECONDS_TEST=1 \
+    FAKE_PI_BURST_BYTES=20000 FAKE_PI_BURST_TARGET="$RUNS/rev-budget-stream.jsonl" \
+    FAKE_PI_SLOW_SECONDS_TEST=10 launch rev-budget-stream slow --implementer-run impl-volker || rc=$?
+  (( rc == 5 )) || fail "a review over its stream budget exited $rc, expected 5"
+  contains "$RUNS/rev-budget-stream.done" 'REVIEW-BUDGET' 'the run is marked REVIEW-BUDGET'
+  contains "$ROOT/rev-budget-stream.launch.log" 'stream' 'the message names the stream size'
+}
+
+# A malformed budget value is a refusal, not an invented default.
+check_budget_value_refused() {
+  local before rc=0
+  before=$(pi_invocations)
+  PI_REVIEW_MAX_SECONDS_TEST=soon launch rev-budget-bad none --account volker || rc=$?
+  (( rc == 2 )) || fail "a non-integer budget exited $rc, expected 2"
+  contains "$ROOT/rev-budget-bad.launch.log" 'PI_REVIEW_MAX_SECONDS must be a non-negative integer' \
+    'a non-integer budget is refused'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review started with a malformed budget'
+}
+
+# --- a stale report ----------------------------------------------------------
+
+# A retried review reuses its report path; the reviewer cannot rewrite the file,
+# so an existing one would certify a run that produced nothing.
+check_stale_report_refused() {
+  local before rc=0
+  printf 'previous run report\n' > "$REPORTS/rev-stale.md"
+  before=$(pi_invocations)
+  launch rev-stale none --account volker || rc=$?
+  (( rc == 2 )) || fail "a review over an existing report exited $rc, expected 2"
+  contains "$ROOT/rev-stale.launch.log" 'the review report already exists' \
+    'an existing report path is what refused the review'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review started over an existing report'
+  [[ $(cat "$REPORTS/rev-stale.md") == 'previous run report' ]] || fail 'the stale report was overwritten'
+  rm -f -- "$REPORTS/rev-stale.md"
+}
+
+# --- worktree-scoped state classes ------------------------------------------
+
+# A branch switch at the SAME commit moves no sha, no status and no diff.
+check_modified_head_branch() {
+  local rc=0
+  launch rev-switch switch --implementer-run impl-volker || rc=$?
+  (( rc == 4 )) || fail "a reviewer that switched branch exited $rc, expected 4"
+  contains "$RUNS/rev-switch.done" 'REVIEW-MODIFIED-TREE' 'a branch switch is flagged'
+  contains "$ROOT/rev-switch.launch.log" 'head-branch' 'the printed flag names the symbolic HEAD'
+  git -C "$WORKTREE" switch -q "$ORIGINAL_BRANCH" || :
+  git -C "$WORKTREE" branch -qD reviewer-scratch 2>/dev/null || :
+}
+
+# `update-index --assume-unchanged` hides a tracked edit from status AND diff.
+check_modified_index_flags() {
+  local rc=0
+  launch rev-index assume-unchanged --implementer-run impl-github2 || rc=$?
+  (( rc == 4 )) || fail "a reviewer that hid an edit behind an index flag exited $rc, expected 4"
+  contains "$RUNS/rev-index.done" 'REVIEW-MODIFIED-TREE' 'an index flag is flagged'
+  contains "$ROOT/rev-index.launch.log" 'index-flags' 'the printed flag names the index entry flags'
+  git -C "$WORKTREE" update-index --no-assume-unchanged -- tracked.txt 2>/dev/null || :
+  git -C "$WORKTREE" update-index --really-refresh -q 2>/dev/null || :
+  clean_worktree
+}
+
+# `info/exclude` is the other way to hide a new file from status.
+check_modified_exclude() {
+  local rc=0
+  launch rev-exclude exclude --implementer-run impl-volker || rc=$?
+  (( rc == 4 )) || fail "a reviewer that edited info/exclude exited $rc, expected 4"
+  contains "$RUNS/rev-exclude.done" 'REVIEW-MODIFIED-TREE' 'an exclude change is flagged'
+  contains "$ROOT/rev-exclude.launch.log" 'exclude' 'the printed flag names the exclude file'
+  cp -- "$ROOT/exclude.orig" "$WORKTREE/.git/info/exclude"
+}
+
+# An edit to a file that was ALREADY untracked leaves the status line identical.
+check_modified_untracked_content() {
+  local rc=0
+  printf 'implementer leftover\n' > "$WORKTREE/leftover.txt"
+  launch rev-untracked-content untracked-content --implementer-run impl-github2 || rc=$?
+  (( rc == 4 )) || fail "a reviewer that edited a pre-existing untracked file exited $rc, expected 4"
+  contains "$RUNS/rev-untracked-content.done" 'REVIEW-MODIFIED-TREE' 'an untracked content change is flagged'
+  contains "$ROOT/rev-untracked-content.launch.log" 'untracked-content' 'the printed flag names the untracked content'
+  rm -f -- "$WORKTREE/leftover.txt"
+  clean_worktree
+}
+
+# The diff leg on its own: a further edit to an ALREADY dirty tracked file keeps
+# the same ` M` status line and only the diff hash changes.
+check_modified_diff_of_dirty_file() {
+  local rc=0
+  printf 'pre-existing change\n' >> "$WORKTREE/tracked.txt"
+  launch rev-dirty-diff write --implementer-run impl-volker || rc=$?
+  (( rc == 4 )) || fail "a reviewer that edited an already-dirty file exited $rc, expected 4"
+  contains "$RUNS/rev-dirty-diff.done" 'REVIEW-MODIFIED-TREE' 'a further edit to a dirty file is flagged'
+  contains "$ROOT/rev-dirty-diff.launch.log" 'diff' 'the printed flag names the diff'
+  clean_worktree
+}
+
+# --- a foreign completion marker --------------------------------------------
+
+# A refused launch must not append its verdict to an earlier run's marker. The
+# launch is refused by pi-impl (the name already has evidence) and the tree
+# changes in the same window (a git shim reports a status change on the third
+# `status` call, which is the after-state read).
+check_foreign_marker_refused() {
+  local shim=$ROOT/git-foreign real_git counter=$ROOT/git-foreign.count rc=0
+  real_git=$(command -v git)
+  mkdir -p "$shim"
+  cat > "$shim/git" <<SH
+#!/usr/bin/env bash
+is_status=0
+for a in "\$@"; do [[ \$a == status ]] && is_status=1; done
+if (( is_status == 1 )); then
+  n=\$(( \$(cat "$counter" 2>/dev/null || printf 0) + 1 ))
+  printf '%s' "\$n" > "$counter"
+  $real_git "\$@"
+  (( n >= 3 )) && printf ' M tracked.txt\n'
+  exit 0
+fi
+exec $real_git "\$@"
+SH
+  chmod +x "$shim/git"
+  printf 'EXIT=0 OUTCOME=SUCCESS\n' > "$RUNS/rev-foreign.done"
+  rm -f -- "$counter"
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-foreign --report "$REPORTS/rev-foreign.md" \
+    --account volker > "$ROOT/rev-foreign.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 2 )) || fail "a refused launch over a foreign marker exited $rc, expected 2"
+  contains "$ROOT/rev-foreign.launch.log" 'the review did not start' \
+    'the refusal says the review never started'
+  [[ $(cat "$RUNS/rev-foreign.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a refused launch appended its verdict to another run marker'
+  rm -f -- "$RUNS/rev-foreign.done" "$counter"
+}
+
+# An unresolvable report path is refused instead of compared in its raw spelling:
+# the old fallback compared the unresolved string, so a symlinked or bound alias
+# could slip a report inside the worktree.
+check_unresolvable_report_path_refused() {
+  local shim=$ROOT/realpath-shim real_realpath before rc=0
+  real_realpath=$(command -v realpath)
+  mkdir -p "$shim"
+  # `realpath -m` effectively never fails on its own, so the refusal branch is
+  # pinned through the only seam that reaches it: a realpath that FAILS for the
+  # report path only (the worktree and prompt are resolved with -e earlier).
+  cat > "$shim/realpath" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do [[ \$a == -m ]] && exit 1; done
+exec $real_realpath "\$@"
+SH
+  chmod +x "$shim/realpath"
+  before=$(pi_invocations)
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-unresolvable --report "$REPORTS/rev-unresolvable.md" \
+    --account volker > "$ROOT/rev-unresolvable.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 2 )) || fail "an unresolvable report path exited $rc, expected 2"
+  contains "$ROOT/rev-unresolvable.launch.log" 'cannot resolve the review report path' \
+    'an unresolvable report path is refused instead of compared in its raw spelling'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review started with an unresolvable report path'
+}
+
+# --- the report is the reviewer's final message -----------------------------
+
+# The reviewer has no write tool: the launcher saves its final message.
+check_unresolvable_report_path_refused
+check_report_from_final_message() {
+  local rc=0
+  launch rev-final none --implementer-run impl-github2 || rc=$?
+  (( rc == 0 )) || fail "a clean review that wrote no report file exited $rc, expected 0"
+  [[ $(done_line rev-final) == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a clean review with text is not SUCCESS'
+  contains "$REPORTS/rev-final.md" 'Completed the fixture task.' \
+    'the report is the reviewer final assistant message'
+  lacks "$RUNS/rev-final.done" REVIEW-MODIFIED-TREE 'a clean review does not flag the tree'
+}
+
+# A settled run whose final message carries no text leaves no review.
+check_no_text_is_no_report() {
+  local rc=0
+  FAKE_PI_STREAM_TEST="$SCRIPT_DIR/fixtures/pi-thinking-only.jsonl" \
+    launch rev-notext none --implementer-run impl-volker || rc=$?
+  (( rc == 2 )) || fail "a review that said nothing exited $rc, expected 2"
+  contains "$ROOT/rev-notext.launch.log" 'REVIEW-NO-REPORT' 'a review without text is REVIEW-NO-REPORT'
+  contains "$RUNS/rev-notext.done" 'REVIEW-NO-REPORT' 'the marker carries the no-report verdict'
+  [[ ! -e $REPORTS/rev-notext.md ]] || fail 'a review that said nothing wrote a report'
+}
+
+
+# --- the account record's other spellings and failure modes ------------------
+
+# The Codex route spellings pin the same account mapping as the pi ones; 97 of
+# the 162 real `.route` files in the release run dir use them.
+printf 'deepseek-volker\n' > "$RUNS/impl-codex-volker.route"
+printf 'deepseek-github2\n' > "$RUNS/impl-codex-github2.route"
+
+check_other_account_for_codex_volker() {
+  local rc=0
+  launch rev-codex-volker none --implementer-run impl-codex-volker || rc=$?
+  (( rc == 0 )) || { cat "$ROOT/rev-codex-volker.launch.log" >&2; fail "a Codex deepseek-volker review exited $rc"; }
+  [[ $(cat "$RUNS/rev-codex-volker.route") == deepseek-pi-github2 ]] \
+    || fail 'a Codex deepseek-volker implementation was not reviewed on github2'
+}
+
+check_other_account_for_codex_github2() {
+  local rc=0
+  launch rev-codex-github2 none --implementer-run impl-codex-github2 || rc=$?
+  (( rc == 0 )) || { cat "$ROOT/rev-codex-github2.launch.log" >&2; fail "a Codex deepseek-github2 review exited $rc"; }
+  [[ $(cat "$RUNS/rev-codex-github2.route") == deepseek-pi-volker ]] \
+    || fail 'a Codex deepseek-github2 implementation was not reviewed on volker'
+}
+
+# A lookup that FAILED is not a lookup that found nothing: an unreadable account
+# state refuses with the failure wording, never with "no account is recorded".
+check_lookup_failed_branch() {
+  local before rc=0 corrupt=$ROOT/opendesign-corrupt.json
+  printf '{"volker": {"last_used_epoch": 0, "blocked_until_epoch": 0}, "threads": {"t": "luna"}}\n' > "$corrupt"
+  before=$(pi_invocations)
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$corrupt" PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-lookup-failed --report "$REPORTS/rev-lookup-failed.md" \
+    --implementer-run impl-thread > "$ROOT/rev-lookup-failed.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 2 )) || fail "a corrupt account state exited $rc, expected 2"
+  contains "$ROOT/rev-lookup-failed.launch.log" 'the Open Design account lookup failed for implementer thread' \
+    'a failed lookup is reported as a failure'
+  lacks "$ROOT/rev-lookup-failed.launch.log" 'no Open Design account is recorded' \
+    'a failed lookup is not reported as an absent account'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review started after a failed account lookup'
+}
+
+# --account bypasses the implementer record by design, and says so on stderr.
+check_account_pin_stderr_note() {
+  local rc=0
+  launch rev-account-note none --account volker || rc=$?
+  (( rc == 0 )) || fail "a pinned review exited $rc"
+  contains "$ROOT/rev-account-note.launch.log" '--account pins the reviewer with no implementer record to cross-check' \
+    'a pinned review warns that nothing cross-checked the account'
+}
+
+# r1 #11: pi's own status passes through, and a nonzero one must not read green.
+check_pi_rc_passthrough() {
+  local rc=0
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_RC=1 FAKE_PI_ACTION=none \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-pi-rc --report "$REPORTS/rev-pi-rc.md" --account volker \
+    > "$ROOT/rev-pi-rc.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 1 )) || fail "a pi exit 1 exited $rc, expected 1 passed through"
+  [[ $(done_line rev-pi-rc) == 'EXIT=1 OUTCOME=ERROR' ]] \
+    || fail 'a nonzero pi exit is not recorded as ERROR'
+  [[ ! -e $REPORTS/rev-pi-rc.md ]] || fail 'a failed review wrote a report'
+}
+
+# --- documentation ---------------------------------------------------------
+
 # --- documentation ---------------------------------------------------------
 
 check_docs() {
   local readme=$SCRIPT_DIR/../README.md changes=$SCRIPT_DIR/../CHANGES.md
+  local agents=$SCRIPT_DIR/../../../AGENTS.md
   contains "$readme" 'pi-review.sh' 'README names the pi review launcher'
   contains "$readme" 'REVIEW-MODIFIED-TREE' 'README documents the modified-tree flag'
+  # shellcheck disable=SC2016 # the backticked route row is the literal README text
+  contains "$readme" '| `deepseek-pi-<other>` | `pi-review.sh` |' 'README keeps the pi review route row'
+  contains "$readme" '--tools read,grep,find,ls' 'README names the reviewer tool set it enforces'
+  contains "$readme" 'PI_REVIEW_MAX_SECONDS' 'README names the wall-clock budget'
+  contains "$readme" 'PI_REVIEW_MAX_STREAM_BYTES' 'README names the stream budget'
+  contains "$readme" 'REVIEW-BUDGET' 'README documents the budget verdict'
+  contains "$readme" 'REVIEW-NO-REPORT' 'README documents the no-text verdict'
+  contains "$readme" '<run>.review/before-state.txt' 'README names the persisted before-state'
+  contains "$readme" 'ls-files -s -v' 'README lists the index-flag comparison'
+  contains "$readme" 'info/exclude' 'README lists the exclude comparison'
+  contains "$readme" 'untracked files' 'README lists the untracked-content comparison'
+  contains "$readme" 'does not cover' 'README states what the comparison does NOT cover'
+  contains "$readme" 'any **pi or pi-impl exit status' 'README states that pi exit codes pass through'
+  contains "$readme" 'never through the' 'README states the kill path'
+  contains "$readme" '<run>.lock' 'README names the owner record the kill path uses'
   contains "$changes" 'pi-review.sh' 'CHANGES.md records the pi review launcher'
+  contains "$changes" 'PI_EXTRA_ARGS' 'CHANGES.md records the PI_EXTRA_ARGS seam'
+  contains "$changes" 'RG-315' 'CHANGES.md names the remote-gate progress glob fix'
+  contains "$agents" 'pi-review.sh' 'AGENTS.md names the pi review launcher'
 }
 
 check_other_account_for_volker
 check_other_account_for_github2
 check_other_account_from_thread
+check_other_account_for_codex_volker
+check_other_account_for_codex_github2
+check_lookup_failed_branch
+check_account_pin_stderr_note
+check_pi_rc_passthrough
 check_unknown_implementer_account
 check_unknown_thread_account
 check_account_pinning
 check_modified_tracked_file
 check_modified_untracked_file
-check_no_report
 check_dirty_before_state_allowed
 check_unreadable_before_state_refused
 check_report_inside_worktree
@@ -383,8 +774,23 @@ check_account_required
 check_unknown_account_value
 check_report_required
 check_modified_head
+check_read_only_tool_set
+check_caller_extra_args_replaced
+check_extra_args_cannot_override_contract
+check_budget_wall_time
+check_budget_stream_bytes
+check_budget_value_refused
+check_stale_report_refused
+check_modified_head_branch
+check_modified_index_flags
+check_modified_exclude
+check_modified_untracked_content
+check_modified_diff_of_dirty_file
+check_foreign_marker_refused
+check_report_from_final_message
+check_no_text_is_no_report
 check_docs
 
 [[ -z $(git -C "$WORKTREE" status --porcelain) ]] \
   || fail 'the reviewed worktree is not clean after the checks'
-echo 'PASS pi-review: other-account selection, thread lookup, refusals, read-only tree guard (tracked/untracked/HEAD), report passthrough'
+echo 'PASS pi-review: other-account selection, thread lookup, refusals, read-only tool set, review budget, stale-report refusal, worktree state classes, report from the final message'
