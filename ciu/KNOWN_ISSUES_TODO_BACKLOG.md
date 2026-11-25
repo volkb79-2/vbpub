@@ -20,9 +20,11 @@ Later update, 2026-11-24 — **CIU-227, CIU-230 and CIU-231 FIXED IN THIS BRANCH
 inside a stack dir of a multi-stack root refuses with the `--dir .` remedy).
 
 Later update, 2026-11-25 — **CIU-235 FIXED IN THIS BRANCH (P-core-11 r2fix)**
-(the R2 lane's 5m per-candidate budget was shorter than the ~416 s suite it
+(the R2 lane's 5m per-candidate wall budget was shorter than the ~416 s suite it
 bounds, so an unkillable mutant was reported `BUDGET_EXCEEDED` instead of
-`survived`; the budget is 15m and the three unjudged candidates are killed).
+`survived`; the lane now declares no per-candidate wall budget at all —
+`budget_per_candidate = "none"`, liveness is the stall detector — and the three
+unjudged candidates are killed by behavioural tests).
 
 Later update, 2026-11-24 — **CIU-232 FIXED IN THIS BRANCH (P-core-10 fix round
 1); CIU-233 FILED** (procio's signal scope had overridden the foreground
@@ -704,7 +706,7 @@ entries.
 | CIU-232 | procio's signal scope replaced the foreground one-shot's SIGTERM/SIGHUP forwarding handlers during `run_cmd` | Minor | FIXED IN THIS BRANCH (P-core-10 fix round 1) |
 | CIU-233 | Seventeen deferred direct `subprocess.run(capture_output=True)` sites still have no bounded post-exit drain | Minor | OPEN 2026-11-24 (P-core-10 review) |
 | CIU-234 | `procutil.run_cmd`'s helper-thread branch leaves the child running when a main-thread `KeyboardInterrupt` or `SystemExit` interrupts `worker.join()` | Minor | OPEN 2026-11-24 (P-core-10 review r2, M2) |
-| CIU-235 | The CIU R2 lane's 5m per-candidate budget is shorter than the full suite, so an unkillable mutant is reported `BUDGET_EXCEEDED` and the lane can never report a survivor | Major for CIU R2 evidence | FIXED IN THIS BRANCH (P-core-11 r2fix) |
+| CIU-235 | The CIU R2 lane's 5m per-candidate wall budget was shorter than the full suite, so an unkillable mutant was reported `BUDGET_EXCEEDED` and the lane could never report a survivor (now no per-candidate wall budget at all; liveness is the stall detector) | Major for CIU R2 evidence | FIXED IN THIS BRANCH (P-core-11 r2fix) |
 
 
 The approved milestone decisions and serial package order are in
@@ -7416,11 +7418,27 @@ apart; the `end` record reports `{"budget_exceeded": 3, "killed": 16,
 (`helper_needed = False` → `True`) and the two dry-run `flush=True` lines at 999
 and 1073 (line numbers as of that head).
 
-**Fix.** `ciu/assay.toml` raises `budget_per_candidate` to `15m`: about 2x the
-measured suite, so a slow judge host still classifies an unkillable candidate
-as `survived`, while killed candidates keep stopping early and the outer lane
-`budget` is unchanged. SPEC S18.2 states the value and the derivation. The
-three candidates were replayed by hand against new behavioural tests in
+**Fix.** `ciu/assay.toml` no longer bounds a candidate by wall time at all:
+`budget_per_candidate = "none"` (assay's explicit opt-out), with `liveness =
+true` as the only stall detector. The 15m value this branch first carried was
+itself a guess about how long a suite takes; the operator's 2026-11-25 ruling
+("NO TIME BUDGETS that constrain a run: things take as long as they take, as
+long as they make progress") attaches progress, not elapsed time, to the
+bucket. In assay, a candidate that stops making progress is killed by the
+liveness monitor (`assay/src/assay/liveness.py:2080-2095`) and reported as
+`hung` — its own bucket, outside `mutation_pct`
+(`assay/src/assay/termination.py:53`, `assay/src/assay/mutation.py:5696-5706`;
+boxed as `BUDGET_EXCEEDED`/`CANDIDATE_HUNG` so a lane containing one is still
+an adverse outcome rather than a silent survivor). `"none"` loads only because
+the lane's own finite top-level `budget` (8h; run-gate.toml caps the lane at
+485m) is declared: `assay/src/assay/config.py:1942` runs
+`_refuse_unbounded_without_unit_bounds` only when `budget` is `"unbounded"`,
+and `config.py:2733-2745` is what that function uses to refuse an explicit
+`"none"` under it — this lane never declares `budget = "unbounded"`, so
+neither refusal applies. The value is still parsed and WARNed at run time
+(`assay/src/assay/runner.py:6020-6034`, a deliberate written-down choice, not
+a silent default). SPEC S18.2 states the change and the mechanism. The
+  three candidates were replayed by hand against new behavioural tests in
 `ciu/tests/tests/test_ciu_235_dryrun_flush_and_helper_need.py`: the helper
 verdict (`helper_needed`) is read from a `plan_only` dry run whose target
 ownership the process can apply itself (the `REQUIRED` case stays pinned by

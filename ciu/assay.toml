@@ -108,15 +108,27 @@ operators = [
   "python:bool-const-flip",
   "python:falsy-swap",
 ]
-# 15m (was 5m until 2026-11-25, CIU-235). The budget is a bound on the WHOLE
-# suite, and a mutant that no test kills runs all of it: the measured full
-# suite is ~416 s in the baseline (run rgw-ciu-20261125T202211-v1001, v1001),
-# so a 5m bound cut every such candidate at 302 s and reported it as
-# BUDGET_EXCEEDED instead of "survived" -- the lane could not report a survivor
-# at all. Killed mutants still stop early (104-129 s, --maxfail=1); 15m leaves
-# ~2x headroom over the measured suite for a slower judge host while staying
-# well inside the outer lane budget (assay.toml `budget`, run-gate.toml).
-budget_per_candidate = "15m"
+# `none` (CIU-235, operator 2026-11-25: "NO TIME BUDGETS that constrain a run").
+# A per-candidate wall bound is a guess about how long a suite takes, and every
+# guess is wrong on some host: this lane's whole suite measures ~416 s in the
+# baseline (run rgw-ciu-20261125T202211-v1001, v1001), and a mutant that no test
+# kills runs ALL of it, so the previous 5m (then 15m) bound cut such a candidate
+# at 302 s and reported BUDGET_EXCEEDED instead of "survived" -- an adverse
+# bucket that is a measurement failure, not a verdict about the tests. What this
+# lane needs is progress, not a clock, so the wall bound is gone and
+# `liveness = true` is the whole stall detector: a candidate that stops making
+# progress (no new plugin event, no stdout/stderr growth, no process-tree CPU
+# growth over the calibrated idle window) is killed and classified `hung`
+# (assay liveness.py:2080-2095 -> runner.py:1840-1843 ReasonCode.CANDIDATE_HUNG
+# -> termination.py:80-83 Termination.HUNG -> _R2_BUCKETS "hung", and
+# mutation.py:5696-5706 maps it to BUDGET_EXCEEDED/CANDIDATE_HUNG, outside
+# `mutation_pct`). A candidate that keeps working is bounded only by the lane's
+# own top-level `budget` (below, 8h; run-gate.toml caps the lane at 485m), which
+# stays finite -- `"none"` is admissible exactly because that top-level bound is
+# declared (assay config._refuse_unbounded_without_unit_bounds). Liveness needs
+# the cgroup observer (run-gate.toml `resource_observer = "cgprofile"`,
+# `resources.pids`).
+budget_per_candidate = "none"
 liveness = true
 
 [lanes.ciu.judge.canary]

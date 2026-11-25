@@ -354,6 +354,27 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     assert "active liveness" in readme
 
 
+def test_ciu_r2_lane_has_no_per_candidate_wall_budget_and_docs_say_so():
+    """CIU-235: a candidate is bounded by PROGRESS, not by a clock.
+
+    A wall bound is a guess about how long a suite takes; this lane's own suite
+    is ~416 s and a mutant no test kills runs all of it, so a finite bound
+    shorter than that turns a survivor into `BUDGET_EXCEEDED` and the lane can
+    no longer report one. `liveness = true` (asserted above) is what still ends
+    a candidate that stops making progress, and the lane's finite top-level
+    `budget` is what makes `"none"` admissible at assay's load-time check.
+    """
+    lane = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["ciu"]
+    mutation = lane["judge"]["mutation"]
+    assert mutation["budget_per_candidate"] == "none"
+    assert mutation["liveness"] is True
+    # The opt-out is admissible only because the lane's OWN command stays bounded.
+    assert lane["budget"] != "unbounded"
+    spec = (REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert 'budget_per_candidate = "none"' in spec
+    assert "hung" in spec
+
+
 def test_ciu_r2_worker_budget_matches_the_three_worker_pilot():
     """Run-Gate must request workers within the measured CPU and memory envelope."""
     lanes = tomllib.loads((REPO_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]

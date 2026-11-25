@@ -22,7 +22,7 @@ the technical detail below it.
 ## [Unreleased]
 
 ### Fixed
-- fix(ciu): CIU-235 — the R2 lane's `budget_per_candidate` is 15m, not 5m (the ~416 s suite it bounds was cut at 302 s, so an unkillable mutant read `BUDGET_EXCEEDED` instead of `survived`); the three unjudged `engine.py` candidates (helper verdict, two dry-run `flush=True` lines) are now killed by behavioural tests
+- fix(ciu): CIU-235 — the R2 lane no longer bounds a candidate by wall time at all: `budget_per_candidate = "none"` (operator 2026-11-25, "no time budgets that constrain a run") with `liveness = true` as the stall detector, because the ~416 s suite it used to bound was being cut at 302 s under the old 5m bound, so an unkillable mutant read `BUDGET_EXCEEDED` instead of `survived`; a candidate that stops making progress is still killed, as `hung` (`CANDIDATE_HUNG`); the three unjudged `engine.py` candidates (helper verdict, two dry-run `flush=True` lines) are now killed by behavioural tests
 
 <!-- cmru: release history -->
 
