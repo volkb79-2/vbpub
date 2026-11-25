@@ -98,8 +98,32 @@ pi_review_mutant("pi-review-budget-bytes-off",
        '      if [[ $stream_bytes =~ ^[0-9]+$ ]] && (( stream_bytes >= review_max_bytes )); then',
        '      if (( 0 )); then')
 pi_review_mutant("pi-review-stale-report-overwrite",
-       'if [[ -e $review_path ]]; then',
+       'if report_path_taken; then\n  echo "the review report already exists',
+       'if false; then\n  echo "the review report already exists')
+# M1: the report is persisted only for a settled-success class. The mutant keeps
+# the old rule (any text in last.txt) and must be killed by the CONTEXT-FULL
+# fixture, which carries partial text and a zero pi exit.
+pi_review_mutant("pi-review-report-on-any-text",
+       'if (( launch_rc == 0 )) && [[ $run_outcome == SUCCESS || $run_outcome == UNCOMMITTED ]] &&',
+       'if (( launch_rc == 0 )) && [[ -z $run_outcome || $run_outcome == SUCCESS || $run_outcome == UNCOMMITTED ]] &&')
+# M2: the earlier review's before-state must survive a retried run name. The
+# mutant drops the refusal, so the material is re-rendered (and pi-impl then
+# refuses), which the byte-identical assertion catches.
+pi_review_mutant("pi-review-material-overwrite",
+       'if [[ -e $REVIEW_MATERIAL_DIR/before-state.txt ]]; then',
        'if false; then')
+# M3: the process group must be VERIFIED before it is signalled. The mutant
+# signals the group unconditionally, which the pgid shim makes an ESRCH: the log
+# then claims a group stop it never made, and the stop no longer lands.
+pi_review_mutant("pi-review-group-unverified",
+       'if [[ $launch_pgid =~ ^[0-9]+$ ]] && (( launch_pgid == launch_pid )); then',
+       'if true; then')
+# M3: a stop that is not confirmed must not be waited on. The mutant waits on the
+# launch whatever the reading was, which the unreadable-liveness case then does
+# for the fake reviewer's whole 20-second sleep.
+pi_review_mutant("pi-review-stop-waits-unconfirmed",
+       '  [[ $launch_state == gone ]] || stopped_after_kill=1',
+       '  stopped_after_kill=1')
 pi_review_mutant("pi-review-foreign-marker",
        'if ! marker_is_ours && [[ $marker_before != absent ]]; then',
        'if false; then')

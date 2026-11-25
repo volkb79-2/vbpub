@@ -11,6 +11,10 @@ unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
 unset PI_TEST_FOCUS
 unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset CONTROLLER_OD_ACCOUNTS_SCRIPT OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER OPENCODE_IMPL_SCRIPT
+# The pi seams pi-review.sh exports for its own child, and the review budget: an
+# ambient PI_EXTRA_ARGS (exactly what a review launcher exports) would refuse or
+# widen every launch these mutants are judged through.
+unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_POLL_SECONDS PI_REVIEW_KILL_WAIT_SECONDS
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-mutation-test.XXXXXX")
@@ -49,7 +53,9 @@ for pi_review_mutant in \
   pi-review-status-no-uall \
   pi-review-tools-wide pi-review-budget-off pi-review-budget-bytes-off \
   pi-review-stale-report-overwrite pi-review-foreign-marker \
-  pi-review-realpath-fallback; do
+  pi-review-realpath-fallback pi-review-report-on-any-text \
+  pi-review-material-overwrite pi-review-group-unverified \
+  pi-review-stop-waits-unconfirmed; do
   expect_killed "$pi_review_mutant" \
     env PI_REVIEW_SCRIPT="$ROOT/mutants/scripts/controller/$pi_review_mutant/pi-review.sh" \
       bash "$SCRIPT_DIR/test-pi-review.sh"

@@ -27,14 +27,23 @@
 #    copy of the prompt naming those files and the tool set is what pi reads.
 #    A review report is not written by the reviewer either (it has no write
 #    tool): the reviewer's FINAL assistant message is the report, and this
-#    wrapper persists it at --report after the run settles.
+#    wrapper persists it at --report after the run settles -- but ONLY for a
+#    settled SUCCESS/UNCOMMITTED class (see the exit codes).
+#    NOT prevented, and worth saying: the `read` tool is not confined to the
+#    worktree. It can read anything the wrapper's user can, including
+#    credentials under $HOME. The review prompt and the rendered material are
+#    the only inputs this wrapper controls.
 # 2. ENFORCED during the run: a review budget. PI_REVIEW_MAX_SECONDS (wall
-#    time, default 1800) and PI_REVIEW_MAX_STREAM_BYTES (<run>.jsonl size,
+#    time, default 7200) and PI_REVIEW_MAX_STREAM_BYTES (<run>.jsonl size,
 #    default 268435456) are checked every PI_REVIEW_POLL_SECONDS (default 15).
 #    Over budget the launch is stopped (TERM to the launch's own process group,
-#    which reaches pi and the liveness sidecar, then KILL after
-#    PI_REVIEW_KILL_WAIT_SECONDS, default 10) and the run is marked
-#    `REVIEW-BUDGET` (exit 5).
+#    which reaches pi-impl, the pi it execs and the liveness sidecar, then KILL
+#    after PI_REVIEW_KILL_WAIT_SECONDS, default 10) and the run is marked
+#    `REVIEW-BUDGET` (exit 5). The group is VERIFIED with `ps -o pgid=` first:
+#    when the launch is not its own group leader, the fallback is a TERM to the
+#    launch pid alone and the log says which form was used. A launch that
+#    outlasts KILL is reported with its pid and NOT waited for, so a stop can
+#    never block the wrapper. The effective limits are printed at launch.
 #
 # 3. DETECTED after the fact (not prevented): before and after the launch the
 #    wrapper records the worktree's `git rev-parse HEAD`, `git status
@@ -62,11 +71,17 @@
 # already set PI_MODEL / PI_THINKING, which pi-impl.sh preserves.
 #
 # Exit codes: 2 for the refusals above (usage, unreadable worktree, report
-# inside the worktree, unknown account, account records that name none, an
-# invalid budget value), otherwise pi-impl.sh's own code, returned unchanged
-# (0 settled, 1 or another pi exit status, 2 refused, 3 both Open Design
-# accounts blocked). 4 is REVIEW-MODIFIED-TREE and 5 is REVIEW-BUDGET; neither
-# is a pi-impl.sh code.
+# inside the worktree, an existing report, an earlier review of this name's own
+# before-state, unknown account, account records that name none, an invalid
+# budget value) and for REVIEW-NO-REPORT or a report that cannot be written; 4
+# is REVIEW-MODIFIED-TREE; 5 is REVIEW-BUDGET; 6 is REVIEW-NOT-SETTLED (pi-impl
+# settled in a class that is not SUCCESS/UNCOMMITTED, so no report was written:
+# CONTEXT-FULL, TOOL-CALL-NO-TEXT, EMPTY-COMPLETION*, NO-REPORT, USAGE-LIMIT,
+# ERROR, INCOMPLETE). 0 means exactly one thing: the review settled in a
+# success class AND its report was saved. Every other pi or pi-impl exit status
+# is passed through unchanged (1, 2 refused, 3 both Open Design accounts
+# blocked). None of 4, 5, 6 is a pi-impl.sh code; pi itself can exit 5 too, so a
+# bare 5 is not the budget verdict -- the marker is.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
@@ -145,9 +160,27 @@ esac
 # A retried review normally reuses its report path, and the reviewer cannot
 # rewrite the file: an existing one would leave the previous run's report
 # standing as this run's. Refuse before anything is rendered or launched.
-if [[ -e $review_path ]]; then
+report_path_taken() {
+  # `-L` as well as `-e`: a DANGLING symlink is not `-e`, and cp would write
+  # through it to a target nothing compared.
+  [[ -e $review_path || -L $review_path ]]
+}
+if report_path_taken; then
   echo "the review report already exists: $review_path" >&2
   echo '  a review that writes no report must not leave an earlier report certified as this run' >&2
+  exit 2
+fi
+
+# The review material lives per RUN NAME, and its before-state is the only
+# record of what the tree looked like when an EARLIER review of that name
+# started. A retried review re-renders <run>.review/ BEFORE pi-impl.sh refuses
+# the name (it refuses a name that already has evidence), which would delete
+# that record and leave a before-state describing a launch that never started.
+# Refuse here, before a single byte of it is rewritten.
+REVIEW_MATERIAL_DIR=$CONTROLLER_RUNS_DIR/$name.review
+if [[ -e $REVIEW_MATERIAL_DIR/before-state.txt ]]; then
+  echo "an earlier review of this name already recorded its before-state: $REVIEW_MATERIAL_DIR/before-state.txt" >&2
+  echo '  a retried review must use a fresh run name; reusing this one would record a launch that never started' >&2
   exit 2
 fi
 
@@ -279,6 +312,31 @@ before_exclude=$TREE_EXCLUDE
 before_untracked=$TREE_UNTRACKED
 before_diff=$TREE_DIFF
 
+# --- the review budget -------------------------------------------------------
+# PI_REVIEW_MAX_SECONDS default: 7200 s (two hours), not 1800. A max-effort pi
+# review of a ~1200-line diff did not finish inside 3600 s, so a 30-minute
+# default stopped real reviews and reported them as budget stops. The budget
+# bounds a runaway; it must not pace an expected review.
+review_max_seconds=${PI_REVIEW_MAX_SECONDS:-7200}
+review_max_bytes=${PI_REVIEW_MAX_STREAM_BYTES:-268435456}
+review_poll=${PI_REVIEW_POLL_SECONDS:-15}
+review_kill_wait=${PI_REVIEW_KILL_WAIT_SECONDS:-10}
+for pair in "PI_REVIEW_MAX_SECONDS=$review_max_seconds" "PI_REVIEW_MAX_STREAM_BYTES=$review_max_bytes" \
+  "PI_REVIEW_POLL_SECONDS=$review_poll" "PI_REVIEW_KILL_WAIT_SECONDS=$review_kill_wait"; do
+  value=${pair#*=}
+  [[ $value =~ ^[0-9]+$ ]] || {
+    echo "${pair%%=*} must be a non-negative integer (got: $value)" >&2
+    exit 2
+  }
+done
+(( review_max_seconds > 0 )) || { echo 'PI_REVIEW_MAX_SECONDS must be a positive integer' >&2; exit 2; }
+(( review_max_bytes > 0 )) || { echo 'PI_REVIEW_MAX_STREAM_BYTES must be a positive integer' >&2; exit 2; }
+(( review_poll > 0 )) || { echo 'PI_REVIEW_POLL_SECONDS must be a positive integer' >&2; exit 2; }
+# The limits a run actually got, in its own log: a stopped review and a
+# surprising default are then read from the record, not re-derived from docs.
+printf 'pi-review: budget wall=%ss stream=%s bytes poll=%ss kill-wait=%ss\n' \
+  "$review_max_seconds" "$review_max_bytes" "$review_poll" "$review_kill_wait" >&2
+
 launch_rc=0
 
 marker=$CONTROLLER_RUNS_DIR/$name.done
@@ -305,7 +363,8 @@ marker_is_ours() {
 # the run's final message as the report. Everything here lives in
 # <runs-dir>/<run>.review/, OUTSIDE the reviewed worktree -- a write inside it
 # would be exactly what the after-state comparison is looking for.
-REVIEW_MATERIAL_DIR=$CONTROLLER_RUNS_DIR/$name.review
+# (REVIEW_MATERIAL_DIR is declared with the report/name refusals above, so the
+# refusal can run before this function writes anything.)
 review_prompt=''
 prepare_review_material() {
   local wt=$1 base='' path=$REVIEW_MATERIAL_DIR
@@ -383,22 +442,6 @@ if ! prepare_review_material "$worktree"; then
   echo "cannot render the review material in $REVIEW_MATERIAL_DIR; nothing was launched" >&2
   exit 2
 fi
-# --- the review budget -------------------------------------------------------
-review_max_seconds=${PI_REVIEW_MAX_SECONDS:-1800}
-review_max_bytes=${PI_REVIEW_MAX_STREAM_BYTES:-268435456}
-review_poll=${PI_REVIEW_POLL_SECONDS:-15}
-review_kill_wait=${PI_REVIEW_KILL_WAIT_SECONDS:-10}
-for pair in "PI_REVIEW_MAX_SECONDS=$review_max_seconds" "PI_REVIEW_MAX_STREAM_BYTES=$review_max_bytes" \
-  "PI_REVIEW_POLL_SECONDS=$review_poll" "PI_REVIEW_KILL_WAIT_SECONDS=$review_kill_wait"; do
-  value=${pair#*=}
-  [[ $value =~ ^[0-9]+$ ]] || {
-    echo "${pair%%=*} must be a non-negative integer (got: $value)" >&2
-    exit 2
-  }
-done
-(( review_max_seconds > 0 )) || { echo 'PI_REVIEW_MAX_SECONDS must be a positive integer' >&2; exit 2; }
-(( review_max_bytes > 0 )) || { echo 'PI_REVIEW_MAX_STREAM_BYTES must be a positive integer' >&2; exit 2; }
-(( review_poll > 0 )) || { echo 'PI_REVIEW_POLL_SECONDS must be a positive integer' >&2; exit 2; }
 
 # The read-only tool set, through pi-impl.sh's PI_EXTRA_ARGS seam (one argv
 # element per line, so nothing here is word-split). The launcher owns this
@@ -424,11 +467,67 @@ PI_ROUTE="deepseek-pi-$review_account" PI_REPORT='' \
   "$SCRIPT_DIR/pi-impl.sh" "$worktree" "$review_prompt" "$name" &
 launch_pid=$!
 set +m
+
+# `set -m` is what gives the launch its own process group, and a group signal
+# is only a stop if that is TRUE. It is read from the kernel, not assumed: a
+# `kill -- -PID` against a group the launch does not lead is ESRCH, an error
+# that `|| true` would swallow while `kill -0` keeps answering "alive" and the
+# wrapper then waits out the whole run with a budget that never stopped it.
+launch_pgid=''
+launch_pgid=$(ps -o pgid= -p "$launch_pid" 2>/dev/null | tr -d '[:space:]')
+if [[ $launch_pgid =~ ^[0-9]+$ ]] && (( launch_pgid == launch_pid )); then
+  stop_group=1
+else
+  # Not its own group leader: signal the launch pid alone. That reaches
+  # pi-impl.sh and NOT the pi it execs, which the message says -- a stop that
+  # cannot reach the reviewer's process is not the same guarantee.
+  stop_group=0
+fi
+
+# Three states, from two facts that really answer: `kill -0` (does the pid
+# exist at all) and `ps` (its state, so a ZOMBIE -- which has already ended and
+# only waits to be collected -- is "gone" and not "running"). A liveness the
+# second fact cannot answer is "unknown": never "alive" (which would let a
+# missing `ps` block a stop forever) and never "gone" (which would certify a
+# stop that was never observed). The poll loop continues on "unknown" so the
+# WALL budget still fires; the post-stop path decides on "gone" only.
+launch_state=''
+launch_state_of() {
+  local pid=$1 stat
+  launch_state=unknown
+  kill -0 "$pid" 2>/dev/null || { launch_state=gone; return 0; }
+  stat=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]') || stat=''
+  [[ -n $stat ]] || { launch_state=unknown; return 0; }
+  case $stat in
+    Z* | X*) launch_state=gone ;;
+    *) launch_state=alive ;;
+  esac
+  return 0
+}
+stop_launch() {
+  # $1 TERM|KILL. One signal to the group when that is really the launch's
+  # group, else one to the launch pid. The form used is printed: a caller reading
+  # the log must be able to tell which guarantee it got.
+  local signal=$1
+  if (( stop_group == 1 )); then
+    kill -"$signal" -- "-$launch_pid" 2>/dev/null || true
+    printf 'pi-review: budget stop %s to the launch process group (%s)\n' "$signal" "$launch_pid" >&2
+  else
+    kill -"$signal" "$launch_pid" 2>/dev/null || true
+    printf 'pi-review: budget stop %s to the launch pid alone (%s): it is not its own process group leader (pgid=%s), so the pi it started is not signalled\n' \
+      "$signal" "$launch_pid" "${launch_pgid:-unknown}" >&2
+  fi
+}
+
 started_epoch=$EPOCHSECONDS
 # Poll in 0.2s slices up to PI_REVIEW_POLL_SECONDS, so a run that ends inside
 # the interval is reaped at once instead of after a full interval (the suite
 # runs many short launches and must not pay the long-case interval each time).
 next_poll=$started_epoch
+# NOTE on the loop condition: bash reaps an exited background child itself, so
+# `kill -0` stops answering as soon as the launch ends; that is the cheap
+# "it is over" signal here. The three-state reading is used only where a
+# decision depends on it (the stop below), so a normal run pays no extra fork.
 while kill -0 "$launch_pid" 2>/dev/null; do
   now_epoch=$EPOCHSECONDS
   if (( now_epoch - started_epoch >= review_max_seconds )); then
@@ -447,18 +546,36 @@ while kill -0 "$launch_pid" 2>/dev/null; do
   fi
   sleep 0.2
 done
+stopped_after_kill=0
 if [[ -n $budget_reason ]]; then
-  # TERM the whole group, give it PI_REVIEW_KILL_WAIT_SECONDS to settle, then
-  # KILL what is left. Never leave a stopped run's processes behind.
-  kill -TERM -- "-$launch_pid" 2>/dev/null || true
+  # TERM, give it PI_REVIEW_KILL_WAIT_SECONDS to settle, then KILL what is left.
+  stop_launch TERM
   ticks=$(( review_kill_wait * 10 ))
-  while (( ticks > 0 )) && kill -0 "$launch_pid" 2>/dev/null; do
+  while (( ticks > 0 )) && launch_state_of "$launch_pid" && [[ $launch_state != gone ]]; do
     sleep 0.1
     ticks=$(( ticks - 1 ))
   done
-  kill -0 "$launch_pid" 2>/dev/null && kill -KILL -- "-$launch_pid" 2>/dev/null || true
+  launch_state_of "$launch_pid"
+  if [[ $launch_state != gone ]]; then
+    stop_launch KILL
+    # A KILL window is best effort. Never wait forever on it: a launch that is
+    # still there is reported and the wrapper exits anyway, because a budget
+    # guarantee that can hang is not a guarantee.
+    ticks=$(( review_kill_wait * 10 ))
+    while (( ticks > 0 )) && launch_state_of "$launch_pid" && [[ $launch_state != gone ]]; do
+      sleep 0.1
+      ticks=$(( ticks - 1 ))
+    done
+    launch_state_of "$launch_pid"
+    [[ $launch_state == gone ]] || stopped_after_kill=1
+  fi
 fi
-wait "$launch_pid" || launch_rc=$?
+if (( stopped_after_kill == 0 )); then
+  # Gone, or observed gone before the stop: reaping it is what keeps a zombie
+  # from being read as a running review, and it cannot block (the child has
+  # ended).
+  wait "$launch_pid" || launch_rc=$?
+fi
 
 if [[ -n $budget_reason ]]; then
   marker=$CONTROLLER_RUNS_DIR/$name.done
@@ -478,6 +595,14 @@ if [[ -n $budget_reason ]]; then
   fi
   printf 'REVIEW-BUDGET: the review was stopped over budget (%s); pi-impl exit %s\n' \
     "$budget_reason" "$launch_rc" >&2
+  if (( stopped_after_kill == 1 )); then
+    # The stop is NOT confirmed: a process still there after TERM and KILL, or a
+    # liveness `ps` could not read (which is reported as unknown rather than as
+    # either "alive" or "stopped"). Name the pid, say which was observed, exit
+    # anyway: waiting here is what would block for the rest of the run.
+    printf 'REVIEW-BUDGET: launch %s not confirmed stopped after TERM+KILL (last state: %s); not waiting for it\n' \
+      "$launch_pid" "${launch_state:-unknown}" >&2
+  fi
   exit 5
 fi
 
@@ -517,21 +642,88 @@ fi
 # report check would always read NO-REPORT. The report is the run's final
 # assistant message, saved here -- outside the reviewed worktree, after the
 # after-state comparison, so writing it cannot change what is being judged.
-if (( launch_rc == 0 )) && [[ -s $CONTROLLER_RUNS_DIR/$name.last.txt ]] \
-  && grep -q '[^[:space:]]' "$CONTROLLER_RUNS_DIR/$name.last.txt"; then
-  if ! cp -- "$CONTROLLER_RUNS_DIR/$name.last.txt" "$report_path"; then
-    echo "cannot save the review report at $report_path" >&2
+#
+# It is saved ONLY for a settled-success outcome class. Having text in
+# last.txt is not the same thing: pi writes partial text for a
+# `stopReason=length` message, so a review cut off by its context window leaves
+# text and a zero exit from pi-impl (CONTEXT-FULL). Persisting that would
+# certify a review that was explicitly cut off mid-way, which is the class of
+# failure this wrapper exists to close.
+run_outcome=''
+read_run_outcome() {
+  # The outcome class pi-impl.sh recorded for THIS launch: line 1 of the
+  # marker, which is `<run>.done`'s historical `EXIT=<n> OUTCOME=<class>`. A
+  # marker that is not ours belongs to an earlier invocation of the name and
+  # answers nothing about this run.
+  local first
+  run_outcome=''
+  marker_is_ours || return 1
+  first=$(head -n 1 "$marker" 2>/dev/null) || return 1
+  case $first in
+    *OUTCOME=*) run_outcome=${first#*OUTCOME=} ;;
+    *) return 1 ;;
+  esac
+  run_outcome=${run_outcome%%[[:space:]]*}
+  [[ -n $run_outcome ]] || return 1
+  return 0
+}
+marker=$CONTROLLER_RUNS_DIR/$name.done
+# Read once, for every exit path: the class is the reason printed beside a
+# nonzero status too.
+read_run_outcome || :
+if (( launch_rc == 0 )) && [[ $run_outcome == SUCCESS || $run_outcome == UNCOMMITTED ]] &&
+  [[ -s $CONTROLLER_RUNS_DIR/$name.last.txt ]] &&
+  grep -q '[^[:space:]]' "$CONTROLLER_RUNS_DIR/$name.last.txt"; then
+  # Write to the RESOLVED path, the one every check above reasoned about, and
+  # re-check it first: a symlink that appeared between the refusal and this
+  # write would otherwise land the report where nothing was compared.
+  if report_path_taken; then
+    echo "the review report appeared before the write: $review_path" >&2
+    echo '  a review that writes no report must not leave an earlier report certified as this run' >&2
+    exit 2
+  fi
+  if ! cp -- "$CONTROLLER_RUNS_DIR/$name.last.txt" "$review_path"; then
+    echo "cannot save the review report at $review_path" >&2
     exit 2
   fi
   exit 0
 fi
 if (( launch_rc == 0 )); then
-  # A settled run that said nothing leaves no review: the outcome class pi-impl.sh
-  # recorded (EMPTY-COMPLETION-RETRIES-EXHAUSTED and friends) is the reason, and
-  # this is still exit 0 from pi. A review that produced no text is not a success.
-  marker=$CONTROLLER_RUNS_DIR/$name.done
-  [[ -e $marker ]] && marker_is_ours && printf 'REVIEW-NO-REPORT\n' >> "$marker"
-  echo "REVIEW-NO-REPORT: the review settled without any review text; nothing was written to $report_path" >&2
-  exit 2
+  # Exit 0 means exactly one thing for a review: it settled in a success class
+  # AND its report was saved. Everything else is a non-zero code, with the class
+  # written beside pi-impl.sh's own line so no reader sees it as green.
+  case $run_outcome in
+    SUCCESS | UNCOMMITTED)
+      # A success class with no text to persist: pi-impl.sh's SUCCESS requires
+      # text, so this is the class/last.txt pair disagreeing. Report it as the
+      # missing report it is rather than inventing a class.
+      [[ -e $marker ]] && marker_is_ours && printf 'REVIEW-NO-REPORT\n' >> "$marker"
+      echo "REVIEW-NO-REPORT: the review settled in class $run_outcome with no review text to persist; nothing was written to $review_path" >&2
+      exit 2
+      ;;
+    EMPTY-COMPLETION | EMPTY-COMPLETION-RETRIES-EXHAUSTED)
+      # A settled run that said nothing leaves no review at all: the class is the
+      # reason (empty or thinking-only), and this is still exit 0 from pi.
+      [[ -e $marker ]] && marker_is_ours && printf 'REVIEW-NO-REPORT\n' >> "$marker"
+      echo "REVIEW-NO-REPORT: the review settled in class $run_outcome without any review text; nothing was written to $review_path" >&2
+      exit 2
+      ;;
+    *)
+      # CONTEXT-FULL, TOOL-CALL-NO-TEXT, NO-REPORT, INCOMPLETE, ERROR,
+      # USAGE-LIMIT or an unreadable class: the run settled with a zero exit but
+      # is NOT a success, and its final text (a `stopReason=length` message DOES
+      # carry text) is a cut-off fragment. Persisting it would certify a review
+      # that did not complete.
+      [[ -e $marker ]] && marker_is_ours && printf 'REVIEW-NOT-SETTLED\n' >> "$marker"
+      echo "REVIEW-NOT-SETTLED: the review settled in class ${run_outcome:-unknown}, which is not a success class (SUCCESS or UNCOMMITTED); nothing was written to $review_path" >&2
+      exit 6
+      ;;
+  esac
+fi
+# A nonzero pi/pi-impl status passes through unchanged (never 0), and it writes
+# no report either: the class, when one was recorded, is printed for the reader.
+if [[ -n $run_outcome ]]; then
+  printf 'pi-review: the review ended in class %s with pi-impl exit %s; no report was written\n' \
+    "$run_outcome" "$launch_rc" >&2
 fi
 exit "$launch_rc"

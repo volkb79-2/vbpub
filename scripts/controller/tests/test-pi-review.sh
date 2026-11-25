@@ -141,7 +141,7 @@ launch() {
     FAKE_PI_UNTRACKED="$WORKTREE/untracked.txt" FAKE_PI_WORKTREE="$WORKTREE" \
     FAKE_PI_UNTRACKED_DIR="$WORKTREE/scratch" \
     FAKE_PI_EXCLUDE="$WORKTREE/.git/info/exclude" \
-    PI_REVIEW_MAX_SECONDS="${PI_REVIEW_MAX_SECONDS_TEST:-1800}" \
+    PI_REVIEW_MAX_SECONDS="${PI_REVIEW_MAX_SECONDS_TEST:-7200}" \
     PI_REVIEW_MAX_STREAM_BYTES="${PI_REVIEW_MAX_STREAM_BYTES_TEST:-268435456}" \
     PI_REVIEW_POLL_SECONDS="${PI_REVIEW_POLL_SECONDS_TEST:-15}" \
     PI_REVIEW_KILL_WAIT_SECONDS="${PI_REVIEW_KILL_WAIT_SECONDS_TEST:-10}" \
@@ -496,6 +496,21 @@ check_budget_value_refused() {
   [[ $(pi_invocations) == "$before" ]] || fail 'a review started with a malformed budget'
 }
 
+# The default wall-clock budget is what an ordinary caller gets when it sets
+# nothing. It was 1800 s, which stopped real max-effort reviews; the value is
+# asserted from the script's own default, not from a test-side mirror.
+check_budget_default_wall() {
+  local rc=0
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-budget-default --report "$REPORTS/rev-budget-default.md" \
+    --account volker > "$ROOT/rev-budget-default.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 0 )) || fail "a pinned review exited $rc"
+  contains "$ROOT/rev-budget-default.launch.log" 'wall=7200s' \
+    'the wall-clock budget defaults to 7200 s and is printed at launch'
+  [[ -e $REPORTS/rev-budget-default.md ]] || fail 'the default-budget review wrote no report'
+}
+
 # --- a stale report ----------------------------------------------------------
 
 # A retried review reuses its report path; the reviewer cannot rewrite the file,
@@ -686,7 +701,178 @@ SH
   [[ $(pi_invocations) == "$before" ]] || fail 'a review started with an unresolvable report path'
 }
 
-# --- the report is the reviewer's final message -----------------------------
+# M1: a review pi-impl classified as CONTEXT-FULL still carries text (pi writes a
+# partial message for stopReason=length), and pi-impl exits 0. Persisting that
+# text would certify a review that was cut off mid-way.
+check_length_cutoff_not_persisted() {
+  local rc=0
+  FAKE_PI_STREAM_TEST="$SCRIPT_DIR/fixtures/pi-length.jsonl" \
+    launch rev-lengthcut none --account volker || rc=$?
+  (( rc == 6 )) || fail "a context-full review exited $rc, expected 6 (REVIEW-NOT-SETTLED)"
+  [[ $(done_line rev-lengthcut) == 'EXIT=0 OUTCOME=CONTEXT-FULL' ]] \
+    || fail 'the fixture did not reproduce a zero-exit CONTEXT-FULL run'
+  contains "$RUNS/rev-lengthcut.done" 'REVIEW-NOT-SETTLED' 'a cut-off review is marked in its marker'
+  contains "$ROOT/rev-lengthcut.launch.log" 'CONTEXT-FULL' 'the message names the outcome class'
+  [[ ! -e $REPORTS/rev-lengthcut.md ]] || fail 'a cut-off review persisted its partial text as the report'
+}
+
+# The same rule for the other non-success classes a zero pi exit can carry. A
+# USAGE-LIMIT was previously reported as REVIEW-NO-REPORT, hiding "the review
+# account is out of balance".
+check_non_success_classes_not_persisted() {
+  local rc=0
+  FAKE_PI_STREAM_TEST="$SCRIPT_DIR/fixtures/pi-402.jsonl" \
+    launch rev-usage-limit none --account volker || rc=$?
+  (( rc == 6 )) || fail "a usage-limited review exited $rc, expected 6 (REVIEW-NOT-SETTLED)"
+  contains "$RUNS/rev-usage-limit.done" 'OUTCOME=USAGE-LIMIT' 'the usage limit class is recorded'
+  contains "$ROOT/rev-usage-limit.launch.log" 'REVIEW-NOT-SETTLED' 'a usage-limited review is not reported as a missing report'
+  lacks "$ROOT/rev-usage-limit.launch.log" 'REVIEW-NO-REPORT' 'a usage limit is not folded into the empty-message verdict'
+  [[ ! -e $REPORTS/rev-usage-limit.md ]] || fail 'a usage-limited review wrote a report'
+}
+
+# M2: <run>.review/ is rendered before pi-impl refuses a reused run name, so a
+# retry with the same name would rewrite the earlier invocation's before-state
+# and then refuse to launch. The refusal must come first, and the evidence must
+# survive byte for byte.
+check_earlier_material_not_rewritten() {
+  local rc=0 before_sha
+  launch rev-material none --account volker || rc=$?
+  (( rc == 0 )) || fail "the first review of a name exited $rc"
+  before_sha=$(git hash-object -- "$RUNS/rev-material.review/before-state.txt")
+  # A retry of the same RUN NAME, with a fresh report path at the wrapper's
+  # level: the name has evidence, so pi-impl would refuse it, and the material
+  # must not be rewritten before that happens. That earlier before-state is the
+  # thing the refusal is about, so it is read after the retry.
+  rc=0
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-material --report "$REPORTS/rev-material-retry.md" \
+    --account volker > "$ROOT/rev-material-retry.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 2 )) || fail "a retry over an earlier review's material exited $rc, expected 2"
+  contains "$ROOT/rev-material-retry.launch.log" 'an earlier review of this name already recorded its before-state' \
+    'the earlier before-state is what refused the retry'
+  [[ $(git hash-object -- "$RUNS/rev-material.review/before-state.txt") == "$before_sha" ]] \
+    || fail 'a refused retry rewrote the earlier review before-state'
+  [[ ! -e $REPORTS/rev-material-retry.md ]] || fail 'a refused retry wrote a report'
+}
+
+# The malformed-budget refusal must come BEFORE the material is rendered: it
+# used to run after `prepare_review_material`, so a `PI_REVIEW_MAX_SECONDS=soon`
+# typo wrote a fresh `<run>.review/before-state.txt` and then refused -- leaving
+# evidence of a launch that never happened.
+check_budget_refusal_before_material() {
+  local before rc=0
+  before=$(pi_invocations)
+  PI_REVIEW_MAX_SECONDS_TEST=soon launch rev-budget-order none --account volker || rc=$?
+  (( rc == 2 )) || fail "a malformed budget exited $rc, expected 2"
+  contains "$ROOT/rev-budget-order.launch.log" 'PI_REVIEW_MAX_SECONDS must be a non-negative integer' \
+    'the malformed value is what refused'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review started with a malformed budget'
+  [[ ! -e $RUNS/rev-budget-order.review/before-state.txt ]] \
+    || fail 'the malformed-budget refusal rendered a before-state before refusing'
+}
+
+# M3: the process-group ownership is VERIFIED before a group signal is used,
+# the form actually used is printed, and a stop that cannot use the group still
+# ENDS the launch instead of blocking on it. A ps shim reports the launch's pgid
+# as something other than the launch pid, so only the pid-only fallback is
+# reachable; the fake reviewer then sleeps 20 s, which the old code would have
+# waited out (its group TERM/KILL hit an ESRCH and `|| true` swallowed it, while
+# `kill -0` kept answering "alive").
+check_budget_stop_verifies_group() {
+  local rc=0 started elapsed shim=$ROOT/ps-pgid-shim real_ps
+  real_ps=$(command -v ps)
+  mkdir -p "$shim"
+  cat > "$shim/ps" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case \$a in
+    pgid=*) printf '1\\n'; exit 0 ;;
+  esac
+done
+exec $real_ps "\$@"
+SH
+  chmod +x "$shim/ps"
+  started=$EPOCHSECONDS
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_ACTION=slow \
+    FAKE_PI_SLOW_SECONDS=20 PI_REVIEW_MAX_SECONDS=1 PI_REVIEW_POLL_SECONDS=1 \
+    PI_REVIEW_KILL_WAIT_SECONDS=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-pgid --report "$REPORTS/rev-pgid.md" --account volker \
+    > "$ROOT/rev-pgid.launch.log" 2>&1 < /dev/null || rc=$?
+  elapsed=$(( EPOCHSECONDS - started ))
+  (( rc == 5 )) || fail "a budget stop over a non-leader launch exited $rc, expected 5"
+  contains "$ROOT/rev-pgid.launch.log" 'to the launch pid alone' \
+    'the log says which form was used, because the launch is not its own group leader'
+  contains "$ROOT/rev-pgid.launch.log" 'pgid=1' 'the log names the pgid it actually read'
+  lacks "$ROOT/rev-pgid.launch.log" 'to the launch process group' \
+    'the group form is not claimed when the pgid was not verified'
+  contains "$RUNS/rev-pgid.done" 'REVIEW-BUDGET' 'the run is still marked REVIEW-BUDGET'
+  # 1s wall + 1s TERM wait + 1s KILL wait: the fallback reaches pi-impl, so the
+  # launch ends. The old group-only path would have waited the fake 20s out.
+  (( elapsed <= 12 )) || fail "a budget stop over a non-leader launch blocked for ${elapsed}s"
+  [[ ! -e $REPORTS/rev-pgid.md ]] || fail 'a stopped review wrote a report'
+}
+
+# M3: when the stop cannot be CONFIRMED, the wrapper names the survivor and
+# exits instead of waiting for it. This is the only state a fake seam can reach:
+# the launch died of KILL (so it can no longer answer), while a `ps` that does
+# not answer at all is what the wrapper must read as "unconfirmed" and not as
+# an invitation to `wait`. Nothing here signals a process this check did not
+# start: the launch is the wrapper's own child.
+check_budget_stop_unconfirmed_is_bounded() {
+  local rc=0 started elapsed shim=$ROOT/ps-unreadable-shim real_ps
+  real_ps=$(command -v ps)
+  mkdir -p "$shim"
+  cat > "$shim/ps" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case \$a in
+    stat=*) exit 0 ;;
+  esac
+done
+exec $real_ps "\$@"
+SH
+  chmod +x "$shim/ps"
+  started=$EPOCHSECONDS
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_ACTION=slow \
+    FAKE_PI_SLOW_SECONDS=20 PI_REVIEW_MAX_SECONDS=1 PI_REVIEW_POLL_SECONDS=1 \
+    PI_REVIEW_KILL_WAIT_SECONDS=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-unconfirmed --report "$REPORTS/rev-unconfirmed.md" --account volker \
+    > "$ROOT/rev-unconfirmed.launch.log" 2>&1 < /dev/null || rc=$?
+  elapsed=$(( EPOCHSECONDS - started ))
+  (( rc == 5 )) || fail "a budget stop with an unreadable liveness exited $rc, expected 5"
+  (( elapsed <= 12 )) || fail "an unconfirmed budget stop blocked for ${elapsed}s; it must not wait for the launch"
+  contains "$ROOT/rev-unconfirmed.launch.log" 'REVIEW-BUDGET' 'the stop is still reported'
+  contains "$ROOT/rev-unconfirmed.launch.log" 'not confirmed stopped' \
+    'the wrapper says the stop was not confirmed rather than claiming it was'
+  contains "$ROOT/rev-unconfirmed.launch.log" 'not waiting for it' \
+    'the wrapper says it did not wait for the launch'
+  contains "$ROOT/rev-unconfirmed.launch.log" 'last state: unknown' \
+    'the message states what the liveness reading actually was'
+  contains "$RUNS/rev-unconfirmed.done" 'REVIEW-BUDGET' 'the run is still marked REVIEW-BUDGET'
+  [[ ! -e $REPORTS/rev-unconfirmed.md ]] || fail 'an unconfirmed stop wrote a report'
+}
+
+# L5: the check and the write use the SAME (resolved) path. A symlink at the
+# report path pointing INSIDE the reviewed worktree is resolved first, so the
+# containment refusal (which reasons about the resolved path) stops it; the old
+# code wrote to the caller's raw spelling after checking the resolved one.
+check_report_symlink_resolved_before_use() {
+  local before rc=0
+  ln -s "$WORKTREE/planted-review.md" "$REPORTS/rev-symlink.md"
+  before=$(pi_invocations)
+  launch rev-symlink none --account volker || rc=$?
+  (( rc == 2 )) || fail "a report symlinked into the worktree exited $rc, expected 2"
+  contains "$ROOT/rev-symlink.launch.log" 'report path is inside the reviewed worktree' \
+    'the resolved target, not the raw spelling, is what the containment check compared'
+  contains "$ROOT/rev-symlink.launch.log" "$WORKTREE/planted-review.md" \
+    'the refusal names the resolved target'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review started with its report symlinked into the worktree'
+  [[ ! -e $WORKTREE/planted-review.md ]] || fail 'the report was written through a symlink into the worktree'
+  rm -f -- "$REPORTS/rev-symlink.md"
+}
 
 # The reviewer has no write tool: the launcher saves its final message.
 check_report_from_final_message() {
@@ -790,12 +976,21 @@ check_docs() {
   contains "$readme" 'PI_REVIEW_MAX_STREAM_BYTES' 'README names the stream budget'
   contains "$readme" 'REVIEW-BUDGET' 'README documents the budget verdict'
   contains "$readme" 'REVIEW-NO-REPORT' 'README documents the no-text verdict'
+  contains "$readme" 'REVIEW-NOT-SETTLED' 'README documents the not-settled verdict'
+  contains "$readme" 'default **7200**' 'README states the raised wall-clock default'
+  contains "$readme" 'not confined to' 'README says the read tool is not confined to the worktree'
+  contains "$readme" 'means exactly one thing' 'README states what exit 0 means for a review'
   contains "$readme" '<run>.review/before-state.txt' 'README names the persisted before-state'
   contains "$readme" 'ls-files -s -v' 'README lists the index-flag comparison'
   contains "$readme" 'info/exclude' 'README lists the exclude comparison'
   contains "$readme" 'untracked files' 'README lists the untracked-content comparison'
   contains "$readme" 'does NOT cover' 'README states what the comparison does NOT cover'
-  contains "$readme" 'pi or pi-impl exit status' 'README states that pi exit codes pass through'
+  # M4: the old sentence claimed EVERY pi/pi-impl exit status (0 included) passes
+  # through unchanged, which the REVIEW-NO-REPORT and report-write paths
+  # contradict. The list now names the launcher's own codes and says what 0 means.
+  contains "$readme" 'Otherwise pi-impl' "README states which code a settling review returns"
+  contains "$readme" 'REVIEW-NOT-SETTLED' "README lists the launcher's own exit codes"
+  lacks "$readme" 'any** pi or pi-impl exit status' 'README no longer claims every pi exit status passes through'
   contains "$readme" 'UNREACHABLE for a review' 'README states that rc 3 is unreachable for a review'
   contains "$readme" 'never through the' 'README states the kill path'
   contains "$readme" '<run>.lock' 'README names the owner record the kill path uses'
@@ -832,6 +1027,7 @@ check_extra_args_cannot_override_contract
 check_budget_wall_time
 check_budget_stream_bytes
 check_budget_value_refused
+check_budget_default_wall
 check_stale_report_refused
 check_modified_head_branch
 check_modified_index_flags
@@ -844,6 +1040,13 @@ check_foreign_marker_refused
 check_unresolvable_report_path_refused
 check_report_from_final_message
 check_no_text_is_no_report
+check_length_cutoff_not_persisted
+check_non_success_classes_not_persisted
+check_earlier_material_not_rewritten
+check_budget_refusal_before_material
+check_budget_stop_verifies_group
+check_budget_stop_unconfirmed_is_bounded
+check_report_symlink_resolved_before_use
 check_docs
 
 [[ -z $(git -C "$WORKTREE" status --porcelain) ]] \
