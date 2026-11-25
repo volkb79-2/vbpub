@@ -4127,7 +4127,7 @@ Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M2
 
 ## KI-194 - cmru suite judges other projects
 
-**Status:** FIXED IN THIS BRANCH (P-core-12); filed 2026-11-24, severity: medium.
+**Status:** FIXED IN THIS BRANCH (P-core-12) for the image suite, the estate checks and the budget groups; residual files listed in the amendment below; filed 2026-11-24, severity: medium.
 
 Originally: `tests/test_tester_unified_image.py` (5,441 lines, the tester-unified Dockerfile and `gen-requirements.py`), `test_dependency_levels_pyproject.py::TestRealEstate` and the bootstrap-order tests judge other projects; the P6b final gate failed on 13 such tests when tls-edge was added to the tester PROJECTS list. `tests/test_gate_budgets.py` restates Run-Gate's budget rule.
 **Wanted.** Cross-project checks move to the project they check (the tester-unified checks to tester-unified's own lanes); anything genuinely estate-wide becomes a lane of `libraries/test-policy` (`estate_test_policy`). There is no new top-level estate-lint directory. `test_gate_budgets.py` is deleted after RG-296. cmru's gate then judges cmru.
@@ -4139,6 +4139,8 @@ Originally: `tests/test_tester_unified_image.py` (5,441 lines, the tester-unifie
 - `tests/test_gate_budgets.py` keeps only what `lanes --check` does not decide (exact lane pairing, cmru's canary policy, the mutation lane's `--timeout-seconds` floor); the margin and canary-budget groups are gone. The file is not deleted: RG-296's check does not cover those three groups, so deleting it would drop them silently.
 
 No enforcing project registry exists (no guard test fails for an unregistered directory), so `estate-lint/` is a directory plus a lane plus a README, not a registry entry. Out of scope here: `run-gate-project/tests/test_lanes_check.py::test_real_repository_all_has_no_findings` duplicates the new estate-lint step.
+
+Residual, not moved here: four cmru test files still read other projects (`test_bootstrap_from_zero_sequence.py`, `test_tester_image_cli_extended_identity.py`, `test_installed_wheel_subprocess.py`, `test_w2_integ.py`; the bootstrap-literal check is P-core-13). Two consequences of the new layout: (1) `cmru r0-r1` no longer checks the outer >= inner + 5m and canary-budget rules, so a merge that edits only `run-gate.toml` or `assay.toml` should also run `estate-lint/suite`; (2) `estate-lint/suite` runs the image's installed `run-gate`, not `{worktree}/run-gate-project/run_gate.py`, so a change to `_check_lanes_project` is judged by the previous checker.
 
 Source: .controller-state/design-review-2026-11-24/cmru-cli-extended.md M5/M6
 

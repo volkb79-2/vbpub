@@ -3,8 +3,9 @@
 The estate checks load `cmru.orchestration.toml` through cmru's strict reader,
 which DECLARES ``${CGROUP_PARENT_DEV_GATES}`` with no default: unset, the reader
 exits 2. The lane environment forwards the host's *placement* slice, which must
-not decide a test's outcome, so every test gets a constant fake value instead. Set inside the environment snapshot so a
-test's own ``delenv`` is not re-introduced by fixture teardown.
+not decide a test's outcome, so every test gets a constant fake value instead.
+Set inside the environment snapshot so a test's own ``delenv`` is not
+re-introduced by fixture teardown.
 """
 import contextlib
 import os

@@ -20,8 +20,8 @@ Two things, both estate-wide:
 2. **Run-Gate lane budgets** (`run-gate lanes --check --all --strict`, the
    second step of the `suite` lane). It walks every tracked `run-gate.toml`,
    and with `--strict` the "outer budget >= inner budget + 5m" margin is a
-   failure rather than a warning. The rules it no longer needs restating in a
-   project's own tests.
+   failure rather than a warning. A project's own tests no longer restate those
+   rules.
 
 ## How to run it
 
@@ -37,6 +37,12 @@ cd estate-lint && PYTHONPATH=../cmru/src:../libraries/worktree/src \
 The lane runs in `tester-unified`: the image bakes a copy of cmru, so the lane
 puts the **worktree's** `cmru/src` and `libraries/worktree/src` on
 `PYTHONPATH` and judges the checkout, not the image.
+
+Two limits to know. The lane runs the image's installed `run-gate`, not
+`{worktree}/run-gate-project/run_gate.py`, so a change to the budget checker
+itself is judged by the previous checker. And `cmru r0-r1` no longer checks the
+budget rules, so a merge that edits only a `run-gate.toml` or `assay.toml`
+should also run `estate-lint/suite`.
 
 ## What it does not own
 
