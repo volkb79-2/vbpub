@@ -609,8 +609,10 @@ class ShellKitTests(F.ShellKitBase):
     def test_a_mid_run_drift_marks_the_step_inconclusive_and_stops_the_ladder(self) -> None:
         # 2.3: every tick reads the five files back and compares them with the kit's OWN write, and the comparison
         # runs again before a step's first write, so a foreign value never becomes the WAL's "original".
+        # This case needs a second JUDGED tick in step 0 (the foreign write lands in the first one's sample), so it
+        # raises the dwell itself: the shared fake host runs the shortest ladder the other seams need.
         r = self.run_kit("--steps", "2", "--dwell", "0", ticks="40", **self.judge_env("PASS"),
-                         MDT_ACCEPT_HOTSET=str(self.foreign_writer(every=1)))
+                         MDT_ACCEPT_DWELL_TICKS="3", MDT_ACCEPT_HOTSET=str(self.foreign_writer(every=1)))
         steps = (self.ev / "steps.env").read_text()
         self.assertIn("drift:dev.slice/memory.min", steps, r.stdout + r.stderr)
         self.assertEqual(self.judge_steps(), ["0"], "the drift stops the ladder at step 0")
