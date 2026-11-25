@@ -62,7 +62,9 @@ host table; `flock`, `git`, `python3`, `jq` (failures) and `docker`, `shellcheck
 directories; the effective number of local gate slots (`CONTROLLER_GATE_SLOTS`, default 2)
 and that every slot lock (`CONTROLLER_GATE_LOCK`, `CONTROLLER_GATE2_LOCK` from two
 slots on, and the derived `gate<N>.lock` files from three slots on) is set, absolute,
-distinct and in a writable directory (a failure otherwise); and where `$CONTROLLER_HOME` and `CONTROLLER_RUNS_DIR` really live (a
+distinct and in a writable directory (a failure otherwise); whether the keep-alive watcher's pid
+is running (read from `/proc/<pid>/cmdline`, never probed with a lock or signal; a WARN prints
+the detached start command); and where `$CONTROLLER_HOME` and `CONTROLLER_RUNS_DIR` really live (a
 symlink target inside a git work tree is a warning: `git clean -fdx` would delete it,
 see [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md)). It prints names and paths only,
 never a value from the env file, the host table or a key. Limit: the env file is
