@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-208 | OPEN (filed 2026-11-24, edge P-edge-08 review M1/S1: `bundle-build` writes no Seam-3 per-distribution manifest entries) | — |
 | KI-207 | OPEN (filed 2026-11-24, KI-141 parts 6+7 review: three stale "first release" / "asynchronous R2" comments) | — |
 | KI-206 | BY DESIGN (filed 2026-11-24, the `release-gate` lane needs GitHub auth: local or release transaction only, never a remote-gate lane) | — |
 | KI-205 | OPEN (filed 2026-11-24, P-core-06 review follow-ups: watchdog escaped PIDs unprinted, SystemExit(143) swallowed by refusal handlers, test gaps, stale 0.3.0 prose) | — |
@@ -4336,3 +4337,13 @@ Source: vbpub-core, P-core-05 image build, 2026-11-24.
 The lanes under items 2 and 3 must stay byte-identical, because the whole-source backfill (PLAN-assay P-assay-08) runs at one fixed commit. Before editing either comment, check whether the assay judge identity or a run-gate lane digest hashes the config file's bytes; if it does, the edit waits for the next intended lane change (P-assay-18).
 
 **Close when:** the three comments describe the whole-source R2 lane as it is now, with the judge identity unchanged.
+
+## KI-208 - `cmru handler bundle-build` writes no Seam-3 per-distribution manifest entries
+
+**Status:** OPEN (filed 2026-11-24); severity: medium. Source: the edge controller's P-edge-08 review r1, M1 and S1 (`.controller-state/edge/reports/P-edge-08-review-r1.md`). Related: KI-196 (the installer wheel set baked into `get.py`).
+
+- **Gap.** `cmru handler bundle-build` (7.4.0 and 7.5.0) writes only the generic manifest. It writes no Seam-3 per-distribution `manifest[distribution]` entries for the declared `[[project.installer.wheels]]`. Only tls-edge's deleted `write-bundle-manifest.py` wrote them.
+- **Consequence.** A tls-edge 3.2.0 `get.py` update against a bundle built by `bundle-build` fails closed: `manifest.json has no entry for distribution 'cli-extended'`.
+- **Edge's workaround (4.0).** `tools/bundle_contract.py`, an installer extension that swaps `get.py` internals (`_install_wheels`, `_verify_wheel_sha256`, `_wheel_listed`) through `globals()` and verifies the wheels from the bundle's `files` list instead (P-edge-08 review S1: it evades the EXTENSION_API contract). The tls-edge docs also describe a one-time 3.x -> 4.0 update with the fresh `get.py`.
+- **Fix options.** (a) `bundle-build` writes the per-distribution entries for every declared `[[project.installer.wheels]]`, so old installers can read new bundles and the workaround, S1 and the one-time update path all go away; or (b) an EXTENSION_API wheel-verification hook, so an extension can supply wheel verification without touching template internals.
+- **Close when:** a bundle built by `cmru handler bundle-build` is readable by a 3.2.0-era `get.py` (a test installs from such a bundle), or the extension hook exists and tls-edge's `tools/bundle_contract.py` uses it instead of `globals()`.
