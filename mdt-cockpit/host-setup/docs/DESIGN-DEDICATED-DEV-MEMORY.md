@@ -122,14 +122,26 @@ fallback until the measurement gives the value. The old fixed 1280M was only the
 - **Margin**, sampled every 10 s: U = `MemTotal − MemFree − Σ memory.current of every root child`;
   `init.scope` `memory.current`; W = Σ zone `high` × page size from `/proc/zoneinfo`.
   M = p99(U) + p99(init.scope) + W + 64M.
-- **Acceptance** (else raise the failing value and repeat): floored-unit refault deltas ≈ 0; system.slice and
-  user.slice `memory.pressure` `some avg10 ≤ 1`; `ssh host true` ≤ 2 × idle baseline; no `oom_kill` delta in
-  global vmstat, dev.slice or tier `memory.events`.
+- **Acceptance** (else raise the failing value and repeat): floored-unit refault deltas ≈ 0 (**superseded**: v2 makes
+  them informational only, below); system.slice and user.slice `memory.pressure` `some avg10 ≤ 1`; `ssh host true` ≤
+  2 × idle baseline; no `oom_kill` delta in global vmstat, dev.slice or tier `memory.events`.
 - **Stored in `/etc/mdt/host-setup.env`:** `DEV_HOST_MEMORY_MIN` (empty = mirror table, `-` = none, else
   space-separated `unit=size` row overrides such as `docker.service=300M`; `.slice` names and sizes < 1M refused);
   `DEV_HOST_MEMORY_MARGIN` (M, default 512M, ≥ 64M); `DEV_INTERACTIVE_MEMORY_MIN` (cockpit floor, 5.2);
   `DEV_HOST_MEMORY_MEASURED` (free text `<UTC date> <evidence dir>`, never read by the derivation; check.sh NOTEs
   while it is empty). A floor change valid for both flavours goes to DI2's table and both mirrors follow.
+
+**v2 (P-plat-19k, 2026-11-25) supersedes this method.** `docs/DESIGN-ACCEPT-KIT-V2.md` replaces the single 30 min
+window with a step-wise **squeeze test** (a dummy container sized to dev.slice's remaining room under `memory.max` and
+inflated 128M per step, so dev.slice stays at its ceiling while the ceiling rises and the host reserve shrinks; each step
+must prove the load was real), takes the floors' hot set `H` from **DAMON** — one paddr kdamond, one `stat` scheme per unit
+with `memcg`/`young` ops-filters, `H` = the `sz_ops_filter_passed` p95 and `floor = 1.10 × H`, never `end − start`, and a
+slice summed over its leaf memcgs — instead of `active_anon + active_file` × 1.25, and makes **pressure and ssh/service
+latency the hard criteria**: the per-unit **refault criterion above is informational only from v2 on** (both 19g runs
+failed solely on it while pressure, ssh, swap and OOM all passed). `M` keeps its formula but is read over the deepest
+passing step, `K_proposed = max(F_new + M, k_last_pass)` replaces this note's two v1 clamps, and a derived floor below the
+installed row stays an untested candidate. The squeeze pauses the reconcile on `/run/mdt-accept.lock` instead of stopping
+its timer, so a SIGKILL of the kit still converges the host back.
 
 **Bounds** (refused before any write, exit 2, naming the key): F ≤ 10 % MemTotal (DIV2-BL-12); derived
 system.slice floor ≤ 460M (DIV2-BL-10); K ≥ F + 128M; dev.slice `MemoryMin` ≤ dev `MemoryMax` − 1G (r1 10);
