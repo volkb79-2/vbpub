@@ -10,7 +10,10 @@ set -u
 # one digit-free ping into the pane's EMPTY single-row prompt box, reads it back after 1 s and presses Enter only on
 # an exact match; anything else is cleared (our own text) or left alone (foreign text, dialog, busy) and
 # ~/controller/keepalive/<sessionId>.abort holds the anchor. The count N comes from the JSONL, the cap is
-# KEEPALIVE_MAX, at most one ping per anchor. Pane lock ~/controller/locks/<%pane_id>.lock is shared with the
+# KEEPALIVE_MAX, at most one ping per anchor. Every pane check (busy, dialog, prompt box) reads ONE `pane_view` of the
+# capture: all bottom windows are measured from the mode line, and the rows below it (the agents panel) are trimmed
+# at the mode line (the agents panel below it is not part of the box). Pane lock
+# ~/controller/locks/<%pane_id>.lock is shared with the
 # resume helpers. Files: logs/keepalive.log, keepalive.pid, locks/keepalive.lock. Skips are logged on change only.
 #
 # NOTE (DeepSeek / Open Design controllers): no code path until such a controller exists; operator ruling, the
@@ -41,7 +44,7 @@ DIALOG_LINES=15                                                   # how many bot
 BOX_RULE_BYTES='(?:\xe2\x94\x80){20,}'                            # a prompt-box rule: at least 20 x U+2500, nothing else (perl, bytes)
 BOX_LABEL_RULE_BYTES='(?:\xe2\x94\x80){20,}[A-Za-z0-9._-]+(?:\xe2\x94\x80)+'   # same rule with one tmux session label (spaces stripped)
 BOX_LINES=6                                                       # the input row must be within this many bottom non-blank lines
-BOX_FOOT_MARKER='⏵⏵ bypass permissions on'                        # footer rows below the mode line are not part of the prompt box
+BOX_FOOT_MARKER='⏵⏵ bypass permissions on'                        # the mode line: footer rows below it are not part of the prompt box
 
 RESUME_PREFIX=KA_RESUME   # resume-lib.sh test seams; not KEEPALIVE_*, that namespace is this script's constants
 home_dir=${KEEPALIVE_HOME:-${CONTROLLER_HOME:-$HOME/controller}}
@@ -122,6 +125,20 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
 PY
 }
 
+pane_view() { # $1 = capture with escapes: the prompt box and every bottom window are measured from the MODE line, not from
+  # the last line of the capture: nothing below the mode line (the agents panel) is part of the prompt box. No input row
+  # or no mode line: the capture is returned unchanged (fail-safe).
+  local ln=() i idx=-1 n esc=$'\033' re mode
+  re="^(${esc}\[[0-9;]*m)*$INPUT_MARKER"
+  mapfile -t ln <<<"$1"; n=${#ln[@]}
+  for ((i = 0; i < n; i++)); do [[ ${ln[i]} =~ $re ]] && idx=$i; done
+  (( idx >= 0 )) || { printf '%s\n' "${ln[@]}"; return 0; }
+  for ((i = idx + 1; i < n; i++)); do
+    mode=$(strip_sgr <<<"${ln[i]}")
+    [[ $mode == *"$BOX_FOOT_MARKER"* ]] && { n=$((i + 1)); break; }   # the mode line: the agents panel below it is not the box
+  done
+  printf '%s\n' "${ln[@]:0:n}"
+}
 dialog_open() { # $1 = capture with escapes: a numbered permission/question menu is on screen
   local plain; plain=$(strip_sgr <<<"$1" | grep -v '^[[:space:]]*$' | tail -n "$DIALOG_LINES")
   grep -qE -- "$DIALOG_CURSOR_RE" <<<"$plain" || grep -qF -- "$DIALOG_FOOTER" <<<"$plain"
@@ -129,11 +146,11 @@ dialog_open() { # $1 = capture with escapes: a numbered permission/question menu
 is_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
 is_label_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_LABEL_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
 box_ok() { # $1 = capture: the live input row is alone in its box (a box rule right above AND below), within the last BOX_LINES non-blank lines
+  # $1 must be a pane_view capture: the trim at the mode line lives there, once.
   local ln=() i n idx=-1 re="^$INPUT_MARKER"
   mapfile -t ln < <(strip_sgr <<<"$1" | grep -av '^[[:space:]]*$')   # colour codes first: a codes-only line is blank, as in pane_state_of
   n=${#ln[@]}
   for ((i = 0; i < n; i++)); do [[ ${ln[i]} =~ $re ]] && idx=$i; done
-  for ((i = idx + 1; i < n; i++)); do [[ ${ln[i]} == *"$BOX_FOOT_MARKER"* ]] && { n=$((i + 1)); break; }; done
   (( idx >= 1 && idx + 1 < n && idx >= n - BOX_LINES )) || return 1
   { is_rule "${ln[idx-1]}" || is_label_rule "${ln[idx-1]}"; } && is_rule "${ln[idx+1]}"   # label only above; a draft adds lines below
 }
@@ -151,6 +168,7 @@ abort_mark() { # sid anchor: the session is skipped while its anchor is this one
 ping_pane() {
   local name=$1 sid=$2 pane=$3 anchor=$4 n=$5 t rc rest row want="$INPUT_MARKER $PING_TEXT"
   t=$(tmux capture-pane -e -p -t "$pane") || { skip "$name" "$sid" "capture-failed"; return; }
+  t=$(pane_view "$t")   # one view for the busy, dialog and box checks: each window starts at the mode line
   pane_state_of "$t"; rc=$?
   [[ $rc -eq 1 ]] && { skip "$name" "$sid" "busy"; return; }
   dialog_open "$t" && { skip "$name" "$sid" "dialog"; return; }
@@ -159,6 +177,7 @@ ping_pane() {
   tmux send-keys -t "$pane" -l -- "$PING_TEXT" || { klog "$name" "$sid" error "send-keys failed"; return; }
   sleep "$readback_wait"
   t=$(tmux capture-pane -e -p -t "$pane") || { klog "$name" "$sid" abort-foreign "read-back capture failed; nothing more sent"; abort_mark "$sid" "$anchor"; return; }
+  t=$(pane_view "$t")   # the same view as before typing: a busy pane whose mode line sits above a tall panel still reads busy
   row=$(norm_row "$(input_row_of "$t")"); rest=${row#"$INPUT_MARKER "}
   local ours=0 prefix=0
   [[ $row == "$want" ]] && ours=1

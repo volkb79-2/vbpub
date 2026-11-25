@@ -50,6 +50,30 @@ chmod +x "$ROOT/bin/tmux"
 box() { printf 'output\n%s\n%b\n%s\n%b\n' "$RULE" "$1" "$RULE" "${2:-  ctx 41%}"; }
 BUSYL='  * Thinking (12s . esc to interrupt)'
 MENU=' Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel'
+PANELFIX=$SCRIPT_DIR/fixtures/keepalive/idle-agents-panel.ansi                     # the sanitized REAL idle agents-panel capture
+# panel_frame <dest> <extra panel rows> <busy 0|1>: a temp copy of the REAL capture, with `· esc to interrupt` added to its
+# mode line when busy and N extra panel rows appended.
+panel_frame() {
+  local dest=$1 rows=$2 busy=$3 k mode_line
+  mode_line=$(grep -nFm1 -- '⏵⏵ bypass permissions on' "$PANELFIX" | cut -d: -f1)
+  local esc=$'\033'
+  cp -- "$PANELFIX" "$dest"
+  # append the busy marker at the END of the mode line's text: the line is captured with colour runs, and appending is what
+  # a real busy pane shows (the mode line grows, the rest of the layout does not move)
+  if (( busy )); then sed -i "${mode_line}s/${esc}\\[39m$/ · esc to interrupt${esc}\\[39m/" "$dest"; fi
+  for ((k = 1; k <= rows; k++)); do printf '  \e[38;5;246m◯ general-purpose\e[39m  \e[38;5;246magent %s running a foreground tool\e[39m\n' "$k" >>"$dest"; done
+}
+# typed_row <dest> <text>: the read-back shape: the capture's EMPTY input row now holds the text
+typed_row() { sed -i "s/❯$(printf '\xc2\xa0')/❯ $2/" "$1"; }
+# draft_row <dest>: a continuation line right under the live input row (a multi-line draft)
+draft_row() { perl -i -pe 'if (!$d && /\xe2\x9d\xaf\xc2\xa0/) { $_ .= "  foo\n"; $d = 1 }' "$1"; }
+# menu_frame <dest> <extra panel rows>: an MB layout, built from the REAL capture's last section: the permission menu above
+# the capture's own top box rule, its empty box, its mode line and its panel plus N extra rows
+menu_frame() {
+  local dest=$1 rows=$2 first k
+  first=$(grep -nFm1 -- '❯' "$PANELFIX" | cut -d: -f1)   # -m1: grep stops itself, no `| head` SIGPIPE under pipefail
+  { printf '%b\n' "$MENU"; tail -n "+$((first - 1))" "$PANELFIX"; for ((k = 1; k <= rows; k++)); do printf '  \e[38;5;246m◯ general-purpose\e[39m  \e[38;5;246magent %s running a foreground tool\e[39m\n' "$k"; done; } >"$dest"
+}
 # frame <dir> <phase> <n> <kind>
 frame() {
   local f; f=$(printf '%s/frames/%s.%03d' "$1" "$2" "$3")
@@ -66,6 +90,11 @@ frame() {
     ROK) box "❯\xc2\xa0$TEXT" >"$f" ;;                                    # read-back: exactly our text, NBSP as the separator
     ROK2) box "❯ $TEXT" >"$f" ;;                                          # ... plain space
     ROK3) box "❯\xc2\xa0\xc2\xa0$TEXT\xc2\xa0 " >"$f" ;;                  # ... NBSP gap doubled, trailing NBSP
+    LID) panel_frame "$f" 3 0 ;;                                        # the REAL idle agents panel plus 3 rows: pingable
+    LB) panel_frame "$f" 6 1 ;;                                         # H1: real frame, `esc to interrupt` in the mode line, 9 panel rows
+    LRB) panel_frame "$f" 6 1; typed_row "$f" "$TEXT" ;;                # H1: the read-back of the ping on such a pane
+    LMB) menu_frame "$f" 12 ;;                                            # H1: a menu above the box, then the real mode line, then a 15-row panel
+    LMLP) panel_frame "$f" 6 0; draft_row "$f" ;;                       # H1: a draft line under the live row, mode line and panel below
     RPF) box '❯ [keepalive] cache ref' >"$f" ;;                           # only a prefix of our text
     RFO) box "❯ hello $TEXT" >"$f" ;;                                     # foreign text typed by the operator
     RBUSY) { printf '%s\n' "$BUSYL"; box "❯ $TEXT"; } >"$f" ;;            # a turn started: our text, busy
@@ -115,11 +144,12 @@ klog() { cat -- "$D/home/logs/keepalive.log"; }
 called() { grep -qF -- "$1" "$D/calls.log" 2>/dev/null; }
 logged() { grep -qF -- "$1" "$D/home/logs/keepalive.log" 2>/dev/null; }
 sent_keys() { calls | grep -c '^send-keys'; }
-capture_functions() { # $1 = sanitized real capture; prints "<pane_state rc> <box_ok rc> <dialog_open rc>"
+capture_functions() { # $1 = sanitized real capture; prints "<pane_state rc> <box_ok rc> <dialog_open rc>" of the TRIMMED view
   KEEPALIVE_SOURCE_ONLY=1 bash -c '
     set -uo pipefail
     source "$1"
     capture=$(<"$2")
+    capture=$(pane_view "$capture")
     pane_state_of "$capture"; pane=$?
     box_ok "$capture"; box=$?
     dialog_open "$capture"; dialog=$?
@@ -149,6 +179,8 @@ for capture in idle-ide-notice.ansi idle-agents-panel.ansi; do
   [[ $result == '0 0 1' ]] || fail "$capture: pane_state_of/box_ok/dialog_open returned $result, wanted 0 0 1"
   echo "PASS real capture $capture: pane_state_of=0 box_ok=true dialog_open=false"
 done
+# 1e. H1 on the REAL frame: the trimmed view keeps the real idle agents panel pingable (its panel rows are not the box).
+scenario h1-real-panel 3400 "LID" "ROK"; run; called 'send-keys %1 Enter' || fail "the real idle agents panel must stay pingable"
 
 # 2. R2-2: the read-back re-runs the busy and dialog checks
 scenario rb-busy 3400 "I" "RBUSY"; run
@@ -184,6 +216,21 @@ done
 scenario pane-narrow 3400 "I" "ROK"; echo "%1 main 70" >"$D/panes.txt"; run
 [[ $(sent_keys) -eq 0 ]] || fail "a pane narrower than 80 columns must not be pinged"; logged 'pane-narrow (70)' || fail "narrow logged"
 
+# 4a. H1: on a frame built from the REAL agents-panel capture the trim is the only reason a busy pane whose mode line sits
+#     above a tall panel is recognised. Each case would type (and submit) the ping at 3539714d1.
+scenario h1-busy-panel 3400 "LB" "ROK"; run
+[[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a busy pane with 9 panel rows must not be pinged (esc to interrupt is 10 lines up)"; }
+logged 'skip busy' || fail "H1: the pane must be skipped as busy, not as an unknown box layout"
+scenario h1-readback 3400 "LID" "LRB"; run
+called 'send-keys %1 C-u' || { calls >&2; fail "H1: a busy read-back over a panel must be cleared with C-u"; }
+! called 'send-keys %1 Enter' || fail "H1: Enter was sent into a busy pane whose mode line sits above a panel"
+logged 'abort-busy' || fail "H1: abort-busy logged for the panel read-back"
+scenario h1-dialog 3400 "LMB" "ROK"; run
+[[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a menu above the box, a mode line and a 15-row panel must not be pinged"; }
+logged 'skip dialog' || fail "H1: the dialog must be found below a tall panel too"
+scenario h1-draft 3400 "LMLP" "ROK"; run
+[[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a draft line under the live row must never be typed into"; }
+logged 'skip input-box-layout' || fail "H1: a draft is refused by the box geometry"
 # 4b. M1: a multi-line draft (box row empty, continuation line below it) is never typed into, and never erased or submitted
 #     when it only shows on the read-back (cursor on the draft line or on the marker row)
 for kind in RML1 RML2; do
