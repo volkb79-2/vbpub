@@ -35,6 +35,18 @@ case "$host" in
     ;;
 esac
 
+# cmru 7.5.0 ends a step that printed nothing for runner.no_progress_timeout_seconds (1800 s
+# by default, cmru/src/cmru/runner.py:43). A delegated lane takes 6-50 minutes, so the wait
+# below prints one progress line per interval instead of staying silent until the watchdog
+# fires; 300 s feeds the default watchdog several lines before it could trip. An unset
+# variable means 300; a set but non-integer or out-of-range value is refused, because it
+# states an intent this script cannot honour.
+heartbeat_seconds="${ASSAY_RELEASE_GATE_HEARTBEAT_S-300}"
+if [[ ! "$heartbeat_seconds" =~ ^[0-9]{1,4}$ ]] \
+  || (( 10#$heartbeat_seconds < 30 || 10#$heartbeat_seconds > 1500 )); then
+  die "ASSAY_RELEASE_GATE_HEARTBEAT_S must be an integer from 30 to 1500; got '$heartbeat_seconds'" 2
+fi
+
 commit="${CMRU_RELEASE_GATE_COMMIT:-}"
 [[ -n "$commit" ]] \
   || die 'CMRU_RELEASE_GATE_COMMIT is unset; run this from the CMRU release gate'
@@ -133,6 +145,44 @@ remote_gate_pid=""
 remote_gate_launching=false
 pending_signal=""
 pending_signal_status=""
+remote_gate_started_at=""
+heartbeat_pid=""
+
+# The wait below stays the plain blocking `wait "$remote_gate_pid"`, so a trapped INT/TERM
+# interrupts it exactly as before and the child's exit status still reaches remote_status.
+# The heartbeat is a separate subshell: its own sleep is interruptible, so the cancel path
+# stops it before it cancels the remote run and nothing is left printing after the wait.
+print_wait_line() {
+  printf 'assay release-gate: waiting for remote run %s on %s (%ss)\n' \
+    "$run_name" "$host" "$(( $(date +%s) - remote_gate_started_at ))" >&2
+}
+
+start_heartbeat() {
+  local interval=$heartbeat_seconds parent_pid=$$
+  (
+    set +e
+    sleep_pid=""
+    trap 'kill "$sleep_pid" 2>/dev/null; exit 0' INT TERM
+    # `$$` is the wrapper's own pid inside a subshell, so a wrapper that dies by SIGKILL
+    # cannot leave a heartbeat printing into a closed terminal: the loop ends with it.
+    while kill -0 "$parent_pid" 2>/dev/null; do
+      sleep "$interval" &
+      sleep_pid=$!
+      wait "$sleep_pid"
+      sleep_pid=""
+      kill -0 "$parent_pid" 2>/dev/null || break
+      print_wait_line
+    done
+  ) &
+  heartbeat_pid=$!
+}
+
+stop_heartbeat() {
+  [[ -n "$heartbeat_pid" ]] || return 0
+  kill "$heartbeat_pid" 2>/dev/null || true
+  wait "$heartbeat_pid" 2>/dev/null || true
+  heartbeat_pid=""
+}
 
 handle_remote_signal() {
   local signal_name="$1" exit_status="$2" cancel_status
@@ -143,6 +193,7 @@ handle_remote_signal() {
   fi
 
   trap ':' INT TERM
+  stop_heartbeat
   if [[ -n "$remote_gate_pid" ]]; then
     kill -s "$signal_name" "$remote_gate_pid" 2>/dev/null || true
   fi
@@ -175,11 +226,14 @@ remote_gate_launching=false
 if [[ -n "$pending_signal" ]]; then
   handle_remote_signal "$pending_signal" "$pending_signal_status"
 fi
+remote_gate_started_at=$(date +%s)
+start_heartbeat
 if wait "$remote_gate_pid"; then
   remote_status=0
 else
   remote_status=$?
 fi
+stop_heartbeat
 remote_gate_pid=""
 
 if receipt="$(python3 - "$run_dir/meta.json" "$run_dir/result.json" <<'PYEOF'

@@ -9,6 +9,7 @@ import select
 import signal
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -31,6 +32,7 @@ import json
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 
 args = sys.argv[1:]
@@ -97,6 +99,19 @@ if config.get("write_result", True):
     json.dumps(sorted(os.environ)), encoding="utf-8"
 )
 (remote_out / "remote-child.pid").write_text(str(os.getpid()), encoding="utf-8")
+hold_until = config.get("hold_until")
+if hold_until:
+    # Event-driven, so the test's assertions never rest on a duration: the wrapper's
+    # heartbeat is observed first, then the test writes this file to let the run end.
+    deadline = time.monotonic() + float(config.get("hold_max_seconds", 30))
+    while not Path(hold_until).exists():
+        if time.monotonic() > deadline:
+            print(
+                "fake remote-gate: hold_until was never released",
+                file=sys.stderr,
+            )
+            raise SystemExit(90)
+        time.sleep(0.01)
 if config.get("signal_mode"):
     released = False
     def release(_sig, _frame):
@@ -200,6 +215,202 @@ def _remote_calls(env: dict[str, str]) -> list[list[str]]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+# A heartbeat interval must be 30 s or more, so a test cannot observe one inside a
+# reasonable run without speeding that ONE sleep up: the BASH_ENV definition replaces
+# the wrapper's `sleep 300` heartbeat wait with 50 ms and passes every other duration
+# through unchanged. The assertion itself is event-driven (a line is waited for, never
+# a fixed pause), so no result depends on how fast the host runs the loop.
+FAST_HEARTBEAT_ENV = (
+    "sleep() {\n"
+    '  case "${1:-}" in\n'
+    "    300) /bin/sleep 0.05 ;;\n"
+    '    *) command sleep "$@" ;;\n'
+    "  esac\n"
+    "}\n"
+)
+HEARTBEAT_LINE = re.compile(
+    r"^assay release-gate: waiting for remote run "
+    r"(assay-rel-[0-9a-f]{12}-(?:tester-unified|self-qualification-provisional)-[0-9a-z]{7}) "
+    r"on (v1001|r1002) \((\d+)s\)$"
+)
+
+
+def _fast_heartbeat_sleep(tmp_path: Path) -> str:
+    path = tmp_path / "fast-heartbeat-sleep.sh"
+    path.write_text(FAST_HEARTBEAT_ENV, encoding="utf-8")
+    return str(path)
+
+
+class Wrapper:
+    """A running release-gate.sh with its output files, closed together."""
+
+    def __init__(self, tmp_path: Path, env: dict[str, str]) -> None:
+        self.stderr_path = tmp_path / "wrapper.stderr"
+        self.stdout_path = tmp_path / "wrapper.stdout"
+        self.stderr_path.write_text("", encoding="utf-8")
+        self.stdout_path.write_text("", encoding="utf-8")
+        self._streams = (
+            self.stdout_path.open("a", encoding="utf-8"),
+            self.stderr_path.open("a", encoding="utf-8"),
+        )
+        self.proc = subprocess.Popen(
+            ["/bin/bash", str(SCRIPT), "tester-unified"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            stdout=self._streams[0],
+            stderr=self._streams[1],
+            start_new_session=True,
+        )
+
+    def stderr(self) -> str:
+        return self.stderr_path.read_text(encoding="utf-8")
+
+    def wait_for(self, predicate, what: str, *, timeout_s: float = 60.0) -> str:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            text = self.stderr()
+            if predicate(text):
+                return text
+            time.sleep(0.01)
+        raise AssertionError(
+            f"the wrapper never {what}; exit {self.proc.poll()}; stderr so far:\n"
+            f"{self.stderr()}"
+        )
+
+    def reap(self, *, timeout_s: float = 60.0) -> int:
+        try:
+            self.proc.wait(timeout=timeout_s)
+        finally:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if self.proc.poll() is None:
+                self.proc.wait(timeout=timeout_s)
+            for stream in self._streams:
+                stream.close()
+        return self.proc.returncode
+
+    def kill_leftovers(self) -> None:
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _heartbeat_lines(text: str) -> list[re.Match[str]]:
+    return [
+        match
+        for line in text.splitlines()
+        if (match := HEARTBEAT_LINE.match(line)) is not None
+    ]
+
+
+@pytest.mark.parametrize("value", ["10", "1501", "zero", "300.5", "", " 300"])
+def test_release_gate_rejects_an_unusable_heartbeat_interval(
+    tmp_path: Path, value: str
+) -> None:
+    env = _environment(tmp_path)
+    env["ASSAY_RELEASE_GATE_HEARTBEAT_S"] = value
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2
+    assert proc.stderr.strip() == (
+        "assay release-gate: ASSAY_RELEASE_GATE_HEARTBEAT_S must be an integer "
+        f"from 30 to 1500; got '{value}'"
+    )
+    assert not _remote_calls(env)
+
+
+@pytest.mark.parametrize("value", ["30", "300", "1500"])
+def test_release_gate_accepts_the_heartbeat_interval_bounds(
+    tmp_path: Path, value: str
+) -> None:
+    env = _environment(tmp_path)
+    env["ASSAY_RELEASE_GATE_HEARTBEAT_S"] = value
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 0, proc.stderr
+    assert _heartbeat_lines(proc.stderr) == []
+    assert len(_remote_calls(env)) == 1
+
+
+def test_release_gate_heartbeats_while_a_remote_run_is_slow(tmp_path: Path) -> None:
+    env = _environment(tmp_path)
+    env["BASH_ENV"] = _fast_heartbeat_sleep(tmp_path)
+    released = tmp_path / "release-the-fake-run"
+    _configure_fake(env, hold_until=str(released), lane_status=1, verdict="FAIL")
+    wrapper = Wrapper(tmp_path, env)
+    try:
+        stderr = wrapper.wait_for(
+            lambda text: len(_heartbeat_lines(text)) >= 2, "printed two heartbeat lines"
+        )
+        beats = _heartbeat_lines(stderr)
+        run_name = _remote_calls(env)[0]
+        name = run_name[run_name.index("--name") + 1]
+        assert [match.group(1) for match in beats] == [name, name]
+        assert [match.group(2) for match in beats] == ["v1001", "v1001"]
+        # The shape is fixed: run name, host and a whole-seconds elapsed count.
+        assert int(beats[0].group(3)) >= 0
+        assert int(beats[1].group(3)) >= int(beats[0].group(3))
+        released.write_text("go", encoding="utf-8")
+        status = wrapper.reap()
+    finally:
+        wrapper.kill_leftovers()
+
+    # The heartbeat must not swallow the lane's own exit status.
+    assert status == 1, wrapper.stderr()
+    assert len(_remote_calls(env)) == 1
+
+
+def test_release_gate_heartbeat_still_cancels_the_remote_run_on_term(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    env["BASH_ENV"] = _fast_heartbeat_sleep(tmp_path)
+    secret_names = (
+        "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
+        "GH_TOKEN", "GH_ENTERPRISE_TOKEN",
+    )
+    env.update({name: f"secret-{name}" for name in secret_names})
+    ready_fifo = tmp_path / "remote-ready.fifo"
+    os.mkfifo(ready_fifo)
+    _configure_fake(env, signal_mode=True, ready_fifo=str(ready_fifo))
+    ready_fd = os.open(ready_fifo, os.O_RDWR | os.O_NONBLOCK)
+    wrapper = Wrapper(tmp_path, env)
+    try:
+        wrapper.wait_for(
+            lambda text: len(_heartbeat_lines(text)) >= 1, "printed a heartbeat line"
+        )
+        ready, _, _ = select.select([ready_fd], [], [], 15)
+        assert ready, "fake remote-gate did not reach its signal-ready handshake"
+        assert os.read(ready_fd, 32) == b"ready\n"
+        wrapper.proc.send_signal(signal.SIGTERM)
+        status = wrapper.reap()
+    finally:
+        os.close(ready_fd)
+        wrapper.kill_leftovers()
+
+    stderr = wrapper.stderr()
+    assert status == 143, stderr
+    assert (Path(env["REMOTE_GATE_OUT"]) / "remote-signal.txt").read_text(
+        encoding="utf-8"
+    ) == str(signal.SIGTERM.value)
+    assert (Path(env["REMOTE_GATE_OUT"]) / "remote-child-finished.txt").exists()
+    calls = _remote_calls(env)
+    assert [call[0] for call in calls] == ["run", "cancel"]
+    assert "remote cancellation was requested" in stderr
+    cancel_secrets = json.loads(
+        (Path(env["REMOTE_GATE_OUT"]) / "remote-cancel-env-secrets.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert all(cancel_secrets[name] is False for name in secret_names)
+    # The heartbeat stops with the wait: no progress line is printed after the cancel.
+    cancel_at = stderr.index("remote cancellation was requested")
+    assert stderr.index(_heartbeat_lines(stderr)[-1].group(0)) < cancel_at
 
 
 def _run(tmp_path: Path, lane: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
