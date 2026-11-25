@@ -945,6 +945,21 @@ run-gate r2 -- --merge-manifest .run-gate/merge.json
 run-gate r2 -- --carry-forward .run-gate/assay-state/proj --merge-state=.run-gate/carried
 ```
 
+A RELATIVE path value is resolved against the project directory the lane
+`cd`s into — the same directory the judge resolves it against — and NOT
+against the directory you invoked `run-gate` from. Run-Gate never changes its
+own working directory, so in a monorepo (or with `--worktree`) those two are
+different trees: `--merge-manifest .run-gate/merge.json` from the repository
+root means `<project>/.run-gate/merge.json`, not `<repo>/.run-gate/`. Write an
+ABSOLUTE path when you mean the repository's own `.run-gate/`:
+
+```sh
+run-gate r2 -- --merge-manifest "$PWD/.run-gate/merge.json"
+```
+
+The token reaches the judge exactly as typed; only the path Run-Gate CHECKS
+is made absolute, and it is made absolute against the lane's own directory.
+
 Run-Gate's argv builder appends the forwarded tokens AFTER its own
 (`--file`, `--verdict-json`, `--state-dir`, `--shard K/N`/`--merge-shards
 N`/`--carry-over ...` when given); history records them as `assay_forward`
@@ -957,6 +972,7 @@ run never stands in for the whole lane's duration.
 |---|---|
 | `--state-dir`, `--progress`, `--progress-heartbeat`, `--verdict-json`, `--file`, `--request-base` | `<flag> is injected by Run-Gate` — give it before `--` if Run-Gate has to know it |
 | `--jobs`, `--shard`, `--merge-shards` | `<flag> is owned by Run-Gate: give it before '--' (or drop it)` |
+| a flag the SAME invocation already gives through one of Run-Gate's own options (`--rejudge-outcome`, `--carry-over`, `--merge-state`, ...) | the same `is owned by Run-Gate` line: a duplicate is last-wins at the judge (replace-valued) or silently additive (`--carry-over`, `--merge-state`), so the run would not be the one history records |
 | a bare token that is not a flag's value | `argument '<token>' after '--' can only be the value of the preceding flag` |
 | `--rejudge-contaminated` with `--` arguments | it resolves its own selection from history and would lose that target |
 | a path-valued flag outside the checkout/worktree | `--merge-state '<path>' is outside the checkout ... copy it under <checkout>/.run-gate/ (git-ignored) first` |
@@ -971,18 +987,28 @@ resolve relative to the file; the manifest itself is never opened, so an
 absent or inconsistent manifest is Assay's refusal (`merge manifest
 refused: ...`), passed through unreworded.
 
-**Capability probe.** Only when arguments were forwarded, the lane first asks
-the judge for `assay capabilities --json` and checks that the document's
-`schema` is `assay-capabilities/2` and that `commands.run` lists every
-forwarded long flag (otherwise: `this judge does not support <flag> (assay
-capabilities)`). Unknown keys are ignored — only `schema` and `commands.run`
-are read, and an unknown SCHEMA is refused rather than reinterpreted. A judge
-that refuses `capabilities` itself (Assay before 12.3.0, or a build that
-cannot import its analysis package) keeps its own one line and the lane stops
-there: no degraded mode and no fallback to the `run --help` probe, which is
-still what covers Run-Gate's OWN flexible flags (Assay 12.2.0's inventory
-floor). A lane that forwards nothing generates the same script as before, byte
-for byte.
+**Capability probe, and the judge floor.** Forwarded store flags need
+**Assay 12.3.0 or newer**: the inventory version is checked before a
+container starts (`requires assay >= 12.3.0 (RG-318)`), the same way the
+`--shard`/`--merge-shards` family is held to 12.2.0. Above that floor the
+CHECK is the probe, not the version: only when arguments were forwarded, the
+lane first asks the judge for `assay capabilities --json` and checks that the
+document's `schema` is `assay-capabilities/2` and that `commands.run` lists
+every forwarded long flag (otherwise: `this judge does not support <flag>
+(assay capabilities)`). Flag names are compared by EXACT name (the token's
+text before its first `=`, so `--merge-manifest` and `--merge-manifest-x` are
+different flags and `--flag=value` names `--flag`), never by prefix. Unknown
+keys are ignored — only `schema` and `commands.run` are read, and an unknown
+SCHEMA is refused rather than reinterpreted. A judge that refuses
+`capabilities` itself (a build that cannot import its analysis package, or
+any judge older than 12.3.0) keeps its own one line and the lane stops there:
+no degraded mode and no fallback to the `run --help` probe, which is still
+what covers Run-Gate's OWN flexible flags (Assay 12.2.0's inventory floor).
+The probe runs AFTER the lane's own source/setup steps and BEFORE `run`, in
+the same environment and with the same judge command as the run itself; it is
+not "next to" the `run --help` grep, and with only forwarded tokens the
+`run --help` grep is absent. A lane that forwards nothing generates the same
+script as before, byte for byte, and is never probed.
 
 Nothing changes for the flags Run-Gate documents above. `--shard K/N`,
 `--merge-shards N`, `--carry-over DIR` + `--carry-over-reason TEXT`,

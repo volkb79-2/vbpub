@@ -3116,25 +3116,38 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - its **own** flags may never be forwarded: `--state-dir`, `--progress`,
     `--progress-heartbeat`, `--verdict-json`, `--file` and `--request-base`
     are injected by Run-Gate, `--jobs`, `--shard` and `--merge-shards` are
-    Run-Gate's own (give them before `--`). A bare token is legal only as the
-    value of the preceding flag;
+    Run-Gate's own (give them before `--`). Nor may a forwarded flag
+    DUPLICATE a name this same invocation's own options already put on the
+    judge's argv (`--rejudge-outcome`, `--carry-over`, `--merge-state`,
+    `--merge-shard-store` from `--merge-shards`, and so on): a second copy
+    would be last-wins at the judge (replace-valued) or silently additive
+    (append-valued), so the run would be one Run-Gate never recorded. A bare
+    token is legal only as the value of the preceding flag;
   - **mount visibility**: the value of `--merge-state`, `--merge-shard-store`,
     `--merge-manifest`, `--carry-over`, `--carry-forward`, `--reuse-from`,
     `--only-candidates`, `--exclude-candidates` or `--candidates-file` is
-    made absolute and must resolve under the checkout or the judged worktree
-    (Run-Gate adds no mount for it). A `--merge-manifest FILE` is checked on
-    its PARENT DIRECTORY, because the stores it names resolve relative to the
-    file. Run-Gate never opens, parses or checks the manifest: an absent or
-    inconsistent manifest is Assay's refusal, passed through unreworded;
+    made absolute -- a RELATIVE value against the project directory the lane
+    runs in, which is the directory the judge resolves it against, never the
+    invoking cwd -- and must resolve under the checkout or the judged
+    worktree (Run-Gate adds no mount for it). A `--merge-manifest FILE` is
+    checked on its PARENT DIRECTORY, because the stores it names resolve
+    relative to the file. Run-Gate never opens, parses or checks the
+    manifest: an absent or inconsistent manifest is Assay's refusal, passed
+    through unreworded;
   - a **capability probe**, only when arguments were forwarded: the lane
     runs `<judge> capabilities --json` and Run-Gate reads exactly `schema`
     (must be `assay-capabilities/2`; an unknown schema, unparseable output or
     a non-zero exit is a refusal) and `commands.run` (every forwarded long
-    flag must appear there, else `this judge does not support <flag> (assay
-    capabilities)`). A judge that refuses `capabilities` itself (Assay
-    before 12.3.0, or a build without its analysis package) keeps its own
-    line, unreworded: no degraded mode, no fallback to the `run --help`
-    probe, which stays for Run-Gate's OWN flags.
+    flag must appear there, compared by EXACT name -- the token's text before
+    its first `=`, so `--merge-manifest` and `--merge-manifest-x` are
+    different flags -- else `this judge does not support <flag> (assay
+    capabilities)`). The forward floor is `assay >= 12.3.0` (`R-53b`,
+    RG-318), read from the inventory version before a container starts; the
+    probe stays the CHECK above that floor. A judge that refuses
+    `capabilities` itself keeps its own line, unreworded: no degraded mode, no
+    fallback to the `run --help` probe, which stays for Run-Gate's OWN flags.
+    The probe runs after the lane's setup steps and before `run`, in the same
+    environment and with the same judge command.
   - A forwarded-token run is recorded `selective` with an `assay_forward`
     token list, so it never certifies the whole lane's duration.
   - `--rejudge-contaminated` forces its own selection and refuses `--`

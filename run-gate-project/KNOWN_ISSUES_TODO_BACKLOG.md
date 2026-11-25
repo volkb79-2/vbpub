@@ -9605,20 +9605,29 @@ the preceding flag.
 **Mount rule.** Every path value of `--merge-state`, `--merge-shard-store`,
 `--merge-manifest`, `--carry-over`, `--carry-forward`, `--reuse-from`,
 `--only-candidates`, `--exclude-candidates` and `--candidates-file` is made
-absolute and must resolve under the repo or the judged worktree, reusing
-`validate_r2_flex_paths`; a `--merge-manifest` is checked on its parent
-directory tree. Run-Gate adds no mount and never opens or parses a manifest.
+absolute -- a RELATIVE value against the project directory the lane runs in
+(`project_dir`), which is the directory the judge resolves it against, never
+the invoking cwd -- and must resolve under the repo or the judged worktree,
+reusing `validate_r2_flex_paths`; a `--merge-manifest` is checked on its
+parent directory tree. Run-Gate adds no mount and never opens or parses a
+manifest. A forwarded flag that repeats a name this same invocation's own
+options put on the argv (`--rejudge-outcome`, `--carry-over`, `--merge-state`,
+`--merge-shard-store` from `--merge-shards`, ...) is refused too, because a
+duplicate is last-wins (replace-valued) or silently additive (append-valued)
+at the judge.
 `--rejudge-contaminated` refuses `--` arguments (it forces its own selection).
 
-**Capability probe.** Only when tokens were forwarded, the lane runs
-`<judge> capabilities --json` and Run-Gate reads exactly `schema` (must be
-`assay-capabilities/2`; anything else, unparseable output or a non-zero exit
-is refused) and `commands.run` (every forwarded long flag must be listed, else
-`this judge does not support <flag> (assay capabilities)`). A judge that
-refuses `capabilities` itself keeps its own line, unreworded. The `run --help`
-grep for Run-Gate's OWN flags stays (released Assay 12.2.0 has no
-`capabilities`), and the version pin/floor for forwarded store flags follows
-after Assay 12.3.0 ships (RG-318).
+**Capability probe and floor.** Forwarded store flags need `assay >= 12.3.0`
+(RG-318), read from the inventory version before a container starts. Only when
+tokens were forwarded, the lane runs `<judge> capabilities --json` and
+Run-Gate reads exactly `schema` (must be `assay-capabilities/2`; anything
+else, unparseable output or a non-zero exit is refused) and `commands.run`
+(every forwarded long flag must be listed by EXACT name -- the text before the
+first `=`, so `--merge-manifest-x` is a different flag -- else `this judge does
+not support <flag> (assay capabilities)`). Above the floor the probe, not the
+version, is what decides. A judge that refuses `capabilities` itself keeps its
+own line, unreworded. The `run --help` grep for Run-Gate's OWN flags stays
+(it covers the flexible R2 flags of Assay 12.2.0, which has no `capabilities`).
 
 **Removed duplicated checks (Assay owns them now).** `--carry-over` paired
 with a non-empty `--carry-over-reason` (Assay `mutation_store.py`), the
@@ -9946,18 +9955,73 @@ Source: P-core-12.
 **Status:** OPEN 2026-11-25 (filed by RG-297). Severity: Minor.
 
 - `run-gate-project/tests/test_lanes_check.py:383-412 test_real_repository_all_has_no_findings` duplicates step 2 of the `estate-lint/suite` lane and turns Run-Gate red for any OTHER project's bad budget.
-- `run-gate-project/tests/test_tester_unified_base_variants.py` judges `tester-unified`, not Run-Gate.
+- `run-gate-project/tests/test_tester_unified_base_variants.py` WATCHES `tester-unified/Dockerfile` (read at `tests/test_tester_unified_base_variants.py:27`), another project's image, rather than judging one of Run-Gate's own rules.
 - **Wanted.** Decide keep/remove for the first and move the second to `tester-unified/tests`.
 Source: P-core-12.
 
 ## RG-318 — the assay version pin for forwarded store flags
 
-**Status:** OPEN 2026-11-25 (filed by RG-297). Severity: Minor.
+**Status:** CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0`
+is now RELEASED: tag `assay-v12.3.0`, wheel sha256
+`18b03b198830a9d2732da7f235c431118ab6567d13371c46d41dd19c3c2873ba`).
+Severity: Minor.
 
-When Assay 12.3.0 is released, Run-Gate adds the floor for forwarded store
-flags (`assay >= 12.3.0`) and the `tester-unified` image carries it. Until
-then, a forwarded-flag run is probed by `capabilities --json` at run time and
-the tests stub the document (`test_run_gate_assay_forward.py`); RG-297
-deliberately adds no version pin or floor for `capabilities`, because 12.3.0
-is not released yet.
+- **The floor, as the repo expresses version floors.** Run-Gate's own
+  mechanism for a feature floor is a named tuple compared against the
+  judge's INVENTORY version (`assay_inventory_version_meets_floor`), exactly
+  as `R2_FLEX_ASSAY_FLOOR = (12, 2, 0)` holds the flexible R2 flags.
+  `ASSAY_FORWARD_ASSAY_FLOOR = (12, 3, 0)` is the new one: a lane that
+  forwards arguments after `--` is refused, exit 3 / NOT_RUN
+  `judge-floor`, with `requires assay >= 12.3.0 (RG-318)` before any
+  container starts. No new mechanism was built.
+- **The check stays at run time.** Above the floor the `capabilities --json`
+  probe decides: an unknown schema, unparseable output, a missing
+  `commands.run`, or a forwarded flag the judge does not list is refused. A
+  version claim alone never accepts a flag the judge does not advertise.
+- **tester-unified carries assay from SOURCE, not as a wheel.** The image
+  copies `assay/` (`tester-unified/Dockerfile:361`, metadata at `:203`) for
+  dependency-closure generation and denies the name to any PyPI-bound pip
+  (`tester-unified/gen-requirements.py:43`), and Run-Gate's source-backed
+  lane setup installs the SELECTED WORKTREE's `assay/` into
+  `/opt/tester-venv` at lane runtime (`run_gate.py` `assay_source_setup`).
+  There is therefore no assay version pin in the image to raise: any
+  checkout carrying `assay-v12.3.0` (or later) satisfies the floor, and a
+  checkout older than it is refused loudly by the floor above.
+- **What an image rebuild still has to do (not done here, and none of it in
+  this package):** none of it moves the judge's version. A rebuild is needed
+  only for the usual reasons (a new Run-Gate wheel, a moved cli-extended
+  pin), and after it a source-backed lane must still install the worktree's
+  `assay/` at or above `assay-v12.3.0`.
 Source: RG-297.
+
+## RG-319 — no per-run `--env` in `remote-gate`
+
+**Status:** OPEN 2026-11-25 (filed by the RG-297 fix round). Severity: Minor.
+
+- **Gap.** `scripts/netcup/runner/remote-gate.py:1323-1354` (`run`) accepts
+  `--hosts-file`, `--out-dir`, `--project-dir`, `--repo`, `--base`,
+  `--min-run-gate`, `--allow-exec-env`, `--name`, `--detach`, the resource
+  and PSI/wait flags, `--collect-store`, `--seed-store`, `--store-max-mib`,
+  `--poll` and the trailing `extra nargs="*"` (run-gate arguments after
+  `--`) — and NO flag for one run's environment. The only environment a job
+  receives is the per-repo PROFILE `env` table of the hosts file
+  (`scripts/netcup/runner/remote-gate.py:162-168` validates it, `:870`
+  renders it into `ENVX` as `docker exec -e K=V ...`, `:746` uses it), and
+  `RESERVED_ENV` (`:87`) only guards names the job itself sets.
+- **Effect.** A lane whose declared inputs change per run cannot be gated
+  remotely. Concretely, cmru's lane `r2` needs `CMRU_ASSAY_BASELINE_FACTS`
+  (`cmru/run-gate.toml:234` `required_env`, and
+  `cmru/run-gate.toml:207` forwards it into the ephemeral environment); a
+  remote run of it therefore requires editing the controller's private copy
+  of the hosts file (a repo-profile `env` entry, which then applies to EVERY
+  lane of that repo, not to this run). Run-Gate's own `preflight_required_env`
+  (`run-gate-project/run_gate.py:9009-9021`) refuses the missing variable by
+  name, so the run fails rather than misjudging — loud, but unavoidable in
+  the current surface.
+- **Wanted.** A repeatable `--env KEY=VALUE` on `remote-gate run`, rendered
+  into the job's `docker exec` environment for that run alone, with the same
+  validation the profile table already gets (`ENV_KEY_RE`, and the
+  `RESERVED_ENV` / `RUN_GATE_ALLOW_*` refusals — a per-run override must not
+  be able to displace the safety posture). The value must never be logged or
+  written into the run record.
+Source: RG-297 fix round (subtask 5); verified against the script, not inferred.
