@@ -45,8 +45,13 @@ not even under `--dry-run`, so nothing is left to clean up; the runner-owned `vo
 run left behind are the legacy case of ciu < 7.28.0.
 
 Like every ciu root, run `ciu up` from the main checkout path (S16.3 refuses to start a
-worktree whose project does not yet exist in the primary checkout). `ciu up` here with no `--dir` names nothing
-(ciu >= 7.28.0 refuses it with exit 2, naming `ciu up --dir .`), so always pass `--dir`.
+worktree whose project does not yet exist in the primary checkout). This root is
+`standalone_root = true` (`ciu.global.defaults.toml.j2:29`) and registers no
+`[deploy.phases]` entry, so `ciu up` here with no `--dir` selects nothing: it prints
+`No phases/stacks selected to deploy` and exits 0 (`ciu/src/ciu/deploy.py:2841-2848`).
+This directory IS the resolved root, and CIU-231's exit-2 refusal with the `ciu up --dir .`
+remedy deliberately does not cover a root invocation (`deploy.py:2792-2795`); it covers a
+stack directory of a larger multi-stack root. Always pass `--dir` explicitly.
 
 ## Dark theme
 
