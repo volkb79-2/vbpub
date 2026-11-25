@@ -39,12 +39,19 @@ ciu down --dir voice-screen-share/jitsi-server
 
 On a native host (not the devcontainer), also export `CGROUP_PARENT_DEV_INTERACTIVE` (the host's
 interactive slice, e.g. `dev-interactive.slice`). The S6.5 root helper needs it to give the `vol-*`
-hostdirs their uid-1000 owner. If an earlier run (including `--dry-run`) was refused before that, remove the
-empty runner-owned `vol-*` dirs it left before you retry (CIU-227).
+hostdirs their uid-1000 owner; ciu >= 7.28.0 refuses without it, and its refusal names the variable, the
+`.slice` shape and `systemctl list-units --type=slice`. A refused run on that version leaves no hostdir,
+not even under `--dry-run`; the runner-owned `vol-*` dirs an earlier refused
+run left behind are the legacy case of ciu < 7.28.0.
 
 Like every ciu root, run `ciu up` from the main checkout path (S16.3 refuses to start a
-worktree whose project does not yet exist in the primary checkout). A bare `ciu up` selects
-nothing: always pass `--dir`.
+worktree whose project does not yet exist in the primary checkout). This root is
+`standalone_root = true` (`ciu.global.defaults.toml.j2:29`) and registers no
+`[deploy.phases]` entry, so `ciu up` here with no `--dir` selects nothing: it prints
+`No phases/stacks selected to deploy` and exits 0 (`ciu/src/ciu/deploy.py:2841-2848`).
+This directory IS the resolved root, and CIU-231's exit-2 refusal with the `ciu up --dir .`
+remedy deliberately does not cover a root invocation (`deploy.py:2792-2795`); it covers a
+stack directory of a larger multi-stack root. Always pass `--dir` explicitly.
 
 ## Dark theme
 
