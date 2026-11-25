@@ -43,24 +43,14 @@ esac
 # fires; 300 s feeds the default watchdog several lines before it could trip. An unset
 # variable means 300; a set but non-integer or out-of-range value is refused, because it
 # states an intent this script cannot honour.
+# A value this script cannot honour is one of the combined refusal's problems, so a
+# single remote run names every setting an operator has to fix (B579).
 heartbeat_seconds="${ASSAY_RELEASE_GATE_HEARTBEAT_S-300}"
+heartbeat_problem=""
 if [[ ! "$heartbeat_seconds" =~ ^[0-9]{1,4}$ ]] \
   || (( 10#$heartbeat_seconds < 30 || 10#$heartbeat_seconds > 1500 )); then
-  die "ASSAY_RELEASE_GATE_HEARTBEAT_S must be an integer from 30 to 1500; got '$heartbeat_seconds'" 2
+  heartbeat_problem="ASSAY_RELEASE_GATE_HEARTBEAT_S must be an integer from 30 to 1500; got '$heartbeat_seconds'"
 fi
-
-commit="${CMRU_RELEASE_GATE_COMMIT:-}"
-[[ -n "$commit" ]] \
-  || die 'CMRU_RELEASE_GATE_COMMIT is unset; run this from the CMRU release gate'
-[[ "$commit" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
-  || die 'CMRU_RELEASE_GATE_COMMIT must be a full lowercase Git object ID'
-
-worktree="$(git rev-parse --show-toplevel)" \
-  || die 'cannot resolve the vbpub worktree root'
-head="$(git rev-parse HEAD)" \
-  || die 'cannot resolve the release-gate worktree HEAD'
-[[ "$head" == "$commit" ]] \
-  || die "CMRU_RELEASE_GATE_COMMIT ($commit) does not match worktree HEAD ($head)"
 
 remote_gate="../scripts/netcup/runner/remote-gate.py"
 [[ -f "$remote_gate" ]] \
@@ -92,23 +82,36 @@ remote_gate_base_env=(
 # later source: it is a fact, not a default.
 release_gate_problems=()
 [[ -z "$host_problem" ]] || release_gate_problems+=("$host_problem")
+[[ -z "$heartbeat_problem" ]] || release_gate_problems+=("$heartbeat_problem")
 
 controller_lib="../scripts/controller/lib.sh"
 controller_home=""
 controller_hosts=""
 controller_remote_hosts=""
 controller_remote_out=""
-if [[ -n ${HOME:-} && -f "$controller_lib" ]]; then
+controller_read_error=""
+# The controller configuration is consulted only while at least one explicit
+# REMOTE_GATE_* value is missing. A value the operator exported outranks that file
+# anyway, so an unreadable controller file must not block a fully explicit pair
+# (the documented "explicit first" precedence, which is also the escape hatch
+# when the controller file is broken).
+if [[ -n ${HOME:-} && -f "$controller_lib" && (! -v REMOTE_GATE_HOSTS || ! -v REMOTE_GATE_OUT) ]]; then
   # CONTROLLER_INIT_READONLY keeps controller_init from creating or rewriting any
   # controller file or directory (scripts/controller/lib.sh:12-45); only the
   # resolved values are read back.
+  controller_stderr="$(mktemp "${TMPDIR:-/tmp}/assay-release-gate-controller.XXXXXX")" \
+    || die 'cannot create a temporary file to read the controller configuration'
+  # `set -uo pipefail`, without -e, is what scripts/controller/remote-gate.sh:24 runs:
+  # a controller file whose bare probe fails (a `command -v` for a tool this cockpit
+  # lacks, say) must not be reported as unreadable when the values it defines are
+  # usable. The read fails only on a fatal error, and its last stderr line is kept.
   if controller_config="$(env CONTROLLER_INIT_READONLY=1 bash -c '
-      set -euo pipefail
+      set -uo pipefail
       . "$1"
       controller_init
       printf "%s\n%s\n%s\n%s\n" "${CONTROLLER_HOME:-}" "${CONTROLLER_HOSTS_FILE:-}" \
         "${CONTROLLER_REMOTE_HOSTS_FILE:-}" "${CONTROLLER_REMOTE_OUT:-}"
-    ' controller-config "$controller_lib" 2>/dev/null)"; then
+    ' controller-config "$controller_lib" 2>"$controller_stderr")"; then
     mapfile -t controller_values <<<"$controller_config"
     controller_home=${controller_values[0]:-}
     controller_hosts=${controller_values[1]:-}
@@ -117,9 +120,13 @@ if [[ -n ${HOME:-} && -f "$controller_lib" ]]; then
   else
     # A controller configuration that exists but cannot be read is refused, not
     # treated as absent: falling through to another source would hide a broken
-    # controller.local.env behind a stale default.
-    release_gate_problems+=("cannot read the controller configuration ($controller_lib controller_init)")
+    # controller.local.env behind a stale default. Its own reason is appended, so
+    # the refusal does not send the operator hunting through the file.
+    controller_read_error="$(<"$controller_stderr")"
+    controller_read_error=${controller_read_error##*$'\n'}
+    release_gate_problems+=("cannot read the controller configuration ($controller_lib controller_init${controller_read_error:+: $controller_read_error})")
   fi
+  rm -f -- "$controller_stderr"
 fi
 
 # remote-gate.sh (scripts/controller/remote-gate.sh:102-103) resolves a configured
@@ -133,16 +140,19 @@ resolve_controller_path() {
   printf '%s' "$path"
 }
 
+# Every problem names the source that supplied the unusable value: the operator has to
+# know which of REMOTE_GATE_HOSTS, the controller configuration and remote-gate.py's own
+# defaults to look at, and the label is the one the resolution chain used.
 hosts_file_problem() {
-  local path="$1"
+  local source="$1" path="$2"
   if [[ -z "$path" ]]; then
-    printf '%s' 'host table resolved to an empty path'
+    printf 'host table from %s resolved to an empty path' "$source"
   elif [[ ! -e "$path" ]]; then
-    printf '%s' "host table is missing: $path"
+    printf 'host table from %s is missing: %s' "$source" "$path"
   elif [[ ! -f "$path" ]]; then
-    printf '%s' "host table is not a regular file: $path"
+    printf 'host table from %s is not a regular file: %s' "$source" "$path"
   elif [[ ! -r "$path" ]]; then
-    printf '%s' "host table is not readable: $path"
+    printf 'host table from %s is not readable: %s' "$source" "$path"
   fi
 }
 
@@ -150,17 +160,17 @@ hosts_file_problem() {
 # so a path that does not exist yet is judged by the nearest existing ancestor that
 # would have to accept it.
 out_dir_problem() {
-  local path="$1" ancestor
+  local source="$1" path="$2" ancestor
   if [[ -z "$path" ]]; then
-    printf '%s' 'output directory resolved to an empty path'
+    printf 'output directory from %s resolved to an empty path' "$source"
     return 0
   fi
   if [[ -d "$path" ]]; then
-    [[ -w "$path" ]] || printf '%s' "output directory is not writable: $path"
+    [[ -w "$path" ]] || printf 'output directory from %s is not writable: %s' "$source" "$path"
     return 0
   fi
   if [[ -e "$path" ]]; then
-    printf '%s' "output directory exists but is not a directory: $path"
+    printf 'output directory from %s exists but is not a directory: %s' "$source" "$path"
     return 0
   fi
   ancestor="$path"
@@ -168,20 +178,25 @@ out_dir_problem() {
     ancestor=$(dirname -- "$ancestor")
   done
   if [[ ! -d "$ancestor" ]]; then
-    printf '%s' "output directory cannot be created: $ancestor is not a directory"
+    printf 'output directory from %s cannot be created: %s is not a directory' "$source" "$ancestor"
   elif [[ ! -w "$ancestor" ]]; then
-    printf '%s' "output directory cannot be created: $ancestor is not writable"
+    printf 'output directory from %s cannot be created: %s is not writable' "$source" "$ancestor"
   fi
 }
 
-# remote-gate.py's defaults, read from its module rather than copied here. Asked only
-# when no controller configuration supplied the value.
+# remote-gate.py's defaults, read from its module rather than copied here. Loaded at
+# most once, in THIS shell: a loader called inside `$(...)` can never keep its flag, so
+# the second value used to import the module again (two python starts and a second
+# bytecode-cache write under the gitignored scripts/netcup/runner/__pycache__).
 remote_gate_defaults=""
+remote_gate_defaults_error=""
 remote_gate_defaults_loaded=false
 load_remote_gate_defaults() {
   [[ "$remote_gate_defaults_loaded" == true ]] && return 0
   remote_gate_defaults_loaded=true
-  remote_gate_defaults="$(env "${remote_gate_base_env[@]}" python3 - "$remote_gate" <<'PYEOF'
+  local stderr_file
+  stderr_file=$(mktemp "${TMPDIR:-/tmp}/assay-release-gate-defaults.XXXXXX") || return 0
+  if remote_gate_defaults="$(env "${remote_gate_base_env[@]}" python3 - "$remote_gate" 2>"$stderr_file" <<'PYEOF'
 import importlib.util
 import sys
 
@@ -195,36 +210,28 @@ spec.loader.exec_module(module)
 print(module.DEFAULT_HOSTS)
 print(module.DEFAULT_OUT)
 PYEOF
-)" || remote_gate_defaults=""
-}
-default_hosts() {
-  load_remote_gate_defaults
-  printf '%s' "${remote_gate_defaults%%$'\n'*}"
-}
-default_out() {
-  load_remote_gate_defaults
-  printf '%s' "${remote_gate_defaults#*$'\n'}"
-}
-
-tried_note() {
-  local note='' item
-  for item in "$@"; do
-    note+="$item; "
-  done
-  printf '%s' "${note%; }"
+)"; then
+    :
+  else
+    # An import that failed is not an empty default: saying so keeps the refusal from
+    # certifying a path the module never supplied.
+    remote_gate_defaults=""
+    remote_gate_defaults_error="$(<"$stderr_file")"
+    remote_gate_defaults_error=${remote_gate_defaults_error##*$'\n'}
+  fi
+  rm -f -- "$stderr_file"
 }
 
-hosts_tried=()
+# Exactly one source supplies each value, and a source that is consulted supplies either
+# a usable value or the problem that refuses it; nothing falls through a failed source.
 remote_hosts=""
 hosts_problem=""
 if [[ -v REMOTE_GATE_HOSTS ]]; then
-  hosts_tried+=("REMOTE_GATE_HOSTS ($REMOTE_GATE_HOSTS)")
-  hosts_problem=$(hosts_file_problem "$REMOTE_GATE_HOSTS")
+  hosts_problem=$(hosts_file_problem REMOTE_GATE_HOSTS "$REMOTE_GATE_HOSTS")
   [[ -n "$hosts_problem" ]] || remote_hosts="$REMOTE_GATE_HOSTS"
 elif [[ -n "$controller_remote_hosts" ]]; then
   candidate=$(resolve_controller_path "$controller_remote_hosts")
-  hosts_tried+=("CONTROLLER_REMOTE_HOSTS_FILE ($candidate)")
-  hosts_problem=$(hosts_file_problem "$candidate")
+  hosts_problem=$(hosts_file_problem CONTROLLER_REMOTE_HOSTS_FILE "$candidate")
   [[ -n "$hosts_problem" ]] || remote_hosts="$candidate"
 elif [[ -n "$controller_hosts" ]]; then
   candidate=$(resolve_controller_path "$controller_hosts")
@@ -232,30 +239,26 @@ elif [[ -n "$controller_hosts" ]]; then
   # does not exist means this controller configures no host table; it is not a
   # misconfigured path, so the remote-gate.py default still applies.
   if [[ "$candidate" != "$controller_home/hosts.local.json" || -e "$candidate" ]]; then
-    hosts_tried+=("CONTROLLER_HOSTS_FILE ($candidate)")
-    hosts_problem=$(hosts_file_problem "$candidate")
+    hosts_problem=$(hosts_file_problem CONTROLLER_HOSTS_FILE "$candidate")
     [[ -n "$hosts_problem" ]] || remote_hosts="$candidate"
   fi
 fi
 if [[ -z "$remote_hosts" && -z "$hosts_problem" ]]; then
-  candidate=$(default_hosts)
-  hosts_tried+=("remote-gate.py DEFAULT_HOSTS ($candidate)")
-  hosts_problem=$(hosts_file_problem "$candidate")
-  [[ -n "$hosts_problem" ]] || remote_hosts="$candidate"
-fi
-if [[ -z "$remote_hosts" ]]; then
-  if [[ -n "$hosts_problem" ]]; then
-    release_gate_problems+=("$hosts_problem")
+  load_remote_gate_defaults
+  if [[ -n "$remote_gate_defaults_error" ]]; then
+    hosts_problem="cannot read remote-gate.py's default host table: $remote_gate_defaults_error"
   else
-    release_gate_problems+=("no host table resolved (tried: $(tried_note "${hosts_tried[@]}"))")
+    candidate="${remote_gate_defaults%%$'\n'*}"
+    hosts_problem=$(hosts_file_problem 'remote-gate.py DEFAULT_HOSTS' "$candidate")
+    [[ -n "$hosts_problem" ]] || remote_hosts="$candidate"
   fi
 fi
-out_tried=()
+[[ -z "$hosts_problem" ]] || release_gate_problems+=("$hosts_problem")
+
 remote_out=""
 out_problem=""
 if [[ -v REMOTE_GATE_OUT ]]; then
-  out_tried+=("REMOTE_GATE_OUT ($REMOTE_GATE_OUT)")
-  out_problem=$(out_dir_problem "$REMOTE_GATE_OUT")
+  out_problem=$(out_dir_problem REMOTE_GATE_OUT "$REMOTE_GATE_OUT")
   [[ -n "$out_problem" ]] || remote_out="$REMOTE_GATE_OUT"
 elif [[ -n "$controller_remote_out" ]]; then
   # controller_init leaves CONTROLLER_REMOTE_OUT in its configured spelling, and
@@ -263,31 +266,27 @@ elif [[ -n "$controller_remote_out" ]]; then
   # value has no stable meaning here, so resolve it against CONTROLLER_HOME the
   # way controller_init resolves its own directories.
   candidate=$(resolve_controller_path "$controller_remote_out")
-  out_tried+=("CONTROLLER_REMOTE_OUT ($candidate)")
-  out_problem=$(out_dir_problem "$candidate")
+  out_problem=$(out_dir_problem CONTROLLER_REMOTE_OUT "$candidate")
   [[ -n "$out_problem" ]] || remote_out="$candidate"
 elif [[ -d "$controller_home" ]]; then
   # controller_init's default output directory. Used only when the controller home
   # itself exists: a CONTROLLER_HOME spelling that names no directory configures
   # nothing, so remote-gate.py's own default still applies.
   candidate="$controller_home/remote-gates"
-  out_tried+=("CONTROLLER_HOME/remote-gates ($candidate)")
-  out_problem=$(out_dir_problem "$candidate")
+  out_problem=$(out_dir_problem CONTROLLER_HOME/remote-gates "$candidate")
   [[ -n "$out_problem" ]] || remote_out="$candidate"
 fi
 if [[ -z "$remote_out" && -z "$out_problem" ]]; then
-  candidate=$(default_out)
-  out_tried+=("remote-gate.py DEFAULT_OUT ($candidate)")
-  out_problem=$(out_dir_problem "$candidate")
-  [[ -n "$out_problem" ]] || remote_out="$candidate"
-fi
-if [[ -z "$remote_out" ]]; then
-  if [[ -n "$out_problem" ]]; then
-    release_gate_problems+=("$out_problem")
+  load_remote_gate_defaults
+  if [[ -n "$remote_gate_defaults_error" ]]; then
+    out_problem="cannot read remote-gate.py's default output directory: $remote_gate_defaults_error"
   else
-    release_gate_problems+=("no output directory resolved (tried: $(tried_note "${out_tried[@]}"))")
+    candidate="${remote_gate_defaults#*$'\n'}"
+    out_problem=$(out_dir_problem 'remote-gate.py DEFAULT_OUT' "$candidate")
+    [[ -n "$out_problem" ]] || remote_out="$candidate"
   fi
 fi
+[[ -z "$out_problem" ]] || release_gate_problems+=("$out_problem")
 
 if [[ -z ${HOME:-} ]]; then
   release_gate_problems+=('HOME is unset; remote-gate needs it for the host table and ~/.ssh')
@@ -300,6 +299,22 @@ if (( ${#release_gate_problems[@]} )); then
   done
   die "$combined_problem" 2
 fi
+
+# The CMRU transaction binding is a separate refusal on purpose: it can only be judged
+# where CMRU states the commit, and it is not one of the settings above. It is checked
+# after them so a run outside CMRU still hears about its missing settings first.
+commit="${CMRU_RELEASE_GATE_COMMIT:-}"
+[[ -n "$commit" ]] \
+  || die 'CMRU_RELEASE_GATE_COMMIT is unset; run this from the CMRU release gate'
+[[ "$commit" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+  || die 'CMRU_RELEASE_GATE_COMMIT must be a full lowercase Git object ID'
+
+worktree="$(git rev-parse --show-toplevel)" \
+  || die 'cannot resolve the vbpub worktree root'
+head="$(git rev-parse HEAD)" \
+  || die 'cannot resolve the release-gate worktree HEAD'
+[[ "$head" == "$commit" ]] \
+  || die "CMRU_RELEASE_GATE_COMMIT ($commit) does not match worktree HEAD ($head)"
 
 remote_gate_env=(
   "${remote_gate_base_env[@]}"
@@ -342,6 +357,7 @@ run_name="assay-rel-${commit:0:12}-${lane}-${utc}"
 run_dir="$remote_out/$run_name"
 remote_gate_pid=""
 remote_gate_launching=false
+heartbeat_starting=false
 pending_signal=""
 pending_signal_status=""
 remote_gate_started_at=""
@@ -361,7 +377,12 @@ start_heartbeat() {
   (
     set +e
     sleep_pid=""
-    trap 'kill "$sleep_pid" 2>/dev/null; exit 0' INT TERM
+    # `$!` is the pid of the sleep current at trap time. The first loop iteration forks
+    # its `sleep` BEFORE `sleep_pid=$!` assigns it, so a TERM landing in that window
+    # would have killed the empty string, left the real sleep running for up to
+    # `interval` seconds and held the caller's pipe open. `${!:-}` names the fork
+    # itself, which is the very job the trap exists to kill.
+    trap 'kill "${!:-}" 2>/dev/null; kill "${sleep_pid:-}" 2>/dev/null; exit 0' INT TERM
     # `$$` is the wrapper's own pid inside a subshell, so a wrapper that dies by SIGKILL
     # cannot leave a heartbeat printing into a closed terminal: the loop ends with it.
     while kill -0 "$parent_pid" 2>/dev/null; do
@@ -376,6 +397,20 @@ start_heartbeat() {
   heartbeat_pid=$!
 }
 
+start_heartbeat_guarded() {
+  # INT/TERM can arrive between the fork inside start_heartbeat and the assignment that
+  # records its pid (`heartbeat_pid=$!`). Handling them there would find no pid to stop
+  # and orphan a subshell that keeps printing into the caller's pipe, so the two signals
+  # are deferred (never dropped) and handled below, once the pid is known. `trap '' INT
+  # TERM` around the fork would discard a signal instead of deferring it.
+  heartbeat_starting=true
+  start_heartbeat
+  heartbeat_starting=false
+  if [[ -n "$pending_signal" ]]; then
+    handle_remote_signal "$pending_signal" "$pending_signal_status"
+  fi
+}
+
 stop_heartbeat() {
   [[ -n "$heartbeat_pid" ]] || return 0
   kill "$heartbeat_pid" 2>/dev/null || true
@@ -385,7 +420,8 @@ stop_heartbeat() {
 
 handle_remote_signal() {
   local signal_name="$1" exit_status="$2" cancel_status
-  if [[ -z "$remote_gate_pid" && "$remote_gate_launching" == true ]]; then
+  if [[ (-z "$remote_gate_pid" && "$remote_gate_launching" == true) \
+    || "$heartbeat_starting" == true ]]; then
     pending_signal="$signal_name"
     pending_signal_status="$exit_status"
     return 0
@@ -426,7 +462,7 @@ if [[ -n "$pending_signal" ]]; then
   handle_remote_signal "$pending_signal" "$pending_signal_status"
 fi
 remote_gate_started_at=$(date +%s)
-start_heartbeat
+start_heartbeat_guarded
 if wait "$remote_gate_pid"; then
   remote_status=0
 else
