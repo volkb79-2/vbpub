@@ -10,6 +10,12 @@ about this project's real `run-gate.toml` and `assay.toml`, so they restate no r
 config loader and its validators, `merge_lanes`, `attach_r2_flex`, `refuse_serialized_shard` and the
 `select_r2_jobs` worker selection. Nothing starts docker or a lane.
 
+What is NOT here: the shard-instance shape (`r2.shard0of2` plus `refuse_serialized_shard`), the
+`merge_shards` acceptance and the outer-budget margin are decided by
+`run-gate lanes --check --all --strict`, which the `estate-lint` lane runs over the estate
+(P-core-12, CLI-EXT-45); cli-extended does not restate them. What remains here is what that check
+does NOT decide, each listed with the rule it guards.
+
 The module is loaded by file path (no `sys.path` change). `run-gate-project/` lives in the same
 monorepo and is part of every checkout the gate lanes mount, so a missing `run_gate.py` means a
 broken checkout and FAILS the test (never skips).
@@ -19,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import re
 import sys
 import tomllib
 from functools import cache
@@ -29,11 +34,6 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 RUN_GATE_SOURCE = PACKAGE_ROOT.parents[1] / "run-gate-project" / "run_gate.py"
-SECONDS = {"s": 1, "m": 60, "h": 3600}
-#: The outer container budget exceeds the inner Assay deadline by at least this much, for container
-#: start and the editable assay install. cmru's gate tests (cmru/tests/test_gate_budgets.py) enforce
-#: this rule for cmru; cli-extended adopts it and enforces it here.
-OUTER_MARGIN_SECONDS = 5 * 60
 CANDIDATES = 1561
 
 
@@ -46,12 +46,6 @@ def _run_gate():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def _seconds(text: str) -> int:
-    match = re.fullmatch(r"(\d+)([smh])", text.strip())
-    assert match, f"unparsed duration {text!r}"
-    return int(match.group(1)) * SECONDS[match.group(2)]
 
 
 def _assay_lane() -> dict:
@@ -84,6 +78,8 @@ def _args(**overrides) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
+#: Uncovered by `lanes --check`: it inspects only `kind = "assay"` lanes' budget, canary and shard
+#: shape — never the lane kind/assay_lane/environment resolution this test asks for.
 def test_run_gate_loads_the_project_config_and_resolves_r2_as_a_native_assay_lane() -> None:
     lane, environment, name = _effective()
     assert lane["kind"] == "assay", (
@@ -94,22 +90,19 @@ def test_run_gate_loads_the_project_config_and_resolves_r2_as_a_native_assay_lan
     assert environment["mode"] == "ephemeral", f"{name} must be an ephemeral environment"
 
 
-def test_run_gate_admits_a_shard_of_the_r2_lane_as_its_own_instance() -> None:
-    rg = _run_gate()
-    lane, environment, name = _effective()
-    sharded, instance = rg.attach_r2_flex(lane, "r2", _args(shard="0/2"))
-    assert instance == "r2.shard0of2"
-    assert rg.assay_artifact_lane(sharded) == "cli-extended.r2.shard0of2"
-    # Raises GateError for an exec-mode environment or a lane with resources.shared.
-    rg.refuse_serialized_shard(sharded, "r2", environment, name)
-
-
-def test_run_gate_accepts_the_merge_and_carry_over_requests_for_the_r2_lane() -> None:
+#: Uncovered by `lanes --check`: it never calls `assay_artifact_lane`, so the artifact-lane NAME a
+#: shard derives is not checked there (the shard instance shape itself is).
+def test_a_sharded_r2_lane_names_its_own_artifact_lane() -> None:
     rg = _run_gate()
     lane, _environment, _name = _effective()
-    merged, instance = rg.attach_r2_flex(lane, "r2", _args(merge_shards="3"))
-    assert instance == "r2"
-    assert merged["_r2_flex"]["merge_shards"] == 3
+    sharded, _instance = rg.attach_r2_flex(lane, "r2", _args(shard="0/2"))
+    assert rg.assay_artifact_lane(sharded) == "cli-extended.r2.shard0of2"
+
+
+#: Uncovered by `lanes --check`: it checks `--merge-shards`, not `--carry-over`.
+def test_run_gate_accepts_the_carry_over_request_for_the_r2_lane() -> None:
+    rg = _run_gate()
+    lane, _environment, _name = _effective()
     carried, _ = rg.attach_r2_flex(
         lane,
         "r2",
@@ -118,6 +111,7 @@ def test_run_gate_accepts_the_merge_and_carry_over_requests_for_the_r2_lane() ->
     assert carried["_r2_flex"]["carry_over"] == ["/store"]
 
 
+#: Uncovered by `lanes --check`: nothing there feeds a command-kind lane to `attach_r2_flex`.
 def test_run_gate_would_refuse_the_old_command_lane() -> None:
     """The controlled wrong case: the pre-CLI-EXT-41 lane shape is refused by the same helper."""
     rg = _run_gate()
@@ -127,6 +121,8 @@ def test_run_gate_would_refuse_the_old_command_lane() -> None:
         rg.attach_r2_flex(old, "r2", _args(shard="0/2"))
 
 
+#: Uncovered by `lanes --check`: the worker count `select_r2_jobs` derives from the declared
+#: resources is never computed there.
 def test_run_gate_picks_three_workers_per_shard_with_cheap_clone_and_one_without() -> None:
     rg = _run_gate()
     lane, _environment, _name = _effective()
@@ -149,6 +145,7 @@ def test_run_gate_picks_three_workers_per_shard_with_cheap_clone_and_one_without
     assert workers(False) == 1
 
 
+#: Uncovered by `lanes --check`: it does not compare `candidate_ram` with any measured RSS.
 def test_candidate_ram_covers_the_measured_rss_maximum() -> None:
     rg = _run_gate()
     lane, _environment, _name = _effective()
@@ -156,12 +153,8 @@ def test_candidate_ram_covers_the_measured_rss_maximum() -> None:
     assert rg.parse_size_bytes(lane["resources"]["candidate_ram"]) >= 256 * 1024**2
 
 
-def test_r2_outer_budget_exceeds_the_assay_lane_deadline_by_the_margin() -> None:
-    lane = tomllib.loads((PACKAGE_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["r2"]
-    inner = _seconds(_assay_lane()["budget"])
-    assert _seconds(lane["budget"]) >= inner + OUTER_MARGIN_SECONDS
-
-
+#: Uncovered by `lanes --check`: `resource_observer`, `clean_tree`, `pids` and the absent `argv`
+#: of a native Assay lane are not inspected there.
 def test_r2_keeps_the_observer_and_clean_tree_declarations_of_the_sibling_native_lanes() -> None:
     lane = tomllib.loads((PACKAGE_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["r2"]
     assert lane["resource_observer"] == "cgprofile"

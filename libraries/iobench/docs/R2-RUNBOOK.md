@@ -85,6 +85,26 @@ which bundles the commit and the base to the host, runs the lane in a
 throwaway checkout and pulls the artifacts and the store back. Run them from
 the repository root of the commit under test.
 
+**Use ONE commit for everything: both shards, every resume chunk and the merge
+run.** The wrapper bundles the commit named in its third argument and records
+it as `run-gate.commit=<sha>` in the log; Assay's shard store carries the plan
+it was produced for. A merge either refuses such a store (`changed-plan`,
+`foreign-judge`) or accepts it and binds a verdict to a tree the store was not
+produced from, so mixing commits is wrong in both outcomes. If the head
+changes, this is a new campaign, not a resume: pass the new sha everywhere and
+plan again (section 2).
+
+**A 4g lane takes ALL FOUR of a host's admission slots for the whole run.**
+`remote-gate.sh` sizes a lane by its declared `resources.memory`
+(`run-gate.toml` 4g) against `CONTROLLER_REMOTE_BUDGET_MB` / slots (default
+5120 MiB over 4 slots, unit 1280 MiB), so a 4096 MiB declaration needs
+`ceil(4096/1280) = 4` slots (`remote-gate.sh:137-190`; a measured entry in
+`remote-gate-weights.tsv` can only lower that weight, never raise it). One
+iobench shard therefore occupies its host alone for its whole run: on one
+host two shards serialise, and no other lane is admitted beside it. Plan the
+two hosts (r1002 and v1001) accordingly rather than assuming a shard runs
+next to other work.
+
 ```bash
 # shard 0/2 on r1002: 53 candidates
 scripts/controller/remote-gate.sh r1002 libraries/iobench r2 HEAD \
@@ -174,7 +194,7 @@ worker ≈ 0.2/min).
 * **Lane memory**: 4 GiB declared, 75 % of it (3072 MiB) is the memory budget
   (the default `ram_target = "75%"`, `run_gate.py:2165`), and
   `candidate_ram = 512m` (a floor over the measured
-  p95 391,901,184 B ≈ 374 MiB and the known 1,462 MiB maximum) gives
+  p95 391,901,184 B ≈ 374 MiB and the largest replay candidate RSS of 1,496 MiB (1.46 GiB)) gives
   `memory_workers = 3072 // 512 = 6` (`run_gate.py:5389`); CPU cap 3 with
   oversubscribe 1.0 gives
   `cpu_workers = 3`; `jobs = min(jobs_max 4, 3, 6, remaining) = 3`
@@ -224,15 +244,11 @@ worker ≈ 0.2/min).
 
 ## 7. The whole-target lane (`r2-whole`)
 
-Note for the next docs package: `docs/CONSUMERS.md` "Repository gate" and
-`docs/DESIGN-GUIDE.md` "Registered repository gate" still describe `r2` as
-the whole-target `jobs = "auto"` / `1536m` lane. Those files were outside
-this package's allowed-file list; the text above is correct for the shipped
-configuration.
-
 `run-gate r2-whole` is the previous behaviour, byte for byte: every shipped
-module, all 1891 candidates, `jobs = "auto"`, 1536m, 365m. `[lanes.gate]`
-still runs it, so the release gate is unchanged; a periodic whole-package
-campaign is still the only way to judge a file nobody touched in this change.
-Use it deliberately (`run-gate r2-whole`), never as the lane for an owed R2 on
-one diff.
+module, all 1891 candidates, `jobs = "auto"`, 1536m, 365m. **The repository
+gate no longer runs it** (`[lanes.gate]` is `r0-r1` only, budget 25m = the
+r0-r1 lane's 20m plus R-59's 5m margin), so a merge is not held to a mutation
+verdict. R2 is owed asynchronously on the latest code and is settled by the
+diff-scoped `r2` above; a periodic whole-package campaign is still the only
+way to judge a file nobody touched in a change. Use it deliberately
+(`run-gate r2-whole`), never as the lane for an owed R2 on one diff.

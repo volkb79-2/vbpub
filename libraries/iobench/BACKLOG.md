@@ -362,7 +362,7 @@ named refusal and never promotes fallback output to raw-target proof.
 
 ## IOB-BL-55 — the iobench `r2` lane cannot finish a whole-target campaign (sizing package, 2026-11-24)
 
-**Status:** OPEN (filed 2026-11-24 from the WP-10 P1 merge ruling; no lane change made yet). Priority: R2
+**Status:** OPEN (filed 2026-11-24 from the WP-10 P1 merge ruling; the lane change is merged as `[lanes.r2]` diff-scoped, the gate runs `r0-r1` only, and the owed R2 campaign on the WP-10 P1 code is still running). Priority: R2
 evidence for the M1 raw claim writer, which has no mutation evidence until this runs.
 
 **Finding.** The only `r2` measurement so far is the remote gate

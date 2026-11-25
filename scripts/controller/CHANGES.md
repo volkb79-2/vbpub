@@ -15,6 +15,36 @@ no separate version number, so entries are grouped by the work that landed.
   size and cap, cut at its cap with a visible marker, `MISSING` for an absent file, exit 2 for an
   unknown role. Test: `tests/test-resume-read.sh` (wired into `run-suite.sh`).
 
+### Pi review launcher (`pi-review.sh`)
+- `pi-review.sh` (new; `tests/test-pi-review.sh` with the fake `pi` and account seams of `test-pi-impl.sh`): the pi counterpart of `codex-review.sh`, and a thin wrapper over `pi-impl.sh`. It runs the review on the Open Design account the implementer did NOT use, derived from `<implementer-run>.route` when that pins one and otherwise from `<implementer-run>.thread` via `opendesign-accounts.py find-thread-account`; an account it cannot find is refused with exit 2 (never a fallback to the implementer's account), and `--account volker|github2` pins the reviewer directly. Before and after the launch it records `git rev-parse HEAD`, `git status --porcelain=v1 -uall` and a hash of `git diff HEAD`; any difference appends `REVIEW-MODIFIED-TREE` to `<run>.done`, prints it and exits 4 without reverting the change. `--report` is passed through, so a review that writes no review file stays `OUTCOME=NO-REPORT`, and a report path inside the reviewed worktree is refused. `pi --help` can restrict tools (`--tools`, `--exclude-tools`, `--no-tools`) but `pi-impl.sh` has no pass-through for extra pi arguments, so that restriction is a follow-up rather than part of this change.
+
+### Keep-alive: one trimmed pane view for every ping check (P-plat-22b E fix 1)
+- `ctl-keepalive.sh`: `pane_view` gives the busy, dialog and prompt-box checks ONE capture that is measured from the
+  MODE line (`⏵⏵ bypass permissions on`) instead of the last line of the pane, so the agents panel below it can no
+  longer push `esc to interrupt` or a menu out of the bottom windows and let a ping into a busy pane. The trim happens
+  only while the mode line carries the unfocused hint `↓ to manage` (`BOX_PANEL_HINT`): a focused panel is not
+  captured yet and may look identical, so without the hint nothing is trimmed and the strict box geometry refuses the
+  pane. Built from the real capture (`tests/fixtures/keepalive/idle-agents-panel.ansi` edited per frame): `H1` busy,
+  read-back, dialog and draft refusals plus the `M1` focused-panel refusal; `box_ok` no longer trims on its own.
+  The watch loop is `while (( ! stop ))`, so a TERM during the sleep ends it without one more poll.
+- `ctl-doctor.sh`: the printed start command carries `CONTROLLER_HOME=<path>` when it is not the default
+  `$HOME/controller` (else the watcher would write its pid file elsewhere and the check keeps saying absent), and a
+  pid file without a trailing newline reads as a pid instead of a stale file.
+- `tests/test-entrypoints.sh` fails when `git ls-files` lists no row at all or when `ctl-keepalive.sh` is not among
+  them. `docs/design/agctl/CONTEXT-ECONOMY.md` step 5 describes the mode-line view and the one-label top rule.
+
+### Keep-alive follow-ups
+- `ctl-keepalive.sh`: break the watch loop immediately after a poll in which SIGTERM/SIGINT set
+  `stop`, instead of sleeping once more while holding the singleton lock. The smallest
+  source-only test seam is named in its header. `ctl-doctor.sh` now reports
+  `keepalive: running pid <n>` only from `/proc/<pid>/cmdline`, otherwise WARNs `absent` or
+  `absent (stale pid file)` and prints the detached start command; it remains read-only and
+  has no `--fix` mode. The watcher and every other `scripts/controller/*.sh` entry point are
+  100755 in the git index (the sourced `lib.sh` and `resume-lib.sh` are the explicit
+  exceptions). The watch fixtures now include sanitized real panes for the IDE-switch notice
+  and the agents panel below the mode line. Tests: `test-ctl-keepalive.sh`,
+  `test-ctl-doctor.sh`, new `test-entrypoints.sh`; all wired into `run-suite.sh`.
+
 ### Test fix: piped `grep -q` under pipefail
 - `tests/test-ctl-state-backup.sh`, `test-gate-slots.sh`, `test-skills-sync.sh`: a producer piped into `grep -q` could get SIGPIPE (rc 141) when grep exited on the first match while the producer was still writing, and `pipefail` then made the condition false (`--include-large must archive the large file` failed on r1002, 2026-11-24). The three uses now read to EOF (`grep ... >/dev/null`). `test-job-check.sh` was reviewed and left alone: its `grep -qF` calls read a file argument, not a pipe.
 

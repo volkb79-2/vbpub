@@ -83,7 +83,8 @@ For programmatic Codex invocations in this environment, repository work MUST
 be launched through the controller wrapper with the route selected by name.
 Use `scripts/controller/codex-impl.sh` with `CODEX_ROUTE=luna`,
 `CODEX_ROUTE=deepseek-volker`, or `CODEX_ROUTE=deepseek-github2`; reviews use
-`scripts/controller/codex-review.sh`. The wrapper owns the profile-home and
+`scripts/controller/codex-review.sh`, or `scripts/controller/pi-review.sh` for a
+pi review on the other Open Design account. The wrapper owns the profile-home and
 shared-session details. Do not export a Codex home by hand. Ordinary tasks use
 GPT-6-Luna at xhigh when that is the operator's route; programmatic reviews and
 plans use GPT-6-Sol at xhigh when directed.

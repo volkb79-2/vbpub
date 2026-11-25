@@ -3,14 +3,17 @@
 set -u
 # ctl-keepalive.sh [--once]
 # Prompt-cache keep-alive watcher for the interactive Claude Code controller panes in tmux. Spec:
-# docs/design/agctl/CONTEXT-ECONOMY.md section 2 (+ review items R2-1/2/3/5). ONE process for all panes, started
-# detached by hand (`setsid nohup ctl-keepalive.sh &`; ctl-doctor integration is a follow-up), never by a
-# controller session. `--once` runs one poll (tests; it pings too).
+# docs/design/agctl/CONTEXT-ECONOMY.md section 2 (+ review items R2-1/2/3/5). ONE process for all panes, started detached
+# by hand (`setsid nohup ctl-keepalive.sh &`); ctl-doctor reports it running or absent and prints this start command, but
+# never starts it. No controller session owns it. `--once` runs one poll (tests; it pings too).
 # 55-59 min after the last real API request (newest assistant record with usage in the session JSONL) it types
 # one digit-free ping into the pane's EMPTY single-row prompt box, reads it back after 1 s and presses Enter only on
 # an exact match; anything else is cleared (our own text) or left alone (foreign text, dialog, busy) and
 # ~/controller/keepalive/<sessionId>.abort holds the anchor. The count N comes from the JSONL, the cap is
-# KEEPALIVE_MAX, at most one ping per anchor. Pane lock ~/controller/locks/<%pane_id>.lock is shared with the
+# KEEPALIVE_MAX, at most one ping per anchor. Every pane check (busy, dialog, prompt box) reads ONE `pane_view` of the
+# capture: all bottom windows are measured from the mode line, and the rows below it (the agents panel) are trimmed
+# only while the mode line carries the unfocused `↓ to manage` hint (a focused panel is not captured yet). Pane lock
+# ~/controller/locks/<%pane_id>.lock is shared with the
 # resume helpers. Files: logs/keepalive.log, keepalive.pid, locks/keepalive.lock. Skips are logged on change only.
 #
 # NOTE (DeepSeek / Open Design controllers): no code path until such a controller exists; operator ruling, the
@@ -20,8 +23,9 @@ DEEPSEEK_OPENDESIGN_CACHE_TTL_MIN=110
 DEEPSEEK_OPENDESIGN_KEEPALIVE_AT_MIN=100
 #
 # Test seams ONLY (paths and clock, never policy): KEEPALIVE_HOME, KEEPALIVE_SESSIONS_DIR, KEEPALIVE_PROJECTS_DIR,
-# KEEPALIVE_PROC, KEEPALIVE_NOW (epoch seconds), KEEPALIVE_READBACK_WAIT. The constants below are plain assignments:
-# an inherited environment variable cannot change the cap or the name list.
+# KEEPALIVE_PROC, KEEPALIVE_NOW (epoch seconds), KEEPALIVE_READBACK_WAIT, and KEEPALIVE_SOURCE_ONLY (source the functions
+# without starting the watcher). The constants below are plain assignments: an inherited environment variable cannot
+# change the cap or the name list.
 KEEPALIVE_POLL=60                                 # seconds between polls
 KEEPALIVE_IDLE_MIN=3300                           # ping from 55 min after the anchor ...
 KEEPALIVE_IDLE_MAX=3540                           # ... to 59 min (after that the cache is gone: a ping would only pay twice)
@@ -32,13 +36,16 @@ KEEPALIVE_MIN_WIDTH=80                            # panes narrower than this cou
 # The ping: no digits (they would select a numbered menu option), starts with `[` (never a slash command, `!` or `#`).
 PING_PREFIX='[keepalive'                          # what the JSONL scan counts
 PING_TEXT='[keepalive] cache refresh only: reply ok, no tools'
-# ---- pane markers: UNVERIFIED on Claude Code 2.1.331 (replace the fixtures in tests/test-ctl-keepalive.sh with real
-# ---- captured panes when the operator has them; a Claude Code release may change them) ------------------------------
+# ---- pane markers: the sanitized real idle captures in tests/fixtures/keepalive cover the box, notice and agents-panel
+# ---- layouts; the dialog cursor/footer remain UNVERIFIED on Claude Code 2.1.331. A Claude Code release may change them.
 DIALOG_CURSOR_RE='^[[:space:]]*❯[[:space:]]*[0-9]+\.[[:space:]]'   # cursor on a numbered option of a permission/question menu
 DIALOG_FOOTER='Esc to cancel'                                     # footer of those menus
 DIALOG_LINES=15                                                   # how many bottom non-blank lines are searched for them
 BOX_RULE_BYTES='(?:\xe2\x94\x80){20,}'                            # a prompt-box rule: at least 20 x U+2500, nothing else (perl, bytes)
+BOX_LABEL_RULE_BYTES='(?:\xe2\x94\x80){20,}[A-Za-z0-9._-]+(?:\xe2\x94\x80)+'   # same rule with one tmux session label (spaces stripped)
 BOX_LINES=6                                                       # the input row must be within this many bottom non-blank lines
+BOX_FOOT_MARKER='⏵⏵ bypass permissions on'                        # the mode line: footer rows below it are not part of the prompt box
+BOX_PANEL_HINT='↓ to manage'                                      # the mode line's unfocused agents-panel hint: only this panel layout is trimmed
 
 RESUME_PREFIX=KA_RESUME   # resume-lib.sh test seams; not KEEPALIVE_*, that namespace is this script's constants
 home_dir=${KEEPALIVE_HOME:-${CONTROLLER_HOME:-$HOME/controller}}
@@ -119,18 +126,38 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
 PY
 }
 
+pane_view() { # $1 = capture with escapes: the prompt box and every bottom window are measured from the MODE line, not from
+  # the last line of the capture. Only the unfocused agents-panel layout is trimmed (its mode line carries BOX_PANEL_HINT):
+  # a panel that holds keyboard focus is not captured yet and may look identical, so there the capture is returned
+  # unchanged and box_ok's strict geometry refuses the pane. No input row or no mode line: unchanged, fail-safe.
+  local ln=() i idx=-1 n esc=$'\033' re mode
+  re="^(${esc}\[[0-9;]*m)*$INPUT_MARKER"
+  mapfile -t ln <<<"$1"; n=${#ln[@]}
+  for ((i = 0; i < n; i++)); do [[ ${ln[i]} =~ $re ]] && idx=$i; done
+  (( idx >= 0 )) || { printf '%s\n' "${ln[@]}"; return 0; }
+  for ((i = idx + 1; i < n; i++)); do
+    mode=$(strip_sgr <<<"${ln[i]}")
+    [[ $mode == *"$BOX_FOOT_MARKER"* ]] || continue
+    [[ $mode == *"$BOX_PANEL_HINT"* ]] && n=$((i + 1))   # unfocused panel: nothing below the mode line is part of the box
+    break
+  done
+  printf '%s\n' "${ln[@]:0:n}"
+}
 dialog_open() { # $1 = capture with escapes: a numbered permission/question menu is on screen
   local plain; plain=$(strip_sgr <<<"$1" | grep -v '^[[:space:]]*$' | tail -n "$DIALOG_LINES")
   grep -qE -- "$DIALOG_CURSOR_RE" <<<"$plain" || grep -qF -- "$DIALOG_FOOTER" <<<"$plain"
 }
 is_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
+is_label_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_LABEL_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
 box_ok() { # $1 = capture: the live input row is alone in its box (a box rule right above AND below), within the last BOX_LINES non-blank lines
+  # $1 must be a pane_view capture: the trim at the mode line lives there, once, because a second trim here would also
+  # cut a FOCUSED agents panel (no BOX_PANEL_HINT) and admit it.
   local ln=() i n idx=-1 re="^$INPUT_MARKER"
   mapfile -t ln < <(strip_sgr <<<"$1" | grep -av '^[[:space:]]*$')   # colour codes first: a codes-only line is blank, as in pane_state_of
   n=${#ln[@]}
   for ((i = 0; i < n; i++)); do [[ ${ln[i]} =~ $re ]] && idx=$i; done
   (( idx >= 1 && idx + 1 < n && idx >= n - BOX_LINES )) || return 1
-  is_rule "${ln[idx-1]}" && is_rule "${ln[idx+1]}"   # a multi-line draft has its continuation lines between row and rule
+  { is_rule "${ln[idx-1]}" || is_label_rule "${ln[idx-1]}"; } && is_rule "${ln[idx+1]}"   # label only above; a draft adds lines below
 }
 norm_row() { # the input row with NBSP as a space and the gap after the marker squeezed (R2-1), trailing blanks dropped
   local r=$1
@@ -146,6 +173,7 @@ abort_mark() { # sid anchor: the session is skipped while its anchor is this one
 ping_pane() {
   local name=$1 sid=$2 pane=$3 anchor=$4 n=$5 t rc rest row want="$INPUT_MARKER $PING_TEXT"
   t=$(tmux capture-pane -e -p -t "$pane") || { skip "$name" "$sid" "capture-failed"; return; }
+  t=$(pane_view "$t")   # one view for the busy, dialog and box checks: each window starts at the mode line
   pane_state_of "$t"; rc=$?
   [[ $rc -eq 1 ]] && { skip "$name" "$sid" "busy"; return; }
   dialog_open "$t" && { skip "$name" "$sid" "dialog"; return; }
@@ -154,6 +182,7 @@ ping_pane() {
   tmux send-keys -t "$pane" -l -- "$PING_TEXT" || { klog "$name" "$sid" error "send-keys failed"; return; }
   sleep "$readback_wait"
   t=$(tmux capture-pane -e -p -t "$pane") || { klog "$name" "$sid" abort-foreign "read-back capture failed; nothing more sent"; abort_mark "$sid" "$anchor"; return; }
+  t=$(pane_view "$t")   # the same view as before typing: a busy pane whose mode line sits above a tall panel still reads busy
   row=$(norm_row "$(input_row_of "$t")"); rest=${row#"$INPUT_MARKER "}
   local ours=0 prefix=0
   [[ $row == "$want" ]] && ours=1
@@ -226,6 +255,19 @@ poll_once() {
   done
 }
 
+watch_loop() {
+  while (( ! stop )); do   # a TERM during the sleep returns from `wait` and ends here: no extra poll, no extra Python scan
+    poll_once
+    (( stop )) && break
+    sleep "$KEEPALIVE_POLL" 8>&- & wait $!
+  done
+}
+
+if [[ ${KEEPALIVE_SOURCE_ONLY:-} == 1 ]]; then
+  [[ ${BASH_SOURCE[0]} != "$0" ]] || { echo "KEEPALIVE_SOURCE_ONLY only works when sourced" >&2; exit 2; }
+  return 0
+fi
+
 [[ ${1:-} == --once || $# -eq 0 ]] || { echo "usage: ${0##*/} [--once]" >&2; exit 2; }
 if ! { mkdir -p -- "$home_dir/logs" "$home_dir/locks" "$home_dir/keepalive" && : >>"$log"; } 2>/dev/null; then echo "ERROR cannot write below $home_dir" >&2; exit 2; fi
 exec 8>"$home_dir/locks/keepalive.lock"
@@ -236,4 +278,4 @@ stop=0; trap 'stop=1' TERM INT   # a signal never interrupts a ping: the read-ba
 klog watcher - start "poll=$KEEPALIVE_POLL window=$KEEPALIVE_IDLE_MIN-$KEEPALIVE_IDLE_MAX max=$KEEPALIVE_MAX names=$KEEPALIVE_NAMES"
 if [[ ${1:-} == --once ]]; then poll_once; exit 0; fi
 # the sleep must not inherit the singleton lock (fd 8), or a restart would find it held for up to a minute
-while (( ! stop )); do poll_once; sleep "$KEEPALIVE_POLL" 8>&- & wait $!; done
+watch_loop

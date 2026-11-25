@@ -104,12 +104,16 @@ The historical R2 mutation campaign cited in IOB-R2-01 is documented in the
 [2026-11-02 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md) and
 the [raw evidence summary](docs/reports/IOBENCH-R2-R1002-EVIDENCE-SUMMARY-2026-11-13.md).
 
-The registered repository gate runs R0–R1 and native Assay R2 through
-Run-Gate. Its R2 lane opts into `jobs = "auto"` with an Assay ceiling of
-four workers; it runs serially when the prepared workspace does not support
-Assay's btrfs cheap-clone requirement. See the
-[gate consumer guide](docs/CONSUMERS.md#repository-gate) for how to run it and
-the [design guide](docs/DESIGN-GUIDE.md#registered-repository-gate) for why
-the R2 lane uses native Assay dispatch. Campaigns started with the former
-command lane do not resume after this storage change; see the consumer guide
-for the state paths.
+The registered repository gate runs R0–R1 through Run-Gate. R2 is owed
+asynchronously on the latest code and runs by name, never inside the gate:
+`run-gate r2` is the diff-scoped lane (only the lines a base..HEAD diff adds,
+3 workers in a 4g cap, comparison base required: `run-gate r2 --base <ref>`),
+and `run-gate r2-whole` is the periodic whole-package campaign
+(`jobs = "auto"` with an Assay ceiling of four workers, 1536m). See the
+[gate consumer guide](docs/CONSUMERS.md#repository-gate) for how to run them,
+the [R2 runbook](docs/R2-RUNBOOK.md) for the owed-R2 procedure (two shards,
+one commit, store/resume), and the
+[design guide](docs/DESIGN-GUIDE.md#registered-repository-gate) for why both
+lanes are native Assay dispatch. Campaigns started with the former command
+lane do not resume after this storage change; see the consumer guide for the
+state paths.

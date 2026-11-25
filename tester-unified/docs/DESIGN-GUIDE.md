@@ -139,7 +139,7 @@ neither the base's apt source nor a "latest" lookup, and a bump is a reviewed ed
 v5.6.0 was published 2026-10-02 (17 days before the 2026-10-19 pin) and Docker's apt index serves it as
 `5.6.0-1~debian.13~trixie`. The step only runs when `docker compose version` does not already answer (an MDT
 base ships the plugin) and the image build fails unless it does afterwards. The oracle
-`cmru/tests/test_tester_unified_image.py::test_compose_is_dockers_pinned_plugin_not_debians_package`
+`tester-unified/tests/test_tester_unified_image.py::test_compose_is_dockers_pinned_plugin_not_debians_package`
 refuses a floating or missing version, a missing sha256, any bare `docker-compose` package name and an apt
 install of the plugin; the shim test above executes the step, including the checksum-mismatch stop.
 
@@ -212,7 +212,7 @@ ignored window. First-party packages have no age window at all (operator decisio
 always the latest published release; the 14-day rule is for third-party dependencies only), and the image honours
 that structurally rather than by exemption: a first-party name never reaches an index-bound pip (released wheels
 `--no-index --no-deps`, cmru source-built offline, the generator refusing the names), which
-`test_the_age_window_never_applies_to_a_first_party_package` in `cmru/tests/test_tester_unified_image.py` asserts. The
+`test_the_age_window_never_applies_to_a_first_party_package` in `tester-unified/tests/test_tester_unified_image.py` asserts. The
 Debian/Python base digest and the node image digest are the deliberate exceptions: they are
 digest-pinned and age-checked by `cmru versions` (`tester-base/versions/`). `wheel-builder` ages the two installs
 baked into it the same way; the build backends that `python -m build` installs at run time are a separate matter
