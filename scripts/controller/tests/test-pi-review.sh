@@ -689,7 +689,6 @@ SH
 # --- the report is the reviewer's final message -----------------------------
 
 # The reviewer has no write tool: the launcher saves its final message.
-check_unresolvable_report_path_refused
 check_report_from_final_message() {
   local rc=0
   launch rev-final none --implementer-run impl-github2 || rc=$?
@@ -842,6 +841,7 @@ check_modified_diff_of_dirty_file
 check_untracked_in_untracked_dir
 check_unreadable_after_state_flagged
 check_foreign_marker_refused
+check_unresolvable_report_path_refused
 check_report_from_final_message
 check_no_text_is_no_report
 check_docs
