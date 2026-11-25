@@ -108,7 +108,15 @@ operators = [
   "python:bool-const-flip",
   "python:falsy-swap",
 ]
-budget_per_candidate = "5m"
+# 15m (was 5m until 2026-11-25, CIU-235). The budget is a bound on the WHOLE
+# suite, and a mutant that no test kills runs all of it: the measured full
+# suite is ~416 s in the baseline (run rgw-ciu-20261125T202211-v1001, v1001),
+# so a 5m bound cut every such candidate at 302 s and reported it as
+# BUDGET_EXCEEDED instead of "survived" -- the lane could not report a survivor
+# at all. Killed mutants still stop early (104-129 s, --maxfail=1); 15m leaves
+# ~2x headroom over the measured suite for a slower judge host while staying
+# well inside the outer lane budget (assay.toml `budget`, run-gate.toml).
+budget_per_candidate = "15m"
 liveness = true
 
 [lanes.ciu.judge.canary]

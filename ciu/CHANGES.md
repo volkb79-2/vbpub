@@ -21,6 +21,9 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- fix(ciu): CIU-235 — the R2 lane's `budget_per_candidate` is 15m, not 5m (the ~416 s suite it bounds was cut at 302 s, so an unkillable mutant read `BUDGET_EXCEEDED` instead of `survived`); the three unjudged `engine.py` candidates (helper verdict, two dry-run `flush=True` lines) are now killed by behavioural tests
+
 <!-- cmru: release history -->
 
 ## [7.28.0] - 2026-11-24

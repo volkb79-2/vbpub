@@ -7517,7 +7517,14 @@ evidence-judgment command.
   from the lane's coverage artifact, R2: serial native Python mutation with
   active liveness monitoring, the declared operator set, and per-candidate
   budget, and R3: an import-break canary against the declared CIU source
-  target. A new unsafe
+  target. The per-candidate budget is **15m** (CIU-235): it bounds the whole
+  suite, because a mutant no test kills runs all of it, and the measured full
+  suite is ~416 s in the baseline (`rgw-ciu-20261125T202211-v1001`). The earlier
+  5m bound cut every such candidate at 302 s, so the lane reported
+  `BUDGET_EXCEEDED` instead of `survived` and could not report a survivor at
+  all; killed mutants still stop early (104-129 s under `--maxfail=1`), and 15m
+  leaves about 2x headroom for a slower judge while staying inside the lane's
+  outer `budget`. A new unsafe
   symlink anywhere in the repository reds the lane until its owner declares
   or untracks it (fail-closed).
 - **S18.3** *Cgroup (fail-closed).* The gate resolves the container slice
