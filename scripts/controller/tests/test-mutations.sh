@@ -46,6 +46,7 @@ killed_count=0
 for pi_review_mutant in \
   pi-review-account-inverted pi-review-head-only pi-review-index-only \
   pi-review-exclude-only pi-review-untracked-content-only pi-review-diff-only \
+  pi-review-status-no-uall \
   pi-review-tools-wide pi-review-budget-off pi-review-budget-bytes-off \
   pi-review-stale-report-overwrite pi-review-foreign-marker \
   pi-review-realpath-fallback; do
