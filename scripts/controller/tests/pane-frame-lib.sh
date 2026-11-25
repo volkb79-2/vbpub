@@ -9,7 +9,7 @@ MENU=' Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel'
 # ` · ↓ to manage` is removed when the panel has focus, N agent rows are appended below the mode line, and [mode text]
 # replaces the bypass-mode footer, so a pane in another permission mode (no BOX_FOOT_MARKER anywhere) can be framed.
 panel_frame() {
-  local dest=$1 rows=$2 busy=$3 hint=$4 mode=$5 k mode_line
+  local dest=$1 rows=$2 busy=$3 hint=$4 mode=${5:-} k mode_line
   mode_line=$(grep -nFm1 -- '⏵⏵ bypass permissions on' "$PANELFIX" | cut -d: -f1)
   cp -- "$PANELFIX" "$dest"
   [[ -z $mode ]] || sed -i "${mode_line}s|⏵⏵ bypass permissions on|$mode|" "$dest"
