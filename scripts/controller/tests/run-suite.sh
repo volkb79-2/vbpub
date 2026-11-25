@@ -17,6 +17,7 @@ files=(
   "$SCRIPT_DIR/../codex-impl.sh"
   "$SCRIPT_DIR/../pi-impl.sh"
   "$SCRIPT_DIR/../codex-review.sh"
+  "$SCRIPT_DIR/../pi-review.sh"
   "$SCRIPT_DIR/../opencode-impl.sh"
   "$SCRIPT_DIR/../resume-usage-limited.sh"
   "$SCRIPT_DIR/../start-after.sh"
@@ -43,6 +44,7 @@ files=(
   "$SCRIPT_DIR/test-job-check.sh"
   "$SCRIPT_DIR/test-wrappers.sh"
   "$SCRIPT_DIR/test-pi-impl.sh"
+  "$SCRIPT_DIR/test-pi-review.sh"
   "$SCRIPT_DIR/test-hardening-tools.sh"
   "$SCRIPT_DIR/test-gate-slots.sh"
   "$SCRIPT_DIR/test-ctx-hooks.sh"
@@ -52,6 +54,7 @@ files=(
   "$SCRIPT_DIR/test-chain-run.sh"
   "$SCRIPT_DIR/test-ctl-doctor.sh"
   "$SCRIPT_DIR/test-ctl-hygiene.sh"
+  "$SCRIPT_DIR/test-entrypoints.sh"
   "$SCRIPT_DIR/test-ctl-state-backup.sh"
   "$SCRIPT_DIR/test-clear-resume.sh"
   "$SCRIPT_DIR/test-compact-resume.sh"
@@ -76,6 +79,7 @@ bash "$SCRIPT_DIR/test-ctl-status.sh" || exit $?
 bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
+bash "$SCRIPT_DIR/test-pi-review.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?
 bash "$SCRIPT_DIR/test-gate-slots.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctx-hooks.sh" || exit $?
@@ -84,6 +88,7 @@ bash "$SCRIPT_DIR/test-remote-gate.sh" || exit $?
 bash "$SCRIPT_DIR/test-chain-run.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-doctor.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-hygiene.sh" || exit $?
+bash "$SCRIPT_DIR/test-entrypoints.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-state-backup.sh" || exit $?
 bash "$SCRIPT_DIR/test-clear-resume.sh" || exit $?
 bash "$SCRIPT_DIR/test-compact-resume.sh" || exit $?

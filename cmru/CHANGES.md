@@ -32,7 +32,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
-
+- tests: cmru's gate judges cmru again. The tester-unified image suite moved to
+  `tester-unified/tests/` (KI-194), the real-estate dependency and bootstrap-doc
+  order checks moved to the new `estate-lint/` project, and
+  `tests/test_gate_budgets.py` keeps only the budget facts `run-gate lanes --check`
+  does not decide.
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

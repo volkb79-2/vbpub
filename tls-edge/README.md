@@ -77,7 +77,7 @@ tls-edge/
   src/tls_edge_cli/            ← installed `tls-edge configure/show/validate` CLI
   pyproject.toml                ← CLI wheel and optional interactive extra
   requirements-runtime.txt      ← CLI runtime dependency set
-  ciu-stack/                  ← templates + source of truth + ciu v2 deploy package
+  ciu-stack/                  ← schema, shipped defaults, templates, ciu v2 deploy package
     ciu.defaults.toml.j2      ← full configuration contract with commentary
     ciu.compose.yml.j2        ← Compose template (Traefik + docker-socket-proxy)
     traefik.yml.j2            ← Traefik static config template
@@ -98,7 +98,6 @@ tls-edge/
     render_standalone.py      ← Jinja2+TOML render engine; DooD-aware paths
     update-rendered.sh        ← regenerate ignored edge-proxy/ trial output
     bundle_wheels.py          ← generated requirements + the one first-party wheel fetcher
-    release.sh                ← thin CMRU release entry point
 
   consumer-examples/          ← ready-to-copy example stacks
     pattern-a-public-only/
@@ -117,9 +116,14 @@ tls-edge/
 
 The standalone tree is a generated trial artifact, not a supported deployment:
 
-**Defaults**: ACME TLS-ALPN-01 challenge, port 80 on, Let's Encrypt
-production CA.  Setting an ACME contact email is strongly recommended (avoids
-rate-limit notices from Let's Encrypt); see the note below.
+**The tls-edge-specific defaults** (ACME mode, port 80, ca_server, public port
+set): the schema and every shipped value are in
+[`ciu-stack/ciu.defaults.toml.j2`](ciu-stack/ciu.defaults.toml.j2), and
+`tls-edge show` prints what a configured instance actually uses.
+
+Setting an ACME contact email is strongly recommended (Let's Encrypt uses it to
+warn the account before a rate limit is hit); [`INSTALL` §3](docs/INSTALL.md#3-install)
+shows where it goes (`email` under `[tls_edge.acme]` in the answers file).
 
 ```bash
 # 1. Point your DNS A/AAAA record at this host.
@@ -209,23 +213,31 @@ on disk.
 
 ## TLS mode reference
 
-| Mode | Challenge | Port 80 needed | Wildcard | Renewal | Typical use |
-|---|---|---|---|---|---|
-| `acme-tls` | TLS-ALPN-01 | No | No | Automatic (Traefik) | Default; per-subdomain certs, no manual steps |
-| `acme-http` | HTTP-01 | Yes | No | Automatic (Traefik) | When ALPN is blocked; port 80 must be open |
-| `acme-dns` | DNS-01 | No | Yes | Automatic (Traefik + lego) | Wildcard cert; requires DNS provider API key |
-| `static` | n/a | No | Yes | Manual certbot or hook | Manual wildcard TXT (no DNS API), or corporate certs |
-| `dev` | n/a | No | Yes | n/a (397-day cert) | Self-signed CA (openssl) or mkcert; DooD-safe |
+`tls-edge show` reports the mode and the port plan of a configured instance; that
+is the listener requirement the CLI validates for a mode,
+`src/tls_edge_cli/config.py:492-495`.
+The mode list and their defaults are in
+[`ciu-stack/ciu.defaults.toml.j2`](ciu-stack/ciu.defaults.toml.j2).  The table
+below covers the operational choice only (which challenge each mode uses, and
+how renewal happens); per-mode instructions are in
+[INSTALL §4](docs/INSTALL.md#4-configure-listeners-and-certificates).
+
+| Mode | Challenge | Renewal | Typical use |
+|---|---|---|---|
+| `acme-tls` | TLS-ALPN-01 | Automatic (Traefik) | Default; per-subdomain certs, no manual steps |
+| `acme-http` | HTTP-01 | Automatic (Traefik) | When ALPN is blocked; needs the HTTP listener |
+| `acme-dns` | DNS-01 | Automatic (Traefik + lego) | Wildcard cert; requires DNS provider API key |
+| `static` | n/a | Manual certbot or hook | Manual wildcard TXT (no DNS API), or corporate certs |
+| `dev` | n/a | n/a (397-day cert) | Self-signed CA (openssl) or mkcert; DooD-safe |
 
 **Wildcard without DNS API** (`static` mode + `certbot --manual`): issue a
 `*.example.com` cert interactively by adding a `_acme-challenge` TXT record
 when certbot prompts.  No DNS API key needed.  Requires manual action every
 ~60 days.  See [the manual DNS-TXT procedure](CONSUMER_GUIDE.md#static-mode--wildcard-cert-via-manual-dns-txt-no-dns-api-required).
 
-**Port 80 note**: port 80 is on by default (HTTP→HTTPS redirect, required for
-`acme-http`). Use `tls-edge configure` to turn it off for an installed CIU
-instance; for a generated trial checkout, set
-`tls_edge.ports.expose_http = false` in the site override and re-render.
+**Port 80 note**: whether the instance serves HTTP is an override value
+(`[tls_edge.ports] expose_http`), so `tls-edge show` answers it for a live
+instance.  `acme-http` needs it on; every other mode works with it off.
 
 **Static mode note**: both `live/<domain>/` and `archive/<domain>/` must be
 mounted.  Certbot uses relative symlinks between these two directories; mounting
@@ -276,22 +288,15 @@ ignored `cmru.secret.toml [github].token`; a committed credential is rejected.
 CMRU's `xztar` writer sorts members, normalises ownership and modes, and uses
 `SOURCE_DATE_EPOCH`; two builds with identical inputs and epoch are byte-identical.
 
-### Standalone (simplest)
-
-```bash
-bash tls-edge/tools/release.sh 0.2.0
-# → isolated CMRU transaction: gate, commits VERSION + CHANGES, tags, builds,
-#   publishes, and synchronises main
-```
-
-Accepts an optional leading `v` (`0.2.0` and `v0.2.0` both work).
-
-### Via cmru (consistent with other vbpub projects)
+### Release command
 
 ```bash
 cmru release tls-edge --set-version 0.2.0
-# → same declared project contract, with the root audit log
+# → isolated CMRU transaction: gate, commits VERSION + CHANGES, tags, builds,
+#   publishes, and synchronises main, with the root audit log
 ```
+
+This is the only release entry point: tls-edge keeps no release script of its own.
 
 ### What happens after publish
 

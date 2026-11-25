@@ -4,13 +4,14 @@
 
 The tls-edge instance runs a single Traefik deployment that:
 - terminates TLS for all consumer services on this host
-- routes requests by host name (one host name per service, all on port 443)
+- routes requests by host name (one host name per service, all on the shared HTTPS listener)
 - discovers consumer services automatically from Docker labels
 - exposes nothing by default; containers must opt in
 
-Port 80 is **on by default**: it carries the permanent HTTP→HTTPS redirect and
-ACME HTTP-01 challenges.  It can be disabled (`tls_edge.ports.expose_http =
-false`).  Always publish `https://` URLs.
+The HTTP listener is in the shipped defaults: it carries the permanent
+HTTP→HTTPS redirect and ACME HTTP-01 challenges.  Whether this instance keeps it
+is the `expose_http` override, reported by `tls-edge show`.  Always publish
+`https://` URLs.
 
 Consumers attach to the shared `ingress_public` network and declare routing
 via Compose labels.  No access to the tls-edge instance itself is needed.
@@ -106,11 +107,12 @@ harmless if present, but omitting them keeps labels clean.
 ### One host name per service (no port-based routing)
 
 Every service gets its own host name on the shared HTTPS port; the edge has no
-alternate HTTPS entrypoint. Generic defaults publish 80/tcp (optional redirect
-and ACME HTTP-01) and 443/tcp (all HTTPS). HTTP/3 can add UDP on the public
-HTTPS port. Raw TCP/UDP media is published directly by the application and is
-not an edge entrypoint. Point one DNS name per service at the host (a wildcard
-record is fine) and route by `Host()`.
+alternate HTTPS entrypoint. The shipped public port set is in
+`ciu-stack/ciu.defaults.toml.j2`; which ports a live instance publishes is
+`tls-edge show`'s answer. HTTP/3 can add UDP on the public HTTPS port. Raw TCP/UDP
+media is published directly by the application and is not an edge entrypoint.
+Point one DNS name per service at the host (a wildcard record is fine) and route
+by `Host()`.
 
 > Only one service can own the combination of hostname + entrypoint.  To
 > share one host name between two services add a path matcher:
@@ -403,9 +405,10 @@ curl --cacert /path/to/local-ca.crt https://svc.my.domain/
 curl -k https://svc.my.domain/        # insecure; dev only
 ```
 
-Note: port 80 is on by default and redirects HTTP to HTTPS (and serves ACME
-HTTP-01 challenges when configured). Set `tls_edge.ports.expose_http = false`
-to disable it; then `curl http://svc.my.domain/` will be refused or time out.
+Note: an instance that keeps the HTTP listener redirects HTTP to HTTPS and
+serves ACME HTTP-01 challenges when configured. Set
+`tls_edge.ports.expose_http = false` to disable it; then `curl http://svc.my.domain/`
+will be refused or time out.
 
 ### 5. Access log audit trail
 
@@ -602,7 +605,7 @@ requirements.
 
 ```
 tls-edge/
-  ciu-stack/                        ← Jinja2 templates (single source of truth)
+  ciu-stack/                        ← Jinja2 templates and the configuration schema
     ciu.defaults.toml.j2            ←   all configuration options + defaults
     ciu.compose.yml.j2              ←   Compose template
     traefik.yml.j2                  ←   Traefik static config template

@@ -1,10 +1,21 @@
-"""The outer Run-Gate budget of an Assay lane must stay above the Assay lane's own deadline.
+"""cmru-specific budget facts of its own Run-Gate/Assay lanes.
 
-The Run-Gate Assay wrappers bound the container; each `assay.toml` lane budget
-is the binding deadline inside it. The full R0/R1/R3 lane also nests the
-import-break canary attempt budget, while T1's R0/R1 lane has no canary. This
-reads both files with `tomllib` and fails when the relation is broken; every
-assertion has a controlled-wrong case.
+What is left here after P-core-12 (KI-194) is what `run-gate lanes --check`
+does NOT decide:
+
+* the EXACT pairing of the two outer lanes with the two inner Assay lanes
+  (`--check` only verifies that the named inner lane exists, so a miswire to
+  another *existing* lane passes it),
+* cmru's canary policy: the R0/R1 lane deliberately has no canary while the
+  full lane does,
+* the mutation lane's command-level `--timeout-seconds` floor (a command lane's
+  argv is not inspected at all).
+
+The generic rules — outer budget >= inner budget + 5m (`--strict`) and the
+canary attempt budget <= the lane budget — are enforced by
+`run-gate lanes --check --all --strict` in the `estate-lint` lane, so they are
+not restated here (the follow-up that closes the remaining gaps above is
+tracked by the controller).
 """
 from __future__ import annotations
 
@@ -19,33 +30,16 @@ PAIRS = (
     ("assay", "cmru"),
     ("assay-r0-r1", "cmru-r0-r1"),
 )
-MARGIN_SECONDS = 5 * 60
 
 
-def seconds(text: str) -> int:
-    match = re.fullmatch(r"(\d+)([smh])", text.strip())
-    assert match, f"unparsed duration {text!r}"
-    return int(match.group(1)) * {"s": 1, "m": 60, "h": 3600}[match.group(2)]
-
-
-def violations(assay_doc: dict, gate_doc: dict) -> list[str]:
+def miswires(assay_doc: dict, gate_doc: dict) -> list[str]:
+    """Outer lane -> inner lane name mismatches, for the pairs cmru declares."""
     out: list[str] = []
     for outer_name, inner_name in PAIRS:
         outer = gate_doc["lanes"][outer_name]
-        inner = assay_doc["lanes"][inner_name]
+        # Existence only: another EXISTING inner lane would pass `lanes --check`.
         if outer["assay_lane"] != inner_name:
             out.append(f"run-gate [{outer_name}] runs assay lane {outer['assay_lane']!r}, not {inner_name!r}")
-        if seconds(outer["budget"]) < seconds(inner["budget"]) + MARGIN_SECONDS:
-            out.append(
-                f"run-gate [{outer_name}] budget {outer['budget']} is not >= assay [{inner_name}] "
-                f"budget {inner['budget']} + 5m"
-            )
-        attempt = inner["judge"].get("canary", {}).get("budget_per_attempt")
-        if attempt is not None and seconds(attempt) > seconds(inner["budget"]):
-            out.append(
-                f"assay [{inner_name}] canary budget_per_attempt {attempt} exceeds its lane budget "
-                f"{inner['budget']}"
-            )
     return out
 
 
@@ -56,13 +50,9 @@ def _load() -> tuple[dict, dict]:
     )
 
 
-def test_the_committed_budgets_keep_the_outer_above_the_inner():
-    assay_doc, gate_doc = _load()
-    assert violations(assay_doc, gate_doc) == []
-
-
 def test_the_pairs_exist_and_are_what_the_gate_actually_runs():
     assay_doc, gate_doc = _load()
+    assert miswires(assay_doc, gate_doc) == []
     for outer_name, inner_name in PAIRS:
         assert gate_doc["lanes"][outer_name]["kind"] == "assay"
         assert gate_doc["lanes"][outer_name]["assay_lane"] == inner_name
@@ -73,44 +63,13 @@ def test_the_pairs_exist_and_are_what_the_gate_actually_runs():
             assert "budget_per_attempt" in judge["canary"]
 
 
-# ─── controlled wrong implementations: each assertion must be able to go red ──────────────
-
-def test_an_outer_budget_equal_to_the_inner_is_reported():
-    assay_doc, gate_doc = _load()
-    wrong = copy.deepcopy(gate_doc)
-    wrong["lanes"]["assay"]["budget"] = assay_doc["lanes"]["cmru"]["budget"]
-    assert any("run-gate [assay]" in v and "+ 5m" in v for v in violations(assay_doc, wrong))
-
-
-def test_an_outer_budget_below_the_inner_is_reported_for_the_t1_pair_too():
-    assay_doc, gate_doc = _load()
-    wrong = copy.deepcopy(gate_doc)
-    wrong["lanes"]["assay-r0-r1"]["budget"] = "45m"
-    assert any("assay-r0-r1" in v for v in violations(assay_doc, wrong))
-
-
-def test_a_canary_attempt_longer_than_the_lane_is_reported():
-    assay_doc, gate_doc = _load()
-    wrong = copy.deepcopy(assay_doc)
-    wrong["lanes"]["cmru"]["judge"]["canary"]["budget_per_attempt"] = "2h"
-    assert any("exceeds its lane budget" in v for v in violations(wrong, gate_doc))
-
+# ─── controlled wrong implementation: the pairing assertion must be able to go red ─────────
 
 def test_a_miswired_assay_lane_is_reported():
     assay_doc, gate_doc = _load()
     wrong = copy.deepcopy(gate_doc)
     wrong["lanes"]["assay"]["assay_lane"] = "cmru-r0-r1"
-    assert any("not 'cmru'" in v for v in violations(assay_doc, wrong))
-
-
-def test_the_duration_parser_rejects_what_it_cannot_read():
-    assert (seconds("50m"), seconds("60m"), seconds("7h"), seconds("90s")) == (3000, 3600, 25200, 90)
-    for bad in ("auto", "1d", "5"):
-        try:
-            seconds(bad)
-        except AssertionError:
-            continue
-        raise AssertionError(f"{bad!r} was accepted")
+    assert any("not 'cmru'" in v for v in miswires(assay_doc, wrong))
 
 
 #: The known-good cmru suite took up to 825 s under concurrent lanes in the
