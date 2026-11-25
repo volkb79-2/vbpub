@@ -35,6 +35,17 @@ All notable changes to debian-install-v2 are recorded here.
   <state_dir>/io-benchmark.json`. An arbitrary absolute path as the output is
   refused, so a caller bug can never have the root runner replace another file.
 
+### Fixed (v2 r2 fix-forward)
+- IC-M1a's measured R2 campaign planned 179 candidates at about 137 s each and
+  judged 31 (21 killed, 10 survived) before a 50-minute bound. The new
+  regression tests cover all ten survivors without changing installer behavior.
+  Chunked resume had rejected every prior record because `PYTHONPATH` embedded
+  the throwaway `{worktree}` and was in Assay's `env_passthrough`, so
+  `judge_sha256` changed on every run (Assay B577; Run-Gate RG-314). The R2 lane
+  now passes checkout-relative library roots, runs with `--jobs 2`
+  (`jobs_max = 2`), and sizes the measured 179 x 137 / 2 x 1.5 = about
+  306.5-minute campaign at 310 minutes in Assay and 330 minutes in Run-Gate.
+
 ### Added (IC-M1a, btrfs-root configuration)
 - v2 now configures a single-device btrfs root installed by the rollback ISO
   without writing a partition table or resizing the filesystem. Root discovery
