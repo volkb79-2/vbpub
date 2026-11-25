@@ -110,18 +110,6 @@ deployment.
 
 ## Roadmap
 
-### TE-06 — three release-notes sources
-
-`TLS_EDGE_RELEASE_NOTES` in `cmru.toml` carries version-specific prose,
-released CHANGES sections were edited after their tags, and INSTALL.md keeps
-release history. Decided: the headline is version-agnostic (install and verify
-only); version prose lives only in pending notes before the tag; released
-CHANGES sections are immutable from now on (existing post-tag edits stay);
-INSTALL.md carries no release history; bundled versions come from the
-manifest (cmru KI-197).
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M2
-
 ### TE-08 — tests exercise the wrong renderer; coverage rule
 
 Remaining: rebase the CLI tests on the CLI boundary and remove the
@@ -129,29 +117,6 @@ private-helper, source-grep and config-literal oracles in P-edge-04. P-edge-03
 covers the standalone/ciu renderer oracles and D10's coverage-exclusion policy.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M5, M6
-
-### TE-11 — docs restate facts
-
-Ports, keys and defaults are restated across many documents. ARCHITECTURE has
-two socket-proxy allowlists and claims a single source of truth, and this
-backlog holds resolved and out-of-scope plans. Decided: facts live in
-`ciu.defaults.toml.j2` and `tls-edge show`, with docs linking there;
-ARCHITECTURE keeps rationale only. The backlog keeps open items only; closed
-ones go one line each to `archive/2026-Q4.md`. The DOCKER-USER helper, multiple Traefik
-instances and log aggregation are dropped; the middleware library folds into
-FEAT-01, and mkcert moves to the mdt-cockpit backlog.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` L1
-
-### TE-12 — small duplication
-
-`requirements-test.txt` duplicates the pyproject `test` extra,
-`tools/release.sh` duplicates `cmru release`, and the override `ciu.toml.j2`
-is parsed by the CLI as plain TOML but rendered by ciu as Jinja. Decided: one
-test-dependency list (the pyproject extra), `cmru release` only, and the
-override documented and enforced as plain TOML.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` L4
 
 ### TE-13 — rootless Docker ownership of vol-traefik-acme
 

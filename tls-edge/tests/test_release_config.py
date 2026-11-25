@@ -63,7 +63,7 @@ def test_operator_docs_name_the_bundle_root_and_reproducibility_inputs():
 
 def test_closed_te_05_uses_the_archive_table_shape():
     archive = (ROOT / "archive" / "2026-Q4.md").read_text(encoding="utf-8")
-    assert "TE-05 | hand-rolled bundle build | <this merge> | 2026-11-24" in archive
+    assert "TE-05 | hand-rolled bundle build | ac90d7953 | 2026-11-24" in archive
 
 
 def test_install_doc_carries_no_release_history():
