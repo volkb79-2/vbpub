@@ -217,7 +217,10 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
 
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
-    assert "source roots MUST be unchanged between them" in spec
+    # KI-211: the base is delegated, so a merge HEAD is judged against the
+    # selected tag and the old "source roots must be unchanged" refusal is gone.
+    assert 'judge.base_source = "request"' in spec
+    assert "source roots MUST be unchanged between them" not in spec
 
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
     lane = assay_config["cmru"]

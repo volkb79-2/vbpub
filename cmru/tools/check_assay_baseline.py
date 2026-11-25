@@ -485,8 +485,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        effective_base = assay_git.resolve_base(PROJECT_ROOT, tag_commit)
-        resolution = assay_git.base_resolution_mode(PROJECT_ROOT)
+        # `--base` is the caller's comparison, so it is DELEGATED (B552): on a
+        # merge HEAD Assay's default answer is HEAD's first parent, which would
+        # replace the selected tag with the branch tip and judge only the
+        # merge's own payload (run rgw-r2-20261125T202359-r1002). Delegated,
+        # the answer is merge-base(tag, HEAD), and the tag is already proven to
+        # be in HEAD's ancestry above, so the answer is the tag itself (KI-211).
+        effective_base = assay_git.resolve_base(
+            PROJECT_ROOT, tag_commit, delegated=True,
+        )
+        resolution = assay_git.base_resolution_mode(PROJECT_ROOT, delegated=True)
         source_delta = ""
         if effective_base != tag_commit:
             source_delta = assay_git.run(
@@ -504,11 +512,18 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    if source_delta.strip():
+    if effective_base != tag_commit:
+        # A delegated comparison must answer the selected tag itself. Anything
+        # else means Assay judged a different range than the one this lane
+        # selected and reported -- refuse rather than mutate the wrong diff.
+        detail = (
+            "source paths differ" if source_delta.strip()
+            else "the judged range would not be tag..HEAD"
+        )
         print(
             f"check-assay-baseline: Assay's effective base is {effective_base!r} "
             f"({resolution}), not selected published release tag {base_tag!r} "
-            f"at {tag_commit}; source paths differ, so the R1 and mutation "
+            f"at {tag_commit}; {detail}, so the R1 and mutation "
             "ranges would differ",
             file=sys.stderr,
         )

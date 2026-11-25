@@ -579,18 +579,39 @@ def test_assay_baseline_checker_refuses_release_tagged_root_without_previous_tag
     assert "cannot resolve previous ancestor CMRU release tag" in error
 
 
-def test_assay_baseline_checker_refuses_merge_whose_first_parent_is_not_tag(
+def test_assay_baseline_checker_accepts_a_merge_head_and_judges_the_selected_tag(
     monkeypatch, tmp_path, capsys,
 ):
-    project = _repository(tmp_path, with_tag=True)
-    _merge_from(tmp_path, first_parent="main")
-    _prepare_checker(monkeypatch, project, base="cmru-v1.1.0")
+    """KI-211: a merge HEAD is accepted, and the judged base is the tag, not the first parent.
 
-    assert check_assay_baseline.main(["--base", "cmru-v1.1.0"]) == 1
+    The first parent (``main``) carries CMRU source changes after the tag, so
+    Assay's UNDELEGATED answer would be that commit and the campaign would
+    judge only the merge's own payload. The lane passes the base explicitly,
+    which is a delegated comparison (B552): the resolution is
+    ``merge-base(tag, HEAD)``, which is the tag itself because the checker
+    proved it is in HEAD's ancestry.
+    """
+    from assay import git as assay_git
+
+    project = _repository(tmp_path, with_tag=True)
+    merge_head = _merge_from(tmp_path, first_parent="main")
+    tag_commit = _git(tmp_path, "rev-parse", "refs/tags/cmru-v1.1.0^{commit}").stdout.strip()
+    first_parent = _git(tmp_path, "rev-parse", f"{merge_head}^1").stdout.strip()
+    assert first_parent != tag_commit
+
+    # What Assay would judge without the delegation, and what it judges with it.
+    assert assay_git.resolve_base(project, tag_commit) == first_parent
+    assert assay_git.resolve_base(project, tag_commit, delegated=True) == tag_commit
+    assert assay_git.base_resolution_mode(project) == "first-parent"
+    assert assay_git.base_resolution_mode(project, delegated=True) == "merge-base"
+
+    _prepare_checker(monkeypatch, project, base="cmru-v1.1.0")
+    assert check_assay_baseline.main(["--base", "cmru-v1.1.0"]) == 0
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "Assay's effective base" in captured.err
-    assert "source paths differ" in captured.err
+    assert captured.out == "cmru-v1.1.0\n"
+    assert "explicit base resolves to published tag cmru-v1.1.0" in captured.err
+    assert "effective base" not in captured.err
+    assert "source paths differ" not in captured.err
 
 
 def test_assay_baseline_checker_refuses_when_effective_base_cannot_be_resolved(
@@ -615,6 +636,54 @@ def test_assay_baseline_checker_refuses_when_effective_base_cannot_be_resolved(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "cannot compare Assay's effective base" in captured.err
+
+
+def test_assay_baseline_checker_refuses_an_effective_base_that_is_not_the_selected_tag(
+    monkeypatch, tmp_path, capsys,
+):
+    """KI-211: the guard that replaced the first-parent refusal still fires.
+
+    The lane delegates its base, so Assay must answer the selected tag. If an
+    Assay version resolved something else, the campaign would judge a range the
+    lane never selected; the checker refuses rather than mutating it.
+    """
+    project = _repository(tmp_path, with_tag=True)
+    _prepare_checker(monkeypatch, project, base="cmru-v1.1.0")
+
+    from assay import git as assay_git
+
+    seen = {}
+    real_resolve_base = assay_git.resolve_base
+    real_mode = assay_git.base_resolution_mode
+
+    def delegate_only(*args, **kwargs):
+        seen["resolve_base"] = kwargs.get("delegated")
+        return real_resolve_base(*args, **kwargs)
+
+    def delegate_only_mode(*args, **kwargs):
+        seen["base_resolution_mode"] = kwargs.get("delegated")
+        return real_mode(*args, **kwargs)
+
+    monkeypatch.setattr(assay_git, "resolve_base", delegate_only)
+    monkeypatch.setattr(assay_git, "base_resolution_mode", delegate_only_mode)
+
+    assert check_assay_baseline.main(["--base", "cmru-v1.1.0"]) == 0
+    # The lane's own base is delegated, on BOTH calls: an undeligated
+    # resolution would answer a merge HEAD with its first parent (KI-211).
+    assert seen == {"resolve_base": True, "base_resolution_mode": True}
+    capsys.readouterr()
+
+    other_commit = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(
+        assay_git, "resolve_base", lambda *_args, **_kwargs: other_commit,
+    )
+
+    assert check_assay_baseline.main(["--base", "cmru-v1.1.0"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Assay's effective base" in captured.err
+    assert "(merge-base)" in captured.err
+    assert "ranges would differ" in captured.err
 
 
 def test_assay_baseline_checker_rejects_head_release_tag_with_default_facts(

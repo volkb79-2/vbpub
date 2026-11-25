@@ -2037,3 +2037,68 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
             max_mutants=1,
             timeout_seconds=120,
         )
+
+
+def _judged_base_repo(root: Path) -> tuple[Path, str, str, str]:
+    """A repository whose HEAD is a merge, with the selected tag on neither parent tip.
+
+    ``tag`` is the base the lane would pass. The first parent adds a CMRU
+    source change after the tag, and the merged-in branch adds another, so an
+    undeligated (first-parent) resolution would judge only the merge's own
+    payload while a delegated one judges both. Returns (project, tag_commit,
+    first_parent, merge_head).
+    """
+    repo = root / "repo"
+    project = repo / "cmru"
+    source = project / "src" / "cmru" / "module.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("first\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=Test",
+             "-c", "user.email=test@example.invalid", *args],
+            check=True, text=True, stdout=subprocess.PIPE,
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("add", "cmru")
+    git("commit", "-qm", "tagged base")
+    tag_commit = git("rev-parse", "HEAD")
+    git("tag", "cmru-v1.0.0")
+    source.write_text("second\n", encoding="utf-8")
+    git("commit", "-qam", "first-parent source change")
+    first_parent = git("rev-parse", "HEAD")
+    git("checkout", "-q", "-B", "incoming", tag_commit)
+    (project / "src" / "cmru" / "other.py").write_text("incoming\n", encoding="utf-8")
+    git("add", "cmru/src/cmru/other.py")
+    git("commit", "-qm", "second-parent source change")
+    git("checkout", "-q", "main")
+    git("merge", "-q", "--no-ff", "--no-edit", "incoming")
+    return project, tag_commit, first_parent, git("rev-parse", "HEAD")
+
+
+def test_campaign_judges_a_merge_head_against_the_selected_tag_not_the_first_parent(tmp_path):
+    """KI-211: the campaign's own base resolution, at the boundary it uses."""
+    from assay import diff as assay_diff
+
+    project, tag_commit, first_parent, merge_head = _judged_base_repo(tmp_path)
+    repo_root = project.parent
+
+    # Assay's undelegated answer for this shape, and the one the campaign must use.
+    assert assay_git.resolve_base(repo_root, tag_commit) == first_parent
+    judged = mutation_campaign._judged_base(repo_root, tag_commit, assay_git)
+    assert judged == tag_commit
+
+    # The judged diff is tag..HEAD: both parents' source changes.
+    diff_text = assay_git.run(repo_root, "diff", "--unified=0", judged, merge_head)
+    added = sorted(assay_diff.parse_added_lines(diff_text).by_file)
+    assert "cmru/src/cmru/module.py" in added
+    assert "cmru/src/cmru/other.py" in added
+    # An undelegated (first-parent) comparison would MISS the first parent's own
+    # source change after the tag -- the narrowing this fix removes.
+    merge_payload = assay_git.run(repo_root, "diff", "--unified=0", first_parent, merge_head)
+    assert sorted(assay_diff.parse_added_lines(merge_payload).by_file) == [
+        "cmru/src/cmru/other.py",
+    ]

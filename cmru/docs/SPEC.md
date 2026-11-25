@@ -3682,11 +3682,16 @@ tag at HEAD against its exact origin commit, including older tag names that
 point to the same commit.
 
 A CMRU release tag at HEAD is never a base; every release tag at HEAD is
-excluded before the ancestry checks. If HEAD is a merge, Assay resolves the
-comparison to HEAD's first parent. When that commit differs from the base tag
-commit, the configured CMRU source roots MUST be unchanged between them, or the
-checker refuses, because the mutation range would cover only the merge's own
-payload.
+excluded before the ancestry checks. The base is the CALLER's comparison, so
+Assay resolves it as delegated (`judge.base_source = "request"`, Assay B552):
+`merge-base(base, HEAD)`. Because the checker has proven the selected tag is
+in HEAD's ancestry, that answer IS the tag commit, on a merge HEAD exactly as
+on a linear one, and the judged R1/mutation range is `tag..HEAD` -- every
+changed source, including what a merged-in parent brought in. An
+undeligated Assay resolution would answer a merge HEAD with its first parent
+instead and judge only the merge's own payload; the checker MUST NOT accept
+that answer. If the resolved effective base is not the selected tag commit the
+checker refuses, naming the resolved commit and the selected tag.
 
 The registered host `gate` lane queries origin with CMRU's credential-scoped
 Git transport and passes only token-free tag and commit facts through
