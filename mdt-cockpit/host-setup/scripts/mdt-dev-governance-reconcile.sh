@@ -350,15 +350,34 @@ _mdt_converge_prop() { # <unit> <cgroup dir> <Property> <file>
   fi
 }
 if [ "${HOST_ROLE:-}" = dedicated-dev ]; then
-  rm -f "$_cv_dir/memory-deferred"
-  for _cv_unit in dev.slice dev-interactive.slice dev-background.slice dev-gates.slice dev-buildkitd.slice system.slice user.slice \
-      $(for _cv_f in "${MDT_SYSTEMD_DIR:-/etc/systemd/system}"/*.service.d/95-mdt-memory-min.conf; do [ -f "$_cv_f" ] && basename "$(dirname "$_cv_f")" | sed 's/\.d$//'; done); do
-    _cv_cg=$(systemctl show -p ControlGroup --value "$_cv_unit" 2>/dev/null)
-    [ -n "$_cv_cg" ] && [ -d "$CG$_cv_cg" ] || continue
-    for _cv_pair in MemoryMin:memory.min MemoryLow:memory.low MemoryHigh:memory.high MemoryMax:memory.max MemorySwapMax:memory.swap.max; do
-      _mdt_converge_prop "$_cv_unit" "$CG$_cv_cg" "${_cv_pair%%:*}" "${_cv_pair#*:}"
+  # P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3): the acceptance squeeze run (host-setup/tools/accept/accept-run.sh) writes
+  # the SAME five files with its own ladder of raises, under a host squeezed on purpose; interleaving the two would
+  # fight over memory.max and could write a ceiling below memory.current. The run holds /run/mdt-accept.lock for its
+  # whole life and this block HOLDS it (not merely tests it) while it converges, so a run and the converge can
+  # never interleave. A held lock means a live run: the block is SKIPPED with a NOTE, never stopped -- the run
+  # restores its own originals, and the next timer tick converges again (the kernel releases the lock on ANY
+  # death of the run, SIGKILL included, so there is no stuck pause to undo).
+  _cv_accept_lock="${MDT_ACCEPT_LOCK:-/run/mdt-accept.lock}"; _cv_accept_paused=0
+  if exec 9>>"$_cv_accept_lock" 2>/dev/null; then
+    flock -n 9 || _cv_accept_paused=1
+  else   # an accept run cannot hold the lock either, so "a run is live" would be an invention: converge
+    log "NOTE: cannot open $_cv_accept_lock, so it is indeterminate whether an acceptance run is live; the memory block runs"
+  fi
+  if [ "$_cv_accept_paused" = 1 ]; then
+    log "NOTE: an acceptance squeeze run holds $_cv_accept_lock: the dedicated-dev memory block is SKIPPED this tick (the run restores the originals itself; any death of it releases the lock and the next tick converges)"
+  else
+    rm -f "$_cv_dir/memory-deferred"
+    for _cv_unit in dev.slice dev-interactive.slice dev-background.slice dev-gates.slice dev-buildkitd.slice system.slice user.slice \
+        $(for _cv_f in "${MDT_SYSTEMD_DIR:-/etc/systemd/system}"/*.service.d/95-mdt-memory-min.conf; do [ -f "$_cv_f" ] && basename "$(dirname "$_cv_f")" | sed 's/\.d$//'; done); do
+      _cv_cg=$(systemctl show -p ControlGroup --value "$_cv_unit" 2>/dev/null)
+      [ -n "$_cv_cg" ] && [ -d "$CG$_cv_cg" ] || continue
+      for _cv_pair in MemoryMin:memory.min MemoryLow:memory.low MemoryHigh:memory.high MemoryMax:memory.max MemorySwapMax:memory.swap.max; do
+        _mdt_converge_prop "$_cv_unit" "$CG$_cv_cg" "${_cv_pair%%:*}" "${_cv_pair#*:}"
+      done
     done
-  done
+    exec 9>&-   # the rest of this sweep is not an accept run's business
+  fi
+  exec 9>&- 2>/dev/null || true
 fi
 
 # --- slice zswap writeback policies -------------------------------------------

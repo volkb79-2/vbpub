@@ -142,7 +142,14 @@ ExecStopPost='/…/accept-restore.sh --from-unit --lock-timeout 30 --evidence <E
 kill included, which the traps never see — so a kit death cannot leave the host at the last lowered reserve with the reconcile unpaused. `--from-unit`
 makes it suitable for ExecStopPost: exit 3 ("nothing to do", the normal outcome after a clean run whose trap already restored) becomes exit 0 so the
 unit does not end failed, and it waits up to `--lock-timeout` seconds with `flock -w` instead of `-n`, because a slow-dying child can still hold the
-inherited descriptor for a moment. No `pkill`, no pattern `kill`.
+inherited descriptor for a moment. No `pkill`, no pattern `kill`. **The WAL's lines** (one per write, appended before the effect):
+`MAX=<relpath>|<original>|<value the kit wrote>|<utc>` and `MIN=<relpath>|…` (the LAST line of a relpath is the one in force, because a later write's
+original is the value that write must be compared against), plus `container=<exact docker name>` per created name, `boot_id=<id>`, `kdamond=<idx>`,
+`dev_orig=<bytes>`, `k_tested=<label>`, `pid=<kit pid>`, `started_utc=`. A restore that runs as the kit's **own** finish takes `--in-run`, because that
+caller already holds the lock (waiting on it would deadlock); a lock that cannot even be opened is **indeterminate**, never "no run is live" (install.sh
+and the reconcile distinguish "held" — `flock -E 99` — from "cannot open", and both refuse or fall back on the correct side of that difference), and an
+unreadable `boot_id` restores rather than skipping, because restoring is the safe direction. Anyone else reading a WAL: `restore=pending` never means
+the host is still squeezed in a max, only that one lowering waits for the reconcile.
 
 ## 3. (b) Hard criteria, with numbers
 

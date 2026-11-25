@@ -1018,6 +1018,23 @@ if ! _tree_plan=$(python3 "$HERE/mdt_tree_cache.py" plan --config "$CANDIDATE_PA
   exit 2
 fi
 
+# P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3): while an acceptance squeeze run holds the accept lock, a converge here would
+# write the K0-based MemoryMax straight into dev.slice -- up to 6 x 128M below memory.current, with no safe-lowering
+# rule -- against a host squeezed on purpose, and the run's readback would see it only after the reclaim and the dev
+# OOM. So this refuses (exit 3, nothing done) exactly like daemon-reload-check.sh does, and the operator finishes the
+# run first (accept-restore.sh) and then re-runs the installer. Three states, never two: flock's -E code for
+# "held" is distinct from "cannot even open the lock" (a missing /run/mdt-accept.lock is NOT evidence of no run).
+_cv_accept_lock="${MDT_ACCEPT_LOCK:-/run/mdt-accept.lock}"
+_cv_accept_rc=0
+flock -n -E 99 "$_cv_accept_lock" true || _cv_accept_rc=$?
+case "$_cv_accept_rc" in
+  0) ;;
+  99) echo "ERROR: an acceptance squeeze run holds $_cv_accept_lock: the installer refuses (exit 3), nothing was changed. Let the run end and restore the host (tools/accept/accept-restore.sh --evidence <dir>), then re-run install.sh." >&2
+      exit 3 ;;
+  *) echo "ERROR: cannot test the acceptance lock $_cv_accept_lock (flock rc=$_cv_accept_rc), so it is indeterminate whether an acceptance run is live; the installer refuses (exit 3), nothing was changed." >&2
+     exit 3 ;;
+esac
+
 # === COMMIT POINT: nothing above this line mutates the host (MDT-HS-02) ===
 # Every refusal above has been evaluated. Only now are /etc/mdt, the buildx config
 # directory, the installed config and the guard confirmation record touched.

@@ -475,5 +475,318 @@ class ShellKitTests(unittest.TestCase):
         self.assertEqual([c for c in self.calls() if c.startswith("run ")], [])
 
 
+
+def shell_block(source: str, start: str, end: str) -> str:
+    i = source.index(start)
+    return source[i:source.index(end, i)]
+
+
+class RestoreTests(unittest.TestCase):
+    """accept-restore.sh (DESIGN-ACCEPT-KIT-V2 2.6) over a fake cgroupfs: every death state a WAL can hold."""
+
+    DEV_MAX = 7_190_757_376          # a plausible r1002 dev.slice memory.max
+    TIER_MAX = 4_506_402_816
+    MIN_DEV = 536_870_912
+
+    def setUp(self) -> None:
+        self._t = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        _fake("docker", FAKE_DOCKER, bindir)
+        self.log = self.tmp / "fake.log"
+        self.log.write_text("")
+        self.cg = self.tmp / "cg"
+        self.dev = self.cg / "dev.slice"
+        self.tier = self.dev / "dev-gates.slice"
+        for d in (self.dev, self.tier):
+            d.mkdir(parents=True)
+        self.ev = self.tmp / "ev"
+        self.ev.mkdir()
+        self.state = self.ev / "squeeze-state.env"
+        self.man = self.ev / "manifest.env"
+        self.lock = self.tmp / "lock"
+        self.bootfile = self.tmp / "boot_id"
+        self.bootfile.write_text("11111111-2222-3333-4444-555555555555\n")
+        self.damon = self.tmp / "damon"
+        self.hold = None   # an open file object holding the lock in THIS process
+        self.env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_LOG=str(self.log),
+                        FAKE_DOCKER_ROOT=str(self.tmp), MDT_ACCEPT_CGROUP=str(self.cg),
+                        MDT_ACCEPT_BOOT_ID=str(self.bootfile), MDT_ACCEPT_SQUEEZE_STATE=str(self.state),
+                        MDT_ACCEPT_MANIFEST=str(self.man), MDT_ACCEPT_LOCK=str(self.lock),
+                        MDT_ACCEPT_DAMON_ADMIN=str(self.damon), MDT_ACCEPT_POLL_STEP="0",
+                        MDT_ACCEPT_RESTORE_TIMEOUT="0")
+
+    def maxes(self, dev_written: int | None = None, tier_written: int | None = None, dev_orig: int | None = None,
+              tier_orig: int | None = None) -> None:
+        dw, tw = (self.DEV_MAX if dev_written is None else dev_written), (self.TIER_MAX if tier_written is None else tier_written)
+        do, to = (self.DEV_MAX if dev_orig is None else dev_orig), (self.TIER_MAX if tier_orig is None else tier_orig)
+        (self.dev / "memory.max").write_text(f"{dw}\n")
+        (self.tier / "memory.max").write_text(f"{tw}\n")
+        self.wal_max = [f"MAX=dev.slice/memory.max|{do}|{dw}|t0",
+                        f"MAX=dev.slice/dev-gates.slice/memory.max|{to}|{tw}|t0"]
+
+    def wal(self, lines: list[str], boot_id: str | None = None) -> None:
+        self.state.write_text("\n".join(lines + ([f"boot_id={boot_id}"] if boot_id else [])) + "\n")
+
+    def restore(self, *args: str, **extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run([str(KIT / "accept-restore.sh"), "--evidence", str(self.ev), *args],
+                              env=dict(self.env, **extra), capture_output=True, text=True, timeout=120)
+
+    def hold_lock(self) -> None:
+        self.hold = open(self.lock, "w")
+        fcntl.flock(self.hold, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.addCleanup(self.hold.close)
+
+    def damon_kdamond(self, idx: str = "1", state: str = "on") -> None:
+        d = self.damon / "kdamonds" / idx
+        d.mkdir(parents=True)
+        (d / "state").write_text(state + "\n")
+        (self.damon / "kdamonds" / "nr_kdamonds").write_text("2\n")
+
+    def test_a_kill_before_the_first_write_writes_nothing_and_reports_success(self) -> None:
+        self.wal([])   # trap armed, no state line yet: the file exists and is empty
+        self.maxes()
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("restore=ok", self.man.read_text())
+        self.assertFalse(self.state.exists(), "a clean restore removes the state file")
+
+    def test_a_kill_between_a_wal_line_and_its_write_leaves_the_file_at_its_original(self) -> None:
+        self.maxes()   # the file still holds its original although the WAL already claims the write
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX - 5 * 128 * MIB}|t0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX))
+        self.assertNotIn("RESTORE-PENDING", self.man.read_text())
+
+    def test_a_kill_after_the_maxes_and_the_mins_restores_them_in_order(self) -> None:
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB, tier_written=self.TIER_MAX + 128 * MIB)
+        scope = self.tier / "docker-id-mdt-accept-squeeze.scope"
+        scope.mkdir()
+        (scope / "memory.min").write_text(f"{512 * MIB}\n")
+        (self.dev / "memory.min").write_text(f"{self.MIN_DEV}\n")
+        (self.tier / "memory.min").write_text(f"{self.MIN_DEV}\n")
+        self.wal(self.wal_max + [
+            f"MIN=dev.slice/dev-gates.slice/docker-id-mdt-accept-squeeze.scope/memory.min|0|{512 * MIB}|t0",
+            f"MIN=dev.slice/dev-gates.slice/memory.min|0|{self.MIN_DEV}|t0",
+            f"MIN=dev.slice/memory.min|0|{self.MIN_DEV}|t0",
+        ])
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX))
+        self.assertEqual((self.tier / "memory.max").read_text().strip(), str(self.TIER_MAX))
+        for f in (self.dev / "memory.min", self.tier / "memory.min", scope / "memory.min"):
+            self.assertEqual(f.read_text().strip(), "0", f)
+        order = [ln for ln in r.stdout.splitlines() if "->" in ln and "kit wrote" in ln]
+        self.assertEqual(len(order), 5, r.stdout)
+        idx = lambda needle: [i for i, ln in enumerate(order) if needle in ln]   # noqa: E731
+        self.assertLess(max(idx("memory.min")), min(idx("memory.max")), "the mins are restored before either max")
+        self.assertLess(idx("docker-id-")[0], idx("dev-gates.slice/memory.min")[0], "the scope min before the tier min")
+        self.assertLess(idx("dev-gates.slice/memory.min")[0], idx("dev.slice/memory.min")[0], "child before parent")
+
+    def test_a_kill_after_the_kdamond_started_switches_it_off_and_never_writes_nr_kdamonds(self) -> None:
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
+        self.damon_kdamond()
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0", "kdamond=1"])
+        before = (self.damon / "kdamonds" / "nr_kdamonds").read_text()
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("kdamond 1 -> off", r.stdout)
+        self.assertEqual((self.damon / "kdamonds" / "1" / "state").read_text().strip(), "off")
+        self.assertEqual((self.damon / "kdamonds" / "nr_kdamonds").read_text(), before,
+                         "nr_kdamonds recreates every kdamond directory and fails EBUSY while one is on")
+
+    def test_the_container_names_are_removed_by_exact_name_and_a_reboot_writes_nothing(self) -> None:
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0", "container=mdt-accept-squeeze"],
+                 boot_id="11111111-2222-3333-4444-555555555555")
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("rm -f mdt-accept-squeeze", r.stdout)   # --rm is never relied on; the exact name is logged
+        self.assertIn("rm -f mdt-accept-squeeze", self.log.read_text())
+        self.assertFalse(self.state.exists())
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX - 128 * MIB}|t0"], boot_id="deadbeef")
+        (self.dev / "memory.max").write_text(f"{self.DEV_MAX - 128 * MIB}\n")
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("rebooted since the WAL was written; nothing written", r.stdout)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX - 128 * MIB),
+                         "a rebooted host keeps the boot's values")
+        self.assertIn("restore_note=rebooted", self.man.read_text())
+        self.assertFalse(self.state.exists())
+
+    def test_a_missing_scope_counts_as_restored_and_a_foreign_value_is_left_alone(self) -> None:
+        self.wal([f"MIN=dev.slice/dev-gates.slice/docker-gone.scope/memory.min|0|{512 * MIB}|t0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("its cgroup is gone", r.stdout)
+        self.assertNotIn("RESTORE-PENDING", self.man.read_text())
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
+        (self.dev / "memory.max").write_text("6000000000\n")   # another writer has taken the file over
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("another writer owns it, left alone", r.stdout)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), "6000000000")
+
+    def test_a_max_lowering_without_64m_of_headroom_is_deferred_with_exit_1(self) -> None:
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
+        (self.dev / "memory.current").write_text(f"{self.DEV_MAX - 8 * MIB}\n")   # inside the 64M rule
+        (self.tier / "memory.reclaim").write_text("")
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("DEFERRED", r.stdout)
+        self.assertTrue(self.state.exists(), "a deferred lowering keeps the state file for the reconcile")
+        self.assertIn(f"RESTORE-PENDING dev.slice/memory.max {self.DEV_MAX}", self.man.read_text())
+        self.assertIn("restore=pending", self.man.read_text())
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX + 128 * MIB),
+                         "never a lowering without headroom")
+        self.assertEqual((self.tier / "memory.reclaim").read_text().strip(), "256M",
+                         "the load tiers are reclaimed, never dev.slice itself")
+
+    def test_restore_twice_is_idempotent_and_a_live_run_blocks_it(self) -> None:
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        again = self.restore()
+        self.assertEqual(again.returncode, 3)
+        self.assertIn("nothing to do", again.stdout)
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
+        self.hold_lock()
+        r = self.restore()
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("a live run holds the lock", r.stderr)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX))
+        self.assertTrue(self.state.exists(), "a refused restore writes nothing and keeps the WAL")
+
+    def test_from_unit_turns_nothing_to_do_into_success_and_waits_for_the_lock(self) -> None:
+        self.maxes()
+        r = self.restore("--from-unit")   # the ExecStopPost of a clean run: no state file left
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
+        (self.dev / "memory.max").write_text(f"{self.DEV_MAX + 128 * MIB}\n")
+        self.hold_lock()
+        r = self.restore("--from-unit", "--lock-timeout", "1")
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("still held after 1s", r.stderr)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX + 128 * MIB))
+        self.hold.close()
+        r = self.restore("--from-unit")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX))
+
+    def test_in_run_restores_without_taking_the_lock_the_caller_holds(self) -> None:
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
+        self.hold_lock()
+        r = self.restore("--in-run")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX))
+
+    def test_a_lock_that_cannot_be_opened_is_indeterminate_never_no_run(self) -> None:
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
+        r = self.restore(MDT_ACCEPT_LOCK=str(self.tmp / "missing" / "lock"))
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("indeterminate", r.stderr)
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX), "nothing written")
+
+
+class AcceptLockPauseTests(unittest.TestCase):
+    """The accept-lock pause (DESIGN-ACCEPT-KIT-V2 2.3): the reconcile's memory block and install.sh's refusal."""
+
+    RECONCILE_BLOCK = shell_block(
+        (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text(encoding="utf-8"),
+        'if [ "${HOST_ROLE:-}" = dedicated-dev ]; then\n  # P-plat-19m',
+        "# --- slice zswap writeback policies")
+    INSTALL_BLOCK = shell_block(
+        (ROOT / "install.sh").read_text(encoding="utf-8"),
+        "# P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3): while an acceptance squeeze run holds the accept lock",
+        "# === COMMIT POINT")
+
+    def setUp(self) -> None:
+        self._t = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        self.lock = self.tmp / "lock"
+        self.cg = self.tmp / "cg"
+        (self.cg / "dev.slice").mkdir(parents=True)
+        self.deferred = self.tmp / "reconcile"
+        self.deferred.mkdir()
+        (self.deferred / "memory-deferred").write_text("dev.slice 1\n")
+        self.hold = None
+
+    def hold_lock(self) -> None:
+        self.hold = open(self.lock, "w")
+        fcntl.flock(self.hold, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.addCleanup(self.hold.close)
+
+    def run_reconcile_block(self, lock: Path | None = None) -> subprocess.CompletedProcess:
+        # _mdt_converge_prop is stubbed: this test is about the pause, not the converge arithmetic
+        script = ('set -uo pipefail\nlog(){ echo "[reconcile] $*"; }\nMDT_RC=0\n'
+                  f'CG="{self.cg}"\n_cv_dir="{self.deferred}"\n_mdt_converge_prop(){{ :; }}\n'
+                  f'MDT_ACCEPT_LOCK="{lock or self.lock}"\nHOST_ROLE=dedicated-dev\n'
+                  + self.RECONCILE_BLOCK + f'\nflock -n -E 99 "{self.lock}" true; echo "after=$?"\n')
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+
+    def run_install_block(self, lock: Path | None = None) -> subprocess.CompletedProcess:
+        script = ('set -uo pipefail\n'
+                  f'MDT_ACCEPT_LOCK="{lock or self.lock}"\n' + self.INSTALL_BLOCK + '\necho "reached-commit-point"\n')
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+
+    def test_the_reconcile_block_pauses_while_a_run_holds_the_lock_and_resumes_after(self) -> None:
+        self.hold_lock()
+        r = self.run_reconcile_block()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("SKIPPED this tick", r.stdout)
+        self.assertTrue((self.deferred / "memory-deferred").exists(), "a paused tick never clears the deferral")
+        self.assertIn("after=99", r.stdout, "the pause leaves the run's lock alone")
+        self.hold.close()
+        r = self.run_reconcile_block()
+        self.assertIn("after=0", r.stdout, "the block closes its descriptor, so the sweep does not hold the lock")
+        self.assertFalse((self.deferred / "memory-deferred").exists(), "the resumed tick converges and clears the deferral")
+        self.assertNotIn("SKIPPED", r.stdout)
+
+    def test_a_lock_that_cannot_be_opened_is_named_and_does_not_pause_the_memory_block(self) -> None:
+        r = self.run_reconcile_block(lock=self.tmp / "no" / "lock")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("cannot open", r.stdout, "absence for emptiness: never report a live run that cannot be seen")
+        self.assertNotIn("SKIPPED", r.stdout)
+        self.assertFalse((self.deferred / "memory-deferred").exists(), "an unobservable lock does not stop the converge")
+
+    def test_install_sh_refuses_under_the_lock_before_the_commit_point(self) -> None:
+        text = (ROOT / "install.sh").read_text()
+        self.assertLess(text.index("# P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3)"), text.index("# === COMMIT POINT"))
+        self.assertIn("exit 3", self.INSTALL_BLOCK)
+        free = self.run_install_block()
+        self.assertEqual(free.returncode, 0, free.stdout + free.stderr)
+        self.assertIn("reached-commit-point", free.stdout)
+        self.hold_lock()
+        held = self.run_install_block()
+        self.assertEqual(held.returncode, 3, held.stdout + held.stderr)
+        self.assertIn("an acceptance squeeze run holds", held.stderr)
+        self.assertIn("nothing was changed", held.stderr)
+        self.assertNotIn("reached-commit-point", held.stdout)
+        missing = self.run_install_block(lock=self.tmp / "no" / "lock")
+        self.assertEqual(missing.returncode, 3, missing.stdout)
+        self.assertIn("indeterminate", missing.stderr)
+        self.assertNotIn("reached-commit-point", missing.stdout)
+
+    def test_the_install_refusal_stays_a_read_only_preflight_block(self) -> None:
+        # test_hs02 scans the whole pre-COMMIT-POINT region for mutating commands; this pin keeps the new lines inside
+        # that contract even if the scan's own rules change later.
+        for line in self.INSTALL_BLOCK.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            for mutating in ("mkdir", "install ", "rm ", "mv ", "touch ", "cp ", "systemctl ", "docker "):
+                self.assertNotIn(mutating, stripped, line)
+        self.assertLessEqual(len([ln for ln in self.INSTALL_BLOCK.splitlines() if ln.strip() and not ln.strip().startswith("#")]), 12)
+
+
 if __name__ == "__main__":
     unittest.main()
