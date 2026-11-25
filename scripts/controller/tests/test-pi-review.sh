@@ -797,6 +797,7 @@ check_docs() {
   contains "$readme" 'untracked files' 'README lists the untracked-content comparison'
   contains "$readme" 'does NOT cover' 'README states what the comparison does NOT cover'
   contains "$readme" 'pi or pi-impl exit status' 'README states that pi exit codes pass through'
+  contains "$readme" 'UNREACHABLE for a review' 'README states that rc 3 is unreachable for a review'
   contains "$readme" 'never through the' 'README states the kill path'
   contains "$readme" '<run>.lock' 'README names the owner record the kill path uses'
   contains "$changes" 'pi-review.sh' 'CHANGES.md records the pi review launcher'

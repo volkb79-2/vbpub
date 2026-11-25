@@ -434,7 +434,9 @@ inside the worktree, an existing report, an unresolvable report path, unknown
 account, account records that name none, an invalid budget value); 4
 `REVIEW-MODIFIED-TREE`; 5 `REVIEW-BUDGET`; otherwise pi-impl's own code, and
 **any** pi or pi-impl exit status (0, 1, 2, 3, 126, 127, 129, …) passes through
-unchanged. The `.done` marker is the authority, not the code: `job-check.sh`,
+unchanged. `3` ("both Open Design accounts blocked") is pi-impl's own code but
+UNREACHABLE for a review: the pinned `start-pi <account>` never fails over, so a
+blocked review account launches and ends `USAGE-LIMIT` with pi's exit status. The `.done` marker is the authority, not the code: `job-check.sh`,
 `job-status.sh` and `ctl-status.sh` read any `REVIEW-MODIFIED-TREE`,
 `REVIEW-BUDGET` or `REVIEW-NO-REPORT` line of the marker, so a flagged or
 stopped review is never shown as green. Two concurrent reviews of one worktree
