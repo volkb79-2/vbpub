@@ -338,6 +338,24 @@ def test_override_rejects_jinja_marker_and_names_the_file(tmp_path: Path):
         config.load_site(stack_dir)
 
 
+@pytest.mark.parametrize("marker", ["{{", "{%", "{#"])
+@pytest.mark.parametrize("verb", ["validate", "show"])
+def test_cli_refuses_a_templated_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    marker: str,
+    verb: str,
+) -> None:
+    """The override is plain TOML; a Jinja marker is refused with the file path."""
+    root, stack_dir = _case_root(tmp_path, _override(f'note = "{marker} rendered_later }}"\n'))
+    rc, output = _run_cli_with_prompts(monkeypatch, [verb, "--root", str(root)])
+
+    assert rc == 2, output
+    assert str(stack_dir / "ciu.toml.j2") in output
+    assert "plain TOML" in output
+    assert marker in output
+
+
 def test_override_rejects_scalar_for_default_table(tmp_path: Path):
     _, stack_dir = _case_root(tmp_path, _override("http3 = true\n"))
     defaults, overlay, _ = config.load_site(stack_dir)

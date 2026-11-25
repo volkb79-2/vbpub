@@ -27,9 +27,10 @@ All examples use `example.test`, a reserved placeholder; use your own domain.
 
 Containers started by `ciu up` are `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy`; `<id>` is derived from
 the path `/srv/tls-edge-instance/stack`, which is why that path is stable. The compose service name `traefik`
-stays a DNS name on the networks. Generic defaults publish **80/tcp and 443/tcp**. HTTP/3 optionally adds
-UDP on the same public HTTPS port. Raw TCP/UDP media is published directly by the application; examples
-include Jitsi JVB on UDP 10000 and Mattermost Calls on TCP+UDP 8443.
+stays a DNS name on the networks. The public port set a fresh instance publishes is the one
+`ciu-stack/ciu.defaults.toml.j2` ships, adjusted by your override; `tls-edge show` prints it. HTTP/3
+optionally adds UDP on the same public HTTPS port. Raw TCP/UDP media is published directly by the application;
+examples include Jitsi JVB on UDP 10000 and Mattermost Calls on TCP+UDP 8443.
 
 ## 2. Requirements
 
@@ -61,10 +62,9 @@ it does not collect site settings. `tls-edge configure` then asks for the domain
 HTTP/3, network/volume adoption, and runtime placement. It displays the exact changes and
 inbound firewall ports before writing the instance override and `consumer.env`.
 
-A host that already runs a tls-edge instance older than 4.0 has no in-place path to 4.0: such an instance cannot
-update to 4.0 through the installer, so 4.0 is installed fresh as this section describes. `get.py install` on a root
-that already holds an instance runs an update instead, so stop the old edge (it holds ports 80 and 443) and move its
-instance root aside, or install into the other scope, before the fresh install.
+An instance cannot be updated in place across a major version boundary: install the new major fresh, as this section
+describes. `get.py install` on a root that already holds an instance runs an update instead, so stop the old edge (it
+holds ports 80 and 443) and move its instance root aside, or install into the other scope, before the fresh install.
 
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
 does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
@@ -110,9 +110,9 @@ cgroup_parent = "<slice>.slice"
 
 For `acme-dns`, set `[tls_edge.tls] mode = "acme-dns"` and add `[tls_edge.acme.dns] provider` and optionally
 `wildcard_main`. For `static` or `dev`, set the mode and add `[tls_edge.static] cert_base`,
-`domains = ["example.test"]`, and `source = "bind"` or `"volume"`. A 3.1 flat answers file is refused; each old
-name is reported with its schema-shaped replacement. The CLI never asks for or stores DNS credentials;
-configure those through CIU secrets as described below.
+`domains = ["example.test"]`, and `source = "bind"` or `"volume"`. The flat answers file of an earlier schema is
+refused, and each old name is reported with its schema-shaped replacement. The CLI never asks for or stores DNS
+credentials; configure those through CIU secrets as described below.
 
 `get.py` verifies the bundle SHA-256 and the manifest (every file, every wheel), installs the wheels offline
 with `--require-hashes`, runs the bootstrap adapter, and only then switches `current`. Do not pipe `get.py` into
@@ -182,13 +182,9 @@ and `tls-edge configure --dry-run` all run this same validation. Limit: ciu runs
 defaults declare it under `[tls_edge.hooks]` `pre_secrets` and `pre_compose`. An override that empties both lists
 removes it from `ciu check` and `ciu up`, so keep the shipped entries (tracked upstream as ciu CIU-226).
 
-| `[tls_edge.tls] mode` | How | Port needed | Certificates |
-|---|---|---|---|
-| `acme-tls` (default) | TLS-ALPN-01 on :443 | 443 | one per host name |
-| `acme-http` | HTTP-01 | 80 | one per host name |
-| `acme-dns` | DNS-01 via a lego provider | none | per host, or one wildcard |
-| `static` | certbot files under `cert_base` | none | yours |
-| `dev` | self-signed (`scripts/dev-certs.sh`) | none | local CA |
+`[tls_edge.tls] mode` is one of the five the schema declares
+(`ciu-stack/ciu.defaults.toml.j2` carries each mode and its constraints, including which listener it
+needs); `tls-edge show` reports the mode and port plan of a configured instance.
 
 **Per host vs wildcard.** The HTTPS entrypoint carries the resolver but no fixed domain list, so every consumer
 router's `Host()` rule gets its own certificate the first time it is requested. An automatic wildcard
@@ -206,7 +202,7 @@ certbot renew --dry-run
 After a renewal the hook finds the Traefik container by its Compose service label and installed-instance name
 pattern, then runs `docker restart --time 5 <name>`. Expect about 3 seconds of edge downtime. It does not write
 or rewrite any file in the instance; when no matching container is running it prints a message and exits 0.
-The stable symlink follows the hook shipped in `stack/scripts/`: a 4.x `update` refreshes the file it points at,
+The stable symlink follows the hook shipped in `stack/scripts/`: an `update` refreshes the file it points at,
 so later instance updates take effect without another copied hook.
 
 **Staging CA** while testing: `[tls_edge.acme] ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"`
@@ -229,7 +225,7 @@ CF_DNS_API_TOKEN_FILE = "/run/secrets/dns_api_token"
 `ciu` asks for the token on `ciu up` (or reads `CF_DNS_API_TOKEN` from the environment). Add this block to the
 site override after running the CLI; secret references are intentionally kept out of wizard answers.
 
-**Port 80** is on by default (redirect and HTTP-01). Set `[tls_edge.ports] expose_http = false` to turn it off;
+The HTTP listener is on in the shipped defaults. Turn it off with `[tls_edge.ports] expose_http = false`;
 `acme-http` then cannot work. **HTTP/3**: set `[tls_edge.http3] enabled = true` to publish UDP on the public
 HTTPS port; keep TCP open for HTTP/1.1 and HTTP/2 clients and fallback. **Raw media** stays outside
 tls-edge: the application publishes its own TCP/UDP ports directly and advertises that endpoint to clients.
@@ -310,10 +306,8 @@ To move an existing instance to the durable hostdir manually:
    ```
 
 4. Run `sudo ./ciu check && sudo ./ciu up`. Keep the old volume until the new edge has issued or reused its
-   certificates successfully. A rollback to a release older than 3.2 ignores `store`, mounts the `acme-data`
-   volume (empty unless the old one was kept); an empty volume forces re-issuance, and the hostdir remains on
-   disk for a later roll-forward. An instance that adopted a volume must restore `[tls_edge.acme] volume_name`
-   before rolling back, or the older release mounts the project's own, empty `acme-data`.
+   certificates successfully. A rollback keeps `acme.store`, so the hostdir you migrated to stays in use; the
+   hostdir also remains on disk for a later roll-forward.
 
 ## 7. Roll back
 
@@ -322,10 +316,9 @@ sudo /srv/tls-edge-instance/bin/tls-edge-installer rollback
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
-`rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. A 3.2 rollback keeps
-`shared/acme`, but a rollback to a release older than 3.2 ignores `acme.store` and mounts the `acme-data` volume
-(empty unless the old one was kept, see §6), so it may re-issue every certificate. The hostdir remains on disk;
-roll forward again to reuse it.
+`rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. A rollback keeps
+`acme.store`, so a hostdir instance goes on using `shared/acme`; the hostdir remains on disk, so roll forward again
+to reuse it.
 
 ## 8. Migrate from a hand-made deployment (PLAN, not executed)
 
@@ -369,8 +362,10 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    `/srv/tls-edge-instance/bin/tls-edge validate`. Do **not** run `ciu up` yet. The proposed edge port set is
    80/tcp, 443/tcp, and 443/udp (HTTP/3); allow these in both firewalls. Mattermost's direct media pair on
    8443/tcp+udp is separate from the edge.
-   Do not use `ciu up --skip-check` to move past a refused configuration: CIU creates the hostdir before the
-   hook refuses, so the failed attempt can leave a root-owned `stack/ciu-stack/vol-traefik-acme`.
+   `ciu` 7.28.0 and later evaluates its S6.5 helper preconditions BEFORE creating any hostdir, and `--dry-run`
+   creates none at all, so a refused `ciu up` (missing `CGROUP_PARENT_DEV_INTERACTIVE`, an incompatible existing
+   hostdir, a mistyped `seed`) leaves no hostdir; fix the precondition and retry.  Do not reach for
+   `ciu up --skip-check` instead: it does not address the refusal and hides the hook's verdict.
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
    adopted (`external: true`), never created or removed by the instance.
@@ -386,13 +381,14 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    `cd /srv/tls-edge-instance/stack && sudo ./ciu up`. Traefik re-reads `acme.json`: no re-issuance.
 6. **Start direct media.** From `voice-screen-share/mattermost-server`, run its `ciu up` so Mattermost binds
    8443 directly. Follow that project's [`CONSUMER.md`](../../voice-screen-share/mattermost-server/CONSUMER.md#calls-cut-over)
-   "Calls cut-over" section. Run this only after the old edge is stopped and the 4.0 edge is up.
+   "Calls cut-over" section. Run this only after the old edge is stopped and the new edge is up.
 7. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    and a Mattermost media test from outside on its directly published 8443 tcp and udp ports.
-8. **Rollback (any failure in 7).** Stop only the Mattermost process that binds 8443 if its Compose services can be
-   stopped selectively. If that is not supported, `ciu down` in `voice-screen-share/mattermost-server` (no `-v`);
-   that stops the whole Mattermost stack. `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`) stops the
+8. **Rollback (any failure in 7).** Mattermost's Calls media is published by the `mattermost` service itself, so
+   there is no separate process to stop: stopping "the process that binds 8443" stops the `mattermost` service, and
+   its web UI on 8065 goes down with it. `ciu down` at the stack root (no `-v`) does the same and is the supported
+   way; there is no selective per-port stop. `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`) stops the
    tls-edge instance. `ciu down` only stops containers; to remove them as well, use
    `docker compose -p <project> down` (never `-v`), where `<project>` comes from
    `docker inspect <container_prefix>-traefik --format '{{index .Config.Labels "com.docker.compose.project"}}'`
@@ -420,19 +416,24 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
 - `ciu env generate` and `ciu up --dry-run` create/attach a Docker network (CIU-162): run them on the host, not
   from a devcontainer you care about.
 - A non-root CIU run that creates `vol-traefik-acme` through the S6.5 root helper needs
-  `CGROUP_PARENT_DEV_INTERACTIVE=<slice>` exported (CIU-230; filed with ciu; see its backlog).
-- `ciu up --dry-run` can create the root-owned `stack/ciu-stack/vol-traefik-acme` (CIU-227; filed with
-  ciu; see its backlog).
-- Removing a user-scope instance also encounters that root-owned `stack/ciu-stack/vol-traefik-acme`; delete it
-  with root before removing the instance directory.
+  `CGROUP_PARENT_DEV_INTERACTIVE` exported, naming a LOADED slice unit such as `dev-interactive.slice`
+  (`systemctl list-units --type=slice` lists candidates). ciu >= 7.28.0 refuses without it and the refusal
+  names the variable, the `.slice` shape and that command (CIU-230); there is no fallback slice.
+- `ciu up --dry-run` creates no hostdir from ciu >= 7.28.0: it prints `Would create ...` and resolves every
+  declaration (CIU-227). A refused `ciu up` leaves nothing behind on the same version, because the S6.5 helper
+  preconditions are checked before the first `mkdir`. Known limit: a failure AFTER `mkdir` that is not a
+  precondition — the helper's `docker run`, a seed `copytree` — can still leave a runner-owned directory.
+- A `stack/ciu-stack/vol-traefik-acme` owned by root is the legacy case of an instance created by ciu < 7.28.0
+  (a refused run there could leave it), or a failure after `mkdir`; delete it with root before removing a
+  user-scope instance.
 - The release publishes one bundle per interpreter through `cmru handler bundle-build` and
   `cmru handler tarball-publish --variant`.
 
 ### Releasing tls-edge (maintainers)
 
-- The Calls preset removal is a major-version change. Mark breaking changes with
-  `!` or a `BREAKING CHANGE:` footer so conventional versioning can identify
-  them, and select the target version explicitly when releasing.
+- Version prose belongs in the pending release notes, not in `cmru.toml`'s headline or this document. Mark
+  breaking changes with `!` or a `BREAKING CHANGE:` footer so conventional versioning can identify them,
+  and select the target version explicitly when releasing.
 - Build with `cmru handler bundle-build --bundle-config bundle.toml --cmru-config
   ../cmru.orchestration.toml --name tls-edge --variant all`. The archive names, file allowlist, installer
   manifest and deterministic `xztar` writer come from `bundle.toml`; the first-party fetcher is
