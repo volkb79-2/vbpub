@@ -289,7 +289,7 @@ artifact = "coverage.json"
 # stops at its first failing test; the R0/R1 baseline keeps full coverage and
 # survivors still run the full suite. Nov-8 shard lanes measured ~570 s -> ~288 s
 # per candidate over 1712 candidates, with kill outcomes unchanged (WP1).
-# With CMRU_TEST_ORDER=heavy-last, tests/conftest.py stably moves the eight
+# With CMRU_TEST_ORDER=heavy-last, tests/conftest.py stably moves the seven
 # known slow install/e2e/image-integration files (59% of the measured suite time)
 # after the fast unit files in BOTH baseline and candidate collection. A fail-fast
 # kill can therefore land in seconds instead of paying for a heavy file first;

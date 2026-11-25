@@ -20,7 +20,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "set -eu; cd {worktree}/estate-lint && PYTHONPATH={worktree}/cmru/src:{worktree}/libraries/worktree/src:$PYTHONPATH PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q; cd {worktree} && run-gate lanes --check --all --strict",
+  "set -eu; cd {worktree}/estate-lint && PYTHONPATH={worktree}/cmru/src:{worktree}/libraries/worktree/src${PYTHONPATH:+:$PYTHONPATH} PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q; cd {worktree} && run-gate lanes --check --all --strict",
 ]
 clean_tree = false
 # Unmeasured at first release: a handful of config reads plus one `lanes --check`

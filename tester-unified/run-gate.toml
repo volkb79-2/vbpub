@@ -15,7 +15,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "cd {worktree}/tester-unified && PYTHONPATH={worktree}/cmru/src:{worktree}/libraries/worktree/src:$PYTHONPATH PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q",
+  "cd {worktree}/tester-unified && PYTHONPATH={worktree}/cmru/src:{worktree}/libraries/worktree/src${PYTHONPATH:+:$PYTHONPATH} PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q",
 ]
 clean_tree = false
 # Unmeasured at first release: the suite has 189 tests and reads the repository

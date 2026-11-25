@@ -26,8 +26,8 @@ Two things, both estate-wide:
 ## How to run it
 
 ```bash
-# from the repository root, through the registered lane:
-run-gate --worktree . estate-lint/suite     # or `scripts/controller/gate-run.sh estate-lint/suite`
+# through the registered lane (run-gate reads the run-gate.toml of the current directory):
+cd estate-lint && run-gate --worktree <tree> suite    # or `scripts/controller/gate-run.sh --worktree <tree> suite`
 
 # the lane's first step alone, in the tester-unified environment:
 cd estate-lint && PYTHONPATH=../cmru/src:../libraries/worktree/src \

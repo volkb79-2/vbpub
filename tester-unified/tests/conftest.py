@@ -10,7 +10,8 @@ for while it lived under `cmru/tests/`:
 * the real estate config DECLARES ``${CGROUP_PARENT_DEV_GATES}`` with no
   default, so a test that loads ``cmru.orchestration.toml`` through the strict
   reader exits 2 unless the variable is present. The lane environment does not
-  forward the host's value, so every test gets a fake one (never the host's).
+  forward the host's *placement* slice (which must not decide a test's outcome),
+  so every test gets a constant fake value instead.
 
 The test-policy plugin and the descendant reaper are deliberately absent: this
 suite declares no ``cli_case`` or ``estate_allow`` markers and defines no
