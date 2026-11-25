@@ -693,7 +693,8 @@ class RestoreTests(unittest.TestCase):
         r = self.restore(MDT_ACCEPT_LOCK=str(self.tmp / "missing" / "lock"))
         self.assertEqual(r.returncode, 3, r.stdout)
         self.assertIn("indeterminate", r.stderr)
-        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX), "nothing written")
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX + 128 * MIB),
+                         "nothing written: the kit's own value stays where it is")
 
 
 class AcceptLockPauseTests(unittest.TestCase):
