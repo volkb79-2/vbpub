@@ -48,6 +48,17 @@ All notable changes to debian-install-v2 are recorded here.
   now passes checkout-relative library roots, runs with `--jobs 2`
   (`jobs_max = 2`), and sizes the measured 179 x 137 / 2 x 1.5 = about
   306.5-minute campaign at 310 minutes in Assay and 330 minutes in Run-Gate.
+- Round two of the survivor work pins 43 of those 47: one test per mutant
+  (two for `installer.py:3803`, three for `installer.py:4068`, two for
+  `installer.py:4100`), and a near-miss per line for the six `Or->And`
+  runner allow-list checks (`actions.py:189-200`), each breaking exactly one
+  half of the condition so only the mutated `and` lets the argv through. The
+  four remaining survivors are recorded as equivalent by proof, not waived:
+  `installer.py:807/811` (`return ""` whose sole caller tests truthiness),
+  `installer.py:4109` (`mounted` is reassigned on both paths before it is
+  read), and `layout_policy.py:236` (the only `DataVolume` construction whose
+  `nocow` field is read always passes it explicitly). No installer behaviour
+  changed.
 
 ### Added (IC-M1a, btrfs-root configuration)
 - v2 now configures a single-device btrfs root installed by the rollback ISO
