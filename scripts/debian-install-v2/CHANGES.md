@@ -36,9 +36,12 @@ All notable changes to debian-install-v2 are recorded here.
   refused, so a caller bug can never have the root runner replace another file.
 
 ### Fixed (v2 r2 fix-forward)
-- IC-M1a's measured R2 campaign planned 179 candidates at about 137 s each and
-  judged 31 (21 killed, 10 survived) before a 50-minute bound. The new
+- IC-M1a's measured R2 campaign planned 179 candidates (about 137 s each in
+  its first chunk, about 96 s each in the 31-candidate run) and judged 31
+  (21 killed, 10 survived) before a 50-minute bound. The new
   regression tests cover all ten survivors without changing installer behavior.
+  The full 194-candidate campaign then ran at `--jobs 2` and finished in
+  2 h 53 m, killing 147 and leaving 47 survivors (this package's subject).
   Chunked resume had rejected every prior record because `PYTHONPATH` embedded
   the throwaway `{worktree}` and was in Assay's `env_passthrough`, so
   `judge_sha256` changed on every run (Assay B577; Run-Gate RG-314). The R2 lane
