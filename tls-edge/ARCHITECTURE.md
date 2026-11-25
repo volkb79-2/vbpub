@@ -395,21 +395,26 @@ Traefik and the Docker daemon.  Traefik speaks to `tcp://dockerproxy:2375`
 (inside `traefik_internal`) and never holds a file descriptor to
 `/var/run/docker.sock`.  Only the socket proxy container mounts the socket.
 
-The proxy enforces an endpoint allowlist.  Traefik needs the read-only set below;
-this is the one place the allowlist is written down, and it must agree with the
+The proxy enforces an endpoint allowlist.  What the shipped stack sets is the
 `environment` block of the `dockerproxy` service in
-`ciu-stack/ciu.compose.yml.j2`:
+`ciu-stack/ciu.compose.yml.j2`, reproduced here so the list is readable in one
+place; that template is authoritative and this block must agree with it:
 
 ```
 CONTAINERS: 1   # read container metadata
 NETWORKS:   1   # read network info
-SERVICES:   1   # read swarm service metadata (no-op on standalone Docker)
-TASKS:      1   # read swarm task metadata (no-op on standalone Docker)
-POST:       0   # DENY all mutating calls
+SERVICES:    1   # read swarm service metadata (no-op on standalone Docker)
+TASKS:       1   # read swarm task metadata (no-op on standalone Docker)
+POST:        0   # DENY all mutating calls
 ```
 
 No other endpoint is enabled, and **all write operations are denied globally by
-that `POST: 0`** before the request ever reaches the Docker daemon.
+that `POST: 0`** before the request ever reaches the Docker daemon.  This block
+records the shipped configuration, not a claim that it is the whole set of
+endpoints Traefik can use: the Docker provider is configured with `watch: true`
+(`ciu-stack/traefik.yml.j2:116`) while `EVENTS` is not enabled above, so whether
+containers created after Traefik starts are routed is unverified -- tracked as
+TE-14.
 
 ### Blast radius analysis
 

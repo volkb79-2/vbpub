@@ -127,6 +127,17 @@ run. Unverified; check on a rootless host before 4.0.0.
 
 Source: P-edge-04b fix review (2026-11-24).
 
+### TE-14 — docker provider `watch` vs socket-proxy `EVENTS`
+
+Question: `ciu-stack/traefik.yml.j2:116` sets the Docker provider `watch: true`,
+but the socket proxy's allowlist (`ciu-stack/ciu.compose.yml.j2:29-33`) does not
+enable `EVENTS`. Unverified whether containers created after Traefik starts are
+routed; check on a host (start a labelled container alongside a running
+Traefik). If they are not, enable `EVENTS: 1` in both files and update
+ARCHITECTURE's socket-proxy section accordingly.
+
+Source: P-edge-09 review r1b (2026-11-24).
+
 ### FEAT-01 — bearer-token authentication middleware for routed services
 
 Provide an optional Traefik `forwardAuth` integration for services that need
