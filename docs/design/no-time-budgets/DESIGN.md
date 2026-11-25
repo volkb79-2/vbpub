@@ -289,13 +289,14 @@ shard of nine while its siblings keep the host log moving.
 | P3 | run-gate: stall reported as `lane-stalled`, then a `STALLED` verdict | vbpub-core + compatibility note | small/medium | closed verdict table change; needs its own release |
 | P4 | assay: `budget_per_candidate` advisory for progressing candidates; WARN; verdict field | vbpub-assay (review) | medium | misclassifying a slow-but-progressing candidate as hung if the progress signal is coarse (`README.md:676-690`) |
 | P5 | assay: canary liveness (or an explicit unwatched disclosure) | vbpub-assay (review) | medium | R3 units stay capped until this ships; do not remove `budget_per_attempt` first |
-| P6 | runner: fleet driver (`run-gate-r2-fleet`, or a `remote-gate fleet` verb) + store transport on cancel/term | scripts/netcup owner | large | the TERM trap and store collection touch the only path that preserves progress (§6b) |
-| P7 | run-gate: `--shard` for command lanes (a command lane's shard = per-shard `--only-candidates`-equivalent or per-shard runner partitioning) | vbpub-core | medium/large | a command lane has no candidate model; naive sharding splits a suite by file and silently changes what a PASS means |
+| P6 | runner: fleet driver (`run-gate-r2-fleet`, or a `remote-gate fleet` verb); store collection on cancel/term is vbpub-platform's own small package (§6b), which P6 depends on | scripts/netcup owner | large | a fleet without that collection loses a stopped shard's progress |
+| P7 | (lower priority: rollback converts debian-install-v2's R2 into a native R2 assay lane, which `--shard` already serves) run-gate: `--shard` for command lanes (a command lane's shard = per-shard `--only-candidates`-equivalent or per-shard runner partitioning) | vbpub-core | medium/large | a command lane has no candidate model; naive sharding splits a suite by file and silently changes what a PASS means |
 | P8 | cmru: feed the step watchdog `progress_paths` (build logs, gate progress) | cmru owner | small | watchdog stays, only its silence definition widens |
 | P9 | project toml migration (6 projects) | per-project owner, one change each | small each | a converted lane losing its only bound on an old run-gate |
 
 Ordering constraint: P1 before P2 (a rule that removes a cap needs the watch to
-exist), P6 after P7 for the rollback lane but independent of P1..P5, P9 last.
+exist), P6 after platform's store-collection package and independent of P1..P5
+and P7, P9 last.
 
 ## 6. The two reported gaps (verified)
 
@@ -318,7 +319,9 @@ and none literally named `r2` (`git show <branch>:scripts/debian-rollback/run-ga
 Every one of them hits the same refusal. Also relevant: `refuse_serialized_shard`
 (`:3225-3243`) refuses an exec-mode or `resources.shared` lane, so "just sharding
 the command lane" would need each shard in an ephemeral environment.
-Resolution is P7; the honest scope statement is that a command lane has **no
+The rollback need is met without P7: debian-install-v2's R2 becomes a native R2
+assay lane (main controller, 2026-11-25). P7 stays as a lower-priority package
+for other command lanes; the honest scope statement is that a command lane has **no
 candidate model**, so its shard must partition by a declared unit (test file,
 target source, suite segment) supplied by the lane, never by a heuristic.
 
@@ -337,7 +340,7 @@ progress lives in that checkout, so a cancelled run loses it — exactly what
 `--resume` needed. `host-sat-queue.sh:186-190` cancels through this same path,
 so a queue timeout loses the store too.
 
-Fix (P6): collect before teardown on every exit path — the TERM trap must run
+Fix (not part of P6: vbpub-platform owns it as its own small package): collect before teardown on every exit path — the TERM trap must run
 `collect_stores` (bounded, and never changing `rc`) *before* cancelling, or
 `finish` must call it after the lane container is stopped and before
 `rm -rf $CKDIR`. Same rule for `remote-gate cancel`, which currently only
@@ -387,10 +390,16 @@ output; CPU growth defers the hang only up to a no-progress bound calibrated
 from the baseline's worst event gap (a multiple of it), after which the
 candidate is `CANDIDATE_HUNG`. Pressure samples pause that clock and do not
 reset it. This bounds the absence of progress, not total work. Until it ships,
-a lane that declares `budget_per_candidate = "none"` keeps a finite lane
-`budget` as its only stop for such a candidate.
+a lane should keep a per-candidate bound of about three times its measured
+baseline suite time as the no-progress bound for a spinning candidate, because
+with `"none"` one such candidate runs until the lane budget and ends the whole
+lane `BUDGET_EXCEEDED` (main controller ruling, 2026-11-25; ciu applies it in
+CIU-235).
 
 ## 8. Open operator questions
+
+(Sent to the operator by the main controller on 2026-11-25, with the
+recommendations below as the proposal; unanswered until recorded here.)
 
 1. **`BUDGET_EXCEEDED` for a stopped shard.** When a fleet shard stalls and is
    cancelled, is the *campaign* verdict `INCONCLUSIVE` (a shard is missing) or
