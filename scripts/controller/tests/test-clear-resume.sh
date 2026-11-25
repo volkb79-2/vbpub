@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016 # the prompt fixture carries a literal $HOME and backticks
+# shellcheck disable=SC1091,SC2016 # the prompt fixture carries a literal $HOME and backticks; the shared frame lib is sourced
 set -uo pipefail
 # clear-resume.sh against a STUB tmux first on PATH: it records every call and serves capture-pane
 # output from frame files that advance one per call (the last frame repeats), so the checks are
@@ -7,6 +7,8 @@ set -uo pipefail
 unset CLEAR_RESUME_POLL CLEAR_RESUME_IDLE_TRIES CLEAR_RESUME_CLEAR_TRIES CLEAR_RESUME_TYPE_PAUSE CLEAR_RESUME_FINAL_WAIT
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SCRIPT=${CLEAR_RESUME_SCRIPT:-$SCRIPT_DIR/../clear-resume.sh}
+# shellcheck source=pane-frame-lib.sh
+source "$SCRIPT_DIR/pane-frame-lib.sh"   # panel_frame and the REAL agents-panel capture (PANELFIX), shared with the watcher test
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-clear-resume-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
@@ -14,6 +16,7 @@ export CLEAR_RESUME_LOCK_DIR=$ROOT/locks   # the per-pane lock must not touch th
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
 not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
+RULE=$(printf '─%.0s' {1..40})
 
 mkdir -p "$ROOT/bin"
 cat > "$ROOT/bin/tmux" <<'SH'
@@ -42,21 +45,30 @@ exit 0
 SH
 chmod +x "$ROOT/bin/tmux"
 
-# frame <dir> <phase> <n> <kind>: B busy, I idle (input row = marker + NBSP only), T idle with text typed in the
-# input row, S idle with an older non-empty input row in the scrollback and an empty current one, D idle with a
-# stale busy line above the last 4, C cleared, N not yet cleared
+# frame <dir> <phase> <n> <kind>: B busy, I idle (a real prompt box, input row = marker + NBSP only), T the same box
+# with text typed in the input row, S an older non-empty input row in the scrollback and an empty current one, D idle
+# with a stale busy line ABOVE the box's top rule (the history, not the box), C cleared, N not yet cleared; the L kinds
+# are the REAL agents-panel capture with N
+# appended panel rows, idle (LI) or busy (L<n>B), and LMB is the same capture in ANOTHER permission mode (no mode-line
+# marker, so nothing is trimmed: the box must still anchor the busy check).
 frame() {
   local f; f=$(printf '%s/frames/%s.%03d' "$1" "$2" "$3")
   case $4 in
     B) printf 'output\n  * Thinking (12s . esc to interrupt)\n\n' >"$f" ;;
-    I) printf 'output\n❯\xc2\xa0\n\n  ctx 41%%\n' >"$f" ;;
-    T) printf 'output\n❯ half-typed text\n\n  ctx 41%%\n' >"$f" ;;
-    S) printf '❯ older prompt\nreply\n❯\xc2\xa0\n\n  ctx 41%%\n' >"$f" ;;
-    G) printf 'output\n❯\xc2\xa0\x1b[2mrun the tests\x1b[0m\n\n  ctx 41%%\n' >"$f" ;;        # dim prompt suggestion = empty
-    X) printf 'output\n\x1b[39m❯\x1b[0m half-typed \x1b[2mtext\x1b[22m\n\n  ctx 41%%\n' >"$f" ;; # coloured marker, plain typed text
-    D) printf '(esc to interrupt)\n1\n2\n3\n4\n> \n' >"$f" ;;
-    C) printf '\n> \n  ctx ?\n' >"$f" ;;
-    N) printf '> \n  loading\n' >"$f" ;;
+    I) printf 'output\n%s\n❯\xc2\xa0\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;
+    T) printf 'output\n%s\n❯ half-typed text\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;
+    S) printf '❯ older prompt\nreply\n%s\n❯\xc2\xa0\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;
+    G) printf 'output\n%s\n❯\xc2\xa0\x1b[2mrun the tests\x1b[0m\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;        # dim prompt suggestion = empty
+    X) printf 'output\n%s\n\x1b[39m❯\x1b[0m half-typed \x1b[2mtext\x1b[22m\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;; # coloured marker, plain typed text
+    D) printf '(esc to interrupt)\n1\n2\n3\n4\n%s\n❯\xc2\xa0\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;   # a stale busy line ABOVE the prompt box
+    C) printf '%s\n❯\xc2\xa0\n%s\n  ctx ?\n' "$RULE" "$RULE" >"$f" ;;
+    N) printf '%s\n❯\xc2\xa0\n%s\n  loading\n' "$RULE" "$RULE" >"$f" ;;
+    LI) panel_frame "$f" 3 0 1 ;;
+    L1B) panel_frame "$f" 1 1 1 ;;
+    L3B) panel_frame "$f" 3 1 1 ;;
+    L6B) panel_frame "$f" 6 1 1 ;;
+    L12B) panel_frame "$f" 12 1 1 ;;
+    LMB) panel_frame "$f" 6 1 1 '⏵⏵ accept edits on' ;;   # busy in another permission mode: no mode-line marker, no trim
   esac
 }
 # scenario <name> <start frames> <cleared frames>: fresh stub dir, prompt and log
@@ -163,6 +175,31 @@ scenario coloured "X" "C"
 CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
 [[ $RC -eq 5 ]] || fail "typed text after a coloured marker exit $RC (want 5)"
 not_contains <(calls) "send-keys" "typed text after a coloured marker: /clear was sent"
+
+# 5f. F4: an agents panel below the mode line never hides a running turn. With 1, 3, 6 or 12 panel rows the mode
+#     line's `esc to interrupt` sits OUTSIDE the last 4 non-blank lines of the untrimmed capture (it is 1-12 lines
+#     above the bottom), so at 91e9d65f3 wait_idle counted three "idle" polls and sent /clear into a running turn.
+for kind in L1B L3B L6B L12B; do
+  scenario "panel-$kind" "$kind" "C"
+  CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
+  [[ $RC -eq 3 ]] || fail "agents panel $kind: exit $RC (want 3, the pane is busy)"
+  not_contains <(calls) "send-keys" "agents panel $kind: keys were sent into a running turn"
+done
+# 5g. The same busy frame in ANOTHER permission mode: its mode line is not `⏵⏵ bypass permissions on`, so pane_view
+#     trims nothing and the busy check must still find the marker below the prompt box's top rule. At 91e9d65f3 this
+#     read as idle as well.
+scenario panel-othermode "LMB" "C"
+CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 3 ]] || fail "other permission mode: exit $RC (want 3, the pane is busy)"
+not_contains <(calls) "send-keys" "other permission mode: keys were sent into a running turn"
+# 5h. The REAL idle agents panel with the unfocused hint stays ready: the trim must not break the happy path.
+scenario panel-idle "LI" "C C"
+run '%9' "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "idle agents panel exit $RC"
+[[ $(calls | grep -c '^capture start') -eq 3 ]] || fail "idle agents panel: expected exactly 3 idle checks"
+called_clear=0; calls | grep -qF 'send-keys %9 /clear Enter' && called_clear=1
+[[ $called_clear -eq 1 ]] || { calls >&2; fail "idle agents panel: /clear was not sent"; }
+cmp -s "$D/sent.txt" "$D/expected.txt" || fail "idle agents panel: the prompt was not sent exactly"
 
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "C"
