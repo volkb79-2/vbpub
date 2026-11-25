@@ -76,10 +76,12 @@ candidate_ram = "512m"
 io_sync = "durable"
 
 # The WHOLE-TARGET mutation lane, unchanged in behaviour (every shipped module,
-# every candidate, 1891 of them on the 2026-11-24 tree). Kept reachable by
-# name because that is what `[lanes.gate]` runs and because a periodic
-# whole-package campaign is still the only way to judge a file nobody touched;
-# it is NOT the lane to run for an owed R2 on one change. `run-gate r2-whole`.
+# every candidate, 1891 of them on the 2026-11-24 tree). It is NOT part of
+# `[lanes.gate]` any more (the repository gate runs `r0-r1` only), and it is
+# NOT the lane to run for an owed R2 on one change -- that is the diff-scoped
+# `r2` above (docs/R2-RUNBOOK.md). Keep it reachable by name: a periodic
+# whole-package campaign is still the only way to judge a file nobody touched.
+# `run-gate r2-whole`.
 [lanes.r2-whole]
 kind = "assay"
 assay_lane = "iobench"
@@ -96,12 +98,23 @@ pids = 8192
 memory = "1536m"
 io_sync = "durable"
 
+# The repository gate: R0/R1 only. R2 is OWED asynchronously on the latest
+# code (the operator release rule), so this lane runs no mutation campaign:
+# the diff-scoped `r2` (owed, one change at a time, docs/R2-RUNBOOK.md) and
+# the periodic whole-package `r2-whole` are run by name by the controller.
+# A mutation campaign inside the gate is what made every iobench merge gate
+# end BUDGET_EXCEEDED (75 of 1891 candidates in 6 h, ETA about 8450 min).
+#
+# budget 25m = [lanes.r0-r1] 20m + the 5m margin R-59 requires above an inner
+# lane (`run-gate lanes --check`, LANES_CHECK_BUDGET_MARGIN_SECONDS = 5m in
+# run-gate-project/run_gate.py:217), for the nested container start. Raising
+# this instead of adding margin would let the outer bound cut the inner lane.
 [lanes.gate]
 kind = "command"
 environment = "bare-host"
 argv = [
   "bash", "-c",
-  "cd {worktree}/libraries/iobench && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2-whole",
+  "cd {worktree}/libraries/iobench && run-gate --worktree {worktree} r0-r1",
 ]
 clean_tree = false
-budget = "400m"
+budget = "25m"
