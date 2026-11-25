@@ -61,6 +61,23 @@ def test_the_repository_state_dir_is_read_only_reported_when_the_repo_is_named(t
     assert resolved.state_dirs == (resolved.repo_state_dir, resolved.peers_dir)
 
 
+def test_the_gate_paths_default_to_the_controller_home(tmp_path):
+    resolved = ag_config.load({"CONTROLLER_HOME": str(tmp_path / "home")}, cwd=tmp_path)
+
+    # `remote-gate.sh` writes its locks under the home and its results under the home too
+    # (184/225); the override is the one variable the script itself honours.
+    assert resolved.gate_lock_dir == tmp_path / "home" / ag_config.GATE_LOCK_DIR
+    assert resolved.remote_gate_out == tmp_path / "home" / ag_config.GATE_OUT_DIR
+
+
+def test_a_configured_gate_result_directory_replaces_the_default(tmp_path):
+    resolved = ag_config.load(
+        {"CONTROLLER_HOME": str(tmp_path / "home"), "CONTROLLER_REMOTE_OUT": "gates"}, cwd=tmp_path
+    )
+
+    assert resolved.remote_gate_out == tmp_path / "gates"
+
+
 def test_agctl_toml_extends_the_legacy_runs_dirs(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
@@ -127,7 +144,20 @@ def test_the_estate_verb_is_registered_with_no_network_or_write_group(capsys):
 
     app = agcli.build_cli(ident())
     assert app.run(argv=["estate", "--help"]) == 0
-    assert "--json" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "--json" in out
+    assert "--header" in out
+
+
+def test_the_estate_header_flag_is_not_a_mutating_option():
+    from agctl import cli as agcli
+
+    verb = next(verb for verb in agcli.build_cli(ident()).verbs if verb.name == "estate")
+    flags = [flag for option in verb.options for flag in option.flags]
+
+    assert "--header" in flags
+    assert verb.mutating is False
+    assert verb.include_progress is False
 
 
 def test_a_source_tree_without_the_installed_distribution_refuses_loudly():

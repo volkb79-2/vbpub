@@ -14,6 +14,7 @@ from cli_extended import (
     CliIdentity,
     CliRegistry,
     CliRuntime,
+    OptionSpec,
     VerbSpec,
     VersionLookupError,
 )
@@ -65,8 +66,18 @@ def build_cli(cli_identity: CliIdentity | None = None):
             description="print one row per package: plan state, worktree branch and head, its runs and its gates, "
             "each field naming its source (read-only)",
             group="EXPLORATION",
-            examples=("agctl estate", "agctl estate --json"),
+            examples=("agctl estate", "agctl estate --json", "agctl estate --header"),
             include_progress=False,
+            options=(
+                OptionSpec(
+                    ("--header",),
+                    "print the compact injected estate header instead of the rows: merge candidates, held "
+                    "leases, live runs and handover ages, with bucketed ages so an unchanged estate prints "
+                    "identical text (hard cap 4096 bytes)",
+                    group="OUTPUT CONTROL",
+                    parser_kwargs={"action": "store_true"},
+                ),
+            ),
             handler=_estate,
         ),
     )

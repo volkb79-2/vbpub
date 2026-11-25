@@ -27,8 +27,14 @@ HOME_VAR = "CONTROLLER_HOME"
 RUNS_VAR = "CONTROLLER_RUNS_DIR"
 REPO_VAR = "CONTROLLER_REPO"
 TOML_VAR = "AGCTL_TOML"
+# The gate result directory override of `remote-gate.sh:225` (`${CONTROLLER_REMOTE_OUT:-...}`).
+REMOTE_OUT_VAR = "CONTROLLER_REMOTE_OUT"
 TOML_NAME = "agctl.toml"
 REPO_STATE_DIR = ".controller-state"
+# The gate lock directory of `remote-gate.sh:184` (`$CONTROLLER_HOME/remote-gate-locks`).
+GATE_LOCK_DIR = "remote-gate-locks"
+# The gate results directory of `remote-gate.sh:225`.
+GATE_OUT_DIR = "remote-gates"
 # The legacy flat-file runs directories of DESIGN section 4, read-only inputs for the
 # one-release window. The registry of slice 2 writes only under its own runs dir.
 LEGACY_RUNS_DIRS = ("c5-runs",)
@@ -49,6 +55,8 @@ class Config:
     state_dirs: tuple[Path, ...]
     repo_state_dir: Path | None
     peers_dir: Path
+    gate_lock_dir: Path
+    remote_gate_out: Path
     toml_path: Path
     toml_state: str  # "absent" | "loaded"
     toml_legacy_dirs: tuple[Path, ...]
@@ -124,6 +132,8 @@ def load(env: Mapping[str, str] | None = None, *, cwd: Path | None = None) -> Co
     if environment.get(REPO_VAR):
         repo_state = expand(environment[REPO_VAR], base) / REPO_STATE_DIR
     peers = home.parent / PEERS_DIRNAME
+    configured_out = environment.get(REMOTE_OUT_VAR)
+    remote_gate_out = expand(configured_out, base) if configured_out else home / GATE_OUT_DIR
 
     return Config(
         home=home,
@@ -131,6 +141,8 @@ def load(env: Mapping[str, str] | None = None, *, cwd: Path | None = None) -> Co
         state_dirs=_dedupe([path for path in (repo_state, peers) if path is not None]),
         repo_state_dir=repo_state,
         peers_dir=peers,
+        gate_lock_dir=home / GATE_LOCK_DIR,
+        remote_gate_out=remote_gate_out,
         toml_path=toml_path,
         toml_state=toml_state,
         toml_legacy_dirs=legacy,
