@@ -1,0 +1,47 @@
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+
+[project]
+id = "agctl"
+description = "agent control: controller state, the run registry and the estate view"
+template_revision = 4
+prefix = "agctl-v"
+artifacts = ["wheel"]
+scm_dist = "agctl"
+
+# SCM release: the version comes from the `agctl-v*` tag this contract mints. The FIRST
+# release must pass `--set-version` (a brand-new tag prefix has nothing to bump from), and it
+# is not cut until slice 1's ESTATE READERS and the header are reviewed (DESIGN section 8).
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+# Release gate: the project's own `tests` lane (pytest with a branch-aware coverage floor).
+# R2 mutation and the canary lane are open work (KNOWN_ISSUES AGC-01/AGC-02), so they are
+# deliberately NOT declared as release steps yet.
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "agctl: tests (pytest, line+branch coverage floor)", argv = ["run-gate", "tests"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "agctl: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "agctl: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "agctl", "--cwd", "."], cwd = "." },
+]
