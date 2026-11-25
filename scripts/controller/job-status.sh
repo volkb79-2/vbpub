@@ -336,11 +336,13 @@ def command_text(children):
 def finished_line(name):
     marker = (runs_dir / f"{name}.done").read_text(encoding="utf-8", errors="replace").splitlines()
     status = marker[0] if marker else "EXIT=? OUTCOME=?"
-    # pi-review.sh appends REVIEW-MODIFIED-TREE after pi-impl.sh's own marker, and
-    # that line 1 can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit. The
-    # flag is read from the WHOLE marker: line 1 alone is a false certificate.
-    if any(line.strip() == "REVIEW-MODIFIED-TREE" for line in marker[1:]):
-        status = f"REVIEW-MODIFIED-TREE {status}"
+    # pi-review.sh appends its own verdict line after pi-impl.sh's marker, and
+    # that line 1 can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit or a
+    # stopped review. The verdict is read from the WHOLE marker: line 1 alone is
+    # a false certificate.
+    for verdict in ("REVIEW-MODIFIED-TREE", "REVIEW-BUDGET", "REVIEW-NO-REPORT"):
+        if any(line.strip() == verdict for line in marker[1:]):
+            status = f"{verdict} {status}"
     return f"{name}: FINISHED {status}"
 
 

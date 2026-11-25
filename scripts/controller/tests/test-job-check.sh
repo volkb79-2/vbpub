@@ -187,7 +187,7 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
   "$SRC" pi-review-flag "$REPO" deepseek-pi-volker > "$ROOT/pi-review-flag.out" 2>&1; then
   fail 'a REVIEW-MODIFIED-TREE run was accepted as a successful job'
 fi
-contains "$ROOT/pi-review-flag.out" 'REVIEW-MODIFIED-TREE: the reviewer changed the reviewed worktree' \
+contains "$ROOT/pi-review-flag.out" 'REVIEW-MODIFIED-TREE: the review did not complete cleanly' \
   'job-check names the modified-tree flag as the reason the run is red'
 contains "$ROOT/pi-review-flag.out" 'done: EXIT=0 OUTCOME=SUCCESS' 'the pi-impl line is still printed beside the flag'
 if grep -qF 'JOB-CHECK: green' "$ROOT/pi-review-flag.out"; then fail 'a flagged review printed JOB-CHECK: green'; fi
@@ -204,7 +204,19 @@ contains "$ROOT/pi-review-clean.out" 'JOB-CHECK: green' 'an unflagged review sti
 if grep -qF 'REVIEW-MODIFIED-TREE' "$ROOT/pi-review-clean.out"; then
   fail 'an unflagged review was reported as a modified tree'
 fi
-rm -f -- "$HOME_ROOT/runs/pi-review-flag."* "$HOME_ROOT/runs/pi-review-clean."*
+# The other two review verdicts are read the same way: a budget stop and a
+# settled run that produced no review text can BOTH stand beside `EXIT=0`.
+for verdict in REVIEW-BUDGET REVIEW-NO-REPORT; do
+  cp "$SCRIPT_DIR/fixtures/pi-success.jsonl" "$HOME_ROOT/runs/pi-review-verdict.jsonl"
+  printf 'EXIT=0 OUTCOME=SUCCESS\n%s\n' "$verdict" > "$HOME_ROOT/runs/pi-review-verdict.done"
+  if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+    "$SRC" pi-review-verdict "$REPO" deepseek-pi-volker > "$ROOT/pi-review-verdict.out" 2>&1; then
+    fail "a $verdict run was accepted as a successful job"
+  fi
+  contains "$ROOT/pi-review-verdict.out" "$verdict: the review did not complete cleanly" \
+    "job-check names $verdict as the reason the run is red"
+done
+rm -f -- "$HOME_ROOT/runs/pi-review-flag."* "$HOME_ROOT/runs/pi-review-clean."* "$HOME_ROOT/runs/pi-review-verdict."*
 git -C "$REPO" switch -qc sol-task "$BASE"
 printf 'sol review fix\n' > "$REPO/sol.txt"
 git -C "$REPO" add sol.txt

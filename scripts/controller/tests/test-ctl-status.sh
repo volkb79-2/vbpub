@@ -93,6 +93,19 @@ contains "$ROOT/status-pi.out" 'REVIEW-MODIFIED-TREE EXIT=0 OUTCOME=SUCCESS' \
 contains "$ROOT/status-pi.out" 'pi-review-clean route=deepseek-pi-volker EXIT=0 OUTCOME=SUCCESS' \
   'status keeps an unflagged review row unmarked'
 
-rm -f -- "$HOME_ROOT/runs/pi-review-flagged."* "$HOME_ROOT/runs/pi-review-clean."*
+printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-BUDGET\n' > "$HOME_ROOT/runs/pi-review-budget.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-budget.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-budget.route"
+printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-NO-REPORT\n' > "$HOME_ROOT/runs/pi-review-notext.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-notext.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-notext.route"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-pi-verdicts.out" 2>&1
+contains "$ROOT/status-pi-verdicts.out" 'REVIEW-BUDGET EXIT=0 OUTCOME=SUCCESS' \
+  'status prints a budget-stopped review as stopped'
+contains "$ROOT/status-pi-verdicts.out" 'REVIEW-NO-REPORT EXIT=0 OUTCOME=SUCCESS' \
+  'status prints a text-less review beside its pi-impl line'
 
-echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, pi run stalls, review flag, missing config'
+rm -f -- "$HOME_ROOT/runs/pi-review-flagged."* "$HOME_ROOT/runs/pi-review-clean."* \
+  "$HOME_ROOT/runs/pi-review-budget."* "$HOME_ROOT/runs/pi-review-notext."*
+
+echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, pi run stalls, review verdicts, missing config'

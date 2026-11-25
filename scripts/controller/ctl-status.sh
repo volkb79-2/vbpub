@@ -8,13 +8,17 @@ controller_init
 [[ $# == 0 ]] || { echo "usage: $0" >&2; exit 2; }
 
 done_state() {
-  # $1 the run's completion marker. pi-review.sh APPENDS REVIEW-MODIFIED-TREE
-  # after pi-impl.sh's own line 1, which can read `EXIT=0 OUTCOME=SUCCESS` for a
-  # reviewer commit; reading line 1 alone shows a tampered review as green.
-  local marker=$1 first
+  # $1 the run's completion marker. pi-review.sh APPENDS its own verdict line
+  # (REVIEW-MODIFIED-TREE, REVIEW-BUDGET, REVIEW-NO-REPORT) after pi-impl.sh's
+  # line 1, which can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit;
+  # reading line 1 alone shows a tampered or stopped review as green.
+  local marker=$1 first verdict=''
   first=$(head -n 1 "$marker" | head -c 70)
-  if grep -qF -- 'REVIEW-MODIFIED-TREE' "$marker"; then
-    printf 'REVIEW-MODIFIED-TREE %s' "$first"
+  for candidate in REVIEW-MODIFIED-TREE REVIEW-BUDGET REVIEW-NO-REPORT; do
+    grep -qF -- "$candidate" "$marker" && verdict=$candidate
+  done
+  if [[ -n $verdict ]]; then
+    printf '%s %s' "$verdict" "$first"
   else
     printf '%s' "$first"
   fi

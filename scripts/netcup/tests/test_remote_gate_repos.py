@@ -710,6 +710,32 @@ def test_collect_extracts_artifacts_and_maps_cancel(tmp_path):
     assert out[-1] == "lane docs verdict CANCELLED; exit_code 143"
 
 
+def test_collected_artifacts_include_every_progress_file_in_the_two_dirs(tmp_path):
+    """RG-315: `find -name 'progress*.jsonl'` matches the BASENAME, so a lane's own
+    `r2-progress.jsonl` never came back in artifacts.tgz. The pattern is `*progress*.jsonl`;
+    the `.assay`/`.run-gate` path filter and the 50M cap stay."""
+    job = rg.render_job(hosts()["v1001"], "prog", {"sha": SHA, "base": None, "tags": []}, "suite", ".", "", 0, [])
+    snippet = job[job.index("( cd \"$CKDIR/$PROJ\""):job.index("# store collection")]  # the artifact find|tar line, verbatim
+    ckdir = tmp_path / "ck"
+    (ckdir / ".assay").mkdir(parents=True)
+    (ckdir / ".run-gate").mkdir(parents=True)
+    (ckdir / "elsewhere").mkdir()
+    (ckdir / ".assay" / "progress.jsonl").write_text("{}\n")
+    (ckdir / ".assay" / "r2-progress.jsonl").write_text("{}\n")
+    (ckdir / ".run-gate" / "r2-progress.jsonl").write_text("{}\n")
+    (ckdir / "elsewhere" / "unrelated.jsonl").write_text("{}\n")
+    d = tmp_path / "d"
+    d.mkdir()
+    script = f'CKDIR={ckdir}; PROJ=.; D={d}\n' + snippet
+    r = subprocess.run(["bash", "-euo", "pipefail", "-c", script], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    listing = subprocess.run(["tar", "-tzf", str(d / "artifacts.tgz")], capture_output=True, text=True, check=True).stdout.split()
+    assert "./.assay/progress.jsonl" in listing
+    assert "./.assay/r2-progress.jsonl" in listing, listing
+    assert "./.run-gate/r2-progress.jsonl" in listing, listing
+    assert not any(name.endswith("unrelated.jsonl") for name in listing), listing
+
+
 def test_main_reports_gate_errors_and_missing_files(tmp_path, capsys):
     ctx, _ = ctx_for(tmp_path, [])
     assert rg.main(["--out-dir", str(tmp_path / "o"), "status", "missing"], ctx) == 2

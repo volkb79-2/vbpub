@@ -99,8 +99,16 @@ if [[ -e $done_file ]]; then
   # that marker can read `EXIT=0 OUTCOME=SUCCESS` (a reviewer commit leaves a
   # clean tree and a present report). The flag is the run's verdict, so it is
   # read from the whole marker: line 1 alone is a false certificate.
-  if grep -qF -- 'REVIEW-MODIFIED-TREE' "$done_file"; then
-    echo "REVIEW-MODIFIED-TREE: the reviewer changed the reviewed worktree (see $done_file)"
+  # The review launcher appends its own verdict line beside pi-impl.sh's marker:
+  # REVIEW-MODIFIED-TREE (the tree moved), REVIEW-BUDGET (stopped over budget),
+  # REVIEW-NO-REPORT (settled without any review text). Each of those can stand
+  # beside `EXIT=0`, so every one of them makes the run red.
+  review_verdict=''
+  for verdict in REVIEW-MODIFIED-TREE REVIEW-BUDGET REVIEW-NO-REPORT; do
+    grep -qF -- "$verdict" "$done_file" && review_verdict=$verdict
+  done
+  if [[ -n $review_verdict ]]; then
+    echo "$review_verdict: the review did not complete cleanly (see $done_file)"
     red=1
   fi
 else

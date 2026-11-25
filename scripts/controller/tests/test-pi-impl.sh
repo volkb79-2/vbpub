@@ -579,6 +579,23 @@ check_job_status() {
     || { cat "$ROOT/job-status-flagged.out" >&2; fail 'job-status did not report the flagged review'; }
   grep -qF 'REVIEW-MODIFIED-TREE' "$ROOT/job-status-flagged.out" \
     || { cat "$ROOT/job-status-flagged.out" >&2; fail 'job-status hid the REVIEW-MODIFIED-TREE flag'; }
+  # The review launcher has two more verdicts, and both can stand beside EXIT=0.
+  printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-NO-REPORT\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-notext.out" 2>&1 || {
+    cat "$ROOT/job-status-notext.out" >&2
+    fail 'job-status failed on a text-less review'
+  }
+  grep -qF 'REVIEW-NO-REPORT' "$ROOT/job-status-notext.out" \
+    || { cat "$ROOT/job-status-notext.out" >&2; fail 'job-status hid the REVIEW-NO-REPORT verdict'; }
+  # The real double shape: pi-impl settled with `EXIT=0`, then the budget stop
+  # appended its own verdict line.
+  printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-BUDGET\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-budget.out" 2>&1 || {
+    cat "$ROOT/job-status-budget.out" >&2
+    fail 'job-status failed on a budget-stopped review'
+  }
+  grep -qF 'flagged-review: FINISHED REVIEW-BUDGET EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-budget.out" \
+    || { cat "$ROOT/job-status-budget.out" >&2; fail 'job-status did not report the budget-stopped review'; }
   rm -f -- "$CONTROLLER_ROOT/runs/flagged-review.done"
   python3 - "$json" <<'PY'
 import json, sys
