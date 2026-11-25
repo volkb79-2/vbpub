@@ -18,7 +18,69 @@ artifacts = ["coverage.json"]
 memory = "1g"
 io_sync = "durable"
 
+# ---------------------------------------------------------------------------
+# r2 — the DIFF-SCOPED, parallel mutation lane (the one to run; see
+# docs/R2-RUNBOOK.md). It mutates only the lines a request base..HEAD diff adds
+# under src/iobench, which is what makes an owed R2 on one package affordable:
+# the whole-target lane below plans 1891 candidates on the 2026-11-24 tree while
+# the P1 change (94d9c2227..74e86a3f5) plans the fraction recorded in the
+# runbook.
+#
+# It DELEGATES its comparison base (`assay.toml` [lanes.iobench-diff]
+# judge.base_source = "request"), so run-gate appends `--request-base <ref>`
+# from `run-gate r2 --base <ref>` (RG-26/R-35). Without `--base` the ref is the
+# judged tree's ciu-recorded fork point, else `merge-base HEAD @{upstream}`;
+# on a throwaway remote checkout neither exists, so a remote run MUST pass
+# `--base` (the runbook does).
+#
+# jobs = 3 is EXPLICIT, not "auto", so the controller gets the same worker
+# count on every host instead of whatever the probe decided. It is legal only
+# with an enforced memory cap, the counted CPUs and a Cowtree-confirmed btrfs
+# cheap-clone workspace; a host without that CoW area refuses `--jobs 3` by
+# name rather than silently serialising (then pass `--jobs 1`).
+#
+# Arithmetic (run-gate SPEC R-53; run-gate 25.9.0 "R2 jobs" INFO line prints
+# all of it before the container starts):
+#   cpu_cap 3 (environments.tester-unified resources.cpus), oversubscribe 1.0
+#     -> cpu_workers = floor(3 * 1.0) = 3
+#   enforced lane memory 4g -> memory budget 75% of 4g = 3072 MiB
+#   3 MiB..: declared candidate_ram 512 MiB (a FLOOR over the measured p95
+#     391,901,184 bytes = 374 MiB from the 2026-11-02 campaign, whose largest
+#     single candidate peaked at 1,462 MiB) -> memory_workers = 3072 // 512 = 6
+#   assay max_mutants remaining cap is never binding here
+#   jobs = min(jobs_max 4, cpu 3, memory 6, remaining) = 3
+# 3 workers x 512 MiB = 1536 MiB estimated candidate RSS inside a 4096m cap,
+# which leaves the rest of the cap for the baseline (measured 253-270 s) and
+# pytest/coverage overhead. The 2026-11-02 campaign ran N=3 inside the
+# smaller 1536m cap and peaked at 2.67 GiB on the slice, so 4g is the measured
+# shape, not a guess at one worker's need.
+#
+# budget = 150m is sized from the measurement in docs/R2-RUNBOOK.md and keeps
+# the 5m margin above the assay lane's own 145m that `run-gate lanes --check`
+# requires (R-59).
 [lanes.r2]
+kind = "assay"
+assay_lane = "iobench-diff"
+resource_observer = "cgprofile"
+environment = "tester-unified"
+jobs = 3
+clean_tree = false
+budget = "150m"
+artifacts = [".assay/verdict-iobench-diff.json",
+  ".assay/progress-iobench-diff.jsonl"]
+
+[lanes.r2.resources]
+pids = 8192
+memory = "4g"
+candidate_ram = "512m"
+io_sync = "durable"
+
+# The WHOLE-TARGET mutation lane, unchanged in behaviour (every shipped module,
+# every candidate, 1891 of them on the 2026-11-24 tree). Kept reachable by
+# name because that is what `[lanes.gate]` runs and because a periodic
+# whole-package campaign is still the only way to judge a file nobody touched;
+# it is NOT the lane to run for an owed R2 on one change. `run-gate r2-whole`.
+[lanes.r2-whole]
 kind = "assay"
 assay_lane = "iobench"
 resource_observer = "cgprofile"
@@ -29,7 +91,7 @@ budget = "365m"
 artifacts = [".assay/verdict-iobench.json",
   ".assay/progress-iobench.jsonl"]
 
-[lanes.r2.resources]
+[lanes.r2-whole.resources]
 pids = 8192
 memory = "1536m"
 io_sync = "durable"
@@ -39,7 +101,7 @@ kind = "command"
 environment = "bare-host"
 argv = [
   "bash", "-c",
-  "cd {worktree}/libraries/iobench && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2",
+  "cd {worktree}/libraries/iobench && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2-whole",
 ]
 clean_tree = false
 budget = "400m"
