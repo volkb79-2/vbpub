@@ -5,9 +5,12 @@ absorb, and turns the measurements into **proposals with the rule that produced 
 the writeback and queue settings (`dirty_bytes`, `dirty_background_bytes`, `nr_requests`, `max_sectors_kb`), and the dev IO caps.
 
 The measurement core is Python 3 standard library plus `fio` >= 3.30 for its latency fields; startup also checks that fio documents
-`--allow_mounted_write`. Raw-device write and discard stages are refused because fio and `blkdiscard` cannot use the same held kernel
-`O_EXCL` descriptor as iobench. The command line adopts `cli-extended` (so the CLI needs that library
-on `PYTHONPATH`; the core does not).
+`--allow_mounted_write`. Raw-partition writes and discards are opt-in with `--allow-raw-write`: the target must carry a marker from
+`target init` with `--i-own-this-device`, its exact size and its PARTUUID. Marker initialization uses its own short-lived kernel
+claim; each later run takes a separate `O_RDWR|O_EXCL|O_CLOEXEC` claim before its first raw stage and holds it until every child is
+reaped. fio inherits that run claim as `/dev/fd/N`, and discards use `BLKDISCARD` on it. File targets need no opt-in. The command line
+adopts `cli-extended` (so the CLI needs
+that library on `PYTHONPATH`; the core does not).
 See [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) for why it works this way, [docs/CONSUMERS.md](docs/CONSUMERS.md) for how to use it, and [docs/SPEC.md](docs/SPEC.md) for the normative
 requirements and the result schema.
 
@@ -22,25 +25,34 @@ requirements and the result schema.
 | Plausibility | PLA-06 checks Little's law with total fio latency and retains each rung's IOPS, QD and mean completion/submission/total latency; failures keep the cap effects of every failed dependent rung. Veryquick's cold class is never used to corroborate its 20x–100x PLA-19 band; that band remains inconclusive and only >100x fails. Sequential read/write ratio thresholds remain provisional ([why](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)); never keys on the `rotational` flag | `IOB-PLA`, `IOB-REF` |
 | Proposals | `proposals.writeback`, `proposals.caps`, `proposals.iocost_model`, `proposals.iocost_qos`, each value with `rule`, `inputs`, `status` | `IOB-DER` |
 | Ceiling history | append-only disk history; raw rows supply proposal values, while file/probe rows can confirm stability only; weak disks require the remembered device name and model, and a known stored machine-id must still match; a chroot record with no stored id stays unbound after first boot ([why](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)) | `IOB-CEI` |
-| Safety | a raw-device target can be initialized for its marker, but RealHost refuses raw-device write and discard stages until a writer can use a held kernel `O_EXCL` descriptor; the marker's `O_EXCL` open protects only marker creation; fio's `--allow_mounted_write=0` is an additional mounted-device guard, not a process-holder claim; file targets are preallocated files on existing filesystems; refuses mounted, swap, signature-bearing or root-disk targets; refuses multi-device btrfs work dirs and targets; Host binds file writers and discards to the authorised extent (plain `run`/`spawn` cannot reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
+| Safety | raw-partition writes and discards need `--allow-raw-write` and an opt-in target marker; marker initialization uses its own short-lived claim, while each run takes a separate kernel `O_EXCL` claim for every fio child and discard and releases it only after the children are reaped; the claim blocks mount, swapon, md/dm setup and other exclusive openers, not ordinary openers; under the `/dev/fd/N` rewrite, fio's planned `--allow_mounted_write=0` is retained for argv parity but the kernel claim is the mounted-device guard; whole disks, dm/md/loop devices, mounted/root/holder/swap-active targets, missing PARTUUID, serial-only identity and changed PARTUUID/size/device-number are refused for every device verb, including `target show`, result identity and read-only work; without the flag the word-for-word `raw_device_write_unsupported` refusal remains; file targets need no opt-in; refuses multi-device btrfs work dirs and targets; Host binds writers and discards to the authorised extent (plain `run`/`spawn` cannot reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
 | IBX ladder error study | a separate, root-run fio controller measures rung spread and bias under a 500 GB decimal write cap; a shared-system-disk raw partition refuses by default and needs the operator's consent flag plus a per-run drift-check token whose risk context is recorded; `run --dry-run` validates without study-output or target writes or timer changes and requires an initial liveness probe; `rehearse` runs planner-scaled real fio across scheduled job shapes, using `--test-scale` only with an output-contained regular file under `/tmp`; absent kernel IO-control files mean no setting, while present unreadable or active controls refuse; I/O PSI is advisory and independent liveness checks protect the host ([why](docs/DESIGN-GUIDE.md#ibx-ladder-error-study)) | [study-day procedure](studies/ibx/README.md); [host acceptance](studies/ibx/ACCEPTANCE.md); [consumer example](docs/CONSUMERS.md#ibx-host-study) |
 
-Device target identity uses a PARTUUID or a usable whole-disk serial. For virtio-blk, iobench reads that serial from `/sys/block/<disk>/serial` ([design](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)).
+A device target's write identity is its PARTUUID; a whole-disk serial remains disk-scope evidence but cannot identify a raw write target. For virtio-blk, iobench reads that serial from `/sys/block/<disk>/serial` ([design](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)).
 
 Both device and file targets must be at least **1 GiB + 1 MiB**: 1 GiB usable for calibration plus the reserved marker tail. A run's work dir must already exist, be empty, and have at least `max(4 GiB, 3 × planned cell volume)` free after target initialization. See the [guard design](docs/DESIGN-GUIDE.md#72-the-veryquick-profile) and [consumer setup](docs/CONSUMERS.md#2-calibrate-once-per-host-or-storage-class).
 
-Raw-device marker initialization is available, but RealHost refuses raw-device
-write and discard stages: fio opens the path itself and `blkdiscard` does not
-accept iobench's held descriptor. `--allow_mounted_write=0` remains an additional
-mounted-device guard, but it does not claim exclusion from ordinary process
-openers. Use a preallocated file on an existing filesystem for benchmark runs
-until a writer can perform I/O through the same held `O_EXCL` descriptor. For
-install-time measurement used by iogovmon, raw-partition measurement is currently
-unavailable. A file on btrfs is supported only when its filesystem resolves to
-one backing disk; multi-device btrfs is refused for both file targets and work
-dirs, including when a work-dir path equals the btrfs mount point. File results include the
-filesystem, extent mapping and copy-on-write layers, so they do not mean the
-same thing as a raw-partition result ([target choice and rationale](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)).
+For a raw partition, `target init` takes a temporary `O_EXCL` claim and writes
+the marker through it. A later `calibrate`, `matrix` or `run` needs
+`--allow-raw-write`; S0 then opens the partition with
+`O_RDWR|O_EXCL|O_CLOEXEC`, checks the claimed file descriptor's block-device
+number, `BLKGETSIZE64` size and live PARTUUID, and keeps that claim until every
+raw child has been reaped. Planned fio argv names the logical partition; only
+the launch argv rewrites the single `--filename` to `/dev/fd/N`, inherited
+through the supervisor and fio `pass_fds`. The claim blocks mount, swapon, md/dm
+assembly and other `O_EXCL` openers; it does not exclude ordinary non-exclusive
+openers. The planned fio argv still carries `--allow_mounted_write=0`, but after
+the `/dev/fd/N` rewrite fio cannot match that descriptor against the mount
+table, so the kernel claim is the mounted-device guard. The flag is retained
+for argv parity and fio semantics, not as a second runtime guard.
+Raw discards run `BLKDISCARD` through the held descriptor in chunks of at most
+1 GiB and return the named `Operation not supported` outcome when the device
+does not implement discard. A file on btrfs is supported only when its
+filesystem resolves to one backing disk; multi-device btrfs is refused for both
+file targets and work dirs, including when a work-dir path equals the btrfs
+mount point. File results include the filesystem, extent mapping and
+copy-on-write layers, so they do not mean the same thing as a raw-partition
+result ([target choice and rationale](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)).
 `target init --file` preallocates the file, but only the fill and later jobs write real data. The rest can remain
 filesystem-allocated but unwritten; reads of those regions may be served as zeros without device I/O.
 `target init` and `target show` therefore report `written_bytes` and `unwritten_bytes` within `usable_bytes` when the filesystem type is
@@ -84,7 +96,7 @@ libraries/iobench/
 
 ## Status
 
-Implemented (IOB-03 P3, reviewed through wave 2026-10-27) and partially accepted live on 2026-11-09: the r1002 Debian 13 QEMU/TCG guest verified target refusals, fio 3.39 compatibility, file extents on ext4/XFS/btrfs, and veryquick run/restore mechanics. TCG performance numbers and cache conclusions are not evidence about disk performance. IOB-ACC-01 still owes the mounted-filesystem raw-boundary case, `systemd-run --wait`, a second SIGTERM during file `fallocate -p`, a real 150 s fresh observation, cross-direction/plausibility checks, and a disk with a known cache. The parent-death cleanup guarantee covers asynchronously spawned benchmark commands through `_ProcHandle` (`Host.spawn`/`Host.write_range`), and has a no-device forked-process regression; a live re-probe is still owed. Synchronous `Host.run` clients are outside that guarantee: killing a `systemd-run --wait` client leaves its unit running until explicit stop or `RuntimeMaxSec`. See the [design rationale](docs/DESIGN-GUIDE.md#9-safety-design) and [adoption notes](docs/CONSUMERS.md#2-calibrate-once-per-host-or-storage-class). The first cmru release remains open (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
+Implemented (IOB-03 P3, reviewed through wave 2026-10-27) and partially accepted live on 2026-11-09: the r1002 Debian 13 QEMU/TCG guest verified target refusals, fio 3.39 compatibility, file extents on ext4/XFS/btrfs, and veryquick run/restore mechanics. The 2026-11-24 r1002 raw-claim probe then verified the exclusive claim, fio through `/dev/fd/N` with `pass_fds`, direct sequential/random writes, and the non-fatal fio cache-invalidation notice; it did not run a destructive iobench raw calibration. TCG performance numbers and cache conclusions are not evidence about disk performance. IOB-ACC-01 still owes the live opt-in raw calibration, mount/swapon EBUSY checks under the claim, discard and cleanup checks, `systemd-run --wait`, a second SIGTERM during file `fallocate -p`, a real 150 s fresh observation, cross-direction/plausibility checks, and a disk with a known cache. The parent-death cleanup guarantee covers asynchronously spawned benchmark commands through `_ProcHandle` (`Host.spawn`/`Host.write_range`), and has a no-device forked-process regression; a live re-probe is still owed. Synchronous `Host.run` clients are outside that guarantee: killing a `systemd-run --wait` client leaves its unit running until explicit stop or `RuntimeMaxSec`. See the [design rationale](docs/DESIGN-GUIDE.md#9-safety-design) and [adoption notes](docs/CONSUMERS.md#2-calibrate-once-per-host-or-storage-class). The first cmru release remains open (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
 the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
 
@@ -92,12 +104,16 @@ The historical R2 mutation campaign cited in IOB-R2-01 is documented in the
 [2026-11-02 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md) and
 the [raw evidence summary](docs/reports/IOBENCH-R2-R1002-EVIDENCE-SUMMARY-2026-11-13.md).
 
-The registered repository gate runs R0–R1 and native Assay R2 through
-Run-Gate. Its R2 lane opts into `jobs = "auto"` with an Assay ceiling of
-four workers; it runs serially when the prepared workspace does not support
-Assay's btrfs cheap-clone requirement. See the
-[gate consumer guide](docs/CONSUMERS.md#repository-gate) for how to run it and
-the [design guide](docs/DESIGN-GUIDE.md#registered-repository-gate) for why
-the R2 lane uses native Assay dispatch. Campaigns started with the former
-command lane do not resume after this storage change; see the consumer guide
-for the state paths.
+The registered repository gate runs R0–R1 through Run-Gate. R2 is owed
+asynchronously on the latest code and runs by name, never inside the gate:
+`run-gate r2` is the diff-scoped lane (only the lines a base..HEAD diff adds,
+3 workers in a 4g cap, comparison base required: `run-gate r2 --base <ref>`),
+and `run-gate r2-whole` is the periodic whole-package campaign
+(`jobs = "auto"` with an Assay ceiling of four workers, 1536m). See the
+[gate consumer guide](docs/CONSUMERS.md#repository-gate) for how to run them,
+the [R2 runbook](docs/R2-RUNBOOK.md) for the owed-R2 procedure (two shards,
+one commit, store/resume), and the
+[design guide](docs/DESIGN-GUIDE.md#registered-repository-gate) for why both
+lanes are native Assay dispatch. Campaigns started with the former command
+lane do not resume after this storage change; see the consumer guide for the
+state paths.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render the tls-edge templates (standalone, no ciu required).
-# Usage: scripts/render.sh [--check] [--stamp] [--certs-only] [--defaults-only]
+# Usage: tools/render.sh [--check] [--stamp] [--certs-only] [--defaults-only]
 set -euo pipefail
 
 if ! python3 -c 'import jinja2, tomllib' 2>/dev/null; then

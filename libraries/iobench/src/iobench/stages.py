@@ -51,6 +51,7 @@ class Config:
     protect_cgroup: str | None = None
     abort_psi: float | None = None
     installer: bool = False
+    raw_write: bool = False
     production_pattern: str | None = None
     production_units: tuple[str, ...] = ()
     metering: str | None = None
@@ -200,6 +201,8 @@ class Runner:
 
     def finish(self, job: FioJob, handle: Any, started: float) -> FioResult:
         out = devio.collect(self.host, job, handle.wait(), started)
+        for warning in out.warnings:
+            self.safety.report.warnings.append(f"fio_preamble: {warning}")
         for path in (job.log_path, job.hist_path):
             self.host.remove(path)
         if out.returncode != 0:
@@ -257,6 +260,8 @@ class Runner:
         self.host.makedirs(self.scratch)
         self.host.allow_scratch(self.scratch)  # the run's own log directory: the only place a fio log prefix may point to
         self.preflight.update({"slice_io_max_before": self.safety.report.io_max_before})
+        if self.target.kind == "device" and cfg.raw_write:
+            self.host.claim(self.target.ref)  # one kernel claim covers every raw stage until cleanup's reaps are complete
         self.mark("S0", "ok")
 
 
@@ -305,18 +310,29 @@ class Runner:
             self.body()
         except Aborted as exc:
             status, message, code = "aborted", str(exc), exc.exit_code
-        except Refusal:
-            self.cleanup("failed", "", 2)
+        except Refusal as exc:
+            self._attach_cleanup_problem(exc, 2)
             raise
         except (IobenchError, HostError, S.SeriesError) as exc:
             status, message, code = "failed", str(exc), getattr(exc, "exit_code", 1)
-        except BaseException:
-            self.cleanup("failed", "", 1)
+        except BaseException as exc:
+            self._attach_cleanup_problem(exc, 1)
             raise
         else:
             status, message, code = self.identity_at_end()
         status, message, code = self.cleanup(status, message, code)
         return self.conclude(status, message, code)
+
+    def _attach_cleanup_problem(self, error: BaseException, exit_code: int) -> None:
+        """Keep the body's exception and attach a cleanup outcome instead of silently discarding it."""
+        _status, cleanup_message, _code = self.cleanup("failed", "", exit_code)
+        if cleanup_message:
+            note = f"cleanup: {cleanup_message}"
+            if isinstance(error, Exception):
+                # The CLI renders expected and reported unexpected exceptions with str(); notes alone are visible only in
+                # a traceback. Keep the original type and object, but make the named cleanup outcome operator-visible.
+                error.args = (f"{error}; {note}",)
+            error.add_note(note)
 
     def identity_at_end(self) -> tuple[str, str, int]:
         """IOB-PLA-15: the target identity must still match its marker when the run ends, else the run failed."""
@@ -327,17 +343,25 @@ class Runner:
         return "complete", "", 0
 
     def cleanup(self, status: str, message: str, exit_code: int) -> tuple[str, str, int]:
-        """Restore every knob, verify io.max, release the lock (IOB-SAF-02/-03/-04)."""
+        """Restore every knob, verify io.max, and release the lock after the raw claim (IOB-SAF-02/-03/-04)."""
         if not self.safety.locked:
             return status, message, exit_code  # refused before the lock: this invocation owns no journal and restores nothing
+        claim_problem: str | None = None
         try:
             self.safety.restore()
             self.safety.verify_io_max()
         except VerificationFailure as exc:
-            return "failed", str(exc), exc.exit_code
+            status, message, exit_code = "failed", str(exc), exc.exit_code
         finally:
             self.clear_scratch()
-            self.safety.release()
+            claim_problem = self.safety.release()
+        if claim_problem is not None:
+            message = f"{message}; {claim_problem}" if message else claim_problem
+            if status == "complete":
+                status = "failed"
+            if exit_code == 0:
+                exit_code = 1
+            return status, message, exit_code
         return status, message, exit_code
 
     def clear_scratch(self) -> None:

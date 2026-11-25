@@ -1,0 +1,39 @@
+project_root = "."
+dist_dir = "dist"
+bundle_dir = "bundle"
+client_dir = "client"
+
+[archive]
+name_template = "tls-edge-v{version}-{variant}.tar.xz"
+format = "xztar"
+version_env = "TLS_EDGE_VERSION"
+
+[vendor]
+requirements = ["requirements-bundle.txt"]
+platforms = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64"]
+dest = "wheels"
+
+[stage]
+# Build tls-edge-cli and fetch ciu + cli-extended through one first-party fetcher.
+argv = [
+  "python3", "../../tools/bundle_wheels.py", "stage",
+  "{bundle_dir}", "{variant}", "{python_version}",
+]
+
+[manifest]
+name = "manifest.json"
+
+[copy]
+# Operator-facing files only. Maintainer tooling lives in tools/ and is not copied.
+# The .gitignore source is stored under packaging/ but installed at the bundle root.
+files = [
+  "VERSION",
+  "get.py",
+  "README.md",
+  "ARCHITECTURE.md",
+  "CONSUMER_GUIDE.md",
+  "KNOWN_ISSUES_TODO_BACKLOG.md",
+  "ciu.global.defaults.toml.j2",
+  "packaging/instance-root/.gitignore",
+]
+dirs = ["ciu-stack", "consumer-examples", "docs", "installer", "scripts"]

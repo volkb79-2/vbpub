@@ -16001,6 +16001,14 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 **Close when.** A test proves that a mismatch caused by a single passthrough value names that variable in the resume event and on stderr, and the CONSUMERS paragraph is in place. Source: vbpub-rollback's message to vbpub-assay at ~16:58Z; record diff by vbpub-assay.
 
+**Evidence 2026-11-25: the relative-PYTHONPATH fix did not restore cross-checkout resume.**
+- Rollback's v2 seeded-resume proof `rgw-r2-20261124T230949-r1002` ran at c17b2f5f9, after `PYTHONPATH` was made checkout-relative, and it was confirmed STORE-SEEDED.
+- It took 2h26m against 2h53m for the cold run, and it re-judged most candidates.
+- Result: 194 candidates, 145 killed, the same 47 survived, and 2 `budget_exceeded` (the installer at 750/751; both were killed in the cold run).
+- Suspect: another input that changes per checkout or per run is still folded into `judge_sha256`. It is not yet identified; the stored records of the two runs have not been diffed.
+- This makes Wanted item 1 (name the judge component that moved) the way to find it, rather than another manual record diff.
+- Source: the main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
+
 ## B578 — A kill with rc!=0 and no failing test named is still counted as killed
 
 **Status: OPEN (filed 2026-11-24 from the P-assay-08 backfill pilot, main controller's request); severity: medium (judge classification; it can inflate scores).**
@@ -16047,3 +16055,15 @@ The main controller resumed with `ASSAY_RELEASE_GATE_HOST=v1001 REMOTE_GATE_HOST
 **Fixed (a), and the docs half of (b).** `tools/release-gate.sh` now resolves the host table and the output dir the way `scripts/controller/remote-gate.sh` does, read-only through `CONTROLLER_INIT_READONLY=1`: `REMOTE_GATE_HOSTS`/`REMOTE_GATE_OUT` first, then `CONTROLLER_REMOTE_HOSTS_FILE`/`CONTROLLER_HOSTS_FILE` and `CONTROLLER_REMOTE_OUT`/`CONTROLLER_HOME/remote-gates`, then `remote-gate.py`'s module defaults. Every missing or unusable setting is reported in ONE refusal (exit 2) before any work; `ASSAY_RELEASE_GATE_HOST` still has no default because the host is a load decision. Pinned by `gate/tests/test_release_gate.py::test_release_gate_reports_every_unusable_setting_in_one_refusal` and the three resolution-order tests beside it. The "Release gate environment" paragraph is in `docs/CONSUMERS.md` (`### Assay release-gate host`), with the README and DESIGN-GUIDE sections updated in step.
 
 **Related (heartbeat, cmru 7.5.0 watchdog).** The same wrapper now prints `assay release-gate: waiting for remote run <run> on <host> (<elapsed>s)` every `ASSAY_RELEASE_GATE_HEARTBEAT_S` seconds (30-1500, default 300), so a quiet 6-50 minute lane no longer trips CMRU 7.5.0's 1800 s per-step no-progress watchdog (`cmru/src/cmru/runner.py:43`) the way it killed assay 12.3.0. `cmru.toml` and the cmru setting are unchanged; the lane's exit status and the `INT`/`TERM` cancel path are untouched.
+
+## B580 — A seeded run's verdict does not say how much it resumed
+
+**Status: OPEN (filed 2026-11-25 by the main controller via vbpub-assay); severity: low (operational).**
+
+**Symptom.** Whether a seeded R2 run actually reused its store can only be read from the `resume` progress event in `r2-progress.jsonl` (`src/assay/mutation.py:3052-3065`: `resumed_total`, `rejected_total`, `rejudged_total` and the B529/B527/B530 diagnostics). The verdict JSON and its summary carry none of these counts. A remote lane does not collect `r2-progress.jsonl` today, so the seeded-resume proof `rgw-r2-20261124T230949-r1002` (B577 evidence) could only be judged from wall time and per-candidate counts.
+
+**Wanted.** The verdict summary exposes at least `resumed_total` and `rejected_total` (and preferably the other counts of the `resume` event), with a zero/absent rule for an unseeded run. Then a seeded run is readable from the verdict alone. This is a verdict-schema addition: it is P-assay-17's (v21) to place, or a later additive schema bump.
+
+**Not assay's part.** Collecting `r2-progress.jsonl` from remote lanes is the run-gate half; the main controller routed it to vbpub-core.
+
+**Close when.** A seeded run's verdict carries the resume counts, a test pins them for one resumed and one rejected record, and the schema docs list them. Source: main controller's message to vbpub-assay, ~01:35Z 2026-11-25.

@@ -6,7 +6,7 @@ parser in `--dry-run` mode. WHAT is in the [README](../README.md); WHY in the [D
 ## 0. Install
 
 The measurement core needs only Python 3 and `fio` >= 3.30 for JSON `clat_ns` percentiles; startup also checks that the installed fio documents `--allow_mounted_write` exactly. Device jobs are always passed
-`--allow_mounted_write=0` as a mounted-device guard, but RealHost currently refuses raw-device writes and discards because fio and `blkdiscard` cannot use iobench's held kernel `O_EXCL` descriptor. The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
+`--allow_mounted_write=0` for argv parity and fio's own option semantics. Raw-partition writes and discards are opt-in with `--allow-raw-write` and run under one held kernel `O_EXCL` claim; after the `/dev/fd/N` launch rewrite, that claim, not the option, is the mounted-device guard. File targets need no opt-in. The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
 library on `PYTHONPATH` (or installed). In this repo:
 
 ```bash
@@ -27,21 +27,8 @@ iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --e
 iobench target show /dev/vda7 --json
 ```
 
-`target init` refuses a mounted (in the caller's or PID 1's mount namespace), swap-active, signature-bearing (`blkid -p`) or root-disk target; the override requires `--i-own-this-device`
-**and** the matching `--expect-size` and `--expect-partuuid` (or `--expect-serial` when the device reports one). A device with neither a PARTUUID nor a serial is refused. Mounted, swap and
-root refusals can never be overridden. The marker open uses kernel `O_EXCL` only for that marker write and then closes it. It does not reserve the device for later stages. RealHost refuses raw-device write and discard stages: fio opens the path itself and `blkdiscard` cannot use the same held O_EXCL descriptor. At the stage boundary, the `O_RDONLY|O_EXCL` probe detects a kernel block-device holder conflict, such as a mounted filesystem or another exclusive holder, and reports `device_in_use`; an ordinary non-exclusive opener does not make the probe busy. Even when the probe succeeds, the stage refuses with `raw_device_write_unsupported`. Every generated device fio job still carries `--allow_mounted_write=0` as an additional mounted-device guard; it does not exclude ordinary process openers. Use a file target for benchmark runs. `written_bytes` and `unwritten_bytes` are `null` for a raw device because it has no file extent map.
-
-For a partition without a PARTUUID, supply its parent disk's serial when the kernel reports one:
-
-```bash
-DEVICE=/dev/vda7
-DISK="$(lsblk -ndo PKNAME "$DEVICE")"
-SERIAL="$(cat "/sys/block/$DISK/serial")"
-# Replace the sample size with the exact value from: blockdev --getsize64 "$DEVICE"
-iobench target init "$DEVICE" --i-own-this-device --expect-size 435853320192 --expect-serial "$SERIAL"
-```
-
-`--expect-serial` is matched against the whole-disk serial at `/sys/block/<disk>/serial`; virtio-blk exposes it there.
+`target init` refuses a whole disk, dm/md/loop device, a mounted target (in the caller's or PID 1's mount namespace), a swap-active, signature-bearing (`blkid -p`) or root-disk target. A raw target must be a real partition with a PARTUUID; serial-only identity is refused. The override requires `--i-own-this-device`
+**and** the matching `--expect-size` and `--expect-partuuid`. Mounted, swap and root refusals can never be overridden. Initialization takes `O_RDWR|O_EXCL|O_CLOEXEC` as its own short-lived claim and writes the marker through that held descriptor. A later raw run needs `--allow-raw-write`; without it, every raw write or discard keeps the word-for-word `raw_device_write_unsupported` refusal. With it, S0 takes a separate run claim before the first raw stage and holds it until every child is reaped. Fio plans `--filename=PATH`, but launches with `/dev/fd/N` and inherits that descriptor; discards issue `BLKDISCARD` on the held descriptor in chunks of at most 1 GiB. The claim blocks mount, swapon, md/dm setup and other exclusive openers, not ordinary non-exclusive openers. Every generated device fio job still carries `--allow_mounted_write=0` for argv parity and fio's own semantics; fio cannot match `/dev/fd/N` against the mount table, so the claim is the runtime mounted-device guard. `written_bytes` and `unwritten_bytes` are `null` for a raw device because it has no file extent map.
 
 Prepare a file target on an existing persistent filesystem for the runnable examples below:
 
@@ -226,7 +213,7 @@ The wizard's default (D-IOC-4) must be able to run on production hosts that have
 `O_DIRECT`. Its identity is (filesystem UUID, inode, size) with the marker in its last MiB and a sidecar `.iobench-target`; every writing stage re-verifies it. Preallocation reserves
 the file extent but does not write data: the later fill and jobs write only their planned ranges, so the rest can remain allocated but unwritten. Reading an unwritten range can return
 zeros without device I/O and must not be treated as a measured disk read. Refused:
-tmpfs/ramfs/overlay, symlinks, hard links, too little free space, a `--size` that is not a positive integer multiple of 1 MiB, and on the root filesystem a `--size` above 10 % of the free space (`--allow-large-root-target` overrides; `--size` is required and is the hard upper bound). The parser and planner both refuse a misaligned size and print the next lower valid MiB multiple. Free space is re-checked while the fill runs; `limited-by-space` is recorded only when low space prevents a planned fill chunk, not after the final planned chunk completed. The "fresh" write is reported as `fresh_fs_alloc` with the filesystem's `discard` mount option and enters the write cap only on a `discard` mount; iobench never runs `fstrim`. Every figure carries the `filesystem_layer` limit and is never mixed with device-kind history. For btrfs, the mount's anonymous device number is resolved through the filesystem UUID and `/sys/fs/btrfs/<uuid>/devices`; iobench accepts exactly one member device and refuses multi-device btrfs for both file targets and work dirs, including when the work-dir path equals the mount point. Namespace checks compare both raw and resolved device numbers. Raw-partition install-time measurement is currently unavailable because RealHost refuses raw-device mutations; use the file target for current runs. File results include btrfs copy-on-write, allocation and extent-mapping effects and must be interpreted as filesystem-layer observations.
+tmpfs/ramfs/overlay, symlinks, hard links, too little free space, a `--size` that is not a positive integer multiple of 1 MiB, and on the root filesystem a `--size` above 10 % of the free space (`--allow-large-root-target` overrides; `--size` is required and is the hard upper bound). The parser and planner both refuse a misaligned size and print the next lower valid MiB multiple. Free space is re-checked while the fill runs; `limited-by-space` is recorded only when low space prevents a planned fill chunk, not after the final planned chunk completed. The "fresh" write is reported as `fresh_fs_alloc` with the filesystem's `discard` mount option and enters the write cap only on a `discard` mount; iobench never runs `fstrim`. Every figure carries the `filesystem_layer` limit and is never mixed with device-kind history. For btrfs, the mount's anonymous device number is resolved through the filesystem UUID and `/sys/fs/btrfs/<uuid>/devices`; iobench accepts exactly one member device and refuses multi-device btrfs for both file targets and work dirs, including when the work-dir path equals the mount point. Namespace checks compare both raw and resolved device numbers. A raw partition can instead use the opt-in claimed path described above, after the installer or operator creates a dedicated partition and the PARTUUID is known. File results include btrfs copy-on-write, allocation and extent-mapping effects and must be interpreted as filesystem-layer observations.
 
 ```bash
 FS_UUID="$(findmnt -n -o UUID -T /var/lib/iobench)"
@@ -257,7 +244,7 @@ the time axis when the observation run is long enough. If the first seconds are 
 
 ## 8b. debian-install-v2 (installer profile)
 
-The installer owns the throwaway partition lifecycle. The previous raw-target examples are not runnable with RealHost: raw writes and discards are refused until a writer can use a held `O_EXCL` descriptor. `--installer` does not waive that refusal. Use the file-target form on an existing filesystem for current benchmark runs; a future claimed raw writer is needed before debian-install-v2 can resume raw-target measurement.
+The installer owns the throwaway partition lifecycle. For a raw target it must now prepare the partition with `target init --i-own-this-device --expect-size --expect-partuuid` and pass `--allow-raw-write` to the benchmark command. Without that flag, the raw write and discard stages keep the word-for-word `raw_device_write_unsupported` refusal. `--installer` does not waive the flag, the marker, the claim, or any target refusal. This package supplies the claimed writer but deliberately does not change debian-install-v2's command line; until that consumer is updated in the later profile/target packages, use its current file-target form or retain the named raw refusal.
 
 ```bash
 FS_UUID="$(findmnt -n -o UUID -T /mnt/iobench)"
@@ -287,31 +274,61 @@ A few more refusals you may meet (each names its condition and a remedy; all exi
 * `holder_active` (an md/dm holder), `path_colon`, `exists_without_sidecar` (the sidecar must match the file's inode, size and filesystem UUID), `dry_run_rate_other_target` / `dry_run_rate_unusable`
   (`--dry-run` plans only with `--assume-r-est` or the current calibration of the same target).
 * `fio_option_unsupported`: the installed fio does not document `allow_mounted_write`, and the refusal names the installed fio version. Device jobs use
-  `--allow_mounted_write=0`, so fio aborts destructive I/O if the target appears mounted. The marker's kernel `O_EXCL` open protects only marker creation; it does not hold an ownership claim across stages. Raw writes and discards are refused until their writer can use a held claim. A device that is claimed at marker time is `identity_changed` (exit 2).
+  `--allow_mounted_write=0` for argv parity and fio's own semantics; because the launch path is `/dev/fd/N`, the kernel claim is the
+  mounted-device guard. `raw_device_write_unsupported` means the run did not pass
+  `--allow-raw-write`, so no kernel claim was taken; the word-for-word refusal names the write or discard stage. `device_in_use` means the held
+  `O_EXCL` claim could not be taken because the target is mounted, swap-active, held through md/dm, or exclusively opened by another process. The
+  run's claim is held across every raw fio child and every discard, and it is released only after those children are reaped. Marker initialization uses
+  its own short-lived claim. A released claim does not exclude ordinary non-exclusive openers, so keep the confirmed quiet window.
+* `raw_target_not_partition`, `raw_target_dm`, `raw_target_md`, `raw_target_loop`: the named target is a whole disk or a virtual block device rather
+  than a dedicated physical partition. `raw_target_partuuid_required` means the partition has no PARTUUID; a serial, including a serial supplied with
+  `--expect-serial`, is never sufficient identity. `raw_target_size_changed`, `raw_target_devno_changed` and `raw_target_partuuid_changed` mean the
+  claimed or freshly checked device no longer equals the identity named at `target init`; rerun the guard against the intended partition. These target-shape
+  refusals apply to every device verb, including `target show`, result identity and read-only stages. A marker previously written on a whole disk,
+  dm/md/loop device or serial-only partition cannot be read; re-run `target init` on a dedicated partition carrying a PARTUUID.
 * A dry run is a plan, not an acceptance: its output says `preflight: not_run`; the same invocation without `--dry-run` may still be refused.
 * `check --section writeback --calibration` is a usage error (a calibration carries no writeback); `check` exit 5 also covers `damaged_proposals` and a `schema_minor` newer than the installed iobench.
 
 ## Repository gate
 
-The registered Run-Gate configuration keeps the R2 judgment in Assay's
-native lane so Run-Gate can apply its worker policy, record the selection,
-and keep Assay's resumable state outside an ephemeral worktree. Run the
-registered lanes from the IOBench project directory:
+The registered repository gate is `run-gate r0-r1` only (the coverage suite).
+It runs no mutation campaign: R2 is **owed asynchronously on the latest code**
+(operator release rule), so a merge gate is never held to a mutation verdict.
+The two mutation lanes exist and are run **by name**:
+
+* `run-gate r2` — the **diff-scoped** lane. It mutates only the lines a
+  request base..HEAD diff adds under `src/iobench` (Assay lane `iobench-diff`),
+  and it needs a comparison base: `run-gate r2 --base <ref>`, because a
+  `base_source = "request"` lane has no fallback ref by design (without
+  `--base` it answers NOT_RUN/`no-base` instead of guessing). It runs 3 workers
+  inside a 4g lane cap with a 12m per-candidate ceiling. This is the lane for
+  an owed R2 on one change; the split over two hosts, the store/resume
+  procedure and the measured plan are in [docs/R2-RUNBOOK.md](R2-RUNBOOK.md).
+* `run-gate r2-whole` — the **periodic whole-package** campaign (every shipped
+  module, 1891 candidates on the 2026-11-24 tree, `jobs = "auto"`, 1536m,
+  365m). It is the only way to judge a file nobody touched in the change under
+  judgement, and it is far too large to sit inside a merge gate.
+
+The R2 lane keeps the judgment in Assay's native lane so Run-Gate can apply
+its worker policy, record the selection, and keep Assay's resumable state
+outside an ephemeral worktree. Run the registered lanes from the IOBench
+project directory:
 
 ```bash
 run-gate r0-r1
-run-gate r2
+run-gate r2 --base <ref>          # owed R2 on a change (docs/R2-RUNBOOK.md)
+run-gate r2-whole                 # periodic whole-package campaign, deliberate
 ```
 
-The R2 lane opts into automatic worker selection. Assay's
-`[lanes.iobench.judge.mutation].jobs_max = 4` is its ceiling; the former
-`jobs = 1` setting was the legacy alias for that ceiling, so it limited every
-run to one worker. Run-Gate now reads the ceiling and passes the selected
-count. With no candidate history it uses a conservative 1 GiB per candidate;
-without Assay's supported btrfs cheap-clone workspace, auto remains at one.
-Use `run-gate r2 --jobs 2` to request a specific parallel count when the
-workspace supports it. A request above the ceiling or without the required
-workspace fails before mutation candidates start.
+The r2 lane's worker count is `jobs = 3`, explicit rather than `"auto"`, so
+every host gets the same count; it is legal only with the enforced 4g cap, the
+counted CPUs and a Cowtree-confirmed btrfs cheap-clone workspace. A host
+without that CoW area refuses `--jobs 3` by name rather than silently
+serialising; pass `--jobs 1` there. The whole-package lane still opts into
+`jobs = "auto"`: Assay's `[lanes.iobench.judge.mutation].jobs_max = 4` is its
+ceiling, measured candidate RSS sets the count once history exists (otherwise
+a conservative 1 GiB per candidate), and it stays at one worker unless Assay's
+prepared workspace confirms its supported btrfs cheap clone.
 
 <!-- run-gate-config -->
 ```toml
@@ -323,23 +340,26 @@ image = "tester-unified:local"
 
 [lanes.r2]
 kind = "assay"
-assay_lane = "iobench"
+assay_lane = "iobench-diff"
 environment = "tester-unified"
-jobs = "auto"
+jobs = 3
 resource_observer = "cgprofile"
+budget = "245m"
 
 [lanes.r2.resources]
 cpus = "3"
-memory = "1536m"
+memory = "4g"
+candidate_ram = "512m"
 pids = 8192
 ```
 
 Run-Gate writes the Assay verdict and progress to
-`.assay/verdict-iobench.json` and `.assay/progress-iobench.jsonl`. Its
-resumable mutation state is stored under the repository's ignored
-`.run-gate/assay-state/` area; rerun the same lane on the same tree after a
-budget stop. The former command lane used `.assay/mutation-state-r2` and
-`.assay/progress-r2.jsonl`; those files are not imported, so an in-progress
+`.assay/verdict-iobench-diff.json` and `.assay/progress-iobench-diff.jsonl`
+(`.assay/verdict-iobench.json` / `.assay/progress-iobench.jsonl` for
+`r2-whole`). Its resumable mutation state is stored under the repository's
+ignored `.run-gate/assay-state/` area; rerun the same lane on the same tree
+after a budget stop. The former command lane used `.assay/mutation-state-r2`
+and `.assay/progress-r2.jsonl`; those files are not imported, so an in-progress
 campaign from that configuration must be restarted under the native lane.
 
 ## 10. What a refusal looks like

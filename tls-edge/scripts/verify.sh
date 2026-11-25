@@ -119,54 +119,25 @@ echo "   expose_http: $EXPOSE_HTTP"
 echo "   domain     : ${DOMAIN:-(none — domain-dependent checks will SKIP)}"
 echo
 
-# ─── check 1: generated trial render ──────────────────────────────────────────
-echo "$(_bold "1. Standalone trial render")"
+# ─── check 1: validated ciu configuration ────────────────────────────────────
+echo "$(_bold "1. ciu configuration")"
 
-if [[ -z "$DOMAIN" ]]; then
-    skip "no domain — skipping render.sh --check (it requires a domain)"
-elif "$SCRIPT_DIR/render.sh" --check 2>&1 | sed 's/^/   /'; then
-    pass "render.sh --check succeeded"
-else
-    fail "render.sh --check failed"
-fi
-
-TMPDIR_RENDER="$(mktemp -d)"
-cleanup_tmp() { rm -rf "$TMPDIR_RENDER"; }
-trap cleanup_tmp EXIT
-
-DRIFT_RC=0
-if [[ -f "$OVERRIDE_FILE" ]]; then
-    # Local override exists — render it to a temporary trial tree.
-    python3 "$SCRIPT_DIR/render_standalone.py" --out "$TMPDIR_RENDER" || DRIFT_RC=$?
-else
-    # No override — render the shipped defaults.
-    python3 "$SCRIPT_DIR/render_standalone.py" --out "$TMPDIR_RENDER" --defaults-only || DRIFT_RC=$?
-fi
-if [[ $DRIFT_RC -ne 0 ]]; then
-    fail "trial render exited $DRIFT_RC"
-fi
-
-for RFILE in docker-compose.yml traefik.yml conf.d/certs.yml conf.d/options.yml conf.d/middlewares.yml; do
-    RENDERED="$TMPDIR_RENDER/$RFILE"
-    if [[ ! -f "$RENDERED" ]]; then
-        [[ $DRIFT_RC -eq 0 ]] && fail "trial render: $RFILE not produced"
-        continue
+if [[ -x "$ROOT/ciu" ]]; then
+    if "$ROOT/ciu" check 2>&1 | sed 's/^/   /'; then
+        pass "ciu check succeeded"
+    else
+        fail "ciu check failed"
     fi
-    pass "rendered: $RFILE"
-done
+else
+    skip "bundled ciu launcher is missing; run this from the installed stack root"
+fi
 
 # ─── check 2: compose config validation ───────────────────────────────────────
 echo
 echo "$(_bold "2. docker compose config")"
 
-if [[ -f "$COMPOSE_FILE" ]]; then
-    COMPOSE_TO_CHECK="$COMPOSE_FILE"
-    COMPOSE_KIND="rendered CIU compose"
-else
-    COMPOSE_TO_CHECK="$TMPDIR_RENDER/docker-compose.yml"
-    COMPOSE_KIND="rendered trial compose"
-    : > "$TMPDIR_RENDER/.env"
-fi
+COMPOSE_TO_CHECK="$COMPOSE_FILE"
+COMPOSE_KIND="rendered CIU compose"
 if [[ ! -f "$COMPOSE_TO_CHECK" ]]; then
     fail "$COMPOSE_KIND file is missing: $COMPOSE_TO_CHECK"
 elif docker compose -f "$COMPOSE_TO_CHECK" config -q 2>&1 | sed 's/^/   /'; then

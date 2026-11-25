@@ -42,7 +42,7 @@ class FioJob:
     fsync: int | None = None
     numjobs: int = 1
     prefix: str = ""
-    device_guard: bool = False  # device targets: pin fio's mounted-write refusal; RealHost refuses raw writes until fio can use a held O_EXCL claim
+    device_guard: bool = False  # device targets: retain the planned mounted-write option for argv parity; the /dev/fd/N claim is the runtime guard
 
     @property
     def writes(self) -> bool:
@@ -145,7 +145,7 @@ def require_fio_option(host: Host, option: str, version: tuple[int, int]) -> Non
         if unknown or res.returncode == 0:
             raise Refusal(
                 "fio_option_unsupported",
-                f"{version_text} does not document the option {option!r}; iobench includes it as an additional mounted-device guard",
+                f"{version_text} does not document the option {option!r}; iobench retains it as a fixed device-job argv token for argv parity and fio's own semantics",
                 "install a fio build that documents --allow_mounted_write; fio >= 3.30 is independently required for clat_ns percentiles",
             )
         raise Refusal(
@@ -245,11 +245,30 @@ class FioResult:
     hist: list[tuple[float, list[int]]] | None
     started: float
     error: str = ""
+    warnings: tuple[str, ...] = ()
 
 
 def parse_fio_json(text: str, ddir: str) -> FioStats:
+    document, _preamble = split_fio_output(text)
+    return _parse_fio_document(document, ddir)
+
+
+def split_fio_output(text: str) -> tuple[str, tuple[str, ...]]:
+    """fio may print device notices before its JSON; parse from the first ``{`` and retain every preamble line."""
+    start = text.find("{")
+    if start < 0:
+        raise json.JSONDecodeError("fio output has no JSON object", text, 0)
+    preamble = tuple(line for line in text[:start].splitlines() if line.strip())
+    return text[start:], preamble
+
+
+def _parse_fio_document(text: str, ddir: str) -> FioStats:
     doc = json.loads(text)
-    job = doc["jobs"][0][ddir]
+    job_entry = doc["jobs"][0]
+    error = job_entry.get("error", 0)
+    if error != 0:
+        raise IntegrityError(f"IOB-PLA-20: fio job {job_entry.get('jobname', '<unnamed>')} reported error {error}")
+    job = job_entry[ddir]
     clat = job["clat_ns"]
     clat_mean_us = float(clat["mean"]) / 1000.0
     slat = (job.get("slat_ns") or {}).get("mean")
@@ -320,10 +339,11 @@ def collect(host: Host, job: FioJob, run: RunResult, started: float) -> FioResul
     """Parse a finished fio run into a :class:`FioResult` (stats, series, histogram)."""
     if run.returncode != 0:
         return FioResult(job, run.returncode, None, [], None, started, run.stderr.strip())
-    stats = parse_fio_json(run.stdout, job.ddir)
+    document, warnings = split_fio_output(run.stdout)
+    stats = _parse_fio_document(document, job.ddir)
     series = parse_rate_log(host.read_text(job.log_path), job.metric)
     hist = parse_hist_log(host.read_text(job.hist_path)) if job.hist else None
-    return FioResult(job, 0, stats, series, hist, started)
+    return FioResult(job, 0, stats, series, hist, started, warnings=warnings)
 
 
 def tail_start(size: int) -> int:

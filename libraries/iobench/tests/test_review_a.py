@@ -168,7 +168,7 @@ def test_rev_a_b4_a_failing_blkid_or_wipefs_is_a_refusal_naming_the_probe():
     host.probe_failures["blkid"] = RunResult(2, "", "")  # 2 is the documented "nothing found": a normal answer, judged on its own
     with pytest.raises(Refusal) as err:
         init(host)
-    assert err.value.condition == "identity_missing"
+    assert err.value.condition == "raw_target_partuuid_required"
 
 
 def test_rev_a_b4_a_failing_docker_ps_is_not_a_quiet_host():

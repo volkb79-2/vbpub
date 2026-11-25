@@ -190,7 +190,7 @@ def test_standalone_trial_render_has_full_tree_and_stamp(tmp_path: Path) -> None
     out = tmp_path / "trial"
     base_argv = [
         sys.executable,
-        str(ROOT / "scripts" / "render_standalone.py"),
+        str(ROOT / "tools" / "render_standalone.py"),
         "--stack-dir",
         str(ROOT / "ciu-stack"),
         "--out",
@@ -211,7 +211,7 @@ def test_standalone_trial_render_has_full_tree_and_stamp(tmp_path: Path) -> None
     subprocess.run(
         [
             sys.executable,
-            str(ROOT / "scripts" / "render_standalone.py"),
+            str(ROOT / "tools" / "render_standalone.py"),
             "--stack-dir",
             str(ROOT / "ciu-stack"),
             "--out",

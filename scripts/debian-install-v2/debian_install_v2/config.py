@@ -41,8 +41,9 @@ CLOUD_INIT_CLEANUP_MODES = ("retain", "userdata-only", "clean", "clean-all")
 # 720 and 3600 s) plus IOBENCH_OUTER_MARGIN_S for process startup and result
 # persistence. The values are literal because this module must stay importable
 # without the iobench package (the installer runs on a host that only carries
-# the copied iobench sources); tests/test_iobench_runner.py binds every value
-# back to PROFILE_BUDGET_S[profile] + IOBENCH_OUTER_MARGIN_S.
+# the copied iobench sources); debian_install_v2/tests/test_io_benchmark_profile.py
+# (`test_one_timeout_table_covers_every_rung_and_is_the_iobench_budget_plus_the_margin`)
+# binds every value back to PROFILE_BUDGET_S[profile] + IOBENCH_OUTER_MARGIN_S.
 IO_BENCHMARK_PROFILES = ("veryquick", "quick", "standard")
 IO_BENCHMARK_PROFILE_DEFAULT = "quick"
 IOBENCH_OUTER_MARGIN_S = 60

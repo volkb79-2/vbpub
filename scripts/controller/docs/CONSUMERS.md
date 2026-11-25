@@ -295,7 +295,8 @@ Everything is a flag or an environment variable (`CTX_STATE_DIR`,
 (10000), `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_GOAL_PROMPT`,
 `CTX_READBACK_REDACT_PATTERNS` (one regex per line, forwarded as `--redact-pattern`),
 `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`,
-`CTX_SESSION_KIND`, `CTX_HOOK_ROLE`, `CTX_SOFT_CONTROLLER`, `CTX_SOFT_AGENT`,
+`CTX_SESSION_KIND`, `CTX_HOOK_ROLE`, `CTX_INFORM_AT`, `CTX_URGE_AT`, `CTX_FORCE_AT`,
+`CTX_FORCE_GRACE`, `CTX_SOFT_AGENT`,
 `CTX_REPO_ROOT`, `CTX_HANDOFF_FILE`, `CTX_MAIN_CONTROLLER`). Without
 `--state-dir` the state directory is the nearest `.controller-state` at or above
 the hook input's `cwd` (else the repo holding the script, else nothing is written),
@@ -304,18 +305,23 @@ session id, so sessions sharing one state directory never read each other's. The
 ladder is a note every 50000 tokens from 100000 on. The wording follows the
 session kind (`--session-kind` / `CTX_SESSION_KIND` / `CTX_HOOK_ROLE`; default:
 the main session is a `controller`, a hook fired inside an Agent-tool subagent is
-`spawned`) and that kind's soft threshold: a controller below it (default 650000)
-persists at the next semantic boundary and continues, never stopping or waiting for
-a compaction; at or past it, it writes the handover (controller-handover skill),
-syncs the plan, sets READY and ends the turn. A spawned session gets the context
-marker until its threshold (default 200000), then finish-or-return-PARTIAL. The
-context ceiling in the marker is the model's `autoCompactWindow` from
-`~/.claude/settings.json`.
+`spawned`). A controller below 200000 persists at the next semantic boundary and
+continues; from 200000 (and again, more urgently, from 250000) it is asked to write the
+handover (controller-handover skill) and launch `compact-resume.sh` detached; from 300000
+the `pre-tool-use` mode denies every tool call after 5 more, except the handover
+writes (state dir, `plan.yaml`, `scratchpad_dir`), the reads of the state dir, `plan.yaml`
+and `scripts/controller/` that an Edit needs first, `Skill controller-handover`, and one bare
+launch of this checkout's own `compact-resume.sh`/`clear-resume.sh` (the deny reason carries
+the template). An interactive top-level session that is NOT a controller must export
+`CTX_HOOK_ROLE=agent`, or it is forced at 300000 too. A spawned session gets the context marker until its threshold
+(default 200000), then finish-or-return-PARTIAL. The marker counts calls to the 300k
+forced yield; no ceiling or `autoCompactWindow` is read.
 
 To replace a hand-written hook with this script, change only the path in each
 `.claude/settings.local.json` command: the five commands are
 `python3 <repo>/scripts/controller/hooks/ctx-hooks.py statusline`, `post-tool-use`,
-`stop`, `pre-compact` and `session-start` (matcher `compact`).
+`stop`, `pre-compact` and `session-start` (matcher `compact`); the forced yield adds a
+sixth, a `PreToolUse` entry (no matcher) running the same script with `pre-tool-use`.
 A failed build never fails the
 session: `session-start` then prints the exact manual command, and
 `readback-state-<session_id>.json` carries the failure so the next session sees it. Which

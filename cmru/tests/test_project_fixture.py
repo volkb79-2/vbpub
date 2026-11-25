@@ -190,18 +190,11 @@ MODULE_SKIP_MARKERS = {
 }
 # (module, path prefix) -> (guard that must still be in the module source, why).
 RUNTIME_GUARDED = {
-    ("test_cli_build_output_semantics.py", "tls-edge"): (
-        r'pytest\.skip\("tls-edge tree is not part of the disposable gate fixture"\)',
-        "tls-edge is outside the disposable fixture; the test skips itself",
-    ),
     ("test_installer_extensions.py", "tls-edge"): (
         r'pytest\.skip\("tls-edge not present"\)', "tls-edge is outside the fixture; skips",
     ),
     ("test_installer_extensions.py", "ciu"): (
         r'pytest\.skip\("ciu enroll fragment not present"\)', "ciu is outside the fixture; skips",
-    ),
-    ("test_installer_w1_round1.py", "tls-edge"): (
-        r'pytest\.skip\("tls-edge not present"\)', "tls-edge is outside the fixture; skips",
     ),
     ("test_installed_wheel_subprocess.py", "libraries/cli-extended"): (
         r"_needs_build_tools = pytest\.mark\.skipif",

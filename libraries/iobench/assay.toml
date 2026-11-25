@@ -28,8 +28,8 @@ source_roots = ["src/iobench"]
 mode = "whole_target"
 # Every executable shipped module; tests/test_gate.py checks the inventory.
 # The docstring-only __init__.py has no executable lines for whole-target
-# coverage. host.py and __main__.py remain the two coverage-excluded real-effect
-# shims, covered by the r1002 acceptance probe IOB-ACC-01 and FakeHost parity.
+# coverage. __main__.py remains the only coverage-excluded entry shim; host.py's
+# syscall and subprocess boundaries are unit-tested with mocks and mutated.
 targets = [
   "src/iobench/cache.py",
   "src/iobench/calibrate.py",
@@ -42,6 +42,7 @@ targets = [
   "src/iobench/errors.py",
   "src/iobench/extents.py",
   "src/iobench/guard.py",
+  "src/iobench/host.py",
   "src/iobench/ladder.py",
   "src/iobench/matrix.py",
   "src/iobench/plan.py",
@@ -70,3 +71,101 @@ max_mutants = 10000
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "auto"
 liveness = true
+
+# ---------------------------------------------------------------------------
+# The R2 lane the gate actually runs (run-gate.toml [lanes.r2] -> assay_lane
+# = "iobench-diff"). It judges ONLY the lines a request base..HEAD diff adds,
+# which is what makes an owed R2 on one package affordable: the whole-target
+# lane above plans 1891 candidates on the 2026-11-24 tree, while the P1 change
+# (base 94d9c2227 = the pre-merge base, seven files +518/-89, host.py +260/-53)
+# measured 98 candidates (43 of them host.py) -- 53 and 45 split over two
+# shards. docs/R2-RUNBOOK.md section 2 records the exact plan and the command
+# that re-derives it. `[lanes.iobench]` above is UNCHANGED and remains the
+# whole-target lane: invoke it by name (`run-gate r2-whole` in run-gate.toml)
+# when a whole-package campaign is wanted.
+#
+# `base_source = "request"` (assay B019/A-328) declares that the COMPARISON
+# COMMIT is the gate's to supply, never a literal in this file: run-gate passes
+# `--base <ref>` through as `--request-base` because the judge inventory it
+# reads at lane construction says this lane delegates (RG-26/R-35). A lane
+# declaring this REFUSES to run without a request base -- no fallback to HEAD
+# or to a default branch name, because a changed-line judgment whose base was
+# guessed is not a changed-line judgment.
+#
+# R0+R2, not R0+R1+R2: the project's unit/coverage gate is run-gate.toml
+# [lanes.r0-r1]; this lane's own R0 run is the mutation baseline (the same
+# pytest argv, needed because a mutant is judged by that suite), and R2 is the
+# only claim this lane exists to render. `require_branch`/`fail_under` are
+# R1-only and are deliberately absent.
+[lanes.iobench-diff]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = [
+  "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--cov=iobench", "--cov-branch", "--cov-report=json:coverage.json",
+]
+# Identical to [lanes.iobench]: relative PYTHONPATH only. An absolute
+# {worktree} path in a variable this lane passes through would fold the
+# checkout path into judge_sha256 (assay B142/B577, run-gate RG-314) and make
+# every seeded resume across throwaway checkouts a judge mismatch.
+env = { PYTHONPATH = "src:../cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+# Sized in run-gate.toml [lanes.r2] and docs/R2-RUNBOOK.md: the wrapper keeps
+# 5m of headroom above this (run-gate R-59, `lanes --check` budget-margin).
+budget = "240m"
+allow_argv_append = false
+
+[lanes.iobench-diff.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.iobench-diff.judge]
+language = "python"
+# changed_lines (which is what an ABSENT `mode` means, spelled out): mutant
+# candidates come from the diff's added lines under source_roots, never from
+# the declared target list. `judge.targets` is whole_target-only and is refused
+# under this mode, so it is absent by design.
+mode = "changed_lines"
+source_roots = ["src/iobench"]
+base_source = "request"
+
+# No [lanes.iobench-diff.judge.coverage] table: that declaration is R1-only and
+# assay refuses it on this R0+R2 lane as inert config (`fail_under`,
+# `allow_excluded` and `require_branch` are absent for the same reason). The
+# argv still carries --cov/--cov-report so a candidate runs the SAME command
+# the 2026-11-24 measurements were taken with (278 s p50); the coverage.json it
+# writes is simply not read by this lane.
+
+# No measurement runs before this lane, so every budget below is derived from
+# the 2026-11-24 whole-target campaign on v1001
+# (rgw-gate-20261124T164429-v1001, head 74e86a3f5, jobs 1):
+#   baseline (R0 pytest) 253-270 s;  candidate wall p50 278 s, p90 330 s,
+#   max 408 s; 75 candidates judged in ~6 h = 0.2 candidates/min at N=1.
+# `auto` derived 760 s (max(3 x baseline, baseline+60)) from that baseline, so
+# an explicit bound is pinned instead: it is a CEILING for a slow or contended
+# mutant, not a target. 12m (720 s) is 1.76x the measured worst candidate and
+# does not follow the baseline upward when this lane runs 3 jobs on 3 CPUs.
+[lanes.iobench-diff.judge.mutation]
+# Ceiling; the ACTUAL count comes from run-gate.toml [lanes.r2] jobs = 3 (one
+# worker per enforced CPU on the 3-CPU tester-unified cap) and must not exceed
+# this. Raising one without the other is refused by run-gate at construction.
+jobs_max = 4
+# Guard, not a plan size: `max_mutants` ends the run with MUTANT_LIMIT_EXCEEDED
+# instead of silently truncating. The measured plan is 98 (BASE 94d9c2227) --
+# see docs/R2-RUNBOOK.md section 2, and `assay plan iobench-diff
+# --request-base <ref>` reproduces it without running anything. A plan far
+# above this cap means the request base is wrong (too old), not that the cap is
+# too small -- the same reasoning nyxloom's session-extract lane records at its
+# max_mutants = 1500.
+max_mutants = 1200
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "12m"
+# Off: liveness watches each candidate for a hung PROCESS TREE, and the
+# whole-target lane already declares it. Turned on only when a first campaign
+# shows a candidate hanging; see docs/R2-RUNBOOK.md.
+liveness = false

@@ -30,6 +30,7 @@ entrypoint = "installer/adapter.py"
 required_commands = ["python3", "docker", "git"]
 manifest_name = "manifest.json"
 signature_name = "manifest.json.minisig"
+extensions = ["tools/bundle_contract.py"]
 # The bundled ciu (wheel + dependency wheels) runs the stack from <root>/stack/.
 launchers = ["ciu", "tls-edge"]
 stable_dir = "stack"
@@ -39,12 +40,12 @@ stub_launchers = ["ciu"]
 # selected at install time with `get.py install --variant py313`.
 [[project.variants]]
 name = "py313"
-build_arg = "PYTHON_TAG=cp313"
+build_arg = "PYTHON_VERSION=3.13"
 label = "CPython 3.13, x86_64 glibc"
 
 [[project.variants]]
 name = "py314"
-build_arg = "PYTHON_TAG=cp314"
+build_arg = "PYTHON_VERSION=3.14"
 label = "CPython 3.14, x86_64 glibc"
 
 [[project.installer.wheels]]
@@ -99,9 +100,12 @@ commands = [
 
 [steps.build]
 quiet = true
+clean_dirs = ["dist"]
+required_env = ["TLS_EDGE_VERSION"]
+env_command = ["python3", "tools/bundle_wheels.py", "version-env"]
 commands = [
-  { label = "tls-edge: stage ciu and dependency wheels per interpreter", argv = ["python3", "scripts/stage-wheels.py"], cwd = "." },
-  { label = "tls-edge: build one installer bundle per interpreter variant", argv = ["bash", "scripts/build-artifact.sh"], cwd = "." },
+  { label = "tls-edge: build one reproducible bundle per interpreter variant", argv = ["cmru", "handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "../cmru.orchestration.toml", "--name", "tls-edge", "--variant", "all"], cwd = "." },
+  { label = "tls-edge: retain publisher version and installer inputs", argv = ["python3", "tools/bundle_wheels.py", "retain", "dist"], cwd = "." },
 ]
 
 [steps.push]
@@ -110,7 +114,7 @@ commands = [
   # One tarball per interpreter variant, all under the same release tag or none (cmru KI-115).
   # The --variant names and labels repeat [[project.variants]] above; tests/test_release_config.py
   # keeps the two in step. dist/get.py is the installer, published beside the bundles.
-  { label = "tls-edge: publish variant bundles", argv = ["cmru", "handler", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*.tar.xz", "--version-file", "dist/VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES", "--variant", "py313=CPython 3.13, x86_64 glibc", "--variant", "py314=CPython 3.14, x86_64 glibc", "--extra-asset", "dist/get.py"], cwd = "." },
+  { label = "tls-edge: publish variant bundles", argv = ["cmru", "handler", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*-py*.tar.xz", "--version-file", "dist/VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES", "--variant", "py313=CPython 3.13, x86_64 glibc", "--variant", "py314=CPython 3.14, x86_64 glibc", "--extra-asset", "dist/get.py"], cwd = "." },
 ]
 
 [versions.targets."oci.socket-proxy"]

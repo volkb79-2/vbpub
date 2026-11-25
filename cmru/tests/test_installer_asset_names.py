@@ -83,8 +83,11 @@ def producer_violations(project_dir: Path) -> list[str]:
     suffix = installer["asset_suffix"]
     prefix = str(project["prefix"])
     assert prefix.endswith("-v"), f"{project_dir.name}: prefix {prefix!r} must end in '-v'"
-    contract = bundle_asset_name(prefix[:-2], SAMPLE_VERSION, suffix)
     name = project_dir.name
+    variants = [
+        str(item["name"]) for item in project.get("variants", [])
+        if isinstance(item, dict) and item.get("name")
+    ]
     out: list[str] = []
     produced = 0
 
@@ -93,19 +96,26 @@ def producer_violations(project_dir: Path) -> list[str]:
         template = _toml(bundle_toml).get("archive", {}).get("name_template")
         if template:
             produced += 1
-            built = template.format(version=SAMPLE_VERSION)
-            if built != contract:
-                out.append(f"{name}: bundle.toml name_template builds {built!r}, "
-                           f"but its get.py downloads {contract!r}")
+            if "{variant}" in template and not variants:
+                out.append(f"{name}: bundle.toml name_template uses {{variant}} but "
+                           "[[project.variants]] declares none")
+            for variant in variants or [None]:
+                built = template.format(version=SAMPLE_VERSION, variant=variant or "")
+                expected = bundle_asset_name(prefix[:-2], SAMPLE_VERSION, suffix, variant)
+                if built != expected:
+                    out.append(f"{name}: bundle.toml name_template builds {built!r}, "
+                               f"but its get.py downloads {expected!r}")
     for glob in _tarball_globs(cfg):
         produced += 1
         legacy = f"{prefix[:-2]}-{SAMPLE_VERSION}{suffix}"
         if fnmatch.fnmatchcase(legacy, glob):
             out.append(f"{name}: tarball-publish --glob {shlex.quote(glob)} also matches the "
                        f"non-contract name {legacy!r}")
-        if not fnmatch.fnmatchcase(contract, glob):
-            out.append(f"{name}: tarball-publish --glob {shlex.quote(glob)} does not match "
-                       f"{contract!r}, the name its get.py downloads")
+        for variant in variants or [None]:
+            expected = bundle_asset_name(prefix[:-2], SAMPLE_VERSION, suffix, variant)
+            if not fnmatch.fnmatchcase(expected, glob):
+                out.append(f"{name}: tarball-publish --glob {shlex.quote(glob)} does not match "
+                           f"{expected!r}, the name its get.py downloads")
 
     if produced == 0:
         if name in KNOWN_NO_BUNDLE_PRODUCER:
@@ -198,6 +208,20 @@ def test_a_producer_that_keeps_its_own_name_is_reported(tmp_path):
 
 def test_a_conforming_bundle_producer_passes(tmp_path):
     assert producer_violations(_synthetic(tmp_path, template="demo-v{version}.tar.xz")) == []
+
+
+def test_a_multi_variant_bundle_producer_checks_each_canonical_asset(tmp_path):
+    root = _synthetic(
+        tmp_path,
+        template="demo-v{version}-{variant}.tar.xz",
+        glob="demo-v*-py*.tar.xz",
+    )
+    with (root / "cmru.toml").open("a", encoding="utf-8") as stream:
+        stream.write(
+            '[[project.variants]]\nname = "py313"\n'
+            '[[project.variants]]\nname = "py314"\n'
+        )
+    assert producer_violations(root) == []
 
 
 def test_a_deviating_tarball_glob_is_reported_and_a_conforming_one_passes(tmp_path):

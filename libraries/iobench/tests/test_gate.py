@@ -6,7 +6,7 @@ import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = ROOT / "src" / "iobench"
-EXEMPT = {"host.py", "__main__.py"}
+EXEMPT = {"__main__.py"}
 NO_EXECUTABLE_TARGETS = {"__init__.py"}
 
 

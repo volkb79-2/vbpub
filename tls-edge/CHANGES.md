@@ -6,18 +6,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 ### Breaking
+- 3.x instances cannot update to 4.0 via the installer; install 4.0 fresh (no in-place migration).
 - The Mattermost Calls preset is removed. `tls-edge` no longer defines a `calls` key, media CLI questions,
   `mattermost-calls-*` entrypoints, or TCP/UDP media ports.
 - Site overrides use schema 2. Schema 1 records with `[tls_edge.calls] enabled = false` (or no `enabled`) and
   only the old port keys are migrated by dropping the table silently. `enabled = true` is refused and names
   `voice-screen-share/mattermost-server`; Mattermost publishes its media port directly on the host.
-- Upgrade step: a tls-edge 3.x edge with its Calls preset enabled holds 8443 on that host, so disable it
-  before Mattermost's `ciu up`; `configure` writes schema 2 and removes a migrated Calls table.
+- Cut-over step: an edge that still runs the Calls preset holds 8443 on that host, so disable it before
+  Mattermost's `ciu up`; `configure` writes schema 2 and removes a migrated Calls table.
 - `tls-edge configure --answers` now takes a sparse site override in the schema's own shape, such as
   `[tls_edge.http3] enabled = true`. The 3.1 flat answer vocabulary is refused, and each old key names its
   schema-shaped replacement.
 - The standalone installer is removed. The generated `edge-proxy/` tree is no longer committed; use
-  `scripts/render_standalone.py --out DIR --defaults-only` only for a disposable trial.
+  `tools/render_standalone.py --out DIR --defaults-only` only for a maintainer's disposable trial.
 - `tls-edge configure/show/validate --root` now names a stack directory containing `ciu-stack/` (the instance's
   `stack/` directory or a repository checkout). `consumer.env` is optional for a checkout.
 - In static mode the certbot deploy hook now discovers the instance's Traefik container and restarts it
@@ -33,26 +34,31 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   reports drift without failing, and `tls-edge configure` re-syncs it.
 - `tls_edge.ingress_network` must be a valid Docker network name.
 - `$` is refused in `tls_edge.traefik.hostdir.acme.path` (ciu expands `$VAR`; the validator sees it raw).
+- Bundles are built by `cmru handler bundle-build`; maintainer scripts no longer ship in the
+  instance, and archives are byte-identical for identical inputs. `ciu` and `cli-extended`
+  track their latest release unless `TLS_EDGE_CIU_VERSION` / `TLS_EDGE_CLI_EXTENDED_VERSION`
+  pin them.
+- `scripts/verify.sh` check 1 now runs the bundled `<root>/ciu check` instead of the
+  standalone renderer and SKIPs when the ciu stub is absent.
 
 ### Added
 - `tls-edge show --json` emits the effective contract, structured public-port plan and
   `consumer_env` state in a versioned `tls-edge.show` envelope.
 
 ### Operator notes
-- 4.0 upgrade step: run `tls-edge configure --answers <empty file> --yes` after updating and before
-  `ciu up`, so the new contract keys are added to the 3.2 `consumer.env`.
+- Run `tls-edge configure --answers <empty file> --yes` after every update and before `ciu up`, so
+  `consumer.env` carries every owned contract key and the override is written in the installed release's schema.
 
 ### Upgrade
 - Anyone who used the removed standalone installer or plain Compose on the committed `edge-proxy/` tree must
   install a get.py instance and run its bundled CIU stack. Follow `docs/INSTALL.md`; do not migrate by copying
   the old rendered tree. From a repository checkout, pass `--root <checkout>/tls-edge`, and from an installed
   instance, pass `--root <instance>/stack`.
-- A static-mode 3.x instance whose old certbot hook ran must pass `--overwrite-local` to the 4.0 update: the old
-  hook rewrote `stack/edge-proxy/conf.d/certs.yml`, which the 4.0 bundle no longer ships. The replaced original
-  is saved under `shared/overwritten/`.
-- Reinstall the certbot deploy hook after updating a 3.x instance. Use the stable
-  `/srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh` symlink so later instance updates take effect
-  without another copied hook.
+- On a 4.x instance a file you edited in the synced set stops `update` with exit 2 and a list; keep host edits in
+  `ciu.toml.j2` or pass `--overwrite-local` (the replaced files are saved under `shared/overwritten/<UTC time>/`).
+- The certbot deploy hook is a stable symlink to
+  `/srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh`, and `update` refreshes the file it points at, so
+  later instance updates take effect without another copied hook.
 
 <!-- cmru: pending release notes end -->
 

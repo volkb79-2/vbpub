@@ -360,9 +360,10 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    not listed there (wheels are hashed through their distribution entry instead), and a
    symlink or hardlink only when its target is a listed file. A project whose release is a
    plain tarball writes that manifest with `cmru handler bundle-manifest --name NAME
-   --tag TAG --root <staged top-level dir>` as the last step before `tar` (tls-edge's
-   `scripts/build-artifact.sh` does); `cmru.manifest.build_manifest(..., bundle_root=DIR)`
-   embeds the same `files` map for wheel-based bundles. A bad tree (symlink, special file,
+   --tag TAG --root <staged top-level dir>` as the last step before `tar`, or lets
+   `cmru handler bundle-build` write it as part of the bundle;
+   `cmru.manifest.build_manifest(..., bundle_root=DIR)` embeds the same `files` map for
+   wheel-based bundles. A bad tree (symlink, special file,
    missing root) or an invalid `--tag` is a one-line `[ERROR]` and a non-zero exit (1 for the
    tree, 2 for the tag), never a traceback. Manifest `files` keys must be normalised relative
    paths: `../x`, `..`, `/abs`, `a//b`, `./a`, NUL and backslash are refused.

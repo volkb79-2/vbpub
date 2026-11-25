@@ -90,6 +90,10 @@ worktree that lacks `.controller-state` or `plan.yaml`, the run prints a WARNING
 naming them: the real state lives in the main checkout. What is state and what is work:
 [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md).
 
+## Restart read (`resume-read.sh`)
+
+`resume-read.sh <main|platform|core|assay|hostobs|edge|rollback>`: ONE read-only call that prints exactly the state-file slices a restarted session needs (each under `== <path> [<slice>] (<bytes> B, cap <cap> B) ==`, cut at its cap with a visible marker, `MISSING` for an absent file, exit 2 for an unknown role). The output has a budget (`RESUME_READ_TOTAL`, default 24000 B) that the per-slice caps (`RESUME_READ_CAP_<SLICE>`) are scaled to fit, because the Bash tool turns anything above about 30,000 characters into a persisted file; a STATE.md over its share prints one `WARN STATE.md is N B, cap C: shorten it` line. The SessionStart hook names it as the first command; slices and settings: the script header and AGENTS.md "Long-running controllers"; test: `tests/test-resume-read.sh`.
+
 ## Successor restart (`compact-resume.sh`, `clear-resume.sh`)
 
 `compact-resume.sh <tmux-pane-id> <guidance-file> <prompt-file> <log-file>` (default: `/compact`, background work survives) and `clear-resume.sh <tmux-pane-id> <prompt-file> <log-file>` (clean slate: `/clear`) restart an interactive Claude Code session in a tmux pane and type the prompt file; both share `resume-lib.sh`; launch detached with `setsid nohup`; procedure, exit codes and limits: AGENTS.md "Successor restart of an interactive session".
@@ -723,9 +727,16 @@ printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py pre-compact \
 ```
 
 Subcommands: `statusline`, `post-tool-use`, `pre-compact`, `session-start`,
-`stop`: the same five words as the retired untracked `.controller-state/hooks/ctx.py`,
-so wiring this script is a path change in `.claude/settings.local.json`
-(`python3 <repo>/scripts/controller/hooks/ctx-hooks.py <mode>` per mode).
+`stop` (the same five words as the retired untracked `.controller-state/hooks/ctx.py`) and
+`pre-tool-use` (the forced yield at 300k: 5 grace calls, then a deny that still allows the
+handover writes (under the state directory, `plan.yaml`, the hook's `scratchpad_dir`), the
+reads those edits need (the state directory, `plan.yaml`, `scripts/controller/` -- the harness
+refuses an Edit of a file this conversation did not Read), `Skill controller-handover`, and ONE
+bare launch of this checkout's own `compact-resume.sh`/`clear-resume.sh`; the deny reason
+carries the launch template). Wiring this script is a path change in
+`.claude/settings.local.json` (`python3 <repo>/scripts/controller/hooks/ctx-hooks.py <mode>`
+per mode) plus one new `PreToolUse` entry. Controller thresholds: 200k INFORM, 250k urge,
+300k forced (`CTX_INFORM_AT`, `CTX_URGE_AT`, `CTX_FORCE_AT`, `CTX_FORCE_GRACE`).
 Configuration is flags or environment (`CTX_STATE_DIR`,
 `CTX_EXTRACT_CMD`,
 `CTX_READBACK_BUDGET_TOKENS` = 30000, `CTX_READBACK_TAIL_PROSE_TOKENS` =
@@ -735,17 +746,13 @@ Configuration is flags or environment (`CTX_STATE_DIR`,
 state directory defaults to the nearest `.controller-state` at or above the hook
 input's `cwd`, so no checkout path is hard-coded.
 
-The pressure ladder (`post-tool-use`) notes every 50k from 100k on. The ceiling
-comes from `~/.claude/settings.json` (`modelSettings.<model>.autoCompactWindow`
-for the session's model, else the top-level `autoCompactWindow`, else 500000;
-a missing or malformed file never raises) and feeds the growth line ("calls to
-the Nk ceiling"). One soft threshold per session kind: controller
-`CTX_SOFT_CONTROLLER` (alias `CTX_CONTROLLER_SOFT`, default 650000), agent
-`CTX_SOFT_AGENT` (default 200000); the note fires at `min(soft, ceiling - 50000)`
-and the hook log gets a `warning` event when the ceiling is at or below the soft
-threshold. A controller below its threshold is told to
-persist and keep working; at or past it, to write the handover
-(controller-handover skill), sync the plan, set READY and end the turn. An agent
+The pressure ladder (`post-tool-use`) notes every 50k from 100k on; the growth line
+counts "calls to the 300k forced yield" (no ceiling, no `autoCompactWindow`). A
+controller below 200k is told to persist and plan a voluntary stop; at 200k
+(`CTX_INFORM_AT`) and 250k (`CTX_URGE_AT`) to write the handover and launch
+`compact-resume.sh` detached; from 300k (`CTX_FORCE_AT`) `pre-tool-use` denies every
+call after `CTX_FORCE_GRACE` (5) tool calls except the handover writes and that
+launch. An agent (`CTX_SOFT_AGENT`, default 200000)
 gets the marker only until its threshold, then finish-or-PARTIAL. A controller
 past 200k with a HANDOFF.md older than 15 minutes also gets a stale-state
 warning, and `session-start` prints a role rule (main controller, sub-controller
