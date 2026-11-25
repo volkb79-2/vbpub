@@ -35300,7 +35300,10 @@ class TestLaneDeadlineEnforcement:
         for argv, message in [
             (["gate", "--", "--file", "one.py"], "cannot accept selective"),
             (["gate", "--rejudge", "case"], "apply to one assay member"),
-            (["assay", "--", "--file", "one.py"], "assay lane"),
+            # RG-297: an assay lane now ACCEPTS arguments after `--`; the
+            # flags Run-Gate injects itself stay refused by name.
+            (["assay", "--", "--file", "one.py"],
+             "--file is injected by Run-Gate"),
             (["command", "--reuse-from", "prior.json"], "assay-only flags"),
             (["assay", "--rejudge", ""], "non-empty candidate ID"),
             (["assay", "--rejudge", "case", "--rejudge-outcome", ""],
