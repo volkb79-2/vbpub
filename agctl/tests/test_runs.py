@@ -16,7 +16,7 @@ from agctl import runs as ag_runs
 def _config(tmp_path: Path, *extra: str) -> ag_config.Config:
     """A config whose runs directories are all under `tmp_path` (no live path is reachable)."""
 
-    runs_dirs = tuple(str(tmp_path / name) for name in ("runs", *extra))
+    runs_dirs = tuple(tmp_path / name for name in ("runs", *extra))
     return ag_config.Config(
         home=tmp_path / "home",
         runs_dirs=runs_dirs,
@@ -158,10 +158,12 @@ def test_live_reports_tokens_and_its_update_epoch():
 
 
 def test_a_malformed_or_odd_live_document_is_unknown_not_zero():
-    for text in (None, "not json", "[]", '{"latest_total_tokens": true}', '{"latest_total_tokens": "5"}',
-                 '{"latest_total_tokens": 5, "updated_epoch": "x"}'):
+    for text in (None, "not json", "[]", '{"latest_total_tokens": true}', '{"latest_total_tokens": "5"}'):
         assert ag_runs.parse_live(text) == (None, None)
     assert ag_runs.parse_live('{"latest_total_tokens": 5}') == (5, None)
+    # An unreadable `updated_epoch` costs that field only: the token count that IS there is a
+    # fact and is kept.
+    assert ag_runs.parse_live('{"latest_total_tokens": 5, "updated_epoch": "x"}') == (5, None)
 
 
 # --- the join key -------------------------------------------------------------------------------

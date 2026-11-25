@@ -192,9 +192,7 @@ def _runs_field(records: tuple[ag_runs.RunRecord, ...], set_: ag_runs.RunSet) ->
         if state == ag_runs.ENDED:
             status = f"{record.outcome or 'outcome-unknown'} exit {record.exit_code}"
         else:
-            status = "active"
-            if record.tokens is not None:
-                status += f" {record.tokens // 1000}k"
+            status = "active" + (f" {record.tokens // 1000}k" if record.tokens is not None else "")
         chain = next((members for members in chains.values() if record.id in members and len(members) > 1), ())
         suffix = f" chain {'>'.join(chain)}" if chain else ""
         parts.append(f"{record.id} {status}{suffix}")
@@ -217,8 +215,7 @@ def _gates_field(package: str, results: tuple[ag_sources.GateResult, ...], slots
         return Field(value=UNKNOWN, source=GATES_SOURCE, state=UNKNOWN, detail=detail)
     newest = mine[0]
     detail = f"{len(mine)} result(s); newest {newest.name}"
-    if held:
-        detail += f"; {len(held)} slot(s) held estate-wide ({', '.join(slot.name for slot in held)})"
+    detail += f"; {len(held)} slot(s) held estate-wide ({', '.join(slot.name for slot in held)})" if held else "; no gate slot held"
     return Field(value=newest.text(), source=GATES_SOURCE, state=PRESENT, mtime=newest.mtime, detail=detail)
 
 
@@ -373,8 +370,7 @@ def render_header(rows: list[Row], view: View) -> str:
     lines.append(f"MERGE {len(merge)}: " + ("; ".join(f"{branch} {head}" for _, branch, head in merge) or "none"))
     held = [slot for slot in view.slots if slot.state == ag_sources.HELD]
     lines.append(
-        "LEASES "
-        + (", ".join(slot.text() for slot in held) if held else "none")
+        f"LEASES {len(held)}: " + (", ".join(slot.text() for slot in held) if held else "none")
     )
     live = [record for record in view.run_set.records if record.state() == ag_runs.ACTIVE]
     if not view.run_set.readable:
@@ -387,19 +383,36 @@ def render_header(rows: list[Row], view: View) -> str:
         )
         lines.append(f"LIVE {len(live)}: " + (rendered or "none"))
     peers = "; ".join(
-        f"{peer.peer} {age_bucket(view.now - peer.handover_mtime) if peer.handover_mtime else AGE_UNKNOWN}"
+        f"{peer.peer} {age_bucket(view.now - peer.handover_mtime) if peer.handover_mtime is not None else AGE_UNKNOWN}"
         for peer in view.peers
     )
     lines.append("PEERS: " + (peers or "none"))
     own = age_bucket(view.now - view.handover_mtime) if view.handover_mtime is not None else AGE_UNKNOWN
     lines.append(f"HANDOVER own {own}")
     text = "\n".join(lines)
-    if len(text) > HEADER_LIMIT:
-        # Cut on a line boundary so a truncated block never ends mid-token, and leave room for
-        # the marker plus its own line: the cap applies to the bytes actually printed.
-        cut = text.rfind("\n", 0, HEADER_LIMIT - len(HEADER_MARKER) - 2)
-        text = text[: max(0, cut)] + "\n" + HEADER_MARKER
+    if len(text) + 1 > HEADER_LIMIT:
+        text = _truncate(lines)
     return text + "\n"
+
+
+def _truncate(lines: list[str]) -> str:
+    """The longest run of whole lines that fits the cap, marker included.
+
+    Whole lines only, because half a line can be read as a different fact. If not even the
+    first line fits, that first line is cut to the cap and marked — an oversized single line
+    must not produce an empty block.
+    """
+
+    room = HEADER_LIMIT - len(HEADER_MARKER) - 2
+    kept: list[str] = []
+    for line in lines:
+        candidate = "\n".join([*kept, line])
+        if len(candidate) > room:
+            break
+        kept.append(line)
+    if not kept:
+        return lines[0][:room] + "\n" + HEADER_MARKER
+    return "\n".join([*kept, HEADER_MARKER])
 
 
 def read_view(config: ag_config.Config, *, now: float | None = None) -> tuple[View | None, str]:

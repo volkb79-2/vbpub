@@ -168,16 +168,17 @@ class Slot:
 
 
 def split_lock_name(name: str) -> tuple[str, str] | None:
-    for suffix, kind in ((".admit", "admit"), (".slot", "slot")):
-        if not name.endswith(suffix) or len(name) <= len(suffix):
-            continue
-        if kind == "slot":
-            host, _, number = name[: -len(suffix)].rpartition(".")
-            if not number.isdigit() or not host:
-                return None
-            return host, kind
-        host = name[: -len(suffix)]
-        return (host, kind) if host else None
+    """`(<host>, "admit"|"slot")` of a gate lock file name, else ``None``.
+
+    The two shapes `remote-gate.sh` writes are `<host>.admit` and `<host>.slot<N>` (184-195).
+    Anything else in that directory belongs to some other tool and is not a gate lease.
+    """
+
+    if name.endswith(".admit") and len(name) > len(".admit"):
+        return name[: -len(".admit")], "admit"
+    host, separator, number = name.rpartition(".slot")
+    if separator and host and number.isdigit():
+        return host, "slot"
     return None
 
 
@@ -283,10 +284,7 @@ def read_results(config) -> tuple[GateResult, ...]:
             verdict, verdict_source = recorded, RESULT_JSON
         if not verdict:
             verdict_source = ""
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
+        mtime = mtime_of(path) or 0.0
         host = meta.get("host")
         project = meta.get("project_dir")
         sha = meta.get("sha")

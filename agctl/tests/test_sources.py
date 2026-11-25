@@ -87,6 +87,7 @@ def test_a_lock_slot_name_splits_into_host_and_kind():
     assert ag_sources.split_lock_name("v1001.slot3") == ("v1001", "slot")
     assert ag_sources.split_lock_name(".admit") is None
     assert ag_sources.split_lock_name("v1001.slotx") is None
+    assert ag_sources.split_lock_name("v1001.slot") is None
     assert ag_sources.split_lock_name("r1002.admit.bak") is None
 
 

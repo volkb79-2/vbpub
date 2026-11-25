@@ -69,7 +69,10 @@ def expand(value: str, base: Path) -> Path:
     if not text:
         raise ConfigError("a path value names no directory (empty string)")
     path = Path(text).expanduser()
-    return path if path.is_absolute() else base / path
+    resolved = path if path.is_absolute() else base / path
+    # A `..` in a path is resolved here, once, so every consumer compares the same spelling
+    # (`a/../b` and `b` must not look like two directories in `runs_dirs` or in a report).
+    return Path(os.path.normpath(resolved))
 
 
 def _dedupe(paths: list[Path]) -> tuple[Path, ...]:
@@ -88,6 +91,9 @@ def _read_toml(path: Path) -> tuple[Path, ...]:
         document = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"{path}: cannot be read as TOML ({error})") from None
+    unknown_top = sorted(set(document) - {"runs"})
+    if unknown_top:
+        raise ConfigError(f"{path}: top level names unknown key(s): {', '.join(unknown_top)}")
     runs = document.get("runs")
     if runs is None:
         return ()

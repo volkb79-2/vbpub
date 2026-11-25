@@ -1,22 +1,14 @@
-"""agctl's command line and configuration boundary, on temp trees only.
+"""The configuration boundary: every path resolved from the environment or `agctl.toml`.
 
 No test here touches the real estate: `$CONTROLLER_HOME`, the runs directories and the state
-directories are all built inside `tmp_path`, and no test starts the CLI against a live checkout.
+directories are all built inside `tmp_path`, and nothing is read outside it.
 """
 
 from __future__ import annotations
 
 import pytest
-from cli_extended import CliIdentity, VersionLookupError
 
 from agctl import config as ag_config
-
-LONG_NAME = "agent control: controller state and the estate view"
-
-
-def ident(version: str = "9.9.9") -> CliIdentity:
-    return CliIdentity("AGCTL", version, LONG_NAME, "agctl")
-
 
 # --- config: defaults, environment, agctl.toml ---------------------------------------------
 
@@ -103,7 +95,8 @@ def test_an_explicitly_named_but_absent_agctl_toml_is_a_configuration_error(tmp_
         ("[runs\n", "cannot be read as TOML"),
         ('[runs]\nlegacy_dir = ["x"]\n', "unknown key"),
         ('[runs]\nlegacy_dirs = "x"\n', "list of path strings"),
-        ("runs = 3\n", "[runs] must be a table"),
+        ('legacy_dirs = ["x"]\n', "top level names unknown key"),
+        ("runs = 3\n", r"\[runs\] must be a table"),
     ],
 )
 def test_a_malformed_agctl_toml_refuses_and_names_the_problem(tmp_path, text, expected):
@@ -115,58 +108,33 @@ def test_a_malformed_agctl_toml_refuses_and_names_the_problem(tmp_path, text, ex
         ag_config.load({"CONTROLLER_HOME": str(home)}, cwd=tmp_path)
 
 
-# --- the CLI boundary -----------------------------------------------------------------------
+def test_an_empty_path_value_refuses_instead_of_resolving_to_the_cwd():
+    with pytest.raises(ag_config.ConfigError, match="names no directory"):
+        ag_config.expand("   ", ag_config.Path("/tmp"))
 
 
-def test_help_names_the_estate_verb(capsys):
-    from agctl import cli as agcli
+def test_a_toml_that_is_not_utf8_is_refused_with_the_decode_reason(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ag_config.TOML_NAME).write_bytes(b"\xff\xfe[runs]\n")
 
-    assert agcli.build_cli(ident()).run(argv=["--help"]) == 0
-    assert "estate" in capsys.readouterr().out
-
-
-def test_version_reports_the_identity_and_never_a_literal(capsys):
-    from agctl import cli as agcli
-
-    assert agcli.build_cli(ident("1.2.3")).run(argv=["--version"]) == 0
-    assert "agctl 1.2.3" in capsys.readouterr().out
+    with pytest.raises(ag_config.ConfigError, match="cannot be read as TOML"):
+        ag_config.load({"CONTROLLER_HOME": str(home)}, cwd=tmp_path)
 
 
-def test_an_unknown_verb_is_a_usage_error(capsys):
-    from agctl import cli as agcli
+def test_an_explicitly_named_existing_agctl_toml_is_loaded(tmp_path):
+    named = tmp_path / "explicit.toml"
+    named.write_text('[runs]\nlegacy_dirs = ["runs-extra"]\n', encoding="utf-8")
 
-    assert agcli.build_cli(ident()).run(argv=["estate-of-the-world"]) == 2
-    assert "agctl" in capsys.readouterr().err
+    resolved = ag_config.load({"AGCTL_TOML": str(named)}, cwd=tmp_path)
 
-
-def test_the_estate_verb_is_registered_with_no_network_or_write_group(capsys):
-    from agctl import cli as agcli
-
-    app = agcli.build_cli(ident())
-    assert app.run(argv=["estate", "--help"]) == 0
-    out = capsys.readouterr().out
-    assert "--json" in out
-    assert "--header" in out
+    assert resolved.toml_path == named
+    assert resolved.toml_state == "loaded"
+    assert resolved.toml_legacy_dirs == (tmp_path / "runs-extra",)
 
 
-def test_the_estate_header_flag_is_not_a_mutating_option():
-    from agctl import cli as agcli
+def test_a_relative_path_with_a_dotdot_is_resolved_to_one_spelling(tmp_path):
+    resolved = ag_config.load({"CONTROLLER_HOME": str(tmp_path / "home")}, cwd=tmp_path)
 
-    verb = next(verb for verb in agcli.build_cli(ident()).verbs if verb.name == "estate")
-    flags = [flag for option in verb.options for flag in option.flags]
-
-    assert "--header" in flags
-    assert verb.mutating is False
-    assert verb.include_progress is False
-
-
-def test_a_source_tree_without_the_installed_distribution_refuses_loudly():
-    # A distribution name that is never installed exercises the refusal path of `main()`, not
-    # the happy path, and there is deliberately no literal fallback version.
-    with pytest.raises(VersionLookupError, match="not-installed-under-this-name"):
-        CliIdentity.resolve(
-            name="AGCTL",
-            long_name=LONG_NAME,
-            command="agctl",
-            distribution="agctl-not-installed-under-this-name",
-        )
+    (home,) = [path for path in resolved.runs_dirs if path.name == "runs"]
+    assert ".." not in str(home)

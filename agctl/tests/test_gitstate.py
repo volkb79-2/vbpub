@@ -86,6 +86,14 @@ def test_a_locked_line_without_reason_still_reads_as_locked():
     assert entry.locked == "locked"
 
 
+def test_a_branch_line_that_is_not_a_ref_is_kept_as_the_short_name():
+    (entry,) = gitstate.parse_worktree_porcelain("worktree /repo/wt\nHEAD aaaaaaa\nbranch odd-name\n")
+
+    # A `branch` line is normally `refs/heads/<name>`; a damaged one keeps its text instead of
+    # being dropped, because the row can still say which branch the block claims.
+    assert entry.branch == "odd-name"
+
+
 def test_a_block_without_a_path_carries_no_entry():
     assert gitstate.parse_worktree_porcelain("HEAD aaaaaaa\nbranch refs/heads/x\n") == ()
 

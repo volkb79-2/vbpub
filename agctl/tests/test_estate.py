@@ -85,7 +85,7 @@ def _slot(host: str = "v1001", name: str = "v1001.slot1", state: str = "free", p
 
 
 def _result(tmp_path, name: str = "rgw-tests-1", project: str = "cmru", lane: str = "tests", verdict: str = "PASS",
-            mtime: float = 1000.0) -> ag_sources.GateResult:
+            mtime: float = 1000.0, sha: str = "5e02d731b") -> ag_sources.GateResult:
     return ag_sources.GateResult(
         name=name, host="v1001", project=project, lane=lane, sha="5e02d731b", verdict=verdict,
         verdict_source="lane.log: run-gate verdict line", started="2026-11-25T21:22:23Z", mtime=mtime, detail="",
@@ -332,8 +332,8 @@ def test_the_header_is_capped_and_marked_when_it_is_too_long(tmp_path):
 
     assert len(text.encode()) <= agg.HEADER_LIMIT
     assert text.rstrip("\n").endswith(agg.HEADER_MARKER)
-    # The cap cuts on a line boundary: no line is a partial token.
-    assert all(line in ("MERGE", "LEASES", "LIVE", "PEERS", "HANDOVER", agg.HEADER_MARKER) or line.startswith(("MERGE ", "LEASES ", "LIVE ", "PEERS: ", "HANDOVER ")) for line in text.splitlines())
+    # The cap keeps whole lines only: every line before the marker is a complete section line.
+    assert all(line.startswith(("MERGE ", "LEASES ", "LIVE ", "PEERS: ", "HANDOVER ")) for line in text.splitlines()[:-1])
 
 
 def test_a_header_exactly_at_the_limit_is_not_marked(tmp_path):
