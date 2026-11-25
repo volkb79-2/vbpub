@@ -6,6 +6,7 @@ import json
 import os
 import re
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -36,8 +37,13 @@ import time
 from pathlib import Path
 
 args = sys.argv[1:]
+# The wrapper scrubs the environment and resolves REMOTE_GATE_OUT itself, so the
+# fake's control file cannot live in the resolved out dir (a resolution test moves
+# it). The python shim below always passes it here.
+config_path = Path(args[1])
+args = args[2:]
 remote_out = Path(os.environ["REMOTE_GATE_OUT"])
-config = json.loads((remote_out.parent / "fake-config.json").read_text(encoding="utf-8"))
+config = json.loads(config_path.read_text(encoding="utf-8"))
 calls_path = remote_out / "remote-calls.jsonl"
 
 def record_call(argv):
@@ -98,6 +104,13 @@ if config.get("write_result", True):
 (remote_out / "remote-env-keys.json").write_text(
     json.dumps(sorted(os.environ)), encoding="utf-8"
 )
+(remote_out / "remote-gate-selection.json").write_text(
+    json.dumps({
+        "REMOTE_GATE_HOSTS": os.environ.get("REMOTE_GATE_HOSTS"),
+        "REMOTE_GATE_OUT": os.environ.get("REMOTE_GATE_OUT"),
+    }),
+    encoding="utf-8",
+)
 (remote_out / "remote-child.pid").write_text(str(os.getpid()), encoding="utf-8")
 hold_until = config.get("hold_until")
 if hold_until:
@@ -148,12 +161,31 @@ def _environment(tmp_path: Path, *, host: str = "v1001") -> dict[str, str]:
     python = fake_bin / "python3"
     python.write_text(
         f"#!{real_python}\n"
+        "import json\n"
         "import os\n"
         "import sys\n"
         f"fake_remote = {str(fake_remote)!r}\n"
         f"real_python = {real_python!r}\n"
+        f"fake_config = {str(tmp_path / 'fake-config.json')!r}\n"
+        "if sys.argv[1:2] == ['-'] and sys.argv[2:3] == [\n"
+        "    '../scripts/netcup/runner/remote-gate.py'\n"
+        "]:\n"
+        "    # release-gate.sh reads remote-gate.py's DEFAULT_HOSTS/DEFAULT_OUT by\n"
+        "    # importing the module. A test that pins the \"module default last\"\n"
+        "    # resolution order must control those two values instead of inheriting\n"
+        "    # whatever this host's real defaults happen to be.\n"
+        "    try:\n"
+        "        defaults = json.loads(open(fake_config, encoding='utf-8').read())\n"
+        "    except (OSError, ValueError):\n"
+        "        defaults = {}\n"
+        "    wanted = defaults.get('module_defaults')\n"
+        "    if wanted is not None:\n"
+        "        print(wanted['hosts'])\n"
+        "        print(wanted['out'])\n"
+        "        raise SystemExit(0)\n"
         "if sys.argv[1:2] == ['../scripts/netcup/runner/remote-gate.py']:\n"
-        "    argv = [real_python, fake_remote, *sys.argv[2:]]\n"
+        "    argv = [real_python, fake_remote, '--fake-config', fake_config,\n"
+        "            *sys.argv[2:]]\n"
         "else:\n"
         "    argv = [real_python, *sys.argv[1:]]\n"
         "os.execv(real_python, argv)\n",
@@ -178,20 +210,54 @@ def _environment(tmp_path: Path, *, host: str = "v1001") -> dict[str, str]:
                 "lane_status": 0,
                 "write_meta": True,
                 "write_result": True,
+                # remote-gate.py's own defaults, as this test's fake python shim
+                # answers them, so no release-gate test imports the real module
+                # and no test reads the cockpit's real ~/.config.
+                "module_defaults": {
+                    "hosts": str(tmp_path / "home" / ".config" / "remote-gate" / "hosts.json"),
+                    "out": str(remote_out),
+                },
             }
         ),
         encoding="utf-8",
     )
+    # A hermetic HOME: remote-gate.py derives its own default host table from it,
+    # so the "module default last" resolution order is reachable without reading
+    # the cockpit's real ~/.config. A HOME with no host table would instead make
+    # every base-case test refuse.
+    home = tmp_path / "home"
+    default_hosts_dir = home / ".config" / "remote-gate"
+    default_hosts_dir.mkdir(parents=True)
+    (default_hosts_dir / "hosts.json").write_text("{}", encoding="utf-8")
+    # An empty CONTROLLER_HOME means "this controller configures nothing", so a
+    # base-case test never reads the cockpit's own controller.local.env.
+    controller_home = tmp_path / "controller"
+    controller_home.mkdir()
     env = {
         **os.environ,
         # The self-hosted lane scrubs HOME (env_passthrough is PATH only) and
         # release-gate.sh forwards HOME under `set -u`: the helper must not
         # depend on the caller having one.
-        "HOME": os.environ.get("HOME") or str(tmp_path),
+        "HOME": str(home),
+        "CONTROLLER_HOME": str(controller_home),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "REMOTE_GATE_OUT": str(remote_out),
         "CMRU_RELEASE_GATE_COMMIT": commit,
+        # Test-only: where the fake remote-gate reads its control file, and where
+        # the test looks for the calls it recorded. Neither key reaches a child
+        # process: the wrapper runs remote-gate under `env -i` with an allowlist.
+        "ASSAY_TEST_FAKE_CONFIG": str(tmp_path / "fake-config.json"),
+        "ASSAY_TEST_OUT": str(remote_out),
     }
+    # The caller's own remote-gate settings must not steer the wrapper's resolution.
+    env.pop("REMOTE_GATE_HOSTS", None)
+    env.pop("ASSAY_RELEASE_GATE_HEARTBEAT_S", None)
+    for name in (
+        "CONTROLLER_HOSTS_FILE",
+        "CONTROLLER_REMOTE_HOSTS_FILE",
+        "CONTROLLER_REMOTE_OUT",
+    ):
+        env.pop(name, None)
     if host:
         env["ASSAY_RELEASE_GATE_HOST"] = host
     else:
@@ -200,7 +266,10 @@ def _environment(tmp_path: Path, *, host: str = "v1001") -> dict[str, str]:
 
 
 def _fake_config(env: dict[str, str]) -> Path:
-    return Path(env["REMOTE_GATE_OUT"]).parent / "fake-config.json"
+    # The fake remote-gate's control file lives outside the resolved output
+    # directory on purpose: a resolution test moves REMOTE_GATE_OUT, and the
+    # wrapper's `env -i` scrub means this test-only key never reaches a child.
+    return Path(env["ASSAY_TEST_FAKE_CONFIG"])
 
 
 def _configure_fake(env: dict[str, str], **updates: object) -> None:
@@ -211,10 +280,33 @@ def _configure_fake(env: dict[str, str], **updates: object) -> None:
 
 
 def _remote_calls(env: dict[str, str]) -> list[list[str]]:
-    path = Path(env["REMOTE_GATE_OUT"]) / "remote-calls.jsonl"
+    # Deliberately reads the test's own copy of the default output directory: an
+    # assertion that no remote run started must not be vacuous just because the
+    # test removed REMOTE_GATE_OUT to force the wrapper to resolve one.
+    return _remote_calls_at(Path(env["ASSAY_TEST_OUT"]))
+
+
+def _remote_calls_at(out_dir: Path) -> list[list[str]]:
+    path = out_dir / "remote-calls.jsonl"
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _remote_selection_at(out_dir: Path) -> dict[str, str | None]:
+    """What the wrapper actually handed remote-gate.py as its two settings."""
+    return json.loads(
+        (out_dir / "remote-gate-selection.json").read_text(encoding="utf-8")
+    )
+
+
+COMBINED_REFUSAL_HEADER = (
+    "assay release-gate: the remote release-gate environment is not usable:"
+)
+
+
+def _combined_refusal(problems: list[str]) -> str:
+    return COMBINED_REFUSAL_HEADER + "".join(f"\n  - {problem}" for problem in problems) + "\n"
 
 
 # A heartbeat interval must be 30 s or more, so a test cannot observe one inside a
@@ -345,16 +437,21 @@ def test_release_gate_heartbeats_while_a_remote_run_is_slow(tmp_path: Path) -> N
     wrapper = Wrapper(tmp_path, env)
     try:
         stderr = wrapper.wait_for(
-            lambda text: len(_heartbeat_lines(text)) >= 2, "printed two heartbeat lines"
+            # Both conditions, waited for (never a fixed pause): a line proves the
+            # heartbeat loop runs, the recorded call proves the fake remote-gate
+            # started and therefore names the run.
+            lambda text: len(_heartbeat_lines(text)) >= 2 and bool(_remote_calls(env)),
+            "printed two heartbeat lines for a started remote run",
         )
         beats = _heartbeat_lines(stderr)
         run_name = _remote_calls(env)[0]
         name = run_name[run_name.index("--name") + 1]
-        assert [match.group(1) for match in beats] == [name, name]
-        assert [match.group(2) for match in beats] == ["v1001", "v1001"]
+        # Every line names this one run on this one host, however many arrived.
+        assert {match.group(1) for match in beats} == {name}
+        assert {match.group(2) for match in beats} == {"v1001"}
         # The shape is fixed: run name, host and a whole-seconds elapsed count.
         assert int(beats[0].group(3)) >= 0
-        assert int(beats[1].group(3)) >= int(beats[0].group(3))
+        assert int(beats[-1].group(3)) >= int(beats[0].group(3))
         released.write_text("go", encoding="utf-8")
         status = wrapper.reap()
     finally:
@@ -586,30 +683,191 @@ def test_release_gate_requires_the_host_selector(tmp_path: Path) -> None:
     env = _environment(tmp_path, host="")
     proc = _run(tmp_path, "tester-unified", env)
 
-    assert proc.returncode == 3
-    assert proc.stderr.strip() == (
-        "assay release-gate: ASSAY_RELEASE_GATE_HOST is unset; "
-        "set it to local, v1001, or r1002"
+    assert proc.returncode == 2
+    assert proc.stderr == (
+        "assay release-gate: the remote release-gate environment is not usable:\n"
+        "  - ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002\n"
     )
     assert not _remote_calls(env)
 
 
 @pytest.mark.parametrize("home", [None, ""])
-def test_remote_release_gate_refuses_an_unset_or_empty_home_before_running(
+def test_remote_release_gate_reports_an_unset_or_empty_home_with_the_other_settings(
     tmp_path: Path, home: str | None
 ) -> None:
     env = _environment(tmp_path)
+    # Removing HOME also removes the controller config and the module default,
+    # so the refusal names every setting that cannot be resolved, not just HOME.
     if home is None:
         env.pop("HOME")
     else:
         env["HOME"] = home
+    env.pop("REMOTE_GATE_OUT", None)
     proc = _run(tmp_path, "tester-unified", env)
 
-    assert proc.returncode == 3
-    assert proc.stderr.strip() == (
-        "assay release-gate: HOME is unset; remote-gate needs "
-        "~/.config/remote-gate/hosts.json and ~/.ssh"
+    assert proc.returncode == 2
+    assert proc.stderr == (
+        "assay release-gate: the remote release-gate environment is not usable:\n"
+        "  - HOME is unset; remote-gate needs it for the host table and ~/.ssh\n"
     )
+    assert not _remote_calls(env)
+
+
+def test_release_gate_reports_every_unusable_setting_in_one_refusal(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path, host="")
+    # Nothing may resolve: no explicit setting, no controller config (HOME is
+    # unset, so controller_init cannot even run), and module defaults that do
+    # not exist. Today the wrapper refuses one setting per attempt (B579), so
+    # this test pins the single combined refusal.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    missing_hosts = tmp_path / "missing-hosts.json"
+    _configure_fake(
+        env,
+        module_defaults={
+            "hosts": str(missing_hosts),
+            "out": str(blocker / "remote-gates"),
+        },
+    )
+    env.pop("REMOTE_GATE_HOSTS", None)
+    env.pop("REMOTE_GATE_OUT")
+    env.pop("HOME")
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2
+    assert proc.stderr == _combined_refusal(
+        [
+            "ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002",
+            f"host table is missing: {missing_hosts}",
+            f"output directory cannot be created: {blocker} is not a directory",
+            "HOME is unset; remote-gate needs it for the host table and ~/.ssh",
+        ]
+    )
+    # One refusal, no work: no remote run is launched and the wrapper never waits.
+    assert _remote_calls(env) == []
+
+
+def _controller_home(
+    tmp_path: Path,
+    *,
+    hosts_name: str = "controller-hosts.json",
+    remote_hosts_name: str | None = None,
+    out_name: str = "controller-gates",
+) -> Path:
+    """A controller home the way scripts/controller/lib.sh reads one.
+
+    `controller.local.env` keeps the RELATIVE spellings (as a real controller
+    file may), so the wrapper has to make them absolute against CONTROLLER_HOME.
+    """
+    controller = tmp_path / "controller-home"
+    controller.mkdir()
+    (controller / out_name).mkdir()
+    (controller / hosts_name).write_text("{}", encoding="utf-8")
+    lines = [f"CONTROLLER_HOSTS_FILE={hosts_name}", f"CONTROLLER_REMOTE_OUT={out_name}"]
+    if remote_hosts_name is not None:
+        (controller / remote_hosts_name).write_text("{}", encoding="utf-8")
+        lines.append(f"CONTROLLER_REMOTE_HOSTS_FILE={remote_hosts_name}")
+    (controller / "controller.local.env").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+    return controller
+
+
+def test_release_gate_explicit_remote_gate_settings_win_over_controller_config(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    controller = _controller_home(tmp_path)
+    env["CONTROLLER_HOME"] = str(controller)
+    explicit_hosts = tmp_path / "explicit-hosts.json"
+    explicit_hosts.write_text("{}", encoding="utf-8")
+    env["REMOTE_GATE_HOSTS"] = str(explicit_hosts)
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 0, proc.stderr
+    # The remote-gate process is the only witness that matters: it reports the
+    # REMOTE_GATE_HOSTS and REMOTE_GATE_OUT the wrapper actually handed it.
+    selection = _remote_selection_at(Path(env["REMOTE_GATE_OUT"]))
+    assert selection == {
+        "REMOTE_GATE_HOSTS": str(explicit_hosts),
+        "REMOTE_GATE_OUT": env["REMOTE_GATE_OUT"],
+    }
+    assert not (controller / "controller-gates" / "remote-calls.jsonl").exists()
+
+
+def test_release_gate_refuses_an_unusable_explicit_setting_instead_of_falling_through(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    env["CONTROLLER_HOME"] = str(_controller_home(tmp_path))
+    missing = tmp_path / "missing-hosts.json"
+    env["REMOTE_GATE_HOSTS"] = str(missing)
+    proc = _run(tmp_path, "tester-unified", env)
+
+    # A value the caller stated is a fact, not a default: it is refused rather
+    # than silently replaced by the controller's own host table.
+    assert proc.returncode == 2
+    assert proc.stderr == _combined_refusal([f"host table is missing: {missing}"])
+    assert _remote_calls(env) == []
+
+
+def test_release_gate_resolves_settings_from_the_controller_config(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    controller = _controller_home(tmp_path, remote_hosts_name="controller-remote-hosts.json")
+    env["CONTROLLER_HOME"] = str(controller)
+    env.pop("REMOTE_GATE_HOSTS", None)
+    env.pop("REMOTE_GATE_OUT")
+    # Module defaults that cannot work, so a PASS proves the controller config won.
+    _configure_fake(
+        env,
+        module_defaults={
+            "hosts": str(tmp_path / "unusable-module-hosts.json"),
+            "out": str(tmp_path / "unusable-module-out"),
+        },
+    )
+    proc = _run(tmp_path, "tester-unified", env)
+    controller_out = controller / "controller-gates"
+
+    assert proc.returncode == 0, proc.stderr
+    assert len(_remote_calls_at(controller_out)) == 1
+    # CONTROLLER_REMOTE_HOSTS_FILE wins over CONTROLLER_HOSTS_FILE, exactly as
+    # scripts/controller/remote-gate.sh:102-103 does; the relative spelling is
+    # made absolute against CONTROLLER_HOME.
+    assert _remote_selection_at(controller_out) == {
+        "REMOTE_GATE_HOSTS": str(controller / "controller-remote-hosts.json"),
+        "REMOTE_GATE_OUT": str(controller_out),
+    }
+    assert not _remote_calls(env)
+
+
+def test_release_gate_falls_back_to_remote_gate_module_defaults_last(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    # A controller home that does not exist configures nothing (its default
+    # hosts.local.json spelling is absent), so the module defaults must apply.
+    env["CONTROLLER_HOME"] = str(tmp_path / "no-controller")
+    env.pop("REMOTE_GATE_HOSTS", None)
+    env.pop("REMOTE_GATE_OUT")
+    module_out = tmp_path / "module-default-gates"
+    module_out.mkdir()
+    module_hosts = tmp_path / "module-default-hosts.json"
+    module_hosts.write_text("{}", encoding="utf-8")
+    _configure_fake(
+        env, module_defaults={"hosts": str(module_hosts), "out": str(module_out)}
+    )
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 0, proc.stderr
+    assert len(_remote_calls_at(module_out)) == 1
+    assert _remote_selection_at(module_out) == {
+        "REMOTE_GATE_HOSTS": str(module_hosts),
+        "REMOTE_GATE_OUT": str(module_out),
+    }
     assert not _remote_calls(env)
 
 
@@ -674,9 +932,9 @@ def test_release_gate_scrubs_publisher_and_gh_credentials_from_remote_gate(
         )
     )
     # Python's locale coercion may add LC_CTYPE when starting with env -i.
-    allowed_keys = {"PATH", "HOME", "REMOTE_GATE_OUT", "LC_CTYPE"}
-    if "REMOTE_GATE_HOSTS" in env:
-        allowed_keys.add("REMOTE_GATE_HOSTS")
+    # REMOTE_GATE_HOSTS is always present because the wrapper resolves a host
+    # table even when the caller names none (B579).
+    allowed_keys = {"PATH", "HOME", "REMOTE_GATE_OUT", "REMOTE_GATE_HOSTS", "LC_CTYPE"}
     if env.get("SSH_AUTH_SOCK"):
         allowed_keys.add("SSH_AUTH_SOCK")
     assert observed_keys == allowed_keys

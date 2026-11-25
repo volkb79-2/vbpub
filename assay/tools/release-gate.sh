@@ -21,17 +21,19 @@ case "$lane" in
     ;;
 esac
 
-[[ -n ${ASSAY_RELEASE_GATE_HOST:-} ]] \
-  || die 'ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002'
-host="$ASSAY_RELEASE_GATE_HOST"
+host="${ASSAY_RELEASE_GATE_HOST:-}"
+host_problem=""
 case "$host" in
   local)
     exec "${local_argv[@]}"
     ;;
   v1001 | r1002)
     ;;
+  '')
+    host_problem='ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002'
+    ;;
   *)
-    die 'ASSAY_RELEASE_GATE_HOST must be local, v1001, or r1002' 2
+    host_problem='ASSAY_RELEASE_GATE_HOST must be local, v1001, or r1002'
     ;;
 esac
 
@@ -64,9 +66,6 @@ remote_gate="../scripts/netcup/runner/remote-gate.py"
 [[ -f "$remote_gate" ]] \
   || die "remote-gate.py is missing at $remote_gate"
 
-[[ -n ${HOME:-} ]] \
-  || die 'HOME is unset; remote-gate needs ~/.config/remote-gate/hosts.json and ~/.ssh'
-
 remote_gate_base_env=(
   -u GITHUB_PUSH_PAT
   -u GITHUB_TOKEN
@@ -75,38 +74,238 @@ remote_gate_base_env=(
   -u GH_ENTERPRISE_TOKEN
   -i
   "PATH=$PATH"
-  "HOME=$HOME"
+  "HOME=${HOME:-}"
 )
 
-if [[ -v REMOTE_GATE_OUT ]]; then
-  [[ -n "$REMOTE_GATE_OUT" ]] \
-    || die 'REMOTE_GATE_OUT is set but empty'
-  remote_out="$REMOTE_GATE_OUT"
-else
-  remote_out="$(env "${remote_gate_base_env[@]}" python3 - "$remote_gate" <<'PYEOF'
+# ---- settings: one source each, and one refusal for all of them -------------
+# Resolved once, here, before any work. The release gate used to refuse one setting
+# per run, so an operator with three unset settings needed three attempts and still
+# could not see what the last one would be (B579).
+#
+# The host is a load decision and keeps NO default. The host table and the output
+# directory come from the controller's own configuration when REMOTE_GATE_* do not
+# name them, because scripts/controller/remote-gate.sh already owns those values
+# (hosts file at :102-103, output dir at :225) and a second copy would drift. That
+# configuration is READ, never written: a release gate must not provision the
+# controller. remote-gate.py's own defaults are the last resort, as they were before.
+# A value that is set but unusable is REFUSED rather than silently replaced by a
+# later source: it is a fact, not a default.
+release_gate_problems=()
+[[ -z "$host_problem" ]] || release_gate_problems+=("$host_problem")
+
+controller_lib="../scripts/controller/lib.sh"
+controller_home=""
+controller_hosts=""
+controller_remote_hosts=""
+controller_remote_out=""
+if [[ -n ${HOME:-} && -f "$controller_lib" ]]; then
+  # CONTROLLER_INIT_READONLY keeps controller_init from creating or rewriting any
+  # controller file or directory (scripts/controller/lib.sh:12-45); only the
+  # resolved values are read back.
+  if controller_config="$(env CONTROLLER_INIT_READONLY=1 bash -c '
+      set -euo pipefail
+      . "$1"
+      controller_init
+      printf "%s\n%s\n%s\n%s\n" "${CONTROLLER_HOME:-}" "${CONTROLLER_HOSTS_FILE:-}" \
+        "${CONTROLLER_REMOTE_HOSTS_FILE:-}" "${CONTROLLER_REMOTE_OUT:-}"
+    ' controller-config "$controller_lib" 2>/dev/null)"; then
+    mapfile -t controller_values <<<"$controller_config"
+    controller_home=${controller_values[0]:-}
+    controller_hosts=${controller_values[1]:-}
+    controller_remote_hosts=${controller_values[2]:-}
+    controller_remote_out=${controller_values[3]:-}
+  else
+    # A controller configuration that exists but cannot be read is refused, not
+    # treated as absent: falling through to another source would hide a broken
+    # controller.local.env behind a stale default.
+    release_gate_problems+=("cannot read the controller configuration ($controller_lib controller_init)")
+  fi
+fi
+
+# remote-gate.sh (scripts/controller/remote-gate.sh:102-103) resolves a configured
+# hosts file against CONTROLLER_HOME when it is not absolute; do the same here.
+resolve_controller_path() {
+  local path="$1"
+  [[ -n "$path" ]] || { printf '%s' ''; return 0; }
+  if [[ "$path" != /* ]]; then
+    path="$controller_home/$path"
+  fi
+  printf '%s' "$path"
+}
+
+hosts_file_problem() {
+  local path="$1"
+  if [[ -z "$path" ]]; then
+    printf '%s' 'host table resolved to an empty path'
+  elif [[ ! -e "$path" ]]; then
+    printf '%s' "host table is missing: $path"
+  elif [[ ! -f "$path" ]]; then
+    printf '%s' "host table is not a regular file: $path"
+  elif [[ ! -r "$path" ]]; then
+    printf '%s' "host table is not readable: $path"
+  fi
+}
+
+# remote-gate.py creates a missing output directory itself (run_dir.mkdir(parents=True)),
+# so a path that does not exist yet is judged by the nearest existing ancestor that
+# would have to accept it.
+out_dir_problem() {
+  local path="$1" ancestor
+  if [[ -z "$path" ]]; then
+    printf '%s' 'output directory resolved to an empty path'
+    return 0
+  fi
+  if [[ -d "$path" ]]; then
+    [[ -w "$path" ]] || printf '%s' "output directory is not writable: $path"
+    return 0
+  fi
+  if [[ -e "$path" ]]; then
+    printf '%s' "output directory exists but is not a directory: $path"
+    return 0
+  fi
+  ancestor="$path"
+  while [[ ! -e "$ancestor" ]]; do
+    ancestor=$(dirname -- "$ancestor")
+  done
+  if [[ ! -d "$ancestor" ]]; then
+    printf '%s' "output directory cannot be created: $ancestor is not a directory"
+  elif [[ ! -w "$ancestor" ]]; then
+    printf '%s' "output directory cannot be created: $ancestor is not writable"
+  fi
+}
+
+# remote-gate.py's defaults, read from its module rather than copied here. Asked only
+# when no controller configuration supplied the value.
+remote_gate_defaults=""
+remote_gate_defaults_loaded=false
+load_remote_gate_defaults() {
+  [[ "$remote_gate_defaults_loaded" == true ]] && return 0
+  remote_gate_defaults_loaded=true
+  remote_gate_defaults="$(env "${remote_gate_base_env[@]}" python3 - "$remote_gate" <<'PYEOF'
 import importlib.util
 import sys
 
 path = sys.argv[1]
 spec = importlib.util.spec_from_file_location("assay_release_remote_gate", path)
 if spec is None or spec.loader is None:
-    raise SystemExit("cannot load remote-gate.py to resolve its output directory")
+    raise SystemExit("cannot load remote-gate.py to resolve its defaults")
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
+print(module.DEFAULT_HOSTS)
 print(module.DEFAULT_OUT)
 PYEOF
-)" || die 'cannot read remote-gate.py output-directory default'
-  [[ -n "$remote_out" ]] || die 'remote-gate.py returned an empty output-directory default'
+)" || remote_gate_defaults=""
+}
+default_hosts() {
+  load_remote_gate_defaults
+  printf '%s' "${remote_gate_defaults%%$'\n'*}"
+}
+default_out() {
+  load_remote_gate_defaults
+  printf '%s' "${remote_gate_defaults#*$'\n'}"
+}
+
+tried_note() {
+  local note='' item
+  for item in "$@"; do
+    note+="$item; "
+  done
+  printf '%s' "${note%; }"
+}
+
+hosts_tried=()
+remote_hosts=""
+hosts_problem=""
+if [[ -v REMOTE_GATE_HOSTS ]]; then
+  hosts_tried+=("REMOTE_GATE_HOSTS ($REMOTE_GATE_HOSTS)")
+  hosts_problem=$(hosts_file_problem "$REMOTE_GATE_HOSTS")
+  [[ -n "$hosts_problem" ]] || remote_hosts="$REMOTE_GATE_HOSTS"
+elif [[ -n "$controller_remote_hosts" ]]; then
+  candidate=$(resolve_controller_path "$controller_remote_hosts")
+  hosts_tried+=("CONTROLLER_REMOTE_HOSTS_FILE ($candidate)")
+  hosts_problem=$(hosts_file_problem "$candidate")
+  [[ -n "$hosts_problem" ]] || remote_hosts="$candidate"
+elif [[ -n "$controller_hosts" ]]; then
+  candidate=$(resolve_controller_path "$controller_hosts")
+  # controller_init's own default spelling (CONTROLLER_HOME/hosts.local.json) that
+  # does not exist means this controller configures no host table; it is not a
+  # misconfigured path, so the remote-gate.py default still applies.
+  if [[ "$candidate" != "$controller_home/hosts.local.json" || -e "$candidate" ]]; then
+    hosts_tried+=("CONTROLLER_HOSTS_FILE ($candidate)")
+    hosts_problem=$(hosts_file_problem "$candidate")
+    [[ -n "$hosts_problem" ]] || remote_hosts="$candidate"
+  fi
+fi
+if [[ -z "$remote_hosts" && -z "$hosts_problem" ]]; then
+  candidate=$(default_hosts)
+  hosts_tried+=("remote-gate.py DEFAULT_HOSTS ($candidate)")
+  hosts_problem=$(hosts_file_problem "$candidate")
+  [[ -n "$hosts_problem" ]] || remote_hosts="$candidate"
+fi
+if [[ -z "$remote_hosts" ]]; then
+  if [[ -n "$hosts_problem" ]]; then
+    release_gate_problems+=("$hosts_problem")
+  else
+    release_gate_problems+=("no host table resolved (tried: $(tried_note "${hosts_tried[@]}"))")
+  fi
+fi
+out_tried=()
+remote_out=""
+out_problem=""
+if [[ -v REMOTE_GATE_OUT ]]; then
+  out_tried+=("REMOTE_GATE_OUT ($REMOTE_GATE_OUT)")
+  out_problem=$(out_dir_problem "$REMOTE_GATE_OUT")
+  [[ -n "$out_problem" ]] || remote_out="$REMOTE_GATE_OUT"
+elif [[ -n "$controller_remote_out" ]]; then
+  # controller_init leaves CONTROLLER_REMOTE_OUT in its configured spelling, and
+  # remote-gate.sh creates it relative to its own working directory. A relative
+  # value has no stable meaning here, so resolve it against CONTROLLER_HOME the
+  # way controller_init resolves its own directories.
+  candidate=$(resolve_controller_path "$controller_remote_out")
+  out_tried+=("CONTROLLER_REMOTE_OUT ($candidate)")
+  out_problem=$(out_dir_problem "$candidate")
+  [[ -n "$out_problem" ]] || remote_out="$candidate"
+elif [[ -d "$controller_home" ]]; then
+  # controller_init's default output directory. Used only when the controller home
+  # itself exists: a CONTROLLER_HOME spelling that names no directory configures
+  # nothing, so remote-gate.py's own default still applies.
+  candidate="$controller_home/remote-gates"
+  out_tried+=("CONTROLLER_HOME/remote-gates ($candidate)")
+  out_problem=$(out_dir_problem "$candidate")
+  [[ -n "$out_problem" ]] || remote_out="$candidate"
+fi
+if [[ -z "$remote_out" && -z "$out_problem" ]]; then
+  candidate=$(default_out)
+  out_tried+=("remote-gate.py DEFAULT_OUT ($candidate)")
+  out_problem=$(out_dir_problem "$candidate")
+  [[ -n "$out_problem" ]] || remote_out="$candidate"
+fi
+if [[ -z "$remote_out" ]]; then
+  if [[ -n "$out_problem" ]]; then
+    release_gate_problems+=("$out_problem")
+  else
+    release_gate_problems+=("no output directory resolved (tried: $(tried_note "${out_tried[@]}"))")
+  fi
+fi
+
+if [[ -z ${HOME:-} ]]; then
+  release_gate_problems+=('HOME is unset; remote-gate needs it for the host table and ~/.ssh')
+fi
+
+if (( ${#release_gate_problems[@]} )); then
+  combined_problem='the remote release-gate environment is not usable:'
+  for problem in "${release_gate_problems[@]}"; do
+    combined_problem+=$'\n'"  - $problem"
+  done
+  die "$combined_problem" 2
 fi
 
 remote_gate_env=(
   "${remote_gate_base_env[@]}"
   "REMOTE_GATE_OUT=$remote_out"
+  "REMOTE_GATE_HOSTS=$remote_hosts"
 )
-if [[ -v REMOTE_GATE_HOSTS ]]; then
-  remote_gate_env+=("REMOTE_GATE_HOSTS=$REMOTE_GATE_HOSTS")
-fi
 if [[ -n ${SSH_AUTH_SOCK:-} ]]; then
   remote_gate_env+=("SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
 fi
