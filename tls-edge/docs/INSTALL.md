@@ -27,9 +27,10 @@ All examples use `example.test`, a reserved placeholder; use your own domain.
 
 Containers started by `ciu up` are `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy`; `<id>` is derived from
 the path `/srv/tls-edge-instance/stack`, which is why that path is stable. The compose service name `traefik`
-stays a DNS name on the networks. Generic defaults publish **80/tcp and 443/tcp**. HTTP/3 optionally adds
-UDP on the same public HTTPS port. Raw TCP/UDP media is published directly by the application; examples
-include Jitsi JVB on UDP 10000 and Mattermost Calls on TCP+UDP 8443.
+stays a DNS name on the networks. The public port set a fresh instance publishes is the one
+`ciu-stack/ciu.defaults.toml.j2` ships, adjusted by your override; `tls-edge show` prints it. HTTP/3
+optionally adds UDP on the same public HTTPS port. Raw TCP/UDP media is published directly by the application;
+examples include Jitsi JVB on UDP 10000 and Mattermost Calls on TCP+UDP 8443.
 
 ## 2. Requirements
 
@@ -181,13 +182,9 @@ and `tls-edge configure --dry-run` all run this same validation. Limit: ciu runs
 defaults declare it under `[tls_edge.hooks]` `pre_secrets` and `pre_compose`. An override that empties both lists
 removes it from `ciu check` and `ciu up`, so keep the shipped entries (tracked upstream as ciu CIU-226).
 
-| `[tls_edge.tls] mode` | How | Port needed | Certificates |
-|---|---|---|---|
-| `acme-tls` (default) | TLS-ALPN-01 on :443 | 443 | one per host name |
-| `acme-http` | HTTP-01 | 80 | one per host name |
-| `acme-dns` | DNS-01 via a lego provider | none | per host, or one wildcard |
-| `static` | certbot files under `cert_base` | none | yours |
-| `dev` | self-signed (`scripts/dev-certs.sh`) | none | local CA |
+`[tls_edge.tls] mode` is one of the five the schema declares
+(`ciu-stack/ciu.defaults.toml.j2` carries each mode and its constraints, including which listener it
+needs); `tls-edge show` reports the mode and port plan of a configured instance.
 
 **Per host vs wildcard.** The HTTPS entrypoint carries the resolver but no fixed domain list, so every consumer
 router's `Host()` rule gets its own certificate the first time it is requested. An automatic wildcard
@@ -228,7 +225,7 @@ CF_DNS_API_TOKEN_FILE = "/run/secrets/dns_api_token"
 `ciu` asks for the token on `ciu up` (or reads `CF_DNS_API_TOKEN` from the environment). Add this block to the
 site override after running the CLI; secret references are intentionally kept out of wizard answers.
 
-**Port 80** is on by default (redirect and HTTP-01). Set `[tls_edge.ports] expose_http = false` to turn it off;
+The HTTP listener is on in the shipped defaults. Turn it off with `[tls_edge.ports] expose_http = false`;
 `acme-http` then cannot work. **HTTP/3**: set `[tls_edge.http3] enabled = true` to publish UDP on the public
 HTTPS port; keep TCP open for HTTP/1.1 and HTTP/2 clients and fallback. **Raw media** stays outside
 tls-edge: the application publishes its own TCP/UDP ports directly and advertises that endpoint to clients.

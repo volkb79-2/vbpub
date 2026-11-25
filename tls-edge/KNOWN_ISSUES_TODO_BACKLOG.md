@@ -93,10 +93,6 @@ public-facing service container of each stack, never databases, caches, or
 workers.  Backend containers must join only the stack's private internal
 network.
 
-Roadmap: add a `DOCKER-USER` iptables enforcement helper (see Roadmap below)
-for kernel-level east-west isolation between containers on the shared ingress
-network.
-
 ---
 
 ### Single Traefik instance is a single point of failure
@@ -182,14 +178,12 @@ than estate-wide bearer authentication. This feature is the planned shared
 edge solution; it is deliberately not enabled by PWMCP until tls-edge ships
 the verifier integration.
 
-### Middleware template library
-
-Add a set of ready-to-enable middleware definitions in `conf.d/` that consumers
-can reference by name in their router labels without writing their own YAML:
-rate limiting (`rateLimit`), IP allowlisting (`ipAllowList`), and a
-BasicAuth-protected dashboard endpoint.  Each middleware would ship disabled
-and be enabled by a single line change in `conf.d/middlewares.yml`, which
-Traefik hot-reloads.
+Remaining middleware work, from the same review that created this entry:
+ready-to-enable definitions in `conf.d/` that consumers reference by name in
+their router labels without writing their own YAML — rate limiting
+(`rateLimit`), IP allowlisting (`ipAllowList`), and a BasicAuth-protected
+dashboard endpoint. They ship disabled and are enabled through the schema
+rather than by editing a synced file (an edited synced file stops `update`).
 
 ### Traefik Prometheus metrics on an internal entrypoint
 
@@ -197,30 +191,6 @@ Expose Traefik's built-in Prometheus metrics endpoint on a loopback-bound or
 `traefik_internal`-bound entrypoint so that a scraper on the same host can
 collect request rates, error rates, and TLS handshake counts without publishing
 a metrics port to `ingress_public`.
-
-### `DOCKER-USER` iptables enforcement helper
-
-Provide a script or compose pre-hook that installs `DOCKER-USER` iptables rules
-to restrict east-west traffic on `ingress_public` at the kernel level.  This
-would enforce isolation independently of application bind-address configuration,
-closing the gap described in the east-west limitation above.  Rules would target
-network CIDRs rather than container IPs to survive container restarts.
-
-### Multiple Traefik instances per trust class
-
-Define a second tls-edge variant (`tls-edge-internal` or similar) attached
-to a separate ingress network with different routing policies — for example,
-mTLS enforcement for internal API services while the primary edge handles
-public-facing services.  Requires either additional host ports or an upstream
-L4 load balancer to distribute by SNI.
-
-### Centralised log aggregation
-
-Document and provide configuration for shipping Traefik's JSON access log to a
-log aggregation stack (Loki + Grafana as the lightweight default, with Elastic
-Stack and Splunk as alternatives).  The access log already includes timestamp,
-router name, service name, upstream address, HTTP status, and latency —
-sufficient for a searchable, persistent audit trail.
 
 ### Instance packaging follow-ups (filed 2026-11-04)
 
@@ -234,11 +204,3 @@ Wire `scripts/dev-certs.sh` into a ciu `pre_compose` hook so that running
 `ciu` in dev mode automatically generates the self-signed CA and certificate
 into the certs volume before Traefik starts.  Currently, dev cert generation
 is a manual step separate from the ciu deploy flow.
-
-### mkcert in the base dev image (tooling; separate repo)
-
-Consider adding `mkcert` to the `modern-debian-tools-python-debug` base image
-so that devcontainer-based dev mode gets a trusted local CA certificate
-installed into the system and browser trust stores automatically, eliminating
-the manual CA import step.  This is a change to the tooling image repository,
-not to tls-edge itself.
