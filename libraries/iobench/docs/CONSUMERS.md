@@ -291,25 +291,44 @@ A few more refusals you may meet (each names its condition and a remedy; all exi
 
 ## Repository gate
 
-The registered Run-Gate configuration keeps the R2 judgment in Assay's
-native lane so Run-Gate can apply its worker policy, record the selection,
-and keep Assay's resumable state outside an ephemeral worktree. Run the
-registered lanes from the IOBench project directory:
+The registered repository gate is `run-gate r0-r1` only (the coverage suite).
+It runs no mutation campaign: R2 is **owed asynchronously on the latest code**
+(operator release rule), so a merge gate is never held to a mutation verdict.
+The two mutation lanes exist and are run **by name**:
+
+* `run-gate r2` — the **diff-scoped** lane. It mutates only the lines a
+  request base..HEAD diff adds under `src/iobench` (Assay lane `iobench-diff`),
+  and it needs a comparison base: `run-gate r2 --base <ref>`, because a
+  `base_source = "request"` lane has no fallback ref by design (without
+  `--base` it answers NOT_RUN/`no-base` instead of guessing). It runs 3 workers
+  inside a 4g lane cap with a 12m per-candidate ceiling. This is the lane for
+  an owed R2 on one change; the split over two hosts, the store/resume
+  procedure and the measured plan are in [docs/R2-RUNBOOK.md](R2-RUNBOOK.md).
+* `run-gate r2-whole` — the **periodic whole-package** campaign (every shipped
+  module, 1891 candidates on the 2026-11-24 tree, `jobs = "auto"`, 1536m,
+  365m). It is the only way to judge a file nobody touched in the change under
+  judgement, and it is far too large to sit inside a merge gate.
+
+The R2 lane keeps the judgment in Assay's native lane so Run-Gate can apply
+its worker policy, record the selection, and keep Assay's resumable state
+outside an ephemeral worktree. Run the registered lanes from the IOBench
+project directory:
 
 ```bash
 run-gate r0-r1
-run-gate r2
+run-gate r2 --base <ref>          # owed R2 on a change (docs/R2-RUNBOOK.md)
+run-gate r2-whole                 # periodic whole-package campaign, deliberate
 ```
 
-The R2 lane opts into automatic worker selection. Assay's
-`[lanes.iobench.judge.mutation].jobs_max = 4` is its ceiling; the former
-`jobs = 1` setting was the legacy alias for that ceiling, so it limited every
-run to one worker. Run-Gate now reads the ceiling and passes the selected
-count. With no candidate history it uses a conservative 1 GiB per candidate;
-without Assay's supported btrfs cheap-clone workspace, auto remains at one.
-Use `run-gate r2 --jobs 2` to request a specific parallel count when the
-workspace supports it. A request above the ceiling or without the required
-workspace fails before mutation candidates start.
+The r2 lane's worker count is `jobs = 3`, explicit rather than `"auto"`, so
+every host gets the same count; it is legal only with the enforced 4g cap, the
+counted CPUs and a Cowtree-confirmed btrfs cheap-clone workspace. A host
+without that CoW area refuses `--jobs 3` by name rather than silently
+serialising; pass `--jobs 1` there. The whole-package lane still opts into
+`jobs = "auto"`: Assay's `[lanes.iobench.judge.mutation].jobs_max = 4` is its
+ceiling, measured candidate RSS sets the count once history exists (otherwise
+a conservative 1 GiB per candidate), and it stays at one worker unless Assay's
+prepared workspace confirms its supported btrfs cheap clone.
 
 <!-- run-gate-config -->
 ```toml
@@ -321,23 +340,26 @@ image = "tester-unified:local"
 
 [lanes.r2]
 kind = "assay"
-assay_lane = "iobench"
+assay_lane = "iobench-diff"
 environment = "tester-unified"
-jobs = "auto"
+jobs = 3
 resource_observer = "cgprofile"
+budget = "245m"
 
 [lanes.r2.resources]
 cpus = "3"
-memory = "1536m"
+memory = "4g"
+candidate_ram = "512m"
 pids = 8192
 ```
 
 Run-Gate writes the Assay verdict and progress to
-`.assay/verdict-iobench.json` and `.assay/progress-iobench.jsonl`. Its
-resumable mutation state is stored under the repository's ignored
-`.run-gate/assay-state/` area; rerun the same lane on the same tree after a
-budget stop. The former command lane used `.assay/mutation-state-r2` and
-`.assay/progress-r2.jsonl`; those files are not imported, so an in-progress
+`.assay/verdict-iobench-diff.json` and `.assay/progress-iobench-diff.jsonl`
+(`.assay/verdict-iobench.json` / `.assay/progress-iobench.jsonl` for
+`r2-whole`). Its resumable mutation state is stored under the repository's
+ignored `.run-gate/assay-state/` area; rerun the same lane on the same tree
+after a budget stop. The former command lane used `.assay/mutation-state-r2`
+and `.assay/progress-r2.jsonl`; those files are not imported, so an in-progress
 campaign from that configuration must be restarted under the native lane.
 
 ## 10. What a refusal looks like
