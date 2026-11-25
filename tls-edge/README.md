@@ -122,8 +122,8 @@ set): the schema and every shipped value are in
 `tls-edge show` prints what a configured instance actually uses.
 
 Setting an ACME contact email is strongly recommended (Let's Encrypt uses it to
-warn the account before a rate limit is hit); [`INSTALL` §4](docs/INSTALL.md#4-configure-listeners-and-certificates)
-shows where it goes.
+warn the account before a rate limit is hit); [`INSTALL` §3](docs/INSTALL.md#3-install)
+shows where it goes (`email` under `[tls_edge.acme]` in the answers file).
 
 ```bash
 # 1. Point your DNS A/AAAA record at this host.
@@ -214,7 +214,7 @@ on disk.
 ## TLS mode reference
 
 `tls-edge show` reports the mode and the port plan of a configured instance; that
-is what the CLI validates about a mode (its listener requirements),
+is the listener requirement the CLI validates for a mode,
 `src/tls_edge_cli/config.py:492-495`.
 The mode list and their defaults are in
 [`ciu-stack/ciu.defaults.toml.j2`](ciu-stack/ciu.defaults.toml.j2).  The table
