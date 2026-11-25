@@ -39,6 +39,17 @@
 # report check. Every active run also gets <run>.live (liveness/progress,
 # read by job-status.sh) and <run>.events (JSON lines, one per continue).
 #
+# `PI_EXTRA_ARGS` adds pi arguments to this launch: ONE ARGV ELEMENT PER LINE
+# (newline separated, so a value may itself contain spaces; no word splitting
+# and no eval, so nothing in it is ever reinterpreted as shell syntax). It is
+# appended AFTER pi-impl.sh's own arguments and before the `--` prompt
+# separator, and it may NOT set the launch contract pi-impl.sh owns: `-p`,
+# `--print`, `--mode`, `--model`, `--thinking`, `--session`, `--session-id`,
+# `--session-dir`, `-c`/`--continue`, `-r`/`--resume`, `--fork` and a bare `--`
+# are refused before anything is claimed or launched. The seam exists for a
+# caller that must restrict pi's tools (pi-review.sh does); an empty or unset
+# value adds nothing, so the implementer contract is unchanged.
+#
 # A run NAME is owned by one live wrapper: the wrapper takes an exclusive
 # flock on <runs-dir>/<name>.lock before it writes anything (lib.sh
 # controller_run_claim) and releases it on every exit path, so two wrappers on
@@ -54,6 +65,7 @@ caller_pi_route=${PI_ROUTE-}
 caller_pi_model=${PI_MODEL-}
 caller_pi_thinking=${PI_THINKING-}
 caller_pi_session_dir=${PI_SESSION_DIR-}
+caller_pi_extra_args=${PI_EXTRA_ARGS-}
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 controller_init
@@ -61,6 +73,10 @@ controller_init
 [[ -z $caller_pi_model ]] || PI_MODEL=$caller_pi_model
 [[ -z $caller_pi_thinking ]] || PI_THINKING=$caller_pi_thinking
 [[ -z $caller_pi_session_dir ]] || PI_SESSION_DIR=$caller_pi_session_dir
+# The caller's extra arguments win over a local environment file, like the four
+# above: a review launcher exports its restricted tool set, and a stale
+# PI_EXTRA_ARGS in controller.local.env must not widen it.
+[[ -z $caller_pi_extra_args ]] || PI_EXTRA_ARGS=$caller_pi_extra_args
 
 usage() {
   echo "usage: $0 <worktree> <absolute-prompt-file> <run-name> [resume <session-id>] [--report <absolute-path>]" >&2
@@ -130,6 +146,30 @@ if [[ ! $live_interval =~ ^[0-9]+$ ]] || (( live_interval == 0 )); then
   echo 'PI_LIVE_INTERVAL_SECONDS must be a positive integer' >&2
   exit 2
 fi
+
+# PI_EXTRA_ARGS: extra pi argv elements, one per line (see the header). Refused
+# before the run name is claimed, so a malformed value retires and overwrites
+# nothing.
+extra_pi_args=()
+parse_extra_pi_args() {
+  local line
+  [[ -n ${PI_EXTRA_ARGS-} ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    [[ ! $line =~ ^[[:space:]]*$ ]] || continue
+    case $line in
+      -p | --print | --mode | --mode=* | --model | --model=* | --thinking | --thinking=* | \
+        --session | --session=* | --session-id | --session-id=* | --session-dir | --session-dir=* | \
+        -c | --continue | -r | --resume | --fork | --fork=* | --)
+        echo "PI_EXTRA_ARGS may not set '$line': pi-impl.sh owns the launch contract (print mode, mode, model, thinking, session)" >&2
+        return 1
+        ;;
+    esac
+    extra_pi_args+=("$line")
+  done <<< "$PI_EXTRA_ARGS"
+  return 0
+}
+parse_extra_pi_args || exit 2
 
 out=$CONTROLLER_RUNS_DIR
 # Ownership first: nothing below may write a name-owned record until this
@@ -263,6 +303,10 @@ IFS= read -r -d '' prompt_text < "$prompt" || :
 continue_prompt=''
 IFS= read -r -d '' continue_prompt < "$continue_prompt_file" || :
 base_pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" --session-dir "$session_dir")
+# PI_EXTRA_ARGS is appended after the wrapper's own arguments: a caller can add
+# a tool selection, never replace the launch contract (reserved flags are
+# refused above).
+(( ${#extra_pi_args[@]} == 0 )) || base_pi_args+=("${extra_pi_args[@]}")
 resume_target=''
 [[ $mode != resume ]] || resume_target=$session_id
 
