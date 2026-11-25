@@ -300,8 +300,8 @@ ciu creates every hostdir it finds declared, and D1's key check needs the key de
 - Update never touches the directory. The sync writes or deletes only recorded manifest files under
   `stack/` (`get.py:1774-1813`). In `shared/`, the installer touches only `host.toml` and
   `overwritten/` (`get.py:1246-1250`, `1815-1820`).
-- A rollback keeps `acme.store`. A 4.0 install cannot reach a pre-3.2 release: 3.x has no update path into
-  4.0, so the rollback chain of a 4.0 instance only contains 4.0-and-later releases, and every one of them
+- A rollback keeps `acme.store`. A 4.0 install has no supported path to a pre-3.2 release: 3.x has no update path into
+  4.0 (3.x bundles are not usable by the 4.0 installer), so the rollback chain of a 4.0 instance only contains 4.0-and-later releases, and every one of them
   understands `store`. The pre-3.2 case (a release older than 3.2 ignoring `store` and starting an empty
   `acme-data`) is therefore unreachable from a 4.0 install and is not a documented requirement.
   (Ruling, TE-06 review; INSTALL states the operational fact only.)

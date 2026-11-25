@@ -91,8 +91,9 @@ Since tls-edge 4.0 the tree holds **no committed `edge-proxy/`**: it is generate
 **Excluded:** `.git/`, `tools/` (maintainer-only, including `render_standalone.py`),
 `.release-vars`, and all gitignored runtime files (`ciu.toml.j2`, `consumer.env`,
 `edge-proxy/`).
-Each published asset carries a sibling `<asset>.sha256` sidecar
-(`cmru/src/cmru/release.py:106-111`), not one shared `SHA256SUMS` asset.
+Each variant tarball carries a sibling `<asset>.sha256` sidecar
+(`cmru/src/cmru/release.py:106-111`), not one shared `SHA256SUMS` asset; the release-level
+`get.py` is published as a bare asset without a sidecar.
 
 ## Phased implementation
 
