@@ -83,6 +83,11 @@ holds the full bodies.
 | HOB-91 | `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,200 rows | Minor | OPEN (P-hostobs-09 report) |
 | HOB-92 | `SIGTERM` keeps its default action; the graceful stop path is required before P-16 | Major | OPEN (P-hostobs-09 decision) |
 | HOB-93 | P-hostobs-09 residual doc and test nits | Minor | OPEN (P-hostobs-09 r2) |
+| HOB-94 | `current` before the first tick answers `internal`, but WIRE §4.6 names `unavailable` | Major | OPEN (P-hostobs-11(a) r1 candidate 3) |
+| HOB-95 | The `selftest` lane never builds or runs the example tests | Minor | OPEN (P-hostobs-11(a) r1/r2) |
+| HOB-96 | The `conformance` lane never exercises the live demo | Minor | OPEN (P-hostobs-11(a) r1/r2) |
+| HOB-97 | `watch`'s hello-derived interval default loses its reason and can refuse a legal hello | Minor | OPEN (P-hostobs-11(a) r2) |
+| HOB-98 | P-hostobs-11/P-12 residual doc, lane-comment and coverage-header nits | Minor | OPEN (P-hostobs-12 r1/r2, P-11(b) VM report) |
 
 ---
 
@@ -1117,3 +1122,151 @@ section "Developing and debugging".
 **Exit criteria.** `parse_refusal` asserts the exact `key <name>:` slot and every existing refusal case passes. §(d) states the ancestor rule beside the simple one. The README figure is replaced by a measurement taken on `rs-20261124b` (the P-09 round 3 `tools/dev test -p hostobs-probe` took 30.1 s), or the sentence names the image it was measured on. Both wrapped passages are re-flowed so no line breaks mid-phrase.
 
 Source: `reviews/p09-r2-3bc01d21f.md` Nits 2, 3, 4, 5.
+
+## HOB-94 — `current` before the first tick answers `internal`, but WIRE §4.6 names `unavailable`
+
+**Where:** `docs/WIRE.md` §4.6 (`:443-444`) and §10 (`:1006-1011`), `bins/probe/src/live.rs`
+(`ProbeBackend::current`, `:67-70`), `crates/serve/src/conn.rs` (`current_block`, `:948-961`),
+`crates/serve/src/codes.rs` (`Code::ALL`, `:93`; the §10-set test, `:240`),
+`crates/client/src/error.rs` (`ERROR_CODES`, `:30-54`), `crates/client/examples/watch.rs`
+(`wait_for_tick`, `:176-190`; called at `:352`).
+
+WIRE §4.6 says that only the seq-0 "no tick yet" state is `unavailable`, but §10's closed list has no
+such code, and PROBE-PROCESS §(b) rule 3 requires the backend to answer `Unavailable` before the first
+tick. The two sides cannot both be obeyed. The probe returns `BackendError::Unavailable`
+(`live.rs:68-69`) and the serving core maps it to the only legal code, `internal` (`conn.rs:959`).
+That answer is well formed, just wrong: `Code::Internal` is one of the 23 names `Code::ALL` pins
+against §10 (`codes.rs:93`, `:240`), and the client pins the same list in `ERROR_CODES`
+(`error.rs:30-54`).
+
+**Impact.** It is not a rare state. `deploy/systemd/hostobs-observe.socket:8` sets `Accept=no` and
+LIVE-DEMO part (b) enables only the socket units (`docs/LIVE-DEMO.md:122`), so the first client after
+boot or restart starts the probe and deterministically lands in the window; `internal` is
+indistinguishable from a real server fault. The shipped `watch` example works around it with a
+30 s status poll (`watch.rs:176-190`, `:352`). `subscribe` is unaffected: `registry.rs:266` keeps a
+subscription due across `Unavailable`, and WIRE §4.7 sends the first BLOCK at the next due tick. The
+item must land before consumers (run-gate profiling, agctl, thrashguard, topos) call `current`.
+
+**Exit criteria.** In the next serve/WIRE package (P-13 or later), exactly one of:
+- a minor-versioned `unavailable` code added to §10 (additive, §9.1) with a typed client error in
+  `client::error` and both 23-name lists and their tests updated (24 names); or
+- a defined `internal` `detail` for this state, for example `{"reason":"no-tick"}`, stated in §10's
+  `detail` keys with a client-side check.
+Either way a test drives a sequencer at seq 0 through `Call::Current` and asserts the new answer,
+never a bare `internal`, and `watch.rs`'s `wait_for_tick` and `status_tick_seq` (both about 25 lines)
+are deleted. Deferring the answer is not an option: PROBE-PROCESS §(b) rule 3 forbids answering "not
+yet" from the backend.
+
+Source: `reviews/p11a-r1-6ee0643d4.md` "Backlog candidate 3", carried as candidate 1 in
+`reviews/p11a-r2-dda3fe69f.md`.
+
+## HOB-95 — The `selftest` lane never builds or runs the example tests
+
+**Where:** `run-gate.toml` `[lanes.selftest]` argv (`:31`), `crates/client/examples/watch.rs`
+(`#[cfg(test)] mod tests`, `:374-494`; seven tests at `:387-486`).
+
+The lane runs `tools/cargo-offline.sh llvm-cov nextest --workspace --locked --offline --profile ci
+--no-tests=fail --lcov …` with no `--examples` and no `--all-targets`, so cargo never builds the
+example as a test target and its seven tests — `arguments_accept_defaults_and_explicit_values`,
+`argument_errors_name_the_missing_or_bad_option`, `selection_is_embedded_without_reencoding`,
+`interval_is_an_exact_multiple_of_the_tick`, `row_format_is_one_tab_separated_line`,
+`a_non_measurement_never_renders_its_value`, `status_readiness_finds_the_tick_sequence` — run in no
+lane. The `lint` lane's `--all-targets` (`run-gate.toml:13`) only lints them; a broken assertion in
+one of these tests is invisible to every gate.
+
+**Exit criteria.** In the package that next touches the `selftest` lane, the nextest command gains
+`--all-targets` (or `--examples`), and the lane log shows the seven `watch` tests running (nextest's
+`--list` count or the run summary), so a deliberately failing example test makes `selftest` red. If
+the example enters the llvm-cov report, `coverage-floors.toml`'s `crates/client` floor is re-derived
+from the new measurement, or the example is excluded with the exclusion stated there.
+
+Source: `reviews/p11a-r1-6ee0643d4.md` Backlog candidates 3 and `reviews/p11a-r2-dda3fe69f.md`
+candidate 2.
+
+## HOB-96 — The `conformance` lane never exercises the live demo
+
+**Where:** `run-gate.toml` `[lanes.conformance]` argv (`:58-68`), `python/tests/test_live_demo.py`
+(`FixtureLiveRun`, `:137-170`), `tools/live-demo.py`.
+
+The lane builds `hostobs-probe` only (`run-gate.toml:58`) and exports only `HOSTOBS_PROBE_BIN`
+(`:63`). Nothing builds the `watch` example or exports `HOSTOBS_WATCH_BIN`, so `FixtureLiveRun`
+skips on its `skipUnless` guard (`test_live_demo.py:137-141`) in every gate; only the verdict unit
+tests (`Verdict`, `:65-134`) run. The one test that runs the real script against a real probe and a
+real `watch` binary never runs, so the harness's activation, signal and transcript paths have no
+gate coverage at all.
+
+**Exit criteria.** The `conformance` lane builds `-p hostobs-client --example watch`, exports
+`HOSTOBS_WATCH_BIN` beside `HOSTOBS_PROBE_BIN`, and `FixtureLiveRun` is reported as run (not skipped)
+with its PASS/FAIL assertions holding. The lane's `budget = "10m"` is re-measured with the extra
+build (HOB-89 already records that it was never measured).
+
+Source: `reviews/p11a-r1-6ee0643d4.md` Backlog candidates 4 and `reviews/p11a-r2-dda3fe69f.md`
+candidate 3.
+
+## HOB-97 — `watch`'s hello-derived interval default loses its reason and can refuse a legal hello
+
+**Where:** `crates/client/examples/watch.rs` (`validate_interval`, `:152-163`; the default and its
+error mapping, `:328-340`).
+
+Three faults in one default:
+
+- `validate_interval` returns the useful text `this level does not serve subscriptions` for
+  `tick_ms == 0` (`:153-155`), but the hello-derived arm discards every message and returns
+  `ClientError::Protocol(ProtocolKind::BadReply)` (`:336-339`), so the user sees `protocol bad-reply`
+  with no reason.
+- The comment at `:336` calls `tick_ms` 0 "a malformed server fact", although WIRE §4.4 defines 0 for
+  levels that serve no block verb (`docs/WIRE.md:388-390`; built at `crates/serve/src/limits.rs:400-403`).
+- The default is the raw `hello.limits.tick_ms` (`:328`). A legal probe config may set `tick_ms` below
+  `min_interval_ms`: `bins/probe/src/config.rs:247` accepts 100..=60000 and `limits.rs:296` fixes
+  `min_interval_ms` at 1,000, so `tick_ms = 500` makes the derived default fail validation and exit 1
+  as `bad-reply`, again without the explanatory message.
+
+No shipped config hits this (`tick_ms` 1,000 = `min_interval_ms`), so it is a client-side robustness
+nit rather than a live defect.
+
+**Exit criteria.** In the next example/client package: the hello-derived failure prints
+`validate_interval`'s message to stderr before returning the client error, and the default becomes
+the smallest multiple of `tick_ms` that is at least `min_interval_ms` (still at most 60,000; if no
+such multiple exists the refusal names the limit). Tests: `tick_ms = 0` and `tick_ms = 500` with
+`min_interval_ms = 1,000` each print the reason and keep exit 1, while a 1,000/1,000 hello still
+takes `tick_ms` unchanged.
+
+Source: `reviews/p11a-r2-dda3fe69f.md` "Extras beyond the brief" (interval-error classification) and
+its Backlog candidate 5.
+
+## HOB-98 — P-hostobs-11/P-12 residual doc, lane-comment and coverage-header nits
+
+**Where:** the five items below.
+
+- (a) `python/reference/make_hub_fixtures.py:5` and `python/tests/test_hub_fixtures.py:10` still name
+  `crates/proto/tests/hub_fixtures.rs`. P-12 moved that file to `crates/serve/tests/hub_fixtures.rs`;
+  the file's own doc line (`:11`) already names the current path for its sibling.
+- (b) `run-gate.toml:73` and `:117` say "four functional crates", `:167` and `:206` say "five judged
+  crates", and `:86` says "the 56 declared `src/*.rs` files". `assay.toml:212` and its `source_roots`
+  (`:301-308`) judge six crates, and its `targets` declares 61 files. The numbers were written before
+  P-12 put the hub and the probe's serving modules into `crates/serve`.
+- (c) `crates/serve/tests/hub_fixtures.rs:11` is 103 columns. Rustfmt does not wrap comments and
+  `fmt --check` passes, so it is cosmetic and survives every lane.
+- (d) `coverage-floors.toml:2-3` lists `serve` among the floors "measured on their own tests", but
+  `:10-12` says `serve` takes `proto`'s 98/96 as its donor floor (`[crates."crates/serve"]`, `:37-39`).
+  The header's first list and its closing sentence disagree.
+- (e) `docs/LIVE-DEMO.md` never mentions `systemd-analyze security` or says which "OK-with-flags"
+  entries a reviewer should expect. The VM evidence records the overall result
+  (`runs/p11b-vm-demo.report.md:141`, `Overall exposure level for hostobs-probe.service: 1.8 OK`) and
+  asks for the entry list.
+
+**Impact.** Each is cosmetic or a reader hazard; none changes behaviour. (b) and (d) misdescribe what
+the gates judge, which is the kind of stale comment a future lane edit trusts.
+
+**Exit criteria.** (a) and (c): the two docstrings and the one comment name
+`crates/serve/tests/hub_fixtures.rs` (one line, in a Python-scoped package, or P-18 if HOB-73 drops
+the generator first). (b): `run-gate.toml`'s four count-bearing comments state six judged crates and
+61 declared targets, or derive the numbers from `assay.toml` rather than spelling them. (d): the
+`coverage-floors.toml` header separates the inherited floors from the own-tests floors. (e):
+LIVE-DEMO §(b) names the expected OK-with-flags entries from a fresh `systemd-analyze security` run
+on the shipped units and the overall `1.8 OK`, so a reviewer can tell expected flags from policy
+drift; the naming is backed by a recorded run, not by inference.
+
+Source: `reviews/p12-r1-3e8ce04b4.md` notes "Stale counts in `run-gate.toml`" and "Stale Python
+docstrings"; `reviews/p12-r2-eb9151fd5.md` Nit 5 and new Nit 8; `runs/p11b-vm-demo.report.md`
+"Deviations", follow-up candidate 1.
