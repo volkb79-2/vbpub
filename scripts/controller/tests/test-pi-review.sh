@@ -102,6 +102,7 @@ case ${FAKE_PI_ACTION:-none} in
   write) printf 'reviewer edit\n' >> "$FAKE_PI_EDIT" ;;
   untracked) printf 'untracked file\n' > "$FAKE_PI_UNTRACKED" ;;
   untracked-content) printf 'changed after launch\n' > "$FAKE_PI_UNTRACKED" ;;
+  untracked-in-dir) printf 'second file\n' > "$FAKE_PI_UNTRACKED_DIR/second.txt" ;;
   commit)
     printf 'reviewer commit\n' >> "$FAKE_PI_EDIT"
     git -C "$FAKE_PI_WORKTREE" commit -qam 'reviewer commit'
@@ -138,6 +139,7 @@ launch() {
     FAKE_PI_ACTION="$action" FAKE_PI_EDIT="$WORKTREE/tracked.txt" \
     FAKE_PI_SLOW_SECONDS="${FAKE_PI_SLOW_SECONDS_TEST:-${FAKE_PI_SLOW_SECONDS:-2}}" \
     FAKE_PI_UNTRACKED="$WORKTREE/untracked.txt" FAKE_PI_WORKTREE="$WORKTREE" \
+    FAKE_PI_UNTRACKED_DIR="$WORKTREE/scratch" \
     FAKE_PI_EXCLUDE="$WORKTREE/.git/info/exclude" \
     PI_REVIEW_MAX_SECONDS="${PI_REVIEW_MAX_SECONDS_TEST:-1800}" \
     PI_REVIEW_MAX_STREAM_BYTES="${PI_REVIEW_MAX_STREAM_BYTES_TEST:-268435456}" \
@@ -570,6 +572,56 @@ check_modified_diff_of_dirty_file() {
   clean_worktree
 }
 
+
+# `-uall`: a second file inside an ALREADY-untracked DIRECTORY leaves the plain
+# porcelain line `?? scratch/` unchanged, so the STATUS leg needs the deep form.
+# The flag names status specifically: without `-uall` only the untracked-content
+# hash would differ and the message would not say "status".
+check_untracked_in_untracked_dir() {
+  local rc=0
+  mkdir -p "$WORKTREE/scratch"
+  printf 'first file\n' > "$WORKTREE/scratch/first.txt"
+  launch rev-uall untracked-in-dir --implementer-run impl-github2 || rc=$?
+  (( rc == 4 )) || fail "a file added inside an untracked directory exited $rc, expected 4"
+  contains "$RUNS/rev-uall.done" 'REVIEW-MODIFIED-TREE' 'a deep untracked addition is flagged'
+  contains "$ROOT/rev-uall.launch.log" 'status' 'the printed flag names the status comparison (-uall)'
+  rm -rf -- "$WORKTREE/scratch"
+  clean_worktree
+}
+
+# A worktree whose AFTER-state cannot be read cannot be certified: the flag is
+# written with the reason, not a silent pass.
+check_unreadable_after_state_flagged() {
+  local shim=$ROOT/git-after real_git counter=$ROOT/git-after.count rc=0
+  real_git=$(command -v git)
+  mkdir -p "$shim"
+  # status call 1 is the before-state, 2 is pi-impl's own classification, 3 is the
+  # after-state: failing from the third on models a tree that stopped answering.
+  cat > "$shim/git" <<SH
+#!/usr/bin/env bash
+is_status=0
+for a in "\$@"; do [[ \$a == status ]] && is_status=1; done
+if (( is_status == 1 )); then
+  n=\$(( \$(cat "$counter" 2>/dev/null || printf 0) + 1 ))
+  printf '%s' "\$n" > "$counter"
+  (( n >= 3 )) && exit 1
+fi
+exec $real_git "\$@"
+SH
+  chmod +x "$shim/git"
+  rm -f -- "$counter"
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-after-unreadable --report "$REPORTS/rev-after-unreadable.md" \
+    --account volker > "$ROOT/rev-after-unreadable.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 4 )) || fail "an unreadable after-state exited $rc, expected 4"
+  contains "$ROOT/rev-after-unreadable.launch.log" 'can no longer be read' \
+    'an unreadable after-state is flagged with its reason'
+  contains "$RUNS/rev-after-unreadable.done" 'REVIEW-MODIFIED-TREE' \
+    'an unreadable after-state writes the flag, not a pass'
+  rm -f -- "$counter"
+}
+
 # --- a foreign completion marker --------------------------------------------
 
 # A refused launch must not append its verdict to an earlier run's marker. The
@@ -786,6 +838,8 @@ check_modified_index_flags
 check_modified_exclude
 check_modified_untracked_content
 check_modified_diff_of_dirty_file
+check_untracked_in_untracked_dir
+check_unreadable_after_state_flagged
 check_foreign_marker_refused
 check_report_from_final_message
 check_no_text_is_no_report

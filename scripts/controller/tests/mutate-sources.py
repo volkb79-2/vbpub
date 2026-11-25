@@ -88,6 +88,9 @@ pi_review_mutant("pi-review-diff-only",
 pi_review_mutant("pi-review-tools-wide",
        "printf '%s|n' --tools read,grep,find,ls --exclude-tools".replace("|", chr(92)),
        "printf '%s|n' --tools read,grep,find,ls,bash --exclude-tools".replace("|", chr(92)))
+pi_review_mutant("pi-review-status-no-uall",
+       '  status=$(git -C "$wt" --no-optional-locks status --porcelain=v1 -uall 2>/dev/null) || return 1',
+       '  status=$(git -C "$wt" --no-optional-locks status --porcelain=v1 2>/dev/null) || return 1')
 pi_review_mutant("pi-review-budget-off",
        '  if (( now_epoch - started_epoch >= review_max_seconds )); then',
        '  if (( 0 )); then')
