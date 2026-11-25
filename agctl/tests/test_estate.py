@@ -484,6 +484,12 @@ def test_truncation_leaves_a_block_that_fits_completely_alone():
     assert agg._truncate(short).splitlines() == short
 
 
+def test_truncation_after_one_fitting_line_keeps_that_line_only():
+    truncated = agg._truncate(["MERGE 0: none", "L" * 6000])
+
+    assert truncated.splitlines() == ["MERGE 0: none", agg.HEADER_MARKER]
+
+
 def test_truncation_keeps_whole_lines_and_marks_the_block():
     truncated = agg._truncate(["a" * 10, "b" * 5000])
 

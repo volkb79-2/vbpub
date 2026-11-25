@@ -398,23 +398,27 @@ def _truncate(lines: list[str]) -> str:
     """The longest run of whole lines that fits the cap, marker included.
 
     Whole lines only, because half a line can be read as a different fact. A block that already
-    fits is returned unchanged (no marker), so the function is total: the caller never has to
-    decide whether truncation was needed. If not even the first line fits, that first line is
-    cut to the cap and marked — an oversized single line must not produce an empty block.
+    fits is returned unchanged (no marker), so the function is total and the cap has exactly one
+    owner. If not even the first line fits, that first line is cut to the cap and marked — an
+    oversized single line must not produce an empty block.
+
+    The lengths are accumulated over the WHOLE list before anything is chosen: a loop that
+    breaks would leave an unreachable "ran to the end" branch, which is the kind of untested
+    path this package exists to avoid.
     """
 
     room = HEADER_LIMIT - len(HEADER_MARKER) - 2
-    if len("\n".join(lines)) <= room:
+    cumulative = 0
+    fit = 0
+    for index, line in enumerate(lines):
+        cumulative += len(line) + (1 if index else 0)
+        if cumulative <= room:
+            fit = index + 1
+    if fit == len(lines):
         return "\n".join(lines)
-    kept: list[str] = []
-    for line in lines:
-        candidate = "\n".join([*kept, line])
-        if len(candidate) > room:
-            break
-        kept.append(line)
-    if not kept:
+    if fit == 0:
         return lines[0][:room] + "\n" + HEADER_MARKER
-    return "\n".join([*kept, HEADER_MARKER])
+    return "\n".join([*lines[:fit], HEADER_MARKER])
 
 
 def read_view(config: ag_config.Config, *, now: float | None = None) -> tuple[View | None, str]:
