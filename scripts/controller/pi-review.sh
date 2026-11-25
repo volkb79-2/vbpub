@@ -229,8 +229,10 @@ record_tree_state() {
   index=$(git -C "$wt" --no-optional-locks ls-files -s -v -z 2>/dev/null |
     git hash-object --stdin 2>/dev/null) || return 1
   # `info/exclude` is the other way to hide new files from `status`. It is read
-  # through --git-path, so a linked worktree resolves its own path, not the
-  # common one; an absent file is recorded as absent rather than as empty.
+  # through --git-path. NOTE: `info/exclude` belongs to the REPOSITORY, not to one
+  # worktree, so in a linked worktree this resolves to the common dir's file and
+  # another session editing it would flag a review (a false alarm, the safe
+  # direction). An absent file is recorded as absent rather than as empty.
   path=$(git -C "$wt" --no-optional-locks rev-parse --git-path info/exclude 2>/dev/null) || return 1
   [[ $path == /* ]] || path=$wt/$path
   if [[ -e $path ]]; then

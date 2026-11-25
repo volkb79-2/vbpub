@@ -405,8 +405,10 @@ launch the wrapper records, and compares, exactly these worktree-scoped values:
 `git rev-parse HEAD`; the symbolic HEAD (`DETACHED` when detached); `git status
 --porcelain=v1 -uall`; a hash of `git ls-files -s -v -z` (index entry flags,
 which is what `--assume-unchanged`/`--skip-worktree` hides behind); the hash of
-`$(git rev-parse --git-path info/exclude)`, or `ABSENT`; the hashes of the
-pre-existing untracked files' content; and a hash of `git diff --no-ext-diff
+`$(git rev-parse --git-path info/exclude)`, or `ABSENT` (this file belongs to
+the repository: in a linked worktree it resolves to the common dir's copy, so
+another session editing it flags a review); the hashes of the pre-existing
+untracked files' content; and a hash of `git diff --no-ext-diff
 --no-textconv --no-color HEAD --binary`. Any difference appends `REVIEW-
 MODIFIED-TREE` to `<run>.done`, prints it and exits 4, leaving the changes in
 place for the controller to judge. A dirty worktree is allowed (it is compared
