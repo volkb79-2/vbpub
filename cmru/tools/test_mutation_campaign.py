@@ -70,7 +70,7 @@ def test_disposable_fixture_copies_shared_libraries_and_estate_configs(tmp_path,
         source.write_text(f"name = {relative.parts[0]!r}\n", encoding="utf-8")
 
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "cmru", "libraries/worktree", "topos", "nyxloom"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "cmru", "libraries", "topos", "nyxloom"], check=True)
     subprocess.run(
         ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"],
         check=True,

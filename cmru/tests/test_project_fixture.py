@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 import subprocess
@@ -76,12 +77,32 @@ def _estate(repo_root: Path) -> Path:
     _write(project_root / "pyproject.toml", "[tool.pytest.ini_options]\n")
     _write(project_root / "src/cmru/__init__.py", "")
     _write(project_root / "src/cmru/config.py", "VALUE = 1\n")
+    # The copied conftest imports these two from the project source; the fixture
+    # copies the real modules, this estate only needs the names it binds.
+    _write(
+        project_root / "src/cmru/process_guard.py",
+        "class DescendantLeakError(RuntimeError):\n    pass\n\n"
+        "class DescendantGuard:\n    def __init__(self, root_pid):\n        self.root_pid = root_pid\n\n"
+        "def enable_child_subreaper():\n    return False\n\n"
+        "def restore_child_subreaper(previous):\n    return None\n",
+    )
     (project_root / "config-link.py").symlink_to("src/cmru/config.py")
     for library, package in (
         ("cli-extended", "cli_extended"),  # present in the repo, must NOT be copied
         ("worktree", "worktree"),
     ):
         _write(repo_root / "libraries" / library / "src" / package / "__init__.py", "")
+    # The estate test policy is not an installed wheel dependency: cmru's
+    # tests/conftest.py locates this source tree itself (see _policy_source).
+    _write(repo_root / "libraries" / "test-policy" / "src" / "estate_test_policy" / "__init__.py", "")
+    _write(
+        repo_root / "libraries" / "test-policy" / "src" / "estate_test_policy" / "plugin.py",
+        "pytest_plugins = ()\n",
+    )
+    _write(
+        repo_root / "libraries" / "test-policy" / "src" / "estate_test_policy" / "policy.py",
+        "def analyze_source(source, **kwargs):\n    return source\n",
+    )
     _write(repo_root / ".gitignore", "*.egg-info/\n")
     # The fixture copies only TRACKED inputs, resolved through a real Git worktree.
     subprocess.run(["git", "init", "-q", str(repo_root)], check=True)
@@ -108,8 +129,71 @@ def test_disposable_project_fixture_copies_worktree_library_never_cli_extended_a
     # (and so every mutated candidate) never carries a vendored copy of its source.
     assert not (workspace / CX_LIBRARY).exists()
     assert (workspace / "libraries/worktree/src/worktree/__init__.py").is_file()
+    # The estate test policy travels with the copied suite (KI-209): conftest locates it.
+    assert (workspace / "libraries/test-policy/src/estate_test_policy/plugin.py").is_file()
     assert (workspace / "topos/cmru.toml").is_file()
     assert (workspace / "nyxloom/cmru.toml").is_file()
+
+
+def test_the_copied_suite_locates_the_estate_test_policy_it_imports(tmp_path):
+    """The fixture boundary, not the constant: the copied conftest really imports.
+
+    ``cmru/tests/conftest.py`` does not take ``estate_test_policy`` from an
+    installed wheel; ``_policy_source`` locates ``libraries/test-policy/src``
+    relative to the suite and raises ``RuntimeError: cannot locate
+    libraries/test-policy/src from cmru tests`` when the tree is absent. A
+    fixture without it therefore fails collection in the known-good R2 control
+    before a single mutant is judged (rgw-r2-20261125T202614-r1002, KI-209).
+    This runs the copied suite's own conftest in a subprocess, so a missing
+    pathspec fails here even though the pathspec constant and the copy both
+    look right.
+    """
+    repo_root = tmp_path / "repo"
+    project_root = _estate(repo_root)
+    workspace = tmp_path / "scratch"
+    # The estate above is a miniature vbpub, so it gets CMRU's REAL conftest: this
+    # test judges the locator the shipped suite runs, not a stand-in for it.
+    real_conftest = Path(__file__).resolve().parent / "conftest.py"
+    _write(project_root / "tests" / "conftest.py", real_conftest.read_text(encoding="utf-8"))
+    subprocess.run(
+        ["git", "-C", str(repo_root), "add", "cmru/tests/conftest.py"], check=True,
+    )
+    copy_project_fixture(repo_root=repo_root, project_root=project_root, workspace=workspace)
+
+    probe_source = '''
+import importlib.util, json, pathlib, sys
+
+conftest_path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("copied_conftest", conftest_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+import estate_test_policy
+print(
+    json.dumps(
+        {
+            "policy_src": str(module._POLICY_SRC),
+            "plugin_file": estate_test_policy.__file__,
+        }
+    )
+)
+'''
+    copied_conftest = workspace / "cmru/tests/conftest.py"
+    probe = tmp_path / "probe_conftest.py"
+    probe.write_text(probe_source, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(probe), str(copied_conftest)],
+        # Outside the copied tree: the locator must succeed through the copied
+        # suite's own parents, not because the working directory happens to be a
+        # checkout that still has the library.
+        cwd=str(tmp_path),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+    )
+    assert result.returncode == 0, result.stdout
+    located = json.loads(result.stdout)
+    policy_src = Path(located["policy_src"])
+    assert policy_src == (workspace / "libraries/test-policy/src").resolve()
+    assert (policy_src / "estate_test_policy" / "plugin.py").is_file()
+    assert Path(located["plugin_file"]).resolve().parent == policy_src / "estate_test_policy"
 
 
 def test_fixture_carries_the_suite_collection_inputs_and_keeps_skip_keys_and_untracked_state_out(tmp_path):
