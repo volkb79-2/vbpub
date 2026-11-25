@@ -389,21 +389,23 @@ def render_header(rows: list[Row], view: View) -> str:
     lines.append("PEERS: " + (peers or "none"))
     own = age_bucket(view.now - view.handover_mtime) if view.handover_mtime is not None else AGE_UNKNOWN
     lines.append(f"HANDOVER own {own}")
-    text = "\n".join(lines)
-    if len(text) + 1 > HEADER_LIMIT:
-        text = _truncate(lines)
-    return text + "\n"
+    # `_truncate` is total: it returns the block unchanged when it already fits, so the cap is
+    # guaranteed in one place instead of an `if` here and another cut inside.
+    return _truncate(lines) + "\n"
 
 
 def _truncate(lines: list[str]) -> str:
     """The longest run of whole lines that fits the cap, marker included.
 
-    Whole lines only, because half a line can be read as a different fact. If not even the
-    first line fits, that first line is cut to the cap and marked — an oversized single line
-    must not produce an empty block.
+    Whole lines only, because half a line can be read as a different fact. A block that already
+    fits is returned unchanged (no marker), so the function is total: the caller never has to
+    decide whether truncation was needed. If not even the first line fits, that first line is
+    cut to the cap and marked — an oversized single line must not produce an empty block.
     """
 
     room = HEADER_LIMIT - len(HEADER_MARKER) - 2
+    if len("\n".join(lines)) <= room:
+        return "\n".join(lines)
     kept: list[str] = []
     for line in lines:
         candidate = "\n".join([*kept, line])
