@@ -6,6 +6,15 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Added
+- `resume-read.sh <role>` (P-plat-22a): one read-only call prints the slices a restarted
+  session needs (main: PRIME, the newest `RESUME HERE #N` block + its `(#N ...)` lines, the
+  section 8 tail, the last 3 operator-decision sections, `git log -8 origin/main`, the worktree
+  count; a topic: STATE.md, platform/assay HANDOFF block, a newer successor handover,
+  PRIME-<topic>, PROGRAM.md sections 1-3 headings + section 8 tail), each under a header with
+  size and cap, cut at its cap with a visible marker, `MISSING` for an absent file, exit 2 for an
+  unknown role. Test: `tests/test-resume-read.sh` (wired into `run-suite.sh`).
+
 ### Test fix: piped `grep -q` under pipefail
 - `tests/test-ctl-state-backup.sh`, `test-gate-slots.sh`, `test-skills-sync.sh`: a producer piped into `grep -q` could get SIGPIPE (rc 141) when grep exited on the first match while the producer was still writing, and `pipefail` then made the condition false (`--include-large must archive the large file` failed on r1002, 2026-11-24). The three uses now read to EOF (`grep ... >/dev/null`). `test-job-check.sh` was reviewed and left alone: its `grep -qF` calls read a file argument, not a pipe.
 
@@ -14,6 +23,28 @@ no separate version number, so entries are grouped by the work that landed.
 - `resume-lib.sh`: `pane_state` split into `pane_state_of` / `input_row_of` (same behaviour, reused by the watcher); `resolve_pane` (exit 2 when the target does not resolve to a pane id) and `lock_pane`. `compact-resume.sh` / `clear-resume.sh` lock on the resolved `#{pane_id}` like the watcher (exit 7 after 2 min on a held lock). Their tests use a temp lock dir (`*_LOCK_DIR`) and a stub `display`.
 
 ### Changed
+- `hooks/ctx-hooks.py` context policy (P-plat-22a, operator 2026-11-24): the controller is
+  INFORMed at 200k to reach a voluntary stop for compaction (write the handover, launch
+  `compact-resume.sh` detached), reminded more urgently at 250k, and at 300k the yield is
+  FORCED: new mode `pre-tool-use` lets `CTX_FORCE_GRACE` (5) tool calls pass, then denies every
+  call except Write/Edit under the state directory or of `plan.yaml` and a Bash call that is only
+  the `compact-resume.sh`/`clear-resume.sh` launch (fail open without a readable fill or state;
+  never for agents). The 500k/650k ceilings, `CTX_SOFT_CONTROLLER`/`CTX_CONTROLLER_SOFT` and the
+  `autoCompactWindow` lookup are removed; the growth marker counts calls to the forced yield.
+  A NEW `PreToolUse` entry is needed in `.claude/settings.local.json`. The session-start text
+  names `resume-read.sh <role>` as the one first command, keeps the live hook's pointers (PRIME,
+  PROGRAM.md sections 1-3 and the section 8 tail, ListAgents, write your state file) and prints
+  the block's `FIRST ACTION` line (P-plat-05 r2 nit 4).
+- P-plat-05b (r2 nits): the tests run against a throwaway default state directory
+  (`CTX_STATE_DIR`), so a run from the main checkout never writes the live hook log;
+  `readback-state-<sid>.json` moved to `<state>/hooks/` (the old location is still read);
+  pre-compact prunes (newest 3 readbacks per session, pressure/force/readback-state files
+  untouched for 14 days); AGENTS.md and HARNESS-COMPACTION-CHECKLIST.md name
+  `readback-<sid>-N.md`. Mutants: ceiling/soft-alias/effective-soft/soft-handover removed, 11
+  added for the thresholds, the grace, the allow-list, prune, FIRST ACTION and the legacy state.
+- `dev-profiles.toml:57` (hostobs profile): `dev_image` is now
+  `tester-unified-rust-dev:rs-20261124b`, moved by q266 (hostobs P-hostobs-09,
+  vbpub@2d2e1a566); recorded here, the file itself is unchanged by this entry.
 - `hooks/ctx-hooks.py` is now a drop-in replacement for the untracked live hook
   `.controller-state/hooks/ctx.py` (CTL-43; wiring and deleting `ctx.py` are the
   controller's step): only the command path in `.claude/settings.local.json`

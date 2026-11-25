@@ -426,12 +426,11 @@ secret, so the hook logs, stores and prints only a `<REGEX>` placeholder.
 replaced an untracked 203-line copy that told the controller "auto-compaction is
 the only limit: never stop" (it contradicts the operator's 2026-11-18 handover
 decision: auto-compaction is not a safe handover) and hard-coded a 500k ceiling.
-The ceiling is the model's `autoCompactWindow` from `~/.claude/settings.json`
-(model entry, else top-level, else a documented default), read from the
-session's own transcript model. The soft threshold is the one place the wording
-changes: below it the controller keeps working and persists at boundaries, at or
-past it the controller writes the handover, syncs the plan, sets READY and ends
-the turn; an agent finishes or returns PARTIAL from its own threshold. The read
+Since 2026-11-24 (operator) no ceiling and no `autoCompactWindow` enter the policy:
+the named thresholds are the one place the wording changes. Below 200k the controller
+persists at boundaries, from 200k (urgent from 250k) it writes the handover and launches
+`compact-resume.sh` itself, and from 300k a `PreToolUse` deny forces that after a
+5-call grace; an agent finishes or returns PARTIAL from its own threshold. The read
 order after a compaction is the READ FIRST line of the newest handover block,
 so a handover edit needs no hook edit.
 - **State, not a checkout path.** The state directory comes from a flag, then

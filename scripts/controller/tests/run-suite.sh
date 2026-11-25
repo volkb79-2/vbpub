@@ -34,6 +34,7 @@ files=(
   "$SCRIPT_DIR/../clear-resume.sh"
   "$SCRIPT_DIR/../compact-resume.sh"
   "$SCRIPT_DIR/../resume-lib.sh"
+  "$SCRIPT_DIR/../resume-read.sh"
   "$SCRIPT_DIR/../ctl-keepalive.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
   "$REPO_ROOT/scripts/netcup/runner/remote-gate-cache.sh"
@@ -54,6 +55,7 @@ files=(
   "$SCRIPT_DIR/test-ctl-state-backup.sh"
   "$SCRIPT_DIR/test-clear-resume.sh"
   "$SCRIPT_DIR/test-compact-resume.sh"
+  "$SCRIPT_DIR/test-resume-read.sh"
   "$SCRIPT_DIR/test-ctl-keepalive.sh"
   "$SCRIPT_DIR/run-suite.sh"
   "$queue_test"
@@ -85,6 +87,7 @@ bash "$SCRIPT_DIR/test-ctl-hygiene.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-state-backup.sh" || exit $?
 bash "$SCRIPT_DIR/test-clear-resume.sh" || exit $?
 bash "$SCRIPT_DIR/test-compact-resume.sh" || exit $?
+bash "$SCRIPT_DIR/test-resume-read.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-keepalive.sh" || exit $?
 bash "$queue_test" || exit $?
 bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh" || exit $?

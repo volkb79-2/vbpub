@@ -23,6 +23,7 @@ from typing import Any, Callable, Sequence
 
 from . import devio
 from .devio import HIST_BINS, PERCENTILES, FioJob, bin_value_ns, parse_job
+from .errors import Aborted, Refusal
 from .extents import Extents
 from .host import (TAIL_BYTES, HostError, RunResult, SEEK_EXTENT_FILESYSTEMS, StatInfo, TargetRef, check_argv, check_preallocate,
                    check_sysfs_path)
@@ -533,6 +534,14 @@ class FakeHost:
         self.nlinks: dict[str, int] = {}
         self.devices: dict[str, FakeDevice] = {}
         self.exclusive_device_conflicts: set[str] = set()  # injected O_EXCL busy result; does not model ordinary open descriptors
+        self.claims: dict[str, TargetRef] = {}
+        self.claim_fds: dict[str, int] = {}
+        self.raw_handles: list[FakeHandle] = []
+        self.process_launches: list[tuple[list[str], tuple[int, ...]]] = []
+        self.discard_requests: list[list[str]] = []
+        self.discard_hook: Callable[[FakeHost, int, int], None] | None = None
+        self.unreaped_children: set[int] = set()
+        self.fio_preamble = ""
         self.dynamic: dict[str, Callable[[], str]] = {}
         self.mounts: list[tuple[str, str, str, str, str, str]] = []  # (ns, devno, mountpoint, source, fstype, opts)
         self.fs_space: dict[str, list[int]] = {}
@@ -547,6 +556,7 @@ class FakeHost:
         self.sysfs_clamp: dict[str, str] = {}  # path -> the value the kernel stores whatever is written (clamped or rounded)
         self.events: list[tuple[float, int, Callable[[], None]]] = []
         self.pending: str | None = None
+        self.escalated = False
         self.signals_installed = False
         self.probe_failures: dict[str, RunResult] = {}  # command basename -> a failing result to return instead of the normal one
         self.known_units: set[str] = set()
@@ -760,7 +770,20 @@ class FakeHost:
 
     def add_mount(self, devno: str, mountpoint: str, source: str, fstype: str = "ext4", options: str = "rw,relatime",
                   ns: str = "both") -> None:
+        if any(claim.devno == devno or claim.path == source for claim in self.claims.values()):
+            raise Refusal("device_in_use", f"Linux refused to mount {source}: iobench holds an O_EXCL claim",
+                          "release the iobench claim before mounting")
         self.mounts.append((ns, devno, mountpoint, source, fstype, options))
+
+    def add_swap(self, path: str) -> None:
+        claimed = next((claim for claim in self.claims.values() if claim.path == path), None)
+        if claimed is not None:
+            raise Refusal("device_in_use", f"Linux refused swapon on {path}: iobench holds an O_EXCL claim",
+                          "release the iobench claim before enabling swap")
+        current = self.files.get("/proc/swaps", "Filename Type Size Used Priority\n")
+        if not current.endswith("\n"):
+            current += "\n"
+        self.put("/proc/swaps", current + f"{path} partition 1 0 -2\n")
 
     def _mountinfo_self(self) -> str:
         return self._mountinfo("self")
@@ -917,6 +940,8 @@ class FakeHost:
             if needle in job.name:
                 self.cut_done[needle] = self.cut_done.get(needle, 0) + int(sim.io_bytes)
         out, rate_log, hist_log = self.fio.render(job, sim)
+        if self.fio_preamble:
+            out = self.fio_preamble + out
         self.put(job.log_path, rate_log)
         if hist_log is not None:
             self.put(job.hist_path, hist_log)
@@ -941,11 +966,20 @@ class FakeHost:
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
         if target.kind == "device" and target.path in self.exclusive_device_conflicts:
-            raise HostError(f"{target.path} has an injected exclusive block-device conflict")
+            raise Refusal("device_in_use", f"{target.path} has an injected exclusive block-device conflict",
+                          "remove the fake mount/swap/exclusive holder before retrying")
         self._log(argv, bound=True)
+        job = devio.assert_writer_bound(argv, target, offset, length)  # the same binding RealHost enforces (parity)
+        launch, pass_fds = argv, ()
+        if target.kind == "device":
+            fd = self._claim_fd_for(target, write=True)
+            launch = [f"--filename=/dev/fd/{fd}" if token == f"--filename={target.path}" else token for token in argv]
+            if launch.count(f"--filename=/dev/fd/{fd}") != 1:
+                raise HostError("the planned fio argv does not name the claimed target exactly once")
+            pass_fds = (fd,)
         dev = self._verify(target)
         dev.check_range(offset, length, "fio")
-        job = devio.assert_writer_bound(argv, target, offset, length)  # the same binding RealHost enforces (parity)
+        self.process_launches.append((list(launch), pass_fds))
         self._crash_check()
 
         handle = self._launch(job, dev, time_based="--time_based" in argv)
@@ -957,21 +991,43 @@ class FakeHost:
             dev.written.add(offset, offset + (length if job.random else min(length, done)))
 
         handle.on_finish = finish
+        if target.kind == "device":
+            self.raw_handles.append(handle)
         return handle
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
         if target.kind == "device" and target.path in self.exclusive_device_conflicts:
-            raise HostError(f"{target.path} has an injected exclusive block-device conflict")
+            raise Refusal("device_in_use", f"{target.path} has an injected exclusive block-device conflict",
+                          "remove the fake mount/swap/exclusive holder before retrying")
         self._log(argv, bound=True)
-        dev = self._verify(target)
+        self.discard_requests.append(list(argv))
         devio.assert_discard_bound(argv, target, offset, length)
+        if target.kind == "device":
+            self._claim_fd_for(target, write=False)
+        dev = self._verify(target)
         dev.check_range(offset, length, "discard")
         if not dev.discard_supported:
             return RunResult(1, "", "Operation not supported")
-        dev.written.remove(offset, offset + length)
+        if target.kind == "device":
+            remaining, position = length, offset
+            while remaining:
+                if self.escalated:
+                    raise Aborted("second signal during raw-device discard")
+                chunk = min(remaining, 1 << 30)
+                dev.written.remove(position, position + chunk)
+                if self.discard_hook is not None:
+                    self.discard_hook(self, position, chunk)
+                position += chunk
+                remaining -= chunk
+        else:
+            dev.written.remove(offset, offset + length)
         return RunResult(0, "", "")
 
     def write_marker(self, target: TargetRef, text: str) -> None:
+        if target.kind == "device":
+            if self.claims.get(target.path) != target:
+                raise HostError(f"{target.path}: a raw-device marker is written only through the run's held O_EXCL claim")
+            self._verify_claim_identity(target)
         dev = self._verify(target)
         dev.check_range(dev.tail_start, max(len(text), 1), "marker")
         dev.marker = text
@@ -987,6 +1043,88 @@ class FakeHost:
         if start < 0 or end < start or end > target.size_bytes - TAIL_BYTES:
             raise HostError(f"extent query [{start}, {end}) is outside the usable extent of {target.path}")
         return self._verify(target).written.overlap(start, end)
+
+    def claim(self, target: TargetRef) -> int:
+        if target.kind != "device":
+            raise HostError(f"{target.path}: only a block device can be claimed")
+        if self.claims:
+            existing = self.claims.get(target.path)
+            if existing == target:
+                return self.claim_fds[target.path]
+            raise HostError(f"{target.path}: another raw target is already claimed by this host")
+        if target.path in self.exclusive_device_conflicts:
+            raise Refusal("device_in_use", f"{target.path} is already mounted, swap-active, or exclusively held",
+                          "release the holder before retrying")
+        self._verify_claim_identity(target)
+        fd = 9000 + len(self.claim_fds)
+        self.claims[target.path] = target
+        self.claim_fds[target.path] = fd
+        return fd
+
+    def release_claim(self) -> str | None:
+        if not self.claims:
+            return None
+        active = [str(handle.start) for handle in self.raw_handles if handle.poll() is None]
+        if active:
+            return f"raw_claim_child_unreaped: raw writer handle(s) {', '.join(active)} still hold the claim"
+        if self.unreaped_children:
+            return f"raw_claim_child_unreaped: child pid(s) {', '.join(map(str, sorted(self.unreaped_children)))} still hold the claim"
+        for path in list(self.claims):
+            self.claims.pop(path)
+            self.claim_fds.pop(path)
+        self.raw_handles.clear()
+        return None
+
+    def _claim_fd_for(self, target: TargetRef, *, write: bool | None = None) -> int:
+        held = self.claims.get(target.path)
+        if held is None:
+            if write is True:
+                raise Refusal("raw_device_write_unsupported",
+                              f"raw-device fio writes to {target.path} are disabled: fio opens the path itself and cannot use iobench's kernel O_EXCL claim for the whole write interval",
+                              "use a file target; raw-device writes require a writer that performs I/O through the same held O_EXCL descriptor")
+            if write is False:
+                raise Refusal("raw_device_write_unsupported",
+                              f"raw-device discard on {target.path} is disabled: blkdiscard cannot use iobench's kernel O_EXCL claim for the whole discard interval",
+                              "use a file target; raw-device mutation requires a writer that performs I/O through the same held O_EXCL descriptor")
+            raise Refusal("raw_device_write_unsupported",
+                          f"raw-device mutation on {target.path} is disabled without a matching held O_EXCL claim",
+                          "enable raw writes and prepare the target first")
+        if held.size_bytes != target.size_bytes:
+            raise Refusal("raw_target_size_changed",
+                          f"{target.path}: the held claim names size {held.size_bytes}, not {target.size_bytes}",
+                          "stop and rerun `iobench target init` if the resize was intentional")
+        if held.devno != target.devno:
+            raise Refusal("raw_target_devno_changed",
+                          f"{target.path}: the held claim names device {held.devno}, not {target.devno}",
+                          "stop and rerun `iobench target init` against the intended partition")
+        if held.partuuid != target.partuuid:
+            raise Refusal("raw_target_partuuid_changed",
+                          f"{target.path}: the held claim names PARTUUID {held.partuuid}, not {target.partuuid}",
+                          "stop and rerun `iobench target init` against the intended partition")
+        if held != target:
+            raise Refusal("raw_target_claim_mismatch",
+                          f"{target.path}: the held O_EXCL claim belongs to a different raw target identity",
+                          "do not mutate a target after its claim is taken; rerun from `target init`")
+        self._verify_claim_identity(held)
+        return self.claim_fds[target.path]
+
+    def _verify_claim_identity(self, target: TargetRef) -> None:
+        """Re-check the live fake device against the identity named before the claim."""
+        dev = self.devices.get(target.path)
+        if dev is None:
+            raise HostError(f"no such target {target.path}")
+        if dev.size != target.size_bytes:
+            raise Refusal("raw_target_size_changed",
+                          f"the size of {target.path} changed ({target.size_bytes} -> {dev.size})",
+                          "stop and rerun `iobench target init` if the resize was intentional")
+        if dev.devno != target.devno:
+            raise Refusal("raw_target_devno_changed",
+                          f"the device number of {target.path} changed ({target.devno} -> {dev.devno})",
+                          "stop and rerun `iobench target init` against the intended partition")
+        if dev.partuuid != target.partuuid:
+            raise Refusal("raw_target_partuuid_changed",
+                          f"the PARTUUID of {target.path} changed ({target.partuuid} -> {dev.partuuid})",
+                          "stop and rerun `iobench target init` against the intended partition")
 
     def _spawn_workdir(self, job: FioJob) -> FakeHandle:
         sc = self.scenario
@@ -1045,6 +1183,8 @@ class FakeHost:
         return self.pending
 
     def deliver_signal(self, name: str) -> None:
+        if self.pending is not None:
+            self.escalated = True
         self.pending = name
 
     def install_signals(self) -> None:

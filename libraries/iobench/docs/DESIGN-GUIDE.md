@@ -177,7 +177,7 @@ An installer needs a useful identity and sanity check at a cost of about three m
 
 The eight IB-VQ runs showed that the cold-region class was not repeatable on the same disk. `veryquick` therefore reports `cache_state: undetermined` and `class: not_assessed`, while retaining the raw observation as `diagnostic_class`. That profile can decide disk identity, basic plausibility/sanity, and read/write IOPS. It cannot decide cache class, establish a cache-free cap or model, or provide tuning values. Every cap and model value is `unproven: veryquick_profile`; the model is a two-size coarse formula (`bps` from the 128 KiB sequential rate, `randiops` from the 4 KiB random rate, `seqiops = bps // 4096`), not a fit. A closing reference cell still does not fit; the plan does not claim to detect a moving ceiling.
 
-Raw-device marker initialization is supported, but RealHost refuses raw-device write and discard stages. The fio command opens a path itself and `blkdiscard` has no way to use iobench's held descriptor, so neither can retain a kernel `O_EXCL` claim for the full mutation interval. The smallest safe behavior is to disable raw mutation until a claimed writer exists. The marker's `O_EXCL` open protects only that marker operation. At a raw writer boundary, the `O_RDONLY|O_EXCL` probe detects a Linux block-device holder conflict, such as a mounted filesystem or another exclusive holder; an ordinary non-exclusive opener does not make it fail. The probe closes immediately and does not reserve the device. `--allow_mounted_write=0` stays as an additional mounted-device guard and does not exclude ordinary process openers. Use a preallocated file for benchmark runs. On btrfs, file targets and matrix work dirs are accepted only when `/sys/fs/btrfs/<uuid>/devices` identifies exactly one backing device; multi-device or unreadable member lists are refused because one device number would misrepresent a multi-device filesystem. Root and namespace checks use the resolved source identity and retain the raw mountinfo number to match aliases. File results include extent mapping, filesystem allocation and copy-on-write effects, so use them as filesystem-layer observations and do not compare their absolute rates directly with raw-partition results.
+Raw-partition mutation is opt-in with `--allow-raw-write` and a marker from `target init --i-own-this-device --expect-size --expect-partuuid`. Marker initialization takes its own short-lived claim. Without the run flag, a raw write or discard keeps the word-for-word `raw_device_write_unsupported` refusal. With it, S0 takes a separate `O_RDWR|O_EXCL|O_CLOEXEC` claim before the first raw stage, checks the claimed descriptor with `fstat`, `BLKGETSIZE64` and the live PARTUUID, and holds the descriptor until restore has reaped every child. Planned fio argv keeps the logical partition path so extent binding remains visible; at launch RealHost rewrites exactly that one `--filename` argument to `/dev/fd/N` and passes the descriptor through both the supervisor and fio. Raw discard keeps `devio.blkdiscard_argv` as its authorisation shape but executes `BLKDISCARD` ioctl requests on the claim descriptor in chunks of at most 1 GiB, checking for a second signal between chunks; `EOPNOTSUPP` is returned as the named `Operation not supported` outcome rather than a traceback. The kernel normally rejects unsupported discard before accepting any chunk, but if a later chunk returns `EOPNOTSUPP`, the named result can describe a range whose earlier chunks were already discarded. The claim blocks mount, swapon, md/dm setup and other `O_EXCL` openers, but it does not exclude ordinary non-exclusive openers. The planned `--allow_mounted_write=0` is retained for argv parity and fio's own semantics; after the `/dev/fd/N` rewrite fio cannot match the descriptor against the mount table, so the claim is the mounted-device guard. Whole disks, dm/md/loop devices, mounted/root/holder/swap-active targets, a missing PARTUUID and a changed PARTUUID/size/device number are refused for every device verb, including `target show`, result identity and read-only stages. A marker previously written on an unsupported target shape cannot be read; re-run `target init` on a dedicated partition carrying a PARTUUID. Use a file target when the partition cannot satisfy those conditions. On btrfs, file targets and matrix work dirs are accepted only when `/sys/fs/btrfs/<uuid>/devices` identifies exactly one backing device; multi-device or unreadable member lists are refused because one device number would misrepresent a multi-device filesystem. Root and namespace checks use the resolved source identity and retain the raw mountinfo number to match aliases. File results include extent mapping, filesystem allocation and copy-on-write effects, so use them as filesystem-layer observations and do not compare their absolute rates directly with raw-partition results.
 
 `fallocate` reserves a file extent; it does not write the bytes. The fill and each later write cover only their planned ranges, so a file target can retain a large allocated-but-unwritten gap. A read there may be answered from the filesystem's zero page without a device request, which would inflate an IOPS measurement and say nothing about the disk. `target init` and `target show` therefore expose the usable extent as `usable_bytes`, the logical data-extent coverage as `written_bytes`, and the remaining gap as `unwritten_bytes`. RealHost derives this value with `SEEK_DATA`/`SEEK_HOLE` only for ext4, XFS, and single-device Btrfs, clipping to `[0, usable_bytes)`; FakeHost models the same extent map. It is not physical allocation, nonzero content, or a count of fio-written bytes. The query cost follows the number of reported extents (about two metadata seeks per extent); a fragmented file can take more seeks. Other filesystem types return a `null` number and an explicit `written_bytes_status`; tmpfs remains refused as a target. A raw device has no file extent map, and a dry run does not create one. Failed seeks are errors, never a fallback to file size or allocated-block count.
 
@@ -219,25 +219,57 @@ consumers get a cmru-released wheel with its sha256 (never PyPI; no zipapp: it c
 
 ### Registered repository gate
 
-The R2 lane is a native Assay lane in `run-gate.toml`, rather than a command
-that assembles `python -m assay.cli run` itself. Native dispatch lets
-Run-Gate apply and record its R2 `jobs` policy, while Assay owns the
-verdict, progress stream and candidate state contract. Run-Gate moves
-resumable state under the checkout's ignored `.run-gate/` area so retries
-through ephemeral worktrees retain the same campaign state.
-The former command lane's state and progress paths are not imported: the
-native lane starts a new campaign state under the Run-Gate storage contract.
+The repository gate is `run-gate r0-r1` and nothing else. Mutation is a
+different event with a different budget, and an owed R2 is settled
+asynchronously on the latest code, so no merge gate is held to a mutation
+verdict. That split is not cosmetic: the whole-target campaign plans 1891
+candidates for this package, and the 2026-11-24 run judged 75 of them in 6 h
+(0.2 cand/min, ETA about 8450 min), so every iobench merge gate ended
+`BUDGET_EXCEEDED`. A gate that cannot finish is not a gate.
 
-The Assay lane declares `jobs_max = 4`; Run-Gate's `jobs = "auto"` policy
-uses measured candidate RSS when available, otherwise a conservative 1 GiB
-estimate, and stays at one worker unless Assay's prepared workspace confirms
-its supported btrfs cheap clone. The old Assay `jobs = 1` key was a legacy
-alias for `jobs_max`, not a per-run worker choice, so leaving it in place
-would have capped the opt-in policy at one.
+The two mutation lanes are named, run by the controller, and one lane cannot
+be both (Assay refuses `judge.base_source` under `mode = "whole_target"` and
+`judge.targets` under `changed_lines`, `assay/src/assay/config.py:2874-2880`,
+`:2894-2899`):
+
+* `r2` (Assay lane `iobench-diff`) is the **diff-scoped** owed lane: only the
+  lines a request base..HEAD diff adds under `src/iobench`, mode
+  `changed_lines`, `rigor = ["R0", "R2"]`, `base_source = "request"`. The plan
+  for the WP-10 P1 change is 98 candidates, about 5 % of the whole-target set.
+  It declares `jobs = 3` EXPLICITLY rather than `"auto"`, so every host gets
+  the same count; that is legal only inside an enforced 4g cap with the
+  counted CPUs and a Cowtree-confirmed btrfs cheap-clone workspace, and a
+  host without that CoW area refuses `--jobs 3` by name instead of silently
+  serialising. `candidate_ram = "512m"` is a declared floor over the measured
+  per-candidate RSS (p95 374 MiB), which is what makes the arithmetic
+  `memory_workers = 3072 // 512 = 6` honest.
+* `r2-whole` is the **periodic whole-package** campaign: the previous lane,
+  unchanged in behaviour (every shipped module, `jobs = "auto"`, 1536m,
+  365m). It remains the only way to judge a file nobody touched in the change
+  under judgement, and it is run deliberately, never as the R2 of one diff.
+
+Both are native Assay lanes in `run-gate.toml`, rather than a command that
+assembles `python -m assay.cli run` itself. Native dispatch lets Run-Gate
+apply and record its R2 `jobs` policy, while Assay owns the verdict, progress
+stream and candidate state contract. Run-Gate moves resumable state under
+the checkout's ignored `.run-gate/` area so retries through ephemeral
+worktrees retain the same campaign state. The former command lane's state and
+progress paths are not imported: the native lane starts a new campaign state
+under the Run-Gate storage contract.
+
+The whole-package lane still opts into `jobs = "auto"`; Assay's lane declares
+`jobs_max = 4`, and Run-Gate's auto policy uses measured candidate RSS when
+available, otherwise a conservative 1 GiB estimate, and stays at one worker
+unless Assay's prepared workspace confirms its supported btrfs cheap clone.
+The old Assay `jobs = 1` key was a legacy alias for `jobs_max`, not a per-run
+worker choice, so leaving it in place would have capped the opt-in policy at
+one. The operator procedure for the diff-scoped lane (two shards, one commit,
+admission, store/resume, reading the binding verdict) is
+[docs/R2-RUNBOOK.md](R2-RUNBOOK.md).
 
 ## 9. Safety design
 
-* **Target guard (finding P-01)**: a target is usable only with iobench's own marker (the last 1 MiB), written by `iobench target init`, which refuses a mounted (checked in the caller's **and** PID 1's mount namespace), swap, root-disk or signature-bearing device unless `--i-own-this-device` is given together with the matching `--expect-size` and `--expect-partuuid` (or `--expect-serial`); a device with neither identity is refused. The marker is re-verified before **every** writing stage (fio, discard, fill) in every profile; `--installer` only waives the live-host refusals. iobench never runs `mkfs`, `mount`, `umount` or a bare `wipefs` (no builder exists).
+* **Target guard (finding P-01)**: a target is usable only with iobench's own marker (the last 1 MiB), written by `iobench target init`, which refuses a mounted (checked in the caller's **and** PID 1's mount namespace), swap, root-disk, holder, whole-disk, dm, md, loop or signature-bearing device. A device marker requires explicit `--i-own-this-device`, the exact `--expect-size` and the exact mandatory `--expect-partuuid`; `--expect-serial` is only an optional additional equality check, never an identity substitute. The marker is re-verified before **every** writing stage (fio, discard, fill) in every profile; `--installer` only waives the live-host refusals and never the raw-write flag, marker, claim or target guards. iobench never runs `mkfs`, `mount`, `umount` or a bare `wipefs` (no builder exists).
 * **Never `io.max`**: no `io.max`, `IOReadBandwidthMax=`, `set-property`, `daemon-reload`. Slice `io.max` is read before and after and a difference is exit 9 (the systemd per-spelling hazard, guide s6).
 * **Restore on every exit** from a journal in `/run/iobench/restore.json` written before the first change; a knob is restored only if its value still equals what iobench applied (never clobber a newer setting); created work-dir files are removed; verified by read-back.
 * **Volumes from time and measured rate**, never fixed; a truncated stage yields an honest failed stage, not a guessed value. On a slow capped disk the calibration works time-bounded from the measured cap (conflict C-2).
@@ -351,7 +383,7 @@ Not decided here (see IMPLEMENTATION-NOTES `DECISION-NEEDED`): a `--dry-run` tha
 ## Decisions added by the coordinator rulings after the first review wave
 
 * **A dry run is a plan, not an acceptance.** `--dry-run` stays plan-only for this release, and its output (human and `--json`) carries `preflight: not_run` so that a clean dry run cannot read as "this target will be accepted". A report mode is backlog IOB-BL-01.
-* **Raw-device mutation is refused until a claimed writer exists (IOB-BL-28).** `write_marker` uses kernel `O_EXCL` only while writing the marker, then closes it. That does not reserve the device for later stages. fio 3.39 has no raw-device O_EXCL option; its [HOWTO](https://github.com/axboe/fio/blob/fio-3.39/HOWTO.rst) and [Debian 3.39-1 manual](https://sources.debian.org/src/fio/3.39-1/fio.1/) document `allow_mounted_write` but not an exclusive device open, and upstream [issue 1820](https://github.com/axboe/fio/issues/1820) requests that feature. `lockfile=exclusive` is a fio coordination lock, not a kernel block-device claim. Because fio and `blkdiscard` cannot use the same held descriptor that owns an O_EXCL claim, RealHost refuses raw `write_range` and `discard_range` before launching a mutating process. It probes the device at that boundary with `O_RDONLY|O_EXCL`; on Linux this detects a kernel block-device holder conflict, such as a mounted filesystem or another exclusive holder, and reports `device_in_use`. An ordinary non-exclusive opener does not make the probe fail. If the probe succeeds, RealHost still refuses with `raw_device_write_unsupported`. This keeps raw mutators from launching; it does not establish ordinary-opener exclusion. `--allow_mounted_write=0` remains on device fio jobs as an additional guard against mounted-target writes. The fio floor remains >= 3.30 for its separate latency-field requirement; S0 checks the exact mounted-write option in the installed binary. The first host acceptance must verify that the probe reports EBUSY for a mounted device or another exclusive holder, does not report EBUSY for an ordinary non-exclusive reader alone, and never launches a raw mutator; raw mutation itself remains unavailable.
+* **Raw mutation requires one held run claim (IOB-BL-28, IOB-TGT-12).** Marker initialization uses its own short-lived claim. `RealHost.claim` opens the partition with `O_RDWR|O_EXCL|O_CLOEXEC`; `EBUSY`/`EAGAIN` become `device_in_use`. A second exclusive open from the same process is therefore not attempted: `write_marker` writes through the held descriptor, and raw discard issues `BLKDISCARD` on it. S0 takes the run claim before the first raw stage and restore closes it only after all child processes have been reaped. The supervisor writes a reserved unreaped sentinel when adopted children remain, so `poll()`, `wait()` and `kill()` report `raw_claim_child_unreaped` deterministically on normal and abort paths; release also refuses to close while a registered raw handle is still running. For fio, the planned argv keeps `--filename=PATH`, so `assert_writer_bound` and `check_argv` bind the authorised extent. At launch the host rewrites exactly one filename to `/dev/fd/N`, passes the descriptor to the process-group supervisor and then to fio, and leaves `PR_SET_PDEATHSIG` on the supervisor. The claim excludes mount, swapon, md/dm setup and other `O_EXCL` openers, but not ordinary non-exclusive openers. Device jobs retain `--allow_mounted_write=0` for argv parity and fio's own semantics; fio cannot match `/dev/fd/N` against the mount table, so the claim is the actual mounted-device guard. The fio floor remains >= 3.30 for its separate latency-field requirement, and S0 checks the exact mounted-write option in the installed binary. The r1002 2026-11-24 probe verified the claim, fio through `/dev/fd/N`, direct sequential/random writes and the fio cache-invalidation preamble; destructive raw calibration, mount/swapon EBUSY, discard and cleanup remain P4 acceptance.
 * **Runtime bindings.** `RealHost.run`/`spawn` enforce the argv allowlist (shape per tool; fio argv must carry only the option keys `FioJob.argv()` builds, each once (abbreviations and repeats refused), `--ioengine=libaio` only; `systemctl stop` only for `iobench-probe-*` units), `write_range` parses the argv and requires exactly the authorised target, offset and size outside the reserved tail, and `--allow_mounted_write=0` on a device target, and `discard_range` requires the exact output of the typed builder. FakeHost enforces the same functions (`devio.assert_writer_bound`, `assert_discard_bound`), so the parity the notes claim is real.
 * **The probe unit is waited for.** `systemd-run --wait` returns when the unit has finished (the probe script writes its output only at its end); the unit's return code is checked. Without it the sync-latency cell read the file before it existed.
 * **A second signal is not deferred.** A blocking command (`blkdiscard`, `fallocate`) runs in 0.5 s slices; a second SIGTERM/SIGINT/SIGHUP kills it and aborts. The first signal remains a flag honoured at the next tick.
@@ -369,11 +401,10 @@ The one-off IBX study measures how the `veryquick`, `quick`, and `standard`
 ladder rungs vary over time and how ext4-file and btrfs-file measurements bias
 against the raw reference. The implementation lives in
 [`studies/ibx/`](../studies/ibx/README.md), separate from the `iobench`
-calibration CLI. The CLI keeps refusing raw writes because fio and
-`blkdiscard` cannot hold the same kernel `O_EXCL` descriptor; the study needs a
-controlled raw-partition reference and therefore invokes its own bounded fio
-job files through the approved host wrapper. It records no SSH or host
-orchestration code.
+calibration CLI. The CLI can mutate a raw partition only under the held claim
+described above; the study needs its own bounded workload schedule, separate
+target-consent and resume policy, and therefore invokes its fio job files
+through the approved host wrapper. It records no SSH or host orchestration code.
 
 The driver fails closed on target geometry, active io.cost and cgroup IO
 controls, monitor thresholds, write/time budgets, and timer state during live

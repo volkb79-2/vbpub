@@ -5,6 +5,7 @@
       "kind": "minimum",
       "members": [
         "option:route:entrypoint:iobench/calibrate/--target",
+        "option:route:entrypoint:iobench/calibrate/--allow-raw-write",
         "option:route:entrypoint:iobench/calibrate/--confirm-quiet-window",
         "option:route:entrypoint:iobench/calibrate/--installer",
         "option:route:entrypoint:iobench/calibrate/--profile"
@@ -12,6 +13,7 @@
       "route_id": "route:entrypoint:iobench/calibrate",
       "shape": {
         "defaulted_options": [
+          "option:route:entrypoint:iobench/calibrate/--allow-raw-write",
           "option:route:entrypoint:iobench/calibrate/--confirm-quiet-window",
           "option:route:entrypoint:iobench/calibrate/--installer",
           "option:route:entrypoint:iobench/calibrate/--profile"
@@ -23,7 +25,7 @@
           "option:route:entrypoint:iobench/calibrate/--target"
         ]
       },
-      "signature": "sha256:325360a03eb27ee84dd218c76680e9651dccd843d2e5b589b7d5445517c09e02"
+      "signature": "sha256:29e0d1d209d6705eb190bd3ebb357c4646cb3b4dd16ce5568ad14a8f28281486"
     },
     {
       "id": "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--metering/0aa52ffaa6",
@@ -128,6 +130,19 @@
         "spelling": "--abort-psi"
       },
       "signature": "sha256:63abe0cc07046cfa1f3c0bc40795faa314dcd55bd55e26e295205a9bd7e638c2"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--allow-raw-write/--allow-raw-write",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/calibrate/--allow-raw-write"
+      ],
+      "route_id": "route:entrypoint:iobench/calibrate",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/calibrate/--allow-raw-write",
+        "spelling": "--allow-raw-write"
+      },
+      "signature": "sha256:984f1916422c1ffd5bb7c1e3513775cdca5edfd11aefc5811fdd09141259cc82"
     },
     {
       "id": "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--assume-r-est/--assume-r-est",
@@ -1150,6 +1165,7 @@
       "kind": "minimum",
       "members": [
         "option:route:entrypoint:iobench/matrix/--target",
+        "option:route:entrypoint:iobench/matrix/--allow-raw-write",
         "option:route:entrypoint:iobench/matrix/--confirm-quiet-window",
         "option:route:entrypoint:iobench/matrix/--installer",
         "option:route:entrypoint:iobench/matrix/--full-sweep",
@@ -1158,6 +1174,7 @@
       "route_id": "route:entrypoint:iobench/matrix",
       "shape": {
         "defaulted_options": [
+          "option:route:entrypoint:iobench/matrix/--allow-raw-write",
           "option:route:entrypoint:iobench/matrix/--confirm-quiet-window",
           "option:route:entrypoint:iobench/matrix/--installer",
           "option:route:entrypoint:iobench/matrix/--full-sweep",
@@ -1170,7 +1187,7 @@
           "option:route:entrypoint:iobench/matrix/--target"
         ]
       },
-      "signature": "sha256:e593e2ab5b2d6898b162626b8637ed1d3c4e944e043d3a2df80d89ac75a71e26"
+      "signature": "sha256:a30c2f1ac21ad604dc8dd7a3ae9103bafd8e5a40e8598b622e70b5f1bda6ac22"
     },
     {
       "id": "case:route:entrypoint:iobench/matrix/option-choice/option:route:entrypoint:iobench/matrix/--knob/2e44431268",
@@ -1223,6 +1240,19 @@
         "spelling": "--abort-psi"
       },
       "signature": "sha256:17f11130f903eacb2d7fa6b970b41c4ab7a3fff94a2ca7a60990f288a27b42d3"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--allow-raw-write/--allow-raw-write",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/matrix/--allow-raw-write"
+      ],
+      "route_id": "route:entrypoint:iobench/matrix",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/matrix/--allow-raw-write",
+        "spelling": "--allow-raw-write"
+      },
+      "signature": "sha256:25b51985665243d98c6eaefcbd8c272d8ede524486b6b278474d52f491378e99"
     },
     {
       "id": "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--budget-minutes/--budget-minutes",
@@ -1568,6 +1598,7 @@
       "kind": "minimum",
       "members": [
         "option:route:entrypoint:iobench/run/--target",
+        "option:route:entrypoint:iobench/run/--allow-raw-write",
         "option:route:entrypoint:iobench/run/--confirm-quiet-window",
         "option:route:entrypoint:iobench/run/--installer",
         "option:route:entrypoint:iobench/run/--profile",
@@ -1576,6 +1607,7 @@
       "route_id": "route:entrypoint:iobench/run",
       "shape": {
         "defaulted_options": [
+          "option:route:entrypoint:iobench/run/--allow-raw-write",
           "option:route:entrypoint:iobench/run/--confirm-quiet-window",
           "option:route:entrypoint:iobench/run/--installer",
           "option:route:entrypoint:iobench/run/--profile",
@@ -1588,7 +1620,7 @@
           "option:route:entrypoint:iobench/run/--target"
         ]
       },
-      "signature": "sha256:a655d9812b69f1b3683770e5d874ce2a33797b8313d2639d674236a7fbfd37bf"
+      "signature": "sha256:ff84173db6fcdac65cc93297057dca9f1f8ae8fe709e4cfaedae6f04d82adbff"
     },
     {
       "id": "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--metering/0aa52ffaa6",
@@ -1693,6 +1725,19 @@
         "spelling": "--abort-psi"
       },
       "signature": "sha256:04af6302797ebf429b43148c34c6f584186b746d80278acbd3aa8d8a61a86688"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--allow-raw-write/--allow-raw-write",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/run/--allow-raw-write"
+      ],
+      "route_id": "route:entrypoint:iobench/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/run/--allow-raw-write",
+        "spelling": "--allow-raw-write"
+      },
+      "signature": "sha256:6dea49354114898c4da4b0f66aeb33597501489fb3b2812aba4cec0fc094215c"
     },
     {
       "id": "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--assume-r-est/--assume-r-est",
@@ -2755,6 +2800,44 @@
             "single_command_invocation": false
           },
           "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-raw-write",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Opt in to raw-partition writes and discards under one held kernel O_EXCL claim; the target must be a prepared, unmounted partition with its named PARTUUID. File targets need no opt-in.",
+          "dest": "allow_raw_write",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-raw-write"
+          ],
+          "help_group": "RUN",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/calibrate/--allow-raw-write",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "calibrate"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
           "scope": "verb-local",
           "type": null
         },
@@ -4758,6 +4841,44 @@
           "type": null
         },
         {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-raw-write",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Opt in to raw-partition writes and discards under one held kernel O_EXCL claim; the target must be a prepared, unmounted partition with its named PARTUUID. File targets need no opt-in.",
+          "dest": "allow_raw_write",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-raw-write"
+          ],
+          "help_group": "RUN",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/matrix/--allow-raw-write",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "matrix"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
           "canonical": "--work-dir",
@@ -5724,6 +5845,44 @@
             "single_command_invocation": false
           },
           "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-raw-write",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Opt in to raw-partition writes and discards under one held kernel O_EXCL claim; the target must be a prepared, unmounted partition with its named PARTUUID. File targets need no opt-in.",
+          "dest": "allow_raw_write",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-raw-write"
+          ],
+          "help_group": "RUN",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/run/--allow-raw-write",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
           "scope": "verb-local",
           "type": null
         },
@@ -7004,7 +7163,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "You own this device and accept that iobench overwrites its last MiB marker. Raw-device write/discard stages are currently refused because fio cannot use the same held O_EXCL descriptor.",
+          "description": "You own this device and accept that iobench overwrites its last MiB marker.",
           "dest": "i_own_this_device",
           "effective_default": false,
           "exclusive_group": null,
@@ -7430,7 +7589,7 @@
           "synopsis": null
         }
       ],
-      "description": "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused.",
+      "description": "Write the iobench marker to a dedicated partition (or create a file target).",
       "group": "MODIFICATION",
       "id": "route:entrypoint:iobench/target/init",
       "kind": "invocation",
@@ -7490,7 +7649,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused. [mutating; dry-run]",
+      "summary": "Write the iobench marker to a dedicated partition (or create a file target). [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

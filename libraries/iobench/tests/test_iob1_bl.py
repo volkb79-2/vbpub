@@ -69,10 +69,12 @@ def test_iob_bl_28_fakehost_injected_exclusive_conflict_blocks_raw_mutation():
     host.exclusive_device_conflicts.add("/dev/vda7")
     before_spawns = host.fio_spawns
     try:
-        with pytest.raises(host_mod.HostError, match="injected exclusive block-device conflict"):
+        with pytest.raises(Refusal) as blocked:
             runner.spawn(writer)
-        with pytest.raises(host_mod.HostError, match="injected exclusive block-device conflict"):
+        assert blocked.value.condition == "device_in_use"
+        with pytest.raises(Refusal) as blocked_discard:
             runner.discard((0, 1 << 20))
+        assert blocked_discard.value.condition == "device_in_use"
         assert host.devices["/dev/vda7"].write_bytes == 0
         assert not any(kind == "discard" for kind, _, _ in host.devices["/dev/vda7"].log)
         assert host.fio_spawns == before_spawns
@@ -80,9 +82,11 @@ def test_iob_bl_28_fakehost_injected_exclusive_conflict_blocks_raw_mutation():
         runner.safety.release()
 
 
-def test_iob_bl_28_realhost_classifies_o_excl_busy_and_never_launches_mutators(monkeypatch):
-    """Monkeypatched EBUSY checks classification and fail-closed flow, not kernel opener semantics."""
+def test_iob_bl_28_realhost_claims_and_launches_through_the_inherited_descriptor(monkeypatch):
+    """Monkeypatched device checks verify open flags, launch rewriting and descriptor inheritance."""
     import errno
+    import stat
+    from types import SimpleNamespace
     from iobench import devio
     from iobench.host import RealHost, TargetRef
     from iobench.testing import R1002_PARTUUID, R1002_SIZE
@@ -90,6 +94,20 @@ def test_iob_bl_28_realhost_classifies_o_excl_busy_and_never_launches_mutators(m
     host = host_mod.RealHost()
     host.allow_scratch("/run/iobench")
     monkeypatch.setattr(host, "_verify_live", lambda _target: None)
+    real_fstat = os.fstat
+
+    def fstat(fd):
+        if fd != 71:
+            return real_fstat(fd)
+        return SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=os.makedev(254, 7), st_size=0)
+
+    monkeypatch.setattr(host_mod.os, "fstat", fstat)
+
+    def size_ioctl(fd, request, buf, mutate):
+        assert (fd, request, mutate) == (71, host_mod.BLKGETSIZE64, True)
+        buf[:] = R1002_SIZE.to_bytes(8, "little")
+
+    monkeypatch.setattr(host_mod.fcntl, "ioctl", size_ioctl)
     open_calls, closes, launches = [], [], []
     o_excl_busy = True
 
@@ -111,29 +129,32 @@ def test_iob_bl_28_realhost_classifies_o_excl_busy_and_never_launches_mutators(m
             return real_close(fd)
         closes.append(fd)
 
+    finished_handle = SimpleNamespace(pid=5151, poll=lambda: 0)
+
+    def make_handle(argv, **kwargs):
+        launches.append((argv, kwargs))
+        return finished_handle
+
     monkeypatch.setattr(host_mod.os, "open", exclusive_open)
     monkeypatch.setattr(host_mod.os, "close", tracked_close)
-    monkeypatch.setattr(host_mod, "_ProcHandle", lambda argv: launches.append(argv))
-    monkeypatch.setattr(host, "_run_polled", lambda argv, timeout: launches.append(argv))
+    monkeypatch.setattr(host_mod, "_ProcHandle", make_handle)
     ref = TargetRef("device", "/dev/vda7", R1002_SIZE, devno="254:7", partuuid=R1002_PARTUUID)
     job = devio.FioJob("exclusive-probe", ref.path, "randwrite", 4096, 1, 1, 0, 1 << 20, io_size=4096,
                        device_guard=True, prefix="/run/iobench/exclusive-probe")
 
     with pytest.raises(Refusal) as blocked:
-        host.write_range(job.argv(), ref, 0, 1 << 20)
+        host.claim(ref)
     assert blocked.value.condition == "device_in_use"
     assert open_calls[-1][1] & host_mod.os.O_EXCL
-    assert open_calls[-1][1] & host_mod.os.O_ACCMODE == host_mod.os.O_RDONLY
+    assert open_calls[-1][1] & host_mod.os.O_ACCMODE == host_mod.os.O_RDWR
     o_excl_busy = False
-    with pytest.raises(Refusal) as unsupported:
-        host.write_range(job.argv(), ref, 0, 1 << 20)
-    assert unsupported.value.condition == "raw_device_write_unsupported"
+    assert host.claim(ref) == 71
+    handle = host.write_range(job.argv(), ref, 0, 1 << 20)
+    launch, kwargs = launches[-1]
+    assert handle is finished_handle and launch.count("--filename=/dev/fd/71") == 1 and kwargs["pass_fds"] == (71,)
+    assert host.release_claim() is None
     assert closes == [71]
-    with pytest.raises(Refusal) as discard:
-        host.discard_range(devio.blkdiscard_argv(ref.path, 0, 1 << 20), ref, 0, 1 << 20)
-    assert discard.value.condition == "raw_device_write_unsupported"
-    assert not launches
-    assert len(open_calls) == 3
+    assert len(open_calls) == 2
 
 
 @pytest.mark.parametrize("fs_type", ("ext4", "xfs", "btrfs"))

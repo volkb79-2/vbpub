@@ -116,7 +116,7 @@ def _run_standalone(stack_dir: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
-            str(ROOT / "scripts" / "render_standalone.py"),
+            str(ROOT / "tools" / "render_standalone.py"),
             "--stack-dir", str(stack_dir),
             "--check",
         ],

@@ -114,17 +114,6 @@ deployment.
 
 ## Roadmap
 
-### TE-05 — hand-rolled bundle build
-
-`scripts/build-artifact.sh`, `scripts/write-bundle-manifest.py` and most of
-`scripts/stage-wheels.py` re-implement cmru's bundle builder, produce
-non-reproducible tarballs and ship maintainer scripts into every instance.
-Decided: `bundle.toml` plus `cmru handler bundle-build` (cmru KI-126); the
-local builders go, the unlisted-wheel refusal stays, one GitHub fetcher, no
-maintainer scripts in the bundle, and one equivalence build is the proof.
-
-Source: `.controller-state/design-review-2026-11-24/tls-edge.md` H6
-
 ### TE-06 — three release-notes sources
 
 `TLS_EDGE_RELEASE_NOTES` in `cmru.toml` carries version-specific prose,
@@ -161,7 +150,7 @@ Source: `.controller-state/design-review-2026-11-24/tls-edge.md` L1
 ### TE-12 — small duplication
 
 `requirements-test.txt` duplicates the pyproject `test` extra,
-`scripts/release.sh` duplicates `cmru release`, and the override `ciu.toml.j2`
+`tools/release.sh` duplicates `cmru release`, and the override `ciu.toml.j2`
 is parsed by the CLI as plain TOML but rendered by ciu as Jinja. Decided: one
 test-dependency list (the pyproject extra), `cmru release` only, and the
 override documented and enforced as plain TOML.

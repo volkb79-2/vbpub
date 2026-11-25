@@ -21,6 +21,5 @@ certs-dev/
 consumer-examples/**/secrets/*
 !consumer-examples/**/secrets/.gitignore
 
-# Release artifacts (build-artifact.sh output) and staged wheels (stage-wheels.py)
+# Release bundle outputs (cmru handler bundle-build)
 /dist/
-/vendor/
