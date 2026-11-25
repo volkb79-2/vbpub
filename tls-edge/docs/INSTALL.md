@@ -362,8 +362,10 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    `/srv/tls-edge-instance/bin/tls-edge validate`. Do **not** run `ciu up` yet. The proposed edge port set is
    80/tcp, 443/tcp, and 443/udp (HTTP/3); allow these in both firewalls. Mattermost's direct media pair on
    8443/tcp+udp is separate from the edge.
-   Do not use `ciu up --skip-check` to move past a refused configuration: CIU creates the hostdir before the
-   hook refuses, so the failed attempt can leave a root-owned `stack/ciu-stack/vol-traefik-acme`.
+   `ciu` 7.28.0 and later evaluates its S6.5 helper preconditions BEFORE creating any hostdir, and `--dry-run`
+   creates none at all, so a refused `ciu up` (missing `CGROUP_PARENT_DEV_INTERACTIVE`, an incompatible existing
+   hostdir, a mistyped `seed`) leaves the filesystem untouched; fix the precondition and retry.  Do not reach for
+   `ciu up --skip-check` instead: it does not address the refusal and hides the hook's verdict.
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are
    adopted (`external: true`), never created or removed by the instance.
@@ -383,9 +385,10 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 7. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    and a Mattermost media test from outside on its directly published 8443 tcp and udp ports.
-8. **Rollback (any failure in 7).** Stop only the Mattermost process that binds 8443 if its Compose services can be
-   stopped selectively. If that is not supported, `ciu down` in `voice-screen-share/mattermost-server` (no `-v`);
-   that stops the whole Mattermost stack. `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`) stops the
+8. **Rollback (any failure in 7).** Mattermost's Calls media is published by the `mattermost` service itself, so
+   there is no separate process to stop: stopping "the process that binds 8443" stops the `mattermost` service, and
+   its web UI on 8065 goes down with it. `ciu down` at the stack root (no `-v`) does the same and is the supported
+   way; there is no selective per-port stop. `cd /srv/tls-edge-instance/stack && sudo ./ciu down` (no `-v`) stops the
    tls-edge instance. `ciu down` only stops containers; to remove them as well, use
    `docker compose -p <project> down` (never `-v`), where `<project>` comes from
    `docker inspect <container_prefix>-traefik --format '{{index .Config.Labels "com.docker.compose.project"}}'`
@@ -413,11 +416,16 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
 - `ciu env generate` and `ciu up --dry-run` create/attach a Docker network (CIU-162): run them on the host, not
   from a devcontainer you care about.
 - A non-root CIU run that creates `vol-traefik-acme` through the S6.5 root helper needs
-  `CGROUP_PARENT_DEV_INTERACTIVE=<slice>` exported (CIU-230; filed with ciu; see its backlog).
-- `ciu up --dry-run` can create the root-owned `stack/ciu-stack/vol-traefik-acme` (CIU-227; filed with
-  ciu; see its backlog).
-- Removing a user-scope instance also encounters that root-owned `stack/ciu-stack/vol-traefik-acme`; delete it
-  with root before removing the instance directory.
+  `CGROUP_PARENT_DEV_INTERACTIVE` exported, naming a LOADED slice unit such as `dev-interactive.slice`
+  (`systemctl list-units --type=slice` lists candidates). ciu >= 7.28.0 refuses without it and the refusal
+  names the variable, the `.slice` shape and that command (CIU-230); there is no fallback slice.
+- `ciu up --dry-run` creates no hostdir from ciu >= 7.28.0: it prints `Would create ...` and resolves every
+  declaration (CIU-227). A refused `ciu up` leaves nothing behind on the same version, because the S6.5 helper
+  preconditions are checked before the first `mkdir`. Known limit: a failure AFTER `mkdir` that is not a
+  precondition — the helper's `docker run`, a seed `copytree` — can still leave a runner-owned directory.
+- A `stack/ciu-stack/vol-traefik-acme` owned by root is the legacy case of an instance created by ciu < 7.28.0
+  (a refused run there could leave it), or a failure after `mkdir`; delete it with root before removing a
+  user-scope instance.
 - The release publishes one bundle per interpreter through `cmru handler bundle-build` and
   `cmru handler tarball-publish --variant`.
 

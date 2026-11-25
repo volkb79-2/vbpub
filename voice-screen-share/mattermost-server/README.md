@@ -42,7 +42,8 @@ the 3.x Calls preset enabled, follow [Calls cut-over](MIGRATION.md#calls-cut-ove
 before `ciu up`.
 
 (The flag is `--root-folder`; ciu 7.15 has no `--define-root`. This root declares
-no deployment profile, so a bare `ciu up` selects nothing: always pass `--dir`.)
+no deployment profile, and a bare `ciu up` here selects nothing: ciu >= 7.28.0
+refuses that with exit 2 and names `ciu up --dir .`, so always pass `--dir`.)
 
 **Location (MM-MOVE, 2026-10-07).** This directory used to be `nyxloom/mattermost`,
 a sub-stack of nyxloom's ciu root. It is now its OWN standalone ciu root at the
