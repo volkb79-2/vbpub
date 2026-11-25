@@ -41,11 +41,9 @@ PING_TEXT='[keepalive] cache refresh only: reply ok, no tools'
 DIALOG_CURSOR_RE='^[[:space:]]*❯[[:space:]]*[0-9]+\.[[:space:]]'   # cursor on a numbered option of a permission/question menu
 DIALOG_FOOTER='Esc to cancel'                                     # footer of those menus
 DIALOG_LINES=15                                                   # how many bottom non-blank lines are searched for them
-BOX_RULE_BYTES='(?:\xe2\x94\x80){20,}'                            # a prompt-box rule: at least 20 x U+2500, nothing else (perl, bytes)
-BOX_LABEL_RULE_BYTES='(?:\xe2\x94\x80){20,}[A-Za-z0-9._-]+(?:\xe2\x94\x80)+'   # same rule with one tmux session label (spaces stripped)
 BOX_LINES=6                                                       # the input row must be within this many bottom non-blank lines
-BOX_FOOT_MARKER='⏵⏵ bypass permissions on'                        # the mode line: footer rows below it are not part of the prompt box
-BOX_PANEL_HINT='↓ to manage'                                      # the mode line's unfocused agents-panel hint: only this panel layout is trimmed
+# The pane-view markers (BOX_RULE_BYTES, BOX_LABEL_RULE_BYTES, BOX_FOOT_MARKER, BOX_PANEL_HINT) and pane_view,
+# is_rule and is_label_rule live in resume-lib.sh: this watcher and the resume helpers measure the same view.
 
 RESUME_PREFIX=KA_RESUME   # resume-lib.sh test seams; not KEEPALIVE_*, that namespace is this script's constants
 home_dir=${KEEPALIVE_HOME:-${CONTROLLER_HOME:-$HOME/controller}}
@@ -69,7 +67,6 @@ skip() { # name sid reason [key]: a skip is logged once per change of reason per
   [[ ${last_reason[$key]:-} == "$3" ]] && return 0
   last_reason[$key]=$3; klog "$1" "$2" skip "$3"
 }
-strip_sgr() { perl -pe 's/\e\[[0-9;]*m//g'; }
 
 # analyze <jsonl> -> "<anchor epoch> <N> <ctx tokens> <ping newer than the anchor 0|1>", or "none"
 analyze() {
@@ -126,29 +123,10 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
 PY
 }
 
-pane_view() { # $1 = capture with escapes: the prompt box and every bottom window are measured from the MODE line, not from
-  # the last line of the capture. Only the unfocused agents-panel layout is trimmed (its mode line carries BOX_PANEL_HINT):
-  # a panel that holds keyboard focus is not captured yet and may look identical, so there the capture is returned
-  # unchanged and box_ok's strict geometry refuses the pane. No input row or no mode line: unchanged, fail-safe.
-  local ln=() i idx=-1 n esc=$'\033' re mode
-  re="^(${esc}\[[0-9;]*m)*$INPUT_MARKER"
-  mapfile -t ln <<<"$1"; n=${#ln[@]}
-  for ((i = 0; i < n; i++)); do [[ ${ln[i]} =~ $re ]] && idx=$i; done
-  (( idx >= 0 )) || { printf '%s\n' "${ln[@]}"; return 0; }
-  for ((i = idx + 1; i < n; i++)); do
-    mode=$(strip_sgr <<<"${ln[i]}")
-    [[ $mode == *"$BOX_FOOT_MARKER"* ]] || continue
-    [[ $mode == *"$BOX_PANEL_HINT"* ]] && n=$((i + 1))   # unfocused panel: nothing below the mode line is part of the box
-    break
-  done
-  printf '%s\n' "${ln[@]:0:n}"
-}
 dialog_open() { # $1 = capture with escapes: a numbered permission/question menu is on screen
   local plain; plain=$(strip_sgr <<<"$1" | grep -v '^[[:space:]]*$' | tail -n "$DIALOG_LINES")
   grep -qE -- "$DIALOG_CURSOR_RE" <<<"$plain" || grep -qF -- "$DIALOG_FOOTER" <<<"$plain"
 }
-is_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
-is_label_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_LABEL_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
 box_ok() { # $1 = capture: the live input row is alone in its box (a box rule right above AND below), within the last BOX_LINES non-blank lines
   # $1 must be a pane_view capture: the trim at the mode line lives there, once, because a second trim here would also
   # cut a FOCUSED agents panel (no BOX_PANEL_HINT) and admit it.

@@ -1,7 +1,7 @@
 # shellcheck shell=bash disable=SC2034,SC2154 # sourced: the callers use the settings and own pane/log
-# resume-lib.sh: the pane-idle/footer logic shared by clear-resume.sh and compact-resume.sh.
+# resume-lib.sh: the pane-idle/footer logic shared by clear-resume.sh, compact-resume.sh and ctl-keepalive.sh.
 # Source it, never run it. The caller sets RESUME_PREFIX (the env prefix of its test seams,
-# e.g. CLEAR_RESUME) before sourcing and pane/log after; one copy of the footer markers lives here.
+# e.g. CLEAR_RESUME) before sourcing and pane/log after; one copy of the footer and pane-view markers lives here.
 #
 # Footer markers, tied to the status line measured on Claude Code 2.1.331; adjust if it changes.
 BUSY_MARKERS=('esc to interrupt')   # present while the session works (a caller may add more)
@@ -9,6 +9,10 @@ CLEARED_MARKER='ctx ?'              # present after /clear, before the first tur
 COMPACTING_MARKER='Compacting'      # the spinner line of a running compaction (compact-resume.sh adds it to BUSY_MARKERS)
 INPUT_MARKER='❯'                    # starts the input row of the prompt box (the LAST such line is the live one)
 FOOT_LINES=4                        # how many non-blank bottom lines count as the footer
+BOX_RULE_BYTES='(?:\xe2\x94\x80){20,}'                                         # a prompt-box rule: at least 20 x U+2500, nothing else (perl, bytes)
+BOX_LABEL_RULE_BYTES='(?:\xe2\x94\x80){20,}[A-Za-z0-9._-]+(?:\xe2\x94\x80)+'   # the same rule with one tmux session label (spaces stripped)
+BOX_FOOT_MARKER='⏵⏵ bypass permissions on'                                     # the mode line: rows below it are not part of the prompt box
+BOX_PANEL_HINT='↓ to manage'                                                   # the mode line's unfocused agents-panel hint: only this panel layout is trimmed
 
 # Test seams: <RESUME_PREFIX>_POLL (seconds between polls), _IDLE_TRIES, _TYPE_PAUSE, _FINAL_WAIT.
 seam() { local v=${RESUME_PREFIX}_$1; printf '%s' "${!v:-$2}"; }
@@ -16,9 +20,32 @@ poll=$(seam POLL 2) idle_tries=$(seam IDLE_TRIES 900)
 type_pause=$(seam TYPE_PAUSE 1) final_wait=$(seam FINAL_WAIT 10)
 
 say() { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*" >>"$log"; }
-foot() { tmux capture-pane -p -t "$pane" | grep -v '^[[:space:]]*$' | tail -n "$FOOT_LINES"; }
+
+# ---- one pane view: the prompt box and every bottom window are measured from the MODE line, never from the last line
+# ---- of the capture, so the agents panel Claude Code draws BELOW the mode line cannot push a busy marker or a menu
+# ---- out of a window. The rows below the mode line are trimmed only while it carries the unfocused hint
+# ---- BOX_PANEL_HINT: a focused panel is not captured yet and may look identical, so without the hint nothing is
+# ---- trimmed and the capture is returned unchanged (fail-safe). Shared with ctl-keepalive.sh.
+strip_sgr() { perl -pe 's/\e\[[0-9;]*m//g'; }
+is_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
+is_label_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_LABEL_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
+pane_view() { # $1 = capture with escapes: the captured lines down to and including the mode line (unchanged if no box)
+  local ln=() plain=() i idx=-1 n esc=$'\033' re
+  re="^(${esc}\[[0-9;]*m)*$INPUT_MARKER"
+  mapfile -t ln <<<"$1"; n=${#ln[@]}
+  for ((i = 0; i < n; i++)); do [[ ${ln[i]} =~ $re ]] && idx=$i; done
+  (( idx >= 0 )) || { printf '%s\n' "${ln[@]}"; return 0; }
+  mapfile -t plain < <(strip_sgr <<<"$1")   # one perl for the whole capture, not one per line below the input row
+  for ((i = idx + 1; i < n; i++)); do
+    [[ ${plain[i]} == *"$BOX_FOOT_MARKER"* ]] || continue
+    [[ ${plain[i]} == *"$BOX_PANEL_HINT"* ]] && n=$((i + 1))   # unfocused panel: nothing below the mode line is part of the box
+    break
+  done
+  printf '%s\n' "${ln[@]:0:n}"
+}
+foot() { pane_view "$(tmux capture-pane -e -p -t "$pane")" | strip_sgr | grep -v '^[[:space:]]*$' | tail -n "$FOOT_LINES"; }
 busy() { pane_state; [[ $? -eq 1 ]]; } # one capture per call
-pane_state() { pane_state_of "$(tmux capture-pane -e -p -t "$pane")"; } # ONE capture; 0 ready, 1 busy, 2 the input row has text
+pane_state() { pane_state_of "$(pane_view "$(tmux capture-pane -e -p -t "$pane")")"; } # ONE capture; 0 ready, 1 busy, 2 the input row has text
 input_row_of() { # $1 = a capture taken with -e; prints the live input row (marker kept), dim runs and SGR escapes removed
   # Input row = the LAST line starting with INPUT_MARKER (older prompt rows in the scrollback start with it too).
   # Claude Code shows a prompt SUGGESTION as dim text (ESC[2m ... ESC[0m or ESC[22m) in an EMPTY input row;
@@ -27,7 +54,7 @@ input_row_of() { # $1 = a capture taken with -e; prints the live input row (mark
   local esc=$'\033'
   grep -aE "^(${esc}\[[0-9;]*m)*$INPUT_MARKER" <<<"$1" | tail -1 | perl -pe 's/\e\[2m.*?(\e\[(0|22)m|$)//g; s/\e\[[0-9;]*m//g'
 }
-pane_state_of() { # $1 = a capture taken with -e; 0 ready, 1 busy, 2 the input row has text (also used by ctl-keepalive.sh)
+pane_state_of() { # $1 = a pane_view capture; 0 ready, 1 busy, 2 the input row has text (also used by ctl-keepalive.sh)
   # empty = the marker followed only by spaces / NBSP (or no such row at all); the footer text is matched
   # against the busy markers with the SGR escapes stripped.
   local f m row
