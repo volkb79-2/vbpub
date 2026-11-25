@@ -182,7 +182,9 @@ rule stays relative to this run's own `ssh_base`. The v1 manual `ssh.txt` path i
 and a single hand line would leave steps ≥ 1 with no data); the samples go to `probes.csv` as `probe=ssh`. No samples → INCONCLUSIVE.
 
 **3.3 Per-service liveness probes** — every 30 s inside the judged window (8 per step), each `timeout`-wrapped, rc + seconds + detail into
-`probes.csv`. `latency rule` = `max(2 × step-0 p95, step-0 p95 + 0.5 s)`, judged **contention-agnostically**: a step FAILs a latency rule when **≥ 2
+`probes.csv`. **A probe that wrote no row at all is MISSING DATA, so the step is INCONCLUSIVE, never a pass** (the same rule as §3.5's missing hard
+criterion, applied per probe: the kit cannot see the harm it could not measure, L-i); a row with a failing rc, or a latency rule breach, is a FAIL.
+`latency rule` = `max(2 × step-0 p95, step-0 p95 + 0.5 s)`, judged **contention-agnostically**: a step FAILs a latency rule when **≥ 2
 samples exceed it, or any sample hits the timeout, or the median exceeds it**; a single outlier is INFO (the p95 of 10 samples is the max, so one slow
 `docker info` under a starting lane would otherwise fail a step for a contention fact, not a memory verdict).
 
@@ -378,6 +380,7 @@ Seams (no root, no DAMON, no wall clock in a verdict):
 | `MDT_ACCEPT_DAMON_STAT` (new) | the fake `enabled` file: `N` proceeds, `Y` refuses exit 3 with no write, absent proceeds |
 | `MDT_ACCEPT_PROBE_CMD_<NAME>`, `MDT_ACCEPT_PROBE_TIMEOUT` (new) | per-probe argv/timeout; an overrunning probe is killed, recorded `rc=timeout`, and does not hang the step |
 | `MDT_ACCEPT_SQUEEZE_STATE`, `MDT_ACCEPT_DWELL_TICKS`, `MDT_ACCEPT_LOCK`, `MDT_ACCEPT_EXTRA_UNITS`, `MDT_ACCEPT_SSH_TARGET` (new) | the WAL path; the dwell counted in **ticks** (`MDT_ACCEPT_INTERVAL=0`), so no wall clock enters a verdict; the **live lock**, so the reconcile's and install.sh's skip is testable without root; optional-unit presence; the ssh sample source |
+| `MDT_ACCEPT_HOTSET_EVERY`, `MDT_ACCEPT_JUDGE` (new) | the one-sample-per-8 s throttle of §4.2 (a 5 s tick would read one apply twice and skip the next — the aliasing N5 removed from `refresh_ms`; 0 derives it from `MDT_ACCEPT_INTERVAL`); a fake `accept-eval.py --live-step`, so the ladder tests drive PASS/FAIL/INCONCLUSIVE without the real judge |
 
 New tests: the ladder (passing, a stop at the first psi failure, the `F + 128M` ceiling, an `--steps` cap, a step whose **load-was-real** criterion
 misses → INCONCLUSIVE and never `k_last_pass`); the stop-rule arithmetic including step 0 (FAIL vs INCONCLUSIVE); `MemAvailable` and unit-`full`

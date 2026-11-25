@@ -189,9 +189,12 @@ finish() {
     journalctl -k --since "$START_UTC UTC" --no-pager 2>/dev/null | grep -iE 'out of memory|oom-kill' >"$EVID/kernel-oom.txt"
     echo "kernel_oom_lines=$(wc -l <"$EVID/kernel-oom.txt" 2>/dev/null)" >>"$MAN"
   fi
-  # 4.1: damon_measure is ok only when no unit's floor was refused; accept-hotset records the refusals one per unit
+  # 4.1: damon_measure is ok only when no unit's floor was refused; accept-hotset records one
+  # `damon_measure=failed:<unit>:<why>` line per refused unit (6's format), so this only fills in the gaps
   if [ -s "$EVID/hotset-refused" ]; then
-    echo "damon_measure=failed:$(paste -sd' ' "$EVID/hotset-refused")" >>"$MAN"
+    for u in $(cat "$EVID/hotset-refused"); do
+      grep -q "^damon_measure=failed:$u:" "$MAN" 2>/dev/null || echo "damon_measure=failed:$u:sz_ops_filter_passed 0" >>"$MAN"
+    done
   else
     echo "damon_measure=ok" >>"$MAN"
   fi

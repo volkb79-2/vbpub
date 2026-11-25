@@ -1219,22 +1219,53 @@ version rendered. Drop-ins are mode 0644. A killed lane is an infrastructure eve
 zswap (zstd, `max_pool_percent` 25, writeback `yes` on every tier) is unchanged. Open and unmeasured (R3, MDT-072): `io.max` on dev.slice throttles swap writeback, so reclaim at a
 `memory.max` can exhaust its retries on pages under writeback; the acceptance run gates it.
 
-### Acceptance and measurement kit of the dedicated-dev memory model (P-plat-19g, `tools/accept/`)
+### Acceptance and measurement kit of the dedicated-dev memory model (P-plat-19m, v2: the squeeze test and the DAMON floors)
 
-Step 6 of the migration, root on the host (details: the header of each script, `accept-eval.py --help`). Keep admission and the edge demo stacks drained (section 8 step 0) and start exactly one gate lane by hand during each window.
+Step 6 of the migration, root on the host (details: the header of each script, its `usage` on an unknown argument, `accept-eval.py --help`). Keep admission and the edge demo stacks drained
+(section 8 step 0) and start exactly one gate lane by hand during the run; the run itself holds `flock /run/mdt-accept.lock` for its whole length, which pauses the reconcile's
+memory block with a NOTE and makes `install.sh` refuse (exit 3, nothing done) instead of writing a lower `memory.max` under a live squeeze.
 
-0. The accept checkout on the host (a copy of the commit under test, e.g. `/root/vbpub-accept-<sha>`) needs BOTH `mdt-cockpit/` AND `scripts/debian-install-v2/tools/` at their
-   repo-relative paths (see "Required checkout set"): copy or sparse-check-out both (`git sparse-checkout set mdt-cockpit scripts/debian-install-v2/tools`), not `mdt-cockpit/` alone, because
-   the `install.sh` run in step 4 reads the second one and exits 2 before changing anything without it. `tools/accept/accept-eval.py` also needs `mdt_capacity.py` next to `tools/`
-   (the same `host-setup/`), or its install.sh-limit check is skipped and a PASS becomes INCONCLUSIVE.
-1. Per run, twice (`EV` a fresh ABSOLUTE directory): launch DETACHED so an ssh drop cannot orphan it, e.g.
-   `systemd-run --unit mdt-accept-1 --collect "$PWD/tools/accept/accept-run.sh" --evidence "$EV" --warmup 600 --window 1800` (the unit runs in `/`, hence absolute paths; its
-   start hints are in `journalctl -u mdt-accept-1`). During the window start the operator part: the one gate lane, the cockpit attached and idle, an ssh login; write
-   `"<idle> <loaded>"` seconds of `ssh <host> true` into `$EV/ssh.txt`. The probes exit by themselves after warm-up + window + 300 s; after a SIGKILL run
-   `docker rm -f mdt-accept-probe-gates mdt-accept-probe-bg` at once. cgprofile sessions are not captured: the daemon refuses cgroup targets (CP-55).
-2. `tools/accept/accept-eval.py "$EV1" "$EV2"`: exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE (missing data or a load that was not real: repeat; "install.sh would refuse these values" needs a decision on the floor row, not a repeat), 2 usage or crash (never a pin reason).
-3. `tools/accept/daemon-reload-check.sh`: it refuses (exit 3, nothing done) while `/run/mdt/reconcile/memory-deferred` exists or systemd and the kernel disagree on a dev `MemoryMax`.
-4. PASS: put the printed lines into `/etc/mdt/host-setup.env` and re-run `install.sh`. FAIL: raise the failing value and repeat, or pin `DEV_HOST_MEMORY_KEEP=` at the K that FAIL's `== host-setup.env` header prints (floors + measured margin; section 8).
+The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped probes under a 30 min window and judged refaults; v2 inflates **one** dummy by 128M per step with
+`memory.min` keeping its protected part resident, judges **pressure and ssh/service latency** per step (refaults are now `INFO` only), and takes the floors from DAMON's
+`sz_ops_filter_passed` per leaf.
+
+0. **The accept checkout on the host** (a copy of the commit under test, e.g. `/root/vbpub-accept-<sha>`) needs three paths at their repo-relative positions, not one:
+   `mdt-cockpit/` (the kit and `mdt_capacity.py`), `scripts/debian-install-v2/tools/` (`install.sh` exits 2 without it, see "Required checkout set") and
+   `scripts/damon-analysis/lib/` (the DAMON `SysfsInterface` the hot-set driver drives). `git sparse-checkout set mdt-cockpit scripts/debian-install-v2/tools
+   scripts/damon-analysis/lib`; `install.sh` refuses (exit 2) naming the missing `scripts/debian-install-v2/tools/` file, and the run's own preflight refuses (exit 3) when
+   `scripts/damon-analysis/lib/` is absent, naming the path.
+1. **Preflight** (design §7 step 2): `mdt-host-check.sh` with no FAIL, `NeedDaemonReload=no` on `dev.slice` and both tiers, no `/run/mdt/reconcile/memory-deferred`,
+   `damon_stat_enabled=N` (or absent: the kernel then has no DAMON_STAT), `cgprofilectl --json status` with `sessions_live == 0`, `MDT_PSI_GUARD=report`, and
+   `MDT_ACCEPT_SSH_TARGET=root@127.0.0.1` with one verified BatchMode round trip: the kit reads that target's `boot_id` and refuses unless it is **this** host, so a remote
+   target cannot time another machine's sshd. Drain the lanes and **hold** the drain.
+2. **The squeeze run** (`EV` a fresh ABSOLUTE directory), launched DETACHED through `systemd-run` so an ssh drop cannot orphan it and its `ExecStopPost` restores the host after
+   any end of the main process (a SIGKILL or an OOM kill included; the unit runs in `/`, hence the absolute paths):
+
+   ```
+   systemd-run --unit mdt-accept-1 --collect --slice=mdt-accept.slice -p KillMode=mixed -p TimeoutStopSec=600 \
+     -p MemoryMin=64M -p ExecStopPost='<ck>/mdt-cockpit/host-setup/tools/accept/accept-restore.sh --from-unit \
+     --lock-timeout 30 --evidence /root/accept-<ts>-1' \
+     <ck>/mdt-cockpit/host-setup/tools/accept/accept-run.sh --evidence /root/accept-<ts>-1 --steps 6 --step 128M --dwell 300
+   ```
+
+   Operator part during the run: one gate lane, the cockpit attached and idle, one ssh login. Progress is in `journalctl -u mdt-accept-1`; the steps are `STEP <s> K=<K>M <verdict>`.
+   **Duration ≈ 55 min** (warm-up 600 s + 7 dwells of 300 s (steps 0-6) + the DAMON-off control pass + 300 s margin); the eval and apply add ≈ 10 min, so **≈ 3 h on r1002** end
+   to end and no reboot. Exit codes: 0 a step passed, 1 step 0 failed, 4 INCONCLUSIVE (missing data, a load that was not real, or a lowering still deferred), 3 refused.
+3. **Eval**: `tools/accept/accept-eval.py /root/accept-<ts>-1` prints `STEP`/`SQUEEZE`/`FLOOR`/`M`/`K proposed` and the `== host-setup.env` block; exit 0 PASS, 1 FAIL,
+   4 INCONCLUSIVE, 2 usage, a crash or a **v1 evidence directory** (v2 criteria on v1 data would turn a missing squeeze into a pass). Put the printed
+   `DEV_HOST_MEMORY_MIN`/`DEV_HOST_MEMORY_MARGIN`/`DEV_HOST_MEMORY_MEASURED` into `/etc/mdt/host-setup.env` (**no KEEP pin**: K is derived again) and `sudo ./install.sh`, then
+   `mdt-host-check.sh` (no FAIL), then `tools/accept/daemon-reload-check.sh` (it refuses, exit 3 and nothing done, while a lowering is deferred or systemd and the kernel
+   disagree on a dev `MemoryMax`).
+4. **Restore or roll back** — on any failure, or when `manifest.env` reads `restore=pending`:
+   `tools/accept/accept-restore.sh --evidence /root/accept-<ts>-1` (exit 0 restored, **1 a lowering is deferred: report it, never force it**, 3 nothing to do or refused). It is
+   idempotent and reads only the write-ahead file `/root/accept-<ts>-1/squeeze-state.env`, so it repairs the host after **any** death of the run; the same file's
+   `restore=pending` never means the host is still squeezed in a max, only that one lowering waits for the unlocked reconcile. Then `DEV_HOST_MEMORY_KEEP` back at the pre-run
+   value and `sudo ./install.sh`. A run that finds a stale state file restores it first, with one NOTE.
+5. **The third run** at the K the eval proposed is **step 0 only**, one dwell: `accept-run.sh --evidence <EV3> --steps 0`. A FAIL there is R again, and the eval prints **no K
+   to pin**: step 0 failing means the live configuration is not survivable, so the header names only the tested `K0=<K0>M` and says to pin `DEV_HOST_MEMORY_KEEP` **above** it
+   (an invented number would name a K the run never exercised). A v2 run also refuses (exit 3) without `MDT_ACCEPT_SSH_TARGET` and outside `HOST_ROLE=dedicated-dev`.
+6. **After the run**: `accept-run.sh` removes its dummy by its exact name in every exit path and logs every `rm`; a kit that is gone without a `restore=ok` line in
+   `manifest.env` is repaired with `accept-restore.sh --evidence <EV>` (step 4), never by hand-writing cgroup files.
 
 ### Shared tree cache of the dedicated-dev role (AD2-2, MDT-074)
 
