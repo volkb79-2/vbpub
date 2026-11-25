@@ -203,7 +203,10 @@ Use this order for each implementation task.
    and a read-only review prompt. Do not have an implementer review its own
    change. For a Luna implementation, `codex-review.sh` defaults to the Sol
    review profile; for a DeepSeek or OpenCode implementation, select Luna or a
-   separate review session. Keep the review report at an absolute path.
+   separate review session. A DeepSeek implementation is reviewed by
+   `pi-review.sh`, which picks the OTHER Open Design account from the
+   implementer run and proves the reviewed worktree is unchanged. Keep the
+   review report at an absolute path outside the worktree.
 5. **Update the work branch.** Commit only the task's paths, with exactly one
    route trailer on each commit. After implementation and review fixes, fetch
    fresh `origin/main` and merge it into the task branch as the final content
@@ -270,6 +273,7 @@ for the safety checks.
 | `opencode` | `opencode-impl.sh` | OpenCode using its configured Open Design provider. |
 | `luna` | `codex-impl.sh` | Luna Codex route. |
 | `sol` | `codex-impl.sh`, `codex-review.sh` | Independent Sol review route; `codex-review.sh` selects it. |
+| `deepseek-pi-<other>` | `pi-review.sh` | Pi review on the Open Design account the implementer did NOT use; `pi-review.sh` derives it from the implementer run. |
 
 The existing `luna` route remains available for side-by-side implementation
 runs while the favored Pi route gathers operating experience.
@@ -343,6 +347,42 @@ keys cannot be stored there by mistake.
 a caller's override from redirecting them. Luna defaults to `$HOME/.codex2`
 (or `CODEX_HOME_LUNA`); an explicit Sol `codex-impl.sh` run defaults to
 `$HOME/.codex` (or `CODEX_HOME_REVIEW`).
+
+`pi-review.sh` is the pi counterpart of `codex-review.sh`:
+
+```bash
+scripts/controller/pi-review.sh <worktree> <absolute-prompt-file> <run-name> \
+  --report <absolute-review-path> --implementer-run <implementer-run>
+```
+
+It is a thin wrapper over `pi-impl.sh` and guarantees two things. **The other
+account**: the implementer's account comes from `<run>.route` when that pins
+one (`deepseek-pi-volker|github2`, `deepseek-volker|github2`) and otherwise
+from `<run>.thread` through `opendesign-accounts.py find-thread-account`; the
+review route is then `deepseek-pi-<the other account>`. An account that cannot
+be found is a refusal (exit 2) that prints the record paths it read — the
+wrapper never falls back to the implementer's own account. `--account
+volker|github2` pins the review account directly, for an implementer run that
+names none. **The unchanged worktree**: before and after the launch the
+wrapper records `git rev-parse HEAD`, `git status --porcelain=v1 -uall` and a
+hash of `git diff HEAD`; any difference appends `REVIEW-MODIFIED-TREE` to
+`<run>.done`, prints it and exits 4, leaving the changes in place for the
+controller to judge. A dirty worktree is allowed (it is compared with its own
+before-state), a worktree whose before-state cannot be read is refused, and a
+report path inside the worktree is refused because a reviewer could write
+there and an ignored path would not even show in `status`. The outcome
+vocabulary, the report check (`--report` is passed through, so a review that
+writes no review file is `OUTCOME=NO-REPORT`) and the run records are
+`pi-impl.sh`'s; `PI_MODEL` and `PI_THINKING` keep working, and the defaults
+are the eco model at `max` thinking. `REVIEW-MODIFIED-TREE` (exit 4) is the
+one code `pi-review.sh` adds to `pi-impl.sh`'s, whose own codes (0, 1, 2, 3)
+are returned unchanged. pi itself can restrict its tools for a review
+(`--tools`, `--exclude-tools`, `--no-tools`, `--no-builtin-tools`,
+`--no-extensions`), but `pi-impl.sh` builds its argv without a pass-through
+for extra pi arguments, so `pi-review.sh` runs the reviewer with the launcher's
+tool set: it needs `read` and `bash`/`grep` for `git diff`, `git log` and
+grep, and must not edit. Passing an explicit read-only tool set through
+`pi-impl.sh` is a follow-up, not part of this change.
 
 ### Pi on Open Design
 
