@@ -6,6 +6,22 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Resume helpers: the idle check sees a busy pane under a tall agents panel (P-plat-22c)
+- `resume-lib.sh`: `pane_view` and its mode-line markers (`BOX_FOOT_MARKER`, `BOX_PANEL_HINT`, the box-rule patterns) moved
+  here from `ctl-keepalive.sh`, which now sources them, so the resume helpers and the keep-alive watcher measure the
+  same pane. `pane_state` builds that one view from a `-e` capture and refuses it as busy when `busy_beside_box` finds
+  `esc to interrupt` / `Compacting` at or below the box's last top rule, or - with no recognisable box, e.g. a pane in
+  another permission mode - in the last 20 non-blank lines; an unrecognised layout is BUSY, never ready, so a pane that
+  is about to be typed into is never guessed idle. `FOOT_LINES` (4, 6 in `compact-resume.sh`) alone counted the untrimmed
+  bottom lines: with one or more agents-panel rows the mode line's `esc to interrupt` fell outside it and `wait_idle`
+  typed `/clear`, `/compact` or the resume prompt into a running turn. `foot` reads the same view, so the logged footer
+  is the box, not the panel. Tests: `tests/test-clear-resume.sh` / `tests/test-compact-resume.sh` (1, 3, 6 and 12 panel
+  rows busy, the same frame in another permission mode, and the real idle panel still ready) on a shared
+  `tests/pane-frame-lib.sh` built from `tests/fixtures/keepalive/idle-agents-panel.ansi`.
+- `ctl-keepalive.sh` behaviour is unchanged; `ctl-doctor.sh` compares `CONTROLLER_HOME` against a quoted
+  `"${HOME:-}/controller"` (an unquoted right-hand side is a glob pattern), and `docs/design/agctl/CONTEXT-ECONOMY.md`
+  describes the shared idle check and no longer states the focused panel as captured fact.
+
 ### Added
 - `resume-read.sh <role>` (P-plat-22a): one read-only call prints the slices a restarted
   session needs (main: PRIME, the newest `RESUME HERE #N` block + its `(#N ...)` lines, the

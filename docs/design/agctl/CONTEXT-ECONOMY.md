@@ -170,14 +170,19 @@ Per poll, per mapped session:
 3. Context from the last assistant usage (ctx.py rule); skip if >= KEEPALIVE_CTX_MAX (that session must compact, not
    be kept warm).
 4. Lock: `flock -n ~/controller/locks/<pane>.lock`; compact-resume.sh and clear-resume.sh take the same lock (22b
-   adds that to both). Busy lock: skip.
+   adds that to both). Busy lock: skip. They also take the same idle check: `pane_state` in resume-lib.sh reads this
+   watcher's `pane_view` and adds `busy_beside_box`, so no agents panel below the mode line and no unknown permission
+   mode can make a running turn look ready to the helper that types `/clear` or the resume prompt (P-plat-22c).
 5. Pane checks on ONE `tmux capture-pane -e -p -t <pane>` (ANSI kept), all required:
    - ONE view first (`pane_view`): the box and every bottom window below are measured from the MODE line
      (`⏵⏵ bypass permissions on`), so the agents panel below it can never push a marker out of a window. The panel is
-     trimmed only while the mode line carries the unfocused hint `↓ to manage`; a focused panel looks identical, is not
-     captured yet, and is left untrimmed so that the strict box geometry refuses it.
-   - Not busy: no `esc to interrupt` and no `Compacting` in the last 6 non-blank lines of that view (resume-lib.sh
-     markers).
+     trimmed only while the mode line carries the unfocused hint `↓ to manage`; a focused panel may look identical, is
+     not captured yet, and is left untrimmed so that the strict box geometry refuses it.
+   - Not busy: `busy_beside_box` (resume-lib.sh, the view taken above) finds no `esc to interrupt` and no `Compacting`
+     at or below the last prompt-box top rule, or - when the view holds no recognisable box - in its last 20 non-blank
+     lines, and a view with no box at all is BUSY rather than ready. The FOOT_LINES window alone was blind exactly
+     where the agents panel below the mode line bit: a tall panel under an unrecognised mode line pushed the busy
+     marker out of it (P-plat-22c).
    - No dialog. None of the last 15 ANSI-stripped lines of that view may match `^\s*❯\s*[0-9]+\.\s`, and none may
      contain `Esc to cancel`. These are the cursor-on-numbered-option and footer of the permission and question
      menus; UNVERIFIED on 2.1.331, so 22b records a fixture from a real menu capture.

@@ -9,6 +9,7 @@ CLEARED_MARKER='ctx ?'              # present after /clear, before the first tur
 COMPACTING_MARKER='Compacting'      # the spinner line of a running compaction (compact-resume.sh adds it to BUSY_MARKERS)
 INPUT_MARKER='❯'                    # starts the input row of the prompt box (the LAST such line is the live one)
 FOOT_LINES=4                        # how many non-blank bottom lines count as the footer
+BUSY_SCAN_LINES=20                  # ... and the window used when the capture holds no prompt box (see busy_beside_box)
 BOX_RULE_BYTES='(?:\xe2\x94\x80){20,}'                                         # a prompt-box rule: at least 20 x U+2500, nothing else (perl, bytes)
 BOX_LABEL_RULE_BYTES='(?:\xe2\x94\x80){20,}[A-Za-z0-9._-]+(?:\xe2\x94\x80)+'   # the same rule with one tmux session label (spaces stripped)
 BOX_FOOT_MARKER='⏵⏵ bypass permissions on'                                     # the mode line: rows below it are not part of the prompt box
@@ -43,9 +44,37 @@ pane_view() { # $1 = capture with escapes: the captured lines down to and includ
   done
   printf '%s\n' "${ln[@]:0:n}"
 }
+busy_beside_box() { # $1 = a capture: 0 a BUSY_MARKERS line is inside the box (at or below its last top rule), 1 the box
+  # holds none, 2 no prompt box was recognised: then the marker counts anywhere in the last BUSY_SCAN_LINES non-blank
+  # lines. The box is the anchor: pane_view trims to the mode line only in the ONE layout it recognises (the bypass mode
+  # line carrying the unfocused panel hint), so a pane in another permission mode keeps its panel rows and the mode
+  # line's `esc to interrupt` falls outside pane_state_of's FOOT_LINES window. 2 is NOT a ready answer: a caller that
+  # would type into this pane must treat it as busy. Busy wrongly only waits or times out; idle wrongly is typed into.
+  local ln=() i n idx=-1 start=0 boxed=0 win m re="^$INPUT_MARKER"
+  mapfile -t ln < <(strip_sgr <<<"$1" | grep -av '^[[:space:]]*$')
+  n=${#ln[@]}
+  (( n > 0 )) || return 2
+  for ((i = 0; i < n; i++)); do [[ ${ln[i]} =~ $re ]] && idx=$i; done
+  if (( idx >= 1 )) && { is_rule "${ln[idx-1]}" || is_label_rule "${ln[idx-1]}"; }; then
+    boxed=1; start=$((idx - 1))   # the last top rule: everything above it is history, everything below belongs to the box
+  elif (( n > BUSY_SCAN_LINES )); then
+    start=$((n - BUSY_SCAN_LINES))
+  fi
+  win=$(printf '%s\n' "${ln[@]:start}")
+  for m in "${BUSY_MARKERS[@]}"; do grep -qF -- "$m" <<<"$win" && return 0; done
+  (( boxed )) || return 2
+  return 1
+}
 foot() { pane_view "$(tmux capture-pane -e -p -t "$pane")" | strip_sgr | grep -v '^[[:space:]]*$' | tail -n "$FOOT_LINES"; }
 busy() { pane_state; [[ $? -eq 1 ]]; } # one capture per call
-pane_state() { pane_state_of "$(pane_view "$(tmux capture-pane -e -p -t "$pane")")"; } # ONE capture; 0 ready, 1 busy, 2 the input row has text
+pane_state() { # ONE capture; 0 ready, 1 busy, 2 the input row has text. An unrecognised layout is busy, never ready: the
+  # caller is about to type into this pane.
+  local view st
+  view=$(pane_view "$(tmux capture-pane -e -p -t "$pane")")
+  busy_beside_box "$view"; st=$?
+  (( st == 0 || st == 2 )) && return 1
+  pane_state_of "$view"
+}
 input_row_of() { # $1 = a capture taken with -e; prints the live input row (marker kept), dim runs and SGR escapes removed
   # Input row = the LAST line starting with INPUT_MARKER (older prompt rows in the scrollback start with it too).
   # Claude Code shows a prompt SUGGESTION as dim text (ESC[2m ... ESC[0m or ESC[22m) in an EMPTY input row;
