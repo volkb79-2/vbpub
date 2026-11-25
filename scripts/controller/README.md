@@ -204,11 +204,16 @@ Use this order for each implementation task.
 4. **Review on another route.** Give an independent reviewer the exact commit
    and a read-only review prompt. Do not have an implementer review its own
    change. For a Luna implementation, `codex-review.sh` defaults to the Sol
-   review profile; for a DeepSeek or OpenCode implementation, select Luna or a
+   review profile. An OpenCode implementation is reviewed by Luna or by a
    separate review session. A DeepSeek implementation is reviewed by
-   `pi-review.sh`, which picks the OTHER Open Design account from the
-   implementer run and proves the reviewed worktree is unchanged. Keep the
-   review report at an absolute path outside the worktree.
+   `pi-review.sh`, which runs the reviewer with a shell-less, writer-less tool
+   set on the OTHER Open Design account, under a time-and-output budget, and
+   compares the reviewed worktree before and after the launch; the pi-review
+   paragraph below lists exactly what that comparison covers and what it
+   does not. Keep the
+   review report at an absolute path outside the worktree; an existing report
+   file is refused, so a retried review uses a fresh path or deletes the old
+   file.
 5. **Update the work branch.** Commit only the task's paths, with exactly one
    route trailer on each commit. After implementation and review fixes, fetch
    fresh `origin/main` and merge it into the task branch as the final content
@@ -357,34 +362,77 @@ scripts/controller/pi-review.sh <worktree> <absolute-prompt-file> <run-name> \
   --report <absolute-review-path> --implementer-run <implementer-run>
 ```
 
-It is a thin wrapper over `pi-impl.sh` and guarantees two things. **The other
-account**: the implementer's account comes from `<run>.route` when that pins
-one (`deepseek-pi-volker|github2`, `deepseek-volker|github2`) and otherwise
-from `<run>.thread` through `opendesign-accounts.py find-thread-account`; the
-review route is then `deepseek-pi-<the other account>`. An account that cannot
-be found is a refusal (exit 2) that prints the record paths it read — the
-wrapper never falls back to the implementer's own account. `--account
-volker|github2` pins the review account directly, for an implementer run that
-names none. **The unchanged worktree**: before and after the launch the
-wrapper records `git rev-parse HEAD`, `git status --porcelain=v1 -uall` and a
-hash of `git diff HEAD`; any difference appends `REVIEW-MODIFIED-TREE` to
-`<run>.done`, prints it and exits 4, leaving the changes in place for the
-controller to judge. A dirty worktree is allowed (it is compared with its own
-before-state), a worktree whose before-state cannot be read is refused, and a
-report path inside the worktree is refused because a reviewer could write
-there and an ignored path would not even show in `status`. The outcome
-vocabulary, the report check (`--report` is passed through, so a review that
-writes no review file is `OUTCOME=NO-REPORT`) and the run records are
-`pi-impl.sh`'s; `PI_MODEL` and `PI_THINKING` keep working, and the defaults
-are the eco model at `max` thinking. `REVIEW-MODIFIED-TREE` (exit 4) is the
-one code `pi-review.sh` adds to `pi-impl.sh`'s, whose own codes (0, 1, 2, 3)
-are returned unchanged. pi itself can restrict its tools for a review
-(`--tools`, `--exclude-tools`, `--no-tools`, `--no-builtin-tools`,
-`--no-extensions`), but `pi-impl.sh` builds its argv without a pass-through
-for extra pi arguments, so `pi-review.sh` runs the reviewer with the launcher's
-tool set: it needs `read` and `bash`/`grep` for `git diff`, `git log` and
-grep, and must not edit. Passing an explicit read-only tool set through
-`pi-impl.sh` is a follow-up, not part of this change.
+It wraps `pi-impl.sh` and gives the reviewer a **tool set without a shell and
+without a writer**: `--tools read,grep,find,ls --exclude-tools 'mcp__*'
+--no-extensions --no-mcp`, passed through `pi-impl.sh`'s `PI_EXTRA_ARGS` seam,
+which takes one argv element per line (newline separated, never word-split or
+`eval`ed) and refuses the launch contract `pi-impl.sh` owns (`-p`, `--mode`,
+`--model`, `--thinking`, `--session*`, `--continue`, `--resume`, `--fork`, `--`).
+`pi`'s documented default tools are `read`, `bash`, `edit` and `write`
+(`pi --help`, `docs/cli.md`); `--tools` REPLACES that selection, so the set is
+named in full. This is an enforcement, not a detection: there is no tool in
+that set that can run a program, so a reviewer cannot loop in a shell or push a
+multi-gigabyte stream through one. What it needs instead is rendered before the
+launch into `<runs-dir>/<run>.review/`, OUTSIDE the reviewed worktree:
+`commits.txt`, `diff.txt`, `files.txt` (`--name-status`), `uncommitted.diff`,
+`status.txt` and `before-state.txt`; the reviewer's copy of the prompt names
+those files. The reviewer does not write the report either — its FINAL
+assistant message is the report, and the launcher saves it at `--report`.
+A report path that already exists is refused (exit 2): a retried review that
+says nothing must not leave the previous file certified as this run's, and a
+settled run with no text is `REVIEW-NO-REPORT` (exit 2).
+
+It also carries a **review budget**, enforced while the run is going:
+`PI_REVIEW_MAX_SECONDS` (wall clock, default 1800), `PI_REVIEW_MAX_STREAM_BYTES`
+(size of `<run>.jsonl`, default 268435456), `PI_REVIEW_POLL_SECONDS` (default
+15) and `PI_REVIEW_KILL_WAIT_SECONDS` (default 10). The launch runs in its own
+process group; over budget the whole group is TERMed (pi-impl, the pi it execs
+and the liveness sidecar), KILLed if it outlasts the wait, and the run is marked
+`REVIEW-BUDGET` (exit 5). A non-integer value is a refusal, never a default.
+
+**The other account** (the second guarantee): the implementer's account comes
+from `<run>.route` when that pins one (`deepseek-pi-volker|github2`,
+`deepseek-volker|github2`) and otherwise from `<run>.thread` through
+`opendesign-accounts.py find-thread-account`; the review route is then
+`deepseek-pi-<the other account>`. An account that cannot be found is a refusal
+(exit 2) that prints the record paths it read — the wrapper never falls back to
+the implementer's own account. `--account volker|github2` pins the review
+account directly, for an implementer run that names none; it prints one line
+saying that the caller is asserting the reviewer is not the implementer.
+
+**The changed worktree is DETECTED, not prevented.** Before and after the
+launch the wrapper records, and compares, exactly these worktree-scoped values:
+`git rev-parse HEAD`; the symbolic HEAD (`DETACHED` when detached); `git status
+--porcelain=v1 -uall`; a hash of `git ls-files -s -v -z` (index entry flags,
+which is what `--assume-unchanged`/`--skip-worktree` hides behind); the hash of
+`$(git rev-parse --git-path info/exclude)`, or `ABSENT`; the hashes of the
+pre-existing untracked files' content; and a hash of `git diff --no-ext-diff
+--no-textconv --no-color HEAD --binary`. Any difference appends `REVIEW-
+MODIFIED-TREE` to `<run>.done`, prints it and exits 4, leaving the changes in
+place for the controller to judge. A dirty worktree is allowed (it is compared
+with its own before-state). A worktree whose before-state cannot be recorded is
+refused (exit 2) and one whose after-state cannot be read takes the same flag.
+This is a comparison, so it does NOT cover: ignored paths (except `info/exclude`
+itself), `.git` metadata beyond the values above (hooks, the common config,
+other refs), the shared main checkout, other worktrees, and anything outside
+the worktree. A review that is killed loses its comparison; the before-state is
+persisted in `<run>.review/before-state.txt` so a later reader can still see
+what the tree looked like. Stop a review through the owner pid in `<run>.lock`
+(pi-impl), never through the `pi-review.sh` pid: the wrapper waits on its child
+and, if killed, orphans the guarded launch.
+
+The outcome vocabulary and the run records are `pi-impl.sh`'s; `PI_MODEL` and
+`PI_THINKING` keep working, and the defaults are the eco model at `max`
+thinking. Exit codes: 2 for the refusals (usage, unreadable worktree, report
+inside the worktree, an existing report, an unresolvable report path, unknown
+account, account records that name none, an invalid budget value); 4
+`REVIEW-MODIFIED-TREE`; 5 `REVIEW-BUDGET`; otherwise pi-impl's own code, and
+**any** pi or pi-impl exit status (0, 1, 2, 3, 126, 127, 129, …) passes through
+unchanged. The `.done` marker is the authority, not the code: `job-check.sh`,
+`job-status.sh` and `ctl-status.sh` read any `REVIEW-MODIFIED-TREE`,
+`REVIEW-BUDGET` or `REVIEW-NO-REPORT` line of the marker, so a flagged or
+stopped review is never shown as green. Two concurrent reviews of one worktree
+are not serialised; each sees the other's writes and both flag.
 
 ### Pi on Open Design
 

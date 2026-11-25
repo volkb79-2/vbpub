@@ -23,14 +23,14 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-review.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
     exit 1
   fi
 done
-echo 'PASS unmutated job-check and hardening tests before their mutation checks'
+echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl and pi-review tests before their mutation checks'
 export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
 expect_killed() {
   local label=$1; shift
@@ -43,6 +43,16 @@ expect_killed() {
 }
 killed_count=0
 
+for pi_review_mutant in \
+  pi-review-account-inverted pi-review-head-only pi-review-index-only \
+  pi-review-exclude-only pi-review-untracked-content-only pi-review-diff-only \
+  pi-review-tools-wide pi-review-budget-off pi-review-budget-bytes-off \
+  pi-review-stale-report-overwrite pi-review-foreign-marker \
+  pi-review-realpath-fallback; do
+  expect_killed "$pi_review_mutant" \
+    env PI_REVIEW_SCRIPT="$ROOT/mutants/scripts/controller/$pi_review_mutant/pi-review.sh" \
+      bash "$SCRIPT_DIR/test-pi-review.sh"
+done
 expect_killed ctl-infra-attention-threshold \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-infra.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
 expect_killed ctl-pause-newer-than-pass \

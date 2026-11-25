@@ -17,6 +17,7 @@ shutil.copy2(repo / "scripts/controller/ctl-hygiene.sh", controller / "ctl-hygie
 shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
 shutil.copy2(repo / "scripts/controller/pi-live.py", controller / "pi-live.py")
 shutil.copy2(repo / "scripts/controller/job-status.sh", controller / "job-status.sh")
+
 # A mutant wrapper must be judged on the change it carries, not on a missing
 # sibling file: the continuation prompt is read from SCRIPT_DIR.
 shutil.copy2(repo / "scripts/controller/continue-empty-completion.md", controller / "continue-empty-completion.md")
@@ -48,6 +49,60 @@ def mutant(source: str, name: str, before: str, after: str, destination: Path = 
     target.chmod(0o755)
     return target
 
+def pi_review_mutant(name: str, before: str, after: str) -> Path:
+    """A pi-review.sh mutant keeps its siblings: the launcher runs
+    "$SCRIPT_DIR/pi-impl.sh", so a copy without them would fail for every check
+    and be "killed" by a missing file instead of by the mutation."""
+    source = repo / "scripts/controller/pi-review.sh"
+    original = source.read_text(encoding="utf-8")
+    if original.count(before) != 1:
+        raise SystemExit(f"{source}: expected one mutation target, found {original.count(before)}: {before!r}")
+    variant = controller / name
+    variant.mkdir(parents=True)
+    for filename in ("lib.sh", "pi-impl.sh", "pi-live.py", "opendesign-accounts.py", "continue-empty-completion.md"):
+        shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
+    target = variant / "pi-review.sh"
+    target.write_text(original.replace(before, after, 1), encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
+
+pi_review_mutant("pi-review-account-inverted",
+       "    volker) review_account=github2 ;;\n    github2) review_account=volker ;;",
+       "    volker) review_account=volker ;;\n    github2) review_account=github2 ;;")
+pi_review_mutant("pi-review-head-only",
+       '  [[ $TREE_SYMHEAD == "$before_symhead" ]] || changed="${changed:+$changed, }head-branch"',
+       '  :')
+pi_review_mutant("pi-review-index-only",
+       '  [[ $TREE_INDEX == "$before_index" ]] || changed="${changed:+$changed, }index-flags"',
+       '  :')
+pi_review_mutant("pi-review-exclude-only",
+       '  [[ $TREE_EXCLUDE == "$before_exclude" ]] || changed="${changed:+$changed, }exclude"',
+       '  :')
+pi_review_mutant("pi-review-untracked-content-only",
+       '  [[ $TREE_UNTRACKED == "$before_untracked" ]] || changed="${changed:+$changed, }untracked-content"',
+       '  :')
+pi_review_mutant("pi-review-diff-only",
+       '  [[ $TREE_DIFF == "$before_diff" ]] || changed="${changed:+$changed, }diff"',
+       '  :')
+pi_review_mutant("pi-review-tools-wide",
+       "printf '%s|n' --tools read,grep,find,ls --exclude-tools".replace("|", chr(92)),
+       "printf '%s|n' --tools read,grep,find,ls,bash --exclude-tools".replace("|", chr(92)))
+pi_review_mutant("pi-review-budget-off",
+       '  if (( now_epoch - started_epoch >= review_max_seconds )); then',
+       '  if (( 0 )); then')
+pi_review_mutant("pi-review-budget-bytes-off",
+       '      if [[ $stream_bytes =~ ^[0-9]+$ ]] && (( stream_bytes >= review_max_bytes )); then',
+       '      if (( 0 )); then')
+pi_review_mutant("pi-review-stale-report-overwrite",
+       'if [[ -e $review_path ]]; then',
+       'if false; then')
+pi_review_mutant("pi-review-foreign-marker",
+       'if ! marker_is_ours && [[ $marker_before != absent ]]; then',
+       'if false; then')
+pi_review_mutant("pi-review-realpath-fallback",
+       'review_path=$(realpath -m -- "$report_path") || {',
+       'review_path=$(realpath -m -- "$report_path") || review_path=$report_path; false || {')
 
 mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
        "if (( streak >= 2 || flag_newer == 1 )); then",
