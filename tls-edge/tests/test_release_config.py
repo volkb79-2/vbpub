@@ -17,6 +17,7 @@ from conftest import ROOT
 
 CONFIG = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
 ORCHESTRATION = ROOT.parent / "cmru.orchestration.toml"
+_VERSION = re.compile(r"\d+\.\d")
 
 
 def _load_tls_edge(monkeypatch) -> object:
@@ -63,6 +64,41 @@ def test_operator_docs_name_the_bundle_root_and_reproducibility_inputs():
 def test_closed_te_05_uses_the_archive_table_shape():
     archive = (ROOT / "archive" / "2026-Q4.md").read_text(encoding="utf-8")
     assert "TE-05 | hand-rolled bundle build | <this merge> | 2026-11-24" in archive
+
+
+def test_install_doc_carries_no_release_history():
+    """INSTALL describes one install path, not the version history (TE-06).
+
+    Version prose lives in the pending release notes before a tag; INSTALL keeps only
+    the operational facts an instance of the current major needs.
+    """
+    install = " ".join((ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8").split())
+
+    for stale in (
+        "older than 4.0",
+        "no in-place path",
+        "A 3.1 flat answers file",
+        "older than 3.2",
+        "A 3.2 rollback keeps",
+    ):
+        assert stale not in install, stale
+
+
+def test_release_notes_are_version_agnostic(monkeypatch):
+    """The published headline is install/verify only; version prose lives in CHANGES.
+
+    A dotted version in the notes string is what TE-06 removed: the headline outlives
+    the release it was written for, so it must not name one (design review M2). The key
+    is DERIVED from the publish step, so a renamed env var cannot slip past the pin.
+    """
+    argv = _publish_argv()
+    notes = _load_tls_edge(monkeypatch).env[argv[argv.index("--notes-env") + 1]]
+
+    assert _VERSION.search(notes) is None, notes
+    assert "Breaking" not in notes
+    assert "get.py install --variant py313" in notes
+    assert "sha256sum -c" in notes
+    assert "docs/INSTALL.md" in notes
 
 
 def test_the_publish_step_is_cmru_s_tarball_handler_and_variants_agree(monkeypatch):

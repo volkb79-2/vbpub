@@ -61,10 +61,9 @@ it does not collect site settings. `tls-edge configure` then asks for the domain
 HTTP/3, network/volume adoption, and runtime placement. It displays the exact changes and
 inbound firewall ports before writing the instance override and `consumer.env`.
 
-A host that already runs a tls-edge instance older than 4.0 has no in-place path to 4.0: such an instance cannot
-update to 4.0 through the installer, so 4.0 is installed fresh as this section describes. `get.py install` on a root
-that already holds an instance runs an update instead, so stop the old edge (it holds ports 80 and 443) and move its
-instance root aside, or install into the other scope, before the fresh install.
+An instance cannot be updated in place across a major version boundary: install the new major fresh, as this section
+describes. `get.py install` on a root that already holds an instance runs an update instead, so stop the old edge (it
+holds ports 80 and 443) and move its instance root aside, or install into the other scope, before the fresh install.
 
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
 does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
@@ -110,9 +109,9 @@ cgroup_parent = "<slice>.slice"
 
 For `acme-dns`, set `[tls_edge.tls] mode = "acme-dns"` and add `[tls_edge.acme.dns] provider` and optionally
 `wildcard_main`. For `static` or `dev`, set the mode and add `[tls_edge.static] cert_base`,
-`domains = ["example.test"]`, and `source = "bind"` or `"volume"`. A 3.1 flat answers file is refused; each old
-name is reported with its schema-shaped replacement. The CLI never asks for or stores DNS credentials;
-configure those through CIU secrets as described below.
+`domains = ["example.test"]`, and `source = "bind"` or `"volume"`. The flat answers file of an earlier schema is
+refused, and each old name is reported with its schema-shaped replacement. The CLI never asks for or stores DNS
+credentials; configure those through CIU secrets as described below.
 
 `get.py` verifies the bundle SHA-256 and the manifest (every file, every wheel), installs the wheels offline
 with `--require-hashes`, runs the bootstrap adapter, and only then switches `current`. Do not pipe `get.py` into
@@ -206,7 +205,7 @@ certbot renew --dry-run
 After a renewal the hook finds the Traefik container by its Compose service label and installed-instance name
 pattern, then runs `docker restart --time 5 <name>`. Expect about 3 seconds of edge downtime. It does not write
 or rewrite any file in the instance; when no matching container is running it prints a message and exits 0.
-The stable symlink follows the hook shipped in `stack/scripts/`: a 4.x `update` refreshes the file it points at,
+The stable symlink follows the hook shipped in `stack/scripts/`: an `update` refreshes the file it points at,
 so later instance updates take effect without another copied hook.
 
 **Staging CA** while testing: `[tls_edge.acme] ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"`
@@ -310,10 +309,8 @@ To move an existing instance to the durable hostdir manually:
    ```
 
 4. Run `sudo ./ciu check && sudo ./ciu up`. Keep the old volume until the new edge has issued or reused its
-   certificates successfully. A rollback to a release older than 3.2 ignores `store`, mounts the `acme-data`
-   volume (empty unless the old one was kept); an empty volume forces re-issuance, and the hostdir remains on
-   disk for a later roll-forward. An instance that adopted a volume must restore `[tls_edge.acme] volume_name`
-   before rolling back, or the older release mounts the project's own, empty `acme-data`.
+   certificates successfully. A rollback keeps `acme.store`, so the hostdir you migrated to stays in use; the
+   hostdir also remains on disk for a later roll-forward.
 
 ## 7. Roll back
 
@@ -322,10 +319,9 @@ sudo /srv/tls-edge-instance/bin/tls-edge-installer rollback
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
-`rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. A 3.2 rollback keeps
-`shared/acme`, but a rollback to a release older than 3.2 ignores `acme.store` and mounts the `acme-data` volume
-(empty unless the old one was kept, see §6), so it may re-issue every certificate. The hostdir remains on disk;
-roll forward again to reuse it.
+`rollback` re-points `current` to the previous release, resyncs `stack/` and the stubs. A rollback keeps
+`acme.store`, so a hostdir instance goes on using `shared/acme`; the hostdir remains on disk, so roll forward again
+to reuse it.
 
 ## 8. Migrate from a hand-made deployment (PLAN, not executed)
 
@@ -386,7 +382,7 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    `cd /srv/tls-edge-instance/stack && sudo ./ciu up`. Traefik re-reads `acme.json`: no re-issuance.
 6. **Start direct media.** From `voice-screen-share/mattermost-server`, run its `ciu up` so Mattermost binds
    8443 directly. Follow that project's [`CONSUMER.md`](../../voice-screen-share/mattermost-server/CONSUMER.md#calls-cut-over)
-   "Calls cut-over" section. Run this only after the old edge is stopped and the 4.0 edge is up.
+   "Calls cut-over" section. Run this only after the old edge is stopped and the new edge is up.
 7. **Verify.** `scripts/verify.sh --domain <host>`, `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    and a Mattermost media test from outside on its directly published 8443 tcp and udp ports.
@@ -430,9 +426,9 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
 
 ### Releasing tls-edge (maintainers)
 
-- The Calls preset removal is a major-version change. Mark breaking changes with
-  `!` or a `BREAKING CHANGE:` footer so conventional versioning can identify
-  them, and select the target version explicitly when releasing.
+- Version prose belongs in the pending release notes, not in `cmru.toml`'s headline or this document. Mark
+  breaking changes with `!` or a `BREAKING CHANGE:` footer so conventional versioning can identify them,
+  and select the target version explicitly when releasing.
 - Build with `cmru handler bundle-build --bundle-config bundle.toml --cmru-config
   ../cmru.orchestration.toml --name tls-edge --variant all`. The archive names, file allowlist, installer
   manifest and deterministic `xztar` writer come from `bundle.toml`; the first-party fetcher is
