@@ -197,8 +197,7 @@ scenario panel-idle "LI" "C C"
 run '%9' "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "idle agents panel exit $RC"
 [[ $(calls | grep -c '^capture start') -eq 3 ]] || fail "idle agents panel: expected exactly 3 idle checks"
-called_clear=0; calls | grep -qF 'send-keys %9 /clear Enter' && called_clear=1
-[[ $called_clear -eq 1 ]] || { calls >&2; fail "idle agents panel: /clear was not sent"; }
+contains <(calls) 'send-keys %9 /clear Enter' "idle agents panel: /clear was not sent"
 cmp -s "$D/sent.txt" "$D/expected.txt" || fail "idle agents panel: the prompt was not sent exactly"
 
 # 6. Argument and precondition errors exit 2 and send nothing.
