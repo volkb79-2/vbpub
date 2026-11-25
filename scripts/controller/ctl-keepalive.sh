@@ -256,7 +256,7 @@ poll_once() {
 }
 
 watch_loop() {
-  while :; do
+  while (( ! stop )); do   # a TERM during the sleep returns from `wait` and ends here: no extra poll, no extra Python scan
     poll_once
     (( stop )) && break
     sleep "$KEEPALIVE_POLL" 8>&- & wait $!

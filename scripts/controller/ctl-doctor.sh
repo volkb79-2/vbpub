@@ -308,8 +308,13 @@ dir_check logs-dir "$CONTROLLER_LOGS_DIR"
 keepalive_proc=${KEEPALIVE_PROC:-/proc}
 keepalive_pid_file=$CONTROLLER_HOME/keepalive.pid
 keepalive_pid=''
-[[ ! -f $keepalive_pid_file ]] || read -r keepalive_pid <"$keepalive_pid_file" || keepalive_pid=''
-keepalive_fix="setsid nohup bash $(printf '%q' "$SCRIPT_DIR/ctl-keepalive.sh") >/dev/null 2>&1 & disown"
+# head, not `read`: a pid file without a trailing newline makes `read` return 1, and the pid would read as stale.
+[[ ! -f $keepalive_pid_file ]] || keepalive_pid=$(head -n 1 -- "$keepalive_pid_file" 2>/dev/null) || keepalive_pid=''
+# The watcher takes ${KEEPALIVE_HOME:-${CONTROLLER_HOME:-$HOME/controller}}: a printed command without CONTROLLER_HOME
+# would write its pid file under $HOME/controller, and this check would keep saying absent.
+keepalive_env=''
+[[ $CONTROLLER_HOME == ${HOME:-}/controller ]] || keepalive_env="CONTROLLER_HOME=$(printf '%q' "$CONTROLLER_HOME") "
+keepalive_fix="${keepalive_env}setsid nohup bash $(printf '%q' "$SCRIPT_DIR/ctl-keepalive.sh") >/dev/null 2>&1 & disown"
 if [[ $keepalive_pid =~ ^[0-9]+$ && -r $keepalive_proc/$keepalive_pid/cmdline ]] &&
    grep -aqF -- 'ctl-keepalive.sh' "$keepalive_proc/$keepalive_pid/cmdline"; then
   record OK keepalive "running pid $keepalive_pid"
