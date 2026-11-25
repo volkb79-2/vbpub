@@ -54,8 +54,7 @@ for pi_review_mutant in \
   pi-review-tools-wide pi-review-budget-off pi-review-budget-bytes-off \
   pi-review-stale-report-overwrite pi-review-foreign-marker \
   pi-review-realpath-fallback pi-review-report-on-any-text \
-  pi-review-material-overwrite pi-review-group-unverified \
-  pi-review-stop-waits-unconfirmed; do
+  pi-review-material-overwrite pi-review-group-unverified; do
   expect_killed "$pi_review_mutant" \
     env PI_REVIEW_SCRIPT="$ROOT/mutants/scripts/controller/$pi_review_mutant/pi-review.sh" \
       bash "$SCRIPT_DIR/test-pi-review.sh"

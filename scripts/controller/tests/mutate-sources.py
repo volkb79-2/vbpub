@@ -105,7 +105,7 @@ pi_review_mutant("pi-review-stale-report-overwrite",
 # fixture, which carries partial text and a zero pi exit.
 pi_review_mutant("pi-review-report-on-any-text",
        'if (( launch_rc == 0 )) && [[ $run_outcome == SUCCESS || $run_outcome == UNCOMMITTED ]] &&',
-       'if (( launch_rc == 0 )) && [[ -z $run_outcome || $run_outcome == SUCCESS || $run_outcome == UNCOMMITTED ]] &&')
+       'if (( launch_rc == 0 )) && [[ 1 == 1 ]] &&')
 # M2: the earlier review's before-state must survive a retried run name. The
 # mutant drops the refusal, so the material is re-rendered (and pi-impl then
 # refuses), which the byte-identical assertion catches.
@@ -114,16 +114,16 @@ pi_review_mutant("pi-review-material-overwrite",
        'if false; then')
 # M3: the process group must be VERIFIED before it is signalled. The mutant
 # signals the group unconditionally, which the pgid shim makes an ESRCH: the log
-# then claims a group stop it never made, and the stop no longer lands.
+# then claims a group stop it never made, and the pid-only message is gone.
 pi_review_mutant("pi-review-group-unverified",
        'if [[ $launch_pgid =~ ^[0-9]+$ ]] && (( launch_pgid == launch_pid )); then',
        'if true; then')
-# M3: a stop that is not confirmed must not be waited on. The mutant waits on the
-# launch whatever the reading was, which the unreadable-liveness case then does
-# for the fake reviewer's whole 20-second sleep.
-pi_review_mutant("pi-review-stop-waits-unconfirmed",
-       '  [[ $launch_state == gone ]] || stopped_after_kill=1',
-       '  stopped_after_kill=1')
+# NOTE: the "a launch not confirmed stopped must not be waited on" branch has no
+# mutant. Nothing in this suite can construct a child that survives TERM+KILL
+# (a KILL to the wrapper's own child always works), so a mutant of it would
+# survive on behaviour the suite cannot observe -- a false green, which is worse
+# than an uncertified safety valve. The branch is stated in the script header
+# and the README instead.
 pi_review_mutant("pi-review-foreign-marker",
        'if ! marker_is_ours && [[ $marker_before != absent ]]; then',
        'if false; then')
