@@ -931,6 +931,79 @@ ceiling and the memory before the campaign's tree is produced, and treat a
 later change like any other judge change (re-plan, or carry over once the
 lane runs Assay 12.2.0).
 
+### Assay flags after `--` for an assay lane (RG-297)
+
+Run-Gate validates only its own rules; Assay owns what its mutation-store
+flags MEAN. So an assay lane accepts Assay's own flags after `--`, in order,
+and Run-Gate forwards them unchanged to the judge it runs:
+
+```sh
+# merge an owner manifest (Assay B544) into this store, then resume from it
+run-gate r2 -- --merge-manifest .run-gate/merge.json
+
+# both spellings work, and a flag with no value is a plain switch
+run-gate r2 -- --carry-forward .run-gate/assay-state/proj --merge-state=.run-gate/carried
+```
+
+Run-Gate's argv builder appends the forwarded tokens AFTER its own
+(`--file`, `--verdict-json`, `--state-dir`, `--shard K/N`/`--merge-shards
+N`/`--carry-over ...` when given); history records them as `assay_forward`
+with `selective = true`, exactly like a shard or a targeted set, so such a
+run never stands in for the whole lane's duration.
+
+**What Run-Gate still refuses (exit 2).**
+
+| forwarded | refusal |
+|---|---|
+| `--state-dir`, `--progress`, `--progress-heartbeat`, `--verdict-json`, `--file`, `--request-base` | `<flag> is injected by Run-Gate` — give it before `--` if Run-Gate has to know it |
+| `--jobs`, `--shard`, `--merge-shards` | `<flag> is owned by Run-Gate: give it before '--' (or drop it)` |
+| a bare token that is not a flag's value | `argument '<token>' after '--' can only be the value of the preceding flag` |
+| `--rejudge-contaminated` with `--` arguments | it resolves its own selection from history and would lose that target |
+| a path-valued flag outside the checkout/worktree | `--merge-state '<path>' is outside the checkout ... copy it under <checkout>/.run-gate/ (git-ignored) first` |
+
+The path-valued flags are `--merge-state`, `--merge-shard-store`,
+`--merge-manifest`, `--carry-over`, `--carry-forward`, `--reuse-from`,
+`--only-candidates`, `--exclude-candidates` and `--candidates-file`, in both
+spellings. Run-Gate adds NO mount for them: a path outside the checkout and
+the judged worktree is refused, not mounted. For `--merge-manifest FILE` the
+manifest's PARENT DIRECTORY is checked, because the stores a manifest names
+resolve relative to the file; the manifest itself is never opened, so an
+absent or inconsistent manifest is Assay's refusal (`merge manifest
+refused: ...`), passed through unreworded.
+
+**Capability probe.** Only when arguments were forwarded, the lane first asks
+the judge for `assay capabilities --json` and checks that the document's
+`schema` is `assay-capabilities/2` and that `commands.run` lists every
+forwarded long flag (otherwise: `this judge does not support <flag> (assay
+capabilities)`). Unknown keys are ignored — only `schema` and `commands.run`
+are read, and an unknown SCHEMA is refused rather than reinterpreted. A judge
+that refuses `capabilities` itself (Assay before 12.3.0, or a build that
+cannot import its analysis package) keeps its own one line and the lane stops
+there: no degraded mode and no fallback to the `run --help` probe, which is
+still what covers Run-Gate's OWN flexible flags (Assay 12.2.0's inventory
+floor). A lane that forwards nothing generates the same script as before, byte
+for byte.
+
+Nothing changes for the flags Run-Gate documents above. `--shard K/N`,
+`--merge-shards N`, `--carry-over DIR` + `--carry-over-reason TEXT`,
+`--merge-state DIR`, `--only-candidates FILE`, `--exclude-candidates FILE`,
+`--reuse-from`, `--rejudge` and `--rejudge-outcome` stay as documented; only
+the three checks Assay already owns went away with RG-297: the
+`--carry-over`/`--carry-over-reason` pairing and the non-empty reason, the
+"candidate file is not a file" check, and "`--rejudge-outcome` requires at
+least one `--rejudge` ID" (Assay documents the bucket as a union with the
+ids). A missing candidate file or an unpaired reason is now the judge's own
+refusal line.
+
+**ONE UNTESTED FORM: a remote lane.** `remote-gate.sh` forwards everything
+after ITS `--` verbatim to `run-gate <lane> <args>` (`scripts/netcup/runner/
+remote-gate.py:1347`, `extra nargs="*"`), so a forwarded flag over a remote
+lane needs TWO separators: `remote-gate.sh ... -- -- --merge-manifest
+.run-gate/merge.json`. This package did not add an argv-split test for the
+collector (its runner is the owner of that surface), so treat the double `--`
+as UNTESTED until that test exists; do not change the collector here (RG-315
+is filed for its artifact glob, not for this).
+
 ### Restart an old source-backed checkout after a judge upgrade (RG-270)
 
 Internal Assay lanes install the selected worktree's `assay/` source at lane

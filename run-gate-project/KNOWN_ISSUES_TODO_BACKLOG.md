@@ -187,7 +187,7 @@ SPEC §9.
 | RG-294 | private scratch directories leak into the repository | Major | FIXED 2026-11-24 (P-core-01) |
 | RG-295 | no owner-side scratch prune | Minor | FIXED 2026-11-24 (P-core-01) |
 | RG-296 | projects restate lane rules instead of checking them | Minor | FIXED IN THIS BRANCH (P-core-08) |
-| RG-297 | run-gate re-validates Assay flags it should forward opaquely | Minor | OPEN 2026-11-24 (Opus design review) |
+| RG-297 | run-gate re-validates Assay flags it should forward opaquely | Minor | FIXED IN THIS BRANCH (RG-297) |
 | RG-298 | durable R2 store transport is not shipped or re-seeded | Minor | OPEN 2026-11-24 (Opus design review; owner T3/T1, file only) |
 | RG-299 | a signal during scratch cleanup re-raises after the verdict | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
 | RG-300 | `doctor --prune` ignores `--worktree` and imported lane budgets | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
@@ -9587,10 +9587,45 @@ Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and c
 
 ## RG-297 — run-gate re-validates Assay flags
 
-**Status:** OPEN 2026-11-24 (Opus design review). Severity: Minor.
+**Status:** FIXED IN THIS BRANCH (RG-297). Severity: Minor.
 
-Forward Assay flags opaquely after `--`, check only mounts and shard names, and
-use `assay capabilities --json`. This waits for Assay P-assay-10/12 (T3).
+**Forward path.** An assay lane accepts Assay's own flags after `--`
+(`run_gate.py` `parse_assay_forward`): the tokens are kept verbatim and in
+order (both `--flag VALUE` and `--flag=VALUE`), appended AFTER Run-Gate's own
+constructed argv, and recorded in history as `selective` with an
+`assay_forward` token list. Lanes that forward nothing generate the same inner
+script as before.
+
+**Owned flags refused by name** (exit 2): `--state-dir`, `--progress`,
+`--progress-heartbeat`, `--verdict-json`, `--file`, `--request-base` are
+injected by Run-Gate; `--jobs`, `--shard`, `--merge-shards` are Run-Gate's
+own and must be given before `--`. A bare token is legal only as the value of
+the preceding flag.
+
+**Mount rule.** Every path value of `--merge-state`, `--merge-shard-store`,
+`--merge-manifest`, `--carry-over`, `--carry-forward`, `--reuse-from`,
+`--only-candidates`, `--exclude-candidates` and `--candidates-file` is made
+absolute and must resolve under the repo or the judged worktree, reusing
+`validate_r2_flex_paths`; a `--merge-manifest` is checked on its parent
+directory tree. Run-Gate adds no mount and never opens or parses a manifest.
+`--rejudge-contaminated` refuses `--` arguments (it forces its own selection).
+
+**Capability probe.** Only when tokens were forwarded, the lane runs
+`<judge> capabilities --json` and Run-Gate reads exactly `schema` (must be
+`assay-capabilities/2`; anything else, unparseable output or a non-zero exit
+is refused) and `commands.run` (every forwarded long flag must be listed, else
+`this judge does not support <flag> (assay capabilities)`). A judge that
+refuses `capabilities` itself keeps its own line, unreworded. The `run --help`
+grep for Run-Gate's OWN flags stays (released Assay 12.2.0 has no
+`capabilities`), and the version pin/floor for forwarded store flags follows
+after Assay 12.3.0 ships (RG-318).
+
+**Removed duplicated checks (Assay owns them now).** `--carry-over` paired
+with a non-empty `--carry-over-reason` (Assay `mutation_store.py`), the
+"`--only-candidates`/`--exclude-candidates` is not a file" check (Assay
+`cli.py`'s candidate reader), and `--rejudge-outcome requires at least one
+--rejudge ID` (Assay documents the bucket as a union with the ids). Each now
+has a test showing the argv reaches Assay unchanged.
 Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
 
 ## RG-298 — durable R2 store transport
@@ -9885,3 +9920,44 @@ Source: vbpub-core, rg307b gate-full failure 2026-11-24 (`~/controller/remote-ga
 - **Close when.** `lanes --check` warns for the debian-install-v2 pairing before it is fixed, and a seeded resume across two throwaway checkouts is accepted once the pairing is removed.
 
 Source: vbpub-core, filed on vbpub-rollback's report 2026-11-24.
+
+## RG-315 — a remote r2 lane does not collect `r2-progress.jsonl`
+
+**Status:** OPEN 2026-11-25 (filed by RG-297; owner of `scripts/netcup/runner` decides). Severity: Minor.
+
+- **Cause (verified).** `scripts/netcup/runner/remote-gate.py` (~758-762) collects
+  `\( -path './.assay/*' -o -path './.run-gate/*' \) -type f \( -name 'verdict*.json' -o -name 'progress*.jsonl' ... \)`: the glob is anchored at the basename start, so `progress*.jsonl` matches native run-gate assay lanes' `progress-<artifact_lane>.jsonl` but NOT `r2-progress.jsonl`. The command lane `scripts/debian-install-v2/run-gate.toml` passes `--progress .assay/r2-progress.jsonl` itself (its `artifacts = [...]` lists it), so the file exists on the remote host and is simply not collected.
+- **Effect.** Nobody can tell how many candidates resumed from a seeded store. Evidence run `rgw-r2-20261124T230949-r1002`: the collected `artifacts.tgz` holds only `./.assay/verdict-r2.json`; the Assay side is B577/B580.
+- **Wanted.** The collector's glob also matches `*progress*.jsonl`, which is a one-line change in the tracked runner.
+- **Not fixed here.** RG-297 does not touch `scripts/netcup/runner/**`.
+Source: RG-297 workspace filing (P-core-12 follow-up note), evidence run `rgw-r2-20261124T230949-r1002`.
+
+## RG-316 — `run-gate lanes --check` does not decide several lane-contract rules
+
+**Status:** OPEN 2026-11-25 (filed by RG-297). Severity: Minor.
+
+- **Gap.** `lanes --check` does not decide: exact outer-to-inner lane pairing; the canary policy (cmru's `r0-r1` has no canary, cmru has `budget_per_attempt`); a command-lane mutation `--timeout-seconds` >= 1800; and the entire native r2 lane contract (`kind = "assay"`, `assay_lane`, ephemeral environment, `carry_over` accepted, `attach_r2_flex`'s refusal of a command-kind r2 lane, `select_r2_jobs` worker counts, `candidate_ram` >= 256 MiB, `resource_observer`/`clean_tree`/`pids`, no argv).
+- **Kept today** in `cmru/tests/test_gate_budgets.py` and `libraries/cli-extended/tests/test_r2_lane_contract.py` (CLI-EXT-45 PARTLY DONE).
+- **Wanted.** Extend `lanes --check` to these rules or accept the loss explicitly.
+Source: P-core-12.
+
+## RG-317 — two tests judge other projects from run-gate's suite
+
+**Status:** OPEN 2026-11-25 (filed by RG-297). Severity: Minor.
+
+- `run-gate-project/tests/test_lanes_check.py:383-412 test_real_repository_all_has_no_findings` duplicates step 2 of the `estate-lint/suite` lane and turns Run-Gate red for any OTHER project's bad budget.
+- `run-gate-project/tests/test_tester_unified_base_variants.py` judges `tester-unified`, not Run-Gate.
+- **Wanted.** Decide keep/remove for the first and move the second to `tester-unified/tests`.
+Source: P-core-12.
+
+## RG-318 — the assay version pin for forwarded store flags
+
+**Status:** OPEN 2026-11-25 (filed by RG-297). Severity: Minor.
+
+When Assay 12.3.0 is released, Run-Gate adds the floor for forwarded store
+flags (`assay >= 12.3.0`) and the `tester-unified` image carries it. Until
+then, a forwarded-flag run is probed by `capabilities --json` at run time and
+the tests stub the document (`test_run_gate_assay_forward.py`); RG-297
+deliberately adds no version pin or floor for `capabilities`, because 12.3.0
+is not released yet.
+Source: RG-297.
