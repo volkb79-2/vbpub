@@ -46,7 +46,7 @@ io_sync = "durable"
 #   enforced lane memory 4g -> memory budget 75% of 4g = 3072 MiB
 #   declared candidate_ram 512 MiB is a FLOOR over the measured per-candidate
 #     RSS (p95 391,901,184 B = 374 MiB measured over 234 candidate events in
-#     the 2026-11-02 campaign; the largest single candidate there was
+#     the 2026-11-02 campaign; the largest REPLAY candidate RSS there was
 #     1,568,337,920 B = 1.46 GiB) -> memory_workers = 3072 // 512 = 6
 #   assay max_mutants remaining cap is never binding here
 #   jobs = min(jobs_max 4, cpu 3, memory 6, remaining) = 3
@@ -55,7 +55,7 @@ io_sync = "durable"
 # pytest/coverage overhead. The 2.67 GiB (2,864,095,232 B) peak of the
 # 2026-11-02 campaign at N=3 is the campaign sampler's peak on the gate SLICE,
 # not a lane figure: 2.67 GiB cannot fit in the 1536m LANE cap that campaign
-# ran under, which is why that cap is 4g now. 4g is measured, not a guess.
+# ran under, which is why that cap is 4g now. 4g is inferred from that 2.67 GiB peak, not measured as a lane figure.
 #
 # budget = 245m is sized from the measurement in docs/R2-RUNBOOK.md and keeps
 # the 5m margin above the assay lane's own 240m that `run-gate lanes --check`
@@ -108,8 +108,10 @@ io_sync = "durable"
 # end BUDGET_EXCEEDED (75 of 1891 candidates in 6 h, ETA about 8450 min).
 #
 # budget 25m = [lanes.r0-r1] 20m + the 5m margin R-59 requires above an inner
-# lane (`run-gate lanes --check`, LANES_CHECK_BUDGET_MARGIN_SECONDS = 5m in
-# run-gate-project/run_gate.py:217), for the nested container start. Raising
+# lane (R-59; `run-gate lanes --check` enforces it only for kind = "assay"
+# lanes, LANES_CHECK_BUDGET_MARGIN_SECONDS = 5m in
+# run-gate-project/run_gate.py:217, so for this command lane it is a
+# convention), for the nested container start. Raising
 # this instead of adding margin would let the outer bound cut the inner lane.
 [lanes.gate]
 kind = "command"

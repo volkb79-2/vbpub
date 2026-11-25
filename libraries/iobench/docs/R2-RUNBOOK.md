@@ -194,7 +194,7 @@ worker ≈ 0.2/min).
 * **Lane memory**: 4 GiB declared, 75 % of it (3072 MiB) is the memory budget
   (the default `ram_target = "75%"`, `run_gate.py:2165`), and
   `candidate_ram = 512m` (a floor over the measured
-  p95 391,901,184 B ≈ 374 MiB and the known 1,462 MiB maximum) gives
+  p95 391,901,184 B ≈ 374 MiB and the largest replay candidate RSS of 1,496 MiB (1.46 GiB)) gives
   `memory_workers = 3072 // 512 = 6` (`run_gate.py:5389`); CPU cap 3 with
   oversubscribe 1.0 gives
   `cpu_workers = 3`; `jobs = min(jobs_max 4, 3, 6, remaining) = 3`
