@@ -11,7 +11,7 @@ agctl owns controller identity and handover, the run registry, routes, agent fin
 ## 2. The package (exists now)
 
 - **Created now, not after finalize/prime:** heredoc Python cannot be imported, so parsers exist 3-4 times (H3).
-- **`agctl/` at the repo root**, cmru-managed: `src/agctl/{config,routes,runs,streams,handover,cli}.py`, `tests/` (pytest, recorded streams), README, CHANGES, backlog `AGC-NN`, lane `tests`. **Exists now:** the package skeleton (`config`, `cli`, `gitstate`, an `estate` verb that reads git only and states `unknown` for every source without a reader yet), registered in `cmru.orchestration.toml` at L1.
+- **`agctl/` at the repo root**, cmru-managed: `src/agctl/{config,routes,runs,streams,handover,cli}.py`, `tests/` (pytest, recorded streams), README, CHANGES, backlog `AGC-NN`, lane `tests`. **Exists now:** the package skeleton (`config`, `cli`, `gitstate`, `bounded`, `runs`, `sources`, an `estate` verb that reads git, the legacy flat run records, the remote-gate results and slots, and the peer `STATE.md` package lines, each field naming its source and stating `unknown` for anything without a reader yet, plus `estate --header`), registered in `cmru.orchestration.toml` at L1.
 - **Stdlib plus cli-extended** (CLI, `register_skills_verbs`); until T2 P7.0b (P-core-05) puts the wheel in tester-unified, the lane and shims set `PYTHONPATH=libraries/cli-extended/src` (no vendored copy).
 - **Bash freeze (B9):** no new bash in `scripts/controller/` beyond 50-line entry points (exception: P-plat-02).
 - **Skills are package data** (`agctl skills install|check|list|uninstall`); `controller-handover` moves in, `skills-sync.sh` retires (operator 2026-11-18).
