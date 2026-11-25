@@ -332,3 +332,13 @@ def test_discover_root_names_a_configured_path_that_is_not_even_a_parent(tmp_pat
     # reporting a git failure for a directory nobody could enter.
     assert root is None
     assert "is not a directory" in detail
+
+
+def test_two_lines_after_a_locked_line_still_flush_once_per_block():
+    entries = gitstate.parse_worktree_porcelain(
+        "worktree /repo/a\nlocked by hand\nHEAD aaaaaaa\n\nworktree /repo/b\nbare\n"
+    )
+
+    assert [entry.path for entry in entries] == ["/repo/a", "/repo/b"]
+    assert entries[0].locked == "by hand"
+    assert entries[1].bare is True

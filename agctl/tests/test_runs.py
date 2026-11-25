@@ -364,8 +364,20 @@ def test_by_id_answers_none_for_a_name_that_is_not_there(tmp_path):
 
 
 def test_first_line_of_an_empty_document_is_empty():
+    assert ag_runs._first_line(None) == ""
     assert ag_runs._first_line("") == ""
-    assert ag_runs._first_line("\nsecond\n") == ""
+    assert ag_runs._first_line("\n\nsecond\n") == ""
+    assert ag_runs._first_line("  luna  \n") == "luna"
+
+
+def test_an_empty_route_file_leaves_the_route_blank(tmp_path):
+    _write(tmp_path, "runs", "p.route", "\n\n")
+    _write(tmp_path, "runs", "p.done", "EXIT=0 OUTCOME=SUCCESS\n")
+
+    record = ag_runs.read(_config(tmp_path)).by_id("p")
+
+    assert record.route == ""
+    assert record.outcome == "SUCCESS"
 
 
 def test_a_record_whose_live_file_disappeared_still_reads(tmp_path):

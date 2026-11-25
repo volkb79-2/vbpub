@@ -41,6 +41,8 @@ def test_a_lock_line_with_a_device_field_that_is_not_a_pair_is_skipped():
     # is not turned into an entry that would then match the wrong inode.
     assert ag_sources.parse_proc_locks("8: FLOCK ADVISORY WRITE 1 fd:00 0 EOF\n") == ()
     assert ag_sources.parse_proc_locks("8: FLOCK ADVISORY WRITE 1 nonsense:1 0 EOF\n") == ()
+    # Two parts that are not hexadecimal are the ValueError path, not the "not a pair" path.
+    assert ag_sources.parse_proc_locks("8: FLOCK ADVISORY WRITE 1 zz:yy:1 0 EOF\n") == ()
 
 
 def test_a_short_or_odd_proc_locks_line_is_skipped_not_guessed():
@@ -248,6 +250,8 @@ def test_a_meta_file_that_is_not_json_and_a_result_file_that_is_not_json_are_unk
 
     assert (result.host, result.lane, result.verdict) == (ag_sources.UNKNOWN, ag_sources.UNKNOWN, ag_sources.UNKNOWN)
     assert result.detail.startswith("meta.json")
+    # The reason travels with the JSON payload too, so a machine consumer sees it as well.
+    assert result.as_dict()["detail"] == result.detail
 
 
 def test_a_file_in_the_results_directory_is_skipped_and_a_meta_stat_failure_is_tolerated(tmp_path):

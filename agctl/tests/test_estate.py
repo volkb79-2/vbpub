@@ -478,6 +478,12 @@ def test_a_merge_list_that_is_present_but_does_not_name_the_branch_is_no(tmp_pat
     assert "merge candidate" in row.fields["merged"].detail
 
 
+def test_truncation_leaves_a_block_that_fits_completely_alone():
+    short = ["MERGE 0: none", "LEASES 0: none"]
+
+    assert agg._truncate(short).splitlines() == short
+
+
 def test_truncation_keeps_whole_lines_and_marks_the_block():
     truncated = agg._truncate(["a" * 10, "b" * 5000])
 
