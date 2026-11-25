@@ -1,9 +1,15 @@
-"""The release config publishes exactly the variants and retained inputs declared."""
+"""The release config publishes exactly the variants and retained inputs declared.
+
+Oracles that only repeated a literal from `cmru.toml` (and identical duplicates of
+`cmru`'s own suite) are gone; what remains guards behaviour or an agreement between
+two declarations that must not drift apart (design review M3/M6, cmru KI-194/KI-197).
+"""
 from __future__ import annotations
 
 import fnmatch
 import re
 import tomllib
+from pathlib import PurePosixPath
 
 from cmru.bundle import parse_config as parse_bundle_config
 from cmru.config import load_forge_config
@@ -59,53 +65,33 @@ def test_closed_te_05_uses_the_archive_table_shape():
     assert "TE-05 | hand-rolled bundle build | <this merge> | 2026-11-24" in archive
 
 
-def test_push_step_is_the_cmru_variants_handler_not_a_project_script():
+def test_the_publish_step_is_cmru_s_tarball_handler_and_variants_agree(monkeypatch):
+    """The project keeps no release script; cmru owns the publish step.
+
+    The `--variant` repeat is kept until cmru KI-197 makes `tarball-publish` read
+    `[[project.variants]]` itself; see the plan's KI list.
+    """
     argv = _publish_argv()
     assert argv[:3] == ["cmru", "handler", "tarball-publish"]
-    assert "scripts/publish-variants.py" not in " ".join(argv)
-    assert not (ROOT / "scripts" / "publish-variants.py").exists()
+    assert not (ROOT / "tools" / "release.sh").exists()
 
-
-def test_handler_variants_repeat_the_declared_variants_with_their_labels():
-    argv = _publish_argv()
     specs = [argv[i + 1] for i, item in enumerate(argv) if item == "--variant"]
     declared = [f"{v['name']}={v['label']}" for v in CONFIG["project"]["variants"]]
     assert specs == declared
     assert argv[argv.index("--prefix") + 1] == CONFIG["project"]["prefix"].removesuffix("-v")
 
 
-def test_the_installer_is_published_beside_the_bundles_from_the_build_output(monkeypatch):
+def test_publisher_and_build_agree_on_the_retained_version_inventory(monkeypatch):
+    """KI-194's inventory oracle, moved from cmru's suite into the owning project."""
     argv = _publish_argv()
-    assert argv[argv.index("--extra-asset") + 1] == "dist/get.py"
-    assert argv[argv.index("--version-file") + 1] == "dist/VERSION"
-    project = _load_tls_edge(monkeypatch)
-    assert project.artifact_dirs == ["dist"]
-    build = project.steps["build"]
-    assert build["clean_dirs"] == ["dist"]
-    assert build["required_env"] == ["TLS_EDGE_VERSION"]
-    assert build["env_command"] == ["python3", "tools/bundle_wheels.py", "version-env"]
+    version_file = PurePosixPath(argv[argv.index("--version-file") + 1])
+    extra_asset = PurePosixPath(argv[argv.index("--extra-asset") + 1])
+    assert version_file.parent == extra_asset.parent
+
+    build = _load_tls_edge(monkeypatch).steps["build"]
+    retain = build["commands"][-1]["argv"]
+    assert retain[2:4] == ["retain", str(version_file.parent)]
     assert build["commands"][0]["argv"][:3] == ["cmru", "handler", "bundle-build"]
-    assert build["commands"][1]["argv"] == [
-        "python3", "tools/bundle_wheels.py", "retain", "dist",
-    ]
-
-
-def test_bundle_build_names_reproducible_variant_archives_from_one_variant_table(monkeypatch):
-    bundle = parse_bundle_config(ROOT / "bundle.toml")
-    project = _load_tls_edge(monkeypatch)
-
-    assert bundle.archive_template == "tls-edge-v{version}-{variant}.tar.xz"
-    assert bundle.archive_version_env == "TLS_EDGE_VERSION"
-    assert bundle.archive_format == "xztar"
-    assert bundle.vendor is not None
-    assert bundle.vendor.requirements == ["requirements-bundle.txt"]
-    assert bundle.vendor.dest == "wheels"
-    assert bundle.stage is not None
-    assert "{variant}" in " ".join(bundle.stage.argv)
-    assert [variant.name for variant in project.variants] == ["py313", "py314"]
-    assert [variant.build_arg for variant in project.variants] == [
-        "PYTHON_VERSION=3.13", "PYTHON_VERSION=3.14",
-    ]
 
 
 def test_bundle_copy_allowlist_is_operator_only():
@@ -131,12 +117,14 @@ def test_bundle_copy_allowlist_is_operator_only():
         "verify-external.sh",
         "verify.sh",
     ]
-
-
-def test_asset_suffix_matches_the_installer_asset_suffix():
-    argv = _publish_argv()
-    suffix = argv[argv.index("--asset-suffix") + 1] if "--asset-suffix" in argv else ".tar.xz"
-    assert suffix == CONFIG["project"]["installer"]["asset_suffix"]
+    # Maintainer tooling never ships, and the release has one entry point (cmru).
+    assert sorted(path.name for path in (ROOT / "tools").iterdir() if path.is_file()) == [
+        "bundle_contract.py",
+        "bundle_wheels.py",
+        "render.sh",
+        "render_standalone.py",
+        "update-rendered.sh",
+    ]
 
 
 def test_publish_glob_matches_every_variant_but_not_the_retired_single_asset_name():
@@ -147,22 +135,11 @@ def test_publish_glob_matches_every_variant_but_not_the_retired_single_asset_nam
     assert not fnmatch.fnmatchcase("tls-edge-v4.0.0.tar.xz", glob)
 
 
-def test_cmru_release_runs_the_registered_r0_r1_r3_gate():
-    commands = CONFIG["steps"]["run-tests"]["commands"]
-    assert commands == [{
-        "label": "tls-edge: R0/R1/R3 release gate",
-        "argv": ["run-gate", "release-gate"],
-        "cwd": ".",
-    }]
+def test_release_runs_a_registered_release_gate_lane():
+    argv = CONFIG["steps"]["run-tests"]["commands"][0]["argv"]
+    assert argv[0] == "run-gate"
+    lane = argv[1]
 
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
-    assert gate["lanes"]["release-gate"]["kind"] == "assay"
-    assert gate["lanes"]["release-gate"]["assay_lane"] == "release-gate"
-
-    assay = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))
-    lane = assay["lanes"]["release-gate"]
-    assert lane["rigor"] == ["R0", "R1", "R3"]
-    assert lane["judge"]["mode"] == "whole_target"
-    assert lane["judge"]["fail_under"] == 100.0
-    assert lane["judge"]["require_branch"] is True
-    assert lane["judge"]["canary"]["mechanism"] == "import-break"
+    assert gate["lanes"][lane]["kind"] == "assay"
+    assert gate["lanes"][lane]["assay_lane"] == lane

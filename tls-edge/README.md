@@ -98,7 +98,6 @@ tls-edge/
     render_standalone.py      ← Jinja2+TOML render engine; DooD-aware paths
     update-rendered.sh        ← regenerate ignored edge-proxy/ trial output
     bundle_wheels.py          ← generated requirements + the one first-party wheel fetcher
-    release.sh                ← thin CMRU release entry point
 
   consumer-examples/          ← ready-to-copy example stacks
     pattern-a-public-only/
@@ -276,22 +275,15 @@ ignored `cmru.secret.toml [github].token`; a committed credential is rejected.
 CMRU's `xztar` writer sorts members, normalises ownership and modes, and uses
 `SOURCE_DATE_EPOCH`; two builds with identical inputs and epoch are byte-identical.
 
-### Standalone (simplest)
-
-```bash
-bash tls-edge/tools/release.sh 0.2.0
-# → isolated CMRU transaction: gate, commits VERSION + CHANGES, tags, builds,
-#   publishes, and synchronises main
-```
-
-Accepts an optional leading `v` (`0.2.0` and `v0.2.0` both work).
-
-### Via cmru (consistent with other vbpub projects)
+### Release command
 
 ```bash
 cmru release tls-edge --set-version 0.2.0
-# → same declared project contract, with the root audit log
+# → isolated CMRU transaction: gate, commits VERSION + CHANGES, tags, builds,
+#   publishes, and synchronises main, with the root audit log
 ```
+
+This is the only release entry point: tls-edge keeps no release script of its own.
 
 ### What happens after publish
 
