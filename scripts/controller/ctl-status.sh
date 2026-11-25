@@ -9,16 +9,23 @@ controller_init
 
 done_state() {
   # $1 the run's completion marker. pi-review.sh APPENDS its own verdict line
-  # (REVIEW-MODIFIED-TREE, REVIEW-BUDGET, REVIEW-NO-REPORT) after pi-impl.sh's
-  # line 1, which can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit;
-  # reading line 1 alone shows a tampered or stopped review as green.
+  # (REVIEW-MODIFIED-TREE, REVIEW-BUDGET, REVIEW-NO-REPORT, REVIEW-NOT-SETTLED)
+  # after pi-impl.sh's line 1, which can read `EXIT=0 OUTCOME=SUCCESS` for a
+  # reviewer commit; reading line 1 alone shows a tampered or stopped review as
+  # green. One rule for all three readers (job-check.sh, job-status.sh and here):
+  # a verdict is ANY line of the marker that contains it.
   local marker=$1 first verdict=''
   first=$(head -n 1 "$marker" | head -c 70)
-  for candidate in REVIEW-MODIFIED-TREE REVIEW-BUDGET REVIEW-NO-REPORT; do
+  for candidate in REVIEW-MODIFIED-TREE REVIEW-BUDGET REVIEW-NO-REPORT REVIEW-NOT-SETTLED; do
     grep -qF -- "$candidate" "$marker" && verdict=$candidate
   done
   if [[ -n $verdict ]]; then
-    printf '%s %s' "$verdict" "$first"
+    # The no-marker fallback writes the verdict INTO line 1: printing it twice
+    # in one row is noise, not evidence.
+    case $first in
+      *"$verdict"*) printf '%s' "$first" ;;
+      *) printf '%s %s' "$verdict" "$first" ;;
+    esac
   else
     printf '%s' "$first"
   fi

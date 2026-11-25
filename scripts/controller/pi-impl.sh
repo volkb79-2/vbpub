@@ -170,6 +170,15 @@ parse_extra_pi_args() {
   return 0
 }
 parse_extra_pi_args || exit 2
+# L2: the seam can come from a caller's export OR from a host's
+# controller.local.env (lib.sh sources that with `set -a`, so an unset caller
+# value is silently replaced by the file's). A widened or narrowed implementer
+# run must not be invisible: every non-empty seam is announced, with the count
+# of arguments it adds, so the run's own log carries the fact.
+if (( ${#extra_pi_args[@]} > 0 )); then
+  printf 'pi-impl: PI_EXTRA_ARGS adds %s pi argument(s); this launch is not the plain implementer argv\n' \
+    "${#extra_pi_args[@]}" >&2
+fi
 
 out=$CONTROLLER_RUNS_DIR
 # Ownership first: nothing below may write a name-owned record until this

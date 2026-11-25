@@ -339,9 +339,11 @@ def finished_line(name):
     # pi-review.sh appends its own verdict line after pi-impl.sh's marker, and
     # that line 1 can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit or a
     # stopped review. The verdict is read from the WHOLE marker: line 1 alone is
-    # a false certificate.
-    for verdict in ("REVIEW-MODIFIED-TREE", "REVIEW-BUDGET", "REVIEW-NO-REPORT"):
-        if any(line.strip() == verdict for line in marker[1:]):
+    # a false certificate. The line CONTAINS the verdict, which is the one rule
+    # job-check.sh and ctl-status.sh also use (the no-marker fallback writes the
+    # verdict as line 1, so a whole-line equality test would miss it).
+    for verdict in ("REVIEW-MODIFIED-TREE", "REVIEW-BUDGET", "REVIEW-NO-REPORT", "REVIEW-NOT-SETTLED"):
+        if any(verdict in line for line in marker[1:]):
             status = f"{verdict} {status}"
     return f"{name}: FINISHED {status}"
 

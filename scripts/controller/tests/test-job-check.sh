@@ -206,7 +206,7 @@ if grep -qF 'REVIEW-MODIFIED-TREE' "$ROOT/pi-review-clean.out"; then
 fi
 # The other two review verdicts are read the same way: a budget stop and a
 # settled run that produced no review text can BOTH stand beside `EXIT=0`.
-for verdict in REVIEW-BUDGET REVIEW-NO-REPORT; do
+for verdict in REVIEW-BUDGET REVIEW-NO-REPORT REVIEW-NOT-SETTLED; do
   cp "$SCRIPT_DIR/fixtures/pi-success.jsonl" "$HOME_ROOT/runs/pi-review-verdict.jsonl"
   printf 'EXIT=0 OUTCOME=SUCCESS\n%s\n' "$verdict" > "$HOME_ROOT/runs/pi-review-verdict.done"
   if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \

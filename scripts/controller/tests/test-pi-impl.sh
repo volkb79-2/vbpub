@@ -7,6 +7,10 @@ set -uo pipefail
 # same defect into the operator's shell, where it read as a product bug.
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
+# The pi seams pi-review.sh exports for its own child, and the review budget: an
+# ambient PI_EXTRA_ARGS (which is exactly what a review launcher leaves in a
+# controller shell) would refuse or widen every launch this check makes.
+unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_POLL_SECONDS PI_REVIEW_KILL_WAIT_SECONDS
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
 JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}
@@ -579,7 +583,7 @@ check_job_status() {
     || { cat "$ROOT/job-status-flagged.out" >&2; fail 'job-status did not report the flagged review'; }
   grep -qF 'REVIEW-MODIFIED-TREE' "$ROOT/job-status-flagged.out" \
     || { cat "$ROOT/job-status-flagged.out" >&2; fail 'job-status hid the REVIEW-MODIFIED-TREE flag'; }
-  # The review launcher has two more verdicts, and both can stand beside EXIT=0.
+  # The review launcher has three more verdicts, and all can stand beside EXIT=0.
   printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-NO-REPORT\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
   "$JOB_STATUS" flagged-review > "$ROOT/job-status-notext.out" 2>&1 || {
     cat "$ROOT/job-status-notext.out" >&2
@@ -596,6 +600,24 @@ check_job_status() {
   }
   grep -qF 'flagged-review: FINISHED REVIEW-BUDGET EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-budget.out" \
     || { cat "$ROOT/job-status-budget.out" >&2; fail 'job-status did not report the budget-stopped review'; }
+  # The not-settled verdict (pi-review.sh exit 6: a zero pi exit in a class that
+  # is not SUCCESS/UNCOMMITTED) is read by the same rule. It must be reported,
+  # including when it is written INTO line 1 by the launcher's no-marker fallback
+  # (a whole-line equality test on lines 2+ would miss that shape).
+  printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\nREVIEW-NOT-SETTLED\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-notsettled.out" 2>&1 || {
+    cat "$ROOT/job-status-notsettled.out" >&2
+    fail 'job-status failed on a not-settled review'
+  }
+  grep -qF 'REVIEW-NOT-SETTLED' "$ROOT/job-status-notsettled.out" \
+    || { cat "$ROOT/job-status-notsettled.out" >&2; fail 'job-status hid the REVIEW-NOT-SETTLED verdict'; }
+  printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-line1-verdict.out" 2>&1 || {
+    cat "$ROOT/job-status-line1-verdict.out" >&2
+    fail 'job-status failed on a marker whose line 1 carries the verdict'
+  }
+  grep -qF 'REVIEW-BUDGET' "$ROOT/job-status-line1-verdict.out" \
+    || { cat "$ROOT/job-status-line1-verdict.out" >&2; fail 'job-status ignored a verdict written as line 1'; }
   rm -f -- "$CONTROLLER_ROOT/runs/flagged-review.done"
   python3 - "$json" <<'PY'
 import json, sys

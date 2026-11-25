@@ -105,6 +105,24 @@ contains "$ROOT/status-pi-verdicts.out" 'REVIEW-BUDGET EXIT=0 OUTCOME=SUCCESS' \
 contains "$ROOT/status-pi-verdicts.out" 'REVIEW-NO-REPORT EXIT=0 OUTCOME=SUCCESS' \
   'status prints a text-less review beside its pi-impl line'
 
+# The fourth verdict, and the no-marker fallback shape: pi-review.sh writes
+# `EXIT=5 OUTCOME=REVIEW-BUDGET` as line 1 when the launch left no marker. The
+# verdict is then already IN line 1, and the row must not print it twice.
+printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\nREVIEW-NOT-SETTLED\n' > "$HOME_ROOT/runs/pi-review-notsettled.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-notsettled.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-notsettled.route"
+printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\n' > "$HOME_ROOT/runs/pi-review-line1-verdict.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-line1-verdict.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-line1-verdict.route"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-pi-more.out" 2>&1
+contains "$ROOT/status-pi-more.out" 'REVIEW-NOT-SETTLED EXIT=5 OUTCOME=REVIEW-BUDGET' \
+  'status prints the not-settled verdict beside its pi-impl line'
+contains "$ROOT/status-pi-more.out" 'pi-review-line1-verdict route=deepseek-pi-github2 EXIT=5 OUTCOME=REVIEW-BUDGET' \
+  'status does not print a verdict twice when the marker line 1 already carries it'
+! grep -qF 'REVIEW-BUDGET REVIEW-BUDGET' "$ROOT/status-pi-more.out" \
+  || fail 'status printed the same verdict twice for one run'
+rm -f -- "$HOME_ROOT/runs/pi-review-notsettled."* "$HOME_ROOT/runs/pi-review-line1-verdict."*
+
 rm -f -- "$HOME_ROOT/runs/pi-review-flagged."* "$HOME_ROOT/runs/pi-review-clean."* \
   "$HOME_ROOT/runs/pi-review-budget."* "$HOME_ROOT/runs/pi-review-notext."*
 

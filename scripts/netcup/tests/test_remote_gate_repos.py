@@ -724,6 +724,12 @@ def test_collected_artifacts_include_every_progress_file_in_the_two_dirs(tmp_pat
     (ckdir / ".assay" / "r2-progress.jsonl").write_text("{}\n")
     (ckdir / ".run-gate" / "r2-progress.jsonl").write_text("{}\n")
     (ckdir / "elsewhere" / "unrelated.jsonl").write_text("{}\n")
+    # A `.jsonl` INSIDE one of the two collected dirs that is not a progress
+    # file: the path filter alone would not exclude it, so only the correct
+    # basename pattern does. Without this a mutant widening the pattern to
+    # `-name '*.jsonl'` passed every assertion above.
+    (ckdir / ".assay" / "not-a-progress.jsonl").write_text("{}\n")
+    (ckdir / ".run-gate" / "something.jsonl").write_text("{}\n")
     d = tmp_path / "d"
     d.mkdir()
     script = f'CKDIR={ckdir}; PROJ=.; D={d}\n' + snippet
@@ -734,6 +740,11 @@ def test_collected_artifacts_include_every_progress_file_in_the_two_dirs(tmp_pat
     assert "./.assay/r2-progress.jsonl" in listing, listing
     assert "./.run-gate/r2-progress.jsonl" in listing, listing
     assert not any(name.endswith("unrelated.jsonl") for name in listing), listing
+    # The two collected dirs contain non-progress `.jsonl` files: they must stay
+    # out, which is what makes `-name '*.jsonl'` (and `progress*.jsonl` again)
+    # fail instead of merely narrowing the collected set.
+    assert not any(name.endswith("not-a-progress.jsonl") for name in listing), listing
+    assert not any(name.endswith(".run-gate/something.jsonl") for name in listing), listing
 
 
 def test_main_reports_gate_errors_and_missing_files(tmp_path, capsys):

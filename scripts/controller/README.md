@@ -377,18 +377,43 @@ launch into `<runs-dir>/<run>.review/`, OUTSIDE the reviewed worktree:
 `commits.txt`, `diff.txt`, `files.txt` (`--name-status`), `uncommitted.diff`,
 `status.txt` and `before-state.txt`; the reviewer's copy of the prompt names
 those files. The reviewer does not write the report either — its FINAL
-assistant message is the report, and the launcher saves it at `--report`.
-A report path that already exists is refused (exit 2): a retried review that
-says nothing must not leave the previous file certified as this run's, and a
-settled run with no text is `REVIEW-NO-REPORT` (exit 2).
+assistant message is the report, and the launcher saves it at `--report`,
+**but only for a settled success class**: `SUCCESS` or `UNCOMMITTED`. A run that
+pi-impl.sh recorded as anything else writes no report, because having text in the
+final message is not the same as having a review (`stopReason=length` text, the
+`CONTEXT-FULL` class, is a cut-off fragment). `CONTEXT-FULL`,
+`TOOL-CALL-NO-TEXT`, `NO-REPORT`, `INCOMPLETE`, `ERROR` and `USAGE-LIMIT` are
+`REVIEW-NOT-SETTLED` (exit 6); the empty/thinking-only classes are
+`REVIEW-NO-REPORT` (exit 2).
+A report path that already exists is refused (exit 2, and a dangling symlink
+counts as existing): a retried review that says nothing must not leave the
+previous file certified as this run's. So is a `<run>.review/before-state.txt`
+from an earlier review of the same NAME — the material is rendered before
+`pi-impl.sh` refuses the reused name, so a retry must use a fresh run name.
+Text in the final message is not the only thing checked; the outcome class is.
+
+**What this does NOT prevent, and cannot:** the `read` tool is not confined to
+the worktree. The reviewer can read anything the wrapper's user can, including
+credentials under `$HOME`, `/proc`, and the implementer's own run records. The
+review prompt and the rendered material are the only inputs the launcher
+controls; enforcing a filesystem boundary would need an OS-level mechanism, not
+this tool selection. A worktree whose `AGENTS.md` steers the reviewer is a real
+risk, and it is not closed here.
 
 It also carries a **review budget**, enforced while the run is going:
-`PI_REVIEW_MAX_SECONDS` (wall clock, default 1800), `PI_REVIEW_MAX_STREAM_BYTES`
-(size of `<run>.jsonl`, default 268435456), `PI_REVIEW_POLL_SECONDS` (default
-15) and `PI_REVIEW_KILL_WAIT_SECONDS` (default 10). The launch runs in its own
-process group; over budget the whole group is TERMed (pi-impl, the pi it execs
-and the liveness sidecar), KILLed if it outlasts the wait, and the run is marked
-`REVIEW-BUDGET` (exit 5). A non-integer value is a refusal, never a default.
+`PI_REVIEW_MAX_SECONDS` (wall clock, default **7200** — a max-effort review of a
+~1200-line diff did not finish inside 3600 s, so 30 minutes paced real reviews),
+`PI_REVIEW_MAX_STREAM_BYTES` (size of `<run>.jsonl`, default 268435456),
+`PI_REVIEW_POLL_SECONDS` (default 15) and `PI_REVIEW_KILL_WAIT_SECONDS`
+(default 10), printed at launch so a stopped run's limits are in its own log.
+The launch runs in its own process group, and that ownership is VERIFIED before
+it is used: the launcher reads the launch's pgid and signals the group only when
+the launch leads it, otherwise it signals the launch pid alone and says so —
+a stop that cannot reach the pi the launcher's child execs is not the same
+guarantee as one that does. Over budget the launch is TERMed, KILLed if it
+outlasts the wait, the run is marked `REVIEW-BUDGET` (exit 5), and a launch that
+survives both is named with its pid instead of being waited on: the budget can
+never block the wrapper. A non-integer value is a refusal, never a default.
 
 **The other account** (the second guarantee): the implementer's account comes
 from `<run>.route` when that pins one (`deepseek-pi-volker|github2`,
@@ -430,16 +455,22 @@ and, if killed, orphans the guarded launch.
 The outcome vocabulary and the run records are `pi-impl.sh`'s; `PI_MODEL` and
 `PI_THINKING` keep working, and the defaults are the eco model at `max`
 thinking. Exit codes: 2 for the refusals (usage, unreadable worktree, report
-inside the worktree, an existing report, an unresolvable report path, unknown
-account, account records that name none, an invalid budget value); 4
-`REVIEW-MODIFIED-TREE`; 5 `REVIEW-BUDGET`; otherwise pi-impl's own code, and
-**any** pi or pi-impl exit status (0, 1, 2, 3, 126, 127, 129, …) passes through
-unchanged. `3` ("both Open Design accounts blocked") is pi-impl's own code but
-UNREACHABLE for a review: the pinned `start-pi <account>` never fails over, so a
-blocked review account launches and ends `USAGE-LIMIT` with pi's exit status. The `.done` marker is the authority, not the code: `job-check.sh`,
-`job-status.sh` and `ctl-status.sh` read any `REVIEW-MODIFIED-TREE`,
-`REVIEW-BUDGET` or `REVIEW-NO-REPORT` line of the marker, so a flagged or
-stopped review is never shown as green. Two concurrent reviews of one worktree
+inside the worktree, an existing report, an unresolvable report path, an earlier
+review of this name's own before-state, unknown account, account records that
+name none, an invalid budget value) and for `REVIEW-NO-REPORT` or a report that
+cannot be written; 4 `REVIEW-MODIFIED-TREE`; 5 `REVIEW-BUDGET`; 6
+`REVIEW-NOT-SETTLED`. `0` means exactly one thing for a review: it settled in
+`SUCCESS`/`UNCOMMITTED` AND its report was saved. Otherwise pi-impl's own code is
+returned unchanged (`1`, `2` refused, `3` both Open Design accounts blocked, and
+any other pi status). `3` ("both Open Design accounts blocked") is pi-impl's own
+code but UNREACHABLE for a review: the pinned `start-pi <account>` never fails
+over, so a blocked review account launches and ends `USAGE-LIMIT` with pi's exit
+status. `4`, `5` and `6` are the launcher's, not pi-impl's — pi itself can exit
+5, so a bare `5` is not the budget verdict: the `.done` marker is the authority,
+not the code. `job-check.sh`, `job-status.sh` and `ctl-status.sh` read any
+`REVIEW-MODIFIED-TREE`, `REVIEW-BUDGET`, `REVIEW-NO-REPORT` or
+`REVIEW-NOT-SETTLED` line of the marker, so a flagged, stopped or unsucceeded
+review is never shown as green. Two concurrent reviews of one worktree
 are not serialised; each sees the other's writes and both flag.
 
 ### Pi on Open Design
