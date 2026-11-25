@@ -55,8 +55,8 @@ io_sync = "durable"
 # smaller 1536m cap and peaked at 2.67 GiB on the slice, so 4g is the measured
 # shape, not a guess at one worker's need.
 #
-# budget = 150m is sized from the measurement in docs/R2-RUNBOOK.md and keeps
-# the 5m margin above the assay lane's own 145m that `run-gate lanes --check`
+# budget = 245m is sized from the measurement in docs/R2-RUNBOOK.md and keeps
+# the 5m margin above the assay lane's own 240m that `run-gate lanes --check`
 # requires (R-59).
 [lanes.r2]
 kind = "assay"
@@ -65,7 +65,7 @@ resource_observer = "cgprofile"
 environment = "tester-unified"
 jobs = 3
 clean_tree = false
-budget = "150m"
+budget = "245m"
 artifacts = [".assay/verdict-iobench-diff.json",
   ".assay/progress-iobench-diff.jsonl"]
 

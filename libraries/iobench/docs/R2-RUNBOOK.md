@@ -17,7 +17,7 @@ See the [design rationale](DESIGN-GUIDE.md#registered-repository-gate).
   appends Assay's `--request-base <ref>` for a lane whose inventory says
   `base_source == "request"` (`run-gate-project/run_gate.py:15018`, guard
   `:9972-9979`). Our lane declares it in
-  `assay.toml` `[lanes.iobench-diff.judge]` (line 133).
+  `assay.toml` `[lanes.iobench-diff.judge]` (line 135).
 * **A native Assay lane can carry it** — converting `r2` to a command lane is
   unnecessary. (`scripts/debian-install-v2/run-gate.toml:69-77` is a command
   lane only because it drives Assay by hand; its `assay.toml:33` still carries
@@ -47,7 +47,7 @@ See the [design rationale](DESIGN-GUIDE.md#registered-repository-gate).
   `:14999-15004`).
 * **Budget margin**: the wrapper lane budget must exceed the Assay lane's own
   budget by >= 5 minutes (`run_gate.py:217`, check `:20133-20149`).
-  `150m` outer > `145m` inner satisfies it.
+  `245m` outer > `240m` inner satisfies it.
 
 ## 2. The measured plan (reproduce, do not guess)
 
@@ -114,7 +114,7 @@ After both finish, merge on one host (strict: every shard store must exist):
 ```bash
 scripts/controller/remote-gate.sh r1002 libraries/iobench r2 HEAD \
   --base 94d9c2227 \
-  --seed-store <local merged dir>=.run-gate/assay-shards/libraries/iobench \
+  --seed-store /tmp/iobench-merge/.run-gate/assay-shards/libraries/iobench=.run-gate/assay-shards/libraries/iobench \
   -- --merge-shards 2
 ```
 
@@ -155,7 +155,7 @@ worker ≈ 0.2/min).
   `assay/src/assay/mutation.py:2136-2153`) from the 253 s baseline and would
   follow that baseline up under three-way contention.
 * **Per shard lane**: the usable candidate window is
-  `145m - baseline - closeout`. Baseline 270 s + setup ≈ 5 min; the closeout
+  `240m - baseline - closeout`. Baseline 270 s + setup ≈ 5 min; the closeout
   analysis (Assay `analyze campaign`) gets a quarter of what remains per call,
   capped at 900 s per call, and is skipped under 40 s
   (`run_gate.py:15138-15160`), so reserve 8 min. That leaves about
@@ -168,8 +168,8 @@ worker ≈ 0.2/min).
 * **Fit**: shard 0/2 plans 53 and shard 1/2 plans 45, so each host needs
   **two chunks** at the conservative factor and one if scaling is better than
   1.5x. Resume, do not enlarge blindly: stop at `BUDGET_EXCEEDED` and re-run
-  the same command with the seed store (section 5). Raising `145m` is also
-  safe up to the wrapper's `150m + 5m` rule, but a chunk that ends on its
+  the same command with the seed store (section 5). Raising `240m` is also
+  safe up to the wrapper's `245m + 5m` rule, but a chunk that ends on its
   budget is not a failure.
 * **Lane memory**: 4 GiB declared, 75 % of it (3072 MiB) is the memory budget
   (the default `ram_target = "75%"`, `run_gate.py:2165`), and
@@ -190,8 +190,11 @@ worker ≈ 0.2/min).
   and it dies with the throwaway checkout. Every remote chunk therefore
   passes `--collect-store .run-gate/assay-shards/libraries/iobench`, which
   packs that directory into `assay-store.tgz` + `.sha256` before the checkout
-  is removed; a later chunk passes
-  `--seed-store <collected dir>=.run-gate/assay-shards/libraries/iobench`.
+  is removed. A later chunk of the SAME shard unpacks that shard's archive and seeds it:
+  `mkdir -p /tmp/iobench-<K> && tar -xzf <run>/assay-store.tgz -C /tmp/iobench-<K>`, then
+  `--seed-store /tmp/iobench-<K>/.run-gate/assay-shards/libraries/iobench=.run-gate/assay-shards/libraries/iobench`
+  (the tar members keep their `<rel>/` prefix, so the seed argument is the inner `libraries/iobench`
+  directory, not the unpack root).
 * A seeded resume is **the same judge** only if `judge_sha256` does not fold a
   checkout path in. `assay/src/assay/mutation.py:1514-1560` folds the lane's
   `env_declared` values and the SHA-256 fingerprint of every *present*
@@ -211,8 +214,11 @@ worker ≈ 0.2/min).
   checkout, plus `run-gate: lane '<lane>' verdict ...` in `lane.log`.
   `remote-gate.sh` copies every `verdict*.json` beside the log as
   `<run>.verdict-N.json`.
-* Survivors are rows in that verdict. File them against the package; they are
-  not fixed inside an R2 campaign.
+* The R2 verdict that binds the commit is the one from the `--merge-shards 2` run (the whole lane `r2`);
+  the per-shard verdicts are inputs to it. Check its `run-gate.commit=` line names the head under judgement.
+* Every survivor goes to a fix-forward package that adds killing tests (the shape of `v2-r2-fixfwd`),
+  followed by a re-run on the fix commit (`--only-candidates` or a seeded resume). A `pragma: no cover`, an
+  equivalence-ledger entry or a waiver is not an outcome of this runbook.
 * `BUDGET_EXCEEDED` (run-gate exit 4) is not a defect of the lane: resume
   with the seed store (section 5).
 

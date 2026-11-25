@@ -113,7 +113,7 @@ env = { PYTHONPATH = "src:../cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
 # Sized in run-gate.toml [lanes.r2] and docs/R2-RUNBOOK.md: the wrapper keeps
 # 5m of headroom above this (run-gate R-59, `lanes --check` budget-margin).
-budget = "145m"
+budget = "240m"
 allow_argv_append = false
 
 [lanes.iobench-diff.isolation]
@@ -145,7 +145,7 @@ base_source = "request"
 # the 2026-11-24 whole-target campaign on v1001
 # (rgw-gate-20261124T164429-v1001, head 74e86a3f5, jobs 1):
 #   baseline (R0 pytest) 253-270 s;  candidate wall p50 278 s, p90 330 s,
-#   max 408 s; 76 candidates judged in ~6 h = 0.2 candidates/min at N=1.
+#   max 408 s; 75 candidates judged in ~6 h = 0.2 candidates/min at N=1.
 # `auto` derived 760 s (max(3 x baseline, baseline+60)) from that baseline, so
 # an explicit bound is pinned instead: it is a CEILING for a slow or contended
 # mutant, not a target. 12m (720 s) is 1.76x the measured worst candidate and
