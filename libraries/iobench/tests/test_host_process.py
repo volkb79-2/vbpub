@@ -8,6 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from iobench import host as host_mod
+
 
 def _state(pid):
     try:
@@ -30,6 +34,77 @@ def _wait_pidfd_exit(pidfd):
     with selectors.DefaultSelector() as events:
         events.register(pidfd, selectors.EVENT_READ)
         events.select()
+
+
+class _RecordingPopen:
+    """A Popen stand-in that records every call the handle makes to it; no child process exists."""
+
+    def __init__(self, argv, **kwargs) -> None:
+        self.argv, self.kwargs = argv, kwargs
+        self.pid, self.returncode = 4242, 0
+        self.calls: list[object] = []
+        self.running = True
+
+    def poll(self):
+        self.calls.append("poll")
+        return None if self.running else self.returncode
+
+    def send_signal(self, signum):
+        self.calls.append(("send_signal", signum))
+        self.running = False
+
+    def wait(self, timeout=None):
+        self.calls.append(("wait", timeout))
+        self.running = False
+        return self.returncode
+
+
+def _recorded_handle(monkeypatch):
+    monkeypatch.setattr(host_mod, "_PRCTL", object())
+    monkeypatch.setattr(host_mod.subprocess, "Popen", _RecordingPopen)
+    return host_mod._ProcHandle(["true"])
+
+
+def test_c1_kill_marks_the_handle_closed_and_a_second_kill_touches_nothing(monkeypatch):
+    """C1 (host.py:535 ``self._closed = True`` True->False): after ``kill`` the handle is closed, so the abort path can be
+    reached twice: the second ``kill`` returns at once and never signals or waits on the process again."""
+    handle = _recorded_handle(monkeypatch)
+    process = handle._p
+    assert handle._closed is False
+    try:
+        handle.kill()
+    finally:
+        # Under the mutant ``kill`` raises ValueError on the file it just closed, before its last line runs; this
+        # assertion still executes then, so the defect (a handle that never marks itself closed) is reported as a plain
+        # test failure instead of an uncaught ValueError.
+        assert handle._closed is True
+    assert handle._out.closed and handle._err.closed
+    assert process.calls == ["poll", ("send_signal", signal.SIGTERM), ("wait", host_mod.SUPERVISOR_EXIT_TIMEOUT_S)]
+    handle.kill()
+    assert process.calls == ["poll", ("send_signal", signal.SIGTERM), ("wait", host_mod.SUPERVISOR_EXIT_TIMEOUT_S)]
+
+
+def test_c2_wait_marks_the_handle_closed_and_a_later_kill_touches_nothing(monkeypatch):
+    """C2 (host.py:515 ``self._closed = True`` in ``wait``'s finally True->False): a finished handle is closed, so the
+    claim cleanup that later calls ``kill`` neither signals nor waits on the process again."""
+    handle = _recorded_handle(monkeypatch)
+    process = handle._p
+    assert handle.wait() == host_mod.RunResult(0, "", "")
+    # Under the mutant this is still False; after the kill below the handle would then reach the closed files.
+    assert handle._closed is True
+    assert process.calls == [("wait", None)]
+    handle.kill()
+    assert process.calls == [("wait", None)]
+    assert handle._out.closed and handle._err.closed
+
+
+def test_a_second_wait_after_a_kill_raises_on_the_closed_output_files(monkeypatch):
+    """What the real code does with a second ``wait()`` after ``kill()``: the closed temporary files raise, so a caller
+    cannot read an answer from a handle the abort path already closed. Pinned, not silently tolerated."""
+    handle = _recorded_handle(monkeypatch)
+    handle.kill()
+    with pytest.raises(ValueError, match="closed file"):
+        handle.wait()
 
 
 def _set_child_subreaper(enabled):
