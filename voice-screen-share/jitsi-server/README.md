@@ -40,8 +40,8 @@ ciu down --dir voice-screen-share/jitsi-server
 On a native host (not the devcontainer), also export `CGROUP_PARENT_DEV_INTERACTIVE` (the host's
 interactive slice, e.g. `dev-interactive.slice`). The S6.5 root helper needs it to give the `vol-*`
 hostdirs their uid-1000 owner; ciu >= 7.28.0 refuses without it, and its refusal names the variable, the
-`.slice` shape and `systemctl list-units --type=slice`. A refused run on that version creates no hostdir,
-not even under `--dry-run`, so nothing is left to clean up; the runner-owned `vol-*` dirs an earlier refused
+`.slice` shape and `systemctl list-units --type=slice`. A refused run on that version leaves no hostdir,
+not even under `--dry-run`; the runner-owned `vol-*` dirs an earlier refused
 run left behind are the legacy case of ciu < 7.28.0.
 
 Like every ciu root, run `ciu up` from the main checkout path (S16.3 refuses to start a

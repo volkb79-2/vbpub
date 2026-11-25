@@ -364,7 +364,7 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
    8443/tcp+udp is separate from the edge.
    `ciu` 7.28.0 and later evaluates its S6.5 helper preconditions BEFORE creating any hostdir, and `--dry-run`
    creates none at all, so a refused `ciu up` (missing `CGROUP_PARENT_DEV_INTERACTIVE`, an incompatible existing
-   hostdir, a mistyped `seed`) leaves the filesystem untouched; fix the precondition and retry.  Do not reach for
+   hostdir, a mistyped `seed`) leaves no hostdir; fix the precondition and retry.  Do not reach for
    `ciu up --skip-check` instead: it does not address the refusal and hides the hook's verdict.
 2. **Review adoption.** Confirm the generated override contains `ingress_external = true`,
    `volume_name = "edge-proxy_acme-data"`, and `cgroup_parent = "edge.slice"`. The network and volume are

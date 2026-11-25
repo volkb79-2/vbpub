@@ -116,11 +116,14 @@ tls-edge/
 
 The standalone tree is a generated trial artifact, not a supported deployment:
 
-**Defaults** (ACME mode, port 80, CA, public port set): the schema and every
-shipped value are in
+**The tls-edge-specific defaults** (ACME mode, port 80, ca_server, public port
+set): the schema and every shipped value are in
 [`ciu-stack/ciu.defaults.toml.j2`](ciu-stack/ciu.defaults.toml.j2), and
-`tls-edge show` prints what a configured instance actually uses.  They are not
-restated here.
+`tls-edge show` prints what a configured instance actually uses.
+
+Setting an ACME contact email is strongly recommended (Let's Encrypt uses it to
+warn the account before a rate limit is hit); [`INSTALL` §4](docs/INSTALL.md#4-configure-listeners-and-certificates)
+shows where it goes.
 
 ```bash
 # 1. Point your DNS A/AAAA record at this host.
@@ -210,11 +213,13 @@ on disk.
 
 ## TLS mode reference
 
-Which mode needs port 80, which can issue a wildcard, and how renewal works are
-validated together by the CLI and reported by `tls-edge show`; the mode list and
-their defaults are in
+`tls-edge show` reports the mode and the port plan of a configured instance; that
+is what the CLI validates about a mode (its listener requirements),
+`src/tls_edge_cli/config.py:492-495`.
+The mode list and their defaults are in
 [`ciu-stack/ciu.defaults.toml.j2`](ciu-stack/ciu.defaults.toml.j2).  The table
-below covers the operational choice only; per-mode instructions are in
+below covers the operational choice only (which challenge each mode uses, and
+how renewal happens); per-mode instructions are in
 [INSTALL §4](docs/INSTALL.md#4-configure-listeners-and-certificates).
 
 | Mode | Challenge | Renewal | Typical use |
