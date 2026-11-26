@@ -1126,9 +1126,7 @@ mod tests {
 
         let mut reversed_context =
             encode_event_payload(&point_context_event()).expect("point context body");
-        let first_key = reversed_context[80];
-        reversed_context[80] = reversed_context[88];
-        reversed_context[88] = first_key;
+        reversed_context.swap(80, 88);
         assert_kind(decode_event_payload(&reversed_context), "event-order");
     }
 
