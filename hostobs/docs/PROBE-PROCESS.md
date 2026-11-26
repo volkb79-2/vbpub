@@ -266,6 +266,15 @@ events_ring_bytes = 4194304        # 4096..=1 GiB
   `store.tmpfs_dir`; it never redirects tmpfs tiers below durable `store.dir`.
 - `events_cap_bytes` is checked against the configured events segment file bound, and
   `events_ring_bytes` is large enough for the largest valid event/1 record.
+- **Store startup limit (M3 B4).** The probe opens the store before `sampler::spawn` and before
+  recording anything. A durable-directory failure (including a full disk or directory fsync
+  error), a symlinked root, or a tier directory over its entry bound stops startup with exit 2;
+  no samples or events have been recorded. `RestartPreventExitStatus=2` prevents an automatic
+  service restart. A non-tmpfs path, unreadable mount table, or missing mount entry for
+  `store.tmpfs_dir` is collapsed to `hostobs-probe: store.tmpfs_dir must be on tmpfs; store.dir is durable storage`,
+  without the underlying mount cause. Other store-open errors are printed
+  as `hostobs-probe: store: <StoreError>`; that prefix does not identify `store.dir` or
+  `store.tmpfs_dir` as a key, although some error variants include a path or segment name.
 - The only probe-wide spelling is the one shown above. A per-level form such as
   `[limits.observe] max_rows = 2` is an unknown-field refusal, not a silent override (P-06
   backlog B3).

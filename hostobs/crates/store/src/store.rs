@@ -1644,9 +1644,9 @@ mod tests {
             hostobs_proto::event::encode_event_frame(&first.to_payload().expect("first payload"))
                 .expect("first frame");
         let first_outcome = store
-            .record_event(&first, &first_frame, 1_000_000_000)
+            .record_event(&first, &first_frame, 61_000_000_000)
             .expect("first record");
-        assert_eq!(first_outcome.segment, "events-0-0.seg.open");
+        assert_eq!(first_outcome.segment, "events-60-0.seg.open");
 
         let second = crate::events::Event::new_record(
             EventKind::Point,
@@ -1666,12 +1666,12 @@ mod tests {
             hostobs_proto::event::encode_event_frame(&second.to_payload().expect("second payload"))
                 .expect("second frame");
         let second_outcome = store
-            .record_event(&second, &second_frame, 121_000_000_000)
+            .record_event(&second, &second_frame, 181_000_000_000)
             .expect("second record");
-        assert_eq!(second_outcome.segment, "events-120-1.seg.open");
+        assert_eq!(second_outcome.segment, "events-180-1.seg.open");
         assert_eq!(
             second_outcome.evicted.segments,
-            vec![String::from("events-0-0.seg")]
+            vec![String::from("events-60-0.seg")]
         );
         assert_eq!(first.t_mono_ns, 10);
         assert_eq!(second.t_mono_ns, 20);

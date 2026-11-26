@@ -98,6 +98,7 @@ holds the full bodies.
 | HOB-104 | CPU model and benchmark records are outside the current hostobs metric model | Major | OPEN (M6 host/1) |
 | HOB-105 | Containerized assay has no launcher handoff for the host cgroup key | Major | OPEN (core launcher) |
 | HOB-106 | Event issuer cgroup attribution is not verified against a sampled cgroup | Major | OPEN (consumer policy and verified peer binding) |
+| HOB-107 | Inferred span ends lose the initiating event's event/1 fields | Minor | OPEN (M3 B4 r1 L5) |
 
 ---
 
@@ -1606,3 +1607,21 @@ disagreement is a closed refusal, and WIRE replaces its unverified-label rule wi
 rule. This is a future consumer package, not an M3 package.
 
 Source: operator ruling 2026-11-26; PLAN-M3-carve.md HOB-106; WIRE §4.12 and plan v4 §C.4.
+
+## HOB-107 — Inferred span ends lose the initiating event's event/1 fields
+
+**Where:** `crates/store/src/events.rs` (`SpanTable::abandon_issuer`).
+
+`abandon_issuer` currently creates the inferred end through `Event::new`, which drops the
+initiating `OpenSpan`'s `span`, `uid`, `peer`, `ctx` and `attrs`; the generated event also has
+`real_ns = 0`. The event/1 encoder refuses the span-zero end. B4 has no production caller, so
+this does not block the current probe startup path.
+
+**Impact.** The first B5/B7 production caller cannot persist an inferred `abandoned` end with
+event/1 until those fields are carried over.
+
+**Exit criteria.** Before the first production caller, construct the inferred end with `span`,
+`uid`, `peer`, `ctx` and `attrs` copied from the `OpenSpan`, and take `real_ns` from the caller.
+Tests prove the event/1 payload retains the initiating identity and the caller's real time.
+
+Source: M3 B4 r1 L5; PLAN-M3-carve.md §C.4.

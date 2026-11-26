@@ -199,8 +199,10 @@ hostobs-watch \
 The probe unit keeps `ProtectControlGroups=yes`, `PrivateNetwork=yes` and
 `RestrictAddressFamilies=AF_UNIX`; it does not set `ProtectProc=invisible` or
 `ProcSubset=pid`, because the live slice reads host-wide `/proc` and other
-processes' cgroup facts. State directories, `CAP_SYS_PTRACE` and the future act
-socket are deliberately absent from this part-(a)/(b) contract.
+processes' cgroup facts. The unit creates `RuntimeDirectory=hostobs/tiers` with
+`RuntimeDirectoryMode=0700` and `RuntimeDirectoryPreserve=restart`, plus
+`StateDirectory=hostobs/probe` with `StateDirectoryMode=0700`. `CAP_SYS_PTRACE`
+and the future act socket are deliberately absent from this part-(a)/(b) contract.
 
 ### `absent` cells in the recorded Debian 13 guest
 

@@ -278,7 +278,7 @@ mod tests {
         let mut cache = EventDedup::new();
         let first = reply(1, None);
         cache.insert(1, "point", "boot", 1, first, 100);
-        assert_eq!(cache.get(1, "point", "boot", 1, 10), Some(first));
+        assert_eq!(cache.get(1, "point", "boot", 1, 1_000), Some(first));
         let second = reply(2, None);
         cache.insert(1, "point", "boot", 2, second, 20);
         assert_eq!(
@@ -287,6 +287,10 @@ mod tests {
         );
         assert_eq!(
             cache.get(1, "point", "boot", 2, 100 + EVENT_DEDUP_TTL_NS),
+            Some(second)
+        );
+        assert_eq!(
+            cache.get(1, "point", "boot", 2, 1_000 + EVENT_DEDUP_TTL_NS),
             None
         );
     }

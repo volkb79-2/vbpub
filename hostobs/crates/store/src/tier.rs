@@ -1823,10 +1823,14 @@ mod tests {
             7
         );
         let second = reopened
-            .append(&Job::new(event_frame(), 20_000_000_000, Vec::new()), 8, 4)
+            .append(&Job::new(event_frame(), 20_000_000_000, Vec::new()), 8, 3)
             .expect("second epoch append");
         assert_eq!(second.segment, "events-0-1.seg.open");
-        assert_eq!(reopened.scan().segments.len(), 2);
+        let third = reopened
+            .append(&Job::new(event_frame(), 30_000_000_000, Vec::new()), 8, 4)
+            .expect("new dictionary generation append");
+        assert_eq!(third.segment, "events-0-2.seg.open");
+        assert_eq!(reopened.scan().segments.len(), 3);
 
         let dir = StoreDir::open(temp.path(), false).expect("dir");
         let headers: Vec<(u64, u32)> = reopened
@@ -1839,9 +1843,10 @@ mod tests {
                 (scanned.header.epoch, scanned.header.dict_generation)
             })
             .collect();
-        assert_eq!(headers, vec![(7, 3), (8, 4)]);
+        assert_eq!(headers, vec![(7, 3), (8, 3), (8, 4)]);
         assert!(reopened.scan().segments[0].is_sealed());
-        assert!(reopened.scan().segments[1].open);
+        assert!(reopened.scan().segments[1].is_sealed());
+        assert!(reopened.scan().segments[2].open);
     }
 
     #[test]
@@ -3254,12 +3259,30 @@ mod tests {
         assert!(tier.has_open(), "the name at the bound is ours");
         assert!(tier.scan().notes.is_empty());
         assert_eq!(tier.next_seq(), SEQ_NAME_MAX + 1);
-        tier.append(&job(10_000_000_000, 16), 1, 1)
+        let adopted = tier
+            .append(&job(10_000_000_000, 16), 7, 3)
             .expect("the open segment still takes records");
-        let refused = tier.append(&job(65_000_000_000, 16), 1, 1);
+        assert_eq!(adopted.records, 2, "the adopted record remains in the segment");
+        let refused = tier.append(&job(65_000_000_000, 16), 7, 3);
         assert_eq!(refused.map(|_| ()), Err(StoreError::LengthOverflow));
         assert_eq!(tier.next_seq(), SEQ_NAME_MAX + 1, "the mark does not move");
         assert_eq!(tier.scan().segments.len(), 1);
+
+        let epoch_temp = TempDir::new("seq-bound-epoch-roll");
+        plant_open_segment(&epoch_temp, SEQ_NAME_MAX);
+        let mut epoch_tier = tier_with_cap(&epoch_temp, 3600, 0);
+        epoch_tier
+            .append(&job(10_000_000_000, 16), 7, 3)
+            .expect("the adopted segment accepts its epoch");
+        let changed_epoch = epoch_tier.append(&job(20_000_000_000, 16), 8, 3);
+        assert_eq!(
+            changed_epoch.map(|_| ()),
+            Err(StoreError::LengthOverflow),
+            "a changed epoch needs a new segment even in the same bucket"
+        );
+        assert_eq!(epoch_tier.next_seq(), SEQ_NAME_MAX + 1, "the mark does not move");
+        assert_eq!(epoch_tier.scan().segments.len(), 1);
+        assert!(epoch_tier.scan().segments[0].is_sealed());
     }
 
     #[test]

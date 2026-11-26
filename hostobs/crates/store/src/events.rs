@@ -599,7 +599,6 @@ impl Event {
     }
 
     /// Convert the event to the frozen event/1 code and ordering vocabulary.
-    #[must_use]
     pub fn to_payload(&self) -> Result<EventPayload, ProtoError> {
         let outcome = self.outcome.map_or(0, |outcome| match outcome {
             Outcome::Ok => 1,
@@ -2262,17 +2261,18 @@ mod tests {
             hostobs_proto::event::encode_event_frame(&event.to_payload().expect("event payload"))
                 .expect("event/1 frame");
         let outcome = store
-            .record_at(&event, &frame, 65_000_000_000, 3, 1)
+            .record_at(&event, &frame, 125_000_000_000, 3, 1)
             .expect("record event");
-        assert_eq!(outcome.segment, "events-60-0.seg.open");
+        assert_eq!(outcome.segment, "events-120-0.seg.open");
         let dir = StoreDir::open(temp.path(), false).expect("dir");
         let scanned = crate::segment::scan(&dir, &outcome.segment, 1 << 22, 1024)
             .expect("scan event segment");
         assert_eq!(scanned.header.epoch, 3);
         assert_eq!(scanned.header.dict_generation, 1);
-        assert_eq!(scanned.header.start_real_ns, 60_000_000_000);
-        assert_eq!(scanned.records[0].real_ns, 65_000_000_000);
+        assert_eq!(scanned.header.start_real_ns, 120_000_000_000);
+        assert_eq!(scanned.records[0].real_ns, 125_000_000_000);
         assert_eq!(scanned.records[0].payload, frame);
+        assert_eq!(event.real_ns, 65_000_000_000);
         assert_eq!(
             event.t_mono_ns, 10,
             "monotonic event time stays independent"

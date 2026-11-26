@@ -19,9 +19,8 @@ use hostobs_serve::limits::Level;
 use hostobs_serve::server::ServerLimits;
 use hostobs_store::error::StoreError;
 use hostobs_store::events::MAX_RING_BYTES;
-use hostobs_store::format::TierKind;
 use hostobs_store::store::{StoreConfig, StoreDirs};
-use hostobs_store::tier::{TierConfig, MAX_CAP_BYTES};
+use hostobs_store::tier::MAX_CAP_BYTES;
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -374,16 +373,18 @@ fn parse_store(source: &str, table: StoreTable) -> Result<StoreSettings, ConfigE
         ));
     }
 
-    let events = TierConfig::new(
-        "events",
-        TierKind::Events,
-        60,
-        14 * 24 * 3600,
-        events_cap_bytes,
-        false,
-    )
-    .and_then(|tier| tier.with_max_payload(EVENT_MAX_PAYLOAD))
-    .map_err(|_| {
+    let mut events = StoreConfig::plan_v4(&dir, 0, 0)
+        .map_err(|_| {
+            ConfigError::semantic(
+                source,
+                &table.events_cap_bytes.span(),
+                KEY_EVENTS_CAP_BYTES,
+                "cannot construct the events tier with this cap",
+            )
+        })?
+        .events;
+    events.cap_bytes = events_cap_bytes;
+    let events = events.with_max_payload(EVENT_MAX_PAYLOAD).map_err(|_| {
         ConfigError::semantic(
             source,
             &table.events_cap_bytes.span(),

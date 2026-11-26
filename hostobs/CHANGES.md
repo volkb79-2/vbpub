@@ -14,7 +14,9 @@
   attributes and peer labels; point-event dedupe is bounded by FIFO capacity and monotonic TTL.
   The probe opens the configured durable and tmpfs store tiers at startup and records nothing
   yet. Segment placement and eviction use real time, and a new epoch or dictionary generation
-  starts a fresh segment header.
+  starts a fresh segment header. **Breaking for existing installs:** add all four `[store]`
+  keys (`dir`, `tmpfs_dir`, `events_cap_bytes`, `events_ring_bytes`) and install
+  `deploy/systemd/hostobs-probe.service` and `deploy/tmpfiles.d/hostobs.conf`, or the probe exits 2.
 - **Fixed (M3 B1, `HOB-90`):** peer credentials use a raw 12-byte `SO_PEERCRED` read with length and pid guards; pid 0 remains accepted as invisible, while accept captures the uid plus unverified UTF-8 comm and cgroup `(st_dev, inode)` labels bounded to 4 KiB and 64 path components.
 - **Added (M3 A2):** package the standard-library `hostobs_client` distribution with the `hostobs-mark` entry point; conformance builds and checks its zipapp, while a CMRU wheel-build contract is planned for A1 and `hostobs/cmru.toml` is not present yet.
 - **Fixed (M3 A2 review):** packaging checks now reject namespace-only source directories, match package-data patterns by path segment, pin the complete setuptools table and legacy config absence, exercise `hostobs-mark` exit codes against an unavailable socket, and require fault probes to observe their expected rejection.
