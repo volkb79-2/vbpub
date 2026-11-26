@@ -14,10 +14,10 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-215 | OPEN (filed 2026-11-26, the R2 docs pin rejects a legitimate explanation of Assay's `judge.base_source = "request"` mechanism) | — |
-| KI-214 | OPEN (filed 2026-11-26, the R2 campaign test docstring names a nonexistent library `.gitignore`) | — |
-| KI-213 | OPEN (filed 2026-11-26, the R2 lane's 7-hour wall budget cannot fit 101 candidates at the measured full-suite cost) | — |
-| KI-212 | OPEN (filed 2026-11-25, P-core-12 follow-up: `cmru/tools/project_fixture.py:44-45` and its `SUITE_COLLECTION_INPUTS` entries `nyxloom/pyproject.toml` (:58) and `nyxloom/src` (:59) still name `test_tester_unified_image`'s `_nyxloom_wheel_inputs()` as a cmru test read, but that module moved to `tester-unified/tests/test_tester_unified_image.py:2817` and cmru no longer collects it. The `cmru/tests/conftest.py` HEAVY_LAST comment was checked and is NOT stale, so that half of the original report was dropped) | — |
+| KI-215 | FIXED IN THIS BRANCH (the docs check rejects an affirmative CMRU lane declaration while allowing general Assay explanations) | branch |
+| KI-214 | FIXED IN THIS BRANCH (the campaign test docstring names the repository root `.gitignore` as the source of the output-ignore patterns) | branch |
+| KI-213 | OPEN (filed 2026-11-26, the R2 campaign needs a progress-based liveness bound that does not cut off advancing work at 7h) | — |
+| KI-212 | OPEN (filed 2026-11-25, P-core-12 follow-up: `cmru/tools/project_fixture.py`'s comment and `SUITE_COLLECTION_INPUTS` entries `nyxloom/pyproject.toml` and `nyxloom/src` still name `test_tester_unified_image`'s `_nyxloom_wheel_inputs()` as cmru test reads, but that test moved to `tester-unified/tests/test_tester_unified_image.py` and cmru no longer collects it. The `cmru/tests/conftest.py` `HEAVY_LAST_FILES` comment was checked and is NOT stale, so that half of the original report was dropped) | — |
 | KI-211 | FIXED IN THIS BRANCH (filed 2026-11-25, cmru lane r2 `rgw-r2-20261125T202359-r1002`: the baseline checker refused a merge HEAD because Assay's effective base was the first parent, not the selected release tag; with no sound reason for the refusal, cmru's two R2 tools now pass `delegated=True` to Assay's base resolution because the lane supplies the comparison base itself, so a merge HEAD is judged against the selected tag) | branch |
 | KI-210 | FIXED IN THIS BRANCH (filed 2026-11-25, cmru lane r2: the publish-refusal contract test reached api.github.com because only `get_release_by_tag` was stubbed, not the transport; the gate host has no network) | branch |
 | KI-209 | FIXED IN THIS BRANCH (filed 2026-11-25, cmru lane r2 `rgw-r2-20261125T202614-r1002`: the mutation fixture carried `libraries/worktree` only, so the copied suite's conftest could not locate `libraries/test-policy/src` and the known-good control exited 4 before a mutant was judged) | branch |
@@ -4384,10 +4384,10 @@ The lanes under items 2 and 3 must stay byte-identical, because the whole-source
 
 **Status:** OPEN (filed 2026-11-25); severity: low. Source: the P-core-12 review's stale-input sweep, re-verified here rather than trusted.
 
-- **True claim.** `cmru/tools/project_fixture.py:44-45` says `nyxloom/pyproject.toml` plus `nyxloom/src` are read by "`test_tester_unified_image`'s `_nyxloom_wheel_inputs()` parametrize list", and `SUITE_COLLECTION_INPUTS` still carries both pathspecs (`:58-59`). That module now lives at `tester-unified/tests/test_tester_unified_image.py:2817` (`_nyxloom_wheel_inputs`, parametrized at `:2964`) and cmru no longer collects it (KI-194 moved the image suite). A scan of every literal repository-root read over `cmru/tests` and `cmru/tools` finds no other reader of either path, so the copy and the fingerprint carry a tree no cmru test in the fixture reads.
-- **False claim, dropped.** The same report said the `cmru/tests/conftest.py` `HEAVY_LAST` comment is stale. It is not: `conftest.py:111-115` documents the oracle (`tests/test_r2_heavy_last_order.py::test_heavy_last_files_all_exist`), and all seven names in `HEAVY_LAST_FILES` exist in `cmru/tests/` (the moved `test_tester_unified_image.py` entry went with `3f1d960e3`). No work is owed for it.
-- **Why it is not folded into KI-209.** Dropping the two pathspecs changes which tracked files the fixture copies and fingerprints, so it needs its own negative control (the estate in `cmru/tests/test_project_fixture.py` currently stages `nyxloom/pyproject.toml` and two `nyxloom/src` files as `SUPPORT_FILES`, and `_estate` writes untracked `nyxloom/src` state on purpose to prove it is excluded).
-- **Wanted.** Either delete the two `SUITE_COLLECTION_INPUTS` entries plus their comment lines (and move the corresponding `SUPPORT_FILES`/`_estate`/manifest assertions in `cmru/tests/test_project_fixture.py`), or restate the comment as "carried for the estate's other consumers" if a real reader is found. Verify with the fixture closure scan, not by inspection alone.
+- **True claim.** The comment beside `SUITE_COLLECTION_INPUTS` in `cmru/tools/project_fixture.py` associates `nyxloom/pyproject.toml` and `nyxloom/src` with `test_tester_unified_image`'s `_nyxloom_wheel_inputs()` parametrization, and `SUITE_COLLECTION_INPUTS` still contains both entries. That test now lives at `tester-unified/tests/test_tester_unified_image.py::_nyxloom_wheel_inputs`, and cmru no longer collects it (KI-194 moved the image suite). The fixture therefore copies and fingerprints inputs no collected cmru test reads.
+- **False claim, dropped.** The same report said the `HEAVY_LAST_FILES` comment in `cmru/tests/conftest.py` is stale. It is not: `cmru/tests/test_r2_heavy_last_order.py::test_heavy_last_files_all_exist` verifies those entries. No work is owed for that part.
+- **Why it is not folded into KI-209.** Dropping the two pathspecs changes which tracked files the fixture copies and fingerprints, so it needs its own negative control. `cmru/tests/test_project_fixture.py` stages the nyxloom support files through `SUPPORT_FILES` and checks the fixture's copied and excluded paths.
+- **Wanted.** Either delete the two `SUITE_COLLECTION_INPUTS` entries plus their comment lines (and move the corresponding `SUPPORT_FILES`, fixture-estate and manifest assertions in `cmru/tests/test_project_fixture.py`), or restate the comment as "carried for the estate's other consumers" if a real reader is found. Verify with the fixture closure scan, not by inspection alone.
 - **Close when:** every `SUITE_COLLECTION_INPUTS` entry has a named in-fixture reader that the closure scan confirms, or no `nyxloom` entry remains.
 
 ## KI-211 - the R2 base check refused a merge HEAD: Assay's effective base was the first parent, not the selected release tag
@@ -4410,26 +4410,26 @@ The lanes under items 2 and 3 must stay byte-identical, because the whole-source
 - **Named limit.** This relies on Assay's B552 (assay >= 12.3.0, released): `resolve_base(..., delegated=True)` and `base_resolution_mode(..., delegated=True)`. An Assay that predates B552 does not ignore the flag — `resolve_base` has no `delegated` parameter, so the call raises `TypeError: resolve_base() got an unexpected keyword argument 'delegated'`, which `check_assay_baseline.py` does not catch (it catches `assay.AssayError` only), so the lane dies with a traceback instead of the documented refusal. It fails closed either way; the cost is that the failure shape an operator sees is not the documented one. cmru installs Assay from the selected worktree's own `assay/` source in every mutation path (`run-gate.toml` lanes), so this is a same-repo boundary, not a version pin.
 - **Close when:** (done) a merge HEAD with a moved first parent is accepted and the judged range is `selected-tag..HEAD`.
 
-## KI-213 - the R2 lane's 7-hour wall budget can end a campaign before progress completes
+## KI-213 - the R2 lane's 7-hour wall budget can end a progressing campaign
 
 **Status:** OPEN (filed 2026-11-26); severity: medium.
 
-- **Observed.** `cmru/run-gate.toml:300` sets the `r2` mutation lane's wall budget to `7h`. A full-suite candidate took about 13 minutes on an 8-core host on 2026-11-26; 101 candidates cannot fit inside that limit. Increasing the wall budget alone would keep making the run depend on host speed. Related, but separate from KI-134's completed-subset verdict and KI-152's replay of unfinished outcomes, this item concerns the total wall bound being shorter than the full candidate set.
-- **Wanted.** Do not let an elapsed-time budget truncate a campaign. Bound stalled work with a progress-based stall window. Record per-test timing in the known-good control so a slow host can be distinguished from a stuck test.
-- **Close when:** the R2 run is bounded by lack of progress rather than a fixed total wall time, and known-good evidence reports per-test timing.
+- **Observed.** `[lanes.r2].budget` in `cmru/run-gate.toml` is `7h`. The 2026-11-26 `progress-mutation-cmru.jsonl` stream declares 101 candidates and records 17 judged by campaign elapsed time 7,601 seconds. Candidate `elapsed_seconds` ranged from 533 to 806 seconds for the candidates that reached the full-suite portion; the three survivors took 776 to 806 seconds. The first candidate completed at 773 seconds of campaign time after taking 14 seconds itself, so about 759 seconds had already elapsed. At the observed average of 17 candidates per 7,601 seconds, 101 candidates project to about 12.5 hours; the 7h wall bound risks truncating an advancing campaign. The stream does not identify a host or core count. This is separate from KI-134's completed-subset verdict and KI-152's replay of unfinished outcomes.
+- **Wanted.** Give the campaign a progress-based liveness limit so a run that is advancing is not stopped at an arbitrary total duration. Preserve Run-Gate's hard, admission-visible `budget`; do not delete or set it aside, and do not treat `stall_timeout` as a replacement. Since `[lanes.r2]` is `kind = "command"`, a stall bound must use the log stream (Run-Gate's `LogStreamWatch`) or move to a lane kind with a progress-file watch; it cannot use `ProgressWatch` as the lane stands. This needs a Run-Gate-supported way to let progressing work continue while retaining the bound required for admission. Record per-test timing in the known-good control so a slow test is distinguishable from a stuck one.
+- **Close when:** the R2 campaign stops stalled work based on lack of progress, does not cut off advancing work at the current fixed wall duration, retains a hard admission-visible bound, and its known-good evidence reports per-test timing.
 
-## KI-214 - the R2 campaign test docstring cites a library ignore file that does not exist
+## KI-214 - the R2 campaign test docstring cited a library ignore file that did not exist
 
-**Status:** OPEN (filed 2026-11-26, cmrur2-review-r2 L4); severity: low.
+**Status:** FIXED IN THIS BRANCH (filed 2026-11-26, cmrur2-review-r2 L4); severity: low.
 
-- **Observed.** `cmru/tools/test_mutation_campaign.py:589` says the test-policy library ignores `artifacts/`, `evidence/` and `logs/` in `libraries/test-policy/.gitignore`. That file does not exist. The patterns are in the repository root `.gitignore:383-385`.
-- **Wanted.** Correct the test docstring to cite the repository's ignore rules.
-- **Close when:** the docstring names the root `.gitignore` as the source of those patterns.
+- **Observed.** The docstring of `cmru/tools/test_mutation_campaign.py::test_campaign_status_ignores_a_shared_library_released_artifact_tree` attributed `artifacts/`, `evidence/` and `logs/` to a nonexistent `libraries/test-policy/.gitignore`. The patterns are in the repository root `.gitignore`.
+- **Fix.** The docstring now names the repository root `.gitignore` and its `**/artifacts/`, `**/evidence/` and `**/logs/` patterns.
+- **Close when:** (done) the test docstring attributes the ignore patterns to the root `.gitignore`.
 
-## KI-215 - the R2 docs pin rejects a legitimate explanation of Assay's base setting
+## KI-215 - the R2 docs pin rejected a legitimate explanation of Assay's base setting
 
-**Status:** OPEN (filed 2026-11-26, cmrur2-review-r2 L6); severity: low.
+**Status:** FIXED IN THIS BRANCH (filed 2026-11-26, cmrur2-review-r2 L6); severity: low.
 
-- **Observed.** `cmru/tests/test_docs_config_examples.py:237-238` rejects the literal `judge.base_source = "request"` in all five user documents, even when the text accurately explains Assay's mechanism. The intended contract is that no CMRU lane declares this setting; the existing structural check at `:242-245` already covers that configuration rule.
-- **Wanted.** Scope the text assertion to false claims that a CMRU lane declares the setting, and keep the structural `assay.toml` check.
-- **Close when:** an accurate explanation of Assay's setting is allowed, while a false claim about CMRU lane configuration is still rejected.
+- **Observed.** `test_assay_and_release_gate_split_rigor_without_empty_release_mutation` previously rejected any occurrence of `judge.base_source = "request"` in the five CMRU documents, even when it accurately explained Assay's mechanism. The structural `assay.toml` check already verifies that no CMRU lane declares this setting.
+- **Fix.** The test now rejects affirmative claims that a CMRU lane declares the setting, while allowing a general Assay explanation. Its structural check of the CMRU lane declarations remains.
+- **Close when:** (done) a general explanation is allowed and a false claim that a CMRU lane declares the setting is rejected.

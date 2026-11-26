@@ -1212,8 +1212,9 @@ that exact commit.
 Run it at any commit, including a merge HEAD: both R2 tools pass
 `delegated=True` to Assay's `git.resolve_base`. The baseline checker also
 passes it to `git.base_resolution_mode` to report the mode; the mutation
-campaign does not call that helper. This is a call-site keyword, not a lane
-setting. The delegated resolution gives
+campaign does not call that helper (its `_judged_base` docstring explains
+delegated resolution, but the campaign does not report the mode). This is a
+call-site keyword, not a lane setting. The delegated resolution gives
 `merge-base(selected tag, HEAD)` — the tag itself, since the tag is proven to
 be in HEAD's ancestry — so a merge is judged against the selected release tag
 like any other HEAD. The lane refuses if the effective base is not the selected

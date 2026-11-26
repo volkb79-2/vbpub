@@ -44,9 +44,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): cmru's R2 lane accepts a merge HEAD. Both R2 tools pass
   `delegated=True` to Assay's `git.resolve_base`; the baseline checker also
   passes it to `git.base_resolution_mode` to report the mode, while the
-  mutation campaign does not call that helper. The lane supplies its own
-  comparison base (`judge.base_source` is not involved: cmru's own Assay lanes
-  are `whole_target` and declare no base),
+  mutation campaign does not call that helper (its `_judged_base` docstring
+  explains delegated resolution, but the campaign does not report the mode).
+  The lane supplies its own comparison base (`judge.base_source` is not
+  involved: cmru's own Assay lanes are `whole_target` and declare no base),
   so the judged diff is
   `selected-release-tag..HEAD` on every HEAD shape instead of the merge's
   first-parent payload; the checker still refuses any effective base that is

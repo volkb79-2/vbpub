@@ -233,9 +233,23 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
             rf"assay_git\.{function}\([^)]*delegated=True", source,
         ), f"{tool} must delegate its base to Assay ({function})"
     assert "delegated=True" in spec
-    # The docs must not claim a lane declares the base (M1): no cmru lane does.
+    # Reject an affirmative CMRU lane declaration while allowing a general
+    # explanation of Assay's request-based base mechanism.
+    false_lane_base_claim = re.compile(
+        r"\b(?:CMRU(?:'s)?(?: own)?(?: Assay)? lanes?|(?:Assay )?lanes? in CMRU)"
+        r"\s+(?:declare|declares|use|uses|set|sets)\s+"
+        r"`?judge\.base_source\s*=\s*[\"']request[\"']`?",
+        re.IGNORECASE,
+    )
+    assert false_lane_base_claim.search(
+        'CMRU lanes declare `judge.base_source = "request"`',
+    )
+    assert false_lane_base_claim.search(
+        'A lane that declares `judge.base_source = "request"` delegates its base.',
+    ) is None
     for document in ("docs/SPEC.md", "docs/DESIGN-GUIDE.md", "docs/CONSUMERS.md", "README.md", "CHANGES.md"):
-        assert 'judge.base_source = "request"' not in (ROOT / document).read_text(encoding="utf-8"), document
+        text = (ROOT / document).read_text(encoding="utf-8")
+        assert not false_lane_base_claim.search(text), document
     assert "source roots MUST be unchanged between them" not in spec
 
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]

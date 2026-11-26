@@ -1189,7 +1189,8 @@ origin commit, including older tag names that point to the same commit.
 If HEAD is a merge, CMRU's R2 tools pass `delegated=True` to Assay's
 `git.resolve_base` (B552). The baseline checker also passes it to
 `git.base_resolution_mode` to report the mode; the mutation campaign does not
-call that helper. This call-site keyword means
+call that helper (its `_judged_base` docstring explains delegated resolution,
+but the campaign does not report the mode). This call-site keyword means
 comparison is `merge-base(selected tag, HEAD)` — the tag itself, because the
 tag is proven to be in HEAD's ancestry. A merge HEAD is therefore judged
 against the selected tag like any other, covering the merged-in parent's

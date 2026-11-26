@@ -3687,7 +3687,9 @@ CMRU's two R2 tools (`tools/check_assay_baseline.py` and
 `tools/mutation_campaign.py`) say so to Assay themselves: both pass
 `delegated=True` to `assay.git.resolve_base(...)` (Assay B552). The baseline
 checker also passes it to `assay.git.base_resolution_mode(...)` to report the
-mode; the mutation campaign does not call that helper. The answer is
+mode; the mutation campaign does not call that helper (its `_judged_base`
+docstring explains delegated resolution, but the campaign does not report the
+mode). The answer is
 `merge-base(base, HEAD)` rather than a merge HEAD's first parent. This is a
 keyword argument at the call site, not lane configuration: CMRU's own Assay
 lanes are `whole_target` and declare no base at all (`judge.base_source` is
