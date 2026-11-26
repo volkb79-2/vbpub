@@ -74,7 +74,7 @@ Hibernation is not supported. ZFS has no swap: a zvol can deadlock (`DESIGN-GUID
 (`install-btrfs.sh:172-190`), from P-27a `dr-state enroll --sysroot` (C12). Off: the same layout with stock boot,
 enrollable later. Per boot path:
 - **btrfs + GRUB, off:** stock GRUB via `grub-install --removable --no-nvram`; the firmware path
-  `EFI/BOOT/BOOTX64.EFI` is what `install-grub` replaces on enrollment (`dr-state:602-610`). The flags are not
+  `EFI/BOOT/BOOTX64.EFI` is what `install-grub` replaces on enrollment (`files/usr/local/lib/dr-state/dr_state/core.py:1103-1120`). The flags are not
   remembered: a `grub-efi-amd64` upgrade re-runs `grub-install` (U2), writing `EFI/debian/grubx64.efi` and an NVRAM
   entry, possibly in v2 stage one's upgrade (`installer.py:1545`), and that entry ignores dr's default. So off
   installs preset debconf `grub2/force_efi_extra_removable=true` and `grub2/update_nvram=false`; enrollment
@@ -87,7 +87,7 @@ enrollable later. Per boot path:
   (`ZFS-POC-PLAN.md:142`).
 
 **C8.** The kernel command line becomes target configuration before IC-M4. It is hard-coded as `net.ifnames=0
-console=tty0 console=ttyS0,115200` (`dr-state:296`, `:998`; `py/boot/grub.py:107`), and the ISO entries end with
+console=tty0 console=ttyS0,115200` (`files/usr/local/lib/dr-state/dr_state/boot/grub.py:105-107`; `files/usr/local/lib/dr-state/dr_state/boot/sdboot.py:656-657`), and the ISO entries end with
 `console=ttyS0,115200n8` (`build-iso.sh:89`, `:93`). The last `console=` is `/dev/console`; netcup's console is VNC
 only (`RESEARCH-2026-11.md:37`), so emergency shells and the no-config ERASE prompt (`dr-autoinstall:172`) never
 reach it. Each state carries `/etc/kernel/cmdline`, gen-menu reads it, the install config sets it (`tty0` last on
@@ -113,7 +113,7 @@ refused at load (`layout_policy.disk_spec`, `v2/debian_install_v2/layout_policy.
 | Lane `r1-vm-iso-btrfs` (vm-lab OVMF guest from the dr ISO) beside `r1-vm-real-commit`; v2's own harness is BIOS only (`RESEARCH-2026-11.md:38`) | `v2/run-gate.toml:117` |
 
 Unchanged: the next-boot kernel is the highest `/boot/vmlinuz-*` (`installer.py:1475-1480`), dr-state's newest pair
-(`dr-state:207`); v2 never edits GRUB or the command line (`update-grub` allowlisted, unused, `actions.py:130`).
+(`files/usr/local/lib/dr-state/dr_state/storage/btrfs.py:195`, `files/usr/local/lib/dr-state/dr_state/ids.py:198`); v2 never edits GRUB or the command line (`update-grub` allowlisted, unused, `actions.py:130`).
 
 **C10.** v2 owns swap size and data subvolumes (host tuning); the installer owns `@swap` and the excluded set (layout).
 
@@ -134,10 +134,10 @@ of the fresh case (`py/core.py:959-975`).
 - Debian 13 or later, `python3` >= 3.13 with full stdlib (core D1, D2), UEFI, Secure Boot off (`mokutil
   --sb-state`; dr's GRUB image is unsigned, D27).
 - Root on btrfs or ZFS, one device, not on LUKS, LVM or md (Q10).
-- ESP vfat, GPT partition 1 of the boot disk (`dr-state:606`); >= 512 MiB free for systemd-boot (ready layouts only).
+- ESP vfat, GPT partition 1 of the boot disk (`dr-state@d5f449971`); >= 512 MiB free for systemd-boot (ready layouts only).
 - Kernel and initramfs in the root's `/boot`; a separate `/boot` partition is folded into the new state and left
   unused. For an ext `/boot`, which the source's entry still reads, `install-grub` adds `ext2` (absent at
-  `dr-state:607-608`), else the case is refused.
+  `dr-state@d5f449971`), else the case is refused.
 - btrfs free space: estimated free >= max(2 GiB, 5 %) plus every path copied into a NOCOW subvolume, since btrfs
   refuses clones between COW and NOCOW files (proposal, U9). ZFS: the size of every copied path (U10).
 - No `@os-*` except a ready layout's one state; `/.top`, if mounted, is `subvolid=5`; no active swapfile in the

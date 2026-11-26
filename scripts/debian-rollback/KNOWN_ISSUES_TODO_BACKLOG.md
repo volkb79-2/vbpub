@@ -239,3 +239,45 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **Problem.** Hook modes come from the checkout's or ISO stage's source modes. A source tree whose hook modes were widened by tools or a permissive umask can therefore produce writable-group hooks on the target instead of the required `0644` and `0755`.
 **Wanted.** Normalize the three hook modes at a payload ownership boundary or prove the staging path pins them against a wider umask.
+
+## DR-126 — Tight ESP refresh refusal happens after shrink work
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-22, P-rollback-40, DESIGN-CORE-SPLIT.md D19
+
+**Problem.** On a tight ESP, an initrd refresh can pass selection-time fit using the old default pair as credit, then shrink the menu and refuse during the later copy check. The stale initrd remains, and the refusal arrives after filesystem mutations.
+**Wanted.** Decide whether a target's superseded pair counts as capacity credit and move the capacity refusal before any shrink mutation; cover both initrd refresh and kernel upgrade.
+
+## DR-127 — Foreign selectors refuse strict delete and prune
+
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-24, DESIGN-CORE-SPLIT.md §3.3
+
+**Problem.** A real foreign default such as `windows.conf` is rejected by strict selector parsing, so `delete` and `prune` exit 3 instead of treating it as an entry that contains no owned state.
+**Wanted.** Decide and test foreign-selector behavior in P-24; preserve refusals for malformed selectors that could identify an owned entry unsafely.
+
+## DR-128 — bootctl ignores `--sysroot` for firmware variables
+
+**State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-24, DESIGN-CORE-SPLIT.md §3.3
+
+**Problem.** `bootctl set-default` and `set-oneshot` ignore `--sysroot` and can mutate the host firmware variables while a command is pointed at a mounted target.
+**Wanted.** Refuse firmware-variable mutations for a non-host sysroot or use an interface that demonstrably targets the requested firmware state; add a regression test.
+
+## DR-129 — sdboot.py exceeds its design size target
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-23, P-rollback-24, DESIGN-CORE-SPLIT.md D23
+
+**Problem.** `sdboot.py` is about 1,125 lines against the design target of about 750, which increases review and maintenance cost for the backend.
+**Wanted.** Reassess the target during P-23/P-24 and split cohesive filesystem, publication and selector responsibilities where that reduces complexity without moving the boot contract across unclear boundaries.
+
+## DR-130 — Serial runtime hot patch removes the old tree before extract
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-25, poc/dr-serial.py
+
+**Problem.** `install_current_dr_state` removes `/usr/local/lib/dr-state` before extracting the replacement archive. A failed extract leaves the dev guest without the runtime.
+**Wanted.** Extract to a temporary sibling tree, verify the runtime digest, then atomically replace the current tree.
+
+## DR-131 — Installer extract follows an intermediate destination symlink
+
+**State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-21, poc/install-btrfs.sh
+
+**Problem.** The installer treats a destination symlink to a directory as an existing directory, omits it from the archive, and tar writes descendants through the link outside the target root.
+**Wanted.** Refuse an intermediate symlink or resolve every destination beneath the target root without following links; add an offline regression fixture.

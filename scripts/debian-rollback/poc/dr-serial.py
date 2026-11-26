@@ -13,7 +13,7 @@ apt hook's dedupe window (dr-state, default 900 s) is another reason: a second a
 window takes no snapshot, so scenarios that count new snapshots need a guest without a recent one. The guest must be running (vm-lab start --plain-host) with a
 login prompt on ttyS0 and root password "root" (the PoC installer default). The log is a plain transcript
 and is the evidence; the PASS/FAIL lines are a convenience. Exit status is non-zero when any check fails.
-Hot-patching is dev-only: acceptance runs on freshly built disks and refuses these helpers with DR_ACCEPTANCE=1.
+Hot-patching is dev-only: DR_ACCEPTANCE unset, empty or 0 means dev; 1 means acceptance and refuses hot patches; any other value is refused.
 
 How output is read (the echoed command line is part of what comes back on a tty, so nothing may be matched
 against it):
@@ -1243,13 +1243,16 @@ def payload_files() -> tuple[Path, ...]:
 
 
 def payload_manifest_digest() -> str:
-    """Hash the relative names and bytes of the complete installed files payload."""
+    """Hash every bytecode-free regular file under files/usr/local."""
 
     manifest = hashlib.sha256()
     for path in payload_files():
-        relative = path.relative_to(PAYLOAD_ROOT).as_posix()
+        relative = path.relative_to(PAYLOAD_ROOT)
+        if relative.parts[:2] != ("usr", "local"):
+            continue
+        relative_name = relative.as_posix()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        manifest.update(f"{digest}  {relative}\n".encode("ascii"))
+        manifest.update(f"{digest}  {relative_name}\n".encode("ascii"))
     return manifest.hexdigest()
 
 
@@ -1259,8 +1262,6 @@ def installed_payload_digest_command() -> str:
     return (
         "cd / && "
         "find usr/local/sbin/dr-state usr/local/lib/dr-state "
-        "etc/apt/apt.conf.d/80dr-state "
-        "etc/kernel/postinst.d/zz-dr-state etc/kernel/postrm.d/zz-dr-state "
         "-type f -print0 "
         "| LC_ALL=C sort -z "
         "| xargs -0 sha256sum "
@@ -1270,7 +1271,7 @@ def installed_payload_digest_command() -> str:
 
 
 def payload_archive() -> bytes:
-    """Return the complete payload as a root-owned archive of regular file members."""
+    """Return the runtime file subtrees as a root-owned archive without directory members."""
 
     def normalized(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         parts = PurePosixPath(member.name).parts
@@ -1285,9 +1286,16 @@ def payload_archive() -> bytes:
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for path in payload_files():
+            relative = path.relative_to(PAYLOAD_ROOT).as_posix()
+            if not relative.startswith("usr/local/"):
+                continue
+            if relative != "usr/local/sbin/dr-state" and not relative.startswith(
+                "usr/local/lib/dr-state/"
+            ):
+                raise ValueError(f"cannot hot-patch unexpected runtime file {relative}")
             archive.add(
                 path,
-                arcname=path.relative_to(PAYLOAD_ROOT).as_posix(),
+                arcname=relative,
                 recursive=False,
                 filter=normalized,
             )
@@ -1312,7 +1320,7 @@ def _hot_patch_refused(log, helper: str) -> bool:
 
 
 def install_current_dr_state(g, log):
-    """Upload the complete payload; dev-only: acceptance runs on freshly built disks."""
+    """Upload the runtime subtrees; dev-only: acceptance runs on freshly built disks."""
     if _hot_patch_refused(log, "install_current_dr_state"):
         return False
     try:
@@ -1337,7 +1345,7 @@ def install_current_dr_state(g, log):
         "rm -f \"$dr_payload\""
     )
     _, out = g.run(command, 300)
-    return check(log, "guest uses the exact files payload under test",
+    return check(log, "guest uses the exact runtime payload under test",
                  tag(out, "DRSTATE_INSTALL_RC") == "0" and tag(out, "DRSTATE_SHA") == digest,
                  f"rc={tag(out, 'DRSTATE_INSTALL_RC')} sha={tag(out, 'DRSTATE_SHA')} expected={digest}")
 
@@ -2013,7 +2021,11 @@ def _update_dr_state(g, log, what="Python runtime"):
     """Install from the seed ISO; dev-only: acceptance runs on freshly built disks."""
     if _hot_patch_refused(log, "_update_dr_state"):
         return False
-    digest = payload_manifest_digest()
+    try:
+        digest = payload_manifest_digest()
+    except (OSError, ValueError) as exc:
+        check(log, "current dr-state source is readable by the guest driver", False, repr(exc))
+        return False
     _, out = g.run(
         "mkdir -p /mnt/seed; mount -o ro /dev/sr0 /mnt/seed; echo MNTRC:$?; "
         "rm -rf /usr/local/lib/dr-state; "
