@@ -103,7 +103,9 @@ fn parse_comm(bytes: &[u8]) -> Option<String> {
 }
 
 fn unified_cgroup_path(contents: &str) -> Option<PathBuf> {
-    let mut paths = contents.lines().filter_map(|line| line.strip_prefix("0::/"));
+    let mut paths = contents
+        .lines()
+        .filter_map(|line| line.strip_prefix("0::/"));
     let relative = Path::new(paths.next()?);
     if paths.next().is_some()
         || relative.is_absolute()
@@ -138,8 +140,8 @@ fn peer_labels(
     cgroup_root: &Path,
 ) -> (Option<String>, Option<CgroupKey>) {
     let pid_root = proc_root.join(pid.to_string());
-    let comm = read_bounded(&pid_root.join("comm"), MAX_COMM_BYTES)
-        .and_then(|bytes| parse_comm(&bytes));
+    let comm =
+        read_bounded(&pid_root.join("comm"), MAX_COMM_BYTES).and_then(|bytes| parse_comm(&bytes));
     let cgroup = read_cgroup_key(&pid_root.join("cgroup"), cgroup_root, |path| {
         let metadata = std::fs::metadata(path)?;
         Ok((metadata.dev(), metadata.ino()))
@@ -546,10 +548,10 @@ mod tests {
     use rustix::event::{eventfd, EventfdFlags};
 
     use super::{parse_comm, peer_from_ucred, read_cgroup_key, run};
-    use hostobs_serve::conn::CgroupKey;
     use hostobs_serve::backend::{
         Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, Turn,
     };
+    use hostobs_serve::conn::CgroupKey;
     use hostobs_serve::encode::{control_frame, server_prefix};
     use hostobs_serve::limits::Level;
     use hostobs_serve::selection::Selection;

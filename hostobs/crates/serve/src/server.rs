@@ -1883,32 +1883,28 @@ mod tests {
         backend.current.insert(selection.clone(), Ok(data));
         let mut server = Server::new(limits, backend);
         let uid = 42;
-        let Accept::Accepted(observe) =
-            server.accept(
-                Level::Observe,
-                Some(Peer {
-                    uid,
-                    pid: Some(7),
-                    comm: None,
-                    cgroup: None,
-                }),
-                0,
-            )
-        else {
+        let Accept::Accepted(observe) = server.accept(
+            Level::Observe,
+            Some(Peer {
+                uid,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            }),
+            0,
+        ) else {
             panic!("observe accepted");
         };
-        let Accept::Accepted(operator) =
-            server.accept(
-                Level::Operator,
-                Some(Peer {
-                    uid,
-                    pid: Some(8),
-                    comm: None,
-                    cgroup: None,
-                }),
-                0,
-            )
-        else {
+        let Accept::Accepted(operator) = server.accept(
+            Level::Operator,
+            Some(Peer {
+                uid,
+                pid: Some(8),
+                comm: None,
+                cgroup: None,
+            }),
+            0,
+        ) else {
             panic!("operator accepted");
         };
 
