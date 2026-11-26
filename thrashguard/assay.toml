@@ -95,9 +95,17 @@ format = "lcov"
 artifact = "lcov.info"
 
 # R1 needs an explicit snapshot policy (Assay's `[isolation]` requirement, an R1
-# refusal without one). This project declares NO unsafe-symlink omission because it
-# has none, so `repository` is the narrower — and therefore the honest — spelling:
-# `repository-minus-unsafe-symlinks` is refused together with an empty list.
+# refusal without one). The snapshot is the WHOLE repository, not just this crate,
+# because Assay snapshots the worktree; three `topos/tests/fixtures` files are
+# symlinks to absolute host paths (`/etc/passwd`, `memory.current`), and Git refuses
+# to materialise them in the snapshot (`ERROR/GIT_FAILED`). They are listed here
+# exactly as hostobs lists them (`hostobs/assay.toml:112-119`) — one repository,
+# one omission list — and none of them is inside this crate's judged `src/`.
 [lanes.r0-r1.isolation]
-snapshot_selection = "repository"
+snapshot_selection = "repository-minus-unsafe-symlinks"
 snapshot_history = "shallow"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
