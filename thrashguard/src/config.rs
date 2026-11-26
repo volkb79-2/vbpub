@@ -376,7 +376,7 @@ fn read_layer(path: &Path) -> Result<Layer, ConfigError> {
 }
 
 /// Parse one layer's text. The `source` label appears in every refusal.
-pub fn parse_layer(text: &str, source: &str) -> Result<Layer, ConfigError> {
+fn parse_layer(text: &str, source: &str) -> Result<Layer, ConfigError> {
     let mut layer = Layer::default();
     let mut table: Option<BTreeMap<String, Entry>> = None;
     for (index, raw_line) in text.lines().enumerate() {
