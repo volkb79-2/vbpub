@@ -504,6 +504,11 @@ def test_plugin_injection_refuses_wrappers_and_prepends_a_new_pythonpath(tmp_pat
     ]
 
 
+def _liveness_plugin_hooks(plugin) -> tuple[str, ...]:
+    """Every pytest hook the materialized liveness plugin defines, in order."""
+    return tuple(name for name in dir(plugin) if name.startswith("pytest_"))
+
+
 def test_liveness_hook_pin_rejects_same_fingerprint_callable_substitution(
     tmp_path, monkeypatch
 ):
@@ -518,12 +523,12 @@ def test_liveness_hook_pin_rejects_same_fingerprint_callable_substitution(
             plugin_name="assay_liveness_plugin",
             function=getattr(plugin, name),
         )
-        for name in (
-            "pytest_configure",
-            "pytest_runtest_logreport",
-            "pytest_sessionfinish",
-            "pytest_unconfigure",
-        )
+        # DERIVED from the plugin itself rather than transcribed: a hook the
+        # plugin registers without being in the witness pin set is the failure
+        # this test exists to catch (P4/S2's `pytest_runtest_logstart` was
+        # exactly that -- unpinned, it made every liveness cold witness
+        # unsupported). The assertion below binds the two sets.
+        for name in _liveness_plugin_hooks(plugin)
     }
 
     class Hook:
@@ -557,6 +562,7 @@ def test_liveness_hook_pin_rejects_same_fingerprint_callable_substitution(
     assert witness_spec is not None and witness_spec.loader is not None
     witness = importlib.util.module_from_spec(witness_spec)
     witness_spec.loader.exec_module(witness)
+    assert set(_liveness_plugin_hooks(plugin)) == set(witness._LIVENESS_PLUGIN_HOOKS)
 
     assert witness._pin_liveness_hook_callables(config)
     assert witness._liveness_hook_registry_matches(config)

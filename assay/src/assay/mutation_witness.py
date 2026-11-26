@@ -1536,6 +1536,13 @@ _ASSAY_PLUGIN_HOOKS = (
 _LIVENESS_PLUGIN_NAME = "assay_liveness_plugin"
 _LIVENESS_PLUGIN_HOOKS = (
     "pytest_configure",
+    # (P4/S2) `pytest_runtest_logstart` writes the `test_start` record the
+    # per-test CPU bound dates its window from. It is pinned like the other
+    # four: an unpinned registration on a hook in `_HOOKS` would be an
+    # untrusted implementation, which makes EVERY cold witness on a liveness
+    # lane unsupported ("coverage baseline unsupported pytest hooks:
+    # pytest_runtest_logstart") -- a capability lost, not a hook ignored.
+    "pytest_runtest_logstart",
     "pytest_runtest_logreport",
     "pytest_sessionfinish",
     "pytest_unconfigure",

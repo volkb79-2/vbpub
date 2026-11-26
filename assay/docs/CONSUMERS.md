@@ -408,10 +408,11 @@ candidate conftests load as well. The reviewed Hypothesis and pytest-cov code
 objects are pinned too; replacing one in place makes the attempt unsupported,
 even when its visible fingerprint stays the same.
 When liveness is active, the materialized liveness plugin's
-`pytest_configure`, `pytest_runtest_logreport`, `pytest_sessionfinish` and
-`pytest_unconfigure` HookImpls, functions, code objects and globals are pinned
-to the selected plugin path too. A candidate that replaces one while
-preserving its visible fingerprint cannot certify a cold kill or survivor.
+`pytest_configure`, `pytest_runtest_logstart`, `pytest_runtest_logreport`,
+`pytest_sessionfinish` and `pytest_unconfigure` HookImpls, functions, code
+objects and globals are pinned to the selected plugin path too. A candidate
+that replaces one while preserving its visible fingerprint cannot certify a
+cold kill or survivor.
 
 There is one compatibility exception for
 `tests/conftest.py::pytest_sessionfinish`: Assay accepts that hook only when

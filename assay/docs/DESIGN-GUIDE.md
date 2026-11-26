@@ -1147,13 +1147,25 @@ can be classified.
 
 When liveness is active, Assay also captures the exact materialized
 `assay_liveness_plugin` registrations for `pytest_configure`,
-`pytest_runtest_logreport`, `pytest_sessionfinish` and `pytest_unconfigure`.
-They must come from the selected plugin path and retain the same HookImpl,
-function, code object and globals. This closes a same-module/path substitution
-that could otherwise alter a test report before the witness hook sees it while
-leaving the displayed hook fingerprint unchanged. Collection compares all
-four registrations; the registry monitor then checks each hook as pytest calls
-it. A mismatch disables both cold and replay proof.
+`pytest_runtest_logstart`, `pytest_runtest_logreport`, `pytest_sessionfinish`
+and `pytest_unconfigure`. They must come from the selected plugin path and
+retain the same HookImpl, function, code object and globals. This closes a
+same-module/path substitution that could otherwise alter a test report before
+the witness hook sees it while leaving the displayed hook fingerprint
+unchanged. Collection compares all five registrations; the registry monitor
+then checks each hook as pytest calls it. A mismatch disables both cold and
+replay proof.
+
+`pytest_runtest_logstart` is on that list because of P4/S2, and the failure it
+would cause without being there is worth stating: the liveness plugin's
+`test_start` record dates the per-test CPU bound's window, but the hook itself
+lives in `HOOK_FINGERPRINT_HOOKS`, where an untrusted implementation marks the
+BASELINE unsupported. The visible result was not "one hook is ignored" but
+"cold witness: coverage baseline unsupported pytest hooks:
+pytest_runtest_logstart", refusing the whole lane. A hook the plugin registers
+must therefore be in the pin set, and
+`tests/core/test_mutation_witness_unit.py` now derives the set from the plugin
+itself so the two cannot drift apart again.
 
 The private receipt travels over a per-attempt bounded, length-framed pipe.
 The parent drains it while pytest runs and accepts exactly one complete
