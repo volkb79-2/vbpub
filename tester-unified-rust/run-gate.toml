@@ -17,3 +17,6 @@ python3 -m unittest discover -s tests -v''',
 ]
 clean_tree = true
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during crate-cache verification and
+# shell checks before the unittest suite; no <=300s output cadence is guaranteed.
+stall_timeout = "20m"

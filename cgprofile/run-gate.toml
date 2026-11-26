@@ -49,6 +49,14 @@ argv = [
 ]
 clean_tree = false
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION. tools/gate.sh's coverage path runs the
+# suite DETACHED (`docker run -d` -> `docker wait` -> `docker logs`, see
+# gate.sh:294-313): the association `docker update`/inspect lines around it are
+# the only output, and the suite itself writes nothing to this lane's stdout
+# until it has finished. Declared EQUAL to this lane's budget, so a slow suite
+# cannot be reported STALLED. No silence bound has been measured yet; RG-326
+# tracks a real progress signal for it.
 
 # Focused regression work uses the requested partial CLI-case check. The
 # coverage-partial lane exercises the suite with the same option while
@@ -64,6 +72,9 @@ argv = [
 ]
 clean_tree = false
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the focused pytest suite; a
+# healthy test may run without a flushed event for 300s; no bound is measured.
+stall_timeout = "10m"
 [lanes.focused.resources]
 memory = "2g"
 cpus = "3"
@@ -77,6 +88,9 @@ argv = [
 ]
 clean_tree = false
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while coverage runs pytest; no output
+# cadence of 300s or less is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "20m"
 [lanes.coverage-partial.resources]
 memory = "3g"
 cpus = "3"
@@ -133,6 +147,14 @@ argv = [
 ]
 clean_tree = false
 budget = "10m"
+# RG-320/H1: SILENT BY CONSTRUCTION. This lane is the canary runner, whose
+# per-canary step CAPTURES the pytest it cares about and prints only the
+# verdict AFTER it returns (cgprofile/tools/canary-run.sh:65-67 (`out="$(... pytest ... 2>&1)"`)),
+# so not one byte of the selector's own progress reaches this lane's stdout
+# while it runs: a single slow selector is a silent window of unknown length
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 cannot fail a
+# lane main would let finish. No silence bound has been measured yet.
+stall_timeout = "10m"
 [lanes.r3.resources]
 memory = "1g"
 memory_swap = "16g"
@@ -158,3 +180,13 @@ clean_tree = false
 # The full sequence includes the enforced 24h assay R2 window. This outer
 # command-lane budget is advisory; assay.toml owns the actual R2 deadline.
 budget = "25h"
+stall_timeout = "25h"
+# RG-320/H1: SILENT BY CONSTRUCTION. This lane only orchestrates three nested
+# run-gate invocations; the output this lane's own stdout can show between them
+# is whatever the nested lanes print, and a nested `r2` member runs Assay, whose
+# progress is written to a FILE that the OUTER lane never reads. A single
+# mutation candidate inside it can legitimately run longer than 300 s with no
+# progress record (RG-326, and R-40i's own note about the assay floor), so the
+# outer strip of silence is bounded only by this lane's own budget. Declared
+# EQUAL to it, so P1 can never fail this lane where main would let it finish.
+# No silence bound has been measured yet; RG-326 tracks a real progress signal.
