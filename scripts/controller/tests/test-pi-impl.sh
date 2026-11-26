@@ -2487,6 +2487,7 @@ check_mode_stream_review_resume() {
     > "$ROOT/killed-review-resume.launch.log" 2>&1 < /dev/null \
     || fail 'a review found through its running stream head was refused'
   assert_review_argv 'killed first review stream resume'
+  # shellcheck disable=SC2016 # the backticks are the message's literal text
   contains "$ROOT/killed-review-resume.launch.log" 'run mode review (stream-record)' \
     'a session event without `.thread` or session-mode state finds its run mode'
 
@@ -2768,6 +2769,7 @@ check_mode_rule_paragraph() {
   # The paragraph every implementer prompt carries must say the three things
   # an agent can otherwise only be asked politely: the pattern ban, the capped
   # container with a private PID namespace, and "no shell experiments".
+  # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
   contains "$IMPLEMENTER_RULES" 'no `pkill`' 'the implementer rule names the pattern kill'
   contains "$IMPLEMENTER_RULES" 'killall' 'the implementer rule names killall'
   contains "$IMPLEMENTER_RULES" 'recorded itself' 'the implementer rule pins the kill to recorded pids'

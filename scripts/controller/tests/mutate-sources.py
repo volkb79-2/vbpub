@@ -734,7 +734,7 @@ mutant("scripts/controller/pi-impl.sh", "pi-prompt-absolute.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-worktree-exists.sh",
        'worktree=$(realpath -e -- "$1") || usage', 'worktree=$1')
 mutant("scripts/controller/pi-impl.sh", "pi-session-id-guard.sh",
-       '  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != *..* && $1 != . ]]',
+       '  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != *..* && $1 != . && $1 != *.jsonl ]]',
        '  return 0')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-guard.sh",
        'elif [[ $mode != new || $# -gt 4 ]]; then', 'elif [[ $mode != new ]]; then')
@@ -815,8 +815,8 @@ mutant("scripts/controller/pi-impl.sh", "pi-record-owner-new-only.sh",
 # A forced launch retires the previous records only once it is real: restoring
 # the early retirement moves them aside on a refusal that follows.
 mutant("scripts/controller/pi-impl.sh", "pi-force-retire-early.sh",
-       'controller_run_claim "$name" || exit 2\nretire_existing=0',
-       'controller_run_claim "$name" || exit 2\n'
+       'recheck_claimed_resume_mode || exit 2\nretire_existing=0',
+       'recheck_claimed_resume_mode || exit 2\n'
        '[[ $mode != new || ${CONTROLLER_RUN_FORCE:-0} != 1 ]] || controller_run_retire_records "$name" >/dev/null\n'
        'retire_existing=0')
 mutant("scripts/controller/pi-impl.sh", "pi-force-retire-before-credentials.sh",
@@ -936,9 +936,9 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-session-implementer-as-review.s
        '  if [[ $session_mode_state == valid ]]; then')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-session-implementer-refusal-dropped.sh",
        '    if [[ $request_origin == caller && $requested_mode == implementer ]]; then\n'
-       '      printf \'pi session %s is recorded as a REVIEW and cannot be resumed in implementer mode\\n\' "$session_id" >&2',
+       '      if [[ $session_review_source == review-material ]]; then',
        '    if false; then\n'
-       '      printf \'pi session %s is recorded as a REVIEW and cannot be resumed in implementer mode\\n\' "$session_id" >&2')
+       '      if [[ $session_review_source == review-material ]]; then')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-session-invalid-record-guessed.sh",
        '  [[ $session_mode_state != invalid ]] || {',
        '  true || {')
@@ -954,12 +954,12 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-extra-args-list-dropped.sh",
 # refused, and the paragraph is what pi actually receives.
 mutant("scripts/controller/pi-impl.sh", "pi-mode-rules-file-refusal-dropped.sh",
        'if [[ ! -r $rules_file ]]; then\n'
-       '  echo "pi review prompt rule file is missing or unreadable: $rules_file" >&2\n'
+       '  echo "pi $run_mode prompt rule file is missing or unreadable: $rules_file" >&2\n'
        "  echo '  every launch appends its fixed rule paragraph; a prompt without it is not the contract this wrapper promises' >&2\n"
        '  exit 2\n'
        'fi',
        'if false; then\n'
-       '  echo "pi review prompt rule file is missing or unreadable: $rules_file" >&2\n'
+       '  echo "pi $run_mode prompt rule file is missing or unreadable: $rules_file" >&2\n'
        "  echo '  every launch appends its fixed rule paragraph; a prompt without it is not the contract this wrapper promises' >&2\n"
        '  exit 2\n'
        'fi')

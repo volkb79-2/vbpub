@@ -494,6 +494,8 @@ persist_retired_run_session_mode() {
   [[ -n $old_mode ]] || {
     printf 'cannot preserve retired pi session mode: %s has a session id but no recorded mode or review evidence\n' \
       "$run_name" >&2
+    printf '  remedy: use a new run name, or write the true mode of that session (the one word review or implementer; review if unsure) to %s and force the reuse again\n' \
+      "$out/$run_name.mode" >&2
     return 2
   }
   acquire_session_mode_lock "$old_id" 1 || return 2

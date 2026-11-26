@@ -449,7 +449,11 @@ must match a recorded id exactly; prefixes and ids ending `.jsonl` are refused.
 Forced name reuse first persists the old session's mode, using
 the same locked monotonic record, before it retires the `.thread` and `.jsonl`
 files. The session record can become `review`, but no later implementer launch
-can replace it.
+can replace it. A forced reuse is refused when the old name has a session id but
+no recorded mode and no review evidence (for example a run made before mode
+records existed, or a Codex run that left only a `.thread`). Use a new run name,
+or write the true mode of that session (the one word `review` or `implementer`;
+`review` if unsure) to `<runs-dir>/<run>.mode` and force the reuse again.
 
 A record that exists but is unreadable or neither word is refused rather than
 guessed. A name that carries review material (`<run>.review/before-state.txt`)
