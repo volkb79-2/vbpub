@@ -417,8 +417,8 @@ without it every container started after Traefik is not routed.
 `docker-socket-proxy:v0.5.0` already defaults `EVENTS` to `1`; the instance sets
 it explicitly so a change of that default cannot silently stop new containers
 from being routed.  Verified on r1002 on 2026-11-26 (tls-edge 4.0.0): a labelled
-container was routed about 1 s after start and unrouted about 1 s after `docker
-stop`, with Traefik restarts still 0 (TE-14, closed).
+container was routed by the second 0.5 s poll (about 1 s) after start and unrouted
+by the same poll after `docker stop`, with Traefik restarts still 0 (TE-14, closed).
 
 ### Blast radius analysis
 

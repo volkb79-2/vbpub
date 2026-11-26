@@ -239,6 +239,15 @@ def test_install_doc_carries_no_release_history():
     assert "docker compose -p <project> down" in install, (
         "the fresh-install text names the removal command, never a `-v` variant"
     )
+    # Review SHOULD-2: `-v` deletes the instance's own named volume, but an adopted
+    # external one survives it (Compose never removes a volume it does not own; INSTALL
+    # section 6 and the backlog say what removes it instead). Both directions are
+    # asserted, so a rewrite back to the old "and an external one with it" goes red.
+    assert "never add `-v`" in install
+    assert "deletes the instance's own named ACME volume" in install
+    assert "An adopted external volume survives `down -v`" in install
+    assert "`ciu clean` can still remove the adopted volume" in install
+    assert "and an external one with it" not in install
     for stale in (
         "older than 4.0",
         "no in-place path",
