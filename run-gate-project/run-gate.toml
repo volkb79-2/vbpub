@@ -115,15 +115,21 @@ memory_swap = "16g"
 # the count is chosen by jobs = "auto" below.
 #
 # RW-23b (round-1 review S1) used to say NO `stall_timeout` here, because
-# `run_bare_host_lane` (this lane's own runner, `environment = "bare-host"`)
-# had no watch of any kind and the key was SILENTLY INERT. RG-320 (rev 75)
-# replaced that fact: the bare-host runner is watched now (`StreamWatch` over
-# its own output stream), and an ASSAY lane is still watched from its progress
-# file as before, so this lane is bounded by silence whether or not it declares
-# a number. It declares NONE deliberately: the 300 s default is what an
-# unmeasured lane gets, and `run-gate: stall bound 300s (source: auto)` says so
-# out loud. Raise it here with the measured reason if this sweep is ever
-# legitimately silent longer.
+# `run_bare_host_lane` had no watch of any kind and the key was SILENTLY INERT.
+# That paragraph was wrong about the lane as well as the runner: this lane is
+# `environment = "tester-unified"` (`mode = "ephemeral"`), so it runs in a
+# container, and it is `kind = "assay"` — `make_output_stream_watch` returns None
+# for a non-command kind, and its silence is judged from its PROGRESS FILE
+# (`ProgressWatch`), not from `StreamWatch` over a bare-host child's stdout.
+# What RG-320 (rev 75) actually changed here is disclosure and record, not the
+# bound: this lane has been armed with `max(300s, 3x its published cadence)`, or
+# 600 s between `command_finished` and the R2 `plan`, since RG-7. It still
+# declares NO `stall_timeout`, deliberately — the derivation above is what an
+# unmeasured assay lane gets, and the disclosure names that same RULE
+# (`run-gate: stall bound max(300s, 3x the published cadence), or 600s between
+# command_finished and the R2 plan (source: auto-derived) — ...`), so the printed
+# line, the record and the stop message name the same rule. Raise it here with
+# the measured reason if this sweep is ever legitimately silent longer.
 #
 # This lane's total-time bound is the hard `budget` below.
 [lanes.assay-r2]

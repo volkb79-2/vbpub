@@ -1058,15 +1058,20 @@ so the watch came first and no cap fell (that is P2).
 
 Three choices, each of which had a plausible alternative:
 
-- **The default is 300 s, and it names itself.** A lane that declares no
-  `stall_timeout` is armed with `DEFAULT_STALL_BOUND_SECONDS` rather than left
-  unbounded, because "declared nothing" used to mean "nothing stops it". The
-  rejected alternative — require a declaration — makes a first-ever lane
-  unwatchable at exactly the moment nobody knows its cadence. 300 s is the
+- **The default is 300 s for a COMMAND lane, and it names itself.** A lane that
+  declares no `stall_timeout` is armed with `DEFAULT_STALL_BOUND_SECONDS` rather
+  than left unbounded, because "declared nothing" used to mean "nothing stops
+  it". The rejected alternative — require a declaration — makes a first-ever
+  lane unwatchable at exactly the moment nobody knows its cadence. 300 s is the
   operator's answer to the design's Q4; it is never lower than `3x` a published
-  cadence, which is why assay lanes keep `max(300, 3x cadence)`. The disclosure
-  line and the run record both say `auto` or `declared`, so an operator can tell
-  a number they chose from one this tool chose.
+  cadence, which is why an ASSAY lane keeps `max(300, 3x cadence)` (or 600 s
+  between `command_finished` and the R2 `plan`) — the bound RG-7 already armed
+  it with, so for those lanes P1 changed the disclosure, not the number. The
+  disclosure line and the run record say `declared`, `auto`, or
+  `auto-derived` — the last for an assay lane, whose bound is a RULE and is
+  published as that rule (`ASSAY_AUTO_BOUND_RULE`) instead of as one number
+  invented before the lane ran, so an operator can tell a number they chose from
+  one this tool chose.
 - **One signal per kind, read from the declaration, never inferred per path.**
   A container command lane's silence is `docker logs -f`'s arrival age; an exec
   or bare-host command lane has no container log, so P1 gave it the arrival age

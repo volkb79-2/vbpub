@@ -135,7 +135,10 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 
    Every lane whose kind can be watched is bounded even if it declares
    nothing (RG-320): the bound is `stall_timeout` when you write one, else
-   300 s, and the disclosure line and the run record's `stall_bound` say which.
+   300 s for a COMMAND lane and, for an ASSAY lane, the `max(300s, 3x its
+   published cadence)` / 600 s-post-command rule it already had since RG-7 —
+   published as that RULE (`source: auto-derived`) rather than as a number.
+   The disclosure line and the run record's `stall_bound` say which.
    The signal differs by kind — an assay lane's progress file, a container
    command lane's `docker logs -f` arrivals, an exec or bare-host command
    lane's own stdout — and an AUTO bound (only) pauses while host memory PSI

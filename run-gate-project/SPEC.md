@@ -443,9 +443,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   lane's liveness signal, never total elapsed time; legal on BOTH `assay`
   and `command` lanes since RG-41 (rev 36 dropped the earlier assay-only
   restriction — a command lane's liveness signal is its own log stream,
-  `R-40f`), legal on BOTH `assay` and `command` lanes since RG-41 (rev 36
-  dropped the earlier assay-only restriction — a command lane's liveness
-  signal is its own log stream, `R-40f`), and since RG-320 (`R-40i`) a lane
+  `R-40f`), and since RG-320 (`R-40i`) a lane
   that declares NOTHING is still bounded (`DEFAULT_STALL_BOUND_SECONDS`
   300 s), with the number AND its source (`declared`/`auto`) disclosed and
   recorded as `stall_bound`; the signal depends on the lane kind
@@ -2485,7 +2483,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `_validate_lane` still refuses the key there by name rather than
     accepting an inert one. Nothing in this rule removes a cap: `budget`
     stays exactly as binding as it was (`R-40e`), and `budget = "unbounded"`
-    is P2's, not this one.
+    is P2's, not this one. **One limit is stated here rather than buried:**
+    the 300 s floor is NOT sound for a mutation shard whose SINGLE candidate
+    can legitimately run longer than that while writing no progress record —
+    Assay records a candidate once it finishes, so a slow candidate looks
+    exactly like a wedge until it ends. Until Assay emits a per-candidate
+    heartbeat (or an `expect_next_event_within_s` that covers one candidate),
+    such a shard can be reported STALLED by a bound nobody measured it against.
+    That is design package **P4** (`docs/design/no-time-budgets/DESIGN.md`
+    §7.1 and its P4 row), which arms a per-candidate no-progress watch; this
+    rule does not pre-empt it, and assay-side work is tracked there, not
+    here.
   - **`R-40g` Assay progress is scoped to the latest run header (RG-90,
     rev 59).** Assay appends a `run` event at the start of each invocation;
     Run-Gate considers candidate events only after the latest valid `run`

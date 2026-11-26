@@ -32337,6 +32337,12 @@ class TestExecLaneProfilingWiring:
 
     def test_exec_daemon_watch_verdict_stops_the_lane_as_infrastructure(
             self, tmp_path, monkeypatch):
+        """RG-320 fix round 1 (L1): stopping an exec lane's stall ends the
+        `docker exec` CLIENT, and `docker exec` disconnecting does not
+        reliably stop the in-container command (the `budget` wrapper says so).
+        The STALLED message must therefore SAY so — an operator who reads
+        "STALLED" and assumes the suite is gone will leave a survivor burning
+        a shared runner's CPU. Ending the survivor is RG-327."""
         class Watch:
             def drain(self):
                 return [("event", {"event": "verdict", "watch": {
@@ -32395,7 +32401,9 @@ class TestExecLaneProfilingWiring:
                                            "profile_error": None,
                                            "profile_ref": None})
         process = Process()
-        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"STALLED.*client was stopped; the command "
+                                 r"inside the runner may STILL BE RUNNING"):
             self._exec_lane_call(
                 tmp_path, monkeypatch, ["true"], {},
                 popen_factory=lambda *args, **kwargs: process)

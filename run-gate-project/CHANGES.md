@@ -11,18 +11,35 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Added
 - run-gate: a stall watch on every watchable lane kind (RG-320, P1 of
-  `docs/design/no-time-budgets/DESIGN.md`) — a lane declaring no
+  `docs/design/no-time-budgets/DESIGN.md`) — a COMMAND lane declaring no
   `stall_timeout` is armed with a 300 s bound, and the exec/bare-host command
   runners get their first liveness signal (`StreamWatch` over their own output
-  stream). The bound, its source (`declared`/`auto`) and the signal it judges
-  are disclosed on the line and recorded as `stall_bound`; an AUTO bound (only)
-  pauses under host memory/IO pressure. No cap is removed and
-  `budget = "unbounded"` is still refused (that is P2).
+  stream). An ASSAY lane keeps the auto bound it has had since RG-7
+  (`max(300s, 3x its published cadence)`, 600 s post-command); for it P1 changed
+  what is disclosed and recorded, not the number enforced. The bound, its source
+  (`declared`/`auto`/`auto-derived`) and the signal it judges are disclosed on
+  the line and recorded as `stall_bound`; an AUTO bound (only) pauses under host
+  memory/IO pressure. No cap is removed and `budget = "unbounded"` is still
+  refused (that is P2).
 
 ### Changed
 - run-gate: a container command lane is watched by `LogStreamWatch` whether or
   not it declares `stall_timeout` (RG-320), so every command lane is now bounded
   by silence rather than left unbounded when silent.
+- run-gate: `OutputTee.join()` now waits at most `OUTPUT_DRAIN_TIMEOUT_SECONDS`
+  (5 s) and DISCLOSES an incomplete drain, instead of blocking until EOF on a
+  lane's output pipe — a grandchild that outlived the terminated process group
+  could hold that pipe open and hang the lane past both its budget and its stall
+  stop (RG-320 fix round 1, L5).
+- run-gate: a `stall_timeout` on a NON-sequence lane can no longer be spelled
+  with an `_`-prefixed key: derived keys are an explicit set
+  (`DERIVED_LANE_KEYS`), accepted only on a lane Run-Gate itself has stamped, so
+  `_stall_timeout` / `_budget` / `_x` in a config are refused BY NAME again
+  (RG-320 fix round 1, M3) — the accepted-and-inert shape RG-32 exists to stop.
+- run-gate: an exec lane's STALLED message now says the in-container command may
+  still be running after the client is stopped (RG-327 tracks ending it); a
+  lane whose liveness signal cannot be resolved is disclosed as UNKNOWN rather
+  than named (`signal not resolvable for this lane`, RG-320 fix round 1, M2).
 - run-gate: RG-58's bare-host "`stall_timeout` is inert" load-time WARN and its
   matching `doctor` 2d line are RETIRED, not reworded — the bare-host runner has
   a watch now, so the message had outlived the fact it asserted.

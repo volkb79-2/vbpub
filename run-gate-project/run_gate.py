@@ -19866,7 +19866,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         raise GateBudgetExceeded(code,
                                  run_record.get("log_path") if run_record else None)
     if stalled is not None:
-        fail_infra(f"lane {lane_name!r} STALLED: {stalled}")
+        # RG-320 fix round 1 (L1): a stall on an exec lane stops the CLIENT,
+        # not the runner's inner command — `docker exec` disconnecting does not
+        # reliably stop the in-container child (the `budget` wrapper above says
+        # exactly that). The message must not leave an operator believing the
+        # suite is gone; ending the survivor itself is RG-327 (a marker-based
+        # stop on a SHARED runner is a design change, not a sentence).
+        fail_infra(f"lane {lane_name!r} STALLED: {stalled}. The `docker exec` "
+                   f"client was stopped; the command inside the runner may "
+                   f"STILL BE RUNNING (KNOWN_ISSUES RG-327)")
     return code
 
 

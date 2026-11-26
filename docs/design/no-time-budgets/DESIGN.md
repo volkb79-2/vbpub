@@ -51,9 +51,9 @@ ends a run with a verdict.
 | RG-2 | lane `budget` (exec lane) | `:18612-18618`, `:18894-18919`, `:19058-19060` | per lane | in-runner GNU `timeout --preserve-status --kill-after=5s <budget>s`, then client grace | same, `BUDGET_EXCEEDED` |
 | RG-3 | lane `budget` (bare-host lane) | `:19393-19404`, `:19514-19519` | per lane | `proc.wait(timeout=remaining)`, then `terminate_process_group` | same |
 | RG-4 | lane `budget` re-attach continuation | `:17171-17181` | inherits the original admission clock | `await_container` | same (may fire immediately on a re-attach of an over-budget container) |
-| RG-5 | `stall_timeout` (assay lane) | `:1649-1663`, `ProgressWatch._idle_bound :16388-16405` | absent = auto bound | `ProgressWatch` from the progress file | `fail_infra` → `ERROR`, exit 2 (`:17436-17440`) |
-| RG-6 | `stall_timeout` (command container lane) | `:1667-1671` (legal for both kinds), `LogStreamWatch :16631`, `:17221-17226` | absent = no watch | log-line arrival age | `ERROR` exit 2, "STALLED" (`:17436-17440`) |
-| RG-7 | auto idle bound (assay lane, no declared key) | `:731` (600 s post-command), `:16405` (`max(300, 3*cadence)`) | 300 s floor | `ProgressWatch(auto_bound=True)` armed on container/exec/bare-host lanes (`:17201`, `:18853`, `:19307`) | `ERROR` exit 2 |
+| RG-5 | `stall_timeout` (assay lane) | `:1741-1769` (legal on both kinds), `ProgressWatch._idle_bound :16961-16979` | absent = auto bound | `ProgressWatch` from the progress file | `fail_infra` → `ERROR`, exit 2 (`:18207`, `:19875`, `:20359`) |
+| RG-6 | `stall_timeout` (command container lane) | `:1741-1769` (legal for both kinds), `LogStreamWatch :17212-17401` | absent = 300 s auto bound (P1) | log-line arrival age | `ERROR` exit 2, "STALLED" (`:18207`) |
+| RG-7 | auto idle bound (assay lane, no declared key) | `:743` (600 s post-command), `:16979` (`max(300, 3*cadence)`), `:752` (the 300 s floor) | 300 s floor | `ProgressWatch(auto_bound=True)` armed on container/exec/bare-host lanes (`:17962`, `:18044`, `:19628`, `:20125`) | `ERROR` exit 2 |
 | RG-8 | host-mode `stall_timeout` | was `:1443-1453`, `:2102-2105` — **CLOSED by P1 (run-gate rev 75)** | — | `StreamWatch` over the runner's own output stream; the RG-58 WARN and `doctor` 2d are retired with the fact they asserted | none left: the key is no longer inert anywhere |
 | RG-9 | `lanes --check` outer/inner margin | `:217` (300 s), `:20133-20149` | 5 m | the check verb only | check finding (no run stops); `--strict` fails the estate-lint lane |
 | RG-10 | `lanes --check` canary attempt ≤ lane budget | `:20152-20168` | — | check verb only | finding |
@@ -148,7 +148,7 @@ Progress sources that exist today:
 |---|---|---|
 | assay lane (R0/R1/whole) | `--progress` phase stream, `command_running` heartbeat every 60 s (`README.md:648-660`) | `.assay/progress-<lane>.jsonl` |
 | assay R2 candidate | new plugin event, stdout/stderr file growth, process-tree CPU growth over 30 s; PSI-credit-gated idle clock (`liveness.py:1974-1990` eligibility, `:2050-2096` decision) | liveness side files |
-| container command lane | arrival age of `docker logs -f --timestamps` lines (`run_gate.py:16631-16740`) | log stream |
+| container command lane | arrival age of `docker logs -f --timestamps` lines (`run_gate.py:17212-17401`) | log stream |
 | exec command lane | since P1: arrival of the runner's own stdout chunks (`StreamWatch` over `OutputTee`) | output stream |
 | bare-host lane | `ProgressWatch` (assay) — and, as a command lane, since P1 its own stdout arrivals | progress file / output stream |
 
@@ -218,7 +218,7 @@ vocabulary — historical verdicts must keep parsing. Two additions, in this
 order:
 
 1. Stalls currently surface as `ERROR`/exit 2 via `fail_infra`
-   (`:17436-17440`, `:19062-19063`): a genuine stall is *not* an infrastructure
+   (`:18207`, `:19875`, `:20359`): a genuine stall is *not* an infrastructure
    failure and must not be reported as one. First package: keep exit 2 but
    carry a machine-readable reason token `lane-stalled` in the run record and
    the message.
@@ -521,7 +521,12 @@ exists, and a lane that declares `unbounded` without that watch is refused by
 name.
 
 **P1 has since shipped** (run-gate rev 75, package `P1` in §5): every watchable
-lane kind is armed with a stall bound, including the exec/bare-host command
-runners that had no signal at all. P1 removed no cap and does not accept
-`budget = "unbounded"` (that is P2), which is exactly the ordering the rule
-above demands. The rest of §5's packages are still design.
+lane kind is armed with a stall bound. What P1 newly ARMED is the *command*
+kinds — the exec/bare-host runners that had no signal at all (RG-41's
+`LogStreamWatch` already covered a container command lane), and the flat 300 s
+default now reaches every command lane that declares nothing. An **assay** lane
+was already armed before P1 with `ProgressWatch(auto_bound=True)` (RG-7: the
+`max(300, 3x cadence)` / 600 s post-command rule), so for those lanes P1 changed
+what is *disclosed and recorded*, not the number enforced. P1 removed no cap and
+does not accept `budget = "unbounded"` (that is P2), which is exactly the
+ordering the rule above demands. The rest of §5's packages are still design.

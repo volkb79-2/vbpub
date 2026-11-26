@@ -118,9 +118,13 @@ Rules of thumb:
    deliberately: assay's bound must fit inside whatever the outer caller
    allows (`CONSUMERS.md` "Consumer timeouts must not cut lanes short").
 6. **Every watchable lane is bounded, and the bound names its signal
-   (RG-320).** You do not have to declare anything: a lane that writes no
-   `stall_timeout` gets 300 s from `DEFAULT_STALL_BOUND_SECONDS`, and the run
-   prints `stall bound 300s (source: auto)` and records it as
+   (RG-320).** You do not have to declare anything: a `command` lane that writes
+   no `stall_timeout` gets 300 s from `DEFAULT_STALL_BOUND_SECONDS` and the run
+   prints `stall bound 300s (source: auto)`; an `assay` lane keeps the bound it
+   has had since RG-7 — `max(300s, 3x its published cadence)`, or 600 s between
+   `command_finished` and the R2 `plan` — printed as that RULE
+   (`source: auto-derived`), because the number it will use is not known before
+   the lane runs. Either way the run records it as
    `run_record["stall_bound"]`. What judges the silence depends on your
    lane's kind — assay → its progress file; container `command` → its
    `docker logs -f` arrivals; exec/`bare-host` `command` → its own stdout
