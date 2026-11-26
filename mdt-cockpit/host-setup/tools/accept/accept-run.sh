@@ -196,7 +196,13 @@ DAMON_STATE=$(printf '%s\n' "$setup_out" | sed -n 's/^damon_stat_enabled=//p' | 
 KDM=$(printf '%s\n' "$setup_out" | sed -n 's/^kdamond=//p' | tail -n 1)
 DAMON_OK=1
 # ---------- traps and the finish path (2.6) ----------
-START_UTC=$(now); T0=$SECONDS; TICKS=0; EXIT_RC=0; FINISHED=""; SLP=""
+# `EXIT_RC` starts EMPTY, never 0: finish() takes `EXIT_RC=${EXIT_RC:-$rc}` ("no verdict was decided yet, so this
+# exit's status is the run's"). A non-empty seed made `${EXIT_RC:-$rc}` ignore the real status of every refusal that
+# exits AFTER this trap is armed -- the unwritable-WAL refusal (exit 3) and the dummy-start, missing-scope and
+# placement-mismatch ones -- so a host-refusing run reported success. Empty means "take $rc"; the ladder still
+# decides its own status below (EXIT_RC=$VERDICT_RC) and the INT/TERM/HUP traps set theirs. (Both halves pinned by
+# ShellKitTests::test_an_unwritable_state_path_writes_no_cgroup_file.)
+START_UTC=$(now); T0=$SECONDS; TICKS=0; EXIT_RC=; FINISHED=""; SLP=""
 DEV_WRITTEN=$DEV_MAX_START; TIER_WRITTEN=$TIER_MAX_START
 DEV_MIN_WRITTEN=$DEV_MIN_START; TIER_MIN_WRITTEN=$TIER_MIN_START
 SCOPE=""; SCOPE_MIN_WRITTEN=0; SCOPE_ANON=0

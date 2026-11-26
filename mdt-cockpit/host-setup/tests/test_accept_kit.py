@@ -837,6 +837,15 @@ class ShellKitTests(F.ShellKitBase):
         self.assertEqual((self.cg / "dev.slice" / "dev-gates.slice" / "memory.min").read_text().strip(), str(self.TIER_MIN),
                          "no memory.min write happened without a WAL line")
         self.assertNotIn("kill -s USR1", " ".join(self.calls()), "no dummy was even signalled")
+        # The status above is the refusal's, never a trap seed: `EXIT_RC` is armed EMPTY, so finish()'s
+        # `EXIT_RC=${EXIT_RC:-$rc}` takes THIS exit's status. A non-empty seed (0) muted every refusal raised after the
+        # trap was armed -- this WAL header, the dummy start, the missing scope, the placement mismatch -- and the run
+        # exited 0: a false certification, and the single failure of the `mdt-cockpit smoke` lane at 292cc5c5e. Both
+        # halves are pinned: the behaviour above, and the seed itself, so a future `EXIT_RC=<value>` goes red here
+        # instead of silently turning every post-trap refusal into a success report.
+        src = (KIT / "accept-run.sh").read_text()
+        self.assertRegex(src, r"TICKS=0; EXIT_RC=;", "EXIT_RC must be armed empty or finish() ignores the real status")
+        self.assertNotRegex(src, r"TICKS=0; EXIT_RC=[^;]", "a seeded EXIT_RC makes ${EXIT_RC:-$rc} mute the real status")
 
     def test_a_probe_whose_row_went_missing_is_named_and_never_silently_passed(self) -> None:
         # 3.3/3.5: a probe that did not run is missing data, never a pass. 8 samples per step per probe (the old fixture
