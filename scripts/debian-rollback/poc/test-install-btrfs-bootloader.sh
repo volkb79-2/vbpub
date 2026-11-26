@@ -185,12 +185,8 @@ chmod 0750 "$PAYLOAD_TARGET/etc"
 
 PAYLOAD_USR_ARCHIVE=$WORK/payload-usr.tar
 PAYLOAD_ETC_ARCHIVE=$WORK/payload-etc.tar
-payload_members "$PAYLOAD_SOURCE/usr" "$PAYLOAD_TARGET/usr" |
-  tar -C "$PAYLOAD_SOURCE/usr" --null --owner=0 --group=0 --numeric-owner \
-    --no-recursion --files-from=- -cf "$PAYLOAD_USR_ARCHIVE"
-payload_members "$PAYLOAD_SOURCE/etc" "$PAYLOAD_TARGET/etc" |
-  tar -C "$PAYLOAD_SOURCE/etc" --null --owner=0 --group=0 --numeric-owner \
-    --no-recursion --files-from=- -cf "$PAYLOAD_ETC_ARCHIVE"
+files_payload_archive "$PAYLOAD_SOURCE/usr" "$PAYLOAD_TARGET/usr" "$PAYLOAD_USR_ARCHIVE"
+files_payload_archive "$PAYLOAD_SOURCE/etc" "$PAYLOAD_TARGET/etc" "$PAYLOAD_ETC_ARCHIVE"
 tar --numeric-owner -tvf "$PAYLOAD_USR_ARCHIVE" >"$WORK/payload.attrs"
 tar --numeric-owner -tvf "$PAYLOAD_ETC_ARCHIVE" >>"$WORK/payload.attrs"
 tar -tf "$PAYLOAD_USR_ARCHIVE" >"$WORK/payload.names"
@@ -229,7 +225,7 @@ done
 
 # Root ownership was verified above. For this non-root extraction fixture, use the lane uid/gid so --same-owner
 # exercises the production extractor without relying on the lane's ability to chown files to root.
-# shellcheck disable=SC2329 # sourced install_files_payload resolves this test override at runtime
+# shellcheck disable=SC2218,SC2329 # sourced install_files_payload resolves this test override dynamically
 files_payload_archive() { # files_payload_archive SOURCE TARGET ARCHIVE (test uid/gid)
   local source=$1 target=$2 archive=$3 uid gid
   uid=$(id -u)
@@ -245,6 +241,7 @@ PAYLOAD_ARCHIVE=""
 install_files_payload "$PAYLOAD_SOURCE/usr" "$PAYLOAD_TARGET/usr" 2>"$WORK/usr-extract-dry.err"
 contains shared-extract-argv "$WORK/usr-extract-dry.err" \
   "+ tar -C $PAYLOAD_TARGET/usr --same-owner -xf PAYLOAD_ARCHIVE"
+# shellcheck disable=SC2034 # sourced install_files_payload reads this for real archive extraction
 DRY=0
 install_files_payload "$PAYLOAD_SOURCE/usr" "$PAYLOAD_TARGET/usr"
 install_files_payload "$PAYLOAD_SOURCE/etc" "$PAYLOAD_TARGET/etc"

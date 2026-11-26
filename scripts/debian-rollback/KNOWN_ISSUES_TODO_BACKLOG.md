@@ -286,5 +286,5 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 
 **State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-22, DESIGN-CORE-SPLIT.md D27, poc/dr-serial.py
 
-**Problem.** P-22 plans `usr/local/sbin/dr-state-apt-hook`, but the current archive allow-list and guest digest path list do not include it. The archive refuses the file by name; if that refusal is removed without updating the guest list, the whole-`files/` manifest and guest digest differ.
+**Problem.** P-22 plans `usr/local/sbin/dr-state-apt-hook`, but the current archive allow-list and guest digest path list do not include it. The archive refuses it by name, while the whole-`files/` manifest includes it and the guest digest does not. As soon as the file exists, `verify_current_dr_state` and `_update_dr_state` report a digest mismatch even with the archive refusal still in place.
 **Wanted.** When adding the hook, extend the accepted archive paths and guest digest list together, then keep the offline equivalence test proving both sides hash the same file set.
