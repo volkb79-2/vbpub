@@ -554,7 +554,7 @@ def test_the_header_lists_merge_candidates_leases_live_runs_and_ages(tmp_path):
         "MERGE 1: plat-19m-acceptkit-20261125_020339 " + "2" * 9,
         "LEASES 1: v1001 v1001.slot1 pid 7",
         "LIVE 1: plat-19m-pi-y1 luna <50k",
-        "PEERS: core 6-24h",
+        "PEERS 1: core 6-24h",
         "HANDOVER own >24h",
     ]
 
