@@ -3019,6 +3019,38 @@ def test_a_second_manager_is_refused_for_the_whole_duration_of_every_command(tmp
     assert len(transport.refusals) % 4 == 0
 
 
+def test_a_killed_lock_holder_never_wedges_the_campaign(tmp_path):
+    plan = _plan(4)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    source = Path(__file__).resolve().parents[1] / "src"
+    holder = subprocess.Popen(
+        [
+            "python3", "-c",
+            "import fcntl, os, sys, time\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "print('held', flush=True)\n"
+            "time.sleep(60)\n",
+            str(tmp_path / "campaign.lock"),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(source)},
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(ContractError, match="is busy"):
+            manager.tick("campaign")
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+    assert manager.tick("campaign")["campaign"] == "campaign"
+    assert (tmp_path / "campaign.lock").exists()
+
+
 def test_lock_holder_exit_never_wedges_the_campaign(tmp_path):
     plan = _plan(4)
     clock = FakeClock()
