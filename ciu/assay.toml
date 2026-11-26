@@ -164,7 +164,10 @@ liveness = true
 # source snapshot independently of individual test mutations.
 mechanism = "import-break"
 target = "src/ciu/worktree.py"
-budget_per_attempt = "20m"
+# 45m, as on `ciu-gate` below (CIU-235): one attempt is two whole-suite runs and
+# a loaded host measured 1108 s for one, so 20m could end this lane's canary
+# before its probe started.
+budget_per_attempt = "45m"
 
 # Release gate (operator 2026-11-05: R0+R1+R3 gate a release; R2 mutation is async on the latest
 # release only). Same argv, environment, isolation and judge as [lanes.ciu] minus the R2 mutation

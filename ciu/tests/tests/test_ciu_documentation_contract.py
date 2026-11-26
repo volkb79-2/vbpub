@@ -469,7 +469,9 @@ def test_ciu_gate_canary_bound_covers_a_loaded_host_and_fits_its_enclosing_budge
     assert _duration_minutes(canary["budget_per_attempt"]) <= _duration_minutes(
         assay_lanes["ciu-gate"]["budget"]
     )
-    spec = _flat((REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8"))
+    # The R2 lane's canary runs the same suite, so it carries the same bound.
+    assert assay_lanes["ciu"]["judge"]["canary"]["budget_per_attempt"] == "45m"
+    spec =_flat((REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8"))
     assert "import-break canary" in spec
 
 
