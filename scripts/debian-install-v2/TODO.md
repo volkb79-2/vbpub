@@ -591,9 +591,11 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Proposal.** Keep that path and schema; add no second file. fleetd host facts stay the report channel (`geekbench_major`, `geekbench_version`, `baseline_score`, `single_core`, `multi_core`, `basis`). Consumers derive `cpu_factor = single_core / 1500`; the record does not store it. The record's `baseline_score` (2500) is the Geekbench reference machine and is not the 1500 unit.
 
+**Operator rules (2026-11-26).** Every score is recorded together with its Geekbench major version (the host record has `tool_major`; every place that copies or reports a score keeps the major beside it). A host without a record keeps its raw CPU values plus the processor model; no factor is invented for it.
+
 **Gaps.** The record can be missing: the `vanilla` profile turns the step off, a failed step is advisory (`warned`), and aarch64 has no verified pin. A record without scores (tool exit 4) needs `--resolve`; `multi_core` may be null. The GB7 stdout shape is unverified. An existing record is not re-measured by an install (readers reject a CPU model or vCPU mismatch).
 
-**Open decision.** Whether 1500 = 1.0 applies to both Geekbench 6 and 7 (cgprofile and cpu_benchmark treat majors as not comparable), and what a consumer does with no score (assay SPEC TIM-030; cgprofile CP-59).
+**Open decision.** Whether 1500 = 1.0 applies to both Geekbench 6 and 7 (cgprofile and cpu_benchmark treat majors as not comparable), assay SPEC TIM-030 and cgprofile CP-59 must follow the no-record rule above.
 
 **Close when.** The factor and the major rule are written in one consumer-facing spec, assay and fleetd use it, and every estate host has a record or a named reason for none.
 
