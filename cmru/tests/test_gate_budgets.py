@@ -7,9 +7,9 @@ does NOT decide:
   (`--check` only verifies that the named inner lane exists, so a miswire to
   another *existing* lane passes it),
 * cmru's canary policy: the R0/R1 lane deliberately has no canary while the
-  full lane does,
-* the mutation lane's command-level `--timeout-seconds` floor (a command lane's
-  argv is not inspected at all).
+  full lane does, and
+* the mutation commands do not impose an elapsed-time limit on a control or
+  candidate (a command lane's argv is not inspected by Run-Gate).
 
 The generic rules — outer budget >= inner budget + 5m (`--strict`) and the
 canary attempt budget <= the lane budget — are enforced by
@@ -20,7 +20,6 @@ tracked by the controller).
 from __future__ import annotations
 
 import copy
-import re
 import tomllib
 from pathlib import Path
 
@@ -72,32 +71,12 @@ def test_a_miswired_assay_lane_is_reported():
     assert any("not 'cmru'" in v for v in miswires(assay_doc, wrong))
 
 
-#: The known-good cmru suite took up to 825 s under concurrent lanes in the
-#: 2026-11-12 R2 rehearsal; the control/candidate timeout must leave headroom above it.
-MUTATION_TIMEOUT_FLOOR = 1800
-
-
-def mutation_timeout_seconds(gate_doc: dict) -> int | None:
-    command = "\n".join(gate_doc["lanes"]["mutation"]["argv"])
-    match = re.search(r"--timeout-seconds\s+([0-9]+)\b", command)
-    return int(match.group(1)) if match else None
-
-
-def test_the_mutation_lane_timeout_covers_the_known_good_suite():
+def test_mutation_lanes_have_no_elapsed_child_timeout_and_surface_inconclusive():
     _assay, gate = _load()
-    timeout = mutation_timeout_seconds(gate)
-    assert timeout is not None, "the mutation lane must declare --timeout-seconds"
-    assert timeout >= MUTATION_TIMEOUT_FLOOR
-
-
-def test_a_mutation_timeout_below_the_suite_is_reported():
-    _assay, gate = _load()
-    wrong = copy.deepcopy(gate)
-    wrong["lanes"]["mutation"]["argv"] = [
-        part.replace("--timeout-seconds 1800", "--timeout-seconds 120")
-        for part in wrong["lanes"]["mutation"]["argv"]
-    ]
-    assert mutation_timeout_seconds(wrong) == 120 < MUTATION_TIMEOUT_FLOOR
+    for name in ("mutation", "r2"):
+        command = "\n".join(gate["lanes"][name]["argv"])
+        assert "--timeout-seconds" not in command
+        assert gate["lanes"][name]["exit_map"]["2"] == "ERROR"
 
 
 def test_r2_has_no_elapsed_budget_and_declares_a_stall_watch():

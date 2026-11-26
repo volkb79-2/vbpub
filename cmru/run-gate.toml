@@ -223,10 +223,9 @@ io_sync = "relaxed"
 # to prepare one-shot origin facts before its aggregate mutation campaign.
 # An empty source diff writes skip evidence bound to candidate HEAD and emits
 # no tag; otherwise only an older skip record is removed before emitting it.
-# The 2026-11-12 R2 rehearsal measured full-suite controls from 368 to 825 s
-# under concurrent lanes (CPU PSI 20-43). The 1800 s control ceiling is 2.18x
-# the longest observed run; it is also the candidate-timeout floor, while
-# candidate_timeout_seconds scales further from the measured control.
+# No elapsed-time limit applies to the known-good control or candidates. The
+# tool ends a child only after its output stops growing, credits memory PSI
+# pauses within the R2 lane's 15m stall window, and records its bounds.
 [lanes.mutation]
 kind = "command"
 environment = "cmru-mutation"
@@ -240,7 +239,7 @@ set -euo pipefail
 cd {worktree}/cmru
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
-/opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
+PYTHONUNBUFFERED=1 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
 BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --skip-evidence)
 if [ -z "$BASE" ]; then
     echo "mutation: no changed source — explicit skip evidence recorded"
@@ -249,7 +248,7 @@ fi
 mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
     --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
-    --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 \
+    --base "$BASE" --max-mutants 10000 \
     --evidence .assay/mutation-cmru.json \
     --progress .assay/progress-mutation-cmru.jsonl \
     --require-candidates --resume -- \
@@ -259,6 +258,7 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
 ]
 budget = "7h"
 artifacts = [".assay/mutation-cmru.json"]
+exit_map = { "2" = "ERROR" }
 
 [lanes.mutation.resources]
 pids = 8192
@@ -285,7 +285,7 @@ cd {worktree}/cmru
 BASE="{base}"
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
-/opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
+PYTHONUNBUFFERED=1 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
 CMRU_ASSAY_BASELINE_FACTS=$(/opt/tester-venv/bin/python tools/local_baseline_facts.py --base "$BASE")
 export CMRU_ASSAY_BASELINE_FACTS
 BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --base "$BASE" --skip-evidence)
@@ -296,7 +296,7 @@ fi
 mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
     --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
-    --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 \
+    --base "$BASE" --max-mutants 10000 \
     --evidence .assay/mutation-cmru.json \
     --progress .assay/progress-mutation-cmru.jsonl \
     --require-candidates --resume "$@" -- \
@@ -307,6 +307,7 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
 ]
 stall_timeout = "15m"
 artifacts = [".assay/mutation-cmru.json"]
+exit_map = { "2" = "ERROR" }
 
 [lanes.r2.resources]
 pids = 8192
