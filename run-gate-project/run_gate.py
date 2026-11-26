@@ -83,9 +83,10 @@ __revision__ = 75  # rev 75: RG-320 -- a stall watch on every watchable lane kin
 # (`daemon_not_running_reason()`, shared with `doctor`'s own wording,
 # RG-59) instead of reusing "produced unparsable stdout" for two
 # structurally different failures. RG-58: a bare-host lane declaring
-# `stall_timeout` (silently inert -- no watch of any kind exists on that
-# runner) gets a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
-# never refuse), one shared reason function. RG-61: eight-item SPEC/
+# `stall_timeout` (silently inert -- no watch of any kind existed on that
+# runner) got a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
+# never refuse), one shared reason function. SUPERSEDED by RG-320 (rev 75):
+# that runner has a watch now, so both surfaces print NOTHING for it. RG-61: eight-item SPEC/
 # CONSUMERS/LANE-AUTHORING/backlog/usage() documentation drift sweep (new
 # `R-30c` for the doctor profiler check, R-30's status count, the stale
 # 0/0-as-100% narrative corrected to RW-5's actual SKIPPED design,

@@ -114,19 +114,18 @@ memory_swap = "16g"
 # 5-CPU ceiling. Assay may run up to jobs_max candidates concurrently (assay 11/12 B157);
 # the count is chosen by jobs = "auto" below.
 #
-# RW-23b (round-1 review S1): NO `stall_timeout` here. `stall_timeout`
-# (RG-36/R-40c) bounds SILENCE via `ProgressWatch`/`LogStreamWatch`, both of
-# which only exist for CONTAINER lanes (`await_container`'s log-stream poll,
-# gated on `kind == "command" and lane.get("stall_timeout")`, and the
-# progress-file watch built for container lanes) — `run_bare_host_lane`
-# (this lane's own runner, `environment = "bare-host"`) is a plain
-# `subprocess.run` with no watch of any kind, so a `stall_timeout` here was
-# SILENTLY INERT: a stuck-but-still-running mutation sweep was never
-# stopped early, contrary to what the config used to claim. This lane's
-# total-time bound is the hard `budget` below; `stall_timeout` separately
-# bounds silence while a container is running. After RG-43's host/bare-host
-# role swap, `stall_timeout` is live only on a lane with
-# `environment = "host"` (a real container), never on `bare-host`.
+# RW-23b (round-1 review S1) used to say NO `stall_timeout` here, because
+# `run_bare_host_lane` (this lane's own runner, `environment = "bare-host"`)
+# had no watch of any kind and the key was SILENTLY INERT. RG-320 (rev 75)
+# replaced that fact: the bare-host runner is watched now (`StreamWatch` over
+# its own output stream), and an ASSAY lane is still watched from its progress
+# file as before, so this lane is bounded by silence whether or not it declares
+# a number. It declares NONE deliberately: the 300 s default is what an
+# unmeasured lane gets, and `run-gate: stall bound 300s (source: auto)` says so
+# out loud. Raise it here with the measured reason if this sweep is ever
+# legitimately silent longer.
+#
+# This lane's total-time bound is the hard `budget` below.
 [lanes.assay-r2]
 kind = "assay"
 assay_lane = "r2"                   # -> assay.toml [lanes.r2]

@@ -83,8 +83,10 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    times; an exec or bare-host command lane's own output stream (RG-320 added
    that signal — before it, a host/exec lane's `stall_timeout` loaded clean and
    did nothing); a SEQUENCE lane has none of its own, its members carry the
-   watches (`SPEC` `R-40f`). An AUTO bound (only) pauses under host memory/IO
-   pressure, exactly as `ProgressWatch` does. The documented shape for
+   watches (`SPEC` `R-40i`). An AUTO bound (only) pauses under host memory/IO
+   pressure, exactly as `ProgressWatch` does
+   ([design rationale](docs/DESIGN-GUIDE.md#every-watchable-lane-is-bounded-and-which-signal-is-never-guessed-rg-320)).
+   The documented shape for
    a mutation lane is a generous assay `budget` +
    `judge.mutation.budget_per_candidate` + this key; progress output is
    scoped to the latest Assay run header, with rates and ETAs based on that
