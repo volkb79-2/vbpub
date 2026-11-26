@@ -1,0 +1,100 @@
+# thrashguard's gate lanes. One project, one crate, one workspace (design §5).
+#
+# WHY `tools/cargo-offline.sh` HERE AND NOT hostobs's: the image's crate cache
+# identity is the registry set of hostobs's lock, and its verifier compares
+# BOTH directions, so pointing it at a lock whose registry set is empty by
+# design reports a false mismatch. This wrapper keeps the closed check that
+# matters here -- "the lock names no registry/git package, so nothing needs
+# fetching" -- and sets CARGO_NET_OFFLINE before exec. Header:
+# thrashguard/tools/cargo-offline.sh.
+schema_version = 1
+
+# R0: the crate builds, its unit/integration tests pass, and the offline lock
+# check holds. R1: coverage of the judged source files at the declared floor
+# (the `r0-r1` lane in assay.toml; Run-Gate reaches the judge from the worktree's
+# own assay source, because `tester-unified-rust` has no pip by design).
+#
+# `network = "none"`, `--locked`, `--offline`: a dependency that is not in the
+# image cache fails loudly instead of being downloaded at gate time.
+[lanes.lint]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Formatting, Clippy with warnings denied, and rustdoc, offline."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/thrashguard
+tools/cargo-offline.sh fmt --all --check
+tools/cargo-offline.sh clippy --all-targets --locked --offline -- -D warnings
+RUSTDOCFLAGS="-D warnings" tools/cargo-offline.sh doc --no-deps --locked --offline
+python3 -I tools/check-lints.py .''',
+]
+clean_tree = true
+budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION; cargo prints nothing while one crate
+# compiles and no output cadence is measured, so the bound equals the budget.
+stall_timeout = "20m"
+
+[lanes.r0-r1]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Build and run the crate's tests offline (R0), then judge R0/R1 with Assay from the worktree's own source."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/thrashguard
+tools/cargo-offline.sh build --locked --offline
+tools/cargo-offline.sh nextest run --locked --offline --no-tests=fail
+tools/cargo-offline.sh test --doc --locked --offline
+tools/cargo-offline.sh clippy --all-targets --locked --offline -- -D warnings
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="{worktree}/assay/src:{worktree}/assay/analysis/src:{worktree}/libraries/cowtree/src"
+mkdir -p .assay .run-gate/assay-state
+rm -f -- .assay/verdict-r0-r1.json .assay/progress-r0-r1.jsonl
+rc=0
+python3 -m assay.cli run r0-r1 --file assay.toml \
+  --verdict-json .assay/verdict-r0-r1.json \
+  --resume --progress .assay/progress-r0-r1.jsonl \
+  --state-dir .run-gate/assay-state || rc=$?
+python3 -m assay.cli verify .assay/verdict-r0-r1.json \
+  || { echo "run-gate: the Assay verdict is not schema-conformant" >&2; exit 2; }
+if ! python3 -m assay.cli analyze verdict .assay/verdict-r0-r1.json \
+     --expected-commit "$(git rev-parse HEAD)" --format text \
+     > .assay/verdict-r0-r1-summary.txt; then
+  echo "run-gate: the Assay verdict does not describe this lane's HEAD" >&2
+  exit 2
+fi
+cat .assay/verdict-r0-r1-summary.txt
+python3 - .assay/verdict-r0-r1.json <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    claims = json.load(handle)["claims"]
+for claim in claims:
+    print("r0-r1 claim: %s %s %s" % (
+        claim["rigor"], claim["status"], claim.get("reason_code") or ""))
+    coverage = claim.get("coverage")
+    if not coverage:
+        continue
+    print("  lines %d/%d = %.4f%% over %d targets; branches %d/%d (%s)" % (
+        coverage["covered"], coverage["executable"], coverage["pct"],
+        coverage["considered"], coverage["branches_covered"],
+        coverage["branches_total"], coverage["branch_capability"]))
+    print("  uncovered lines listed as findings in %d file(s)"
+          % len(coverage["missing_lines"]))
+PY
+exit "$rc"''',
+]
+exit_map = { "0" = "PASS", "2" = "ERROR" }
+clean_tree = true
+budget = "30m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION; the cargo steps and the nested
+# `assay run` guarantee no output cadence and none is measured, so the bound
+# equals the budget.
+stall_timeout = "30m"
+artifacts = [".assay/verdict-r0-r1.json"]
+
+# No R2 lane yet: no mutation campaign has been designed or run for this crate
+# (backlog TG-5). It is deliberately NOT declared here rather than declared and
+# left red, so `run-gate lanes --check` cannot read a missing lane as evidence.
