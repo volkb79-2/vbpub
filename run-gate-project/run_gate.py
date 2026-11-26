@@ -18431,8 +18431,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     identity = lane_container_identity(repo, project_dir, lane_name,
                                        head_commit(worktree))
     name = identity["name"]
-    argv = [docker, "run", "-d", "--oom-score-adj",
-            str(LANE_CONTAINER_OOM_SCORE_ADJ), "--name", name, "--init",
+    # `run -d --name <name>` stays the head of the argv; new flags go after it.
+    argv = [docker, "run", "-d", "--name", name, "--init",
+            "--oom-score-adj", str(LANE_CONTAINER_OOM_SCORE_ADJ),
             "--cgroup-parent", slice_name,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}"]
     network, network_source = resolve_network_setting(lane, env)
