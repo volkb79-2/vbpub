@@ -22317,11 +22317,31 @@ class TestStreamWatch:
     def test_the_pause_is_capped_so_a_wedged_lane_still_stalls(self):
         """`PRESSURE_PAUSE_MAX_SECONDS` bounds the credit: a lane that is
         genuinely wedged must not be shielded forever by a host that is
-        permanently loaded."""
+        permanently loaded.
+
+        Fix round 1 (M4): the pause has to be OBSERVED for the cap to be
+        measurable at all. The previous shape advanced the clock
+        `PRESSURE_PAUSE_MAX_SECONDS + 301` BEFORE the first poll, so the pause
+        only opened at that poll and credited nothing — the test then passed
+        identically with an INFINITE cap, pinning "a lane with no output
+        stalls" rather than "the credit is capped"."""
         psi = [7.0]
         watch, _tee, clock, _psi = self._watch(300, auto_bound=True, psi=psi)
-        clock.advance(run_gate.PRESSURE_PAUSE_MAX_SECONDS + 301)
-        assert watch.poll() is not None
+        cap = run_gate.PRESSURE_PAUSE_MAX_SECONDS
+        assert watch.poll() is None        # pressure seen: PAUSE OPENS here
+        clock.advance(cap / 2)
+        assert watch.poll() is None        # open; elapsed == the credit so far
+        clock.advance(cap / 2)
+        assert watch.poll() is None        # elapsed == cap; age still 0
+        # The host stays loaded for THREE times the cap. Only `cap` of that
+        # pause is ever credited, so the age reaches 2 * cap - cap = cap and
+        # the lane is stopped, naming the age it was judged on. (Without the
+        # `min(paused, PRESSURE_PAUSE_MAX_SECONDS)` cap the whole 2 * cap
+        # pause is credited, the age stays 0 and this assertion fails.)
+        clock.advance(cap)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert f"has written nothing for {int(cap)}s" in stalled
 
     def test_a_broken_pressure_reader_is_unknown_not_high(self):
         def boom():
@@ -22330,6 +22350,31 @@ class TestStreamWatch:
         watch = run_gate.StreamWatch(FakeTee(clock), 300, "unit", clock, boom,
                                      auto_bound=True)
         assert watch._pressure_high() is False
+
+    def test_a_chatty_lane_is_judged_on_arrivals_not_on_wall_time(self):
+        """Fix round 1 (M5): the end-to-end chatty test used to rely on a
+        WALL-CLOCK margin (8 echoes of 0.2 s under a 1 s bound, i.e. 5x). Five
+        ticks is not a structural margin on a host that overcommits by design:
+        one delayed echo would redden the product for behaving correctly. The
+        property that test is really about is here, with no wall time at all
+        — every arrival restarts the clock, however the ticks are spaced.
+        """
+        watch, tee, clock, _ = self._watch(300)
+        # Ten arrivals, each arriving just short of the bound, so a watch
+        # that measured TOTAL elapsed time (or that failed to credit an
+        # arrival) would stall on the second call at the latest.
+        for _ in range(10):
+            tee.chunk()
+            clock.advance(299)
+            assert watch.poll() is None
+        assert tee.chunks == 10
+        # …and, with no further arrival, it does stall, from the LAST
+        # arrival rather than from the watch's construction.
+        clock.advance(2)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "has written nothing for 301s" in stalled
+        assert "10 chunk(s) of output" in stalled
 
 
 class TestStallEndToEndBareHostLane:
@@ -22386,13 +22431,24 @@ class TestStallEndToEndBareHostLane:
 
     def test_a_chatty_bare_host_lane_is_never_stopped(
             self, tmp_path, monkeypatch, capsys):
+        """Fix round 1 (M5): the margin here is STRUCTURAL, not temporal.
+
+        The lane declares a 10 s bound and echoes every 0.2 s, so a false
+        STALL needs a single 10 s gap between two echoes — 50x the tick —
+        rather than the 1 s bound this test used to carry, where python
+        start-up or a scheduler stall under a loaded host could redden a
+        correct product (the estate's "a test result must not depend on host
+        load" rule; the estate overcommits by design). The wall-clock
+        arithmetic itself is pinned by `TestStreamWatch` on a `FakeClock`,
+        and this test keeps its own job: the output really PASSES THROUGH
+        (the watch times arrivals; it must never capture-and-replay)."""
         with _test_child_scope():
             with alarm_guard("RG-320 chatty bare-host lane", seconds=90):
                 repo, proj = self._proj(
                     tmp_path,
                     'argv = ["bash", "-c", '
                     '"for i in $(seq 1 8); do echo tick $i; sleep 0.2; done"]',
-                    'stall_timeout = "1s"')
+                    'stall_timeout = "10s"')
                 monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
                 monkeypatch.chdir(proj)
                 monkeypatch.setattr(sys, "argv", ["run-gate"])
@@ -35283,7 +35339,15 @@ class TestGateLogAndLockCleanupOracles:
         tee.proc = SimpleNamespace(stdout=Stream(["plain", b"\xff", b""]))
         tee.path = log
         tee.error = None
-        tee.thread = SimpleNamespace(join=lambda: None)
+        # RG-320 (P1): `_copy` now also records the arrival facts
+        # `StreamWatch` times, so an `__new__`-built tee has to carry them
+        # (a fake clock, since this test drives no real time).
+        tee.chunks = 0
+        tee.last_chunk_at = None
+        tee.clock = lambda: 1000.0
+        tee.on_chunk = None
+        tee.thread = SimpleNamespace(join=lambda *_a, **_kw: None,
+                                            is_alive=lambda: False)
         terminal = io.StringIO()
         with contextlib.redirect_stdout(terminal):
             tee._copy()
@@ -35295,17 +35359,69 @@ class TestGateLogAndLockCleanupOracles:
         no_stream.proc = SimpleNamespace(stdout=None)
         no_stream.path = None
         no_stream.error = None
-        no_stream.thread = SimpleNamespace(join=lambda: None)
+        no_stream.chunks = 0
+        no_stream.last_chunk_at = None
+        no_stream.clock = lambda: 1000.0
+        no_stream.on_chunk = None
+        no_stream.thread = SimpleNamespace(join=lambda *_a, **_kw: None,
+                                            is_alive=lambda: False)
         no_stream._copy()
 
         broken = run_gate.OutputTee.__new__(run_gate.OutputTee)
         broken.proc = SimpleNamespace(stdout=Stream([RuntimeError("pipe broke")]))
         broken.path = None
         broken.error = None
-        broken.thread = SimpleNamespace(join=lambda: None)
+        broken.chunks = 0
+        broken.last_chunk_at = None
+        broken.clock = lambda: 1000.0
+        broken.on_chunk = None
+        broken.thread = SimpleNamespace(join=lambda *_a, **_kw: None,
+                                            is_alive=lambda: False)
         broken._copy()
         broken.join()
         assert "output log capture stopped: pipe broke" in capsys.readouterr().err
+
+    def test_an_output_drain_that_never_finishes_is_bounded_and_disclosed(
+            self, monkeypatch, capsys):
+        """Fix round 1 (L5): `OutputTee.join()` used to block until EOF on
+        the lane's pipe, which a GRANDCHILD that left the terminated process
+        group (`setsid`, a daemon, a lingering `docker` client) can hold open
+        forever — so a lane whose `budget` expired and whose stall watch had
+        ALREADY stopped it still never returned. The drain is bounded now and
+        an incomplete one is disclosed instead of silently proceeding; both
+        halves are asserted here, on a thread stub that never drains (so the
+        verdict, not a wall-clock measurement, is what the test judges)."""
+        class WedgedThread:
+            def __init__(self):
+                self.timeouts = []
+
+            def join(self, timeout=None):
+                # Returns immediately: this stub models a pipe that never
+                # reaches EOF, so the drain cannot finish.
+                self.timeouts.append(timeout)
+
+            def is_alive(self):
+                return True
+
+        tee = run_gate.OutputTee.__new__(run_gate.OutputTee)
+        tee.error = None
+        tee.thread = WedgedThread()
+        assert run_gate.OUTPUT_DRAIN_TIMEOUT_SECONDS == 5.0
+        monkeypatch.setattr(run_gate, "OUTPUT_DRAIN_TIMEOUT_SECONDS", 0.01)
+        # The module constant is READ AT CALL TIME (a `timeout=` default in
+        # the signature would have frozen 5.0 at import and this test would
+        # silently prove nothing).
+        assert tee.join() is False
+        assert tee.thread.timeouts == [0.01]
+        assert ("run-gate: WARNING: output drain did not finish within 0.01s"
+                in capsys.readouterr().err)
+        # A drain that DOES finish is silent and says so in its return value.
+        done = run_gate.OutputTee.__new__(run_gate.OutputTee)
+        done.error = None
+        done.thread = SimpleNamespace(join=lambda *_a, **_kw: None,
+                                      is_alive=lambda: False)
+        assert done.join() is True
+        assert capsys.readouterr().err == ""
 
     def test_lane_log_and_container_log_failures_are_best_effort(
             self, tmp_path, monkeypatch, capsys):
@@ -35621,7 +35737,7 @@ class TestLaneDeadlineEnforcement:
         monkeypatch.setattr(run_gate, "print_host_pressure_line", lambda *_a: None)
         monkeypatch.setattr(run_gate, "print_profile_session_line", lambda *_a: None)
         monkeypatch.setattr(run_gate, "OutputTee", lambda *_a, **_kw:
-                            SimpleNamespace(join=lambda: None))
+                            SimpleNamespace(join=lambda *_a, **_kw: True))
         monkeypatch.setattr(run_gate, "_self_rss_bytes", lambda: 100)
         monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
 
@@ -36309,7 +36425,12 @@ class TestFinalChangedLineCoverageOracles:
         tee.proc = SimpleNamespace(stdout=Stream())
         tee.path = None
         tee.error = None
-        tee.thread = SimpleNamespace(join=lambda: None)
+        tee.chunks = 0
+        tee.last_chunk_at = None
+        tee.clock = lambda: 1000.0
+        tee.on_chunk = None
+        tee.thread = SimpleNamespace(join=lambda *_a, **_kw: None,
+                                            is_alive=lambda: False)
         tee._copy()
         assert capsys.readouterr().out == "visible without archive"
 
@@ -36995,7 +37116,7 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "print_host_pressure_line", lambda *_args: None)
         monkeypatch.setattr(run_gate, "print_profile_session_line", lambda *_args: None)
         monkeypatch.setattr(run_gate, "OutputTee", lambda *_args, **_kwargs:
-                            SimpleNamespace(join=lambda: None))
+                            SimpleNamespace(join=lambda *_a, **_kw: True))
         monkeypatch.setattr(run_gate, "_self_rss_bytes", lambda: 100)
         monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
 

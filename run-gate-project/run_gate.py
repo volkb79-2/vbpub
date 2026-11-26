@@ -223,6 +223,16 @@ LANE_KILL_GRACE_SECONDS = 5
 # container alive. Docker logs normally replay quickly; 60 s leaves ample room
 # for a large log while still reaching `rm -f` when the daemon is wedged.
 CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS = 60
+# RG-320 fix round 1 (L5): the drain `OutputTee.join()` waits for a child's
+# last chunks must be BOUNDED, for the same reason `LogStreamWatch.join()` is
+# (RG-41 round 1). A local sweep at `OutputTee`'s drain is not enough: a
+# GRANDCHILD that left the terminated lane's process group (`setsid`, a daemon,
+# a `docker` client that outlives its caller) keeps the write end of the lane's
+# pipe open, so `read()` never returns EOF and an unbounded join would hang the
+# lane after its budget and its stall watch had both already ended it. Normal
+# drains finish in milliseconds; this only bounds the pathological case, and the
+# join DISCLOSES when it did not finish rather than silently dropping output.
+OUTPUT_DRAIN_TIMEOUT_SECONDS = 5.0
 FAILED_EVIDENCE_KEEP = 10
 FAILED_NODE_LIMIT = 5
 
@@ -8752,11 +8762,35 @@ class OutputTee:
         except BaseException as exc:
             self.error = exc
 
-    def join(self) -> None:
-        self.thread.join()
+    def join(self, timeout: float | None = None) -> bool:
+        """Wait for this reflector to drain what the child last wrote, and
+        return whether the drain actually FINISHED.
+
+        Fix round 1 (L5): `thread.join()` with no timeout is only bounded by
+        EOF on the lane's pipe, and a grandchild that left the process group
+        (`setsid`, a daemon, a `docker` client) can hold that pipe open after
+        the lane itself has been terminated — so the lane would never return,
+        no matter that its `budget` expired or that its stall watch already
+        stopped it. `OUTPUT_DRAIN_TIMEOUT_SECONDS` bounds the wait and an
+        incomplete drain is DISCLOSED (a trailing chunk may still be in flight),
+        exactly as `LogStreamWatch.join()` already does for the container case.
+
+        The timeout is resolved at CALL time rather than defaulted in the
+        signature, so the module constant is the one place the value lives
+        (a `timeout=OUTPUT_DRAIN_TIMEOUT_SECONDS` default would freeze the
+        value at import time and quietly ignore any later change)."""
+        if timeout is None:
+            timeout = OUTPUT_DRAIN_TIMEOUT_SECONDS
+        self.thread.join(timeout)
+        drained = not self.thread.is_alive()
+        if not drained:
+            print(f"{PROG}: WARNING: output drain did not finish within "
+                  f"{timeout}s — a trailing chunk may still be in flight",
+                  file=sys.stderr, flush=True)
         if self.error is not None:
             print(f"{PROG}: WARNING: output log capture stopped: {self.error}",
                   file=sys.stderr, flush=True)
+        return drained
 
 
 class StreamWatch:
