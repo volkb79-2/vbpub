@@ -645,6 +645,84 @@ def open_job_event_writer(event_file: str, job_id: str, lane: str,
     return JobEventWriter(fd, path, job_id, lane)
 
 
+def mount_flag_sources(flags: list[str]) -> list[str]:
+    """Read host sources from the Docker bind-mount flag shapes we emit."""
+    sources: list[str] = []
+    index = 0
+    while index < len(flags):
+        token = flags[index]
+        if token in ("-v", "--volume") and index + 1 < len(flags):
+            source = flags[index + 1].split(":", 1)[0]
+            if os.path.isabs(source):
+                sources.append(source)
+            index += 2
+            continue
+        if token == "--mount" and index + 1 < len(flags):
+            spec = flags[index + 1]
+            source = next((part.split("=", 1)[1]
+                           for part in spec.split(",")
+                           if part.startswith(("source=", "src="))), None)
+            if source is not None and os.path.isabs(source):
+                sources.append(source)
+            index += 2
+            continue
+        if token.startswith("--mount="):
+            spec = token.split("=", 1)[1]
+            source = next((part.split("=", 1)[1]
+                           for part in spec.split(",")
+                           if part.startswith(("source=", "src="))), None)
+            if source is not None and os.path.isabs(source):
+                sources.append(source)
+        index += 1
+    return sources
+
+
+def inspect_container_mount_sources(docker: str, container: str) -> list[str]:
+    """Return the host-side sources mounted into a persistent runner."""
+    result = subprocess.run(
+        [docker, "inspect", "--type", "container", "--format",
+         "{{range .Mounts}}{{println .Source}}{{end}}", container],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or
+                  f"exit {result.returncode}").strip()
+        fail_infra(f"cannot inspect host mount sources of container "
+                   f"{container!r}: {detail}")
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def inspect_container_id_best_effort(docker: str,
+                                     container: str) -> str | None:
+    """Return Docker's reported full id, or None without guessing."""
+    try:
+        result = subprocess.run(
+            [docker, "inspect", "--type", "container", "--format",
+             "{{.Id}}", container], capture_output=True, text=True,
+            timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    container_id = result.stdout.strip()
+    return container_id or None
+
+
+def emit_lane_started(container_id: str | None, image_id: str | None,
+                      adopted: bool, *, reason: str | None = None,
+                      lane: str | None = None) -> None:
+    """Write the lane's container identity before its output is relayed."""
+    writer = _ACTIVE_JOB_EVENT_WRITER
+    if writer is None:
+        return
+    fields = {"container_id": container_id, "image_id": image_id,
+              "adopted": bool(adopted)}
+    if reason is not None:
+        fields["reason"] = reason
+    elif container_id is None:
+        fields["reason"] = "container-id-unavailable"
+    writer.emit("lane-started", lane=lane, **fields)
+
+
 def operation_result(code: int, reason: str) -> LaneResult:
     """Map non-lane CLI operations to the same closed process table."""
     if code == 0:
@@ -18267,6 +18345,24 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
              f"but {worktree} is now at {head} — run-gate will not attach "
              f"that run to this commit, and will not start a second "
              f"container for the same lane. {remedy}")
+    if _ACTIVE_JOB_EVENT_WRITER is not None:
+        mount_sources = inspect_container_mount_sources(docker, name)
+        validate_job_event_destination(
+            str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
+            mount_sources=mount_sources)
+        container_id = state.get("id") if isinstance(state, dict) else None
+        if container_id and recorded_id == container_id:
+            image_id, image_error = inspect_container_image_id(
+                docker, container_id)
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(container_id, image_id, True,
+                              reason=reason, lane=lane_name)
+        else:
+            emit_lane_started(
+                None, None, True,
+                reason="inflight-container-identity-unverified",
+                lane=lane_name)
     # A lost container or a `--fresh` discard starts under today's config and
     # must keep the fresh run's mode. Arm the recorded identity only after
     # this call has committed to following, re-attaching to, or collecting
@@ -18585,6 +18681,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         else f"this lane's mount set (including ${EXTRA_MOUNT_ENV_VAR})")
     judge_flags = judge_mount_flags(lane, worktree)
     mounts += judge_flags
+    event_writer = _ACTIVE_JOB_EVENT_WRITER
+    if event_writer is not None:
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_flag_sources(mounts))
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
@@ -18725,6 +18826,21 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if started.returncode != 0:
         if ksm_monitor is not None:
             report_ksm_measurement(ksm_monitor, run_record)
+        if event_writer is not None:
+            container_id = ((started.stdout or "").strip().splitlines()
+                            or [None])[-1]
+            if container_id:
+                image_id, image_error = inspect_container_image_id(
+                    docker, container_id)
+                reason = (f"image-id-unavailable: {image_error}"
+                          if image_id is None else None)
+                emit_lane_started(container_id, image_id, False,
+                                  reason=reason, lane=lane_name)
+            else:
+                emit_lane_started(
+                    None, None, False,
+                    reason="docker-run-failed-before-container-id",
+                    lane=lane_name)
         # RG-12: a failed `docker run` may still have created the container
         # (pull/entrypoint failures) — preserve its logs, then show a REAL
         # tail of stderr instead of only the last line.
@@ -18735,8 +18851,28 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
         fail_infra(f"docker run failed (exit {started.returncode}); last "
                    f"stderr line(s):\n{tail}{where}")
+    started_container_id = ((started.stdout or "").strip().splitlines()
+                            or [None])[-1]
+    if event_writer is not None and not started_container_id:
+        started_container_id = inspect_container_id_best_effort(docker, name)
+    image_id = image_error = None
+    if isinstance(selection, dict) or event_writer is not None:
+        image_target = (started_container_id
+                        if event_writer is not None and started_container_id
+                        else name)
+        image_id, image_error = inspect_container_image_id(docker, image_target)
+    if event_writer is not None:
+        if started_container_id:
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(started_container_id, image_id, False,
+                              reason=reason, lane=lane_name)
+        else:
+            emit_lane_started(
+                None, None, False,
+                reason="docker-run-succeeded-without-container-id",
+                lane=lane_name)
     if isinstance(selection, dict):
-        image_id, image_error = inspect_container_image_id(docker, name)
         selection["image_id"] = image_id
         selection["image_id_status"] = "observed" if image_id else "unavailable"
         selection["image_id_error"] = image_error
@@ -18756,7 +18892,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # this invocation did not create).
         "runner": "container",
         "container": name,
-        "container_id": (started.stdout.strip().splitlines() or [""])[-1],
+        "container_id": started_container_id or "",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         # The epoch is stored beside the ISO stamp deliberately: human output
         # wants the stamp, elapsed time and RW-3's duration want a number,
@@ -19023,10 +19159,34 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         fail_infra(f"docker ps failed for exec-mode preflight: {detail[0]}")
     names = set(running.stdout.strip().splitlines())
     if name not in names:
+        if _ACTIVE_JOB_EVENT_WRITER is not None:
+            emit_lane_started(
+                None, None, False, reason="exec-environment-not-running",
+                lane=lane_name)
         raise GateNotRunError(
             "environment-down",
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
+    if _ACTIVE_JOB_EVENT_WRITER is not None and not dry_run:
+        mount_sources = inspect_container_mount_sources(docker, name)
+        validate_job_event_destination(
+            str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
+            mount_sources=mount_sources)
+        inspected = container_state(docker, name)
+        container_id = inspected.get("id") if inspected else None
+        if not container_id:
+            container_id = inspect_container_id_best_effort(docker, name)
+        if container_id:
+            image_id, image_error = inspect_container_image_id(docker, name)
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(container_id, image_id, True,
+                              reason=reason, lane=lane_name)
+        else:
+            emit_lane_started(
+                None, None, True,
+                reason="exec-runner-inspect-returned-no-container-id",
+                lane=lane_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
                               state_root=env.get("state_root"),
@@ -21898,6 +22058,8 @@ def _dispatch(argv: list[str] | None = None, *,
             if assay_selective:
                 fail("--reuse-from, --rejudge and --rejudge-outcome apply to "
                      "one assay member, not a sequence")
+            emit_lane_started(None, None, False,
+                              reason="composite-sequence-has-no-container")
             return _dispatch_sequence(
                 args.lane, lane, args, lanes, cfg, cfg_path, central,
                 central_path, cfg_sha256, central_cfg_sha256, project_dir,
@@ -22264,6 +22426,8 @@ def _dispatch(argv: list[str] | None = None, *,
             if not env:  # built-in 'bare-host' — 'host' now resolves to a
                          # non-empty synthetic env and falls through to
                          # run_container_lane() below like any named env.
+                emit_lane_started(None, None, False,
+                                  reason="bare-host-lane-has-no-container")
                 disclose_r2_jobs(args.lane, r2_jobs_selection)
                 budget_started_epoch, budget_started_monotonic = admit_now()
                 budget_deadline = (budget_started_monotonic

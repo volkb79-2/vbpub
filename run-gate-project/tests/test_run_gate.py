@@ -43125,3 +43125,239 @@ class TestHistoryStoreReadableByTheReleasedReader:
         released.finish_run_record(entry, exit_code=0)
         assert released.record_invocation(proj, repo, entry, 10)
         assert len(read_store(proj)["lanes"]["suite"]["history"]) >= 3
+
+
+class TestJobEventOptionsAndWriter:
+    def test_job_event_flags_are_paired_and_job_id_grammar_is_bounded(self):
+        assert run_gate.JOB_ID_MAX_LENGTH == 128
+        run_gate.validate_job_event_options(None, None)
+        for event_file, job_id in (
+                ("/tmp/events.jsonl", None), (None, "job-1"),
+                ("/tmp/events.jsonl", ""),
+                ("/tmp/events.jsonl", "-bad"),
+                ("/tmp/events.jsonl", "bad/id"),
+                ("/tmp/events.jsonl", "x" * 129)):
+            with pytest.raises(run_gate.GateError):
+                run_gate.validate_job_event_options(event_file, job_id)
+
+    def test_event_destination_refuses_relative_missing_symlink_and_nonregular(
+            self, tmp_path):
+        with pytest.raises(run_gate.GateError, match="absolute path"):
+            run_gate.validate_job_event_destination("relative.jsonl")
+        with pytest.raises(run_gate.GateError, match="parent"):
+            run_gate.validate_job_event_destination(
+                str(tmp_path / "missing" / "events.jsonl"))
+        target = tmp_path / "target.jsonl"
+        target.write_text("")
+        symlink = tmp_path / "events-link.jsonl"
+        symlink.symlink_to(target)
+        with pytest.raises(run_gate.GateError, match="symlink"):
+            run_gate.validate_job_event_destination(str(symlink))
+        with pytest.raises(run_gate.GateError, match="regular file"):
+            run_gate.validate_job_event_destination(str(tmp_path))
+
+    def test_event_destination_refuses_checkout_and_mounted_paths(self,
+                                                                  tmp_path):
+        repo = tmp_path / "repo"
+        worktree = repo / ".worktrees" / "lane"
+        worktree.mkdir(parents=True)
+        with pytest.raises(run_gate.GateError, match="protected checkout"):
+            run_gate.validate_job_event_destination(
+                str(worktree / "events.jsonl"), worktree=worktree, repo=repo)
+        mount = tmp_path / "host-mount"
+        mount.mkdir()
+        with pytest.raises(run_gate.GateError, match="mounted by this lane"):
+            run_gate.validate_job_event_destination(
+                str(mount / "events.jsonl"), mount_sources=[str(mount)])
+
+    def test_writer_appends_one_json_line_and_enforces_mode_0600(self,
+                                                                 tmp_path):
+        path = tmp_path / "events.jsonl"
+        path.write_text("previous\n")
+        path.chmod(0o644)
+        writer = run_gate.open_job_event_writer(
+            str(path), "job.1", "suite")
+        try:
+            writer.emit("lane-started", container_id=None, image_id=None,
+                        adopted=False, reason="bare-host")
+        finally:
+            writer.close()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        lines = path.read_text().splitlines()
+        assert lines[0] == "previous"
+        assert json.loads(lines[1]) == {
+            "api": "fleet-host-agent/1", "event": "lane-started",
+            "job_id": "job.1", "lane": "suite", "container_id": None,
+            "image_id": None, "adopted": False, "reason": "bare-host",
+        }
+
+
+class TestJobEventContainerEvents:
+    @staticmethod
+    def _fake_event_docker(tmp_path, monkeypatch, container_id, image_id):
+        shim_dir = tmp_path / "event-docker"
+        shim_dir.mkdir()
+        calls = tmp_path / "event-docker-calls.log"
+        shim = shim_dir / "docker"
+        shim.write_text(textwrap.dedent(f"""\
+            #!/bin/sh
+            printf '%s\\037' "$@" >> "{calls}"
+            printf '\\n' >> "{calls}"
+            case "$1" in
+              run)
+                case "$*" in
+                  *"run-gate.lane=suite"*)
+                    printf '%s\\n' "{container_id}"
+                    ;;
+                  *)
+                    printf '%s\\n' "{'c' * 64}"
+                    ;;
+                esac
+                ;;
+              inspect)
+                case "$*" in
+                  *"{{{{.Image}}}}"*) printf '%s\\n' "{image_id}" ;;
+                  *"{{{{.Id}}}}"*) printf '%s\\n' "{container_id}" ;;
+                  *"{{{{.State.Status}}}}"*)
+                    printf '%s\\n' 'running|0|2026-01-01T00:00:01Z|2026-01-01T00:00:00Z|{container_id}'
+                    ;;
+                  *"{{{{range .Mounts}}}}"*) : ;;
+                esac
+                ;;
+              wait) printf '0\\n' ;;
+              logs) printf 'fake-container-output\\n' ;;
+              rm) : ;;
+            esac
+            exit 0
+        """))
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+        monkeypatch.setenv("PATH", f"{shim_dir}:{os.environ['PATH']}")
+        return calls
+
+    def test_ephemeral_event_uses_docker_reported_identity_and_labels(
+            self, tmp_path, monkeypatch, capsys):
+        container_id = "a" * 64
+        image_id = "sha256:" + "b" * 64
+        calls = self._fake_event_docker(
+            tmp_path, monkeypatch, container_id, image_id)
+        repo = make_repo(tmp_path)
+        config = f"""\
+            schema_version = 1
+
+            [environments.ci]
+            mode = "ephemeral"
+            image = "test-image:local"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "ci"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """
+        project = make_project(repo, config)
+        worktree = make_worktree(repo, tmp_path)
+        monkeypatch.chdir(worktree / "proj")
+        monkeypatch.setenv("RUN_GATE_PROFILE", "off")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda _path, **_kwargs: Path("/phys"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_: None)
+        monkeypatch.setattr(run_gate, "preflight_lane_uid_ownership",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            run_gate, "run_lane_with_cgroup_event_guard",
+            lambda _lane, runner, enabled=True: runner())
+        event_file = tmp_path / "events.jsonl"
+        assert run_gate.main(["suite", "--event-file", str(event_file),
+                              "--job-id", "job-start"]) == 0
+        capsys.readouterr()
+        events = [json.loads(line) for line in event_file.read_text().splitlines()]
+        [started] = [event for event in events
+                     if event["event"] == "lane-started"]
+        assert started["container_id"] == container_id
+        assert started["image_id"] == image_id
+        assert started["adopted"] is False
+        docker_argv = calls.read_text()
+        assert "run-gate.lane=suite" in docker_argv
+        assert "run-gate.project=proj" in docker_argv
+
+    def test_adopted_inflight_event_uses_inspected_identity(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path.parent / f"{tmp_path.name}-adopted.jsonl"
+        container_id = "d" * 64
+        image_id = "sha256:" + "e" * 64
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-adopted", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        pending = {
+            "runner": "container", "container": "lane-container",
+            "container_id": container_id, "commit": "head-sha",
+            "started_at": "2026-01-01T00:00:00Z",
+            "started_epoch": 1767225600.0,
+        }
+        state = {"id": container_id, "status": "running", "exit_code": 0,
+                 "finished_at": "", "started_at": "2026-01-01T00:00:00Z"}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: pending)
+        monkeypatch.setattr(run_gate, "validate_inflight_assay_contract",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "live_owner_pid", lambda *_: None)
+        monkeypatch.setattr(run_gate, "container_state", lambda *_: state)
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_: "head-sha")
+        monkeypatch.setattr(run_gate, "inspect_container_mount_sources",
+                            lambda *_: [])
+        monkeypatch.setattr(run_gate, "inspect_container_image_id",
+                            lambda *_: (image_id, None))
+        monkeypatch.setattr(run_gate, "adopt_inflight_ksm",
+                            lambda _record, _pending, monitor: monitor)
+        monkeypatch.setattr(run_gate, "await_container",
+                            lambda *_args, **_kwargs: 0)
+        try:
+            assert run_gate.resolve_inflight(
+                "docker", {"kind": "command"}, "suite", tmp_path,
+                tmp_path, tmp_path, False, False, {}) == 0
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        capsys.readouterr()
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["event"] == "lane-started"
+        assert event["container_id"] == container_id
+        assert event["image_id"] == image_id
+        assert event["adopted"] is True
+
+    def test_same_named_foreign_container_is_never_emitted(
+            self, tmp_path, monkeypatch):
+        event_file = tmp_path / "foreign.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-foreign", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        pending = {
+            "runner": "container", "container": "same-name",
+            "container_id": "a" * 64, "commit": "head-sha",
+            "started_at": "2026-01-01T00:00:00Z",
+        }
+        foreign = {"id": "c" * 64, "status": "running", "exit_code": 0,
+                   "finished_at": "", "started_at": "2026-01-01T00:00:00Z"}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: pending)
+        monkeypatch.setattr(run_gate, "validate_inflight_assay_contract",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "live_owner_pid", lambda *_: None)
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *_args, **_kwargs: foreign)
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_: "head-sha")
+        monkeypatch.setattr(run_gate, "record_lost_run",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "clear_inflight_record",
+                            lambda *_args, **_kwargs: None)
+        try:
+            assert run_gate.resolve_inflight(
+                "docker", {"kind": "command"}, "suite", tmp_path,
+                tmp_path, tmp_path, False, False, None) is None
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert event_file.read_text() == ""
