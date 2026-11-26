@@ -134,10 +134,10 @@ of the fresh case (`py/core.py:959-975`).
 - Debian 13 or later, `python3` >= 3.13 with full stdlib (core D1, D2), UEFI, Secure Boot off (`mokutil
   --sb-state`; dr's GRUB image is unsigned, D27).
 - Root on btrfs or ZFS, one device, not on LUKS, LVM or md (Q10).
-- ESP vfat, GPT partition 1 of the boot disk (`dr-state@d5f449971`); >= 512 MiB free for systemd-boot (ready layouts only).
+- ESP vfat, GPT partition 1 of the boot disk (`files/usr/local/lib/dr-state/dr_state/core.py:1118`); >= 512 MiB free for systemd-boot (ready layouts only).
 - Kernel and initramfs in the root's `/boot`; a separate `/boot` partition is folded into the new state and left
-  unused. For an ext `/boot`, which the source's entry still reads, `install-grub` adds `ext2` (absent at
-  `dr-state@d5f449971`), else the case is refused.
+  unused. For an ext `/boot`, which the source's entry still reads, `install-grub` adds `ext2` in the GRUB
+  image module list (`files/usr/local/lib/dr-state/dr_state/core.py:1118-1134`), else the case is refused.
 - btrfs free space: estimated free >= max(2 GiB, 5 %) plus every path copied into a NOCOW subvolume, since btrfs
   refuses clones between COW and NOCOW files (proposal, U9). ZFS: the size of every copied path (U10).
 - No `@os-*` except a ready layout's one state; `/.top`, if mounted, is `subvolid=5`; no active swapfile in the

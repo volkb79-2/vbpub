@@ -440,21 +440,23 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
   - **Installer.** The two-step install packs `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into `usr/`
     and `etc/` tar archives whose members are explicitly owned `0:0`, then extracts them as root with `--same-owner`.
     The `usr/` archive lands at the runtime's existing early point; the `etc/` archive lands only after
-    `gen-menu --default`. Each archive omits directory members only for directories that already exist at the
-    destination; pre-existing target directories keep their owner and mode, while missing parents may be archived.
+    `gen-menu --default`. Each archive omits top-level directory members and descendant directory members that
+    already exist at the destination; pre-existing target directories keep their owner and mode, while missing
+    descendant parents may be archived.
     The installer prints the initial state name with
     `printf` instead of calling `dr-state _state-name`; `initialize-state` stays the only validator, so the Live
     system needs no Python.
   - **Seed and ISO ownership.** The seed ISO is packed with `-uid 0 -gid 0`; the remastered ISO applies
     `-chown_r 0 /dr/files -- -chgrp_r 0 /dr/files --` before commit. A non-root builder therefore cannot stamp its
     uid on a root-executed runtime.
-  - **Hot patching.** `install_current_dr_state` in dr-serial archives only regular files under
-    `files/usr/local/sbin/dr-state` and `files/usr/local/lib/dr-state`, with no directory members. It rejects any
-    other file under `files/usr/local`; its Python manifest and guest expression cover the same bytecode-free regular
-    file set under that tree. `install_current_apt_hook` updates the APT hook separately, and `_update_dr_state`
-    copies the runtime and hooks from the seed. `DR_ACCEPTANCE` unset, empty or `0` selects dev mode; `1` selects
-    acceptance and refuses hot patches; every other value is refused. Newly created directories under
-    `/usr/local/lib/dr-state` take modes from the guest's umask (P-rollback-25).
+  - **Hot patching.** `install_current_dr_state` in dr-serial archives regular file members from the complete
+    `files/` payload, without directory members. It refuses any file under `files/usr/local` outside
+    `usr/local/sbin/dr-state` and `usr/local/lib/dr-state`, naming the unexpected path. The Python manifest and
+    guest expression cover the runtime subtrees and all three `etc/` hook files; the offline equivalence test
+    checks that they hash the same file set. `install_current_apt_hook` remains available for an APT-hook-only
+    update, and `_update_dr_state` copies the runtime and hooks from the seed. `DR_ACCEPTANCE` unset, empty or `0`
+    selects dev mode; `1` selects acceptance and refuses hot patches; every other value is refused. Newly created
+    directories under `/usr/local/lib/dr-state` take modes from the guest's umask (P-rollback-25).
 
 ## 11. Parity strategy (L1, R3)
 

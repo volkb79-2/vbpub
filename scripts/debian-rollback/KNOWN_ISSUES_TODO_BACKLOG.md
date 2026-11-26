@@ -233,19 +233,19 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 **Problem.** Under `DR_ACCEPTANCE=1`, the hot-patch helpers refuse as designed, but s2-s3, recovery-kernel, recovery-library, recovery-dependency, s7, s8, window-negative and s9b still call one of them and therefore cannot run on a freshly built disk.
 **Wanted.** Give those eight scenarios a verify-only path, such as `verify_current_dr_state`, before the controller's leased acceptance run.
 
-## DR-125 — Hook payload modes come from the checkout
+## DR-125 — Payload modes come from the checkout
 
-**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-25, DESIGN-CORE-SPLIT.md D27, files/etc
+**State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-21, P-rollback-25, DESIGN-CORE-SPLIT.md D27, files/
 
-**Problem.** Hook modes come from the checkout's or ISO stage's source modes. A source tree whose hook modes were widened by tools or a permissive umask can therefore produce writable-group hooks on the target instead of the required `0644` and `0755`.
-**Wanted.** Normalize the three hook modes at a payload ownership boundary or prove the staging path pins them against a wider umask.
+**Problem.** Seed `-rock`, ISO `-map` and installer tar packing preserve source modes. A builder with umask 002 can produce root-owned files and directories with mode 0664 or 0775 in both the runtime tree and the three hooks. The hook mode tests expect 0644 and 0755; the runtime had the same source-mode behavior before P-25.
+**Wanted.** Normalize or prove mode pins for the complete payload at the seed, ISO and installer boundaries, including runtime files and directories and all three hooks, while preserving root ownership and existing target directory metadata.
 
 ## DR-126 — Tight ESP refresh refusal happens after shrink work
 
 **State:** open · **Severity:** medium · **Owner:** rollback · **Links:** P-rollback-22, P-rollback-40, DESIGN-CORE-SPLIT.md D19
 
-**Problem.** On a tight ESP, an initrd refresh can pass selection-time fit using the old default pair as credit, then shrink the menu and refuse during the later copy check. The stale initrd remains, and the refusal arrives after filesystem mutations.
-**Wanted.** Decide whether a target's superseded pair counts as capacity credit and move the capacity refusal before any shrink mutation; cover both initrd refresh and kernel upgrade.
+**Problem.** On a tight ESP, an initrd refresh can pass selection-time fit using every owned pair of a kept state as credit, including the pair its entry is about to stop using. Phase 1 cannot remove that pair while the remaining entry still references it, so the menu shrinks and the later copy check refuses, leaving the stale initrd after filesystem mutations. This can happen on every `update-initramfs -u`, not only when the kernel version changes.
+**Wanted.** Decide whether the superseded pair of a kept state counts as capacity credit and move the capacity refusal before any shrink mutation. P-40's ESP-exhaustion scenario should cover an initrd refresh as well as a kernel upgrade.
 
 ## DR-127 — Foreign selectors refuse strict delete and prune
 
@@ -268,16 +268,23 @@ Closed items are one line each in [archive/](archive/). The format is [docs/BACK
 **Problem.** `sdboot.py` is about 1,125 lines against the design target of about 750, which increases review and maintenance cost for the backend.
 **Wanted.** Reassess the target during P-23/P-24 and split cohesive filesystem, publication and selector responsibilities where that reduces complexity without moving the boot contract across unclear boundaries.
 
-## DR-130 — Serial runtime hot patch removes the old tree before extract
+## DR-130 — Serial runtime refresh removes the old tree before replacement
 
 **State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-25, poc/dr-serial.py
 
-**Problem.** `install_current_dr_state` removes `/usr/local/lib/dr-state` before extracting the replacement archive. A failed extract leaves the dev guest without the runtime.
-**Wanted.** Extract to a temporary sibling tree, verify the runtime digest, then atomically replace the current tree.
+**Problem.** `install_current_dr_state` removes `/usr/local/lib/dr-state` before extracting the replacement archive, and `_update_dr_state` removes it before copying from the seed. A failed extract or copy leaves the dev guest without the runtime.
+**Wanted.** Stage each replacement in a temporary sibling tree, verify its digest, then atomically replace the current tree.
 
 ## DR-131 — Installer extract follows an intermediate destination symlink
 
 **State:** open · **Severity:** high · **Owner:** rollback · **Links:** P-rollback-21, poc/install-btrfs.sh
 
-**Problem.** The installer treats a destination symlink to a directory as an existing directory, omits it from the archive, and tar writes descendants through the link outside the target root.
+**Problem.** On a target with an intermediate symlink, the installer treats the link as an existing directory, omits it from the archive, and tar writes descendants through it. An absolute link resolves against the Live system root; a relative link escapes only when it points outward. A fresh debootstrap target has no such links, and the prior `cp -a` path behaved the same way, so this is not a regression.
 **Wanted.** Refuse an intermediate symlink or resolve every destination beneath the target root without following links; add an offline regression fixture.
+
+## DR-132 — Future runtime hook must join the hot-patch manifest
+
+**State:** open · **Severity:** low · **Owner:** rollback · **Links:** P-rollback-22, DESIGN-CORE-SPLIT.md D27, poc/dr-serial.py
+
+**Problem.** P-22 plans `usr/local/sbin/dr-state-apt-hook`, but the current archive allow-list and guest digest path list do not include it. The archive refuses the file by name; if that refusal is removed without updating the guest list, the whole-`files/` manifest and guest digest differ.
+**Wanted.** When adding the hook, extend the accepted archive paths and guest digest list together, then keep the offline equivalence test proving both sides hash the same file set.

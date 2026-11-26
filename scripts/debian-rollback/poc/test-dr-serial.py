@@ -91,6 +91,11 @@ PAYLOAD_HOOKS = (
     "etc/kernel/postinst.d/zz-dr-state",
     "etc/kernel/postrm.d/zz-dr-state",
 )
+PAYLOAD_HOOK_MODES = {
+    PAYLOAD_HOOKS[0]: 0o644,
+    PAYLOAD_HOOKS[1]: 0o755,
+    PAYLOAD_HOOKS[2]: 0o755,
+}
 
 
 def copy_payload_files(destination: Path) -> None:
@@ -264,6 +269,7 @@ def main() -> int:
         members = archive.getmembers()
         launcher = archive.getmember("usr/local/sbin/dr-state")
         package = archive.getmember("usr/local/lib/dr-state/dr_state/core.py")
+        hooks = [archive.getmember(path) for path in PAYLOAD_HOOKS]
     if any(member.isdir() for member in members):
         failures.append(
             "payload archive contains directory members: "
@@ -272,12 +278,13 @@ def main() -> int:
     unexpected_members = [
         member.name
         for member in members
-        if member.name != "usr/local/sbin/dr-state"
+        if member.name not in PAYLOAD_HOOKS
+        and member.name != "usr/local/sbin/dr-state"
         and not member.name.startswith("usr/local/lib/dr-state/")
     ]
     if unexpected_members:
         failures.append(
-            "runtime archive contains paths outside its two subtrees: "
+            "payload archive contains paths outside the runtime subtrees and hooks: "
             f"{unexpected_members}"
         )
     if any("__pycache__" in member.name or member.name.endswith((".pyc", ".pyo"))
@@ -288,6 +295,12 @@ def main() -> int:
             failures.append(
                 f"payload archive member {member.name} is not root-owned: "
                 f"{member.uid}:{member.gid} {member.uname}:{member.gname}"
+            )
+    for member in hooks:
+        if member.mode & 0o777 != PAYLOAD_HOOK_MODES[member.name]:
+            failures.append(
+                f"payload archive hook {member.name} mode is "
+                f"{member.mode & 0o777:o}, want {PAYLOAD_HOOK_MODES[member.name]:o}"
             )
     if (
         launcher.name != "usr/local/sbin/dr-state"
@@ -333,8 +346,8 @@ def main() -> int:
             drs.PAYLOAD_ROOT = original_payload_root
     if before == after_core:
         failures.append("payload digest ignored a core.py change")
-    if after_core != after_hook:
-        failures.append("runtime payload digest included an APT hook outside files/usr/local")
+    if after_core == after_hook:
+        failures.append("payload digest ignored an APT hook byte change")
     if not hook_config_exact:
         failures.append("current_apt_hook_config() did not read the hook from PAYLOAD_ROOT/files")
     if not launcher_unchanged:
@@ -357,9 +370,7 @@ def main() -> int:
             )
     for required in (
         "--same-owner",
-        "chown -R 0:0 /usr/local/sbin/dr-state /usr/local/lib/dr-state "
-        "/etc/apt/apt.conf.d/80dr-state /etc/kernel/postinst.d/zz-dr-state "
-        "/etc/kernel/postrm.d/zz-dr-state; echo OWNRC:$?;",
+        "chown -R 0:0 /usr/local/sbin/dr-state /usr/local/lib/dr-state",
         "/etc/apt/apt.conf.d/80dr-state",
         "/etc/kernel/postinst.d/zz-dr-state",
         "/etc/kernel/postrm.d/zz-dr-state",
@@ -381,13 +392,17 @@ def main() -> int:
     for required in (
         "usr/local/sbin/dr-state",
         "usr/local/lib/dr-state",
+        "etc/apt/apt.conf.d/80dr-state",
+        "etc/kernel/postinst.d/zz-dr-state",
+        "etc/kernel/postrm.d/zz-dr-state",
         "-type f -print0",
     ):
         if required not in installed_digest_command:
             failures.append(f"installed payload digest command omits {required!r}")
 
-    # Execute the guest digest expression against a temporary tree with every file under
-    # files/usr/local, then compare it with the Python manifest.
+    # Execute the hand-written guest path list against every file in Python's manifest. A new
+    # payload path outside that list makes the two digests differ, rather than merely checking
+    # that today's literals are present in the command string.
     with tempfile.TemporaryDirectory() as temporary:
         digest_root = Path(temporary) / "installed"
         copy_payload_files(digest_root)
@@ -395,7 +410,7 @@ def main() -> int:
         manifest_digest = drs.payload_manifest_digest()
     if guest_digest != manifest_digest:
         failures.append(
-            "digest-path-list-equivalence: guest digest file set differs from runtime payload files: "
+            "digest-path-list-equivalence: guest digest path list differs from payload_files(): "
             f"guest={guest_digest} python={manifest_digest}"
         )
 
@@ -443,6 +458,7 @@ def main() -> int:
 
     design_root = Path(drs.__file__).parent.parent / "docs"
     core_design = (design_root / "DESIGN-CORE-SPLIT.md").read_text(encoding="utf-8")
+    core_design_compact = " ".join(core_design.split())
     convergence_design = (design_root / "DESIGN-INSTALL-CONVERGENCE.md").read_text(
         encoding="utf-8"
     )
@@ -450,10 +466,10 @@ def main() -> int:
         failures.append("install-convergence design still cites the retired dr-state shell by line")
     for required in (
         "sdboot rehashes source and ESP payloads until P-23",
-        "omits directory members only for directories that already exist at the destination",
-        "takes modes from the guest's umask",
+        "omits top-level directory members and descendant directory members that already exist at the destination",
+        "take modes from the guest's umask",
     ):
-        if required not in core_design:
+        if required not in core_design_compact:
             failures.append(f"core-split design omits the updated payload contract {required!r}")
 
     hot_patch_calls = (
@@ -535,7 +551,7 @@ def main() -> int:
             f"raised={apt_raised!r} commands={apt_hook_guest.commands!r}"
         )
 
-    # The runtime archive converges only its two allowed subtrees; hook updates use separate helpers.
+    # The whole-files archive converges the runtime and the three hook files.
     with tempfile.TemporaryDirectory() as temporary:
         changed_payload = Path(temporary) / "files"
         shutil.copytree(
@@ -558,7 +574,7 @@ def main() -> int:
                     raise AssertionError("runtime helper did not delimit its archive")
                 decoded = base64.b64decode("".join(match.group(1).split()), validate=True)
                 if decoded != drs.payload_archive():
-                    raise AssertionError("runtime helper did not send its complete runtime archive")
+                    raise AssertionError("runtime helper did not send the complete files payload archive")
                 if "tar -C / --same-owner -xf" not in command:
                     raise AssertionError("runtime helper does not extract file members at /")
                 shutil.rmtree(root / "usr/local/lib/dr-state", ignore_errors=True)
@@ -568,11 +584,9 @@ def main() -> int:
                     archive.extractall(root, filter="fully_trusted")
                 for relative in PAYLOAD_HOOKS:
                     installed = (root / relative).read_bytes()
-                    expected = (original_payload_root / relative).read_bytes()
+                    expected = (drs.PAYLOAD_ROOT / relative).read_bytes()
                     if installed != expected:
-                        raise AssertionError(
-                            f"runtime helper unexpectedly changed hook {relative}"
-                        )
+                        raise AssertionError(f"runtime helper did not install changed hook {relative}")
                 return 0, (
                     f"DRSTATE_SHA:{installed_digest_at(root)}\n"
                     "DRSTATE_INSTALL_RC:0\n"

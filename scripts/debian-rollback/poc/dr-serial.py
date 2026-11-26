@@ -1243,14 +1243,11 @@ def payload_files() -> tuple[Path, ...]:
 
 
 def payload_manifest_digest() -> str:
-    """Hash every bytecode-free regular file under files/usr/local."""
+    """Hash the relative names and bytes of the complete installed files payload."""
 
     manifest = hashlib.sha256()
     for path in payload_files():
-        relative = path.relative_to(PAYLOAD_ROOT)
-        if relative.parts[:2] != ("usr", "local"):
-            continue
-        relative_name = relative.as_posix()
+        relative_name = path.relative_to(PAYLOAD_ROOT).as_posix()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         manifest.update(f"{digest}  {relative_name}\n".encode("ascii"))
     return manifest.hexdigest()
@@ -1262,6 +1259,8 @@ def installed_payload_digest_command() -> str:
     return (
         "cd / && "
         "find usr/local/sbin/dr-state usr/local/lib/dr-state "
+        "etc/apt/apt.conf.d/80dr-state "
+        "etc/kernel/postinst.d/zz-dr-state etc/kernel/postrm.d/zz-dr-state "
         "-type f -print0 "
         "| LC_ALL=C sort -z "
         "| xargs -0 sha256sum "
@@ -1271,7 +1270,7 @@ def installed_payload_digest_command() -> str:
 
 
 def payload_archive() -> bytes:
-    """Return the runtime file subtrees as a root-owned archive without directory members."""
+    """Return the complete payload as a root-owned archive of regular file members."""
 
     def normalized(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         parts = PurePosixPath(member.name).parts
@@ -1287,10 +1286,9 @@ def payload_archive() -> bytes:
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for path in payload_files():
             relative = path.relative_to(PAYLOAD_ROOT).as_posix()
-            if not relative.startswith("usr/local/"):
-                continue
-            if relative != "usr/local/sbin/dr-state" and not relative.startswith(
-                "usr/local/lib/dr-state/"
+            if relative.startswith("usr/local/") and (
+                relative != "usr/local/sbin/dr-state"
+                and not relative.startswith("usr/local/lib/dr-state/")
             ):
                 raise ValueError(f"cannot hot-patch unexpected runtime file {relative}")
             archive.add(
@@ -1320,7 +1318,7 @@ def _hot_patch_refused(log, helper: str) -> bool:
 
 
 def install_current_dr_state(g, log):
-    """Upload the runtime subtrees; dev-only: acceptance runs on freshly built disks."""
+    """Upload the complete payload; dev-only: acceptance runs on freshly built disks."""
     if _hot_patch_refused(log, "install_current_dr_state"):
         return False
     try:
@@ -1345,7 +1343,7 @@ def install_current_dr_state(g, log):
         "rm -f \"$dr_payload\""
     )
     _, out = g.run(command, 300)
-    return check(log, "guest uses the exact runtime payload under test",
+    return check(log, "guest uses the exact files payload under test",
                  tag(out, "DRSTATE_INSTALL_RC") == "0" and tag(out, "DRSTATE_SHA") == digest,
                  f"rc={tag(out, 'DRSTATE_INSTALL_RC')} sha={tag(out, 'DRSTATE_SHA')} expected={digest}")
 
