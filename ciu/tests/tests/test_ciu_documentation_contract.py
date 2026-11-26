@@ -112,6 +112,23 @@ def _toml_blocks(path: Path) -> list[str]:
     return TOML_FENCE_RE.findall(path.read_text(encoding="utf-8"))
 
 
+def _flat(text: str) -> str:
+    """The text with every run of whitespace collapsed to one space.
+
+    The documents are hard-wrapped (a comment or a SPEC paragraph breaks a
+    sentence over several lines), so a statement has to be compared as prose,
+    not as a line: a wrap must not be able to hide a sentence.
+    """
+    return " ".join(text.split())
+
+
+def _duration_minutes(value: str) -> int:
+    """`90m`/`8h`/`5400s` -> minutes, for the enclosing-budget arithmetic."""
+    suffix = value[-1]
+    amount = int(value[:-1])
+    return {"m": amount, "h": amount * 60, "s": amount // 60}[suffix]
+
+
 def test_every_toml_example_parses_with_the_shipped_loader():
     for doc in DOCS:
         for block in _toml_blocks(doc):
@@ -354,25 +371,106 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     assert "active liveness" in readme
 
 
-def test_ciu_r2_lane_has_no_per_candidate_wall_budget_and_docs_say_so():
-    """CIU-235: a candidate is bounded by PROGRESS, not by a clock.
+def test_ciu_r2_lane_declares_a_derived_per_candidate_bound_and_docs_say_what_ends_it():
+    """CIU-235 (review r1 H1): the per-candidate bound is DERIVED, never guessed.
 
-    A wall bound is a guess about how long a suite takes; this lane's own suite
-    is ~416 s and a mutant no test kills runs all of it, so a finite bound
-    shorter than that turns a survivor into `BUDGET_EXCEEDED` and the lane can
-    no longer report one. `liveness = true` (asserted above) is what still ends
-    a candidate that stops making progress, and the lane's finite top-level
-    `budget` is what makes `"none"` admissible at assay's load-time check.
+    A fixed wall bound is a guess about how long a suite takes; this lane's own
+    suite is ~416 s and a mutant no test kills runs all of it, so the old 5m
+    bound cut a survivor into `BUDGET_EXCEEDED` and the lane could not report one.
+    `"auto"` derives `max(3 x baseline, baseline + 60 s)` from THIS run's measured
+    baseline, so it scales with the host.
+
+    The documentation half is the part that could go stale silently, and review
+    r1 M1 shows why: four documents described liveness as the whole stall
+    detector and asked a reader to believe growing CPU counts as progress
+    (assay's `hung` needs FLAT cpu). So this test asserts the exact statements
+    the documents must carry, including what still ends a candidate that keeps
+    WORKING -- the per-candidate bound, reported `budget_exceeded` -- and that
+    the bound is a wall clock and the interim until assay's CPU-seconds no-
+    progress bound (design P4) exists.
     """
-    lane = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["ciu"]
+    lane_text = (REPO_ROOT / "assay.toml").read_text(encoding="utf-8")
+    lane = tomllib.loads(lane_text)["lanes"]["ciu"]
     mutation = lane["judge"]["mutation"]
-    assert mutation["budget_per_candidate"] == "none"
+    assert mutation["budget_per_candidate"] == "auto"
     assert mutation["liveness"] is True
-    # The opt-out is admissible only because the lane's OWN command stays bounded.
     assert lane["budget"] != "unbounded"
-    spec = (REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
-    assert 'budget_per_candidate = "none"' in spec
-    assert "hung" in spec
+    # The lane file itself must name the formula, its source and the reason, so a
+    # reader of the lane does not have to trust this test's summary of it.
+    flat_lane = _flat(lane_text)
+    assert "max(3 x baseline, baseline + 60 s)" in flat_lane
+    assert "assay/src/assay/mutation.py:2636-2641" in flat_lane
+    assert "auto_budget_per_candidate_seconds` (mutation.py:2136-2153)" in flat_lane
+    assert "idle stall only" in flat_lane
+    assert "WALL CLOCK" in flat_lane
+    assert "P4" in flat_lane
+    # ... and the three user-facing documents must state what ends a candidate.
+    spec = _flat((REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8"))
+    assert 'budget_per_candidate = "auto"' in spec
+    assert "max(3 x baseline, baseline + 60 s)" in spec
+    assert "ends an IDLE stall only" in spec
+    assert "complete, pressure-free resource trace" in spec
+    assert "reported `budget_exceeded`" in spec
+    assert "wall clock" in spec
+    assert "design P4" in spec
+    changes = _flat((REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8"))
+    assert "max(3 x baseline, baseline + 60 s)" in changes
+    assert "IDLE stall only" in changes
+    assert "reported `budget_exceeded`" in changes
+    assert "wall clock" in changes
+    assert "design P4" in changes
+
+
+def test_the_lane_loads_through_assays_own_loader_when_it_is_importable():
+    """A bare `tomllib` read proves the TOML parses, not that assay accepts it.
+
+    `budget_per_candidate = "auto"` is one of two closed non-duration spellings
+    resolved BEFORE `parse_duration`; only the shipped loader proves the lane is
+    admissible (`_refuse_unbounded_without_unit_bounds` and the `"none"` arm
+    both live there). Guarded, because ciu's runtime dependency set does not
+    contain assay — run-gate installs it for the judged lane.
+    """
+    load_lane_file = pytest.importorskip("assay.config").load_lane_file
+    lanes = load_lane_file(REPO_ROOT / "assay.toml")
+    mutation = lanes.lane("ciu").judge.mutation
+    assert mutation.budget_per_candidate == "auto"
+    assert mutation.liveness == "true"
+    assert lanes.lane("ciu").budget != "unbounded"
+
+
+def test_ciu_gate_canary_bound_covers_a_loaded_host_and_fits_its_enclosing_budgets():
+    """CIU-235 review r1: 20m expired before the R3 probe even started.
+
+    Run `rgw-ciu-gate-20261125T222402-v1001` ended BUDGET_EXCEEDED/LANE_TIMEOUT
+    with the attempt recorded `not_attempted`/`budget_exhausted`, because the
+    coverage baseline ALONE took 1108 s on that loaded host (~416 s on an
+    unloaded one). One canary attempt is control + transformed whole-suite runs,
+    so the per-attempt bound must cover two loaded baselines; it must also stay
+    inside the enclosing budgets (assay's lane budget, run-gate's outer one).
+    """
+    assay_lanes = tomllib.loads(
+        (REPO_ROOT / "assay.toml").read_text(encoding="utf-8")
+    )["lanes"]
+    canary = assay_lanes["ciu-gate"]["judge"]["canary"]
+    assert canary["budget_per_attempt"] == "45m"
+    # The measured reason must stay beside the key it explains.
+    lane_text = _flat((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))
+    assert "rgw-ciu-gate-20261125T222402-v1001" in lane_text
+    assert "1108 s" in lane_text
+    assert "BUDGET_EXCEEDED" in lane_text
+    outer = tomllib.loads(
+        (REPO_ROOT / "run-gate.toml").read_text(encoding="utf-8")
+    )["lanes"]
+    # run-gate's `lanes --check` proves these numerically (and strictly); this
+    # pins the arithmetic so a future edit cannot quietly invert them.
+    assert _duration_minutes(outer["ciu-gate"]["budget"]) >= _duration_minutes(
+        assay_lanes["ciu-gate"]["budget"]
+    ) + 5
+    assert _duration_minutes(canary["budget_per_attempt"]) <= _duration_minutes(
+        assay_lanes["ciu-gate"]["budget"]
+    )
+    spec = _flat((REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8"))
+    assert "import-break canary" in spec
 
 
 def test_ciu_r2_worker_budget_matches_the_three_worker_pilot():

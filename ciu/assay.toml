@@ -18,7 +18,10 @@
 schema_version = 2
 
 # Lane `ciu` = the async R2 mutation lane (needs run-gate.toml's
-# resource_observer = "cgprofile" + resources.pids because liveness = true below).
+# resource_observer = "cgprofile" + resources.pids because every native R2
+# candidate is judged against observed CANDIDATE resource-limit counters --
+# see the [lanes.ciu.judge.mutation] comment below, which also says which
+# part of that is liveness's own and which is not).
 # Lane `ciu-gate` (further down) = the release gate R0/R1/R3 without mutation.
 [lanes.ciu]
 scope = "S1"
@@ -108,27 +111,52 @@ operators = [
   "python:bool-const-flip",
   "python:falsy-swap",
 ]
-# `none` (CIU-235, operator 2026-11-25: "NO TIME BUDGETS that constrain a run").
-# A per-candidate wall bound is a guess about how long a suite takes, and every
-# guess is wrong on some host: this lane's whole suite measures ~416 s in the
-# baseline (run rgw-ciu-20261125T202211-v1001, v1001), and a mutant that no test
-# kills runs ALL of it, so the previous 5m (then 15m) bound cut such a candidate
-# at 302 s and reported BUDGET_EXCEEDED instead of "survived" -- an adverse
-# bucket that is a measurement failure, not a verdict about the tests. What this
-# lane needs is progress, not a clock, so the wall bound is gone and
-# `liveness = true` is the whole stall detector: a candidate that stops making
-# progress (no new plugin event, no stdout/stderr growth, no process-tree CPU
-# growth over the calibrated idle window) is killed and classified `hung`
-# (assay liveness.py:2080-2095 -> runner.py:1840-1843 ReasonCode.CANDIDATE_HUNG
-# -> termination.py:80-83 Termination.HUNG -> _R2_BUCKETS "hung", and
-# mutation.py:5696-5706 maps it to BUDGET_EXCEEDED/CANDIDATE_HUNG, outside
-# `mutation_pct`). A candidate that keeps working is bounded only by the lane's
-# own top-level `budget` (below, 8h; run-gate.toml caps the lane at 485m), which
-# stays finite -- `"none"` is admissible exactly because that top-level bound is
-# declared (assay config._refuse_unbounded_without_unit_bounds). Liveness needs
-# the cgroup observer (run-gate.toml `resource_observer = "cgprofile"`,
-# `resources.pids`).
-budget_per_candidate = "none"
+# `auto` (CIU-235, fixed by review r1 H1 on the controller's 2026-11-26 ruling).
+# The bound is DERIVED from the same run's own measurement, never guessed: the
+# lane's R0 baseline command wall time, taken once the baseline PASSes and
+# before any candidate is submitted (assay/src/assay/mutation.py:2636-2641 calls
+# `baseline_wall_seconds` (mutation.py:2121-2134) and
+# `auto_budget_per_candidate_seconds` (mutation.py:2136-2153), whose formula is
+# `max(3 x baseline, baseline + 60 s)`). It therefore scales with the host the
+# lane happens to run on, which a fixed number cannot -- and it is recorded:
+# `judgment.r2.budget_per_candidate_derived_s` on the verdict
+# (assay/src/assay/verdict.py:3646) and the `plan` progress record carry the
+# resolved value (mutation.py:2677-2691).
+#
+# Why this lane needs it (CIU-235): this suite measured ~416 s in the baseline of
+# run `rgw-ciu-20261125T202211-v1001` (v1001), and a mutant that no test kills
+# runs ALL of it, so the old 5m bound cut such a candidate at 302 s and reported
+# `BUDGET_EXCEEDED` instead of `survived` -- an adverse bucket that is a
+# measurement failure, not a verdict about the tests. At 416 s `auto` derives
+# ~1249 s (~21 min), which is above the whole suite on that host and above it by
+# construction on a loaded one.
+#
+# WHAT ENDS A CANDIDATE (assay's behaviour, stated precisely -- review r1 M1):
+# liveness ends an idle stall only. `hung` needs an idle window with a flat CPU
+# (`idle_hang = idle_for >= bound and not cpu_growing`, liveness.py:2073;
+# `hung = resource_trace_complete and (idle_hang or finish_hang)`, :2080) AND a
+# complete, pressure-free resource trace -- a truncated trace never certifies a
+# hang (:2020-2025), and the idle clock accrues only over intervals whose
+# counters are `clear` (:1975-1979). Growing CPU is what PREVENTS `hung`; stdout/
+# stderr growth also counts as progress (:2029-2033). So a candidate that keeps
+# working -- spinning on CPU, printing without end, blocked under a busy child,
+# or under pressure that never clears -- is NOT idle, is never ended by
+# liveness, and is ended by THIS per-candidate bound (`budget_exceeded`, this
+# lane's own `hung` bucket still available for a genuine idle stall:
+# liveness.py:2086-2095 -> runner.py:1840-1843 ReasonCode.CANDIDATE_HUNG ->
+# termination.py:80-83 Termination.HUNG -> _R2_BUCKETS "hung", mapped in
+# mutation.py:5696-5706, outside `mutation_pct`). That bound is a WALL CLOCK, and
+# it is the interim: assay's CPU-seconds-without-progress bound is design P4
+# (docs/design/no-time-budgets/DESIGN.md S7.1) and replaces it when it ships.
+#
+# The cgroup observer (run-gate.toml `resource_observer = "cgprofile"`,
+# `resources.pids`) is required for the CANDIDATE RESOURCE-LIMIT evidence every
+# native R2 candidate is judged against (mutation.py:3504-3505 calls
+# `_read_candidate_resource_counters`, mutation.py:1704-1721, and
+# mutation_store.py:4608 passes `observation_required=True`), NOT by liveness:
+# liveness reads its own procfs sources (/proc/<pid>/cgroup, mountinfo, PSI,
+# cpu.stat: assay/src/assay/liveness_resources.py:124-164).
+budget_per_candidate = "auto"
 liveness = true
 
 [lanes.ciu.judge.canary]
@@ -183,4 +211,15 @@ artifact = "coverage.json"
 [lanes.ciu-gate.judge.canary]
 mechanism = "import-break"
 target = "src/ciu/worktree.py"
-budget_per_attempt = "20m"
+# 45m (CIU-235 review r1): 20m expired on a loaded host before this lane's canary
+# could start its probe. Run `rgw-ciu-gate-20261125T222402-v1001` (lane
+# `ciu-gate`, head d5b83200a) ended BUDGET_EXCEEDED/LANE_TIMEOUT (exit 4) with the
+# R3 attempt recorded `not_attempted`/`budget_exhausted`, because the coverage
+# baseline ALONE took 1108 s there (its `command_started`/`command_finished` pair
+# in `progress-ciu-gate.jsonl`; it is ~416 s on an unloaded host). One attempt =
+# control snapshot + control run + transform snapshot + transformed run
+# (assay/src/assay/canary.py:723-746), i.e. two whole-suite runs, so the bound
+# must cover two loaded-host baselines. 45m does that and still fits the lane's
+# own 90m `budget` below (run-gate's 100m outer `budget` is the 90m + 10m margin;
+# `run-gate lanes --check` reports 0 findings).
+budget_per_attempt = "45m"

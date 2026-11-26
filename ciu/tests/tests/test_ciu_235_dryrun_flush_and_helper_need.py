@@ -88,10 +88,6 @@ class RecordingStdout:
     def isatty(self) -> bool:
         return False
 
-    def exact_chunks(self) -> list[str]:
-        """Every published chunk that is exactly one newline-terminated line."""
-        return [chunk for chunk in self.published if chunk.count("\n") == 1]
-
 
 def test_a_dry_run_of_self_ownable_hostdirs_reports_the_helper_as_not_needed(
     tmp_path, monkeypatch, capsys
@@ -118,14 +114,22 @@ def test_a_dry_run_of_self_ownable_hostdirs_reports_the_helper_as_not_needed(
     assert not (tmp_path / "vol-api-logs").exists()
 
 
-def test_each_dry_run_line_is_flushed_by_the_time_it_is_emitted(tmp_path, monkeypatch):
-    """engine.py:999 and engine.py:1073 -- every dry-run line is flushed as printed.
+def test_every_dry_run_line_reaches_the_stream_in_the_flush_that_publishes_it(
+    tmp_path, monkeypatch
+):
+    """engine.py:999 and engine.py:1073 -- each line is published by its own flush.
 
     The dry run is the operator's preview: the lines must be readable through the
     pipe while the run is still going (they are printed next to child-process
-    output), so each of them is written with `flush=True`. A `flush=False`
-    leaves them for whichever flush comes next (or for process exit), which is
-    exactly the delivery change that was under test.
+    output), so each of them is written with `flush=True`. The contract asserted
+    here is the delivery contract, not a print granularity: **the flush that
+    publishes a line carries nothing written after it** -- the text a reader
+    received at that moment ends with that line, and the run writes nothing more
+    into that same chunk. A `flush=False` leaves the line for whichever flush
+    comes next (or for process exit), so that flush then carries the line
+    TOGETHER with whatever was written after it: a preview that is not readable
+    until the next line is printed. That is the delivery change under test, and
+    it is what makes the two mutants fail.
     """
     _own_process(monkeypatch)
 
@@ -137,19 +141,47 @@ def test_each_dry_run_line_is_flushed_by_the_time_it_is_emitted(tmp_path, monkey
         repo_root=tmp_path, physical_root=tmp_path, plan_only=True,
     )
 
-    lines = recorder.exact_chunks()
-    # A line that was written WITHOUT flush stayed in the buffer and was
-    # published by whichever flush came next, together with the lines before it
-    # (or at process exit). So a line is proven flushed-as-emitted exactly when
-    # one flush published it ALONE -- one newline-terminated chunk.
-    would_create = [
-        line for line in lines if line.startswith("[INFO]   Would create: ")
-    ]
-    assert len(would_create) == 2, recorder.published
-    for line in would_create:
-        assert line.endswith((", 0o775)\n",)), line
-    summaries = [line for line in lines if line.startswith("[INFO] Would create ")]
-    assert len(summaries) == 1, recorder.published
-    assert "--dry-run creates none" in summaries[0]
+    # A dry run of two hostdirs prints FOUR lines the operator must be able to
+    # read while the run is still going: the scan banner, two `Would create:`
+    # lines and the summary. The contract asserted is the DELIVERY one, per line:
+    # **the flush that publishes a line carries nothing written after it**. So a
+    # line is proven published-as-emitted exactly when some `flush()` carried a
+    # chunk that ENDS with that line -- the reader got it, and got nothing that
+    # was written after it in the same chunk. This is deliberately not "one
+    # line per flush" (review r1 L3: a `flush()` carrying two complete lines
+    # still delivers both at the moment they were printed, and this form accepts
+    # that); what it does refuse is the mutant's shape, where the line is
+    # published only as a prefix of a chunk that carries LATER text.
+    published = recorder.published
+    expected_lines = (
+        ("[INFO] Scanning for volume directories", 1),
+        ("[INFO]   Would create: ", 2),
+        ("[INFO] Would create ", 1),
+    )
+    carriers_all: list[str] = []
+    for prefix, count in expected_lines:
+        # The line a flush published is the LAST line of that chunk: anything
+        # written after it would have been in the same chunk instead.
+        carriers = [
+            chunk for chunk in published
+            if chunk.split("\n")[-2:-1]
+            and chunk.split("\n")[-2].startswith(prefix)
+        ]
+        assert len(carriers) == count, (prefix, published)
+        carriers_all.extend(carriers)
+        for chunk in carriers:
+            line = chunk.split("\n")[-2]
+            # The chunk ENDS with that line: nothing was written after it into
+            # the same flush, which is the contract this file documents.
+            assert chunk[-1] == "\n", chunk
+            if prefix == "[INFO]   Would create: ":
+                # The ownership and mode are part of the preview the operator
+                # reads, so they must be in the line the flush published.
+                assert line.endswith(", 0o775)"), line
+            if prefix == "[INFO] Would create ":
+                assert "--dry-run creates none" in line, line
+    # These four are DISTINCT flushes -- a line swept up into a later chunk is
+    # not a chunk that ends with it, so it could never appear here.
+    assert len({published.index(chunk) for chunk in carriers_all}) == 4, published
     # Nothing the dry run printed is left buffered.
     assert not recorder.pending, recorder.pending

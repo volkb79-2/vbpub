@@ -1472,10 +1472,12 @@ $ cmru run ciu --step run-tests
 
 The Assay lane runs the full suite with the configured coverage floor,
 changed-line judgment (R1), native mutation (R2), and import-break canary
-(R3). R2 liveness bounds stalled pytest candidates; `--maxfail=1` stops a
-failing mutant at its first failed test without shortening a successful full
-run. The verdict and progress stream live outside the judged tree in gitignored
-`.assay/`.
+(R3). R2's liveness monitor ends an IDLE stall only; the per-candidate bound
+(`budget_per_candidate = "auto"`, derived from this run's own baseline) is what
+ends a candidate that keeps working, reported `budget_exceeded`.
+`--maxfail=1` stops a failing mutant at its first failed test without
+shortening a successful full run. The verdict and progress stream live outside
+the judged tree in gitignored `.assay/`.
 
 Contract notes for a consumer of the gate:
 

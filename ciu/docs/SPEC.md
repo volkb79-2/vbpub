@@ -7517,22 +7517,31 @@ evidence-judgment command.
   from the lane's coverage artifact, R2: serial native Python mutation with
   active liveness monitoring and the declared operator set, and R3: an
   import-break canary against the declared CIU source target. The R2 lane
-  declares **no per-candidate wall budget** (`budget_per_candidate = "none"`,
-  CIU-235 and the operator's 2026-11-25 "no time budgets that constrain a run"
-  ruling): a wall bound is a guess about how long a suite takes, and a mutant
-  that no test kills runs the whole ~416 s suite (measured in
-  `rgw-ciu-20261125T202211-v1001`), so the earlier 5m bound cut every such
-  candidate at 302 s and the lane reported `BUDGET_EXCEEDED` instead of
-  `survived` -- it could not report a survivor, which is the one thing an R2
-  campaign exists to do. **Progress, not elapsed time, bounds a candidate:**
-  `liveness = true` watches each candidate's plugin events, stdout/stderr
-  growth and process-tree CPU, and a candidate that stops making progress is
-  killed as `hung` (its own reported bucket, never `mutation_pct`). A candidate
-  that keeps working is bounded only by the lane's finite top-level `budget`
-  (8h here, and run-gate.toml's 485m lane cap), which is exactly the
-  declaration that makes `"none"` admissible at assay's load-time check. The
-  bucket a stall still gets, and the assay lines it comes from, are stated in
-  `assay.toml`'s own comment beside the key. A new unsafe
+  declares `budget_per_candidate = "auto"` (CIU-235; review r1 H1 and the
+  controller's 2026-11-26 ruling): the per-candidate bound is DERIVED from the
+  same run's own baseline, `max(3 x baseline, baseline + 60 s)` over the lane
+  command's measured wall time, taken once the baseline passes and before any
+  candidate is submitted, so it scales with the host the lane runs on; a fixed
+  number cannot, and the earlier 5m bound cut a ~416 s whole-suite candidate
+  (measured in `rgw-ciu-20261125T202211-v1001`) at 302 s, so the lane reported
+  `BUDGET_EXCEEDED` instead of `survived` -- it could not report a survivor,
+  which is the one thing an R2 campaign exists to do. The derived value is
+  recorded on the verdict (`judgment.r2.budget_per_candidate_derived_s`).
+  **What ends a candidate:** `liveness = true` ends an IDLE stall only, and
+  only with a complete, pressure-free resource trace: `hung` requires an idle
+  window with a flat CPU (growing CPU is what prevents `hung`, and
+  stdout/stderr growth also counts as progress). A candidate that keeps
+  WORKING -- spinning on CPU, printing without end, or blocked under a busy
+  child -- is never ended by liveness; it is ended by the per-candidate bound
+  and reported `budget_exceeded` (a genuine idle stall keeps its own `hung`/
+  `CANDIDATE_HUNG` bucket, never `mutation_pct`). That bound is a wall clock
+  and is the interim: assay's CPU-seconds-without-progress bound (design P4,
+  `docs/design/no-time-budgets/DESIGN.md` S7.1) replaces it when it ships.
+  The cgroup observer (`resource_observer`/`resources.pids` in
+  `run-gate.toml`) is required for the CANDIDATE RESOURCE-LIMIT evidence every
+  native R2 candidate is judged against, not by liveness, which reads its own
+  procfs sources. The bound, the formula and the assay lines they come from
+  are stated in `assay.toml`'s own comment beside the key. A new unsafe
   symlink anywhere in the repository reds the lane until its owner declares
   or untracks it (fail-closed).
 - **S18.3** *Cgroup (fail-closed).* The gate resolves the container slice
