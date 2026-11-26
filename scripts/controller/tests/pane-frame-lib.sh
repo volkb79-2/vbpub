@@ -59,7 +59,8 @@ stray_frame() {
     MENUBOX) { printf '%b\n' "$MENU" ''; printf '%b\n' "$rule" '❯\xc2\xa0' "$rule" '  ctx 41%'; } >"$dest" ;;
     H1I) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · 1 monitor · ← 8 agents · ↓ to manage' >"$dest" ;;
     H1B) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · esc to interrupt · ← 8 agents' >"$dest" ;;
-    SPIN|SPIN_EDGE|SPIN_PROSE|PROSE) # the bottom FOOT_LINES window ends below the top rule; only the L2 scan sees these lines
+    SPIN|SPIN_EDGE|SPIN_PROSE|PROSE) # the Compacting line is never directly above the top rule: compact-resume's 6-line bottom
+      # window reaches that one row (and rightly reads any `Compacting` there as busy), so only the L2 scan sees these lines
       if [[ $2 == SPIN ]]; then
         printf '%b\n' 'output' '  ✔ Update installed · restart to apply' \
           '  ✶ Compacting conversation… (3s)…' \
@@ -68,9 +69,9 @@ stray_frame() {
         printf '%b\n' '  ✶ Compacting conversation… (3s)…' '  notice: 1' '  notice: 2' \
           '  notice: 3' '  notice: 4' '  notice: 5' >"$dest"
       elif [[ $2 == SPIN_PROSE ]]; then
-        printf '%b\n' 'output' '  ● Compacting now.' >"$dest"
+        printf '%b\n' 'output' '  ● Compacting now.' '  notice: 1' >"$dest"
       else
-        printf '%b\n' 'output' '  The agent is Compacting a summary right now.' >"$dest"
+        printf '%b\n' 'output' '  The agent is Compacting a summary right now.' '  notice: 1' >"$dest"
       fi
       printf '%b\n' "$rule" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · ← 8 agents' >>"$dest" ;;
   esac
