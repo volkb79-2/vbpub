@@ -3262,7 +3262,10 @@ mod tests {
         let adopted = tier
             .append(&job(10_000_000_000, 16), 7, 3)
             .expect("the open segment still takes records");
-        assert_eq!(adopted.records, 2, "the adopted record remains in the segment");
+        assert_eq!(
+            adopted.records, 2,
+            "the adopted record remains in the segment"
+        );
         let refused = tier.append(&job(65_000_000_000, 16), 7, 3);
         assert_eq!(refused.map(|_| ()), Err(StoreError::LengthOverflow));
         assert_eq!(tier.next_seq(), SEQ_NAME_MAX + 1, "the mark does not move");
@@ -3280,7 +3283,11 @@ mod tests {
             Err(StoreError::LengthOverflow),
             "a changed epoch needs a new segment even in the same bucket"
         );
-        assert_eq!(epoch_tier.next_seq(), SEQ_NAME_MAX + 1, "the mark does not move");
+        assert_eq!(
+            epoch_tier.next_seq(),
+            SEQ_NAME_MAX + 1,
+            "the mark does not move"
+        );
         assert_eq!(epoch_tier.scan().segments.len(), 1);
         assert!(epoch_tier.scan().segments[0].is_sealed());
     }
