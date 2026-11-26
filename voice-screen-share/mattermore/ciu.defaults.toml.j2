@@ -11,8 +11,10 @@
 #     volumes (compose-project prefixed). The id is path-derived, so it differs
 #     from voice-screen-share/mattermost-server's.
 #   - NO host ports published, NO ingress_public/tls-edge membership, NO
-#     tls-edge Calls routers by default. The live edge owns public 8443
-#     TCP+UDP for the live Mattermost; this tryout must never take it.
+#     tls-edge Calls routers by default. Since tls-edge 4.0 the edge has no
+#     Calls preset: 8443 TCP+UDP belongs to whatever publishes Mattermost Calls
+#     media directly (the live Mattermost stack), and this tryout must never
+#     take it.
 #   - The Calls media listener (8443 in the container) is unpublished. For a
 #     LAN-only experiment `tryout.media_host_port` publishes it on ANOTHER host
 #     port (never 8443): off by default, and starting it that way needs the

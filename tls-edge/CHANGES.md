@@ -10,6 +10,60 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [4.0.1] - 2026-11-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=a3e9c28f31a55be2dc786c66fb5a7bc3ed2f9fb4 -->
+
+### Fixed
+- fix(tls-edge): verify.sh reports only what it observed and orders no certificate (bcffebb6e)
+- fix(tls-edge): verify.sh reports only what it observed and orders no certificate (3d701d7b3)
+
+### Documentation
+- docs(tls-edge): bind the TE-14 archive row and fix three wording nits (a9ea6dabe)
+- docs(tls-edge): verify.sh is fixed (7d0f8acf6)
+- docs(tls-edge): correct four statements found by review (53a3d70a7)
+- docs(tls-edge): verify.sh is fixed (b70cf6154)
+- docs(tls-edge): name the flags in the ops-check mitigation row too (70500002b)
+- docs(tls-edge): drop release-history prose and pin the tunnelled verify command (9cabaa150)
+- docs(tls-edge): 4.0.1 pending notes and the operator verify command (5a3d4dfdb)
+- docs(tls-edge): known issues and user-scope install notes after 4.0.0 (641852ebe)
+- docs(tls-edge): record the 4.0.0 acceptance findings; enable EVENTS explicitly (306e90f57)
+
+### Testing
+- test(tls-edge): make the missing-volume assertion able to fail; doc follow-ups (0aef18d2f)
+- test(tls-edge): tolerate the isolated release-gate clone missing the baseline tag (34762be5a)
+- test(tls-edge): pin the 4.0.0 release-note fragments to the 4.0.0 section (c867d92c6)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- The `dockerproxy` service now sets `EVENTS: 1` explicitly. The Docker provider's `watch: true` needs
+  the event stream, which the proxy image already enabled by default; the instance no longer relies on
+  that default (TE-14, verified on a host on 2026-11-26: a container started after Traefik was
+  routed by the second 0.5 s poll (about 1 s), without a Traefik restart).
+
+### Fixed
+- `scripts/verify.sh` check 5 could never pass because the proxy name was not passed to its probe; it
+  now requires an explicit HTTP 403 response.
+- Check 8 passed the domain test when `acme.json` did not mention `--domain` at all; it now warns. It
+  also reported no ACME errors when the log scan could not read the logs; that now fails.
+- Check 8 read only a volume name for ACME storage, so a `hostdir` instance fell back to a volume name
+  that `docker run` creates empty (found by reading the code, not on a host). It now uses Traefik's
+  volume name or bind-mount source, fails when neither exists, and creates no storage.
+- Check 11 reported "isolation working" whenever its probe returned nothing, including HTTP error
+  answers and a probe that did not run. It now passes only on recognized transport errors.
+- Check 9 now routes the canary through a fixed `.invalid` Host with `tls=true` and no `certresolver`,
+  so it orders no certificate. Runs that reached the 4.0.0 canary exited 127 because `cleanup_tmp` did
+  not exist. From 3.0.0 to 4.0.0, an ACME-mode canary run could order a real certificate for
+  `verify.<domain>` once per new name, since Traefik stores it; no certificate was ordered when a
+  configured wildcard already covered that name.
+
+### Known issues
+- `TE-13`: the ownership of `vol-traefik-acme` under rootless Docker is unverified (not checked before
+  4.0.0; waived by the main controller on 2026-11-26). The `py314` bundle passed the release gates but
+  was not installed on a host (no python 3.14 there). Both are in
+  `KNOWN_ISSUES_TODO_BACKLOG.md`.
+<!-- cmru: pending release notes end -->
+
 ## [4.0.0] - 2026-11-26
 <!-- cmru: generated -->
 <!-- cmru: source-end=f041f5eed0ff9479c9e36a6f8c5673ab9d9f533a -->

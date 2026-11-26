@@ -21,6 +21,9 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- fix(ciu): CIU-235 — the R2 lane's per-candidate bound is now DERIVED from the run's own baseline (`budget_per_candidate = "auto"`: `max(3 x baseline, baseline + 60 s)` over the measured lane-command wall time, recorded on the verdict) instead of a fixed number, because the ~416 s suite it bounds was being cut at 302 s under the old 5m bound, so a mutant no test kills read `BUDGET_EXCEEDED` instead of `survived`; `liveness = true` stays on and ends an IDLE stall only (`hung`/`CANDIDATE_HUNG`), with a complete pressure-free resource trace — a candidate that keeps working (spinning, printing, busy child) is ended by the per-candidate bound and reported `budget_exceeded` while more than that bound remains in the lane; if no more than the derived bound remains, the lane deadline can instead leave the attempt unclassified and end the lane `BUDGET_EXCEEDED`/`LANE_TIMEOUT` (see [SPEC S18.2](docs/SPEC.md#s18--implementation-gate-assay-backed)); the bound is a wall clock, the interim until assay's CPU-seconds-without-progress bound (design P4) ships; the `ciu-gate` canary's `budget_per_attempt` rises 20m -> 45m because the coverage baseline alone took 1108 s on a loaded host and the attempt expired (`rgw-ciu-gate-20261125T222402-v1001`); the three unjudged `engine.py` candidates (helper verdict, two dry-run `flush=True` lines) are now killed by behavioural tests
+
 <!-- cmru: release history -->
 
 ## [7.28.0] - 2026-11-24

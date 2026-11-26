@@ -136,7 +136,7 @@ python3 tools/render_standalone.py --out "$PWD/edge-proxy" --defaults-only
 cd edge-proxy
 docker compose up -d
 
-# 4. Verify the trial.
+# 4. Verify the trial stack.
 bash ../scripts/verify.sh
 
 # 5. Onboard your services — see CONSUMER_GUIDE.md.
@@ -247,22 +247,29 @@ only `live/` causes silent TLS failure inside the container.
 
 ## Verification
 
-`scripts/verify.sh` runs a post-install checklist.  Categories checked:
+`scripts/verify.sh` runs a post-install checklist. Strictly, it checks, in order:
 
 | Check | What it verifies |
 |---|---|
-| Stack health | Both containers report healthy (`docker inspect`) |
-| Port binding | Configured HTTP/HTTPS ports and any enabled HTTP/3 socket are bound on the expected interface |
-| TLS handshake | `openssl s_client` against the host FQDN; cert loaded (not the Traefik default self-signed) |
-| ACME volume | `acme.json` exists, is non-empty, and has mode 0600 |
-| Network | `ingress_public` network exists and Traefik is attached |
-| DNS | Host FQDN resolves to the host's public IP |
-| Port 80 | Reports whether HTTP→HTTPS redirect is active or port is closed |
+| 1. ciu configuration | The bundled `<root>/ciu check` passes (SKIPs when the ciu launcher is absent) |
+| 2. compose | `docker compose config -q` accepts the rendered stack |
+| 3. health | Both containers report `healthy` (`docker inspect`) |
+| 4. networks | `ingress_public` exists; `traefik_internal` exists and is internal |
+| 5. socket proxy | A GET is allowed and a POST is refused at `dockerproxy:2375` |
+| 6. redirect | With `expose_http = true`: the HTTP entrypoint answers 301/308 |
+| 7. TLS | A certificate is served for the domain and it is not Traefik's default self-signed |
+| 8. ACME/static | ACME: an existing named volume or bind mount holds non-empty `acme.json` at mode 0600; ACME log scan errors FAIL and a missing `--domain` mention WARNs. Static/dev: the cert file is readable |
+| 9. canary | A labelled `whoami` container is routed through `websecure` using a fixed `.invalid` Host, `tls=true`, and no `certresolver`; it orders no certificate |
+| 10. access log | Traefik's recent log lines are JSON carrying `RouterName` |
+| 11. ops isolation | With `--ops-check`: an ops endpoint is unreachable from the given network |
 
-Run at any time:
+Pass `--domain` as a host name the edge already serves a certificate for. The
+canary probes with that name as TLS SNI and `tls-edge-verify-canary.invalid` as
+the HTTP Host; its router has `tls=true` and no `certresolver`. `--no-canary`
+remains an optional way to skip check 9.
 
 ```bash
-bash scripts/verify.sh
+bash scripts/verify.sh --domain app.example.test
 ```
 
 ---
