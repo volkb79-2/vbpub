@@ -1257,10 +1257,14 @@ The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped pro
    `mdt-host-check.sh` (no FAIL), then `tools/accept/daemon-reload-check.sh` (it refuses, exit 3 and nothing done, while a lowering is deferred or systemd and the kernel
    disagree on a dev `MemoryMax`).
 4. **Restore or roll back** — on any failure, or when `manifest.env` reads `restore=pending`:
-   `tools/accept/accept-restore.sh --evidence /root/accept-<ts>-1` (exit 0 restored, **1 a lowering is deferred: report it, never force it**, 3 nothing to do or refused). It is
+   `tools/accept/accept-restore.sh --evidence /root/accept-<ts>-1` (exit 0 restored, **1 a lowering is deferred OR a foreign value was left alone: report it, never force it**, 3 nothing to do or refused). It is
    idempotent and reads only the write-ahead file `/root/accept-<ts>-1/squeeze-state.env`, so it repairs the host after **any** death of the run; the same file's
-   `restore=pending` never means the host is still squeezed in a max, only that one lowering waits for the unlocked reconcile. Then `DEV_HOST_MEMORY_KEEP` back at the pre-run
-   value and `sudo ./install.sh`. A run that finds a stale state file restores it first, with one NOTE.
+   `restore=pending` never means the host is still squeezed in a max, only that one lowering waits for the unlocked reconcile. **`restore=ok` is written only
+   when every value the kit wrote is back at its start value**; a file the kit never wrote is left alone, named `restore=foreign:<file>`, and the command
+   exits **1** with the state file kept (`restore=pending` likewise), so a later `accept-restore.sh` on the same file finishes it — a `restore=ok` line is the
+   only thing that may be read as "the host is back". Then `DEV_HOST_MEMORY_KEEP` back at the pre-run
+   value and `sudo ./install.sh`. A run that finds a stale state file restores it first, with one NOTE; a run whose `dev`/`dev-gates` `memory.min` sits above
+   systemd's `MemoryMin` (a leftover of an interrupted run) refuses (exit 3) instead of recording that raise as its original.
 5. **The third run** at the K the eval proposed is **step 0 only**, one dwell: `accept-run.sh --evidence <EV3> --steps 0`. A FAIL there is R again, and the eval prints **no K
    to pin**: step 0 failing means the live configuration is not survivable, so the header names only the tested `K0=<K0>M` and says to pin `DEV_HOST_MEMORY_KEEP` **above** it
    (an invented number would name a K the run never exercised). A v2 run also refuses (exit 3) without `MDT_ACCEPT_SSH_TARGET` and outside `HOST_ROLE=dedicated-dev`.

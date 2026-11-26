@@ -133,8 +133,16 @@ write to it removes and recreates **every** kdamond directory and fails `EBUSY` 
 exit 3, `nr_kdamonds = 0` → write 1 and use index 0, otherwise use the highest index (which is `off`), record it in the WAL and overwrite its
 configuration (a cgprofiled session started mid-run then fails `EBUSY` on its own write — a cgprofile NOTE, never a host effect, and §4.4's
 `sessions_live == 0` makes it unlikely); (5) `end_utc`, `restore=ok|pending`, probe end states, and delete the state file only on `ok`. **Compare,
-then restore.** An original is written back only while the file still holds the value the kit wrote (both in the WAL); a differing value means another
-writer has taken over and is NOTEd, not overwritten. **A reboot mid-run** is a different `boot_id`: the boot already reset the cgroup files, so the
+then restore.** The five originals are captured **once**, at start (`DEV_MIN_START`/`TIER_MIN_START` beside `DEV_MAX_START`), and every WAL line of
+a relpath carries that start value as its original — a `memory.min` read again at step s is the kit's own step s−1 raise, never the original. In the
+restore the **first** WAL line of a relpath supplies the original and **any** value the kit wrote for it counts as the kit's (a death between a line
+and its write leaves the previous step's value, which is still the kit's own). A value the kit never wrote means another writer has taken over: it is
+NOTEd, **not** overwritten, and reported loudly as `restore=foreign:<rel>`; the restore then exits **1** and **keeps the WAL** (the stricter of the
+two options: only a later write or the reconcile can prove what that file should hold, and `restore=ok` must never be printed over an untouched foreign
+value). A failed WAL append aborts the run before the cgroup write it protects (no write without a record), and the preflight checks free space on the
+**evidence** filesystem (`/root`, not the Docker data root), because a full disk would silently degrade write-ahead to write-only. Every `docker rm -f`
+on a restore path (the kit's own `finish` and `accept-restore.sh`) is bounded by a timeout (`MDT_ACCEPT_RM_TIMEOUT`, 30 s) whose failure is logged and
+**never** stops the min restores or the kdamond `off`; a squeezed dockerd stalls `rm` exactly as it stalls the probes. **A reboot mid-run** is a different `boot_id`: the boot already reset the cgroup files, so the
 restore writes nothing, clears the state file with a NOTE and exits 0. **`accept-restore.sh`** (new verb) repairs a state file left by SIGKILL:
 idempotent, exit 0 ok / 3 nothing to do / 1 pending, and a later `accept-run.sh` that finds one restores first with one NOTE. It takes the same flock
 (`-w`, see below) and refuses while a live run holds it. **A unit that ends by itself.** The `systemd-run` unit carries its own restore: `-p
@@ -185,7 +193,10 @@ and a single hand line would leave steps ≥ 1 with no data); the samples go to 
 `probes.csv`. **A probe that wrote no row at all is MISSING DATA, so the step is INCONCLUSIVE, never a pass** (the same rule as §3.5's missing hard
 criterion, applied per probe: the kit cannot see the harm it could not measure, L-i); a row with a failing rc, or a latency rule breach, is a FAIL.
 `latency rule` = `max(2 × step-0 p95, step-0 p95 + 0.5 s)`, judged **contention-agnostically**: a step FAILs a latency rule when **≥ 2
-samples exceed it, or any sample hits the timeout, or the median exceeds it**; a single outlier is INFO (the p95 of 10 samples is the max, so one slow
+samples exceed it, or any sample hits the timeout, or the median exceeds it**; a single outlier is INFO. The rule applies to the probes whose pass
+rule **is** latency; the two exceptions are named in the judge (`LATENCY_EXEMPT`): `psi_guard`, whose pass rule is "active + ticks advance" and whose
+recorded seconds are its own probe duration (never the run's elapsed time, which grows by a dwell per step and would FAIL a healthy daemon around
+step 3-4), and `cgprofiled` in its `degraded` form (CLI absent → `systemctl is-active`), which §3.3 makes INFO (the p95 of 10 samples is the max, so one slow
 `docker info` under a starting lane would otherwise fail a step for a contention fact, not a memory verdict).
 
 | unit | probe | timeout | pass rule |
