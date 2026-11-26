@@ -98,3 +98,11 @@ def test_a_mutation_timeout_below_the_suite_is_reported():
         for part in wrong["lanes"]["mutation"]["argv"]
     ]
     assert mutation_timeout_seconds(wrong) == 120 < MUTATION_TIMEOUT_FLOOR
+
+
+def test_r2_has_no_elapsed_budget_and_declares_a_stall_watch():
+    _assay, gate = _load()
+    lane = gate["lanes"]["r2"]
+
+    assert "budget" not in lane
+    assert lane["stall_timeout"] == "15m"

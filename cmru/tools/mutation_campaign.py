@@ -41,6 +41,7 @@ OPERATORS = (
 )
 _CANDIDATE_CLEANUP_SECONDS = 10.0
 _CANDIDATE_OUTPUT_TAIL_BYTES = 1 << 20
+_MUTATION_PROGRESS_INTERVAL_SECONDS = 300.0
 _SETUPTOOLS_SOURCE_KEYS = frozenset({
     "include-package-data",
     "package-data",
@@ -166,6 +167,7 @@ def _stream_control_output(control_log) -> None:
 def _run(
     argv: Sequence[str], *, cwd: Path, timeout_seconds: float,
     output_dir: Path | None = None, full_output_log=None,
+    progress_label: str | None = None,
 ) -> CommandRun:
     """Run one command and prove its descendants are gone before returning."""
     try:
@@ -185,6 +187,8 @@ def _run(
             window = ProcessTreeWindow(cleanup_seconds=_CANDIDATE_CLEANUP_SECONDS)
             try:
                 with window:
+                    if progress_label is not None:
+                        print(f"mutation: {progress_label} starting", flush=True)
                     try:
                         process = window.spawn(
                             command,
@@ -200,12 +204,38 @@ def _run(
                         raise CandidateIsolationError(
                             f"cannot start candidate command: {exc}"
                         ) from exc
+                    wait_started = time.monotonic()
+                    deadline = wait_started + timeout_seconds
                     try:
-                        returncode = process.wait(timeout=timeout_seconds)
+                        while True:
+                            remaining = max(0.0, deadline - time.monotonic())
+                            wait_seconds = (
+                                min(_MUTATION_PROGRESS_INTERVAL_SECONDS, remaining)
+                                if progress_label is not None else remaining
+                            )
+                            try:
+                                returncode = process.wait(timeout=wait_seconds)
+                                break
+                            except subprocess.TimeoutExpired:
+                                now = time.monotonic()
+                                if now >= deadline:
+                                    raise
+                                if progress_label is not None:
+                                    print(
+                                        f"mutation: {progress_label} still running; "
+                                        f"elapsed={now - wait_started:.0f}s",
+                                        flush=True,
+                                    )
                     except subprocess.TimeoutExpired as exc:
                         evidence = window.finish(timed_out=True, force=True)
                         if full_output_log is not None:
                             _copy_full_output(output, full_output_log)
+                        if progress_label is not None:
+                            print(
+                                f"mutation: {progress_label} timed out after "
+                                f"{timeout_seconds:g}s",
+                                flush=True,
+                            )
                         timeout_error = subprocess.TimeoutExpired(
                             command,
                             timeout_seconds,
@@ -221,6 +251,12 @@ def _run(
                     if full_output_log is not None:
                         _copy_full_output(output, full_output_log)
                     stdout = _read_output_tail(output)
+                    if progress_label is not None:
+                        print(
+                            f"mutation: {progress_label} command exited "
+                            f"{returncode}; elapsed={time.monotonic() - wait_started:.0f}s",
+                            flush=True,
+                        )
                     return CommandRun(
                         returncode=returncode,
                         stdout=stdout,
@@ -1131,6 +1167,7 @@ def _run_campaign(
         )
     if args.require_candidates and not jobs:
         raise RuntimeError("the declared source diff produced no mutation candidates")
+    print(f"mutation: candidate inventory ready ({len(jobs)} candidates)", flush=True)
 
     results = _resume_results(
         evidence_path=args.evidence,
@@ -1170,6 +1207,7 @@ def _run_campaign(
     started = time.monotonic()
     control_log = tempfile.TemporaryFile(mode="w+b")
     control_seconds = 0.0
+    print("mutation: preparing known-good control", flush=True)
     try:
         with tempfile.TemporaryDirectory(prefix="cmru-mutation-baseline-") as temporary:
             baseline_root = _copy_frozen_fixture(
@@ -1177,6 +1215,7 @@ def _run_campaign(
                 project_prefix=project_prefix,
                 workspace=Path(temporary),
             )
+            print("mutation: known-good control fixture ready", flush=True)
             # Refuse before the campaign if exact cgroup-v2 counters or contract-2
             # observer access are unavailable. A mutation result without this
             # evidence cannot support a kill claim.
@@ -1188,6 +1227,7 @@ def _run_campaign(
                     timeout_seconds=args.timeout_seconds,
                     output_dir=Path(temporary),
                     full_output_log=control_log,
+                    progress_label="known-good control",
                 )
             finally:
                 control_seconds = time.monotonic() - control_started
@@ -1321,6 +1361,11 @@ def _run_campaign(
             raise RuntimeError(document["infrastructure_error"])
         existing = results[index]
         if existing is not None and existing.get("outcome") == "killed":
+            print(
+                f"mutation: candidate {index + 1}/{len(jobs)} reused "
+                "(previously killed)",
+                flush=True,
+            )
             _append_progress(args.progress, {
                 "event": "candidate",
                 "candidate_index": index,
@@ -1336,6 +1381,8 @@ def _run_campaign(
         relative = _relative_project_path(
             job.path, repo_root=repo_root, project_root=project_root
         )
+        progress_label = f"candidate {index + 1}/{len(jobs)}"
+        print(f"mutation: {progress_label} preparing", flush=True)
         with tempfile.TemporaryDirectory(prefix="cmru-mutation-") as temporary:
             candidate_root = _copy_frozen_fixture(
                 template_root=template_root,
@@ -1367,6 +1414,7 @@ def _run_campaign(
                     test_argv, cwd=candidate_root,
                     timeout_seconds=candidate_timeout,
                     output_dir=Path(temporary),
+                    progress_label=progress_label,
                 )
             except subprocess.TimeoutExpired as exc:
                 timed_out = True
@@ -1464,6 +1512,10 @@ def _run_campaign(
             "elapsed_seconds": result.elapsed_seconds,
             "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
         })
+        print(
+            f"mutation: {progress_label} recorded outcome={result.outcome}",
+            flush=True,
+        )
         if limit_evidence.limit_hit:
             document["status"] = "infrastructure-error"
             document["infrastructure_error"] = (

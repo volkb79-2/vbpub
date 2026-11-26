@@ -297,7 +297,7 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {work
 ''',
   "--",
 ]
-budget = "7h"
+stall_timeout = "15m"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.r2.resources]

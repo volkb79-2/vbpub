@@ -1402,6 +1402,53 @@ print(json.dumps(payload))
     return json.loads(process.stdout)
 
 
+def test_mutation_runner_reports_progress_while_a_labeled_child_is_running(
+        monkeypatch, tmp_path, capsys):
+    process_tree = importlib.import_module("assay.process_tree")
+
+    class FakeProcess:
+        def __init__(self):
+            self.waits = 0
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired(["fake-command"], timeout)
+            return 0
+
+    class FakeWindow:
+        def __init__(self, cleanup_seconds):
+            self.process = FakeProcess()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def spawn(self, *args, **kwargs):
+            return self.process
+
+        def finish(self, **kwargs):
+            return SimpleNamespace(
+                outliving_descendants=0,
+                to_dict=lambda: {"leader_status": "exited"},
+            )
+
+    monkeypatch.setattr(process_tree, "ProcessTreeWindow", FakeWindow)
+
+    result = mutation_campaign._run(
+        ["fake-command"], cwd=tmp_path, timeout_seconds=1800,
+        progress_label="candidate 1/1",
+    )
+
+    output = capsys.readouterr().out
+    assert result.returncode == 0
+    assert "mutation: candidate 1/1 starting" in output
+    assert "mutation: candidate 1/1 still running" in output
+    assert "mutation: candidate 1/1 command exited 0" in output
+
+
 def test_mutation_subprocess_has_a_hard_timeout(tmp_path):
     result = _run_in_subreaper_process(
         [sys.executable, "-c", "import time; time.sleep(30)"],
