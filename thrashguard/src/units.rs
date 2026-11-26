@@ -414,9 +414,7 @@ where
         }
         let entries = match read_dir(&directory) {
             Ok(entries) => entries,
-            Err(error)
-                if directory != root && error.kind() == std::io::ErrorKind::NotFound =>
-            {
+            Err(error) if directory != root && error.kind() == std::io::ErrorKind::NotFound => {
                 continue;
             }
             Err(error) => {

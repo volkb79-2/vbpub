@@ -536,7 +536,9 @@ pub fn bounded_events_reply(boot_id: &str, rows: &[Value], truncated: bool) -> V
             break;
         }
         page.push(row.clone());
-        if events_reply(boot_id, page.clone(), incomplete).to_json().len()
+        if events_reply(boot_id, page.clone(), incomplete)
+            .to_json()
+            .len()
             > crate::json::MAX_DOCUMENT_BYTES
         {
             page.pop();
@@ -1188,7 +1190,11 @@ mod tests {
             Arc::new(ManualClock::new(2)),
             &tree.at("absent.pressure"),
         );
-        assert_eq!(restarted.journal().seq(), 1, "the largest accepted request recovers");
+        assert_eq!(
+            restarted.journal().seq(),
+            1,
+            "the largest accepted request recovers"
+        );
         let too_long_id = "i".repeat(crate::wire::MAX_ID_BYTES + 1);
         let oversized = format!(
             "{{\"v\":\"{}\",\"verb\":\"heartbeat\",\"id\":\"{too_long_id}\"}}",
@@ -1199,7 +1205,11 @@ mod tests {
             refusal.get("reason").and_then(Value::as_str),
             Some("too-large")
         );
-        assert_eq!(restarted.journal().seq(), 1, "the request adds no journal row");
+        assert_eq!(
+            restarted.journal().seq(),
+            1,
+            "the request adds no journal row"
+        );
         drop(restarted);
 
         let after_refusal = guard(
@@ -1227,8 +1237,9 @@ mod tests {
         let detail = "x".repeat(700);
         for at in 0..200 {
             core.journal
-                .append(&Event::decision("would-freeze", "pressure", "report", at)
-                    .with_detail(&detail))
+                .append(
+                    &Event::decision("would-freeze", "pressure", "report", at).with_detail(&detail),
+                )
                 .expect("append event row");
         }
         let reply = socket::answer(
@@ -1238,7 +1249,10 @@ mod tests {
         );
         let text = reply.to_json();
         assert!(text.len() <= crate::json::MAX_DOCUMENT_BYTES);
-        assert!(Value::parse(&text).is_ok(), "the client document parser accepts it");
+        assert!(
+            Value::parse(&text).is_ok(),
+            "the client document parser accepts it"
+        );
         assert_eq!(reply.get("truncated").and_then(Value::as_bool), Some(true));
         assert!(
             reply.get("rows").and_then(Value::as_array).unwrap().len() < 200,

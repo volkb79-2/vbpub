@@ -654,9 +654,7 @@ mod tests {
         assert!(matches!(parse_request(&line), Ok(Request::Register(_))));
 
         let too_long_id = "i".repeat(MAX_ID_BYTES + 1);
-        let line = registration_line(&format!(
-            "\"verb\":\"heartbeat\",\"id\":\"{too_long_id}\""
-        ));
+        let line = registration_line(&format!("\"verb\":\"heartbeat\",\"id\":\"{too_long_id}\""));
         assert_eq!(
             parse_request(&line),
             Err(WireError::FieldTooLarge {

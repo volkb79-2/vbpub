@@ -374,10 +374,12 @@ fn existing_sequence(dir: &Path, boot_id: &str) -> io::Result<u64> {
 
 /// Iterate only newline-terminated rows, stripping a CR from CRLF input.
 pub fn complete_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
-    bytes.split_inclusive(|byte| *byte == b'\n').filter_map(|line| {
-        let line = line.strip_suffix(b"\n")?;
-        Some(line.strip_suffix(b"\r").unwrap_or(line))
-    })
+    bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            let line = line.strip_suffix(b"\n")?;
+            Some(line.strip_suffix(b"\r").unwrap_or(line))
+        })
 }
 
 /// Bound every peer-influenced string before it reaches the append-only file.
@@ -506,9 +508,15 @@ mod tests {
                 "{field} was shortened with a visible marker"
             );
         }
-        let shadowed = row.get("shadowed").and_then(Value::as_array).expect("shadowed");
+        let shadowed = row
+            .get("shadowed")
+            .and_then(Value::as_array)
+            .expect("shadowed");
         assert_eq!(shadowed.len(), MAX_SHADOWED_ROWS);
-        assert_eq!(shadowed.last().and_then(Value::as_str), Some(TRUNCATED_MARKER));
+        assert_eq!(
+            shadowed.last().and_then(Value::as_str),
+            Some(TRUNCATED_MARKER)
+        );
         assert_eq!(Value::parse(line.trim()).expect("valid row"), row);
     }
 
@@ -552,13 +560,21 @@ mod tests {
         assert_eq!(row.get("seq").and_then(Value::as_i64), Some(5));
         let bytes = std::fs::read(journal.file()).expect("journal bytes");
         let complete: Vec<&[u8]> = complete_lines(&bytes).collect();
-        assert_eq!(complete.len(), 3, "the torn fragment is isolated by a newline");
+        assert_eq!(
+            complete.len(),
+            3,
+            "the torn fragment is isolated by a newline"
+        );
         assert_eq!(
             std::str::from_utf8(complete[2]).expect("new row is valid UTF-8"),
             row.to_json()
         );
         let restarted = Journal::new(&dir, BOOT).expect("second restart");
-        assert_eq!(restarted.seq(), 5, "the complete row's sequence is recovered");
+        assert_eq!(
+            restarted.seq(),
+            5,
+            "the complete row's sequence is recovered"
+        );
     }
 
     #[test]
@@ -677,9 +693,15 @@ mod tests {
         let restarted = journal(&tree);
         let (rows, truncated) = restarted.rows_since(0);
         assert!(rows.is_empty());
-        assert!(truncated, "a new in-memory ring cannot claim the old prefix");
+        assert!(
+            truncated,
+            "a new in-memory ring cannot claim the old prefix"
+        );
         let (_, truncated) = restarted.rows_since(restarted.seq());
-        assert!(!truncated, "a caller already at the recovered sequence is current");
+        assert!(
+            !truncated,
+            "a caller already at the recovered sequence is current"
+        );
     }
 
     #[test]

@@ -436,12 +436,14 @@ mod tests {
     fn an_over_limit_registration_field_gets_the_named_too_large_reason() {
         let mut recorder = Recorder::default();
         let id = "i".repeat(crate::wire::MAX_ID_BYTES + 1);
-        let line = format!(
-            "{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"heartbeat\",\"id\":\"{id}\"}}"
-        );
+        let line =
+            format!("{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"heartbeat\",\"id\":\"{id}\"}}");
         let reply = answer(&mut recorder, Role::Registrant, &line);
         assert_eq!(reply.get("ok").and_then(Value::as_bool), Some(false));
-        assert_eq!(reply.get("reason").and_then(Value::as_str), Some("too-large"));
+        assert_eq!(
+            reply.get("reason").and_then(Value::as_str),
+            Some("too-large")
+        );
         assert!(
             recorder.seen.is_empty(),
             "oversized fields never reach dispatch"

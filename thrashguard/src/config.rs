@@ -1101,7 +1101,10 @@ mod tests {
         ] {
             let socket = std::fs::read_to_string(root.join("deploy/systemd").join(name))
                 .unwrap_or_else(|error| panic!("cannot read {name}: {error}"));
-            assert!(socket.contains("Accept=no"), "{name} must pass a listener fd");
+            assert!(
+                socket.contains("Accept=no"),
+                "{name} must pass a listener fd"
+            );
             assert!(
                 socket.contains("Service=thrashguard.service"),
                 "{name} must activate the shipped service"
@@ -1133,16 +1136,15 @@ mod tests {
     #[test]
     fn closed_wire_reason_vocabulary_is_exact_in_consumer_docs() {
         const CONSUMERS: &str = include_str!("../docs/CONSUMERS.md");
+        // Anchor this check to the one closed-list sentence; the expected set is
+        // duplicated from socket::refuse plus daemon::too-many-sessions, so a code
+        // vocabulary change must update this list as well as the consumer contract.
         let list = CONSUMERS
-            .split("Other wire refusals use the closed reason vocabulary ")
+            .split("closed reason vocabulary ")
             .nth(1)
             .and_then(|tail| tail.split(';').next())
             .expect("the closed wire reason sentence");
-        let documented = list
-            .split('`')
-            .skip(1)
-            .step_by(2)
-            .collect::<Vec<_>>();
+        let documented = list.split('`').skip(1).step_by(2).collect::<Vec<_>>();
         assert_eq!(
             documented,
             [
@@ -1164,13 +1166,18 @@ mod tests {
     fn design_matches_assay_tim030_and_the_p1_emission_boundary() {
         const DESIGN: &str = include_str!("../../docs/design/thrashguard/DESIGN.md");
         const ASSAY_SPEC: &str = include_str!("../../assay/docs/SPEC.md");
+        let normalized_spec = ASSAY_SPEC.split_whitespace().collect::<Vec<_>>().join(" ");
+        let normalized_design = DESIGN.split_whitespace().collect::<Vec<_>>().join(" ");
         for phrase in [
             "effective CPU seconds (TIM-020) as raw, un-normalized CPU seconds",
             "ref_cpu_s = effective_cpu_s * single_core / baseline_score",
             "assay holds no score constant",
             "a record of another major counts as no record",
         ] {
-            assert!(ASSAY_SPEC.contains(phrase), "TIM-030 no longer says {phrase:?}");
+            assert!(
+                normalized_spec.contains(phrase),
+                "TIM-030 no longer says {phrase:?}"
+            );
         }
         for phrase in [
             "TIM-020 is planned and is not implemented in the current assay code",
@@ -1178,9 +1185,13 @@ mod tests {
             "ref_cpu_s = effective_cpu_s * single_core / baseline_score",
             "assay holds no score constant",
             "A record for another major counts as no record",
-            "P1 is observe-only and emits no\nhostobs events",
+            "P1 is observe-only and emits no hostobs events",
+            "idempotent on `(event name, boot_id, seq)` and best-effort",
         ] {
-            assert!(DESIGN.contains(phrase), "the design contract is missing {phrase:?}");
+            assert!(
+                normalized_design.contains(phrase),
+                "the design contract is missing {phrase:?}"
+            );
         }
     }
 

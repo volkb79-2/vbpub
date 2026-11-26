@@ -714,7 +714,10 @@ mod tests {
             .expect("one oversized row is excluded from the bounded page");
         assert!(reply.to_json().len() <= thrashguard::json::MAX_DOCUMENT_BYTES);
         assert_eq!(reply.get("truncated").and_then(Value::as_bool), Some(true));
-        assert_eq!(reply.get("rows").and_then(Value::as_array).map(<[_]>::len), Some(0));
+        assert_eq!(
+            reply.get("rows").and_then(Value::as_array).map(<[_]>::len),
+            Some(0)
+        );
     }
 
     #[test]

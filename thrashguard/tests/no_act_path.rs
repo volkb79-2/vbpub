@@ -303,8 +303,14 @@ fn comment_markers_inside_strings_and_after_character_literals_remain_executable
     assert!(code.contains("https://memory.reclaim"));
     assert!(!code.contains("cgroup.events"));
     assert!(!code.contains("memory.max"));
-    assert!(code.contains("cgroup.freeze;"), "block-marker text did not mask code after a char literal");
-    assert!(code.contains("after_line_marker;"), "line-marker text did not mask code after a char literal");
+    assert!(
+        code.contains("cgroup.freeze;"),
+        "block-marker text did not mask code after a char literal"
+    );
+    assert!(
+        code.contains("after_line_marker;"),
+        "line-marker text did not mask code after a char literal"
+    );
 }
 
 #[test]

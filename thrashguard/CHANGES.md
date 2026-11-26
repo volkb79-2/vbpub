@@ -15,7 +15,8 @@ the next release's entry; the design is the normative document.
   the machine leaves parking mode, an `unknown-pressure` row, plus `registered`,
   `registration-refused`, `deregistered` and `expired`. Nothing is repeated every
   tick: the current decision is readable from `status`/`candidates` instead.
-- **The daemon serves both sockets.** The registrant verbs `register`, `update`,
+- **The daemon serves the reader socket and the optional registrant socket.**
+  The registrant verbs `register`, `update`,
   `heartbeat`, `deregister` resolve a container to one scope, store it, answer,
   and journal the outcome; the reader verbs `status`, `candidates`, `events`
   and `version` answer from the daemon's own state and journal ring. A reader
