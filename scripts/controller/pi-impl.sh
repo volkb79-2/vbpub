@@ -39,6 +39,17 @@
 # report check. Every active run also gets <run>.live (liveness/progress,
 # read by job-status.sh) and <run>.events (JSON lines, one per continue).
 #
+# `PI_EXTRA_ARGS` adds pi arguments to this launch: ONE ARGV ELEMENT PER LINE
+# (newline separated, so a value may itself contain spaces; no word splitting
+# and no eval, so nothing in it is ever reinterpreted as shell syntax). It is
+# appended AFTER pi-impl.sh's own arguments and before the `--` prompt
+# separator, and it may NOT set the launch contract pi-impl.sh owns: `-p`,
+# `--print`, `--mode`, `--model`, `--thinking`, `--session`, `--session-id`,
+# `--session-dir`, `-c`/`--continue`, `-r`/`--resume`, `--fork` and a bare `--`
+# are refused before anything is claimed or launched. The seam exists for a
+# caller that must restrict pi's tools (pi-review.sh does); an empty or unset
+# value adds nothing, so the implementer contract is unchanged.
+#
 # A run NAME is owned by one live wrapper: the wrapper takes an exclusive
 # flock on <runs-dir>/<name>.lock before it writes anything (lib.sh
 # controller_run_claim) and releases it on every exit path, so two wrappers on
@@ -48,12 +59,42 @@
 # CONTROLLER_RUN_FORCE=1 retires the previous owner's records into
 # <runs-dir>/retired/<name>/<utc-stamp>/ (never deletes them) and is refused
 # while an owner is still alive.
+#
+# Signal guard. Every pi run this wrapper starts gets
+# <this dir>/pi-shims FIRST on its PATH, for the first run, a resume and every
+# automatic continuation alike. `pkill`, `killall` and a `pgrep` carrying a
+# signal argument refuse there with `pi-shim: refused <name>` and exit 126: a
+# pattern kill in the shared devcontainer hits other controller sessions (a pi
+# agent whose brief banned it still ran `pkill -f 'sleep 30'` and killed other
+# sessions' monitors), and a written ban did not hold. Plain `pgrep` passes
+# through to the real pgrep. The shims are checked before launch and the launch
+# is refused (exit 2) if any is missing or not executable; no environment
+# variable switches the guard off.
+#
+# pi's bash tool inherits PATH and does not run a login shell: it spawns
+# /bin/bash with `-c` (dist/utils/shell.js:17-18 and :112-119) under an env that
+# is `{...process.env}` with pi's own bin dir prepended (dist/utils/shell.js:147-157,
+# passed at dist/core/tools/bash.js:78 and :160/:287). That inherited env is why
+# the wrapper's PATH assignment reaches the agent, and the prepended bin dir is
+# why a launch is refused while `$PI_CODING_AGENT_DIR/bin` (default
+# `$HOME/.pi/agent/bin`) holds any of the three names. That value is read the
+# way pi reads it (dist/utils/paths.js `normalizePath` expands a leading `~/`
+# against the home directory; dist/config.js:511-513), and a value that is not
+# absolute after that expansion is refused, because pi would join it to ITS OWN
+# working directory, which this wrapper cannot check beforehand.
+#
+# Known limits, which the shims cannot cover: the bash builtin `kill` (a
+# negative group pid or any pid the agent did not start), an ABSOLUTE path such
+# as /usr/bin/pkill or /usr/bin/killall, a shell loop over /proc, and a script
+# that resets PATH itself. The guard is a mechanical refusal for the ordinary
+# spellings, not a security boundary.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
 caller_pi_model=${PI_MODEL-}
 caller_pi_thinking=${PI_THINKING-}
 caller_pi_session_dir=${PI_SESSION_DIR-}
+caller_pi_extra_args=${PI_EXTRA_ARGS-}
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 controller_init
@@ -61,6 +102,10 @@ controller_init
 [[ -z $caller_pi_model ]] || PI_MODEL=$caller_pi_model
 [[ -z $caller_pi_thinking ]] || PI_THINKING=$caller_pi_thinking
 [[ -z $caller_pi_session_dir ]] || PI_SESSION_DIR=$caller_pi_session_dir
+# The caller's extra arguments win over a local environment file, like the four
+# above: a review launcher exports its restricted tool set, and a stale
+# PI_EXTRA_ARGS in controller.local.env must not widen it.
+[[ -z $caller_pi_extra_args ]] || PI_EXTRA_ARGS=$caller_pi_extra_args
 
 usage() {
   echo "usage: $0 <worktree> <absolute-prompt-file> <run-name> [resume <session-id>] [--report <absolute-path>]" >&2
@@ -130,6 +175,93 @@ if [[ ! $live_interval =~ ^[0-9]+$ ]] || (( live_interval == 0 )); then
   echo 'PI_LIVE_INTERVAL_SECONDS must be a positive integer' >&2
   exit 2
 fi
+
+# PI_EXTRA_ARGS: extra pi argv elements, one per line (see the header). Refused
+# before the run name is claimed, so a malformed value retires and overwrites
+# nothing.
+extra_pi_args=()
+parse_extra_pi_args() {
+  local line
+  [[ -n ${PI_EXTRA_ARGS-} ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    [[ ! $line =~ ^[[:space:]]*$ ]] || continue
+    case $line in
+      -p | --print | --mode | --mode=* | --model | --model=* | --thinking | --thinking=* | \
+        --session | --session=* | --session-id | --session-id=* | --session-dir | --session-dir=* | \
+        -c | --continue | -r | --resume | --fork | --fork=* | --)
+        echo "PI_EXTRA_ARGS may not set '$line': pi-impl.sh owns the launch contract (print mode, mode, model, thinking, session)" >&2
+        return 1
+        ;;
+    esac
+    extra_pi_args+=("$line")
+  done <<< "$PI_EXTRA_ARGS"
+  return 0
+}
+parse_extra_pi_args || exit 2
+# L2: the seam can come from a caller's export OR from a host's
+# controller.local.env (lib.sh sources that with `set -a`, so an unset caller
+# value is silently replaced by the file's). A widened or narrowed implementer
+# run must not be invisible: every non-empty seam is announced, with the count
+# of arguments it adds, so the run's own log carries the fact.
+if (( ${#extra_pi_args[@]} > 0 )); then
+  printf 'pi-impl: PI_EXTRA_ARGS adds %s pi argument(s); this launch is not the plain implementer argv\n' \
+    "${#extra_pi_args[@]}" >&2
+fi
+# The signal guard (see the header): every shim must exist and be executable.
+# This is a fact read from the filesystem, so a missing or non-executable shim
+# refuses the launch instead of starting an agent with an unguarded PATH. It is
+# checked before the name is claimed, so a refusal leaves no run record behind.
+pi_shims_dir=$SCRIPT_DIR/pi-shims
+for shim in pkill killall pgrep; do
+  if [[ ! -f $pi_shims_dir/$shim || ! -x $pi_shims_dir/$shim ]]; then
+    echo "pi signal guard is incomplete: $pi_shims_dir/$shim is missing or not executable" >&2
+    exit 2
+  fi
+done
+# pi prepends its OWN tool directory to the PATH of every command its bash tool
+# runs (dist/utils/shell.js:147-157 `getShellEnv`, whose binDir is
+# dist/config.js:538-540 `join(getAgentDir(), "bin")`, and getAgentDir is
+# `$PI_CODING_AGENT_DIR` or $HOME/.pi/agent, dist/config.js:510-515). A
+# pkill/killall/pgrep sitting there would be found BEFORE the shims, so the guard
+# cannot promise anything while one exists: refuse instead of starting an agent
+# with a guard that a download could shadow.
+#
+# The value is resolved the way pi resolves it (dist/config.js:511-513 calls
+# utils/paths.js normalizePath:100-124, which expands a leading `~/` against the
+# home directory and returns everything else as written). Bash does NOT
+# tilde-expand a variable's value, so a literal test of
+# `$PI_CODING_AGENT_DIR/bin/pkill` would miss `~/agents/pi/bin/pkill`: the
+# launch would proceed and pi would then put the REAL expanded directory ahead
+# of the shims. A value still not absolute after that expansion is joined by pi
+# to PI's OWN working directory (the worktree), which this wrapper cannot stat
+# as one path, so it is refused with a named message rather than guessed at.
+pi_agent_dir=${PI_CODING_AGENT_DIR:-}
+if [[ -n $pi_agent_dir ]]; then
+  # SC2088 is silenced for the WHOLE statement: the `~/` here is pi's documented
+  # spelling, matched literally (bash must not expand it into $HOME before the
+  # comparison), not a tilde the author expected to expand.
+  # shellcheck disable=SC2088
+  case $pi_agent_dir in
+    '~') pi_agent_dir=$HOME ;;
+    '~/'*) pi_agent_dir=$HOME/${pi_agent_dir#'~/'} ;;
+    /*) : ;;
+    *)
+      echo "pi signal guard cannot be enforced: PI_CODING_AGENT_DIR must be an absolute path or start with ~/ (got '$pi_agent_dir')" >&2
+      echo 'pi expands a leading ~/ and joins anything else to its own working directory, so its bin directory cannot be checked before the launch; name an absolute path' >&2
+      exit 2
+      ;;
+  esac
+else
+  pi_agent_dir=$HOME/.pi/agent
+fi
+for shim in pkill killall pgrep; do
+  if [[ -e $pi_agent_dir/bin/$shim ]]; then
+    echo "pi signal guard cannot be enforced: $pi_agent_dir/bin/$shim shadows the shim" >&2
+    echo 'pi prepends its own bin directory to the agent PATH; remove that file or move it out of the way' >&2
+    exit 2
+  fi
+done
 
 out=$CONTROLLER_RUNS_DIR
 # Ownership first: nothing below may write a name-owned record until this
@@ -263,6 +395,10 @@ IFS= read -r -d '' prompt_text < "$prompt" || :
 continue_prompt=''
 IFS= read -r -d '' continue_prompt < "$continue_prompt_file" || :
 base_pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" --session-dir "$session_dir")
+# PI_EXTRA_ARGS is appended after the wrapper's own arguments: a caller can add
+# a tool selection, never replace the launch contract (reserved flags are
+# refused above).
+(( ${#extra_pi_args[@]} == 0 )) || base_pi_args+=("${extra_pi_args[@]}")
 resume_target=''
 [[ $mode != resume ]] || resume_target=$session_id
 
@@ -300,11 +436,20 @@ invoke_pi() {
   local prompt_text=$1 stream=$2 first_run=$3
   local -a argv=("${base_pi_args[@]}")
   [[ -z $resume_target ]] || argv+=(--session "$resume_target")
+  # The shim directory goes FIRST on the agent's PATH and only there: this
+  # wrapper's own commands keep the caller's PATH. pi's bash tool hands its
+  # inherited environment to the shell it spawns, so the agent sees the shims.
+  # `${PATH:+:$PATH}` and not `${PATH-}`: an UNSET or EMPTY PATH would otherwise
+  # hand the child a trailing empty field, and an empty PATH field means the
+  # CURRENT DIRECTORY (the worktree) both to the shim's own lookup and to every
+  # command the agent runs.
   if [[ $first_run == 1 ]]; then
-    (cd -- "$worktree" && controller_close_ownership_fds && exec nice pi "${argv[@]}" -- "$prompt_text" \
+    (cd -- "$worktree" && controller_close_ownership_fds \
+      && PATH=$pi_shims_dir${PATH:+:$PATH} exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null > "$stream" 2> "$out/$name.err")
   else
-    (cd -- "$worktree" && controller_close_ownership_fds && exec nice pi "${argv[@]}" -- "$prompt_text" \
+    (cd -- "$worktree" && controller_close_ownership_fds \
+      && PATH=$pi_shims_dir${PATH:+:$PATH} exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null >> "$stream" 2>> "$out/$name.err")
   fi
 }

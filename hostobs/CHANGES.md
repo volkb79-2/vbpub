@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 - **Fixed (M3 B1, `HOB-90`):** peer credentials now use a raw 12-byte `SO_PEERCRED` read with length and pid guards; pid 0 remains accepted as invisible, and accept captures the uid plus advisory UTF-8 comm and cgroup `(st_dev, inode)` labels.
+- **Added (M3 A2):** package the standard-library `hostobs_client` distribution with the `hostobs-mark` entry point; conformance builds and checks its zipapp, while a CMRU wheel-build contract is planned for A1 and `hostobs/cmru.toml` is not present yet.
+- **Fixed (M3 A2 review):** packaging checks now reject namespace-only source directories, match package-data patterns by path segment, pin the complete setuptools table and legacy config absence, exercise `hostobs-mark` exit codes against an unavailable socket, and require fault probes to observe their expected rejection.
 - **Added (M3 B2):** the observer level is installable through its systemd socket, tmpfiles directory and shipped probe configuration; deploy regression checks pin all three levels, and the Debian setup notes cover its access group.
 - **Added (HOB-102):** the kernel collector reads `cgroup.freeze` and `cgroup.events`, and the sampler publishes `cgroup.freeze`, `cgevents.frozen` and `cgevents.populated` as last-only cgroup state metrics.
 - **Changed (P-hostobs-12, `HOB-67`):** the sans-IO serving core and send hub now live in `crates/serve`; `proto` keeps the codec and stream layers, while `probe` keeps process wiring, config, the driver, sampler and live backend.
