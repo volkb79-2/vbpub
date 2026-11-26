@@ -286,6 +286,11 @@ def setup(args) -> int:
         raise Refusal(f"{args.admin}/kdamonds is absent: DAMON sysfs is unavailable")
     idx = select_kdamond(args.admin, args.state)
     entries = entries_or_refuse(units, args.cgroup)
+    # `contexts/0` is created only by writing `1` to contexts/nr_contexts.
+    # A fresh kdamond has nr_contexts=0, so avail_operations is not readable
+    # until this write has happened.  Keep this before every read below
+    # contexts/0; the WAL already records the kdamond before the write.
+    da.SysfsInterface.create_context(idx, 0)
     avail = read_lines(os.path.join(args.admin, "kdamonds", str(idx), "contexts", "0", "avail_operations"))
     if not avail:
         raise Refusal(f"kdamonds/{idx}/contexts/0/avail_operations is unreadable")
