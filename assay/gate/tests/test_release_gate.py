@@ -217,6 +217,11 @@ def _environment(tmp_path: Path, *, host: str = "v1001") -> dict[str, str]:
         "            # removes HOME must see the missing-path refusal the real module\n"
         "            # would produce.\n"
         "            hosts = os.path.expanduser('~/.config/remote-gate/hosts.json')\n"
+        "        if wanted.get('import_failure'):\n"
+        "            # The import that failed is not an empty default (finding 5):\n"
+        "            # the loader must report the failure, never a blank path.\n"
+        "            print('remote-gate.py cannot be imported', file=sys.stderr)\n"
+        "            raise SystemExit(3)\n"
         "        print(hosts)\n"
         "        print(wanted['out'])\n"
         "        raise SystemExit(0)\n"
@@ -1112,6 +1117,126 @@ def test_release_gate_refuses_an_unusable_explicit_setting_instead_of_falling_th
         [f"host table from REMOTE_GATE_HOSTS is missing: {missing}"]
     )
     assert _remote_calls(env) == []
+
+
+def test_release_gate_refuses_an_unusable_explicit_out_instead_of_falling_through(
+    tmp_path: Path,
+) -> None:
+    # Finding 5a: only the HOSTS half of "an explicit setting is a fact" was pinned.
+    # Here the controller configuration supplies a usable output directory and the
+    # operator's own REMOTE_GATE_OUT is a regular file: falling through to the
+    # controller value would silently ignore the value B579's operator hand-set.
+    env = _environment(tmp_path)
+    controller = _controller_home(tmp_path)
+    env["CONTROLLER_HOME"] = str(controller)
+    unusable_out = tmp_path / "explicit-out-is-a-file"
+    unusable_out.write_text("not a directory", encoding="utf-8")
+    env["REMOTE_GATE_OUT"] = str(unusable_out)
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [
+            "output directory from REMOTE_GATE_OUT exists but is not a directory: "
+            f"{unusable_out}"
+        ]
+    )
+    # Neither the controller's output directory nor the module default may run work.
+    assert not (controller / "controller-gates" / "remote-calls.jsonl").exists()
+    assert _remote_calls(env) == []
+
+
+@pytest.mark.parametrize("setting", ["REMOTE_GATE_HOSTS", "REMOTE_GATE_OUT"])
+def test_release_gate_refuses_a_set_but_empty_explicit_setting(
+    tmp_path: Path, setting: str
+) -> None:
+    # Finding 5b: `[[ -v ]]` deliberately makes an empty stated value a refusal
+    # ("resolved to an empty path") instead of the pre-change dedicated die, and
+    # `${VAR:-}` semantics would silently treat "" as unset and fall through.
+    env = _environment(tmp_path)
+    env["CONTROLLER_HOME"] = str(_controller_home(tmp_path))
+    env[setting] = ""
+    proc = _run(tmp_path, "tester-unified", env)
+
+    label = "host table" if setting == "REMOTE_GATE_HOSTS" else "output directory"
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [f"{label} from {setting} resolved to an empty path"]
+    )
+    assert _remote_calls(env) == []
+
+
+def test_release_gate_reports_a_module_default_that_could_not_be_imported(
+    tmp_path: Path,
+) -> None:
+    # Finding 5c: nothing made the shim fail its import, so "an import that failed
+    # is not an empty default" was an untested claim. An import failure must name
+    # the import, never report the table as resolved to an empty path.
+    env = _environment(tmp_path)
+    env["CONTROLLER_HOME"] = str(tmp_path / "no-controller")
+    env.pop("REMOTE_GATE_HOSTS", None)
+    env.pop("REMOTE_GATE_OUT")
+    _configure_fake(env, module_defaults={"import_failure": True})
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [
+            "cannot read remote-gate.py's default host table: "
+            "remote-gate.py cannot be imported",
+            "cannot read remote-gate.py's default output directory: "
+            "remote-gate.py cannot be imported",
+        ]
+    )
+    assert _remote_calls(env) == []
+
+
+def _probe_controller_home(tmp_path: Path) -> Path:
+    """A controller file whose bare probe fails but whose values are usable (finding 4).
+
+    The reader must run `set -uo pipefail` WITHOUT `-e` (tools/release-gate.sh:109,
+    matching scripts/controller/remote-gate.sh:24): a `command -v` for a tool this
+    cockpit lacks, or a failing `cd`, exits non-zero without being fatal, and the
+    values the file already defined stay usable. `_broken_controller_home` above
+    pins the FATAL half (a `set -u` expansion error, which kills the reader under
+    `-u` alone); this file pins the half that only `-e` would kill.
+    """
+    controller = tmp_path / "probe-controller-home"
+    controller.mkdir()
+    (controller / "controller-hosts.json").write_text("{}", encoding="utf-8")
+    (controller / "controller.local.env").write_text(
+        "CONTROLLER_HOSTS_FILE=controller-hosts.json\n"
+        # A bare probe this host does not satisfy: exit 1, not fatal.
+        "command -v assay-absent-probe-tool >/dev/null\n"
+        # ... and a failing `cd`, the other shape the comment names.
+        "cd -- /nonexistent-assay-probe-dir 2>/dev/null\n",
+        encoding="utf-8",
+    )
+    return controller
+
+
+def test_release_gate_reads_a_controller_file_whose_bare_probe_fails(
+    tmp_path: Path,
+) -> None:
+    # Finding 4: the reader was changed to `set -uo pipefail` (no `-e`) so a
+    # controller file with a failing-but-non-fatal line is not reported as
+    # unreadable. Neither earlier test covers that half: `_broken_controller_home`
+    # fails fatally under `-u` alone. Re-adding `-e` to the reader turns this run
+    # into a "cannot read the controller configuration" refusal.
+    env = _environment(tmp_path)
+    controller = _probe_controller_home(tmp_path)
+    env["CONTROLLER_HOME"] = str(controller)
+    env.pop("REMOTE_GATE_HOSTS", None)
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "cannot read the controller configuration" not in proc.stderr
+    # The child is the witness that the values survived the failing probe, and that
+    # the controller's host table is the one the wrapper handed it (remote-gate.sh:24
+    # parity is the comment's claim).
+    selection = _remote_selection_at(Path(env["REMOTE_GATE_OUT"]))
+    assert selection["REMOTE_GATE_HOSTS"] == str(controller / "controller-hosts.json")
+    assert len(_remote_calls(env)) == 1
 
 
 def test_release_gate_reads_the_controller_config_only_when_a_setting_is_missing(

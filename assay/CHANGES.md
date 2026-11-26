@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(assay): the release gate's heartbeat trap no longer signals the pid it inherits, a failed
+  defaults import names its own cause, the round-2 review's unpinned branches are pinned (B579
+  round 2). The heartbeat subshell consumed its inherited `$!` -- the `remote-gate.py` child the
+  wrapper had just recorded -- before installing its trap, so a TERM in that window could signal
+  the run it exists to protect; the subshell now forks and reaps a placeholder child first. An
+  unreachable `TMPDIR` is reported as `cannot create a temporary file for the remote-gate.py
+  defaults import` instead of `DEFAULT_HOSTS resolved to an empty path`. CONSUMERS.md no longer
+  says a missing `remote-gate.py` is judged after the settings: it is judged before them (exit 3),
+  and the CMRU binding after. New pins: the heartbeat trap window, the reader's `-e`-free
+  `set -uo pipefail`, an unusable explicit `REMOTE_GATE_OUT`, set-but-empty explicit values, a
+  failing module-defaults import, and the missing-script ordering. `release-gate.sh` is now
+  shellchecked by the suite too. No behaviour change to the lane's exit status, the cancel path
+  or the heartbeat interval.
+
 <!-- cmru: release history -->
 
 ## [12.3.0] - 2026-11-25
