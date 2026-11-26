@@ -177,14 +177,20 @@ fn peer(stream: &UnixStream, proc_root: &Path, cgroup_root: &Path) -> Option<Pee
     )
 }
 
+/// Where the advisory peer label is read from.
+#[derive(Clone, Copy)]
+struct PeerRoots<'a> {
+    proc: &'a Path,
+    cgroup: &'a Path,
+}
+
 fn accept_ready<B: Turn>(
     server: &mut Server<B>,
     listeners: &mut [(Level, UnixListener)],
     sockets: &mut BTreeMap<ConnId, Open>,
     ready: &BTreeSet<usize>,
     skip_next: &mut BTreeSet<usize>,
-    proc_root: &Path,
-    cgroup_root: &Path,
+    roots: PeerRoots<'_>,
     now_ns: u64,
 ) {
     for &index in ready {
@@ -197,7 +203,7 @@ fn accept_ready<B: Turn>(
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
-                    let peer = peer(&stream, proc_root, cgroup_root);
+                    let peer = peer(&stream, roots.proc, roots.cgroup);
                     match server.accept(*level, peer, now_ns) {
                         Accept::Accepted(id) => {
                             sockets.insert(
@@ -508,8 +514,10 @@ pub(crate) fn run<B: Turn>(
             &mut sockets,
             &ready.listeners,
             &mut skip_next,
-            proc_root,
-            cgroup_root,
+            PeerRoots {
+                proc: proc_root,
+                cgroup: cgroup_root,
+            },
             now_ns,
         );
 
