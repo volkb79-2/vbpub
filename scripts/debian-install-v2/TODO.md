@@ -582,3 +582,20 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 **Do.** Either pass the resolved `config.state_dir` to the allow-list and compare against it, or move that check into the installer-side caller where the config is known. Do not widen the current check as an alternative.
 
 **Close when.** A state-dir root other than `config.state_dir` is refused with a named error, and the legitimate installer argv (both rung-parametrized cases) is still accepted.
+
+## OPEN (DIV2-BL-21, 2026-11-26): the install-time Geekbench record as the CPU normalization source (Geekbench ST 1500 = 1.0)
+
+**Source.** Operator, 2026-11-25: every host's Geekbench (single and multi thread) runs at OS install time and the result is persisted as the CPU normalization source for assay and fleetd.
+
+**Exists already (read on origin/main, no live host checked).** The default-on stage-two step `run_cpu_benchmark` runs `tools/cpu_benchmark.py` once and writes `/var/lib/mdt/host-facts/cpu-benchmark.json` (mode 0644, schema `mdt-host-cpu-benchmark/1`, with `single_core` and `multi_core`; the claim link stays in a separate 0600 file). `mdt host-setup cpu-benchmark` writes the same record on hosts not installed by v2. fleetd reads it through `paths.geekbench_record` in `/etc/fleetd/facts.toml` and reports it in `host-facts/1`; cgprofile reads it (`cgprofile/src/cgprofile/machine.py`).
+
+**Proposal.** Keep that path and schema; add no second file. fleetd host facts stay the report channel (`geekbench_major`, `geekbench_version`, `baseline_score`, `single_core`, `multi_core`, `basis`). Consumers derive `cpu_factor = single_core / 1500`; the record does not store it. The record's `baseline_score` (2500) is the Geekbench reference machine and is not the 1500 unit.
+
+**Operator rules (2026-11-26).** Every score is recorded together with its Geekbench major version (the host record has `tool_major`; every place that copies or reports a score keeps the major beside it). A host without a record keeps its raw CPU values plus the processor model; no factor is invented for it.
+
+**Gaps.** The record can be missing: the `vanilla` profile turns the step off, a failed step is advisory (`warned`), and aarch64 has no verified pin. A record without scores (tool exit 4) needs `--resolve`; `multi_core` may be null. The GB7 stdout shape is unverified. An existing record is not re-measured by an install (readers reject a CPU model or vCPU mismatch).
+
+**Open decision.** Whether 1500 = 1.0 applies to both Geekbench 6 and 7 (cgprofile and cpu_benchmark treat majors as not comparable) is open. assay SPEC TIM-030 and cgprofile CP-59 must follow the no-record rule above.
+
+**Close when.** The factor and the major rule are written in one consumer-facing spec, assay and fleetd use it, and every estate host has a record or a named reason for none.
+

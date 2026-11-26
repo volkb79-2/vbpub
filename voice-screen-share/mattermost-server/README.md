@@ -41,8 +41,14 @@ Calls publishes host TCP+UDP 8443 directly. On a host whose tls-edge still has
 the 3.x Calls preset enabled, follow [Calls cut-over](MIGRATION.md#calls-cut-over)
 before `ciu up`.
 
-(The flag is `--root-folder`; ciu 7.15 has no `--define-root`. This root declares
-no deployment profile, so a bare `ciu up` selects nothing: always pass `--dir`.)
+(The flag is `--root-folder`; ciu 7.15 has no `--define-root`. This root is
+`standalone_root = true` (`ciu.global.defaults.toml.j2:47`), so root resolution stops
+here (`ciu/src/ciu/workspace.py:84-117`), and this root's shipped config registers no
+`[deploy.phases]` entry: a bare `ciu up` in this directory selects nothing, prints
+`No phases/stacks selected to deploy` and exits 0 (`ciu/src/ciu/deploy.py:2841-2848`,
+the `cwd == root` case CIU-231 leaves at rc 0, `deploy.py:2792-2795`). CIU-231's exit-2
+refusal with the `ciu up --dir .` remedy covers a stack directory of a larger
+multi-stack root, not a root invocation. Always pass `--dir` explicitly.)
 
 **Location (MM-MOVE, 2026-10-07).** This directory used to be `nyxloom/mattermost`,
 a sub-stack of nyxloom's ciu root. It is now its OWN standalone ciu root at the

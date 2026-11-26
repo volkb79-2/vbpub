@@ -61,6 +61,8 @@ def pi_review_mutant(name: str, before: str, after: str) -> Path:
     variant.mkdir(parents=True)
     for filename in ("lib.sh", "pi-impl.sh", "pi-live.py", "opendesign-accounts.py", "continue-empty-completion.md"):
         shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
+    # pi-impl.sh refuses to launch without its signal-guard shims beside it.
+    shutil.copytree(repo / "scripts/controller/pi-shims", variant / "pi-shims")
     target = variant / "pi-review.sh"
     target.write_text(original.replace(before, after, 1), encoding="utf-8")
     target.chmod(0o755)
