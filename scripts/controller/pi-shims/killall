@@ -1,0 +1,16 @@
+#!/bin/sh
+# pi-shim: the `killall` every pi run launched by scripts/controller/pi-impl.sh
+# sees. pi-impl.sh prepends this directory to the agent's PATH, because killing
+# by name in the shared devcontainer hits other controller sessions: a pi agent
+# whose brief banned pattern kills still ran `pkill -f 'sleep 30'` and killed
+# other sessions' monitors. A written ban did not hold, so this guard is
+# mechanical.
+#
+# This shim always refuses and never signals anything. Exit 126 follows the
+# shell convention for a command that exists and is refused.
+#
+# Known limits (not covered by the guard): the bash builtin `kill` (a negative
+# group pid or a foreign pid), an absolute path such as /usr/bin/killall, and a
+# script that resets PATH itself.
+printf 'pi-shim: refused killall: killing every process of a name can hit another controller session in this shared devcontainer; signal only the exact pid you started\n' >&2
+exit 126
