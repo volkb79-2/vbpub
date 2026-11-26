@@ -386,12 +386,14 @@ def read_steps(evidence: Path) -> dict[int, dict[str, str]]:
 
 
 def run_verdict(run: dict) -> str:
-    """3.5/2.5: PASS iff >= 1 step passed (F, M and K are checked by `proposal`); FAIL iff a hard criterion failed
-    at step 0; INCONCLUSIVE otherwise -- a step-0 INCONCLUSIVE (missing data, load not real) included."""
-    if run["passed"]:
-        return "PASS"
+    """Only a measured pass or the sole continuing load_not_real result can support a run verdict."""
     if 0 in run["steps"] and run["steps"][0].get("verdict") == "FAIL":
         return "FAIL"
+    if any(st.get("verdict") == "INCONCLUSIVE" and st.get("cause") != "load_not_real"
+           for st in run["steps"].values()):
+        return "INCONCLUSIVE"
+    if run["passed"]:
+        return "PASS"
     return "INCONCLUSIVE"
 
 
@@ -480,8 +482,9 @@ def print_run(run: dict) -> str:
     k0 = int(man["k_tested"]) if man.get("k_tested", "").isdigit() else None
     step_bytes = int(man["step_bytes"]) if man.get("step_bytes", "").isdigit() else 128 * MIB
     for n, st in sorted(run["steps"].items()):
-        k = f"K={size(k0 - n * step_bytes)}" if k0 is not None else "K=?"
-        print(f"STEP {n} {k} {st.get('verdict', 'INCONCLUSIVE')} {st.get('detail', '')}")
+        state = st.get("verdict", "INCONCLUSIVE")
+        k = f"K={size(k0 - n * step_bytes)}" if k0 is not None and state in ("PASS", "FAIL") else ""
+        print(f"STEP {n}{' ' + k if k else ''} {state} {st.get('detail', '')}")
     verdict = run_verdict(run)
     if verdict == "FAIL":
         who = f"K0={size(k0)}" if k0 is not None else "K0"
@@ -489,6 +492,11 @@ def print_run(run: dict) -> str:
               "(step 0 failed at the live configuration); this run measures no value")
         print("VERDICT FAIL")
         print("== host-setup.env (NOT to be applied: FAIL; no K is printed at all on a FAIL)")
+        return verdict
+    if verdict == "INCONCLUSIVE":
+        print("INCONCLUSIVE: the ladder stopped with unmeasured data; no K is proposed")
+        print("VERDICT INCONCLUSIVE")
+        print("== host-setup.env (NOT to be applied: INCONCLUSIVE)")
         return verdict
     if run["passed"] and run["failed"]:
         last, first = max(run["passed"]), max(run["failed"])

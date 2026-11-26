@@ -225,7 +225,7 @@ DEV_WRITTEN=$DEV_MAX_START; TIER_WRITTEN=$TIER_MAX_START
 DEV_MIN_WRITTEN=$DEV_MIN_START; TIER_MIN_WRITTEN=$TIER_MIN_START
 SCOPE=""; SCOPE_MIN_WRITTEN=0; SCOPE_ANON=0
 OOM0=$(awk '$1=="oom_kill"{print $2+0}' "$PROC/vmstat" 2>/dev/null); OOM0=${OOM0:-0}
-ABORT=""; ABORT_VERDICT=""; ABORT_CAUSE=""; STEP_VERDICT=""; STEP_CAUSE=""
+ABORT=""; ABORT_VERDICT=""; ABORT_CAUSE=""; STEP_VERDICT=""; STEP_CAUSE=""; LADDER_INCONCLUSIVE=0
 LAST_PASS_STEP=""; K_LAST_PASS=""; FIRST_FAIL_STEP=""; K_FIRST_FAIL=""; STEPS_RUN=0
 finish() {
   local rc=$?
@@ -341,8 +341,8 @@ dummy_deadline=$((WARMUP + (STEPS + 2) * DWELL + 600)) # a safety cap only: step
 echo "dummy_a0=$A0" >>"$MAN"; echo "dummy_d0=$D0" >>"$MAN"; echo "dummy_deepest_ceiling=$DEEPEST" >>"$MAN"
 printf 'container=%s\nboot_id=%s\npid=%s\nstarted_utc=%s\nk_tested=%s\ndev_orig=%s\n' \
   "$DUMMY" "$BOOT_ID" "$$" "$START_UTC" "$K0" "$DEV_MAX_START" >>"$STATE" || {
-  # M3: no cgroup write without its write-ahead record. The kdamond is already on and the traps are armed,
-  # so finish() still switches it off; no ceiling and no min has been touched at this point.
+  # M3: no cgroup write without its write-ahead record. hotset setup already WAL-recorded kdamond= and the traps are
+  # armed, so finish() still switches it off; no ceiling and no min has been touched at this point.
   echo "accept-run: cannot append to the write-ahead state file $STATE (full or read-only evidence filesystem); the run is aborted before any cgroup write" >&2
   exit 3
 }
@@ -411,7 +411,7 @@ abort() { # <verdict> <cause>: an abort is a step verdict plus a ladder stop (2.
 }
 wal_add() { # <line>: the write-ahead record MUST land before the effect it protects (M3). A failed append aborts the
             # run: without it the restore could never prove which value is the kit's, and the raised value would stay.
-  printf '%s\n' "$1" >>"$STATE" 2>/dev/null || { note "cannot append to the write-ahead state file $STATE; the run is aborted rather than writing a cgroup file unrecorded"; abort FAIL wal; return 1; }
+  printf '%s\n' "$1" >>"$STATE" 2>/dev/null || { note "cannot append to the write-ahead state file $STATE; the run is aborted rather than writing a cgroup file unrecorded"; abort INCONCLUSIVE wal; return 1; }
   return 0
 }
 psi_holding() { # <slice>: full avg10 >= 5 held for PSI_HOLD seconds (psi-guard's own trigger numbers)
@@ -566,8 +566,12 @@ probe_run() { # <step> <name>
       timed 5 bash -c "logger -t '$tag' '$nonce'; i=0; while [ \$i -lt 50 ]; do journalctl -t '$tag' --since @$start -o cat -n 1 2>/dev/null | grep -q '$nonce' && exit 0; sleep 0.1; i=\$((i+1)); done; exit 1"
       probe_record "$s" journald liveness "$T_RC" "$T_SECONDS" "nonce=$nonce visible=$([ "$T_RC" = 0 ] && echo yes || echo no)" ;;
     dockerd)
-      timed "$(probe_timeout dockerd)" docker info -f '{{.ServerVersion}}'
-      [ -n "$T_OUT" ] && [ "$T_RC" != timeout ] && T_RC=0
+      timed "$(probe_timeout dockerd)" sh -c 'exec 2>/dev/null; exec docker info -f "{{.ServerVersion}}"'
+      if [ "$T_RC" = 0 ] && [[ "$T_OUT" =~ ^[0-9]+([.][0-9]+)+([+-][A-Za-z0-9.-]+)?$ ]]; then
+        : # a successful client response with a version-shaped server value
+      elif [ "$T_RC" = 0 ]; then
+        T_RC=1
+      fi
       probe_record "$s" dockerd liveness "$T_RC" "$T_SECONDS" "version=$T_OUT" ;;
     containerd)
       timed "$(probe_timeout containerd)" docker exec "$DUMMY" true
@@ -681,13 +685,13 @@ step_write() { # <step>: the per-step sequence of 2.3; the dummy never grows bef
   [ "$target" -gt "$cur" ] || { abort INCONCLUSIVE drift:dev.slice/memory.max; return 1; }
   wal_add "MAX=dev.slice/memory.max|$DEV_MAX_START|$target|$(now)" || return 1
   echo "$target" >"$CG/dev.slice/memory.max" 2>/dev/null && [ "$(rdnum "$CG/dev.slice/memory.max")" = "$target" ] ||
-    { abort FAIL write:dev.slice/memory.max; return 1; }
+    { abort INCONCLUSIVE write:dev.slice/memory.max; return 1; }
   DEV_WRITTEN=$target
   ts=$(rdnum "$CG/dev.slice/memory.max"); ts=${ts:-0}
   [ "$target" -le "$ts" ] || { abort FAIL tier_above_parent; return 1; }
   wal_add "MAX=dev.slice/$PARENT/memory.max|$TIER_MAX_START|$target|$(now)" || return 1
   echo "$target" >"$CG/dev.slice/$PARENT/memory.max" 2>/dev/null && [ "$(rdnum "$CG/dev.slice/$PARENT/memory.max")" = "$target" ] ||
-    { abort FAIL "write:dev.slice/$PARENT/memory.max"; return 1; }
+    { abort INCONCLUSIVE "write:dev.slice/$PARENT/memory.max"; return 1; }
   TIER_WRITTEN=$target
   anon=$(scope_stat "$SCOPE" anon); anon=${anon:-0}   # the baseline BEFORE the signal: after it, the grown value
   timeout -k 5 10 docker kill -s USR1 "$DUMMY" >/dev/null 2>&1 || { abort INCONCLUSIVE no_dummy; return 1; }
@@ -714,15 +718,15 @@ step_write() { # <step>: the per-step sequence of 2.3; the dummy never grows bef
   [ "$rootnew" -le $((MEM_TOTAL - SQUEEZE_UNPROTECTED)) ] || { abort FAIL bound_min; return 1; }
   wal_add "MIN=dev.slice/memory.min|$DEV_MIN_START|$((DEV_MIN_START + protect))|$(now)" || return 1
   echo "$((DEV_MIN_START + protect))" >"$CG/dev.slice/memory.min" 2>/dev/null &&
-    [ "$(rdnum "$CG/dev.slice/memory.min")" = "$((DEV_MIN_START + protect))" ] || { abort FAIL write:dev.slice/memory.min; return 1; }
+    [ "$(rdnum "$CG/dev.slice/memory.min")" = "$((DEV_MIN_START + protect))" ] || { abort INCONCLUSIVE write:dev.slice/memory.min; return 1; }
   DEV_MIN_WRITTEN=$(rdnum "$CG/dev.slice/memory.min")
   wal_add "MIN=dev.slice/$PARENT/memory.min|$TIER_MIN_START|$((TIER_MIN_START + protect))|$(now)" || return 1
   echo "$((TIER_MIN_START + protect))" >"$CG/dev.slice/$PARENT/memory.min" 2>/dev/null &&
-    [ "$(rdnum "$CG/dev.slice/$PARENT/memory.min")" = "$((TIER_MIN_START + protect))" ] || { abort FAIL "write:dev.slice/$PARENT/memory.min"; return 1; }
+    [ "$(rdnum "$CG/dev.slice/$PARENT/memory.min")" = "$((TIER_MIN_START + protect))" ] || { abort INCONCLUSIVE "write:dev.slice/$PARENT/memory.min"; return 1; }
   TIER_MIN_WRITTEN=$(rdnum "$CG/dev.slice/$PARENT/memory.min")
   wal_add "MIN=dev.slice/$PARENT/$(basename "$SCOPE")/memory.min|$smin0|$smin|$(now)" || return 1
   echo "$smin" >"$SCOPE/memory.min" 2>/dev/null && [ "$(rdnum "$SCOPE/memory.min")" = "$smin" ] ||
-    { abort FAIL write:scope_min; return 1; }
+    { abort INCONCLUSIVE write:scope_min; return 1; }
   SCOPE_MIN_WRITTEN=$(rdnum "$SCOPE/memory.min")
   # 5: read back all five, and only then start the settling window; every compared value is the kit's own read-back (L-m)
   [ "$(rdnum "$CG/dev.slice/memory.max")" = "$DEV_WRITTEN" ] || { abort INCONCLUSIVE drift:dev.slice/memory.max; return 1; }
@@ -734,7 +738,7 @@ step_write() { # <step>: the per-step sequence of 2.3; the dummy never grows bef
   return 0
 }
 step_judge() { # <step>: the judge turns this step's rows and probes into verdict/cause/detail; the stop rule reads it
-  local s=$1
+  local s=$1 label
   rm -f "$EVID/steps/$s.env"
   if [ -n "$JUDGE" ]; then
     sh -c "$JUDGE --live-step '$EVID' --step '$s'" >"$EVID/judge-$s.log" 2>&1 || true
@@ -747,8 +751,9 @@ step_judge() { # <step>: the judge turns this step's rows and probes into verdic
   STEP_VERDICT=$(sed -n 's/^verdict=//p' "$EVID/steps/$s.env" | tail -n 1)
   STEP_CAUSE=$(sed -n 's/^cause=//p' "$EVID/steps/$s.env" | tail -n 1)
   local detail; detail=$(sed -n 's/^detail=//p' "$EVID/steps/$s.env" | tail -n 1)
-  echo "STEP $s K=$(( (K0 - s * STEP) / MIB ))M $STEP_VERDICT cause=${STEP_CAUSE:-<none>} $detail" >>"$STEPSEN"
-  echo "accept-run: STEP $s K=$(( (K0 - s * STEP) / MIB ))M $STEP_VERDICT cause=${STEP_CAUSE:-<none>} $detail"
+  label=""; case $STEP_VERDICT in PASS|FAIL) label="K=$(( (K0 - s * STEP) / MIB ))M" ;; esac
+  echo "STEP $s${label:+ $label} $STEP_VERDICT cause=${STEP_CAUSE:-<none>} $detail" >>"$STEPSEN"
+  echo "accept-run: STEP $s${label:+ $label} $STEP_VERDICT cause=${STEP_CAUSE:-<none>} $detail"
   case $STEP_VERDICT in
     PASS) LAST_PASS_STEP=$s; K_LAST_PASS=$((K0 - s * STEP)) ;;
     FAIL) FIRST_FAIL_STEP=$s; K_FIRST_FAIL=$((K0 - s * STEP)) ;;
@@ -756,11 +761,12 @@ step_judge() { # <step>: the judge turns this step's rows and probes into verdic
   esac
 }
 step_mark() { # <step>: an aborted step the shell judged itself (the judge never sees a half-taken step)
-  local s=$1
+  local s=$1 label
   printf 'verdict=%s\ncause=%s\ndetail=aborted before the judged window finished\n' "$ABORT_VERDICT" "$ABORT_CAUSE" >"$EVID/steps/$s.env"
   STEP_VERDICT=$ABORT_VERDICT; STEP_CAUSE=$ABORT_CAUSE
-  echo "STEP $s K=$(( (K0 - s * STEP) / MIB ))M $ABORT_VERDICT cause=$ABORT_CAUSE (aborted)" >>"$STEPSEN"
-  echo "accept-run: STEP $s K=$(( (K0 - s * STEP) / MIB ))M $ABORT_VERDICT cause=$ABORT_CAUSE (aborted)"
+  label=""; case $ABORT_VERDICT in PASS|FAIL) label="K=$(( (K0 - s * STEP) / MIB ))M" ;; esac
+  echo "STEP $s${label:+ $label} $ABORT_VERDICT cause=$ABORT_CAUSE (aborted)" >>"$STEPSEN"
+  echo "accept-run: STEP $s${label:+ $label} $ABORT_VERDICT cause=$ABORT_CAUSE (aborted)"
   case $ABORT_VERDICT in FAIL) FIRST_FAIL_STEP=$s; K_FIRST_FAIL=$((K0 - s * STEP)) ;; esac
 }
 # ---------- the ladder (2.5) ----------
@@ -800,7 +806,10 @@ for s in $(seq 0 "$STEPS"); do
   case $STEP_VERDICT in
     PASS) continue ;;
     FAIL) break ;;
-    *) [ "$STEP_CAUSE" = load_not_real ] && continue; break ;; # only "load was real" continues the ladder
+    *)
+      [ "$STEP_CAUSE" = load_not_real ] && continue  # the only non-blocking inconclusive continues the ladder
+      [ "$STEP_VERDICT" = INCONCLUSIVE ] && LADDER_INCONCLUSIVE=1
+      break ;;
   esac
 done
 # the DAMON-off control pass (9 risk 3): one dwell at the ceilings in force (the deepest step actually taken),
@@ -817,6 +826,7 @@ fi
 # ---------- the run's verdict (3.5): PASS iff a step passed and the floors/M are derivable; FAIL iff step 0 failed ----------
 VERDICT=INCONCLUSIVE; VERDICT_RC=4
 if [ "$FIRST_FAIL_STEP" = 0 ]; then VERDICT=FAIL; VERDICT_RC=1
+elif [ "$ABORT_VERDICT" = INCONCLUSIVE ] || [ "$LADDER_INCONCLUSIVE" = 1 ]; then VERDICT=INCONCLUSIVE; VERDICT_RC=4
 elif [ -n "$LAST_PASS_STEP" ]; then VERDICT=PASS; VERDICT_RC=0; fi
 {
   echo "squeeze_steps_run=$STEPS_RUN"

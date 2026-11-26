@@ -235,6 +235,18 @@ class EvalTests(unittest.TestCase):
         self.assertIn("VERDICT INCONCLUSIVE", out)
         self.assertNotIn("pin DEV_HOST_MEMORY_KEEP", out)
 
+    def test_a_blocking_inconclusive_after_a_pass_never_proposes_or_prints_a_k(self) -> None:
+        d = F.write_run(self.tmp / "inc-after-pass", steps=(0, 1), verdicts=("PASS", "INCONCLUSIVE"),
+                        causes=("", "wal"))
+        rc, out = run_eval(str(d))
+        self.assertEqual(rc, 4, out)
+        self.assertIn("STEP 1 INCONCLUSIVE", out)
+        self.assertNotIn("STEP 1 K=", out)
+        self.assertIn("no K is proposed", out)
+        self.assertNotIn("K proposed=", out)
+        self.assertNotIn("SQUEEZE last pass", out)
+        self.assertIn("VERDICT INCONCLUSIVE", out)
+
     def test_refaults_are_informational_and_do_not_change_the_verdict(self) -> None:
         d = F.write_run(self.tmp / "ref", steps=(0, 1), verdicts=("PASS", "PASS"), refault=5000)
         rc, out = run_eval(str(d))
@@ -596,6 +608,33 @@ class ShellKitTests(F.ShellKitBase):
         self.assertIn("restore=ok", man)
         self.assertEqual(man.count("restore=ok"), 1, "accept-restore.sh writes restore=ok; finish never states it twice")
 
+    def test_dockerd_probe_requires_success_and_a_version_shaped_stdout(self) -> None:
+        body = r'''if [ "$1" = info ] && [ "$3" = "{{.DockerRootDir}}" ]; then
+  echo "$FAKE_DOCKER_ROOT"; exit 0
+fi
+if [ "$1" = info ] && [ "$3" = "{{.ServerVersion}}" ]; then
+  n=0; [ -f "$FAKE_DOCKER_COUNT" ] && n=$(cat "$FAKE_DOCKER_COUNT")
+  n=$((n + 1)); echo "$n" > "$FAKE_DOCKER_COUNT"
+  case $n in
+    1) echo "Cannot connect to the Docker daemon" >&2; exit 7 ;;
+    2) echo "Cannot connect to the Docker daemon"; exit 0 ;;
+    *) echo "29.0.1"; exit 0 ;;
+  esac
+fi
+'''
+        _fake("docker", body + F.FAKE_DOCKER, self.tmp / "bin")
+        r = self.run_kit("--steps", "2", "--dwell", "0", ticks="8", FAKE_DOCKER_COUNT=str(self.tmp / "docker-count"),
+                         MDT_ACCEPT_PROBE_CMD_DOCKERD=None, **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = [ln.split(",") for ln in (self.ev / "probes.csv").read_text().splitlines()
+                if ln.split(",")[2:3] == ["dockerd"]]
+        self.assertEqual(len(rows), 3, rows)
+        self.assertEqual(rows[0][4], "7", rows[0])
+        self.assertEqual(rows[0][6], "version=", "docker stderr is not accepted as server-version stdout")
+        self.assertEqual(rows[1][4], "1", rows[1])
+        self.assertEqual(rows[2][4], "0", rows[2])
+        self.assertIn("version=29.0.1", rows[2][6])
+
     def judge_steps(self) -> list[str]:
         return [ln.split()[1] for ln in (self.ev / "steps.env").read_text().splitlines() if ln.startswith("STEP ")]
 
@@ -647,8 +686,19 @@ class ShellKitTests(F.ShellKitBase):
         r = self.run_kit("--steps", "2", "--dwell", "0", ticks="6", **self.judge_env("PASS"))
         # 2.4: "an abort is a step FAIL plus a ladder stop", and a step-0 FAIL is the run's FAIL (2.5)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("verdict=FAIL", (self.ev / "steps" / "0.env").read_text())
         self.assertIn("mem_available", (self.ev / "steps" / "0.env").read_text())
         self.assertEqual(len(self.judge_steps()), 1)
+
+    def test_the_bound_min_guard_remains_a_measured_fail(self) -> None:
+        # bound_min is a failed safety invariant, not a kit/evidence failure: it remains FAIL and supplies a first-fail K.
+        (self.cg / "system.slice" / "memory.min").write_text(f"{8 * 1024 * MIB - 128 * MIB}\n")
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        step = (self.ev / "steps" / "1.env").read_text()
+        self.assertIn("verdict=FAIL", step)
+        self.assertIn("cause=bound_min", step)
+        self.assertIn("k_first_fail=", (self.ev / "manifest.env").read_text())
 
     def test_the_preflight_refuses_when_the_evidence_filesystem_cannot_hold_the_wal(self) -> None:
         # M3: the WAL lives on the EVIDENCE filesystem, which may be a different filesystem than the Docker data root
@@ -906,25 +956,41 @@ class ShellKitTests(F.ShellKitBase):
 
     def test_a_wal_append_that_fails_mid_run_stops_the_step_before_its_cgroup_write(self) -> None:
         # M3's second half: the state file is writable for the header, then stops accepting appends. The step's MAX
-        # append fails, so the memory.max write it protects must NOT happen; the step is marked FAIL cause=wal.
+        # append fails, so the memory.max write it protects must NOT happen; the step is INCONCLUSIVE cause=wal, never
+        # a measured FAIL or a PASS inherited from step 0.
         state = self.ev / "squeeze-state.env"
         r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", **self.judge_env("PASS"),
                          FAKE_STATE_IS_DIR=str(state))
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
         step1 = (self.ev / "steps" / "1.env").read_text()
+        self.assertIn("verdict=INCONCLUSIVE", step1)
         self.assertIn("cause=wal", step1)
+        self.assertIn("squeeze_verdict=INCONCLUSIVE", (self.ev / "manifest.env").read_text())
+        self.assertIn("k_first_fail=\n", (self.ev / "manifest.env").read_text())
+        self.assertIn("STEP 1 INCONCLUSIVE", r.stdout)
+        self.assertNotIn("STEP 1 K=", r.stdout)
         self.assertEqual((self.cg / "dev.slice" / "memory.max").read_text().strip(), str(self.DEV_MAX_START),
                          "no memory.max write happened when its WAL line could not be appended")
         self.assertIn("write-ahead state file", r.stdout + r.stderr)
 
+    def test_a_cgroup_write_failure_is_inconclusive_not_a_false_k_failure(self) -> None:
+        # A failed memory.min write after its WAL line is a kit write failure, not evidence that this K failed.
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", **self.judge_env("PASS"),
+                         FAKE_FAIL_CGROUP_WRITE="dev.slice/memory.min")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        step = (self.ev / "steps" / "1.env").read_text()
+        self.assertIn("verdict=INCONCLUSIVE", step)
+        self.assertIn("cause=write:dev.slice/memory.min", step)
+        manifest = (self.ev / "manifest.env").read_text()
+        self.assertIn("squeeze_verdict=INCONCLUSIVE", manifest)
+        self.assertIn("k_first_fail=\n", manifest)
+        self.assertIn("STEP 1 INCONCLUSIVE", r.stdout)
+        self.assertNotIn("STEP 1 K=", r.stdout)
+
     def test_the_real_psi_guard_probe_records_its_own_seconds(self) -> None:
-        # H2, WITHOUT the seam: MDT_ACCEPT_PROBE_CMD_PSI_GUARD is unset, so accept-run.sh's own branch runs
-        # (`systemctl is-active` + MainPID + /proc/<pid>/stat). The column must be the probe's OWN duration; it used to
-        # record `SECONDS - T0`, the run's elapsed time. The fake host stalls a fixed 2.2 s on the USR1 (never host
-        # load), so by step 1's probes the run's elapsed time is >= 2 s while the probe itself takes ~0.2 s: the old
-        # code recorded >= 2 s here (SECONDS is whole seconds), the new code cannot -- and that elapsed-vs-own gap is
-        # what the judge's latency rule read as "psi_guard latency over its step-0 baseline". 2.2 s, not 3: the
-        # discrimination only needs the run's elapsed to exceed the 1.0 s limit, and every whole second here is one
-        # the smoke lane pays.
+        # H2: compare the probe with the same step's sample elapsed value, which is captured before that probe. The
+        # fake host's USR1 stall makes run elapsed exceed probe duration; no absolute duration threshold depends on
+        # worker load or spawn speed.
         r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", FAKE_PSI_SHOW_SLEEP="0.2", FAKE_KILL_SLEEP="2.2",
                          MDT_ACCEPT_PROBE_CMD_PSI_GUARD=None, **self.judge_env("PASS"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

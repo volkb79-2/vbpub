@@ -164,6 +164,10 @@ case "$1" in
     # probes' own durations before the next step's probes (H2's test relies on that, never on host load)
     sleep "${FAKE_KILL_SLEEP:-0}"
     [ -n "${FAKE_DRIFT_FILE:-}" ] && echo "${FAKE_DRIFT_VALUE:-}" > "$FAKE_DRIFT_FILE"
+    if [ "${FAKE_FAIL_CGROUP_WRITE:-}" = "dev.slice/memory.min" ]; then
+      rm -f "$MDT_ACCEPT_CGROUP/dev.slice/memory.min"
+      mkdir -p "$MDT_ACCEPT_CGROUP/dev.slice/memory.min"
+    fi
     d=$(ls -d "$MDT_ACCEPT_CGROUP/dev.slice/"*"/docker-id-$4.scope" 2>/dev/null | head -n 1)
     [ -n "$d" ] || exit 1
     anon=$(awk '$1=="anon"{print $2}' "$d/memory.stat"); anon=$((anon + ${FAKE_STEP_BYTES:-134217728}))
