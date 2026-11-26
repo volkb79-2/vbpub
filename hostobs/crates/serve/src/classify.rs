@@ -958,6 +958,54 @@ mod tests {
         assert!(matches!(dispatched(&supported).call, Call::Current(_)));
     }
 
+    #[test]
+    fn step_11_selection_refusal_details_match_the_schema_order() {
+        let cases: [(&str, &str); 4] = [
+            (
+                r#"{
+                    "selection": {
+                        "entities": [{"cgroup_id": {"dev": 0}}],
+                        "metrics": ["m"]
+                    }
+                }"#,
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                r#"{
+                    "selection": {
+                        "entities": [{"cgroup_id": {"dev": "x"}}],
+                        "metrics": ["m"]
+                    }
+                }"#,
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                r#"{
+                    "selection": {
+                        "entities": [
+                            {"cgroup_id": {"dev": 1, "inode": 2}},
+                            {"cgroup_id": {"dev": 1, "inode": 2}}
+                        ],
+                        "metrics": ["Bad"]
+                    }
+                }"#,
+                "selection.metrics",
+            ),
+            (
+                r#"{
+                    "selection": {
+                        "entities": [{"cgroup_id": {"dev": 0, "inode": 1}}]
+                    }
+                }"#,
+                "selection.entities.cgroup_id.dev",
+            ),
+        ];
+        for (args, path) in cases {
+            let text = req("current", args);
+            assert_refusal(&binary(text.as_bytes()), Code::BadRequest, 5, &key(path));
+        }
+    }
+
     // ---- step 10: the argument schemas
 
     #[test]

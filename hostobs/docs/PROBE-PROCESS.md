@@ -365,7 +365,8 @@ R27); only the hub.rs module doc was stale, and this package fixes it.
    ignores `SIGPIPE`, so a gone peer is `EPIPE`). A connection still open after a turn whose poll
    reported `POLLHUP` or `POLLERR` is `finish`ed.
 7. Never bind, install a signal handler, use `SO_PEERPIDFD` or spawn a process. The P-11 systemd
-   units set `RestartPreventExitStatus=2`, so a start-up refusal does not restart in a loop.
+   units set `RestartPreventExitStatus=2`, so `Restart=` does not retry a start-up refusal;
+   socket activation can start it again until the start limit.
 8. Tests (§(h)): hello, `current`, `subscribe` over a real socket on `FixedBackend` (`Turn` via its
    `seq` field);
    a slow reader (the hub sheds, others are served); EOF; refused unknown and missing fd names;

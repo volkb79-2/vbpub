@@ -144,6 +144,38 @@ class WireFixtures(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "bad-request")
                 self.assertEqual(caught.exception.path, path)
 
+    def test_b9_selection_refusal_order_matches_the_rust_schema(self):
+        cases = [
+            (
+                {"entities": [{"cgroup_id": {"dev": 0}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"dev": "x"}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                {
+                    "entities": [
+                        {"cgroup_id": {"dev": 1, "inode": 2}},
+                        {"cgroup_id": {"dev": 1, "inode": 2}},
+                    ],
+                    "metrics": ["Bad"],
+                },
+                "selection.metrics",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"dev": 0, "inode": 1}}]},
+                "selection.entities.cgroup_id.dev",
+            ),
+        ]
+        for selected, key in cases:
+            with self.subTest(key=key):
+                with self.assertRaises(hostobs_wire_ref.SelectionError) as caught:
+                    hostobs_wire_ref.canonical_selection(selected)
+                self.assertEqual(caught.exception.code, "bad-request")
+                self.assertEqual(caught.exception.path, key)
+
     def test_b9_cgroup_id_minor_gate_is_step_11_after_schema(self):
         selected = {
             "entities": [{"cgroup_id": {"dev": 1, "inode": 2}}],

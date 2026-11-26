@@ -159,6 +159,24 @@ fn handshake_sends_the_prefix_alone_then_hello_with_corr_one() {
 }
 
 #[test]
+fn handshake_accepts_minor_one_server_and_status_request() {
+    let hello_result = hello_json("observe", &[], BOOT, 7).replace("\"minor\":2", "\"minor\":1");
+    assert!(hello_result.contains("\"proto\":{\"major\":1,\"minor\":1}"));
+    let mut incoming = prefix(1, 1);
+    incoming.extend(rep_ok(1, &hello_result));
+    incoming.extend(rep_ok(2, "{}"));
+    let clock = clock();
+    let (script, rig) = script(&clock, incoming);
+    let mut client = open(script, Level::Observe, None).expect("minor-one server");
+
+    assert_eq!(client.hello().minor, 1);
+    let reply = client.request("status", "{}").expect("status reply");
+    assert_eq!(reply.result_json(), "{}");
+    let expected = frame(1, 2, b"{\"verb\":\"status\",\"args\":{}}");
+    assert!(rig.written.borrow().ends_with(&expected));
+}
+
+#[test]
 fn handshake_accepts_a_hello_exactly_at_its_own_frame_length() {
     let payload = "{\"verb\":\"hello\",\"args\":{\"client\":\"test\",\
                    \"proto\":{\"major\":1,\"minor\":2}}}";
