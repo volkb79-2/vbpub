@@ -75,9 +75,16 @@
 # definition (pi-review-argv) shared with pi-review.sh, which sets the mode
 # instead of carrying a second copy of the literal list.
 #
-# The mode is STICKY per run name. Every launch records it beside the other run
-# records as <runs-dir>/<name>.mode ('review' or 'implementer'), and a resume
-# takes the recorded mode whenever it does not narrow it:
+# The mode is STICKY per run name and per pi session. Every accepted launch
+# records it beside the other run records as <runs-dir>/<name>.mode
+# ('review' or 'implementer'); as soon as pi's stream provides the session id,
+# the wrapper also records it in <runs-dir>/session-modes/<session-id>. On a
+# resume, the name record and session record are read, and <runs-dir>/*.thread
+# is scanned for exact matches whose name records may already exist from an
+# earlier version. Review in ANY of those sources forces review; a resume asking
+# for implementer mode is refused before the run name is claimed. Session mode
+# writes are locked and monotonic, so review can never be replaced with
+# implementer. A resume takes the recorded mode whenever it does not narrow it:
 #  * recorded 'review' + a caller that NAMED implementer mode is REFUSED (exit
 #    2) before the name is claimed: a review's session never gets a shell. A
 #    caller that named no mode takes the record; a value only the host's
@@ -91,9 +98,9 @@
 #    before-state.txt, written by pi-review.sh) is read as review even when the
 #    record is missing: the session is then known to be a review, and the safe
 #    direction is failing closed.
-#  * a missing record with no review evidence keeps the mode the caller named
-#    (or the default), so a pre-existing IMPLEMENTER session (which predates
-#    this record) resumes unchanged.
+#  * missing records with no review evidence and no matching session/thread
+#    record saying review keep the mode the caller named (or the default), so a
+#    pre-existing IMPLEMENTER session resumes unchanged.
 # The caller's value wins over controller.local.env in the LESS SAFE direction:
 # PI_RUN_MODE is saved before that file is sourced and re-applied after, so a
 # stale `PI_RUN_MODE=implementer` in a local environment file cannot flip a
@@ -219,8 +226,11 @@ name=$3
 }
 mode=${4:-new}
 session_id=${5:-}
+valid_session_id() {
+  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != *..* && $1 != . ]]
+}
 if [[ $mode == resume ]]; then
-  [[ -n $session_id && $session_id =~ ^[A-Za-z0-9._-]+$ && $session_id != *..* ]] || usage
+  valid_session_id "$session_id" || usage
 elif [[ $mode != new || $# -gt 4 ]]; then
   usage
 fi
@@ -250,6 +260,106 @@ if [[ -v PI_RUN_MODE ]]; then
   if (( caller_pi_run_mode_set == 1 )); then request_origin=caller; else request_origin=local-env; fi
 fi
 mode_record=$CONTROLLER_RUNS_DIR/$name.mode
+session_modes_dir=$CONTROLLER_RUNS_DIR/session-modes
+session_mode_lock_fd=''
+session_mode_lock_id=''
+mode_record_value=''
+session_mode_record_value=''
+session_review_found=0
+session_review_source=''
+
+read_mode_record_if_present() {
+  local path=$1
+  mode_record_value=''
+  if [[ ! -e $path && ! -L $path ]]; then return 1; fi
+  if [[ -L $path || ! -f $path || ! -r $path ]]; then
+    printf 'cannot establish run mode: %s is unreadable or not a regular file\n' "$path" >&2
+    return 2
+  fi
+  mode_record_value=$(<"$path") || {
+    printf 'cannot establish run mode: %s could not be read\n' "$path" >&2
+    return 2
+  }
+  case $mode_record_value in
+    implementer | review) return 0 ;;
+    *)
+      printf "cannot establish run mode: %s is not 'review' or 'implementer'\n" "$path" >&2
+      return 2
+      ;;
+  esac
+}
+
+acquire_session_mode_lock() {
+  local id=$1 lock_path
+  valid_session_id "$id" || {
+    printf 'cannot use unsafe pi session id for a mode record: %s\n' "$id" >&2
+    return 2
+  }
+  if [[ -n $session_mode_lock_fd && $session_mode_lock_id == "$id" ]]; then return 0; fi
+  if [[ -n $session_mode_lock_fd ]]; then
+    echo 'cannot acquire two pi session mode locks in one launch' >&2
+    return 2
+  fi
+  if [[ -L $session_modes_dir || ( -e $session_modes_dir && ! -d $session_modes_dir ) ]]; then
+    printf 'cannot use pi session mode directory: %s is not a real directory\n' "$session_modes_dir" >&2
+    return 2
+  fi
+  mkdir -p -- "$session_modes_dir" || {
+    printf 'cannot create pi session mode directory: %s\n' "$session_modes_dir" >&2
+    return 2
+  }
+  lock_path=$session_modes_dir/$id.lock
+  exec {session_mode_lock_fd}> "$lock_path" || {
+    printf 'cannot open pi session mode lock: %s\n' "$lock_path" >&2
+    session_mode_lock_fd=''
+    return 2
+  }
+  if ! flock -x "$session_mode_lock_fd"; then
+    printf 'cannot lock pi session mode: %s\n' "$lock_path" >&2
+    release_session_mode_lock
+    return 2
+  fi
+  session_mode_lock_id=$id
+}
+
+release_session_mode_lock() {
+  [[ -n $session_mode_lock_fd ]] || return 0
+  exec {session_mode_lock_fd}>&-
+  session_mode_lock_fd=''
+  session_mode_lock_id=''
+}
+
+write_session_mode() {
+  local id=$1 own_lock=0 path stored_mode='' write_mode=$run_mode rc=0
+  valid_session_id "$id" || {
+    printf 'cannot use unsafe pi session id for a mode record: %s\n' "$id" >&2
+    return 2
+  }
+  if [[ $session_mode_lock_id != "$id" ]]; then
+    acquire_session_mode_lock "$id" || return 2
+    own_lock=1
+  fi
+  path=$session_modes_dir/$id
+  if read_mode_record_if_present "$path"; then
+    stored_mode=$mode_record_value
+  else
+    rc=$?
+    if (( rc != 1 )); then
+      (( own_lock == 0 )) || release_session_mode_lock
+      return 2
+    fi
+  fi
+  # A session record only moves toward the stricter mode. In particular, a
+  # stale implementer invocation can never replace a review record.
+  if [[ $stored_mode == review || $run_mode == review ]]; then write_mode=review; fi
+  if ! printf '%s\n' "$write_mode" > "$path"; then
+    printf 'cannot write pi session mode record: %s\n' "$path" >&2
+    (( own_lock == 0 )) || release_session_mode_lock
+    return 2
+  fi
+  (( own_lock == 0 )) || release_session_mode_lock
+}
+
 # A NEW launch is decided by the caller alone: a name that already has a mode
 # record is refused as a collision unless CONTROLLER_RUN_FORCE retires the
 # records, so the stickiness below belongs to a RESUME only. Reading the record
@@ -258,20 +368,68 @@ mode_record=$CONTROLLER_RUNS_DIR/$name.mode
 run_mode=${requested_mode:-implementer}
 mode_source=${request_origin:-default}
 if [[ $mode == resume ]]; then
+  # Serialize mode resolution with every other resume of this session. The lock
+  # remains held through the accepted launch's session record write below; a
+  # second run name cannot pass a stale implementer read after review was stored.
+  acquire_session_mode_lock "$session_id" || exit 2
   record_mode=''
   mode_record_state=absent
-  if [[ -e $mode_record ]]; then
-    # `-e` and `-r` are two different facts: a record that exists and cannot be
-    # read is not an absent record, and neither licenses a guess.
-    if [[ -r $mode_record ]]; then
-      record_mode=$(<"$mode_record")
-      case $record_mode in
-        implementer | review) mode_record_state=valid ;;
-        *) mode_record_state=invalid ;;
-      esac
-    else
-      mode_record_state=invalid
+  if read_mode_record_if_present "$mode_record"; then
+    record_mode=$mode_record_value
+    mode_record_state=valid
+  else
+    record_rc=$?
+    if (( record_rc == 2 )); then mode_record_state=invalid; fi
+  fi
+  session_mode_path=$session_modes_dir/$session_id
+  session_mode_state=absent
+  if read_mode_record_if_present "$session_mode_path"; then
+    session_mode_record_value=$mode_record_value
+    session_mode_state=valid
+  else
+    record_rc=$?
+    if (( record_rc == 2 )); then session_mode_state=invalid; fi
+  fi
+  [[ $session_mode_state != invalid ]] || {
+    echo "cannot establish the run mode of pi session $session_id: $session_mode_path is not 'review' or 'implementer'" >&2
+    exit 2
+  }
+
+  # Older runs already have <name>.thread and <name>.mode, but no session-mode
+  # record. Match the thread content exactly, then read that name's mode. An
+  # unreadable candidate cannot be proven unrelated, so it refuses the resume.
+  for thread_path in "$CONTROLLER_RUNS_DIR"/*.thread; do
+    [[ -e $thread_path || -L $thread_path ]] || continue
+    if [[ -L $thread_path || ! -f $thread_path || ! -r $thread_path ]]; then
+      printf 'cannot establish pi session mode: thread record is unreadable: %s\n' "$thread_path" >&2
+      exit 2
     fi
+    thread_session=$(<"$thread_path") || {
+      printf 'cannot establish pi session mode: thread record could not be read: %s\n' "$thread_path" >&2
+      exit 2
+    }
+    [[ $thread_session == "$session_id" ]] || continue
+    thread_name=${thread_path##*/}
+    thread_name=${thread_name%.thread}
+    [[ $thread_name != "$name" ]] || continue
+    [[ $thread_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $thread_name != *..* ]] || {
+      printf 'cannot establish pi session mode: matching thread has an invalid run name: %s\n' "$thread_path" >&2
+      exit 2
+    }
+    thread_mode_path=$CONTROLLER_RUNS_DIR/$thread_name.mode
+    if read_mode_record_if_present "$thread_mode_path"; then
+      if [[ $mode_record_value == review ]]; then
+        session_review_found=1
+        session_review_source=thread-record
+      fi
+    else
+      record_rc=$?
+      (( record_rc == 1 )) || exit 2
+    fi
+  done
+  if [[ $session_mode_state == valid && $session_mode_record_value == review ]]; then
+    session_review_found=1
+    session_review_source=session-record
   fi
   case $mode_record_state in
     valid)
@@ -322,10 +480,32 @@ if [[ $mode == resume ]]; then
       if [[ -e $CONTROLLER_RUNS_DIR/$name.review/before-state.txt ]]; then
         run_mode=review
         mode_source=review-material
+        if (( session_review_found == 0 )); then
+          session_review_found=1
+          session_review_source=review-material
+        fi
         printf 'pi-impl: %s has review material but no mode record; it is resumed as a review (fail closed)\n' "$name" >&2
       fi
       ;;
   esac
+  if (( session_review_found == 1 )); then
+    if [[ $request_origin == caller && $requested_mode == implementer ]]; then
+      if [[ $session_review_source == review-material ]]; then
+        printf 'run name %s has review material and cannot be resumed in implementer mode\n' "$name" >&2
+      else
+        printf 'pi session %s is recorded as a REVIEW and cannot be resumed in implementer mode\n' "$session_id" >&2
+      fi
+      echo '  a review session never gets a shell or a writer, so the mode is sticky across run names' >&2
+      echo '  resume it with PI_RUN_MODE=review, or name no mode at all and the session record decides' >&2
+      exit 2
+    fi
+    if [[ $request_origin == local-env && $requested_mode != review ]]; then
+      printf 'pi-impl: controller.local.env asks for %s mode, but session %s is a recorded review; the record decides\n' \
+        "$requested_mode" "$session_id" >&2
+    fi
+    run_mode=review
+    [[ $mode_record_state == valid && $record_mode == review ]] || mode_source=$session_review_source
+  fi
 fi
 case $run_mode in
   review) review_argv_file=$SCRIPT_DIR/pi-review-argv ;;
@@ -682,6 +862,13 @@ if (( retire_existing == 1 )); then
     exit 2
   fi
 fi
+if [[ $mode == resume ]]; then
+  # The session lock was acquired before mode resolution. Persist the effective
+  # mode and release it before pi starts; a second run name now observes review
+  # before it can claim its own name or launch.
+  write_session_mode "$session_id" || exit 2
+  release_session_mode_lock
+fi
 controller_run_record_owner
 printf '%s\n' "$worktree" > "$out/$name.wt"
 printf '%s\n' "$route_record" > "$out/$name.route"
@@ -885,6 +1072,12 @@ IFS=$'\t' read -r stream_session stop_reason usage_limited settled aborted \
 thread_id=${stream_session:-$session_id}
 if [[ -n $thread_id ]]; then
   printf '%s\n' "$thread_id" > "$out/$name.thread"
+  # A new run learns its session id from pi's stream. Record the mode at that
+  # point so a later resume under any run name can recover it.
+  if ! write_session_mode "$thread_id"; then
+    printf 'pi-impl: session mode for %s could not be recorded; the run-name mode remains available\n' \
+      "$thread_id" >&2
+  fi
   if CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" \
     record-thread "$thread_id" "$od_account"; then
     :
@@ -919,6 +1112,12 @@ while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION ]]; do
   IFS=$'\t' read -r stream_session stop_reason usage_limited settled aborted \
     has_text has_tool_call <<< "$inspection"
   thread_id=${stream_session:-$thread_id}
+  if [[ -n $thread_id ]]; then
+    if ! write_session_mode "$thread_id"; then
+      printf 'pi-impl: session mode for %s could not be recorded after continuation; the run-name mode remains available\n' \
+        "$thread_id" >&2
+    fi
+  fi
   outcome=$(classify_run "$rc")
   printf '{"ev":"empty-completion-retry","attempt":%s,"exit":%s,"outcome":"%s"}\n' \
     "$attempt" "$rc" "$outcome" >> "$out/$name.events"

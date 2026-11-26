@@ -237,7 +237,15 @@ for pi_case in \
   pi-mode-extra-args-allowed:mode-extra-args \
   pi-mode-extra-args-list-dropped:mode-extra-args \
   pi-mode-rules-file-refusal-dropped:mode-rules-file \
-  pi-mode-prompt-dropped:mode-prompt pi-mode-local-env-flip:mode-local-env; do
+  pi-mode-prompt-dropped:mode-prompt pi-mode-local-env-flip:mode-local-env \
+  pi-mode-session-thread-ignored:mode-session-thread \
+  pi-mode-session-write-dropped:mode-session-thread \
+  pi-mode-session-implementer-refusal-dropped:mode-session-thread \
+  pi-mode-session-thread-invalid-record-guessed:mode-session-thread \
+  pi-mode-session-record-ignored:mode-session-record \
+  pi-mode-session-monotonic-dropped:mode-session-record \
+  pi-mode-session-invalid-record-guessed:mode-session-record \
+  pi-mode-session-implementer-as-review:mode-session-implementer; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \

@@ -19,18 +19,20 @@ no separate version number, so entries are grouped by the work that landed.
   tools, extensions, MCP, skills, prompt templates and project trust is named in
   the message first — so a review cannot be widened back to a shell, and an
   unclassified spelling takes the same exit rather than slipping through. The
-  mode is a name-owned record (`<runs-dir>/<run>.mode`, written only by a launch
-  that got past every refusal and retired with the other records on a forced
-  reuse), and it is STICKY: a resume of a `review` name is a review, a CALLER
-  asking for implementer mode on it is refused before the name is claimed, and
-  an implementer name resumed as a review keeps the stricter mode and records
-  it. A record that exists but says neither word is refused instead of guessed,
-  a missing record with `<run>.review/before-state.txt` beside it is resumed as
-  a review (fail closed where the session is known), and a missing record with
-  no material keeps the mode the launch named — which is what leaves
-  pre-existing implementer sessions unchanged. A `PI_RUN_MODE` value supplied
-  only by `controller.local.env` is a default for launches that name none: it
-  never flips a caller's review, and against a record it is printed, not obeyed.
+  mode is recorded by run name (`<runs-dir>/<run>.mode`) and, once pi's stream
+  provides the session id, by session (`<runs-dir>/session-modes/<session-id>`).
+  Resumes read both records and scan `<runs-dir>/*.thread` for exact session-id
+  matches, then read the matching names' mode records. Review is sticky across
+  fresh run names; a CALLER asking for implementer mode on a recorded review is
+  refused before the name is claimed. Session records are locked and monotonic:
+  review can never be replaced with implementer. An implementer name or session
+  resumed as review keeps the stricter mode and records it. An unreadable or
+  invalid record is refused instead of guessed, a missing current-name record
+  with `<run>.review/before-state.txt` beside it is resumed as review, and a
+  pre-existing implementer session without review evidence resumes unchanged.
+  A `PI_RUN_MODE` value supplied only by `controller.local.env` is a default for
+  launches that name none: it never flips a caller's review, and against a
+  record it is printed, not obeyed.
 - **A fixed rule paragraph on every pi prompt.** `<mode>-prompt-rules.md` beside
   the wrapper is appended to the prompt of every launch and to the automatic
   continuation; a launch whose file is missing is refused (exit 2). The
@@ -41,7 +43,8 @@ no separate version number, so entries are grouped by the work that landed.
   devcontainer; the review paragraph says the run executes nothing.
 - Tests: `tests/test-pi-impl.sh` gains the run-mode checks (`review-argv`,
   `implementer-mode`, `review-argv-definition`, `mode-value`, `mode-extra-args`,
-  `mode-sticky`, `mode-evidence`, `mode-rules-file`, `mode-local-env`,
+  `mode-sticky`, `mode-session-thread`, `mode-session-record`,
+  `mode-session-implementer`, `mode-evidence`, `mode-rules-file`, `mode-local-env`,
   `mode-record`, `mode-prompt`), the fake pi now records one argv element per
   NUL-terminated record, and `tests/test-mutations.sh`/`mutate-sources.py` carry
   one hand mutant per new refusal. `tests/test-pi-review.sh` asserts the review

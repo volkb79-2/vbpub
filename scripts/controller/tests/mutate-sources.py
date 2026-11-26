@@ -734,8 +734,8 @@ mutant("scripts/controller/pi-impl.sh", "pi-prompt-absolute.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-worktree-exists.sh",
        'worktree=$(realpath -e -- "$1") || usage', 'worktree=$1')
 mutant("scripts/controller/pi-impl.sh", "pi-session-id-guard.sh",
-       '[[ -n $session_id && $session_id =~ ^[A-Za-z0-9._-]+$ && $session_id != *..* ]] || usage',
-       '[[ -n $session_id ]] || usage')
+       '  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != *..* && $1 != . ]]',
+       '  return 0')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-guard.sh",
        'elif [[ $mode != new || $# -gt 4 ]]; then', 'elif [[ $mode != new ]]; then')
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-guard.sh",
@@ -857,6 +857,39 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-invalid-record-guessed.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-mode-evidence-dropped.sh",
        '      if [[ -e $CONTROLLER_RUNS_DIR/$name.review/before-state.txt ]]; then',
        '      if false; then')
+# A session sticks across caller-selected run names. These mutants each remove
+# one source or consequence of that rule; their focused arms also verify that an
+# implementer session is not broadened into a review by an unrelated match.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-thread-ignored.sh",
+       '      if [[ $mode_record_value == review ]]; then\n'
+       '        session_review_found=1\n'
+       '        session_review_source=thread-record',
+       '      if false; then\n'
+       '        session_review_found=1\n'
+       '        session_review_source=thread-record')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-record-ignored.sh",
+       '  if [[ $session_mode_state == valid && $session_mode_record_value == review ]]; then',
+       '  if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-thread-invalid-record-guessed.sh",
+       '      (( record_rc == 1 )) || exit 2',
+       '      : # invalid matching-name mode record ignored')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-write-dropped.sh",
+       '  if ! printf \'%s\\n\' "$write_mode" > "$path"; then',
+       '  if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-monotonic-dropped.sh",
+       '  if [[ $stored_mode == review || $run_mode == review ]]; then write_mode=review; fi',
+       '  if [[ $run_mode == review ]]; then write_mode=review; fi')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-implementer-as-review.sh",
+       '  if [[ $session_mode_state == valid && $session_mode_record_value == review ]]; then',
+       '  if [[ $session_mode_state == valid ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-implementer-refusal-dropped.sh",
+       '    if [[ $request_origin == caller && $requested_mode == implementer ]]; then\n'
+       '      printf \'pi session %s is recorded as a REVIEW and cannot be resumed in implementer mode\\n\' "$session_id" >&2',
+       '    if false; then\n'
+       '      printf \'pi session %s is recorded as a REVIEW and cannot be resumed in implementer mode\\n\' "$session_id" >&2')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-invalid-record-guessed.sh",
+       '  [[ $session_mode_state != invalid ]] || {',
+       '  true || {')
 # In review mode the seam adds nothing at all -- the general refusal is the one
 # that holds for a spelling this wrapper never classified.
 mutant("scripts/controller/pi-impl.sh", "pi-mode-extra-args-allowed.sh",

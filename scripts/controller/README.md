@@ -146,9 +146,11 @@ Use this order for each implementation task.
    tool set from `pi-review-argv` in the wrapper's OWN argv (first run, resume
    and every automatic continuation), every prompt carries
    `review-prompt-rules.md` (execute nothing), and `PI_EXTRA_ARGS` that would
-   widen it is refused. The mode is recorded as `<runs-dir>/<run>.mode` and is
-   **sticky**: a resume of a review is a review, and asking for implementer mode
-   on it is refused. A missing rule file refuses the launch (exit 2).
+   widen it is refused. The mode is recorded as `<runs-dir>/<run>.mode` and, as
+   soon as pi supplies the session id, `<runs-dir>/session-modes/<session-id>`.
+   It is **sticky per run name and session**: a review resumed under a fresh name
+   is still a review, and asking for implementer mode on it is refused. A
+   missing rule file refuses the launch (exit 2).
 
    Use `CODEX_ROUTE=deepseek` to select an Open Design account automatically,
    or pin one with `CODEX_ROUTE=deepseek-volker` or
@@ -426,20 +428,26 @@ still has `bash`, and nothing there technically prevents the bash builtin
 not prevented (see the `implementer-prompt-rules.md` paragraph every implementer
 prompt carries), and the mechanical part is the `pi-shims` PATH guard.
 
-**Review mode is sticky per run name.** Every launch records it as
-`<runs-dir>/<run>.mode` (`review` or `implementer`) beside `--report`'s material
-and the route record, and a resume is forced into the recorded mode: a resume
-that ASKS for implementer mode on a review is refused (exit 2, before the name
-is claimed), while a resume that names no mode simply takes the record. A
-record that exists but is neither word is refused rather than guessed, and a
-name that carries review material (`<run>.review/before-state.txt`) but no mode
-record is resumed as a review — the session is known to be one, so the safe
-direction is failing closed. A pre-existing implementer session (no record, no
-material) resumes unchanged. A `PI_RUN_MODE` value that only the host's
-`controller.local.env` supplied is a default for launches that name none: it
-cannot flip a review, and a request naming the wrong mode is not obeyed either.
-An implementer run may be resumed STRICTER (as a review); the record then
-becomes `review` and the run is a review for the rest of its life.
+**Review mode is sticky per run name and pi session.** Every launch records it as
+`<runs-dir>/<run>.mode` (`review` or `implementer`); as soon as the wrapper learns
+the session id from pi's stream, it also records the mode in
+`<runs-dir>/session-modes/<session-id>`. On resume, the wrapper reads both records
+and scans `<runs-dir>/*.thread` for exact matches, then reads each matching run
+name's mode record. Review from any of these sources forces review, even when
+the caller uses a fresh name. A caller that ASKS for implementer mode on that
+session is refused (exit 2, before the new name is claimed); no mode takes the
+recorded review. The session record is locked and monotonic: it can become
+`review`, but no later implementer launch can replace it.
+
+A record that exists but is unreadable or neither word is refused rather than
+guessed. A name that carries review material (`<run>.review/before-state.txt`)
+but no mode record is resumed as a review. A pre-existing implementer session
+with no review evidence or matching review record resumes unchanged. A
+`PI_RUN_MODE` value that only the host's `controller.local.env` supplied is a
+default for launches that name none; it cannot flip a review, and a request
+naming the wrong mode is not obeyed either. An implementer run may be resumed
+STRICTER (as a review); the name and session records then become `review` and
+the session stays a review for the rest of its life.
 
 It also carries a **review budget**, enforced while the run is going:
 `PI_REVIEW_MAX_SECONDS` (wall clock, default **7200** — a max-effort review of a

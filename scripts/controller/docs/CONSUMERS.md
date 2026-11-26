@@ -183,7 +183,9 @@ In `review` mode the wrapper puts the read-only set from `scripts/controller/pi-
 (`--tools read,grep,find,ls`, `--exclude-tools mcp__*`, `--no-extensions`, `--no-mcp`)
 in its OWN argv, so the first launch, a manual `resume` and every automatic
 continuation carry it, and every prompt gets `review-prompt-rules.md` (execute
-nothing). The mode is recorded as `<runs-dir>/<run>.mode` and is **sticky**:
+nothing). The mode is recorded as `<runs-dir>/<run>.mode` and, once pi provides
+the session id, `<runs-dir>/session-modes/<session-id>`. It is **sticky across
+run names**:
 
 ```text
 run name pi-review-run was started as a REVIEW and cannot be resumed in implementer mode
@@ -191,11 +193,16 @@ run name pi-review-run was started as a REVIEW and cannot be resumed in implemen
 ```
 
 Resume it with `PI_RUN_MODE=review`, or with no `PI_RUN_MODE` at all and the
-record decides. The reverse direction is allowed: an implementer name may be
-resumed as a review, and the record then becomes `review`. A record that says
-neither word is refused rather than guessed, and a name that carries
+record decides. The wrapper also scans `<runs-dir>/*.thread` for exact matches
+to the resumed session id and reads those run names' mode records, so a review
+resumed under a fresh name is still a review. Any review record forces review;
+an explicit implementer request is refused before the new name is claimed. The
+session record is locked and monotonic, so it cannot be changed back to
+`implementer`. The reverse direction is allowed: an implementer name or session
+may be resumed as a review, and its records then become `review`. An unreadable
+or invalid record is refused rather than guessed, and a name that carries
 `<run>.review/before-state.txt` but no mode record is resumed as a review. A
-pre-existing implementer session (no record, no material) resumes unchanged.
+pre-existing implementer session without review evidence resumes unchanged.
 
 In `review` mode a caller's `PI_EXTRA_ARGS` is refused (exit 2) instead of
 merged: any element at all, and every spelling pi accepts for tools

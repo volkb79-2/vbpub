@@ -157,22 +157,26 @@ The mode is therefore `pi-impl.sh`'s own switch:
   — is a vocabulary that must be kept in step with pi, and a spelling it misses
   fails silently. Rejected: allowing an "equal or narrower" seam, which cannot
   be decided without re-implementing pi's own tool merge.
-- **The mode is a name-owned record (`<run>.mode`), read on a resume.** A
-  review's session must never become a shell by resuming it, and a resume is the
-  routine path of a long job. So every accepted launch writes the mode beside the
-  route and after every refusal; a resume of a `review` name refuses a caller
-  that ASKS for implementer mode (exit 2, before the name is claimed) and takes
-  the record when the caller names none. An implementer name may be resumed
-  STRICTER, and the record then becomes `review`: the direction that can only
-  narrow is allowed, the other is refused.
-- **Missing or unreadable: the safe direction only where the fact exists.** A
-  record that exists and says neither word is refused — no correct writer
-  produces it, and guessing which word was meant is a fallback that cannot fail
-  loudly. A record that is MISSING is not the same fact: a name carrying
-  `<run>.review/before-state.txt` (written by `pi-review.sh` before its launch)
-  is known to be a review and is resumed as one; a name with neither is a
-  pre-existing implementer session, which must resume unchanged rather than be
-  turned into a review by a refusal it never asked for.
+- **The mode follows both the run name and the pi session.** Every accepted
+  launch writes `<run>.mode`; once the wrapper learns the pi session id, it also
+  writes `<runs-dir>/session-modes/<session-id>`. A resume reads its name and
+  session records, then scans `<runs-dir>/*.thread` for exact matches and reads
+  those names' mode records. This covers a review resumed under a fresh name and
+  sessions created before session records existed. If any source says `review`,
+  the launch is a review; a caller that ASKS for implementer mode is refused
+  (exit 2, before its new name is claimed), and a resume with no named mode takes
+  review. Session writes use a lock and move only toward review, so a later
+  implementer launch cannot overwrite it. An implementer name or session may be
+  resumed STRICTER; its records then become `review`.
+- **Missing or unreadable: the safe direction only where the fact exists.** An
+  unreadable or invalid name, session, or matching-name mode record is refused —
+  no correct writer produces it, and guessing which word was meant is a fallback
+  that cannot fail loudly. A missing name record is not the same fact: a name
+  carrying `<run>.review/before-state.txt` (written by `pi-review.sh` before its
+  launch) is known to be a review and is resumed as one. A pre-existing
+  implementer session without review evidence or any matching review record
+  resumes unchanged rather than being turned into a review by a refusal it
+  never asked for.
 - **A host file is a default, not a request.** `controller.local.env` is sourced
   with `set -a`, so a `PI_RUN_MODE=implementer` line in it would otherwise decide
   every launch. The caller's own value is saved before that file is sourced and
