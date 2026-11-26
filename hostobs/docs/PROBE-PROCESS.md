@@ -24,10 +24,12 @@ and why it lost.
 - **Process-detail reads such as `cmdline` and every other `/proc/<pid>/*` read never run on the
   server thread.** The B1 exception is the accept-time peer label: the driver reads
   `/proc/<pid>/comm` and `/proc/<pid>/cgroup` once, and every failed or invalid check becomes
-  `None`. These labels are advisory and never affect authorization, dedupe, rate limits, quotas
-  or the per-uid connection cap. The package that serves process detail gives those reads a
-  bounded worker pool on the sampler side (the archived sampler's shape: a few workers, a
-  bounded queue, one in-flight read per pid) and publishes the results in the tick.
+  `None`. The cgroup membership read is limited to 4 KiB and its path to 64 components; a deeper
+  path is refused before any cgroup metadata lookup. These labels are advisory and never affect
+  authorization, dedupe, rate limits, quotas or the per-uid connection cap. The package that
+  serves process detail gives those reads a bounded worker pool on the sampler side (the archived
+  sampler's shape: a few workers, a bounded queue, one in-flight read per pid) and publishes the
+  results in the tick.
 - **A slow client cannot delay another one** because the loop never waits on any one socket: a
   full socket buffer is `WouldBlock`, the hub keeps or sheds that client's queue (WIRE §5.3) and the
   turn moves on. This supersedes plan v4 §B.4 "Control/observer verbs have their own serving
@@ -189,9 +191,15 @@ site reads the 12-byte Linux `ucred` and returns its actual length. `driver::dec
 requires length 12, maps pid 0 to `None`, and refuses a negative pid before constructing any
 rustix `Pid` or `NonZeroI32`. A peer with `pid: None` remains accepted. This is the second
 unsafe expression in `activation.rs`, and `check-lints.py` pins both expressions' count.
-`comm` is kept only when readable as UTF-8. `cgroup` is kept only for a `0::/…` path with no
-`..` component whose target `st_dev` equals the configured cgroup root's `st_dev`; every failed
-check gives `None`. The label has no decision weight.
+`comm` is kept only when valid UTF-8 with no control characters after one trailing newline is
+removed. `cgroup` is kept only for a `0::/…` path with no `..` component, at most 64 components,
+and a target whose nonzero `st_dev` equals the configured cgroup root's `st_dev` and whose inode
+is nonzero; the membership read is at most 4 KiB. Every failed check gives `None`.
+
+The process labels are read after accept and can describe a different process if the connector's
+pid was reused before the read, the socket was passed to another process, or `/proc` belongs to a
+different PID namespace. They carry no authority. Every consumer, including future event or
+watch surfaces, must show them as **unverified**.
 
 A refusal exits 2 before the sampler starts, with one line naming the variable or the adopted
 socket name. `LISTEN_PID` and `LISTEN_FDS` refuse leading-zero decimal spellings. The
@@ -297,7 +305,7 @@ keys, so the shape would change twice.
   there too; `crates/kernel/src/lib.rs` must contain `#![deny(unsafe_code)]`; and
   `tools/check-lints-mutation.py` pins list-form `allow`, `expect`, whitespace variants,
   crate-level `warn`, a bare unsafe expression in a kernel integration test, and a second
-  allowance in `activation.rs`.
+  allowance in `activation.rs`, plus an unlisted third unsafe expression in `activation.rs`.
 
 **Alternative: allow `Command::new` in `bins/probe/tests/` and spawn the binary with `LISTEN_FDS`.**
 Lost: it widens the spawn lint to a directory. Setting `LISTEN_PID` after the fork also needs

@@ -82,7 +82,8 @@ pub const SERVER_MINOR: u16 = PROTO_MINOR;
 
 /// A cgroup identity label captured from the peer's `/proc` entry.
 ///
-/// This is advisory process metadata, not the model's mount-id-based cgroup identity.
+/// This is the same `(st_dev, inode)` pair stored by the model cgroup identity and used by the
+/// `cgroup_id` selector, read from the peer's unverified `/proc` entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CgroupKey {
     /// The `st_dev` device number of the cgroup directory.
@@ -96,9 +97,11 @@ pub struct CgroupKey {
 pub struct Peer {
     /// The peer's uid.
     pub uid: u32,
-    /// The peer's pid in the probe's PID namespace, if visible.
+    /// The pid reported by `SO_PEERCRED` at connect time, in the probe's PID namespace,
+    /// if visible.
+    /// A `/proc` label read later for this pid can describe another process.
     pub pid: Option<u32>,
-    /// The peer's process name when readable as UTF-8.
+    /// The unverified process name when valid UTF-8 and free of control characters.
     pub comm: Option<String>,
     /// The peer's cgroup device and inode for a directory joined under the configured root and
     /// found on that root's device.

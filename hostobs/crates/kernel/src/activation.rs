@@ -9,6 +9,7 @@
 //!   levels.
 //! - `LISTEN_FDNAMES` must name exactly that many non-empty, distinct descriptors.
 //! - Each descriptor must be an open, listening `AF_UNIX` `SOCK_STREAM` socket.
+//! - Accepted streams expose a raw `SO_PEERCRED` read; credential decoding stays with the probe.
 //!
 //! [`take`] is process-wide and intentionally one-shot. It checks and sets the guard before
 //! parsing, so a failed first call cannot be retried after some environment fact changes.
@@ -325,9 +326,11 @@ mod raw {
     pub fn peer_credentials_raw<Fd: AsFd>(fd: Fd) -> io::Result<([u8; UCRED_BYTES], u32)> {
         let mut credentials = [0_u8; UCRED_BYTES];
         let mut length = 12_u32;
-        // SAFETY: `fd` is a live borrowed socket descriptor. `credentials` has exactly 12 writable
-        // bytes, and `length` points to a live socklen_t initialized to that capacity. Linux's
-        // `SO_PEERCRED` writes no more than the supplied capacity and reports the returned length.
+        // SAFETY: `fd` is a live borrowed socket descriptor. The `extern "C"` declaration above
+        // matches Linux's `getsockopt` ABI (`c_int` arguments/result, a `c_void` value pointer and
+        // `u32` `socklen_t`). `credentials` has exactly 12 writable bytes, and `length` points to a
+        // live socklen_t initialized to that capacity. Linux's `SO_PEERCRED` writes no more than
+        // the supplied capacity and reports the returned length.
         let result = unsafe {
             getsockopt(
                 fd.as_fd().as_raw_fd(),

@@ -36,7 +36,8 @@ const EVENTFD_BYTES: usize = 8;
 const NS_PER_MS: u64 = 1_000_000;
 const UCRED_LEN: usize = 12;
 const MAX_COMM_BYTES: usize = 16;
-const MAX_CGROUP_BYTES: usize = 64 * 1024;
+const MAX_CGROUP_BYTES: usize = 4 * 1024;
+const MAX_CGROUP_DEPTH: usize = 64;
 
 struct Open {
     stream: UnixStream,
@@ -91,15 +92,20 @@ fn decode_ucred(
 
 fn read_bounded(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
     let file = std::fs::File::open(path).ok()?;
+    read_bounded_from(file, max_bytes)
+}
+
+fn read_bounded_from(reader: impl Read, max_bytes: usize) -> Option<Vec<u8>> {
     let read_limit = u64::try_from(max_bytes).ok()?.checked_add(1)?;
     let mut bytes = Vec::with_capacity(max_bytes.min(4096));
-    file.take(read_limit).read_to_end(&mut bytes).ok()?;
+    reader.take(read_limit).read_to_end(&mut bytes).ok()?;
     (bytes.len() <= max_bytes).then_some(bytes)
 }
 
 fn parse_comm(bytes: &[u8]) -> Option<String> {
     let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-    std::str::from_utf8(bytes).ok().map(str::to_owned)
+    let comm = std::str::from_utf8(bytes).ok()?;
+    (!comm.chars().any(char::is_control)).then(|| comm.to_owned())
 }
 
 fn unified_cgroup_path(contents: &str) -> Option<PathBuf> {
@@ -115,15 +121,27 @@ fn unified_cgroup_path(contents: &str) -> Option<PathBuf> {
     {
         return None;
     }
+    if relative.components().count() > MAX_CGROUP_DEPTH {
+        return None;
+    }
     Some(relative.to_path_buf())
 }
 
 fn read_cgroup_key(
     proc_cgroup: &Path,
     cgroup_root: &Path,
+    file_identity: impl FnMut(&Path) -> io::Result<(u64, u64, bool)>,
+) -> Option<CgroupKey> {
+    let file = std::fs::File::open(proc_cgroup).ok()?;
+    read_cgroup_key_from(file, cgroup_root, file_identity)
+}
+
+fn read_cgroup_key_from(
+    proc_cgroup: impl Read,
+    cgroup_root: &Path,
     mut file_identity: impl FnMut(&Path) -> io::Result<(u64, u64, bool)>,
 ) -> Option<CgroupKey> {
-    let bytes = read_bounded(proc_cgroup, MAX_CGROUP_BYTES)?;
+    let bytes = read_bounded_from(proc_cgroup, MAX_CGROUP_BYTES)?;
     let contents = std::str::from_utf8(&bytes).ok()?;
     let relative = unified_cgroup_path(contents)?;
     if relative
@@ -149,7 +167,7 @@ fn read_cgroup_key(
         }
     }
     let (target_dev, inode, _) = identity;
-    (target_dev == root_dev).then_some(CgroupKey {
+    (target_dev != 0 && inode != 0 && target_dev == root_dev).then_some(CgroupKey {
         dev: target_dev,
         inode,
     })
@@ -579,7 +597,8 @@ mod tests {
     use rustix::event::{eventfd, EventfdFlags};
 
     use super::{
-        cgroup_path_identity, parse_comm, peer_from_ucred, read_bounded, read_cgroup_key, run,
+        cgroup_path_identity, parse_comm, peer_from_ucred, read_bounded, read_cgroup_key,
+        read_cgroup_key_from, run, MAX_CGROUP_BYTES,
     };
     use hostobs_serve::backend::{
         Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, Turn,
@@ -1181,12 +1200,84 @@ mod tests {
     }
 
     #[test]
+    fn control_character_comm_is_omitted_but_non_ascii_utf8_is_kept() {
+        assert_eq!(parse_comm(b"\x1b]0;x\x07\n"), None);
+        assert_eq!(parse_comm(b"a\nb"), None);
+        assert_eq!(
+            parse_comm("café\n".as_bytes()),
+            Some(String::from("café"))
+        );
+    }
+
+    #[test]
     fn parent_component_in_peer_cgroup_path_is_omitted() {
         let fixture = peer_fixture_root().join("proc/17/cgroup");
         let key = read_cgroup_key(&fixture, Path::new("unused-root"), |_| {
             panic!("invalid cgroup path must be rejected before stat")
         });
         assert_eq!(key, None);
+    }
+
+    #[test]
+    fn peer_cgroup_depth_is_capped_before_identity_lookup() {
+        let root = Path::new("fixture-cgroup-root");
+        let sixty_four = format!("0::/{}", vec!["x"; 64].join("/"));
+        let mut identity_calls = 0;
+        let key = read_cgroup_key_from(sixty_four.as_bytes(), root, |_| {
+            identity_calls += 1;
+            Ok((10, 23, true))
+        });
+        assert_eq!(key, Some(CgroupKey { dev: 10, inode: 23 }));
+        assert_eq!(
+            identity_calls,
+            65,
+            "root plus 64 membership components"
+        );
+
+        let sixty_five = format!("0::/{}", vec!["x"; 65].join("/"));
+        identity_calls = 0;
+        let key = read_cgroup_key_from(sixty_five.as_bytes(), root, |_| {
+            identity_calls += 1;
+            Ok((10, 23, true))
+        });
+        assert_eq!(key, None);
+        assert_eq!(
+            identity_calls,
+            0,
+            "over-depth paths are refused before stat"
+        );
+    }
+
+    #[test]
+    fn peer_cgroup_read_accepts_four_kibibytes_and_refuses_more() {
+        let mut components = Vec::new();
+        for index in 0..64 {
+            components.push("x".repeat(if index < 3 { 62 } else { 63 }));
+        }
+        let contents = format!("0::/{}", components.join("/"));
+        assert_eq!(contents.len(), MAX_CGROUP_BYTES);
+
+        let root = Path::new("fixture-cgroup-root");
+        let mut identity_calls = 0;
+        let key = read_cgroup_key_from(contents.as_bytes(), root, |_| {
+            identity_calls += 1;
+            Ok((10, 23, true))
+        });
+        assert_eq!(key, Some(CgroupKey { dev: 10, inode: 23 }));
+        assert_eq!(identity_calls, 65);
+
+        let too_long = format!("{contents}x");
+        identity_calls = 0;
+        let key = read_cgroup_key_from(too_long.as_bytes(), root, |_| {
+            identity_calls += 1;
+            Ok((10, 23, true))
+        });
+        assert_eq!(key, None);
+        assert_eq!(
+            identity_calls,
+            0,
+            "oversized reads are refused before stat"
+        );
     }
 
     #[test]
@@ -1212,6 +1303,24 @@ mod tests {
             }
         });
         assert_eq!(key, Some(CgroupKey { dev: 10, inode: 23 }));
+    }
+
+    #[test]
+    fn zero_peer_cgroup_device_or_inode_is_omitted() {
+        let fixture = peer_fixture_root().join("proc/18/cgroup");
+        let root = Path::new("fixture-cgroup-root");
+
+        for target_identity in [(0, 23, true), (10, 0, true)] {
+            let key = read_cgroup_key(&fixture, root, |path| {
+                if path == root {
+                    Ok((10, 1, true))
+                } else {
+                    assert_eq!(path, root.join("child"));
+                    Ok(target_identity)
+                }
+            });
+            assert_eq!(key, None);
+        }
     }
 
     #[test]
