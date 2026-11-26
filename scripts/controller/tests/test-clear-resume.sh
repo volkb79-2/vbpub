@@ -54,7 +54,7 @@ chmod +x "$ROOT/bin/tmux"
 frame() {
   local f; f=$(printf '%s/frames/%s.%03d' "$1" "$2" "$3")
   case $4 in
-    B) printf 'output\n  * Thinking (12s . esc to interrupt)\n\n' >"$f" ;;
+    B) printf 'output\n%s\n❯\xc2\xa0\n%s\n  * Thinking (12s . esc to interrupt)\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;  # busy marker inside a real box
     I) printf 'output\n%s\n❯\xc2\xa0\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;
     T) printf 'output\n%s\n❯ half-typed text\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;
     S) printf '❯ older prompt\nreply\n%s\n❯\xc2\xa0\n%s\n  ctx 41%%\n' "$RULE" "$RULE" >"$f" ;;

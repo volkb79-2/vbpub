@@ -52,15 +52,15 @@ exit 0
 SH
 chmod +x "$ROOT/bin/tmux"
 
-# frame <dir> <phase> <n> <kind>: B busy, K compacting spinner, I idle (a real prompt box, input row = marker + NBSP
+# frame <dir> <phase> <n> <kind>: B busy, K compacting marker, I idle (a real prompt box, input row = marker + NBSP
 # only), T the same box with text typed in the input row, S an older non-empty input row in the scrollback and an empty
 # current one; the L kinds are the REAL agents-panel capture with N appended panel rows, busy (L<n>B), and LMB is the
 # same capture in ANOTHER permission mode (no mode-line marker, so nothing is trimmed: the box still anchors the busy check).
 frame() {
   local f; f=$(printf '%s/frames/%s.%03d' "$1" "$2" "$3")
   case $4 in
-    B) printf 'output\n  * Thinking (12s . esc to interrupt)\n\n' >"$f" ;;
-    K) printf 'output\n  * Compacting conversation... (3s)\n\n' >"$f" ;;
+    B) printf 'output\n%s\n❯\xc2\xa0\n%s\n  * Thinking (12s . esc to interrupt)\n  ctx 442k\n' "$RULE" "$RULE" >"$f" ;;  # busy marker inside a real box
+    K) printf 'output\n%s\n❯\xc2\xa0\n%s\n  * Compacting conversation... (3s)\n  ctx 442k\n' "$RULE" "$RULE" >"$f" ;;  # only busy sign is below the box
     I) printf 'output\n%s\n❯\xc2\xa0\n%s\n  ctx 442k\n' "$RULE" "$RULE" >"$f" ;;
     T) printf 'output\n%s\n❯ half-typed text\n%s\n  ctx 442k\n' "$RULE" "$RULE" >"$f" ;;
     S) printf '❯ older prompt\nreply\n%s\n❯\xc2\xa0\n%s\n  ctx 442k\n' "$RULE" "$RULE" >"$f" ;;
@@ -128,7 +128,8 @@ contains "$D/log" "ERROR pane never idle" "never idle logged"
 [[ ! -e $D/sent.1 ]] || fail "never idle: something was sent"
 not_contains <(calls) "send-keys" "never idle: keys were sent"
 
-# 4. Compaction never finishes: exit 4 (distinct from 3), /compact was sent, the resume prompt was not.
+# 4. Compaction never finishes: the boxed K frame has only `Compacting` below the box, so it depends on the caller's
+#    BUSY_MARKERS addition; exit 4 (distinct from 3), /compact was sent, the resume prompt was not.
 scenario stuck "I" "K"
 COMPACT_RESUME_DONE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 4 ]] || fail "never finishing exit $RC (want 4)"
