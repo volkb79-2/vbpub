@@ -1527,7 +1527,9 @@ class AdmissionBook:
                     if is_lease:
                         self._lease_name_available_locked(request.lease_id, request.container_name, inspector)
                     aging_s = self._aging_seconds(capacity)
-                    waiter_record["priority"] = current_priority
+                    if waiter_record["priority"] != current_priority:
+                        waiter_record["priority"] = current_priority
+                        _atomic_json(waiter_path, waiter_record)
                     records = self._load_records()
                     waiters = self._load_waiters_locked()
                     now = _nonnegative_number(self.clock(), "clock")

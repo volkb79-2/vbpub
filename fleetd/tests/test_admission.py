@@ -494,6 +494,45 @@ def test_priority_clamps_only_to_the_most_urgent_allowed_class_not_more_urgent_t
         result.handle.complete()
 
 
+def test_reclamped_waiter_priority_is_persisted_for_other_book_readers(tmp_path):
+    clock = _FakeClock()
+    first_policy = {"ops": ("campaign",)}
+    next_policy = {"ops": ("gate",)}
+    base = _capacity(max_planned=2 * GIB)
+    first_capacity = replace(base, policy=replace(
+        base.policy,
+        priority_classes_by_principal=Fact.known(first_policy),
+    ))
+    next_capacity = replace(base, policy=replace(
+        base.policy,
+        priority_classes_by_principal=Fact.known(next_policy),
+    ))
+    capacities = [first_capacity]
+    book = _book(tmp_path / "state", clock=clock)
+    blocker = _admit(book, first_capacity, job_id="ops-blocker")
+    observations = []
+
+    def wait_for_admission(seconds):
+        if not observations:
+            capacities[0] = next_capacity
+            observations.append("policy changed")
+        elif len(observations) == 1:
+            observations.append(book.status("ops-waiter", "ops")["priority"])
+            blocker.handle.complete()
+        clock.now += seconds
+
+    book.waiter = wait_for_admission
+    result = book.submit(
+        _request(job_id="ops-waiter", priority="dev"),
+        authenticated_group="ops",
+        capacity_provider=lambda: capacities[0],
+        wait_s=2,
+    )
+    assert observations == ["policy changed", "gate"]
+    assert result.record["priority"] == "gate"
+    result.handle.complete()
+
+
 def test_unknown_or_missing_priority_policy_refuses_without_inventing_class(tmp_path):
     base = _capacity()
     unknown = replace(base, policy=replace(
