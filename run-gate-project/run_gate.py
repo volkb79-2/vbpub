@@ -17,7 +17,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 76  # rev 76: RG-321/RG-322 -- lane OOM bias and inventory refusals
+__revision__ = 77  # rev 77: RG-329 -- job event file for fleet runners
 # Linux's oom_score_adj steers OOM victim choice; disposable gate lanes
 # should be selected before the interactive controller.
 LANE_CONTAINER_OOM_SCORE_ADJ = 500

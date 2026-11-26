@@ -11,7 +11,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Added
 - run-gate: paired `--event-file` and `--job-id` flags emit host-owned
-  `lane-started` and `lane-verdict` JSONL events for fleet runners (RG-329).
+  `lane-started` and `lane-verdict` JSONL events for fleet runners (RG-329,
+  rev 77).
 
 ### Changed
 - run-gate: ephemeral gate lane containers use `--oom-score-adj 500` so host

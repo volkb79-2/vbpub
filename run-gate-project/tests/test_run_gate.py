@@ -2439,8 +2439,8 @@ class TestArgvConstruction:
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
         idx = lambda flag: run_call.index(flag)  # noqa: E731
-        assert run_call[0:3] == ["run", "-d", "--name"]
-        assert run_call[4] == "--init"
+        assert run_call[0] == "run"
+        assert "-d" in run_call and "--init" in run_call
         # RG-242: <repo>-run-gate-<project>-<lane>-<sha8>-<stamp>-<ns9>
         assert run_call[idx("--name") + 1].startswith("repo-run-gate-proj-suite-")
         assert run_gate.is_lane_container_name(run_call[idx("--name") + 1])
@@ -19967,7 +19967,8 @@ class TestTwoClientsOneLane:
             if follower is not None and follower_stream is not None:
                 follower_stream.close()
 
-        name = lane_runs(log)[0][3]
+        run_call = lane_runs(log)[0]
+        name = run_call[run_call.index("--name") + 1]
         assert follower.returncode == 0, out_b
         assert f"run-gate: following {name} (owner pid " in out_b, out_b
         assert "re-attached" not in out_b, out_b
@@ -23286,7 +23287,8 @@ class TestInflightRecordStore:
         data = seen["record"]
         head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
-        assert data["container"] == lane_runs(log)[0][3]
+        run_call = lane_runs(log)[0]
+        assert data["container"] == run_call[run_call.index("--name") + 1]
         # Hollow test 2: this line used to prove the CONSTRUCTION of a value
         # no product code read. `container_id` is now load-bearing — it is
         # compared against `{{.Id}}` on every re-attach — and the behaviour

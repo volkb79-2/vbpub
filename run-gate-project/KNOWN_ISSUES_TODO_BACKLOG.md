@@ -213,8 +213,9 @@ SPEC §9.
 | RG-321 | ephemeral gate lane containers do not lose host OOM selection to the interactive controller | Enhancement | FIXED IN THIS BRANCH (rev 76) |
 | RG-322 | RG-297 review L-a/L-b/L-c follow-ups: refusal text, remedy and precedence | Low | FIXED IN THIS BRANCH (rev 76) |
 | RG-323 | gate containers lack Assay's benchmark record and host identity inputs for effective CPU-time bounds | Enhancement | OPEN 2026-11-26 |
-| RG-324 | Run-Gate does not treat Assay's wall-stop result as non-judgement | Minor | OPEN 2026-11-26 |
-| RG-325 | Run-Gate must follow Assay's next lane inventory schema bump | Minor | OPEN 2026-11-26 |
+| RG-324 | Run-Gate's non-judgement mapping of Assay's wall stop is not pinned to the final reason contract | Minor | OPEN 2026-11-26 |
+| RG-325 | A future Assay lane inventory schema bump needs a Run-Gate release that accepts only the new version | Minor | OPEN 2026-11-26 |
+| RG-329 | a host runner cannot trust the shared lane log for container identity or verdict | Enhancement | FIXED IN THIS BRANCH (rev 77) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9998,8 +9999,8 @@ Severity: Minor.
   own line (`arguments after '--' for lane 'x' need an inventory proving the
   judge accepts them (assay >= 12.3.0, RG-318): <why>. Update the checkout, or
   re-pin the judge to >= 12.3.0`); a lane that forwards nothing keeps its old
-  behaviour. Both refusals name the remedy (`update the checkout, or re-pin
-  the judge to >= 12.3.0`).
+  behaviour. Both refusals name the remedy (update the checkout, or re-pin
+  the judge to >= 12.3.0; the first starts it with a capital `Update`).
 - **tester-unified carries assay from SOURCE, not as a wheel.** The image
   copies `assay/` (`tester-unified/Dockerfile:361`, metadata at `:203`) for
   dependency-closure generation and denies the name to any PyPI-bound pip
@@ -10102,34 +10103,37 @@ against the current code and docs.
 
 These inputs let Assay derive host-relative effective CPU-time bounds and
 attribute per-cgroup measurements without a host-name-dependent resource
-summary. Source: `assay/docs/DESIGN-EFFECTIVE-CPU-TIME.md` §8, “Packages”
-(core/run-gate), and §9, Q3.
+summary. Source: `assay/docs/DESIGN-EFFECTIVE-CPU-TIME.md` §5 (record path),
+§8, “Packages” (core/run-gate), and §9, Q3.
 
-## RG-324 — treat Assay's wall-stop result as non-judgement
+## RG-324 — pin the non-judgement mapping of Assay's wall stop with a test
 
 **Status:** OPEN 2026-11-26. Severity: Minor.
 
-When Assay reports its final wall-stop result (`INCONCLUSIVE` with Assay's
-wall-stop reason), Run-Gate must preserve it as a non-judgement result rather
-than turn the stopped campaign into a product FAIL or PASS. Use the final
-status/reason contract Assay ships; the draft reason name is owned by Assay.
-Source: `assay/docs/DESIGN-EFFECTIVE-CPU-TIME.md` §6.4 wall-time bullet and
-§8, “Packages” (core/run-gate).
+Assay's decided wall-stop result is outcome `BUDGET_EXCEEDED` with reason
+`LANE_TIMEOUT`, exit 4; there is no wall-stop code and no `INCONCLUSIVE`
+mapping. Run-Gate already maps `BUDGET_EXCEEDED` to `BUDGET_EXCEEDED` and
+records it as resumable, so no behaviour change is expected. Open: once Assay
+ships the final reason contract, confirm it and pin that mapping with a test.
+Do not change how `INCONCLUSIVE` is mapped. Sources:
+`assay/docs/VERDICT-V21-DELTA.md` §8.1 (b) and
+`assay/docs/DESIGN-EFFECTIVE-CPU-TIME.md` §6.4, wall-time bullet.
 
-## RG-325 — accept only Assay's new lane inventory schema after its bump
+## RG-325 — if Assay bumps the lane inventory schema, accept only the new one
 
 **Status:** OPEN 2026-11-26. Severity: Minor.
 
 Today Assay defines only `LANE_INVENTORY_SCHEMA_VERSION = 1` in
 `assay/src/assay/cli.py`, and Run-Gate accepts only that inventory version.
-When Assay bumps the lane inventory with Assay 13.0.0 / verdict v21, Run-Gate
-must move to accepting only the new schema in a release that follows Assay's.
-Do not add dual-version support. Source: `assay/src/assay/cli.py` and the
-Assay 13.0.0 / verdict v21 plan.
+As decided today Assay 13.0.0 / verdict v21 does not bump it (it stays 1 and
+only removes two keys). If a later Assay release bumps it, Run-Gate must move
+to accepting only the new schema in a release that follows Assay's. Do not add
+dual-version support. Sources: `assay/src/assay/cli.py` and
+`assay/docs/VERDICT-V21-DELTA.md` §8.1 (a).
 
 ## RG-329 — host runners need a private Run-Gate start and verdict event stream
 
-**Status:** FIXED IN THIS BRANCH (P-fd-05 package A2). Severity: Enhancement.
+**Status:** FIXED IN THIS BRANCH (rev 77, P-fd-05 package A2). Severity: Enhancement.
 
 A fleet runner cannot trust the shared lane log for container identity or
 verdict: lane output can forge Run-Gate's anchored summary, and Run-Gate can
