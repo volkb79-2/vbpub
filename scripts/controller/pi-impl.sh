@@ -48,6 +48,31 @@
 # CONTROLLER_RUN_FORCE=1 retires the previous owner's records into
 # <runs-dir>/retired/<name>/<utc-stamp>/ (never deletes them) and is refused
 # while an owner is still alive.
+#
+# Signal guard. Every pi run this wrapper starts gets
+# <this dir>/pi-shims FIRST on its PATH, for the first run, a resume and every
+# automatic continuation alike. `pkill`, `killall` and a `pgrep` carrying a
+# signal argument refuse there with `pi-shim: refused <name>` and exit 126: a
+# pattern kill in the shared devcontainer hits other controller sessions (a pi
+# agent whose brief banned it still ran `pkill -f 'sleep 30'` and killed other
+# sessions' monitors), and a written ban did not hold. Plain `pgrep` passes
+# through to the real pgrep. The shims are checked before launch and the launch
+# is refused (exit 2) if any is missing or not executable; no environment
+# variable switches the guard off.
+#
+# pi's bash tool inherits PATH and does not run a login shell: it spawns
+# /bin/bash with `-c` (dist/utils/shell.js:17-18 and :112-119) under an env that
+# is `{...process.env}` with pi's own bin dir prepended (dist/utils/shell.js:147-157,
+# passed at dist/core/tools/bash.js:78 and :160/:287). That inherited env is why
+# the wrapper's PATH assignment reaches the agent, and the prepended bin dir is
+# why a launch is refused while `$PI_CODING_AGENT_DIR/bin` (default
+# `$HOME/.pi/agent/bin`) holds any of the three names.
+#
+# Known limits, which the shims cannot cover: the bash builtin `kill` (a
+# negative group pid or any pid the agent did not start), an ABSOLUTE path such
+# as /usr/bin/pkill or /usr/bin/killall, a shell loop over /proc, and a script
+# that resets PATH itself. The guard is a mechanical refusal for the ordinary
+# spellings, not a security boundary.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
@@ -130,6 +155,33 @@ if [[ ! $live_interval =~ ^[0-9]+$ ]] || (( live_interval == 0 )); then
   echo 'PI_LIVE_INTERVAL_SECONDS must be a positive integer' >&2
   exit 2
 fi
+
+# The signal guard (see the header): every shim must exist and be executable.
+# This is a fact read from the filesystem, so a missing or non-executable shim
+# refuses the launch instead of starting an agent with an unguarded PATH. It is
+# checked before the name is claimed, so a refusal leaves no run record behind.
+pi_shims_dir=$SCRIPT_DIR/pi-shims
+for shim in pkill killall pgrep; do
+  if [[ ! -f $pi_shims_dir/$shim || ! -x $pi_shims_dir/$shim ]]; then
+    echo "pi signal guard is incomplete: $pi_shims_dir/$shim is missing or not executable" >&2
+    exit 2
+  fi
+done
+# pi prepends its OWN tool directory to the PATH of every command its bash tool
+# runs (dist/utils/shell.js:147-157 `getShellEnv`, whose binDir is
+# dist/config.js:538-540 `join(getAgentDir(), "bin")`, and getAgentDir is
+# `$PI_CODING_AGENT_DIR` or $HOME/.pi/agent, dist/config.js:510-515). A
+# pkill/killall/pgrep sitting there would be found BEFORE the shims, so the guard
+# cannot promise anything while one exists: refuse instead of starting an agent
+# with a guard that a download could shadow.
+pi_agent_dir=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+for shim in pkill killall pgrep; do
+  if [[ -e $pi_agent_dir/bin/$shim ]]; then
+    echo "pi signal guard cannot be enforced: $pi_agent_dir/bin/$shim shadows the shim" >&2
+    echo 'pi prepends its own bin directory to the agent PATH; remove that file or move it out of the way' >&2
+    exit 2
+  fi
+done
 
 out=$CONTROLLER_RUNS_DIR
 # Ownership first: nothing below may write a name-owned record until this
@@ -300,11 +352,16 @@ invoke_pi() {
   local prompt_text=$1 stream=$2 first_run=$3
   local -a argv=("${base_pi_args[@]}")
   [[ -z $resume_target ]] || argv+=(--session "$resume_target")
+  # The shim directory goes FIRST on the agent's PATH and only there: this
+  # wrapper's own commands keep the caller's PATH. pi's bash tool hands its
+  # inherited environment to the shell it spawns, so the agent sees the shims.
   if [[ $first_run == 1 ]]; then
-    (cd -- "$worktree" && controller_close_ownership_fds && exec nice pi "${argv[@]}" -- "$prompt_text" \
+    (cd -- "$worktree" && controller_close_ownership_fds \
+      && PATH="$pi_shims_dir:${PATH-}" exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null > "$stream" 2> "$out/$name.err")
   else
-    (cd -- "$worktree" && controller_close_ownership_fds && exec nice pi "${argv[@]}" -- "$prompt_text" \
+    (cd -- "$worktree" && controller_close_ownership_fds \
+      && PATH="$pi_shims_dir:${PATH-}" exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null >> "$stream" 2>> "$out/$name.err")
   fi
 }

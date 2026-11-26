@@ -6,6 +6,29 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Changed
+- **Signal guard for every pi run (P-plat-31).** `pi-impl.sh` now prepends
+  `scripts/controller/pi-shims/` to the agent's `PATH` for the first run, a resume
+  and every automatic continuation (the agent only; the wrapper's own commands
+  keep the caller's `PATH`). The three POSIX shims refuse a pattern kill: `pkill`
+  and `killall` always (one `pi-shim: refused <name>` stderr line, exit 126), and
+  `pgrep` whenever an argument would signal (`--signal`, `--signal=<sig>`,
+  `--kill`, a `-<SIGNAME>`/`-<number>` spelling), while a plain `pgrep` still
+  execs the real one found on `PATH` (exit 127 when there is none). The launch
+  is refused (exit 2) with a named message when a shim is missing or not
+  executable (that check runs before the run name is claimed, so a refusal leaves
+  no record behind) and when pi's own managed-bin directory
+  (`$PI_CODING_AGENT_DIR/bin`, default `$HOME/.pi/agent/bin`) holds one of the
+  three names: pi prepends that directory to the agent's `PATH`, so it would
+  shadow the shim. No environment variable turns the guard off.
+  Covered by `tests/test-pi-impl.sh` (`signal-guard-*`; the fake pi asserts
+  `command -v` resolves inside the shim directory and only then calls the shims
+  on a pattern it made random) and by `tests/test-entrypoints.sh`, which now
+  also requires the three shim files to be 100755 in the index. Known limits,
+  recorded in the script header and the README: the bash builtin `kill` (a
+  negative or foreign pid), an absolute path such as `/usr/bin/pkill`, and any
+  script that resets `PATH` itself.
+
 ### Added
 - `resume-read.sh <role>` (P-plat-22a): one read-only call prints the slices a restarted
   session needs (main: PRIME, the newest `RESUME HERE #N` block + its `(#N ...)` lines, the

@@ -459,6 +459,19 @@ exits 0. Its `errorMessage` reset is recorded by the account helper; an
 unparseable reset uses the existing bounded unknown-reset default. No quota
 probe is made before a start.
 
+**Signal guard.** The wrapper puts `pi-shims/` FIRST on the agent's `PATH`
+(the first run, a resume and every automatic continuation alike): `pkill`,
+`killall` and a `pgrep` carrying a signal argument refuse there with one
+`pi-shim: refused <name>` line and exit 126, while a plain `pgrep` passes
+through. A pattern kill in the shared devcontainer hits other controller
+sessions, and a brief's written ban did not hold. The launch is refused (exit
+2) when any shim is missing or not executable, or when pi's own managed-bin
+directory (`$PI_CODING_AGENT_DIR/bin`, default `$HOME/.pi/agent/bin`) holds a
+`pkill`, `killall` or `pgrep`, because pi puts that directory ahead of the
+agent's `PATH`. No variable switches the guard off. It does not cover the
+bash builtin `kill` (a negative or foreign pid), an absolute `/usr/bin/pkill`,
+or a script that resets `PATH`.
+
 See the [design guide](docs/DESIGN-GUIDE.md#pi-open-design-route) for the
 reason Pi runs are classified from the event stream and how its session id
 joins the shared account map. The [consumer guide](docs/CONSUMERS.md#run-pi-on-open-design)
