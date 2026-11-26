@@ -839,7 +839,7 @@ def _validate_host_facts_2(value: object) -> HostFacts:
     })
     _validate_v2_disks(root["disks"], "host-facts/2.disks")
 
-    cgroup = _wrapped_group(root["cgroup_v2"], "host-facts/2.cgroup_v2", {
+    _wrapped_group(root["cgroup_v2"], "host-facts/2.cgroup_v2", {
         "mounted": _wrapped_bool,
         "controllers": lambda item, path: _wrapped(item, path, _plain_strings),
     })
@@ -877,10 +877,10 @@ def _validate_host_facts_2(value: object) -> HostFacts:
     _wrapped(guard["config_digest"], "host-facts/2.guard.config_digest", _string)
     _wrapped_int(guard["frozen_units"], "host-facts/2.guard.frozen_units", minimum=0)
 
-    freeze = _object(root["freeze"], "host-facts/2.freeze", {"since_utc", "by", "reason", "queued"})
+    freeze = _object(root["freeze"], "host-facts/2.freeze", {"since_utc", "by", "freeze_reason", "queued"})
     _wrapped_timestamp(freeze["since_utc"], "host-facts/2.freeze.since_utc")
     _wrapped_str(freeze["by"], "host-facts/2.freeze.by")
-    _wrapped_str(freeze["reason"], "host-facts/2.freeze.reason")
+    _wrapped_str(freeze["freeze_reason"], "host-facts/2.freeze.freeze_reason")
     _wrapped_int(freeze["queued"], "host-facts/2.freeze.queued", minimum=0)
 
     policy = _object(root["policy"], "host-facts/2.policy", {

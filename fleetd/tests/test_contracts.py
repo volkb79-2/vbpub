@@ -101,7 +101,7 @@ def _host_facts_2():
             "config_digest": _v("sha256:" + "a" * 64), "frozen_units": _unknown(),
         },
         "freeze": {
-            "since_utc": _unknown(), "by": _unknown(), "reason": _unknown(), "queued": _unknown(),
+            "since_utc": _unknown(), "by": _unknown(), "freeze_reason": _unknown(), "queued": _unknown(),
         },
         "policy": {
             "host_role": _v("dedicated-dev"), "psi_refuse_some_avg10": _v(25),
