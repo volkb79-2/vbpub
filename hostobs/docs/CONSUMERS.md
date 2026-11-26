@@ -420,6 +420,32 @@ the registry-set identity, so a workspace-only lock edit (a path dependency betw
 needs no image rebuild. An image with the older whole-lock identity rejects ANY lock byte
 change. Which tag a host carries is a fact of that host and is not recorded in this repository.
 
+## Select a published cgroup
+
+A minor-2 `current` request can select a cgroup by its `stat(2)` identity and read its CPU usage and
+CPU limit readings:
+
+```json
+{
+  "verb": "current",
+  "args": {
+    "selection": {
+      "entities": [{"cgroup_id": {"dev": 2049, "inode": 5159}}],
+      "metrics": ["cpu.usage_usec", "limit.cpu.max.period", "limit.cpu.max.quota"]
+    }
+  }
+}
+```
+
+Call `stat(2)` on the cgroup directory and use `st_dev` for `dev` and `st_ino` for `inode`; `dev` is
+not a mount ID. The selector resolves only against the tick served for that request. It is not a
+durable record key, and hostobs does not guarantee that the pair never names a later cgroup,
+including after a reboot or on another host. Keep the reply's `inc` together with `boot_id` and
+`epoch` when recording identity, then compare those fields. `limit.cpu.max.quota` and
+`limit.cpu.max.period` are gauge values in microseconds: quota is `unsupported` for `max` and for an
+absent `cpu.max`; period reports `P` for a readable `Q P` or `max P` line and is `absent` when the
+file is missing.
+
 ## Boundaries
 
 These four rules say where hostobs ends and its neighbours begin; later packages and other tools

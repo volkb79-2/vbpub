@@ -1,7 +1,7 @@
 //! The checked, canonical selection of WIRE.md section 4.2.
 //!
 //! A [`Selection`] is the stream key: entity selectors are sorted by their derived
-//! [`Ord`] (incarnation, path, prefix, all) and metric names bytewise, with no
+//! [`Ord`] (incarnation, cgroup id, path, prefix, all) and metric names bytewise, with no
 //! duplicates. Only [`Selection::new`] constructs one, so every value it returns
 //! satisfies the decoded-length, control-character, count and uniqueness rules.
 
@@ -19,12 +19,19 @@ pub const MAX_NAME_BYTES: usize = 64;
 
 /// One entity selector.
 ///
-/// The variant declaration order is the canonical order: `Inc` before `Path`,
-/// `Path` before `Prefix`, and `Prefix` before `All`.
+/// The variant declaration order is the canonical order: `Inc`, `CgroupId`, `Path`,
+/// `Prefix`, then `All`. `CgroupId` fields compare numerically in declaration order.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Sel {
     /// Match one incarnation.
     Inc(u64),
+    /// Match the published cgroup key (`stat(2)` device and inode).
+    CgroupId {
+        /// `st_dev` from `stat(2)`, not a mount id.
+        dev: u64,
+        /// The cgroup directory inode from `stat(2)`.
+        inode: u64,
+    },
     /// Match one path.
     Path(String),
     /// Match the paths with one prefix.
@@ -51,6 +58,8 @@ const ENTITY_KEY: &str = "selection.entities";
 const METRIC_KEY: &str = "selection.metrics";
 const PATH_KEY: &str = "selection.entities.path";
 const PREFIX_KEY: &str = "selection.entities.prefix";
+const CGROUP_ID_DEV_KEY: &str = "selection.entities.cgroup_id.dev";
+const CGROUP_ID_INODE_KEY: &str = "selection.entities.cgroup_id.inode";
 
 const fn error(key: &'static str) -> SelectionError {
     SelectionError { key }
@@ -98,6 +107,9 @@ impl Selection {
         for entity in &entities {
             match entity {
                 Sel::Inc(_) | Sel::All => {}
+                Sel::CgroupId { dev: 0, .. } => return Err(error(CGROUP_ID_DEV_KEY)),
+                Sel::CgroupId { inode: 0, .. } => return Err(error(CGROUP_ID_INODE_KEY)),
+                Sel::CgroupId { .. } => {}
                 Sel::Path(text) => valid_text(text, MAX_PATH_BYTES, PATH_KEY)?,
                 Sel::Prefix(text) => valid_text(text, MAX_PATH_BYTES, PREFIX_KEY)?,
             }
@@ -195,6 +207,9 @@ mod tests {
             "{\"prefix\":\"p\"}",
             "{\"path\":\"a\"}",
             "{\"path\":\"B\"}",
+            "{\"cgroup_id\":{\"dev\":2,\"inode\":8}}",
+            "{\"cgroup_id\":{\"dev\":1,\"inode\":9}}",
+            "{\"cgroup_id\":{\"dev\":1,\"inode\":3}}",
             "{\"inc\":10}",
             "{\"inc\":2}",
         ]);
@@ -202,10 +217,13 @@ mod tests {
         let found = selection.entities();
         assert_eq!(found.first(), Some(&Sel::Inc(2)));
         assert_eq!(found.get(1), Some(&Sel::Inc(10)));
-        assert_eq!(found.get(2), Some(&Sel::Path("B".to_string())));
-        assert_eq!(found.get(3), Some(&Sel::Path("a".to_string())));
-        assert_eq!(found.get(4), Some(&Sel::Prefix("p".to_string())));
-        assert_eq!(found.get(5), Some(&Sel::All));
+        assert_eq!(found.get(2), Some(&Sel::CgroupId { dev: 1, inode: 3 }));
+        assert_eq!(found.get(3), Some(&Sel::CgroupId { dev: 1, inode: 9 }));
+        assert_eq!(found.get(4), Some(&Sel::CgroupId { dev: 2, inode: 8 }));
+        assert_eq!(found.get(5), Some(&Sel::Path("B".to_string())));
+        assert_eq!(found.get(6), Some(&Sel::Path("a".to_string())));
+        assert_eq!(found.get(7), Some(&Sel::Prefix("p".to_string())));
+        assert_eq!(found.get(8), Some(&Sel::All));
         let text = metrics(&["\"z\"", "\"a-b.c_d\"", "\"b\""]);
         let selection = parse(&text).expect("selection");
         assert_eq!(
@@ -225,6 +243,49 @@ mod tests {
             "selection.entities"
         );
         assert_eq!(metric_error(&["\"a\"", "\"~u0061\""]), "selection.metrics");
+        assert_eq!(
+            entity_error(&[
+                "{\"cgroup_id\":{\"dev\":3,\"inode\":9}}",
+                "{\"cgroup_id\":{\"dev\":3,\"inode\":9}}",
+            ]),
+            "selection.entities"
+        );
+    }
+
+    #[test]
+    fn cgroup_id_fields_have_exact_validation_paths() {
+        assert_eq!(
+            entity_error(&["{\"cgroup_id\":{\"dev\":0,\"inode\":9}}"]),
+            "selection.entities.cgroup_id.dev"
+        );
+        assert_eq!(
+            entity_error(&["{\"cgroup_id\":{\"dev\":3,\"inode\":0}}"]),
+            "selection.entities.cgroup_id.inode"
+        );
+        assert_eq!(
+            entity_error(&["{\"cgroup_id\":{\"dev\":\"3\",\"inode\":9}}"]),
+            "selection.entities.cgroup_id.dev"
+        );
+        assert_eq!(
+            entity_error(&["{\"cgroup_id\":{\"dev\":3,\"inode\":true}}"]),
+            "selection.entities.cgroup_id.inode"
+        );
+        assert_eq!(
+            entity_error(&["{\"cgroup_id\":{\"dev\":3,\"inode\":9,\"other\":1}}"]),
+            "selection.entities.cgroup_id.other"
+        );
+        assert_eq!(
+            entity_error(&["{\"cgroup_id\":{\"dev\":3}}"]),
+            "selection.entities.cgroup_id.inode"
+        );
+        assert_eq!(
+            entity_error(&["{\"cgroup_id\":{\"inode\":9}}"]),
+            "selection.entities.cgroup_id.dev"
+        );
+        assert_eq!(
+            entity_error(&["{\"cgroup_id\":true}"]),
+            "selection.entities.cgroup_id"
+        );
     }
 
     #[test]
@@ -393,6 +454,8 @@ mod tests {
             Selection::new(vec![Sel::Path("a".repeat(MAX_PATH_BYTES + 1))], m()),
             Selection::new(vec![Sel::Path("a\u{1}".to_string())], m()),
             Selection::new(vec![Sel::Inc(1), Sel::Inc(1)], m()),
+            Selection::new(vec![Sel::CgroupId { dev: 0, inode: 1 }], m()),
+            Selection::new(vec![Sel::CgroupId { dev: 1, inode: 0 }], m()),
             Selection::new(vec![Sel::Inc(1)], Vec::new()),
             Selection::new(vec![Sel::Inc(1)], vec!["A".to_string()]),
             Selection::new(vec![Sel::Inc(1)], vec!["a".to_string(), "a".to_string()]),

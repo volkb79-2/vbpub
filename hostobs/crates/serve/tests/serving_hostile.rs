@@ -29,18 +29,19 @@ use hostobs_serve::server::{Accept, Server, ServerLimits};
 const RUNS: usize = 2_000;
 const MS: u64 = 1_000_000;
 const LINE_MAX: u32 = 64;
-const HELLO_ARGS: &str = "{\"client\":\"c\",\"proto\":{\"major\":1,\"minor\":1}}";
+const HELLO_ARGS: &str = "{\"client\":\"c\",\"proto\":{\"major\":1,\"minor\":2}}";
 const CURRENT_ARGS: &str = "{\"selection\":{\"entities\":[{\"inc\":1}],\"metrics\":[\"m\"]}}";
 const VERBS: [&str; 5] = ["hello", "status", "current", "events", "annotate"];
 
 /// The codes `classify` may refuse with.
-const REFUSALS: [Code; 6] = [
+const REFUSALS: [Code; 7] = [
     Code::BadFrame,
     Code::HelloRequired,
     Code::UnknownVerb,
     Code::Forbidden,
     Code::BadRequest,
     Code::UnsupportedVersion,
+    Code::UnsupportedFeature,
 ];
 
 const FATAL: [Code; 10] = [
@@ -279,6 +280,10 @@ fn check_refusal(query: &Query<'_>, refusal: &Refusal) {
             assert_eq!(refusal.code, Code::BadRequest);
             assert!(key_is_schema_text(path), "{path:?}");
         }
+        Detail::Feature(feature) => {
+            assert_eq!(refusal.code, Code::UnsupportedFeature);
+            assert_eq!(*feature, "cgroup_id");
+        }
         Detail::Pool(_) => assert_eq!(refusal.code, Code::Budget),
     }
     check_error_encodings(refusal.code, refusal.corr, &refusal.detail);
@@ -408,7 +413,7 @@ fn a_valid_hello_and_status_dispatch_in_their_contexts() {
         mode: Mode::Binary,
         phase: Phase::BeforeHello,
         level: Level::Observe,
-        prefix: Prefix { major: 1, minor: 1 },
+        prefix: Prefix { major: 1, minor: 2 },
         payload: hello.as_bytes(),
     };
     let done = classify(&query).expect("hello");
@@ -474,6 +479,7 @@ fn every_code_and_detail_encodes_and_parses_back() {
         Detail::Empty,
         Detail::Key(String::new()),
         Detail::Key("proto.minor".to_string()),
+        Detail::Feature("cgroup_id"),
     ];
     for code in Code::ALL {
         for detail in &details {
@@ -675,7 +681,7 @@ fn the_grid_of_valid_requests_matches_the_hand_derived_r11_table() {
                             mode,
                             phase,
                             level,
-                            prefix: Prefix { major: 1, minor: 1 },
+                            prefix: Prefix { major: 1, minor: 2 },
                             payload: text.as_bytes(),
                         };
                         let (code, want_corr) = expected(&case);
@@ -1117,7 +1123,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
         };
         slots[slot] = Some(id);
         model.insert(id, ObservedConnection::new());
-        let mut hello = server_prefix(1, 1).to_vec();
+        let mut hello = server_prefix(1, 2).to_vec();
         hello.extend(server_request(1, "hello", HELLO_ARGS));
         send_plain_request_with_expected_reply(
             &mut server,
@@ -1224,7 +1230,7 @@ fn server_hostile_2000_steps_with_block_verbs() {
                 slots[slot] = Some(id);
                 subscriptions[slot].clear();
                 model.insert(id, ObservedConnection::new());
-                let mut hello = server_prefix(1, 1).to_vec();
+                let mut hello = server_prefix(1, 2).to_vec();
                 hello.extend(server_request(1, "hello", HELLO_ARGS));
                 send_plain_request_with_expected_reply(
                     &mut server,

@@ -81,6 +81,11 @@ fn push_detail(out: &mut String, detail: &Detail) {
             push_string(out, path);
             out.push('}');
         }
+        Detail::Feature(feature) => {
+            out.push_str("{\"feature\":");
+            push_string(out, feature);
+            out.push('}');
+        }
         Detail::Pool(pool) => {
             out.push_str("{\"pool\":");
             push_string(out, pool.name());
@@ -279,13 +284,13 @@ mod tests {
 
     #[test]
     fn the_prefix_is_magic_then_major_and_minor_little_endian() {
-        let prefix = server_prefix(1, 1);
+        let prefix = server_prefix(1, 2);
         assert_eq!(prefix.len(), PREFIX_LEN);
-        assert_eq!(prefix, [0x48, 0x4F, 0x42, 0x01, 1, 0, 1, 0]);
+        assert_eq!(prefix, [0x48, 0x4F, 0x42, 0x01, 1, 0, 2, 0]);
         let wide = server_prefix(0x0201, 0x0403);
         assert_eq!(wide.get(4..), Some([1u8, 2, 3, 4].as_slice()));
         let detected = detect_mode(&prefix);
-        assert_eq!(detected, Ok(Mode::Binary { major: 1, minor: 1 }));
+        assert_eq!(detected, Ok(Mode::Binary { major: 1, minor: 2 }));
         assert_eq!(hostobs_proto::frame::hello(), prefix.to_vec());
     }
 
@@ -359,6 +364,15 @@ mod tests {
         let odd = Detail::Key("a\"b\\c\u{1}".to_string());
         let payload = error_payload(Code::BadRequest, &odd);
         assert!(check_rep(payload.as_bytes(), false).is_ok());
+    }
+
+    #[test]
+    fn a_feature_detail_names_the_unsupported_feature() {
+        let payload = error_payload(Code::UnsupportedFeature, &Detail::Feature("cgroup_id"));
+        assert_eq!(
+            error_parts(payload.as_bytes(), false).2,
+            "{\"feature\":\"cgroup_id\"}"
+        );
     }
 
     #[test]
