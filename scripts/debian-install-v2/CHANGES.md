@@ -4,6 +4,14 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed (R2 lane budget)
+- The `r2` budgets are 430m (assay) and 450m (run-gate). This is headroom for
+  slow or loaded hosts, not a measured need: complete 194-candidate runs took
+  174 to 224 min at 2 jobs. The `LANE_TIMEOUT` runs of 2026-11-25 never reached
+  the lane bound (`814c5129` ended after 166 min under a 310m bound): their
+  candidates exceeded the derived per-candidate bound, which follows the
+  baseline measured at start (DIV2-BL-22).
+
 ### Added (WP-10 P2, `io_benchmark_profile`)
 - New config key `io_benchmark_profile` next to `run_io_benchmark`, accepted
   values `veryquick`, `quick` and `standard`, default `quick` (operator
@@ -36,15 +44,32 @@ All notable changes to debian-install-v2 are recorded here.
   refused, so a caller bug can never have the root runner replace another file.
 
 ### Fixed (v2 r2 fix-forward)
-- IC-M1a's measured R2 campaign planned 179 candidates at about 137 s each and
-  judged 31 (21 killed, 10 survived) before a 50-minute bound. The new
+- IC-M1a's measured R2 campaign planned 179 candidates (about 137 s each in
+  its first chunk, about 96 s each in the 31-candidate run) and judged 31
+  (21 killed, 10 survived) before a 50-minute bound. The new
   regression tests cover all ten survivors without changing installer behavior.
+  The full 194-candidate campaign then ran at `--jobs 2` and finished in
+  2 h 53 m, killing 147 and leaving 47 survivors (this package's subject).
   Chunked resume had rejected every prior record because `PYTHONPATH` embedded
   the throwaway `{worktree}` and was in Assay's `env_passthrough`, so
-  `judge_sha256` changed on every run (Assay B577; Run-Gate RG-314). The R2 lane
-  now passes checkout-relative library roots, runs with `--jobs 2`
+  `judge_sha256` changed on every run (Assay B577; Run-Gate RG-314). The change
+  below did not fix this: on 2026-11-25 a run seeded with the records of an
+  earlier run at the same commit reused none of them (`resumed_total: 0`,
+  `rejected_total: 186`; the `PYTHONPATH` passthrough digest differed), so
+  B577 is still open. The R2 lane now passes checkout-relative library roots, runs with `--jobs 2`
   (`jobs_max = 2`), and sizes the measured 179 x 137 / 2 x 1.5 = about
   306.5-minute campaign at 310 minutes in Assay and 330 minutes in Run-Gate.
+- Round two of the survivor work pins 43 of those 47: one test per mutant
+  (two for `installer.py:3803`, three for `installer.py:4068`, two for
+  `installer.py:4100`), and a near-miss per line for the six `Or->And`
+  runner allow-list checks (`actions.py:189-200`), each breaking exactly one
+  half of the condition so only the mutated `and` lets the argv through. The
+  four remaining survivors are recorded as equivalent by proof, not waived:
+  `installer.py:807/811` (`return ""` whose sole caller tests truthiness),
+  `installer.py:4109` (`mounted` is reassigned on both paths before it is
+  read), and `layout_policy.py:236` (the only `DataVolume` construction whose
+  `nocow` field is read always passes it explicitly). No installer behaviour
+  changed.
 
 ### Added (IC-M1a, btrfs-root configuration)
 - v2 now configures a single-device btrfs root installed by the rollback ISO

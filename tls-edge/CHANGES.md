@@ -5,8 +5,160 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [4.0.1] - 2026-11-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=a3e9c28f31a55be2dc786c66fb5a7bc3ed2f9fb4 -->
+
+### Fixed
+- fix(tls-edge): verify.sh reports only what it observed and orders no certificate (bcffebb6e)
+- fix(tls-edge): verify.sh reports only what it observed and orders no certificate (3d701d7b3)
+
+### Documentation
+- docs(tls-edge): bind the TE-14 archive row and fix three wording nits (a9ea6dabe)
+- docs(tls-edge): verify.sh is fixed (7d0f8acf6)
+- docs(tls-edge): correct four statements found by review (53a3d70a7)
+- docs(tls-edge): verify.sh is fixed (b70cf6154)
+- docs(tls-edge): name the flags in the ops-check mitigation row too (70500002b)
+- docs(tls-edge): drop release-history prose and pin the tunnelled verify command (9cabaa150)
+- docs(tls-edge): 4.0.1 pending notes and the operator verify command (5a3d4dfdb)
+- docs(tls-edge): known issues and user-scope install notes after 4.0.0 (641852ebe)
+- docs(tls-edge): record the 4.0.0 acceptance findings; enable EVENTS explicitly (306e90f57)
+
+### Testing
+- test(tls-edge): make the missing-volume assertion able to fail; doc follow-ups (0aef18d2f)
+- test(tls-edge): tolerate the isolated release-gate clone missing the baseline tag (34762be5a)
+- test(tls-edge): pin the 4.0.0 release-note fragments to the 4.0.0 section (c867d92c6)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- The `dockerproxy` service now sets `EVENTS: 1` explicitly. The Docker provider's `watch: true` needs
+  the event stream, which the proxy image already enabled by default; the instance no longer relies on
+  that default (TE-14, verified on a host on 2026-11-26: a container started after Traefik was
+  routed by the second 0.5 s poll (about 1 s), without a Traefik restart).
+
+### Fixed
+- `scripts/verify.sh` check 5 could never pass because the proxy name was not passed to its probe; it
+  now requires an explicit HTTP 403 response.
+- Check 8 passed the domain test when `acme.json` did not mention `--domain` at all; it now warns. It
+  also reported no ACME errors when the log scan could not read the logs; that now fails.
+- Check 8 read only a volume name for ACME storage, so a `hostdir` instance fell back to a volume name
+  that `docker run` creates empty (found by reading the code, not on a host). It now uses Traefik's
+  volume name or bind-mount source, fails when neither exists, and creates no storage.
+- Check 11 reported "isolation working" whenever its probe returned nothing, including HTTP error
+  answers and a probe that did not run. It now passes only on recognized transport errors.
+- Check 9 now routes the canary through a fixed `.invalid` Host with `tls=true` and no `certresolver`,
+  so it orders no certificate. Runs that reached the 4.0.0 canary exited 127 because `cleanup_tmp` did
+  not exist. From 3.0.0 to 4.0.0, an ACME-mode canary run could order a real certificate for
+  `verify.<domain>` once per new name, since Traefik stores it; no certificate was ordered when a
+  configured wildcard already covered that name.
+
+### Known issues
+- `TE-13`: the ownership of `vol-traefik-acme` under rootless Docker is unverified (not checked before
+  4.0.0; waived by the main controller on 2026-11-26). The `py314` bundle passed the release gates but
+  was not installed on a host (no python 3.14 there). Both are in
+  `KNOWN_ISSUES_TODO_BACKLOG.md`.
+<!-- cmru: pending release notes end -->
+
+## [4.0.0] - 2026-11-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=f041f5eed0ff9479c9e36a6f8c5673ab9d9f533a -->
+
+### Added
+- feat(tls-edge): build release bundles with cmru (ae9f8a5f2)
+- feat(tls-edge)!: one deployment path for 4.0.0 (9d93c04ed)
+- feat(tls-edge)!: remove the Calls preset (114466f4f)
+- feat(tls-edge): render the consumer contract (bec52eb7a)
+- feat(tls-edge)!: drive configure from one field table (b7d77240b)
+
+### Fixed
+- fix(tls-edge): drop the 3.x to 4.0 adoption step (e6d330047)
+- fix(tls-edge): refresh installer render for KI-208 note (59a9868e4)
+- fix(tls-edge): clarify bundle root and verifier notes (12356be90)
+- fix(tls-edge): document the 3.x bundle adoption step (5a2296558)
+- fix(tls-edge): pin the generated bundle dependency closure (de560247a)
+- fix(tls-edge): fail closed on unreachable render paths (88943d832)
+- fix(tls-edge): name removed Calls answer keys in refusals (f7af64b49)
+- fix(tls-edge): apply P-edge-07 review nits (aad357589)
+- fix(tls-edge): validate generated trial compose in verify.sh (cea360457)
+- fix(tls-edge): report Docker discovery failures in certbot hook (e4629bf3d)
+- fix(tls-edge): keep checkout configure from creating consumer.env (5881b6910)
+- fix(tls-edge): report duplicate consumer env keys accurately (e3ebd3eb4)
+- fix(tls-edge): validate ingress network names (ca642ce07)
+- fix(tls-edge): refuse removed Calls answer keys directly (9ede06f97)
+- fix(tls-edge): name the rejected Calls key precisely (0c97d9546)
+- fix(tls-edge): recognize compose-owned consumer env lines (b94839ee6)
+- fix(tls-edge): refuse env expansion in ACME hostdir paths (b4fe99d08)
+- fix(tls-edge): apply P-edge-04 review round 1 (482f936d1)
+- fix(tls-edge): make field kinds exhaustive (32956e664)
+
+### Changed
+- refactor(tls-edge): drop the duplicate test manifest and release script (TE-12) (002abcafd)
+- chore(tls-edge): remove one-off bundle equivalence lane (8ecc8806f)
+- chore(tls-edge): bundle review nits (d13a5d4f6)
+- chore(tls-edge): apply review hygiene carry-overs (d205f5541)
+
+### Documentation
+- docs(tls-edge): bind the P-edge-09 archive rows and fix the r2 follow-ups (f1463ae16)
+- docs(tls-edge): do not claim the allowlist is what Traefik needs; file TE-14 (59f3bfe24)
+- docs(tls-edge): fix the claims the review found untrue (595caabaf)
+- docs: correct stale ciu and tls-edge wording across the estate docs (P-edge-09) (2b6760432)
+- docs(tls-edge): close TE-06, TE-11 and TE-12 in the backlog (P-edge-09) (2fb9b0d40)
+- docs(tls-edge): state facts once, keep rationale in ARCHITECTURE (TE-11) (17af00b3a)
+- docs(tls-edge): make the release headline install-and-verify only (TE-06) (6cd7bf1a8)
+- docs(tls-edge): say how a 3.x host reaches a fresh 4.0 install (e9d9c6ad6)
+- docs(tls-edge): drop the remaining 3.x upgrade notes the ruling made moot (d6fcd4438)
+- docs(tls-edge): state that a 3.x host installs 4.0 fresh (58769312e)
+- docs(tls-edge): scope the KI-208 shim to fresh installs and 4.x updates (ccc0aee73)
+- docs(tls-edge): announce that 4.0 is a fresh install for 3.x (2900dfd7c)
+- docs(tls-edge): require clean-tree bundle builds (4baf013d1)
+- docs(tls-edge): record the KI-208 bundle manifest workaround (03c55ef01)
+- docs(tls-edge): bind TE-03, TE-04 and TE-09 archive lines to the integration merge (071e30b39)
+- docs(tls-edge): use the supported Traefik container name (d61ee829b)
+- docs(tls-edge): restore Mattermost after a deployment rollback (e2c0e40c0)
+- docs(tls-edge): document certbot hook upgrade and symlink install (403f78168)
+- docs(tls-edge): bind archived backlog items to merges (b0d9439c3)
+- docs(tls-edge): clarify direct Calls media publication (a69080d6a)
+- docs(tls-edge): identify the ciu backlog for known defects (3f5f7b48f)
+- docs(tls-edge): clarify direct-media example requirements (fce45c909)
+- docs(tls-edge): normalize limitation archive entries (a5c576dc9)
+- docs(tls-edge): record hook validation boundary (7910e0272)
+- docs(tls-edge): restore the Calls cut-over order (2a89b4703)
+- docs(tls-edge): link transports to the consumer contract (28052f771)
+- docs(tls-edge): make update re-sync self-contained (588f957e2)
+- docs(tls-edge): close TE-03 and TE-04 for 4.0.0 (27dfbf21b)
+- docs(tls-edge): document the supported instance and generated trial (2f6dafc05)
+- docs(tls-edge): document direct media publication and schema 2 (afc2817db)
+- docs(tls-edge): close 3.2.0 INSTALL carry-overs (01c27087f)
+
+### Testing
+- test(tls-edge): read the curated release notes before and after cmru's fold (9c520e8dd)
+- test(tls-edge): restore the release-config pins the TE-12 cleanup dropped (70620ad4c)
+- test(tls-edge): assert wheel build and resolution argv (811471871)
+- test(tls-edge): pin every generated dependency floor (2b44d33fd)
+- test(tls-edge): add P-edge-0607 integration oracles (96342d408)
+- test(tls-edge): pin Calls first-key refusal order (fd946187d)
+- test(tls-edge): pin certbot hook discovery filters (9614ca166)
+- test(tls-edge): require a real standalone render stamp (6c9524b8b)
+- test(tls-edge): cover operator lines in duplicate detection (51a107003)
+- test(tls-edge): use literal consumer env expectations (d346b6174)
+- test(tls-edge): pin numeric public-port ordering (308f5069c)
+- test(tls-edge): cover drift parsing with operator lines (f41e032ec)
+- test(tls-edge): measure every CLI package module (09481af03)
+- test(tls-edge): cover structured port-plan refusals (63c90683a)
+- test(tls-edge): prove ciu invokes the validation hook (4999a5fb4)
+- test(tls-edge): fix P-edge-04 review carry-overs (47bec13f5)
+- test(tls-edge): cover load_site boundary after helper removal (e5cfe7ded)
+- test(tls-edge): cover field-table boundaries and cleanup branches (65af6c8b6)
+
+<!-- cmru: pending release notes begin -->
 ### Breaking
-- 3.x instances cannot update to 4.0 via the installer; install 4.0 fresh (no in-place migration).
+- Updating a 3.x instance to 4.0 in place is not supported: there is no migration, and the installer does not
+  refuse the attempt. Install 4.0 fresh (see Upgrade).
 - The Mattermost Calls preset is removed. `tls-edge` no longer defines a `calls` key, media CLI questions,
   `mattermost-calls-*` entrypoints, or TCP/UDP media ports.
 - Site overrides use schema 2. Schema 1 records with `[tls_edge.calls] enabled = false` (or no `enabled`) and
@@ -50,6 +202,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `consumer.env` carries every owned contract key and the override is written in the installed release's schema.
 
 ### Upgrade
+- Existing 3.x get.py instances. Do not run the 4.0 `get.py install` on the 3.x instance root: on a root that
+  already holds an instance it runs an in-place update. A 3.x `bin/tls-edge-installer update` without
+  `--version` resolves to the newest release, so it picks 4.0 and fails wheel verification before the instance
+  is switched; pass `--version tls-edge-v3.2.0` to stay on 3.x. To move to 4.0: stop the old edge (it holds
+  80 and 443, and 8443 if the Calls preset is enabled), move the old instance root aside (or install into the
+  other scope), and install 4.0 as `docs/INSTALL.md` section 3 describes. Copy the old
+  `stack/ciu-stack/ciu.toml.j2` into the new instance before `configure` (Calls `enabled = true` is refused),
+  run `configure --answers <empty file> --yes`, then `ciu up`. A new instance does not take over the old
+  root's `shared/acme`; keep the old root until the new edge has its certificates.
 - Anyone who used the removed standalone installer or plain Compose on the committed `edge-proxy/` tree must
   install a get.py instance and run its bundled CIU stack. Follow `docs/INSTALL.md`; do not migrate by copying
   the old rendered tree. From a repository checkout, pass `--root <checkout>/tls-edge`, and from an installed
@@ -59,10 +220,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - The certbot deploy hook is a stable symlink to
   `/srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh`, and `update` refreshes the file it points at, so
   later instance updates take effect without another copied hook.
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [3.2.0] - 2026-11-24
 <!-- cmru: generated -->
