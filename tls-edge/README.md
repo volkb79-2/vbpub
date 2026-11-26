@@ -136,9 +136,8 @@ python3 tools/render_standalone.py --out "$PWD/edge-proxy" --defaults-only
 cd edge-proxy
 docker compose up -d
 
-# 4. Verify the trial (--no-canary: 4.0.0's canary orders a real certificate for
-#    verify.<domain>; see docs/INSTALL.md section 3 and the backlog's known limitations).
-bash ../scripts/verify.sh --no-canary
+# 4. Verify the trial stack.
+bash ../scripts/verify.sh
 
 # 5. Onboard your services — see CONSUMER_GUIDE.md.
 ```
@@ -259,17 +258,18 @@ only `live/` causes silent TLS failure inside the container.
 | 5. socket proxy | A GET is allowed and a POST is refused at `dockerproxy:2375` |
 | 6. redirect | With `expose_http = true`: the HTTP entrypoint answers 301/308 |
 | 7. TLS | A certificate is served for the domain and it is not Traefik's default self-signed |
-| 8. ACME/static | The ACME volume holds a non-empty `acme.json` at mode 0600, or the static cert file is readable |
-| 9. canary | A labelled `whoami` container is routed through `websecure` |
+| 8. ACME/static | ACME: an existing named volume or bind mount holds non-empty `acme.json` at mode 0600; ACME log scan errors FAIL and a missing `--domain` mention WARNs. Static/dev: the cert file is readable |
+| 9. canary | A labelled `whoami` container is routed through `websecure` using a fixed `.invalid` Host, `tls=true`, and no `certresolver`; it orders no certificate |
 | 10. access log | Traefik's recent log lines are JSON carrying `RouterName` |
 | 11. ops isolation | With `--ops-check`: an ops endpoint is unreachable from the given network |
 
-Run at any time, with `--no-canary` until 4.0.1 (4.0.0's canary orders a real certificate for
-`verify.<domain>`, and its checks 5 and 9 and the exit status are known-bad; see
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md#known-limitations)):
+Pass `--domain` as a host name the edge already serves a certificate for. The
+canary probes with that name as TLS SNI and `tls-edge-verify-canary.invalid` as
+the HTTP Host; its router has `tls=true` and no `certresolver`. `--no-canary`
+remains an optional way to skip check 9.
 
 ```bash
-bash scripts/verify.sh --no-canary
+bash scripts/verify.sh --domain app.example.test
 ```
 
 ---

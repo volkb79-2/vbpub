@@ -76,10 +76,11 @@ holds ports 80 and 443) and move its instance root aside, or install into the ot
 its names and networks. Remove them with `docker compose -p <project> down`, and never add `-v`. `<project>` is the
 `com.docker.compose.project` label of the stopped container; section 8 shows the one-line `docker inspect` that
 reads it. Without `-v` it removes the containers and their networks and keeps every volume. With `-v` it also
-deletes the instance's own named ACME volume, so the next start re-issues every certificate (mind the CA's
-rate limits). An adopted external volume survives `down -v`, because Compose never removes a volume it does not
-own, and a hostdir source lives outside `stack/` and is not removed either; but `ciu clean` can still remove the
-adopted volume. Section 6 states the storage rules. Installing over containers that are merely stopped was
+deletes the project's volumes: on an instance that uses its own named ACME volume that is the certificate store,
+so the next start re-issues every certificate (mind the CA's rate limits). Do not count on an adopted volume
+surviving it (one that carries the removed project's Compose labels may be deleted too; not tested). A hostdir
+source lives outside `stack/` and is not removed. `ciu clean` can still remove an adopted volume. Section 6
+states the storage rules. Installing over containers that are merely stopped was
 not tested, so remove them first. An older edge that still runs its Calls preset also holds 8443 on that host
 until it is stopped: the current major's edge has no Calls preset, and Mattermost publishes Calls media on 8443
 directly (see 8).
@@ -144,19 +145,32 @@ sudo ./ciu env generate     # first time only; ciu up does it too. DOCKER_GID is
                             # when the host has no docker group:
                             # sudo env DOCKER_GID=$(stat -c %g /var/run/docker.sock) ./ciu env generate
 sudo ./ciu check            # all stages pass on a fresh install
-sudo ./scripts/verify.sh --domain app.example.test --no-canary
+sudo ./scripts/verify.sh --domain app.example.test
 ```
 
-`verify.sh` discovers the container and volume names of a ciu instance by itself.
+`verify.sh` discovers the container names of a ciu instance by itself. In ACME
+modes it also discovers the storage mount on Traefik at `/var/lib/traefik`,
+then `/etc/traefik/acme`: a named volume uses its Docker volume name, and a bind
+mount uses its absolute source path. `EDGE_ACME_VOLUME` can override discovery
+with an existing volume name or an absolute bind path. The check never creates
+a volume or host directory; missing storage fails check 8.
 
-**Run `verify.sh` with `--no-canary` until the fix ships.** Its canary (check 9) creates a
-router on `websecure` with no `tls=true`, so the entrypoint's `certResolver` applies and the
-edge orders a REAL certificate for `verify.<--domain>` from the configured ACME CA: a public
-Certificate Transparency entry, and an order against the CA's rate limit. The canary then
-probes 5 s later, before issuance can finish, and `sniStrict` refuses the handshake, so
-check 9 FAILs on its first run while the order stays in the ACME volume. `--no-canary`
-skips check 9 and orders nothing. The other defects of the installed release's checks are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md#known-limitations).
+In ACME modes, `--domain` must be a host name for which the edge already serves
+a certificate: use a routed consumer host, or the wildcard/base name when the
+served certificate covers it. In static and dev modes, use the certificate
+lineage name, covered by that certificate. Without the flag, the script
+auto-detects a name only from `static.domains[0]` or `wildcard_main`. A fresh
+ACME edge with no routed consumer and no served certificate cannot pass checks
+7 and 9. If neither source yields a name, omit `--domain` and checks 6, 7, and
+9 SKIP, or route a consumer first. Supplying a name before the edge serves its
+certificate makes checks 7 and 9 FAIL.
+
+Check 9 routes `tls-edge-verify-canary.invalid` through `websecure` with
+`tls=true` and no `certresolver`, then probes with `--domain` as TLS SNI and the
+fixed `.invalid` name as the HTTP Host. The canary orders no certificate.
+A consumer router for `--domain` with non-default TLS options or client
+certificates makes check 9 fail on a healthy edge. `--no-canary` remains an
+optional way to skip check 9.
 
 ## 4. Configure listeners and certificates
 
@@ -304,9 +318,10 @@ the preflight hook refuses a `consumer.env` that lacks an owned contract key. `c
 managed override fields, so the override is written in the schema of the installed release.
 
 An instance whose override adopts an existing volume keeps it: `acme.volume_name` names that exact external
-volume and `configure` writes `store = "volume"` explicitly. `down -v` and `ciu --reset` preserve an external
-volume, but `ciu clean` may remove it when it carries this project's labels; only the hostdir is guaranteed to
-survive `ciu clean`.
+volume and `configure` writes `store = "volume"` explicitly. Run with the instance's Compose model,
+`docker compose down -v` and `ciu --reset` preserve an external volume (section 3 covers the
+`docker compose -p <project> down` form), but `ciu clean` may remove it when it carries this project's labels; only
+the hostdir is guaranteed to survive `ciu clean`.
 
 To move an existing instance to the durable hostdir manually:
 
@@ -408,8 +423,8 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 6. **Start direct media.** From `voice-screen-share/mattermost-server`, run its `ciu up` so Mattermost binds
    8443 directly. Follow that project's [`CONSUMER.md`](../../voice-screen-share/mattermost-server/CONSUMER.md#calls-cut-over)
    "Calls cut-over" section. Run this only after the old edge is stopped and the new edge is up.
-7. **Verify.** `scripts/verify.sh --domain <host> --no-canary` (required of the installed release for now;
-   section 3 has the reason), `curl -I https://<each consumer host>`, one certificate check per
+7. **Verify.** `scripts/verify.sh --domain app.example.test` (the check 9 canary orders no certificate; see section 3 for the domain precondition),
+   `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    and a Mattermost media test from outside on its directly published 8443 tcp and udp ports.
 8. **Rollback (any failure in 7).** Mattermost's Calls media is published by the `mattermost` service itself, so

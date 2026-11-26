@@ -11,14 +11,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   that default (TE-14, verified on a host on 2026-11-26: a container started after Traefik was
   routed by the second 0.5 s poll (about 1 s), without a Traefik restart).
 
+### Fixed
+- `scripts/verify.sh` check 5 could never pass because the proxy name was not passed to its probe; it
+  now requires an explicit HTTP 403 response.
+- Check 8 passed the domain test when `acme.json` did not mention `--domain` at all; it now warns. It
+  also reported no ACME errors when the log scan could not read the logs; that now fails.
+- Check 8 read only a volume name for ACME storage, so a `hostdir` instance fell back to a volume name
+  that `docker run` creates empty (found by reading the code, not on a host). It now uses Traefik's
+  volume name or bind-mount source, fails when neither exists, and creates no storage.
+- Check 11 reported "isolation working" whenever its probe returned nothing, including HTTP error
+  answers and a probe that did not run. It now passes only on recognized transport errors.
+- Check 9 now routes the canary through a fixed `.invalid` Host with `tls=true` and no `certresolver`,
+  so it orders no certificate. Runs that reached the 4.0.0 canary exited 127 because `cleanup_tmp` did
+  not exist. From 3.0.0 to 4.0.0, an ACME-mode canary run could order a real certificate for
+  `verify.<domain>` once per new name, since Traefik stores it; no certificate was ordered when a
+  configured wildcard already covered that name.
+
 ### Known issues
-- `scripts/verify.sh` is unchanged in 4.0.0 and must be run with `--no-canary` until the fix ships: its
-  canary routes `Host(verify.<--domain>)` on `websecure` without router-level `tls=true`, so the
-  entrypoint's `certResolver` orders a REAL certificate for `verify.<domain>` (public CT entry, CA
-  rate-limit count), then probes 5 s later before issuance completes. Its check 5 always FAILs (the
-  probe is single-quoted, so the proxy name never expands) and a run that reaches the canary exits 127
-  (the EXIT trap calls the undefined `cleanup_tmp`). `docs/INSTALL.md` section 3 says so; the fix is
-  TE-15 (planned 4.0.1).
 - `TE-13`: the ownership of `vol-traefik-acme` under rootless Docker is unverified (not checked before
   4.0.0; waived by the main controller on 2026-11-26). The `py314` bundle passed the release gates but
   was not installed on a host (no python 3.14 there). Both are in
