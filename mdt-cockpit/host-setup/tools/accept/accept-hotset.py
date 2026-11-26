@@ -13,15 +13,18 @@ the OR that "both filters allow" would make it. The per-unit number is Sigma `tr
 after one `update_schemes_tried_regions`; `refresh_ms` is 0 because the kit drives the updates itself and the
 kernel's own periodic refresh would alias the scheme's 8 s apply interval (r2 N5).
 
+    accept-hotset.py preflight             --evidence DIR --units "u=rel ..." [--admin DIR] ...
     accept-hotset.py setup                 --evidence DIR --state FILE --units "u=rel ..." [--admin DIR] ...
     accept-hotset.py refresh-schemes --step N      (same args, plus the running kdamond from the WAL)
     accept-hotset.py sample          --step N      (same args)
     accept-hotset.py off|on                        (same args)
 
-`setup` refuses (exit 3, nothing written) when DAMON_STAT is not `N`, when a kdamond is already `on`, when the
-kernel lacks `paddr`/`stats/sz_ops_filter_passed`/the `ops_filters` chain, or when a live cgprofile session
-multiplexes kdamonds (4.4). It appends `kdamond=<idx>` to the WAL **before** it writes `on`, because the restore
-reads that index from the WAL only.
+`preflight` checks DAMON_STAT, cgprofilectl, sysfs presence/ownership, paddr ranges, and existing daemon state/counts
+without writing sysfs. `setup` refuses (exit 3) when DAMON_STAT is not `N`, when any kdamond is not `off`, when no
+empty off daemon can be taken, when the kernel lacks `paddr`/`stats/sz_ops_filter_passed`/the `ops_filters` chain,
+or when a live cgprofile session multiplexes kdamonds (4.4). It syncs owner/count/index records to the WAL before
+growing `nr_kdamonds` or `nr_contexts`, creates the context before reading `avail_operations`, and starts only that
+daemon. Restore shrinks only the recorded growth after confirming the recorded daemon and affected daemons are off.
 Exit 0 ok, 3 refused, 2 usage or crash. Test hooks: `--fixture` (a JSON per-unit sample source, no sysfs),
 `--damon-stat PATH`, `--cgroup DIR`, `--lib DIR`, `--proc DIR`.
 """
@@ -67,6 +70,18 @@ def read_int(path: str, default: int | None = None) -> int:
         if default is None:
             raise
         return default
+
+
+def append_wal(state: str, *lines: str) -> None:
+    """Make ownership and planned DAMON growth durable before the sysfs write."""
+    try:
+        with open(state, "a", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(f"{line}\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError as exc:
+        raise Refusal(f"cannot sync DAMON write-ahead records to {state}: {exc}") from exc
 
 
 def write_text(path: str, value: object) -> None:
@@ -148,23 +163,64 @@ def damon_stat_state(path: str) -> str:
 
 
 def cgprofile_sessions() -> None:
-    """4.4's second conflict: a live cgprofile session multiplexes kdamonds. The CLI's absence is a NOTE."""
+    """Refuse unless the endpoint is configured and cgprofile confirms no live sessions."""
+    if not os.environ.get("CGPROFILE_CONTROL_SOCKET"):
+        raise Refusal("CGPROFILE_CONTROL_SOCKET is unset; source the host endpoint record before running the kit")
     exe = shutil.which("cgprofilectl")
     if exe is None:
-        note("cgprofilectl is not installed: the kdamond multiplexing check is skipped (the CLI's absence is never a refusal)")
-        return
+        raise Refusal("cgprofilectl is not installed; cannot rule out a live session that owns DAMON")
     try:
         r = subprocess.run([exe, "--json", "status"], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as exc:
         raise Refusal(f"cgprofilectl --json status could not run ({exc}); whether a cgprofile session is live is unknown") from exc
+    output = (r.stdout + ("\n" if r.stdout and r.stderr else "") + r.stderr).strip()
+    if len(output) > 512:
+        output = output[:509] + "..."
     if r.returncode != 0:
-        raise Refusal(f"cgprofilectl --json status exited {r.returncode}; whether a cgprofile session is live is unknown")
+        raise Refusal(f"cgprofilectl --json status exited {r.returncode}; output={output!r}; cannot rule out a live session")
     match = re.search(r'"sessions_live"\s*:\s*"?(\d+)"?', r.stdout)
     if match is None:
-        note("cgprofilectl --json status names no sessions_live count: a live session cannot be ruled out from its output")
-        return
+        raise Refusal(f"cgprofilectl --json status has no sessions_live count; output={output!r}")
     if int(match.group(1)) != 0:
         raise Refusal(f"cgprofilectl reports sessions_live={match.group(1)}: a live cgprofile session holds kdamonds")
+
+
+def check_damon_sysfs(admin: str) -> None:
+    """Read-only check of the DAMON admin interface and the caller's ownership/write access."""
+    euid = os.geteuid()
+    if euid != 0 and os.path.abspath(admin) == "/sys/kernel/mm/damon/admin":
+        raise Refusal("the real DAMON sysfs interface requires root; refusing before setup")
+    kdamonds = os.path.join(admin, "kdamonds")
+    nr_path = os.path.join(kdamonds, "nr_kdamonds")
+    if not os.path.isdir(kdamonds) or not os.path.isfile(nr_path):
+        raise Refusal(f"{admin}/kdamonds/nr_kdamonds is absent: DAMON sysfs is unavailable")
+    for path in (kdamonds, nr_path):
+        try:
+            owner = os.stat(path).st_uid
+        except OSError as exc:
+            raise Refusal(f"cannot stat DAMON sysfs {path}: {exc}") from exc
+        expected = 0 if euid == 0 else euid
+        if owner != expected:
+            raise Refusal(f"DAMON sysfs {path} is owned by uid {owner}, expected uid {expected}; refusing")
+        if not os.access(path, os.R_OK | os.W_OK):
+            raise Refusal(f"DAMON sysfs {path} is not readable and writable by uid {euid}; refusing")
+
+
+def preflight(args) -> int:
+    """Check all hot-set environmental facts without writing DAMON sysfs."""
+    status = damon_stat_state(args.damon_stat)
+    cgprofile_sessions()
+    if not args.fixture:
+        check_damon_sysfs(args.admin)
+        entries_or_refuse(parse_units(args.units), args.cgroup)
+        physical_ranges(args.iomem, mem_total_bytes(args.proc))
+        # Do not select a daemon here: an old WAL may own an on kdamond that must
+        # be restored after this read-only environment check. setup() selects it
+        # again immediately before recording ownership and writing sysfs.
+    print(f"damon_stat_enabled={status}")
+    print("cgprofile_sessions=0")
+    print("damon_sysfs=ready" if not args.fixture else "damon_sysfs=fixture")
+    return 0
 
 
 def set_ops_filters(scheme_dir: str, memcg_path: str) -> None:
@@ -245,32 +301,94 @@ def load_lib(path: str, admin: str):
     return da
 
 
-def select_kdamond(admin: str, state: str) -> int:
-    """4.1's one kdamond: any `on` kdamond refuses, nr_kdamonds=0 writes 1 and uses index 0, else the highest
-    index (off) is reused and overwritten. The index goes to the WAL BEFORE `on` (the restore reads it from there)."""
+def select_kdamond(admin: str) -> tuple[int, int, str]:
+    """Select a new or empty off kdamond without changing sysfs.
+
+    Writing nr_kdamonds recreates every kdamond directory, so it is only
+    allowed from zero. With existing daemons, the kit may take an empty off
+    one whose contexts/nr_contexts is zero; it refuses to overwrite staged
+    inputs from any non-empty daemon.
+    """
     nrd = os.path.join(admin, "kdamonds")
     nr = read_int(os.path.join(nrd, "nr_kdamonds"), -1)
     if nr < 0:
         raise Refusal(f"{nrd}/nr_kdamonds is unreadable: the DAMON sysfs interface is absent or not root-owned")
+    empty: list[int] = []
     for idx in range(nr):
         st = read_lines(os.path.join(nrd, str(idx), "state"))
         if not st:
             raise Refusal(f"{nrd}/{idx}/state is unreadable")
-        if st[0].strip() == "on":
-            raise Refusal(f"kdamond {idx} is already on: the kit runs one kdamond and never multiplexes")
+        if st[0].strip() != "off":
+            raise Refusal(f"kdamond {idx} state is {st[0].strip()!r}, not off: the kit requires every existing kdamond off")
+        contexts = os.path.join(nrd, str(idx), "contexts")
+        count = read_int(os.path.join(contexts, "nr_contexts"), -1)
+        if count < 0:
+            raise Refusal(f"{contexts}/nr_contexts is unreadable; refusing to take or overwrite this kdamond")
+        if count == 0:
+            empty.append(idx)
     if nr == 0:
-        write_text(os.path.join(nrd, "nr_kdamonds"), 1)
-        idx = 0
-    else:
-        idx = nr - 1
+        return 0, nr, "created"
+    if not empty:
+        raise Refusal(f"all {nr} existing kdamonds have contexts; refusing to overwrite a kdamond the kit did not take")
+    return empty[-1], nr, "taken"
+
+
+def restore_owned_kdamond(admin: str, state: str) -> None:
+    """Undo only the kdamond named in the synced ownership WAL, while it is off."""
+    values: dict[str, str] = {}
+    for line in read_lines(state):
+        key, sep, value = line.partition("=")
+        if sep and key.startswith("damon_"):
+            values[key] = value
+    owner = values.get("damon_owner")
+    if owner not in ("created", "taken"):
+        return
     try:
-        with open(state, "a") as fh:
-            fh.write(f"kdamond={idx}\n")
-    except OSError as exc:
-        raise Refusal(f"cannot append kdamond={idx} to {state}: {exc}") from exc
-    if not os.path.isdir(os.path.join(nrd, str(idx))):
-        raise Refusal(f"kdamond {idx} does not exist after nr_kdamonds={nr}")
-    return idx
+        original_nr = int(values["damon_nr_kdamonds"])
+        kd = int(values["damon_kdamond"])
+        original_contexts = int(values["damon_nr_contexts"])
+    except (KeyError, ValueError) as exc:
+        raise Refusal("DAMON ownership WAL is incomplete; leaving its sysfs state untouched") from exc
+    kdamonds = os.path.join(admin, "kdamonds")
+    nr_path = os.path.join(kdamonds, "nr_kdamonds")
+    current_nr = read_int(nr_path, -1)
+    expected_nr = original_nr + (1 if owner == "created" else 0)
+    if current_nr not in (original_nr, expected_nr):
+        raise Refusal(f"DAMON nr_kdamonds is {current_nr}, expected {original_nr} or {expected_nr}; leaving it untouched")
+    kd_dir = os.path.join(kdamonds, str(kd))
+    if current_nr == original_nr and owner == "created":
+        return
+    state_path = os.path.join(kd_dir, "state")
+    current_state = read_lines(state_path)
+    if not current_state:
+        raise Refusal(f"{state_path} is unreadable; leaving DAMON counts untouched")
+    if current_state[0].strip() != "off":
+        write_text(state_path, "off")
+        current_state = read_lines(state_path)
+        if not current_state or current_state[0].strip() != "off":
+            raise Refusal(f"kdamond {kd} did not become off; leaving DAMON counts untouched")
+    if owner == "created":
+        for idx in range(current_nr):
+            other_state = read_lines(os.path.join(kdamonds, str(idx), "state"))
+            if not other_state or other_state[0].strip() != "off":
+                raise Refusal(f"kdamond {idx} is not confirmed off; refusing nr_kdamonds restore")
+        append_wal(state, f"damon_restore_nr_kdamonds={original_nr}")
+        write_text(nr_path, original_nr)
+        if read_int(nr_path, -1) != original_nr:
+            raise Refusal("nr_kdamonds did not return to its original value")
+        return
+    if current_nr != original_nr:
+        raise Refusal("taken kdamond count changed; refusing to modify its contexts")
+    contexts_path = os.path.join(kd_dir, "contexts", "nr_contexts")
+    current_contexts = read_int(contexts_path, -1)
+    if current_contexts == original_contexts:
+        return
+    if current_contexts != 1 or original_contexts != 0:
+        raise Refusal(f"kdamond {kd} contexts/nr_contexts is {current_contexts}, expected 0 or 1; leaving it untouched")
+    append_wal(state, f"damon_restore_nr_contexts={kd}|{original_contexts}")
+    write_text(contexts_path, original_contexts)
+    if read_int(contexts_path, -1) != original_contexts:
+        raise Refusal(f"kdamond {kd} contexts/nr_contexts did not return to zero")
 
 
 def configure(da, admin: str, kd: int, entries: list[tuple[str, str]],
@@ -321,27 +439,46 @@ def setup(args) -> int:
         print(f"damon_stat_enabled={status}")
         print("kdamond=fake")
         return 0
+    check_damon_sysfs(args.admin)
     da = load_lib(args.lib, args.admin)
     if not da.SysfsInterface.is_available():
         raise Refusal(f"{args.admin}/kdamonds is absent: DAMON sysfs is unavailable")
     entries = entries_or_refuse(units, args.cgroup)
     ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
-    idx = select_kdamond(args.admin, args.state)
-    # `contexts/0` is created only by writing `1` to contexts/nr_contexts.
-    # A fresh kdamond has nr_contexts=0, so avail_operations is not readable
-    # until this write has happened.  Keep this before every read below
-    # contexts/0; the WAL already records the kdamond before the write.
-    da.SysfsInterface.create_context(idx, 0)
-    avail = read_lines(os.path.join(args.admin, "kdamonds", str(idx), "contexts", "0", "avail_operations"))
-    if not avail:
-        raise Refusal(f"kdamonds/{idx}/contexts/0/avail_operations is unreadable")
-    if "paddr" not in avail[0].split():
-        raise Refusal(f"avail_operations [{avail[0].strip()}] has no paddr: this kernel cannot monitor physical regions")
-    configure(da, args.admin, idx, entries, ranges, commit=False)
-    da.SysfsInterface.kdamond_on(idx)
-    st = read_lines(os.path.join(args.admin, "kdamonds", str(idx), "state"))
-    if not st or st[0].strip() != "on":
-        raise Refusal(f"kdamond {idx} did not start (state {st[0].strip() if st else 'unreadable'!r})")
+    idx, original_nr, owner = select_kdamond(args.admin)
+    # These synced records establish ownership before either count write. A
+    # write to nr_kdamonds rebuilds every child, while a write to nr_contexts
+    # creates contexts/0; the restore uses only the object explicitly named.
+    append_wal(args.state, f"damon_owner={owner}", f"damon_nr_kdamonds={original_nr}",
+               f"damon_kdamond={idx}", "damon_nr_contexts=0", f"kdamond={idx}")
+    try:
+        nrd = os.path.join(args.admin, "kdamonds")
+        if owner == "created":
+            write_text(os.path.join(nrd, "nr_kdamonds"), original_nr + 1)
+            if read_int(os.path.join(nrd, "nr_kdamonds"), -1) != original_nr + 1:
+                raise Refusal("nr_kdamonds did not create the selected kdamond")
+        # Context 0 does not exist at nr_contexts=0. This is the write that
+        # creates it, and it is WALed above before avail_operations is read.
+        da.SysfsInterface.create_context(idx, 0)
+        context_count = read_int(os.path.join(nrd, str(idx), "contexts", "nr_contexts"), -1)
+        if context_count != 1:
+            raise Refusal(f"kdamond {idx} contexts/nr_contexts={context_count} after context creation")
+        avail = read_lines(os.path.join(nrd, str(idx), "contexts", "0", "avail_operations"))
+        if not avail:
+            raise Refusal(f"kdamonds/{idx}/contexts/0/avail_operations is unreadable")
+        if "paddr" not in avail[0].split():
+            raise Refusal(f"avail_operations [{avail[0].strip()}] has no paddr: this kernel cannot monitor physical regions")
+        configure(da, args.admin, idx, entries, ranges, commit=False)
+        da.SysfsInterface.kdamond_on(idx)
+        st = read_lines(os.path.join(nrd, str(idx), "state"))
+        if not st or st[0].strip() != "on":
+            raise Refusal(f"kdamond {idx} did not start (state {st[0].strip() if st else 'unreadable'!r})")
+    except Exception as exc:
+        try:
+            restore_owned_kdamond(args.admin, args.state)
+        except Exception as restore_exc:
+            raise Refusal(f"setup failed ({exc}); immediate DAMON restore is pending ({restore_exc}); WAL kept at {args.state}") from exc
+        raise
     say(f"kdamond {idx}: {len(entries)} leaf schemes, paddr, refresh_ms 0, {SAMPLE_US // 1000}ms/{AGGR_US // 1000}s")
     print(f"damon_stat_enabled={status}")
     print(f"kdamond={idx}")
@@ -469,7 +606,7 @@ def kdamond_state_cmd(args, value: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=("setup", "refresh-schemes", "sample", "off", "on"))
+    ap.add_argument("command", choices=("preflight", "setup", "refresh-schemes", "sample", "off", "on"))
     ap.add_argument("--evidence", required=True)
     ap.add_argument("--state", help="the WAL; setup appends kdamond=<idx> to it, the other commands read it")
     ap.add_argument("--units", default="")
@@ -484,10 +621,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fixture")
     try:
         args = ap.parse_args(argv)
-        os.makedirs(args.evidence, exist_ok=True)
+        if args.command != "preflight":
+            os.makedirs(args.evidence, exist_ok=True)
         if args.command == "setup" and not args.state:
             raise Refusal("setup needs --state: the WAL gets kdamond=<idx> before `on`")
-        handler = {"setup": setup, "refresh-schemes": refresh, "sample": sample,
+        handler = {"preflight": preflight, "setup": setup, "refresh-schemes": refresh, "sample": sample,
                    "off": lambda a: kdamond_state_cmd(a, "off"),
                    "on": lambda a: kdamond_state_cmd(a, "on")}[args.command]
         return handler(args)

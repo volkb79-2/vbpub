@@ -16,8 +16,9 @@
 # (a min lowering cannot OOM, and a scope directory that is gone counts as restored); (3b) then the
 # memory.max originals, child before parent, each only while its own memory.current <= target - 64M, else
 # up to 8 x 256M `memory.reclaim` on dev-gates.slice and a deferral (RESTORE-PENDING in manifest.env, WAL
-# kept, exit 1); (4) `off` to the WAL-named kdamond, read back -- `nr_kdamonds` is NEVER written: any write
-# to it recreates every kdamond directory and fails EBUSY while one is on.
+# kept, exit 1); (4) switch the WAL-owned kdamond off, then restore only the count the kit grew. A write to
+# nr_kdamonds recreates every child, so it is allowed only when every affected kdamond is confirmed off. A taken
+# daemon has only its empty context removed. The WAL records each structural restore before its write.
 #   accept-restore.sh --evidence DIR [--from-unit [--lock-timeout S]] [--in-run]
 # `container=<name>`, `boot_id=`, `kdamond=<idx>` are single lines.
 # Exit 0 restored, 3 nothing to do or refused, 1 a lowering is deferred (RESTORE-PENDING) or a foreign value was
@@ -70,7 +71,7 @@ if [ "$IN_RUN" != 1 ]; then   # --in-run means accept-run.sh's own finish: the c
 fi
 
 declare -a MAXES=() MINS=() NAMES=()
-boot=""; kd=""
+boot=""; kd=""; damon_owner=""; damon_nr=""; damon_ctx_nr=""
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
     MAX=*) MAXES+=("${line#MAX=}") ;;
@@ -78,6 +79,10 @@ while IFS= read -r line || [ -n "$line" ]; do
     container=*) NAMES+=("${line#container=}") ;;
     boot_id=*) boot=${line#boot_id=} ;;
     kdamond=*) kd=${line#kdamond=} ;;
+    damon_owner=*) damon_owner=${line#damon_owner=} ;;
+    damon_nr_kdamonds=*) damon_nr=${line#damon_nr_kdamonds=} ;;
+    damon_nr_contexts=*) damon_ctx_nr=${line#damon_nr_contexts=} ;;
+    damon_restore_nr_kdamonds=*|damon_restore_nr_contexts=*) ;;
     dev_orig=*|k_tested=*|pid=*|started_utc=*|kit_boot=*|'') ;;
     '# '*|'#'*) ;;
     *) note "unknown WAL line '${line%%=*}': host fact only, nothing restored from it" ;;
@@ -180,14 +185,113 @@ fi
 if [ "${#MAXES[@]}" -gt 0 ]; then   # (3b) child before parent, each under its own 64M rule
   while IFS= read -r e; do [ -n "$e" ] && restore_one max "$e"; done < <(printf '%s\n' "${MAXES[@]}" | wal_entries)
 fi
-if [ -n "$kd" ] && [ -d "$DAMON_ADMIN/kdamonds/$kd" ]; then   # (4) off only, read back
-  kof="$DAMON_ADMIN/kdamonds/$kd/state"
-  if echo off >"$kof" 2>/dev/null && [ "$(cat "$kof" 2>/dev/null)" = off ]; then
-    say "kdamond $kd -> off"
-  else
-    note "kdamond $kd: could not be switched off; its state file was left as it was (nr_kdamonds is never written)"
+wal_sync() {
+  printf '%s\n' "$1" >>"$STATE" 2>/dev/null && sync -f "$STATE" 2>/dev/null
+}
+damon_refuse() {
+  note "$1; DAMON structural restore is pending"
+  printf 'DAMON-RESTORE-PENDING %s\n' "$1" >>"$MAN" 2>/dev/null
+  PENDING=1
+}
+restore_damon() {
+  [ -n "$kd" ] || return 0
+  [ "$kd" != fake ] || return 0
+  case "$kd" in *[!0-9]*) damon_refuse "DAMON ownership WAL has invalid kdamond index '$kd'"; return 0 ;; esac
+  case "$damon_owner" in
+    ""|created|taken) ;;
+    *) damon_refuse "DAMON ownership WAL has unknown owner '$damon_owner'"; return 0 ;;
+  esac
+  if [ "$damon_owner" = created ] || [ "$damon_owner" = taken ]; then
+    case "$damon_nr:$damon_ctx_nr" in
+      *[!0-9:]*|:*|*:) damon_refuse "DAMON ownership WAL is incomplete"; return 0 ;;
+    esac
   fi
-fi
+  nrfile="$DAMON_ADMIN/kdamonds/nr_kdamonds"
+  nrnow=$(cat "$nrfile" 2>/dev/null) || nrnow=""
+  case "$nrnow" in ''|*[!0-9]*) damon_refuse "DAMON nr_kdamonds is unreadable"; return 0 ;; esac
+  case "$damon_owner" in
+    created)
+      expected=$((damon_nr + 1))
+      if [ "$nrnow" = "$damon_nr" ]; then return 0; fi
+      if [ "$nrnow" != "$expected" ]; then
+        damon_refuse "DAMON nr_kdamonds is $nrnow, expected $damon_nr or $expected; kdamond $kd was left untouched"
+        return 0
+      fi ;;
+    taken)
+      if [ "$nrnow" != "$damon_nr" ]; then
+        damon_refuse "DAMON nr_kdamonds is $nrnow, expected unchanged $damon_nr for taken kdamond $kd; it was left untouched"
+        return 0
+      fi ;;
+    *)
+      if [ "$kd" -ge "$nrnow" ]; then
+        damon_refuse "legacy WAL kdamond $kd is outside current nr_kdamonds=$nrnow; it was left untouched"
+        return 0
+      fi ;;
+  esac
+  kof="$DAMON_ADMIN/kdamonds/$kd/state"
+  if [ -r "$kof" ]; then
+    if [ "$(cat "$kof" 2>/dev/null)" != off ]; then
+      if echo off >"$kof" 2>/dev/null && [ "$(cat "$kof" 2>/dev/null)" = off ]; then
+        say "kdamond $kd -> off"
+      else
+        damon_refuse "kdamond $kd could not be switched off"
+        return 0
+      fi
+    fi
+  elif [ "$damon_owner" = created ] && [ "$(cat "$DAMON_ADMIN/kdamonds/nr_kdamonds" 2>/dev/null)" = "$damon_nr" ]; then
+    return 0 # a previous structural restore removed this newly-created daemon
+  else
+    damon_refuse "kdamond $kd state is unreadable"
+    return 0
+  fi
+  case "$damon_owner" in
+    created|taken) ;;
+    *) return 0 ;; # legacy WAL: switch off only; it carries no ownership for structural writes
+  esac
+  if [ "$damon_owner" = created ]; then
+    i=0
+    while [ "$i" -lt "$nrnow" ]; do
+      other="$DAMON_ADMIN/kdamonds/$i/state"
+      if [ ! -r "$other" ] || [ "$(cat "$other" 2>/dev/null)" != off ]; then
+        damon_refuse "kdamond $i is not confirmed off, so nr_kdamonds was left untouched"
+        return 0
+      fi
+      i=$((i + 1))
+    done
+    if ! wal_sync "damon_restore_nr_kdamonds=$damon_nr"; then
+      damon_refuse "cannot sync the nr_kdamonds restore record"
+      return 0
+    fi
+    if echo "$damon_nr" >"$nrfile" 2>/dev/null && [ "$(cat "$nrfile" 2>/dev/null)" = "$damon_nr" ]; then
+      say "nr_kdamonds $nrnow -> $damon_nr (kit-created kdamond removed)"
+    else
+      damon_refuse "nr_kdamonds restore failed (still $(cat "$nrfile" 2>/dev/null))"
+    fi
+    return 0
+  fi
+  nrnow=$(cat "$nrfile" 2>/dev/null) || nrnow=""
+  if [ "$nrnow" != "$damon_nr" ]; then
+    damon_refuse "DAMON nr_kdamonds is ${nrnow:-unreadable}, expected unchanged $damon_nr for taken kdamond $kd; contexts were left untouched"
+    return 0
+  fi
+  ctxfile="$DAMON_ADMIN/kdamonds/$kd/contexts/nr_contexts"
+  ctxnow=$(cat "$ctxfile" 2>/dev/null) || ctxnow=""
+  if [ "$ctxnow" = "$damon_ctx_nr" ]; then return 0; fi
+  if [ "$ctxnow" != 1 ] || [ "$damon_ctx_nr" != 0 ]; then
+    damon_refuse "kdamond $kd contexts/nr_contexts is ${ctxnow:-unreadable}, expected 0 or 1; it was left untouched"
+    return 0
+  fi
+  if ! wal_sync "damon_restore_nr_contexts=$kd|$damon_ctx_nr"; then
+    damon_refuse "cannot sync the context restore record"
+    return 0
+  fi
+  if echo "$damon_ctx_nr" >"$ctxfile" 2>/dev/null && [ "$(cat "$ctxfile" 2>/dev/null)" = "$damon_ctx_nr" ]; then
+    say "kdamond $kd contexts/nr_contexts $ctxnow -> $damon_ctx_nr (kit-grown context removed)"
+  else
+    damon_refuse "kdamond $kd contexts/nr_contexts restore failed"
+  fi
+}
+restore_damon
 if [ "$PENDING" = 1 ]; then
   printf 'restore=pending\n' >>"$MAN" 2>/dev/null
 fi
@@ -196,7 +300,7 @@ if [ "$PENDING" = 1 ] || [ "$FOREIGN" = 1 ]; then
   # kit wrote is back at its original; a foreign value needs another writer to prove it, a deferred lowering
   # needs the reconcile, and either one may be finished by a later accept-restore.sh from the same WAL.
   [ "$FOREIGN" = 1 ] && say "a file the kit never wrote was left alone (restore=foreign in $MAN); the state file is kept"
-  [ "$PENDING" = 1 ] && say "a lowering is deferred (RESTORE-PENDING in $MAN); the state file is kept; the unlocked reconcile completes it"
+  [ "$PENDING" = 1 ] && say "restore is pending (details in $MAN); the state file is kept for a later accept-restore.sh"
   exit 1
 fi
 rm -f "$STATE"
