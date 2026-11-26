@@ -26,6 +26,9 @@ argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQU
 # the release flow now runs this lane too (MDT-060), so it must not flake on contention. The iogov suite has since moved to the
 # independent project `iogovmon/` (own `run-gate r0-r1` lane, 2026-11-05); the budget is kept until the lane's new duration is measured.
 budget = "6m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during py_compile, render, and pytest;
+# no <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "6m"
 
 [lanes.smoke.resources]
 memory = "1g"
@@ -43,6 +46,9 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1; cpu=$(/opt/tester-venv/bin/python -c 'import os; print(min(os.sched_getaffinity(0)))') || exit 1; taskset -c $cpu bash -c 'while :; do :; done' & busy=$!; trap 'kill $busy 2>/dev/null' EXIT; i=0; while [ $i -lt 50 ]; do i=$((i+1)); taskset -c $cpu /opt/tester-venv/bin/pytest -p no:cacheprovider -q -x host-setup/tests/test_io_governance.py -k 'test_it_lists_limits_from_files_that_report_size_zero or test_systemd_mode_prints_properties' || { echo \"stress: FAILED on repetition $i\"; exit 1; }; done; echo 'stress: 50 repetitions OK'"]
 budget = "4m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION between successful pytest repetitions;
+# the stress loop has no guaranteed <=300s output cadence; see RG-326.
+stall_timeout = "4m"
 
 [lanes.io-governance-stress.resources]
 memory = "1g"
@@ -53,12 +59,18 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_estate_doctor.py -q"]
 budget = "6m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the estate-doctor pytest runs;
+# no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "6m"
 
 [lanes.host-setup-admission]
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_admission.py host-setup/tests/test_hs02.py host-setup/tests/test_env_example_allowed_values.py host-setup/tests/test_wizard_flow.py host-setup/tests/test_install_runtime_blocks.py host-setup/tests/test_cgprofile_install.py host-setup/tests/test_excluded_capacity.py -q"]
 budget = "4m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the admission pytest selection
+# runs; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "4m"
 
 [lanes.host-setup-admission.resources]
 cpus = "2"
@@ -74,6 +86,9 @@ environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && exec /opt/tester-venv/bin/python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_push_lane"]
 clean_tree = true
 budget = "15m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the release-flow unittest
+# modules run; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "15m"
 
 # The OCI-layout push test (real registry:2, buildx export, crane/regctl digest verification)
 # needs tools tester-unified does not carry, so it runs INSIDE the mdt-cockpit image, with the

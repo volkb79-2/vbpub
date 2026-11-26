@@ -34,6 +34,9 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the R0/R1 pytest suite; no
+# <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "5m"
 [lanes.r0-r1.resources]
 cpus = "3"
 

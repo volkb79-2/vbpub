@@ -92,6 +92,9 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH}:{worktree}/libraries/cowtree/src && \"$TESTER_VENV/bin/python\" -m pytest tests/ boot-pool-patch/tests/ golden-iso/tests/ vanilla-iso-patcher/tests/ -q"]
 budget = "3m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the unit pytest suites; no
+# <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "3m"
 description = "TrueNAS client, restore, boot-pool policy and vanilla ISO patcher unit tests"
 
 [lanes.unit.resources]
@@ -102,6 +105,9 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH}:{worktree}/libraries/cowtree/src && \"$TESTER_VENV/bin/python\" -m pytest boot-pool-patch/tests/ -q"]
 budget = "3m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during boot-pool patch pytest; no
+# <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "3m"
 description = "Boot-pool patch policy, adapter artifacts, and live-gate contract tests"
 
 [lanes.unit-boot-pool-patch.resources]
@@ -112,6 +118,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_storage.py"]
 budget = "35m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during live_storage.py API, ZFS, and
+# guest operations; stage output has no <=300s guarantee; see RG-326.
+stall_timeout = "35m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS"]
 description = "Live API, datasets, zvol, VM TCG, container and share acceptance on a disposable TrueNAS VM"
 
@@ -120,6 +129,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_boot.py"]
 budget = "35m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during live_boot.py remote reboot and
+# boot polling calls; progress prints are not guaranteed during a blocked call; see RG-326.
+stall_timeout = "35m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_REBOOT"]
 description = "Verify boot-pool user-data root and child mount persistence across a controlled TrueNAS reboot"
 
@@ -128,6 +140,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_update.py"]
 budget = "90m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during live_update.py update and job
+# polling calls; progress prints are not guaranteed during a blocked call; see RG-326.
+stall_timeout = "90m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_REBOOT", "TRUENAS_TEST_ALLOW_UPDATE", "TRUENAS_UPDATE_EXPECTED_VERSION", "TRUENAS_UPDATE_ISO", "TRUENAS_UPDATE_METADATA"]
 description = "Install a verified TrueNAS update from read-only guest media, reboot, and verify the marker plus optional preserved UI workload records and data"
 
@@ -136,6 +151,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH}:{worktree}/libraries/cowtree/src && \"$TESTER_VENV/bin/python\" accept-update-survival.py plant"]
 budget = "35m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during remote fixture planting in
+# accept-update-survival.py; no <=300s output cadence is measured; see RG-326.
+stall_timeout = "35m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_SURVIVAL_MODE", "TRUENAS_SURVIVAL_PROFILE", "TRUENAS_SURVIVAL_PATCHED_TARGET", "TRUENAS_SURVIVAL_MANIFEST", "TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE"]
 description = "Plant account, storage, share, VM, scheduler, replication, API-key and certificate fixtures, then save a canonical midclt baseline"
 
@@ -144,6 +162,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH}:{worktree}/libraries/cowtree/src && \"$TESTER_VENV/bin/python\" accept-update-survival.py update"]
 budget = "100m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during remote update selection and
+# reboot in accept-update-survival.py; no <=300s cadence is guaranteed; see RG-326.
+stall_timeout = "100m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_UPDATE", "TRUENAS_TEST_ALLOW_REBOOT", "TRUENAS_UPDATE_EXPECTED_VERSION", "TRUENAS_UPDATE_TRAIN", "TRUENAS_SURVIVAL_PATCHED_TARGET", "TRUENAS_SURVIVAL_UPDATE_RECORD"]
 description = "Select the exact newest official update manifest on the named train, call update.run with that version, and reboot; resumes an already-recorded job"
 
@@ -152,6 +173,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH}:{worktree}/libraries/cowtree/src && \"$TESTER_VENV/bin/python\" accept-update-survival.py verify"]
 budget = "35m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during remote post-update state and
+# checksum verification; no <=300s output cadence is measured; see RG-326.
+stall_timeout = "35m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_SURVIVAL_PATCHED_TARGET", "TRUENAS_SURVIVAL_MANIFEST", "TRUENAS_SURVIVAL_REPORT", "TRUENAS_SURVIVAL_EXPECTED_AFTER"]
 description = "Compare the post-update canonical midclt dump, account password hash, and Path A/B/non-reserved data checksums against the planted manifest"
 
@@ -160,6 +184,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_v27_patch.py"]
 budget = "40m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during remote v27 patch recovery and
+# API verification; captured middleware calls have no <=300s guarantee; see RG-326.
+stall_timeout = "40m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_V27_PATCH_BUNDLE", "TRUENAS_V27_PATCH_BUNDLE_SHA256"]
 description = "Fingerprint and install an exact v27 adapter, recover the stale RC.1 record after the pinned nightly update, or run one digest-bound Path A repair"
 
@@ -168,6 +195,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_v28_patch.py"]
 budget = "25m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during live_v28_patch.py remote
+# patch application and API verification; no cadence is measured; see RG-326.
+stall_timeout = "25m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS"]
 description = "Hash-verify, transactionally apply, and API-check the exact TrueNAS 28 nightly adapter on a disposable Path A or Path B guest"
 
@@ -176,6 +206,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_path_b_provision.py"]
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during Path B disk and middleware
+# provisioning calls; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "20m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_DISK_PROVISION", "TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"]
 description = "Create and middleware-register Path B only on an explicitly selected disposable TrueNAS boot-disk tail; repeat to verify idempotency"
 
@@ -184,6 +217,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_path_a_provision.py"]
 budget = "15m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during Path A provisioning and
+# verification calls; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "15m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS"]
 description = "Create and verify only the empty 2 GiB Path A root after the exact v27 patch is installed"
 
@@ -192,6 +228,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_path_b_partition.py"]
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during GPT partition reservation and
+# middleware calls; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "20m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_DISK_PROVISION", "TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"]
 description = "Reserve only the guarded Path B free-tail GPT partition so the registered UI lane creates the ZFS pool"
 
@@ -200,6 +239,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_api_probe.py"]
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during middleware refusal, pool, and
+# vdev API probes; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "20m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"]
 description = "Assert middleware refusal messages, reserved-partition pool creation/adoption, destruction and vdev-operation isolation, and boot-pool/partition integrity"
 
@@ -208,6 +250,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src:{worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_ui.py"]
 budget = "45m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during Playwright UI workflows and
+# their remote middleware waits; no <=300s cadence is guaranteed; see RG-326.
+stall_timeout = "45m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
 description = "Use the managed PWMCP browser for Path A or explicitly provisioned Path B storage, submit dataset/zvol/container/VM UI workflows, and verify backing ZFS state; optional Path B wizard mode probes pool creation"
 
@@ -216,6 +261,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src:{worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_ui_auth.py"]
 budget = "15m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during browser lease and UI navigation
+# waits in live_ui_auth.py; no <=300s cadence is measured; see RG-326.
+stall_timeout = "15m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_EXPECTED_VERSION", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
 description = "Authenticate to a TrueNAS UI through PWMCP and inventory visible navigation without changing host state"
 
@@ -224,6 +272,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src:{worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_ui_prepare_ssh.py"]
 budget = "15m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during remote SSH and browser setup
+# operations; progress is step-based with no <=300s guarantee; see RG-326.
+stall_timeout = "15m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
 description = "On an explicitly disposable target, configure the supplied key on the built-in root account, disable root/global SSH password authentication, and start SSH through the TrueNAS UI"
 
@@ -240,6 +291,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src:{worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_ui_workloads.py"]
 budget = "45m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during live UI workload actions and
+# middleware checks; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "45m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "TRUENAS_UI_WORKLOAD_MANIFEST", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
 description = "Start and stop preserved Path A container and VM through the TrueNAS UI, then verify their boot-pool data"
 
@@ -248,6 +302,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_vdev_topology.py"]
 budget = "60m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during live topology creation and
+# remote ZFS checks; stage output has no <=300s guarantee; see RG-326.
+stall_timeout = "60m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
 description = "Create auxiliary-vdev zvols in the TrueNAS UI, then test API cache, log, and special vdevs on sparse single-disk and RAIDZ1 pools"
 
@@ -256,5 +313,8 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && PYTHONPATH={worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_inspect.py"]
 budget = "15m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during remote TrueNAS inspection
+# requests; the script has no measured <=300s output cadence; see RG-326.
+stall_timeout = "15m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION"]
 description = "Read-only inventory of TrueNAS datasets, container and VM records, snapshots, and pool health"

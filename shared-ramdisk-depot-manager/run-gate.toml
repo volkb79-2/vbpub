@@ -51,3 +51,6 @@ environment = "bare-host"
 argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "e2e"]
 clean_tree = false
 budget = "60m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while gate.sh runs the detached e2e
+# container and waits for its verdict; no <=300s stdout cadence; see RG-326.
+stall_timeout = "60m"

@@ -18,6 +18,9 @@ python3 -I tools/check-lints-mutation.py .''',
 ]
 clean_tree = true
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while cargo fmt/clippy/doc/deny and
+# mutation lint steps run; no 300s output cadence is guaranteed; see RG-326.
+stall_timeout = "20m"
 
 [lanes.selftest]
 kind = "command"
@@ -35,6 +38,9 @@ python3 tools/crate-floors.py cov-summary.json coverage-floors.toml''',
 ]
 clean_tree = true
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while nextest and cargo test run;
+# output cadence is not guaranteed within 300s; no bound is measured; see RG-326.
+stall_timeout = "20m"
 artifacts = ["lcov.info", "cov-summary.json"]
 
 # The Python conformance lane (plan v4 §B.5, HOB-4): the independent reference decoders, the
@@ -72,6 +78,9 @@ python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests''',
 ]
 clean_tree = true
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during offline cargo build/metadata
+# and unittest discovery; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "10m"
 
 # Assay R1 over the four functional crates (hostobs plan v4, M1 row: "+ assay-r1
 # once R-2 lands"; assay B243/B523 consumer integration).

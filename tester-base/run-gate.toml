@@ -13,3 +13,6 @@ argv = ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py
 clean_tree = true
 required_env = ["CGROUP_PARENT_DEV_GATES", "TESTER_BASE_IMAGE"]
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the candidate-image unittest
+# scenarios run; per-test verbose output has no <=300s cadence guarantee; see RG-326.
+stall_timeout = "10m"

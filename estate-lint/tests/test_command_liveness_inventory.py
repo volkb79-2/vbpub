@@ -370,6 +370,62 @@ stall_timeout = "1m"
                for error in errors)
 
 
+def test_cmru_release_wrapper_member_table_finds_a_longer_member_bound():
+    config = '''
+schema_version = 1
+[lanes.ref-probe]
+kind = "command"
+argv = ["true"]
+budget = "5m"
+stall_timeout = "5m"
+[lanes.release-preconditions]
+kind = "command"
+argv = ["true"]
+budget = "2m"
+stall_timeout = "2m"
+[lanes.installed-wheel-live]
+kind = "command"
+argv = ["true"]
+budget = "2m"
+stall_timeout = "2m"
+[lanes.assay]
+kind = "assay"
+argv = ["true"]
+budget = "2m"
+[lanes.mutation]
+kind = "command"
+argv = ["true"]
+budget = "6m"
+stall_timeout = "6m"
+[lanes.gate]
+kind = "command"
+argv = ["python3", "-I", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
+budget = "10m"
+stall_timeout = "1m"
+'''
+    source = '''
+REF_PROBE_LANE = "ref-probe"
+RELEASE_PRECONDITIONS_LANE = "release-preconditions"
+LIVE_WHEEL_LANE = "installed-wheel-live"
+plan = {"assay_lane": "assay"}
+assay_lane = plan["assay_lane"]
+for lane in (
+    RELEASE_PRECONDITIONS_LANE,
+    REF_PROBE_LANE,
+    LIVE_WHEEL_LANE,
+    assay_lane,
+):
+    run(lane)
+'''
+    errors = audit_liveness(
+        {"cmru/run-gate.toml": config},
+        'schema_version = 1\nlanes = []\n', set(), cmru_source=source,
+    )
+    assert any("wrapper effective bound 60s is shorter" in error
+               and "member cmru/run-gate.toml#ref-probe" in error
+               for error in errors)
+
+
 def test_dynamic_nested_lane_uses_inventory_member_names():
     config = '''
 schema_version = 1

@@ -141,6 +141,9 @@ exec git update-ref "refs/cmru-gate/${branch#cmru-gate-}/ref-probe" HEAD
 ''',
 ]
 budget = "5m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the local ref-probe git steps;
+# no <=300s output cadence is measured; see RG-326.
+stall_timeout = "5m"
 
 [lanes.ref-probe.resources]
 pids = 8192
@@ -168,6 +171,9 @@ exec /opt/tester-venv/bin/python -m pytest \
 ''',
 ]
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the release-preconditions
+# pytest selection runs; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "10m"
 
 [lanes.release-preconditions.resources]
 pids = 8192
@@ -205,6 +211,9 @@ exec nice -n 10 /opt/tester-venv/bin/python -m pytest -q --cli-case-partial "$@"
   "--",
 ]
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the quiet editable Assay
+# install and survivor-regression pytest; no output bound is measured; see RG-326.
+stall_timeout = "10m"
 
 # Dedicated ephemeral environment for CMRU's mutation lane. Project environment
 # tables replace central ones as a whole, so this repeats the tester image and
@@ -268,6 +277,9 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
 ''',
 ]
 budget = "7h"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during mutation_campaign.py; it writes
+# candidate progress to a file, not this command's stdout; no bound is measured.
+stall_timeout = "7h"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.mutation.resources]
@@ -308,6 +320,9 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {work
   "--",
 ]
 budget = "7h"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during mutation_campaign.py; it writes
+# candidate progress to a file, not this command's stdout; no bound is measured.
+stall_timeout = "7h"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.r2.resources]
