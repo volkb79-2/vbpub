@@ -10,14 +10,30 @@ no separate version number, so entries are grouped by the work that landed.
 - `resume-lib.sh`: `pane_view` and its mode-line markers (`BOX_FOOT_MARKER`, `BOX_PANEL_HINT`, the box-rule patterns) moved
   here from `ctl-keepalive.sh`, which now sources them, so the resume helpers and the keep-alive watcher measure the
   same pane. `pane_state` builds that one view from a `-e` capture and refuses it as busy when `busy_beside_box` finds
-  `esc to interrupt` / `Compacting` at or below the box's last top rule, or - with no recognisable box, e.g. a pane in
-  another permission mode - in the last 20 non-blank lines; an unrecognised layout is BUSY, never ready, so a pane that
-  is about to be typed into is never guessed idle. `FOOT_LINES` (4, 6 in `compact-resume.sh`) alone counted the untrimmed
+  `esc to interrupt` at or below the box's last top rule, or - with no recognisable box - in the last 20 non-blank
+  lines (that fallback is removed in fix round 1, below: no box is BUSY); an unrecognised layout is BUSY, never ready,
+  so a pane that is about to be typed into is never guessed idle. A pane in another permission mode DOES have a box
+  (the `LMB` test), it only loses the mode-line trim. `FOOT_LINES` (4, 6 in `compact-resume.sh`) alone counted the untrimmed
   bottom lines: with one or more agents-panel rows the mode line's `esc to interrupt` fell outside it and `wait_idle`
   typed `/clear`, `/compact` or the resume prompt into a running turn. `foot` reads the same view, so the logged footer
   is the box, not the panel. Tests: `tests/test-clear-resume.sh` / `tests/test-compact-resume.sh` (1, 3, 6 and 12 panel
   rows busy, the same frame in another permission mode, and the real idle panel still ready) on a shared
   `tests/pane-frame-lib.sh` built from `tests/fixtures/keepalive/idle-agents-panel.ansi`.
+- Fix round 1 (review `plat-22c-resumebusy-r1`, FIX-FIRST): the live main pane's prompt-box TOP rule carries the
+  `◉ xhigh · /effort  vbpub-main-controller` label, which the old label matcher (`[A-Za-z0-9._-]` only) refused - so the
+  helpers saw no box, read busy forever and never acted (H1). A separate `is_top_rule` now accepts a line that starts with
+  20+ U+2500 and ends with U+2500 whatever label lies between; `box_ok`/`is_label_rule` are byte-identical, so the
+  keep-alive watcher is unchanged. Readiness also needs a PLAIN rule directly below the input row and no open dialog
+  (`dialog_open` + its constants moved here from the watcher), which closes the empty-first-row DRAFT and the menu-above
+  an-intact-box cases (M1). `BUSY_SCAN_LINES` and the no-box fallback are gone (L1: the fallback could only return the
+  same verdict as "no box is busy"); the compaction spinner is also searched in the 6 non-blank lines just above the
+  top rule, matched as ONE non-alphanumeric glyph, whitespace, then `Compacting` at the line's start, so prose that
+  contains the word does not count (L2; a narrow pane's wrapped `esc to interrupt` stays a documented limit rather than
+  a width floor). A pane that is not ready for a reason the helper cannot read logs that reason and the footer ONCE per
+  wait (no prompt box / a dialog), instead of leaving exit 3/4/5 to say only "never idle". Both headers now say an
+  unrecognised layout exits 3 or 4. Tests: EMPTY, QMENU, BANG, NORULE, DRAFT, MENUBOX, H1I/H1B, SPIN and PROSE frames
+  in both resume tests (shared `stray_frame` in `tests/pane-frame-lib.sh`), the M2 base holes, and the corrected
+  `L1B`/`5f` comments.
 - `ctl-keepalive.sh` behaviour is unchanged; `ctl-doctor.sh` compares `CONTROLLER_HOME` against a quoted
   `"${HOME:-}/controller"` (an unquoted right-hand side is a glob pattern), and `docs/design/agctl/CONTEXT-ECONOMY.md`
   describes the shared idle check and no longer states the focused panel as captured fact.
