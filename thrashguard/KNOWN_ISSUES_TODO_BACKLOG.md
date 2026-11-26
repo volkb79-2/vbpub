@@ -155,7 +155,11 @@ and no Rust build path outside the gate image. So a `cmru.toml` written today
 would have a build step that cannot build anything, which is exactly the
 "declared but never run" shape the estate forbids. Registering it in the graph
 without a config is refused by the loader, and nothing in the estate currently
-requires the entry: a project that is absent from the graph is simply not judged.
+requires the entry. Absence from the CMRU project graph skips project ordering
+and release orchestration; it does not skip the estate's tracked-config audit:
+`run-gate lanes --check --all --strict` still reads this project's
+`run-gate.toml`. That audit checks lane declarations, not this project's test
+results or release graph membership.
 
 **Wanted.** An operator decision on one of: (a) a small `tools/package-release.sh`
 that builds the binary in `tester-unified-rust` and emits

@@ -37,7 +37,8 @@ the next release's entry; the design is the normative document.
 - `unsafe_code` moves from `forbid` to `deny`: `src/activation.rs` needs one
   `unsafe` block to adopt a raw descriptor. `tools/check-lints.py` asserts one
   allowance per block, in that file only, so a second block anywhere fails the
-  lint lane. The no-act-path test still refuses every signal and cgroup write.
+  lint lane. The no-act-path checks are lexical scans for known targets and APIs;
+  they document their limits and do not claim to prove absence of every act path.
 - The judged set grows to twelve targets: `src/activation.rs` and `src/daemon.rs`
   join the ten modules P1 already had.
 - `status` and `candidates` documents are built once in `src/daemon.rs` and used
@@ -45,3 +46,26 @@ the next release's entry; the design is the normative document.
   client cannot drift apart.
 - `update` answers with the `score` and `priority` the registration now carries
   instead of a bare `id`.
+
+### Fixed
+
+- **Socket activation and journaling:** activation now checks `LISTEN_PID`, the
+  exact descriptor count and names, and listener type; journal sequence and
+  monotonic timestamps stay boot-relative across process restarts. Static
+  candidates do not expire, boot grace and optional registrant behavior are
+  applied, socket reads/writes and JSON nesting are bounded, and the local
+  events page merges both journal generations within row and byte limits.
+- **Resolver and issuer boundaries:** static paths refuse symlinks, incomplete
+  walks refuse rather than claim uniqueness, and shadowed matches appear in the
+  registration event. Cross-issuer operations remain possible in P1; TG-12
+  records the P2 enforce blocker because the available stable API has no safe
+  peer credential support.
+- **Docs and deploy facts:** documented TOML is tested from the files, the
+  measured R1 provenance names the commit actually measured without lowering
+  the 88.0 floor, and service write paths match boot tmpfiles. The example
+  documentation URL was removed. Hostobs' observer socket, issuer, open event
+  names, point-event keys and RAM-ring completeness rules are stated in the
+  design; P1 itself emits no hostobs events.
+- **Review details:** registration depth and config loading have named tests;
+  consumer docs describe hundredths, `several`, foreground socket permissions,
+  and stale socket cleanup. The gdb helper uses the selected profile cache.

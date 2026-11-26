@@ -210,43 +210,42 @@ fleetd, no agctl, no registrant: `[[static_unit]]` plus `mode = enforce` freezes
 ## 4. Frozen-time accounting — one path: thrashguard -> hostobs -> consumers
 
 Nothing inside a gate container reads thrashguard (H1 replaced by B2). assay runs *in* the frozen container and
-the cockpit runs in a private cgroup namespace, so the consumer path is the host's telemetry: **thrashguard
-emits, hostobs records, consumers read.**
+the cockpit runs in a private cgroup namespace, so the planned P4 consumer path is the host's telemetry:
+**thrashguard emits, hostobs records, consumers read.** P1 is observe-only and emits nothing to hostobs.
 
-**What thrashguard emits.** Per frozen interval: `unit`, `run`, `owner` (registrant-supplied); `cgroup` scope
-name and `cgroup_id` (inode, so a recycled path is detectable); `boot_id` (intervals never span boots);
-`mono_start_ns`, `mono_end_ns` and `seconds` on **`CLOCK_MONOTONIC`**, not wall time — the kernel keeps it
-running while the cgroup is frozen (`compute-design-REVIEW.md:100`); `reason`
-(`pressure|aged_out|guard_stop|deregistered|unreadable_psi|manual`); `reclaim_bytes` (read-back, or `null`).
-Any wall-clock field is derived, never authoritative.
+**What thrashguard emits in P4.** A completed interval is represented by two point events, `thrashguard.freeze`
+and `thrashguard.thaw`. Both carry the same `boot_id` and `seq`, plus the `cgroup` scope name and `cgroup_id`
+(inode, so a recycled path is detectable); `unit`, `run`, `owner` and `reason` retain their meanings below.
+`seconds` appears on the thaw event only and records the interval length on **`CLOCK_MONOTONIC`**, not wall
+time — the kernel keeps it running while the cgroup is frozen (`compute-design-REVIEW.md:100`). Any wall-clock
+field is derived, never authoritative.
 
-**Where it is recorded.** hostobs' event store, two names in its closed vocabulary, `thrashguard.freeze` and
-`thrashguard.thaw`, submitted as a hostobs `annotate` request and read back as hostobs `events`. **Which hostobs
-socket serves `annotate`, and which serves `events`, is hostobs' own decision and is not fixed here.** The authority
-is the level/verb table in `hostobs/docs/WIRE.md` (today `:476-484`, `:492-497`); that table is still being decided
-on the hostobs side (their M3), and on current main only the observe and operator sockets exist, with `annotate`,
-`events` and `spans` answering unknown-verb. So this section states the contract and never a socket name: read the
-WIRE table, not this paragraph, for where a verb is served. The argument budget is the constraint: `ctx` accepts
-only `run`, `lane`, `candidate`, `txn`, `session`, each <= 128 B (`WIRE.md:493`, which defers to 4.10 at `:476`), so
-the run id rides in `ctx.run` and five factual fields go in `attrs` (8 pairs, key <= 64 B, value <= 256 B,
-`hostobs/crates/store/src/events.rs:42`, `:48`, `:50`): `cgroup` (the scope name), `cgroup_id`, `boot_id`, `seq`,
-`seconds`. `reason` and `unit`/`owner` go in the event's `name`/`key`/`code` fields; `reclaim_bytes` stays in
-thrashguard's own journal, because a ninth attr does not fit. The issuer is the emitting uid plus its cgroup
-incarnation from `SO_PEERCRED`/`SO_PEERPIDFD` (`WIRE.md:498-502`), so no separate emitter identity is invented.
-Emission is best-effort and idempotent on `(boot_id, seq)` (D19): a lost event is `unknown`, never a wrong number.
+**Where it is recorded.** P4 submits `annotate` on hostobs' **OBSERVER socket**, admitted through group
+`hostobs-observer`; the control socket answers `unknown-verb` until hostobs M6. The event names are open and
+append-only. Only the `thrashguard.` prefix is closed for this integration; readers accept events under that
+prefix only from uid 0 or the configured thrashguard uid. The issuer is `uid:<n>` from `SO_PEERCRED` plus an
+**unverified** peer label: this path does not have `SO_PEERPIDFD` cgroup-incarnation binding, so the label is
+not authorization evidence. Hostobs stores the event and consumers read it through its event reader. The argument budget is the
+constraint: `ctx` accepts only `run`, `lane`, `candidate`, `txn`, `session`, each <= 128 B (`WIRE.md:493`, which
+defers to 4.10 at `:476`), so the run id rides in `ctx.run` and factual fields go in `attrs` (8 pairs, key <= 64 B,
+value <= 256 B, `hostobs/crates/store/src/events.rs:42`, `:48`, `:50`): `cgroup`, `cgroup_id`, `boot_id`, `seq`,
+and, on thaw only, `seconds`. `reason` and `unit`/`owner` go in the event's `name`/`key`/`code` fields;
+`reclaim_bytes` stays in thrashguard's own journal. Emission is best-effort and idempotent on `(boot_id, seq)`
+(D19): a lost event is `unknown`, never a wrong number.
 
 ### 4a. What exists today in hostobs, and what is missing (B2 check)
 
 | Part | Today |
 |---|---|
-| event + span store, bounded ring, closed name/attr bounds | **exists**: `hostobs/crates/store/src/events.rs:1-50` |
-| `annotate` verb (control, JSON, peer-bound issuer, 50/s per issuer) | in the table, **not served**: `served: false` at `hostobs/crates/serve/src/verbs.rs:76`; planned M3 (`docs/design/hostobs/PLAN-v4-2026-11-08.md:376`) |
-| `events` read verb | **planned M3**: `verbs.rs:73`, `hostobs/docs/WIRE.md:476-484` |
+| event + span store, bounded ring, bounded name/attr lengths | **exists**: `hostobs/crates/store/src/events.rs:1-50` |
+| `annotate` verb | served on the **OBSERVER** socket, group `hostobs-observer`; the control socket answers `unknown-verb` until M6 |
+| event read and completeness | RAM-only ring; a window is complete only from `started_real_ns` onward with no displacement, otherwise the result is `unknown`, never 0; consumers query at least `max_park_s` back |
 | freeze state as a *sampled* fact (`cgroup.freeze`, `cgroup.events`) | **missing**: not registered in `hostobs/crates/model/src/metric.rs`; `crates/kernel/src/cgroup.rs` reads `cpu.stat`, `memory.*`, `io.stat`, `pids.current`, PSI only |
 
-Owner of every missing row: hostobs (M3; the metric registration needs its own backlog item). Until they land
-the consumer path is **absent** and every consumer reports the frozen total as `unknown`. They gate P4, not
-P1/P2.
+The event ring is volatile: a read window is complete only when it starts at or after the probe's
+`started_real_ns` and no event in the window was displaced. Otherwise consumers report `unknown`, never 0.
+Consumers query at least `max_park_s` back. The freeze-state sample remains missing (hostobs HOB-102/B8) and
+gates the corresponding P4 consumer behavior, not P1/P2.
 
 ### 4b. assay: effective CPU time, and the verdict does not depend on it
 
@@ -265,10 +264,10 @@ and survives, so **thrashguard is optional**: run-gate and assay work unchanged 
 `frozen_seconds` is `unknown`, never `0`.
 
 **Summaries are normalised, not raw.** The unit, the formula and the handling of a host with no basis are
-assay's own contract: `assay/docs/SPEC.md` chapter **TIM**, requirement **TIM-030** (planned) — time is normalised
-to the recorded Geekbench major's own reference machine, which is 1.0 for that major (Geekbench 7 single-core
-reference 2500), never to a fixed point count, and majors are never mixed; a host with no readable score has no
-basis and the summary says so rather than inventing a zero. The per-host score input stays
+assay's own contract: `assay/docs/SPEC.md` chapter **TIM**, requirement **TIM-030** — time is normalised to the
+recorded Geekbench major's own reference machine, which is 1.0 for that major (Geekbench 7 single-core reference
+2500), never to the retired 1500-point basis or another fixed point count, and majors are never mixed; a host
+with no readable score has no basis and the summary says so rather than inventing a zero. The per-host score input stays
 `cgprofile/docs/PROTOCOL.md:625-627` (`speed`); this document does not restate the rules.
 
 ### 4c. run-gate: unchanged verdict, one shared bound, optional pause
@@ -406,13 +405,15 @@ refuses and never invents a zero. Absent agctl: thrashguard's CLI and fleetd's s
 
 ### 6c. hostobs: the event intake (B2)
 
-Thrashguard emits `thrashguard.freeze` / `thrashguard.thaw` into hostobs; §4a lists what exists there today and what
-is missing. Emission is a hostobs `annotate` request and consumption a hostobs `events` read, with the attribute
-budget spent as described in §4. **The serving socket is hostobs' to name, not this document's:** consult
-`hostobs/docs/WIRE.md`'s level/verb table (today `:476-484`, `:492-497`) for which socket serves `annotate` and
-where `events` is read; that table is still being decided on the hostobs side (their M3), and on current main only
-the observe and operator sockets exist, with `annotate`, `events` and `spans` answering unknown-verb. Missing today
-(owner: hostobs) is exactly §4a's three rows; until they land consumers report `unknown`. The `cgroup` attr is exact (`docker-<id>.scope` fits <= 256 B) and readers match on it plus `boot_id`, as §4b does.
+P4 sends `thrashguard.freeze` / `thrashguard.thaw` to hostobs; P1 emits nothing there. Emission uses `annotate`
+on the **OBSERVER** socket, group `hostobs-observer`; the control socket answers `unknown-verb` until hostobs
+M6. The names are open and append-only; only the `thrashguard.` prefix is closed. The two point events for an
+interval share `boot_id` and `seq`, and `seconds` is carried on thaw only. The issuer is `uid:<n>` from
+`SO_PEERCRED` plus an unverified peer label, without `SO_PEERPIDFD` cgroup-incarnation binding. Readers accept `thrashguard.*` events
+only from uid 0 or the configured thrashguard uid. The RAM-only ring is complete only for a window beginning at
+or after the probe's `started_real_ns` with no displacement; otherwise consumers report `unknown`, never 0.
+Consumers query at least `max_park_s` back. The `cgroup` attr is exact (`docker-<id>.scope` fits <= 256 B), and
+readers match it plus `boot_id`, as §4b does.
 
 ### 6d. Standalone is a hard requirement
 

@@ -603,7 +603,12 @@ fn bind_one(path: &Path) -> Result<std::os::unix::net::UnixListener, String> {
             .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
     }
     std::os::unix::net::UnixListener::bind(path)
-        .map_err(|error| format!("cannot bind {}: {error}", path.display()))
+        .map_err(|error| {
+            format!(
+                "cannot bind {}: {error}; if this is a stale socket, confirm no daemon owns it, then remove that exact socket path and retry",
+                path.display()
+            )
+        })
 }
 
 /// The two listeners this daemon serves.
@@ -1283,19 +1288,15 @@ mod tests {
     }
 
     #[test]
-    fn binding_a_path_is_loud_and_creates_no_file_when_the_bind_fails() {
+    fn binding_fails_before_creating_a_socket_when_the_parent_is_not_a_directory() {
         let tree = TempTree::new("daemon-bind");
-        let registrant = tree.at("reg/thrashguard.sock");
+        let parent = tree.write("parent-is-a-file", "fixture");
+        let socket = parent.join("guard.sock");
         let reader = tree.at("reader/thrashguard.sock");
-        // Two distinct directories: the bind succeeds and the two paths exist.
-        let endpoint = bind(Some(&registrant), &reader).expect("a temp tree binds");
-        assert!(registrant.exists());
-        assert!(reader.exists());
-        drop(endpoint);
-        // Binding the same path twice is a loud refusal, never a silent takeover.
-        let taken = registrant.parent().expect("a parent").join("taken.sock");
-        let first = bind(Some(&taken), &taken).expect_err("the same path twice");
-        assert!(first.contains("cannot bind"), "{first}");
+        let error = bind(Some(&socket), &reader).expect_err("file cannot be a parent directory");
+        assert!(error.contains("cannot create"), "{error}");
+        assert!(parent.is_file());
+        assert!(!socket.exists());
     }
 
     #[test]

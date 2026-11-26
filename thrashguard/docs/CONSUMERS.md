@@ -101,9 +101,11 @@ A refused registration stores nothing and says which refusal it is:
 # {"v":"thrashguard-registration/1","ok":false,"id":"x","reason":"none","detail":"no docker-<id>.scope under the allowed ancestors"}
 ```
 
-`reason` is one of `none` (no scope found), `several` (more than one depth
-matches), `protected` (the only match is under a protected ancestor), `malformed`
-(the request itself) or `duplicate` (this id is already registered).
+`reason` is one of `none` (no scope found), `several` (more than one match at
+the shallowest matching depth), `protected` (the only match is under a protected
+ancestor), `malformed` (the request itself) or `duplicate` (this id is already
+registered). A deeper same-name match loses to the shallowest match and appears
+in the `registered` event's `shadowed` paths.
 `priority` is exactly `freezable` or `last-resort`. Other wire refusals use the
 closed reason vocabulary `unreadable`, `missing`, `wrong-socket`, `unknown-key`,
 `unknown-verb`, `version`, `too-large` and `value`; readers should preserve these
@@ -124,6 +126,9 @@ It returns at most 1024 rows and a 64 KiB JSON line; `truncated: true` means the
 requested window has a missing prefix or the page hit one of those bounds. Page
 again using the last returned row's `seq` as `--since-seq`. A single row too large
 to fit is refused with a named error.
+
+In `status.psi`, the `some.avg10` and `full.avg10` values are integer hundredths:
+`300` means `3.00`; `total_us` is microseconds.
 
 ## 5. What an operator should expect from P1
 
@@ -148,6 +153,11 @@ to fit is refused with a named error.
   the two socket descriptors; run by hand it binds `--registrant-socket` and
   `--reader-socket` (or the default paths). `mode = off` prints one line and
   exits 0 without binding; `mode = enforce` is refused with exit code 2.
+- **Foreground socket permissions depend on the caller.** The by-hand fallback
+  creates parent directories with the process identity and uses its umask; it
+  does not set the systemd socket groups or modes. The documented access table
+  applies to the systemd/tmpfiles path. If a bind reports an existing path,
+  first confirm no daemon owns it; then remove that exact stale socket and retry.
 
 ## 6. Consumers
 

@@ -289,6 +289,9 @@ fn the_service_write_path_is_created_by_tmpfiles_on_each_boot() {
     assert!(!service.contains("github.com/example"));
     assert!(service
         .lines()
+        .any(|line| line.starts_with("After=systemd-tmpfiles-setup.service")));
+    assert!(service
+        .lines()
         .any(|line| line.trim() == "ReadWritePaths=/run/thrashguard"));
     assert!(tmpfiles
         .lines()

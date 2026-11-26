@@ -56,7 +56,10 @@ resolves it under `allowed_ancestors`, taking the shallowest match (the docker
 scope, not the placement leaf that holds only migrated pids), and refuses a
 registration that resolves to none, to several, or to a `protected` ancestor.
 That resolution, re-checked on every act in P2, is the real containment; the
-socket group is advisory only.
+socket group is advisory only. Group membership controls admission through the
+socket DAC check; it does not bind an id to its registrant. Container root may
+bypass that check, and P1 permits cross-issuer update, heartbeat and deregister
+until TG-12 is resolved.
 
 ## 6. Lifetime is heartbeat liveness, never a job bound
 
@@ -80,10 +83,11 @@ carries `boot_id` so two readings can never be joined across a reboot. The journ
 
 ## 8. Injectable roots, and the one place a real path is spelled
 
-Every unit test takes `--cgroup-root` and `--pressure-path` and works in a temp
+Every unit test injects `--cgroup-root` and `--pressure-path` and works in a temp
 tree. That is the only way to test hysteresis, expiry, thaw ordering and the death
-sweep without freezing the cockpit's own work. The production defaults are the
-real paths and are the *only* place this crate spells them.
+sweep without freezing the cockpit's own work. Production defaults include
+`/sys/fs/cgroup`, `/proc/pressure/memory` and the kernel boot-id path; the source
+check counts these known literals, it is not a general host-path sandbox.
 `tools/check-lints.py` checks that literal count and applies the lexical no-act
 patterns described in §3; those patterns cannot prove safety against aliases,
 macro expansion, generated code, indirect APIs, FFI or unlisted spellings.
@@ -144,3 +148,7 @@ revisit it with a reason rather than by accident:
 11. **`serve` refuses `enforce` and exits 0 on `off`.** `enforce` is valid
     vocabulary and `status` must be able to report it, but this build cannot
     honour it, so the refusal happens at the run boundary with one line.
+12. **Config thresholds require a decimal TOML token.** The PSI reader accepts
+    kernel values such as `3` or `3.1`, but `trigger_avg10` is parsed as a TOML
+    decimal (`3.00` in the consumer example); the integer PSI value is still
+    represented internally as hundredths.
