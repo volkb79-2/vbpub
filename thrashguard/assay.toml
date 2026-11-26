@@ -93,3 +93,11 @@ require_branch = false
 [lanes.r0-r1.judge.coverage]
 format = "lcov"
 artifact = "lcov.info"
+
+# R1 needs an explicit snapshot policy (Assay's `[isolation]` requirement, an R1
+# refusal without one). This project declares NO unsafe-symlink omission because it
+# has none, so `repository` is the narrower — and therefore the honest — spelling:
+# `repository-minus-unsafe-symlinks` is refused together with an empty list.
+[lanes.r0-r1.isolation]
+snapshot_selection = "repository"
+snapshot_history = "shallow"
