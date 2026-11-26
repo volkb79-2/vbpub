@@ -8,7 +8,7 @@ kind = "none"
 [project]
 id = "agctl"
 description = "agent control: controller state, the run registry and the estate view"
-template_revision = 4
+template_revision = 5
 prefix = "agctl-v"
 artifacts = ["wheel"]
 scm_dist = "agctl"
