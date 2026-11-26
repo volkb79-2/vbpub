@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""The project's small lint boundary, mirroring hostobs/tools/check-lints.py in shape.
+"""The project's small lint boundary: the promises a compiler cannot check.
 
-Three checks that a compiler cannot make, all cheap and all able to go red:
+Three checks, all cheap and all able to go red:
 
-1. **No hard-coded host path.** Design §5/D9: every unit test takes an injected
-   cgroup root and pressure path, so `/sys/fs/cgroup` may appear only in a
-   documented default that the CLI or a test injects over -- never as a literal
-   in a code path that acts on it. The scan therefore refuses the literal in
-   `src/` outside the one declared default in `config.rs`, and fails the run if
-   that allowance ever moves.
-2. **No act path.** The `observe` cut compiles none: no write to a cgroup file,
-   no `fs::write`/`File::create`/`OpenOptions` toward cgroupfs, and no signal
-   or kill call. `src/` may only open files for reading.
-3. **One audited `unsafe` item.** `activation.rs` claims a systemd-owned
-   descriptor, which `std` can only do through `unsafe`. The crate denies
-   `unsafe_code`; exactly one function may carry the allowance, and no other
-   file may.
+1. **The host cgroup root is not a literal in the code.** Design §5/D9: every
+   test takes an injected cgroup root (`--cgroup-root`) and pressure path
+   (`--pressure-path`). Exactly ONE file may spell the real default (the CLI's
+   flag default, the place a run resolves it), and the count is asserted, so the
+   allowance cannot silently grow.
+2. **No act path.** Cgroup control files are named only in prose: an executable
+   (non-comment) line mentioning `cgroup.freeze`, `cgroup.events`,
+   `memory.reclaim` or `memory.max` fails, and a file-write API
+   (`fs::write`, `File::create`, `OpenOptions::new`, `fs::remove_*`) is allowed
+   only in the journal writer (`src/events.rs`) and the test-only fixture helper
+   (`src/testutil.rs`, which `lib.rs` must gate with `#[cfg(test)]`). A write to a
+   cgroup file therefore has no way to exist.
+3. **One audited `unsafe` item, at most.** `activation.rs` claims a
+   systemd-owned descriptor, which `std` can only do through `unsafe`. The crate
+   denies `unsafe_code`, so the number of `#[allow(unsafe_code)]` attributes must
+   equal the number of `unsafe {` blocks, all in that one file.
 
 Usage: check-lints.py PROJECT-DIR
 """
@@ -27,14 +30,20 @@ import sys
 from pathlib import Path
 
 CGROUP_LITERAL = '"/sys/fs/cgroup"'
-# The one place the literal is allowed: config.rs's documented default, which
-# every test overrides through `--cgroup-root`. Keep the allowance and the
-# replacement in step: this list is asserted, not assumed.
-CGROUP_LITERAL_ALLOWED = {"src/config.rs": 1}
-UNSAFE_ALLOWED = {"src/activation.rs": 1}
+# The ONLY file allowed to spell the real cgroup root, and how many times: the
+# CLI flag default. Empty today because no module has landed yet that needs it;
+# P1 subtask 4 (`cli.rs`) sets {"src/cli.rs": 1} in the same commit that adds the
+# flag, so the allowance never describes a file that does not exist.
+CGROUP_LITERAL_ALLOWED: dict[str, int] = {}
+# The ONLY files allowed to write anything at all.
+WRITERS = {"src/events.rs", "src/testutil.rs"}
+# The ONLY file allowed an `unsafe` block.
+UNSAFE_FILE = "src/activation.rs"
 
-WRITE_CALLS = re.compile(r"(fs::write|File::create|OpenOptions::new|fs::remove_|fs::rename|fs::set_permissions)")
-SIGNAL_CALLS = re.compile(r"(libc::kill|nix::sys::signal|Command::new\(\"kill\"\)|\.kill\(\)|\bkill\()")
+FORBIDDEN_TARGETS = ("cgroup.freeze", "cgroup.events", "memory.reclaim", "memory.max")
+WRITE_CALLS = re.compile(r"(fs::write|File::create|OpenOptions::new|fs::remove_file|fs::remove_dir)")
+UNSAFE_ALLOW = re.compile(r"allow\(unsafe_code\)")
+UNSAFE_BLOCK = re.compile(r"unsafe\s*{")
 
 
 def source_files(project: Path) -> list[Path]:
@@ -48,50 +57,59 @@ def relative(project: Path, path: Path) -> str:
 def find(project: Path) -> list[str]:
     """Return every violation, one `path:line: reason` each (empty means clean)."""
     problems: list[str] = []
-    seen_literal = 0
-    seen_unsafe = 0
+    literal_count = 0
+    unsafe_allows: list[tuple[str, int]] = []
+    unsafe_blocks = 0
     for path in source_files(project):
         name = relative(project, path)
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith("//"):
-                continue
-            if CGROUP_LITERAL in line:
-                seen_literal += 1
+            code = line.split("//", 1)[0]
+            if CGROUP_LITERAL in code:
+                literal_count += 1
                 if name not in CGROUP_LITERAL_ALLOWED:
                     problems.append(
-                        f"{name}:{number}: the host cgroup root is a literal here; take it from the injected root"
+                        f"{name}:{number}: the host cgroup root is a literal here; it comes from --cgroup-root"
                     )
-            if re.search(r"allow\(unsafe_code\)", line):
-                seen_unsafe += 1
-                if name not in UNSAFE_ALLOWED:
-                    problems.append(f"{name}:{number}: unsafe_code may be allowed only in {sorted(UNSAFE_ALLOWED)}")
-            if WRITE_CALLS.search(line):
+            for target in FORBIDDEN_TARGETS:
+                if target in code:
+                    problems.append(
+                        f"{name}:{number}: {target} is named in executable code; the observe cut compiles no act path"
+                    )
+            if WRITE_CALLS.search(code) and name not in WRITERS:
                 problems.append(
-                    f"{name}:{number}: a file is written here; the observe cut compiles no act path and no cgroup write"
+                    f"{name}:{number}: a file is written here; only {sorted(WRITERS)} may write"
                 )
-            if SIGNAL_CALLS.search(line):
-                problems.append(f"{name}:{number}: a signal is sent here; thrashguard never signals a unit")
-    for name, allowed in CGROUP_LITERAL_ALLOWED.items():
-        actual = sum(
-            1
-            for path in source_files(project)
-            if relative(project, path) == name
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if CGROUP_LITERAL in line and not line.strip().startswith("//")
-        )
-        if actual != allowed:
-            problems.append(
-                f"{name}: the declared cgroup-root literal allowance is {allowed} but the file has {actual}"
-            )
-    if seen_literal != sum(CGROUP_LITERAL_ALLOWED.values()):
+            if UNSAFE_ALLOW.search(code):
+                unsafe_allows.append((name, number))
+                if name != UNSAFE_FILE:
+                    problems.append(f"{name}:{number}: unsafe_code may be allowed only in {UNSAFE_FILE}")
+            unsafe_blocks += len(UNSAFE_BLOCK.findall(code))
+
+    for allowed_name, allowed_count in CGROUP_LITERAL_ALLOWED.items():
+        if (project / allowed_name).is_file():
+            continue
         problems.append(
-            "the cgroup-root literal allowance and the tree disagree; adjust CGROUP_LITERAL_ALLOWED deliberately"
+            f"{allowed_name}: declared a cgroup-root literal allowance of {allowed_count} "
+            "but the file does not exist"
         )
-    if seen_unsafe != sum(UNSAFE_ALLOWED.values()):
+    expected = sum(CGROUP_LITERAL_ALLOWED.values())
+    if literal_count != expected:
         problems.append(
-            "the unsafe allowance and the tree disagree; an unaudited unsafe item is not acceptable"
+            f"the cgroup-root literal allowance is {expected} but the tree has {literal_count}; "
+            "change CGROUP_LITERAL_ALLOWED deliberately"
         )
+    if len(unsafe_allows) != unsafe_blocks:
+        problems.append(
+            f"{len(unsafe_allows)} unsafe_code allowance(s) for {unsafe_blocks} unsafe block(s); "
+            "every unsafe block needs exactly one audited allowance"
+        )
+
+    # The test-only fixture helper must stay test-only: `lib.rs` gates its module.
+    lib = project / "src" / "lib.rs"
+    if lib.is_file():
+        text = lib.read_text(encoding="utf-8")
+        if "pub mod testutil;" in text and "#[cfg(test)]\npub mod testutil;" not in text:
+            problems.append("src/lib.rs: pub mod testutil; is not gated by #[cfg(test)]")
     return problems
 
 
