@@ -2,8 +2,8 @@
 set -uo pipefail
 # Every immediate scripts/controller/*.sh entry point must be executable in the git index.
 # Explicit exceptions are the files whose only role is to be sourced by another controller script.
-# The pi signal-guard shims (scripts/controller/pi-shims/*) are entry points too: a
-# shim the agent cannot execute is a shim the agent can bypass.
+# The pi signal-guard shims (scripts/controller/pi-shims/*) and PID namespace
+# shell wrapper are executable entry points too: otherwise the guard is unusable.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
 SOURCED=(lib.sh resume-lib.sh)
@@ -32,5 +32,8 @@ for shim in pkill killall pgrep; do
   shims=$((shims + 1))
   [[ ${row%% *} == 100755 ]] || bad+=("scripts/controller/pi-shims/$shim (${row%% *})")
 done
+pidns_wrapper_row=$(git -C "$REPO_ROOT" ls-files -s -- scripts/controller/pi-pidns-bash) || pidns_wrapper_row=
+[[ -n $pidns_wrapper_row ]] || { echo 'FAIL: scripts/controller/pi-pidns-bash is not tracked' >&2; exit 1; }
+[[ ${pidns_wrapper_row%% *} == 100755 ]] || bad+=("scripts/controller/pi-pidns-bash (${pidns_wrapper_row%% *})")
 (( ${#bad[@]} == 0 )) || { printf 'not executable (want 100755): %s\n' "${bad[@]}" >&2; exit 1; }
-echo "PASS controller entry-point modes (${rows} files plus ${shims} pi-shims; sourced exceptions: ${SOURCED[*]})"
+echo "PASS controller entry-point modes (${rows} files plus ${shims} pi-shims and PID namespace wrapper; sourced exceptions: ${SOURCED[*]})"

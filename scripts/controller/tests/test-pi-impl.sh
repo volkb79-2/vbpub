@@ -17,21 +17,9 @@ unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_P
 # pi's agent directory decides a launch refusal (pi prepends its bin dir to the
 # agent's PATH), so the caller's ambient value must not decide these checks:
 # every check that cares names it explicitly.
-unset PI_CODING_AGENT_DIR
+unset PI_CODING_AGENT_DIR FAKE_PIDNS_WRAPPER_RC
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
-# The shim directory of the wrapper under test: a mutant copy carries its own,
-# so it is resolved beside $SRC rather than from the suite's own directory.
-SHIM_DIR=$(cd -- "$(dirname -- "$SRC")" && pwd -P)/pi-shims
-if [[ ! -d $SHIM_DIR && -d $SCRIPT_DIR/../pi-shims ]]; then
-  # A mutant wrapper lives in a disposable tree that carries only the siblings it
-  # needs (mutate-sources.py copies continue-empty-completion.md the same way).
-  # Give that tree the real shims so a mutant is judged on its own change and not
-  # on a missing guard directory. This cannot mask a broken guard: fail-closed is
-  # proven separately (check_signal_guard_fail_closed) on a copy that deliberately
-  # lacks a shim, and test-entrypoints.sh requires the shims to be committed 100755.
-  cp -a -- "$SCRIPT_DIR/../pi-shims" "$SHIM_DIR" 2>/dev/null || :
-fi
+PI_IMPL_SOURCE=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
 JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}
 PILIVE=${PI_LIVE_SCRIPT:-$SCRIPT_DIR/../pi-live.py}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-test.XXXXXX")
@@ -54,6 +42,36 @@ PI_ARGV_LOG=$ROOT/pi-argv.log
 PI_ARGV0_LOG=$ROOT/pi-argv0.log
 PI_ENV_LOG=$ROOT/pi-env.log
 PI_PROMPT_LOG=$ROOT/pi-prompt.log
+TEST_CONTROLLER=$ROOT/controller-source
+PI_IMPL_SOURCE_DIR=$(cd -- "$(dirname -- "$PI_IMPL_SOURCE")" && pwd -P)
+mkdir -p "$TEST_CONTROLLER"
+for sibling in lib.sh pi-live.py opendesign-accounts.py pi-review-argv \
+  continue-empty-completion.md implementer-prompt-rules.md review-prompt-rules.md \
+  pi-pidns-extension.js; do
+  if [[ -e $PI_IMPL_SOURCE_DIR/$sibling ]]; then
+    cp -a -- "$PI_IMPL_SOURCE_DIR/$sibling" "$TEST_CONTROLLER/$sibling"
+  else
+    cp -a -- "$SCRIPT_DIR/../$sibling" "$TEST_CONTROLLER/$sibling"
+  fi
+done
+if [[ -d $PI_IMPL_SOURCE_DIR/pi-shims ]]; then
+  cp -a -- "$PI_IMPL_SOURCE_DIR/pi-shims" "$TEST_CONTROLLER/pi-shims"
+else
+  cp -a -- "$SCRIPT_DIR/../pi-shims" "$TEST_CONTROLLER/pi-shims"
+fi
+cp -a -- "$PI_IMPL_SOURCE" "$TEST_CONTROLLER/pi-impl.sh"
+cat > "$TEST_CONTROLLER/pi-pidns-bash" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ $# == 2 && $1 == -c && $2 == true ]] || exit 91
+for arg in "$@"; do printf '%s\0' "$arg" >> "${PI_PIDNS_PROBE_LOG:?}"; done
+exit "${FAKE_PIDNS_WRAPPER_RC:-0}"
+SH
+chmod 0755 "$TEST_CONTROLLER/pi-pidns-bash"
+SRC=$TEST_CONTROLLER/pi-impl.sh
+# The copied wrapper resolves shims and PID namespace files beside itself.
+SHIM_DIR=$TEST_CONTROLLER/pi-shims
+PI_PIDNS_PROBE_LOG=$ROOT/pidns-probe.argv
 mkdir -p "$HOME_ROOT" "$ROOT/bin" "$CONTROLLER_ROOT" "$WORKTREE"
 printf 'brief\n' > "$PROMPT"
 # The outcome classifier reads a committed fact from git (a clean worktree and
@@ -212,7 +230,7 @@ chmod +x "$ROOT/bin/pi"
 
 export CONTROLLER_HOME=$CONTROLLER_ROOT CONTROLLER_REPO=$WORKTREE
 export CONTROLLER_OD_STATE=$STATE
-export PI_ARGV_LOG PI_ARGV0_LOG PI_ENV_LOG PI_PROMPT_LOG
+export PI_ARGV_LOG PI_ARGV0_LOG PI_ENV_LOG PI_PROMPT_LOG PI_PIDNS_PROBE_LOG
 
 launch() {
   local run=$1 route=$2 fixture=$3 input=$4
@@ -2350,6 +2368,114 @@ check_run_mode() {
   check_implementer_mode_unchanged
 }
 
+pidns_probe_count() {
+  local -a probe_args=()
+  [[ -s $PI_PIDNS_PROBE_LOG ]] || { echo 0; return; }
+  mapfile -d '' -t probe_args < "$PI_PIDNS_PROBE_LOG"
+  echo "$(( ${#probe_args[@]} / 2 ))"
+}
+
+# The fixed extension must be selected on every pi invocation, while the
+# wrapper preflight runs once before the run-name claim. A worktree settings
+# file that names a bare shell or another extension cannot replace the CLI
+# selection because each implementer launch uses --no-extensions plus -e.
+check_pidns_launch_contract() {
+  local before after runs=$CONTROLLER_ROOT/runs
+  local extension=$TEST_CONTROLLER/pi-pidns-extension.js
+
+  clean_worktree
+  : > "$PI_ARGV_LOG"
+  argv_reset
+  : > "$PI_PIDNS_PROBE_LOG"
+  wait_launch pidns-first deepseek-pi-volker pi-success /dev/null
+  argv_has --no-extensions 'a first implementer launch disables extension discovery'
+  argv_has_pair -e "$extension" 'a first implementer launch loads the fixed PID namespace extension'
+  [[ $(pidns_probe_count) == 1 ]] || fail 'the first implementer launch did not probe its shell wrapper exactly once'
+
+  argv_reset
+  wait_launch pidns-resume deepseek-pi-volker pi-success /dev/null
+  argv_reset
+  wait_launch pidns-resume deepseek-pi-volker pi-success /dev/null resume pidns-resume-session
+  argv_has --no-extensions 'a resumed implementer launch disables extension discovery'
+  argv_has_pair -e "$extension" 'a resumed implementer launch loads the fixed PID namespace extension'
+
+  argv_reset
+  : > "$PI_ARGV_LOG"
+  before=$(pi_invocations)
+  launch_sequence pidns-continuation deepseek-pi-volker 'pi-empty-completion pi-success'
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 2 ]] || fail 'the PID namespace continuation fixture did not produce two pi invocations'
+  [[ $(grep -Fc -- "--no-extensions -e $extension" "$PI_ARGV_LOG") == 2 ]] \
+    || fail 'the initial implementer run and its automatic continuation did not both carry the fixed extension'
+
+  mkdir -p "$WORKTREE/.pi"
+  cat > "$WORKTREE/.pi/settings.json" <<'JSON'
+{"shellPath":"/bin/bash","extensions":["./unsafe-extension.js"]}
+JSON
+  argv_reset
+  wait_launch pidns-project-settings deepseek-pi-volker pi-success /dev/null
+  argv_has --no-extensions 'worktree settings cannot enable discovered extensions'
+  argv_has_pair -e "$extension" 'worktree shellPath cannot replace the explicit extension backend'
+  rm -rf -- "$WORKTREE/.pi"
+
+  # A review continues to use only pi-review-argv. It neither probes nor loads
+  # the implementer shell extension, and its read-only tool set stays intact.
+  argv_reset
+  : > "$PI_PIDNS_PROBE_LOG"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker PI_RUN_MODE=review \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=pidns-review-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" pidns-review > "$ROOT/pidns-review.launch.log" 2>&1 < /dev/null \
+    || { cat "$ROOT/pidns-review.launch.log" >&2; fail 'the PID namespace contract changed the review launch'; }
+  assert_review_argv 'review remains unchanged'
+  argv_absent "$extension" 'review does not load the implementer PID namespace extension'
+  [[ $(pidns_probe_count) == 0 ]] || fail 'review mode ran an implementer shell preflight'
+}
+
+check_pidns_preflight_refused() {
+  local before runs=$CONTROLLER_ROOT/runs
+  clean_worktree
+  argv_reset
+  : > "$PI_PIDNS_PROBE_LOG"
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_PIDNS_WRAPPER_RC=125 "$SRC" "$WORKTREE" "$PROMPT" pidns-preflight-failed
+  contains "$ROOT/focused-command.out" 'pi implementer launch refused before run name claim: PID namespace preflight failed' \
+    'a failed namespace preflight refuses the implementer launch'
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi started after the PID namespace preflight failed'
+  [[ ! -e $runs/pidns-preflight-failed.lock ]] || fail 'a failed PID namespace preflight claimed the run name'
+
+  mv -- "$TEST_CONTROLLER/pi-pidns-bash" "$TEST_CONTROLLER/pi-pidns-bash.saved"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$WORKTREE" "$PROMPT" pidns-wrapper-missing
+  mv -- "$TEST_CONTROLLER/pi-pidns-bash.saved" "$TEST_CONTROLLER/pi-pidns-bash"
+  contains "$ROOT/focused-command.out" 'pi PID namespace wrapper is missing or not executable' \
+    'an absent shell wrapper refuses before claim'
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi started while its PID namespace wrapper was missing'
+  [[ ! -e $runs/pidns-wrapper-missing.lock ]] || fail 'a missing PID namespace wrapper claimed the run name'
+
+  mv -- "$TEST_CONTROLLER/pi-pidns-extension.js" "$TEST_CONTROLLER/pi-pidns-extension.js.saved"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$WORKTREE" "$PROMPT" pidns-extension-missing
+  mv -- "$TEST_CONTROLLER/pi-pidns-extension.js.saved" "$TEST_CONTROLLER/pi-pidns-extension.js"
+  contains "$ROOT/focused-command.out" 'pi PID namespace extension is missing or unreadable' \
+    'an absent namespace extension refuses before claim'
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi started while its PID namespace extension was missing'
+  [[ ! -e $runs/pidns-extension-missing.lock ]] || fail 'a missing PID namespace extension claimed a run name'
+}
+
+check_pidns_extension_args_refused() {
+  local line attempt=0 before=$CONTROLLER_ROOT/runs
+  for line in --extension --extension=/tmp/override.js -e --no-extensions -ne; do
+    attempt=$(( attempt + 1 ))
+    expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      PI_EXTRA_ARGS="$line" "$SRC" "$WORKTREE" "$PROMPT" "pidns-extra-$attempt"
+    contains "$ROOT/focused-command.out" 'PI_EXTRA_ARGS may not load or disable extensions in implementer mode' \
+      "implementer PI_EXTRA_ARGS refuses extension control '$line'"
+    [[ ! -e $before/pidns-extra-$attempt.lock ]] || fail "the refused extension argument '$line' claimed a run name"
+  done
+}
+
 check_input_validation() {
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     "$SRC" "$WORKTREE" "$PROMPT" report-validation --report relative-report.md
@@ -2761,6 +2887,9 @@ check_job_status_validation() {
 if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
     default-thinking) check_pi_default_thinking_max ;;
+    pidns-argv) check_pidns_launch_contract ;;
+    pidns-preflight) check_pidns_preflight_refused ;;
+    pidns-extra-args) check_pidns_extension_args_refused ;;
     xtrace-key) check_xtrace_key ;;
     outcome-error) check_outcome_error ;;
     outcome-length) clean_worktree; check_outcome_length ;;
@@ -3649,6 +3778,9 @@ check_run_name_ownership
 check_refusal_keeps_records
 check_accepted_resume_records
 check_run_mode
+check_pidns_launch_contract
+check_pidns_preflight_refused
+check_pidns_extension_args_refused
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

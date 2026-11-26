@@ -877,6 +877,71 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-prompt-dropped.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-mode-local-env-flip.sh",
        'if (( caller_pi_run_mode_set == 1 )); then PI_RUN_MODE=$caller_pi_run_mode; fi',
        ': # the local environment file decides the mode')
+# P-plat-26d: every implementer shell has the fixed pi extension, a successful
+# preflight before the name is claimed, and no caller extension-control seam.
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-args-dropped.sh",
+       '  base_pi_args+=(--no-extensions -e "$pidns_extension")',
+       '  : # the implementer shell extension is omitted')
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-project-extensions-enabled.sh",
+       '  base_pi_args+=(--no-extensions -e "$pidns_extension")',
+       '  base_pi_args+=(-e "$pidns_extension")')
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-preflight-dropped.sh",
+       '  if pidns_probe_output=$("$pidns_wrapper" -c true 2>&1); then',
+       '  if true; then')
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-check-dropped.sh",
+       '  if [[ ! -r $pidns_extension ]]; then\n'
+       '    echo "pi PID namespace extension is missing or unreadable: $pidns_extension" >&2\n'
+       '    exit 2\n'
+       '  fi\n',
+       '  : # the extension file is assumed present\n')
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-args-allowed.sh",
+       '      case $line in\n'
+       '        --extension | --extension=* | -e | --no-extensions | -ne)\n'
+       '          echo "PI_EXTRA_ARGS may not load or disable extensions in implementer mode: the PID namespace shell is fixed" >&2\n'
+       '          return 1\n'
+       '          ;;\n'
+       '      esac',
+       '      : # extension args are allowed')
+
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-user-namespace",
+       '  --unshare-user\n  --unshare-pid',
+       '  --unshare-pid')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-pid-namespace",
+       '  --unshare-pid\n  --die-with-parent',
+       '  --die-with-parent')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-die-with-parent",
+       '  --die-with-parent\n  --dev-bind / /',
+       '  --dev-bind / /')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-root-bind",
+       '  --dev-bind / /\n  --perms 0700',
+       '  --perms 0700')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-tmux-perms-not-private",
+       '  --perms 0700 --tmpfs "$tmux_socket_dir"',
+       '  --tmpfs "$tmux_socket_dir"')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-tmux-tmpfs",
+       '  --perms 0700 --tmpfs "$tmux_socket_dir"\n',
+       '')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-docker-api-tmpfs",
+       '  --perms 0700 --tmpfs /run/docker-api\n',
+       '')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-keeps-docker-host",
+       'unset TMUX TMUX_PANE DOCKER_HOST',
+       'unset TMUX TMUX_PANE')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-keeps-tmux",
+       'unset TMUX TMUX_PANE DOCKER_HOST',
+       'unset TMUX_PANE DOCKER_HOST')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-keeps-tmux-pane",
+       'unset TMUX TMUX_PANE DOCKER_HOST',
+       'unset TMUX DOCKER_HOST')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-docker-socket-uncovered",
+       '  bwrap_args+=(--bind /dev/null "$docker_socket")',
+       '  : # Docker socket remains visible')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-fail-open",
+       'if [[ $(<"$status_file") != *\'"child-pid"\'* ]]; then',
+       'if false; then')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-command-status-zero",
+       'exit "$command_rc"',
+       'exit 0')
 mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",
        'controller_run_claim "$name" || exit 2\nretire_existing=0',
        'controller_run_claim "$name" || exit 2\n'
