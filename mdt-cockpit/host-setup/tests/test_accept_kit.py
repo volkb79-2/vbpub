@@ -914,6 +914,83 @@ class ShellKitTests(F.ShellKitBase):
                 self.assertTrue(rows, r.stdout + r.stderr)
                 self.assertEqual(rows[0][4], want, f"active={active} banner={banner_ok}: {rows[0]}")
 
+    def test_the_sshd_row_records_the_larger_of_the_two_probe_durations_as_decimal_seconds(self) -> None:
+        # Fix round 3, the failure of `mdt-cockpit smoke` at 8031f7732: the sshd row's seconds was
+        # `$((secs > T_SECONDS ? secs : T_SECONDS))`, i.e. bash ARITHMETIC over two `S.mmm` decimals. A decimal is no
+        # integer operand at all -- bash answered `0.045: syntax error: invalid arithmetic operator (error token is
+        # ".045")` -- so `probe_record` never ran: the sshd probe wrote NO row and the step read INCONCLUSIVE
+        # `missing data`. Three halves are pinned, each linear in the samples it checks, never in load or speed.
+        #
+        # (a) the SHIPPED block, driven with durations instead of a clock: `timed` is stubbed, so both reads of the
+        #     sshd branch (is-active, then the banner) carry exactly the decimals named here -- `0.045`, `1.500`, and
+        #     the timeout's `<limit>.000`. `probe_record` and the rc composition are the shipped ones.
+        block = shell_block((KIT / "accept-run.sh").read_text(), "probe_var() { # <name>",
+                            "probe_cycle() { # <step> <i> <judged_ticks>")
+        probes = self.tmp / "probes-unit.csv"
+        # the stub is defined AFTER the block that carries the real `timed`: bash resolves a function name at CALL
+        # time, so this is the one `probe_run` sees, and it hands the branch the decimals named in `cases`.
+        stub = ("timed() { TW_N=$((TW_N + 1))\n"
+                "  if [ \"$TW_N\" = 1 ]; then T_RC=$A_RC; T_SECONDS=$A_SEC; T_OUT=$A_OUT\n"
+                "  else T_RC=$B_RC; T_SECONDS=$B_SEC; T_OUT=$B_OUT; fi; return 0; }\n")
+        script = ("set -uo pipefail\n"
+                  f"PROBES='{probes}'\nSSH_TARGET='root@127.0.0.1'\nTW_N=0\n"
+                  + block + stub + "probe_run 0 sshd\n")
+        cases = (  # is-active: seconds, rc, output | banner: seconds, rc, output | the row's rc and seconds
+            ("0.045", "0", "active", "0.004", "0", "SSH-2.0-x", "0", "0.045"),      # the leading-zero fraction
+            ("0.004", "0", "active", "1.500", "0", "SSH-2.0-x", "0", "1.500"),      # the banner is the larger one
+            ("2.000", "timeout", "activating", "0.010", "0", "SSH-2.0-x", "1", "2.000"),   # the timeout's limit
+            ("1.234", "0", "inactive", "0.012", "0", "SSH-2.0-x", "1", "1.234"),     # L1: the rc is still the pair's
+        )
+        for (asec, arc, aout, bsec, brc, bout, want_rc, want_secs) in cases:
+            with self.subTest(is_active_seconds=asec, banner_seconds=bsec):
+                if probes.exists():
+                    probes.unlink()
+                got = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, timeout=60,
+                    env=dict(os.environ, A_SEC=asec, A_RC=arc, A_OUT=aout, B_SEC=bsec, B_RC=brc, B_OUT=bout,
+                             MDT_ACCEPT_SSHD_BANNER_CMD="", MDT_ACCEPT_PROBE_CMD_SSHD=""))
+                self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+                rows = [ln.split(",") for ln in probes.read_text().splitlines() if ln.split(",")[2:3] == ["sshd"]]
+                self.assertEqual(len(rows), 1, f"exactly one sshd row: {got.stdout + got.stderr}")
+                self.assertEqual(rows[0][4], want_rc, f"the rc half of L1 is untouched: {rows[0]}")
+                self.assertEqual(rows[0][5], want_secs,
+                                 f"the LARGER of {asec} s and {bsec} s, as an S.mmm decimal: {rows[0]}")
+                self.assertRegex(rows[0][5], r"^\d{1,2}\.\d{3}$", f"the S.mmm form every probe row uses: {rows[0]}")
+        # (b) the real path, end to end, with the clock the kit really reads: the fake `systemctl` stalls only on
+        #     `is-active ssh.service` (0.20 s) and the banner argv answers at once, so the recorded row must be the
+        #     is-active read. One run, one 0.2 s fake stall; the assertion is ordering (`>= 0.200 s`) and format.
+        import shutil as _sh
+        _sh.rmtree(self.ev, ignore_errors=True)
+        self.log.write_text("")
+        _fake("systemctl", "case \"$*\" in \"is-active ssh.service\") sleep 0.2 ;; esac\n" + F.FAKE_SYSTEMCTL,
+              self.tmp / "bin")
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2", FAKE_ACTIVE="active",
+                         MDT_ACCEPT_PROBE_CMD_SSHD=None, MDT_ACCEPT_SSHD_BANNER_CMD="printf 'SSH-2.0-'",
+                         **self.judge_env("PASS"))
+        rows = [ln.split(",") for ln in (self.ev / "probes.csv").read_text().splitlines()
+                if ln.split(",")[2:3] == ["sshd"]]
+        self.assertTrue(rows, r.stdout + r.stderr)
+        row = rows[0]
+        self.assertEqual(row[4], "0", "the pass rule is untouched: active + banner = rc 0")
+        self.assertIn("is_active_rc=0", row[6])
+        self.assertIn("banner_rc=0", row[6], "the banner's own rc stays separate (L1)")
+        self.assertRegex(row[5], r"^\d{1,3}\.\d{3}$", f"an S.mmm decimal, like every other probe row: {row}")
+        whole, frac = row[5].split(".")
+        self.assertGreaterEqual(int(whole) * 1000 + int(frac), 200,
+                                f"the larger (0.2 s is-active) of the two reads is recorded: {row}")
+        # (c) the conversion on its own: BASE 10 (a leading-zero fraction can never be octal), a non-decimal refused
+        helpers = shell_block((KIT / "accept-run.sh").read_text(), "us_of_seconds() {", "timed() {")
+        for value, want in (("0.045", 45000), ("0.041", 41000), ("0.078", 78000), ("1.500", 1500000),
+                            ("0.5", 500000), ("2.000", 2000000), ("10", 10000000), ("12.345", 12345000)):
+            got = subprocess.run(["bash", "-c", helpers + f"\nus_of_seconds '{value}'"], capture_output=True, text=True,
+                                 timeout=30)
+            self.assertEqual(got.returncode, 0, got.stderr)
+            self.assertEqual(got.stdout.strip(), str(want), f"`{value}` is {want} us, read base 10")
+        for bad in ("", ".500", "0.", "abc", "0..4"):
+            got = subprocess.run(["bash", "-c", helpers + f"\nus_of_seconds '{bad}'"], capture_output=True, text=True,
+                                 timeout=30)
+            self.assertEqual(got.returncode, 1, f"`{bad}` is refused, never printed as a number: {got.stdout!r}")
+
     def test_the_guard_also_runs_while_the_dummy_grows(self) -> None:
         # L5: the guard ran only at the START of each tick, so the <= 60 s grow wait (and a tick's back-to-back
         # probes) was a hole. The fake drops MemAvailable under the floor on the USR1 signal, i.e. INSIDE the wait and

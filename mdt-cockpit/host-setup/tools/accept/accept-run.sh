@@ -467,12 +467,37 @@ probe_var() { # <name> <CMD|TIMEOUT>: the env override, e.g. MDT_ACCEPT_PROBE_CM
   printf '%s' "${!key:-}"
 }
 probe_timeout() { local v; v=$(probe_var "$1" PROBE_TIMEOUT); printf '%s' "${v:-${MDT_ACCEPT_PROBE_TIMEOUT:-10}}"; }
+us_of_seconds() { # <S.mmm|S> -> microseconds on stdout; rc 1 when it is not a decimal seconds value
+  # The `seconds` column is a DECIMAL (S.mmm), so it is never an operand of `$(( ))`: bash reads a leading 0 as OCTAL
+  # (`0.045` -> digits 0045 = 37) and a `.` is not an integer operator at all (`0.045: syntax error: invalid
+  # arithmetic operator`). Both halves are read base 10 here: whole seconds times 1,000,000 plus the fraction padded
+  # or cut to exactly three digits. `<limit>.000` (a timeout) and a bare `<limit>` take the same path.
+  local t=$1 w frac
+  case $t in
+    ''|*[!0-9.]*|.*|*.) return 1 ;;
+    *.*) w=${t%%.*}; frac=${t#*.}
+         case $frac in ''|*[!0-9]*) return 1 ;; esac
+         frac="${frac}000"; frac=${frac:0:3} ;;
+    *) w=$t; frac=000 ;;
+  esac
+  case $w in ''|*[!0-9]*) w=0 ;; esac   # '.500' style is refused above; an empty whole part cannot reach here
+  printf '%d' $(( 10#$w * 1000000 + 10#$frac * 1000 ))   # three fraction digits are milliseconds
+}
+seconds_of_us() { # <microseconds> -> the S.mmm the `seconds` column carries
+  printf '%d.%03d' $(($1 / 1000000)) $(( ($1 / 1000) % 1000 ))
+}
 timed() { # <timeout> <cmd...>: T_RC, T_SECONDS, T_OUT; a timeout is recorded at its full sample length
-  local limit=$1 t0 t1 us; shift
+  local limit=$1 t0 t1 us lim_us; shift
   t0=$(date +%s%N); T_OUT=$(timeout -k 1 "$limit" "$@" 2>&1); T_RC=$?; t1=$(date +%s%N)
   us=$(( (t1 - t0) / 1000 )); [ "$us" -lt 0 ] && us=0
-  T_SECONDS=$(printf '%d.%03d' $((us / 1000000)) $(( (us / 1000) % 1000 )))
-  if [ "$T_RC" = 124 ] || [ "$T_RC" = 137 ]; then T_RC=timeout; T_SECONDS=$(printf '%d.000' "$limit"); fi
+  T_SECONDS=$(seconds_of_us "$us")
+  if [ "$T_RC" = 124 ] || [ "$T_RC" = 137 ]; then
+    T_RC=timeout
+    # the limit rendered as S.mmm through the same decimal reader: `printf '%d.000' "$limit"` cannot render a
+    # fractional limit (0.5), so the timeout row's seconds did not carry the limit it was recorded against
+    lim_us=$(us_of_seconds "$limit") || lim_us=0
+    T_SECONDS=$(seconds_of_us "$lim_us")
+  fi
   return 0
 }
 probe_record() { # <step> <name> <kind> <rc> <seconds> <detail>
@@ -494,18 +519,22 @@ probe_run() { # <step> <name>
     sshd) # 3.3: `active` AND the banner seen; the probe's own rc carries the rule, the judge reads rc.
       # L1: is-active's rc is kept separately -- the banner read overwrites T_RC, so a socket-activated or foreign
       # :22 listener answered a `inactive` ssh.service as a PASS. Both rcs have to be 0 (or the banner seen).
-      local act ban brc arc secs banner
+      local act ban brc arc secs secs_us ban_us banner
       timed 2 systemctl is-active ssh.service; act=$T_OUT; arc=$T_RC; secs=$T_SECONDS
+      secs_us=$(us_of_seconds "$secs") || secs_us=0
       [ "$act" = active ] || arc=1
       # the banner reader: the real /dev/tcp read, unless a test names its own argv (port 22 cannot be exercised
       # hermetically; the seam keeps L1's two-rc rule testable without a listener)
       banner=${MDT_ACCEPT_SSHD_BANNER_CMD:-}
       [ -n "$banner" ] || banner='exec 3<>/dev/tcp/127.0.0.1/22 && head -c 9 <&3'
       timed 2 bash -c "$banner"; brc=$T_RC
+      ban_us=$(us_of_seconds "$T_SECONDS") || ban_us=0   # T_SECONDS is still the banner's read here
       case $T_OUT in *SSH-2.0*) ban=yes ;; *) ban=no ;; esac
       [ "$ban" = yes ] || brc=1
       [ "$arc" = 0 ] && [ "$brc" = 0 ] && [ "$ban" = yes ] && T_RC=0 || T_RC=1
-      probe_record "$s" sshd liveness "$T_RC" "$((secs > T_SECONDS ? secs : T_SECONDS))" "active=$act banner=$ban is_active_rc=$arc banner_rc=$brc" ;;
+      # the row's seconds is the LARGER of the two commands, compared as integers (microseconds) and printed back as
+      # S.mmm: `secs > T_SECONDS` in `$(( ))` made both operands bash arithmetic (a decimal is a syntax error).
+      probe_record "$s" sshd liveness "$T_RC" "$(seconds_of_us "$(( secs_us > ban_us ? secs_us : ban_us ))")" "active=$act banner=$ban is_active_rc=$arc banner_rc=$brc" ;;
     journald)
       local nonce tag start
       nonce=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n'); tag="mdt-accept-$nonce"; start=$(date +%s)
@@ -550,7 +579,7 @@ probe_run() { # <step> <name>
       # psi_guard from the latency rule (its pass rule is "active + ticks advance", 3.3); the column still has to
       # measure the probe and not the run, because every other reader of probes.csv would read that growth as lag.
       t1=$(date +%s%N); us=$(( (t1 - t0) / 1000 )); [ "$us" -lt 0 ] && us=0
-      probe_record "$s" psi_guard liveness "$prc" "$(printf '%d.%03d' $((us / 1000000)) $(( (us / 1000) % 1000 )))" "active=$act ticks=$ticks" ;;
+      probe_record "$s" psi_guard liveness "$prc" "$(seconds_of_us "$us")" "active=$act ticks=$ticks" ;;
     extra)
       local u st main ls
       for u in $EXTRA_UNITS; do
