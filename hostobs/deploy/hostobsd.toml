@@ -1,6 +1,6 @@
 # The only installed probe configuration (PROBE-PROCESS.md §(g)).
 [probe]
-levels = ["observe", "operator"]
+levels = ["observe", "operator", "observer"]
 tick_ms = 1000
 cgroup_root = "/sys/fs/cgroup"
 
