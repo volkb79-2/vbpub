@@ -72,7 +72,7 @@ frame() {
     L6B) panel_frame "$f" 6 1 1 ;;
     L12B) panel_frame "$f" 12 1 1 ;;
     LMB) panel_frame "$f" 6 1 1 '⏵⏵ accept edits on' ;;   # busy in another permission mode: no mode-line marker, no trim
-    EMPTY|QMENU|BANG|NORULE|DRAFT|MENUBOX|H1I|H1B|SPIN|PROSE) stray_frame "$f" "$4" ;;   # the shared refusal / H1 / L2 frames
+    EMPTY|QMENU|BANG|NORULE|DRAFT|DRAFT_FIX|DRAFT_VERIFY|MENUBOX|H1I|H1B|SPIN|PROSE) stray_frame "$f" "$4" ;;   # the shared refusal / H1 / L2 frames
   esac
 }
 # scenario <name> <start frames> <compact frames>: fresh stub dir, guidance, prompt and log
@@ -88,7 +88,7 @@ scenario() {
 # run <args...>: the script under the stub, short polls; sets RC
 run() {
   STUB_DIR=$D PATH=$ROOT/bin:$PATH COMPACT_RESUME_POLL=0.01 COMPACT_RESUME_TYPE_PAUSE=0.01 \
-    COMPACT_RESUME_FINAL_WAIT=0.01 COMPACT_RESUME_SETTLE=0.01 bash "$SCRIPT" "$@" 2>"$D/stderr"; RC=$?
+    COMPACT_RESUME_FINAL_WAIT=0.01 COMPACT_RESUME_SETTLE=0.01 bash "$SCRIPT" "$@" </dev/null 2>"$D/stderr"; RC=$?
 }
 calls() { cat -- "$D/calls.log" 2>/dev/null; }
 rep() { local n=$1; shift; local i; for ((i = 0; i < n; i++)); do printf '%s\n' "$@"; done; }
@@ -232,13 +232,15 @@ for kind in EMPTY QMENU BANG NORULE; do
 done
 # 5j. M1: a DRAFT with an empty first row reads READY at 4708ed03e, so /compact and the draft get submitted. With the
 #     plain rule required BELOW the row it has no box. The reason and the footer must be logged ONCE (H1).
-scenario refuse-DRAFT "DRAFT" "I"
-COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 3 ]] || fail "refusal DRAFT: exit $RC (want 3, a multi-line draft is not ready)"
-not_contains <(calls) "send-keys" "refusal DRAFT: keys were sent over a draft"
-contains "$D/log" "WARN pane not ready: no prompt box recognised" "refusal DRAFT: the reason was not logged"
-[[ $(grep -c 'WARN pane not ready' "$D/log") -eq 1 ]] || fail "refusal DRAFT: the reason must be logged ONCE per wait"
-contains "$D/log" "|  ctx 41%" "refusal DRAFT: the footer is missing from the logged reason"
+for kind in DRAFT DRAFT_FIX DRAFT_VERIFY; do
+  scenario "refuse-$kind" "$kind" "I"
+  COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+  [[ $RC -eq 3 ]] || fail "refusal $kind: exit $RC (want 3, a multi-line draft is not ready)"
+  not_contains <(calls) "send-keys" "refusal $kind: keys were sent over a draft"
+  contains "$D/log" "WARN pane not ready: no prompt box recognised" "refusal $kind: the reason was not logged"
+  [[ $(grep -c 'WARN pane not ready' "$D/log") -eq 1 ]] || fail "refusal $kind: the reason must be logged ONCE per wait"
+  contains "$D/log" "|  ctx 41%" "refusal $kind: the footer is missing from the logged reason"
+done
 # 5k. M1: the permission menu ABOVE an intact empty box reads READY at 4708ed03e and the Enter answers the menu; only
 #     dialog_open stops it, and the helpers never ran that check before.
 scenario refuse-MENUBOX "MENUBOX" "I"

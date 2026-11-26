@@ -21,6 +21,13 @@ panel_frame() {
 typed_row() { sed -i "s/❯$(printf '\xc2\xa0')/❯ $2/" "$1"; }
 # draft_row <dest>: a continuation line right under the live input row (a multi-line draft)
 draft_row() { perl -i -pe 'if (!$d && /\xe2\x9d\xaf\xc2\xa0/) { $_ .= "  foo\n"; $d = 1 }' "$1"; }
+draft_frame() { # <dest> DRAFT_FIX: continuation below the empty row; DRAFT_VERIFY: continuation above it
+  local dest=$1 kind=$2 rule; rule=$(printf '─%.0s' {1..40})
+  case $kind in
+    DRAFT_FIX) printf 'output\n%s\n❯\xc2\xa0\n  - Fix the tests\n%s\n  ctx 41%%\n' "$rule" "$rule" >"$dest" ;;
+    DRAFT_VERIFY) printf 'output\n%s\n  - verify it\n❯\xc2\xa0\n%s\n  ctx 41%%\n' "$rule" "$rule" >"$dest" ;;
+  esac
+}
 # H1RULE: the LIVE main pane's prompt-box TOP rule, as recorded in `.controller-state/successor-runs/main-compact{18,19,20,21}`
 # (2026-11-26): 20+ U+2500, then the label `◉ xhigh · /effort  vbpub-main-controller`, then one closing U+2500. The old
 # `is_label_rule` refuses it (`◉`, `·`, `/` are outside its label set), so before H1 the helpers saw no box and waited.
@@ -32,6 +39,7 @@ H1RULE="$(printf '─%.0s' {1..40}) ◉ xhigh · /effort  vbpub-main-controller 
 #   BANG     a bash-mode `!` input row, which is not the prompt box's `❯` row; no box
 #   NORULE   a `❯` row with no box rule above it (ordinary output instead); the rule BELOW alone must not admit it
 #   DRAFT    an EMPTY first row with a continuation line under it (a multi-line draft, Shift+Enter or a pasted newline)
+#   DRAFT_FIX / DRAFT_VERIFY: dash-prefixed continuation lines in the lower-rule and label-rule positions
 #   MENUBOX  the permission menu ABOVE an intact, empty prompt box (only the dialog check stops it)
 #   H1I      the live main pane's labelled top rule, idle: this one MUST read ready and be typed into (the H1 regression)
 #   H1B      ... the same, with `esc to interrupt` on the box's mode line: it must NOT be typed into
@@ -45,6 +53,7 @@ stray_frame() {
     BANG) printf '%b\n' 'output' "$rule" '! echo hi' "$rule" '  ctx 41%' >"$dest" ;;
     NORULE) printf '%b\n' 'output' '❯\xc2\xa0' "$rule" '  ctx 41%' >"$dest" ;;
     DRAFT) printf '%b\n' 'output' "$rule" '❯\xc2\xa0' '  some text' "$rule" '  ctx 41%' >"$dest" ;;
+    DRAFT_FIX|DRAFT_VERIFY) draft_frame "$dest" "$2" ;;
     MENUBOX) { printf '%b\n' "$MENU" ''; printf '%b\n' "$rule" '❯\xc2\xa0' "$rule" '  ctx 41%'; } >"$dest" ;;
     H1I) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · 1 monitor · ← 8 agents · ↓ to manage' >"$dest" ;;
     H1B) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · esc to interrupt · ← 8 agents' >"$dest" ;;

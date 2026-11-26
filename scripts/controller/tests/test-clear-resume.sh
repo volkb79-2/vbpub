@@ -69,7 +69,7 @@ frame() {
     L6B) panel_frame "$f" 6 1 1 ;;
     L12B) panel_frame "$f" 12 1 1 ;;
     LMB) panel_frame "$f" 6 1 1 '⏵⏵ accept edits on' ;;   # busy in another permission mode: no mode-line marker, no trim
-    EMPTY|QMENU|BANG|NORULE|DRAFT|MENUBOX|H1I|H1B|SPIN|PROSE) stray_frame "$f" "$4" ;;   # the shared refusal / H1 / L2 frames
+    EMPTY|QMENU|BANG|NORULE|DRAFT|DRAFT_FIX|DRAFT_VERIFY|MENUBOX|H1I|H1B|SPIN|PROSE) stray_frame "$f" "$4" ;;   # the shared refusal / H1 / L2 frames
   esac
 }
 # scenario <name> <start frames> <cleared frames>: fresh stub dir, prompt and log
@@ -83,7 +83,7 @@ scenario() {
 # run <args...>: the script under the stub, short polls; sets RC
 run() {
   STUB_DIR=$D PATH=$ROOT/bin:$PATH CLEAR_RESUME_POLL=0.01 CLEAR_RESUME_TYPE_PAUSE=0.01 CLEAR_RESUME_FINAL_WAIT=0.01 \
-    bash "$SCRIPT" "$@" 2>"$D/stderr"; RC=$?
+    bash "$SCRIPT" "$@" </dev/null 2>"$D/stderr"; RC=$?
 }
 calls() { cat -- "$D/calls.log" 2>/dev/null; }
 rep() { local n=$1; shift; local i; for ((i = 0; i < n; i++)); do printf '%s\n' "$@"; done; }
@@ -219,13 +219,15 @@ done
 # 5j. M1: a DRAFT with an empty first row reads READY at 4708ed03e (busy_beside_box sees only the rule above the row and
 #     pane_state_of sees an empty row), so the three idle polls pass and /clear is submitted into the draft. With the
 #     plain rule required BELOW the row it has no box. The reason and the footer are logged ONCE (H1).
-scenario refuse-DRAFT "DRAFT" "C"
-CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
-[[ $RC -eq 3 ]] || fail "refusal DRAFT: exit $RC (want 3, a multi-line draft is not ready)"
-not_contains <(calls) "send-keys" "refusal DRAFT: keys were sent over a draft"
-contains "$D/log" "WARN pane not ready: no prompt box recognised" "refusal DRAFT: the reason was not logged"
-[[ $(grep -c 'WARN pane not ready' "$D/log") -eq 1 ]] || fail "refusal DRAFT: the reason must be logged ONCE per wait"
-contains "$D/log" "|  ctx 41%" "refusal DRAFT: the footer is missing from the logged reason"
+for kind in DRAFT DRAFT_FIX DRAFT_VERIFY; do
+  scenario "refuse-$kind" "$kind" "C"
+  CLEAR_RESUME_IDLE_TRIES=5 run '%9' "$D/prompt.txt" "$D/log"
+  [[ $RC -eq 3 ]] || fail "refusal $kind: exit $RC (want 3, a multi-line draft is not ready)"
+  not_contains <(calls) "send-keys" "refusal $kind: keys were sent over a draft"
+  contains "$D/log" "WARN pane not ready: no prompt box recognised" "refusal $kind: the reason was not logged"
+  [[ $(grep -c 'WARN pane not ready' "$D/log") -eq 1 ]] || fail "refusal $kind: the reason must be logged ONCE per wait"
+  contains "$D/log" "|  ctx 41%" "refusal $kind: the footer is missing from the logged reason"
+done
 # 5k. M1: the permission menu ABOVE an intact empty box: the box is recognised, no busy marker is inside it and the row
 #     is empty, so at 4708ed03e the helper reads READY and the Enter answers the menu - only dialog_open stops it, and
 #     the helpers never ran that check before. (A menu with no box at all is covered by QMENU.)

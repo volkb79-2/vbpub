@@ -75,6 +75,7 @@ frame() {
     LRB) panel_frame "$f" 6 1 1; typed_row "$f" "$TEXT" ;;                # H1: the read-back of the ping on such a pane
     LMB) menu_frame "$f" 12 ;;                                            # H1: a menu above the box, then the real mode line, then a 15-row panel
     LMLP) panel_frame "$f" 6 0 1; draft_row "$f" ;;                       # H1: a draft line under the live row, mode line and panel below
+    DRAFT_FIX|DRAFT_VERIFY) draft_frame "$f" "$4" ;;                      # dash continuation in a box-rule position
     LFOC) panel_frame "$f" 0 0 0 ;;                                       # M1: the real frame WITHOUT the unfocused-panel hint (focused panel)
     RPF) box '❯ [keepalive] cache ref' >"$f" ;;                           # only a prefix of our text
     RFO) box "❯ hello $TEXT" >"$f" ;;                                     # foreign text typed by the operator
@@ -117,7 +118,7 @@ prep() { echo pre >"$D/phase"; rm -f "$D"/idx.*; find "$D/projects" -name '*.jso
 run() { # the watcher once; sets RC
   prep
   STUB_DIR=$D PATH=$ROOT/bin:$PATH KEEPALIVE_HOME=$D/home KEEPALIVE_SESSIONS_DIR=$D/sessions KEEPALIVE_PROJECTS_DIR=$D/projects \
-    KEEPALIVE_PROC=$D/proc KEEPALIVE_NOW=$T0 KEEPALIVE_READBACK_WAIT=0.01 bash "$KA" --once 2>"$D/stderr"; RC=$?
+    KEEPALIVE_PROC=$D/proc KEEPALIVE_NOW=$T0 KEEPALIVE_READBACK_WAIT=0.01 bash "$KA" --once </dev/null 2>"$D/stderr"; RC=$?
 }
 calls() { cat -- "$D/calls.log" 2>/dev/null; }
 klog() { cat -- "$D/home/logs/keepalive.log"; }
@@ -213,6 +214,11 @@ logged 'skip dialog' || fail "H1: the dialog must be found below a tall panel to
 scenario h1-draft 3400 "LMLP" "ROK"; run
 [[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a draft line under the live row must never be typed into"; }
 logged 'skip input-box-layout' || fail "H1: a draft is refused by the box geometry"
+for kind in DRAFT_FIX DRAFT_VERIFY; do
+  scenario "dash-draft-$kind" 3400 "$kind" "ROK"; run
+  [[ $(sent_keys) -eq 0 ]] || fail "dash draft $kind must never be pinged"
+  logged 'skip input-box-layout' || fail "dash draft $kind is refused by the box geometry"
+done
 # 4a2. M1: the trim needs the mode line's unfocused-panel hint (`↓ to manage`); without it the panel may hold the
 #      keyboard focus and the strict box geometry must refuse the pane (nothing is typed into a focused panel)
 scenario m1-focused 3400 "LFOC" "ROK"; run
@@ -306,7 +312,7 @@ helper() { # <script> <args...> with the stub and a short lock wait; sets RC
   STUB_DIR=$D PATH=$ROOT/bin:$PATH CLEAR_RESUME_LOCK_DIR=$D/home/locks COMPACT_RESUME_LOCK_DIR=$D/home/locks \
     CLEAR_RESUME_LOCK_WAIT=0.2 COMPACT_RESUME_LOCK_WAIT=0.2 CLEAR_RESUME_POLL=0.01 CLEAR_RESUME_TYPE_PAUSE=0.01 CLEAR_RESUME_FINAL_WAIT=0.01 \
     CLEAR_RESUME_CLEAR_TRIES=1 COMPACT_RESUME_POLL=0.01 COMPACT_RESUME_TYPE_PAUSE=0.01 COMPACT_RESUME_FINAL_WAIT=0.01 COMPACT_RESUME_SETTLE=0.01 \
-    COMPACT_RESUME_START_TRIES=1 bash "$@" 2>"$D/stderr"; RC=$?
+    COMPACT_RESUME_START_TRIES=1 bash "$@" </dev/null 2>"$D/stderr"; RC=$?
 }
 scenario lockhelp 3400 "I I I I I I I I I I I I" "I"; echo "prompt" >"$D/prompt.txt"; echo "guide" >"$D/guide.txt"; mkdir -p "$D/home/locks"
 hold "$D/home/locks/%1.lock" 2

@@ -47,8 +47,8 @@ say_once() { # $1 = a message: logged at most once between two wait_idle calls (
 # ---- BOX_PANEL_HINT: a focused panel is not captured yet and may look identical, so without the hint nothing is
 # ---- trimmed and the capture is returned unchanged (fail-safe). Shared with ctl-keepalive.sh.
 strip_sgr() { perl -pe 's/\e\[[0-9;]*m//g'; }
-is_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
-is_label_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_LABEL_RULE_BYTES"'$/ ? 0 : 1)' "$r"; }
+is_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_RULE_BYTES"'$/ ? 0 : 1)' -- "$r"; }
+is_label_rule() { local r=${1//$'\xc2\xa0'/}; r=${r//[[:space:]]/}; perl -e 'exit($ARGV[0] =~ /^'"$BOX_LABEL_RULE_BYTES"'$/ ? 0 : 1)' -- "$r"; }
 is_top_rule() { # $1 = the line directly above the input row: the prompt box's TOP rule, 20+ x U+2500, then ANY label,
   # then U+2500 at the END (H1 accepts the live main pane's `───── ◉ xhigh · /effort  vbpub-main-controller ─`, which
   # is_label_rule's [A-Za-z0-9._-] label set refuses). The trailing whitespace is not part of a capture's rule line, so
