@@ -21,6 +21,7 @@ import unittest
 import zipapp
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -353,6 +354,51 @@ class Packaging(unittest.TestCase):
             [],
             "every non-.py file under hostobs_client must match tool.setuptools.package-data",
         )
+
+    def test_packaging_subprocesses_have_timeouts(self) -> None:
+        artifact = Path("unused.pyz")
+        with patch("subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps({"loader": "zipimporter", "entrypoint": EXPECTED_ENTRYPOINT}),
+                stderr="",
+            )
+            verify_entrypoint(artifact, EXPECTED_ENTRYPOINT)
+            self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
+            run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="usage: hostobs-mark\n", stderr=""
+            )
+            verify_zipapp_command(artifact)
+            self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
+            run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr="expected notice"
+            )
+            verify_command_exit(
+                artifact,
+                ["point", "hostobs.packaging-test"],
+                expected_exit=0,
+                environment={},
+                output_fragment="expected notice",
+            )
+            self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
+    def test_consumer_docs_describe_the_unreleased_install(self) -> None:
+        project_root = PYTHON_ROOT.parent
+        packaging = (project_root / "docs" / "PACKAGING.md").read_text(encoding="utf-8")
+        consumers = (project_root / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+        readme = (project_root / "README.md").read_text(encoding="utf-8")
+        self.assertIn("build requirements in `python/pyproject.toml`", packaging)
+        self.assertIn("No release exists yet", consumers)
+        self.assertIn(
+            'python3 -m pip install --no-index --no-deps "$HOSTOBS_CLIENT_WHEEL"',
+            consumers,
+        )
+        self.assertIn("hostobs-mark point hostobs.consumer-check --require", consumers)
+        self.assertIn("hostobs-mark", readme)
+        self.assertIn("No release exists yet", readme)
 
     def test_missing_module_is_rejected(self) -> None:
         contract = project_metadata()
