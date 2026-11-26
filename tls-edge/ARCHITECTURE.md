@@ -834,14 +834,13 @@ socket-proxy policy (GET allowed, POST refused); the HTTP redirect (when
 default); the ACME volume or static cert file; the canary route through
 `websecure`; the access-log JSON format; and the `--ops-check` isolation probe.
 
-Run it after any configuration change before declaring the deployment healthy --
-with `--no-canary` until 4.0.1.  4.0.0's canary routes `verify.<--domain>` on
-`websecure` without router-level `tls=true`, so the entrypoint's `certResolver`
-orders a REAL certificate for that name (public CT entry and a CA rate-limit
-count) and then probes 5 s later, before issuance finishes.  Its check 5 cannot
-pass (a single-quoted probe drops the proxy name) and the EXIT trap calls an
-undefined `cleanup_tmp`, so a run that reaches the canary exits 127.  The
-operator-visible summary is in `KNOWN_ISSUES_TODO_BACKLOG.md`; the fix is TE-15.
+Run it after any configuration change before declaring the deployment healthy.
+Pass `--domain` as a host name the edge already serves a certificate for. The
+canary router uses `Host(tls-edge-verify-canary.invalid)` on `websecure` with
+`tls=true` and no `certresolver`; its probe uses `--domain` for TLS SNI and the
+fixed `.invalid` name for the HTTP Host, so the canary orders no certificate.
+It polls for a `Hostname:` response up to 30 times. `--no-canary` remains an
+optional way to skip check 9.
 
 ### Route registration audit
 
@@ -1010,7 +1009,7 @@ a second gate that is harder to satisfy accidentally.
 | sniStrict rejects SNI-less clients | Bare-IP probes, some uptime checkers, and `openssl s_client` without `-servername` are rejected | Expected and desirable; disable `sniStrict` in `conf.d/options.yml` only if such clients must be served |
 | HTTP listener in the shipped defaults | The edge answers on a second public port | Use `tls-edge configure` to disable it for an installed instance; `acme-http` then cannot be used |
 | Router name uniqueness is operator-enforced | Two stacks using the same router name will conflict | Naming convention adopted in examples: `<stack>-<service>` |
-| App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh --ops-check <network> <container> <port>` (add `--no-canary` while 4.0.0's canary is unfixed, §15) |
+| App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh --ops-check <network> <container> <port>` (§15) |
 | Single Traefik instance is a SPOF | If Traefik crashes, all public services are unreachable | `restart: unless-stopped` mitigates transient failures; HA Traefik requires Swarm or Kubernetes |
 | `ingress_public` east-west visibility | Containers on ingress can attempt connections to each other | Keep ingress membership minimal; strict isolation needs host firewall rules installed by the host |
 | Static config changes (log level, entrypoints, ACME) require re-render + restart | No live override via env vars once config file is mounted | Re-render via ciu (or `tools/render.sh` for a maintainer trial), then `docker compose restart traefik` |

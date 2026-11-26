@@ -141,19 +141,16 @@ sudo ./ciu env generate     # first time only; ciu up does it too. DOCKER_GID is
                             # when the host has no docker group:
                             # sudo env DOCKER_GID=$(stat -c %g /var/run/docker.sock) ./ciu env generate
 sudo ./ciu check            # all stages pass on a fresh install
-sudo ./scripts/verify.sh --domain app.example.test --no-canary
+sudo ./scripts/verify.sh --domain example.test
 ```
 
 `verify.sh` discovers the container and volume names of a ciu instance by itself.
 
-**Run `verify.sh` with `--no-canary` until the fix ships.** Its canary (check 9) creates a
-router on `websecure` with no `tls=true`, so the entrypoint's `certResolver` applies and the
-edge orders a REAL certificate for `verify.<--domain>` from the configured ACME CA: a public
-Certificate Transparency entry, and an order against the CA's rate limit. The canary then
-probes 5 s later, before issuance can finish, and `sniStrict` refuses the handshake, so
-check 9 FAILs on its first run while the order stays in the ACME volume. `--no-canary`
-skips check 9 and orders nothing. The other defects of the installed release's checks are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md#known-limitations).
+Pass `--domain` as a host name the edge already serves a certificate for. Check 9
+routes `tls-edge-verify-canary.invalid` through `websecure` with `tls=true` and no
+`certresolver`, then probes with `--domain` as TLS SNI and the fixed `.invalid`
+name as the HTTP Host. The canary orders no certificate. `--no-canary` remains an
+optional way to skip check 9.
 
 ## 4. Configure listeners and certificates
 
@@ -405,8 +402,8 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 6. **Start direct media.** From `voice-screen-share/mattermost-server`, run its `ciu up` so Mattermost binds
    8443 directly. Follow that project's [`CONSUMER.md`](../../voice-screen-share/mattermost-server/CONSUMER.md#calls-cut-over)
    "Calls cut-over" section. Run this only after the old edge is stopped and the new edge is up.
-7. **Verify.** `scripts/verify.sh --domain <host> --no-canary` (required of the installed release for now;
-   section 3 has the reason), `curl -I https://<each consumer host>`, one certificate check per
+7. **Verify.** `scripts/verify.sh --domain example.test` (use a host name the edge already serves a
+   certificate for; the check 9 canary orders no certificate), `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    and a Mattermost media test from outside on its directly published 8443 tcp and udp ports.
 8. **Rollback (any failure in 7).** Mattermost's Calls media is published by the `mattermost` service itself, so
