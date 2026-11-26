@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -87,6 +88,28 @@ def cpu(seq: int, value: int) -> str:
 
 
 class Verdict(unittest.TestCase):
+    def test_demo_config_uses_required_store_table_and_separate_tiers(self):
+        text = DEMO.config_text(
+            Path("/sys/fs/cgroup"),
+            Path("/tmp/hostobs-demo/store"),
+            Path("/dev/shm/hostobs-demo-tiers"),
+        )
+        config = tomllib.loads(text)
+        self.assertEqual(set(config), {"probe", "limits", "store"})
+        self.assertEqual(
+            set(config["store"]),
+            {"dir", "tmpfs_dir", "events_cap_bytes", "events_ring_bytes"},
+        )
+        self.assertEqual(
+            config["store"],
+            {
+                "dir": "/tmp/hostobs-demo/store",
+                "tmpfs_dir": "/dev/shm/hostobs-demo-tiers",
+                "events_cap_bytes": 67_108_864,
+                "events_ring_bytes": 4_194_304,
+            },
+        )
+
     def test_pass_needs_ordered_ticks_cpu_change_known_qualities_and_sigterm(self):
         passed, reason = DEMO.assess(transcript(f"{cpu(1, 100)}\n{cpu(2, 200)}"), 2)
         self.assertTrue(passed)

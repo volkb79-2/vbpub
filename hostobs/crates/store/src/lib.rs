@@ -55,6 +55,7 @@
 
 pub mod crc;
 pub mod dictionary;
+pub mod dedupe;
 pub mod error;
 pub mod events;
 pub mod format;
@@ -64,3 +65,6 @@ pub mod segment;
 pub mod store;
 pub mod tier;
 pub mod tmpfs;
+
+/// The event idempotency cache and its owned reply value.
+pub use dedupe::{EventDedup, Reply};

@@ -46,10 +46,12 @@ python3 -I tools/live-demo.py \
   --out /tmp/hostobs-live-demo.txt'
 ```
 
-The launcher creates a private temporary directory, writes a strict config with
-both levels, binds two filesystem `AF_UNIX` listeners, and passes them as fds 3
-and 4 (`LISTEN_FDS=2`, `LISTEN_FDNAMES=observe:operator`). It runs `watch` for
-the requested number of observe ticks and once at operator, then sends
+The launcher creates a private temporary directory for the durable store and a
+unique tier directory under `/dev/shm`, writes a strict config with both levels
+and all four store keys, binds two filesystem `AF_UNIX` listeners, and passes
+them as fds 3 and 4 (`LISTEN_FDS=2`, `LISTEN_FDNAMES=observe:operator`). The
+`/dev/shm` tier directory is removed in the launcher's `finally` block. It runs
+`watch` for the requested number of observe ticks and once at operator, then sends
 `SIGTERM` to its own probe pid and reaps it with a bound.
 
 The transcript records the probe argv and `LISTEN_*` environment, the launcher's

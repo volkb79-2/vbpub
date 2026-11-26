@@ -1046,6 +1046,8 @@ impl Tier {
             Some(open) => {
                 let open_bucket = self.start_for(open.header().start_real_ns.max(0))?;
                 open_bucket != start_s
+                    || open.header().epoch != epoch
+                    || open.header().dict_generation != dict_generation
                     || open.record_count() >= crate::segment::SCAN_RECORD_BOUND as u64
                     || self.config.segment_bytes() <= open.len()
             }
@@ -1765,6 +1767,85 @@ mod tests {
             .iter()
             .all(|segment| segment.is_sealed()));
         assert_eq!(tier.bytes(), tier.scan().bytes);
+    }
+
+    #[test]
+    fn a_reopened_event_segment_starts_a_new_header_for_a_new_epoch_in_the_same_bucket() {
+        let temp = TempDir::new("epoch-reopen");
+        let config = TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false)
+            .expect("config");
+        let event_frame = || {
+            hostobs_proto::event::encode_event_frame(&hostobs_proto::event::EventPayload {
+                t_mono_ns: 10,
+                span: 0,
+                peer_dev: 0,
+                peer_inode: 0,
+                uid: 7,
+                peer_pid: 0,
+                kind: 3,
+                outcome: 0,
+                inferred: false,
+                ctx: Vec::new(),
+                attrs: Vec::new(),
+                name: String::from("point"),
+                key: String::from("point"),
+                code: None,
+                comm: None,
+            })
+            .expect("event/1 frame")
+        };
+        let first_name = {
+            let mut first = Tier::open(
+                config.clone(),
+                StoreDir::open(temp.path(), false).expect("dir"),
+                1 << 22,
+            )
+            .expect("first epoch tier");
+            first
+                .append(&Job::new(event_frame(), 10_000_000_000, Vec::new()), 7, 3)
+                .expect("first epoch append");
+            first
+                .open_handle()
+                .expect("open handle")
+                .name()
+                .to_string()
+        };
+        assert_eq!(first_name, "events-0-0.seg.open");
+
+        let mut reopened = Tier::open(
+            config,
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("second epoch tier");
+        assert_eq!(
+            reopened
+                .open_handle()
+                .expect("adopted open segment")
+                .header()
+                .epoch,
+            7
+        );
+        let second = reopened
+            .append(&Job::new(event_frame(), 20_000_000_000, Vec::new()), 8, 4)
+            .expect("second epoch append");
+        assert_eq!(second.segment, "events-0-1.seg.open");
+        assert_eq!(reopened.scan().segments.len(), 2);
+
+        let dir = StoreDir::open(temp.path(), false).expect("dir");
+        let headers: Vec<(u64, u32)> = reopened
+            .scan()
+            .segments
+            .iter()
+            .map(|segment| {
+                let scanned = crate::segment::scan(&dir, &segment.name, 1 << 22, 1024)
+                    .expect("scan segment");
+                (scanned.header.epoch, scanned.header.dict_generation)
+            })
+            .collect();
+        assert_eq!(headers, vec![(7, 3), (8, 4)]);
+        assert!(reopened.scan().segments[0].is_sealed());
+        assert!(reopened.scan().segments[1].open);
     }
 
     #[test]
