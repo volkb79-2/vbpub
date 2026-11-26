@@ -200,7 +200,7 @@ case "$1" in
       n=0; [ -f "$FAKE_TICKS" ] && n=$(cat "$FAKE_TICKS" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE_TICKS"
       pid=${FAKE_PSI_PID:-4242}
       # the REAL psi_guard probe branch reads /proc/<pid>/stat ($14+$15), never the seam: keep that file advancing
-      [ -n "${MDT_ACCEPT_PROC:-}" ] && printf '4242 (mdt-psi-guard) S 1 4242 0 0 0 0 0 0 0 0 0 %s 0 0\n' "$n" > "$MDT_ACCEPT_PROC/$pid/stat" 2>/dev/null
+      [ -n "${MDT_ACCEPT_PROC:-}" ] && printf '4242 (mdt psi) guard) S 1 4242 0 0 0 0 0 0 0 0 0 %s 0 0\n' "$n" > "$MDT_ACCEPT_PROC/$pid/stat" 2>/dev/null
       echo "$pid"
     else
       cat "$FAKE_SHOW/$3-$5" 2>/dev/null
@@ -227,6 +227,193 @@ def fake_bins(d: Path) -> Path:
         (d / name).write_text("#!/bin/sh\n" + body)
         (d / name).chmod(0o755)
     return d
+
+
+class DamonSysfsModel:
+    """Filesystem model for DAMON's nr_* creation ABI.
+
+    Numeric child directories are absent until the parent nr_* attribute is
+    written. Ordinary writes never create a missing parent, so a production
+    read/write in the wrong order fails against this fake as it does in sysfs.
+    """
+
+    def __init__(self, admin: Path, *, avail: str = "vaddr paddr", stats: bool = True,
+                 filters: bool = True) -> None:
+        self.admin = admin
+        self.kdamonds = admin / "kdamonds"
+        self.avail = avail
+        self.stats = stats
+        self.filters = filters
+
+    def initialize(self, count: int = 0, state: str = "off") -> None:
+        self.kdamonds.mkdir(parents=True, exist_ok=True)
+        (self.kdamonds / "nr_kdamonds").write_text(f"{count}\n")
+        for idx in range(count):
+            self._make_kdamond(idx, state)
+
+    def _make_kdamond(self, idx: int, state: str = "off") -> None:
+        kd = self.kdamonds / str(idx)
+        kd.mkdir(parents=True, exist_ok=True)
+        (kd / "state").write_text(state + "\n")
+        (kd / "refresh_ms").write_text("0\n")
+        contexts = kd / "contexts"
+        contexts.mkdir()
+        (contexts / "nr_contexts").write_text("0\n")
+
+    def read(self, path: str) -> str:
+        """Read an existing sysfs attribute; a missing attribute is an ABI failure."""
+        target = Path(path)
+        if not target.is_file():
+            raise FileNotFoundError(path)
+        return target.read_text().strip()
+
+    def read_lines(self, path: str) -> list[str]:
+        try:
+            return self.read(path).splitlines()
+        except OSError:
+            return []
+
+    def read_int(self, path: str, default: int | None = None) -> int:
+        try:
+            return int(self.read(path))
+        except (OSError, ValueError):
+            if default is None:
+                raise
+            return default
+
+    @staticmethod
+    def _numbered_children(parent: Path) -> list[Path]:
+        return [path for path in parent.iterdir() if path.name.isdigit()]
+
+    def _make_context(self, context: Path) -> None:
+        context.mkdir()
+        (context / "avail_operations").write_text(self.avail + "\n")
+        (context / "operations").write_text("vaddr\n")
+        attrs = context / "monitoring_attrs"
+        intervals = attrs / "intervals"
+        intervals.mkdir(parents=True)
+        for name in ("sample_us", "aggr_us", "update_us"):
+            (intervals / name).write_text("0\n")
+        nr_regions = attrs / "nr_regions"
+        nr_regions.mkdir()
+        (nr_regions / "min").write_text("0\n")
+        (nr_regions / "max").write_text("0\n")
+        targets = context / "targets"
+        targets.mkdir()
+        (targets / "nr_targets").write_text("0\n")
+        schemes = context / "schemes"
+        schemes.mkdir()
+        (schemes / "nr_schemes").write_text("0\n")
+
+    def _make_target(self, target: Path) -> None:
+        target.mkdir()
+        (target / "pid_target").write_text("0\n")
+        (target / "obsolete_target").write_text("0\n")
+        regions = target / "regions"
+        regions.mkdir()
+        (regions / "nr_regions").write_text("0\n")
+
+    def _make_scheme(self, scheme: Path) -> None:
+        scheme.mkdir()
+        (scheme / "action").write_text("stat\n")
+        (scheme / "target_nid").write_text("0\n")
+        (scheme / "apply_interval_us").write_text("0\n")
+        access = scheme / "access_pattern"
+        for group in ("sz", "nr_accesses", "age"):
+            values = access / group
+            values.mkdir(parents=True)
+            (values / "min").write_text("0\n")
+            (values / "max").write_text("0\n")
+        stats = scheme / "stats"
+        stats.mkdir()
+        for name in ("nr_tried", "sz_tried", "nr_applied", "sz_applied", "qt_exceeds", "nr_snapshots"):
+            (stats / name).write_text("0\n")
+        if self.stats:
+            (stats / "sz_ops_filter_passed").write_text("0\n")
+        tried = scheme / "tried_regions"
+        tried.mkdir()
+        (tried / "total_bytes").write_text("0\n")
+        if self.filters:
+            for name in ("core_filters", "filters", "ops_filters"):
+                filters = scheme / name
+                filters.mkdir()
+                (filters / "nr_filters").write_text("0\n")
+
+    def _make_filter(self, filter_dir: Path) -> None:
+        filter_dir.mkdir()
+        for name in ("type", "matching", "allow", "memcg_path", "addr_start", "addr_end", "min", "max",
+                     "damon_target_idx"):
+            (filter_dir / name).write_text("\n")
+
+    def write(self, path: str, value: object) -> None:
+        target = Path(path)
+        if not target.is_file():
+            raise FileNotFoundError(path)
+        text = f"{value}\n"
+        prior = target.read_text()
+        target.write_text(text)
+        try:
+            relative = target.relative_to(self.kdamonds)
+        except ValueError:
+            return
+        parts = relative.parts
+        if parts == ("nr_kdamonds",):
+            count = int(value)
+            for child in self._numbered_children(self.kdamonds):
+                shutil.rmtree(child)
+            for idx in range(count):
+                self._make_kdamond(idx)
+        elif len(parts) == 3 and parts[1:] == ("contexts", "nr_contexts"):
+            parent = target.parent
+            for child in self._numbered_children(parent):
+                shutil.rmtree(child)
+            for idx in range(int(value)):
+                self._make_context(parent / str(idx))
+        elif len(parts) == 5 and parts[1] == "contexts" and parts[3:] == ("targets", "nr_targets"):
+            parent = target.parent
+            for child in self._numbered_children(parent):
+                shutil.rmtree(child)
+            for idx in range(int(value)):
+                self._make_target(parent / str(idx))
+        elif len(parts) == 7 and parts[1] == "contexts" and parts[3] == "targets" and parts[5:] == ("regions", "nr_regions"):
+            parent = target.parent
+            for child in self._numbered_children(parent):
+                shutil.rmtree(child)
+            for idx in range(int(value)):
+                region = parent / str(idx)
+                region.mkdir()
+                (region / "start").write_text("0\n")
+                (region / "end").write_text("0\n")
+        elif len(parts) == 5 and parts[1] == "contexts" and parts[3:] == ("schemes", "nr_schemes"):
+            parent = target.parent
+            for child in self._numbered_children(parent):
+                shutil.rmtree(child)
+            for idx in range(int(value)):
+                self._make_scheme(parent / str(idx))
+        elif len(parts) == 7 and parts[1] == "contexts" and parts[3] == "schemes" and parts[5:] == ("ops_filters", "nr_filters"):
+            parent = target.parent
+            for child in self._numbered_children(parent):
+                shutil.rmtree(child)
+            for idx in range(int(value)):
+                self._make_filter(parent / str(idx))
+        elif len(parts) == 2 and parts[1] == "state":
+            if value in ("on", "off"):
+                return
+            state = prior
+            if value == "update_schemes_stats":
+                for stats in target.parent.glob("contexts/*/schemes/*/stats/sz_tried"):
+                    stats.write_text("12345\n")
+            elif value == "update_schemes_tried_regions":
+                for tried in target.parent.glob("contexts/*/schemes/*/tried_regions"):
+                    for child in self._numbered_children(tried):
+                        shutil.rmtree(child)
+                    region = tried / "7"
+                    region.mkdir()
+                    for name, content in (("start", "0\n"), ("end", "4096\n"), ("nr_accesses", "3\n"),
+                                          ("age", "4\n"), ("sz_filter_passed", "4096\n")):
+                        (region / name).write_text(content)
+                    (tried / "total_bytes").write_text("4096\n")
+            target.write_text(state)
 
 
 class ShellKitBase(unittest.TestCase):
@@ -274,7 +461,7 @@ class ShellKitBase(unittest.TestCase):
                                            "SwapFree: 16000000 kB\n")
         (self.proc / "vmstat").write_text("nr_free_pages 1\npswpin 4\npswpout 8\nzswpout 9\nzswpwb 2\noom_kill 3\n")
         (self.proc / "4242").mkdir()
-        (self.proc / "4242" / "stat").write_text("4242 (mdt-psi-guard) S 1 4242 " + "0 " * 10 + "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+        (self.proc / "4242" / "stat").write_text("4242 (mdt psi) guard) S 1 4242 " + "0 " * 10 + "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
         (self.proc / "zoneinfo").write_text("Node 0, zone DMA\n        high 30\n")
         (self.tmp / "damon_stat-N").write_text("N\n")
         self.boot = self.tmp / "boot_id"
@@ -308,7 +495,8 @@ class ShellKitBase(unittest.TestCase):
                         # The old host had NO POLL/RESTORE override: a run that reached the poll path slept 1 s x 60.
                         MDT_ACCEPT_POLL_STEP="0", MDT_ACCEPT_RESTORE_TIMEOUT="0", MDT_ACCEPT_RM_TIMEOUT="10",
                         MDT_ACCEPT_LOCK=str(self.tmp / "lock"), MDT_ACCEPT_MIN_DISK="1", MDT_ACCEPT_MIN_EVID_DISK="1",
-                        MDT_ACCEPT_SSH_TARGET="root@127.0.0.1",
+                        MDT_ACCEPT_SSH_TARGET="root@127.0.0.1", MDT_ACCEPT_SOURCE_SHA="0123456789abcdef0123456789abcdef01234567",
+                        CGPROFILE_CONTROL_SOCKET=str(self.tmp / "cgprofile-control.sock"),
                         MDT_ACCEPT_HOTSET_JSON=str(self.fixture), MDT_ACCEPT_HOTSET_EVERY="1",
                         MDT_ACCEPT_DAMON_STAT=str(self.tmp / "damon_stat-N"),
                         # 2 ticks per step (one settling, one judged): every tick costs ~40 fake-process spawns plus one

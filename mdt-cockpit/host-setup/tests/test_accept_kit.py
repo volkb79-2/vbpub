@@ -346,6 +346,8 @@ class HotsetTests(unittest.TestCase):
         (self.tmp / "meminfo").write_text("MemTotal: 8388608 kB\n")
         self.dstat = self.tmp / "damon_stat"
         self.dstat.write_text("N\n")
+        self.iomem = self.tmp / "iomem"
+        self.iomem.write_text("00000000-1ffffffff : System RAM\n")
         self.ev = self.tmp / "ev"
         self.ev.mkdir()
         self.wal = self.tmp / "wal"
@@ -355,7 +357,8 @@ class HotsetTests(unittest.TestCase):
         # sessions, so a developer's host state never decides a test's outcome
         bindir = self.tmp / "bin"
         F.fake_one("cgprofilectl", "printf '{\"version\": \"test\", \"sessions_live\": 0}\\n'\n", bindir)
-        self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}"}))
+        self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}",
+                                                       "CGPROFILE_CONTROL_SOCKET": str(self.tmp / "cgprofile-control.sock")}))
 
     def tree(self, *, nr: int = 0, state: str = "off", avail: str = "vaddr paddr", filters: bool = True,
              stats: bool = True) -> None:
@@ -416,23 +419,93 @@ class HotsetTests(unittest.TestCase):
         return ["--evidence", str(self.ev), "--state", str(self.wal), "--units", self.units, "--admin", str(self.admin),
                 "--cgroup", str(self.cg), "--proc", str(self.tmp), "--lib", self.lib, "--damon-stat", str(self.dstat), *extra]
 
-    def test_setup_configures_one_kdamond_and_records_its_index_in_the_wal(self) -> None:
-        self.tree()
-        self.ready()
+    def sysfs_model(self, *, count: int = 0, state: str = "off", avail: str = "vaddr paddr",
+                    stats: bool = True, filters: bool = True) -> F.DamonSysfsModel:
+        model = F.DamonSysfsModel(self.admin, avail=avail, stats=stats, filters=filters)
+        model.initialize(count=count, state=state)
+        da = hs.load_lib(self.lib, str(self.admin))
+        self.enterContext(mock.patch.object(hs, "load_lib", return_value=da))
+        self.enterContext(mock.patch.object(hs, "write_text", model.write))
+        self.enterContext(mock.patch.object(hs, "read_lines", model.read_lines))
+        self.enterContext(mock.patch.object(hs, "read_int", model.read_int))
+        self.enterContext(mock.patch.object(da.SysfsInterface, "_write", model.write))
+        self.enterContext(mock.patch.object(da.SysfsInterface, "_read", model.read))
+        if hasattr(hs, "physical_ranges"):
+            self.enterContext(mock.patch.object(hs, "physical_ranges", return_value=[(0, 8 * 1024 ** 3)]))
+        return model
+
+    def restore_model(self) -> subprocess.CompletedProcess:
+        env = dict(os.environ, MDT_ACCEPT_SQUEEZE_STATE=str(self.wal), MDT_ACCEPT_MANIFEST=str(self.ev / "manifest.env"),
+                   MDT_ACCEPT_DAMON_ADMIN=str(self.admin), MDT_ACCEPT_LOCK=str(self.tmp / "accept.lock"))
+        return subprocess.run([str(KIT / "accept-restore.sh"), "--evidence", str(self.ev), "--in-run"],
+                              env=env, capture_output=True, text=True, timeout=F.KIT_RUN_TIMEOUT)
+
+    def test_fresh_nr_zero_creates_the_context_then_runs_the_full_damon_sequence(self) -> None:
+        model = self.sysfs_model()
+        ctx = self.kd / "0" / "contexts"
+        self.assertFalse((ctx / "0").exists(), "the nr_contexts=0 fake must not expose contexts/0")
         rc, out = run_hotset("setup", *self.args())
+        if rc != 0:
+            self.assertIn("kdamonds/0/contexts/0/avail_operations is unreadable", out)
         self.assertEqual(rc, 0, out)
         self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "1")
-        self.assertIn("kdamond=0", self.wal.read_text(), "the WAL line is what the restore derives the index from")
+        self.assertEqual((ctx / "nr_contexts").read_text().strip(), "1")
+        self.assertTrue((ctx / "0" / "avail_operations").is_file())
+        self.assertIn("damon_owner=created", self.wal.read_text())
+        self.assertIn("kdamond=0", self.wal.read_text(), "the WAL names the owned kdamond before either count grows")
         self.assertIn("damon_stat_enabled=N", out)
         self.assertIn("kdamond=0", out)
         self.assertEqual((self.kd / "0" / "refresh_ms").read_text().strip(), "0", "N5: no periodic refresh aliasing aggr_us")
         self.assertEqual((self.kd / "0" / "contexts" / "0" / "operations").read_text().strip(), "paddr")
         self.assertEqual((self.kd / "0" / "contexts" / "0" / "monitoring_attrs" / "intervals" / "sample_us").read_text().strip(), "400000")
         self.assertEqual((self.kd / "0" / "contexts" / "0" / "monitoring_attrs" / "intervals" / "aggr_us").read_text().strip(), "8000000")
-        self.assertEqual((self.kd / "0" / "contexts" / "0" / "targets" / "0" / "regions" / "0" / "end").read_text().strip(), "8589934592")
+        self.assertEqual((self.kd / "0" / "contexts" / "0" / "targets" / "0" / "regions" / "0" / "end").read_text().strip(), str(8 * 1024 ** 3))
+        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "on")
+        rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
+        self.assertEqual(rc, 0, out)
+        rc, out = run_hotset("sample", *self.args("--step", "1"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("docker.service", (self.ev / "hotset.csv").read_text())
+        self.assertIn("user.slice", (self.ev / "hotset.csv").read_text())
+        rc, out = run_hotset("off", *self.args())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "off")
+        self.assertEqual(model.read(str(self.kd / "0" / "contexts" / "0" / "avail_operations")), "vaddr paddr")
+        hs.restore_owned_kdamond(str(self.admin), str(self.wal))
+        self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "0")
+        self.assertFalse((self.kd / "0").exists(), "nr_kdamonds=0 removes the kdamond created by the model")
+
+    def test_hotset_preflight_is_read_only_for_a_fresh_nr_zero_interface(self) -> None:
+        self.sysfs_model()
+        rc, out = run_hotset("preflight", *self.args())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "0")
+        self.assertFalse(self.wal.exists())
+        self.assertFalse((self.kd / "0").exists())
+
+    def test_an_empty_preexisting_off_kdamond_is_taken_and_restored(self) -> None:
+        self.sysfs_model(count=1)
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "1")
+        self.assertIn("damon_owner=taken", self.wal.read_text())
+        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "on")
+        rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
+        self.assertEqual(rc, 0, out)
+        rc, out = run_hotset("sample", *self.args("--step", "1"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("docker.service", (self.ev / "hotset.csv").read_text())
+        rc, out = run_hotset("off", *self.args())
+        self.assertEqual(rc, 0, out)
+        r = self.restore_model()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "1")
+        self.assertEqual((self.kd / "0" / "contexts" / "nr_contexts").read_text().strip(), "0")
+        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "off")
+        self.assertFalse(self.wal.exists())
 
     def test_a_damon_stat_of_y_refuses_with_nothing_written(self) -> None:
-        self.tree()
+        self.sysfs_model()
         self.dstat.write_text("Y\n")
         rc, out = run_hotset("setup", *self.args())
         self.assertEqual(rc, 3, out)
@@ -442,34 +515,36 @@ class HotsetTests(unittest.TestCase):
         self.assertNotIn("kdamond=", (self.kd / "nr_kdamonds").read_text())
 
     def test_an_absent_damon_stat_proceeds_and_records_absent(self) -> None:
-        self.tree()
+        self.sysfs_model()
         self.dstat.unlink()
         rc, out = run_hotset("setup", *self.args())
-        self.assertEqual(rc, 3, out)
+        self.assertEqual(rc, 0, out)
         self.assertNotIn("DAMON_STAT is Y", out)
 
     def test_a_kdamond_that_is_already_on_refuses(self) -> None:
-        self.tree(nr=2, state="on")
+        self.sysfs_model(count=2, state="on")
         rc, out = run_hotset("setup", *self.args())
         self.assertEqual(rc, 3, out)
-        self.assertIn("kdamond 0 is already on", out)
+        self.assertIn("kdamond 0 state is 'on', not off", out)
         self.assertFalse(self.wal.exists())
 
-    def test_an_index_is_reused_only_when_it_is_off(self) -> None:
-        self.tree(nr=2, state="off")
-        rc, _out = run_hotset("setup", *self.args())
-        self.assertEqual(rc, 3)                       # no kernel: the refusal happens after the WAL line
-        self.assertIn("kdamond=1", self.wal.read_text(), "the highest (off) index is reused")
+    def test_a_nonempty_off_kdamond_is_never_overwritten(self) -> None:
+        model = self.sysfs_model(count=1)
+        model.write(str(self.kd / "0" / "contexts" / "nr_contexts"), 1)
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 3, out)
+        self.assertIn("refusing to overwrite", out)
+        self.assertFalse(self.wal.exists())
+        self.assertEqual((self.kd / "0" / "contexts" / "nr_contexts").read_text().strip(), "1")
 
     def test_a_kernel_without_paddr_refuses(self) -> None:
-        self.tree(avail="vaddr fvaddr")
+        self.sysfs_model(avail="vaddr fvaddr")
         rc, out = run_hotset("setup", *self.args())
         self.assertEqual(rc, 3, out)
         self.assertIn("has no paddr", out)
 
     def test_a_kernel_without_sz_ops_filter_passed_refuses_never_end_minus_start(self) -> None:
-        self.tree()
-        self.ready(stats=False)
+        self.sysfs_model(stats=False)
         rc, out = run_hotset("setup", *self.args())
         self.assertEqual(rc, 3, out)
         self.assertIn("sz_ops_filter_passed is unreadable", out)
@@ -568,16 +643,43 @@ class HotsetTests(unittest.TestCase):
         F.fake_one("cgprofilectl", 'printf \'{"version": "x", "sessions_stored": 3}\'\n', bindir)
         env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
         with mock.patch.dict(os.environ, env):
-            hs.cgprofile_sessions()      # stored sessions are not live ones: never a refusal
+            with self.assertRaises(hs.Refusal) as ctx:
+                hs.cgprofile_sessions()
+        self.assertIn("sessions_live count", str(ctx.exception))
         F.fake_one("cgprofilectl", 'printf \'{"sessions_live": 1}\'\n', bindir)
         with mock.patch.dict(os.environ, env):
             with self.assertRaises(hs.Refusal) as ctx:
                 hs.cgprofile_sessions()
         self.assertIn("sessions_live=1", str(ctx.exception))
 
+    def test_preflight_refuses_missing_endpoint_and_reports_bounded_cgprofile_error(self) -> None:
+        missing = self.tmp / "bin-missing"
+        F.fake_one("cgprofilectl", 'echo "endpoint-unset: cannot connect" >&2; exit 2\n', missing)
+        env = dict(os.environ, PATH=f"{missing}:{os.environ['PATH']}", CGPROFILE_CONTROL_SOCKET="")
+        with mock.patch.dict(os.environ, env):
+            with self.assertRaises(hs.Refusal) as ctx:
+                hs.cgprofile_sessions()
+        self.assertIn("CGPROFILE_CONTROL_SOCKET is unset", str(ctx.exception))
+        env["CGPROFILE_CONTROL_SOCKET"] = "/run/cgprofile/control/cgprofile.sock"
+        with mock.patch.dict(os.environ, env):
+            with self.assertRaises(hs.Refusal) as ctx:
+                hs.cgprofile_sessions()
+        self.assertIn("endpoint-unset: cannot connect", str(ctx.exception))
+        self.assertLess(len(str(ctx.exception)), 600, "the command's error text is present but bounded")
+
 
 class ShellKitTests(F.ShellKitBase):
     """accept-run.sh: the ladder, the WAL, the per-step writes, the probes, the stop rule, the cleanup paths."""
+
+    def test_cgprofile_environment_refusal_happens_before_any_host_write(self) -> None:
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2", FAKE_SESSIONS_LIVE="1",
+                         **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("sessions_live=1", r.stderr)
+        self.assertFalse((self.ev / "samples.csv").exists())
+        self.assertFalse(any(line.startswith("run ") for line in self.calls()), "no dummy or other Docker write ran")
+        self.assertEqual((self.cg / "dev.slice" / "memory.max").read_text().strip(), str(self.DEV_MAX_START))
+        self.assertEqual((self.cg / "dev.slice" / "memory.min").read_text().strip(), str(512 * M))
 
     def test_the_shell_scripts_are_syntax_and_shellcheck_clean(self) -> None:
         for s in sorted(KIT.glob("*.sh")):
@@ -1265,6 +1367,18 @@ class RestoreTests(unittest.TestCase):
         (d / "state").write_text(state + "\n")
         (self.damon / "kdamonds" / "nr_kdamonds").write_text("2\n")
 
+    def damon_tree(self, *, states: tuple[str, ...], contexts: tuple[int, ...]) -> Path:
+        root = self.damon / "kdamonds"
+        root.mkdir(parents=True)
+        (root / "nr_kdamonds").write_text(f"{len(states)}\n")
+        for idx, (state, count) in enumerate(zip(states, contexts, strict=True)):
+            kd = root / str(idx)
+            kd.mkdir()
+            (kd / "state").write_text(f"{state}\n")
+            (kd / "contexts").mkdir()
+            (kd / "contexts" / "nr_contexts").write_text(f"{count}\n")
+        return root
+
     def test_a_kill_before_the_first_write_writes_nothing_and_reports_success(self) -> None:
         self.wal([])   # trap armed, no state line yet: the file exists and is empty
         self.maxes()
@@ -1306,7 +1420,7 @@ class RestoreTests(unittest.TestCase):
         self.assertLess(idx("docker-id-")[0], idx("dev-gates.slice/memory.min")[0], "the scope min before the tier min")
         self.assertLess(idx("dev-gates.slice/memory.min")[0], idx("dev.slice/memory.min")[0], "child before parent")
 
-    def test_a_kill_after_the_kdamond_started_switches_it_off_and_never_writes_nr_kdamonds(self) -> None:
+    def test_a_legacy_wal_switches_its_named_kdamond_off_without_count_ownership(self) -> None:
         self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
         self.damon_kdamond()
         self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0", "kdamond=1"])
@@ -1316,7 +1430,49 @@ class RestoreTests(unittest.TestCase):
         self.assertIn("kdamond 1 -> off", r.stdout)
         self.assertEqual((self.damon / "kdamonds" / "1" / "state").read_text().strip(), "off")
         self.assertEqual((self.damon / "kdamonds" / "nr_kdamonds").read_text(), before,
-                         "nr_kdamonds recreates every kdamond directory and fails EBUSY while one is on")
+                         "a legacy WAL owns no structural count, so it only switches off its named kdamond")
+
+    def test_restore_removes_only_the_created_kdamond_after_all_are_off(self) -> None:
+        root = self.damon_tree(states=("on",), contexts=(1,))
+        self.wal(["damon_owner=created", "damon_nr_kdamonds=0", "damon_kdamond=0", "damon_nr_contexts=0", "kdamond=0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("nr_kdamonds 1 -> 0", r.stdout)
+        self.assertEqual((root / "nr_kdamonds").read_text().strip(), "0")
+        self.assertEqual((root / "0" / "state").read_text().strip(), "off")
+        self.assertFalse(self.state.exists())
+
+    def test_restore_removes_only_the_context_grown_on_a_taken_kdamond(self) -> None:
+        root = self.damon_tree(states=("on",), contexts=(1,))
+        self.wal(["damon_owner=taken", "damon_nr_kdamonds=1", "damon_kdamond=0", "damon_nr_contexts=0", "kdamond=0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("contexts/nr_contexts 1 -> 0", r.stdout)
+        self.assertEqual((root / "nr_kdamonds").read_text().strip(), "1")
+        self.assertEqual((root / "0" / "contexts" / "nr_contexts").read_text().strip(), "0")
+        self.assertFalse(self.state.exists())
+
+    def test_created_count_restore_refuses_after_count_drift_without_touching_an_unowned_kdamond(self) -> None:
+        root = self.damon_tree(states=("on", "on"), contexts=(1, 0))
+        self.wal(["damon_owner=created", "damon_nr_kdamonds=0", "damon_kdamond=0", "damon_nr_contexts=0", "kdamond=0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("expected 0 or 1", r.stdout)
+        self.assertEqual((root / "nr_kdamonds").read_text().strip(), "2")
+        self.assertEqual((root / "0" / "state").read_text().strip(), "on", "count drift means even the saved index is not trusted")
+        self.assertEqual((root / "1" / "state").read_text().strip(), "on", "the unowned kdamond is never touched")
+        self.assertTrue(self.state.exists(), "the pending WAL remains the recovery record")
+
+    def test_taken_count_restore_refuses_before_stopping_a_replaced_kdamond(self) -> None:
+        root = self.damon_tree(states=("on", "on"), contexts=(1, 0))
+        self.wal(["damon_owner=taken", "damon_nr_kdamonds=1", "damon_kdamond=0", "damon_nr_contexts=0", "kdamond=0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("expected unchanged 1", r.stdout)
+        self.assertEqual((root / "nr_kdamonds").read_text().strip(), "2")
+        self.assertEqual((root / "0" / "state").read_text().strip(), "on", "count drift blocks a write to the old index")
+        self.assertEqual((root / "1" / "state").read_text().strip(), "on")
+        self.assertTrue(self.state.exists())
 
     def test_the_container_names_are_removed_by_exact_name_and_a_reboot_writes_nothing(self) -> None:
         self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
