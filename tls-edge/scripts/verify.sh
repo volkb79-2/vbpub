@@ -198,31 +198,42 @@ fi
 echo
 echo "$(_bold "5. Socket-proxy policy")"
 
-_PROXY_RESULT="$(docker run --rm --network traefik_internal alpine:3.20 sh -c '
-    if wget -qO- --timeout=3 http://${EDGE_DOCKERPROXY}:2375/version >/dev/null 2>&1; then
+_PROXY_RESULT="$(docker run --rm --network traefik_internal \
+    -e PROXY_HOST="$EDGE_DOCKERPROXY" alpine:3.20 sh -c '
+    if wget -qO- --timeout=3 "http://${PROXY_HOST}:2375/version" >/dev/null 2>&1; then
         GET_OK=1
     else
         GET_OK=0
     fi
-    if wget -qO- --timeout=3 --post-data=x http://${EDGE_DOCKERPROXY}:2375/containers/create >/dev/null 2>&1; then
-        POST_OK=1
+
+    POST_OUTPUT="$(wget -qO- --timeout=3 --post-data=x \
+        "http://${PROXY_HOST}:2375/containers/create" 2>&1)"
+    POST_STATUS=$?
+    if [ "$POST_STATUS" -ne 0 ] \
+        && printf "%s\n" "$POST_OUTPUT" \
+            | grep -Eq "server returned error: HTTP/[0-9.]+ 403([[:space:]]|$)"; then
+        POST_403=1
     else
-        POST_OK=0
+        POST_403=0
     fi
-    echo "GET=$GET_OK POST=$POST_OK"
+
+    printf "GET=%s POST_403=%s PROBE=complete\n" "$GET_OK" "$POST_403"
 ' 2>/dev/null || true)"
 
 _GET_OK="$(echo "$_PROXY_RESULT" | grep -o 'GET=[01]' | cut -d= -f2 || true)"
-_POST_OK="$(echo "$_PROXY_RESULT" | grep -o 'POST=[01]' | cut -d= -f2 || true)"
+_POST_403="$(echo "$_PROXY_RESULT" | grep -o 'POST_403=[01]' | cut -d= -f2 || true)"
+_PROBE_COMPLETE="$(echo "$_PROXY_RESULT" | grep -c 'PROBE=complete' || true)"
 
-if [[ "$_GET_OK" == "1" && "$_POST_OK" == "0" ]]; then
+if [[ "$_PROBE_COMPLETE" != "1" ]]; then
+    fail "socket proxy: probe did not report a result"
+elif [[ "$_GET_OK" == "1" && "$_POST_403" == "1" ]]; then
     pass "socket proxy: GET /version allowed, POST /containers/create rejected"
-elif [[ "$_GET_OK" == "1" && "$_POST_OK" == "1" ]]; then
+elif [[ "$_GET_OK" == "1" && "$_POST_403" == "0" ]]; then
     fail "socket proxy: POST /containers/create was NOT rejected (POST: 0 not enforced)"
 elif [[ "$_GET_OK" == "0" ]]; then
     fail "socket proxy: GET /version failed (proxy unreachable or broken)"
 else
-    fail "socket proxy: unexpected result — GET=$_GET_OK POST=$_POST_OK"
+    fail "socket proxy: unexpected result — GET=$_GET_OK POST_403=$_POST_403"
 fi
 
 # ─── check 6: HTTP redirect (only when expose_http=true) ──────────────────────
@@ -296,24 +307,49 @@ if is_acme_mode; then
     fi
 
     if [[ -n "$DOMAIN" ]]; then
-        _DOMAIN_COUNT="$(docker run --rm \
-            -v ${EDGE_ACME_VOLUME}:/a:ro \
-            alpine:3.20 sh -c "grep -ci '$DOMAIN' /a/acme.json 2>/dev/null || echo 0" 2>/dev/null || echo 0)"
-        if [[ "${_DOMAIN_COUNT:-0}" -eq 0 ]]; then
-            warn "acme.json does not mention $DOMAIN (issuance pending or domain mismatch)"
+        _DOMAIN_RESULT="$(docker run --rm \
+            -v "${EDGE_ACME_VOLUME}:/a:ro" \
+            -e "VERIFY_DOMAIN=$DOMAIN" \
+            alpine:3.20 sh -c '
+                if DOMAIN_COUNT="$(grep -Fci -- "$VERIFY_DOMAIN" /a/acme.json 2>/dev/null)"; then
+                    echo "COUNT=$DOMAIN_COUNT"
+                else
+                    GREP_STATUS=$?
+                    if [ "$GREP_STATUS" -eq 1 ]; then
+                        echo "COUNT=0"
+                    else
+                        echo "READ_ERROR"
+                    fi
+                fi
+            ' 2>/dev/null || true)"
+        if [[ "$_DOMAIN_RESULT" =~ ^COUNT=([0-9]+)$ ]]; then
+            _DOMAIN_COUNT="${BASH_REMATCH[1]}"
+            if [[ "$_DOMAIN_COUNT" == "0" ]]; then
+                warn "acme.json does not mention $DOMAIN (issuance pending or domain mismatch)"
+            else
+                pass "acme.json references domain $DOMAIN ($_DOMAIN_COUNT occurrence(s))"
+            fi
         else
-            pass "acme.json references domain $DOMAIN ($_DOMAIN_COUNT occurrence(s))"
+            fail "acme.json domain probe could not read the file (got: ${_DOMAIN_RESULT:-(no response)})"
         fi
     fi
 
     # Check traefik logs for ACME errors
-    _ACME_ERRORS="$(docker logs ${EDGE_TRAEFIK} 2>&1 \
-        | grep -iE 'acme.*(error|unable|failed)' || true)"
-    if [[ -n "$_ACME_ERRORS" ]]; then
-        fail "ACME errors found in traefik logs:"
-        echo "$_ACME_ERRORS" | head -5 | sed 's/^/     /'
+    if _ACME_LOGS="$(docker logs "$EDGE_TRAEFIK" 2>&1)"; then
+        if _ACME_ERRORS="$(printf '%s\n' "$_ACME_LOGS" \
+            | grep -iE 'acme.*(error|unable|failed)')"; then
+            fail "ACME errors found in traefik logs:"
+            echo "$_ACME_ERRORS" | head -5 | sed 's/^/     /'
+        else
+            _ACME_GREP_STATUS=$?
+            if [[ "$_ACME_GREP_STATUS" -eq 1 ]]; then
+                pass "no ACME errors in traefik logs"
+            else
+                fail "could not scan traefik logs for ACME errors"
+            fi
+        fi
     else
-        pass "no ACME errors in traefik logs"
+        fail "could not read traefik logs for ACME errors"
     fi
 
 elif [[ "$TLS_MODE" == "static" || "$TLS_MODE" == "dev" ]]; then
@@ -352,41 +388,55 @@ if [[ "$NO_CANARY" == true ]]; then
 elif [[ -z "$DOMAIN" ]]; then
     skip "no domain — skipping canary"
 else
-    trap '_canary_cleanup; cleanup_tmp' EXIT
+    trap '_canary_cleanup' EXIT
 
-    docker run -d --rm \
+    if docker run -d --rm \
         --name "$_CANARY_NAME" \
         --network ingress_public \
         -l traefik.enable=true \
-        -l "traefik.http.routers.verify-canary.rule=Host(\`verify.$DOMAIN\`)" \
+        -l "traefik.http.routers.verify-canary.rule=Host(\`tls-edge-verify-canary.invalid\`)" \
         -l "traefik.http.routers.verify-canary.entrypoints=websecure" \
+        -l "traefik.http.routers.verify-canary.tls=true" \
         -l "traefik.http.services.verify-canary.loadbalancer.server.port=80" \
-        traefik/whoami:v1.11 >/dev/null 2>&1
+        traefik/whoami:v1.11 >/dev/null 2>&1; then
+        _CANARY_RESP=""
+        _CANARY_OK=false
+        for ((_CANARY_ATTEMPT = 1; _CANARY_ATTEMPT <= 30; _CANARY_ATTEMPT++)); do
+            # The URL host supplies TLS SNI; Host selects the deliberately
+            # non-issuable router. --connect-to reaches the edge container.
+            _CANARY_RESP="$(docker run --rm --network ingress_public curlimages/curl:8.10.1 \
+                -ksS --max-time 5 \
+                --connect-to "$DOMAIN:443:${EDGE_TRAEFIK}:443" \
+                -H "Host: tls-edge-verify-canary.invalid" \
+                "https://$DOMAIN/" 2>/dev/null || true)"
+            if echo "$_CANARY_RESP" | grep -q "Hostname:"; then
+                _CANARY_OK=true
+                break
+            fi
+            if [[ "$_CANARY_ATTEMPT" -lt 30 ]]; then
+                sleep 1 || true
+            fi
+        done
 
-    sleep 5
-
-    # --connect-to routes the canary hostname to the edge container directly
-    # (works on host and under DooD, independent of published ports).
-    _CANARY_RESP="$(docker run --rm --network ingress_public curlimages/curl:8.10.1 \
-        -ksS --connect-to "verify.$DOMAIN:443:${EDGE_TRAEFIK}:443" \
-        "https://verify.$DOMAIN/" 2>/dev/null || true)"
+        if [[ "$_CANARY_OK" == true ]]; then
+            pass "canary: Traefik routed to whoami via tls-edge-verify-canary.invalid (SNI $DOMAIN)"
+        else
+            fail "canary: response did not contain 'Hostname:' after 30 probes (routing broken?)"
+            echo "$_CANARY_RESP" | head -5 | sed 's/^/     /'
+        fi
+    else
+        fail "canary: container could not be started"
+    fi
 
     _canary_cleanup
-
-    if echo "$_CANARY_RESP" | grep -q "Hostname:"; then
-        pass "canary: Traefik routed to whoami via verify.$DOMAIN"
-    else
-        fail "canary: response did not contain 'Hostname:' (routing broken?)"
-        echo "$_CANARY_RESP" | head -5 | sed 's/^/     /'
-    fi
 fi
 
 # ─── check 10: access log JSON ────────────────────────────────────────────────
 echo
 echo "$(_bold "10. Access log JSON format")"
 
-_JSON_LOG="$(docker logs --tail 20 ${EDGE_TRAEFIK} 2>/dev/null || true)"
-_HAS_JSON_ROUTERNAME="$(echo "$_JSON_LOG" | python3 -c '
+if _JSON_LOG="$(docker logs --tail 20 "$EDGE_TRAEFIK" 2>/dev/null)"; then
+    if _HAS_JSON_ROUTERNAME="$(printf '%s\n' "$_JSON_LOG" | python3 -c '
 import sys, json
 for line in sys.stdin:
     line = line.strip()
@@ -400,12 +450,17 @@ for line in sys.stdin:
     except Exception:
         pass
 print("no")
-' 2>/dev/null || true)"
-
-if [[ "$_HAS_JSON_ROUTERNAME" == "yes" ]]; then
-    pass "access log: found JSON entries with RouterName key"
+' 2>/dev/null)"; then
+        if [[ "$_HAS_JSON_ROUTERNAME" == "yes" ]]; then
+            pass "access log: found JSON entries with RouterName key"
+        else
+            warn "access log: no JSON lines with RouterName found in last 20 log lines (no traffic yet, or format changed)"
+        fi
+    else
+        warn "access log: could not inspect JSON entries in Traefik logs"
+    fi
 else
-    warn "access log: no JSON lines with RouterName found in last 20 log lines (no traffic yet, or format changed)"
+    warn "access log: could not read Traefik logs"
 fi
 
 # ─── check 11: ops-check ──────────────────────────────────────────────────────
@@ -417,12 +472,24 @@ if [[ "$OPS_CHECK" == false ]]; then
 else
     _OPS_RESULT="$(docker run --rm \
         --network "$OPS_NET" \
-        alpine:3.20 \
-        wget -qO- -T 3 "http://$OPS_CONTAINER:$OPS_PORT/metrics" 2>/dev/null || true)"
-    if [[ -n "$_OPS_RESULT" ]]; then
+        -e "OPS_URL=http://$OPS_CONTAINER:$OPS_PORT/metrics" \
+        alpine:3.20 sh -c '
+            if ! command -v wget >/dev/null 2>&1; then
+                echo "OPS=probe-error"
+                exit 0
+            fi
+            if wget -qO- -T 3 "$OPS_URL" >/dev/null 2>&1; then
+                echo "OPS=reachable"
+            else
+                echo "OPS=unreachable"
+            fi
+        ' 2>/dev/null || true)"
+    if [[ "$_OPS_RESULT" == "OPS=reachable" ]]; then
         fail "ops isolation: http://$OPS_CONTAINER:$OPS_PORT/metrics reachable from $OPS_NET (endpoint NOT isolated)"
-    else
+    elif [[ "$_OPS_RESULT" == "OPS=unreachable" ]]; then
         pass "ops isolation: http://$OPS_CONTAINER:$OPS_PORT/metrics unreachable from $OPS_NET (isolation working)"
+    else
+        fail "ops isolation: probe did not report reachable or unreachable"
     fi
 fi
 
