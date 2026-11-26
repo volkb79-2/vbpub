@@ -454,6 +454,7 @@ def _observer_unavailable_rollup(
 
 def finish(result: LaneResult) -> int:
     """The single normal exit path; persist once, summarize, and close the table."""
+    event_writer = _ACTIVE_JOB_EVENT_WRITER
     record = result._record
     log_path = result.log_path or (record.get("log_path")
                                    if record is not None else None)
@@ -467,6 +468,21 @@ def finish(result: LaneResult) -> int:
     if result._json:
         print(json.dumps({**result.as_dict(), "log_path": log_path},
                          sort_keys=True))
+        if event_writer is not None:
+            lane_name = result._lane_name or event_writer.lane
+            details = [f"verdict {result.verdict}"]
+            if result.exit_code is not None:
+                details.append(f"exit_code {result.exit_code}")
+            if result.reason:
+                details.append(f"reason {result.reason}")
+                if result.reason == "command-exit-map":
+                    last = last_log_line(log_path)
+                    if last:
+                        details.append(f"last_output {json.dumps(last)}")
+            if log_path:
+                details.append(f"log {log_path}")
+            print(f"run-gate: lane {lane_name!r} " + "; ".join(details),
+                  file=sys.stderr, flush=True)
     elif result._lane_name is not None:
         details = [f"verdict {result.verdict}"]
         if result.exit_code is not None:
@@ -481,6 +497,21 @@ def finish(result: LaneResult) -> int:
             details.append(f"log {log_path}")
         print(f"run-gate: lane {result._lane_name!r} " + "; ".join(details),
               flush=True)
+    elif event_writer is not None:
+        details = [f"verdict {result.verdict}"]
+        if result.exit_code is not None:
+            details.append(f"exit_code {result.exit_code}")
+        if result.reason:
+            details.append(f"reason {result.reason}")
+        if log_path:
+            details.append(f"log {log_path}")
+        print(f"run-gate: lane {event_writer.lane!r} " + "; ".join(details),
+              flush=True)
+    if event_writer is not None:
+        event_writer.emit(
+            "lane-verdict", lane=result._lane_name or event_writer.lane,
+            verdict=result.verdict, exit_code=result.gate_exit_code,
+            lane_exit_code=result.exit_code)
     return result.gate_exit_code
 
 
@@ -615,6 +646,38 @@ class JobEventWriter:
             os.close(fd)
         except OSError as exc:
             self._warning(exc)
+
+
+@contextlib.contextmanager
+def suppress_job_events():
+    """Keep nested lane invocations independent of the caller's event file."""
+    global _ACTIVE_JOB_EVENT_WRITER
+    previous = _ACTIVE_JOB_EVENT_WRITER
+    _ACTIVE_JOB_EVENT_WRITER = None
+    try:
+        yield
+    finally:
+        _ACTIVE_JOB_EVENT_WRITER = previous
+
+
+def strip_job_event_options(argv: list[str]) -> list[str]:
+    """Remove the caller's event flags before an internal worker dispatch."""
+    output: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            output.extend(argv[index:])
+            break
+        if token in ("--event-file", "--job-id"):
+            index += 2
+            continue
+        if token.startswith("--event-file=") or token.startswith("--job-id="):
+            index += 1
+            continue
+        output.append(token)
+        index += 1
+    return output
 
 
 def open_job_event_writer(event_file: str, job_id: str, lane: str,
@@ -13789,11 +13852,13 @@ def run_workers_step(args: argparse.Namespace, base_argv: list[str],
                      count: int, dispatch: Callable[..., "LaneResult"],
                      *, scaling: bool) -> dict:
     """One measured step: dispatch at N, record it, read back its outcomes."""
-    result = dispatch(base_argv, _workers_options={
-        "workers": count, "junit": True, "scaling": scaling,
-        "no_recheck": True})
-    record = result._record or {}
-    finish(result)
+    with suppress_job_events():
+        result = dispatch(strip_job_event_options(base_argv),
+                          _workers_options={
+                              "workers": count, "junit": True,
+                              "scaling": scaling, "no_recheck": True})
+        record = result._record or {}
+        finish(result)
     junit = (record.get("workers") or {}).get("junit")
     outcomes = junit_outcomes(Path(junit)) if junit else None
     if junit:
@@ -21355,12 +21420,13 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                     member_argv.append("--fresh")
             if request_base and any(leaf in delegates for leaf in member_leaves):
                 member_argv += ["--base", request_base]
-            result = _dispatch(member_argv,
-                               _admission_ticket=ticket,
-                               _admission_managed=True)
-            # Persist each member's independent history result now; a later
-            # failure in the sequence must not discard earlier measurements.
-            finish(result)
+            with suppress_job_events():
+                result = _dispatch(member_argv,
+                                   _admission_ticket=ticket,
+                                   _admission_managed=True)
+                # Persist each member's independent history result now; a later
+                # failure in the sequence must not discard earlier measurements.
+                finish(result)
             entry = {"lane": member_name, "result": result.as_dict()}
             member_results.append(entry)
             if record is not None:
@@ -22584,14 +22650,19 @@ def _dispatch(argv: list[str] | None = None, *,
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:
+            def recheck_without_parent_events():
+                with suppress_job_events():
+                    return _dispatch(
+                        strip_job_event_options(request_argv),
+                        _admission_ticket=_admission_ticket,
+                        _admission_managed=_admission_managed,
+                        _workers_options={**workers_options, "workers": 1,
+                                          "lf": True, "no_recheck": True})
+
             result = xdist_isolation_recheck(
                 command_lane_result(code, lane), lane, record,
                 workers_options,
-                lambda: _dispatch(
-                    request_argv, _admission_ticket=_admission_ticket,
-                    _admission_managed=_admission_managed,
-                    _workers_options={**workers_options, "workers": 1,
-                                      "lf": True, "no_recheck": True}))
+                recheck_without_parent_events)
         if (lane["kind"] == "assay" and not args.dry_run
                 and result.verdict != "PASS"):
             _report_failed_assay(args.lane, record, eff_proj, repo, lane,

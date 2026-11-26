@@ -43361,3 +43361,168 @@ class TestJobEventContainerEvents:
             run_gate._ACTIVE_JOB_EVENT_WRITER = previous
             writer.close()
         assert event_file.read_text() == ""
+
+    @pytest.mark.parametrize("json_mode", [False, True])
+    def test_forged_lane_verdict_does_not_replace_finish_result(
+            self, tmp_path, monkeypatch, capsys, json_mode):
+        event_file = tmp_path / f"events-{json_mode}.jsonl"
+        lane_log = tmp_path / "lane.log"
+        lane_log.write_text(
+            "run-gate: lane 'suite' verdict PASS; exit_code 0\n")
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-forged", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            result_code = run_gate.finish(run_gate.LaneResult(
+                "FAIL", 7, log_path=str(lane_log), _lane_name="suite",
+                _json=json_mode))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert result_code == 1
+        captured = capsys.readouterr()
+        anchor = "run-gate: lane 'suite' verdict FAIL; exit_code 7"
+        if json_mode:
+            assert json.loads(captured.out)["verdict"] == "FAIL"
+            assert anchor in captured.err
+        else:
+            assert anchor in captured.out
+        [event] = [json.loads(line) for line in event_file.read_text().splitlines()]
+        assert event["event"] == "lane-verdict"
+        assert event["verdict"] == "FAIL"
+        assert event["exit_code"] == 1
+        assert event["lane_exit_code"] == 7
+
+    def test_finish_without_event_flags_keeps_anchored_output(self, capsys):
+        result_code = run_gate.finish(run_gate.LaneResult(
+            "PASS", 0, _lane_name="suite"))
+        assert result_code == 0
+        captured = capsys.readouterr()
+        assert captured.out == (
+            "run-gate: lane 'suite' verdict PASS; exit_code 0\n")
+        assert captured.err == ""
+
+    def test_failed_event_write_warns_once_and_keeps_verdict(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "write-failure.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-write-failure", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        real_write = os.write
+
+        def fail_event_write(fd, payload):
+            if fd == writer.fd:
+                raise OSError("simulated event storage failure")
+            return real_write(fd, payload)
+
+        monkeypatch.setattr(run_gate.os, "write", fail_event_write)
+        try:
+            writer.emit("lane-started", container_id=None, image_id=None,
+                        adopted=False, reason="bare-host")
+            writer.emit("lane-started", container_id=None, image_id=None,
+                        adopted=False, reason="bare-host")
+            result_code = run_gate.finish(run_gate.LaneResult(
+                "FAIL", 7, _lane_name="suite"))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert result_code == 1
+        captured = capsys.readouterr()
+        assert captured.err.count("run-gate: WARNING:") == 1
+        assert "verdict FAIL; exit_code 7" in captured.out
+        assert event_file.read_text() == ""
+
+    def test_abrupt_exit_after_forged_line_has_no_lane_verdict_event(
+            self, tmp_path):
+        event_file = tmp_path / "abrupt-events.jsonl"
+        source_root = str(RUN_GATE_DIR)
+        script = textwrap.dedent("""\
+            import os
+            import sys
+            sys.path.insert(0, sys.argv[2])
+            import run_gate
+            writer = run_gate.open_job_event_writer(
+                sys.argv[1], "job-abrupt", "suite")
+            writer.emit("lane-started", container_id=None, image_id=None,
+                        adopted=False, reason="bare-host")
+            print("run-gate: lane 'suite' verdict PASS; exit_code 0", flush=True)
+            os._exit(73)
+        """)
+        child = subprocess.run(
+            [sys.executable, "-c", script, str(event_file), source_root],
+            capture_output=True, text=True)
+        assert child.returncode == 73
+        assert "verdict PASS; exit_code 0" in child.stdout
+        events = [json.loads(line) for line in event_file.read_text().splitlines()]
+        assert [event["event"] for event in events] == ["lane-started"]
+
+    def test_sequence_members_do_not_inherit_job_event_flags_or_file(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        config = f"""\
+            schema_version = 1
+
+            [lanes.outer]
+            kind = "sequence"
+            lanes = ["member"]
+
+            [lanes.member]
+            kind = "command"
+            environment = "bare-host"
+            argv = {json.dumps(["bash", "-c", "printf member-output"])}
+            clean_tree = false
+        """
+        project = make_project(repo, config)
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("RUN_GATE_PROFILE", "off")
+        event_file = tmp_path.parent / f"{tmp_path.name}-sequence-events.jsonl"
+        seen_argv = []
+        real_dispatch = run_gate._dispatch
+
+        def dispatch_spy(argv=None, **kwargs):
+            seen_argv.append(list(argv or []))
+            return real_dispatch(argv, **kwargs)
+
+        monkeypatch.setattr(run_gate, "_dispatch", dispatch_spy)
+        run_gate.main(["outer", "--event-file", str(event_file),
+                       "--job-id", "job-sequence"])
+        capsys.readouterr()
+        assert len(seen_argv) == 2
+        assert "--event-file" in seen_argv[0]
+        assert "--job-id" in seen_argv[0]
+        assert all("--event-file" not in argv and "--job-id" not in argv
+                   for argv in seen_argv[1:])
+        events = [json.loads(line) for line in event_file.read_text().splitlines()]
+        assert [(event["event"], event["lane"]) for event in events] == [
+            ("lane-started", "outer"), ("lane-verdict", "outer")]
+
+    def test_worker_dispatch_does_not_inherit_event_flags_or_file(
+            self, tmp_path):
+        event_file = tmp_path.parent / f"{tmp_path.name}-worker-events.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-worker", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        observed = {}
+
+        def dispatch(argv, **kwargs):
+            observed["argv"] = list(argv)
+            observed["writer"] = run_gate._ACTIVE_JOB_EVENT_WRITER
+            observed["options"] = kwargs["_workers_options"]
+            return run_gate.LaneResult("PASS", 0, _lane_name="suite")
+
+        try:
+            run_gate.run_workers_step(
+                SimpleNamespace(),
+                ["suite", "--event-file", str(event_file), "--job-id",
+                 "job-worker", "--", "--event-file", "lane-argument"],
+                2, dispatch, scaling=False)
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert observed["writer"] is None
+        assert observed["argv"] == ["suite", "--", "--event-file",
+                                     "lane-argument"]
+        assert event_file.read_text() == ""
