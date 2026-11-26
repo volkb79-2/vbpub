@@ -1186,6 +1186,7 @@ mod tests {
             "assay holds no score constant",
             "A record for another major counts as no record",
             "P1 is observe-only and emits no hostobs events",
+            "Emission is best-effort and idempotent on `(event name, boot_id, seq)` (D19)",
             "idempotent on `(event name, boot_id, seq)` and best-effort",
         ] {
             assert!(

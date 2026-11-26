@@ -238,8 +238,8 @@ constraint: `ctx` accepts only `run`, `lane`, `candidate`, `txn`, `session`, eac
 defers to 4.10 at `:476`), so the run id rides in `ctx.run` and factual fields go in `attrs` (8 pairs, key <= 64 B,
 value <= 256 B, `hostobs/crates/store/src/events.rs:42`, `:48`, `:50`): `cgroup`, `cgroup_id`, `boot_id`, `seq`,
 and, on thaw only, `seconds`. `reason` and `unit`/`owner` go in the event's `name`/`key`/`code` fields;
-`reclaim_bytes` stays in thrashguard's own journal. Emission is best-effort and idempotent on `(boot_id, seq)`
-(D19): a lost event is `unknown`, never a wrong number.
+`reclaim_bytes` stays in thrashguard's own journal. Emission is best-effort and idempotent on
+`(event name, boot_id, seq)` (D19): a lost event is `unknown`, never a wrong number.
 
 ### 4a. What exists today in hostobs, and what is missing (B2 check)
 
