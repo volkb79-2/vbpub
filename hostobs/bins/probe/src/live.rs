@@ -94,7 +94,7 @@ impl Backend for ProbeBackend {
         }
         if scan_required {
             for (row_index, row) in data.rows.iter().enumerate() {
-                let Some(Entry::Entity { inc, label }) = data.entries.get(row.ent as usize) else {
+                let Some(Entry::Entity { label, .. }) = data.entries.get(row.ent as usize) else {
                     continue;
                 };
                 if selection

@@ -940,12 +940,18 @@ mod tests {
         let text = req("subscribe", &subscribe);
         let mut legacy = binary(text.as_bytes());
         legacy.prefix = prefix(1, 1);
-        assert_refusal(
-            &legacy,
-            Code::UnsupportedFeature,
-            5,
-            &Detail::Feature("cgroup_id"),
-        );
+        // The default facts accept no interval, which would refuse the schema before step 11.
+        let paced = ConnFacts {
+            interval: IntervalRule {
+                min_ms: 1_000,
+                tick_ms: 1_000,
+            },
+            ..ConnFacts::default()
+        };
+        let refusal = classify_with(&legacy, &paced).expect_err("refused");
+        assert_eq!(refusal.code, Code::UnsupportedFeature, "{refusal:?}");
+        assert_eq!(refusal.corr, 5);
+        assert_eq!(refusal.detail, Detail::Feature("cgroup_id"));
 
         let text = req("current", &current);
         let supported = binary(text.as_bytes());
