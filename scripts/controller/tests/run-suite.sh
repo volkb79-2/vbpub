@@ -37,6 +37,7 @@ files=(
   "$SCRIPT_DIR/../resume-lib.sh"
   "$SCRIPT_DIR/../resume-read.sh"
   "$SCRIPT_DIR/../ctl-keepalive.sh"
+  "$SCRIPT_DIR/pane-frame-lib.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
   "$REPO_ROOT/scripts/netcup/runner/remote-gate-cache.sh"
   "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"

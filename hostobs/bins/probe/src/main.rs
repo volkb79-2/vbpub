@@ -21,6 +21,7 @@ use rustix::event::{eventfd, EventfdFlags};
 use crate::config::{Action, ConfigError, LevelMapError};
 
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
+const PROC_ROOT: &str = "/proc";
 const MAX_BOOT_ID_BYTES: usize = 64;
 
 fn main() {
@@ -102,7 +103,7 @@ fn serve(config_path: &Path) -> Result<(), ProcessError> {
         boot_id: boot_bytes,
         epoch,
         tick_ms: config.tick_ms,
-        cgroup_root: config.cgroup_root,
+        cgroup_root: config.cgroup_root.clone(),
         max_rows: config.max_rows,
     };
     let stop = Arc::new(AtomicBool::new(false));
@@ -116,7 +117,16 @@ fn serve(config_path: &Path) -> Result<(), ProcessError> {
     let backend = ProbeBackend::new(identity, Arc::clone(&published));
     let server = Server::new(limits, backend);
     let mut now_ns = || clock.mono_ns();
-    driver::run(server, listeners, wake, stop, &mut now_ns).map_err(ProcessError::Run)
+    driver::run(
+        server,
+        listeners,
+        wake,
+        stop,
+        Path::new(PROC_ROOT),
+        &config.cgroup_root,
+        &mut now_ns,
+    )
+    .map_err(ProcessError::Run)
 }
 
 fn listen_variable(name: &'static str) -> Result<Option<String>, StartupError> {
