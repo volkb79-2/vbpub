@@ -8,21 +8,21 @@
 | D1 | One API (`fleet-host-agent/1`); modes differ only in who picks the host | callers share lifecycle and result semantics |
 | D2 | Placement reads host agent `host-facts/2`, never `docker stats` | host facts expose the admitted capacity |
 | D3 | Planned cores may reach `cores + 1`, capped by host `planning_cap` | leave room for IO overlap within the worker slice |
-| D4 | Start warm-set charges at 0.5/1.5/4/12 GiB; exclude swap; live memory PSI is a hard stop | warm working set predicts RAM; PSI catches actual pressure |
+| D4 | Each host sets warm-set charges in `/etc`; exclude swap; live memory PSI is a hard stop | warm working set predicts RAM; PSI catches actual pressure |
 | D5 | One host admission book for every caller; waiting returns 75 | the host sees every job that consumes its capacity |
 | D6 | Progress decides a stall; no run wall-clock budget | duration alone does not show lack of progress |
 | D7 | Stop the lane before collecting; retain checkout and charge if stop fails | collection must include all writes flushed before exit |
 | D8 | Fleetd credentials cover only fleetd-owned hosts; records carry no secret | ciu keeps its own access in ciu-direct mode |
 | D9 | Controller-host planned total is at most 3 GB; max class is `small`, set in `/etc` | a host-owned cap protects the constrained gate slice |
-| D10 | One fair fleetd queue; merge-unblocking gates lead; aged jobs reserve capacity | prevent avoidable merge delay and large-job starvation |
+| D10 | One fair fleetd queue ordered by clamped `priority`; aged jobs reserve capacity | prevent avoidable merge delay and large-job starvation |
 | D11 | A known freeze blocks new jobs; running jobs remain untouched | avoid adding work while thrashguard holds units |
 | D12 | ciu uses an installed runner queue; otherwise it keeps its own admission | avoid two schedulers on an enrolled host |
 | D13 | Remove dev's `max_s`; use progress to judge a run | fixed duration conflicts with the no-time-budget rule |
-| D14 | Controller jobs use host fleetd over a mounted local socket; peer creds map one shared devcontainer principal | host cgroup visibility and queue survival |
+| D14 | Local controller run-gate leases through host fleetd over a mounted socket; fleetd placement waits for a host cockpit runner | host cgroup visibility and queue survival |
 
 ## 1. Scope, non-goals, current state
 
-**Scope.** Job API/host agent, fleetd placement, remote-gate executor/result transport, and four client migrations. Closes
+**Scope.** Job API/host agent, fleetd placement, remote-gate executor/result transport, and fleetd/client migrations including the controller lease. Closes
 CTL-51, CTL-48, FD-042, FD-003 and FD-004. **Non-goals:** netcup API, shard ranges (P-fd-06), fleetd docs/facts (P-fd-07),
 thrashguard itself, agctl's snapshot contract.
 
@@ -49,15 +49,16 @@ already plans RAM-first (`.controller-state/operator-decisions.md:668-671`; `fle
 | mode | who picks the host | host access | admission |
 |---|---|---|---|
 | **ciu-direct** (v8 ciu/run-gate) | the caller | the caller's own keys | the host agent's queue if installed, else ciu's own |
-| **fleetd-placed** | fleetd, from `host-facts/2` | fleetd's credentials, fleetd-owned hosts only | fleetd's cross-host queue, then the host agent |
+| **fleetd-placed** | fleetd, from `host-facts/2` | fleetd-owned hosts; controller host excluded pending cockpit runner | fleetd's cross-host queue, then the host agent |
 
 Same in both: the record, the status answer, the exit codes, the progress stream. Programmatic
 job construction in fleetd today goes through `JobSpec`/`RunnerJobs`
 (`fleetd/src/fleetd/runner.py:30-60`); that module becomes the client of the agent.
 
-**Controller host as a worker (D14).** Fleetd runs there as a host service, outside the devcontainer. Local `run-gate`
-uses its Unix socket and the same admission book as fleetd-placed work. The agent sees `dev-gates.slice` and host
-pressure; the devcontainer's private cgroup view cannot. Its host-owned queue and executor survive devcontainer restart.
+**Controller host service (D14).** Fleetd-agent runs there as a host service, outside the devcontainer. Local `run-gate`
+uses a socket lease against the host admission book; its lane stays in the devcontainer. The agent sees `dev-gates.slice`
+and host pressure, which the devcontainer's private cgroup view cannot. Fleetd-placed execution there waits for a host
+cockpit runner. The queue and live lease records survive devcontainer and agent restarts.
 
 ## 2. The job API
 
@@ -73,7 +74,7 @@ answer rather than no answer.
 
 ### 2.2 Verbs and the record
 
-B4 names `probe|start|stop|fetch|facts`; v1 uses `probe|facts|have|put|submit|status|progress|cancel|fetch`.
+B4 names `probe|start|stop|fetch|facts`; v1 uses `probe|facts|have|put|submit|status|progress|cancel|fetch|lease`.
 No start/stop aliases: the current CLI has a facts collect/validate group, while host-agent verbs
 remain P-fd-05 (`fleetd/src/fleetd/cli.py:396-440`; `fleetd/KNOWN_ISSUES_TODO_BACKLOG.md:854-857`).
 
@@ -90,14 +91,15 @@ remain P-fd-05 (`fleetd/src/fleetd/cli.py:396-440`; `fleetd/KNOWN_ISSUES_TODO_BA
 | `resources.cpu_set` | CPU ids or null | exact host CPU set to use; null lets placement choose an allowed set |
 | `resources.footprint` | `tiny|small|medium|large` | derived by the client from its warm-set table; §3.3 |
 | `resources.declared_peak_bytes` | int or null | lane declaration; a hint, not a cgroup limit |
-| `requested_by` | `{client, version, run}` | audit labels only; the host derives group and priority from the credential |
+| `priority` | `merge-gate|dev|gate|campaign` | requested queue class; host clamps it to the authenticated principal's `/etc` allow-list |
+| `requested_by` | `{client, version, run}` | audit labels only; identity and group come from credentials |
 | `stores.collect`, `stores.seed` | paths; `{path,sha256,bytes}` | today's options (`scripts/netcup/runner/remote-gate.py:1031-1032`) |
 | `extra_argv`, `env` | list, map | argv and named profile values, each checked by the host against allow-lists |
 | `dev` | object or null | tracked patch, untracked archive (each hash and size), verb argv, tty flag and worktree key; only for `kind: dev` |
 | `kind` | `lane|dev` | selects the executor mode |
 
 **Idempotence.** The client prefixes the id with its authenticated group. The digest covers
-`repo`, `sha`, `base`, `project`, `lane`, `shard`, `kind`, all resource fields, store descriptors,
+`repo`, `sha`, `base`, `project`, `lane`, `shard`, `kind`, `priority`, all resource fields, store descriptors,
 `extra_argv`, `env`, `dev`, and `requested_by.client`/`.run`; it excludes `job_id` and
 `requested_by.version`. The agent binds
 the authenticated group separately. Same id and digest returns existing state; same id with a
@@ -113,9 +115,14 @@ The payload has no `max_s`, removing today's timeout wrapper (`scripts/controlle
 streamed body; only `in.bundle`, indexed seed archives and the two dev patch archives are valid
 names. The agent checks length and checksum and creates the destination itself.
 
-Local framing: one request per connection, 4-byte big-endian byte length + UTF-8 JSON object, max 64 KiB.
-For `put`, exactly `bytes` follows, streamed and capped by required `policy.max_upload_bytes`; client half-closes write
-after the full request and server rejects truncation/extra input. `fetch` ranges are at most 8 MiB; responses use same frame + body.
+Controller-only **lease** takes `{container_name, footprint, planned_cores, priority}`. The host returns a `lease_id`; the
+client binds the created container ID on that connection. A reconnect names the existing `lease_id` and immutable container ID.
+
+Local framing: ordinary verbs use one request per connection, 4-byte big-endian byte length + UTF-8 JSON object, max 64 KiB.
+`lease` is controller-socket-only and keeps its connection open for the full gate-container lifetime; grant/bind/ack messages use the same frame size, then Run-Gate closes after removal.
+For `put`, exactly `bytes` follows,
+streamed and capped by required `policy.max_upload_bytes`; client half-closes after the request and server rejects truncation/extra input.
+`fetch` ranges are at most 8 MiB; responses use the same frame + body.
 
 **Several clients, several ciu roots.** The record names `repo` and `requested_by`, and the host
 keeps `jobs/<job_id>/request.json`. Two clients may hold one repo in one checkout root (that is
@@ -211,7 +218,7 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `memory.swap_total_bytes`, `memory.swap_free_bytes` | bytes | `/proc/meminfo` | report only; never counted as capacity |
 | `psi.{cpu,memory,io}.{some,full}_avg10_pct` | percent | `/proc/pressure/*` (`fleetd/src/fleetd/facts.py:306-324`) | `null`+reason; planner refuses unknown (`fleetd/src/fleetd/plan.py:485-490`), remote-gate refuses unreadable (`scripts/netcup/runner/remote-gate.py:248-255`) |
 | `psi.*.avg60`, `psi.*.avg300` | percent | host-facts/1 reads avg10 only (`fleetd/src/fleetd/facts.py:306-324`) | `not-collected`; /2 uses avg10 for admission |
-| `gate_slice.memory_current_bytes`, `.memory_high_bytes`, `.memory_max_bytes`, `.cpu_max` | bytes, quota/period | cgroup v2 files for the configured worker slice | `null`+reason; refuse placement |
+| `gate_slice.memory_current_bytes`, `.memory_warm_bytes`, `.memory_high_bytes`, `.memory_max_bytes`, `.cpu_max` | bytes, quota/period | cgroup v2; warm is current minus `memory.stat[inactive_file]` | missing inputs → `null`+reason; refuse placement |
 | `disks[]` | `{name,mount,total_bytes,free_bytes,fs,floor_bytes}` | `statvfs`; checkout and Docker roots plus per-host `/etc` floors | `null`+reason; refuse that host |
 | `cgroup_v2.mounted`, `cgroup_v2.controllers` | bool, list | mountinfo | refuse (admission and the guard both need it) |
 | `kernel_interfaces.*`, `ksm.*` | bools, ints | kept from /1 | `null`+reason, never a synthetic 0 |
@@ -223,7 +230,7 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `freeze.since_utc`, `freeze.by`, `freeze_reason` | time, strings | hostobs events | `not-collected` until thrashguard P4 |
 | `freeze.queued` | int | none (agctl draft has no source, `agctl-estate-snapshot-draft.md:38-39`) | `not-collected` |
 | `policy.host_role`, `.psi_refuse_some_avg10`, `.max_lane_containers` | as /1 (`fleetd/src/fleetd/contracts.py:510-524`) | `/etc/fleetd/facts.toml` | role null → refuse (`fleetd/src/fleetd/plan.py:480-483`) |
-| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.host_reserve_bytes`, `.disk_floors` | number, class, bytes | `/etc/fleetd/facts.toml`; controller sets `small` and ~3 GB | null+reason; refuse placement |
+| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.host_reserve_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors` | number, class, bytes | required `/etc/fleetd/facts.toml`; charges and allowed priorities are per host/principal | missing value → refuse placement; no defaults |
 | `policy.max_upload_bytes` | bytes | required `/etc/fleetd/facts.toml` | null+reason; refuse `put` |
 | `policy.admission` | `{queue_path, wait_s, settle_s}` | host config | refuse; admission is not optional |
 | `queue.planned_cores`, `.charged_bytes`, `.waiting` | number, bytes, count | host agent's admission book | `null`+reason |
@@ -239,50 +246,56 @@ today" stays true: the one id *is* the join (`.controller-state/platform/design/
 
 ### 3.3 Footprint class and fit
 
-A class estimates the warm working set; it is not a peak-RSS limit. The client derives it from a local warm-set table.
-Today `scripts/controller/remote-gate.sh` reads a controller-owned peak table (`scripts/controller/remote-gate.sh:143-180`); migration replaces it.
+A class estimates the warm working set; it is not a peak-RSS limit. Each host sets its class charges in `/etc/fleetd/facts.toml`;
+the client derives an explicit class from its warm-set table. Today `scripts/controller/remote-gate.sh` reads a controller-owned
+peak table (`scripts/controller/remote-gate.sh:143-180`); migration replaces it. Run-Gate already collects `memory.current`
+and parsed `memory.stat` (`run-gate-project/run_gate.py:4131-4146`); P-fd-05 makes the host agent read those same cgroup inputs.
 
-| class | charge | typical |
+| class | example charge on an 8-GiB worker | typical |
 |---|---:|---|
 | `tiny` | 0.5 GiB | lint, a parse |
 | `small` | 1.5 GiB | a pytest lane, a cmru build |
 | `medium` | 4 GiB | a gate-full lane |
-| `large` | 12 GiB | an R2 shard with a mutation judge |
+| `large` | 6 GiB | a warm-set estimate for a large gate |
 
-After startup, sample cgroup `memory.current` at each progress event (for command lanes, when the log-byte offset advances).
-Use the 90th percentile for that lane/version and assign the smallest class at least that large. If it exceeds `large`,
-refuse until policy adds a class. With no measurement, the caller supplies an explicit class; the agent invents no
-default. Estimates are not container caps. Host policy refuses above `policy.max_footprint`; the controller permits only
-`small` and caps planned totals at about 3 GB through `/etc/fleetd/facts.toml` (D9).
+`warm(cgroup) = memory.current - memory.stat[inactive_file]`. Use this exact per-cgroup value for each `current_j`, the slice
+term below, and samples after startup at each progress event (command lanes sample when their log-byte offset advances).
+Use the p90 sample for that lane/version and assign the smallest configured class at least that large. With no measurement,
+the caller supplies an explicit class. Missing/invalid class is refusal (2), never an invented default.
+These estimates are not container caps. On an 8-GiB worker with a 0.5–1-GB host reserve, the example charges fit about 7 GiB;
+all charges remain per-host `/etc` values. The controller permits only `small` and caps planned totals near 3 GB (D9).
 
-For each admitted job `j`, let `charge_j` be its warm-set estimate, `current_j` its cgroup use, and
-`reserved = sum(max(0, charge_j - current_j))`. One fit value decides admission:
+For each admitted job `j`, let `charge_j` be its selected host's class charge, `current_j = warm(job_cgroup_j)`,
+`slice_warm_current = warm(gate_slice)`, and `reserved = sum(max(0, charge_j - current_j))`. One fit value decides admission:
 
 ```
 fit_bytes = min(
   memory.total_bytes - host_reserve - sum(charge_j),
-  min(gate_slice.memory_high, gate_slice.memory_max) - gate_slice.memory_current - reserved,
+  min(gate_slice.memory_high, gate_slice.memory_max) - slice_warm_current - reserved,
   policy.max_planned_bytes - sum(charge_j)
 )
 admit iff fit_bytes >= charge_new
 ```
 
-The first term plans warm sets against physical RAM minus the host-services reserve. The slice term subtracts observed
-use plus only unconsumed job reservations, so actual use is not counted twice and a job above estimate still consumes
-its real slice budget. `max_planned_bytes` is the per-host `/etc` cap. Swap is never added, and fleetd's campaign
-overcommit factor (`fleetd/src/fleetd/plan.py:563-585`) is not used. If a job exceeds its estimate, `memory full
-avg10 >= 3` stops new admission but never kills a running job.
+The first term plans warm sets against physical RAM minus the host-services reserve. The slice term subtracts warm observed
+use plus only unconsumed reservations, so actual use is not counted twice. `max_planned_bytes` is the per-host `/etc` cap.
+For each eligible host, static plannable RAM is the minimum of total RAM minus host reserve, slice ceiling and planned-byte cap.
+If the class charge exceeds that value on every eligible host, `submit` refuses with 2; transient load still queues or returns 75.
+Swap is never added; fleetd's campaign overcommit factor (`fleetd/src/fleetd/plan.py:563-585`) is not used. A job may exceed its
+estimate; live `memory full avg10 >= 3` stops new admission but never kills a running job.
 
 ### 3.4 One admission mechanism on the host (B3), exit-75 parity
 
 The agent keeps one host book for all local and direct callers. Fleetd keeps one fair global queue
 and asks candidate hosts for immediate admission; a rejected host request leaves no host waiter.
-The controller host joins the same book through its host agent (D14); its state survives devcontainer restart.
+The controller host joins the same book through its host agent (D14); its state survives devcontainer restart. Local `run-gate`
+uses the `lease` verb for accounting, while fleetd-placed execution there is excluded until a host cockpit runner exists.
 
 ```
 /var/lib/fleetd-agent/       # systemd StateDirectory; root:root 0700, survives agent/devcontainer restart
   admission/
     admitted/<job_id>.json   # charge and CPUs; executor holds flock while alive
+    leases/<lease_id>.json   # local gate charge and immutable container identity
     queue.lock              # one admission decision at a time
     waiting/<job_id>        # ciu-direct waiters; fleetd waits in its global queue
 ```
@@ -293,15 +306,24 @@ The controller host joins the same book through its host agent (D14); its state 
 - **Disk floor.** Below either configured checkout-root or Docker-root free-space floor, ciu-direct
   waits in its host queue and fleetd gets an immediate 75 to try another host.
 - **Fleetd placement.** A candidate must pass load, memory PSI, warm-set RAM, gate-slice, CPU-set
-  and disk-floor checks. Choose greatest remaining warm-set RAM fit, then planned-core headroom,
+  and disk-floor checks. The controller host is not a fleetd execution candidate yet. Choose greatest remaining warm-set RAM fit, then planned-core headroom,
   lowest memory-full avg10, greatest disk headroom and stable `host_id`. `cpu_set` restricts eligible
   hosts and the executor applies it.
-- **Queue order and reservation** (N3): the authenticated key sets the class; merge-unblocking
-  gates lead, then `dev`, `remote-gate`/`fleetd`, and campaigns. Within a class use submit time and
+- **Queue order and reservation** (N3/MF1): order `merge-gate`, `dev`, `gate`, `campaign`; within a class use submit time and
   group-prefixed id. When an aged head cannot fit, reserve its RAM and cores on its best statically
   eligible host using the placement ranking but ignoring active jobs. Backfill there only below that reservation; higher-priority merge gates may pass.
   Recompute the target when facts or eligibility change. The head starts before later arrivals as
   soon as it fits, so small jobs cannot consume its reserved capacity.
+- **Priority authorization.** Host `/etc` policy lists allowed priorities for each credential principal. Missing policy or absent/unknown priority refuses (2).
+  A valid disallowed value clamps only down to the least-urgent allowed class no more urgent than requested; if none exists, refuse (2). Fleetd clamps for its caller before forwarding; the host clamps again for fleetd's credential. `requested_by` never selects priority.
+- **Local run-gate lease (MF3).** On the controller host, `lease` uses this same queue lock, warm charge, planned-core and priority
+  checks; `frozen_units > 0` refuses with 75 (N4). Run-Gate supplies a fresh `container_name` in `{container_name, footprint, planned_cores, priority}`; a class
+  impossible on this host or a name collision refuses with 2. The host waits in the same priority/reservation queue under `queue.lock`; disconnect before grant withdraws the waiter.
+  On grant it writes a pending lease and returns a new `lease_id`. Run-Gate creates the named container stopped with label `fleetd.lease=<lease_id>`, sends its immutable Docker ID on the same connection, and starts it only after the agent
+  verifies name, ID and label and acknowledges the bind. The client persists lease/container identity before start; write or bind
+  failure means no start. Today Run-Gate starts with `docker run -d --name` and writes a best-effort in-flight record afterwards
+  (`run-gate-project/run_gate.py:18424-18437,18566-18589,18644,7350-7389`); package H replaces that order. The devcontainer remains the
+  executor; fleetd does not run this lease as a host job.
 - **Reservation parity.** With continuous small arrivals, a large head job starts in the first
   admission cycle after it becomes feasible; later jobs cannot consume its reserved RAM or cores.
 - **Wait expiry.** On timeout, withdraw a fleetd waiter from its global queue or a ciu-direct waiter under `queue.lock`.
@@ -316,8 +338,8 @@ The controller host joins the same book through its host agent (D14); its state 
   (`scripts/netcup/runner/README.md:1072-1073`; `scripts/netcup/runner/run-job:13-26`).
   Rejected: keep local flocks *and* add host admission — two disagreeing mechanisms is FD-042 by
   construction.
-- **Two schedulers on one host (FD-042).** Every installed runner client, including local
-  controller-host `run-gate`, submits to the same agent book. A host without an installed runner
+- **Two schedulers on one host (FD-042).** Every installed remote runner submits to the host book; local controller-host
+  `run-gate` leases against that same book. A host without an installed runner
   remains ciu-direct's own-admission case (D12). A hand-run container outside the runner is not
   admitted by this contract.
 - **OOM attribution and protection.** Use this job's `State.OOMKilled` or `memory.events`, never the shared slice counter
@@ -387,6 +409,18 @@ Today `run-job` detaches with `nohup` and writes `pid`/`EXIT` (`scripts/netcup/r
 - **Agent restart or downgrade:** the executor is outside the agent cgroup and continues. On
   startup the reaper scans every job without an `EXIT` marker and reconnects to its transient
   scope. It does not signal or restart a live executor.
+**Local lease failure table:**
+
+| event | required behavior |
+|---|---|
+| socket absent/refuses; bad policy/impossible class; frozen/wait expiry | no create or start; exit 3, 2, or 75 respectively |
+| client dies before grant | remove its connection-bound waiter; no lease or container |
+| client dies after grant, before create/bind | inspect exact name; absent means revoke; a matching container is adopted by ID and remains charged; no start without ack |
+| delayed create after revoke | unique name and lease id stay tombstoned; stopped container has no bind ack, is removed when observed, and never starts |
+| EOF after bind or agent restart | keep charge while ID exists; reload StateDirectory; no start until same lease ID/ID reconnects, then continue or reattach |
+| container gone / Docker inspect error | events and periodic reconciliation inspect exact ID; only explicit no-such-object releases; other errors retain charge (current Run-Gate rule: `run-gate-project/run_gate.py:7601-7645`) |
+| name collision or reuse | refuse collision; bind/release use lease ID plus immutable ID, so a reused name cannot steal or release a prior lease |
+
 - **Dead executor, lane still alive:** the reaper finds containers by this job's labels, stops
   the lane, waits for exit, collects from the surviving checkout, then removes those containers
   and checkout. An inspect error other than Docker's explicit "no such object" leaves the job
@@ -423,18 +457,20 @@ today's behaviour verbatim. The carry's *format* belongs to assay's `assay-merge
   `root:fleetd-clients`, `0660`. Devcontainer config read-write bind-mounts `/run/fleetd-agent` to the same path,
   not the socket file; the service leaves the tmpfiles directory in place on restart, exposing its new socket.
   Agent uses Linux `SO_PEERCRED` UID/GID; host policy maps the configured pair to one `controller-devcontainer`
-  principal, auth group and queue class; unknown peers are denied. The socket GID only grants connect permission.
+  principal and auth group; unknown peers are denied. `/etc` policy gives that principal its allowed priorities. The socket GID
+  only grants connect permission.
   Sessions share UID/GID, so cannot be distinguished:
   they share repo/job scope and can act on one another's jobs. Check `requested_by.client` against
-  configured labels; version/run are audit only. No request field grants identity, group or priority;
-  apply the same group/repo/job checks as SSH. Accept only v1 agent verbs, no shell. No SSH key exists
+  configured labels; version/run are audit only. No request field grants identity or group; `priority` is only a request and is
+  clamped by host policy. Apply the same group/repo/job checks as SSH. Accept only v1 agent verbs, including `lease`, no shell. No SSH key exists
   for this host. Missing/refusing socket returns 3, with no SSH or local-admission fallback; retry using
   job id and digest.
-- **Forced command (FD-009).** Authorized keys map to group and priority on the host
+- **Forced command (FD-009).** Authorized keys map to group and allowed priorities on the host
   (`fleetd/KNOWN_ISSUES_TODO_BACKLOG.md:895-905`; enrollment belongs to CIU-218). Replace today's
   client `guarded()` wrapper (`scripts/netcup/runner/remote-gate.py:237-246`) with server-side checks:
   derive identity from the key/peer group, never `requested_by`; validate schema, repo, relative
-  project/store paths inside the checkout, resources and argv. Use a server-side run-gate allow-list,
+  project/store paths inside the checkout, resources and argv. The remote forced-command allow-list rejects local-only `lease`.
+  Use a server-side run-gate allow-list,
   a host per-repo env profile (RG-319), and §2.2's closed fetch names. No shell string is executed.
   Forced command narrows SSH access; it does not sandbox submitted code.
 - **Trust boundary.** Submit runs arbitrary commit code beside the host Docker socket; submit access
@@ -468,33 +504,12 @@ ciu-direct uses the same host queue.
 
 ## 7. Migration, packages, parity
 
-**Migration order.** Ship run-gate's separate-fd event, anchored verdict, OOM score and freeze-aware
-stall watch (RG-321 first), then hostobs event APIs and persistent cockpit `MemoryLow`. Ship the host
-agent as a service with StateDirectory, tmpfiles socket directory, client group and devcontainer mount;
-enable its controller worker after the socket lifecycle probe. Then switch `remote-gate.py`, `dev`,
-fleetd campaigns and the dr runner in order. Keep legacy paths for rollback; remove slots/workroot/
-snapshot after every client migrates. ciu-direct uses runner queue when installed, else own admission (D12).
+**Migration order.** Ship run-gate's separate-fd event, anchored verdict, OOM score and freeze-aware stall watch (RG-321 first), then hostobs event APIs and persistent cockpit `MemoryLow`. Ship the host agent with StateDirectory, tmpfiles socket directory, client group and devcontainer mount; enable after the socket lifecycle probe. Then package H switches local `run-gate` to lease admission; next switch `remote-gate.py`, `dev`, fleetd campaigns and the dr runner. Keep legacy paths for rollback; remove slots/workroot/snapshot after every client migrates. ciu-direct uses runner queue when installed, else own admission (D12).
 
-**Parity rows.** Each row must be able to fail independently: (a) unique exit codes, including
-preflight 4→2, prerequisite 76→73, budget 4, OOM 76, store 77/78, and queue 75; (b) anchored,
-lane-specific verdict and `result.json`, rejecting a substring from test output; (c) cancel stops
-then archives a checksum-valid store with every flushed record; (d) wait expiry withdraws a queued
-job and it never starts later; (e) a reserved large head starts on the first admission after it
-fits despite continuous small arrivals; (f) unreadable PSI and meminfo refuse
-(`scripts/netcup/tests/test_remote_gate_repos.py:597-600`; `scripts/netcup/tests/test_remote_gate_memory.py:91`); (g) no job exceeds host footprint, slice or disk floors; (h)
-the separate-fd event id matches Docker labels and this checkout; (i) OOM is attributed per job
-and all lane/dev containers carry adjustment 500; (j) group identity, repo/path/argv validation
-and closed artifact names reject hostile inputs; (k) bundle/tag replay and checkout sha binding
-(`scripts/netcup/tests/test_remote_gate.py:227,322`); (l) agent restart, dead executor and reboot preserve the charge
-until stop, collection and cleanup finish; (m) the socket has no shell, shared UID maps to one group,
-missing/refused socket returns 3 without fallback, and its directory mount exposes a recreated socket while queue state
-survives devcontainer restart.
-Contract tests also cover same-digest idempotence and major-version refusal.
+**Parity rows.** Each must fail independently: (a) unique exit codes (preflight 4→2, prerequisite 76→73, budget 4, OOM 76, store 77/78, queue 75); (b) anchored lane verdict/result rejects test-output substrings; (c) cancel stops before collecting every flushed record; (d) expired wait never starts later; (e) aged reservation starts on first feasible admission; (f) unreadable PSI/meminfo refuse (`scripts/netcup/tests/test_remote_gate_repos.py:597-600`; `scripts/netcup/tests/test_remote_gate_memory.py:91`); (g) footprint/slice/disk limits; (h) event id matches labels and checkout; (i) per-job OOM and adjustment 500; (j) identity/path/argv/artifact validation; (k) bundle replay and sha binding (`scripts/netcup/tests/test_remote_gate.py:227,322`); (l) restart/dead-executor/reboot preserve charge through cleanup; (m) socket identity/no shell/restart/missing-socket behavior; (n) lease under `queue.lock`, N4 refusal, no start without bind ack, pending-client death, unique-name collision, reconnect/restart retention through Docker-confirmed disappearance.
+Contract gates also cover same-digest idempotence and major-version refusal.
 
-**Rollback.** Each client owns one `legacy|agent` flag. The agent keeps legacy jobs in its charge
-book during overlap. Downgrade within a major is safe because executors run in separate scopes;
-major mismatches refuse and minor additions are capability-advertised. Flag and legacy-path
-removal is a later, separately gated package.
+**Rollback.** Each client owns one `legacy|agent` flag. The agent keeps legacy jobs charged during overlap. Downgrade within a major is safe because executors run in separate scopes; major mismatches refuse and minor additions are capability-advertised. Flag and legacy-path removal is separate.
 
 **Package split, size and gate.**
 
@@ -507,6 +522,7 @@ removal is a later, separately gated package.
 | E. `dev` payload, pty, workspace lock, OOM adjustment; remove `max_s` | S-M | dev contract gate + live dev job |
 | F. fleetd campaigns and dr runner; R2 store carry (RG-298) | S-M | campaign gate + live batch |
 | G. remove legacy flags, slots and runner snapshot after all migrations | S | compatibility gate |
+| H. local run-gate lease client, stopped-container bind/start, durable reattach record | M | lease protocol and restart parity gate; depends on A and C |
 
 Sizes are effort estimates, not lane time limits. No package adds a wall-clock limit to a run.
 
@@ -517,3 +533,25 @@ No P-fd-05 questions remain open: Q1, Q2, Q6, N1 and N3–N5 are in §§0 and 3;
 | # | decision | reason |
 |---|---|---|
 | N2 | Host fleetd serves the same API on a mounted Unix socket; peer credentials map the shared devcontainer UID/GID to one controller principal. Remote hosts keep SSH and forced commands. | Host-side facts and persistent admission state must survive devcontainer restart. |
+
+## Known follow-ups
+
+- FU1 (A): event channel across `docker exec`.
+- FU2 (A/C): verdict and exit consistency after a forged line.
+- FU3 (A): keep thrashguard registration with one owner.
+- FU4 (C): resolve exit-code 73 collision.
+- FU5 (C+F): carry fleetd campaign candidate lists.
+- FU6 (C+F): persist global queue and share aged reservations.
+- FU7 (F): resolve unknown submit outcomes on the same host.
+- FU8 (C): define remote executor user and privileges.
+- FU9 (C): give host waiters connection liveness.
+- FU10 (C): refine socket activation, mount mode and peer GID.
+- FU11 (C): frame SSH requests and bound idle connections.
+- FU12 (C): define job-id grammar and stored-group checks.
+- FU13 (F): define aging threshold and pin reservation target.
+- FU14 (C): configure legacy-job charge.
+- FU15 (C): distinguish guard enforce mode from report/off.
+- FU16 (C): key progress by assay lane.
+- FU17 (C): define CPU-set and per-CPU accounting.
+- FU18 (C/G): reconcile remaining documentation contradictions.
+- Follow-up (C/F): fleetd-placed controller-host jobs wait for a host cockpit runner.
