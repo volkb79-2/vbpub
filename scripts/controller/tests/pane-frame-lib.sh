@@ -21,6 +21,41 @@ panel_frame() {
 typed_row() { sed -i "s/❯$(printf '\xc2\xa0')/❯ $2/" "$1"; }
 # draft_row <dest>: a continuation line right under the live input row (a multi-line draft)
 draft_row() { perl -i -pe 'if (!$d && /\xe2\x9d\xaf\xc2\xa0/) { $_ .= "  foo\n"; $d = 1 }' "$1"; }
+# H1RULE: the LIVE main pane's prompt-box TOP rule, as recorded in `.controller-state/successor-runs/main-compact{18,19,20,21}`
+# (2026-11-26): 20+ U+2500, then the label `◉ xhigh · /effort  vbpub-main-controller`, then one closing U+2500. The old
+# `is_label_rule` refuses it (`◉`, `·`, `/` are outside its label set), so before H1 the helpers saw no box and waited.
+H1RULE="$(printf '─%.0s' {1..40}) ◉ xhigh · /effort  vbpub-main-controller ─"
+# stray_frame <dest> <kind>: the shapes that are NOT a ready prompt box. The resume helpers must read EVERY one of them
+# as busy (waiting, never typing), which is what the M1/M2/H1/L2 rules pin:
+#   EMPTY    a failed or empty capture (a busy pane is not known, so it is not ready)
+#   QMENU    a column-0 question menu: no numbered cursor and no footer, so even dialog_open does not see it; no box
+#   BANG     a bash-mode `!` input row, which is not the prompt box's `❯` row; no box
+#   NORULE   a `❯` row with no box rule above it (ordinary output instead); the rule BELOW alone must not admit it
+#   DRAFT    an EMPTY first row with a continuation line under it (a multi-line draft, Shift+Enter or a pasted newline)
+#   MENUBOX  the permission menu ABOVE an intact, empty prompt box (only the dialog check stops it)
+#   H1I      the live main pane's labelled top rule, idle: this one MUST read ready and be typed into (the H1 regression)
+#   H1B      ... the same, with `esc to interrupt` on the box's mode line: it must NOT be typed into
+#   SPIN     an L2 spinner `✶ Compacting` a few non-blank lines ABOVE the top rule, outside the bottom window
+#   PROSE    the same place, prose that merely CONTAINS `Compacting`: it must not make the pane busy
+stray_frame() {
+  local dest=$1 rule; rule=$(printf '─%.0s' {1..40})   # the plain prompt-box rule, as the caller's own RULE
+  case $2 in
+    EMPTY) : >"$dest" ;;
+    QMENU) printf '%b\n' 'Do you want to proceed?' '1. Yes' '2. No' '' >"$dest" ;;
+    BANG) printf '%b\n' 'output' "$rule" '! echo hi' "$rule" '  ctx 41%' >"$dest" ;;
+    NORULE) printf '%b\n' 'output' '❯\xc2\xa0' "$rule" '  ctx 41%' >"$dest" ;;
+    DRAFT) printf '%b\n' 'output' "$rule" '❯\xc2\xa0' '  some text' "$rule" '  ctx 41%' >"$dest" ;;
+    MENUBOX) { printf '%b\n' "$MENU" ''; printf '%b\n' "$rule" '❯\xc2\xa0' "$rule" '  ctx 41%'; } >"$dest" ;;
+    H1I) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · 1 monitor · ← 8 agents · ↓ to manage' >"$dest" ;;
+    H1B) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · esc to interrupt · ← 8 agents' >"$dest" ;;
+    SPIN|PROSE) # six non-blank lines above the top rule: the bottom FOOT_LINES window ends three lines lower, so only the
+      # L2 scan above the rule can see the spinner (a 6-line window saw it by accident before the rule existed)
+      printf '%b\n' 'output' '  ✔ Update installed · restart to apply' \
+        "$([[ $2 == SPIN ]] && printf '  ✶ Compacting conversation… (3s)…' || printf '  The agent is Compacting a summary right now.')" \
+        '  notice: 3 background tasks' '  notice: 8 agents' '  notice: ← worktree clean' >"$dest"
+      printf '%b\n' "$rule" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · ← 8 agents' >>"$dest" ;;
+  esac
+}
 # menu_frame <dest> <extra panel rows>: an MB layout, built from the REAL capture's last section: the permission menu above
 # the capture's own top box rule, its empty box, its mode line and its panel plus N extra rows
 menu_frame() {

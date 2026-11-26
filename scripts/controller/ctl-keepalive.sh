@@ -38,12 +38,10 @@ PING_PREFIX='[keepalive'                          # what the JSONL scan counts
 PING_TEXT='[keepalive] cache refresh only: reply ok, no tools'
 # ---- pane markers: the sanitized real idle captures in tests/fixtures/keepalive cover the box, notice and agents-panel
 # ---- layouts; the dialog cursor/footer remain UNVERIFIED on Claude Code 2.1.331. A Claude Code release may change them.
-DIALOG_CURSOR_RE='^[[:space:]]*❯[[:space:]]*[0-9]+\.[[:space:]]'   # cursor on a numbered option of a permission/question menu
-DIALOG_FOOTER='Esc to cancel'                                     # footer of those menus
-DIALOG_LINES=15                                                   # how many bottom non-blank lines are searched for them
 BOX_LINES=6                                                       # the input row must be within this many bottom non-blank lines
 # The pane-view markers (BOX_RULE_BYTES, BOX_LABEL_RULE_BYTES, BOX_FOOT_MARKER, BOX_PANEL_HINT) and pane_view,
-# is_rule and is_label_rule live in resume-lib.sh: this watcher and the resume helpers measure the same view.
+# is_rule, is_label_rule and dialog_open (DIALOG_CURSOR_RE, DIALOG_FOOTER, DIALOG_LINES) live in resume-lib.sh: this
+# watcher and the resume helpers measure the same view and run the same dialog check.
 
 RESUME_PREFIX=KA_RESUME   # resume-lib.sh test seams; not KEEPALIVE_*, that namespace is this script's constants
 home_dir=${KEEPALIVE_HOME:-${CONTROLLER_HOME:-$HOME/controller}}
@@ -123,10 +121,6 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
 PY
 }
 
-dialog_open() { # $1 = capture with escapes: a numbered permission/question menu is on screen
-  local plain; plain=$(strip_sgr <<<"$1" | grep -v '^[[:space:]]*$' | tail -n "$DIALOG_LINES")
-  grep -qE -- "$DIALOG_CURSOR_RE" <<<"$plain" || grep -qF -- "$DIALOG_FOOTER" <<<"$plain"
-}
 box_ok() { # $1 = capture: the live input row is alone in its box (a box rule right above AND below), within the last BOX_LINES non-blank lines
   # $1 must be a pane_view capture: the trim at the mode line lives there, once, because a second trim here would also
   # cut a FOCUSED agents panel (no BOX_PANEL_HINT) and admit it.

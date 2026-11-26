@@ -72,6 +72,7 @@ frame() {
     L6B) panel_frame "$f" 6 1 1 ;;
     L12B) panel_frame "$f" 12 1 1 ;;
     LMB) panel_frame "$f" 6 1 1 '⏵⏵ accept edits on' ;;   # busy in another permission mode: no mode-line marker, no trim
+    EMPTY|QMENU|BANG|NORULE|DRAFT|MENUBOX|H1I|H1B|SPIN|PROSE) stray_frame "$f" "$4" ;;   # the shared refusal / H1 / L2 frames
   esac
 }
 # scenario <name> <start frames> <compact frames>: fresh stub dir, guidance, prompt and log
@@ -192,9 +193,11 @@ COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 5 ]] || fail "typed text after a coloured marker exit $RC (want 5)"
 not_contains <(calls) "send-keys" "typed text after a coloured marker: /compact was sent"
 
-# 5f. F4: an agents panel below the mode line never hides a running turn. With 1, 3, 6 or 12 panel rows the mode
-#     line's `esc to interrupt` sits OUTSIDE the last 6 non-blank lines of the untrimmed capture (compact-resume.sh's
-#     FOOT_LINES), so at 91e9d65f3 wait_idle counted three "idle" polls and typed "/compact ..." into a running turn.
+# 5f. F4: an agents panel below the mode line never hides a running turn. With 1, 3, 6 or 12 appended panel rows the mode
+#     line's `esc to interrupt` sits among the last 16 non-blank lines of the untrimmed capture; 3, 6 and 12 rows put it
+#     OUTSIDE compact-resume.sh's 6-line FOOT_LINES window, while with 1 row it is the 5th non-blank line from the bottom,
+#     already inside it - so at 91e9d65f3 wait_idle counted three "idle" polls for those three heights and typed
+#     "/compact ..." into a running turn. L1B is kept for the trimmed view (it must stay busy through the box rule).
 for kind in L1B L3B L6B L12B; do
   scenario "panel-$kind" "$kind" "I"
   COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
@@ -215,6 +218,59 @@ COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "idle agents panel: expected 3 idle checks + the footer"
 cmp -s "$D/sent.1" "$D/expected-compact.txt" || fail "idle agents panel: the /compact line was not sent exactly"
 cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "idle agents panel: the resume prompt was not sent exactly"
+
+# 5i. M2: a pane the helper cannot POSITIVELY recognise as an idle prompt box is never typed into. These four are the
+#     PIN the review found missing (they already read busy at 4708ed03e): delete the `st == 2` refusal in pane_state, or
+#     let an empty capture return 1, and each reads READY and /compact + the prompt are typed into it. EMPTY = a failed or
+#     empty capture; QMENU = a column-0 question menu (no `❯` cursor, no footer, no input row either); BANG = a bash-mode
+#     `!` row, which is not the prompt box; NORULE = a `❯` row with a rule BELOW but none above.
+for kind in EMPTY QMENU BANG NORULE; do
+  scenario "refuse-$kind" "$kind" "I"
+  COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+  [[ $RC -eq 3 ]] || fail "refusal $kind: exit $RC (want 3, not ready)"
+  not_contains <(calls) "send-keys" "refusal $kind: keys were sent into a pane that was never recognised as idle"
+done
+# 5j. M1: a DRAFT with an empty first row reads READY at 4708ed03e, so /compact and the draft get submitted. With the
+#     plain rule required BELOW the row it has no box. The reason and the footer must be logged ONCE (H1).
+scenario refuse-DRAFT "DRAFT" "I"
+COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 3 ]] || fail "refusal DRAFT: exit $RC (want 3, a multi-line draft is not ready)"
+not_contains <(calls) "send-keys" "refusal DRAFT: keys were sent over a draft"
+contains "$D/log" "WARN pane not ready: no prompt box recognised" "refusal DRAFT: the reason was not logged"
+[[ $(grep -c 'WARN pane not ready' "$D/log") -eq 1 ]] || fail "refusal DRAFT: the reason must be logged ONCE per wait"
+contains "$D/log" "|  ctx 41%" "refusal DRAFT: the footer is missing from the logged reason"
+# 5k. M1: the permission menu ABOVE an intact empty box reads READY at 4708ed03e and the Enter answers the menu; only
+#     dialog_open stops it, and the helpers never ran that check before.
+scenario refuse-MENUBOX "MENUBOX" "I"
+COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 3 ]] || fail "refusal MENUBOX: exit $RC (want 3, a dialog is open)"
+not_contains <(calls) "send-keys" "refusal MENUBOX: keys were sent while a menu was open"
+contains "$D/log" "WARN pane not ready: a dialog is open" "refusal MENUBOX: the dialog reason was not logged"
+# 5l. H1: the LIVE main pane's labelled top rule is a box: the idle frame must be typed into (at 4708ed03e it is not: no
+#     box is recognised, the pane reads busy at every poll, /compact is never sent). The same frame with `esc to interrupt`
+#     on the mode line must stay busy (that case already reads busy on the base through the no-box scan: a pin, not a
+#     regression).
+scenario h1-idle "H1I" "I"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "H1: the live main pane's labelled top rule must read ready (exit $RC)"
+[[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "H1: expected 3 idle checks + the footer on the labelled box"
+cmp -s "$D/sent.1" "$D/expected-compact.txt" || fail "H1: the /compact line was not sent exactly on the labelled box"
+cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "H1: the resume prompt was not sent exactly on the labelled box"
+scenario h1-busy "H1B" "I"
+COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 3 ]] || fail "H1 busy: exit $RC (want 3, the labelled box is busy)"
+not_contains <(calls) "send-keys" "H1 busy: keys were sent into a running turn under the labelled box"
+# 5m. L2: a `✶ Compacting` spinner six non-blank lines ABOVE the box's top rule (outside compact-resume.sh's 6-line
+#     FOOT_LINES window, which reaches three non-blank lines higher) makes the pane busy; the same lines with prose that
+#     only CONTAINS the word do not, so the rule is not a bare substring. At 4708ed03e the spinner frame reads READY.
+scenario l2-spinner "SPIN" "I"
+COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 3 ]] || fail "L2 spinner: exit $RC (want 3, a compaction is running above the box)"
+not_contains <(calls) "send-keys" "L2 spinner: keys were sent while a compaction was running above the box"
+scenario l2-prose "PROSE" "I"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "L2 prose: plain prose containing the word must not read busy (exit $RC)"
+[[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "L2 prose: expected 3 idle checks + the footer"
 
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "I"
