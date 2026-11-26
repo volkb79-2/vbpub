@@ -60,6 +60,9 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during compileall and the R0/R1
+# pytest selection; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "5m"
 
 # Mutation testing as a NATIVE Assay lane (DIV2-BL-22). The judge policy --
 # source roots, operators, budgets, the explicit per-candidate bound -- lives
@@ -131,6 +134,14 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+# RG-320/H1: SILENT BY CONSTRUCTION. This lane is the canary runner, whose
+# per-canary step CAPTURES the pytest it cares about and prints only the
+# verdict AFTER it returns (scripts/debian-install-v2/tools/canary-run.sh:60-63 (`out="$(... pytest ... 2>&1)"`)),
+# so not one byte of the selector's own progress reaches this lane's stdout
+# while it runs: a single slow selector is a silent window of unknown length
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 cannot fail a
+# lane main would let finish. No silence bound has been measured yet.
+stall_timeout = "5m"
 
 [lanes.fake-integration]
 kind = "command"
@@ -141,6 +152,9 @@ argv = [
 ]
 clean_tree = false
 budget = "3m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during fake-integration pytest; no
+# <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "3m"
 
 # Requires a Docker daemon reachable from the host lane runner (this repo's
 # devcontainer talks to one via docker-outside-of-docker) and builds/boots a
@@ -161,6 +175,10 @@ argv = [
 ]
 clean_tree = false
 budget = "30m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while run-vm-tests.sh waits for and
+# tests the QEMU/TCG guest; guest output has no proven outer stdout cadence;
+# no silence bound is measured; see RG-326.
+stall_timeout = "30m"
 
 # The implementation/release gate: every consumer (release steps, agents,
 # humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every
@@ -182,6 +200,15 @@ argv = [
 ]
 clean_tree = false
 budget = "1h"
+stall_timeout = "1h"
+# RG-320/H1: SILENT BY CONSTRUCTION. This wrapper relays its nested lanes'
+# stdout, and the nested `r3` member runs tools/canary-run.sh, which captures
+# each canary's pytest output into a shell variable (`out="$(...)"`,
+# canary-run.sh:88-89) and prints nothing while that selector runs. It declares
+# no bound of its own here only because the per-canary window is one test; the
+# WHOLE-lane bound would fail it mid-canary otherwise. Declared EQUAL to the
+# lane budget, so P1 cannot fail this wrapper where main would finish it. No
+# silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 # `memory` and `pids` are both REQUIRED by resource_observer = "cgprofile"
 # (run-gate needs them to attribute candidate-local memory and PID-limit

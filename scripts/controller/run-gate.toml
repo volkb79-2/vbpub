@@ -15,3 +15,6 @@ argv = ["bash", "-c", "cd {worktree}/scripts/controller && bash tests/run-suite.
 # measurement. A run that needs more than this would be a real regression in the
 # suite's cost and should be investigated, not absorbed here.
 budget = "90m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the controller test suite runs;
+# no <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "90m"

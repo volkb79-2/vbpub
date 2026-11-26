@@ -26,6 +26,9 @@ clean_tree = false
 # Unmeasured at first release: a handful of config reads plus one `lanes --check`
 # pass over the estate. The controller measures it on the first gate.
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during pytest and the final
+# `run-gate lanes --check`; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "10m"
 
 [lanes.suite.resources]
 memory = "1g"
