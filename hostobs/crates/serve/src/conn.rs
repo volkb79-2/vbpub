@@ -80,13 +80,28 @@ use crate::verbs::served_at;
 /// The highest protocol minor the probe serves.
 pub const SERVER_MINOR: u16 = PROTO_MINOR;
 
-/// The peer credentials captured once at accept (R23: `pid` is unused in P5b-1).
+/// A cgroup identity label captured from the peer's `/proc` entry.
+///
+/// This is advisory process metadata, not the model's mount-id-based cgroup identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CgroupKey {
+    /// The `st_dev` device number of the cgroup directory.
+    pub dev: u64,
+    /// The inode number of the cgroup directory.
+    pub inode: u64,
+}
+
+/// The peer credentials and advisory process label captured once at accept.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Peer {
     /// The peer's uid.
     pub uid: u32,
-    /// The peer's pid.
-    pub pid: u32,
+    /// The peer's pid in the probe's PID namespace, if visible.
+    pub pid: Option<u32>,
+    /// The peer's process name when readable as UTF-8.
+    pub comm: Option<String>,
+    /// The peer's cgroup device and inode when verified to be under the probe's cgroup root.
+    pub cgroup: Option<CgroupKey>,
 }
 
 /// The connection states of WIRE.md section 5.4. `Closing` is not a state: it is the moment
@@ -302,8 +317,8 @@ impl Conn {
 
     /// The peer credentials captured at accept.
     #[must_use]
-    pub fn peer(&self) -> Peer {
-        self.peer
+    pub fn peer(&self) -> &Peer {
+        &self.peer
     }
 
     /// The current state.
@@ -1154,7 +1169,12 @@ mod tests {
         fn with(level: Level, limits: ConnLimits) -> Rig {
             let mut hub = SendHub::new(queue_limits(&limits));
             let id = hub.add(0);
-            let peer = Peer { uid: 1000, pid: 7 };
+            let peer = Peer {
+                uid: 1000,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            };
             let conn = Conn::new(id, level, peer, &limits, 0);
             let streams = SelectionStreams::new(StreamLimits {
                 bounds: limits.probe.block_bounds(),
@@ -1322,7 +1342,15 @@ mod tests {
     fn conn_row_1_accept_arms_the_hello_deadline_and_starts_undecided() {
         let rig = Rig::new(Level::Observe);
         assert_eq!(rig.conn.state(), State::Undecided);
-        assert_eq!(rig.conn.peer(), Peer { uid: 1000, pid: 7 });
+        assert_eq!(
+            rig.conn.peer(),
+            &Peer {
+                uid: 1000,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            }
+        );
         assert_eq!(rig.conn.level(), Level::Observe);
         assert_eq!(rig.conn.id(), ConnId(1));
         assert_eq!(rig.conn.bytes_written(), 0);
@@ -2196,7 +2224,12 @@ mod tests {
         let limits = limits(Level::Observe);
         let mut hub = SendHub::new(queue_limits(&limits));
         let id = hub.add(0);
-        let peer = Peer { uid: 1000, pid: 7 };
+        let peer = Peer {
+            uid: 1000,
+            pid: Some(7),
+            comm: None,
+            cgroup: None,
+        };
         let mut conn = Conn::new(id, Level::Observe, peer, &limits, 0);
         let backend = CountingBackend::new();
         let mut streams = SelectionStreams::new(StreamLimits {

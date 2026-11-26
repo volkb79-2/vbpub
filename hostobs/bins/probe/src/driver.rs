@@ -8,14 +8,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::OwnedFd;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
 
+use hostobs_kernel::activation::peer_credentials_raw;
 use hostobs_serve::backend::Turn;
-use hostobs_serve::conn::Peer;
+use hostobs_serve::conn::{CgroupKey, Peer};
 use hostobs_serve::hub::ConnId;
 use hostobs_serve::limits::Level;
 use hostobs_serve::server::{Accept, Server};
@@ -31,6 +34,9 @@ const WRITE_BUDGET: usize = 256 * 1024;
 
 const EVENTFD_BYTES: usize = 8;
 const NS_PER_MS: u64 = 1_000_000;
+const UCRED_LEN: usize = 12;
+const MAX_COMM_BYTES: usize = 16;
+const MAX_CGROUP_BYTES: usize = 64 * 1024;
 
 struct Open {
     stream: UnixStream,
@@ -56,12 +62,117 @@ fn io_error(error: rustix::io::Errno) -> io::Error {
     io::Error::from_raw_os_error(error.raw_os_error())
 }
 
-fn peer(stream: &UnixStream) -> Option<Peer> {
-    let credentials = rustix::net::sockopt::socket_peercred(stream).ok()?;
-    Some(Peer {
-        uid: credentials.uid.as_raw(),
-        pid: u32::try_from(credentials.pid.as_raw_pid()).ok()?,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PeerCredentialError {
+    InvalidLength,
+    NegativePid,
+}
+
+fn decode_ucred(
+    bytes: &[u8],
+    returned_len: usize,
+) -> Result<(u32, Option<u32>), PeerCredentialError> {
+    if returned_len != UCRED_LEN || bytes.len() != UCRED_LEN {
+        return Err(PeerCredentialError::InvalidLength);
+    }
+
+    let pid = i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    if pid < 0 {
+        return Err(PeerCredentialError::NegativePid);
+    }
+    let uid = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let pid = if pid == 0 {
+        None
+    } else {
+        Some(u32::try_from(pid).map_err(|_| PeerCredentialError::NegativePid)?)
+    };
+    Ok((uid, pid))
+}
+
+fn read_bounded(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    let read_limit = u64::try_from(max_bytes).ok()?.checked_add(1)?;
+    let mut bytes = Vec::with_capacity(max_bytes.min(4096));
+    file.take(read_limit).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= max_bytes).then_some(bytes)
+}
+
+fn parse_comm(bytes: &[u8]) -> Option<String> {
+    let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    std::str::from_utf8(bytes).ok().map(str::to_owned)
+}
+
+fn unified_cgroup_path(contents: &str) -> Option<PathBuf> {
+    let mut paths = contents.lines().filter_map(|line| line.strip_prefix("0::/"));
+    let relative = Path::new(paths.next()?);
+    if paths.next().is_some()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return None;
+    }
+    Some(relative.to_path_buf())
+}
+
+fn read_cgroup_key(
+    proc_cgroup: &Path,
+    cgroup_root: &Path,
+    mut file_identity: impl FnMut(&Path) -> io::Result<(u64, u64)>,
+) -> Option<CgroupKey> {
+    let bytes = read_bounded(proc_cgroup, MAX_CGROUP_BYTES)?;
+    let contents = std::str::from_utf8(&bytes).ok()?;
+    let relative = unified_cgroup_path(contents)?;
+    let (root_dev, _) = file_identity(cgroup_root).ok()?;
+    let (target_dev, inode) = file_identity(&cgroup_root.join(relative)).ok()?;
+    (target_dev == root_dev).then_some(CgroupKey {
+        dev: target_dev,
+        inode,
     })
+}
+
+fn peer_labels(
+    pid: u32,
+    proc_root: &Path,
+    cgroup_root: &Path,
+) -> (Option<String>, Option<CgroupKey>) {
+    let pid_root = proc_root.join(pid.to_string());
+    let comm = read_bounded(&pid_root.join("comm"), MAX_COMM_BYTES)
+        .and_then(|bytes| parse_comm(&bytes));
+    let cgroup = read_cgroup_key(&pid_root.join("cgroup"), cgroup_root, |path| {
+        let metadata = std::fs::metadata(path)?;
+        Ok((metadata.dev(), metadata.ino()))
+    });
+    (comm, cgroup)
+}
+
+fn peer_from_ucred(
+    bytes: &[u8],
+    returned_len: usize,
+    proc_root: &Path,
+    cgroup_root: &Path,
+) -> Option<Peer> {
+    let (uid, pid) = decode_ucred(bytes, returned_len).ok()?;
+    let (comm, cgroup) = pid
+        .map(|pid| peer_labels(pid, proc_root, cgroup_root))
+        .unwrap_or_default();
+    Some(Peer {
+        uid,
+        pid,
+        comm,
+        cgroup,
+    })
+}
+
+fn peer(stream: &UnixStream, proc_root: &Path, cgroup_root: &Path) -> Option<Peer> {
+    let (bytes, returned_len) = peer_credentials_raw(stream).ok()?;
+    peer_from_ucred(
+        &bytes,
+        usize::try_from(returned_len).ok()?,
+        proc_root,
+        cgroup_root,
+    )
 }
 
 fn accept_ready<B: Turn>(
@@ -70,6 +181,8 @@ fn accept_ready<B: Turn>(
     sockets: &mut BTreeMap<ConnId, Open>,
     ready: &BTreeSet<usize>,
     skip_next: &mut BTreeSet<usize>,
+    proc_root: &Path,
+    cgroup_root: &Path,
     now_ns: u64,
 ) {
     for &index in ready {
@@ -82,7 +195,7 @@ fn accept_ready<B: Turn>(
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
-                    let peer = peer(&stream);
+                    let peer = peer(&stream, proc_root, cgroup_root);
                     match server.accept(*level, peer, now_ns) {
                         Accept::Accepted(id) => {
                             sockets.insert(
@@ -283,6 +396,8 @@ pub(crate) fn run<B: Turn>(
     mut listeners: Vec<(Level, UnixListener)>,
     wake: OwnedFd,
     stop: Arc<AtomicBool>,
+    proc_root: &Path,
+    cgroup_root: &Path,
     now_ns: &mut dyn FnMut() -> u64,
 ) -> io::Result<()> {
     let timeout = Timespec {
@@ -391,6 +506,8 @@ pub(crate) fn run<B: Turn>(
             &mut sockets,
             &ready.listeners,
             &mut skip_next,
+            proc_root,
+            cgroup_root,
             now_ns,
         );
 
@@ -418,6 +535,7 @@ mod tests {
     use std::os::fd::OwnedFd;
     use std::os::linux::net::SocketAddrExt;
     use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
     use std::sync::Arc;
     use std::thread::{self, JoinHandle};
@@ -427,7 +545,8 @@ mod tests {
     use hostobs_proto::frame::{decode_block, FrameHeader, FrameType};
     use rustix::event::{eventfd, EventfdFlags};
 
-    use super::run;
+    use super::{parse_comm, peer_from_ucred, read_cgroup_key, run};
+    use hostobs_serve::conn::CgroupKey;
     use hostobs_serve::backend::{
         Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, Turn,
     };
@@ -442,6 +561,18 @@ mod tests {
     const CURRENT_ARGS: &str = r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
 
     static NEXT_SOCKET: AtomicU32 = AtomicU32::new(0);
+
+    fn peer_fixture_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-label")
+    }
+
+    fn raw_ucred(pid: i32, uid: u32) -> [u8; 12] {
+        let mut bytes = [0_u8; 12];
+        bytes[..4].copy_from_slice(&pid.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&uid.to_ne_bytes());
+        bytes[8..12].copy_from_slice(&0_u32.to_ne_bytes());
+        bytes
+    }
 
     struct TestBackend {
         fixed: FixedBackend,
@@ -527,9 +658,20 @@ mod tests {
 
             let backend = TestBackend::new(Arc::clone(&seq), data);
             let server = Server::new(limits, backend);
+            let proc_root = peer_fixture_root().join("proc");
+            let cgroup_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/kernel/tests/fixtures/cgroupfs");
             let join = thread::spawn(move || {
                 let mut clock = move || thread_now.load(Ordering::SeqCst);
-                run(server, listeners, wake, sampler_stop, &mut clock)
+                run(
+                    server,
+                    listeners,
+                    wake,
+                    sampler_stop,
+                    &proc_root,
+                    &cgroup_root,
+                    &mut clock,
+                )
             });
 
             Rig {
@@ -919,6 +1061,112 @@ mod tests {
         drop(disconnected);
         let mut replacement = wait_for_served(&rig, Level::Observe);
         replacement.current(3);
+    }
+
+    #[test]
+    fn pid_zero_is_invisible_without_constructing_a_rustix_pid() {
+        let fixture = peer_fixture_root();
+        let credentials = raw_ucred(0, 1000);
+        let peer = peer_from_ucred(
+            &credentials,
+            credentials.len(),
+            &fixture.join("proc"),
+            &fixture.join("proc"),
+        )
+        .expect("pid zero still has valid credentials");
+        assert_eq!(peer.uid, 1000);
+        assert_eq!(peer.pid, None);
+        assert_eq!(peer.comm, None);
+        assert_eq!(peer.cgroup, None);
+    }
+
+    #[test]
+    fn positive_pid_is_visible() {
+        let fixture = peer_fixture_root();
+        let credentials = raw_ucred(42, 1000);
+        let peer = peer_from_ucred(
+            &credentials,
+            credentials.len(),
+            &fixture.join("proc"),
+            &fixture.join("proc"),
+        )
+        .expect("pid 42 credentials");
+        assert_eq!(peer.pid, Some(42));
+    }
+
+    #[test]
+    fn truncated_and_negative_peer_credentials_are_refused() {
+        let fixture = peer_fixture_root();
+        let credentials = raw_ucred(42, 1000);
+        assert!(peer_from_ucred(
+            &credentials,
+            8,
+            &fixture.join("proc"),
+            &fixture.join("proc"),
+        )
+        .is_none());
+
+        let credentials = raw_ucred(-1, 1000);
+        assert!(peer_from_ucred(
+            &credentials,
+            credentials.len(),
+            &fixture.join("proc"),
+            &fixture.join("proc"),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn gone_peer_has_no_comm() {
+        let fixture = peer_fixture_root();
+        let credentials = raw_ucred(42, 1000);
+        let peer = peer_from_ucred(
+            &credentials,
+            credentials.len(),
+            &fixture.join("proc"),
+            &fixture.join("proc"),
+        )
+        .expect("pid 42 credentials");
+        assert_eq!(peer.comm, None);
+    }
+
+    #[test]
+    fn non_utf8_comm_is_omitted() {
+        assert_eq!(parse_comm(&[0xff, b'\n']), None);
+    }
+
+    #[test]
+    fn parent_component_in_peer_cgroup_path_is_omitted() {
+        let fixture = peer_fixture_root().join("proc/17/cgroup");
+        let key = read_cgroup_key(&fixture, Path::new("unused-root"), |_| {
+            panic!("invalid cgroup path must be rejected before stat")
+        });
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn peer_cgroup_on_a_different_device_is_omitted() {
+        let fixture = peer_fixture_root().join("proc/18/cgroup");
+        let root = Path::new("fixture-cgroup-root");
+        let key = read_cgroup_key(&fixture, root, |path| {
+            if path == root {
+                Ok((10, 1))
+            } else {
+                assert_eq!(path, root.join("child"));
+                Ok((11, 2))
+            }
+        });
+        assert_eq!(key, None);
+
+        let key = read_cgroup_key(&fixture, root, |path| {
+            if path == root {
+                Ok((10, 1))
+            } else {
+                assert_eq!(path, root.join("child"));
+                Ok((10, 23))
+            }
+        });
+        assert_eq!(key, Some(CgroupKey { dev: 10, inode: 23 }));
     }
 
     #[test]

@@ -73,7 +73,16 @@ fn server(published: Arc<Published>, max_rows: u32) -> (Server<ProbeBackend>, Co
     limits.probe.max_rows = max_rows;
     let mut server = Server::new(limits, ProbeBackend::new(identity(), published));
     let now = 1_003_000_000;
-    let id = match server.accept(Level::Observe, Some(Peer { uid: 1000, pid: 7 }), now) {
+    let id = match server.accept(
+        Level::Observe,
+        Some(Peer {
+            uid: 1000,
+            pid: Some(7),
+            comm: None,
+            cgroup: None,
+        }),
+        now,
+    ) {
         Accept::Accepted(id) => id,
         Accept::Refused => panic!("observe connection refused"),
     };

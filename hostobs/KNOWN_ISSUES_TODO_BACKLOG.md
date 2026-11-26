@@ -81,7 +81,7 @@ holds the full bodies.
 | HOB-87 | The conformance lane prints a Python traceback when `cargo metadata` yields no JSON line | Minor | OPEN (P-hostobs-09 r2) |
 | HOB-88 | The image-contract test checks `--locked`/`--offline` only on build and metadata lines | Minor | OPEN (P-hostobs-09 r2) |
 | HOB-89 | The conformance lane's 10-minute budget was never measured on a complete cold run | Minor | OPEN (P-hostobs-09 r1/r2) |
-| HOB-90 | rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible | Major | OPEN (P-hostobs-09 report; constraint documented) |
+| HOB-90 | rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible | Major | RESOLVED (M3 B1 raw `SO_PEERCRED` guard) |
 | HOB-91 | `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,200 rows | Minor | OPEN (P-hostobs-09 report) |
 | HOB-92 | `SIGTERM` keeps its default action; the graceful stop path is required before P-16 | Major | OPEN (P-hostobs-09 decision) |
 | HOB-93 | P-hostobs-09 residual doc and test nits | Minor | OPEN (P-hostobs-09 r2) |
@@ -1079,15 +1079,11 @@ Source: `reviews/p09-r1-26c204d42.md` and `reviews/p09-r2-3bc01d21f.md` Backlog 
 
 ## HOB-90 — rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible
 
-**Where:** `bins/probe/src/driver.rs` `peer` (the `rustix::net::sockopt::socket_peercred(stream).ok()?` call before `Peer` is built), and `docs/PROBE-PROCESS.md` §(d).
+**Where:** `bins/probe/src/driver.rs` `peer` and `docs/PROBE-PROCESS.md` §(d)-(e).
 
-Linux reports pid 0 through `SO_PEERCRED` when the peer's pid is invisible from the probe's PID namespace (`pid_vnr`). rustix 1.1.6 decodes the `ucred` into `Pid(NonZeroI32)` after `assume_init`, so pid 0 is undefined behavior. It is reachable when the probe runs in a private container PID namespace and a host or sibling-namespace client reaches a bind-mounted socket. It is not reachable in the initial host PID namespace. PROBE-PROCESS §(d) now says the probe and every client must share one PID namespace, which is a policy and not a guard. P-09 adds no raw `getsockopt`, because that would be a second audited `unsafe`.
+Linux reports pid 0 through `SO_PEERCRED` when the peer's pid is invisible from the probe's PID namespace (`pid_vnr`). rustix 1.1.6 decodes the `ucred` into `Pid(NonZeroI32)` after `assume_init`, so passing pid 0 to that decoder is undefined behavior. It is reachable when the probe runs in a private container PID namespace and a host or sibling-namespace client reaches a bind-mounted socket.
 
-**Exit criteria.** One of these lands before any deployment with clients in a different PID namespace than the probe, including P-11's container demo if it ever splits them:
-- a guard that reads the raw 12-byte `ucred` and rejects pid 0 before any `NonZeroI32` conversion, with a test whose socket peer reports pid 0 and a lint count (`expected_uses`) updated for the second audited site; or
-- a rustix release whose decoder accepts pid 0, with the lock and image bumped under the freshness rule.
-
-Until then §(d) stays as the only protection.
+**Resolved by M3 B1:** `kernel::activation::peer_credentials_raw` reads the raw 12-byte credential once and returns the kernel's length. The probe checks length 12 and refuses a negative pid before constructing any rustix `Pid` or `NonZeroI32`; pid 0 becomes `pid: None` and the connection is still accepted. No peer socket calls rustix's decoded `socket_peercred`. At accept, `Peer` stores the server-side uid and an advisory pid/comm/cgroup label. `comm` requires valid UTF-8; the cgroup key is `(st_dev, inode)` and is present only for a `0::/…` path without a `..` component on the probe cgroup root's device. The label has no authorization, dedupe, rate-limit, quota or connection-cap weight. The lint pins the two audited unsafe expressions in `activation.rs`; tests cover pid 0, pid 42, truncated and negative credentials, invisible-pid acceptance, a gone peer, invalid UTF-8, a parent path and a different device.
 
 Source: `runs/p09-driver.report.md` Backlog candidates 1; `reviews/p09-r1-26c204d42.md` BC1.
 

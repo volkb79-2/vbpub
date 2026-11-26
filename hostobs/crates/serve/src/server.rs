@@ -334,9 +334,10 @@ impl<B: Backend> Server<B> {
         if self.counts.uid(level, peer.uid) >= conn_limits.level.max_connections_per_uid {
             return Accept::Refused;
         }
+        let uid = peer.uid;
         let id = self.hub.add(now_ns);
         let conn = Conn::new(id, level, peer, &conn_limits, now_ns);
-        self.counts.add(level, peer.uid);
+        self.counts.add(level, uid);
         self.conns.insert(id, conn);
         Accept::Accepted(id)
     }
@@ -784,7 +785,12 @@ mod tests {
         }
 
         fn try_open(&mut self, level: Level, uid: u32) -> Accept {
-            let peer = Peer { uid, pid: 7 };
+            let peer = Peer {
+                uid,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            };
             let accept = self.server.accept(level, Some(peer), self.now);
             if let Accept::Accepted(id) = accept {
                 self.opened.push(id);
@@ -1098,7 +1104,12 @@ mod tests {
     #[test]
     fn accept_row_control_level_and_missing_peer_are_refused_uncounted() {
         let mut d = Driver::new();
-        let peer = Peer { uid: 1, pid: 7 };
+        let peer = Peer {
+            uid: 1,
+            pid: Some(7),
+            comm: None,
+            cgroup: None,
+        };
         let control = d.server.accept(Level::Control, Some(peer), 0);
         assert_eq!(control, Accept::Refused);
         assert_eq!(d.server.accept(Level::Observe, None, 0), Accept::Refused);
@@ -1112,11 +1123,54 @@ mod tests {
         let mut d = Driver::new();
         let id = d.open(Level::Observer, 42);
         let conn = d.server.conn(id).expect("conn");
-        assert_eq!(conn.peer(), Peer { uid: 42, pid: 7 });
+        assert_eq!(
+            conn.peer(),
+            &Peer {
+                uid: 42,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            }
+        );
         assert_eq!(conn.state(), State::Undecided);
         assert_eq!(d.server.uid_count(Level::Observer, 42), 1);
         d.tick(5_001 * MS);
         assert!(d.server.is_closed(id));
+    }
+
+    #[test]
+    fn accept_serves_an_invisible_pid_and_keeps_the_uid_cap_authoritative() {
+        let mut limits = ServerLimits::new();
+        limits.observe.max_connections_per_uid = 1;
+        let mut d = Driver::with(limits);
+        let invisible = Peer {
+            uid: 42,
+            pid: None,
+            comm: None,
+            cgroup: None,
+        };
+        let expected = invisible.clone();
+        let id = match d.server.accept(Level::Observe, Some(invisible), 0) {
+            Accept::Accepted(id) => id,
+            Accept::Refused => panic!("peer with invisible pid was refused"),
+        };
+        assert_eq!(d.server.conn(id).expect("conn").peer(), &expected);
+        assert_eq!(d.server.uid_count(Level::Observe, 42), 1);
+
+        assert_eq!(
+            d.server.accept(
+                Level::Observe,
+                Some(Peer {
+                    uid: 42,
+                    pid: Some(99),
+                    comm: Some(String::from("different-label")),
+                    cgroup: None,
+                }),
+                0,
+            ),
+            Accept::Refused
+        );
+        assert_eq!(d.server.uid_count(Level::Observe, 42), 1);
     }
 
     // ---- R22: every close path releases everything ----
@@ -1830,12 +1884,30 @@ mod tests {
         let mut server = Server::new(limits, backend);
         let uid = 42;
         let Accept::Accepted(observe) =
-            server.accept(Level::Observe, Some(Peer { uid, pid: 7 }), 0)
+            server.accept(
+                Level::Observe,
+                Some(Peer {
+                    uid,
+                    pid: Some(7),
+                    comm: None,
+                    cgroup: None,
+                }),
+                0,
+            )
         else {
             panic!("observe accepted");
         };
         let Accept::Accepted(operator) =
-            server.accept(Level::Operator, Some(Peer { uid, pid: 8 }), 0)
+            server.accept(
+                Level::Operator,
+                Some(Peer {
+                    uid,
+                    pid: Some(8),
+                    comm: None,
+                    cgroup: None,
+                }),
+                0,
+            )
         else {
             panic!("operator accepted");
         };
@@ -2836,7 +2908,12 @@ mod tests {
                     let pick = usize::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
                     let level = Level::ALL[pick];
                     let uid = 1 + u32::try_from(xorshift(&mut seed) % 3).unwrap_or(0);
-                    let mut peer = Some(Peer { uid, pid: 7 });
+                    let mut peer = Some(Peer {
+                        uid,
+                        pid: Some(7),
+                        comm: None,
+                        cgroup: None,
+                    });
                     if xorshift(&mut seed).is_multiple_of(8) {
                         peer = None;
                     }
