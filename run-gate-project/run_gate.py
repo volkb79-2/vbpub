@@ -17895,22 +17895,14 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
     # future re-attach — a lossy filter defended by a rationale that plain
     # `logs -f` already satisfied (RW-15). Start it inside the guarded block
     # below so every post-spawn failure reaches the same process cleanup.
-    # RG-41: a `kind = "command"` lane declaring `stall_timeout` has no
-    # progress file to watch (that is `watch`/`ProgressWatch`'s case, assay
-    # only) — its only liveness signal is this SAME log stream, timed by
-    # arrival instead of read passively. Captured (PIPE) rather than
-    # inherited only when that watch is actually needed; every other lane
-    # keeps the zero-overhead inherited-stdout path unchanged.
-    # RG-320 (P1): the AUTO bound is armed here too. The discipline below
-    # ("captured only when a watch is needed") is now inverted for the kind
-    # that has a log stream at all, because a lane that declares nothing is
-    # precisely the lane this bound exists for. A lane still pays the PIPE
-    # cost only while its own kind can be watched: an assay lane keeps its
-    # progress-file watch and its inherited-stdout path unchanged.
+    # RG-320 (P1): this is the container path by construction, so every
+    # command lane here has a `docker logs -f` signal to watch, whether or not
+    # the loaded lane still carries `_environment_mode`. Disclosure helpers
+    # describe a watch; they do not decide whether this runner arms one.
+    # Assay lanes keep their progress-file watch and inherited-stdout path.
     log_watch: "LogStreamWatch | None" = None
     stall_bound = stall_bound_facts(lane)
-    watch_log_stream = (lane["kind"] == "command"
-                        and lane_stall_signal(lane) == STALL_SIGNAL_LOG_STREAM)
+    watch_log_stream = lane.get("kind") == "command"
     proc: subprocess.Popen | None = None
     saved_log: Path | None = None
     stalled: str | None = None
@@ -18619,7 +18611,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         # RW-18: the lane's own bounds, on this path too — a follower that is
         # never told the `stall_timeout` cannot make sense of the owner
         # stopping the container out from under its log stream.
-        print_lane_bounds(lane, owner_pid=owner)
+        print_lane_bounds(lane, owner_pid=owner,
+                          command_signal=STALL_SIGNAL_LOG_STREAM)
         disown_run_record(run_record)
         if run_record is not None:
             for artifact in ("verdict", "progress"):
@@ -18699,10 +18692,11 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # RW-18: the `budget` and `stall_timeout` this invocation is armed with.
     # A re-attached lane used to be stopped against a `stall_timeout` its own
     # output had never mentioned — the watch below is armed either way.
-    print_lane_bounds(lane)
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_LOG_STREAM)
     # RG-320: the bound this re-attach is armed with, in the record too (the
     # same facts the line above just printed).
-    record_stall_bound(run_record, lane)
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_LOG_STREAM)
     # N3: the artifacts THAT run declared, not the ones this invocation's
     # config would construct — a lane retargeted between the two invocations
     # would otherwise watch a file nothing is appending to and point the
@@ -18999,8 +18993,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     log_resource_forwarded_env(resource_env)
     print_judge_provider(lane)
-    print_lane_bounds(lane)
-    record_stall_bound(run_record, lane)
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_LOG_STREAM)
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_LOG_STREAM)
     print(f"run-gate: docker argv: "
           f"{shlex.join(redact_forwarded_values(
               argv, [*env.get('forward_env', []), *resource_env]))}",

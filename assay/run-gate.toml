@@ -135,7 +135,11 @@ python3 tools/qualify_rust_r1_real.py "$@"''',
 accepts_args = true
 clean_tree = false
 budget = "20m"
+stall_timeout = "20m"
 artifacts = [".assay/rust-r1-real"]
+# RG-320/H1: SILENT BY CONSTRUCTION. qualify_rust_r1_real.py captures every
+# Cargo command's output and emits no progress line before the command ends.
+# No silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 [lanes.rust-r1-qualification.resources]
 memory = "1g"
@@ -168,7 +172,11 @@ python3 tools/qualify_rust_r2_real.py "$@"''',
 accepts_args = true
 clean_tree = false
 budget = "45m"
+stall_timeout = "45m"
 artifacts = [".assay/rust-r2-real"]
+# RG-320/H1: SILENT BY CONSTRUCTION. qualify_rust_r2_real.py captures each
+# cargo-mutants case and prints its result only after that case returns. No
+# silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 [lanes.rust-r2-qualification.resources]
 memory = "2g"
@@ -398,7 +406,11 @@ export PYTHONPATH="{worktree}/assay/src:{worktree}/libraries/cowtree/src"
 exit_map = { "3" = "ERROR" }
 clean_tree = false
 budget = "120m"
+stall_timeout = "120m"
 artifacts = [".assay/replay-pilot"]
+# RG-320/H1: SILENT BY CONSTRUCTION. replay_pilot.py captures each pytest
+# run and prints a replay row only after its mutant/pristine pair completes.
+# No silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 [lanes.replay-pilot.resources]
 memory = "2g"

@@ -210,7 +210,7 @@ SPEC §9.
 | RG-317 | two tests judge other projects from run-gate's suite (`test_lanes_check.py` real-repository sweep, `test_tester_unified_base_variants.py`) | Minor | OPEN 2026-11-25 (filed by RG-297) |
 | RG-318 | the assay version pin for forwarded store flags (`assay >= 12.3.0` floor, `capabilities` probe at run time) | Minor | CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0` released) |
 | RG-319 | no per-run `--env` in `remote-gate`: a job's only environment is the per-repo PROFILE `env` table | Minor | OPEN 2026-11-25 (filed by the RG-297 fix round) |
-| RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source (an assay lane publishes the RG-7 RULE it already had, `auto-derived`); sequence stays unwatched by decision (members carry the watches); 36 silent-by-construction lanes declare a bound equal to their budget (RG-326, finding RG-328); `budget = "unbounded"` remains P2 |
+| RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source (an assay lane publishes the RG-7 RULE it already had, `auto-derived`); sequence stays unwatched by decision (members carry the watches); 41 silent-by-construction lanes declare a bound equal to their budget (RG-326, finding RG-328); `budget = "unbounded"` remains P2 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -10102,7 +10102,10 @@ around `docker load` / `docker build`, `docker run -d` + `docker wait` +
 progress they emit goes to a FILE that only an `assay`-kind lane reads while the
 lane itself is `kind = "command"`. For those lanes the only sound bound is their
 own `budget`, which is why each of them now declares `stall_timeout` EQUAL to its
-`budget` (`mdt-cockpit` `oci-push`/`image-runtime`/`image-runtime-built`/
+`budget` (41 lanes are annotated in total, including `assay`
+`rust-r1-qualification`/`rust-r2-qualification`/`replay-pilot` and `cmru`
+`installed-wheel`/`installed-wheel-live`; `mdt-cockpit`
+`oci-push`/`image-runtime`/`image-runtime-built`/
 `vm-system`, `ciu` `enroll`/`ciu-run-os-integration`,
 `shared-ramdisk-depot-manager` `unit`/`coverage`, `cgprofile` `r0-r1`/`gate`,
 `augeaswrap`-family r2 lanes, `wings-patchstack` `wings`/`coverage`, the
@@ -10136,9 +10139,15 @@ the budget honestly:
   Then each lane's `stall_timeout` can be measured and lowered; until then its
   comment stays true and its bound stays equal to its budget.
 
-Source: H1 of the RG-320 fix round 1 (review `ntb-p1-review-r1.md`, controller
-ruling H1); every claim above was checked in the code that produces the output,
-not inferred from lane names.
+The five additions in round 2 were checked against their producers: Rust R1
+captures all Cargo output and prints no progress; Rust R2 captures each
+cargo-mutants case and reports after it returns; replay-pilot captures pytest
+and reports after each mutant/pristine pair; installed-wheel captures its
+build/install/render commands and prints after completion.
+
+Source: H1 of the RG-320 fix rounds 1 and 2 (reviews `ntb-p1-review-r1.md` and
+`ntb-p1-review-r2b.md`, controller rulings H1); every claim above was checked
+in the code that produces the output, not inferred from lane names.
 
 ## RG-327 — a STALLED `exec` lane leaves the in-container command running
 

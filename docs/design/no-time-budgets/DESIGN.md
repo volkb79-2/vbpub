@@ -154,11 +154,12 @@ Progress sources that exist today:
 
 Judgement quality already present:
 
-- **Silence, never total elapsed.** `ProgressWatch` measures `now - last event`
-  (`:16415`), the log watch measures line age, liveness measures idle inside
+- **Silence, never total elapsed.** `ProgressWatch._active_age` measures
+  `now - last event`, the log watch measures line age, liveness measures idle inside
   *eligible* intervals only.
 - **Pressure-independent.** run-gate pauses its idle clock when host PSI
-  `full avg10 > 5`, crediting at most 1800 s of pause (`:706`, `:16407-16430`);
+  `full avg10 > 5`, crediting at most 1800 s of pause
+  (`PRESSURE_PAUSE_MAX_SECONDS` in `ProgressWatch._active_age`);
   assay credits only intervals whose aggregate pressure/throttle counters did
   not move and never prorates a delta (`liveness.py:1974-1990`).
 - **Disclosure.** run-gate prints which source judged the lane

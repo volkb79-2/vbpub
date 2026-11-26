@@ -139,8 +139,10 @@ Rev 25 (Run-Gate 25.9.x, RG-320 — P1 of
 with a stall bound (new `R-40i`), including the exec and bare-host command
 runners that had no signal at all (`R-40f` extended to the output stream); no
 cap is removed and `budget = "unbounded"` is still refused (that is P2). The
-bound, its SOURCE (`declared`/`auto`) and the signal it judges are disclosed on
-the line and recorded as `stall_bound`; a sequence lane declares none of its
+bound, its SOURCE (`declared`/`auto`/`auto-derived`) and the signal it judges
+are disclosed on the line and recorded as `stall_bound`; command lanes use
+`auto` for the 300 s default and assay lanes use `auto-derived` for the RG-7
+rule. A sequence lane declares none of its
 own and its members carry the watches. RG-58's bare-host "inert" WARN and
 `doctor` 2d are retired because the fact they asserted became false.
 Distilled from `README.md` (design
@@ -445,8 +447,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   restriction — a command lane's liveness signal is its own log stream,
   `R-40f`), and since RG-320 (`R-40i`) a lane
   that declares NOTHING is still bounded (`DEFAULT_STALL_BOUND_SECONDS`
-  300 s), with the number AND its source (`declared`/`auto`) disclosed and
-  recorded as `stall_bound`; the signal depends on the lane kind
+  300 s for command lanes, source `auto`); an assay lane keeps RG-7's derived
+  bound with source `auto-derived` and its rule recorded. The source and signal
+  are disclosed and recorded as `stall_bound`; a declared bound has source
+  `declared` on either watched kind. The signal depends on the lane kind
   (assay → progress file, container command → log stream, exec/bare-host
   command → its own output stream, sequence → none, its members carry
   theirs); `R-40c`), `memory` (`\d+[bkmg]?`, docker `--memory` — superseded by
@@ -2468,13 +2472,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       sized for that command is the escape, and it is disclosed as such in
       the authoring guide.
   - **`R-40i` (RG-320, P1 of the no-time-budgets design) EVERY watched lane
-    is bounded, and the bound names its SOURCE.** A lane that declares no
-    `stall_timeout` is armed with `DEFAULT_STALL_BOUND_SECONDS` (300 s — the
-    operator's answer to the design's question Q4), and its disclosure line,
-    its stall message and its run record all say the bound is `auto`
-    (`run-gate: stall bound 300s (source: auto)`); a declared number still
-    says `source: declared` and is NEVER paused by host pressure (it is the
-    operator's own number). `stall_bound_facts(lane)` is the single
+    is bounded, and the bound names its SOURCE.** A command lane that declares
+    no `stall_timeout` is armed with `DEFAULT_STALL_BOUND_SECONDS` (300 s — the
+    operator's answer to the design's question Q4); its disclosure line, stall
+    message and run record say `source: auto` (`run-gate: stall bound 300s
+    (source: auto)`). An assay lane without a declared value keeps RG-7's
+    derived rule (`max(300s, 3x cadence)`, 600 s post-command); its disclosure
+    and run record say `source: auto-derived` and include the rule, rather than
+    claiming the command-lane default. A declared number on either watched
+    kind says `source: declared` and is NEVER paused by host pressure (it is
+    the operator's own number). `stall_bound_facts(lane)` is the single
     derivation all three read, so the number, the source and the signal cannot
     disagree. Where the kind has no signal at its own level, nothing is
     claimed: a SEQUENCE lane's `record_stall_bound` writes `null` and its

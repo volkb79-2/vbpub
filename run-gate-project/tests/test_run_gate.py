@@ -11178,6 +11178,7 @@ class TestShippedGateFullDeclaration:
             "argv": ["bash", "-c", "cd {worktree}/run-gate-project && "
                      "exec tools/canary-run.sh"],
             "budget": "15m",
+            "stall_timeout": "15m",
             "resources": {"memory": "1g", "memory_swap": "16g"},
         }
         assert lanes["assay-r2"]["assay_lane"] == "r2"
@@ -22831,6 +22832,8 @@ class TestBareHostStallTimeoutWarning:
         repo = make_repo(tmp_path)
         proj = make_project(repo, self._cfg())
         fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda path, **kwargs: Path("/phys"))
         monkeypatch.chdir(proj)
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
@@ -22879,6 +22882,8 @@ class TestBareHostStallTimeoutWarning:
             clean_tree = false
         """)
         fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda path, **kwargs: Path("/phys"))
         monkeypatch.chdir(proj)
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["doctor"]) == 0
@@ -27185,6 +27190,67 @@ class TestAwaitContainerProfilingWiring:
 
     def _start_container(self, state: Path, name: str) -> None:
         (state / name).write_text("running 0\n")
+
+    def test_unstamped_command_lane_still_arms_log_watch(
+            self, tmp_path, monkeypatch):
+        """The container runner knows its signal even when mode stamping is
+        absent (for example, after an environment declaration moves)."""
+        _log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        lane = {"kind": "command", "stall_timeout": "1s"}
+        assert "_environment_mode" not in lane
+
+        class _Process:
+            pid = 4240
+
+            def __init__(self):
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                self.returncode = 0
+                return 0
+
+        watches = []
+
+        class _Watch:
+            def __init__(self, *args, **kwargs):
+                watches.append((args, kwargs))
+
+            def poll(self):
+                return None
+
+            def join(self):
+                return True
+
+        process = _Process()
+        popen_calls = []
+
+        def popen(argv, *args, **kwargs):
+            popen_calls.append(argv)
+            return process
+
+        def run(argv, *args, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="0\n", stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
+        monkeypatch.setattr(run_gate.subprocess, "run", run)
+        monkeypatch.setattr(run_gate, "LogStreamWatch", _Watch)
+        docker = shutil.which("docker")
+        code = run_gate.await_container(
+            docker, name, lane, "suite", tmp_path, tmp_path, tmp_path)
+
+        assert code == 0
+        assert len(watches) == 1
+        assert popen_calls == [[docker, "logs", "-f", "--timestamps", name]]
+        assert watches[0][0][1] == 1
 
     def test_log_watch_setup_failure_reaps_spawned_log_process(
             self, tmp_path, monkeypatch):

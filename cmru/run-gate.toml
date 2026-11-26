@@ -88,6 +88,11 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py"]
 budget = "10m"
+stall_timeout = "10m"
+# RG-320/H1: SILENT BY CONSTRUCTION. installed_wheel_smoke.py captures the
+# wheel build, venv install and render commands, then prints only after all
+# steps finish. No silence bound has been measured yet; RG-326 tracks a real
+# progress signal.
 
 [lanes.installed-wheel.resources]
 pids = 8192
@@ -103,6 +108,11 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py --require-live-snapshot"]
 budget = "10m"
+stall_timeout = "10m"
+# RG-320/H1: SILENT BY CONSTRUCTION. installed_wheel_smoke.py captures the
+# wheel build, venv install and render commands, then prints only after all
+# steps finish. No silence bound has been measured yet; RG-326 tracks a real
+# progress signal.
 
 [lanes.installed-wheel-live.resources]
 pids = 8192

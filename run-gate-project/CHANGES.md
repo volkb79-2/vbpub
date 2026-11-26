@@ -24,8 +24,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Changed
 - run-gate: a container command lane is watched by `LogStreamWatch` whether or
-  not it declares `stall_timeout` (RG-320), so every command lane is now bounded
-  by silence rather than left unbounded when silent.
+  not it declares `stall_timeout` (RG-320); the container runner arms from its
+  known `docker logs -f` path and explicitly discloses and records that signal
+  on start and re-attach, and discloses it to followers, even when
+  environment-mode stamping is absent.
+- run-gate: annotate five additional silent-by-construction command lanes with
+  `stall_timeout` equal to their own budget (`assay` Rust R1/R2 and replay-pilot;
+  `cmru` installed-wheel and installed-wheel-live), following RG-326 pending a
+  real progress signal.
 - run-gate: `OutputTee.join()` now waits at most `OUTPUT_DRAIN_TIMEOUT_SECONDS`
   (5 s) and DISCLOSES an incomplete drain, instead of blocking until EOF on a
   lane's output pipe — a grandchild that outlived the terminated process group
@@ -48,6 +54,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - docs(run-gate): README/SPEC/CONSUMERS/LANE-AUTHORING describe the per-kind
   signal table, the 300 s auto bound with its disclosed source, and the
   buffered-child caveat (RG-320, rev 75: new `R-40i`, `R-40f` extended).
+- docs(run-gate): reconcile RG-320/RG-326 lane counts, cite stable stall-watch
+  symbols in the no-time-budgets design, and distinguish `auto` from
+  `auto-derived` by lane kind.
 
 <!-- cmru: release history -->
 
