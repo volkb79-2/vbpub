@@ -11,22 +11,25 @@
 //!
 //! Module map. Design §5 names the whole set: `psi`, `config`, `socket`,
 //! `units`, `victims`, `actuator`, `clock`, `events`, `cli`, plus the wire and
-//! report helpers this crate adds. **Landed so far** (this cut's subtask 2):
-//! [`clock`], [`config`], [`psi`], [`hysteresis`], [`json`]. The remaining
-//! modules (`units`, `wire`, `events`, `socket`, `report`, `cli`, `daemon`,
-//! `activation`) are the next subtasks and are deliberately not declared here
-//! before they exist: a doc link to a missing module is a rustdoc warning, and
-//! the lint lane denies warnings.
+//! report helpers this crate adds. **Landed so far**: [`clock`], [`config`],
+//! [`psi`], [`hysteresis`], [`json`], [`units`], [`wire`], [`socket`],
+//! [`events`]. The remaining modules (`report`, `cli`, `daemon`, `activation`)
+//! are the next subtasks and are deliberately not declared here before they
+//! exist: a doc link to a missing module is a rustdoc warning, and the lint lane
+//! denies warnings.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod clock;
 pub mod config;
+pub mod events;
 pub mod hysteresis;
 pub mod json;
 pub mod psi;
+pub mod socket;
 pub mod units;
+pub mod wire;
 
 #[cfg(test)]
 pub mod testutil;
