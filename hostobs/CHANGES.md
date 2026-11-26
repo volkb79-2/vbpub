@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - **Fixed (M3 B1, `HOB-90`):** peer credentials now use a raw 12-byte `SO_PEERCRED` read with length and pid guards; pid 0 remains accepted as invisible, and accept captures the uid plus advisory UTF-8 comm and cgroup `(st_dev, inode)` labels.
+- **Added (M3 B2):** the observer level is installable through its systemd socket, tmpfiles directory and shipped probe configuration; deploy regression checks pin all three levels, and the Debian setup notes cover its access group.
 - **Added (HOB-102):** the kernel collector reads `cgroup.freeze` and `cgroup.events`, and the sampler publishes `cgroup.freeze`, `cgevents.frozen` and `cgevents.populated` as last-only cgroup state metrics.
 - **Changed (P-hostobs-12, `HOB-67`):** the sans-IO serving core and send hub now live in `crates/serve`; `proto` keeps the codec and stream layers, while `probe` keeps process wiring, config, the driver, sampler and live backend.
 - **Added (P-hostobs-11a):** a live `watch` client example, the contained two-level `tools/live-demo.py` harness with a fail-closed verdict, and the Debian systemd/config contract for the hostobs probe, with unit and transcript-verdict tests plus `docs/LIVE-DEMO.md`.
