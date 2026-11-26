@@ -510,7 +510,7 @@ def _hold_ticks_reached(path: Path, wanted: int) -> bool:
 
 
 def _parent_pid(pid: int) -> int | None:
-    """The kernel's recorded parent of `pid`, or None when it is gone or a zombie."""
+    """The kernel's recorded parent of `pid`, or None when its stat cannot be read."""
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:
@@ -583,7 +583,7 @@ HEARTBEAT_TRAP_HOOK = (
     '  { printf \'%s\\t%s\\n\' "$BASHPID" "${!:-}"; jobs -p; } >"$ASSAY_HEARTBEAT_TRAP_SEAM.tmp"\n'
     '  mv -f -- "$ASSAY_HEARTBEAT_TRAP_SEAM.tmp" "$ASSAY_HEARTBEAT_TRAP_SEAM"\n'
     '  builtin trap "$@"\n'
-    '  while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" ]]; do\n'
+    '  while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" ]] && kill -0 "$PPID" 2>/dev/null; do\n'
     "    /bin/sleep 0.01\n"
     "  done\n"
     "}\n"
@@ -1176,7 +1176,7 @@ def test_release_gate_judges_the_missing_remote_gate_file_before_the_settings(
 ) -> None:
     env = _environment(tmp_path, host="")
     # Finding 3: CONSUMERS.md says which check runs first. The missing-script check
-    # (tools/release-gate.sh:54-56) is before the settings resolution, so a fresh
+    # (tools/release-gate.sh:55-57) is before the settings resolution, so a fresh
     # clone that also has no host hears only the exit-3 file refusal and a SECOND
     # run is needed for the settings -- the two-attempt cost B579 removed for the
     # settings themselves. Running the real script (an absolute path) in a directory
