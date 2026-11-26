@@ -664,7 +664,28 @@ impl MetricRegistry {
 /// its keys against the same registry when the collectors are imported.
 pub fn sampler_baseline() -> Result<MetricRegistry, MetricError> {
     let mut registry = MetricRegistry::new();
-    // cgroupfs counters and gauges (collect.rs `Ids::new`, `CG_FILES`).
+    // cgroupfs facts (collect.rs `Ids::new`, `CG_FILES`).
+    registry.declare(
+        "cgroup.freeze",
+        MetricKind::State,
+        Unit::None,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
+    registry.declare(
+        "cgevents.frozen",
+        MetricKind::State,
+        Unit::None,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
+    registry.declare(
+        "cgevents.populated",
+        MetricKind::State,
+        Unit::None,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
     registry.declare(
         "cpu.usage_usec",
         MetricKind::Counter,
@@ -1387,6 +1408,33 @@ mod tests {
             Ok(Scope::Cgroup),
             "mem.current is inclusive of descendants and is never summed with them"
         );
+        for name in ["cgroup.freeze", "cgevents.frozen", "cgevents.populated"] {
+            let metric = registry.get(name).expect("freezer state is registered");
+            assert_eq!(
+                (
+                    metric.kind(),
+                    metric.unit(),
+                    metric.scope(),
+                    metric.source()
+                ),
+                (
+                    MetricKind::State,
+                    Unit::None,
+                    Scope::Cgroup,
+                    Source::CgroupFs
+                ),
+                "{name} is sampled cgroup state"
+            );
+            assert_eq!(
+                metric.aggregations(),
+                vec![Aggregation::Last],
+                "{name} is last-only"
+            );
+            assert!(
+                !metric.allows(Aggregation::Mean),
+                "{name} cannot be averaged"
+            );
+        }
         assert_eq!(
             registry.get("probe.resets").map(|m| m.source()),
             Ok(Source::Probe),
