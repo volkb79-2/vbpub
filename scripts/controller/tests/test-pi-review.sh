@@ -152,7 +152,7 @@ launch() {
     FAKE_PI_REPORT="$report" \
     FAKE_PI_ACTION="$action" FAKE_PI_EDIT="$WORKTREE/tracked.txt" \
     FAKE_PI_SLOW_SECONDS="${FAKE_PI_SLOW_SECONDS_TEST:-${FAKE_PI_SLOW_SECONDS:-2}}" \
-    FAKE_PI_UNTRACKED="$WORKTREE/untracked.txt" FAKE_PI_WORKTREE="$WORKTREE" \
+    FAKE_PI_UNTRACKED="${FAKE_PI_UNTRACKED_TEST:-$WORKTREE/untracked.txt}" FAKE_PI_WORKTREE="$WORKTREE" \
     FAKE_PI_UNTRACKED_DIR="$WORKTREE/scratch" \
     FAKE_PI_EXCLUDE="$WORKTREE/.git/info/exclude" \
     PI_REVIEW_MAX_SECONDS="${PI_REVIEW_MAX_SECONDS_TEST:-7200}" \
@@ -565,7 +565,7 @@ check_budget_stream_bytes() {
     FAKE_PI_SLOW_SECONDS_TEST=10 launch rev-budget-stream slow --implementer-run impl-volker || rc=$?
   (( rc == 5 )) || fail "a review over its stream budget exited $rc, expected 5"
   contains "$RUNS/rev-budget-stream.done" 'REVIEW-BUDGET' 'the run is marked REVIEW-BUDGET'
-  contains "$ROOT/rev-budget-stream.launch.log" 'stream' 'the message names the stream size'
+  contains "$ROOT/rev-budget-stream.launch.log" 'over budget (stream ' 'the message names the stream size'
 }
 
 # A malformed budget value is a refusal, not an invented default.
@@ -613,13 +613,29 @@ check_stale_report_refused() {
 
 # --- worktree-scoped state classes ------------------------------------------
 
+# The comparison legs the wrapper reports, read from its one flag line only. The
+# run name appears elsewhere in the launch log, so a substring search of the
+# whole log can match when the leg under test never fired.
+changed_legs() {
+  local line
+  line=$(grep '^REVIEW-MODIFIED-TREE: ' "$ROOT/$1.launch.log" || :)
+  [[ $line == 'REVIEW-MODIFIED-TREE: '*' (pi-impl exit '* ]] || return 0
+  line=${line#REVIEW-MODIFIED-TREE: }
+  printf '%s' "${line%% (pi-impl exit *}"
+}
+assert_changed_leg() {
+  local legs
+  legs=$(changed_legs "$1")
+  [[ ", $legs, " == *", $2, "* ]] || fail "$3 (reported legs: ${legs:-<none>})"
+}
+
 # A branch switch at the SAME commit moves no sha, no status and no diff.
 check_modified_head_branch() {
   local rc=0
   launch rev-switch switch --implementer-run impl-volker || rc=$?
   (( rc == 4 )) || fail "a reviewer that switched branch exited $rc, expected 4"
   contains "$RUNS/rev-switch.done" 'REVIEW-MODIFIED-TREE' 'a branch switch is flagged'
-  contains "$ROOT/rev-switch.launch.log" 'head-branch' 'the printed flag names the symbolic HEAD'
+  assert_changed_leg rev-switch head-branch 'the printed flag names the symbolic HEAD'
   git -C "$WORKTREE" switch -q "$ORIGINAL_BRANCH" || :
   git -C "$WORKTREE" branch -qD reviewer-scratch 2>/dev/null || :
 }
@@ -630,7 +646,7 @@ check_modified_index_flags() {
   launch rev-index assume-unchanged --implementer-run impl-github2 || rc=$?
   (( rc == 4 )) || fail "a reviewer that hid an edit behind an index flag exited $rc, expected 4"
   contains "$RUNS/rev-index.done" 'REVIEW-MODIFIED-TREE' 'an index flag is flagged'
-  contains "$ROOT/rev-index.launch.log" 'index-flags' 'the printed flag names the index entry flags'
+  assert_changed_leg rev-index index-flags 'the printed flag names the index entry flags'
   git -C "$WORKTREE" update-index --no-assume-unchanged -- tracked.txt 2>/dev/null || :
   git -C "$WORKTREE" update-index --really-refresh -q 2>/dev/null || :
   clean_worktree
@@ -642,18 +658,21 @@ check_modified_exclude() {
   launch rev-exclude exclude --implementer-run impl-volker || rc=$?
   (( rc == 4 )) || fail "a reviewer that edited info/exclude exited $rc, expected 4"
   contains "$RUNS/rev-exclude.done" 'REVIEW-MODIFIED-TREE' 'an exclude change is flagged'
-  contains "$ROOT/rev-exclude.launch.log" 'exclude' 'the printed flag names the exclude file'
+  assert_changed_leg rev-exclude exclude 'the printed flag names the exclude file'
   cp -- "$ROOT/exclude.orig" "$WORKTREE/.git/info/exclude"
 }
 
 # An edit to a file that was ALREADY untracked leaves the status line identical.
 check_modified_untracked_content() {
-  local rc=0
+  local rc=0 FAKE_PI_UNTRACKED_TEST=$WORKTREE/leftover.txt
   printf 'implementer leftover\n' > "$WORKTREE/leftover.txt"
   launch rev-untracked-content untracked-content --implementer-run impl-github2 || rc=$?
   (( rc == 4 )) || fail "a reviewer that edited a pre-existing untracked file exited $rc, expected 4"
   contains "$RUNS/rev-untracked-content.done" 'REVIEW-MODIFIED-TREE' 'an untracked content change is flagged'
-  contains "$ROOT/rev-untracked-content.launch.log" 'untracked-content' 'the printed flag names the untracked content'
+  [[ $(cat "$WORKTREE/leftover.txt") == 'changed after launch' ]] \
+    || fail 'the fake reviewer did not edit the pre-existing untracked file'
+  [[ $(changed_legs rev-untracked-content) == untracked-content ]] \
+    || fail "an edit to a pre-existing untracked file must be reported by the content leg alone (reported: $(changed_legs rev-untracked-content))"
   rm -f -- "$WORKTREE/leftover.txt"
   clean_worktree
 }
@@ -666,7 +685,7 @@ check_modified_diff_of_dirty_file() {
   launch rev-dirty-diff write --implementer-run impl-volker || rc=$?
   (( rc == 4 )) || fail "a reviewer that edited an already-dirty file exited $rc, expected 4"
   contains "$RUNS/rev-dirty-diff.done" 'REVIEW-MODIFIED-TREE' 'a further edit to a dirty file is flagged'
-  contains "$ROOT/rev-dirty-diff.launch.log" 'diff' 'the printed flag names the diff'
+  assert_changed_leg rev-dirty-diff diff 'the printed flag names the diff'
   clean_worktree
 }
 
@@ -682,7 +701,7 @@ check_untracked_in_untracked_dir() {
   launch rev-uall untracked-in-dir --implementer-run impl-github2 || rc=$?
   (( rc == 4 )) || fail "a file added inside an untracked directory exited $rc, expected 4"
   contains "$RUNS/rev-uall.done" 'REVIEW-MODIFIED-TREE' 'a deep untracked addition is flagged'
-  contains "$ROOT/rev-uall.launch.log" 'status' 'the printed flag names the status comparison (-uall)'
+  assert_changed_leg rev-uall status 'the printed flag names the status comparison (-uall)'
   rm -rf -- "$WORKTREE/scratch"
   clean_worktree
 }
