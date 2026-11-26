@@ -417,8 +417,20 @@ def test_the_host_request_shape_is_strict_but_the_profile_key_is_optional(tmp_pa
 
 
 def test_candidate_budget_kills_the_child_tree_inside_the_window_host(tmp_path):
-    child = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']); time.sleep(60)"
-    plan = _plan((sys.executable, "-c", child))
+    # (P4) The parent is `/bin/sh`, not a second Python interpreter, and that
+    # is a FIX rather than cosmetic: a `python -c` parent must start (import
+    # something, allocate, fork) inside the 0.1 s budget this test sets, and
+    # under a loaded host that start-up alone can consume it. Measured here:
+    # a Python parent's child became visible in /proc after ~50 ms to 5 s,
+    # while `sh -c '... & ...'` forks in ~1 ms -- so the ONLY thing the 0.1 s
+    # budget can expire against is the sleep the test means it to expire
+    # against. A budget that races process START-UP is a load-dependent test,
+    # not a property of the kill path.
+    # `& wait` keeps exactly ONE descendant in flight while the leader waits
+    # on it: `sh -c 'sleep 60 & sleep 60'` would fork TWO (the background one
+    # and the foreground one), which is a different process-tree shape than
+    # this test is about.
+    plan = _plan(("/bin/sh", "-c", "sleep 60 & wait"))
 
     result = _window_host.run_window(
         plan,
