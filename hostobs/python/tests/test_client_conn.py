@@ -47,13 +47,19 @@ class RigCase(unittest.TestCase):
 class Handshake(RigCase):
     def test_hello_handshake_fields_and_request(self) -> None:
         conn = self.connect(level="operator")
-        self.assertEqual((conn.level, conn.minor, conn.epoch, conn.boot_id), ("operator", 1, 1, hello_result()["boot_id"]))
+        self.assertEqual(
+            (conn.level, conn.minor, conn.epoch, conn.boot_id),
+            ("operator", 2, 1, hello_result()["boot_id"]),
+        )
         self.assertEqual(conn.session, "first")
         self.assertEqual(conn.limits["max_outstanding"], 4)
         self.assertEqual(conn.features, ["peak_reset"])
         self.assertEqual(conn.verbs, ["hello", "status"])
-        self.assertEqual(self.probe.requests(), [(1, "hello", {"client": "test-client", "proto": {"major": 1, "minor": 1}})])
-        self.assertEqual(self.probe.prefix, b"HOB\x01\x01\x00\x01\x00")
+        self.assertEqual(
+            self.probe.requests(),
+            [(1, "hello", {"client": "test-client", "proto": {"major": 1, "minor": 2}})],
+        )
+        self.assertEqual(self.probe.prefix, b"HOB\x01\x01\x00\x02\x00")
 
     def test_negotiated_minor_zero(self) -> None:
         self.assertEqual(self.connect(minor=0).minor, 0)
@@ -138,7 +144,7 @@ class Handshake(RigCase):
     def test_server_minor_above_client_is_refused(self) -> None:
         from hostobs_client.conn import Connection
 
-        self.probe.prefix_reply(1, 2)
+        self.probe.prefix_reply(1, 3)
         with self.assertRaises(ProtocolError):
             Connection(self.rig.client, "observe", client="c", timeout_s=1, clock=self.clock)
 
