@@ -7,6 +7,7 @@ All notable changes to this project are recorded here.
 ### Added
 - Collect, validate and consume `host-facts/2` with explicit null reasons, load, gate-slice, disk, guard and policy facts; `fleet facts validate` retains `/1` for one migration release.
 - Document the new facts and optional host policy keys without changing planner placement decisions; close FD-049's guard fact reshape.
+- The planner reads `/2` `cpu.online` and `memory.total_bytes`, and refuses `/1`; legacy `/1` `cpu.for_lanes` and `memory.for_lanes_bytes` are therefore accepted only by `fleet facts validate` during the migration release and no longer affect placement.
 
 <!-- cmru: release history -->
 
