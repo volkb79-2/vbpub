@@ -15995,7 +15995,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 **Wanted.**
 1. When a resume rejects records for a judge mismatch, report the judge-identity components that differ between the stored records and this run: tree, argv, declared env, passthrough names and values (by name only, value fingerprints never printed), cwd/prefix, link paths, tool version and fingerprints. For this, the judge's component digests must be stored in the store (for example, beside the store manifest), not only their combined hash.
-2. In CONSUMERS, the env_passthrough section: one paragraph stating that a passthrough value that embeds a checkout path makes every remote-gate run a new judge, so resume, carry-forward and the shard merge across runs never match. Name the relative-path fix.
+2. In CONSUMERS, the `env_passthrough` section: explain that an assay-injected `PYTHONPATH` entry changes the fingerprint even when the consumer's own value is relative. Document the declared `env` workaround while the code fix is pending and the pre-injection fingerprint design; do not recommend a relative path.
 
 **Close when.** A test proves that a mismatch caused by a single passthrough value names that variable in the resume event and on stderr, and the CONSUMERS paragraph is in place. Source: vbpub-rollback's message to vbpub-assay at ~16:58Z; record diff by vbpub-assay.
 
