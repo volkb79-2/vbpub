@@ -188,7 +188,7 @@ def test_rows_join_branches_runs_and_gate_results_on_the_head(tmp_path):
     git = _git(tmp_path, (branch,))
     records = (_record("cmru-p07-pi", source=str(tmp_path / "runs"), worktree=_worktree(tmp_path, branch).path),)
     run_set = _run_set(tmp_path, records)
-    view = _view(git, run_set, results=(_result(tmp_path),), slots=(_slot(state="held", pid=42, name="v1001.slot1")))
+    view = _view(git, run_set, results=(_result(tmp_path),), slots=(_slot(state="held", pid=42),))
 
     (row,) = agg.rows_from_inputs(view)
 
@@ -248,7 +248,8 @@ def test_a_gate_result_may_name_the_head_by_its_short_form(tmp_path):
 
 def test_a_row_without_run_or_gate_records_states_unknown_not_zero(tmp_path):
     git = _git(tmp_path, ("plat-19m-acceptkit-20261125_020339",))
-    view = _view(git, _run_set(tmp_path, ()), results=(_result(tmp_path, project="other"),))
+    # A result for another project AND another head: neither of the two joins applies.
+    view = _view(git, _run_set(tmp_path, ()), results=(_result(tmp_path, project="other", sha="9" * 40),))
 
     (row,) = agg.rows_from_inputs(view)
 
@@ -341,18 +342,25 @@ def test_a_run_record_with_a_chain_and_a_live_token_renders_both(tmp_path):
     source = str(tmp_path / "runs")
     branch = "plat-22c-pi-branch"
     worktree = _worktree(tmp_path, branch).path
+    live, lock = _live_record(tmp_path, "plat-22c-pi-y2", tokens=90000)
+    live = ag_runs.RunRecord(
+        id=live.id, source=live.source, files=live.files, exit_code=None, outcome="", review="",
+        route="luna", thread="", worktree=worktree, tokens=90000, live_mtime=None,
+        last_state="READY", last_run="", gauge="", boundary="", mark="", paths=live.paths,
+    )
     records = (
         _record("plat-22c-pi", source=source, files=("done",), outcome="SUCCESS", worktree=worktree),
         _record("plat-22c-pi-y1", source=source, files=(), outcome="", tokens=53, worktree=worktree),
-        _record("plat-22c-pi-y2", source=source, files=("live",), outcome="", tokens=90000, last_state="READY", worktree=worktree),
+        live,
     )
     git = _git(tmp_path, (branch,))
-    view = _view(git, _run_set(tmp_path, records))
+    view = _view(git, _run_set(tmp_path, records), locks=_held((lock,)))
 
     (row,) = agg.rows_from_inputs(view)
 
     assert "3 run(s)" in row.fields["runs"].value
     assert "1 ended" in row.fields["runs"].value
+    assert "1 active" in row.fields["runs"].value
     assert "chain plat-22c-pi>plat-22c-pi-y1>plat-22c-pi-y2" in row.fields["runs"].detail
     assert "plat-22c-pi-y2 active 90k" in row.fields["runs"].detail
 
@@ -367,8 +375,24 @@ def test_no_readable_runs_directory_makes_the_runs_cell_unknown(tmp_path):
     assert str(tmp_path / "runs") in row.fields["runs"].detail
 
 
+def test_an_unreadable_runs_directory_states_its_reason_when_none_is_readable(tmp_path):
+    # Every runs directory exists but none could be listed: the reason is the cell's detail,
+    # not a bare "nothing is readable" that hides WHY.
+    run_set = ag_runs.RunSet(
+        records=(), dirs=(str(tmp_path / "runs"), str(tmp_path / "other")), readable=(),
+        unreadable=((str(tmp_path / "runs"), "cannot read /runs: Permission denied"),),
+    )
+
+    (row,) = agg.rows_from_inputs(_view(_git(tmp_path, ("p-x",)), run_set))
+
+    assert row.fields["runs"].state == agg.MISSING
+    assert row.fields["runs"].detail == "unreadable run directory: cannot read /runs: Permission denied"
+
+
 def test_a_run_whose_lock_is_free_and_which_never_ended_is_died(tmp_path):
     path = tmp_path / "runs" / "p.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
     # A record with a lock path but no `.done`: the raw `RunRecord` is built with its paths map.
     record = ag_runs.RunRecord(
         id="p-pi", source=str(tmp_path / "runs"), files=("live", "lock"), exit_code=None, outcome="", review="",
@@ -472,7 +496,7 @@ def test_text_rendering_states_an_unlistable_git_without_dropping_the_other_rows
 
 
 def test_text_rendering_states_an_unlistable_lock_and_peer_directory(tmp_path):
-    view = _view(_git(tmp_path, ("p-x",)), _run_set(tmp_path, ()),
+    view = _view(_git(tmp_path, ("p-x",)), _run_set(tmp_path, (), unreadable=(("/other-runs", "cannot read /other-runs: Permission denied"),)),
                  slots_detail="cannot read locks: Permission denied",
                  results_detail="cannot read gates: Permission denied",
                  peers_detail=("cannot read state: Permission denied",))
@@ -481,6 +505,7 @@ def test_text_rendering_states_an_unlistable_lock_and_peer_directory(tmp_path):
 
     assert "gate slots UNKNOWN (cannot read locks" in text
     assert "gate results UNKNOWN (cannot read gates" in text
+    assert "run records PARTIAL (cannot read /other-runs" in text
     assert "peer state PARTIAL (cannot read state" in text
 
 
@@ -518,7 +543,8 @@ def test_the_header_says_none_and_unknown_instead_of_omitting_a_section(tmp_path
     assert "MERGE 0: none" in text
     assert "LEASES 0: none" in text
     assert "LIVE 0: none" in text
-    assert "PEERS: none" in text
+    assert "PEERS 0: none" in text
+    assert "HANDOVER own unknown" in text
     assert "HANDOVER own unknown" in text
 
 
@@ -593,11 +619,25 @@ def test_a_context_bucket_edge_does_change_the_header(tmp_path):
     assert "LIVE 1: plat-19m-pi luna 50-150k" in agg.render_header(agg.rows_from_inputs(above_view), above_view)
 
 
+def test_an_ended_run_beside_a_live_one_is_counted_but_not_listed(tmp_path):
+    git = _git(tmp_path, ())
+    ended = _record("p-pi-y1", source=str(tmp_path / "runs"), files=("done",), outcome="SUCCESS")
+    live, lock = _live_record(tmp_path, "p-pi-y2", tokens=1000)
+    view = _view(git, _run_set(tmp_path, (ended, live)), locks=_held((lock,)))
+
+    line = next(line for line in agg.render_header(agg.rows_from_inputs(view), view).splitlines() if line.startswith("LIVE"))
+
+    # An ended run is neither live nor an exclusion: it is a result, not a question.
+    assert line == "LIVE 1: p-pi-y2 luna <50k"
+    assert "p-pi-y1" not in line
+
+
 def test_each_header_line_is_bounded_so_the_later_sections_survive_a_large_estate(tmp_path):
     branches = tuple(f"cmru-20261124_053644-backlog-ki{i}" for i in range(200))
     git = _git(tmp_path, branches, merged=frozenset())
     results = tuple(_result(tmp_path, name=f"rgw-{i}", project="agctl") for i in range(200))
-    peers = tuple(_peer(tmp_path, peer=f"p{i}", package="other") for i in range(50))
+    # 50 real peers (each with prose naming another package, so no row joins them).
+    peers = tuple(_peer(tmp_path, peer=f"p{i}", package=f"other{i}") for i in range(50))
     records = tuple(_live_record(tmp_path, f"r{i}", tokens=1) for i in range(100))
     view = _view(
         git,

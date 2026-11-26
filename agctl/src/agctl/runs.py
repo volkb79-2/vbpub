@@ -45,7 +45,7 @@ REVIEW_PREFIX = "REVIEW-"
 READY_PREFIX = "READY run="
 YIELD_PREFIX = "YIELD run="
 # A generated id's stamp: `-20261125T042108` or `-20261124_183122`.
-STAMP_TOKEN_RE = re.compile(r"^[0-9]{8}[_T][0-9]{6}$")
+STAMP_TOKEN_RE = re.compile(r"^[0-9]{8}(?:[_T][0-9]{6})?$")
 CHAIN_RE = re.compile(r"^(.*)-y([0-9]+)$")
 BOUNDARY_RE = re.compile(r'boundary="([^"]*)"')
 
@@ -155,6 +155,16 @@ def parse_done(text: str | None) -> tuple[int | None, str, str]:
     return exit_code, review or payload, review
 
 
+def _name_tokens(line: str, prefix_length: int) -> list[str]:
+    """The tokens after `run=` with a `key=value` token dropped: it is a field, not a name.
+
+    A line written as `YIELD run=   gauge=12k` has no name at all, and the field that follows
+    must not be read AS the name (a reader would then report `gauge=12k` as a run id).
+    """
+
+    return [token for token in line[prefix_length:].split() if "=" not in token]
+
+
 def parse_last(text: str | None) -> tuple[str, str, str, str, str]:
     """`(state, run, gauge, boundary, mark)` of the LAST READY/YIELD line of a `last.txt`.
 
@@ -171,12 +181,12 @@ def parse_last(text: str | None) -> tuple[str, str, str, str, str]:
             # `READY run=` with no value (an agent quoting the format, or a truncated write)
             # has no run name: the position stays stated-empty instead of raising IndexError
             # and losing the whole estate view.
-            tokens = stripped[len(READY_PREFIX):].split()
+            tokens = _name_tokens(stripped, len(READY_PREFIX))
             state, run = "READY", tokens[0] if tokens else ""
             gauge = boundary = ""
             mark = _token_value(stripped, "mark=")
         elif stripped.startswith(YIELD_PREFIX):
-            tokens = stripped[len(YIELD_PREFIX):].split()
+            tokens = _name_tokens(stripped, len(YIELD_PREFIX))
             state, run = "YIELD", tokens[0] if tokens else ""
             gauge = _token_value(stripped, "gauge=")
             match = BOUNDARY_RE.search(stripped)

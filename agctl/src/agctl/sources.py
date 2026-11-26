@@ -46,6 +46,9 @@ STATE_LIMIT = 262144
 HELD = "held"
 FREE = "free"
 UNKNOWN = "unknown"
+# A `STATE.md` that was read whole. The other two states are `missing` (no file) and
+# `unknown` (the file exists but could not be read whole).
+PRESENT = "present"
 
 
 @dataclass(frozen=True)
