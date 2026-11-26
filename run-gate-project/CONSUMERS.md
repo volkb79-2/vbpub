@@ -3105,6 +3105,52 @@ Uniqueness: nanosecond stamp, never reissued within a process, and docker refuse
 and have no `run-gate.*` labels. A cancel/cleanup tool must match BOTH: the label filter and
 `^run-gate-` by name (dedupe with `sort -u`). Exec-mode containers keep the declared `container_name`.
 
+## Host-owned job event file
+
+A host controller that needs the container identity and Run-Gate's verdict can
+invoke a lane with both flags:
+
+```bash
+run-gate suite --event-file /var/lib/fleetd/jobs/JOB/events.jsonl --job-id JOB
+```
+
+`--event-file` must be an absolute path with an existing parent, outside the
+judged worktree, repository, and every host path mounted into the lane
+container. Existing destinations must be regular files, never symlinks. Run-Gate
+opens the file append-only without following the final symlink and enforces
+mode `0600`. The file is not mounted into the lane container. `--job-id` is
+required with it; IDs match `^[A-Za-z0-9][A-Za-z0-9._-]*$` and are at most 128
+characters. There is no environment-variable fallback. The flags apply only
+to lane runs and cannot be combined with `--dry-run`.
+
+Each line is one JSON event with `api: "fleet-host-agent/1"`, `job_id`, and
+`lane`. `lane-started` carries Docker's full `container_id` and `image_id`,
+plus `adopted`; a lane with no container carries null IDs and a `reason`.
+`lane-verdict` carries Run-Gate's `verdict`, process `exit_code`, and
+`lane_exit_code` (the raw lane status printed by the anchored summary, or
+null). The event is written after the summary line; for `--json`, the JSON
+result stays on stdout and the summary is printed to stderr. Members of
+composites, nested retries, and worker dispatches do not inherit the flags or
+the file; their start facts are forwarded to the parent-owned event stream,
+while only the top-level invocation writes a verdict event. A failed event
+write after lane start produces one warning but does not change Run-Gate's
+verdict or process status.
+
+**Acceptance rule:** a verdict is accepted only when all three sources agree:
+
+- the `lane-verdict` event's `exit_code` equals the Run-Gate process status;
+- its `verdict` and `lane_exit_code` equal the verdict and raw `exit_code` in
+  the last lane-log line beginning with the exact anchored prefix
+  `run-gate: lane '<lane>' verdict` (both lane exit codes are null when the
+  summary omits `exit_code`); and
+- the process status matches Run-Gate's closed verdict table.
+
+No `lane-verdict` event means the job did not pass. A line printed by lane
+output cannot replace Run-Gate's event or final summary. Accept a container ID
+only after `docker inspect` confirms the expected `run-gate.*` labels and that
+the inspected container mounts the job's submitted checkout path. Never
+identify a lane container from its name alone.
+
 ## Partner integration notes
 
 - **assay:** see the split table above. assay's own docs document

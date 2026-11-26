@@ -10126,3 +10126,26 @@ When Assay bumps the lane inventory with Assay 13.0.0 / verdict v21, Run-Gate
 must move to accepting only the new schema in a release that follows Assay's.
 Do not add dual-version support. Source: `assay/src/assay/cli.py` and the
 Assay 13.0.0 / verdict v21 plan.
+
+## RG-329 — host runners need a private Run-Gate start and verdict event stream
+
+**Status:** FIXED IN THIS BRANCH (P-fd-05 package A2). Severity: Enhancement.
+
+A fleet runner cannot trust the shared lane log for container identity or
+verdict: lane output can forge Run-Gate's anchored summary, and Run-Gate can
+exit before printing its own. Paired `--event-file` and `--job-id` flags now
+write host-owned JSONL events outside the checkout and lane mounts. Start
+events carry Docker's identity (or explicit nulls); the sole normal `finish`
+path writes the verdict only after its anchored summary. Nested member, retry,
+and worker dispatches never inherit the event file. Consumer acceptance
+requires agreement among the event, anchored log line, process status, Docker
+labels, and the submitted checkout path.
+
+**Oracles.** Tests cover paired-option and ID validation, path refusals and
+mode, ephemeral and adopted IDs, foreign same-name rejection, null-container
+events, a forged lane summary, abrupt exit without `finish`, JSON and plain
+output, event-write failure, and composite/worker non-inheritance. The forged
+summary and sequence-inheritance tests were observed failing before their
+implementation.
+
+Source: P-fd-05 package A2 controller rulings and design §§2.2, 4.4, 7.

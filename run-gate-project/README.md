@@ -178,6 +178,18 @@ environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
 judge-digest, provenance-mismatch, and state-mount.
 
+### Host-owned job events
+
+A host runner can request a private event stream with the paired flags
+`--event-file /absolute/host/path/events.jsonl --job-id ID`. The file must
+stay outside the judged checkout and every path mounted into the lane
+container. Run-Gate writes the container identity before relaying lane output,
+then writes its verdict after the anchored summary line; `--json` keeps its
+JSON result on stdout and prints that summary on stderr. Missing verdict events
+are never PASS. See the [consumer acceptance rule](CONSUMERS.md#host-owned-job-event-file)
+for the ID grammar and the required agreement between event, log, process
+status, Docker labels, and checkout path.
+
 ### Combined resource settings
 
 Run-Gate reads one `[resources]` table from central/project defaults,

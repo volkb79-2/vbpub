@@ -9,6 +9,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- run-gate: paired `--event-file` and `--job-id` flags emit host-owned
+  `lane-started` and `lane-verdict` JSONL events for fleet runners (RG-329).
+
 ### Changed
 - run-gate: ephemeral gate lane containers use `--oom-score-adj 500` so host
   OOM selection favors disposable gate work over the interactive controller
@@ -18,7 +22,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Documentation
 - docs(run-gate): correct the RG-318 refusal quote and file RG-323–RG-325
-  follow-ups for effective CPU-time support.
+  follow-ups for effective CPU-time support; document RG-329's event-file
+  contract and verdict acceptance rule.
 
 <!-- cmru: release history -->
 
