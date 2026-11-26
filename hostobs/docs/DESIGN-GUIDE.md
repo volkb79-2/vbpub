@@ -25,6 +25,15 @@ checking that it is an open listening `AF_UNIX` stream socket. The crate carries
 `allow(unsafe_code)` occurrence outside `crates/act`. Held-fd adoption is the only raw-fd
 transfer; every ordinary host read remains `File::open`, `read_dir` and `symlink_metadata`.
 
+## Wire: cgroup identity selectors
+
+The `cgroup_id` selector resolves through the key index built during the sampler's walk, and the
+serve backend reads only the turn's `Arc<Tick>`. The pair therefore selects a cgroup in the tick
+being served; it is not a durable record key, and hostobs does not guarantee that a key never names
+a later cgroup, including after a reboot or on another host. A record that needs stable identity
+keeps the reply's `inc` with `boot_id` and `epoch` and compares those fields. Because the key index is
+built with the walk, a cgroup not published in that tick cannot be named by `cgroup_id`.
+
 ## Wire: why fixed-width typed columns (D4)
 
 The topos sampler stores varint TLV values. `proto` stores fixed-width typed little-endian
@@ -188,6 +197,12 @@ counter sum `unreadable` (a partial total is a wrong number that looks right), a
 missing optional file is `absent` or `unsupported` according to a code the caller declares
 (`Absence::Controller` versus `Absence::Feature`). Nothing in a reader writes a zero for a
 failure.
+
+`cgroup.freeze` is the cgroup's own freeze setting; `cgevents.frozen` is its effective
+state, including a frozen ancestor, and `cgevents.populated` says whether it has live tasks.
+Missing `cgroup.freeze` or `cgroup.events` files are `unsupported`; a missing key in a
+successfully read `cgroup.events` file is `absent`, because the quality vocabulary treats a
+missing key as absent and reserves unsupported for a fact the kernel does not provide.
 
 **Unknown device topology is a state, not a bottom device.** The sampler asked each device
 whether its `/sys/dev/block/<dev>/slaves` listing was non-empty and reused the last answer

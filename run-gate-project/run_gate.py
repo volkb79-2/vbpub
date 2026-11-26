@@ -17,7 +17,11 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 75  # rev 75: RG-320 -- a stall watch on every watchable lane kind
+__revision__ = 77  # rev 77: RG-320 -- a stall watch on every watchable lane kind
+# rev 76: RG-321/RG-322 -- lane OOM bias and inventory refusals
+# Linux's oom_score_adj steers OOM victim choice; disposable gate lanes
+# should be selected before the interactive controller.
+LANE_CONTAINER_OOM_SCORE_ADJ = 500
 # rev 74: RG-307/RG-308a -- R-59-consistent wrapper-budget warning
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
@@ -11292,9 +11296,6 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     if entry is None:
         lane["_assay_inventory_error"] = why or "Assay lane inventory is unavailable"
         lane.pop("_assay_inventory", None)
-        if lane.get("_selective_assay") or lane.get("_r2_flex"):
-            fail(f"selective assay flags for lane {lane_name!r} require an "
-                 f"inventory proving that it declares R2: {why}")
         if lane.get("_assay_forward"):
             # RG-318 (review r2 M1): the floor above is read FROM the
             # inventory, so a judge whose inventory cannot be read at all used
@@ -11302,12 +11303,19 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
             # refused by the in-lane capability probe -- the very judge RG-318
             # exists to refuse before a container starts. `fail()` (exit 2)
             # is the convention this branch already uses for the same fact
-            # (no inventory) one condition up; the version-based floor stays
+            # (no inventory) in the selective-flags refusal below; the
+            # version-based floor stays
             # GateNotRunError/`judge-floor`, because only a readable inventory
             # can state a version.
+            floor = ".".join(str(part)
+                             for part in ASSAY_FORWARD_ASSAY_FLOOR)
             fail(f"arguments after '--' for lane {lane_name!r} need an "
                  f"inventory proving the judge accepts them "
-                 f"(assay >= 12.3.0, RG-318): {why}")
+                 f"(assay >= {floor}, RG-318): {why}. Update the checkout, "
+                 f"or re-pin the judge to >= {floor}")
+        if lane.get("_selective_assay") or lane.get("_r2_flex"):
+            fail(f"selective assay flags for lane {lane_name!r} require an "
+                 f"inventory proving that it declares R2: {why}")
         if base_flag:
             fail(f"--base {base_flag!r} was given but run-gate cannot tell "
                  f"whether lane {lane_name!r} delegates its comparison base: "
@@ -15249,8 +15257,8 @@ def assay_forward_probe(command: str, flags: list[str]) -> str:
     reinterpreted. The flag test is a JSON parse in Python (never a grep on
     the document's text).
 
-    A non-zero exit or unparseable output refuses by name. A judge that
-    refuses `capabilities` itself (Assay before 12.3.0, or a build without
+    A non-zero exit or unparseable output refuses by name. A judge that passes
+    the inventory floor but refuses `capabilities` itself (or a build without
     its required analysis package) keeps ITS OWN one line, unreworded: there
     is no degraded mode and no fallback to the `run --help` probe, which
     stays only for Run-Gate's OWN flags."""
@@ -18920,7 +18928,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     identity = lane_container_identity(repo, project_dir, lane_name,
                                        head_commit(worktree))
     name = identity["name"]
+    # `run -d --name <name>` stays the head of the argv; new flags go after it.
     argv = [docker, "run", "-d", "--name", name, "--init",
+            "--oom-score-adj", str(LANE_CONTAINER_OOM_SCORE_ADJ),
             "--cgroup-parent", slice_name,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}"]
     network, network_source = resolve_network_setting(lane, env)
@@ -18981,6 +18991,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
           f"slice {slice_name} ({slice_src})", flush=True)
     print(f"run-gate: effective network: {network} (source: {network_source})",
+          flush=True)
+    print(f"run-gate: gate lane OOM score adjustment: "
+          f"{LANE_CONTAINER_OOM_SCORE_ADJ} (higher scores are selected sooner)",
           flush=True)
     print(f"run-gate: KSM opt-in: {'enabled' if ksm_enabled else 'disabled'} "
           f"(source: {ksm_settings.get('source', 'unknown')}; image shim: "

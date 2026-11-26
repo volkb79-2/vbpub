@@ -2439,8 +2439,8 @@ class TestArgvConstruction:
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
         idx = lambda flag: run_call.index(flag)  # noqa: E731
-        assert run_call[0:3] == ["run", "-d", "--name"]
-        assert run_call[4] == "--init"
+        assert run_call[0] == "run"
+        assert "-d" in run_call and "--init" in run_call
         # RG-242: <repo>-run-gate-<project>-<lane>-<sha8>-<stamp>-<ns9>
         assert run_call[idx("--name") + 1].startswith("repo-run-gate-proj-suite-")
         assert run_gate.is_lane_container_name(run_call[idx("--name") + 1])
@@ -3239,6 +3239,7 @@ class TestExecMode:
         assert len(exec_calls) == 1
         call = exec_calls[0]
         idx = lambda flag: call.index(flag)
+        assert "--oom-score-adj" not in call
         assert str(repo) in call
         assert "bash" in call
 
@@ -8067,6 +8068,67 @@ class TestDryRun:
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         return repo, proj
+
+    def test_ephemeral_lane_dry_run_discloses_oom_score_adjustment(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        lane = {"kind": "command", "environment": "runner",
+                "argv": ["true"]}
+        env = {"mode": "ephemeral", "image": "runner:local"}
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "refresh_judge_identity",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "lane_preload_mount_flags",
+                            lambda *_args, **_kwargs: ([], None, None))
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "refuse_mounts_over_the_judge",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "verify_slice_loaded",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_args: "a" * 40)
+        monkeypatch.setattr(run_gate, "lane_container_identity",
+                            lambda *_args: {"name": "rg-test", "labels": {}})
+        monkeypatch.setattr(run_gate, "build_command_inner",
+                            lambda *_args, **_kwargs: "true")
+        monkeypatch.setattr(run_gate, "resolve_network_setting",
+                            lambda *_args: ("default", "fixture"))
+        monkeypatch.setattr(run_gate, "image_selection_record",
+                            lambda *_args: {})
+        monkeypatch.setattr(run_gate, "disclose_image_selection",
+                            lambda *_args: None)
+        monkeypatch.setattr(run_gate, "log_forwarded_env",
+                            lambda *_args: None)
+        monkeypatch.setattr(run_gate, "log_resource_forwarded_env",
+                            lambda *_args: None)
+        monkeypatch.setattr(run_gate, "print_judge_provider",
+                            lambda *_args: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds",
+                            lambda *_args: None)
+
+        assert run_gate.run_container_lane(
+            lane, "unit", repo, repo, repo, env, "fixture", "slice",
+            "fixture", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "fixture"}) == 0
+        out = capsys.readouterr().out
+        argv = shlex.split(_docker_argv_line(out))
+        oom_index = argv.index("--oom-score-adj")
+        image_index = argv.index("runner:local")
+        assert argv[oom_index + 1] == "500"
+        assert oom_index < image_index
+        assert "run-gate: gate lane OOM score adjustment: 500 " \
+            "(higher scores are selected sooner)" in out
 
     def test_container_lane_dry_run_prints_identical_argv_runs_nothing(
             self, tmp_path, monkeypatch):
@@ -18866,6 +18928,22 @@ class TestResumeAndProgressAlways:
         assert argv[user_index + 1] == "1000:1000"
         assert argv.index("runner:local") > user_index
 
+    def test_ephemeral_environment_probe_argv_omits_oom_score_adjustment(
+            self, monkeypatch, tmp_path):
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        argv = run_gate.build_env_probe_argv(
+            "docker", {"mode": "ephemeral", "image": "runner:local"},
+            "runner", tmp_path / "repo", tmp_path / "worktree", "fixture",
+            "slice", "true")
+        assert argv[:3] == ["docker", "run", "--rm"]
+        assert "--oom-score-adj" not in argv
+
     def test_assay_state_dir_falls_back_to_a_safe_key_outside_repo(self):
         """A --worktree override can relocate project_dir entirely outside
         `repo` (Mode-B); its resolved absolute path gets a deterministic
@@ -19890,7 +19968,8 @@ class TestTwoClientsOneLane:
             if follower is not None and follower_stream is not None:
                 follower_stream.close()
 
-        name = lane_runs(log)[0][3]
+        run_call = lane_runs(log)[0]
+        name = run_call[run_call.index("--name") + 1]
         assert follower.returncode == 0, out_b
         assert f"run-gate: following {name} (owner pid " in out_b, out_b
         assert "re-attached" not in out_b, out_b
@@ -23730,7 +23809,8 @@ class TestInflightRecordStore:
         data = seen["record"]
         head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
-        assert data["container"] == lane_runs(log)[0][3]
+        run_call = lane_runs(log)[0]
+        assert data["container"] == run_call[run_call.index("--name") + 1]
         # Hollow test 2: this line used to prove the CONSTRUCTION of a value
         # no product code read. `container_id` is now load-bearing — it is
         # compared against `{{.Id}}` on every re-attach — and the behaviour

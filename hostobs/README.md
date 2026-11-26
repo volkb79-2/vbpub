@@ -22,7 +22,8 @@ functional:
   registry and the one send hub. It depends on `proto` and performs no I/O or clock reads.
 - **`kernel`** — the read-only collectors: cgroupfs (`cpu.stat`, `cpu.max`/`weight`,
   `memory.current`/`.stat`/`.events`/`.max` and friends, `io.stat`, `pids.current`/`.max`,
-  the three PSI files) and `/proc` (`stat`, `meminfo`, `vmstat`, `loadavg`, one process's
+  `cgroup.freeze` (the cgroup's own setting), `cgroup.events` (`populated`, and the effective
+  `frozen` state, which a frozen ancestor also sets), the three PSI files) and `/proc` (`stat`, `meminfo`, `vmstat`, `loadavg`, one process's
   `stat`/`statm`/`status`/`cmdline`, the boot id and the host `/proc/pressure/*` files),
   plus the identity inputs (`(device, inode)`, boot id, `starttime` ticks) and an
   injectable clock. Every file access goes through one root-anchored, read-only `Fs` trait
@@ -131,6 +132,18 @@ decoded `model` rows; the dependency exists, but decoding remains the caller's s
 scope). Workspace unification removes the duplication behind `HOB-3`/`HOB-10`/`HOB-17`/`HOB-26`/`HOB-27`:
 there is one model quality/value vocabulary, `proto` derives its metric codes from `model`, and
 SP-2 calls `model::derive_rate`.
+
+## Python client
+
+The `hostobs-client` distribution contains the standard-library `hostobs_client`
+package and the `hostobs-mark` command. No release exists yet, and this branch
+does not build a release wheel. See [packaging](docs/PACKAGING.md) and [consumer
+instructions](docs/CONSUMERS.md).
+
+No hostobs probe currently serves `annotate`, and `deploy/` does not install an
+observer socket yet. With no observer socket installed, `hostobs-mark` prints a
+notice and exits 0; `--require` exits 1. When the observer socket is installed,
+callers will need membership in the `hostobs-observer` group.
 
 ## Developing and debugging
 

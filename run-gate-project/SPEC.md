@@ -363,8 +363,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   — `docker exec` can neither place nor cap work), and (container AND exec
   lanes) the fully assembled docker argv; forwarded values are never on it
   (`-e KEY`, the value rides in the docker client's environment, RG-117a);
-  an ephemeral lane also prints its effective KSM setting and source. Mechanics
-  are visible, never buried.
+  an ephemeral lane also prints its effective KSM setting and source, and its
+  OOM score adjustment. Mechanics are visible, never buried.
+- `R-60` **Gate-lane OOM priority (RG-321).** Every ephemeral gate lane
+  container starts with Docker `--oom-score-adj 500`, before the image. The
+  named module constant is the sole source of the value; there is no config
+  key, CLI flag, or environment override. The live and dry-run Docker argv and
+  a `run-gate:` lane fact disclose it. This kernel score biases OOM victim
+  selection toward gate containers so the interactive controller is more
+  likely to survive host memory exhaustion; `memory.low` does not select the
+  victim. It applies only to the detached gate lane start: the `docker run
+  --rm` environment probes, `docker exec` lanes, and bare-host lanes are not
+  covered.
 
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
@@ -740,7 +750,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   names the count, first entry, and the flag escape.
 - `R-15` **Container lanes** run detached: `docker run -d --name
   <repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9> --init
-  --label run-gate.{repo,project,lane,commit,started,name-schema}=...
+  --oom-score-adj 500 (R-60) --label run-gate.{repo,project,lane,commit,started,name-schema}=...
   (RG-242; pre-RG-242 name `run-gate-<repo>-<lane>-<pid>-<epoch>`, no labels)
   --cgroup-parent <slice> -e
   CGROUP_PARENT_DEV_GATES=<slice> [--network none when the effective
@@ -3220,7 +3230,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     to >= 12.3.0`); a judge whose inventory cannot be read AT ALL is refused
     there too, before a container starts, with its own line (`arguments after
     '--' for lane 'x' need an inventory proving the judge accepts them
-    (assay >= 12.3.0, RG-318): <why>`), because the version floor itself is
+    (assay >= 12.3.0, RG-318): <why>. Update the checkout, or re-pin the judge
+    to >= 12.3.0`), because the version floor itself is
     only answerable from a readable inventory. The probe stays the CHECK
     above that floor. A judge that refuses `capabilities` itself keeps its
     own line, unreworded: no degraded mode, no fallback to the `run --help`

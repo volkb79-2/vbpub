@@ -49,14 +49,21 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - run-gate: RG-58's bare-host "`stall_timeout` is inert" load-time WARN and its
   matching `doctor` 2d line are RETIRED, not reworded — the bare-host runner has
   a watch now, so the message had outlived the fact it asserted.
+- run-gate: ephemeral gate lane containers use `--oom-score-adj 500` so host
+  OOM selection favors disposable gate work over the interactive controller
+  (RG-321, rev 76).
+- run-gate: unreadable Assay inventory refusals for forwarded flags give the
+  RG-318 reason and remedy before selective-R2 refusals (RG-322, rev 76).
 
 ### Documentation
 - docs(run-gate): README/SPEC/CONSUMERS/LANE-AUTHORING describe the per-kind
   signal table, the 300 s auto bound with its disclosed source, and the
-  buffered-child caveat (RG-320, rev 75: new `R-40i`, `R-40f` extended).
+  buffered-child caveat (RG-320, rev 77: new `R-40i`, `R-40f` extended).
 - docs(run-gate): reconcile RG-320/RG-326 lane counts, cite stable stall-watch
   symbols in the no-time-budgets design, and distinguish `auto` from
   `auto-derived` by lane kind.
+- docs(run-gate): correct the RG-318 refusal quote and file RG-323–RG-325
+  follow-ups for effective CPU-time support.
 
 <!-- cmru: release history -->
 

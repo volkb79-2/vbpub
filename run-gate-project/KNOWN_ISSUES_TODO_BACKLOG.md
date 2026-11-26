@@ -211,6 +211,11 @@ SPEC §9.
 | RG-318 | the assay version pin for forwarded store flags (`assay >= 12.3.0` floor, `capabilities` probe at run time) | Minor | CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0` released) |
 | RG-319 | no per-run `--env` in `remote-gate`: a job's only environment is the per-repo PROFILE `env` table | Minor | OPEN 2026-11-25 (filed by the RG-297 fix round) |
 | RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source (an assay lane publishes the RG-7 RULE it already had, `auto-derived`); sequence stays unwatched by decision (members carry the watches); 41 silent-by-construction lanes declare a bound equal to their budget (RG-326, finding RG-328); `budget = "unbounded"` remains P2 |
+| RG-321 | ephemeral gate lane containers do not lose host OOM selection to the interactive controller | Enhancement | FIXED IN THIS BRANCH (rev 76) |
+| RG-322 | RG-297 review L-a/L-b/L-c follow-ups: refusal text, remedy and precedence | Low | FIXED IN THIS BRANCH (rev 76) |
+| RG-323 | gate containers lack Assay's benchmark record and host identity inputs for effective CPU-time bounds | Enhancement | OPEN 2026-11-26 |
+| RG-324 | Run-Gate's non-judgement mapping of Assay's wall stop is not pinned to the final reason contract | Minor | OPEN 2026-11-26 |
+| RG-325 | A future Assay lane inventory schema bump needs a Run-Gate release that accepts only the new version | Minor | OPEN 2026-11-26 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9992,9 +9997,10 @@ Severity: Minor.
   in-lane probe, inside a container. `plan_comparison_base` now refuses a
   forwarding lane in that state as well, before a container starts, with its
   own line (`arguments after '--' for lane 'x' need an inventory proving the
-  judge accepts them (assay >= 12.3.0, RG-318): <why>`); a lane that forwards
-  nothing keeps its old behaviour. Both refusals name the remedy (`update the
-  checkout, or re-pin the judge to >= 12.3.0`).
+  judge accepts them (assay >= 12.3.0, RG-318): <why>. Update the checkout, or
+  re-pin the judge to >= 12.3.0`); a lane that forwards nothing keeps its old
+  behaviour. Both refusals name the remedy (update the checkout, or re-pin
+  the judge to >= 12.3.0; the first starts it with a capital `Update`).
 - **tester-unified carries assay from SOURCE, not as a wheel.** The image
   copies `assay/` (`tester-unified/Dockerfile:361`, metadata at `:203`) for
   dependency-closure generation and denies the name to any PyPI-bound pip
@@ -10208,3 +10214,86 @@ settled in the other direction.
 
 Source: H1 of the RG-320 fix round 1, and the seven canary runners found in the
 same audit (RG-326's own note).
+
+
+## RG-321 — ephemeral gate lanes should lose host OOM races before the controller
+
+**Status:** FIXED IN THIS BRANCH (rev 76). Severity: Enhancement.
+
+The operator's 2026-11-26 host policy makes RAM the limiting resource: when
+the host OOM killer must choose, disposable gate lane containers should be
+selected before the interactive controller. `memory.low` does not steer victim
+choice, so each ephemeral lane's detached `docker run -d` now sets
+`--oom-score-adj 500` from one named module constant. Run-Gate prints the value
+and includes it in the visible/dry-run argv. The short inventory and fitness
+probe (`docker run --rm`), exec lanes (`docker exec`), and bare-host lanes are
+outside this setting.
+
+**Oracle.** The ephemeral argv test asserts `--oom-score-adj 500` before the
+image and the lane-fact disclosure. Separate assertions keep the option out of
+the probe and exec argv.
+Source: operator direction, 2026-11-26.
+
+## RG-322 — close RG-297's three Low review follow-ups
+
+**Status:** FIXED IN THIS BRANCH (rev 76). Severity: Low.
+
+- **L-a.** `CONSUMERS.md` now quotes the actual no-inventory prefix,
+  `arguments after '--' for lane ...`.
+- **L-b.** The no-inventory refusal ends with the same actionable checkout or
+  judge-pin remedy as the readable-but-too-old version refusal; the consumer
+  text and this backlog quote match the emitted line.
+- **L-c.** If the inventory is unreadable and the invocation combines Run-Gate
+  selective/flexible controls with forwarded `--` tokens, the refusal names
+  the RG-318 forwarded-arguments cause first. It still happens before the lane
+  starts; the no-forwarded-token path remains unchanged.
+- The capability-probe docstring no longer says a normally versioned
+  pre-12.3.0 Assay reaches the probe: the readable inventory floor rejects it
+  earlier. It now describes a judge that passes the inventory floor but lacks
+  the capability command.
+
+**Oracles.** Regression tests assert the quoted prefix and remedy, exercise the
+combined unreadable-inventory case with no judge run, and retain the existing
+no-forwarded-token control.
+Source: RG-297 independent final review L-a/L-b/L-c (2026-11-26), rechecked
+against the current code and docs.
+
+## RG-323 — provide effective CPU-time benchmark and host identity inputs
+
+**Status:** OPEN 2026-11-26. Severity: Enhancement.
+
+- **Wanted, first stage.** The Run-Gate launcher read-only bind-mounts
+  `/var/lib/mdt/host-facts/cpu-benchmark.json` into each gate container at the
+  same path and sets `ASSAY_HOST_ID` to a stable host name or machine-id hash.
+- **Wanted, after hostobs HOB-90.** Provide the hostobs socket and its group,
+  plus the gate container's host cgroup path and cgroup id (`cgroup_id`).
+
+These inputs let Assay derive host-relative effective CPU-time bounds and
+attribute per-cgroup measurements without a host-name-dependent resource
+summary. Source: `assay/docs/DESIGN-EFFECTIVE-CPU-TIME.md` §5 (record path),
+§8, “Packages” (core/run-gate), and §9, Q3.
+
+## RG-324 — pin the non-judgement mapping of Assay's wall stop with a test
+
+**Status:** OPEN 2026-11-26. Severity: Minor.
+
+Assay's decided wall-stop result is outcome `BUDGET_EXCEEDED` with reason
+`LANE_TIMEOUT`, exit 4; there is no wall-stop code and no `INCONCLUSIVE`
+mapping. Run-Gate already maps `BUDGET_EXCEEDED` to `BUDGET_EXCEEDED` and
+records it as resumable, so no behaviour change is expected. Open: once Assay
+ships the final reason contract, confirm it and pin that mapping with a test.
+Do not change how `INCONCLUSIVE` is mapped. Sources:
+`assay/docs/VERDICT-V21-DELTA.md` §8.1 (b) and
+`assay/docs/DESIGN-EFFECTIVE-CPU-TIME.md` §6.4, wall-time bullet.
+
+## RG-325 — if Assay bumps the lane inventory schema, accept only the new one
+
+**Status:** OPEN 2026-11-26. Severity: Minor.
+
+Today Assay defines only `LANE_INVENTORY_SCHEMA_VERSION = 1` in
+`assay/src/assay/cli.py`, and Run-Gate accepts only that inventory version.
+As decided today Assay 13.0.0 / verdict v21 does not bump it (it stays 1 and
+only removes two keys). If a later Assay release bumps it, Run-Gate must move
+to accepting only the new schema in a release that follows Assay's. Do not add
+dual-version support. Sources: `assay/src/assay/cli.py` and
+`assay/docs/VERDICT-V21-DELTA.md` §8.1 (a).
