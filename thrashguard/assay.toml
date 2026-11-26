@@ -66,7 +66,11 @@ targets = [
   # The judged set grows with every module that lands; a target listed before
   # its file exists is a refusal (`NO_MEASUREMENT/TARGET_NOT_MEASURED`), which
   # is the correct behaviour and the reason the list is kept in step by hand.
+  # Landed in subtask 2; the socket, store, journal and CLI modules join this
+  # list in the same commit that adds them.
   "src/clock.rs",
+  "src/config.rs",
+  "src/hysteresis.rs",
   "src/json.rs",
   "src/lib.rs",
   "src/psi.rs",

@@ -9,9 +9,14 @@
 //! names a **container**, never a cgroup path, and the guard resolves the scope
 //! itself under `allowed_ancestors` and refuses what it cannot resolve.
 //!
-//! Module map (design §5 names these): [`config`], [`clock`], [`psi`],
-//! [`hysteresis`], [`units`], [`events`], [`socket`], [`wire`], [`json`],
-//! [`report`], [`cli`], [`activation`], plus [`daemon`] as the tick loop.
+//! Module map. Design §5 names the whole set: `psi`, `config`, `socket`,
+//! `units`, `victims`, `actuator`, `clock`, `events`, `cli`, plus the wire and
+//! report helpers this crate adds. **Landed so far** (this cut's subtask 2):
+//! [`clock`], [`config`], [`psi`], [`hysteresis`], [`json`]. The remaining
+//! modules (`units`, `wire`, `events`, `socket`, `report`, `cli`, `daemon`,
+//! `activation`) are the next subtasks and are deliberately not declared here
+//! before they exist: a doc link to a missing module is a rustdoc warning, and
+//! the lint lane denies warnings.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
