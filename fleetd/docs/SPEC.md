@@ -9,19 +9,22 @@ runner jobs; it is not a daemon and has no socket or lease protocol.
 
 ## Contracts
 
-- `host-facts/1` carries CPU, Geekbench, memory, PSI, cgroup v2, KSM, and
-  kernel-interface, control-plane, guard, policy, job, and tool facts. When a
-  job or tool inventory is not available, that object is `null` with a
-  non-empty sibling `jobs_reason` or `tools_reason`. A missing nullable leaf
-  must carry a non-empty sibling `<field>_reason`.
+- `host-facts/2` carries CPU, load, Geekbench, memory, PSI, gate-slice, disks,
+  cgroup v2, KSM, kernel-interface, control-plane, guard, freeze, policy,
+  queue, job, and tool facts. Measured and configured values are wrapped as
+  `{"v": value}` or `{"v": null, "reason": "..."}`; `reason` appears only
+  with a null value. `schema`, `agent_version`, and `collected_utc` are plain
+  metadata. `fleet facts validate` accepts `/1` during this one-release
+  migration, but collection and every planner/campaign consumer use `/2` only.
 - `work-request/1` carries the lane, commit and image identity, floors, demand,
   planned and pending candidate IDs, and optional carry-over provenance.
 - `assay-merge-manifest/1` is owned by assay (B544, and B565's
   `owner-manifest` policy). It maps each planned candidate ID to one owner
   store; fleetd no longer validates it.
-- `host-facts/1.guard` carries the merged guard `enabled` flag, the digest of
-  its configuration bytes, and the guard's own runtime `state`. Guard rules
-  are owned by thrashguard (TG-1); fleetd does not validate or apply them.
+- `host-facts/2.guard` carries `guard_present`, the digest of the guard
+  configuration, the guard's own runtime `guard_state`, and `frozen_units`.
+  Guard rules are owned by thrashguard (TG-1); fleetd does not validate or
+  apply them. An unavailable freeze-event source remains null with a reason.
 
 Unknown fields are rejected at every object boundary. Validators identify the
 field path and the missing, extra, or invalid value. See the [consumer guide](CONSUMERS.md)
@@ -55,43 +58,59 @@ manifest.
 ## Facts collection
 
 `fleet facts collect [--root DIR]` reads `/proc` and `/sys` beneath the
-selected root, reads the fixed control-plane unit list's `MemoryMin` properties
-with `systemctl show -p MemoryMin`, reads required versioned configuration at
+selected root, reads configured filesystem capacity with `statvfs`, reads the
+fixed control-plane unit list's `MemoryMin` properties with
+`systemctl show -p MemoryMin`, reads required versioned configuration at
 `/etc/fleetd/facts.toml`, reads the Geekbench record from its configured
-host-owned path, and emits `host-facts/1` JSON. The config declares
+host-owned path, and emits `host-facts/2` JSON. The config declares
 `overcommit`, `oversubscribe_max`, PSI refusal threshold, control-plane slice,
 optional per-profile `profile_reserve_bytes`, and host source paths; missing
 required policy fails. Older config without `profile_reserve_bytes` uses the
 768 MiB compatibility profile constant. `HOST_ROLE` is read from
 the configured host-setup environment file, an existing host-owned source, and
-is not shadowed in fleetd policy. `host-facts/1` accepts `dedicated-dev` and
+is not shadowed in fleetd policy. `host-facts/2` accepts `dedicated-dev` and
 `shared-prod` as host roles; missing, duplicate, empty, or unknown values are
 represented as `null` with a reason. Optional facts whose source is absent are
 also represented as `null` with a reason. Collection is read-only: it never
 invokes Geekbench or writes sysfs/cgroup files.
 
+New host-owned settings are optional so rollout does not invent policy:
+`[gate_slice].slice`, `[paths].checkout_root`, `[paths].docker_root`, and
+`[policy]` keys `host_reserve_bytes`, `planning_cap`, `max_footprint`,
+`max_planned_bytes`, `footprint_charges_bytes`,
+`priority_classes_by_principal`, `disk_floors`, `max_upload_bytes`, and
+`admission`. Missing settings become null facts with a source-specific reason.
+`policy.host_reserve_bytes` is emitted as `memory.host_reserve_bytes` so this
+quantity has one name. These additions do not change the current planner's
+inputs or placement formulas: it does not require `memory.host_reserve_bytes`
+or `disks`; later host admission owns those checks.
+
 The collector exports only the benchmark's matching model and online-CPU
 count. It accepts measured Geekbench 6/7 records with their matching reference
 score, and never uses a table fallback. Guard configuration is merged lexically
-from the main TOML file and its drop-ins. `enabled` is a plain read of the
-merged top-level value: a boolean is reported as itself; a missing, string or
-numeric value is `null` with an `enabled_reason` naming what was found. No
-guard rule is validated. `config_digest` remains the SHA-256 digest of the
-configuration bytes, including drop-ins. The guard runtime state and KSM
-opt-in shim are nullable unless their paths are configured. The state is read
-from the owner's configured runtime-state source, never inferred from rule
-validation (rule validation never fed it); its string values and meanings are
-unchanged. `memory.for_lanes_bytes` is raw `MemTotal`. The collector reports
-configured slice presence and `cpu.weight`, but does not collect the parent
-slice's `memory.min`. Older host-facts/1 inputs may include
-`control_plane.memory_min_bytes`; the validator accepts that legacy field and
-planning ignores it. The bounded
+from the main TOML file and its drop-ins. `guard_present` is the measured
+presence of the configured guard file; it is a known boolean when that path can
+be checked. `config_digest` is the SHA-256 digest of the configuration bytes,
+including drop-ins. The guard runtime state is read from the owner's configured
+runtime-state source, never inferred from rule validation. The freeze-event
+source is not available yet, so `frozen_units` is null with a reason
+(`thrashguard-absent` if no guard config is present, otherwise
+`not-collected`). KSM opt-in shim facts stay null unless their paths are
+configured. `memory.total_bytes` is raw `MemTotal`; load averages come from
+`/proc/loadavg`. Gate-slice warm memory is `memory.current` minus
+`memory.stat[inactive_file]`. The collector reads the parent control-plane
+slice's `memory.min`, and `/2` carries it as `control_plane.memory_min_bytes`
+(null with a reason when the slice is absent or the value cannot be read). The
+planner ignores that field, in `/2` as in older `/1` inputs: no reserve term
+comes from the parent slice. The bounded
 `CONTROL_PLANE_SERVICE_UNITS` list in `fleetd.contracts` supplies one
 `service_memory_min` entry per service, and each entry may carry the unit's
 systemd `load_state` (`null` with a reason when it was not queried). `0`,
 `infinity`, unset, and failed queries are not reported positive values. A
-fixture root queries no unit, so the table is absent and
-`control_plane.service_memory_min_reason` says why.
+fixture root with no injected systemd readers still emits all six service rows;
+each unavailable `memory_min_bytes` and `load_state` is null with its own
+reason. `/2` does not emit `control_plane.service_memory_min_reason`; that
+optional-table shape is retained only by the `/1` compatibility validator.
 
 The planner resolves ONE term per listed service and sums those terms:
 
@@ -122,7 +141,7 @@ other four are mandatory. The total therefore never falls below the sum of the
 values actually reported, and a missing mandatory fact is replaced by that
 service's documented floor rather than by zero.
 
-By design (FD-035), `host-facts/1` validates the TYPE of a service's
+By design (FD-035), host-facts validates the TYPE of a service's
 `memory_min_bytes` and not its magnitude, because the contract describes what a
 host reported and the sanity bound is planning policy: planning refuses an
 implausible value (above 4 x that service's documented default, or a total above
@@ -134,10 +153,9 @@ then refuses.
 `per-service-default` otherwise (with `reserve_missing_services` naming the
 units that were not reported). The fixed profile constant
 (`profile_reserve_bytes`, 768 MiB when the config has no override) is used
-**only** when no per-service fact exists at all — the table is absent, holds
-no listed unit, or every row is a failed query (no positive `memory_min_bytes`
-and no `load_state` in any row), which is the failed-collection case — and
-`reserve_source` then says `profile-constant`. One answering service (a positive
+**only** when no per-service fact exists at all — every row is a failed query
+(no positive `memory_min_bytes` and no `load_state` in any row), which is the
+failed-collection case — and `reserve_source` then says `profile-constant`. One answering service (a positive
 value or a load state) is enough for per-service terms, so the other rows
 contribute their defaults. A reported value refused above its ceiling counts as
 `default` and is listed in `reserve_missing_services`. A per-host plan carries `reserve_services`: one
@@ -145,7 +163,7 @@ contribute their defaults. A reported value refused above its ceiling counts as
 plan evidence shows exactly which term was used for which service. It is
 omitted in the `profile-constant` case, where no per-service term exists.
 Every plan host row also carries `psi_refuse_some_avg10`, the host's refusal
-threshold (a number from 0 through 100, copied from `host-facts/1.policy`), which
+threshold (a number from 0 through 100, copied from `host-facts/2.policy`), which
 the campaign supervisor compares with the probe's pressure readings before it
 starts a batch (FD-022). The field is additive to `fleet-plan/1`.
 
@@ -158,7 +176,7 @@ from fleetd's copy.
 
 Reserve selection does not depend on `MemTotal`, `MemAvailable`, measured RSS,
 or any legacy parent-slice `memory_min_bytes` value. Missing
-`memory.for_lanes_bytes` still refuses planning because physical capacity
+`memory.total_bytes` still refuses planning because physical capacity
 cannot be derived. Calibration of the
 profile constant from measured p95 under load remains open as
 [FD-007b](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-007b-calibrate-profile-reserve-from-measured-p95-under-load).
@@ -208,7 +226,7 @@ It computes:
   documented default, or 0 for an absent optional unit);
 - reserve_h = control_plane.profile_reserve_bytes (768 MiB when absent) only when
   no per-service fact exists at all;
-- P = memory.for_lanes_bytes - reserve_h;
+- P = memory.total_bytes - reserve_h;
 - O = other running expected charges + campaign_slots × instance_memory;
 - B = P × overcommit - O;
 - b = B / W for W worker slots;
@@ -568,7 +586,7 @@ exception boundary, the JSON-mode result stream and the `skills` verbs.
   each command prints its documented, indented and key-sorted document; `--json`
   prints one compact JSON document instead. The documents and their schemas are
   unchanged by the registration (`fleet-plan/1`, `fleet-campaign-status/1`,
-  `fleet-campaign-collection/1`, `host-facts/1`).
+  `fleet-campaign-collection/1`, `host-facts/2`).
 - **Agent skills.** `fleet skills install|check|list|uninstall` come from the
   library. The skill source is packaged inside the wheel at
   `fleetd/skills/fleetd-campaigns/SKILL.md`, the one source of truth; there is no
@@ -583,6 +601,10 @@ source checkout — is what a host needs. `fleetd`
 declares `cli-extended>=0.5.0` as a real wheel dependency (never vendored, never
 put on `sys.path`); 0.5.0 is the library revision the registered gate image
 installs, so the host and the gate run the same contract.
+Collection also requires installed `fleetd` distribution metadata from that
+wheel. In a source-only checkout without `.dist-info`, `fleet` itself refuses
+with exit 3 and `cannot determine the fleetd version`; no agent version is
+invented.
 
 `cli-extended` is published on GitHub Releases only (the bare name is unclaimed
 on PyPI), and the fleetd wheel does not vendor it, so both wheels come from the
@@ -674,8 +696,8 @@ The manifest records registered syntax. The review catalog owns expected behavio
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | route:entrypoint:fleet/collect | invocation | collect | command route; parser handles remaining tokens |  | fetch available progress streams and per-batch verdicts and write fleet-campaign-result/1 JSON plus a Markdown report | fetch available progress streams and per-batch verdicts and write fleet-campaign-result/1 JSON plus a Markdown report | MIXED OPERATIONS |  | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; collect: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:fleet/collect/--hx.type", "option:route:entrypoint:fleet/collect/--state-dir.type"] | complete |
 | route:entrypoint:fleet/facts | delegate-group | facts | delegated group; child CLI parses remaining tokens | delegated: route:entrypoint:fleet/facts/collect, route:entrypoint:fleet/facts/validate | collect or validate host facts | collect or validate host facts | EXPLORATION |  | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | [] | complete |
-| route:entrypoint:fleet/facts/collect | invocation | facts collect | command route; parser handles remaining tokens |  | collect host-facts/1 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root | collect host-facts/1 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root | EXPLORATION |  | false | {} | [{"behavior": [], "confirmation": false, "description": "collect or validate host facts", "group": "EXPLORATION", "id": null, "name": "facts", "summary": "collect or validate host facts", "synopsis": null}] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; facts: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; facts collect: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:fleet/facts/collect/--root.type"] | complete |
-| route:entrypoint:fleet/facts/validate | invocation | facts validate | command route; parser handles remaining tokens |  | validate a serialized host-facts/1 JSON file without contacting the host | validate a serialized host-facts/1 JSON file without contacting the host | EXPLORATION |  | false | {} | [{"behavior": [], "confirmation": false, "description": "collect or validate host facts", "group": "EXPLORATION", "id": null, "name": "facts", "summary": "collect or validate host facts", "synopsis": null}] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; facts: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; facts validate: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["argument:route:entrypoint:fleet/facts/validate/file.type"] | complete |
+| route:entrypoint:fleet/facts/collect | invocation | facts collect | command route; parser handles remaining tokens |  | collect host-facts/2 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root | collect host-facts/2 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root | EXPLORATION |  | false | {} | [{"behavior": [], "confirmation": false, "description": "collect or validate host facts", "group": "EXPLORATION", "id": null, "name": "facts", "summary": "collect or validate host facts", "synopsis": null}] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; facts: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; facts collect: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:fleet/facts/collect/--root.type"] | complete |
+| route:entrypoint:fleet/facts/validate | invocation | facts validate | command route; parser handles remaining tokens |  | validate a serialized host-facts/1 or host-facts/2 JSON file without contacting the host | validate a serialized host-facts/1 or host-facts/2 JSON file without contacting the host | EXPLORATION |  | false | {} | [{"behavior": [], "confirmation": false, "description": "collect or validate host facts", "group": "EXPLORATION", "id": null, "name": "facts", "summary": "collect or validate host facts", "synopsis": null}] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; facts: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; facts validate: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["argument:route:entrypoint:fleet/facts/validate/file.type"] | complete |
 | route:entrypoint:fleet/measurement | invocation | measurement | command route; parser handles remaining tokens |  | write fleet-r2-measurement/1 evidence (per-candidate seconds and memory peaks, medians over killed and survived candidates) beside the campaign state | write fleet-r2-measurement/1 evidence (per-candidate seconds and memory peaks, medians over killed and survived candidates) beside the campaign state | MIXED OPERATIONS |  | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; measurement: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:fleet/measurement/--hx.type", "option:route:entrypoint:fleet/measurement/--state-dir.type"] | complete |
 | route:entrypoint:fleet/plan | invocation | plan | command route; parser handles remaining tokens |  | create a deterministic RAM-first campaign plan; from a clean Git project the plan also pins the commit and project path that `fleet run` requires | create a deterministic RAM-first campaign plan; from a clean Git project the plan also pins the commit and project path that `fleet run` requires | EXPLORATION |  | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; plan: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:fleet/plan/--candidates.type", "option:route:entrypoint:fleet/plan/--demand.type", "option:route:entrypoint:fleet/plan/--hosts.type"] | complete |
 | route:entrypoint:fleet/run | invocation | run | command route; parser handles remaining tokens |  | start or re-adopt the named jobs in a fleet plan [mutating; potentially expensive] | start or re-adopt the named jobs in a fleet plan | MODIFICATION | mutating, potentially expensive | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; run: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["argument:route:entrypoint:fleet/run/plan.type", "option:route:entrypoint:fleet/run/--hx.type", "option:route:entrypoint:fleet/run/--state-dir.type"] | complete |
@@ -698,7 +720,7 @@ The manifest records registered syntax. The review catalog owns expected behavio
 | option:route:entrypoint:fleet/collect/--hx | option | --hx | path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source checkout's scripts/controller/hx.sh; an installed fleetd needs one of them) | {"metavar": "PATH", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["collect"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "TRANSPORT", "hidden": false} |
 | option:route:entrypoint:fleet/collect/--state-dir | option | --state-dir | campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns, or ~/.local/state/fleetd/campaigns when unset) | {"metavar": "DIR", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["collect"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "STATE", "hidden": false} |
 | option:route:entrypoint:fleet/facts/collect/--root | option | --root | prefix for the host's absolute config and fact paths (a fixture root queries no systemd) | {"metavar": "DIR", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | false | {"choices": null, "declared_default": "/", "default": "/", "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["facts", "collect"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "INPUT", "hidden": false} |
-| argument:route:entrypoint:fleet/facts/validate/file | argument | file | host-facts/1 JSON file to validate | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | true | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["facts", "validate"], "scope": "positional"} | {"help_group": "positional arguments", "hidden": false} |
+| argument:route:entrypoint:fleet/facts/validate/file | argument | file | host-facts/1 or host-facts/2 JSON file to validate | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | true | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["facts", "validate"], "scope": "positional"} | {"help_group": "positional arguments", "hidden": false} |
 | argument:route:entrypoint:fleet/measurement/campaign | argument | campaign | campaign ID | {"metavar": "ID", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | true | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["measurement"], "scope": "positional"} | {"help_group": "positional arguments", "hidden": false} |
 | option:route:entrypoint:fleet/measurement/--transport | option | --transport | host transport; only the identity-checked hx wrapper is supported | {"metavar": "NAME", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | false | {"choices": ["hx"], "declared_default": "hx", "default": "hx", "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["measurement"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "TRANSPORT", "hidden": false} |
 | option:route:entrypoint:fleet/measurement/--hx | option | --hx | path of the identity-checked hx wrapper (default: $FLEETD_HX, else the source checkout's scripts/controller/hx.sh; an installed fleetd needs one of them) | {"metavar": "PATH", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["measurement"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "TRANSPORT", "hidden": false} |

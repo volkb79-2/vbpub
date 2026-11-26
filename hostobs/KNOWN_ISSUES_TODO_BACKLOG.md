@@ -48,13 +48,13 @@ holds the full bodies.
 | HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (folded into the HOB-62 history read-view design) |
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
-| HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
-| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (closes at the HOB-63 live slice) |
+| HOB-45 | Rust R2 is registered as a hand-run changed-lines lane but has no hostobs-sized campaign yet; R3 remains unregistered | Major | OPEN (R2 K15; R3 R-4) |
+| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | CLOSED (live slice shown on a VM 2026-11-24; see the entry) |
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
 | HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
 | HOB-61 | `json.rs` `skip_ws` / `string_end` `+=` to `*=` are pure infinite loops: suite-level TIMEOUT under `assay-r2` by nature (accepted known limit; expected 0 MISSED + 2 TIMEOUT) | Minor | OPEN (accepted; moot after HOB-68) |
 | HOB-62 | No production history, process or provenance source | Major | OPEN (2026-11-24 Opus design review) |
-| HOB-63 | M2 ordered consumer-first: P5-live slice before P5b-3 merges | Major | OPEN (2026-11-24 Opus design review) |
+| HOB-63 | M2 ordered consumer-first: P5-live slice before P5b-3 merges | Major | OPEN (live half closed by P-11; history half awaits P-17) |
 | HOB-64 | Workspace unification (crate half of plan P4) | Major | OPEN (2026-11-24 Opus design review) |
 | HOB-65 | No server-side pending requests | Major | OPEN (2026-11-24 Opus design review) |
 | HOB-66 | Probe process/thread model undocumented | Major | OPEN (2026-11-24 Opus design review) |
@@ -81,7 +81,7 @@ holds the full bodies.
 | HOB-87 | The conformance lane prints a Python traceback when `cargo metadata` yields no JSON line | Minor | OPEN (P-hostobs-09 r2) |
 | HOB-88 | The image-contract test checks `--locked`/`--offline` only on build and metadata lines | Minor | OPEN (P-hostobs-09 r2) |
 | HOB-89 | The conformance lane's 10-minute budget was never measured on a complete cold run | Minor | OPEN (P-hostobs-09 r1/r2) |
-| HOB-90 | rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible | Major | OPEN (P-hostobs-09 report; constraint documented) |
+| HOB-90 | rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible | Major | RESOLVED (M3 B1 raw `SO_PEERCRED` guard) |
 | HOB-91 | `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,200 rows | Minor | OPEN (P-hostobs-09 report) |
 | HOB-92 | `SIGTERM` keeps its default action; the graceful stop path is required before P-16 | Major | OPEN (P-hostobs-09 decision) |
 | HOB-93 | P-hostobs-09 residual doc and test nits | Minor | OPEN (P-hostobs-09 r2) |
@@ -89,7 +89,15 @@ holds the full bodies.
 | HOB-95 | The `selftest` lane never builds or runs the example tests | Minor | OPEN (P-hostobs-11(a) r1/r2) |
 | HOB-96 | The `conformance` lane never exercises the live demo | Minor | OPEN (P-hostobs-11(a) r1/r2) |
 | HOB-97 | `watch`'s hello-derived interval default loses its reason and can refuse a legal hello | Minor | OPEN (P-hostobs-11(a) r2) |
-| HOB-98 | P-hostobs-11/P-12 residual doc, lane-comment and coverage-header nits | Minor | OPEN (P-hostobs-12 r1/r2, P-11(b) VM report) |
+| HOB-98 | P-hostobs-11/P-12 residual doc, lane-comment and coverage-header nits | Minor | PARTLY FIXED, rest OPEN ((e) closed by the P-11(b) follow-ups; (a)-(d) open) |
+| HOB-99 | The probe's self-overhead is unmeasured on native hardware with a release build | Major | OPEN (P-11(b) final review F1) |
+| HOB-100 | The next VM run must check the tightened verdict rules, the full model table, a reboot, a non-root operator member and the cgroup controller files | Minor | OPEN (P-11(b) final review F2/F5/F7) |
+| HOB-101 | `watch` prints the client's own loop count in its `closed` line, not the server's END `blocks`/`dropped` | Minor | OPEN (P-11(b) final review F6) |
+| HOB-102 | Freeze state is not a sampled metric | Major | FIXED in tree (M3 B8); live frozen-scope evidence open |
+| HOB-103 | Effective CPU time needs server-side M5 window verbs and event attribution | Major | OPEN (M5 window/1) |
+| HOB-104 | CPU model and benchmark records are outside the current hostobs metric model | Major | OPEN (M6 host/1) |
+| HOB-105 | Containerized assay has no launcher handoff for the host cgroup key | Major | OPEN (core launcher) |
+| HOB-106 | Event issuer cgroup attribution is not verified against a sampled cgroup | Major | OPEN (consumer policy and verified peer binding) |
 
 ---
 
@@ -636,27 +644,27 @@ cross-language case needs a body (an id table plus a payload) whose length is no
 and decoded by `golden_segment.rs`, plus the Python decoder reading the Rust writer's padded
 output.
 
-## HOB-45 — Rust R2 and R3 are unregistered for hostobs
+## HOB-45 — Rust R2 has no hostobs-sized run and R3 is unregistered
 
-**Where:** `hostobs/run-gate.toml` and `hostobs/assay.toml` (no `assay-r2`/`assay-r3`
-lane); assay `nyxloom-trove/4-backlog.md` B245 (R-3b, cargo-mutants ingestion) and B246
-(R-4, Rust canaries).
+**Where:** `hostobs/run-gate.toml` (`[lanes.assay-r2]`) and `hostobs/assay.toml`
+(`[lanes.assay-r2]`, changed-line `source_roots`); assay `nyxloom-trove/4-backlog.md` B245
+(R-3b, cargo-mutants ingestion) and B246 (R-4, Rust canaries).
 
-With `assay-r1` registered the workspace has an assay-judged R1 line verdict. The
-remaining two tiers do not exist for Rust in assay at all: R2 needs
-the `cargo-mutants-outcomes` report parser and the `ASSAY_CHANGED_DIFF` handoff (B245), and
-R3 needs the rustc `UNCOVERED_LINES` injector plus a receipt-writing test-break canary
-(B246). hostobs therefore has no mutation or canary lane, and the test-quality claim is the
-three hand-mutation campaigns in `docs/HAND-MUTANTS-M1*.md` (eighty-two stored, replayable
-mutants). This is recorded once, as a known issue, not as a per-release waiver.
+The hand-run `assay-r2` lane is registered in `run-gate.toml`; `assay.toml` defines its
+`cargo-mutants-outcomes` judge over changed lines in six roots (`crates/model`, `proto`, `serve`,
+`kernel`, `store` and `client`). It is not a default lane. The first real hostobs-sized campaign
+is still tracked as K15; registration alone is not a passing verdict. R3 remains unregistered:
+it needs the rustc `UNCOVERED_LINES` injector plus a receipt-writing test-break canary (B246).
+The recorded hand-mutation campaigns remain separate historical evidence while these gaps are
+open.
 
-**Exit criteria.** An `assay-r2` lane (diff-scoped cargo-mutants, T3, `--base <previous
-release tag>`) and an `assay-r3` lane (test-break canary with a receipt) exist here, pass
-their registered gates in `tester-unified-rust`, and the hand-mutation scripts are retired or
-reduced to the survivors those lanes cannot express.
+**Exit criteria.** A real `assay-r2` campaign judges a non-empty changed-lines set in
+`tester-unified-rust` and records its verdict bound to the commit; an `assay-r3` lane (test-break
+canary with a receipt) is registered and passes its gate. The hand-mutation records may remain as
+historical evidence.
 
-**Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; assay A-501 (Rust R2 not
-adopted is a known issue), `assay/docs/RUST-METHODOLOGY.md`.
+**Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; assay A-501 (historical note that
+Rust R2 was not adopted), `assay/docs/RUST-METHODOLOGY.md`.
 
 ## HOB-54 — The Rust client and the probe's serving loop do not exist yet
 
@@ -705,6 +713,26 @@ with the reader and hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row
 `FrameReader` passes the same reader cases and the client cases; P5b: the 21 connection cases
 now listed in §11.4 against a fake clock, with P5b-3 and P5b-4 still required for the remaining
 page and socketpair cases.
+
+**Closure (P-11(b), 2026-11-24).** CLOSED. The live slice ran on a Debian 13 guest with the
+shipped systemd units: both sockets active, `hello` at observe and operator, one `current`, 60
+consecutive subscription ticks with the same 102 rows on every tick, `closed blocks=60
+reason=unsubscribed`, and one operator tick (`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:190-6315`).
+The VM record shows the probe still active after the stream and it was never stopped by a signal
+there (`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6424,6554`). The SIGTERM
+exit was exercised only by the container run
+(`.controller-state/hostobs/evidence/live-container-20261124.txt:70`). The serving loop, the frame
+reader, the hub, the envelope checks and both clients therefore exist and are exercised end to end.
+
+*Scope of the closure.* The demo's selection was `watch`'s default, so **only `cpu.usage_usec`,
+`mem.current` and `pids.current` were exercised** (`crates/client/examples/watch.rs:22-23`). It did
+not exercise PSI, `io.stat`, `memory.stat`, the host `/proc` metrics, `probe.*`, a reboot (boot-time
+tmpfiles → sockets ordering), the observer socket (which did not exist in that recorded run), or
+a non-root operator-group member (P-11(b) final review F2). `procs` was not served, so there were
+no operator-only read details to exercise. It is also a functional, not a performance, result: the probe was a
+debug build under QEMU emulation at 27.3 CPU-s per 59 s. Those two gaps are carried by
+**HOB-99** (a release build's self-overhead on native hardware) and **HOB-100** (the next VM run's
+full-table selection, one reboot and a non-root operator member), not by this entry.
 
 ## HOB-59 — A failing eviction drops the partial `Evicted`
 
@@ -787,6 +815,24 @@ HOB-62's ceilings move to the P5c-history design.*
 
 **Exit criteria.** P-11 completes and demonstrates the live slice; P-17 delivers the producer-first
 history view and reconciles P5b-3. The live half closes at P-11 and the history half at P-17.
+
+**Closure (live half, P-11(b), 2026-11-24).** The live half of this entry is CLOSED: P-11 demonstrated
+the slice on a VM with the shipped units (`.controller-state/hostobs/evidence/p11b-vm-20261124/`,
+`runs/p11b-vm-demo.report.md`), and **HOB-54 closed with it**. The VM record shows the probe still
+active after the stream and it was never stopped by a signal there
+(`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6424,6554`). The SIGTERM exit
+was exercised only by the container run
+(`.controller-state/hostobs/evidence/live-container-20261124.txt:70`). The history half stays OPEN
+and unchanged: P-17 still owes the producer-first history view and the P5b-3 reconciliation.
+
+*Scope of the live half.* Only `cpu.usage_usec`, `mem.current` and `pids.current` were exercised
+(`crates/client/examples/watch.rs:22-23`, the demo's selection); PSI, `io.stat`, `memory.stat`, the
+host `/proc` metrics, `probe.*`, a reboot, the observer socket (which did not exist in that
+recorded run) and a non-root operator-group member were not (P-11(b) final review F2). `procs` was
+not served, so there were no operator-only read details to exercise. Performance was not measured either: the
+probe was a debug build under QEMU emulation, 27.3 CPU-s in 59 s. **HOB-99** carries the release
+build on native hardware and **HOB-100** the next run's full-table selection, reboot and non-root
+operator member; nothing in the live-half closure claims those.
 
 Source: .controller-state/design-review-2026-11-24/hostobs.md F1 (The plan builds three protocol packages against a fake before any real source or socket exists)
 
@@ -1079,15 +1125,11 @@ Source: `reviews/p09-r1-26c204d42.md` and `reviews/p09-r2-3bc01d21f.md` Backlog 
 
 ## HOB-90 — rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible
 
-**Where:** `bins/probe/src/driver.rs` `peer` (the `rustix::net::sockopt::socket_peercred(stream).ok()?` call before `Peer` is built), and `docs/PROBE-PROCESS.md` §(d).
+**Where:** `bins/probe/src/driver.rs` `peer` and `docs/PROBE-PROCESS.md` §(d)-(e).
 
-Linux reports pid 0 through `SO_PEERCRED` when the peer's pid is invisible from the probe's PID namespace (`pid_vnr`). rustix 1.1.6 decodes the `ucred` into `Pid(NonZeroI32)` after `assume_init`, so pid 0 is undefined behavior. It is reachable when the probe runs in a private container PID namespace and a host or sibling-namespace client reaches a bind-mounted socket. It is not reachable in the initial host PID namespace. PROBE-PROCESS §(d) now says the probe and every client must share one PID namespace, which is a policy and not a guard. P-09 adds no raw `getsockopt`, because that would be a second audited `unsafe`.
+Linux reports pid 0 through `SO_PEERCRED` when the peer's pid is invisible from the probe's PID namespace (`pid_vnr`). rustix 1.1.6 decodes the `ucred` into `Pid(NonZeroI32)` after `assume_init`, so passing pid 0 to that decoder is undefined behavior. It is reachable when the probe runs in a private container PID namespace and a host or sibling-namespace client reaches a bind-mounted socket.
 
-**Exit criteria.** One of these lands before any deployment with clients in a different PID namespace than the probe, including P-11's container demo if it ever splits them:
-- a guard that reads the raw 12-byte `ucred` and rejects pid 0 before any `NonZeroI32` conversion, with a test whose socket peer reports pid 0 and a lint count (`expected_uses`) updated for the second audited site; or
-- a rustix release whose decoder accepts pid 0, with the lock and image bumped under the freshness rule.
-
-Until then §(d) stays as the only protection.
+**Resolved by M3 B1:** `kernel::activation::peer_credentials_raw` reads the raw 12-byte credential once and returns the kernel's length. The probe checks length 12 and refuses a negative pid before constructing any rustix `Pid` or `NonZeroI32`; pid 0 becomes `pid: None` and the connection is still accepted. No peer socket calls rustix's decoded `socket_peercred`. At accept, `Peer` stores the server-side uid and an advisory pid/comm/cgroup label. `comm` requires valid UTF-8; the cgroup key is `(st_dev, inode)` and is present only for a `0::/…` path without a `..` component on the probe cgroup root's device. The label has no authorization, dedupe, rate-limit, quota or connection-cap weight. The lint pins the two audited unsafe expressions in `activation.rs`; tests cover pid 0, pid 42, truncated and negative credentials, invisible-pid acceptance, a gone peer, invalid UTF-8, a parent path and a different device.
 
 Source: `runs/p09-driver.report.md` Backlog candidates 1; `reviews/p09-r1-26c204d42.md` BC1.
 
@@ -1150,11 +1192,12 @@ in **three** copies, only one of them pinned:
 - `python/tests/fake_probe.py:26-31` (`ERROR_CODES`), iterated by
   `test_client_conn.py:171`; no test asserts its length, its order or that it equals §10.
 
-**Impact.** The first client after a socket-activated start usually lands in the window;
-`deploy/systemd/hostobs-observe.socket:8` sets `Accept=no` and LIVE-DEMO part (b) enables only the
-socket units (`docs/LIVE-DEMO.md:122`), so that client starts the probe. It is a race, not a
-certainty: the sampler publishes its first tick before its first sleep (`bins/probe/src/sampler.rs:849-858`)
-and `main.rs:109` spawns it before `driver::run` at `:119`, so a start-on-demand probe closes the
+**Impact.** The first client after a socket-activated start usually lands in the window:
+`deploy/systemd/hostobs-observe.socket:8` sets `Accept=no`, so where the probe is not already
+running that client starts it. LIVE-DEMO part (b) step 3 enables and starts the service, which
+leaves such a client only on a host where the service is stopped or not enabled, or during
+start-up. It is a race, not a certainty: the sampler publishes its first tick before its first
+sleep (`bins/probe/src/sampler.rs:849-858`) and `main.rs:109` spawns it before `driver::run` at `:119`, so a start-on-demand probe closes the
 window within one scan; a probe already sampling (the unit is `WantedBy=multi-user.target`,
 `deploy/systemd/hostobs-probe.service:50-51`) has closed it for every later client. When the client
 does land in it, `internal` is indistinguishable from a real server fault. The shipped `watch`
@@ -1312,16 +1355,254 @@ the gates judge, which is the kind of stale comment a future lane edit trusts.
 in a Python-scoped package, or P-18 if HOB-73 drops the generator first). (b): each line states its own
 lane's number — `:73` and `:117` six functional crates, `:167` and `:206` six judged crates, `:86`
 61 declared targets — or derives them from `assay.toml` rather than spelling them; the `56`
-predates P5b-2b/P-09/P-10 (`assay.toml:24-28`) while only the "four/five crates" wording is a P-12
-artifact. (c): the comment at `hub_fixtures.rs:11` is rewrapped under 100 columns with its path
-unchanged, proved by `fmt --check` plus a wrap check. (d): the `coverage-floors.toml` header separates
-the inherited floors from the own-tests floors. (e): LIVE-DEMO §(b) names the expected OK-with-flags
-entries from a fresh `systemd-analyze security` run on the shipped units and the overall `1.8 OK`, so
-a reviewer can tell expected flags from policy drift; the naming is backed by a recorded run, not by
-inference. `hostobs/CHANGES.md:199` also says "five judged crates"; it is a historical record of the
-P5b package, so it is left alone unless the same package chooses to fix it.
+predates P5b-2b/P-09/P-10 (`assay.toml:24-28`), the `four functional crates` went stale in
+P5a/P5b-1a (2026-11-18) when `crates/client/src` and `bins/probe/src` joined `assay-r1`, and only
+`five judged crates` is a P-12 artifact. (c): the comment at `hub_fixtures.rs:11` is rewrapped under
+100 columns with its path unchanged, proved by `fmt --check` plus a wrap check. (d): the
+`coverage-floors.toml` header separates the inherited floors from the own-tests floors. (e):
+`docs/LIVE-DEMO.md` §(b) names the expected ✗ entries from a fresh `systemd-analyze security` run
+on the shipped units and the overall `1.8 OK`, so a reviewer can tell expected flags from policy
+drift; the naming is backed by a recorded run, not by inference — the 17 `✗` entries and the
+`1.8 OK` summary are now listed and cited to the run's transcript
+(`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6336-6416,6418`).
+`hostobs/CHANGES.md:199` also says "five judged crates"; it is a P5b-era record of the R2 lane, so
+it is left alone unless the same package chooses to fix it.
+
+**Status.** (e) is CLOSED by the P-hostobs-11(b) follow-ups: `docs/LIVE-DEMO.md` §(b) now lists the
+17 expected `✗` entries with why each is deliberate, the `64 ✓` count and the `1.8 OK` score, cited
+to the recorded run. (a), (b), (c) and (d) remain OPEN, unchanged.
 
 Source: `reviews/p12-r1-3e8ce04b4.md` notes "Stale counts in `run-gate.toml`" and "Stale Python
 docstrings"; `reviews/p12-r2-eb9151fd5.md` Nit 5 and new Nit 8; `reviews/p11a-r2-dda3fe69f.md`
 candidate 4 (the `systemd-analyze` evidence request, which r1 makes at `:152`);
 `runs/p11b-vm-demo.report.md` "Deviations", follow-up candidate 1.
+
+## HOB-99 — The probe's self-overhead is unmeasured on native hardware with a release build
+
+**Where:** `bins/probe/src/sampler.rs` (the per-tick walk and `probe.ticks_skipped`),
+`bins/probe/src/live.rs:59` (`status.tick.scan_ms`), `docs/PROBE-PROCESS.md` (the missing budget
+line), and the first native run of the shipped unit.
+
+The only probe CPU figure that exists is a *debug* build under QEMU emulation:
+`/system.slice/hostobs-probe.service` `cpu.usage_usec` rose 4,041,647 →
+31,366,830 over 59 s (`evidence/p11b-vm-20261124/transcript.txt:240` seq=2 and `:6258` seq=61),
+27.3 CPU-s in 59 s, a median 434 ms per 1 s tick, 95 % of `system.slice`'s 28.8 s in the same
+window. The build was `Finished \`dev\` profile [unoptimized + debuginfo]`
+(`evidence/p11b-vm-20261124/artifacts/build.stderr:32,34`), not the `--release` build the brief
+asked for, and the guest ran under TCG. Nothing anywhere measures the probe's overhead on real
+hardware with an optimised binary, and thrashguard and agctl will run `hostobs-probe` permanently.
+
+**Impact.** A consumer cannot plan for a probe whose steady-state cost is unknown: a 434 ms
+median per 1 s tick is 43 % of one core, and a release build on native hardware may be one to two
+orders of magnitude cheaper or may be limited by the walk itself. The VM result must be read as
+functional, not as a performance result.
+
+**Exit criteria.** A release `hostobs-probe` (`--release`, recorded as such) runs natively on
+r1002 or v1001 with at least 30 cgroups and `tick_ms = 1000` for 60 s:
+
+- the unit's `cpu.usage_usec` delta over that window is recorded, in the same form as
+  `transcript.txt:240`/`:6258` (two tick rows with their seqs), not as a summary only;
+- the tick's `scan_ms` from `status` (`bins/probe/src/live.rs:57-60`) is recorded for the same
+  window, so CPU time per tick and the walk's own duration can be compared;
+- `probe.ticks_skipped` (`bins/probe/src/sampler.rs:390-391`) is shown as `0`, which is what a
+  well-fed sampler reports (the VM run's own `probe.ticks_skipped` row is the counter, not this);
+- a new cost section in `docs/PROBE-PROCESS.md` states the measured budget (µs of CPU per tick
+  and per cgroup at `tick_ms = 1000`), so a later regression has a number to fail against.
+
+Source: `reviews/p11b-final-opus.md` F1 and P1 (the probe's own cost, 27.3 CPU-s in 59 s, debug
+build under TCG); `evidence/p11b-vm-20261124/transcript.txt:240,6258`;
+`evidence/p11b-vm-20261124/artifacts/build.stderr:32`.
+
+## HOB-100 — The next VM run must check the tightened verdict rules, the full model table, a reboot, a non-root operator member and the controller files
+
+**Where:** the guest checker (`evidence/p11b-vm-20261124/scripts/guest-check-attempt5.sh`), the demo
+selection (`crates/client/examples/watch.rs:22-23`, `--selection` at `:125-129`), the operator test
+identity, and the absent explanation in `docs/LIVE-DEMO.md`.
+
+Five gaps of the P-11(b) run, none of them a defect of that run:
+
+1. **The guest checker is narrower than `tools/live-demo.py`.** `scripts/guest-check-attempt5.sh:276`
+   accepts any line containing `blocks=60`, so it does not enforce the exact line shape;
+   `blocks=600` itself is allowed by the lower-bound rule now, but a malformed line containing
+   that substring still passes. It never asserts the close *reason*, counts distinct seq values
+   without a rows-per-tick check, and does not require
+   consecutive seqs, and the operator stream is checked only by exit status plus
+   `grep -Fq $'closed\tblocks=1'` (`:361`), with no quality rules on its rows. A duplicated tick,
+   a tick short by ten rows and a replayed seq all replay PASS (r1 N2, N2b, N3).
+2. **One selection only.** The demo used `watch`'s default, so PSI, `io.stat`, `memory.stat`, the
+   host `/proc` metrics and `probe.*` were never exercised (final review F2).
+3. **No reboot.** The boot-time ordering of `systemd-tmpfiles-setup.service` vs
+   `hostobs-observe.socket`/`hostobs-operator.socket` was asserted from `systemctl cat` and
+   `AT_BOOT_*`, not from a second boot.
+4. **Operator access was tested as root.** `:355-365` runs the operator watch as root; the
+   contract says group membership is the access boundary, and no non-root member of
+   `hostobs-operator` connected.
+5. **The `absent` cells rest on the code path, not on the kernel's own witness.** Neither
+   `cgroup.controllers` nor `cgroup.subtree_control` appears anywhere in
+   `transcript.txt` (0 hits), so the `udev` half of the explanation is inferred from the
+   hierarchical `pids.current=1` on its parent.
+
+**Impact.** Each gap is covered in that run by content that was parsed independently, so the run's
+verdict stands. What is missing is a *checker* that would catch the same regression next time, and
+a run that exercises the rest of the model table. A future reuse of the checker inherits a
+verdict that can pass a transcript it should reject.
+
+**Exit criteria.** The next VM run, with the same exact-name and teardown discipline:
+
+- its checker asserts the exact `\t`-anchored `closed\tblocks=N\treason=unsubscribed` form
+  with an integer block count at least the requested ticks (60 observe, 1 operator). Every tick
+  line in both streams must be a full client row with non-empty entity, metric, value and quality;
+  every quality is one of the eight WIRE codes, and every non-`ok` quality has the value
+  `<not-measured>`. `assess()` applies those rules to every row of both streams: `row_rules()`
+  requires a value and quality for each metric row, rejects unknown quality codes, and rejects a
+  value other than `<not-measured>` for a non-`ok` quality; `full_row_form()` rejects a missing
+  or empty entity, metric, value or quality on any tick line. It also checks consecutive observe
+  sequences, exactly one operator sequence, unique `(entity, metric)` pairs in every tick block,
+  equal observe row counts on a quiet target, the allowed live close reasons, and at least one
+  entity whose good `cpu.usage_usec` value increases from its first to last observe sequence;
+- `hostobs-watch --selection` is given the full model table, so every registered metric appears
+  in at least one tick's columns (a tick with a shorter column set fails);
+- one reboot happens with the units enabled, and the transcript shows all three sockets active
+  before the first connection after that boot; the observer socket completes one `hello`;
+- a non-root identity in `hostobs-operator` completes one tick and a non-root identity outside
+  the group is refused, both recorded as exit codes;
+- `cat /sys/fs/cgroup/cgroup.controllers` and `.../cgroup.subtree_control` are captured for `/`
+  and for each cgroup that carries an `absent` cell, so `docs/LIVE-DEMO.md`'s `absent` table is
+  shown by the kernel rather than inferred (final review F7).
+
+Source: `reviews/p11b-final-opus.md` F2, F5, F7; `reviews/p11b-r1-evidence.md` N2, N2b, N3 and
+"Follow-up candidates"; `evidence/p11b-vm-20261124/scripts/guest-check-attempt5.sh:276,361`.
+
+## HOB-101 — `watch` prints the client's own loop count in its `closed` line
+
+**Where:** `crates/client/examples/watch.rs:307-317` (`read_subscription`), and
+`tools/live-demo.py:147-167` (the `close_line` rule that asserts this form).
+
+`watch` prints `closed\tblocks={}\treason={reason}` with `subscription.received()`
+(`watch.rs:315`), which is the client's own count of BLOCK frames it read
+(`crates/client/src/streams.rs:177-179`). The server's END carries `blocks` and `dropped`
+(`crates/client/src/streams.rs:20-25`), and the client has already checked that its own count
+equals `end.blocks` (`crates/client/src/client.rs:880`), so printing the loop count makes the field
+tautological and leaves END `dropped` (the blocks the server dropped for a lagging client,
+`streams.rs:184-190`) invisible in every demo transcript. During `unsubscribe`, blocks that arrive
+while the client waits for its reply are counted too (`crates/client/src/client.rs:550-558`), so
+the printed count may exceed the requested ticks; the live-demo verdict requires an integer count
+at least as large as requested, not equality to the request. The VM run's
+`closed\tblocks=60\t...` therefore records the client's count, which it checked against END
+`blocks`, but does not expose END `dropped`.
+
+**Impact.** A consumer or reviewer cannot see a subscription's drops from the example output, and a
+demo verdict that keys on `blocks=` is checking the client against itself. The fix is one print
+change plus the rule that reads it; no wire change.
+
+**Exit criteria.** `watch`'s `closed` line prints the END's `blocks` and `dropped` from
+`StreamEnd` (both `u32`), with the reason as today, and a unit test in the example's tests makes a
+scripted END whose `blocks`/`dropped` pair differs from the loop count and asserts the printed line
+carries the server's numbers. `tools/live-demo.py`'s `close_line` and its test fixture
+(`python/tests/test_live_demo.py`) accept and assert the new field in the same package, so the
+verdict and the example cannot disagree about the line's form.
+
+Source: `reviews/p11b-final-opus.md` F6 (print the server END `blocks`/`dropped`);
+`evidence/p11b-vm-20261124/transcript.txt:6312`; `crates/client/src/client.rs:880`,
+`crates/client/src/streams.rs:177-189`.
+
+## HOB-102 — Freeze state is not a sampled metric
+
+**Where:** `crates/kernel/src/cgroup.rs`, `crates/model/src/metric.rs`, `bins/probe/src/sampler.rs`.
+
+**Problem.** The probe sampled no freeze state, so a reader could not check a freeze or thaw event
+(thrashguard reports them best-effort) against the cgroup's own `cgroup.freeze` and `cgroup.events`.
+
+**Status.** Fixed by M3 package B8: the sampler publishes `cgroup.freeze`, `cgevents.frozen` and
+`cgevents.populated` as last-only state metrics; an absent or unreadable file never renders as a
+measured `0`. Fixture tests cover the parsers and one sampler tick.
+
+**Open.** No run has shown these columns for a frozen scope on a real host.
+
+**Exit criteria.** One recorded VM run in which a frozen scope shows `cgroup.freeze` 1 and
+`cgevents.frozen` 1, and 0 for both after the thaw, with the kernel files captured beside the ticks.
+
+## HOB-103 — Server-side effective CPU time needs the M5 window verbs, not an M3 package
+
+**Where:** `crates/serve/src/verbs.rs`, `crates/model/src/metric.rs`, WIRE §4.13, and
+`thrashguard/DESIGN.md` §4b.
+
+The current model publishes raw `cpu.usage_usec` and the freeze-state metrics, but it has no
+per-window effective CPU result. The verb table marks `resource-limits`, `window-open` and
+`window-close` as reserved and unserved; `events` and `spans` are also unserved. A consumer that
+needs effective CPU time cannot obtain a server-side window joined to freeze/thaw events from
+this head.
+
+**Impact.** Computing `effective_cpu_s = cpu_s` and `effective_wall_s = wall_s - frozen_seconds`
+requires the window's cgroup incarnation and freeze/thaw events matched on `boot_id`,
+`cgroup_id` and `seq`. Without those events, `frozen_seconds` is unknown, never zero; treating it
+as zero would overstate effective wall time.
+
+**Exit criteria.** The M5 `window/1` path returns `effective_cpu_s` and `effective_wall_s` with
+`frozen_seconds: u64|null` and quality per value. Matching events subtract the frozen interval;
+no matching events return `null` and `unknown`, not `0`. The relation is stated in WIRE and
+`docs/DESIGN-GUIDE.md`; tests cover a frozen interval spanning a window and an interval with no
+events. cgprofiled retires only after this verb is served on both hosts.
+
+Source: operator decision 2026-11-26; PLAN-M3-carve.md HOB-103; `thrashguard/DESIGN.md` §4b.
+
+## HOB-104 — CPU model is not a metric, and Geekbench records never enter hostobs
+
+**Where:** `crates/model/src/metric.rs` (`Unit` and the registry),
+`crates/model/src/value.rs` (`Value`), `crates/serve/src/verbs.rs` (`host`), and WIRE §4.13.
+
+The current metric value types are numeric (`u64`, `i64` and `f64`), and the registry has no CPU
+model or Geekbench metric. The `host` verb is reserved and unserved. Raw CPU time already exists
+as `cpu.usage_usec`; a CPU model string belongs in a future `host/1` reply, not a metric column.
+The score and baseline in a CPU record must come from the host's install-time record rather than
+being invented by hostobs.
+
+**Exit criteria.** `host/1` returns `cpu.model` as a string of at most 128 characters and
+`logical` as `u32`, with quality codes, in the package that declares the WIRE key. No Geekbench
+major, score or baseline appears in a hostobs metric, verb, config key or fixture. Consumer docs
+state that a host record supplies the score and baseline, and a host without one contributes raw
+CPU seconds plus its model only.
+
+Source: operator decision 2026-11-26; PLAN-M3-carve.md HOB-104; `docs/WIRE.md` §4.13.
+
+## HOB-105 — A containerized assay has no designed path to the host socket
+
+**Where:** `hostobs/run-gate.toml`, `hostobs/assay.toml`, the core run-gate launcher, and
+`docs/CONSUMERS.md`'s `cgroup_id` consumer instructions.
+
+A containerized assay needs access to the host observer socket and its group, plus the host
+cgroup path and `(dev, inode)` key for the candidate. The registered hostobs lane config does not
+declare a host-socket mount or pass that host key into the container; the live-demo launcher
+accepts a cgroup root but does not hand a host cgroup key to a container. A container-local
+`stat` has no documented relationship to the host key.
+
+**Exit criteria.** A gate lane declares its access method and its verdict names the resource
+source and state. The launcher passes the host cgroup path and key into the run. The cgroup
+namespace relationship is verified by a VM test before docs make any claim about a
+container-local `stat`. The socket remains a plain Unix socket behind the declared mount and
+group, and hostobs resolves selectors against published rows.
+
+Source: assay q308; PLAN-M3-carve.md HOB-105; WIRE §5.1; thrashguard D15.
+
+## HOB-106 — Full issuer-cgroup attribution waits for a consumer that needs provenance
+
+**Where:** `bins/probe/src/driver.rs` (`peer`), `crates/serve/src/conn.rs` (`Peer`),
+`crates/store/src/events.rs` (`Event::issuer`), and WIRE §4.12.
+
+At accept, the driver reads raw `SO_PEERCRED` into `Peer { uid, pid, comm, cgroup }` (M3 B1).
+`comm` and the cgroup `(st_dev, inode)` are an advisory label read from `/proc` after accept: the
+label can describe another process and carries no authority. The event store accepts an issuer
+string from its caller and does not verify that it names the peer's sampled cgroup. The event
+verbs are unserved, so the current code has no served path that establishes verified
+issuer-cgroup provenance.
+
+**Impact.** A client-written subject or an unverified peer label must not be treated as proof that
+an event belongs to a sampled cgroup. Consumer authorization and telemetry attribution remain
+separate until hostobs can verify their relationship.
+
+**Exit criteria.** Before a consumer authorizes an action by issuer cgroup, it states the policy
+and hostobs establishes a verified relationship between the issuer and claimed `cgroup_id`. A
+disagreement is a closed refusal, and WIRE replaces its unverified-label rule with the verified
+rule. This is a future consumer package, not an M3 package.
+
+Source: operator ruling 2026-11-26; PLAN-M3-carve.md HOB-106; WIRE §4.12 and plan v4 §C.4.

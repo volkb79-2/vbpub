@@ -50,6 +50,25 @@ no separate version number, so entries are grouped by the work that landed.
   one hand mutant per new refusal. `tests/test-pi-review.sh` asserts the review
   launch is in review mode and records its mode.
 
+### Resume and keep-alive pane guards (P-plat-22c)
+- `resume-lib.sh` owns the pane view and shared markers used by both resume helpers and `ctl-keepalive.sh`. `pane_view`
+  trims rows below the mode line only for the unfocused agents-panel hint, so panel rows cannot hide busy markers or
+  dialogs. A resume helper proceeds only when it recognizes a prompt box: the top rule is directly above the live input
+  row, a plain rule is directly below it, the input is empty, and no dialog or busy marker is present. The live main
+  controller's labelled top rule is recognized. Missing boxes, drafts, dialogs, text and busy panes remain not ready;
+  no-box, dialog and spinner refusals log their reason once per wait. Compaction is busy when its marker appears at or below the box's top rule, or
+  when one of `·✢✳✶✻✽*` precedes `Compacting` and an ellipsis within the six non-blank lines above that rule. The
+  keep-alive watcher uses the shared plain/labelled rule matchers and dialog check, while retaining its 80-column and
+  six-line input-box checks. Dash-prefixed draft lines are data to the rule matchers, never command-line switches.
+  Tests: panel heights 1, 3, 6 and 12; another permission mode; empty-first-row drafts including dash-prefixed lines;
+  spinner frames at the scan boundary and `● Compacting now.` prose; and the live labelled top rule, all in the resume
+  tests. Keep-alive draft and pane checks use the shared `tests/pane-frame-lib.sh` and the sanitized real panel capture.
+- The logged footer uses the same trimmed view as the idle check. The helpers still do not impose the watcher's width
+  floor, so a very narrow pane can wrap or truncate a busy marker; the known limits are recorded in
+  `docs/design/agctl/CONTEXT-ECONOMY.md`.
+- `ctl-doctor.sh` compares `CONTROLLER_HOME` against a quoted `"${HOME:-}/controller"` (an unquoted right-hand side is
+  a glob pattern), and the design note describes the shared pane view without treating the focused panel as captured fact.
+
 ### Changed
 - **Signal guard for every pi run (P-plat-31).** `pi-impl.sh` now prepends
   `scripts/controller/pi-shims/` to the agent's `PATH` for the first run, a resume

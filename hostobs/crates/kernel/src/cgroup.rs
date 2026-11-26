@@ -1,11 +1,12 @@
-//! cgroupfs readers: `cpu.stat`, `memory.*`, `io.stat`, `pids.current`, PSI.
+//! cgroupfs readers: freezer state, `cpu.stat`, `memory.*`, `io.stat`, `pids.current`, PSI.
 //!
 //! This is the port of `topos/sampler/src/collect.rs` (`Ids::new`, `CG_FILES`,
 //! `read_cg`/`limit_vals`/`is_bottom`) with the behaviours plan v4 requires to change.
 //! Every reader takes the parsed text and returns [`Readings`] — keyed, typed readings —
 //! or a [`KernelError`] that states why the file could not be used. Nothing here touches
-//! the filesystem: [`read_file`] is the only bridge, so the fixtures under
-//! `crates/kernel/tests/fixtures/cgroupfs/` drive the same code the probe will.
+//! the filesystem: [`read_file`] is the only bridge, so the cgroup tree under
+//! `crates/kernel/tests/fixtures/cgroupfs/` and standalone files under
+//! `crates/kernel/tests/fixtures/cgroupfs-files/` drive the same code the probe will.
 //!
 //! # Contracts (the plan's quality rule)
 //!
@@ -35,6 +36,7 @@
 //!   the text kept for a human.
 
 use core::fmt;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::fs::{Fs, FsError};
@@ -286,8 +288,8 @@ pub fn parse_cpu_stat(text: &[u8], bounds: Bounds) -> Result<Readings, KernelErr
 
 // ---------------------------------------------------------------- memory.current and friends
 
-/// Parse a single-number file (`memory.current`, `pids.current`, `memory.swap.current`,
-/// `memory.zswap.current`): one unsigned number, nothing else.
+/// Parse a single-number file (`cgroup.freeze`, `memory.current`, `pids.current`,
+/// `memory.swap.current`, `memory.zswap.current`): one unsigned number, nothing else.
 ///
 /// # Errors
 ///
@@ -383,6 +385,45 @@ pub fn parse_memory_events(
         match parse_u64(value) {
             Ok(raw) => readings.measured(metric, Value::U64(raw)),
             Err(_) => readings.missing(metric, QualityCode::Unreadable),
+        }
+    }
+    Ok(readings)
+}
+
+/// Parse `cgroup.events` into its `cgevents.*` readings.
+///
+/// This uses the same keyed event parser as `memory.events`; an unparseable value is
+/// unreadable only for the metric named by that line. Every `cgroup.events` value is a
+/// boolean, so a number above 1 is unreadable too, never a measured state. A repeated key
+/// is unreadable because it does not identify one state. This stricter rule is local to
+/// this parser; `parse_memory_events` keeps its existing first-entry lookup behavior.
+///
+/// `cgevents.frozen` is the effective state, which a frozen ancestor also sets.
+/// `cgroup.freeze` is the cgroup's own setting. The two can differ.
+///
+/// # Errors
+///
+/// `KernelError::Parse` for a line that is not `key value`, or for a file with no entry.
+pub fn parse_cgroup_events(text: &[u8], bounds: Bounds) -> Result<Readings, KernelError> {
+    let parsed = parse_memory_events("cgevents.", "cgroup.events", text, bounds)?;
+    if parsed.is_empty() {
+        return Err(KernelError::Parse {
+            file: "cgroup.events",
+            line: None,
+        });
+    }
+    let mut readings = Readings::new();
+    let mut seen = BTreeSet::new();
+    for entry in parsed.entries {
+        if !seen.insert(entry.metric.clone()) {
+            readings
+                .entries
+                .retain(|existing| existing.metric != entry.metric);
+            readings.missing(entry.metric, QualityCode::Unreadable);
+        } else if entry.reading.u64().is_some_and(|raw| raw > 1) {
+            readings.missing(entry.metric, QualityCode::Unreadable);
+        } else {
+            readings.entries.push(entry);
         }
     }
     Ok(readings)
@@ -857,7 +898,9 @@ pub fn read_file_error(error: FsError, absent: Absence) -> KernelError {
 }
 
 /// The cgroup files one pass reads, with their absence semantics.
-pub const CGROUP_FILES: [(&str, Absence); 11] = [
+pub const CGROUP_FILES: [(&str, Absence); 13] = [
+    ("cgroup.events", Absence::Feature),
+    ("cgroup.freeze", Absence::Feature),
     ("cpu.stat", Absence::Controller),
     ("cpu.max", Absence::Controller),
     ("cpu.weight", Absence::Controller),
@@ -934,6 +977,19 @@ fn parse_cgroup_file(
     topology: &dyn TopologySource,
 ) -> Result<Readings, KernelError> {
     match file {
+        "cgroup.events" => parse_cgroup_events(bytes, bounds),
+        "cgroup.freeze" => {
+            let reading = parse_single_u64("cgroup.freeze", bytes)?;
+            if !matches!(reading.u64(), Some(0 | 1)) {
+                return Err(KernelError::Parse {
+                    file: "cgroup.freeze",
+                    line: None,
+                });
+            }
+            let mut readings = Readings::new();
+            readings.push("cgroup.freeze", reading);
+            Ok(readings)
+        }
         "cpu.stat" => parse_cpu_stat(bytes, bounds),
         "cpu.max" => {
             let limit = parse_cpu_max(bytes)?;

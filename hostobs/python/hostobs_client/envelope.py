@@ -28,7 +28,7 @@ U32_MAX = 0xFFFFFFFF
 
 
 class LocalError(WireError):
-    """A refusal made by the client itself (not one of the 46 decoder kinds of WIRE.md 3.10)."""
+    """A refusal made by the client itself (not one of the 50 decoder kinds of WIRE.md 3.10)."""
 
     KINDS: frozenset = frozenset()
 

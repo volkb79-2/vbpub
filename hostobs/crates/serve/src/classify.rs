@@ -27,7 +27,7 @@
 //! the connection state machine's rule, R8). The function reads no clock and keeps no state.
 
 use hostobs_proto::envelope::{check_req, members, EnvelopeError, Kind};
-use hostobs_proto::frame::FrameType;
+use hostobs_proto::frame::{FrameType, PROTO_MINOR};
 
 use crate::args::{self, bounded_key, HelloArgs, SubscribeArgs};
 use crate::codes::{Code, Detail};
@@ -37,6 +37,9 @@ use crate::verbs::{find, Verb};
 
 /// The only protocol major version the probe serves.
 pub const SERVER_MAJOR: u16 = 1;
+
+/// The first protocol minor that accepts the `cgroup_id` selector.
+const CGROUP_ID_MINOR: u16 = 2;
 
 /// The `corr` the first request of a binary connection must carry.
 pub const HELLO_CORR: u32 = 1;
@@ -165,6 +168,24 @@ fn bad_args(corr: u32, error: &args::ArgError) -> Refusal {
     refuse_key(Code::BadRequest, corr, &error.key)
 }
 
+/// Apply the selector feature gate after the full argument schema (request step 11).
+/// JSON has no BLK verbs; `current` and `subscribe` fail the level gate before this check.
+fn cgroup_id_feature(query: &Query<'_>, corr: u32, selection: &Selection) -> Result<(), Refusal> {
+    let uses_cgroup_id = selection
+        .entities()
+        .iter()
+        .any(|entity| matches!(entity, crate::selection::Sel::CgroupId { .. }));
+    let negotiated_minor = query.prefix.minor.min(PROTO_MINOR);
+    if uses_cgroup_id && negotiated_minor < CGROUP_ID_MINOR {
+        return Err(Refusal {
+            code: Code::UnsupportedFeature,
+            corr,
+            detail: Detail::Feature("cgroup_id"),
+        });
+    }
+    Ok(())
+}
+
 /// The `detail.key` of an envelope defect (R14).
 fn envelope_key(payload: &[u8], error: &EnvelopeError) -> String {
     let echoed = |key: &core::ops::Range<usize>| {
@@ -273,11 +294,17 @@ fn call_of(
             Err(error) => Err(bad_args(corr, &error)),
         },
         "current" => match args::current(text) {
-            Ok(selection) => Ok(Call::Current(selection)),
+            Ok(selection) => {
+                cgroup_id_feature(query, corr, &selection)?;
+                Ok(Call::Current(selection))
+            }
             Err(error) => Err(bad_args(corr, &error)),
         },
         "subscribe" => match args::subscribe(text, facts.interval) {
-            Ok(subscribe) => Ok(Call::Subscribe(subscribe)),
+            Ok(subscribe) => {
+                cgroup_id_feature(query, corr, &subscribe.selection)?;
+                Ok(Call::Subscribe(subscribe))
+            }
             Err(error) => Err(bad_args(corr, &error)),
         },
         "unsubscribe" => match args::unsubscribe(text) {
@@ -372,7 +399,7 @@ mod tests {
     use crate::verbs::{find, Shape};
     use hostobs_proto::frame::FrameType;
 
-    const HELLO_ARGS: &str = "{\"client\":\"t\",\"proto\":{\"major\":1,\"minor\":1}}";
+    const HELLO_ARGS: &str = "{\"client\":\"t\",\"proto\":{\"major\":1,\"minor\":2}}";
 
     fn prefix(major: u16, minor: u16) -> Prefix {
         Prefix { major, minor }
@@ -385,7 +412,7 @@ mod tests {
             mode: Mode::Binary,
             phase: Phase::Ready,
             level: Level::Observe,
-            prefix: prefix(1, 1),
+            prefix: prefix(1, 2),
             payload,
         }
     }
@@ -479,7 +506,7 @@ mod tests {
         match done.call {
             Call::Hello(hello) => {
                 assert_eq!(hello.client, "t");
-                assert_eq!((hello.major, hello.minor), (1, 1));
+                assert_eq!((hello.major, hello.minor), (1, 2));
             }
             _ => panic!("status"),
         }
@@ -878,6 +905,107 @@ mod tests {
         }
     }
 
+    #[test]
+    fn step_11_cgroup_id_is_unsupported_below_minor_two_after_schema_validation() {
+        let selection = concat!(
+            r#"{"entities":[{"cgroup_id":{"dev":7,"inode":11}}],"#,
+            r#""metrics":["cpu.usage_usec"]}"#,
+        );
+        let current = format!(r#"{{"selection":{selection}}}"#);
+        let text = req("current", &current);
+        let mut legacy = binary(text.as_bytes());
+        legacy.prefix = prefix(1, 1);
+        assert_refusal(
+            &legacy,
+            Code::UnsupportedFeature,
+            5,
+            &Detail::Feature("cgroup_id"),
+        );
+
+        let invalid = concat!(
+            r#"{"selection":{"entities":[{"cgroup_id":{"dev":0,"inode":11}}],"#,
+            r#""metrics":["cpu.usage_usec"]}}"#,
+        );
+        let text = req("current", invalid);
+        let mut legacy = binary(text.as_bytes());
+        legacy.prefix = prefix(1, 1);
+        assert_refusal(
+            &legacy,
+            Code::BadRequest,
+            5,
+            &key("selection.entities.cgroup_id.dev"),
+        );
+
+        let subscribe = format!(r#"{{"selection":{selection},"interval_ms":1000}}"#);
+        let text = req("subscribe", &subscribe);
+        let mut legacy = binary(text.as_bytes());
+        legacy.prefix = prefix(1, 1);
+        // The default facts accept no interval, which would refuse the schema before step 11.
+        let paced = ConnFacts {
+            interval: IntervalRule {
+                min_ms: 1_000,
+                tick_ms: 1_000,
+            },
+            ..ConnFacts::default()
+        };
+        let refusal = classify_with(&legacy, &paced).expect_err("refused");
+        assert_eq!(refusal.code, Code::UnsupportedFeature, "{refusal:?}");
+        assert_eq!(refusal.corr, 5);
+        assert_eq!(refusal.detail, Detail::Feature("cgroup_id"));
+
+        let text = req("current", &current);
+        let supported = binary(text.as_bytes());
+        assert!(matches!(dispatched(&supported).call, Call::Current(_)));
+    }
+
+    #[test]
+    fn step_11_selection_refusal_details_match_the_schema_order() {
+        let cases: [(&str, &str); 4] = [
+            (
+                r#"{
+                    "selection": {
+                        "entities": [{"cgroup_id": {"dev": 0}}],
+                        "metrics": ["m"]
+                    }
+                }"#,
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                r#"{
+                    "selection": {
+                        "entities": [{"cgroup_id": {"dev": "x"}}],
+                        "metrics": ["m"]
+                    }
+                }"#,
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                r#"{
+                    "selection": {
+                        "entities": [
+                            {"cgroup_id": {"dev": 1, "inode": 2}},
+                            {"cgroup_id": {"dev": 1, "inode": 2}}
+                        ],
+                        "metrics": ["Bad"]
+                    }
+                }"#,
+                "selection.metrics",
+            ),
+            (
+                r#"{
+                    "selection": {
+                        "entities": [{"cgroup_id": {"dev": 0, "inode": 1}}]
+                    }
+                }"#,
+                "selection.entities.cgroup_id.dev",
+            ),
+        ];
+        for (args, path) in cases {
+            let text = req("current", args);
+            assert_refusal(&binary(text.as_bytes()), Code::BadRequest, 5, &key(path));
+        }
+    }
+
     // ---- step 10: the argument schemas
 
     #[test]
@@ -962,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn r7_a_binary_hello_with_major_0_or_minor_0_is_refused_against_prefix_1_1() {
+    fn r7_a_binary_hello_with_major_0_or_minor_0_is_refused_against_prefix_1_2() {
         let text = req("hello", &hello_with(0, 1));
         let query = before_hello(text.as_bytes());
         assert_refusal(&query, Code::BadRequest, 1, &key("proto.major"));
@@ -1001,7 +1129,7 @@ mod tests {
 
     #[test]
     fn r8_the_schema_is_checked_before_the_json_major() {
-        let args = "{\"client\":1,\"proto\":{\"major\":2,\"minor\":1}}";
+        let args = "{\"client\":1,\"proto\":{\"major\":2,\"minor\":2}}";
         let text = line("hello", args, 2);
         let query = Query {
             phase: Phase::BeforeHello,
@@ -1203,14 +1331,14 @@ mod tests {
         let wrong_hello_corr_text = req("hello", HELLO_ARGS);
         let ready_hello_text = req("hello", HELLO_ARGS);
         let observer_status_text = req("status", "{}");
-        let unsupported_hello_text = line("hello", &hello_with(2, 1), 2);
+        let unsupported_hello_text = line("hello", &hello_with(2, 2), 2);
         let bad_hello_text = line(
             "hello",
-            "{\"client\":1,\"proto\":{\"major\":2,\"minor\":1}}",
+            "{\"client\":1,\"proto\":{\"major\":2,\"minor\":2}}",
             2,
         );
         let unserved_text = req("events", "{}");
-        let mismatched_hello_text = req("hello", &hello_with(2, 1));
+        let mismatched_hello_text = req("hello", &hello_with(2, 2));
         let duplicate_status_text = line("status", "{\"pid\":1,\"pid\":1}", 6);
 
         let binary_status = binary(binary_status_text.as_bytes());
@@ -1294,7 +1422,7 @@ mod tests {
                     call: Call::Hello(HelloArgs {
                         client: "t".to_string(),
                         major: 1,
-                        minor: 1,
+                        minor: 2,
                     }),
                 }),
             ),
@@ -1517,6 +1645,7 @@ mod tests {
             match &refusal.detail {
                 Detail::Key(path) => assert!(path.len() <= Detail::MAX_KEY_BYTES),
                 Detail::Empty => panic!("an error detail is a key"),
+                Detail::Feature(feature) => panic!("unexpected feature detail {feature}"),
                 Detail::Pool(pool) => panic!("unexpected pool {pool:?}"),
             }
             let refusal = refused(&json(&payload));

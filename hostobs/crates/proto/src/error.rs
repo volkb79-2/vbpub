@@ -1,4 +1,4 @@
-//! Typed failures of the column codec. Every decode path returns one of these and no
+//! Typed failures of the wire codec. Every decode path returns one of these and no
 //! path panics, slices an untrusted length or returns a partial result.
 //!
 //! The names are stable because they appear in operator output and in the fixtures
@@ -29,8 +29,8 @@ pub enum ProtoError {
         /// The maximum.
         max: usize,
     },
-    /// The frame header's reserved field is not zero.
-    NonZeroReserved(u16),
+    /// A field that must be zero carries a non-zero value.
+    NonZeroReserved(u32),
     /// The frame type byte is outside the closed vocabulary of §B.1.
     UnknownFrameType(u8),
     /// A frame flag bit this codec does not define.
@@ -299,6 +299,30 @@ pub enum ProtoError {
         /// The generation the block carries.
         got: u32,
     },
+    /// An event/1 kind, outcome, or context key code is unknown or incorrectly paired.
+    EventUnknownCode {
+        /// The event field whose code is unknown or inconsistent.
+        field: &'static str,
+        /// The code found in the payload.
+        code: u8,
+    },
+    /// An event/1 field is outside its specified bound.
+    EventFieldBound {
+        /// The field outside its bound.
+        field: &'static str,
+    },
+    /// An event/1 string is invalid UTF-8, contains a control, or violates name grammar.
+    EventText {
+        /// The string field that failed validation.
+        field: &'static str,
+    },
+    /// Event/1 context or attribute keys are not strictly ordered.
+    EventOrder {
+        /// The ordered collection that failed validation.
+        field: &'static str,
+        /// The zero-based position that broke strict ordering.
+        index: usize,
+    },
 }
 
 impl fmt::Display for ProtoError {
@@ -315,7 +339,7 @@ impl fmt::Display for ProtoError {
                 write!(f, "frame of {len} bytes exceeds the {max}-byte maximum")
             }
             ProtoError::NonZeroReserved(value) => {
-                write!(f, "frame header reserved field is {value}, not 0")
+                write!(f, "expected a zero value, found {value}")
             }
             ProtoError::UnknownFrameType(code) => write!(f, "unknown frame type {code}"),
             ProtoError::UnknownFrameFlags(flags) => {
@@ -514,6 +538,21 @@ impl fmt::Display for ProtoError {
                     "dictionary-bearing block carries generation {got}, which does not exceed the held {held}"
                 )
             }
+            ProtoError::EventUnknownCode { field, code } => {
+                write!(
+                    f,
+                    "event field {field} has unknown or inconsistent code {code}"
+                )
+            }
+            ProtoError::EventFieldBound { field } => {
+                write!(f, "event field {field} is outside its bound")
+            }
+            ProtoError::EventText { field } => {
+                write!(f, "event field {field} is invalid text")
+            }
+            ProtoError::EventOrder { field, index } => {
+                write!(f, "event {field} entry {index} is not strictly ordered")
+            }
         }
     }
 }
@@ -576,6 +615,10 @@ impl ProtoError {
             ProtoError::SubjectWithoutTime { .. } => "subject-without-time",
             ProtoError::Deadline => "deadline",
             ProtoError::GenerationRegressed { .. } => "generation-regressed",
+            ProtoError::EventUnknownCode { .. } => "event-unknown-code",
+            ProtoError::EventFieldBound { .. } => "event-field-bound",
+            ProtoError::EventText { .. } => "event-text",
+            ProtoError::EventOrder { .. } => "event-order",
         }
     }
 }
@@ -675,6 +718,14 @@ mod tests {
                 "no unrendered placeholder: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn non_zero_reserved_message_does_not_assume_a_frame_header() {
+        assert_eq!(
+            ProtoError::NonZeroReserved(65_536).to_string(),
+            "expected a zero value, found 65536"
+        );
     }
 
     #[test]
@@ -842,6 +893,25 @@ mod tests {
                 "generation-regressed",
                 ProtoError::GenerationRegressed { held: 2, got: 2 },
             ),
+            (
+                "event-unknown-code",
+                ProtoError::EventUnknownCode {
+                    field: "kind",
+                    code: 4,
+                },
+            ),
+            (
+                "event-field-bound",
+                ProtoError::EventFieldBound { field: "n_attrs" },
+            ),
+            ("event-text", ProtoError::EventText { field: "name" }),
+            (
+                "event-order",
+                ProtoError::EventOrder {
+                    field: "attrs",
+                    index: 1,
+                },
+            ),
         ];
         let mut names = Vec::new();
         for (expected, error) in cases {
@@ -854,7 +924,7 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            46,
+            50,
             "the refused-variant count is part of the contract"
         );
     }

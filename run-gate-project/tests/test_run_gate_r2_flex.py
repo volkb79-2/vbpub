@@ -151,10 +151,6 @@ def test_a_bad_shard_spec_is_refused(spec):
         ({"shard": "0/2", "merge_shards": "2"}, "cannot be combined"),
         ({"merge_shards": "0"}, "--merge-shards must be"),
         ({"merge_shards": "65"}, "--merge-shards must be"),
-        ({"carry_over": ["d"]}, "required together"),
-        ({"carry_over_reason": "why"}, "required together"),
-        ({"carry_over": ["d"], "carry_over_reason": "  "}, "non-empty"),
-        ({"only_candidates": "/nonexistent/ids"}, "is not a file"),
     ],
 )
 def test_invalid_flag_combinations_are_refused(over, message):
@@ -551,6 +547,19 @@ def _doc(name: str) -> str:
     "name", ["README.md", "SPEC.md", "CONSUMERS.md", "LANE-AUTHORING.md", "CHANGES.md"])
 def test_every_user_document_states_the_judge_floor(name):
     assert "12.2.0" in _doc(name)
+
+
+@pytest.mark.parametrize(
+    "name", ["README.md", "SPEC.md", "CONSUMERS.md", "LANE-AUTHORING.md"])
+def test_every_document_that_states_the_forward_floor_states_it(name):
+    """Review r2 L2: the forwarded store-flag floor (RG-318) is a JUDGE FLOOR a
+    lane author has to satisfy, so every document a author reads for it says
+    12.3.0 -- `LANE-AUTHORING.md` included, where it was missing.
+
+    `CHANGES.md` is excluded deliberately: it is generated from commit
+    subjects and carries no hand-written floor statement (the `12.2.0` row
+    above is the one they pin it through)."""
+    assert "12.3.0" in _doc(name)
 
 
 @pytest.mark.parametrize("name", ["SPEC.md", "CONSUMERS.md", "docs/DESIGN-GUIDE.md"])

@@ -511,16 +511,29 @@ assay review `no-time-budgets-assay.md` findings 1-7.
 - **TIM-020** PLANNED. assay additionally obtains thrashguard freeze events
   via hostobs and recalculates effective CPU time from cgprofile data and
   freeze intervals.
-- **TIM-030** PLANNED. The assay summary records time normalized to a
-  Geekbench single-thread score of 1500 points (score table:
-  `cgprofile/docs/SCORES-TABLE.md` at repo root; its fallback table ships
-  empty, backlog CP-59).
+- **TIM-030** PLANNED (operator decision 2026-11-26 02:2xZ). The assay
+  summary records effective CPU seconds (TIM-020) as raw, un-normalized CPU
+  seconds, together with the processor model. When the host has a Geekbench
+  record of major 7 (the unit's major), the summary also records reference
+  CPU seconds, `ref_cpu_s = effective_cpu_s * single_core / baseline_score`,
+  with the record's `tool_major`, `single_core` and `baseline_score`. Both
+  inputs come from the host record; assay holds no score constant. Factor
+  1.0 is that major's own reference machine (Geekbench 7: 2500 single-core,
+  AMD Ryzen 7 7700); the former 1500-point unit is retired. Values are never
+  compared across majors: a record of another major counts as no record.
+  Without a record only raw CPU seconds and the processor model are
+  recorded, so a score can be applied later. cgprofile's score table
+  (`cgprofile/docs/SCORES-TABLE.md`, backlog CP-59) is not an input here;
+  normalized values it states are to follow this unit. Reference: Primate Labs,
+  `geekbench7-cpu-workloads.pdf`.
 
-Open (not settled by the decision): the recalculation formula; behaviour
-when no score is known for a host or the fallback table is empty; whether
-bounds themselves (LIV-030, LIV-060) are expressed in normalized time; how
-freeze intervals are subtracted; which summary fields carry normalized time;
-schema impact.
+Also decided (operator 2026-11-26 01:1xZ, Q3): bounds (LIV-030,
+LIV-060) use normalized time when it is available, otherwise baseline-relative
+CPU time on the same host. Open: how effective CPU time is recalculated
+(TIM-020), including how freeze intervals are subtracted; how a bound is
+derived from normalized time, and its margins (`ref_cpu_s` is an estimate for
+a test suite, since the score averages Geekbench's own workload mix); which
+summary fields carry raw and normalized time; schema impact.
 
 ### 7.2 Places where wall time can affect a verdict today
 

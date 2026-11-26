@@ -137,8 +137,9 @@ def _default_state_dir() -> Path:
 
 
 def _validate_facts(args: argparse.Namespace, runtime: CliRuntime) -> None:
-    validate_host_facts(load_json(args.file))
-    runtime.output.primary("valid host-facts/1")
+    document = load_json(args.file)
+    validate_host_facts(document)
+    runtime.output.primary(f"valid {document['schema']}")
 
 
 def _collect_facts(args: argparse.Namespace, runtime: CliRuntime) -> None:
@@ -399,13 +400,13 @@ def build_facts_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
     registry = CliRegistry(
         cli_identity or identity(),
         prog=f"{PROG} facts",
-        description="Collect host-facts/1 from the host, or validate a serialized record.",
+        description="Collect host-facts/2 from the host, or validate a serialized /1 or /2 record.",
         unexpected_exceptions="report",
     )
     registry.register(VerbSpec(
         "collect",
         description=(
-            "collect host-facts/1 from /proc, /sys, the configured control-plane service "
+            "collect host-facts/2 from /proc, /sys, the configured control-plane service "
             "MemoryMin properties and the Geekbench record; --root maps the host's absolute "
             "config and source paths beneath a fixture root"
         ),
@@ -429,12 +430,12 @@ def build_facts_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
     ))
     registry.register(VerbSpec(
         "validate",
-        description="validate a serialized host-facts/1 JSON file without contacting the host",
+        description="validate a serialized host-facts/1 or host-facts/2 JSON file without contacting the host",
         group=VerbGroup.EXPLORATION.value,
         include_json=False,
         include_progress=False,
         examples=("fleet facts validate host-facts.json",),
-        arguments=(ArgumentSpec("file", "host-facts/1 JSON file to validate", metavar="FILE", parser_kwargs={"type": Path}),),
+        arguments=(ArgumentSpec("file", "host-facts/1 or host-facts/2 JSON file to validate", metavar="FILE", parser_kwargs={"type": Path}),),
         handler=_domain(_validate_facts),
     ))
     return registry.build()

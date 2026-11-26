@@ -19,7 +19,6 @@ from .contracts import (
     CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_BYTES,
     CONTROL_PLANE_SERVICE_OPTIONAL_UNITS,
     CONTROL_PLANE_SERVICE_UNITS,
-    DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
     ContractError,
     is_candidate_id,
     validate_host_facts,
@@ -85,6 +84,19 @@ def _name(value: object, where: str) -> str:
     return value
 
 
+def _fact_value(value: object, where: str) -> tuple[Any, str | None]:
+    """Read one validated host-facts/2 wrapper without inventing a value."""
+    if not isinstance(value, Mapping) or "v" not in value:
+        raise ContractError(f"{where}: expected host-facts/2 value wrapper")
+    if value["v"] is None:
+        return None, str(value["reason"])
+    return value["v"], None
+
+
+def _required_fact(facts: Mapping[str, Any], group: str, name: str) -> tuple[Any, str | None]:
+    return _fact_value(facts[group][name], f"{group}.{name}")
+
+
 def _host_id(value: object, where: str) -> str:
     if not isinstance(value, str) or _HOST_ID.fullmatch(value) is None:
         raise ContractError(f"{where}: expected a safe host id using letters, digits, '.', '_' or '-' ")
@@ -110,9 +122,20 @@ def _control_plane_reserve(facts: Mapping[str, Any]) -> ControlPlaneReserve:
     """
     control_plane = facts["control_plane"]
     service_facts = control_plane.get("service_memory_min")
-    profile_reserve = control_plane.get(
-        "profile_reserve_bytes", DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
-    )
+    if isinstance(service_facts, Mapping):
+        unwrapped_services: dict[str, Any] = {}
+        for unit, service in service_facts.items():
+            if not isinstance(service, Mapping):
+                unwrapped_services[unit] = service
+                continue
+            unwrapped_services[unit] = {
+                key: (
+                    _fact_value(value, f"control_plane.service_memory_min.{unit}.{key}")[0]
+                    if isinstance(value, Mapping) and "v" in value else value
+                )
+                for key, value in service.items()
+            }
+        service_facts = unwrapped_services
     units = list(CONTROL_PLANE_SERVICE_UNITS)
     if not _has_per_service_fact(service_facts, units):
         # No per-service fact at all: collection did not run, the table did not
@@ -120,6 +143,17 @@ def _control_plane_reserve(facts: Mapping[str, Any]) -> ControlPlaneReserve:
         # positive MemoryMin nor a load state). This is the ONE case that still
         # uses the fixed profile constant; six defaults would silently lower the
         # reserve on exactly the host whose systemd could not be asked.
+        profile_reserve, profile_reason = _fact_value(
+            control_plane["profile_reserve_bytes"], "control_plane.profile_reserve_bytes",
+        )
+        if profile_reserve is None:
+            return ControlPlaneReserve(
+                bytes=0,
+                source="profile-constant",
+                missing=tuple(units),
+                services=(),
+                reason=f"control_plane.profile_reserve_bytes: {profile_reason}",
+            )
         return ControlPlaneReserve(
             bytes=profile_reserve,
             source="profile-constant",
@@ -313,12 +347,25 @@ def parse_host_set(value: object) -> tuple[HostInput, ...]:
         if host_id in seen:
             raise ContractError(f"fleet-host-set/1.hosts: duplicate host id {host_id!r}")
         seen.add(host_id)
-        facts = validate_host_facts(row["facts"]).to_dict()
+        raw_facts = row["facts"]
+        if not isinstance(raw_facts, dict) or raw_facts.get("schema") != "host-facts/2":
+            raise ContractError(f"{where}.facts: expected host-facts/2; host-facts/1 is not read by the planner")
+        facts = validate_host_facts(raw_facts).to_dict()
         factor = _number(row.get("f_h", 1.0), f"{where}.f_h", minimum=0.5, maximum=2.0)
         other_running = _parse_other_running(row["other_running"], f"{where}.other_running")
-        active_fact_jobs = facts.get("jobs")
+        active_fact_jobs, _jobs_reason = _fact_value(facts["jobs"], "jobs")
         if active_fact_jobs is not None:
-            known_running = {job["name"] for job in active_fact_jobs if job["running"]}
+            known_running: set[str] = set()
+            for job in active_fact_jobs:
+                state, state_reason = _fact_value(job["state"], "jobs[].state")
+                if state is None:
+                    raise ContractError(f"jobs[].state: {state_reason}")
+                if state.lower() != "running":
+                    continue
+                job_id, job_id_reason = _fact_value(job["id"], "jobs[].id")
+                if job_id is None:
+                    raise ContractError(f"jobs[].id: {job_id_reason}")
+                known_running.add(job_id)
             supplied_running = {job["id"] for job in other_running}
             missing_jobs = sorted(known_running - supplied_running)
             if missing_jobs:
@@ -387,8 +434,18 @@ def _resolve_memory(candidates: tuple[CandidateInput, ...], demand: dict[str, An
 
 
 def _speed(host: HostInput) -> dict[str, Any] | None:
-    speed = host.facts["speed"]
-    return speed if isinstance(speed, dict) else None
+    speed, _reason = _fact_value(host.facts["speed"], "speed")
+    if not isinstance(speed, dict):
+        return None
+    values: dict[str, Any] = {}
+    for name, wrapped in speed.items():
+        value, _field_reason = _fact_value(wrapped, f"speed.{name}")
+        values[name] = value
+    if any(values.get(name) is None for name in (
+        "geekbench_major", "geekbench_version", "baseline_score", "single_core", "multi_core", "basis",
+    )):
+        return None
+    return values
 
 
 def _time_reference(hosts: tuple[HostInput, ...]) -> tuple[int | None, str | None, int | None, str | None]:
@@ -476,64 +533,78 @@ def _resolve_time(
 
 def _refusal(host: HostInput, other_memory: int, other_workers: int, other_containers: int) -> str | None:
     facts = host.facts
-    policy = facts["policy"]
-    role = policy["host_role"]
+    role, reason = _required_fact(facts, "policy", "host_role")
     if role is None:
-        return "host role is unknown"
+        return f"policy.host_role: {reason}"
     if role == "shared-prod":
         return "shared-prod hosts are not eligible for campaign work"
-    threshold = policy["psi_refuse_some_avg10"]
+    threshold, reason = _required_fact(facts, "policy", "psi_refuse_some_avg10")
+    if threshold is None:
+        return f"policy.psi_refuse_some_avg10: {reason}"
     for resource in ("memory", "io"):
-        value = facts["psi"][resource]["some_avg10_pct"]
+        value, reason = _fact_value(
+            facts["psi"][resource]["some_avg10_pct"], f"psi.{resource}.some_avg10_pct",
+        )
         if value is None:
-            return f"{resource} PSI some avg10 is unknown"
+            return f"psi.{resource}.some_avg10_pct: {reason}"
         if value > threshold:
             return f"{resource} PSI some avg10 {value:g}% exceeds host refusal threshold {threshold:g}%"
-    if facts["cgroup_v2"]["mounted"] is not True:
+    mounted, mounted_reason = _required_fact(facts, "cgroup_v2", "mounted")
+    if mounted is None:
+        return f"cgroup_v2.mounted: {mounted_reason}"
+    if mounted is not True:
         return "cgroup v2 is not mounted"
-    if facts["cgroup_v2"]["controllers"] is None:
-        return "cgroup v2 controller list is unknown"
-    if facts["memory"]["for_lanes_bytes"] is None:
-        return "physical lane memory is unknown"
+    controllers, controllers_reason = _required_fact(facts, "cgroup_v2", "controllers")
+    if controllers is None:
+        return f"cgroup_v2.controllers: {controllers_reason}"
+    total_memory, memory_reason = _required_fact(facts, "memory", "total_bytes")
+    if total_memory is None:
+        return f"memory.total_bytes: {memory_reason}"
     reserve = _control_plane_reserve(facts)
     if reserve.reason is not None:
         return reserve.reason
-    physical = facts["memory"]["for_lanes_bytes"] - reserve.bytes
+    physical = total_memory - reserve.bytes
     if physical <= 0:
         return "control-plane memory reserve leaves no physical RAM for lanes"
-    cpus = facts["cpu"]["for_lanes"]
+    cpus, cpu_reason = _required_fact(facts, "cpu", "online")
     if cpus is None:
-        return "CPU capacity for lanes is unknown"
-    cpu_slots = math.floor(cpus * facts["cpu"]["oversubscribe_max"]) - other_workers
+        return f"cpu.online: {cpu_reason}"
+    oversubscribe, oversubscribe_reason = _required_fact(facts, "cpu", "oversubscribe_max")
+    if oversubscribe is None:
+        return f"cpu.oversubscribe_max: {oversubscribe_reason}"
+    cpu_slots = math.floor(cpus * oversubscribe) - other_workers
     if cpu_slots <= 0:
         return "no worker slots remain after other running jobs"
-    max_containers = policy["max_lane_containers"]
+    max_containers, max_containers_reason = _required_fact(facts, "policy", "max_lane_containers")
     if max_containers is None:
-        return "maximum lane container count is unknown"
+        return f"policy.max_lane_containers: {max_containers_reason}"
     if max_containers - other_containers <= 0:
         return "no lane container slots remain after other running jobs"
-    if facts["memory"]["overcommit"] <= 0:
+    overcommit, overcommit_reason = _required_fact(facts, "memory", "overcommit")
+    if overcommit is None:
+        return f"memory.overcommit: {overcommit_reason}"
+    if overcommit <= 0:
         return "host memory overcommit factor is invalid"
-    if facts["memory"]["overcommit"] * physical - other_memory <= 0:
+    if overcommit * physical - other_memory <= 0:
         return "other running work consumes the host's overcommitted RAM budget"
     return None
 
 
 def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
     facts = host.facts
-    policy = facts["policy"]
     reserve = _control_plane_reserve(facts)
     reserve_bytes, reserve_source, missing_services = reserve.bytes, reserve.source, list(reserve.missing)
     other_memory = sum(job["expected_memory_bytes"] for job in host.other_running)
     other_workers = sum(job["workers"] for job in host.other_running)
     other_containers = sum(job["containers"] for job in host.other_running)
     refusal = _refusal(host, other_memory, other_workers, other_containers)
+    threshold, _threshold_reason = _required_fact(facts, "policy", "psi_refuse_some_avg10")
     result: dict[str, Any] = {
         "id": host.host_id,
         "status": "refused" if refusal else "available",
         "f_h": host.f_h,
         # The campaign supervisor defers new batch starts above this PSI (FD-022).
-        "psi_refuse_some_avg10": policy["psi_refuse_some_avg10"],
+        "psi_refuse_some_avg10": threshold,
         "other_running_memory_bytes": other_memory,
         "other_running_workers": other_workers,
         "other_running_containers": other_containers,
@@ -550,7 +621,9 @@ def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
     if refusal is not None:
         result["reason"] = refusal
         return result
-    cpu_slots = math.floor(facts["cpu"]["for_lanes"] * facts["cpu"]["oversubscribe_max"]) - other_workers
+    cpus, _cpu_reason = _required_fact(facts, "cpu", "online")
+    oversubscribe, _oversubscribe_reason = _required_fact(facts, "cpu", "oversubscribe_max")
+    cpu_slots = math.floor(cpus * oversubscribe) - other_workers
     # Manual WP2 commands run one selected batch at a time per host. Parallel
     # campaign slots would overlap the same Run-Gate lane instance and Assay
     # store; WP5's scheduler owns that lifecycle.
@@ -560,9 +633,11 @@ def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
         result["reason"] = "no usable worker slots remain after host policy limits"
         return result
     slots = 1
-    physical = facts["memory"]["for_lanes_bytes"] - reserve_bytes
+    total_memory, _memory_reason = _required_fact(facts, "memory", "total_bytes")
+    overcommit, _overcommit_reason = _required_fact(facts, "memory", "overcommit")
+    physical = total_memory - reserve_bytes
     overhead = other_memory + slots * demand["instance_memory_bytes"]
-    budget = physical * facts["memory"]["overcommit"] - overhead
+    budget = physical * overcommit - overhead
     if budget <= 0:
         result["status"] = "refused"
         result["reason"] = "instance and other-job charges exhaust the overcommitted RAM budget"
@@ -575,7 +650,7 @@ def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
         "cpu_worker_slots": cpu_slots,
         "worker_slots": workers,
         "campaign_slots": slots,
-        "speed": facts["speed"],
+        "speed": _speed(host),
         "physical_bytes": physical,
         "overhead_bytes": overhead,
         "budget_bytes": budget,

@@ -9,6 +9,8 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from cmru import config
 from cmru.config import load_forge_config
 from cmru.version_config import SOURCE_FIELDS
@@ -215,11 +217,49 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
     assert roots == ["src", "../libraries/worktree/src"]
 
 
+def _assert_cmru_assay_lane_contract(lanes):
+    expected_modes = {
+        "cmru": "whole_target",
+        "cmru-r0-r1": "whole_target",
+        "cmru-first-release-r2": "whole_target",
+    }
+    assert set(lanes) == set(expected_modes)
+    for lane_name, expected_mode in expected_modes.items():
+        judge = lanes[lane_name]["judge"]
+        assert "base_source" not in judge, f"{lane_name} declares judge.base_source"
+        assert "base" not in judge, f"{lane_name} declares judge.base"
+        assert judge["mode"] == expected_mode, lane_name
+
+
+def test_cmru_assay_lane_contract_rejects_an_injected_base_source():
+    lanes = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    lanes["cmru"]["judge"]["base_source"] = "request"
+    with pytest.raises(AssertionError, match="cmru declares judge.base_source"):
+        _assert_cmru_assay_lane_contract(lanes)
+
+
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
-    assert "source roots MUST be unchanged between them" in spec
+    # KI-211: cmru's two R2 tools pass `delegated=True` to Assay's base
+    # resolution because the lane supplies the comparison base itself. That is a
+    # call-site keyword argument, NOT a lane declaration: no cmru lane declares
+    # `judge.base_source` (Assay refuses it under `whole_target`). Pin the real
+    # call sites, not a phrase about lane configuration.
+    tools = (ROOT / "tools").resolve()
+    for tool, function in (
+        ("check_assay_baseline.py", "resolve_base"),
+        ("check_assay_baseline.py", "base_resolution_mode"),
+        ("mutation_campaign.py", "resolve_base"),
+    ):
+        source = (tools / tool).read_text(encoding="utf-8")
+        assert re.search(
+            rf"assay_git\.{function}\([^)]*delegated=True", source,
+        ), f"{tool} must delegate its base to Assay ({function})"
+    assert "delegated=True" in spec
+    assert "source roots MUST be unchanged between them" not in spec
 
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    _assert_cmru_assay_lane_contract(assay_config)
     lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
     # R1 needs the complete baseline run to produce its whole-target coverage judgment.
