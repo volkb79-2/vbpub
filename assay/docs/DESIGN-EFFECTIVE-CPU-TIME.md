@@ -14,7 +14,7 @@ not measured or not read). Citations `@14f81bb97` are P4's unmerged branch
 
 | # | Decision | Reason |
 |---|---|---|
-| D1 | No verdict, bucket or rung reads the resource source. Every bound reads assay's own process-tree CPU reader, identical in `none` and `hostobs` mode; hostobs data feeds the summary only. | A verdict that changed with the presence of a daemon would break judge identity and resume. `none` is the working default (hostobs reply). |
+| D1 | No verdict, bucket or rung reads the resource source. Every CPU bound and liveness rule reads only assay's own process-tree CPU reader, identical in `none` and `hostobs` mode; hostobs data feeds the summary, and later freeze attribution (§3), only. | A verdict that changed with the presence of a daemon would break judge identity and resume. `none` is the working default (hostobs reply). |
 | D2 | Source interface `hostobs` \| `none`, default `none`; `hostobs` imports `hostobs_client` lazily from `PYTHONPATH=hostobs/python`; any failure = disclosed `unknown`, never a refusal, never zero. | Operator 01:1xZ; hostobs reply; keep-simple rule. |
 | D3 | `effective_cpu_s = cpu_s`. No freeze subtraction from CPU. Freeze data is for the WALL-based clocks (idle and session-finish windows, `avg_cores`'s denominator) and for attribution of a hung candidate. | A frozen cgroup's tasks do not run, so they accrue no CPU time (thrashguard §4b, M4). |
 | D4 | Freeze intervals only from hostobs M3 `events`; absent, lost or unmatched = `null` + reason, never 0; `null` propagates to every value derived from it. | Binding note N1; thrashguard §4. |
@@ -74,7 +74,7 @@ share, freeze) is `null` with reason `not-selected`.
 | HOB-90 guard (M3 B1) before any socket is mounted into a gate container | hostobs | not done (hostobs reply) |
 | Socket bind-mount + group membership for the gate user | core (run-gate launcher) | not designed |
 | The gate container's **host** cgroup path and `cgroup_id` passed in (the container sees a namespaced path) | core | not designed |
-| Per-cgroup `cpu.usage_usec` readable by `current`/`subscribe` for that cgroup | hostobs | `current`/`subscribe` served [V `hostobs/crates/serve/src/verbs.rs:67-68`]; `cpu.usage_usec` registered [V `crates/model/src/metric.rs:669`]; selection by an arbitrary cgroup [U] |
+| Per-cgroup `cpu.usage_usec` readable by `current`/`subscribe` for that cgroup | hostobs | `current`/`subscribe` served [V `hostobs/crates/serve/src/verbs.rs:68-69`]; `cpu.usage_usec` registered [V `crates/model/src/metric.rs:669`]; selection by an arbitrary cgroup [U] |
 | `events` verb and `annotate` intake | hostobs M3 | not served [V `verbs.rs:73`, `:76`] |
 | thrashguard emits `thrashguard.freeze`/`.thaw` | thrashguard | designed (thrashguard §4), not shipped [U] |
 | CONSUMERS Boundaries rule 2 amendment (§2.3) | hostobs | to add to the M3 plan (hostobs reply) |
@@ -220,7 +220,7 @@ baseline's **wall** seconds [V `liveness.py:1462`, `:1478`, `derived_bound_from_
 durations (wall) [V `per_test_cpu_bound_from_baseline`]. Baseline wall depends on load and on
 parallelism, so a wall number still sets a candidate's kill threshold. A4: `B` = baseline tree CPU
 seconds (§4.2), `b` = the test's in-process CPU (§4.2); multiples and floors unchanged. New policy
-id `cpu-since-completed-event-v2` (P4's is `-v1` [V `liveness.py:837`]); shipped with v21 so the
+id `cpu-since-completed-event-v2` (P4's is `-v1` [V `liveness.py:838`]); shipped with v21 so the
 policy changes once.
 
 ### 6.2 With and without a score
