@@ -12,6 +12,14 @@
 # RM_TIMEOUT,SYSTEMCTL_TIMEOUT,GUARD_EVERY,MIN_EVID_DISK,SSHD_BANNER_CMD}.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+for tool in awk basename bash cat cut date df dirname docker flock getconf grep head hostname id journalctl logger mkdir od python3 rm sed seq sha256sum sh sleep sort ssh sync systemctl tail timeout tr wc; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "accept-run: required host tool $tool is missing from PATH; refusing before host changes" >&2; exit 3; }
+done
+KIT_SHA=${MDT_ACCEPT_SOURCE_SHA:-}
+if [[ ! "$KIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "accept-run: MDT_ACCEPT_SOURCE_SHA must be the full 40-character lowercase commit SHA of this archived kit; refusing" >&2
+  exit 3
+fi
 CG=${MDT_ACCEPT_CGROUP:-/sys/fs/cgroup}
 PROC=${MDT_ACCEPT_PROC:-/proc}
 HOSTENV=${MDT_ACCEPT_HOST_ENV:-/etc/mdt/host-setup.env}
@@ -62,6 +70,9 @@ parse_size() { # 128M / 4096 / 2G -> bytes; a bare number is bytes
   echo $((n * mult))
 }
 rdnum() { local v; v=$(cat "$1" 2>/dev/null) || v=""; case $v in ''|*[!0-9]*) echo "" ;; *) echo "$v" ;; esac; }
+proc_cpu_ticks() { # /proc/<pid>/stat comm may contain spaces and ')' characters; parse fields after its final ')'
+  awk '{ rest=$0; sub(/^.*\) /, "", rest); n=split(rest, f, /[[:space:]]+/); if (n < 13) exit 1; print f[12]+f[13] }' "$1" 2>/dev/null
+}
 envval() { sed -n "s/^$1=//p" "$HOSTENV" 2>/dev/null | tail -n 1 | tr -d "\"' "; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -82,9 +93,9 @@ case "$SYSTEMCTL_TIMEOUT" in ''|0*|*[!0-9]*) usage ;; esac
 case "$CONTROL" in auto|on|off) ;; *) usage ;; esac
 role=$(sed -n 's/^HOST_ROLE=//p' "$HOSTENV" 2>/dev/null | tail -n 1 | tr -d "\"' ")
 if [ "$role" != dedicated-dev ]; then echo "accept-run: HOST_ROLE=${role:-<unset>} in $HOSTENV, not dedicated-dev; refusing" >&2; exit 3; fi
-# Check environment refusals before creating the lock/evidence files, restoring
-# a stale WAL, or changing cgroup or DAMON state. This pass is read-only.
-command -v python3 >/dev/null 2>&1 || { echo "accept-run: python3 is missing; refusing before host changes" >&2; exit 3; }
+# Environment refusals must happen before the lock, evidence directory, stale
+# WAL restore, or any cgroup/DAMON write. This pass is read-only; setup repeats
+# its DAMON checks immediately before taking ownership and writing sysfs.
 STATE=${MDT_ACCEPT_SQUEEZE_STATE:-$EVID/squeeze-state.env}
 DAMON_STAT_OVERRIDE=${MDT_ACCEPT_DAMON_STAT:-}
 LIB="$HERE/../../../../scripts/damon-analysis/lib"
@@ -103,8 +114,13 @@ hotset() { python3 "$HOTSET" "$@" "${HOTSET_ARGS[@]}"; }
 [ -n "$SSH_TARGET" ] || { echo "accept-run: MDT_ACCEPT_SSH_TARGET is required (this host over loopback, e.g. root@127.0.0.1); refusing before host changes" >&2; exit 3; }
 BOOT_ID=$(tr -d '[:space:]' < "$BOOTID_FILE" 2>/dev/null) || BOOT_ID=""
 [ -n "$BOOT_ID" ] || { echo "accept-run: cannot read $BOOTID_FILE; refusing before host changes (the restore's reboot rule needs it)" >&2; exit 3; }
+# The LITERAL kernel path, never $BOOTID_FILE: a test override must not be
+# able to change which remote host is being verified.
 ssh_boot=$(timeout -k 5 20 ssh "${SSH_ARGS[@]}" -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '[:space:]') || ssh_boot=""
-[ "$ssh_boot" = "$BOOT_ID" ] || { echo "accept-run: MDT_ACCEPT_SSH_TARGET=$SSH_TARGET did not return this host's boot_id; refusing before host changes" >&2; exit 3; }
+if [ "$ssh_boot" != "$BOOT_ID" ]; then
+  echo "accept-run: MDT_ACCEPT_SSH_TARGET=$SSH_TARGET reports boot_id '${ssh_boot:-<none>}' but this host is '$BOOT_ID': a remote target would time another machine's sshd (3.2); refusing before host changes" >&2
+  exit 3
+fi
 hotset preflight >/dev/null || { say "the read-only cgprofile, DAMON_STAT, DAMON sysfs and capability preflight refused; no host state has been changed"; exit 3; }
 # One run at a time. This lock is what pauses the reconcile's memory block (2.3) and makes install.sh refuse; the
 # kernel releases it on ANY death of this process, SIGKILL included, so a dead run never leaves the host unpaused.
@@ -126,13 +142,6 @@ fi
 : >"$STEPSEN"   # the previous run's step lines would otherwise be read as this run's ladder
 # ---------- preflight: every fact a label or a write depends on, else exit 3 (2.1, 2.2, 3.2, 4.1, 4.4) ----------
 command -v python3 >/dev/null 2>&1 || { echo "accept-run: python3 is missing (the judge and the hot-set driver need it); refusing" >&2; exit 3; }
-for p in "$HERE/accept-restore.sh" "$HERE/accept-eval.py" "$HOTSET"; do
-  [ -f "$p" ] || { echo "accept-run: $p is missing; refusing" >&2; exit 3; }
-done
-LIB="$HERE/../../../../scripts/damon-analysis/lib"
-if [ ! -d "$LIB" ] && [ -z "${MDT_ACCEPT_HOTSET_JSON:-}" ]; then
-  echo "accept-run: $LIB is missing (an accept checkout needs mdt-cockpit/ AND scripts/damon-analysis/); refusing" >&2; exit 3
-fi
 # The five files' START values are captured here, ONCE, and are what every WAL line carries as its original and
 # what the restore writes back: a MIN read again at step s is the kit's own step s-1 value, never the original.
 DEV_MAX_START=$(rdnum "$CG/dev.slice/memory.max")
@@ -214,22 +223,20 @@ ev_avail=$(df -Pk "$EVID" 2>/dev/null | awk 'NR==2{print $4}')
   echo "accept-run: less than $(( ${MDT_ACCEPT_MIN_EVID_DISK:-65536} / 1024 ))M free in the evidence filesystem of $EVID (${ev_avail:-unreadable} KiB); the write-ahead log could not be trusted; refusing" >&2
   exit 3
 }
-DAMON_STAT_OVERRIDE=${MDT_ACCEPT_DAMON_STAT:-}
-HOTSET_ARGS=(--evidence "$EVID" --admin "$DAMON_ADMIN" --state "$STATE" --units "$UNITS" --cgroup "$CG" --proc "$PROC")
-[ -d "$LIB" ] && HOTSET_ARGS+=(--lib "$LIB")
-[ -n "${MDT_ACCEPT_HOTSET_JSON:-}" ] && HOTSET_ARGS+=(--fixture "$MDT_ACCEPT_HOTSET_JSON")
-[ -n "$DAMON_STAT_OVERRIDE" ] && HOTSET_ARGS+=(--damon-stat "$DAMON_STAT_OVERRIDE")
-hotset() { python3 "$HOTSET" "$@" "${HOTSET_ARGS[@]}"; }
-# L4: the traps are armed BEFORE `hotset setup`, because setup writes the kdamond index to the WAL and switches it ON.
-# An INT/TERM/HUP in that window used to leave the kdamond to ExecStopPost only (not when the kit is run by hand).
-# The full finish() replaces these the moment the ladder state exists; until then the WAL is restored the same way.
+# Repeat the read-only capability check immediately before setup to catch state
+# drift while the preceding host/cgroup preflight was being evaluated.
+hotset preflight >/dev/null || { say "the hot-set environment preflight refused; no host state has been changed"; exit 3; }
+# L4: the traps are armed BEFORE `hotset setup`, because setup WALs ownership/counts, grows the daemon/context, and
+# switches the kdamond ON. An INT/TERM/HUP in that window used to leave the kdamond to ExecStopPost only (not when
+# the kit is run by hand). The full finish() replaces these the moment the ladder state exists; until then the WAL
+# is restored the same way.
 early_stop() { # <rc>
   trap - EXIT INT TERM HUP
   [ -s "$STATE" ] && "$HERE/accept-restore.sh" --evidence "$EVID" --in-run >/dev/null 2>&1
   exit "$1"
 }
 trap 'early_stop $?' EXIT; trap 'early_stop 130' INT; trap 'early_stop 143' TERM; trap 'early_stop 129' HUP
-setup_out=$(hotset setup) || { say "the hot-set preflight refused (see above); nothing was changed"; exit 3; }
+setup_out=$(hotset setup) || { say "the hot-set setup refused after its read-only preflight; its DAMON WAL restore ran"; exit 3; }
 DAMON_STATE=$(printf '%s\n' "$setup_out" | sed -n 's/^damon_stat_enabled=//p' | tail -n 1); DAMON_STATE=${DAMON_STATE:-absent}
 KDM=$(printf '%s\n' "$setup_out" | sed -n 's/^kdamond=//p' | tail -n 1)
 DAMON_OK=1
@@ -271,7 +278,7 @@ finish() {
         if grep -q '^restore=foreign:' "$MAN" 2>/dev/null; then echo "restore=foreign" >>"$MAN"
         else echo "restore=pending" >>"$MAN"; fi
       fi
-      note "the restore did not complete (see $MAN: RESTORE-PENDING / restore=foreign:<rel>); the unlocked reconcile and a later accept-restore.sh from the kept state file finish it"
+      note "the restore did not complete (see $MAN for RESTORE-PENDING / DAMON-RESTORE-PENDING / restore=foreign:<rel>); a later accept-restore.sh must finish it from the kept state file"
       [ "$EXIT_RC" = 0 ] && EXIT_RC=4 # never a PASS while a lowering is still deferred: an install would apply it
     fi
   else
@@ -305,8 +312,8 @@ trap finish EXIT; trap 'EXIT_RC=130; exit 130' INT; trap 'EXIT_RC=143; exit 143'
   echo "floors_snapshot=system.slice=$F_SYSTEM cgprofile.slice=$F_CGP user.slice=$F_USER"
   echo "limit_source=derived"; echo "probe_image=$IMAGE"; echo "damon_stat_enabled=$DAMON_STATE"
   [ -n "$KDM" ] && echo "kdamond=$KDM"
-  echo "kit_sha=$(git -c safe.directory='*' -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)"
-  echo "kit_sha256=$(cat "$HERE"/accept-run.sh "$HERE"/accept-eval.py "$HERE"/accept-restore.sh 2>/dev/null | sha256sum | cut -d' ' -f1)"
+  echo "kit_sha=$KIT_SHA"
+  echo "kit_sha256=$(cat "$HERE"/accept-run.sh "$HERE"/accept-hotset.py "$HERE"/accept-eval.py "$HERE"/accept-restore.sh 2>/dev/null | sha256sum | cut -d' ' -f1)"
   echo "host_setup_env_sha256=$(sha256sum "$HOSTENV" 2>/dev/null | cut -d' ' -f1)"
   awk '/^MemTotal:/{print "mem_total=" $2*1024}/^SwapTotal:/{print "swap_total=" $2*1024}' "$PROC/meminfo"
   echo "dev_max_start=$DEV_MAX_START"; echo "tier_max_start=$TIER_MAX_START"
@@ -559,7 +566,7 @@ probe_run() { # <step> <name>
   fi
   case $n in
     ssh)
-      timed 15 ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" true
+      timed 15 ssh "${SSH_ARGS[@]}" -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" true
       probe_record "$s" ssh ssh "$T_RC" "$T_SECONDS" "target=$SSH_TARGET" ;;
     sshd) # 3.3: `active` AND the banner seen; the probe's own rc carries the rule, the judge reads rc.
       # L1: is-active's rc is kept separately -- the banner read overwrites T_RC, so a socket-activated or foreign
@@ -620,7 +627,7 @@ probe_run() { # <step> <name>
       t0=$(date +%s%N)
       systemctl_read is-active mdt-psi-guard.service; act=$SYSTEMCTL_OUT; arc=$SYSTEMCTL_RC
       systemctl_read show -p MainPID --value mdt-psi-guard.service; pid=$SYSTEMCTL_OUT; pidrc=$SYSTEMCTL_RC
-      case ${pid:-} in ''|0|*[!0-9]*) cur="" ;; *) cur=$(awk '{print $14+$15}' "$PROC/$pid/stat" 2>/dev/null) ;; esac
+      case ${pid:-} in ''|0|*[!0-9]*) cur="" ;; *) cur=$(proc_cpu_ticks "$PROC/$pid/stat") || cur="" ;; esac
       prev=$(cat "$EVID/probes-state/psi_guard.ticks" 2>/dev/null) || prev=""
       case ${cur:-} in
         ''|*[!0-9]*) ;;                                   # no pid or no stat: ticks stay -1 (unknown, INFO)
@@ -678,8 +685,11 @@ tick() { # <phase> <step> [judged_ticks] [i]
   if [ "$ph" = judge ]; then
     probe_cycle "$s" "$i" "$judged" || return 1
     if [ "$HOTSET_EVERY" -le 1 ] || [ $(( i % HOTSET_EVERY )) -eq 0 ]; then
-      hotset sample --step "$s" >>"$EVID/hotset-$s.log" 2>&1 ||
-        note "the hot-set sample of step $s failed (see $EVID/hotset-$s.log)"
+      hotset sample --step "$s" >>"$EVID/hotset-$s.log" 2>&1 || {
+        note "the hot-set sample of step $s failed (see $EVID/hotset-$s.log); the step is INCONCLUSIVE"
+        abort INCONCLUSIVE damon_sample
+        return 1
+      }
     fi
   fi
   TICKS=$((TICKS + 1))
@@ -754,7 +764,11 @@ step_write() { # <step>: the per-step sequence of 2.3; the dummy never grows bef
   [ "$(rdnum "$CG/dev.slice/memory.min")" = "$DEV_MIN_WRITTEN" ] || { abort INCONCLUSIVE drift:dev.slice/memory.min; return 1; }
   [ "$(rdnum "$CG/dev.slice/$PARENT/memory.min")" = "$TIER_MIN_WRITTEN" ] || { abort INCONCLUSIVE "drift:dev.slice/$PARENT/memory.min"; return 1; }
   [ "$(rdnum "$SCOPE/memory.min")" = "$SCOPE_MIN_WRITTEN" ] || { abort INCONCLUSIVE drift:scope_min; return 1; }
-  hotset refresh-schemes --step "$s" >/dev/null 2>&1 || note "the hot-set schemes could not be re-enumerated for step $s"
+  hotset refresh-schemes --step "$s" >/dev/null 2>&1 || {
+    note "the hot-set schemes could not be re-enumerated for step $s; stopping before measurement"
+    abort INCONCLUSIVE damon_refresh
+    return 1
+  }
   return 0
 }
 step_judge() { # <step>: the judge turns this step's rows and probes into verdict/cause/detail; the stop rule reads it
@@ -800,7 +814,7 @@ fi
 systemctl_read show -p MainPID --value mdt-psi-guard.service
 pg_pid=$SYSTEMCTL_OUT
 [ "$SYSTEMCTL_RC" != timeout ] || note "psi_guard initial MainPID read timed out (systemctl rc=timeout); its first probe may be unmeasurable"
-case ${pg_pid:-} in ''|0|*[!0-9]*) ;; *) awk '{print $14+$15}' "$PROC/$pg_pid/stat" 2>/dev/null >"$EVID/probes-state/psi_guard.ticks" ;; esac
+case ${pg_pid:-} in ''|0|*[!0-9]*) ;; *) proc_cpu_ticks "$PROC/$pg_pid/stat" >"$EVID/probes-state/psi_guard.ticks" 2>/dev/null || : ;; esac
 SETTLE_TICKS=${MDT_ACCEPT_SETTLE_TICKS:-$(( DWELL_TICKS * SETTLE / DWELL ))}
 # 4.2: one sample per aggregation interval (8 s), never per tick: a 5 s tick would read one apply twice and skip the
 # next, exactly the aliasing N5 removed from the kernel's own refresh_ms.
