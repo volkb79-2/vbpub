@@ -43704,3 +43704,179 @@ class TestHistoryStoreReadableByTheReleasedReader:
         released.finish_run_record(entry, exit_code=0)
         assert released.record_invocation(proj, repo, entry, 10)
         assert len(read_store(proj)["lanes"]["suite"]["history"]) >= 3
+
+
+class TestRetiredInertReasonHelper:
+    """RG-320 (P1): `host_mode_stall_timeout_inert_reason` is retained only as
+    an unused out-of-tree compatibility helper (no in-tree caller). Its one
+    behaviour is the STRING it returns, and that string must still be true:
+    since P1 a container, exec and bare-host lane are all watched, so the
+    only lane runner it can honestly call inert is a sequence, whose members
+    carry the watches."""
+
+    def test_it_names_the_lane_and_the_only_runner_without_a_watch(self):
+        text = run_gate.host_mode_stall_timeout_inert_reason("suite")
+        assert "'suite'" in text
+        assert "INERT only on a lane runner with no watch" in text
+        # The three watched runners are named, so a reader cannot take the
+        # sentence as "any lane" — it is the retired claim, scoped.
+        assert "every container, exec and bare-host lane is watched" in text
+        assert "a sequence lane is not" in text
+
+    def test_it_is_pure_and_returns_the_same_answer_for_any_name(self):
+        for name in ("suite", "", "lane with 'quotes'"):
+            first = run_gate.host_mode_stall_timeout_inert_reason(name)
+            assert isinstance(first, str) and first
+            assert run_gate.host_mode_stall_timeout_inert_reason(name) == first
+
+
+class TestEnvironmentModeStampingRows:
+    """RG-320 (P1): `_stamp_environment_modes` records the DECLARED mode on
+    each lane table so the disclosure can name the real signal. Three
+    behaviours matter and all three are observable on the returned tables: a
+    row that is NOT a table is skipped rather than crashing the load; the
+    PROJECT's environment shadows the central one (the same precedence
+    `resolve_environment` uses); and a lane whose environment the merge
+    cannot resolve is left UNSTAMPED rather than given a plausible default."""
+
+    def test_a_malformed_row_is_skipped_and_valid_rows_are_still_stamped(self):
+        lanes = {
+            "broken": "not-a-table",
+            "runner-lane": {"kind": "command", "environment": "runner"},
+            "bare": {"kind": "command", "environment": "bare-host"},
+            "unresolved": {"kind": "command", "environment": "missing"},
+            "sum": {"kind": "command", "environment": 3},
+        }
+        project = {"environments": {"runner": {"mode": "exec"}}}
+        central = {"environments": {"runner": {"mode": "ephemeral"}}}
+        run_gate._stamp_environment_modes(lanes, project, central)
+        # A non-table row is left exactly as it was (the guard is a skip, not
+        # a rewrite) and its neighbours are still stamped.
+        assert lanes["broken"] == "not-a-table"
+        assert lanes["runner-lane"]["_environment_mode"] == "exec"
+        assert lanes["bare"]["_environment_mode"] == "host"
+        # "cannot tell" stays unstamped: `resolve_environment` refuses this
+        # lane by name at run time, so stamping a mode here would be a
+        # default standing in for a fact (RG-101).
+        assert "_environment_mode" not in lanes["unresolved"]
+        # A non-string environment is not a declaration either.
+        assert "_environment_mode" not in lanes["sum"]
+
+    def test_the_central_mode_reaches_an_unshadowed_lane(self):
+        lanes = {"central-lane": {"kind": "command",
+                                  "environment": "shared-container"}}
+        run_gate._stamp_environment_modes(
+            lanes, {},
+            {"environments": {"shared-container": {"mode": "ephemeral"}}})
+        assert lanes["central-lane"]["_environment_mode"] == "ephemeral"
+        assert run_gate.lane_stall_signal(lanes["central-lane"]) == \
+            run_gate.STALL_SIGNAL_LOG_STREAM
+
+
+class TestOutputTeeArrivalNotify:
+    """RG-320 (P1): `OutputTee` records every chunk's arrival for `StreamWatch`
+    and, when a caller supplied `on_chunk`, calls it AFTER that arrival. The
+    wake-up is a notification, never a chokepoint: a raising callback must not
+    cost the child a single byte of its copied log or live output."""
+
+    @staticmethod
+    def _tee(chunks, on_chunk=None, clock=None):
+        class Stream:
+            def __init__(self, values):
+                self._values = list(values)
+
+            def read(self, _size):
+                value = self._values.pop(0) if self._values else b""
+                if isinstance(value, BaseException):
+                    raise value
+                return value
+
+        tee = run_gate.OutputTee.__new__(run_gate.OutputTee)
+        tee.proc = SimpleNamespace(stdout=Stream(chunks))
+        tee.path = None
+        tee.error = None
+        tee.chunks = 0
+        tee.last_chunk_at = None
+        clock = clock or (lambda: 1000.0)
+        tee.clock = clock
+        tee.on_chunk = on_chunk
+        tee.thread = SimpleNamespace(join=lambda *_a, **_kw: None,
+                                     is_alive=lambda: False)
+        return tee
+
+    def test_the_callback_runs_once_per_arrival(self, capsys):
+        arrivals = []
+        clock = FakeClock()
+        tee = self._tee(["a", "b", "c", b""],
+                        on_chunk=lambda: arrivals.append(clock()), clock=clock)
+        tee._copy()
+        assert tee.chunks == 3
+        assert len(arrivals) == 3
+        # Announced AFTER the arrival was recorded, so a watcher that wakes on
+        # this callback already sees the chunk that woke it.
+        assert tee.chunks >= len(arrivals)
+        assert capsys.readouterr().out == "abc"
+
+    def test_a_raising_callback_costs_the_lane_nothing(self, tmp_path, capsys):
+        def boom():
+            raise RuntimeError("planted watcher failure")
+
+        log = tmp_path / "lane.log"
+        tee = self._tee(["one", b"\xff", "two", b""], on_chunk=boom)
+        tee.path = log
+        tee._copy()
+        # Every chunk still arrived, was timed and was copied to the log and
+        # the terminal: the callback is the watcher's problem alone.
+        assert tee.chunks == 3
+        assert tee.error is None
+        assert log.read_bytes() == b"one\xfftwo"
+        assert capsys.readouterr().out == "one\ufffdtwo"
+
+    def test_the_callback_is_never_consulted_when_none_was_supplied(
+            self, capsys):
+        tee = self._tee(["only chunk", b""])
+        tee._copy()
+        assert tee.chunks == 1 and capsys.readouterr().out == "only chunk"
+
+
+class TestOutputTeeJoinTimeoutArgument:
+    """The `timeout` parameter of `OutputTee.join()` is honoured when a caller
+    supplies one; only `None` falls back to the module constant (read at call
+    time so a later change of the constant is not frozen out)."""
+
+    @staticmethod
+    def _wedged_thread():
+        class WedgedThread:
+            def __init__(self):
+                self.timeouts = []
+
+            def join(self, timeout=None):
+                self.timeouts.append(timeout)
+
+            def is_alive(self):
+                return True
+
+        return WedgedThread()
+
+    def test_an_explicit_timeout_is_used_verbatim_not_the_constant(
+            self, monkeypatch, capsys):
+        tee = run_gate.OutputTee.__new__(run_gate.OutputTee)
+        tee.error = None
+        tee.thread = self._wedged_thread()
+        monkeypatch.setattr(run_gate, "OUTPUT_DRAIN_TIMEOUT_SECONDS", 7.5)
+        assert tee.join(0.25) is False
+        assert tee.thread.timeouts == [0.25]
+        # The disclosure quotes the timeout that really bounded the wait.
+        assert "did not finish within 0.25s" in capsys.readouterr().err
+
+    def test_an_omitted_timeout_reads_the_constant_at_call_time(self,
+                                                               monkeypatch):
+        tee = run_gate.OutputTee.__new__(run_gate.OutputTee)
+        tee.error = None
+        tee.thread = self._wedged_thread()
+        monkeypatch.setattr(run_gate, "OUTPUT_DRAIN_TIMEOUT_SECONDS", 3.0)
+        assert tee.join() is False
+        assert tee.thread.timeouts == [3.0]
+        monkeypatch.setattr(run_gate, "OUTPUT_DRAIN_TIMEOUT_SECONDS", 4.0)
+        assert tee.join() is False
+        assert tee.thread.timeouts == [3.0, 4.0]
