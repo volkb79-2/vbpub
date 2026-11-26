@@ -125,7 +125,11 @@ impl Hysteresis {
             return Decision {
                 phase: self.phase,
                 parking: false,
-                action: if was_parking { Action::Thaw } else { Action::Unknown },
+                action: if was_parking {
+                    Action::Thaw
+                } else {
+                    Action::Unknown
+                },
             };
         };
         if avg10 >= self.trigger_avg10 {
@@ -140,11 +144,19 @@ impl Hysteresis {
                 return Decision {
                     phase: self.phase,
                     parking: true,
-                    action: if was_parking { Action::None } else { Action::Freeze },
+                    action: if was_parking {
+                        Action::None
+                    } else {
+                        Action::Freeze
+                    },
                 };
             }
             self.phase = Phase::Armed { since_ns: since };
-            return Decision { phase: self.phase, parking: self.is_parking(), action: Action::None };
+            return Decision {
+                phase: self.phase,
+                parking: self.is_parking(),
+                action: Action::None,
+            };
         }
         if avg10 <= self.release_avg10 {
             let since = match self.phase {
@@ -157,17 +169,29 @@ impl Hysteresis {
                 return Decision {
                     phase: self.phase,
                     parking: false,
-                    action: if was_parking { Action::Thaw } else { Action::None },
+                    action: if was_parking {
+                        Action::Thaw
+                    } else {
+                        Action::None
+                    },
                 };
             }
             self.phase = Phase::Releasing { since_ns: since };
-            return Decision { phase: self.phase, parking: self.is_parking(), action: Action::None };
+            return Decision {
+                phase: self.phase,
+                parking: self.is_parking(),
+                action: Action::None,
+            };
         }
         // The dead band: neither condition is satisfied. The guard keeps its mode
         // (parked work stays parked — that is the point of hysteresis) and every
         // half-formed hold is abandoned, because a hold must be continuous.
         self.phase = Phase::Idle;
-        Decision { phase: self.phase, parking: self.is_parking(), action: Action::None }
+        Decision {
+            phase: self.phase,
+            parking: self.is_parking(),
+            action: Action::None,
+        }
     }
 }
 
@@ -179,7 +203,13 @@ mod tests {
     const S: u64 = 1_000_000_000;
 
     fn reading(hundredths: u32) -> Reading {
-        Reading::Known(Pressure { some: Row::default(), full: Row { avg10: hundredths, ..Row::default() } })
+        Reading::Known(Pressure {
+            some: Row::default(),
+            full: Row {
+                avg10: hundredths,
+                ..Row::default()
+            },
+        })
     }
 
     fn unreadable() -> Reading {
@@ -196,13 +226,19 @@ mod tests {
         let mut machine = machine();
         assert_eq!(machine.observe(&reading(299), 0).phase, Phase::Idle);
         // Held from t=0, but only 5 s of trigger: armed, not fired.
-        assert_eq!(machine.observe(&reading(300), 0).phase, Phase::Armed { since_ns: 0 });
+        assert_eq!(
+            machine.observe(&reading(300), 0).phase,
+            Phase::Armed { since_ns: 0 }
+        );
         assert!(!machine.is_parking());
         assert_eq!(machine.observe(&reading(700), 5 * S).action, Action::None);
         // One quiet tick inside the hold window re-arms the clock: the trigger
         // is "held for hold_s", not "seen hold_s apart".
         assert_eq!(machine.observe(&reading(299), 8 * S).phase, Phase::Idle);
-        assert_eq!(machine.observe(&reading(300), 9 * S).phase, Phase::Armed { since_ns: 9 * S });
+        assert_eq!(
+            machine.observe(&reading(300), 9 * S).phase,
+            Phase::Armed { since_ns: 9 * S }
+        );
         assert_eq!(machine.observe(&reading(300), 18 * S).action, Action::None);
         // 10 s after the re-arm: it fires, once.
         let decision = machine.observe(&reading(310), 19 * S);
@@ -219,7 +255,10 @@ mod tests {
         let mut machine = machine();
         machine.observe(&reading(300), 0);
         machine.observe(&reading(300), 15 * S);
-        assert!(machine.is_parking(), "10 s of trigger fired at the first tick past the hold");
+        assert!(
+            machine.is_parking(),
+            "10 s of trigger fired at the first tick past the hold"
+        );
         // Below the release point (150) for 30 s: releasing, no thaw yet, still parking.
         let decision = machine.observe(&reading(100), 30 * S);
         assert_eq!(decision.phase, Phase::Releasing { since_ns: 30 * S });
@@ -283,8 +322,14 @@ mod tests {
             config.hold_s,
             config.release_s,
         );
-        assert_eq!(machine.trigger_avg10, 300, "trigger 3.00 by default (design §2)");
-        assert_eq!(machine.release_avg10, 150, "release at 1.50: the factor-of-two hysteresis");
+        assert_eq!(
+            machine.trigger_avg10, 300,
+            "trigger 3.00 by default (design §2)"
+        );
+        assert_eq!(
+            machine.release_avg10, 150,
+            "release at 1.50: the factor-of-two hysteresis"
+        );
         assert_eq!(machine.hold_ns, 10 * S);
         assert_eq!(machine.release_ns, 60 * S);
         assert!(!machine.is_parking());

@@ -70,7 +70,9 @@ impl fmt::Display for JsonError {
             ),
             Self::Syntax { at, detail } => write!(f, "malformed JSON at byte {at}: {detail}"),
             Self::UnexpectedEnd => f.write_str("JSON document ended before the value was complete"),
-            Self::TrailingData { at } => write!(f, "trailing data at byte {at} after the JSON value"),
+            Self::TrailingData { at } => {
+                write!(f, "trailing data at byte {at} after the JSON value")
+            }
         }
     }
 }
@@ -163,7 +165,10 @@ impl Value {
 
     /// Look a key up in an object value.
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.members()?.iter().find(|(name, _)| name == key).map(|(_, value)| value)
+        self.members()?
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
     }
 
     /// The JSON text of this value, with members in the given (source) order.
@@ -231,8 +236,10 @@ struct Reader<'a> {
 
 fn push_utf8(out: &mut String, bytes: &[u8], start: usize, end: usize) -> Result<(), JsonError> {
     let slice = bytes.get(start..end).ok_or(JsonError::UnexpectedEnd)?;
-    let text = core::str::from_utf8(slice)
-        .map_err(|error| JsonError::Syntax { at: start + error.valid_up_to(), detail: "string is not UTF-8".into() })?;
+    let text = core::str::from_utf8(slice).map_err(|error| JsonError::Syntax {
+        at: start + error.valid_up_to(),
+        detail: "string is not UTF-8".into(),
+    })?;
     out.push_str(text);
     Ok(())
 }
@@ -249,7 +256,10 @@ impl Reader<'_> {
     }
 
     fn syntax(&self, detail: impl Into<String>) -> JsonError {
-        JsonError::Syntax { at: self.at, detail: detail.into() }
+        JsonError::Syntax {
+            at: self.at,
+            detail: detail.into(),
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -316,7 +326,9 @@ impl Reader<'_> {
                     return Ok(Value::Object(pairs));
                 }
                 None => return Err(JsonError::UnexpectedEnd),
-                Some(byte) => return Err(self.syntax(format!("expected ',' or '}}', found {byte:#04x}"))),
+                Some(byte) => {
+                    return Err(self.syntax(format!("expected ',' or '}}', found {byte:#04x}")))
+                }
             }
         }
     }
@@ -339,7 +351,9 @@ impl Reader<'_> {
                     return Ok(Value::Array(items));
                 }
                 None => return Err(JsonError::UnexpectedEnd),
-                Some(byte) => return Err(self.syntax(format!("expected ',' or ']', found {byte:#04x}"))),
+                Some(byte) => {
+                    return Err(self.syntax(format!("expected ',' or ']', found {byte:#04x}")))
+                }
             }
         }
     }
@@ -352,7 +366,9 @@ impl Reader<'_> {
         // contract (design §3: newline-delimited JSON, read by a person as well as a client).
         let mut chunk_start = self.at;
         loop {
-            let Some(byte) = self.peek() else { return Err(JsonError::UnexpectedEnd) };
+            let Some(byte) = self.peek() else {
+                return Err(JsonError::UnexpectedEnd);
+            };
             self.at += 1;
             match byte {
                 b'"' => {
@@ -361,7 +377,9 @@ impl Reader<'_> {
                 }
                 b'\\' => {
                     push_utf8(&mut out, self.bytes, chunk_start, self.at - 1)?;
-                    let Some(escape) = self.peek() else { return Err(JsonError::UnexpectedEnd) };
+                    let Some(escape) = self.peek() else {
+                        return Err(JsonError::UnexpectedEnd);
+                    };
                     self.at += 1;
                     match escape {
                         b'"' => out.push('"'),
@@ -384,9 +402,13 @@ impl Reader<'_> {
     }
 
     fn unicode_escape(&mut self) -> Result<char, JsonError> {
-        let digits = self.bytes.get(self.at..self.at + 4).ok_or(JsonError::UnexpectedEnd)?;
+        let digits = self
+            .bytes
+            .get(self.at..self.at + 4)
+            .ok_or(JsonError::UnexpectedEnd)?;
         let text = core::str::from_utf8(digits).map_err(|_| self.syntax("non-UTF-8 escape"))?;
-        let code = u32::from_str_radix(text, 16).map_err(|_| self.syntax(format!("bad \\u escape {text:?}")))?;
+        let code = u32::from_str_radix(text, 16)
+            .map_err(|_| self.syntax(format!("bad \\u escape {text:?}")))?;
         self.at += 4;
         char::from_u32(code).ok_or_else(|| self.syntax(format!("invalid code point U+{code:04X}")))
     }
@@ -403,7 +425,10 @@ impl Reader<'_> {
             .map_err(|_| self.syntax("non-UTF-8 number"))?;
         text.parse::<i64>()
             .map(Value::Integer)
-            .map_err(|_| JsonError::Syntax { at: start, detail: format!("integer {text:?} is out of range or has a fraction") })
+            .map_err(|_| JsonError::Syntax {
+                at: start,
+                detail: format!("integer {text:?} is out of range or has a fraction"),
+            })
     }
 }
 
@@ -434,7 +459,10 @@ mod tests {
             Err(JsonError::Syntax { .. })
         ));
         let big = format!("[\"{}\"]", "x".repeat(MAX_DOCUMENT_BYTES));
-        assert!(matches!(Value::parse(&big), Err(JsonError::TooLarge { .. })));
+        assert!(matches!(
+            Value::parse(&big),
+            Err(JsonError::TooLarge { .. })
+        ));
     }
 
     #[test]

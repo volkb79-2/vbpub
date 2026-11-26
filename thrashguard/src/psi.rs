@@ -134,7 +134,10 @@ pub struct Poller {
 impl Poller {
     /// A poller reading `path` (production: `/proc/pressure/memory`).
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), previous: None }
+        Self {
+            path: path.into(),
+            previous: None,
+        }
     }
 
     /// The injected path this poller reads.
@@ -167,7 +170,11 @@ impl Poller {
                 ("full", previous.full.total_us, pressure.full.total_us),
             ] {
                 if current_us < previous_us {
-                    return Reading::Unknown(Unreadable::Reset { row, previous_us, current_us });
+                    return Reading::Unknown(Unreadable::Reset {
+                        row,
+                        previous_us,
+                        current_us,
+                    });
                 }
             }
         }
@@ -207,26 +214,32 @@ pub fn parse(text: &str) -> Result<Pressure, String> {
             };
             match key {
                 "avg10" => {
-                    row.avg10 = parse_avg10(value).map_err(|why| format!("line {}: avg10 {why}", index + 1))?;
+                    row.avg10 = parse_avg10(value)
+                        .map_err(|why| format!("line {}: avg10 {why}", index + 1))?;
                     seen_avg10 = true;
                 }
                 "avg60" => {
-                    row.avg60 = parse_avg10(value).map_err(|why| format!("line {}: avg60 {why}", index + 1))?;
+                    row.avg60 = parse_avg10(value)
+                        .map_err(|why| format!("line {}: avg60 {why}", index + 1))?;
                 }
                 "avg300" => {
-                    row.avg300 = parse_avg10(value).map_err(|why| format!("line {}: avg300 {why}", index + 1))?;
+                    row.avg300 = parse_avg10(value)
+                        .map_err(|why| format!("line {}: avg300 {why}", index + 1))?;
                 }
                 "total" => {
-                    row.total_us = value
-                        .parse::<u64>()
-                        .map_err(|_| format!("line {}: total {value:?} is not an integer", index + 1))?;
+                    row.total_us = value.parse::<u64>().map_err(|_| {
+                        format!("line {}: total {value:?} is not an integer", index + 1)
+                    })?;
                     seen_total = true;
                 }
                 other => return Err(format!("line {}: unknown field {other:?}", index + 1)),
             }
         }
         if !seen_avg10 || !seen_total {
-            return Err(format!("line {}: row {kind:?} lacks avg10 or total", index + 1));
+            return Err(format!(
+                "line {}: row {kind:?} lacks avg10 or total",
+                index + 1
+            ));
         }
         match kind {
             "some" => some = Some(row),
@@ -267,7 +280,9 @@ fn parse_avg10(text: &str) -> Result<u32, String> {
             .map_err(|_| format!("{text:?} is not a decimal number"))?,
         _ => fraction.parse().unwrap_or(0),
     };
-    Ok(whole.saturating_mul(HUNDREDTHS_PER_POINT).saturating_add(fraction))
+    Ok(whole
+        .saturating_mul(HUNDREDTHS_PER_POINT)
+        .saturating_add(fraction))
 }
 
 #[cfg(test)]
@@ -289,10 +304,15 @@ mod tests {
     fn a_missing_or_unknown_row_is_malformed_not_zero() {
         assert!(parse("some avg10=1.00 avg60=0.50 avg300=0.10 total=1\n").is_err());
         assert!(parse("full avg10=1.00 avg60=0.50 avg300=0.10 total=1\n").is_err());
-        assert!(parse("some avg10=1.00 avg60=0.50 avg300=0.10 total=1\nfull avg10=1.00 total=1\n").is_ok());
+        assert!(
+            parse("some avg10=1.00 avg60=0.50 avg300=0.10 total=1\nfull avg10=1.00 total=1\n")
+                .is_ok()
+        );
         assert!(parse("cpu avg10=1.00 avg60=0.50 avg300=0.10 total=1\n").is_err());
         assert!(parse("some avg10=1.00 avg60=0.50 avg300=0.10\n").is_err());
-        assert!(parse("some avg10=x avg60=0.50 avg300=0.10 total=1\nfull avg10=1 total=1\n").is_err());
+        assert!(
+            parse("some avg10=x avg60=0.50 avg300=0.10 total=1\nfull avg10=1 total=1\n").is_err()
+        );
     }
 
     #[test]
@@ -308,7 +328,11 @@ mod tests {
         assert!(matches!(poller.poll(), Reading::Known(_)));
         dir.write("memory", "some avg10=1.00 avg60=0.50 avg300=0.10 total=2000\nfull avg10=1.00 avg60=0.50 avg300=0.10 total=8\n");
         match poller.poll() {
-            Reading::Unknown(Unreadable::Reset { row, previous_us, current_us }) => {
+            Reading::Unknown(Unreadable::Reset {
+                row,
+                previous_us,
+                current_us,
+            }) => {
                 assert_eq!((row, previous_us, current_us), ("full", 567, 8));
             }
             other => panic!("expected a reset, got {other:?}"),

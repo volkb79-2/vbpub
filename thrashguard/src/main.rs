@@ -17,13 +17,13 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use thrashguard::cli::{self, Args, Verb};
+use thrashguard::config::StaticUnit;
 use thrashguard::config::{self, Config, Mode};
 use thrashguard::events;
 use thrashguard::json::Value;
 use thrashguard::psi::{Poller, Reading};
 use thrashguard::report::{self, ParkingState, Would};
 use thrashguard::socket::{self, Role};
-use thrashguard::config::StaticUnit;
 use thrashguard::units::{self, Priority, Registration, Store};
 use thrashguard::{EVENT_VERSION, STATE_VERSION};
 
@@ -61,18 +61,28 @@ struct Fatal {
 
 impl Fatal {
     fn usage(message: impl Into<String>) -> Self {
-        Self { message: message.into(), code: 2 }
+        Self {
+            message: message.into(),
+            code: 2,
+        }
     }
 
     fn unknown(message: impl Into<String>) -> Self {
-        Self { message: message.into(), code: 3 }
+        Self {
+            message: message.into(),
+            code: 3,
+        }
     }
 }
 
 fn run(args: &Args) -> Result<(), Fatal> {
     if args.verb == Verb::Version {
         // `version` describes this binary, so it never needs a daemon.
-        println!("thrashguard {} ({STATE_VERSION}, {EVENT_VERSION}, {})", thrashguard::VERSION, thrashguard::REGISTRATION_VERSION);
+        println!(
+            "thrashguard {} ({STATE_VERSION}, {EVENT_VERSION}, {})",
+            thrashguard::VERSION,
+            thrashguard::REGISTRATION_VERSION
+        );
         return Ok(());
     }
     let config = match &args.config {
@@ -83,7 +93,9 @@ fn run(args: &Args) -> Result<(), Fatal> {
     if args.verb == Verb::Serve {
         // `enforce` is valid vocabulary, and `status` must be able to report it,
         // but this build cannot honour it: one line, at the run boundary.
-        config.check_for_run().map_err(|error| Fatal::usage(error.to_string()))?;
+        config
+            .check_for_run()
+            .map_err(|error| Fatal::usage(error.to_string()))?;
     }
     if let Some(path) = &args.socket {
         return ask_socket(path, args);
@@ -105,8 +117,13 @@ fn run(args: &Args) -> Result<(), Fatal> {
 fn store_for(config: &Config, root: &Path, now_ns: u64) -> Result<Store, Fatal> {
     let mut store = Store::from_config(config);
     for unit in &config.static_units {
-        let scope = units::resolve_static_unit(root, unit, config)
-            .map_err(|refusal| Fatal::unknown(format!("[[static_unit]] {}: {}", unit.name, refusal.detail())))?;
+        let scope = units::resolve_static_unit(root, unit, config).map_err(|refusal| {
+            Fatal::unknown(format!(
+                "[[static_unit]] {}: {}",
+                unit.name,
+                refusal.detail()
+            ))
+        })?;
         store
             .register(static_registration(unit, scope, now_ns))
             .map_err(|error| Fatal::usage(error.to_string()))?;
@@ -135,7 +152,10 @@ fn static_registration(unit: &StaticUnit, scope: units::Scope, now_ns: u64) -> R
 fn status(config: &Config, args: &Args) -> Result<(), Fatal> {
     let reading = Poller::new(&args.pressure_path).poll();
     let store = store_for(config, &args.cgroup_root, 0)?;
-    let state = ParkingState { parked: 0, candidates: store.len() };
+    let state = ParkingState {
+        parked: 0,
+        candidates: store.len(),
+    };
     let would = report::choose_victim(config, &store, state, 0, &|_| None);
     let reply = status_reply(config, &reading, &store, &would, 0);
     println!("{}", reply.to_json());
@@ -144,7 +164,10 @@ fn status(config: &Config, args: &Args) -> Result<(), Fatal> {
 
 fn candidates(config: &Config, args: &Args) -> Result<(), Fatal> {
     let store = store_for(config, &args.cgroup_root, 0)?;
-    let state = ParkingState { parked: 0, candidates: store.len() };
+    let state = ParkingState {
+        parked: 0,
+        candidates: store.len(),
+    };
     let would = report::choose_victim(config, &store, state, 0, &|_| None);
     println!("{}", candidates_reply(config, &store, &would, 0).to_json());
     Ok(())
@@ -153,7 +176,8 @@ fn candidates(config: &Config, args: &Args) -> Result<(), Fatal> {
 /// `events` without a socket reads the journal the daemon wrote, paged by
 /// `--since-seq`. Reading it writes nothing.
 fn events(config: &Config, args: &Args) -> Result<(), Fatal> {
-    let boot_id = events::read_boot_id(Path::new(events::BOOT_ID_PATH)).unwrap_or_else(|| "unknown".to_string());
+    let boot_id = events::read_boot_id(Path::new(events::BOOT_ID_PATH))
+        .unwrap_or_else(|| "unknown".to_string());
     let current = config.state_dir.join(events::JOURNAL_FILE);
     let rotated = config.state_dir.join(events::ROTATED_FILE);
     let file = if current.is_file() {
@@ -163,10 +187,7 @@ fn events(config: &Config, args: &Args) -> Result<(), Fatal> {
     } else {
         // No journal is an empty page with a false `truncated`, not an error: a
         // guard that has not run yet has recorded nothing, which is a fact.
-        println!(
-            "{}",
-            events_reply(&boot_id, Vec::new(), false).to_json()
-        );
+        println!("{}", events_reply(&boot_id, Vec::new(), false).to_json());
         return Ok(());
     };
     let text = std::fs::read_to_string(&file)
@@ -220,30 +241,56 @@ fn serve(config: &Config) -> Result<(), Fatal> {
 /// `status` as the wire document: mode, pressure (or its unknown reason), the
 /// candidate count, the next decision and an empty frozen set (nothing is frozen
 /// in P1 — `frozen[]` is the P2 fact and is reported as empty, never invented).
-fn status_reply(config: &Config, reading: &Reading, store: &Store, would: &Would, parked_s: u64) -> Value {
+fn status_reply(
+    config: &Config,
+    reading: &Reading,
+    store: &Store,
+    would: &Would,
+    parked_s: u64,
+) -> Value {
     let psi = match reading {
         Reading::Known(pressure) => Value::Object(vec![
-            ("v".to_string(), Value::Integer(i64::from(pressure.full.avg10))),
-            ("some".to_string(), Value::Integer(i64::from(pressure.some.avg10))),
-            ("full".to_string(), Value::Integer(i64::from(pressure.full.avg10))),
-            ("total_us".to_string(), Value::Integer(as_i64(pressure.full.total_us))),
+            (
+                "v".to_string(),
+                Value::Integer(i64::from(pressure.full.avg10)),
+            ),
+            (
+                "some".to_string(),
+                Value::Integer(i64::from(pressure.some.avg10)),
+            ),
+            (
+                "full".to_string(),
+                Value::Integer(i64::from(pressure.full.avg10)),
+            ),
+            (
+                "total_us".to_string(),
+                Value::Integer(as_i64(pressure.full.total_us)),
+            ),
         ]),
         Reading::Unknown(why) => Value::Object(vec![
             ("v".to_string(), Value::Null),
-            ("reason".to_string(), Value::String(why.reason().to_string())),
+            (
+                "reason".to_string(),
+                Value::String(why.reason().to_string()),
+            ),
             ("detail".to_string(), Value::String(why.detail())),
         ]),
     };
     let mut body = vec![
-        ("mode".to_string(), Value::String(config.mode.as_str().to_string())),
-        ("enforce_refused".to_string(), Value::Bool(config.mode == Mode::Enforce)),
+        (
+            "mode".to_string(),
+            Value::String(config.mode.as_str().to_string()),
+        ),
+        (
+            "enforce_refused".to_string(),
+            Value::Bool(config.mode == Mode::Enforce),
+        ),
         ("psi".to_string(), psi),
         ("candidates".to_string(), Value::Integer(store.len() as i64)),
         ("frozen".to_string(), Value::Array(Vec::new())),
         ("parked_s".to_string(), Value::Integer(as_i64(parked_s))),
         ("desync".to_string(), Value::Array(Vec::new())),
-        ("ttl_s".to_string(), Value::Integer(as_i64(config.ttl_s())),
-        ),
+        ("ttl_s".to_string(), Value::Integer(as_i64(config.ttl_s()))),
         ("would".to_string(), would_value(would)),
     ];
     let (rule, unknown) = report::effective_rule(config);
@@ -268,13 +315,22 @@ fn candidates_reply(config: &Config, store: &Store, would: &Would, now_ns: u64) 
         ));
     }
     let mut body = vec![
-        ("mode".to_string(), Value::String(config.mode.as_str().to_string())),
-        ("rule".to_string(), Value::String(report::effective_rule(config).0.as_str().to_string())),
+        (
+            "mode".to_string(),
+            Value::String(config.mode.as_str().to_string()),
+        ),
+        (
+            "rule".to_string(),
+            Value::String(report::effective_rule(config).0.as_str().to_string()),
+        ),
         ("order".to_string(), Value::Array(rows)),
         ("would".to_string(), would_value(would)),
     ];
     if let (_, Some(unknown)) = report::effective_rule(config) {
-        body.push(("rule_reason".to_string(), Value::String(unknown.to_string())));
+        body.push((
+            "rule_reason".to_string(),
+            Value::String(unknown.to_string()),
+        ));
     }
     thrashguard::wire::ok(STATE_VERSION, body)
 }
@@ -283,8 +339,17 @@ fn candidates_reply(config: &Config, store: &Store, would: &Would, now_ns: u64) 
 /// reader nothing was frozen (P1 has no interval to record).
 fn would_value(would: &Would) -> Value {
     match would {
-        Would::Park { id, unit, cgroup, cgroup_id, rule } => Value::Object(vec![
-            ("action".to_string(), Value::String("would-freeze".to_string())),
+        Would::Park {
+            id,
+            unit,
+            cgroup,
+            cgroup_id,
+            rule,
+        } => Value::Object(vec![
+            (
+                "action".to_string(),
+                Value::String("would-freeze".to_string()),
+            ),
             ("id".to_string(), Value::String(id.clone())),
             ("unit".to_string(), Value::String(unit.clone())),
             ("cgroup".to_string(), Value::String(cgroup.clone())),
@@ -293,12 +358,18 @@ fn would_value(would: &Would) -> Value {
             ("simulated".to_string(), Value::Bool(true)),
         ]),
         Would::Hold { why } => Value::Object(vec![
-            ("action".to_string(), Value::String("would-hold".to_string())),
+            (
+                "action".to_string(),
+                Value::String("would-hold".to_string()),
+            ),
             ("why".to_string(), Value::String(why.as_str().to_string())),
             ("simulated".to_string(), Value::Bool(true)),
         ]),
         Would::Thaw { id, unit, cgroup } => Value::Object(vec![
-            ("action".to_string(), Value::String("would-thaw".to_string())),
+            (
+                "action".to_string(),
+                Value::String("would-thaw".to_string()),
+            ),
             ("id".to_string(), Value::String(id.clone())),
             ("unit".to_string(), Value::String(unit.clone())),
             ("cgroup".to_string(), Value::String(cgroup.clone())),
@@ -318,20 +389,28 @@ fn ask_socket(path: &Path, args: &Args) -> Result<(), Fatal> {
         Verb::Status => format!("{{\"v\":\"{STATE_VERSION}\",\"verb\":\"status\"}}"),
         Verb::Candidates => format!("{{\"v\":\"{STATE_VERSION}\",\"verb\":\"candidates\"}}"),
         Verb::Events => {
-            format!("{{\"v\":\"{EVENT_VERSION}\",\"verb\":\"events\",\"since_seq\":{}}}", args.since_seq)
+            format!(
+                "{{\"v\":\"{EVENT_VERSION}\",\"verb\":\"events\",\"since_seq\":{}}}",
+                args.since_seq
+            )
         }
         Verb::Serve => unreachable!("`serve` never asks a socket"),
     };
     let stream = std::os::unix::net::UnixStream::connect(path)
         .map_err(|error| Fatal::unknown(format!("cannot reach {}: {error}", path.display())))?;
     let mut session = socket::Session::new(
-        stream.try_clone().map_err(|error| Fatal::unknown(error.to_string()))?,
+        stream
+            .try_clone()
+            .map_err(|error| Fatal::unknown(error.to_string()))?,
         stream,
         Role::Reader,
     );
-    let value = session
-        .request(&request)
-        .map_err(|error| Fatal::unknown(format!("{} answered nothing usable: {error}", path.display())))?;
+    let value = session.request(&request).map_err(|error| {
+        Fatal::unknown(format!(
+            "{} answered nothing usable: {error}",
+            path.display()
+        ))
+    })?;
     println!("{}", value.to_json());
     Ok(())
 }
@@ -343,7 +422,10 @@ mod tests {
     use thrashguard::testutil::TempTree;
 
     fn static_unit(name: &str, cgroup: &str) -> StaticUnit {
-        StaticUnit { name: name.to_string(), cgroup: cgroup.to_string() }
+        StaticUnit {
+            name: name.to_string(),
+            cgroup: cgroup.to_string(),
+        }
     }
 
     #[test]
@@ -374,27 +456,88 @@ mod tests {
         );
         let reading = Poller::new(&pressure).poll();
         let store = store_for(&config, tree.path(), 0).expect("resolves");
-        let would =
-            report::choose_victim(&config, &store, ParkingState { parked: 0, candidates: 1 }, 0, &|_| None);
+        let would = report::choose_victim(
+            &config,
+            &store,
+            ParkingState {
+                parked: 0,
+                candidates: 1,
+            },
+            0,
+            &|_| None,
+        );
         let reply = status_reply(&config, &reading, &store, &would, 0);
         assert_eq!(reply.get("mode").and_then(Value::as_str), Some("report"));
         assert_eq!(reply.get("candidates").and_then(Value::as_i64), Some(1));
-        assert_eq!(reply.get("frozen").and_then(Value::as_array).map(<[_]>::len), Some(0));
-        assert_eq!(reply.get("desync").and_then(Value::as_array).map(<[_]>::len), Some(0));
+        assert_eq!(
+            reply
+                .get("frozen")
+                .and_then(Value::as_array)
+                .map(<[_]>::len),
+            Some(0)
+        );
+        assert_eq!(
+            reply
+                .get("desync")
+                .and_then(Value::as_array)
+                .map(<[_]>::len),
+            Some(0)
+        );
         // One candidate and `never_park_last = true`: parking it would leave nothing
         // running, so the decision is a NAMED hold, not a park (`units`/`report`).
-        assert_eq!(reply.get("would").and_then(|body| body.get("action")).and_then(Value::as_str), Some("would-hold"));
-        assert_eq!(reply.get("would").and_then(|body| body.get("why")).and_then(Value::as_str), Some("never-park-last"));
-        assert_eq!(reply.get("psi").and_then(|body| body.get("v")).and_then(Value::as_i64), Some(50), "hundredths");
+        assert_eq!(
+            reply
+                .get("would")
+                .and_then(|body| body.get("action"))
+                .and_then(Value::as_str),
+            Some("would-hold")
+        );
+        assert_eq!(
+            reply
+                .get("would")
+                .and_then(|body| body.get("why"))
+                .and_then(Value::as_str),
+            Some("never-park-last")
+        );
+        assert_eq!(
+            reply
+                .get("psi")
+                .and_then(|body| body.get("v"))
+                .and_then(Value::as_i64),
+            Some(50),
+            "hundredths"
+        );
         // Two candidates do allow one park, and `status` says what it would be.
         std::fs::create_dir_all(tree.at("dev-gates.slice/second.scope")).expect("create second");
-        config.static_units.push(static_unit("second", "dev-gates.slice/second.scope"));
+        config
+            .static_units
+            .push(static_unit("second", "dev-gates.slice/second.scope"));
         let store = store_for(&config, tree.path(), 0).expect("resolves");
-        let would =
-            report::choose_victim(&config, &store, ParkingState { parked: 0, candidates: 2 }, 0, &|_| None);
+        let would = report::choose_victim(
+            &config,
+            &store,
+            ParkingState {
+                parked: 0,
+                candidates: 2,
+            },
+            0,
+            &|_| None,
+        );
         let reply = status_reply(&config, &reading, &store, &would, 0);
-        assert_eq!(reply.get("would").and_then(|body| body.get("action")).and_then(Value::as_str), Some("would-freeze"));
-        assert_eq!(reply.get("would").and_then(|body| body.get("simulated")).and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            reply
+                .get("would")
+                .and_then(|body| body.get("action"))
+                .and_then(Value::as_str),
+            Some("would-freeze")
+        );
+        assert_eq!(
+            reply
+                .get("would")
+                .and_then(|body| body.get("simulated"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -403,10 +546,22 @@ mod tests {
         let reading = Poller::new(tree.at("absent.pressure")).poll();
         let config = Config::defaults();
         let store = Store::new(90);
-        let would = Would::Hold { why: report::Why::NoCandidates };
+        let would = Would::Hold {
+            why: report::Why::NoCandidates,
+        };
         let reply = status_reply(&config, &reading, &store, &would, 0);
-        assert_eq!(reply.get("psi").and_then(|body| body.get("v")), Some(&Value::Null), "unknown is not 0.00");
-        assert_eq!(reply.get("psi").and_then(|body| body.get("reason")).and_then(Value::as_str), Some("read"));
+        assert_eq!(
+            reply.get("psi").and_then(|body| body.get("v")),
+            Some(&Value::Null),
+            "unknown is not 0.00"
+        );
+        assert_eq!(
+            reply
+                .get("psi")
+                .and_then(|body| body.get("reason"))
+                .and_then(Value::as_str),
+            Some("read")
+        );
         assert_eq!(reply.get("mode").and_then(Value::as_str), Some("report"));
     }
 
@@ -422,13 +577,38 @@ mod tests {
             static_unit("b", "dev-gates.slice/b.scope"),
         ];
         let store = store_for(&config, tree.path(), 0).expect("resolves");
-        let would =
-            report::choose_victim(&config, &store, ParkingState { parked: 0, candidates: 2 }, 0, &|_| None);
+        let would = report::choose_victim(
+            &config,
+            &store,
+            ParkingState {
+                parked: 0,
+                candidates: 2,
+            },
+            0,
+            &|_| None,
+        );
         let reply = candidates_reply(&config, &store, &would, 0);
-        assert_eq!(reply.get("order").and_then(Value::as_array).map(<[_]>::len), Some(2));
-        assert_eq!(reply.get("rule").and_then(Value::as_str), Some("newest"), "the rule it can honour");
-        assert_eq!(reply.get("rule_reason").and_then(Value::as_str), Some("rule-unknown"), "and says so");
-        assert_eq!(reply.get("would").and_then(|body| body.get("action")).and_then(Value::as_str), Some("would-freeze"));
+        assert_eq!(
+            reply.get("order").and_then(Value::as_array).map(<[_]>::len),
+            Some(2)
+        );
+        assert_eq!(
+            reply.get("rule").and_then(Value::as_str),
+            Some("newest"),
+            "the rule it can honour"
+        );
+        assert_eq!(
+            reply.get("rule_reason").and_then(Value::as_str),
+            Some("rule-unknown"),
+            "and says so"
+        );
+        assert_eq!(
+            reply
+                .get("would")
+                .and_then(|body| body.get("action"))
+                .and_then(Value::as_str),
+            Some("would-freeze")
+        );
     }
 
     #[test]
@@ -436,12 +616,21 @@ mod tests {
         let tree = TempTree::new("main-events");
         let mut config = Config::defaults();
         config.state_dir = tree.path().join("run");
-        let args = Args { verb: Verb::Events, ..Args::defaults() };
+        let args = Args {
+            verb: Verb::Events,
+            ..Args::defaults()
+        };
         let _ = &args;
         let reply = events_reply("boot-x", Vec::new(), false);
-        assert_eq!(reply.get("rows").and_then(Value::as_array).map(<[_]>::len), Some(0));
+        assert_eq!(
+            reply.get("rows").and_then(Value::as_array).map(<[_]>::len),
+            Some(0)
+        );
         // The verb's real path, with no journal on disk: an empty page, exit 0.
         events(&config, &args).expect("an absent journal is an empty page");
-        assert!(!config.state_dir.exists(), "reading a journal creates nothing");
+        assert!(
+            !config.state_dir.exists(),
+            "reading a journal creates nothing"
+        );
     }
 }

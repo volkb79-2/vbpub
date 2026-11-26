@@ -87,7 +87,11 @@ pub struct Session<R, W> {
 impl<R: std::io::Read, W: Write> Session<R, W> {
     /// A session over a connected pair.
     pub fn new(reader: R, writer: W, role: Role) -> Self {
-        Self { reader: BufReader::new(reader), writer, role }
+        Self {
+            reader: BufReader::new(reader),
+            writer,
+            role,
+        }
     }
 
     /// Read one request line. `Ok(None)` means the peer closed cleanly.
@@ -126,7 +130,9 @@ impl<R: std::io::Read, W: Write> Session<R, W> {
         let mut reply = String::new();
         self.reader.read_line(&mut reply)?;
         if reply.trim().is_empty() {
-            return Err(std::io::Error::other("the daemon closed the connection without a reply"));
+            return Err(std::io::Error::other(
+                "the daemon closed the connection without a reply",
+            ));
         }
         Value::parse(reply.trim()).map_err(|error| std::io::Error::other(error.to_string()))
     }
@@ -148,7 +154,12 @@ pub fn answer<G: Dispatch>(guard: &mut G, role: Role, line: &str) -> Value {
             &format!(
                 "the {} verb belongs on the {} socket",
                 request.verb_name(),
-                if request.is_registrant() { Role::Registrant } else { Role::Reader }.as_str()
+                if request.is_registrant() {
+                    Role::Registrant
+                } else {
+                    Role::Reader
+                }
+                .as_str()
             ),
         );
     }
@@ -163,9 +174,10 @@ fn refuse(role: Role, error: &WireError) -> Value {
         WireError::Version { .. } => "version",
         WireError::TooLarge { .. } => "too-large",
         WireError::Value { .. } => "value",
-        WireError::Empty | WireError::Json(_) | WireError::MemberKind { .. } | WireError::MissingMember { .. } => {
-            "malformed"
-        }
+        WireError::Empty
+        | WireError::Json(_)
+        | WireError::MemberKind { .. }
+        | WireError::MissingMember { .. } => "malformed",
     };
     // `events` is the one reader verb with a version of its own, so a refusal
     // about it names that version rather than the state version.
@@ -174,7 +186,11 @@ fn refuse(role: Role, error: &WireError) -> Value {
         _ if role == Role::Reader && error.to_string().contains("events") => Some(EVENT_VERSION),
         _ => None,
     };
-    wire::refused_reader(version.unwrap_or_else(|| role.version()), reason, &error.to_string())
+    wire::refused_reader(
+        version.unwrap_or_else(|| role.version()),
+        reason,
+        &error.to_string(),
+    )
 }
 
 /// A daemon that answers requests: the one method a socket session needs.
@@ -214,32 +230,52 @@ mod tests {
         // every socket read here is bounded: the timeout exists to turn a hang
         // into a failure with a name, and never to race a slow machine.
         let (client, server) = UnixStream::pair().expect("socketpair");
-        client.set_read_timeout(Some(std::time::Duration::from_secs(60))).expect("a readable timeout");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(60)))
+            .expect("a readable timeout");
         let mut client_reader = client.try_clone().expect("clone");
         let mut session = Session::new(client, server, Role::Reader);
         let reply = wire::version();
         let expected = reply.to_json();
         session.write_reply(&reply).expect("write the reply");
         let mut text = String::new();
-        BufReader::new(&mut client_reader).read_line(&mut text).expect("read the reply back");
-        assert_eq!(text, format!("{expected}\n"), "exactly one line, newline-terminated");
+        BufReader::new(&mut client_reader)
+            .read_line(&mut text)
+            .expect("read the reply back");
+        assert_eq!(
+            text,
+            format!("{expected}\n"),
+            "exactly one line, newline-terminated"
+        );
         assert_eq!(session.role(), Role::Reader);
     }
 
     #[test]
     fn a_request_line_arrives_whole_and_a_closed_peer_is_a_clean_end() {
         let (mut writer, reader) = UnixStream::pair().expect("socketpair");
-        reader.set_read_timeout(Some(std::time::Duration::from_secs(60))).expect("a readable timeout");
+        reader
+            .set_read_timeout(Some(std::time::Duration::from_secs(60)))
+            .expect("a readable timeout");
         // The session's write half is a buffer: the only open endpoint of the pair
         // is `writer`, so closing it is a real EOF rather than a clone kept alive.
         let mut session = Session::new(reader, Vec::<u8>::new(), Role::Registrant);
-        let line = format!("{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"heartbeat\",\"id\":\"a\"}}\n");
-        writer.write_all(line.as_bytes()).expect("write the request");
+        let line =
+            format!("{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"heartbeat\",\"id\":\"a\"}}\n");
+        writer
+            .write_all(line.as_bytes())
+            .expect("write the request");
         let received = session.read_request().expect("read").expect("one line");
-        assert_eq!(received, line, "one request line, whole, including its newline");
+        assert_eq!(
+            received, line,
+            "one request line, whole, including its newline"
+        );
         assert_eq!(session.role(), Role::Registrant);
         drop(writer);
-        assert_eq!(session.read_request().expect("a closed peer"), None, "a closed peer is a clean end");
+        assert_eq!(
+            session.read_request().expect("a closed peer"),
+            None,
+            "a closed peer is a clean end"
+        );
     }
 
     #[test]
@@ -248,13 +284,26 @@ mod tests {
         let line = format!("{{\"v\":\"{STATE_VERSION}\",\"verb\":\"status\"}}");
         let reply = answer(&mut recorder, Role::Registrant, &line);
         assert_eq!(reply.get("ok").and_then(Value::as_bool), Some(false));
-        assert_eq!(reply.get("reason").and_then(Value::as_str), Some("wrong-socket"));
-        assert_eq!(reply.get("v").and_then(Value::as_str), Some(REGISTRATION_VERSION));
-        assert!(recorder.seen.is_empty(), "the dispatcher never sees a foreign verb");
+        assert_eq!(
+            reply.get("reason").and_then(Value::as_str),
+            Some("wrong-socket")
+        );
+        assert_eq!(
+            reply.get("v").and_then(Value::as_str),
+            Some(REGISTRATION_VERSION)
+        );
+        assert!(
+            recorder.seen.is_empty(),
+            "the dispatcher never sees a foreign verb"
+        );
 
-        let line = format!("{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"heartbeat\",\"id\":\"a\"}}");
+        let line =
+            format!("{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"heartbeat\",\"id\":\"a\"}}");
         let reply = answer(&mut recorder, Role::Reader, &line);
-        assert_eq!(reply.get("reason").and_then(Value::as_str), Some("wrong-socket"));
+        assert_eq!(
+            reply.get("reason").and_then(Value::as_str),
+            Some("wrong-socket")
+        );
         assert!(recorder.seen.is_empty());
     }
 
@@ -269,14 +318,24 @@ mod tests {
             let mut recorder = Recorder::default();
             let line = format!("{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"{verb}\",{body}}}");
             let reply = answer(&mut recorder, Role::Registrant, &line);
-            assert_eq!(reply.get("ok").and_then(Value::as_bool), Some(true), "{verb}: {reply:?}");
+            assert_eq!(
+                reply.get("ok").and_then(Value::as_bool),
+                Some(true),
+                "{verb}: {reply:?}"
+            );
             assert_eq!(recorder.seen.len(), 1, "{verb} reached the dispatcher");
         }
         let mut recorder = Recorder::default();
         let line = format!("{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"register\",\"id\":\"a\",\"container\":\"c\"}}");
         let reply = answer(&mut recorder, Role::Registrant, &line);
-        assert!(recorder.seen.iter().any(|seen| matches!(seen, Request::Register(body) if body.id == "a")));
-        assert_eq!(reply.get("cgroup").and_then(Value::as_str), Some("docker-1.scope"));
+        assert!(recorder
+            .seen
+            .iter()
+            .any(|seen| matches!(seen, Request::Register(body) if body.id == "a")));
+        assert_eq!(
+            reply.get("cgroup").and_then(Value::as_str),
+            Some("docker-1.scope")
+        );
         assert_eq!(reply.get("ttl_s").and_then(Value::as_i64), Some(90));
     }
 
@@ -291,7 +350,11 @@ mod tests {
             let mut recorder = Recorder::default();
             let line = format!("{{\"v\":\"{version}\",\"verb\":\"{verb}\"{extra}}}");
             let reply = answer(&mut recorder, Role::Reader, &line);
-            assert_eq!(reply.get("ok").and_then(Value::as_bool), Some(true), "{verb}: {reply:?}");
+            assert_eq!(
+                reply.get("ok").and_then(Value::as_bool),
+                Some(true),
+                "{verb}: {reply:?}"
+            );
             assert_eq!(recorder.seen.len(), 1);
         }
     }
@@ -301,7 +364,10 @@ mod tests {
         let mut recorder = Recorder::default();
         let reply = answer(&mut recorder, Role::Reader, "not json");
         assert_eq!(reply.get("ok").and_then(Value::as_bool), Some(false));
-        assert_eq!(reply.get("reason").and_then(Value::as_str), Some("malformed"));
+        assert_eq!(
+            reply.get("reason").and_then(Value::as_str),
+            Some("malformed")
+        );
         assert_eq!(reply.get("v").and_then(Value::as_str), Some(STATE_VERSION));
         assert!(recorder.seen.is_empty());
 
@@ -309,15 +375,33 @@ mod tests {
             "{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"register\",\"id\":\"a\",\"container\":\"c\",\"ttl_s\":90}}"
         );
         let reply = answer(&mut recorder, Role::Registrant, &line);
-        assert_eq!(reply.get("reason").and_then(Value::as_str), Some("unknown-key"));
-        assert!(reply.get("detail").and_then(Value::as_str).unwrap_or_default().contains("ttl_s"));
+        assert_eq!(
+            reply.get("reason").and_then(Value::as_str),
+            Some("unknown-key")
+        );
+        assert!(reply
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("ttl_s"));
 
-        let reply = answer(&mut recorder, Role::Registrant, "{\"v\":\"thrashguard-registration/1\",\"verb\":\"freeze\"}");
-        assert_eq!(reply.get("reason").and_then(Value::as_str), Some("unknown-verb"));
+        let reply = answer(
+            &mut recorder,
+            Role::Registrant,
+            "{\"v\":\"thrashguard-registration/1\",\"verb\":\"freeze\"}",
+        );
+        assert_eq!(
+            reply.get("reason").and_then(Value::as_str),
+            Some("unknown-verb")
+        );
 
         // An `events` request with the wrong version is refused naming the
         // version `events` speaks, not the reader's own.
-        let reply = answer(&mut recorder, Role::Reader, &format!("{{\"v\":\"{STATE_VERSION}\",\"verb\":\"events\"}}"));
+        let reply = answer(
+            &mut recorder,
+            Role::Reader,
+            &format!("{{\"v\":\"{STATE_VERSION}\",\"verb\":\"events\"}}"),
+        );
         assert_eq!(reply.get("reason").and_then(Value::as_str), Some("version"));
         assert_eq!(reply.get("v").and_then(Value::as_str), Some(EVENT_VERSION));
     }

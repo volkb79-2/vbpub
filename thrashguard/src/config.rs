@@ -33,8 +33,11 @@ pub const DEFAULT_CONFIG: &str = "/etc/thrashguard/thrashguard.toml";
 /// The directory whose `*.toml` files are merged after the main file.
 pub const DROPIN_SUFFIX: &str = ".d";
 /// Default `allowed_ancestors` (design §3).
-pub const DEFAULT_ALLOWED_ANCESTORS: [&str; 3] =
-    ["dev-gates.slice", "dev-background.slice", "dev-buildkitd.slice"];
+pub const DEFAULT_ALLOWED_ANCESTORS: [&str; 3] = [
+    "dev-gates.slice",
+    "dev-background.slice",
+    "dev-buildkitd.slice",
+];
 /// Default `protected` (design §3).
 pub const DEFAULT_PROTECTED: [&str; 3] = ["dev-interactive.slice", "system.slice", "user.slice"];
 /// Default state directory (design §3). `/run` is tmpfs, so this is deliberately
@@ -210,7 +213,10 @@ impl Config {
 
     /// The default path of the drop-in directory for a main configuration path.
     pub fn dropin_dir(main: &Path) -> PathBuf {
-        let mut name = main.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut name = main
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         name.push_str(DROPIN_SUFFIX);
         main.with_file_name(name)
     }
@@ -272,10 +278,23 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Read { path, detail } => write!(f, "cannot read {path:?}: {detail}"),
-            Self::Syntax { source, line, detail } => write!(f, "{source}:{line}: {detail}"),
-            Self::Value { source, line, key, detail } => write!(f, "{source}:{line}: key {key}: {detail}"),
-            Self::UnknownKey { source, line, key } => write!(f, "{source}:{line}: unknown key {key:?}"),
-            Self::Dropin { path, file, detail } => write!(f, "drop-in {file} in {path:?}: {detail}"),
+            Self::Syntax {
+                source,
+                line,
+                detail,
+            } => write!(f, "{source}:{line}: {detail}"),
+            Self::Value {
+                source,
+                line,
+                key,
+                detail,
+            } => write!(f, "{source}:{line}: key {key}: {detail}"),
+            Self::UnknownKey { source, line, key } => {
+                write!(f, "{source}:{line}: unknown key {key:?}")
+            }
+            Self::Dropin { path, file, detail } => {
+                write!(f, "drop-in {file} in {path:?}: {detail}")
+            }
             Self::Unsupported(line) => f.write_str(line),
         }
     }
@@ -388,7 +407,11 @@ fn parse_layer(text: &str, source: &str) -> Result<Layer, ConfigError> {
         }
         if line.starts_with("[[") {
             if !line.ends_with("]]") {
-                return Err(ConfigError::Syntax { source: source.into(), line: line_no, detail: "unterminated table header".into() });
+                return Err(ConfigError::Syntax {
+                    source: source.into(),
+                    line: line_no,
+                    detail: "unterminated table header".into(),
+                });
             }
             let name = line[2..line.len() - 2].trim();
             if name != "static_unit" {
@@ -431,7 +454,11 @@ fn parse_layer(text: &str, source: &str) -> Result<Layer, ConfigError> {
             line: line_no,
             detail: format!("key {key}: {detail}"),
         })?;
-        let entry = Entry { value, source: source.into(), line: line_no };
+        let entry = Entry {
+            value,
+            source: source.into(),
+            line: line_no,
+        };
         let map = match &mut table {
             Some(map) => map,
             None => &mut layer.scalars,
@@ -473,7 +500,9 @@ fn parse_value(text: &str) -> Result<Raw, String> {
         return Err("a value is required".to_string());
     }
     if text.starts_with('"') {
-        let body = text.strip_prefix('"').and_then(|rest| rest.strip_suffix('"'));
+        let body = text
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'));
         let Some(body) = body else {
             return Err(format!("{text:?} is not a complete quoted string"));
         };
@@ -497,7 +526,10 @@ fn parse_value(text: &str) -> Result<Raw, String> {
         }
         return Ok(Raw::Str(out));
     }
-    if let Some(body) = text.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+    if let Some(body) = text
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
         let mut items = Vec::new();
         for piece in body.split(',') {
             let piece = piece.trim();
@@ -522,7 +554,9 @@ fn parse_value(text: &str) -> Result<Raw, String> {
     if text.chars().all(|c| c.is_ascii_digit() || c == '.') && text.contains('.') {
         return Ok(Raw::Dec(text.to_string()));
     }
-    Err(format!("{text:?} is not a string, boolean, integer, decimal or string array"))
+    Err(format!(
+        "{text:?} is not a string, boolean, integer, decimal or string array"
+    ))
 }
 
 /// One accepted key at the top level, in the order the design lists them.
@@ -562,7 +596,11 @@ fn merge(layers: &[Layer]) -> Result<Config, ConfigError> {
     }
     for (key, entry) in &merged {
         if !TOP_KEYS.contains(&key.as_str()) {
-            return Err(ConfigError::UnknownKey { source: entry.source.clone(), line: entry.line, key: key.clone() });
+            return Err(ConfigError::UnknownKey {
+                source: entry.source.clone(),
+                line: entry.line,
+                key: key.clone(),
+            });
         }
     }
     let mut config = Config::defaults();
@@ -601,7 +639,8 @@ fn parse_static_units(tables: &[BTreeMap<String, Entry>]) -> Result<Vec<StaticUn
                                 source: entry.source.clone(),
                                 line: entry.line,
                                 key: key.clone(),
-                                detail: "must be a non-empty relative cgroup name with no `..`".into(),
+                                detail: "must be a non-empty relative cgroup name with no `..`"
+                                    .into(),
                             });
                         }
                         cgroup = Some(value.clone());
@@ -619,7 +658,9 @@ fn parse_static_units(tables: &[BTreeMap<String, Entry>]) -> Result<Vec<StaticUn
         }
         let (Some(name), Some(cgroup)) = (name, cgroup) else {
             let entry = table.values().next();
-            let (source, line) = entry.map_or((String::from("<defaults>"), 0), |entry| (entry.source.clone(), entry.line));
+            let (source, line) = entry.map_or((String::from("<defaults>"), 0), |entry| {
+                (entry.source.clone(), entry.line)
+            });
             return Err(ConfigError::Value {
                 source,
                 line,
@@ -662,7 +703,13 @@ fn apply(config: &mut Config, key: &str, value: &Raw, entry: &Entry) -> Result<(
             "off" => config.mode = Mode::Off,
             "report" => config.mode = Mode::Report,
             "enforce" => config.mode = Mode::Enforce,
-            other => return Err(entry_value(entry, key, format!("{other:?} is not one of: off, report, enforce"))),
+            other => {
+                return Err(entry_value(
+                    entry,
+                    key,
+                    format!("{other:?} is not one of: off, report, enforce"),
+                ))
+            }
         },
         "tick_s" => config.tick_s = bounded_u64(value, entry, key, 1, 3600)?,
         "trigger_avg10" => config.trigger_avg10 = decimal_hundredths(value, entry, key)?,
@@ -675,33 +722,56 @@ fn apply(config: &mut Config, key: &str, value: &Raw, entry: &Entry) -> Result<(
         "victim_rule" => {
             let name = as_str(value, entry, key)?;
             let Some(rule) = VictimRule::from_name(&name) else {
-                return Err(entry_value(entry, key, format!("{name:?} is not one of: newest, refault, smallest-enough")));
+                return Err(entry_value(
+                    entry,
+                    key,
+                    format!("{name:?} is not one of: newest, refault, smallest-enough"),
+                ));
             };
             config.victim_rule = rule;
         }
-        "max_parked" => config.max_parked = u32::try_from(bounded_u64(value, entry, key, 0, 64)?).expect("bounded above"),
+        "max_parked" => {
+            config.max_parked =
+                u32::try_from(bounded_u64(value, entry, key, 0, 64)?).expect("bounded above")
+        }
         "max_park_s" => config.max_park_s = bounded_u64(value, entry, key, 1, 86_400)?,
         "never_park_last" => config.never_park_last = as_bool(value, entry, key)?,
         "thaw_grace_s" => config.thaw_grace_s = bounded_u64(value, entry, key, 0, 3600)?,
         "heartbeat_s" => config.heartbeat_s = bounded_u64(value, entry, key, 1, 3600)?,
         "missed_heartbeats" => {
-            config.missed_heartbeats = u32::try_from(bounded_u64(value, entry, key, 1, 100)?).expect("bounded above")
+            config.missed_heartbeats =
+                u32::try_from(bounded_u64(value, entry, key, 1, 100)?).expect("bounded above")
         }
-        "reclaim_chunk_bytes" => config.reclaim_chunk_bytes = bounded_u64(value, entry, key, 1, 1 << 34)?,
+        "reclaim_chunk_bytes" => {
+            config.reclaim_chunk_bytes = bounded_u64(value, entry, key, 1, 1 << 34)?
+        }
         "reclaim_max_chunks" => {
-            config.reclaim_max_chunks = u32::try_from(bounded_u64(value, entry, key, 0, 64)?).expect("bounded above")
+            config.reclaim_max_chunks =
+                u32::try_from(bounded_u64(value, entry, key, 0, 64)?).expect("bounded above")
         }
         "boot_grace_s" => config.boot_grace_s = bounded_u64(value, entry, key, 0, 3600)?,
         "allowed_ancestors" | "protected" => {
             let names = as_array(value, entry, key)?;
-            let which = if key == "allowed_ancestors" { "allowed_ancestors" } else { "protected" };
+            let which = if key == "allowed_ancestors" {
+                "allowed_ancestors"
+            } else {
+                "protected"
+            };
             for name in &names {
                 if name.trim().is_empty() || name.contains('/') {
-                    return Err(entry_value(entry, key, format!("{name:?} is not a slice name")));
+                    return Err(entry_value(
+                        entry,
+                        key,
+                        format!("{name:?} is not a slice name"),
+                    ));
                 }
             }
             if names.is_empty() {
-                return Err(entry_value(entry, key, format!("{which} must name at least one slice")));
+                return Err(entry_value(
+                    entry,
+                    key,
+                    format!("{which} must name at least one slice"),
+                ));
             }
             if which == "allowed_ancestors" {
                 config.allowed_ancestors = names;
@@ -730,7 +800,12 @@ fn apply(config: &mut Config, key: &str, value: &Raw, entry: &Entry) -> Result<(
 }
 
 fn entry_value(entry: &Entry, key: &str, detail: String) -> ConfigError {
-    ConfigError::Value { source: entry.source.clone(), line: entry.line, key: key.to_string(), detail }
+    ConfigError::Value {
+        source: entry.source.clone(),
+        line: entry.line,
+        key: key.to_string(),
+        detail,
+    }
 }
 
 fn as_str(value: &Raw, entry: &Entry, key: &str) -> Result<String, ConfigError> {
@@ -750,17 +825,32 @@ fn as_bool(value: &Raw, entry: &Entry, key: &str) -> Result<bool, ConfigError> {
 fn as_array(value: &Raw, entry: &Entry, key: &str) -> Result<Vec<String>, ConfigError> {
     match value {
         Raw::Array(items) => Ok(items.clone()),
-        _ => Err(entry_value(entry, key, "must be an array of quoted strings".to_string())),
+        _ => Err(entry_value(
+            entry,
+            key,
+            "must be an array of quoted strings".to_string(),
+        )),
     }
 }
 
-fn bounded_u64(value: &Raw, entry: &Entry, key: &str, min: u64, max: u64) -> Result<u64, ConfigError> {
+fn bounded_u64(
+    value: &Raw,
+    entry: &Entry,
+    key: &str,
+    min: u64,
+    max: u64,
+) -> Result<u64, ConfigError> {
     let Raw::Int(number) = value else {
         return Err(entry_value(entry, key, "must be an integer".to_string()));
     };
-    let number = u64::try_from(*number).map_err(|_| entry_value(entry, key, "must not be negative".to_string()))?;
+    let number = u64::try_from(*number)
+        .map_err(|_| entry_value(entry, key, "must not be negative".to_string()))?;
     if !(min..=max).contains(&number) {
-        return Err(entry_value(entry, key, format!("must be in {min}..={max}, got {number}")));
+        return Err(entry_value(
+            entry,
+            key,
+            format!("must be in {min}..={max}, got {number}"),
+        ));
     }
     Ok(number)
 }
@@ -768,10 +858,14 @@ fn bounded_u64(value: &Raw, entry: &Entry, key: &str, min: u64, max: u64) -> Res
 /// A decimal like `3.00` as integer hundredths; reuse [`crate::psi`]'s rule.
 fn decimal_hundredths(value: &Raw, entry: &Entry, key: &str) -> Result<u32, ConfigError> {
     let Raw::Dec(text) = value else {
-        return Err(entry_value(entry, key, "must be a decimal number such as 3.00".to_string()));
+        return Err(entry_value(
+            entry,
+            key,
+            "must be a decimal number such as 3.00".to_string(),
+        ));
     };
-    let hundredths = crate::psi::parse_avg10_public(text)
-        .map_err(|detail| entry_value(entry, key, detail))?;
+    let hundredths =
+        crate::psi::parse_avg10_public(text).map_err(|detail| entry_value(entry, key, detail))?;
     if hundredths > 10_000 {
         return Err(entry_value(entry, key, format!("{text} is above 100.00")));
     }
@@ -833,18 +927,18 @@ cgroup = "dev-buildkitd.slice"
     #[test]
     fn unknown_keys_and_bad_values_are_refused_with_a_line() {
         let cases = [
-            "mode = \"sleep\"\n",                 // not in the closed set
-            "mode = 1\n",                         // wrong kind
-            "ttl_s = 90\n",                       // not a config key: derived instead
-            "tick_s = 0\n",                       // below the accepted range
-            "tick_s = 9999\n",                    // above it
-            "trigger_avg10 = 3\n",                // a decimal is required
-            "allowed_ancestors = []\n",           // at least one
-            "allowed_ancestors = \"dev.slice\"\n", // not an array
-            "registrant = \"yes\"\n",             // not a boolean
+            "mode = \"sleep\"\n",                       // not in the closed set
+            "mode = 1\n",                               // wrong kind
+            "ttl_s = 90\n",                             // not a config key: derived instead
+            "tick_s = 0\n",                             // below the accepted range
+            "tick_s = 9999\n",                          // above it
+            "trigger_avg10 = 3\n",                      // a decimal is required
+            "allowed_ancestors = []\n",                 // at least one
+            "allowed_ancestors = \"dev.slice\"\n",      // not an array
+            "registrant = \"yes\"\n",                   // not a boolean
             "[[unit]]\nname = \"x\"\ncgroup = \"y\"\n", // unknown table
-            "[limits]\nmax = 1\n",                // nested table
-            "mode = \"report\"\nmode = \"report\"\n", // twice in one file
+            "[limits]\nmax = 1\n",                      // nested table
+            "mode = \"report\"\nmode = \"report\"\n",   // twice in one file
         ];
         for text in cases {
             // A refusal may come from the syntax layer or from the semantic layer; both are
@@ -856,18 +950,26 @@ cgroup = "dev-buildkitd.slice"
             assert!(
                 matches!(
                     error,
-                    ConfigError::Value { .. } | ConfigError::UnknownKey { .. } | ConfigError::Syntax { .. }
+                    ConfigError::Value { .. }
+                        | ConfigError::UnknownKey { .. }
+                        | ConfigError::Syntax { .. }
                 ),
                 "{text:?} -> {error:?}"
             );
-            assert!(error.to_string().starts_with("case.toml"), "{text:?} -> {error}");
+            assert!(
+                error.to_string().starts_with("case.toml"),
+                "{text:?} -> {error}"
+            );
         }
         // The first of them names its own line, so an operator can find it.
-        if let Err(ConfigError::Value { line, .. }) = merge(&[parse_layer("tick_s = 0", "case.toml").expect("syntax")]) {
+        if let Err(ConfigError::Value { line, .. }) =
+            merge(&[parse_layer("tick_s = 0", "case.toml").expect("syntax")])
+        {
             assert_eq!(line, 1);
         } else {
             panic!("tick_s = 0 must be refused");
-        }    }
+        }
+    }
 
     #[test]
     fn duplicate_static_units_and_incomplete_tables_are_refused() {
@@ -875,7 +977,8 @@ cgroup = "dev-buildkitd.slice"
         let error = merge(&[parse_layer(text, "t").expect("syntax")]).expect_err("duplicate");
         assert!(error.to_string().contains("duplicate static unit name"));
         let incomplete = "[[static_unit]]\nname = \"a\"\n";
-        let error = merge(&[parse_layer(incomplete, "t").expect("syntax")]).expect_err("incomplete");
+        let error =
+            merge(&[parse_layer(incomplete, "t").expect("syntax")]).expect_err("incomplete");
         assert!(error.to_string().contains("both `name` and `cgroup`"));
         let unknown = "[[static_unit]]\nname = \"a\"\ncgroup = \"x\"\nscore = 3\n";
         let error = merge(&[parse_layer(unknown, "t").expect("syntax")]).expect_err("unknown key");
@@ -884,10 +987,16 @@ cgroup = "dev-buildkitd.slice"
 
     #[test]
     fn enforce_is_refused_at_the_run_boundary_with_one_line() {
-        let config = merge(&[parse_layer("mode = \"enforce\"", "t").expect("syntax")]).expect("loads");
-        let refusal = config.check_for_run().expect_err("P1 cannot honour enforce");
+        let config =
+            merge(&[parse_layer("mode = \"enforce\"", "t").expect("syntax")]).expect("loads");
+        let refusal = config
+            .check_for_run()
+            .expect_err("P1 cannot honour enforce");
         let text = refusal.to_string();
-        assert!(text.starts_with("mode=enforce is not available in this build"), "{text}");
+        assert!(
+            text.starts_with("mode=enforce is not available in this build"),
+            "{text}"
+        );
         assert!(text.contains("no act path"), "{text}");
         assert_eq!(text.lines().count(), 1, "{text}");
         // It is valid vocabulary: parsing succeeds so `status` can report it.

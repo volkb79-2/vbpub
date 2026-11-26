@@ -15,25 +15,42 @@ use std::path::{Path, PathBuf};
 /// Control-file names a P1 build must never mention in executable code.
 /// They appear in prose (comments and doc comments) on purpose: the design's
 /// vocabulary has to be nameable to be discussed.
-const FORBIDDEN_TARGETS: [&str; 4] = ["cgroup.freeze", "cgroup.events", "memory.reclaim", "memory.max"];
+const FORBIDDEN_TARGETS: [&str; 4] = [
+    "cgroup.freeze",
+    "cgroup.events",
+    "memory.reclaim",
+    "memory.max",
+];
 
 /// Signal and kill entry points, which P1 also must not reach.
-const FORBIDDEN_CALLS: [&str; 4] = ["libc::kill", "nix::sys::signal", "Command::new(\"kill", "process::abort"];
+const FORBIDDEN_CALLS: [&str; 4] = [
+    "libc::kill",
+    "nix::sys::signal",
+    "Command::new(\"kill",
+    "process::abort",
+];
 
 /// The only files allowed to write anything at all.
 const WRITERS: [&str; 2] = ["src/events.rs", "src/testutil.rs"];
 
 /// Write APIs. A cgroup write can only exist if one of these is called from a
 /// file that is not the journal.
-const WRITE_CALLS: [&str; 6] =
-    ["fs::write", "File::create", "OpenOptions::new", "fs::remove_file", "fs::remove_dir", "fs::rename"];
+const WRITE_CALLS: [&str; 6] = [
+    "fs::write",
+    "File::create",
+    "OpenOptions::new",
+    "fs::remove_file",
+    "fs::remove_dir",
+    "fs::rename",
+];
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn sources(dir: &Path, into: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(dir).unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()));
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()));
     for entry in entries {
         let path = entry.expect("a directory entry").path();
         if path.is_dir() {
@@ -64,22 +81,33 @@ fn no_source_file_reaches_a_cgroup_control_file_or_a_signal() {
     let project = manifest_dir();
     let mut files = Vec::new();
     sources(&project.join("src"), &mut files);
-    assert!(!files.is_empty(), "no source files found under {}", project.join("src").display());
+    assert!(
+        !files.is_empty(),
+        "no source files found under {}",
+        project.join("src").display()
+    );
 
     let mut problems = Vec::new();
     for file in &files {
         let name = relative(&project, file);
-        let text = std::fs::read_to_string(file).unwrap_or_else(|error| panic!("cannot read {name}: {error}"));
+        let text = std::fs::read_to_string(file)
+            .unwrap_or_else(|error| panic!("cannot read {name}: {error}"));
         for (index, line) in text.lines().enumerate() {
             let code = code_of(line);
             for target in FORBIDDEN_TARGETS {
                 if code.contains(target) {
-                    problems.push(format!("{name}:{}: {target} appears in executable code", index + 1));
+                    problems.push(format!(
+                        "{name}:{}: {target} appears in executable code",
+                        index + 1
+                    ));
                 }
             }
             for call in FORBIDDEN_CALLS {
                 if code.contains(call) {
-                    problems.push(format!("{name}:{}: {call} appears in executable code", index + 1));
+                    problems.push(format!(
+                        "{name}:{}: {call} appears in executable code",
+                        index + 1
+                    ));
                 }
             }
             for write in WRITE_CALLS {
@@ -92,7 +120,11 @@ fn no_source_file_reaches_a_cgroup_control_file_or_a_signal() {
             }
         }
     }
-    assert!(problems.is_empty(), "the observe cut must compile no act path:\n{}", problems.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "the observe cut must compile no act path:\n{}",
+        problems.join("\n")
+    );
 }
 
 #[test]
@@ -104,7 +136,10 @@ fn the_journal_and_the_fixture_helper_are_the_whole_write_surface() {
     let project = manifest_dir();
     for writer in WRITERS {
         let path = project.join(writer);
-        assert!(path.is_file(), "{writer} is declared a writer but does not exist");
+        assert!(
+            path.is_file(),
+            "{writer} is declared a writer but does not exist"
+        );
         let text = std::fs::read_to_string(&path).expect("a declared writer is readable");
         assert!(
             WRITE_CALLS.iter().any(|call| text.contains(call)),
@@ -120,7 +155,8 @@ fn the_binary_and_the_library_refuse_enforce_with_one_line() {
     // than inventing a second sentence.
     assert!(thrashguard::ENFORCE_REFUSAL.starts_with("mode=enforce is not available in this build"));
     assert_eq!(thrashguard::ENFORCE_REFUSAL.lines().count(), 1);
-    let main = std::fs::read_to_string(manifest_dir().join("src/main.rs")).expect("main.rs is readable");
+    let main =
+        std::fs::read_to_string(manifest_dir().join("src/main.rs")).expect("main.rs is readable");
     assert!(
         main.contains("check_for_run"),
         "the run boundary must call Config::check_for_run, not re-implement the refusal"

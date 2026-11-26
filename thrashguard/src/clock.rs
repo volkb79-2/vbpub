@@ -36,7 +36,9 @@ pub struct SystemClock {
 impl SystemClock {
     /// A clock whose monotonic zero is now.
     pub fn new() -> Self {
-        Self { start: Instant::now() }
+        Self {
+            start: Instant::now(),
+        }
     }
 }
 
@@ -69,7 +71,9 @@ pub struct ManualClock {
 impl ManualClock {
     /// A clock at the given monotonic and wall readings (nanoseconds).
     pub fn at(mono_ns: u64, wall_ns: u64) -> Self {
-        Self { state: Mutex::new((mono_ns, wall_ns)) }
+        Self {
+            state: Mutex::new((mono_ns, wall_ns)),
+        }
     }
 
     /// A clock at zero on both readings, plus the given wall stamp.

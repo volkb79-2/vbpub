@@ -72,7 +72,12 @@ pub struct Event {
 
 impl Event {
     /// A decision row: `seconds: 0` and `simulated: true` are set from `kind`.
-    pub fn decision(kind: &'static str, reason: &'static str, mode: &'static str, at_ns: u64) -> Self {
+    pub fn decision(
+        kind: &'static str,
+        reason: &'static str,
+        mode: &'static str,
+        at_ns: u64,
+    ) -> Self {
         Self {
             event: kind,
             unit: None,
@@ -89,7 +94,12 @@ impl Event {
     }
 
     /// Attach the unit and its scope.
-    pub fn with_scope(mut self, unit: Option<&str>, scope: Option<&str>, cgroup_id: Option<u64>) -> Self {
+    pub fn with_scope(
+        mut self,
+        unit: Option<&str>,
+        scope: Option<&str>,
+        cgroup_id: Option<u64>,
+    ) -> Self {
         self.unit = unit.map(str::to_string);
         self.cgroup = scope.map(str::to_string);
         self.cgroup_id = cgroup_id;
@@ -119,15 +129,26 @@ impl Event {
             ("cgroup".to_string(), optional(self.cgroup.clone())),
             (
                 "cgroup_id".to_string(),
-                self.cgroup_id.map_or(Value::Null, |id| Value::Integer(id as i64)),
+                self.cgroup_id
+                    .map_or(Value::Null, |id| Value::Integer(id as i64)),
             ),
-            ("mono_start_ns".to_string(), Value::Integer(self.mono_start_ns as i64)),
-            ("mono_end_ns".to_string(), Value::Integer(self.mono_end_ns as i64)),
+            (
+                "mono_start_ns".to_string(),
+                Value::Integer(self.mono_start_ns as i64),
+            ),
+            (
+                "mono_end_ns".to_string(),
+                Value::Integer(self.mono_end_ns as i64),
+            ),
             ("seconds".to_string(), Value::Integer(self.seconds() as i64)),
             ("mode".to_string(), Value::String(self.mode.to_string())),
             ("reason".to_string(), Value::String(self.reason.to_string())),
             ("simulated".to_string(), Value::Bool(self.simulated)),
-            ("reclaim_bytes".to_string(), self.reclaim_bytes.map_or(Value::Null, |b| Value::Integer(b as i64))),
+            (
+                "reclaim_bytes".to_string(),
+                self.reclaim_bytes
+                    .map_or(Value::Null, |b| Value::Integer(b as i64)),
+            ),
             ("detail".to_string(), optional(self.detail.clone())),
         ])
     }
@@ -161,7 +182,13 @@ impl Journal {
     pub fn new(dir: impl Into<PathBuf>, boot_id: &str) -> io::Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir, boot_id: boot_id.to_string(), seq: 0, rows: Vec::new(), truncated_from: None })
+        Ok(Self {
+            dir,
+            boot_id: boot_id.to_string(),
+            seq: 0,
+            rows: Vec::new(),
+            truncated_from: None,
+        })
     }
 
     /// The directory the journal lives in.
@@ -195,7 +222,10 @@ impl Journal {
         self.seq = self.seq.saturating_add(1);
         let value = event.to_value(&self.boot_id, self.seq);
         self.rotate_if_full()?;
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(self.file())?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.file())?;
         let mut line = value.to_json();
         line.push('\n');
         file.write_all(line.as_bytes())?;
@@ -230,7 +260,10 @@ impl Journal {
 
     /// Rows above `since_seq` that this process still holds in memory.
     pub fn rows_since(&self, since_seq: u64) -> (&[Value], bool) {
-        let truncated = self.truncated_from.map(|oldest| since_seq < oldest).unwrap_or(false);
+        let truncated = self
+            .truncated_from
+            .map(|oldest| since_seq < oldest)
+            .unwrap_or(false);
         let first = self
             .rows
             .iter()
@@ -266,14 +299,33 @@ mod tests {
         assert_eq!(row.get("v").and_then(Value::as_str), Some(EVENT_VERSION));
         assert_eq!(row.get("boot_id").and_then(Value::as_str), Some(BOOT));
         assert_eq!(row.get("seq").and_then(Value::as_i64), Some(1));
-        assert_eq!(row.get("event").and_then(Value::as_str), Some("would-freeze"));
-        assert_eq!(row.get("seconds").and_then(Value::as_i64), Some(0), "P1 records no interval");
-        assert_eq!(row.get("simulated").and_then(Value::as_bool), Some(true), "a decision, not an effect");
-        assert_eq!(row.get("reclaim_bytes"), Some(&Value::Null), "nothing is reclaimed in P1");
+        assert_eq!(
+            row.get("event").and_then(Value::as_str),
+            Some("would-freeze")
+        );
+        assert_eq!(
+            row.get("seconds").and_then(Value::as_i64),
+            Some(0),
+            "P1 records no interval"
+        );
+        assert_eq!(
+            row.get("simulated").and_then(Value::as_bool),
+            Some(true),
+            "a decision, not an effect"
+        );
+        assert_eq!(
+            row.get("reclaim_bytes"),
+            Some(&Value::Null),
+            "nothing is reclaimed in P1"
+        );
         let file = std::fs::read_to_string(journal.file()).expect("premature");
         let lines: Vec<&str> = file.lines().collect();
         assert_eq!(lines.len(), 1, "one object per line");
-        assert_eq!(lines[0], row.to_json(), "the file holds exactly the replied bytes");
+        assert_eq!(
+            lines[0],
+            row.to_json(),
+            "the file holds exactly the replied bytes"
+        );
     }
 
     #[test]
@@ -281,13 +333,22 @@ mod tests {
         let tree = TempTree::new("events-rotate");
         let mut journal = journal(&tree);
         for _ in 0..3 {
-            journal.append(&Event::decision("would-thaw", "pressure", "report", 2)).expect("append");
+            journal
+                .append(&Event::decision("would-thaw", "pressure", "report", 2))
+                .expect("append");
         }
         assert_eq!(journal.seq(), 3);
         // A journal whose file is already at the bound rotates on the NEXT append,
         // so the current line is never the one split away from its file.
         std::fs::write(journal.file(), "x".repeat(ROTATE_BYTES as usize)).expect("fill");
-        journal.append(&Event::decision("unknown-pressure", "unreadable_psi", "report", 3)).expect("append");
+        journal
+            .append(&Event::decision(
+                "unknown-pressure",
+                "unreadable_psi",
+                "report",
+                3,
+            ))
+            .expect("append");
         assert_eq!(journal.seq(), 4, "seq keeps counting across a rotation");
         let rotated = std::fs::read_to_string(journal.rotated()).expect("rotated file");
         assert!(rotated.len() as u64 >= ROTATE_BYTES);
@@ -301,22 +362,33 @@ mod tests {
         let tree = TempTree::new("events-page");
         let mut journal = journal(&tree);
         for _ in 0..2 {
-            journal.append(&Event::decision("would-freeze", "pressure", "report", 5)).expect("append");
+            journal
+                .append(&Event::decision("would-freeze", "pressure", "report", 5))
+                .expect("append");
         }
         let (rows, truncated) = journal.rows_since(0);
         assert_eq!(rows.len(), 2);
         assert!(!truncated);
         let (rows, truncated) = journal.rows_since(2);
-        assert_eq!(rows.len(), 0, "asking for the last row returns what followed it");
+        assert_eq!(
+            rows.len(),
+            0,
+            "asking for the last row returns what followed it"
+        );
         assert!(!truncated);
         // Fill the ring past its window: the oldest rows drop and the reply says so
         // instead of reporting a silently short page.
         for _ in 0..RECENT_ROWS {
-            journal.append(&Event::decision("would-freeze", "pressure", "report", 6)).expect("append");
+            journal
+                .append(&Event::decision("would-freeze", "pressure", "report", 6))
+                .expect("append");
         }
         let (rows, truncated) = journal.rows_since(1);
         assert_eq!(rows.len(), RECENT_ROWS);
-        assert!(truncated, "a client behind the window is told it missed rows");
+        assert!(
+            truncated,
+            "a client behind the window is told it missed rows"
+        );
         assert_eq!(journal.retained(), RECENT_ROWS);
     }
 
@@ -324,9 +396,21 @@ mod tests {
     fn a_missing_boot_id_is_absent_and_never_invented() {
         let tree = TempTree::new("events-boot");
         let path = tree.write("boot_id", "  b0a1-4f2c  \n");
-        assert_eq!(read_boot_id(&path).as_deref(), Some(BOOT), "the read is trimmed");
+        assert_eq!(
+            read_boot_id(&path).as_deref(),
+            Some(BOOT),
+            "the read is trimmed"
+        );
         tree.write("empty", "\n");
-        assert_eq!(read_boot_id(&tree.at("empty")), None, "an empty file is not an id");
-        assert_eq!(read_boot_id(&tree.at("absent")), None, "an absent file is not an id");
+        assert_eq!(
+            read_boot_id(&tree.at("empty")),
+            None,
+            "an empty file is not an id"
+        );
+        assert_eq!(
+            read_boot_id(&tree.at("absent")),
+            None,
+            "an absent file is not an id"
+        );
     }
 }

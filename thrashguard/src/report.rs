@@ -99,7 +99,9 @@ pub enum Would {
 pub fn effective_rule(config: &Config) -> (VictimRule, Option<&'static str>) {
     match config.victim_rule {
         VictimRule::Newest => (VictimRule::Newest, None),
-        VictimRule::Refault | VictimRule::SmallestEnough => (VictimRule::Newest, Some("rule-unknown")),
+        VictimRule::Refault | VictimRule::SmallestEnough => {
+            (VictimRule::Newest, Some("rule-unknown"))
+        }
     }
 }
 
@@ -115,7 +117,9 @@ pub fn choose_victim(
     thawed_at_ns: &dyn Fn(&str) -> Option<u64>,
 ) -> Would {
     if state.candidates == 0 {
-        return Would::Hold { why: Why::NoCandidates };
+        return Would::Hold {
+            why: Why::NoCandidates,
+        };
     }
     let cap = usize::try_from(config.max_parked).unwrap_or(usize::MAX);
     let invariant_cap = if config.never_park_last {
@@ -124,10 +128,14 @@ pub fn choose_victim(
         usize::MAX
     };
     if state.parked >= cap && cap != usize::MAX {
-        return Would::Hold { why: Why::MaxParked };
+        return Would::Hold {
+            why: Why::MaxParked,
+        };
     }
     if state.parked >= invariant_cap {
-        return Would::Hold { why: Why::NeverParkLast };
+        return Would::Hold {
+            why: Why::NeverParkLast,
+        };
     }
     let grace_ns = config.thaw_grace_s.saturating_mul(1_000_000_000);
     for candidate in store.newest_first() {
@@ -144,7 +152,9 @@ pub fn choose_victim(
             rule: effective_rule(config).0,
         };
     }
-    Would::Hold { why: Why::ThawGrace }
+    Would::Hold {
+        why: Why::ThawGrace,
+    }
 }
 
 /// The unit name a candidate is reported under: the registrant's `run` when it
@@ -207,11 +217,26 @@ mod tests {
     fn the_newest_rule_picks_the_most_recently_registered_unit() {
         let config = Config::defaults();
         let store = store_with(&["old", "middle", "newest"]);
-        let state = ParkingState { parked: 0, candidates: 3 };
+        let state = ParkingState {
+            parked: 0,
+            candidates: 3,
+        };
         let would = choose_victim(&config, &store, state, 0, &nothing_thawed);
-        let Would::Park { id, unit, cgroup, cgroup_id, rule } = would else { panic!("{would:?}") };
+        let Would::Park {
+            id,
+            unit,
+            cgroup,
+            cgroup_id,
+            rule,
+        } = would
+        else {
+            panic!("{would:?}")
+        };
         assert_eq!(id, "newest");
-        assert_eq!(unit, "run-newest", "the run id is the unit name the events carry");
+        assert_eq!(
+            unit, "run-newest",
+            "the run id is the unit name the events carry"
+        );
         assert_eq!(cgroup, "docker-newest.scope");
         assert_eq!(cgroup_id, 102, "the inode comes from the resolved scope");
         assert_eq!(rule, VictimRule::Newest);
@@ -221,8 +246,16 @@ mod tests {
     fn an_empty_candidate_set_holds_with_a_reason_that_is_not_a_silent_noop() {
         let config = Config::defaults();
         let store = store_with(&[]);
-        let state = ParkingState { parked: 0, candidates: 0 };
-        assert_eq!(choose_victim(&config, &store, state, 0, &nothing_thawed), Would::Hold { why: Why::NoCandidates });
+        let state = ParkingState {
+            parked: 0,
+            candidates: 0,
+        };
+        assert_eq!(
+            choose_victim(&config, &store, state, 0, &nothing_thawed),
+            Would::Hold {
+                why: Why::NoCandidates
+            }
+        );
     }
 
     #[test]
@@ -230,20 +263,30 @@ mod tests {
         let mut config = Config::defaults();
         config.max_parked = 2;
         let store = store_with(&["a", "b", "c"]);
-        let at_cap = ParkingState { parked: 2, candidates: 3 };
+        let at_cap = ParkingState {
+            parked: 2,
+            candidates: 3,
+        };
         assert_eq!(
             choose_victim(&config, &store, at_cap, 0, &nothing_thawed),
-            Would::Hold { why: Why::MaxParked },
+            Would::Hold {
+                why: Why::MaxParked
+            },
             "two parked is the configured maximum"
         );
         // `never_park_last` is the tighter bound when the candidate set is small:
         // of two candidates only one may be parked, whatever `max_parked` allows.
         let small = store_with(&["a", "b"]);
         config.max_parked = 8;
-        let one_of_two = ParkingState { parked: 1, candidates: 2 };
+        let one_of_two = ParkingState {
+            parked: 1,
+            candidates: 2,
+        };
         assert_eq!(
             choose_victim(&config, &small, one_of_two, 0, &nothing_thawed),
-            Would::Hold { why: Why::NeverParkLast },
+            Would::Hold {
+                why: Why::NeverParkLast
+            },
             "something must always be able to run"
         );
         // With the invariant disabled, that same state parks the second unit.
@@ -257,22 +300,34 @@ mod tests {
         let mut config = Config::defaults();
         config.thaw_grace_s = 30;
         let store = store_with(&["older", "fresh"]);
-        let state = ParkingState { parked: 0, candidates: 2 };
+        let state = ParkingState {
+            parked: 0,
+            candidates: 2,
+        };
         const S: u64 = 1_000_000_000;
         let thawed = |id: &str| if id == "fresh" { Some(0) } else { None };
         // One second after the thaw the grace (30 s) still holds; at exactly 30 s
         // it is over, so the newer unit wins again.
         let would = choose_victim(&config, &store, state, S, &thawed);
-        let Would::Park { id, .. } = would else { panic!("{would:?}") };
-        assert_eq!(id, "older", "a unit inside its grace window is not the victim");
+        let Would::Park { id, .. } = would else {
+            panic!("{would:?}")
+        };
+        assert_eq!(
+            id, "older",
+            "a unit inside its grace window is not the victim"
+        );
         let would = choose_victim(&config, &store, state, 30 * S, &thawed);
-        let Would::Park { id, .. } = would else { panic!("{would:?}") };
+        let Would::Park { id, .. } = would else {
+            panic!("{would:?}")
+        };
         assert_eq!(id, "fresh", "the newer unit wins once its grace has passed");
         // Every candidate inside its grace is a named hold, never a panic or a park.
         let all_thawed = |_id: &str| Some(0);
         assert_eq!(
             choose_victim(&config, &store, state, 5 * S, &all_thawed),
-            Would::Hold { why: Why::ThawGrace }
+            Would::Hold {
+                why: Why::ThawGrace
+            }
         );
     }
 
@@ -280,12 +335,23 @@ mod tests {
     fn a_rule_with_no_readable_input_says_unknown_and_orders_by_newest() {
         let mut config = Config::defaults();
         config.victim_rule = VictimRule::Refault;
-        assert_eq!(effective_rule(&config), (VictimRule::Newest, Some("rule-unknown")));
+        assert_eq!(
+            effective_rule(&config),
+            (VictimRule::Newest, Some("rule-unknown"))
+        );
         let store = store_with(&["a", "b"]);
-        let state = ParkingState { parked: 0, candidates: 2 };
+        let state = ParkingState {
+            parked: 0,
+            candidates: 2,
+        };
         let would = choose_victim(&config, &store, state, 0, &nothing_thawed);
-        let Would::Park { id, rule, .. } = would else { panic!("{would:?}") };
-        assert_eq!(id, "b", "never a zero refault rate: the newest order still decides");
+        let Would::Park { id, rule, .. } = would else {
+            panic!("{would:?}")
+        };
+        assert_eq!(
+            id, "b",
+            "never a zero refault rate: the newest order still decides"
+        );
         assert_eq!(rule, VictimRule::Newest);
         config.victim_rule = VictimRule::SmallestEnough;
         assert_eq!(effective_rule(&config).1, Some("rule-unknown"));
@@ -313,16 +379,23 @@ mod tests {
                 last_heartbeat_ns: 0,
             })
             .expect("register");
-        let state = ParkingState { parked: 0, candidates: 2 };
+        let state = ParkingState {
+            parked: 0,
+            candidates: 2,
+        };
         let would = choose_victim(&config, &store, state, 0, &nothing_thawed);
-        let Would::Park { id, .. } = would else { panic!("{would:?}") };
+        let Would::Park { id, .. } = would else {
+            panic!("{would:?}")
+        };
         assert_eq!(id, "freezable-1", "the last-resort unit is not first");
         // A unit without a `run` is reported under its id, not under an empty name.
         let mut thaw_map: BTreeMap<&str, u64> = BTreeMap::new();
         thaw_map.insert("freezable-1", 0);
         let thawed = |candidate: &str| thaw_map.get(candidate).copied();
         let would = choose_victim(&config, &store, state, 100, &thawed);
-        let Would::Park { id, unit, .. } = would else { panic!("{would:?}") };
+        let Would::Park { id, unit, .. } = would else {
+            panic!("{would:?}")
+        };
         assert_eq!(id, "last");
         assert_eq!(unit, "last");
     }

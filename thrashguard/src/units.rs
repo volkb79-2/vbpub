@@ -138,7 +138,10 @@ impl Refusal {
     /// One line for a journal entry, a WARN or a `candidates` row.
     pub fn detail(&self) -> String {
         match self {
-            Self::NoneFound { container, searched } => format!(
+            Self::NoneFound {
+                container,
+                searched,
+            } => format!(
                 "no {}{SCOPE_SUFFIX} for container {container:?} under any of {searched:?}",
                 SCOPE_PREFIX
             ),
@@ -150,7 +153,9 @@ impl Refusal {
             Self::Protected { container, path } => {
                 format!("container {container:?} resolves only under the protected path {path}")
             }
-            Self::Malformed { container, detail } => format!("{container:?} is not a container: {detail}"),
+            Self::Malformed { container, detail } => {
+                format!("{container:?} is not a container: {detail}")
+            }
             Self::Unreadable { path, detail } => format!("{path} cannot be read: {detail}"),
         }
     }
@@ -200,8 +205,13 @@ pub fn scope_name(container: &str) -> Result<String, Refusal> {
     if body.is_empty() {
         return Err(malformed("the scope name has an empty container id"));
     }
-    if body.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')) {
-        return Err(malformed("a container id or name is [A-Za-z0-9_.-] only; a path is not accepted"));
+    if body
+        .chars()
+        .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-'))
+    {
+        return Err(malformed(
+            "a container id or name is [A-Za-z0-9_.-] only; a path is not accepted",
+        ));
     }
     if body.contains("..") || body == "." {
         return Err(malformed("`.` and `..` are not container ids"));
@@ -228,11 +238,7 @@ impl Found {
 ///
 /// `root` is the injected cgroup root: production passes the host's cgroup root,
 /// tests pass a temp tree (design §5, D9). Nothing here writes anything.
-pub fn resolve_container(
-    root: &Path,
-    container: &str,
-    config: &Config,
-) -> Result<Scope, Refusal> {
+pub fn resolve_container(root: &Path, container: &str, config: &Config) -> Result<Scope, Refusal> {
     let name = scope_name(container)?;
     let found = walk(root, &name, &config.allowed_ancestors, &config.protected)?;
     decide(container, found, &config.allowed_ancestors)
@@ -259,9 +265,18 @@ pub fn resolve_static_unit(
     if !unit.cgroup.contains('/') && unit.cgroup.ends_with(SCOPE_SUFFIX) {
         return resolve_container(root, &unit.cgroup, config).map_err(|refusal| match refusal {
             // A static unit's refusal names the /etc entry, not a container.
-            Refusal::NoneFound { searched, .. } => Refusal::NoneFound { container: unit.name.clone(), searched },
-            Refusal::Several { matches, .. } => Refusal::Several { container: unit.name.clone(), matches },
-            Refusal::Protected { path, .. } => Refusal::Protected { container: unit.name.clone(), path },
+            Refusal::NoneFound { searched, .. } => Refusal::NoneFound {
+                container: unit.name.clone(),
+                searched,
+            },
+            Refusal::Several { matches, .. } => Refusal::Several {
+                container: unit.name.clone(),
+                matches,
+            },
+            Refusal::Protected { path, .. } => Refusal::Protected {
+                container: unit.name.clone(),
+                path,
+            },
             other => other,
         });
     }
@@ -274,21 +289,33 @@ pub fn resolve_static_unit(
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Refusal::NoneFound { container: unit.name.clone(), searched: vec![relative] })
+            return Err(Refusal::NoneFound {
+                container: unit.name.clone(),
+                searched: vec![relative],
+            })
         }
         // An existing but unreadable path is NOT "absent": that would be a claim
         // the guard cannot make from a failed read.
         Err(error) => {
-            return Err(Refusal::Unreadable { path: path.display().to_string(), detail: error.to_string() })
+            return Err(Refusal::Unreadable {
+                path: path.display().to_string(),
+                detail: error.to_string(),
+            })
         }
     };
     if !metadata.is_dir() {
         return Err(Refusal::Malformed {
             container: unit.name.clone(),
-            detail: format!("[[static_unit]] {} names a cgroup, and {relative} is not a directory", unit.name),
+            detail: format!(
+                "[[static_unit]] {} names a cgroup, and {relative} is not a directory",
+                unit.name
+            ),
         });
     }
-    if let Some(protected) = components.iter().find(|component| config.protected.iter().any(|p| p == *component)) {
+    if let Some(protected) = components
+        .iter()
+        .find(|component| config.protected.iter().any(|p| p == *component))
+    {
         return Err(Refusal::Protected {
             container: unit.name.clone(),
             path: format!("{relative} is under the protected ancestor {protected}"),
@@ -372,10 +399,19 @@ fn walk(
             let name = entry.file_name().to_string_lossy().into_owned();
             let mut components = ancestors.clone();
             components.push(name.clone());
-            let under_allowed = ancestors.iter().any(|component| allowed.iter().any(|a| a == component));
-            let under_protected = ancestors.iter().any(|component| protected.iter().any(|p| p == component));
+            let under_allowed = ancestors
+                .iter()
+                .any(|component| allowed.iter().any(|a| a == component));
+            let under_protected = ancestors
+                .iter()
+                .any(|component| protected.iter().any(|p| p == component));
             if name == scope {
-                found.push(Found { components, path: entry.path(), under_allowed, under_protected });
+                found.push(Found {
+                    components,
+                    path: entry.path(),
+                    under_allowed,
+                    under_protected,
+                });
                 // The scope is a leaf: nothing below it is another match of the
                 // same unit that could beat it, and descending would only cost time.
                 continue;
@@ -385,7 +421,10 @@ fn walk(
     }
     if found.is_empty() {
         if let Some((path, detail)) = errors.first() {
-            return Err(Refusal::Unreadable { path: path.clone(), detail: detail.clone() });
+            return Err(Refusal::Unreadable {
+                path: path.clone(),
+                detail: detail.clone(),
+            });
         }
     }
     Ok(found)
@@ -393,18 +432,31 @@ fn walk(
 
 /// Choose the one scope a match list describes, or name the refusal.
 fn decide(container: &str, found: Vec<Found>, allowed: &[String]) -> Result<Scope, Refusal> {
-    let admissible: Vec<&Found> = found.iter().filter(|f| f.under_allowed && !f.under_protected).collect();
+    let admissible: Vec<&Found> = found
+        .iter()
+        .filter(|f| f.under_allowed && !f.under_protected)
+        .collect();
     if admissible.is_empty() {
         if let Some(protected) = found.iter().find(|f| f.under_protected) {
-            return Err(Refusal::Protected { container: container.to_string(), path: protected.relative() });
+            return Err(Refusal::Protected {
+                container: container.to_string(),
+                path: protected.relative(),
+            });
         }
         return Err(Refusal::NoneFound {
             container: container.to_string(),
             searched: allowed.to_vec(),
         });
     }
-    let shallowest = admissible.iter().map(|f| f.components.len()).min().expect("a non-empty list has a minimum");
-    let ties: Vec<&&Found> = admissible.iter().filter(|f| f.components.len() == shallowest).collect();
+    let shallowest = admissible
+        .iter()
+        .map(|f| f.components.len())
+        .min()
+        .expect("a non-empty list has a minimum");
+    let ties: Vec<&&Found> = admissible
+        .iter()
+        .filter(|f| f.components.len() == shallowest)
+        .collect();
     if ties.len() > 1 {
         return Err(Refusal::Several {
             container: container.to_string(),
@@ -412,12 +464,23 @@ fn decide(container: &str, found: Vec<Found>, allowed: &[String]) -> Result<Scop
         });
     }
     let winner = ties.first().copied().copied().expect("exactly one tie");
-    let shadowed = admissible.iter().filter(|f| f.components.len() != shallowest).map(|f| f.relative()).collect();
+    let shadowed = admissible
+        .iter()
+        .filter(|f| f.components.len() != shallowest)
+        .map(|f| f.relative())
+        .collect();
     let cgroup_id = std::fs::metadata(&winner.path)
-        .map_err(|error| Refusal::Unreadable { path: winner.path.display().to_string(), detail: error.to_string() })?
+        .map_err(|error| Refusal::Unreadable {
+            path: winner.path.display().to_string(),
+            detail: error.to_string(),
+        })?
         .ino();
     Ok(Scope {
-        name: winner.components.last().cloned().expect("a match has components"),
+        name: winner
+            .components
+            .last()
+            .cloned()
+            .expect("a match has components"),
         relative: winner.relative(),
         path: winner.path.clone(),
         cgroup_id,
@@ -547,7 +610,11 @@ pub struct Store {
 impl Store {
     /// An empty store whose expiry is `ttl_s` seconds of silence.
     pub fn new(ttl_s: u64) -> Self {
-        Self { ttl_s, next_seq: 0, entries: BTreeMap::new() }
+        Self {
+            ttl_s,
+            next_seq: 0,
+            entries: BTreeMap::new(),
+        }
     }
 
     /// A store whose expiry follows the configuration (design §3, M2).
@@ -591,17 +658,28 @@ impl Store {
     /// id would share a heartbeat and one of them would expire silently.
     pub fn register(&mut self, mut registration: Registration) -> Result<Registration, StoreError> {
         if self.entries.contains_key(&registration.id) {
-            return Err(StoreError::Duplicate { id: registration.id.clone() });
+            return Err(StoreError::Duplicate {
+                id: registration.id.clone(),
+            });
         }
         self.next_seq = self.next_seq.saturating_add(1);
         registration.registered_seq = self.next_seq;
-        self.entries.insert(registration.id.clone(), registration.clone());
+        self.entries
+            .insert(registration.id.clone(), registration.clone());
         Ok(registration)
     }
 
     /// Apply `update {id, score, priority}` (design §3).
-    pub fn update(&mut self, id: &str, score: Option<i64>, priority: Option<Priority>) -> Result<&Registration, StoreError> {
-        let entry = self.entries.get_mut(id).ok_or_else(|| StoreError::Missing { id: id.to_string() })?;
+    pub fn update(
+        &mut self,
+        id: &str,
+        score: Option<i64>,
+        priority: Option<Priority>,
+    ) -> Result<&Registration, StoreError> {
+        let entry = self
+            .entries
+            .get_mut(id)
+            .ok_or_else(|| StoreError::Missing { id: id.to_string() })?;
         if let Some(score) = score {
             entry.score = score;
         }
@@ -614,14 +692,19 @@ impl Store {
     /// Record a heartbeat. A heartbeat from an unknown id is refused, not created:
     /// registration is the act that resolves a scope.
     pub fn heartbeat(&mut self, id: &str, now_ns: u64) -> Result<&Registration, StoreError> {
-        let entry = self.entries.get_mut(id).ok_or_else(|| StoreError::Missing { id: id.to_string() })?;
+        let entry = self
+            .entries
+            .get_mut(id)
+            .ok_or_else(|| StoreError::Missing { id: id.to_string() })?;
         entry.last_heartbeat_ns = now_ns;
         Ok(entry)
     }
 
     /// Remove a registration the registrant itself ended (M3: this case thaws).
     pub fn deregister(&mut self, id: &str) -> Result<Registration, StoreError> {
-        self.entries.remove(id).ok_or_else(|| StoreError::Missing { id: id.to_string() })
+        self.entries
+            .remove(id)
+            .ok_or_else(|| StoreError::Missing { id: id.to_string() })
     }
 
     /// Remove every registration whose last heartbeat is older than `ttl_s`.
@@ -637,7 +720,10 @@ impl Store {
             .filter(|entry| entry.silent_s(now_ns) >= self.ttl_s)
             .map(|entry| entry.id.clone())
             .collect();
-        expired_ids.into_iter().filter_map(|id| self.entries.remove(&id)).collect()
+        expired_ids
+            .into_iter()
+            .filter_map(|id| self.entries.remove(&id))
+            .collect()
     }
 
     /// The candidate order for the next tick: `freezable` before `last-resort`,
@@ -648,7 +734,10 @@ impl Store {
     pub fn newest_first(&self) -> Vec<&Registration> {
         let mut ordered: Vec<&Registration> = self.entries.values().collect();
         ordered.sort_by(|left, right| {
-            left.priority.rank().cmp(&right.priority.rank()).then(right.registered_seq.cmp(&left.registered_seq))
+            left.priority
+                .rank()
+                .cmp(&right.priority.rank())
+                .then(right.registered_seq.cmp(&left.registered_seq))
         });
         ordered
     }
@@ -665,8 +754,10 @@ mod tests {
 
     /// Build `<root>/dev.slice/dev-gates.slice/docker-<id>.scope` and return the id.
     fn gate_scope(tree: &TempTree, ancestor: &str, id: &str) -> String {
-        std::fs::create_dir_all(tree.at(&format!("dev.slice/{ancestor}/{SCOPE_PREFIX}{id}{SCOPE_SUFFIX}")))
-            .expect("create scope");
+        std::fs::create_dir_all(tree.at(&format!(
+            "dev.slice/{ancestor}/{SCOPE_PREFIX}{id}{SCOPE_SUFFIX}"
+        )))
+        .expect("create scope");
         id.to_string()
     }
 
@@ -677,15 +768,29 @@ mod tests {
         let config = config();
         let scope = resolve_container(tree.path(), &id, &config).expect("resolves");
         assert_eq!(scope.name, "docker-0123abcd.scope");
-        assert_eq!(scope.relative, "dev.slice/dev-gates.slice/docker-0123abcd.scope");
+        assert_eq!(
+            scope.relative,
+            "dev.slice/dev-gates.slice/docker-0123abcd.scope"
+        );
         assert!(scope.path.is_dir());
-        assert_eq!(scope.cgroup_id, std::fs::metadata(&scope.path).expect("metadata").ino(), "the inode is the identity a recycled path must not reuse");
+        assert_eq!(
+            scope.cgroup_id,
+            std::fs::metadata(&scope.path).expect("metadata").ino(),
+            "the inode is the identity a recycled path must not reuse"
+        );
         assert!(scope.shadowed.is_empty());
 
         // The scope name itself is accepted: a client may send either form.
-        let scope = resolve_container(tree.path(), &format!("{SCOPE_PREFIX}{id}{SCOPE_SUFFIX}"), &config)
-            .expect("scope names resolve too");
-        assert_eq!(scope.relative, "dev.slice/dev-gates.slice/docker-0123abcd.scope");
+        let scope = resolve_container(
+            tree.path(),
+            &format!("{SCOPE_PREFIX}{id}{SCOPE_SUFFIX}"),
+            &config,
+        )
+        .expect("scope names resolve too");
+        assert_eq!(
+            scope.relative,
+            "dev.slice/dev-gates.slice/docker-0123abcd.scope"
+        );
     }
 
     #[test]
@@ -698,9 +803,16 @@ mod tests {
             "dev.slice/dev-gates.slice/nested.slice/{SCOPE_PREFIX}{id}{SCOPE_SUFFIX}"
         )))
         .expect("create nested scope");
-        let scope = resolve_container(tree.path(), &id, &config()).expect("resolves to the shallow one");
-        assert_eq!(scope.relative, "dev.slice/dev-gates.slice/docker-55aa.scope");
-        assert_eq!(scope.shadowed, vec!["dev.slice/dev-gates.slice/nested.slice/docker-55aa.scope".to_string()]);
+        let scope =
+            resolve_container(tree.path(), &id, &config()).expect("resolves to the shallow one");
+        assert_eq!(
+            scope.relative,
+            "dev.slice/dev-gates.slice/docker-55aa.scope"
+        );
+        assert_eq!(
+            scope.shadowed,
+            vec!["dev.slice/dev-gates.slice/nested.slice/docker-55aa.scope".to_string()]
+        );
     }
 
     #[test]
@@ -722,19 +834,32 @@ mod tests {
         // A real scope, but under a slice this guard may not park.
         let mut config = config();
         config.allowed_ancestors = vec!["dev-gates.slice".to_string()];
-        let refusal = resolve_container(tree.path(), &id, &config).expect_err("not under an allowed ancestor");
+        let refusal = resolve_container(tree.path(), &id, &config)
+            .expect_err("not under an allowed ancestor");
         assert_eq!(refusal.reason(), "none");
-        assert!(refusal.detail().contains("dev-gates.slice"), "{}", refusal.detail());
-        assert!(!refusal.detail().contains("dev-buildkitd"), "the searched list is the refusal's evidence");
+        assert!(
+            refusal.detail().contains("dev-gates.slice"),
+            "{}",
+            refusal.detail()
+        );
+        assert!(
+            !refusal.detail().contains("dev-buildkitd"),
+            "the searched list is the refusal's evidence"
+        );
     }
 
     #[test]
     fn a_match_under_a_protected_ancestor_is_refused_as_protected() {
         let tree = TempTree::new("units-protected");
         let id = gate_scope(&tree, "dev-interactive.slice", "abcd");
-        let refusal = resolve_container(tree.path(), &id, &config()).expect_err("the cockpit is protected");
+        let refusal =
+            resolve_container(tree.path(), &id, &config()).expect_err("the cockpit is protected");
         assert_eq!(refusal.reason(), "protected");
-        assert!(refusal.detail().contains("dev-interactive.slice"), "{}", refusal.detail());
+        assert!(
+            refusal.detail().contains("dev-interactive.slice"),
+            "{}",
+            refusal.detail()
+        );
     }
 
     #[test]
@@ -743,7 +868,10 @@ mod tests {
         let id = gate_scope(&tree, "dev-gates.slice", "1234");
         gate_scope(&tree, "dev-interactive.slice", "1234");
         let scope = resolve_container(tree.path(), &id, &config()).expect("the allowed scope wins");
-        assert_eq!(scope.relative, "dev.slice/dev-gates.slice/docker-1234.scope");
+        assert_eq!(
+            scope.relative,
+            "dev.slice/dev-gates.slice/docker-1234.scope"
+        );
     }
 
     #[test]
@@ -766,10 +894,27 @@ mod tests {
     fn malformed_container_names_are_refused_rather_than_looked_up() {
         let tree = TempTree::new("units-malformed");
         let root = tree.path();
-        for container in ["", "   ", "/dev.slice/x", "docker-a/../b", "..", "a b", "docker-", "abc.scope"] {
+        for container in [
+            "",
+            "   ",
+            "/dev.slice/x",
+            "docker-a/../b",
+            "..",
+            "a b",
+            "docker-",
+            "abc.scope",
+        ] {
             let refusal = resolve_container(root, container, &config()).expect_err("refused");
-            assert_eq!(refusal.reason(), "malformed", "{container:?} -> {refusal:?}");
-            assert_eq!(refusal.container(), container.trim(), "the refusal echoes what the client sent");
+            assert_eq!(
+                refusal.reason(),
+                "malformed",
+                "{container:?} -> {refusal:?}"
+            );
+            assert_eq!(
+                refusal.container(),
+                container.trim(),
+                "the refusal echoes what the client sent"
+            );
         }
     }
 
@@ -779,10 +924,17 @@ mod tests {
         std::fs::create_dir_all(tree.at("dev-buildkitd.slice/runner.scope")).expect("create path");
         let mut config = config();
         config.static_units = vec![
-            StaticUnit { name: "nightly".to_string(), cgroup: "dev-buildkitd.slice".to_string() },
-            StaticUnit { name: "runner".to_string(), cgroup: "dev-buildkitd.slice/runner.scope".to_string() },
+            StaticUnit {
+                name: "nightly".to_string(),
+                cgroup: "dev-buildkitd.slice".to_string(),
+            },
+            StaticUnit {
+                name: "runner".to_string(),
+                cgroup: "dev-buildkitd.slice/runner.scope".to_string(),
+            },
         ];
-        let slice = resolve_static_unit(tree.path(), &config.static_units[0], &config).expect("the slice exists");
+        let slice = resolve_static_unit(tree.path(), &config.static_units[0], &config)
+            .expect("the slice exists");
         assert_eq!(slice.relative, "dev-buildkitd.slice");
         assert_eq!(slice.name, "dev-buildkitd.slice");
         assert!(slice.path.is_dir());
@@ -795,14 +947,25 @@ mod tests {
         let config = config();
         // `allowed_ancestors` is deliberately NOT consulted for a path form (a
         // standalone host has no docker scopes), but `protected` always is.
-        let unit = StaticUnit { name: "cockpit".to_string(), cgroup: "dev-interactive.slice".to_string() };
+        let unit = StaticUnit {
+            name: "cockpit".to_string(),
+            cgroup: "dev-interactive.slice".to_string(),
+        };
         let refusal = resolve_static_unit(tree.path(), &unit, &config).expect_err("protected");
         assert_eq!(refusal.reason(), "protected");
-        assert_eq!(refusal.container(), "cockpit", "the /etc entry is named, not a container");
+        assert_eq!(
+            refusal.container(),
+            "cockpit",
+            "the /etc entry is named, not a container"
+        );
 
         for cgroup in ["../escape", "/absolute", "a//b", ""] {
-            let unit = StaticUnit { name: "bad".to_string(), cgroup: cgroup.to_string() };
-            let refusal = resolve_static_unit(tree.path(), &unit, &config).expect_err("malformed path");
+            let unit = StaticUnit {
+                name: "bad".to_string(),
+                cgroup: cgroup.to_string(),
+            };
+            let refusal =
+                resolve_static_unit(tree.path(), &unit, &config).expect_err("malformed path");
             assert_eq!(refusal.reason(), "malformed", "{cgroup:?} -> {refusal:?}");
         }
     }
@@ -827,7 +990,9 @@ mod tests {
         Scope {
             name: format!("docker-{id}.scope"),
             relative: format!("dev.slice/dev-gates.slice/docker-{id}.scope"),
-            path: PathBuf::from(format!("/cgroup/dev.slice/dev-gates.slice/docker-{id}.scope")),
+            path: PathBuf::from(format!(
+                "/cgroup/dev.slice/dev-gates.slice/docker-{id}.scope"
+            )),
             cgroup_id: 42,
             shadowed: Vec::new(),
         }
@@ -836,20 +1001,38 @@ mod tests {
     #[test]
     fn registration_order_is_the_newest_rule_and_priority_sorts_first() {
         let mut store = Store::new(90);
-        store.register(registration("a", scope_for("a"), Priority::Freezable)).expect("register a");
-        store.register(registration("b", scope_for("b"), Priority::LastResort)).expect("register b");
-        store.register(registration("c", scope_for("c"), Priority::Freezable)).expect("register c");
+        store
+            .register(registration("a", scope_for("a"), Priority::Freezable))
+            .expect("register a");
+        store
+            .register(registration("b", scope_for("b"), Priority::LastResort))
+            .expect("register b");
+        store
+            .register(registration("c", scope_for("c"), Priority::Freezable))
+            .expect("register c");
         assert_eq!(store.last_seq(), 3);
-        let order: Vec<&str> = store.newest_first().iter().map(|entry| entry.id.as_str()).collect();
-        assert_eq!(order, vec!["c", "a", "b"], "freezable newest-first, then last-resort");
+        let order: Vec<&str> = store
+            .newest_first()
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            vec!["c", "a", "b"],
+            "freezable newest-first, then last-resort"
+        );
         assert_eq!(store.newest_first()[0].registered_seq, 3);
     }
 
     #[test]
     fn a_duplicate_id_is_refused_and_an_unknown_one_is_missing() {
         let mut store = Store::new(90);
-        store.register(registration("a", scope_for("a"), Priority::Freezable)).expect("register");
-        let refusal = store.register(registration("a", scope_for("a2"), Priority::Freezable)).expect_err("duplicate");
+        store
+            .register(registration("a", scope_for("a"), Priority::Freezable))
+            .expect("register");
+        let refusal = store
+            .register(registration("a", scope_for("a2"), Priority::Freezable))
+            .expect_err("duplicate");
         assert_eq!(refusal.reason(), "duplicate");
         assert_eq!(store.len(), 1, "a refused registration stores nothing");
         let refusal = store.heartbeat("nope", 1).expect_err("missing");
@@ -861,12 +1044,21 @@ mod tests {
     #[test]
     fn update_changes_score_and_priority_and_nothing_else() {
         let mut store = Store::new(90);
-        store.register(registration("a", scope_for("a"), Priority::Freezable)).expect("register");
-        let entry = store.update("a", Some(9), Some(Priority::LastResort)).expect("update");
+        store
+            .register(registration("a", scope_for("a"), Priority::Freezable))
+            .expect("register");
+        let entry = store
+            .update("a", Some(9), Some(Priority::LastResort))
+            .expect("update");
         assert_eq!(entry.score, 9);
         assert_eq!(entry.priority, Priority::LastResort);
-        assert_eq!(entry.registered_seq, 1, "an update is not a re-registration");
-        let entry = store.update("a", None, None).expect("an update may carry neither fact");
+        assert_eq!(
+            entry.registered_seq, 1,
+            "an update is not a re-registration"
+        );
+        let entry = store
+            .update("a", None, None)
+            .expect("an update may carry neither fact");
         assert_eq!(entry.score, 9);
     }
 
@@ -874,13 +1066,23 @@ mod tests {
     fn silence_past_the_derived_ttl_expires_the_registration_and_a_heartbeat_saves_it() {
         const S: u64 = 1_000_000_000;
         let config = Config::defaults();
-        assert_eq!(config.ttl_s(), 90, "missed_heartbeats x heartbeat_s from config keys only");
+        assert_eq!(
+            config.ttl_s(),
+            90,
+            "missed_heartbeats x heartbeat_s from config keys only"
+        );
         let mut store = Store::from_config(&config);
-        store.register(registration("a", scope_for("a"), Priority::Freezable)).expect("register");
+        store
+            .register(registration("a", scope_for("a"), Priority::Freezable))
+            .expect("register");
         // 89 s of silence is inside the window; 90 s is not.
         assert_eq!(store.expire(89 * S).len(), 0);
         store.heartbeat("a", 89 * S).expect("heartbeat");
-        assert_eq!(store.expire(178 * S).len(), 0, "89 + 90 = 179: still inside");
+        assert_eq!(
+            store.expire(178 * S).len(),
+            0,
+            "89 + 90 = 179: still inside"
+        );
         let expired = store.expire(179 * S);
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].id, "a");
@@ -898,7 +1100,14 @@ mod tests {
         store.register(entry).expect("register");
         assert_eq!(store.get("slow").expect("stored").heartbeat_s, Some(3600));
         assert_eq!(store.ttl_s(), 90);
-        assert_eq!(store.get("slow").expect("stored").silent_s(1_000_000_000), 1);
-        assert_eq!(store.expire(90 * 1_000_000_000).len(), 1, "the config window still applies");
+        assert_eq!(
+            store.get("slow").expect("stored").silent_s(1_000_000_000),
+            1
+        );
+        assert_eq!(
+            store.expire(90 * 1_000_000_000).len(),
+            1,
+            "the config window still applies"
+        );
     }
 }

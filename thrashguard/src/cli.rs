@@ -135,7 +135,9 @@ impl fmt::Display for CliError {
             Self::UnknownVerb(verb) => write!(f, "unknown verb {verb:?}"),
             Self::MissingValue(flag) => write!(f, "{flag} needs a value"),
             Self::UnexpectedFlag(flag) => write!(f, "{flag} is not a flag this verb accepts"),
-            Self::NotANumber { flag, value } => write!(f, "{flag} takes a whole number, not {value:?}"),
+            Self::NotANumber { flag, value } => {
+                write!(f, "{flag} takes a whole number, not {value:?}")
+            }
             Self::Duplicate(flag) => write!(f, "{flag} was given twice"),
         }
     }
@@ -165,25 +167,35 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, CliError> 
             }
             let value = match inline {
                 Some(value) => value,
-                None => iter.next().ok_or_else(|| CliError::MissingValue(flag.clone()))?,
+                None => iter
+                    .next()
+                    .ok_or_else(|| CliError::MissingValue(flag.clone()))?,
             };
             match flag.as_str() {
                 "--config" => set_once(&mut args.config, PathBuf::from(value), &flag)?,
                 "--cgroup-root" => args.cgroup_root = PathBuf::from(value),
                 "--pressure-path" => args.pressure_path = PathBuf::from(value),
                 "--socket" => set_once(&mut args.socket, PathBuf::from(value), &flag)?,
-                "--registrant-socket" => set_once(&mut args.registrant_socket, PathBuf::from(value), &flag)?,
-                "--reader-socket" => set_once(&mut args.reader_socket, PathBuf::from(value), &flag)?,
+                "--registrant-socket" => {
+                    set_once(&mut args.registrant_socket, PathBuf::from(value), &flag)?
+                }
+                "--reader-socket" => {
+                    set_once(&mut args.reader_socket, PathBuf::from(value), &flag)?
+                }
                 "--since-seq" => {
-                    args.since_seq = value
-                        .parse::<u64>()
-                        .map_err(|_| CliError::NotANumber { flag: flag.clone(), value: value.clone() })?;
+                    args.since_seq = value.parse::<u64>().map_err(|_| CliError::NotANumber {
+                        flag: flag.clone(),
+                        value: value.clone(),
+                    })?;
                 }
                 other => return Err(CliError::UnexpectedFlag(other.to_string())),
             }
             continue;
         }
-        set_verb(&mut verb, Verb::from_name(&token).ok_or(CliError::UnknownVerb(token))?)?;
+        set_verb(
+            &mut verb,
+            Verb::from_name(&token).ok_or(CliError::UnknownVerb(token))?,
+        )?;
     }
     args.verb = verb.ok_or(CliError::NoVerb)?;
     Ok(args)
@@ -223,26 +235,48 @@ mod tests {
         assert!(!args.verb.needs_config());
         let args = parse(vector(&["version"])).expect("the version verb");
         assert_eq!(args.verb, Verb::Version);
-        let args = parse(vector(&["serve", "--config", "/etc/thrashguard/thrashguard.toml"]))
-            .expect("serve with a config");
+        let args = parse(vector(&[
+            "serve",
+            "--config",
+            "/etc/thrashguard/thrashguard.toml",
+        ]))
+        .expect("serve with a config");
         assert_eq!(args.verb, Verb::Serve);
-        assert_eq!(args.config, Some(PathBuf::from("/etc/thrashguard/thrashguard.toml")));
+        assert_eq!(
+            args.config,
+            Some(PathBuf::from("/etc/thrashguard/thrashguard.toml"))
+        );
         assert!(args.verb.needs_config());
-        let args = parse(vector(&["status", "--config=/etc/t/x.toml", "--cgroup-root", "/tmp/cg"]))
-            .expect("equals form and an injected root");
+        let args = parse(vector(&[
+            "status",
+            "--config=/etc/t/x.toml",
+            "--cgroup-root",
+            "/tmp/cg",
+        ]))
+        .expect("equals form and an injected root");
         assert_eq!(args.verb, Verb::Status);
         assert_eq!(args.config, Some(PathBuf::from("/etc/t/x.toml")));
         assert_eq!(args.cgroup_root, PathBuf::from("/tmp/cg"));
-        let args = parse(vector(&["events", "--socket", "/run/thrashguard/reader/thrashguard.sock", "--since-seq", "17"]))
-            .expect("events over a socket");
+        let args = parse(vector(&[
+            "events",
+            "--socket",
+            "/run/thrashguard/reader/thrashguard.sock",
+            "--since-seq",
+            "17",
+        ]))
+        .expect("events over a socket");
         assert_eq!(args.since_seq, 17);
-        assert_eq!(args.socket, Some(PathBuf::from("/run/thrashguard/reader/thrashguard.sock")));
+        assert_eq!(
+            args.socket,
+            Some(PathBuf::from("/run/thrashguard/reader/thrashguard.sock"))
+        );
         // The defaults are the host's own paths, and the injected ones win.
         let args = parse(vector(&["status"])).expect("a bare verb");
         assert_eq!(args.cgroup_root, PathBuf::from(DEFAULT_CGROUP_ROOT));
         assert_eq!(args.pressure_path, PathBuf::from(DEFAULT_PRESSURE_PATH));
         assert_eq!(args.socket, None, "no socket means answer locally");
-        let args = parse(vector(&["status", "--pressure-path", "/tmp/p"])).expect("injected pressure");
+        let args =
+            parse(vector(&["status", "--pressure-path", "/tmp/p"])).expect("injected pressure");
         assert_eq!(args.pressure_path, PathBuf::from("/tmp/p"));
     }
 
@@ -250,19 +284,44 @@ mod tests {
     fn every_refusal_is_a_named_error_rather_than_a_guess() {
         let cases = [
             (vector(&[]), CliError::NoVerb),
-            (vector(&["frobnicate"]), CliError::UnknownVerb("frobnicate".to_string())),
-            (vector(&["status", "--config"]), CliError::MissingValue("--config".to_string())),
-            (vector(&["status", "--nope", "x"]), CliError::UnexpectedFlag("--nope".to_string())),
+            (
+                vector(&["frobnicate"]),
+                CliError::UnknownVerb("frobnicate".to_string()),
+            ),
+            (
+                vector(&["status", "--config"]),
+                CliError::MissingValue("--config".to_string()),
+            ),
+            (
+                vector(&["status", "--nope", "x"]),
+                CliError::UnexpectedFlag("--nope".to_string()),
+            ),
             (
                 vector(&["events", "--since-seq", "later"]),
-                CliError::NotANumber { flag: "--since-seq".to_string(), value: "later".to_string() },
+                CliError::NotANumber {
+                    flag: "--since-seq".to_string(),
+                    value: "later".to_string(),
+                },
             ),
-            (vector(&["status", "--config", "a", "--config", "b"]), CliError::Duplicate("--config".to_string())),
-            (vector(&["status", "serve"]), CliError::Duplicate("verb".to_string())),
+            (
+                vector(&["status", "--config", "a", "--config", "b"]),
+                CliError::Duplicate("--config".to_string()),
+            ),
+            (
+                vector(&["status", "serve"]),
+                CliError::Duplicate("verb".to_string()),
+            ),
         ];
         for (argv, expected) in cases {
-            assert_eq!(parse(argv.clone()).expect_err("refused"), expected, "{argv:?}");
+            assert_eq!(
+                parse(argv.clone()).expect_err("refused"),
+                expected,
+                "{argv:?}"
+            );
         }
-        assert!(USAGE.contains("status") && USAGE.contains("--cgroup-root"), "{USAGE}");
+        assert!(
+            USAGE.contains("status") && USAGE.contains("--cgroup-root"),
+            "{USAGE}"
+        );
     }
 }
