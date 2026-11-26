@@ -21,8 +21,9 @@
 //! already serving something, and the design's rule is that every test takes an
 //! injected root. So the tests drive the framing over
 //! [`std::os::unix::net::UnixStream::pair`] — a real socket fd, no path, nothing
-//! to clean up — and the daemon's listener is bound only by `main`, to a path
-//! from the configuration.
+//! to clean up. In a foreground run, `main` binds the explicit CLI socket paths
+//! or the defaults in this module; under systemd it adopts the configured
+//! listeners instead. Socket paths are not configuration keys.
 
 use std::io::{BufRead, BufReader, Read, Write};
 

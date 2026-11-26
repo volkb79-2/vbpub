@@ -34,8 +34,15 @@ registrant = true
 
 [[static_unit]]
 name = "nightly-r2-campaign"
-cgroup = "dev-buildkitd.slice"
+cgroup = "dev.slice/dev-buildkitd.slice"
 ```
+
+`cgroup` is relative to the cgroup v2 root and includes its parent slice. This
+example targets the estate's `dev.slice/dev-buildkitd.slice`; on another host,
+replace it with an existing cgroup path relative to the cgroup v2 root, or remove
+the `[[static_unit]]` block when no static candidate is wanted. Static paths are
+not constrained by `allowed_ancestors`, but a path under a protected ancestor is
+refused.
 
 Drop-ins are merged lexically: `/etc/thrashguard/thrashguard.toml.d/10-local.toml`,
 `20-...toml`, and so on, exactly the shape fleetd already reads. Unknown keys are
@@ -53,18 +60,71 @@ candidate order for the next tick and every parked unit. In P1 nothing is parked
 so `frozen[]` is empty and every would-be action appears in `events` as a
 `would-freeze` line.
 
-## 2. Running the two sockets under systemd
+## 2. Install and start under systemd
+
+From the project root, obtain the release binary and save the TOML example in
+§1 as `thrashguard.toml`. Then install the binary, config, both groups, all four
+unit files, and the tmpfiles rules:
 
 ```bash
-sudo install -d -m 0755 /run/thrashguard
-sudo groupadd --system thrashguard-registrant
-sudo groupadd --system thrashguard-reader
-sudo cp deploy/systemd/*.service deploy/systemd/*.socket /etc/systemd/system/
-sudo cp deploy/tmpfiles.d/thrashguard.conf /etc/tmpfiles.d/
+sudo install -D -m 0755 target/release/thrashguard /usr/local/bin/thrashguard
+sudo install -D -m 0640 thrashguard.toml /etc/thrashguard/thrashguard.toml
+sudo groupadd --force --system thrashguard-registrant
+sudo groupadd --force --system thrashguard-reader
+sudo install -m 0644 deploy/systemd/thrashguard.service deploy/systemd/thrashguard-reader.socket deploy/systemd/thrashguard-registrant.socket deploy/systemd/thrashguard.slice /etc/systemd/system/
+sudo install -D -m 0644 deploy/tmpfiles.d/thrashguard.conf /etc/tmpfiles.d/thrashguard.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/thrashguard.conf
 sudo systemctl daemon-reload
-sudo systemctl enable --now thrashguard-registrant.socket thrashguard-reader.socket
 ```
+
+`thrashguard.service` requires and orders itself after the reader socket. Both
+shipped socket units use `Accept=no` and name that same service with `Service=`;
+systemd passes the active listeners to it. Start the service itself so it begins
+observing at boot even if no client ever connects.
+
+For `registrant = true`, install this service drop-in before reloading systemd:
+
+```bash
+sudo install -d -m 0755 /etc/systemd/system/thrashguard.service.d
+sudoedit /etc/systemd/system/thrashguard.service.d/registrant.conf
+```
+
+The complete drop-in content is:
+
+```ini
+[Unit]
+Requires=thrashguard-registrant.socket
+After=thrashguard-registrant.socket
+```
+
+Then enable both sockets and the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now thrashguard-reader.socket thrashguard-registrant.socket thrashguard.service
+```
+
+For `registrant = false`, set `registrant = false` in the installed config,
+do not install that drop-in, and keep the optional registrant socket disabled.
+For a fresh install, enable only the reader socket and the service:
+
+```bash
+sudoedit /etc/thrashguard/thrashguard.toml
+sudo systemctl disable --now thrashguard-registrant.socket
+sudo systemctl enable --now thrashguard-reader.socket thrashguard.service
+```
+
+When changing an existing true-mode installation to false mode, first remove
+the exact drop-in if it exists and reload systemd:
+
+```bash
+sudo rm -- /etc/systemd/system/thrashguard.service.d/registrant.conf
+sudo systemctl daemon-reload
+```
+
+The service then adopts only the reader descriptor, as required by the
+configuration. Check the service status and journal after start; a missing or
+unreadable static cgroup is a configuration refusal, not an empty candidate.
 
 `Accept=no` on both sockets means one long-lived daemon owns the listener, so a
 restart never refuses a client that connects during it. Group gating controls
@@ -108,8 +168,8 @@ registered). A deeper same-name match loses to the shallowest match and appears
 in the `registered` event's `shadowed` paths.
 `priority` is exactly `freezable` or `last-resort`. Other wire refusals use the
 closed reason vocabulary `unreadable`, `missing`, `wrong-socket`, `unknown-key`,
-`unknown-verb`, `version`, `too-large` and `value`; readers should preserve these
-names when reporting a refusal.
+`unknown-verb`, `version`, `too-large`, `too-many-sessions` and `value`; readers
+should preserve these names when reporting a refusal.
 
 ## 4. A reader asks what the guard sees
 
@@ -150,7 +210,8 @@ In `status.psi`, the `some.avg10` and `full.avg10` values are integer hundredths
   and `smallest-enough` are P3; until then the replies carry
   `"rule":"newest","rule_reason":"rule-unknown"` rather than a zero rate.
 - **`serve` starts the daemon; it is not a client verb.** With systemd it adopts
-  the two socket descriptors; run by hand it binds `--registrant-socket` and
+  the reader descriptor and, when `registrant = true`, the registrant descriptor;
+  run by hand it binds `--registrant-socket` and
   `--reader-socket` (or the default paths). `mode = off` prints one line and
   exits 0 without binding; `mode = enforce` is refused with exit code 2.
 - **Foreground socket permissions depend on the caller.** The by-hand fallback
@@ -167,3 +228,29 @@ In `status.psi`, the `some.avg10` and `full.avg10` values are integer hundredths
 | run-gate (registrant) | P4; until then run-gate does not register anything and behaves exactly as today |
 | assay | reads freeze events through hostobs, never this socket (design §4b) |
 | fleetd / agctl | read through hostobs and one estate snapshot, never a host socket (design §6) |
+
+## 7. Fresh-host acceptance remains open
+
+No fresh-host systemd run has happened for P1. The following nine checks are
+still open and must be run on a disposable fresh systemd and cgroup v2 host;
+file-backed tests do not substitute for them:
+
+1. Install the binary, the config from the corrected example above, both groups,
+   all four units and the tmpfiles file. Run `systemd-tmpfiles --create`, then
+   `systemd-analyze verify`.
+2. `thrashguard status --config ...` exits 0 with every static unit resolved.
+3. Enable both sockets and the service, then reboot. With no client contact, the
+   service is active in `thrashguard.slice`, with no namespace or activation
+   errors and no restart loop.
+4. Directories are `0755` and `0750` with the right groups; sockets are `0660`
+   `root:<group>`.
+5. As unprivileged group members: reader `status` works with non-null PSI, a real
+   container under `dev-gates.slice` registers, and each group and a non-member
+   get EACCES on the sockets they should not reach.
+6. A `would-*` or `registered` row appears. After `systemctl restart`, clients
+   still connect, seq continues, and `events --socket` with `since_seq=0` is
+   honest.
+7. With `registrant = false` and the registrant socket disabled, the service
+   starts and serves only the reader.
+8. A bad config exits 2 without looping.
+9. Every `cgroup.freeze` stays 0 throughout.

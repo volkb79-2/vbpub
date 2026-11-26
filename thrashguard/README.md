@@ -84,9 +84,11 @@ thrashguard version
 
 The three reader verbs answer **locally** from `--config` when `--socket` is
 absent, so a standalone host is complete with no daemon; with `--socket` they
-ask a running one. `serve` adopts the two systemd descriptors when
-`LISTEN_FDS`/`LISTEN_FDNAMES` are set and binds `--registrant-socket`/
-`--reader-socket` only for a foreground run, `mode = off` exits 0 without
+ask a running one. `serve` validates `LISTEN_PID`, `LISTEN_FDS` and
+`LISTEN_FDNAMES` before adopting the systemd listeners: it receives reader and
+registrant descriptors when `registrant = true`, and the reader descriptor alone
+when false. It binds `--registrant-socket`/`--reader-socket` only for a foreground
+run, `mode = off` exits 0 without
 binding anything, and `mode = enforce` is refused with one line. Every verb
 takes `--config`, `--cgroup-root` and `--pressure-path` (design §5 D9);
 `freeze`/`thaw` are **P2** verbs and do not exist in this build.

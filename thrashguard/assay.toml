@@ -72,10 +72,11 @@ targets = [
   #   it; a declared target with no artifact entry is refused
   #   (`NO_MEASUREMENT/TARGET_NOT_MEASURED`), which is the correct answer and the
   #   reason it is excluded HERE rather than excused.
-  # - `src/cli.rs` is the one file whose job is to spell the host's own paths, so
-  #   its lines are assertions about the host rather than behaviour a floor guards;
-  #   its arguments and refusals are covered by the binary's tests over `cli::parse`
-  #   and by the lane's own invocation.
+  # - `src/cli.rs` is the argv adapter, not part of the twelve-module numeric
+  #   whole-target coverage set below. Its contract is exercised by the focused
+  #   `every_documented_invocation_parses` and `every_refusal_is_a_named_error`
+  #   unit tests in that file, which the lane runs; this percentage floor does
+  #   not claim to measure CLI coverage.
   "src/activation.rs",
   "src/clock.rs",
   "src/config.rs",

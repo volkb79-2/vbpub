@@ -1,4 +1,4 @@
-//! Adoption of the two systemd socket descriptors (design §3, D7).
+//! Adoption of the systemd socket descriptors (design §3, D7).
 //!
 //! The `.socket` units use `Accept=no`, so systemd passes the *listening*
 //! descriptors to the service and owns the path, the group and the mode. That is
@@ -14,7 +14,8 @@
 //! forbids) `unsafe_code`, and this file holds exactly one `#[allow]` and one
 //! `unsafe` block. `tools/check-lints.py` asserts that count in both directions,
 //! so a second unsafe block anywhere fails the lint lane, and a stale allowance
-//! does too. `tests/no_act_path.rs` still refuses every signal and cgroup write.
+//! does too. `tests/no_act_path.rs` rejects its named process-signal and
+//! cgroup-write patterns lexically; it is not a complete semantic proof.
 //!
 //! ## What is checked before a descriptor is trusted
 //!
@@ -31,7 +32,7 @@ use std::os::unix::net::UnixListener;
 
 use crate::socket::Role;
 
-/// How many descriptors this daemon adopts: one per socket group.
+/// Maximum number of descriptors this daemon adopts: one per socket group.
 pub const MAX_LISTEN_FDS: u32 = 2;
 /// The `LISTEN_FDNAMES` names, in the order the `.socket` units declare them.
 pub const FD_NAMES: [&str; 2] = ["registrant", "reader"];
@@ -154,7 +155,7 @@ impl Plan {
     }
 }
 
-/// Read the two environment facts and decide whether systemd activated us.
+/// Read the activation environment and decide whether systemd activated us.
 ///
 /// `Ok(None)` means the variables are absent: a foreground run binds its own
 /// paths (an operator's `thrashguard serve` under a terminal). `Ok(Some(plan))`
@@ -238,7 +239,7 @@ pub fn plan(
     Ok(Some(Plan { descriptors }))
 }
 
-/// The two adopted listeners.
+/// The adopted listeners; the registrant listener is absent when disabled.
 #[derive(Debug)]
 pub struct Adopted {
     /// The registrant listener, when it was announced.
@@ -253,8 +254,8 @@ pub struct Adopted {
 /// [`UnixListener`] from a descriptor number any other way. The safety argument
 /// is narrow and stated here: systemd hands this process descriptors it opened
 /// as `SOCK_STREAM` listeners at these exact numbers (its documented contract,
-/// `sd_listen_fds`), the process is the one it started, and the two numbers come
-/// from `LISTEN_FDS`/`LISTEN_FDNAMES` validated by [`plan`]. Each descriptor is
+/// `sd_listen_fds`), the process is the one it started, and each announced fd
+/// comes from `LISTEN_FDS`/`LISTEN_FDNAMES` validated by [`plan`]. Each descriptor is
 /// taken at most once, and only roles present in the plan are adopted.
 pub fn adopt(plan: Plan) -> Result<Adopted, ActivationError> {
     let mut registrant = None;
@@ -268,8 +269,8 @@ pub fn adopt(plan: Plan) -> Result<Adopted, ActivationError> {
         let mut accepting: c_int = 0;
         let mut accepting_len = std::mem::size_of::<c_int>() as u32;
         // SAFETY: the argument is the load-bearing fact. `fd` was announced by
-        // systemd for this process, and plan checked LISTEN_PID and the exact
-        // two-role announcement. getsockopt verifies the fd is a listening
+        // systemd for this process, and plan checked LISTEN_PID and the configured
+        // descriptor names/count (reader alone or both roles). getsockopt verifies the fd is a listening
         // stream before ownership is taken; the consumed plan prevents re-adoption.
         #[allow(unsafe_code)]
         let listener = unsafe {

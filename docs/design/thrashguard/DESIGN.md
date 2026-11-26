@@ -1,12 +1,14 @@
 <!-- status: design rev 2 (main review FIX-FIRST + operator rulings); scope: new standalone host service TG-1; operator decision 2026-11-25 -->
 # Design: thrashguard (TG-1) — PSI-driven freeze/thaw of dev-tier work
 
-Nothing of thrashguard exists: no code, no unit, no host service. `grep -rln` over `*.py *.rs *.sh *.toml
-*.service *.socket` finds prose only, and every other tool already points here (fleetd `docs/SPEC.md:24`,
+At proposal time thrashguard had no code, unit, or host service. P1 now implements
+the observe-only slice; this note remains normative for the implementation and
+later phases. Other tools point to this contract (fleetd `docs/SPEC.md:24`,
 `:533-534`, `KNOWN_ISSUES_TODO_BACKLOG.md:20`, `:318`, `:967-974`; hostobs
-`KNOWN_ISSUES_TODO_BACKLOG.md:1163-1164`; agctl `docs/design/agctl/DESIGN.md:7`). This note is normative for the
-first implementation. Operator inputs are quoted with line numbers from `.controller-state/operator-decisions.md`;
-later lines win. The main controller's rev-1 review is answered item by item in the run report.
+`KNOWN_ISSUES_TODO_BACKLOG.md:1163-1164`; agctl `docs/design/agctl/DESIGN.md:7`).
+Operator inputs are quoted with line numbers from
+`.controller-state/operator-decisions.md`; later lines win. The main controller's
+review rulings are tracked in the implementation report.
 
 ## 1. Scope and boundary
 
@@ -146,6 +148,10 @@ lexically (the shape fleetd already reads, `fleetd/src/fleetd/facts.py:440-514`)
 `user.slice`), `state_dir` (`/run/thrashguard`), `registrant` (bool) and `[[static_unit]]` (`{name, cgroup}`) for
 standalone hosts. Unknown keys are errors.
 
+`[[static_unit]].cgroup` is relative to the cgroup v2 root. For example,
+`dev.slice/dev-buildkitd.slice` names the buildkit slice below its parent
+`dev.slice`; it is not a root-level `dev-buildkitd.slice`.
+
 **Sockets (D7).** Two, in separate groups, in the estate's common writer/reader shape
 (`/run/mdtd/{observe,control,root}/mdtd.sock 0660 root:mdt-{observe,control,root}`,
 `docs/design/mdtd/DESIGN-rev4-2026-11-07.md:190`):
@@ -201,7 +207,9 @@ no job's own length enters the expiry; a frozen job takes as long as it takes.
 (`{boot_id, seq, event, unit, cgroup, cgroup_id, mono_start_ns, mono_end_ns, seconds, mode, reason}`), rotated
 at 1 MiB to `events.jsonl.1` because `/run` is tmpfs (the psi-guard shape, `scripts/mdt-psi-guard.py:61`,
 `:179-186`). `seq` is monotonic per boot, so a reader pages without a clock. This file is thrashguard's own
-journal and crash record — **not** the consumer path (§4). Every event is also emitted to hostobs (§6c).
+journal and crash record — **not** the consumer path (§4). P4 submits completed
+freeze/thaw interval events to hostobs (§6c); P1 is observe-only and emits no
+hostobs events.
 
 **Standalone (hard requirement, :353).** A host service with its own CLI and `/etc` config, working with no
 fleetd, no agctl, no registrant: `[[static_unit]]` plus `mode = enforce` freezes/thaws by the same rules, and
@@ -249,11 +257,14 @@ gates the corresponding P4 consumer behavior, not P1/P2.
 
 ### 4b. assay: effective CPU time, and the verdict does not depend on it
 
-Per candidate/test assay combines **cgprofile profiling** of the lane's cgroup with **freeze/thaw events** from
-hostobs, matched by `boot_id` + `cgroup` and unioned. Then `effective_cpu_s = cpu_s` (**unchanged**, M4: a frozen
-candidate accrues no CPU seconds, so a CPU-time bound needs no correction) and `effective_wall = wall -
-frozen_seconds` for the wall-based clocks only. Rejected: "invalidates any candidate frozen mid-run" — "why?
-only if it turns out error? freeze should be harmless" (:344); the refinement stands: re-run only candidates
+TIM-020 is planned and is not implemented in the current assay code. Once that
+work lands, assay will combine **cgprofile profiling** of the lane's cgroup with
+**freeze/thaw events** from hostobs, matched by `boot_id` + `cgroup` and unioned.
+Then `effective_cpu_s = cpu_s` (**unchanged**, M4: a frozen candidate accrues no
+CPU seconds, so a CPU-time bound needs no correction) and
+`effective_wall = wall - frozen_seconds` for the wall-based clocks only. Rejected:
+"invalidates any candidate frozen mid-run" — "why? only if it turns out error?
+freeze should be harmless" (:344); the refinement stands: re-run only candidates
 that overlapped a freeze **and** ended killed/timeout/hung.
 
 **Why no verdict depends on it.** assay's per-candidate bound is the CPU-time no-progress bound (P4: "the
@@ -263,12 +274,17 @@ which also states "CPU accrues only when the candidate runs, so pressure needs n
 and survives, so **thrashguard is optional**: run-gate and assay work unchanged without it, and with no events
 `frozen_seconds` is `unknown`, never `0`.
 
-**Summaries are normalised, not raw.** The unit, the formula and the handling of a host with no basis are
-assay's own contract: `assay/docs/SPEC.md` chapter **TIM**, requirement **TIM-030** — time is normalised to the
-recorded Geekbench major's own reference machine, which is 1.0 for that major (Geekbench 7 single-core reference
-2500), never to the retired 1500-point basis or another fixed point count, and majors are never mixed; a host
-with no readable score has no basis and the summary says so rather than inventing a zero. The per-host score input stays
-`cgprofile/docs/PROTOCOL.md:625-627` (`speed`); this document does not restate the rules.
+**Summaries retain raw time and may add reference time.** The rule is
+`assay/docs/SPEC.md` chapter **TIM**, requirement **TIM-030**: record effective
+CPU seconds as raw, un-normalized seconds together with the processor model. If
+the host has a Geekbench 7 record, also record
+`ref_cpu_s = effective_cpu_s * single_core / baseline_score`, using that record's
+`tool_major`, `single_core` and `baseline_score`; assay holds no score constant.
+Geekbench 7's own reference is 2500 single-core, and the former 1500-point unit
+is retired. A record for another major counts as no record, majors are not
+compared, and without a Geekbench 7 record retain raw seconds so a score may be
+applied later. This matches TIM-030; `cgprofile/docs/PROTOCOL.md:625-627`
+(`speed`) is not an input.
 
 ### 4c. run-gate: unchanged verdict, one shared bound, optional pause
 
@@ -349,6 +365,10 @@ never invoked; a fake clock covers hysteresis, aging, `max_park_s`, `never_park_
 sweep. Live acceptance runs in a `vm-lab` Debian guest under real systemd (AGENTS.md VM rules): a real container
 scope frozen/thawed, `cgroup.events` read back, `ExecStopPost` thaw after `systemctl stop` **and** after `kill -9`,
 a memcg OOM on a frozen scope, an unreadable-PSI run.
+
+No fresh-host systemd acceptance run has happened for P1. The nine open host
+checks are listed in `thrashguard/docs/CONSUMERS.md` §7; they remain open until
+recorded on a disposable fresh systemd and cgroup v2 host.
 
 **MVP split** (each its own review; no freezing in the devcontainer):
 
@@ -445,7 +465,7 @@ P2's exit criteria.
 | D16 | thrashguard is optional; verdicts are CPU-time based; no events = `unknown` | a wall-time correction must never become a hidden wall cap |
 | D17 | `max_park_s` (30 min default, configurable, thaw on expiry) is one policy key shared with run-gate's pause bound (Q1) | two bounds drift and one silently reads as silence |
 | D18 | one estate snapshot through fleetd for agctl (H3/B3) | agctl has no host access; a per-host socket read from the cockpit is impossible |
-| D19 | emission is idempotent on `(boot_id, seq)` and best-effort | a retried event must not double count a frozen interval |
+| D19 | emission is idempotent on `(event name, boot_id, seq)` and best-effort | freeze and thaw point events share `boot_id` and `seq`; the event name keeps a retry of one point distinct from its paired point |
 
 Rejected alternatives, by topic:
 
@@ -471,7 +491,7 @@ the record, not a list of open questions.
 | Q4 | does an expired registration thaw? | explicit `deregister` **thaws** (`deregistered`); silent `ttl_s` expiry **does not** (§3, D14) | operator 23:4xZ, with M3's split |
 | Q5 | groups | `thrashguard-registrant`: run-gate's host group + fleetd's service user; `thrashguard-reader`: agctl, fleetd, hostobs (§3) | operator 23:4xZ |
 | Q6 | docs obligation | README + DESIGN-GUIDE + CONSUMERS.md with loader-parsed examples, in P1's file list (§5) | review, accepted |
-| — | consumer path | thrashguard **sends** freeze/thaw events; **hostobs** picks them up; assay gets cgprofile plus those events and recomputes effective CPU time; summaries normalise to the recorded Geekbench major's own reference (1.0 for that major), per `assay/docs/SPEC.md` TIM-030 (§4) | operator 00:0xZ, basis retired 2026-11-26 |
+| — | consumer path | P4 thrashguard sends freeze/thaw events; hostobs records them; assay gets cgprofile plus those events. Per TIM-030, summaries retain raw CPU seconds and add reference CPU seconds only for a Geekbench 7 record (§4) | operator 00:0xZ, basis retired 2026-11-26 |
 | — | boundaries | verdicts are CPU-time based and thrashguard is optional; fleetd is the one cross-host channel and the placer; agctl never touches a host socket (§4e, §6) | operator 00:0xZ / 00:2xZ |
 
 **Still open** (product calls, not blockers):

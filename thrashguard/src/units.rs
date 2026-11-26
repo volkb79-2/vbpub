@@ -249,7 +249,7 @@ pub fn resolve_container(root: &Path, container: &str, config: &Config) -> Resul
 ///
 /// Two forms are accepted, both documented in `docs/CONSUMERS.md`: a scope name
 /// (`docker-<id>.scope`, resolved exactly like a registration) and a path
-/// relative to the cgroup root (`dev-buildkitd.slice/runner.scope`).
+/// relative to the cgroup root (`dev.slice/dev-buildkitd.slice/runner.scope`).
 ///
 /// A path is the operator's own `/etc` choice, so it is **not** held to
 /// `allowed_ancestors` — a standalone host has no docker scopes at all and

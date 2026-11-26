@@ -23,9 +23,10 @@ the next release's entry; the design is the normative document.
   nothing is dropped after 30 s; at most 64 sessions run at once
   (`too-many-sessions`).
 - **systemd socket activation is adopted.** `LISTEN_FDS`/`LISTEN_FDNAMES` are
-  validated as a pure plan (exactly two descriptors, named `registrant` and
-  `reader`, matched by name, not by position) and the descriptors are wrapped
-  through this crate's one audited `unsafe` block. Without the variables — a
+  validated as a pure plan (`reader` alone when `registrant = false`, otherwise
+  `registrant` and `reader`, matched by name, not by position) and the announced
+  descriptors are wrapped through this crate's one audited `unsafe` block.
+  Without the variables — a
   foreground run — `--registrant-socket`/`--reader-socket` are bound instead, so
   a standalone host needs no systemd.
 - **`deploy/systemd/` and `deploy/tmpfiles.d/`** ship the service, the two

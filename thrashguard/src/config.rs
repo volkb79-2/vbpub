@@ -106,7 +106,7 @@ impl VictimRule {
 pub struct StaticUnit {
     /// The unit name a consumer recognises.
     pub name: String,
-    /// The cgroup path, relative to the cgroup root (`dev-buildkitd.slice/...`)
+    /// The cgroup path, relative to the cgroup root (`dev.slice/dev-buildkitd.slice/...`)
     /// or the scope name; resolved like a registration (subtask 3's `units` module).
     pub cgroup: String,
 }
@@ -1000,6 +1000,7 @@ mod tests {
                     "unknown-verb",
                     "version",
                     "too-large",
+                    "too-many-sessions",
                     "value",
                 ][..],
             ),
@@ -1045,6 +1046,141 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn consumer_static_path_and_install_units_match_the_shipped_tree() {
+        const CONSUMERS: &str = include_str!("../docs/CONSUMERS.md");
+        const DESIGN: &str = include_str!("../../docs/design/thrashguard/DESIGN.md");
+        const STATIC_CGROUP: &str = "dev.slice/dev-buildkitd.slice";
+        const UNIT_NAMES: [&str; 4] = [
+            "thrashguard.service",
+            "thrashguard-reader.socket",
+            "thrashguard-registrant.socket",
+            "thrashguard.slice",
+        ];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+        assert!(
+            CONSUMERS.contains(&format!("cgroup = \"{STATIC_CGROUP}\"")),
+            "the consumer's static cgroup example must include its parent slice"
+        );
+        assert!(
+            DESIGN.contains(STATIC_CGROUP),
+            "the consumer example must match the design's cgroup hierarchy"
+        );
+
+        let install_line = format!(
+            "sudo install -m 0644 {} /etc/systemd/system/",
+            UNIT_NAMES
+                .iter()
+                .map(|name| format!("deploy/systemd/{name}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert!(
+            CONSUMERS.contains(&install_line),
+            "the systemd install command must list every shipped unit"
+        );
+        for name in UNIT_NAMES {
+            let unit = root.join("deploy/systemd").join(name);
+            assert!(unit.is_file(), "the documented unit {name} must ship");
+        }
+        let service = std::fs::read_to_string(root.join("deploy/systemd/thrashguard.service"))
+            .expect("the shipped service unit");
+        assert!(service.contains("Requires=thrashguard-reader.socket"));
+        assert!(service.contains("After=systemd-tmpfiles-setup.service thrashguard-reader.socket"));
+        assert!(
+            !service.contains("Requires=thrashguard-registrant.socket"),
+            "the registrant dependency is opt-in in the documented drop-in"
+        );
+        for (name, role) in [
+            ("thrashguard-reader.socket", "reader"),
+            ("thrashguard-registrant.socket", "registrant"),
+        ] {
+            let socket = std::fs::read_to_string(root.join("deploy/systemd").join(name))
+                .unwrap_or_else(|error| panic!("cannot read {name}: {error}"));
+            assert!(socket.contains("Accept=no"), "{name} must pass a listener fd");
+            assert!(
+                socket.contains("Service=thrashguard.service"),
+                "{name} must activate the shipped service"
+            );
+            assert!(
+                socket.contains(&format!("FileDescriptorName={role}")),
+                "{name} must announce the expected role"
+            );
+        }
+        assert!(
+            root.join("deploy/tmpfiles.d/thrashguard.conf").is_file()
+                && CONSUMERS.contains("deploy/tmpfiles.d/thrashguard.conf"),
+            "the documented tmpfiles rules must ship"
+        );
+        for required in [
+            "target/release/thrashguard /usr/local/bin/thrashguard",
+            "thrashguard.toml /etc/thrashguard/thrashguard.toml",
+            "groupadd --force --system thrashguard-registrant",
+            "groupadd --force --system thrashguard-reader",
+            "Requires=thrashguard-registrant.socket\nAfter=thrashguard-registrant.socket",
+            "systemctl enable --now thrashguard-reader.socket thrashguard-registrant.socket thrashguard.service",
+            "systemctl disable --now thrashguard-registrant.socket",
+            "systemctl enable --now thrashguard-reader.socket thrashguard.service",
+        ] {
+            assert!(CONSUMERS.contains(required), "missing install step: {required}");
+        }
+    }
+
+    #[test]
+    fn closed_wire_reason_vocabulary_is_exact_in_consumer_docs() {
+        const CONSUMERS: &str = include_str!("../docs/CONSUMERS.md");
+        let list = CONSUMERS
+            .split("Other wire refusals use the closed reason vocabulary ")
+            .nth(1)
+            .and_then(|tail| tail.split(';').next())
+            .expect("the closed wire reason sentence");
+        let documented = list
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            documented,
+            [
+                "unreadable",
+                "missing",
+                "wrong-socket",
+                "unknown-key",
+                "unknown-verb",
+                "version",
+                "too-large",
+                "too-many-sessions",
+                "value",
+            ],
+            "the named closed reason list must match the daemon's wire vocabulary"
+        );
+    }
+
+    #[test]
+    fn design_matches_assay_tim030_and_the_p1_emission_boundary() {
+        const DESIGN: &str = include_str!("../../docs/design/thrashguard/DESIGN.md");
+        const ASSAY_SPEC: &str = include_str!("../../assay/docs/SPEC.md");
+        for phrase in [
+            "effective CPU seconds (TIM-020) as raw, un-normalized CPU seconds",
+            "ref_cpu_s = effective_cpu_s * single_core / baseline_score",
+            "assay holds no score constant",
+            "a record of another major counts as no record",
+        ] {
+            assert!(ASSAY_SPEC.contains(phrase), "TIM-030 no longer says {phrase:?}");
+        }
+        for phrase in [
+            "TIM-020 is planned and is not implemented in the current assay code",
+            "record effective CPU seconds as raw, un-normalized seconds",
+            "ref_cpu_s = effective_cpu_s * single_core / baseline_score",
+            "assay holds no score constant",
+            "A record for another major counts as no record",
+            "P1 is observe-only and emits no\nhostobs events",
+        ] {
+            assert!(DESIGN.contains(phrase), "the design contract is missing {phrase:?}");
         }
     }
 
