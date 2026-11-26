@@ -8,6 +8,10 @@ unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CO
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR PI_LIVE
 unset OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2 CONTROLLER_OD_STATE
 unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_POLL_SECONDS PI_REVIEW_KILL_WAIT_SECONDS
+# The run mode is the wrapper's own switch (review vs implementer) and the
+# launcher always exports it for its own child: an ambient value must not decide
+# what the DIRECT pi-impl.sh launches below run under.
+unset PI_RUN_MODE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_REVIEW_SCRIPT:-$SCRIPT_DIR/../pi-review.sh}
 # The three .done readers are judged here on the marker the launcher itself
@@ -492,8 +496,11 @@ check_read_only_tool_set() {
   argv0_lacks 'powershell' 'the reviewer argv does not name powershell'
 }
 
-# A caller's own PI_EXTRA_ARGS must not widen a review back to a shell: the
-# launcher replaces the variable, it does not merge with it.
+# The launcher no longer exports the read-only list: it sets pi-impl.sh's REVIEW
+# mode and lets the wrapper own the argv. A caller's own PI_EXTRA_ARGS therefore
+# cannot widen the review, and it cannot narrow it either -- review mode refuses
+# a seam that adds anything, so the launcher clears it instead of replacing it
+# with a second copy of the list.
 check_caller_extra_args_replaced() {
   local rc=0
   local PI_EXTRA_ARGS_TEST=$'--tools\nbash,read'
@@ -504,6 +511,10 @@ check_caller_extra_args_replaced() {
   fi
   argv0_pair '--tools' 'read,grep,find,ls' 'the launcher REPLACES a caller PI_EXTRA_ARGS instead of merging it'
   argv0_lacks 'bash,read' 'a caller-provided tool list never reaches pi'
+  contains "$ROOT/rev-extrawide.launch.log" 'run mode review' \
+    'the review is launched in pi-impl.sh review mode, which owns the tool set'
+  [[ $(cat "$RUNS/rev-extrawide.mode") == review ]] \
+    || fail 'a review launch did not record its mode beside the implementer records'
 }
 
 # pi-impl.sh refuses the launch contract it owns, before it claims the name.
