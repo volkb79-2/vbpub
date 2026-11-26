@@ -114,7 +114,7 @@ busy_beside_box() { # $1 = a pane_view capture: 0 a BUSY_MARKERS line is at or b
   return 1
 }
 foot() { pane_view "$(tmux capture-pane -e -p -t "$pane")" | foot_of; }
-foot_of() { strip_sgr | grep -v '^[[:space:]]*$' | tail -n "$FOOT_LINES"; }   # $0 = a pane_view capture on stdin
+foot_of() { strip_sgr | grep -v '^[[:space:]]*$' | tail -n "$FOOT_LINES"; }   # stdin = a pane_view capture
 busy() { pane_state; [[ $? -eq 1 ]]; } # one capture per call (wait_idle and compact-resume.sh reset the once-per-wait log)
 pane_state() { # ONE capture; 0 ready, 1 busy, 2 the input row has text. Anything not positively recognised as an IDLE
   # prompt box is BUSY, never ready: the caller is about to type into this pane. A busy marker inside the box is just

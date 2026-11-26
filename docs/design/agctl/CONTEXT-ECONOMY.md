@@ -172,14 +172,19 @@ Per poll, per mapped session:
 4. Lock: `flock -n ~/controller/locks/<pane>.lock`; compact-resume.sh and clear-resume.sh take the same lock (22b
    adds that to both). Busy lock: skip. The helpers take this watcher's `pane_view` and add checks of their own
    (`busy_beside_box` in resume-lib.sh, P-plat-22c): the box anchor (at or below the last prompt-box top rule, whose top
-   matcher accepts the live main pane's `◉ xhigh · /effort` label), the compaction spinner in the 6 non-blank lines just
-   above that rule, and a ready answer only for an input row with a top rule above AND a plain rule below it. The
+   matcher accepts the live main pane's `◉ xhigh · /effort` label), a spinner from `·✢✳✶✻✽*` followed by `Compacting`
+   and an ellipsis within the 6 non-blank lines just above that rule, and a ready answer only for an input row with a top
+   rule above AND a plain rule below it. The
    helpers do NOT run the watcher's pane-width check (80 columns -> skip), its 6-line `BOX_LINES` window, or its
    type-then-read-back ping sequence (the helper types only after three consecutive ready polls and reads nothing
    back); they treat a dialog, a draft, a missing box and a failed capture as not ready.
-   KNOWN LIMIT of the helpers, deliberately not closed with a width floor: the busy markers are per-line SUBSTRINGS, so
-   a pane narrow enough to WRAP or TRUNCATE `esc to interrupt` can read idle; a helper that waited on a pane width would
-   strand an idle controller, so the limit stands for them and the watcher's 80-column skip is the only width rule.
+   KNOWN LIMITS:
+   - The dialog check searches the last 15 non-blank lines for menu text without anchoring it to captured menu geometry.
+     Transcript prose quoting `Esc to cancel` or a numbered `❯ 1.` option can therefore conservatively make an idle pane
+     not ready until the text scrolls out of the window.
+   - The resume helpers deliberately have no width floor: busy markers are per-line SUBSTRINGS, so a pane narrow enough
+     to WRAP or TRUNCATE `esc to interrupt` can read idle. A helper that waited on width could strand an idle controller;
+     the keep-alive watcher's 80-column skip remains the only width rule.
 5. Pane checks on ONE `tmux capture-pane -e -p -t <pane>` (ANSI kept), all required:
    - ONE view first (`pane_view`): the box and every bottom window below are measured from the MODE line
      (`⏵⏵ bypass permissions on`), so the agents panel below it can never push a marker out of a window. The panel is
