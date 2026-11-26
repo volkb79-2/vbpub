@@ -121,45 +121,52 @@ def _pending_note_blocks(text: str, *, where: str) -> list[tuple[int, str, str |
     return blocks
 
 
-def _curated_notes(text: str, *, where: str) -> str:
-    """The operator-authored notes, before and after cmru folds them into a dated section.
+# The release whose curated notes the fragments below are quoted from. Pinned by its
+# own version so a later `[Unreleased]` block with content cannot displace it: the
+# generic reader returns the pending notes as soon as they exist (P-edge-12).
+_CURATED_VERSION = "4.0.0"
 
-    Before a release they live in ``[Unreleased]``; cmru's disposable candidate moves
-    the same bytes (``cmru.changelog.fold_unreleased_notes``) into the dated section and
-    leaves ``[Unreleased]`` holding only its comments. A reader taking the FIRST
-    ``### Changed`` in the document therefore read the fold's generated block instead of
-    the curated one, which failed tls-edge 4.0.0's release gate.
+
+def _version_section(text: str, version: str, *, where: str) -> str:
+    """The body of the unique dated ``## [version] - YYYY-MM-DD`` section.
+
+    Selected by the version through cmru's own heading reader, so a heading inside an
+    HTML comment or a fenced block cannot be mistaken for the release section and a
+    missing section fails with the headings that do exist.
     """
-    span = unreleased_span(text)
-    blocks = _pending_note_blocks(text, where=where)
-    with_notes = [block for block in blocks if block[1].strip()]
-    unreleased = [
-        block for block in with_notes
-        if span is not None and span[0] <= block[0] < span[1]
+    headings = markdown_h2_headings(text)
+    named = [item for item in headings if item.text.startswith(f"## [{version}]")]
+    dated = [
+        item for item in named
+        if _DATED_SECTION.fullmatch(item.text) is not None
     ]
-    assert len(unreleased) <= 1, (
-        f"{where}: {len(unreleased)} pending-note blocks hold notes inside [Unreleased]: "
-        f"{len(blocks)} CMRU blocks exist in total"
+    assert len(dated) == 1, (
+        f"{where}: expected exactly one dated `## [{version}] - YYYY-MM-DD` section, "
+        f"found {len(dated)} of {len(named)} `## [{version}]` heading(s); headings: "
+        f"{', '.join(item.text.removeprefix('## ') for item in headings[:5]) or 'none'}"
     )
-    if unreleased:
-        return unreleased[0][1]
-    dated = []
-    for block in with_notes:
-        match = _DATED_SECTION.match(block[2]) if block[2] is not None else None
-        if match is not None:
-            dated.append((block[0], match.group(1), block[1]))
-    assert dated, (
-        f"{where}: no pending release notes carry content: {len(blocks)} CMRU block(s) "
-        "exist, none with notes in [Unreleased] or in a dated `## [X.Y.Z] - YYYY-MM-DD` "
-        "section (a version without notes must say so in its changelog, not silently "
-        "leave the curated assertions reading an empty string)"
+    start = dated[0].start
+    later = [item.start for item in headings if item.start > start]
+    return text[start:min(later) if later else len(text)]
+
+
+def _curated_notes(text: str, *, where: str) -> str:
+    """The operator-authored notes of ``_CURATED_VERSION``'s curated block.
+
+    Selected by version, never by `[Unreleased]`: cmru's disposable candidate folds
+    the pending notes into the dated section (``cmru.changelog.fold_unreleased_notes``)
+    and a reader taking the first block with content would then read the NEXT
+    release's pending notes instead of the version the fragments quote.
+    """
+    section = _version_section(text, _CURATED_VERSION, where=where)
+    blocks = _pending_note_blocks(section, where=where)
+    with_notes = [block for block in blocks if block[1].strip()]
+    assert len(with_notes) == 1, (
+        f"{where}: expected the curated `## [{_CURATED_VERSION}]` section to hold exactly "
+        f"one pending-note block with notes, found {len(with_notes)} of {len(blocks)} "
+        "CMRU block(s) in that section"
     )
-    # Newest first: cmru inserts each new release section directly after the history
-    # marker (``_insert_section_after_marker``), so document order is release order.
-    # A date could disagree (a backfilled section, or a fixture's fixed date), and a
-    # no-tag section carries none at all.
-    newest = min(dated, key=lambda block: block[0])
-    return newest[2]
+    return with_notes[0][1]
 
 
 def _curated_changed(text: str, *, where: str) -> str:
@@ -302,7 +309,6 @@ def test_the_curated_notes_survive_cmru_folding_them_into_the_dated_candidate(tm
     target = tmp_path / "CHANGES.md"
     target.write_text(folded, encoding="utf-8")
 
-    assert _curated_changed(target.read_text(encoding="utf-8"), where=str(target)) == curated
     assert _curated_changed(target.read_text(encoding="utf-8"), where=str(target)) == curated
     # The fixture reproduces the release-gate failure, so this check cannot pass by
     # accident: after the fold the document's FIRST `### Changed` is the generated one,
