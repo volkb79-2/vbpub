@@ -76,8 +76,54 @@ not_contains "$ROOT/status-fresh.out" '--- recent host queue results' 'fresh sta
 printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-stalled.jsonl"
 printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-stalled.route"
 touch -d '@0' "$HOME_ROOT/runs/pi-stalled.jsonl"
+# pi-review.sh APPENDS REVIEW-MODIFIED-TREE after pi-impl.sh's own line 1, which
+# can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit: the run row must
+# carry the flag, or ctl-status shows a tampered review as green.
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-flagged.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-flagged.route"
+printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-MODIFIED-TREE\n' > "$HOME_ROOT/runs/pi-review-flagged.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-clean.jsonl"
+printf 'deepseek-pi-volker\n' > "$HOME_ROOT/runs/pi-review-clean.route"
+printf 'EXIT=0 OUTCOME=SUCCESS\n' > "$HOME_ROOT/runs/pi-review-clean.done"
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-pi.out" 2>&1
 contains "$ROOT/status-pi.out" 'pi-stalled route=deepseek-pi-github2 RUNNING' 'status lists a pi run and its selected route'
 contains "$ROOT/status-pi.out" 'STALLED?' 'a pi stream with an old last event receives the normal stall warning'
+contains "$ROOT/status-pi.out" 'REVIEW-MODIFIED-TREE EXIT=0 OUTCOME=SUCCESS' \
+  'status prints the modified-tree flag beside the pi-impl line instead of hiding it'
+contains "$ROOT/status-pi.out" 'pi-review-clean route=deepseek-pi-volker EXIT=0 OUTCOME=SUCCESS' \
+  'status keeps an unflagged review row unmarked'
 
-echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, pi run stalls, missing config'
+printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-BUDGET\n' > "$HOME_ROOT/runs/pi-review-budget.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-budget.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-budget.route"
+printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-NO-REPORT\n' > "$HOME_ROOT/runs/pi-review-notext.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-notext.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-notext.route"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-pi-verdicts.out" 2>&1
+contains "$ROOT/status-pi-verdicts.out" 'REVIEW-BUDGET EXIT=0 OUTCOME=SUCCESS' \
+  'status prints a budget-stopped review as stopped'
+contains "$ROOT/status-pi-verdicts.out" 'REVIEW-NO-REPORT EXIT=0 OUTCOME=SUCCESS' \
+  'status prints a text-less review beside its pi-impl line'
+
+# The fourth verdict, and the no-marker fallback shape: pi-review.sh writes
+# `EXIT=5 OUTCOME=REVIEW-BUDGET` as line 1 when the launch left no marker. The
+# verdict is then already IN line 1, and the row must not print it twice.
+printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\nREVIEW-NOT-SETTLED\n' > "$HOME_ROOT/runs/pi-review-notsettled.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-notsettled.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-notsettled.route"
+printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\n' > "$HOME_ROOT/runs/pi-review-line1-verdict.done"
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-review-line1-verdict.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-review-line1-verdict.route"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-pi-more.out" 2>&1
+contains "$ROOT/status-pi-more.out" 'REVIEW-NOT-SETTLED EXIT=5 OUTCOME=REVIEW-BUDGET' \
+  'status prints the not-settled verdict beside its pi-impl line'
+contains "$ROOT/status-pi-more.out" 'pi-review-line1-verdict route=deepseek-pi-github2 EXIT=5 OUTCOME=REVIEW-BUDGET' \
+  'status does not print a verdict twice when the marker line 1 already carries it'
+! grep -qF 'REVIEW-BUDGET REVIEW-BUDGET' "$ROOT/status-pi-more.out" \
+  || fail 'status printed the same verdict twice for one run'
+rm -f -- "$HOME_ROOT/runs/pi-review-notsettled."* "$HOME_ROOT/runs/pi-review-line1-verdict."*
+
+rm -f -- "$HOME_ROOT/runs/pi-review-flagged."* "$HOME_ROOT/runs/pi-review-clean."* \
+  "$HOME_ROOT/runs/pi-review-budget."* "$HOME_ROOT/runs/pi-review-notext."*
+
+echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, pi run stalls, review verdicts, missing config'
