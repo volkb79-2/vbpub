@@ -233,6 +233,7 @@ items:
   - {id: B581, title: "release-gate.sh reads newline-packed controller values and loses fields when a value contains a newline; an explicit CONTROLLER_HOSTS_FILE at its default spelling that is missing falls through to the module default", type: bugfix, component: gate, context_estimate: small}
   - {id: B590, title: "release-gate.sh can signal a reaped pid when TERM or INT arrives after the remote child's wait (also in 12.3.0)", type: bugfix, component: gate, context_estimate: small}
   - {id: B591, title: "P-assay-14b final-review follow-ups: a test read race, a wrong CONSUMERS reason, a wrong CHANGES claim about 12.3.0, trap loose ends", type: bugfix, component: gate, context_estimate: small}
+  - {id: B592, title: "release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -16086,23 +16087,33 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B590 — release-gate.sh can signal a reaped pid when TERM or INT arrives after the remote child's `wait`
 
-**Status: FIXED (test 7792fba2d; code 6fe093201; filed 2026-11-26 from the P-assay-14b final review, finding 1); severity: low. In released 12.3.0 and on main.**
+**Status: FIXED (test 7792fba2d; code 6fe093201; stderr handling and strengthened test d3d828b3d; filed 2026-11-26 from the P-assay-14b final review, finding 1); severity: low. In released 12.3.0 and on main.**
 
 **Symptom.** `tools/release-gate.sh` waits for `remote-gate.py` (`if wait "$remote_gate_pid"`), then calls `stop_heartbeat`, and only then sets `remote_gate_pid=""`. A TERM or INT that arrives in between, in practice while `stop_heartbeat` waits for the heartbeat subshell, enters `handle_remote_signal`, which runs `kill -s "$signal_name" "$remote_gate_pid"` on an already reaped pid; if the kernel has reused it, an unrelated process is signalled. The handler also requests a remote cancel of a finished run (`meta.json` exists). P-assay-14b widens the window slightly because the heartbeat trap now forks `jobs -p` before it exits. Harm needs pid reuse within milliseconds. Established by reading the code; not reproduced.
 
-**Wanted.** Set `remote_gate_pid=""` immediately after the `if wait ... fi`, before `stop_heartbeat`, and decide whether a signal in that window should still request the cancel.
+**Wanted.** Set `remote_gate_pid=""` immediately after the `if wait ... fi`, before `stop_heartbeat`; retain the remote cancel request when metadata exists because a failed client does not prove the host job ended.
 
-**Close when.** A gate-lane test holds the wrapper inside `stop_heartbeat` (a `BASH_ENV` override of `kill`), sends TERM, and asserts that no `kill -s TERM <child pid>` is issued; it fails on the old order. The CHANGES entry names 12.3.0 as affected.
+**Close when.** A gate-lane test holds the wrapper inside `stop_heartbeat` (a `BASH_ENV` override of `kill`), asserts the client is already reaped while held, and records every non-`-0` `kill` call whose arguments include the child pid; it fails on the old order at the reaped-client signal assertion. The CHANGES entry names 12.3.0 as affected.
 
 ## B591 — P-assay-14b final-review follow-ups: a test read race, two wrong doc claims, trap loose ends
 
-**Status: FIXED (item 1 in 7792fba2d; remaining items fixed or declined in P-assay-14c; filed 2026-11-26 from the P-assay-14b final review, findings 2-4 and 6-8); severity: low.**
+**Status: FIXED (item 1 in 7792fba2d; remaining items fixed or declined in P-assay-14c, with the script/test follow-up in d3d828b3d; filed 2026-11-26 from the P-assay-14b final review, findings 2-4 and 6-8); severity: low.**
 
-1. `gate/tests/test_release_gate.py:868` (writer `:143`): the heartbeat-trap seam test waits for `remote-child.pid` to exist and then reads it, but the fake writes it with a plain `write_text`; a preempted writer gives `int('')` and fails a correct run under load. Publish through a side name and `replace()`, as the tick counter does.
-2. `docs/CONSUMERS.md:717-720`: the stated reason for the exit-3 / exit-2 split is false. `release_gate_problems` is created before the controller reader's `mktemp` and the same block appends to it, so the reader could join the combined refusal. Say it is a choice, or join it and drop the split.
-3. `CHANGES.md:15-19` (the P-assay-14b entry) says the heartbeat trap "had already stopped" naming the inherited pid. Released 12.3.0 still has `trap 'kill "${!:-}" ...'` without a placeholder and does signal the `remote-gate.py` child before the loop's first sleep; the unreleased entry is what fixes it. Reword before the next release.
+1. `gate/tests/test_release_gate.py:787` (writer `:141`): the heartbeat-trap seam test waits for `remote-child.pid` to exist and then reads it, but the fake writes it with a plain `write_text`; a preempted writer gives `int('')` and fails a correct run under load. Publish through a side name and `replace()`, as the tick counter does.
+2. `docs/CONSUMERS.md:718-720`: the stated reason for the exit-3 / exit-2 split is false. `release_gate_problems` is created before the controller reader's `mktemp` and the same block appends to it, so the reader could join the combined refusal. Say it is a choice, or join it and drop the split.
+3. `CHANGES.md:15-18` (the P-assay-14b entry) says the heartbeat trap "had already stopped" naming the inherited pid. Released 12.3.0 still has `trap 'kill "${!:-}" ...'` without a placeholder and does signal the `remote-gate.py` child before the loop's first sleep; the unreleased entry is what fixes it. Reword before the next release.
 4. Optional: the trap now depends on a fork (`jobs -p` in a process substitution) with no builtin fallback, so under pid or memory exhaustion a live `sleep` survives for up to one interval. Use a job spec (`kill %%`) or record the limit in DESIGN-GUIDE.
 5. Optional tests and comments: no test looks at the job table after a completed `wait`; `_parent_pid`'s docstring claims None for a zombie; the trap hook's hold loop is unbounded without a parent-alive check; one comment cites `release-gate.sh:54-56` for lines `:55-57`.
-   Declined: no extra post-wait job-table test; the existing inherited-pid seam test catches a regression that signals the reaped client.
+   Declined: no post-wait job-table test; the seam test catches a re-added `${!:-}` kill, other post-wait regressions stay unpinned.
 
 **Close when.** Items 1-3 are fixed (item 1 with the publish-by-rename, items 2 and 3 as text that matches the code); items 4 and 5 are fixed or declined with a line here.
+
+## B592 — release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown
+
+**Status: OPEN (filed 2026-11-26 from the P-assay-14c round 1 review, finding 6); severity: low.**
+
+**Symptom.** `stop_heartbeat` sends a signal to `heartbeat_pid`, waits for that process, and only then clears the variable. A signal handled after the wait has reaped the heartbeat but before the assignment can re-enter `stop_heartbeat` and signal the stale pid; if the kernel has reused it, an unrelated process could receive the signal. This is pre-existing and narrower than B590.
+
+**Wanted.** Make heartbeat shutdown safe when the signal handler re-enters after the heartbeat has been reaped, while still stopping and waiting for a live heartbeat.
+
+**Close when.** A gate-lane test pins the post-wait, pre-clear window and proves the handler does not signal the reaped heartbeat pid, while the live-heartbeat cancellation test still proves shutdown completes.
