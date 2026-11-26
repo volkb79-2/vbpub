@@ -89,7 +89,7 @@ LANE_CONTAINER_OOM_SCORE_ADJ = 500
 # structurally different failures. RG-58: a bare-host lane declaring
 # `stall_timeout` (silently inert -- no watch of any kind existed on that
 # runner) got a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
-# never refuse), one shared reason function. SUPERSEDED by RG-320 (rev 75):
+# never refuse), one shared reason function. SUPERSEDED by RG-320 (rev 77):
 # that runner has a watch now, so both surfaces print NOTHING for it. RG-61: eight-item SPEC/
 # CONSUMERS/LANE-AUTHORING/backlog/usage() documentation drift sweep (new
 # `R-30c` for the doctor profiler check, R-30's status count, the stale
