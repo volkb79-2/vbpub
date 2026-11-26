@@ -1537,7 +1537,7 @@ mod tests {
         d.tick(5_001 * MS);
         assert_eq!(d.close_code(id), Some(Code::Deadline));
         let last = d.server.take_final(id).expect("final");
-        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(1))));
+        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(2))));
         assert!(text(&last).contains("deadline"));
     }
 
@@ -1553,7 +1553,7 @@ mod tests {
         d.tick(MS);
         assert_eq!(d.close_code(id), Some(Code::SlowClient));
         let last = d.server.take_final(id).expect("final");
-        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(1))));
+        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(2))));
         assert!(text(&last).contains("slow-client"));
     }
 
@@ -1619,7 +1619,7 @@ mod tests {
         assert_eq!(swept, vec![undecided, partial]);
         assert!(d.server.is_closed(awaiting));
         let last = d.server.take_final(awaiting).expect("final");
-        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(1))));
+        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(2))));
         assert!(text(&last).contains("shutting-down"));
         assert_eq!(d.server.take_final(partial), None);
         d.settle_all();
