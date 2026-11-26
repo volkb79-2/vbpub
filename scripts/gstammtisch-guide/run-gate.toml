@@ -72,6 +72,14 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+# RG-320/H1: SILENT BY CONSTRUCTION. This lane is the canary runner, whose
+# per-canary step CAPTURES the pytest it cares about and prints only the
+# verdict AFTER it returns (scripts/gstammtisch-guide/tools/canary-run.sh:55-57 (`out="$(... pytest ... 2>&1)"`)),
+# so not one byte of the selector's own progress reaches this lane's stdout
+# while it runs: a single slow selector is a silent window of unknown length
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 cannot fail a
+# lane main would let finish. No silence bound has been measured yet.
+stall_timeout = "5m"
 
 # The implementation/release gate: every consumer (release steps, agents,
 # humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every

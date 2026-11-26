@@ -210,7 +210,7 @@ SPEC §9.
 | RG-317 | two tests judge other projects from run-gate's suite (`test_lanes_check.py` real-repository sweep, `test_tester_unified_base_variants.py`) | Minor | OPEN 2026-11-25 (filed by RG-297) |
 | RG-318 | the assay version pin for forwarded store flags (`assay >= 12.3.0` floor, `capabilities` probe at run time) | Minor | CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0` released) |
 | RG-319 | no per-run `--env` in `remote-gate`: a job's only environment is the per-repo PROFILE `env` table | Minor | OPEN 2026-11-25 (filed by the RG-297 fix round) |
-| RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto 300 s bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source; sequence stays unwatched by decision (members carry the watches); `budget = "unbounded"` remains P2 |
+| RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source (an assay lane publishes the RG-7 RULE it already had, `auto-derived`); sequence stays unwatched by decision (members carry the watches); 36 silent-by-construction lanes declare a bound equal to their budget (RG-326, finding RG-328); `budget = "unbounded"` remains P2 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -10107,7 +10107,15 @@ own `budget`, which is why each of them now declares `stall_timeout` EQUAL to it
 `shared-ramdisk-depot-manager` `unit`/`coverage`, `cgprofile` `r0-r1`/`gate`,
 `augeaswrap`-family r2 lanes, `wings-patchstack` `wings`/`coverage`, the
 `gate`/`gate-full` wrappers, and others — each `run-gate.toml` comment names the
-exact silent step and says that no silence bound has been measured). An equal-to-
+exact silent step and says that no silence bound has been measured). The
+`r3`/`assay-r3` CANARY RUNNERS are the same shape and were found in the
+fix-round audit (`run-gate-project` `assay-r3`, `cgprofile` `r3`, `augeaswrap`
+`r3`, `libraries/cli-extended` `r3`, `scripts/damon-analysis` `r3`,
+`scripts/debian-install-v2` `r3`, `scripts/gstammtisch-guide` `r3`): each
+`tools/canary-run.sh` runs its selector with output CAPTURED
+(`out="$(... pytest ... 2>&1)"`, or `>/dev/null 2>&1`) and prints only the
+verdict after it returns, so the lane is silent for the whole of every
+selector with a bound of its own `budget`. An equal-to-
 budget bound cannot fail a lane `main` would let finish, but it also does not
 detect a wedge: it converts "no progress signal" into "no protection". A false
 STALL cannot happen; a real hang is not caught either.
@@ -10123,8 +10131,8 @@ the budget honestly:
   each import, so the lane's own stdout moves.
 - the detached `docker wait` gates: `docker logs -f` in the background, or a
   per-suite marker printed as each target finishes.
-- the `out="$(...)"` canary pattern: `tee` through a file and print the
-  selector's name before each canary.
+- the `out="$(...)"` canary pattern (`tools/canary-run.sh`, seven lanes above):
+  `tee` through a file, or print the selector's name BEFORE the captured call.
   Then each lane's `stall_timeout` can be measured and lowered; until then its
   comment stays true and its bound stays equal to its budget.
 
@@ -10157,3 +10165,37 @@ Failures of the stop attempt must be reported, never swallowed — a survivor th
 nobody noticed is the defect this item exists for.
 
 Source: L1 of the RG-320 fix round 1.
+
+## RG-328 — a lane's `stall_timeout` and its `budget` are read side by side but nothing checks that the bound is fitting
+
+**State:** open · **Severity:** low · **Owner:** - · **Links:** RG-320, RG-326, RG-320 fix round 1 (H1)
+
+**Problem.** H1 of the RG-320 fix round declared `stall_timeout` EQUAL to each
+lane's own `budget` wherever a lane is silent by construction, which is an
+honest and safe bound (it can never stop a lane `main` would let finish) but it
+also means those lanes are effectively UNWATCHED: a real wedge in them is only
+noticed when the budget ends the lane, so P1 adds no protection there and RG-326
+records that as "no protection" rather than "protection". Today nothing notices
+such a pairing: `budget` and `stall_timeout` are separate keys with the same
+duration grammar, read side by side by `print_lane_bounds`, validated
+independently, and never compared. A lane that later drifts into the same shape
+(silent by construction, bound declared, bound set wrong) is invisible, and the
+reverse case — a `stall_timeout` declared SHORTER than a lane's own legitimate
+silent window — is invisible too, right up to the false STALL that H1 exists to
+prevent.
+
+**Wanted.** A load-time (or `lanes --check`) FINDING, not a refusal, that names a
+lanes whose `stall_timeout >= budget` as "this lane is silent-by-construction or
+declares a bound it can never reach: the bound protects nothing" — so the estate
+can see how many lanes are in that state, and so a new lane in the same shape is
+visible at review instead of only on a wedge. Pair it with RG-326's progress-signal
+work: the finding should disappear exactly when a lane gains a real signal and
+its bound can be lowered below its budget.
+
+**Do not** turn it into an error: a bound equal to a budget is legitimate (a lane
+of unknown cadence whose budget is the only fact anyone has), and refusing it
+would make a first-ever lane unwatchable again — the exact trade-off Q4 already
+settled in the other direction.
+
+Source: H1 of the RG-320 fix round 1, and the seven canary runners found in the
+same audit (RG-326's own note).
