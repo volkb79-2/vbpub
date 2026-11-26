@@ -545,6 +545,15 @@ and hostobs does not guarantee that a key never names a later cgroup, including 
 another host. A record that needs stable identity keeps the reply's `inc` together with `boot_id` and
 `epoch` and compares those fields.
 
+Note (non-normative) — the root row's `cpu.usage_usec` is tick-accounted and is not comparable
+with its children's. The kernel computes the root cgroup's `cpu.stat` from tick-sampled `kcpustat`
+(user+nice+system+irq+softirq+steal), while non-root cgroups use precise scheduler runtime, so on
+one 60-tick run the root rose 24.22 s while its top-level children rose 29.11 s in total, and every
+root value was a multiple of 4000 µs at `HZ=250`. Both readings are correct for their own cgroup.
+A consumer must not derive a child's share of the root's CPU: such ratios can exceed 100 %. Nothing
+above is normative — the wire contract says nothing about how a client uses two counters together,
+and this note adds no field, no value and no rule to it.
+
 4.8 **snapshot_at** — args `{"selection": Selection, "real_ns": i64, "tier": "auto|hot|warm|cold",
 "provenance": bool}`. REP result `{"resolved": {"tier": str, "bucket_real_ns": i64, "step_ms": u32,
 "covered_ms": u32}, "provenance": [object] (≤ 64 objects, each ≤ 1 KiB encoded) | null}`; one live-shaped BLOCK (rows + columns,

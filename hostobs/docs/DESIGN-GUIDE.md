@@ -202,7 +202,8 @@ missing optional file is `absent` or `unsupported` according to a code the calle
 failure.
 
 `cgroup.freeze` is the cgroup's own freeze setting; `cgevents.frozen` is its effective
-state, including a frozen ancestor, and `cgevents.populated` says whether it has live tasks.
+state, including a frozen ancestor, and `cgevents.populated` says whether the cgroup or any
+descendant has a live process.
 Missing `cgroup.freeze` or `cgroup.events` files are `unsupported`; a missing key in a
 successfully read `cgroup.events` file is `absent`, because the quality vocabulary treats a
 missing key as absent and reserves unsupported for a fact the kernel does not provide.
