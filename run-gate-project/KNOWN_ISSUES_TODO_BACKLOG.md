@@ -205,6 +205,11 @@ SPEC §9.
 | RG-312 | R-59 does not cover enclosing `kind = "command"` lanes or consumer timeouts; P-core-RG307 r1 follow-ups | Minor | OPEN 2026-11-24 (P-core-RG307 review r1; the two known enclosing budgets were fixed forward) |
 | RG-313 | `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record` asserts "no direct child left" immediately after the client exits, racing the fake `docker logs -f` shell's 0.2 s `sleep` window | Minor | OPEN 2026-11-24 (rg307b gate-full on v1001, assay-r1 R0; passed in the selftest lane on the same sha) |
 | RG-314 | `lanes --check` does not warn when a lane's env value contains `{worktree}` AND the same variable is in the Assay lane's `env_passthrough`: Assay folds passthrough values into `judge_sha256`, so every remote-gate throwaway checkout rejects a seeded resume | Minor | OPEN 2026-11-24 (rollback `rgw-r2-20261124T162538-r1002`, `rejected_total=14`, Assay B577) |
+| RG-315 | a remote r2 lane does not collect `r2-progress.jsonl` into `artifacts.tgz` (the collector glob is `progress*.jsonl`) | Minor | OPEN 2026-11-25 (filed by RG-297; owner of `scripts/netcup/runner`) |
+| RG-316 | `run-gate lanes --check` does not decide several lane-contract rules (lane pairing, canary policy, native r2 contract) | Minor | OPEN 2026-11-25 (filed by RG-297) |
+| RG-317 | two tests judge other projects from run-gate's suite (`test_lanes_check.py` real-repository sweep, `test_tester_unified_base_variants.py`) | Minor | OPEN 2026-11-25 (filed by RG-297) |
+| RG-318 | the assay version pin for forwarded store flags (`assay >= 12.3.0` floor, `capabilities` probe at run time) | Minor | CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0` released) |
+| RG-319 | no per-run `--env` in `remote-gate`: a job's only environment is the per-repo PROFILE `env` table | Minor | OPEN 2026-11-25 (filed by the RG-297 fix round) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9978,6 +9983,15 @@ Severity: Minor.
   probe decides: an unknown schema, unparseable output, a missing
   `commands.run`, or a forwarded flag the judge does not list is refused. A
   version claim alone never accepts a flag the judge does not advertise.
+- **An unreadable inventory is refused too (review r2 M1).** The floor is read
+  FROM the inventory version, so a judge whose `assay lanes --json` cannot
+  answer at all used to skip the floor entirely and be refused only by the
+  in-lane probe, inside a container. `plan_comparison_base` now refuses a
+  forwarding lane in that state as well, before a container starts, with its
+  own line (`arguments after '--' for lane 'x' need an inventory proving the
+  judge accepts them (assay >= 12.3.0, RG-318): <why>`); a lane that forwards
+  nothing keeps its old behaviour. Both refusals name the remedy (`update the
+  checkout, or re-pin the judge to >= 12.3.0`).
 - **tester-unified carries assay from SOURCE, not as a wheel.** The image
   copies `assay/` (`tester-unified/Dockerfile:361`, metadata at `:203`) for
   dependency-closure generation and denies the name to any PyPI-bound pip

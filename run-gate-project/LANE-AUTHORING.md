@@ -388,7 +388,9 @@ with sqlfluff in a command lane if the project wants it.
   `r2_oversubscribe` (default `"1.0"`, recommended opt-in `"1.5"`) multiplies
   the CPU term of that selection. Flexible R2 flags (`--shard`,
   `--merge-shards`, `--carry-over`, ...) need Assay 12.2.0 and an
-  ephemeral, unshared lane for `--shard`; see
+  ephemeral, unshared lane for `--shard`; `-- <assay run flags>` (the
+  forwarded store-flag form, RG-297/RG-318) additionally needs Assay
+  **12.3.0**, checked from the judge inventory before the lane starts. See
   [CONSUMERS](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265).
 - **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
   Every lane kind is profiled now, bare-host included (RG-57) — a

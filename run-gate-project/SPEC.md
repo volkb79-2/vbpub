@@ -3119,10 +3119,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     Run-Gate's own (give them before `--`). Nor may a forwarded flag
     DUPLICATE a name this same invocation's own options already put on the
     judge's argv (`--rejudge-outcome`, `--carry-over`, `--merge-state`,
-    `--merge-shard-store` from `--merge-shards`, and so on): a second copy
-    would be last-wins at the judge (replace-valued) or silently additive
-    (append-valued), so the run would be one Run-Gate never recorded. A bare
-    token is legal only as the value of the preceding flag;
+    `--merge-shard-store` from `--merge-shards`, and so on) -- refused with
+    its own line, `<flag> is already set by a Run-Gate option in this
+    invocation; drop it after '--'` (the flag is already before it, so the
+    remedy is to delete the copy) -- because a second copy would be last-wins
+    at the judge (replace-valued) or silently additive (append-valued), so
+    the run would be one Run-Gate never recorded. A bare token is legal only
+    as the value of the preceding flag;
   - **mount visibility**: the value of `--merge-state`, `--merge-shard-store`,
     `--merge-manifest`, `--carry-over`, `--carry-forward`, `--reuse-from`,
     `--only-candidates`, `--exclude-candidates` or `--candidates-file` is
@@ -3142,12 +3145,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     its first `=`, so `--merge-manifest` and `--merge-manifest-x` are
     different flags -- else `this judge does not support <flag> (assay
     capabilities)`). The forward floor is `assay >= 12.3.0` (`R-53b`,
-    RG-318), read from the inventory version before a container starts; the
-    probe stays the CHECK above that floor. A judge that refuses
-    `capabilities` itself keeps its own line, unreworded: no degraded mode, no
-    fallback to the `run --help` probe, which stays for Run-Gate's OWN flags.
-    The probe runs after the lane's setup steps and before `run`, in the same
-    environment and with the same judge command.
+    RG-318), read from the inventory version before a container starts, and
+    its refusal names the remedy (`update the checkout, or re-pin the judge
+    to >= 12.3.0`); a judge whose inventory cannot be read AT ALL is refused
+    there too, before a container starts, with its own line (`arguments after
+    '--' for lane 'x' need an inventory proving the judge accepts them
+    (assay >= 12.3.0, RG-318): <why>`), because the version floor itself is
+    only answerable from a readable inventory. The probe stays the CHECK
+    above that floor. A judge that refuses `capabilities` itself keeps its
+    own line, unreworded: no degraded mode, no fallback to the `run --help`
+    probe, which stays for Run-Gate's OWN flags. The probe runs after the
+    lane's setup steps and before `run`, in the same environment and with the
+    same judge command.
   - A forwarded-token run is recorded `selective` with an `assay_forward`
     token list, so it never certifies the whole lane's duration.
   - `--rejudge-contaminated` forces its own selection and refuses `--`

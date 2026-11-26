@@ -10979,6 +10979,19 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
         if lane.get("_selective_assay") or lane.get("_r2_flex"):
             fail(f"selective assay flags for lane {lane_name!r} require an "
                  f"inventory proving that it declares R2: {why}")
+        if lane.get("_assay_forward"):
+            # RG-318 (review r2 M1): the floor above is read FROM the
+            # inventory, so a judge whose inventory cannot be read at all used
+            # to reach the lane, mount, admission and `docker run` and be
+            # refused by the in-lane capability probe -- the very judge RG-318
+            # exists to refuse before a container starts. `fail()` (exit 2)
+            # is the convention this branch already uses for the same fact
+            # (no inventory) one condition up; the version-based floor stays
+            # GateNotRunError/`judge-floor`, because only a readable inventory
+            # can state a version.
+            fail(f"arguments after '--' for lane {lane_name!r} need an "
+                 f"inventory proving the judge accepts them "
+                 f"(assay >= 12.3.0, RG-318): {why}")
         if base_flag:
             fail(f"--base {base_flag!r} was given but run-gate cannot tell "
                  f"whether lane {lane_name!r} delegates its comparison base: "
@@ -11046,7 +11059,8 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
                 f"assay lane {lane['assay_lane']!r} has version "
                 f"{assay_version!r}, which cannot be shown to accept "
                 f"arguments after '--'; requires assay >= {floor} "
-                f"(RG-318)")
+                f"(RG-318) -- update the checkout, or re-pin the judge to "
+                f">= {floor}")
     if entry.get("base_source") != "request":
         if base_flag:
             fail(f"--base {base_flag!r} was given but assay lane "
@@ -14890,9 +14904,11 @@ def parse_assay_forward(tokens: list[str], base_dir: Path | str,
         if flag in own_names:
             # Already on this invocation's argv from a Run-Gate option: a
             # second copy would be last-wins (replace-valued) or silently
-            # additive (append-valued) at the judge.
-            fail(f"{flag} is owned by Run-Gate: give it before '--' "
-                 "(or drop it)")
+            # additive (append-valued) at the judge. Review r2 L3: the remedy
+            # is to DROP the copy after '--' -- "give it before '--'" is dead
+            # advice here, because it already IS before '--'.
+            fail(f"{flag} is already set by a Run-Gate option in this "
+                 "invocation; drop it after '--'")
         if flag not in path_flags:
             forwarded.append(token)
             index += 1

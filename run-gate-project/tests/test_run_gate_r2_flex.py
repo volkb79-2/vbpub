@@ -549,6 +549,19 @@ def test_every_user_document_states_the_judge_floor(name):
     assert "12.2.0" in _doc(name)
 
 
+@pytest.mark.parametrize(
+    "name", ["README.md", "SPEC.md", "CONSUMERS.md", "LANE-AUTHORING.md"])
+def test_every_document_that_states_the_forward_floor_states_it(name):
+    """Review r2 L2: the forwarded store-flag floor (RG-318) is a JUDGE FLOOR a
+    lane author has to satisfy, so every document a author reads for it says
+    12.3.0 -- `LANE-AUTHORING.md` included, where it was missing.
+
+    `CHANGES.md` is excluded deliberately: it is generated from commit
+    subjects and carries no hand-written floor statement (the `12.2.0` row
+    above is the one they pin it through)."""
+    assert "12.3.0" in _doc(name)
+
+
 @pytest.mark.parametrize("name", ["SPEC.md", "CONSUMERS.md", "docs/DESIGN-GUIDE.md"])
 def test_the_auto_formula_includes_oversubscription(name):
     assert "floor(cpu_cap * r2_oversubscribe)" in _doc(name)

@@ -972,7 +972,7 @@ run never stands in for the whole lane's duration.
 |---|---|
 | `--state-dir`, `--progress`, `--progress-heartbeat`, `--verdict-json`, `--file`, `--request-base` | `<flag> is injected by Run-Gate` — give it before `--` if Run-Gate has to know it |
 | `--jobs`, `--shard`, `--merge-shards` | `<flag> is owned by Run-Gate: give it before '--' (or drop it)` |
-| a flag the SAME invocation already gives through one of Run-Gate's own options (`--rejudge-outcome`, `--carry-over`, `--merge-state`, ...) | the same `is owned by Run-Gate` line: a duplicate is last-wins at the judge (replace-valued) or silently additive (`--carry-over`, `--merge-state`), so the run would not be the one history records |
+| a flag the SAME invocation already gives through one of Run-Gate's own options (`--rejudge-outcome`, `--carry-over`, `--merge-state`, ...) | `<flag> is already set by a Run-Gate option in this invocation; drop it after '--'` — a duplicate is last-wins at the judge (replace-valued) or silently additive (`--carry-over`, `--merge-state`), so the run would not be the one history records, and the remedy is to delete the copy after `--` (the flag already IS before it) |
 | a bare token that is not a flag's value | `argument '<token>' after '--' can only be the value of the preceding flag` |
 | `--rejudge-contaminated` with `--` arguments | it resolves its own selection from history and would lose that target |
 | a path-valued flag outside the checkout/worktree | `--merge-state '<path>' is outside the checkout ... copy it under <checkout>/.run-gate/ (git-ignored) first` |
@@ -1000,10 +1000,15 @@ text before its first `=`, so `--merge-manifest` and `--merge-manifest-x` are
 different flags and `--flag=value` names `--flag`), never by prefix. Unknown
 keys are ignored — only `schema` and `commands.run` are read, and an unknown
 SCHEMA is refused rather than reinterpreted. A judge that refuses
-`capabilities` itself (a build that cannot import its analysis package, or
-any judge older than 12.3.0) keeps its own one line and the lane stops there:
-no degraded mode and no fallback to the `run --help` probe, which is still
-what covers Run-Gate's OWN flexible flags (Assay 12.2.0's inventory floor).
+`capabilities` itself (a build that cannot import its analysis package) keeps
+its own one line and the lane stops there: no degraded mode and no fallback
+to the `run --help` probe, which is still what covers Run-Gate's OWN flexible
+flags (Assay 12.2.0's inventory floor). A judge older than 12.3.0 never
+reaches that point, and neither does a judge whose `assay lanes --json`
+cannot be read at all: Run-Gate refuses both by name before a container
+starts (`-- <assay run flags> for lane 'x' need an inventory proving the
+judge accepts them (assay >= 12.3.0, RG-318)`, or the judge-floor line for a
+readable but too-old version).
 The probe runs AFTER the lane's own source/setup steps and BEFORE `run`, in
 the same environment and with the same judge command as the run itself; it is
 not "next to" the `run --help` grep, and with only forwarded tokens the
