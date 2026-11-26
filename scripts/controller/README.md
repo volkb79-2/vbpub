@@ -137,6 +137,19 @@ Use this order for each implementation task.
    from `OUTCOME=SUCCESS`. The full vocabulary is in the
    [Pi section](#pi-on-open-design).
 
+   Every pi launch runs under a **run mode**, `implementer` (the default) or
+   `review` (`PI_RUN_MODE`). An implementer launch gets pi's own tool set and
+   every prompt it sends carries `implementer-prompt-rules.md` — the no-pattern-
+   kill paragraph: signal and TERM-trap tests run only inside a capped container
+   with a private PID namespace, against PIDs the test recorded itself; no shell
+   experiments in the shared devcontainer. A review launch carries the read-only
+   tool set from `pi-review-argv` in the wrapper's OWN argv (first run, resume
+   and every automatic continuation), every prompt carries
+   `review-prompt-rules.md` (execute nothing), and `PI_EXTRA_ARGS` that would
+   widen it is refused. The mode is recorded as `<runs-dir>/<run>.mode` and is
+   **sticky**: a resume of a review is a review, and asking for implementer mode
+   on it is refused. A missing rule file refuses the launch (exit 2).
+
    Use `CODEX_ROUTE=deepseek` to select an Open Design account automatically,
    or pin one with `CODEX_ROUTE=deepseek-volker` or
    `CODEX_ROUTE=deepseek-github2`. OpenCode is available through
@@ -364,11 +377,18 @@ scripts/controller/pi-review.sh <worktree> <absolute-prompt-file> <run-name> \
 
 It wraps `pi-impl.sh` and gives the reviewer a **tool set without a shell and
 without a writer**: `--tools read,grep,find,ls --exclude-tools 'mcp__*'
---no-extensions --no-mcp`, passed through `pi-impl.sh`'s `PI_EXTRA_ARGS` seam,
-which takes one argv element per line (newline separated, never word-split or
-`eval`ed) and refuses the launch contract `pi-impl.sh` owns (`-p`, `--mode`,
-`--model`, `--thinking`, `--session*`, `--continue`, `--resume`, `--fork`, `--`).
-`pi`'s documented default tools are `read`, `bash`, `edit` and `write`
+--no-extensions --no-mcp`. That list has **one definition**, the tracked file
+`scripts/controller/pi-review-argv`, which `pi-impl.sh` reads in its own **review
+mode** and puts in its own argv; this launcher sets the mode
+(`PI_RUN_MODE=review`) instead of exporting a second copy of the list. Because
+the set lives in the wrapper's argv, it is carried by the first launch, by every
+automatic continuation and by a manual `resume` alike, and a review launched
+**directly** through `pi-impl.sh` with `PI_RUN_MODE=review` gets it too. In
+review mode `PI_EXTRA_ARGS` is refused (exit 2) when it would add or widen
+tools, `--exclude-tools`, builtin-tool switches, extensions, MCP, skills, prompt
+templates or project trust — and refused for **any** element at all, so a
+spelling the wrapper has not classified takes the same exit and the reason is
+printed. `pi`'s documented default tools are `read`, `bash`, `edit` and `write`
 (`pi --help`, `docs/cli.md`); `--tools` REPLACES that selection, so the set is
 named in full. This is an enforcement, not a detection: there is no tool in
 that set that can run a program, so a reviewer cannot loop in a shell or push a
@@ -398,7 +418,28 @@ credentials under `$HOME`, `/proc`, and the implementer's own run records. The
 review prompt and the rendered material are the only inputs the launcher
 controls; enforcing a filesystem boundary would need an OS-level mechanism, not
 this tool selection. A worktree whose `AGENTS.md` steers the reviewer is a real
-risk, and it is not closed here.
+risk, and it is not closed here. **A review mode is a tool-set enforcement, not
+a sandbox:** the reviewer cannot execute anything because no tool it has can,
+and that is a fact of the argv — but an implementer under the implementer contract
+still has `bash`, and nothing there technically prevents the bash builtin
+`kill`, a TERM-trap script or a direct syscall. Those are instructed against,
+not prevented (see the `implementer-prompt-rules.md` paragraph every implementer
+prompt carries), and the mechanical part is the `pi-shims` PATH guard.
+
+**Review mode is sticky per run name.** Every launch records it as
+`<runs-dir>/<run>.mode` (`review` or `implementer`) beside `--report`'s material
+and the route record, and a resume is forced into the recorded mode: a resume
+that ASKS for implementer mode on a review is refused (exit 2, before the name
+is claimed), while a resume that names no mode simply takes the record. A
+record that exists but is neither word is refused rather than guessed, and a
+name that carries review material (`<run>.review/before-state.txt`) but no mode
+record is resumed as a review — the session is known to be one, so the safe
+direction is failing closed. A pre-existing implementer session (no record, no
+material) resumes unchanged. A `PI_RUN_MODE` value that only the host's
+`controller.local.env` supplied is a default for launches that name none: it
+cannot flip a review, and a request naming the wrong mode is not obeyed either.
+An implementer run may be resumed STRICTER (as a review); the record then
+becomes `review` and the run is a review for the rest of its life.
 
 It also carries a **review budget**, enforced while the run is going:
 `PI_REVIEW_MAX_SECONDS` (wall clock, default **7200** — a max-effort review of a

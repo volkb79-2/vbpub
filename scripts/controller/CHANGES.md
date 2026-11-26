@@ -6,6 +6,47 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Added
+- **A pi run mode, and review mode is the wrapper's own switch (P-plat-26c).**
+  `pi-impl.sh` takes `PI_RUN_MODE=implementer` (default) or `review`. Review
+  mode puts the read-only set defined ONCE in `scripts/controller/pi-review-argv`
+  (`--tools read,grep,find,ls`, `--exclude-tools mcp__*`, `--no-extensions`,
+  `--no-mcp`) in the wrapper's OWN argv, so the first launch, a manual `resume`
+  and every automatic continuation carry it; the previous seam (a caller
+  exporting the list through `PI_EXTRA_ARGS`) is gone, and `pi-review.sh` sets
+  the mode instead of carrying a second copy of the list. In review mode any
+  non-empty `PI_EXTRA_ARGS` is refused (exit 2) — every spelling pi accepts for
+  tools, extensions, MCP, skills, prompt templates and project trust is named in
+  the message first — so a review cannot be widened back to a shell, and an
+  unclassified spelling takes the same exit rather than slipping through. The
+  mode is a name-owned record (`<runs-dir>/<run>.mode`, written only by a launch
+  that got past every refusal and retired with the other records on a forced
+  reuse), and it is STICKY: a resume of a `review` name is a review, a CALLER
+  asking for implementer mode on it is refused before the name is claimed, and
+  an implementer name resumed as a review keeps the stricter mode and records
+  it. A record that exists but says neither word is refused instead of guessed,
+  a missing record with `<run>.review/before-state.txt` beside it is resumed as
+  a review (fail closed where the session is known), and a missing record with
+  no material keeps the mode the launch named — which is what leaves
+  pre-existing implementer sessions unchanged. A `PI_RUN_MODE` value supplied
+  only by `controller.local.env` is a default for launches that name none: it
+  never flips a caller's review, and against a record it is printed, not obeyed.
+- **A fixed rule paragraph on every pi prompt.** `<mode>-prompt-rules.md` beside
+  the wrapper is appended to the prompt of every launch and to the automatic
+  continuation; a launch whose file is missing is refused (exit 2). The
+  implementer paragraph bans pattern kills (`pkill`, `killall`, `pgrep`-then-kill,
+  a `/proc` loop, signals to a group or a foreign pid), confines signal and
+  TERM-trap tests to a capped container with a private PID namespace against PIDs
+  the test recorded itself, and forbids shell experiments in the shared
+  devcontainer; the review paragraph says the run executes nothing.
+- Tests: `tests/test-pi-impl.sh` gains the run-mode checks (`review-argv`,
+  `implementer-mode`, `review-argv-definition`, `mode-value`, `mode-extra-args`,
+  `mode-sticky`, `mode-evidence`, `mode-rules-file`, `mode-local-env`,
+  `mode-record`, `mode-prompt`), the fake pi now records one argv element per
+  NUL-terminated record, and `tests/test-mutations.sh`/`mutate-sources.py` carry
+  one hand mutant per new refusal. `tests/test-pi-review.sh` asserts the review
+  launch is in review mode and records its mode.
+
 ### Changed
 - **Signal guard for every pi run (P-plat-31).** `pi-impl.sh` now prepends
   `scripts/controller/pi-shims/` to the agent's `PATH` for the first run, a resume

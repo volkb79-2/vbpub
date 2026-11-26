@@ -164,6 +164,59 @@ The guard does not cover the bash builtin `kill` on a negative or foreign pid,
 an absolute `/usr/bin/pkill`, a shell loop over `/proc`, or a script that resets
 `PATH`; a brief still has to say so.
 
+### Run mode: implementer or review
+
+Every launch runs under a **run mode**; it is the wrapper's own switch, not a
+caller convention (see the
+[design rationale](DESIGN-GUIDE.md#why-a-review-mode-is-the-wrappers-own-switch-and-sticky)).
+
+```bash
+# implementer (the default): pi's own tool set, plus the fixed rule paragraph
+scripts/controller/pi-impl.sh /path/to/worktree /absolute/path/brief.md pi-run
+
+# review: the read-only tool set, no execution at all
+PI_RUN_MODE=review scripts/controller/pi-impl.sh \
+  /path/to/worktree /absolute/path/review-brief.md pi-review-run
+```
+
+In `review` mode the wrapper puts the read-only set from `scripts/controller/pi-review-argv`
+(`--tools read,grep,find,ls`, `--exclude-tools mcp__*`, `--no-extensions`, `--no-mcp`)
+in its OWN argv, so the first launch, a manual `resume` and every automatic
+continuation carry it, and every prompt gets `review-prompt-rules.md` (execute
+nothing). The mode is recorded as `<runs-dir>/<run>.mode` and is **sticky**:
+
+```text
+run name pi-review-run was started as a REVIEW and cannot be resumed in implementer mode
+  …/runs/pi-review-run.mode records 'review': a review's session never gets a shell or a writer, so the mode is sticky
+```
+
+Resume it with `PI_RUN_MODE=review`, or with no `PI_RUN_MODE` at all and the
+record decides. The reverse direction is allowed: an implementer name may be
+resumed as a review, and the record then becomes `review`. A record that says
+neither word is refused rather than guessed, and a name that carries
+`<run>.review/before-state.txt` but no mode record is resumed as a review. A
+pre-existing implementer session (no record, no material) resumes unchanged.
+
+In `review` mode a caller's `PI_EXTRA_ARGS` is refused (exit 2) instead of
+merged: any element at all, and every spelling pi accepts for tools
+(`--tools`/`-t`, `--exclude-tools`/`-xt`, `--no-tools`/`-nt`,
+`--no-builtin-tools`/`-nbt`), extensions (`--extension`/`-e`,
+`--no-extensions`/`-ne`), MCP (`--no-mcp`), skills (`--skill`,
+`--no-skills`/`-ns`), prompt templates (`--prompt-template`,
+`--no-prompt-templates`/`-np`) and project trust (`--approve`/`-a`,
+`--no-approve`/`-na`) is refused by name. A caller who exported the old
+`PI_EXTRA_ARGS` review seam gets that refusal and should drop the export.
+
+Every launch also needs both rule files (`implementer-prompt-rules.md`,
+`review-prompt-rules.md`) beside the wrapper; a missing one refuses the launch.
+
+**The limit, stated plainly:** the rule paragraph is an INSTRUCTION. In
+implementer mode the agent has `bash`, so the bash builtin `kill`, a TERM-trap
+script and a direct syscall are **not** technically prevented — only the
+mechanical `pi-shims` PATH guard covers the ordinary `pkill`/`killall`/signalling
+`pgrep` spellings. Review mode is a tool-set enforcement (no tool that can
+execute or write at all), not a sandbox, and even it leaves `read` unconfined.
+
 Read the `.done` marker's outcome word before deciding what to do next:
 
 | `.done` outcome | What to do |
