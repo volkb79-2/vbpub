@@ -110,3 +110,34 @@ revisit it with a reason rather than by accident:
    `malformed`), because a registrant that gets "no" needs to know which.
 4. **The scope resolution takes the shallowest match.** Two scopes with the same
    name at different depths would otherwise make the choice depend on walk order.
+5. **Two scopes with the same name at one depth is a refusal (`several`), not a
+   coin flip.** A deeper match of the same name loses to the shallower one and is
+   recorded in `Scope::shadowed` for the journal, so "the docker scope, not the
+   placement leaf" (design §2 D1) is a decision and not a sort order.
+6. **A `[[static_unit]]` path is exempt from `allowed_ancestors`, never from
+   `protected`.** A standalone host has no docker scopes at all, so holding an
+   operator's `/etc` path to the docker ancestors would make the only
+   standalone candidate source unusable; a path under a protected ancestor is
+   still refused, so nobody parks the cockpit by accident.
+7. **`refault` and `smallest-enough` report `rule-unknown` and order by
+   `newest`.** Neither has a readable input in P1 (no `memory.stat` reader, no
+   reclaim estimate). Design §8 requires the guard to *say* unknown rather than
+   use a zero rate, so the reply carries `rule_reason: "rule-unknown"` beside the
+   rule it could honour. Rejected: refusing to run with such a rule, which would
+   turn a config typo into a dead guard.
+8. **Every P1 journal row says `simulated: true` and `seconds: 0`.** No interval
+   can exist because nothing is frozen. Writing `seconds: 0` alone would read as
+   a real, instantly-thawed freeze; the marker is what stops that misreading.
+9. **The journal records transitions, not ticks.** A `would-freeze` row every 5 s
+   for the same unit is noise in a 1 MiB rotating file, and it hides the rows that
+   matter. The live decision — including its reason word — is served by `status`
+   and `candidates` instead.
+10. **The daemon adopts systemd's descriptors instead of binding paths.** A
+    process that binds its own socket cannot set the `root:thrashguard-{registrant,
+    reader}` group (`std` has no `chown`), and it leaves a stale socket file after
+    every restart. `LISTEN_FDS`/`LISTEN_FDNAMES` are validated as a pure plan and
+    one audited `unsafe` block wraps the raw descriptor — the crate's only
+    `unsafe`, asserted by `tools/check-lints.py` in both directions.
+11. **`serve` refuses `enforce` and exits 0 on `off`.** `enforce` is valid
+    vocabulary and `status` must be able to report it, but this build cannot
+    honour it, so the refusal happens at the run boundary with one line.

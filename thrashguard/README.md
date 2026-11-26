@@ -4,9 +4,9 @@ The actuator for "freeze" on a dev-tier host: a small Rust service that watches
 the host's memory PSI and parks one registered unit at a time, so an
 overcommitted host loses time to one job instead of all of them.
 
-**Status: TG-1 P1 `observe` — the monitoring cut.** What exists here reads
-pressure, resolves a registered container to its cgroup scope, journals what it
-*would* do, and reports it. **Nothing in this crate writes a cgroup file or sends
+**Status: TG-1 P1 `observe` — the monitoring cut, complete.** What exists here
+runs the tick loop (`thrashguard serve`), resolves a registered container to its
+cgroup scope, journals what it *would* do, and reports it. **Nothing in this crate writes a cgroup file or sends
 a signal**, and `tests/no_act_path.rs` fails if that ever changes. `mode =
 enforce` is refused with one line until P2 (`act`) is reviewed, because an
 untested freeze is exactly the kind of quiet wrong answer the estate's default
@@ -31,7 +31,7 @@ Each planned cut, and what it needs to be usable:
 
 | Cut | Content | State |
 |---|---|---|
-| P1 `observe` | config, PSI poll, hysteresis, sockets, candidate store + container→scope resolution, `events.jsonl`, `mode=report`, CLI, static units | in progress (this crate) |
+| P1 `observe` | config, PSI poll, hysteresis, the tick loop, the two sockets, candidate store + container→scope resolution, `events.jsonl`, `mode=report`, CLI, static units | complete (this crate) |
 | P2 `act` | freeze/thaw of one scope, reclaim, read-back, death sweep, `enforce`, the thaw queue | not built |
 | P3 `victims` | `newest`, `refault`, `smallest-enough`, aging, invariants | not built |
 | P4 `estate` | run-gate interim registrant, hostobs emission, `host-facts/2`, fleetd, agctl, mdt-cockpit deploy offer | not built |
@@ -58,6 +58,10 @@ Each planned cut, and what it needs to be usable:
 | `/run/thrashguard/registrant/thrashguard.sock` | `root:thrashguard-registrant` 0660 | register, update, heartbeat, deregister |
 | `/run/thrashguard/reader/thrashguard.sock` | `root:thrashguard-reader` 0660 | status, candidates, events, version |
 
+The units live in [`deploy/systemd/`](deploy/systemd) with the socket groups'
+directories from [`deploy/tmpfiles.d/thrashguard.conf`](deploy/tmpfiles.d/thrashguard.conf);
+[docs/CONSUMERS.md](docs/CONSUMERS.md) §2 installs them.
+
 Both are systemd-owned `.socket` units with `Accept=no`, so a daemon restart does
 not refuse a client. Group gating is **advisory** — container root bypasses socket
 DAC — and the real boundary is the scope resolution above.
@@ -65,9 +69,21 @@ DAC — and the real boundary is the scope resolution above.
 ## CLI
 
 ```
-thrashguard --version
-thrashguard status|candidates|events|freeze|thaw ...      # P2 for the two act verbs
+thrashguard serve                 # the daemon: tick loop + both sockets
+thrashguard status                # mode, PSI, candidates, next decision
+thrashguard candidates            # the next tick's order and the victim it implies
+thrashguard events [--since-seq N]
+thrashguard version
 ```
+
+The three reader verbs answer **locally** from `--config` when `--socket` is
+absent, so a standalone host is complete with no daemon; with `--socket` they
+ask a running one. `serve` adopts the two systemd descriptors when
+`LISTEN_FDS`/`LISTEN_FDNAMES` are set and binds `--registrant-socket`/
+`--reader-socket` only for a foreground run, `mode = off` exits 0 without
+binding anything, and `mode = enforce` is refused with one line. Every verb
+takes `--config`, `--cgroup-root` and `--pressure-path` (design §5 D9);
+`freeze`/`thaw` are **P2** verbs and do not exist in this build.
 
 See [docs/CONSUMERS.md](docs/CONSUMERS.md) for worked examples, and
 [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) for why the parts are shaped this

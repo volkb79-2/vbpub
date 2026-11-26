@@ -8,7 +8,7 @@ current behaviour only in the README, docs and SPEC-like files. Views:
 
 ## TG-1 — P1 `observe` is the only cut; every act path is P2
 
-**State:** in-progress · **Severity:** medium · **Owner:** core · **Links:** docs/design/thrashguard/DESIGN.md
+**State:** open · **Severity:** medium · **Owner:** core · **Links:** docs/design/thrashguard/DESIGN.md
 
 **Problem.** The design's MVP splits into P1 `observe`, P2 `act`, P3 `victims` and
 P4 `estate` (design §5). P1 compiles no act path, so `mode = enforce` must be
@@ -72,15 +72,68 @@ the changed lines of `src/` with a mutant-count estimate from
 `cargo mutants --list --in-diff <base>` and a measured per-mutant cost, declared
 only when there is a budget figure. P1's release therefore records "R2 pending".
 
-## TG-6 — The R1 floor in `assay.toml` is a placeholder, not a measurement
+## TG-7 — The deploy surface is committed but only documented as a recipe
 
-**State:** in-progress · **Severity:** medium · **Owner:** core · **Links:** thrashguard/assay.toml, thrashguard/tools/check-floors.py
+**State:** open · **Severity:** low · **Owner:** core · **Links:** thrashguard/deploy/, docs/CONSUMERS.md, docs/design/thrashguard/DESIGN.md §5
 
-**Problem.** `assay.toml [lanes.r0-r1.judge].fail_under` is `90.0` only so the
-lane loads; the design's habit is one full point below the MEASURED value, with
-the derivation recorded in the lane header. A placeholder that survives becomes a
-floor nobody can explain. **Wanted.** The first full `r0-r1` run's measured
-percentage becomes the recorded figure, its derivation is written into the lane
-header, and `coverage-floors.toml` carries the same number so
-`tools/check-floors.py` can check the declaration both ways (floor above measured
-fails; more than four points below fails).
+**Problem.** `deploy/systemd/{thrashguard.service,thrashguard.slice,thrashguard-registrant.socket,thrashguard-reader.socket}`
+and `deploy/tmpfiles.d/thrashguard.conf` exist, and `docs/CONSUMERS.md` §2 shows
+the `install`/`groupadd`/`systemd-tmpfiles`/`systemctl` commands an operator
+pastes. What does not exist is the installer those commands imply: no package,
+no `install.sh`, no upgrade path, so a released binary cannot get onto a host
+without a human copying files out of the checkout. The design also promises
+that mdt-cockpit may **offer** it through a `MDT_THRASHGUARD` host-setup key
+(design §5 "Deploy"), which nobody has built. **Wanted.** One installer that
+takes a released binary (or a tarball) and installs the units, the groups and
+the `/etc` skeleton idempotently, plus the mdt-cockpit offer key if the operator
+wants the offer. Until it exists the README says "a host without mdt-cockpit
+runs it standalone" — true only for a human with a shell.
+
+## TG-8 — `serve`'s session handling is untested against a real listener
+
+**State:** open · **Severity:** medium · **Owner:** core · **Links:** thrashguard/src/daemon.rs, TG-1
+
+**Problem.** `daemon::serve` (the two-thread loop, the accept cap and the
+per-session handler) is covered only through the pieces it composes: the session
+framing over `UnixStream::pair`, the request dispatch, and `bind`. The loop
+itself — accept, spawn, cap at `MAX_SESSIONS`, drop a peer that never sends
+(`SESSION_READ_TIMEOUT`) — is never started by a test, because a test that runs
+it needs a listener thread it must also stop, and the estate forbids a fixed
+sleep as a synchronisation primitive. So a defect in the loop's own shape would
+be found by a live probe, not by the lane. **Wanted.** Either a test that drives
+the loop deterministically (an injected listener whose accept is driven by the
+test, so no sleep races) or a recorded live acceptance probe, and the choice
+written here. Not urgent for P1 — nothing acts — but P2's daemon restart path
+depends on it.
+
+## TG-9 — `LISTEN_FDS` adoption has no live acceptance yet
+
+**State:** open · **Severity:** high · **Owner:** core · **Links:** thrashguard/src/activation.rs, docs/design/thrashguard/DESIGN.md §3 D7
+
+**Problem.** `activation::plan` is unit-tested in both directions, but
+`activation::adopt` — the single audited `unsafe` block that turns a raw
+descriptor into a `UnixListener` — cannot be: a test would have to be systemd,
+and passing this process's own descriptors would test `std`, not the contract.
+The systemd `.socket` units use `Accept=no` with `FileDescriptorName=registrant`
+/ `reader`, so the names and the order are the unit files' facts; they are
+declared in `FD_NAMES` and nothing yet proves the two agree. The `unsafe` block
+is therefore audited by reading, not by a run. **Wanted.** A VM acceptance (the
+design's §5 test host) that starts both `.socket` units, connects a client to
+each, and shows `serve` adopting descriptor 3 and 4 by name; and a lint or test
+that compares `FD_NAMES` against the `FileDescriptorName=` values in
+`deploy/systemd/*.socket`, so a rename cannot silently pass. Do that **before**
+P2, because a mis-adopted descriptor would serve the wrong role's verbs.
+
+## TG-10 — No `INDEX.md` can be generated for this backlog
+
+**State:** open · **Severity:** low · **Owner:** platform · **Links:** docs/BACKLOG-FORMAT.md, TG-1
+
+**Problem.** `docs/BACKLOG-FORMAT.md` names `agctl backlog index` as the generator
+of `<project>/INDEX.md`, and the estate's `agctl backlog check` compares that file
+against regenerated output. This checkout's `agctl` has no backlog module at all
+(the verb is documented, not built), and nyxloom's `backlog` verb manages trove
+entries instead of these files. So `thrashguard/INDEX.md` cannot be produced by
+the documented tool, and a hand-written index would be a file that pretends to be
+generated. **Wanted.** Either the verb is built (the platform side of this), or
+the format document records that `INDEX.md` is optional until it is, and
+`check` tolerates its absence. Until then this project ships no `INDEX.md`.

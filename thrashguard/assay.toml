@@ -76,8 +76,10 @@ targets = [
   #   its lines are assertions about the host rather than behaviour a floor guards;
   #   its arguments and refusals are covered by the binary's tests over `cli::parse`
   #   and by the lane's own invocation.
+  "src/activation.rs",
   "src/clock.rs",
   "src/config.rs",
+  "src/daemon.rs",
   "src/hysteresis.rs",
   "src/json.rs",
   "src/events.rs",

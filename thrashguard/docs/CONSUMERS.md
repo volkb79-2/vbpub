@@ -117,6 +117,18 @@ printf '%s\n' '{"v":"thrashguard-event/1","verb":"events","since_seq":17}' \
   `psi: {"v": null, "reason": ...}` and a `unknown-pressure` event.
 - **A frozen interval is never recorded** because no interval can be frozen yet.
   The journal holds decisions, with `seconds: 0` and an explicit `simulated` field.
+- **The journal holds transitions.** A trigger that holds writes one
+  `would-freeze` (or one `would-hold` naming `no-candidates`, `max-parked`,
+  `never-park-last` or `thaw-grace`); a release writes one `would-thaw`; silent
+  registrations write one `expired` each. The same decision is not repeated every
+  tick — ask `status`/`candidates` for the current one.
+- **`rule-unknown` means the configured rule has no readable input.** `refault`
+  and `smallest-enough` are P3; until then the replies carry
+  `"rule":"newest","rule_reason":"rule-unknown"` rather than a zero rate.
+- **`serve` starts the daemon; it is not a client verb.** With systemd it adopts
+  the two socket descriptors; run by hand it binds `--registrant-socket` and
+  `--reader-socket` (or the default paths). `mode = off` prints one line and
+  exits 0 without binding; `mode = enforce` is refused with exit code 2.
 
 ## 6. Consumers
 
