@@ -3,7 +3,7 @@
 # `tools/check-floors.py`, which refuses a floor above the measured value and a
 # floor more than four points below it, so a placeholder cannot survive here.
 #
-# Measured over the JUDGED SET of 10 `src/*.rs` files at commit 3b25e6e11:
-# 2295 / 2554 executable lines = 89.86 %; the floor is the whole point below it.
+# Measured over the JUDGED SET of 12 `src/*.rs` files at commit 2329a1c55:
+# 3647 / 4058 executable lines = 89.87 %; the floor is the whole point below it.
 [floor]
 pct = 88.0

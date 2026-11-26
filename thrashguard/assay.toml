@@ -96,12 +96,16 @@ targets = [
 # Measured in the registered `r0-r1` lane on the tree of commit `3b25e6e11`
 # (image `tester-unified-rust:rs-20261124v`, `--locked --offline`, profile `ci`):
 #
-#   judged set: 10 `src/*.rs` files (clock, config, events, hysteresis, json, psi,
-#               report, socket, units, wire)
-#   coverage:   2295 / 2554 executable lines = 89.8606 %   (whole file, inline
+#   judged set: 12 `src/*.rs` files (activation, clock, config, daemon, events,
+#               hysteresis, json, psi, report, socket, units, wire)
+#   coverage:   3647 / 4058 executable lines = 89.8719 %   (whole file, inline
 #               `#[cfg(test)]` blocks included -- LCOV has no per-region exclusion)
 #
-# 89.86 - 1 = 88.86; the floor is declared as the whole point below it, 88.0, and
+# The judged set grew by `activation.rs` and `daemon.rs` in the same commit that
+# added them, and the re-measured value barely moved (89.8606 -> 89.8719), so the
+# floor stayed where it was.
+#
+# 89.87 - 1 = 88.87; the floor is declared as the whole point below it, 88.0, and
 # `coverage-floors.toml` carries the same number so `tools/check-floors.py` checks
 # the declaration in both directions (a floor above the measurement fails; more than
 # four points below it also fails). It is a regression guard, never a target: a
