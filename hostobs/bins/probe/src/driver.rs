@@ -1221,9 +1221,7 @@ mod tests {
         let nested = paths.join("grandchild.cgroup");
 
         // Positive control: the same membership resolves where `child` is a real directory.
-        assert!(
-            read_cgroup_key(&nested, &paths.join("directory"), cgroup_path_identity).is_some()
-        );
+        assert!(read_cgroup_key(&nested, &paths.join("directory"), cgroup_path_identity).is_some());
 
         let linked = paths.join("linked");
         // The committed link must still be a link to a real tree, or the refusal proves nothing.
