@@ -137,11 +137,10 @@ class PolicyFacts:
     planning_cap: Fact[float]
     max_footprint: Fact[str]
     max_planned_bytes: Fact[int]
-    host_reserve_bytes: Fact[int]
     footprint_charges_bytes: Fact[Mapping[str, int]]
     priority_classes_by_principal: Fact[Mapping[str, tuple[str, ...]]]
     disk_floors: Fact[Mapping[str, int]]
-    psi_refuse_some_avg10_pct: Fact[float]
+    psi_refuse_some_avg10: Fact[float]
     admission: Fact[Mapping[str, float]]
     aging_s: Fact[float]
     legacy_charge_bytes: Fact[int]
@@ -169,6 +168,7 @@ class HostCapacity:
     cgroup_v2_mounted: Fact[bool]
     policy: PolicyFacts
     guard: GuardFacts
+    warm_samples_bytes_by_id: Fact[Mapping[str, int]]
 
 
 @dataclass(frozen=True)
@@ -336,12 +336,6 @@ def _validate_name(value: str, name: str) -> str:
     return value
 
 
-def _validate_digest(value: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise AdmissionError(ExitCode.REFUSAL, "request digest must be a lowercase sha256")
-    return value
-
-
 def _pressure_value(fact: Fact[float], name: str) -> float:
     value = fact.require(name)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -356,7 +350,10 @@ def _pressure_value(fact: Fact[float], name: str) -> float:
 
 
 def _require_live_facts(capacity: HostCapacity) -> None:
-    if not capacity.cgroup_v2_mounted.require("cgroup_v2.mounted"):
+    mounted = capacity.cgroup_v2_mounted.require("cgroup_v2.mounted")
+    if not isinstance(mounted, bool):
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "cgroup_v2.mounted is invalid")
+    if not mounted:
         raise AdmissionError(ExitCode.REFUSAL, "cgroup v2 is not mounted")
     online = _positive_int(capacity.cpu.online.require("cpu.online"), "cpu.online")
     load1 = capacity.load1.require("load1")
@@ -375,11 +372,11 @@ def _require_live_facts(capacity: HostCapacity) -> None:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "memory full avg10 is at or above 3 percent")
     memory_some = _pressure_value(capacity.psi.memory.some_avg10_pct, "psi.memory.some_avg10_pct")
     some_limit = _nonnegative_number(
-        capacity.policy.psi_refuse_some_avg10_pct.require("policy.psi_refuse_some_avg10_pct"),
-        "policy.psi_refuse_some_avg10_pct",
+        capacity.policy.psi_refuse_some_avg10.require("policy.psi_refuse_some_avg10"),
+        "policy.psi_refuse_some_avg10",
     )
     if some_limit > 100:
-        raise AdmissionError(ExitCode.REFUSAL, "policy.psi_refuse_some_avg10_pct exceeds 100")
+        raise AdmissionError(ExitCode.REFUSAL, "policy.psi_refuse_some_avg10 exceeds 100")
     if memory_some >= some_limit:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "memory some avg10 reached its configured refusal threshold")
     _check_guard(capacity.guard)
@@ -387,7 +384,10 @@ def _require_live_facts(capacity: HostCapacity) -> None:
 
 
 def _check_guard(guard: GuardFacts) -> None:
-    if not guard.guard_present.require("guard.guard_present"):
+    present = guard.guard_present.require("guard.guard_present")
+    if not isinstance(present, bool):
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "guard.guard_present is invalid")
+    if not present:
         return
     state = guard.guard_state.require("guard.guard_state")
     if not isinstance(state, str):
@@ -404,6 +404,8 @@ def _check_guard(guard: GuardFacts) -> None:
 def _check_disk_floors(capacity: HostCapacity) -> None:
     floors = capacity.policy.disk_floors.require("policy.disk_floors")
     if not isinstance(floors, Mapping) or not floors:
+        raise AdmissionError(ExitCode.REFUSAL, "policy.disk_floors must name checkout and Docker roots")
+    if not {"checkout", "docker"}.issubset(floors):
         raise AdmissionError(ExitCode.REFUSAL, "policy.disk_floors must name checkout and Docker roots")
     normalized: dict[str, int] = {}
     for name, floor in floors.items():
@@ -441,7 +443,7 @@ def _read_json_record(path: Path, *, expected_id: str) -> dict[str, object]:
             raise OSError("record is not a regular file")
         raw = path.read_bytes()
         value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, ValueError, RecursionError, OverflowError) as exc:
         raise AdmissionError(
             ExitCode.QUEUED_WITHDRAWN,
             f"admission record {path.name!r} is unreadable; its charge is retained: {exc}",
@@ -460,7 +462,9 @@ def _read_json_record(path: Path, *, expected_id: str) -> dict[str, object]:
     if not isinstance(group, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"admission record {path.name!r} has invalid identity; its charge is retained")
-    if priority not in PRIORITIES or footprint not in FOOTPRINTS or state != "admitted":
+    if (not isinstance(priority, str) or priority not in PRIORITIES
+            or not isinstance(footprint, str) or footprint not in FOOTPRINTS
+            or state != "admitted"):
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"admission record {path.name!r} has invalid policy fields; its charge is retained")
     try:
@@ -485,7 +489,7 @@ def _read_waiter_record(path: Path, *, expected_id: str) -> dict[str, object]:
         if path.is_symlink() or not path.is_file():
             raise OSError("waiter is not a regular file")
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, ValueError, RecursionError, OverflowError) as exc:
         raise AdmissionError(
             ExitCode.QUEUED_WITHDRAWN,
             f"waiting record {path.name!r} is unreadable; it remains reserved: {exc}",
@@ -501,14 +505,16 @@ def _read_waiter_record(path: Path, *, expected_id: str) -> dict[str, object]:
     if not isinstance(group, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"waiting record {path.name!r} has invalid identity; it remains reserved")
-    if priority not in PRIORITIES or requested_priority not in PRIORITIES or footprint not in FOOTPRINTS:
+    if (not isinstance(priority, str) or priority not in PRIORITIES
+            or not isinstance(requested_priority, str) or requested_priority not in PRIORITIES
+            or not isinstance(footprint, str) or footprint not in FOOTPRINTS):
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"waiting record {path.name!r} has invalid policy; it remains reserved")
     if value.get("state") != "waiting" or not isinstance(value.get("cancelled"), bool):
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"waiting record {path.name!r} has invalid state; it remains reserved")
-    record_kind = value.get("record_kind", "job")
-    if record_kind not in {"job", "lease"}:
+    record_kind = value.get("record_kind")
+    if not isinstance(record_kind, str) or record_kind not in {"job", "lease"}:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"waiting record {path.name!r} has invalid record type; it remains reserved")
     try:
@@ -530,7 +536,7 @@ def _read_lease_record(path: Path, *, expected_id: str) -> dict[str, object]:
         if path.is_symlink() or not path.is_file():
             raise OSError("lease is not a regular file")
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, ValueError, RecursionError, OverflowError) as exc:
         raise AdmissionError(
             ExitCode.QUEUED_WITHDRAWN,
             f"lease record {path.name!r} is unreadable; its charge is retained: {exc}",
@@ -547,10 +553,13 @@ def _read_lease_record(path: Path, *, expected_id: str) -> dict[str, object]:
     if not isinstance(group, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"lease record {path.name!r} has invalid identity; its charge is retained")
-    if not isinstance(name, str) or not name or priority not in PRIORITIES or footprint not in FOOTPRINTS:
+    if (not isinstance(name, str) or not name
+            or not isinstance(priority, str) or priority not in PRIORITIES
+            or not isinstance(footprint, str) or footprint not in FOOTPRINTS):
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"lease record {path.name!r} has invalid policy; its charge is retained")
-    if state not in {"pending", "bound", "tombstone"} or not isinstance(value.get("released"), bool):
+    if (not isinstance(state, str) or state not in {"pending", "bound", "tombstone"}
+            or not isinstance(value.get("released"), bool)):
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"lease record {path.name!r} has invalid state; its charge is retained")
     container_id = value.get("container_id")
@@ -560,6 +569,9 @@ def _read_lease_record(path: Path, *, expected_id: str) -> dict[str, object]:
     if state == "bound" and container_id is None:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"lease record {path.name!r} is bound without an id; its charge is retained")
+    if value["released"] and state != "tombstone":
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"lease record {path.name!r} is released without a tombstone; its charge is retained")
     try:
         charged = _positive_int(value.get("charged_bytes"), "lease.charged_bytes")
         current = _nonnegative_int(value.get("current_warm_bytes"), "lease.current_warm_bytes")
@@ -577,10 +589,44 @@ def _read_lease_record(path: Path, *, expected_id: str) -> dict[str, object]:
     return value
 
 
+def _read_terminal_record(path: Path, *, expected_id: str) -> dict[str, object]:
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("terminal record is not a regular file")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, RecursionError, OverflowError) as exc:
+        raise AdmissionError(
+            ExitCode.QUEUED_WITHDRAWN,
+            f"terminal record {path.name!r} is unreadable: {exc}",
+        ) from exc
+    if not isinstance(value, dict) or value.get("job_id") != expected_id:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"terminal record {path.name!r} is malformed")
+    group = value.get("group")
+    digest = value.get("digest")
+    if (value.get("schema") != "fleet-admission-terminal/1" or value.get("state") != "completed"
+            or not isinstance(group, str) or not group
+            or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"terminal record {path.name!r} has invalid identity")
+    try:
+        completed_at = _nonnegative_number(value.get("completed_at"), "terminal.completed_at")
+    except AdmissionError as exc:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"terminal record {path.name!r} is invalid: {exc.reason}") from exc
+    return {
+        "schema": "fleet-admission-terminal/1",
+        "job_id": expected_id,
+        "group": group,
+        "digest": digest,
+        "state": "completed",
+        "completed_at": completed_at,
+    }
+
+
 def _open_lock(path: Path, *, blocking: bool) -> int | None:
     flags = os.O_CREAT | os.O_RDWR
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags |= os.O_NOFOLLOW
     try:
         fd = os.open(path, flags, 0o600)
     except OSError as exc:
@@ -633,6 +679,23 @@ def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot atomically write admission record: {exc}") from exc
 
 
+def _atomic_new_json(path: Path, value: Mapping[str, object]) -> None:
+    """Write a new charged record, rolling it back if durability cannot be confirmed."""
+
+    try:
+        _atomic_json(path, value)
+    except BaseException as original:
+        try:
+            path.unlink(missing_ok=True)
+            _fsync_dir(path.parent)
+        except OSError as cleanup_error:
+            raise AdmissionError(
+                ExitCode.QUEUED_WITHDRAWN,
+                f"new admission record write failed and rollback could not be confirmed; its charge is retained: {cleanup_error}",
+            ) from original
+        raise
+
+
 @dataclass(frozen=True)
 class AdmissionResult:
     record: Mapping[str, object]
@@ -671,13 +734,6 @@ class AdmissionHandle:
     def complete(self) -> None:
         self._book.complete(self)
 
-    def __enter__(self) -> AdmissionHandle:
-        return self
-
-    def __exit__(self, _kind: object, _value: object, _traceback: object) -> None:
-        self.close()
-
-
 class LeaseHandle:
     """A pending/bound lease flock; close never releases its durable accounting record."""
 
@@ -697,13 +753,6 @@ class LeaseHandle:
         if self._lock_fd is not None:
             fd, self._lock_fd = self._lock_fd, None
             _unlock_close(fd)
-
-    def __enter__(self) -> LeaseHandle:
-        return self
-
-    def __exit__(self, _kind: object, _value: object, _traceback: object) -> None:
-        self.close()
-
 
 @dataclass(frozen=True)
 class AdmissionResources:
@@ -870,6 +919,7 @@ class AdmissionBook:
         self.state_dir = Path(state_dir)
         self.admission_dir = self.state_dir / "admission"
         self.admitted_dir = self.admission_dir / "admitted"
+        self.completed_dir = self.admission_dir / "completed"
         self.waiting_dir = self.admission_dir / "waiting"
         self.leases_dir = self.admission_dir / "leases"
         self.locks_dir = self.admission_dir / "locks"
@@ -877,24 +927,41 @@ class AdmissionBook:
         self.clock = clock
         self.waiter = waiter
         try:
-            for directory in (self.admitted_dir, self.waiting_dir, self.leases_dir, self.locks_dir):
+            for directory in (self.admitted_dir, self.completed_dir, self.waiting_dir, self.leases_dir, self.locks_dir):
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         except OSError as exc:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot initialize admission state: {exc}") from exc
 
     def _queue_lock(self) -> int:
-        fd = _open_lock(self.queue_lock_path, blocking=True)
-        if fd is None:
-            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "queue lock could not be acquired")
-        return fd
+        # Blocking flock acquisition cannot return None; only nonblocking locks do.
+        return cast(int, _open_lock(self.queue_lock_path, blocking=True))
 
     def _load_records(self) -> dict[str, dict[str, object]]:
         try:
             job_paths = sorted(path for path in self.admitted_dir.iterdir() if path.name.endswith(".json"))
+            terminal_paths = sorted(path for path in self.completed_dir.iterdir() if path.name.endswith(".json"))
             lease_paths = sorted(path for path in self.leases_dir.iterdir() if path.name.endswith(".json"))
         except OSError as exc:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read admission records: {exc}") from exc
-        records = {f"job:{path.stem}": _read_json_record(path, expected_id=path.stem) for path in job_paths}
+        terminal_records: dict[str, dict[str, object]] = {}
+        for path in terminal_paths:
+            terminal_records[path.stem] = _read_terminal_record(path, expected_id=path.stem)
+        records: dict[str, dict[str, object]] = {}
+        for path in job_paths:
+            terminal = terminal_records.get(path.stem)
+            if terminal is not None:
+                try:
+                    active = _read_json_record(path, expected_id=path.stem)
+                except AdmissionError:
+                    # A durable terminal written before a crash resolves a stale active file.
+                    continue
+                if active["group"] != terminal["group"] or active["digest"] != terminal["digest"]:
+                    raise AdmissionError(
+                        ExitCode.QUEUED_WITHDRAWN,
+                        f"admission record {path.name!r} conflicts with its terminal record; its charge is retained",
+                    )
+                continue
+            records[f"job:{path.stem}"] = _read_json_record(path, expected_id=path.stem)
         for path in lease_paths:
             record = _read_lease_record(path, expected_id=path.stem)
             if not record["released"]:
@@ -904,6 +971,10 @@ class AdmissionBook:
     def _record_path(self, job_id: str) -> Path:
         _validate_name(job_id, "job_id")
         return self.admitted_dir / f"{job_id}.json"
+
+    def _terminal_path(self, job_id: str) -> Path:
+        _validate_name(job_id, "job_id")
+        return self.completed_dir / f"{job_id}.json"
 
     def _lease_path(self, lease_id: str) -> Path:
         _validate_name(lease_id, "lease_id")
@@ -934,6 +1005,19 @@ class AdmissionBook:
             raise AdmissionError(ExitCode.REFUSAL, "job id was already used with a different request digest")
         return AdmissionResult(record, None, True)
 
+    def _existing_terminal_locked(
+        self, job_id: str, authenticated_group: str, digest: str
+    ) -> AdmissionResult | None:
+        path = self._terminal_path(job_id)
+        if not path.exists() and not path.is_symlink():
+            return None
+        record = _read_terminal_record(path, expected_id=job_id)
+        if record["group"] != authenticated_group:
+            raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+        if record["digest"] != digest:
+            raise AdmissionError(ExitCode.REFUSAL, "job id was already used with a different request digest")
+        return AdmissionResult(record, None, True)
+
     def _existing_lease_locked(
         self, lease_id: str, authenticated_group: str, digest: str
     ) -> AdmissionResult | None:
@@ -956,11 +1040,15 @@ class AdmissionBook:
         is_lease: bool,
     ) -> AdmissionResult | None:
         if is_lease:
-            if self._record_path(job_id).exists() or self._record_path(job_id).is_symlink():
-                raise AdmissionError(ExitCode.REFUSAL, "lease id collides with an admitted job id")
+            if any(path.exists() or path.is_symlink() for path in
+                   (self._record_path(job_id), self._terminal_path(job_id))):
+                raise AdmissionError(ExitCode.REFUSAL, "lease id collides with an admitted or completed job id")
             return self._existing_lease_locked(job_id, authenticated_group, digest)
         if self._lease_path(job_id).exists() or self._lease_path(job_id).is_symlink():
             raise AdmissionError(ExitCode.REFUSAL, "job id collides with a lease id")
+        terminal = self._existing_terminal_locked(job_id, authenticated_group, digest)
+        if terminal is not None:
+            return terminal
         return self._existing_admission_locked(job_id, authenticated_group, digest)
 
     def _lease_records_locked(self) -> dict[str, dict[str, object]]:
@@ -1000,22 +1088,8 @@ class AdmissionBook:
         authenticated_group: str,
         digest: str,
         priority: str,
-        capacity: HostCapacity,
-        legacy_ids: tuple[str, ...],
-        inspector: Callable[[str], InspectorAnswer],
+        charged_bytes: int,
     ) -> AdmissionResult:
-        existing = self._existing_lease_locked(request.lease_id, authenticated_group, digest)
-        if existing is not None:
-            return existing
-        self._lease_name_available_locked(request.lease_id, request.container_name, inspector)
-        records = self._load_records()
-        candidate = {
-            "footprint": request.resources.footprint,
-            "planned_cores": request.resources.planned_cores,
-        }
-        eligibility, _remaining_bytes, _remaining_cores, _charges = self._require_candidate_fit(
-            candidate, capacity, records, legacy_ids
-        )
         created_at = _nonnegative_number(self.clock(), "clock")
         lock_fd = _open_lock(self._job_lock_path(request.lease_id), blocking=False)
         if lock_fd is None:
@@ -1030,14 +1104,14 @@ class AdmissionBook:
             "priority": priority,
             "footprint": request.resources.footprint,
             "planned_cores": float(request.resources.planned_cores),
-            "charged_bytes": eligibility.charge_bytes,
+            "charged_bytes": charged_bytes,
             "current_warm_bytes": 0,
             "state": "pending",
             "released": False,
             "created_at": created_at,
         }
         try:
-            _atomic_json(self._lease_path(request.lease_id), record)
+            _atomic_new_json(self._lease_path(request.lease_id), record)
         except BaseException:
             _unlock_close(lock_fd)
             raise
@@ -1052,46 +1126,8 @@ class AdmissionBook:
         priority: str,
         footprint: str,
         planned_cores: float,
-        capacity: HostCapacity,
-        legacy_ids: tuple[str, ...],
+        charged_bytes: int,
     ) -> AdmissionResult:
-        if self._lease_path(job_id).exists() or self._lease_path(job_id).is_symlink():
-            raise AdmissionError(ExitCode.REFUSAL, "job id collides with a lease id")
-        existing = self._existing_admission_locked(job_id, authenticated_group, digest)
-        if existing is not None:
-            return existing
-        records = self._load_records()
-        eligibility = static_eligibility(capacity, footprint, planned_cores)
-        _require_live_facts(capacity)
-        active = tuple(
-            Charge(
-                int(record["charged_bytes"]),
-                int(record["current_warm_bytes"]),
-                float(record["planned_cores"]),
-            )
-            for record in records.values()
-        )
-        legacy_charge: tuple[Charge, ...] = ()
-        if legacy_ids:
-            legacy_bytes = _positive_int(
-                capacity.policy.legacy_charge_bytes.require("policy.legacy_charge_bytes"),
-                "policy.legacy_charge_bytes",
-            )
-            legacy_cores = _nonnegative_number(
-                capacity.policy.legacy_planned_cores.require("policy.legacy_planned_cores"),
-                "policy.legacy_planned_cores",
-            )
-            legacy_charge = tuple(Charge(legacy_bytes, 0, legacy_cores) for _item in legacy_ids)
-        all_charges = active + legacy_charge
-        remaining_bytes = fit_bytes(capacity, all_charges)
-        if remaining_bytes < eligibility.charge_bytes:
-            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
-                                 f"RAM fit {remaining_bytes} is below charge {eligibility.charge_bytes}")
-        remaining_cores = planned_core_headroom(capacity, all_charges)
-        if remaining_cores < float(planned_cores):
-            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
-                                 f"planned-core headroom {remaining_cores} is below request {planned_cores}")
-
         created_at = _nonnegative_number(self.clock(), "clock")
         lock_fd = _open_lock(self._job_lock_path(job_id), blocking=False)
         if lock_fd is None:
@@ -1105,13 +1141,13 @@ class AdmissionBook:
             "priority": priority,
             "footprint": footprint,
             "planned_cores": float(planned_cores),
-            "charged_bytes": eligibility.charge_bytes,
+            "charged_bytes": charged_bytes,
             "current_warm_bytes": 0,
             "state": "admitted",
             "created_at": created_at,
         }
         try:
-            _atomic_json(self._record_path(job_id), record)
+            _atomic_new_json(self._record_path(job_id), record)
         except BaseException:
             _unlock_close(lock_fd)
             raise
@@ -1124,10 +1160,9 @@ class AdmissionBook:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read waiting records: {exc}") from exc
         active: list[dict[str, object]] = []
         for path in paths:
-            waiter = _read_waiter_record(path, expected_id=path.stem)
             lock_fd = _open_lock(self._waiting_lock_path(path.stem), blocking=False)
             if lock_fd is None:
-                active.append(waiter)
+                active.append(_read_waiter_record(path, expected_id=path.stem))
                 continue
             try:
                 path.unlink()
@@ -1140,36 +1175,34 @@ class AdmissionBook:
         return active
 
     def _existing_waiter_locked(
-        self, job_id: str, authenticated_group: str, digest: str, record_kind: str = "job"
+        self, job_id: str, authenticated_group: str, digest: str, record_kind: str
     ) -> AdmissionResult | None:
         path = self._waiting_path(job_id)
         if not path.exists() and not path.is_symlink():
+            return None
+        lock_fd = _open_lock(self._waiting_lock_path(job_id), blocking=False)
+        if lock_fd is not None:
+            try:
+                path.unlink()
+                _fsync_dir(self.waiting_dir)
+            except OSError as exc:
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                     f"cannot withdraw dead waiter {job_id!r}: {exc}") from exc
+            finally:
+                _unlock_close(lock_fd)
             return None
         record = _read_waiter_record(path, expected_id=job_id)
         if record["group"] != authenticated_group:
             raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
         if record["digest"] != digest:
             raise AdmissionError(ExitCode.REFUSAL, "job id was already used with a different request digest")
-        if record.get("record_kind", "job") != record_kind:
+        if record["record_kind"] != record_kind:
             raise AdmissionError(ExitCode.REFUSAL, "job id is already queued for a different record type")
-        lock_fd = _open_lock(self._waiting_lock_path(job_id), blocking=False)
-        if lock_fd is None:
-            return AdmissionResult(record, None, True)
-        try:
-            path.unlink()
-            _fsync_dir(self.waiting_dir)
-        except OSError as exc:
-            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
-                                 f"cannot withdraw dead waiter {job_id!r}: {exc}") from exc
-        finally:
-            _unlock_close(lock_fd)
-        return None
+        return AdmissionResult(record, None, True)
 
     def _register_waiter_locked(self, record: Mapping[str, object]) -> int:
         job_id = str(record["job_id"])
         path = self._waiting_path(job_id)
-        if path.exists() or path.is_symlink():
-            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "waiting record appeared before registration")
         lock_fd = _open_lock(self._waiting_lock_path(job_id), blocking=False)
         if lock_fd is None:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "waiter flock is held without a waiting record")
@@ -1199,9 +1232,34 @@ class AdmissionBook:
         return (PRIORITIES.index(str(record["priority"])), float(record["submitted_at"]), str(record["job_id"]))
 
     @staticmethod
-    def _book_charges(records: Mapping[str, Mapping[str, object]]) -> tuple[Charge, ...]:
+    def _sampled_warm_bytes(capacity: HostCapacity, record: Mapping[str, object]) -> int:
+        samples = capacity.warm_samples_bytes_by_id
+        if samples.value is None:
+            return 0
+        if not isinstance(samples.value, Mapping):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 "capacity.warm_samples_bytes_by_id is invalid")
+        admission_id = record.get("job_id", record.get("lease_id"))
+        if not isinstance(admission_id, str):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 "admission record has no id for warm-set sampling")
+        value = samples.value.get(admission_id, 0)
+        try:
+            return _nonnegative_int(value, f"warm_samples_bytes_by_id[{admission_id!r}]")
+        except AdmissionError as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"capacity warm sample is invalid: {exc.reason}") from exc
+
+    @classmethod
+    def _book_charges(
+        cls, capacity: HostCapacity, records: Mapping[str, Mapping[str, object]]
+    ) -> tuple[Charge, ...]:
         return tuple(
-            Charge(int(record["charged_bytes"]), int(record["current_warm_bytes"]), float(record["planned_cores"]))
+            Charge(
+                int(record["charged_bytes"]),
+                cls._sampled_warm_bytes(capacity, record),
+                float(record["planned_cores"]),
+            )
             for record in records.values()
         )
 
@@ -1214,7 +1272,7 @@ class AdmissionBook:
     ) -> tuple[StaticEligibility, int, float, tuple[Charge, ...]]:
         eligibility = static_eligibility(capacity, str(candidate["footprint"]), float(candidate["planned_cores"]))
         _require_live_facts(capacity)
-        charges = self._book_charges(records)
+        charges = self._book_charges(capacity, records)
         if legacy_ids:
             legacy_bytes = _positive_int(
                 capacity.policy.legacy_charge_bytes.require("policy.legacy_charge_bytes"),
@@ -1274,8 +1332,6 @@ class AdmissionBook:
                 return False, None
             raise
         eligibility, remaining_bytes, remaining_cores, _charges = metrics
-        if legacy_ids:
-            return False, metrics
         fits = remaining_bytes >= eligibility.charge_bytes and remaining_cores >= float(candidate["planned_cores"])
         return fits, metrics
 
@@ -1306,10 +1362,10 @@ class AdmissionBook:
                 continue
             try:
                 static_eligibility(capacity, str(row["footprint"]), float(row["planned_cores"]))
-            except AdmissionError as exc:
-                if exc.exit_code == ExitCode.REFUSAL:
-                    continue
-                raise
+            except AdmissionError:
+                # Candidate feasibility already established every shared host fact;
+                # a waiter-specific footprint or core request can only be refused.
+                continue
             row_fits, _row_metrics = self._candidate_fits(row, capacity, records, legacy_ids)
             if row_fits and self._queue_key(row) < candidate_key:
                 return False
@@ -1345,24 +1401,11 @@ class AdmissionBook:
         return _nonnegative_number(policy["wait_s"], "policy.admission.wait_s")
 
     def _expire_waiter(
-        self, job_id: str, authenticated_group: str, digest: str, *, is_lease: bool = False
+        self, job_id: str, authenticated_group: str, digest: str
     ) -> AdmissionResult:
         queue_fd = self._queue_lock()
         try:
-            existing = self._existing_request_locked(
-                job_id, authenticated_group, digest, is_lease=is_lease
-            )
-            if existing is not None:
-                self._remove_waiter_locked(job_id, digest, authenticated_group)
-                return existing
             self._remove_waiter_locked(job_id, digest, authenticated_group)
-            if self._record_path(job_id).exists() or self._lease_path(job_id).exists():
-                existing = self._existing_request_locked(
-                    job_id, authenticated_group, digest, is_lease=is_lease
-                )
-                if existing is not None:
-                    return existing
-                raise AdmissionError(ExitCode.REFUSAL, "job started with a different request digest")
         finally:
             _unlock_close(queue_fd)
         raise AdmissionError(
@@ -1432,7 +1475,9 @@ class AdmissionBook:
                 records = self._load_records()
                 waiters = self._load_waiters_locked()
                 now = _nonnegative_number(self.clock(), "clock")
-                self._require_candidate_fit(candidate, capacity, records, legacy_ids)
+                eligibility, _remaining_bytes, _remaining_cores, _charges = self._require_candidate_fit(
+                    candidate, capacity, records, legacy_ids
+                )
                 if not self._queue_allows(candidate, waiters, capacity, records, legacy_ids, now, aging_s):
                     raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                                          "immediate admission refused by capacity or an earlier queue reservation")
@@ -1442,9 +1487,7 @@ class AdmissionBook:
                         authenticated_group=group,
                         digest=digest,
                         priority=priority,
-                        capacity=capacity,
-                        legacy_ids=legacy_ids,
-                        inspector=inspector,
+                        charged_bytes=eligibility.charge_bytes,
                     )
                 return self._admit_locked(
                     job_id=request.job_id,
@@ -1453,8 +1496,7 @@ class AdmissionBook:
                     priority=priority,
                     footprint=request.resources.footprint,
                     planned_cores=requested_cores,
-                    capacity=capacity,
-                    legacy_ids=legacy_ids,
+                    charged_bytes=eligibility.charge_bytes,
                 )
             # The WAITING record and its flock are both established inside queue.lock.
             waiter_fd = self._register_waiter_locked(candidate)
@@ -1465,17 +1507,9 @@ class AdmissionBook:
         try:
             while True:
                 if _nonnegative_number(self.clock(), "clock") >= deadline:
-                    return self._expire_waiter(request.job_id, group, digest, is_lease=is_lease)
+                    return self._expire_waiter(request.job_id, group, digest)
                 queue_fd = self._queue_lock()
                 try:
-                    existing = self._existing_request_locked(
-                        request.job_id, group, digest, is_lease=is_lease
-                    )
-                    if existing is not None:
-                        self._remove_waiter_locked(request.job_id, digest, group)
-                        _unlock_close(waiter_fd)
-                        waiter_fd = None
-                        return existing
                     waiter_path = self._waiting_path(request.job_id)
                     waiter_record = _read_waiter_record(waiter_path, expected_id=request.job_id)
                     if waiter_record["cancelled"]:
@@ -1495,6 +1529,9 @@ class AdmissionBook:
                     records = self._load_records()
                     waiters = self._load_waiters_locked()
                     now = _nonnegative_number(self.clock(), "clock")
+                    eligibility, _remaining_bytes, _remaining_cores, _charges = self._require_candidate_fit(
+                        waiter_record, capacity, records, legacy_ids
+                    )
                     if self._queue_allows(waiter_record, waiters, capacity, records, legacy_ids, now, aging_s):
                         if is_lease:
                             result = self._reserve_lease_locked(
@@ -1502,9 +1539,7 @@ class AdmissionBook:
                                 authenticated_group=group,
                                 digest=digest,
                                 priority=current_priority,
-                                capacity=capacity,
-                                legacy_ids=legacy_ids,
-                                inspector=inspector,
+                                charged_bytes=eligibility.charge_bytes,
                             )
                         else:
                             result = self._admit_locked(
@@ -1514,10 +1549,16 @@ class AdmissionBook:
                                 priority=current_priority,
                                 footprint=request.resources.footprint,
                                 planned_cores=requested_cores,
-                                capacity=capacity,
-                                legacy_ids=legacy_ids,
+                                charged_bytes=eligibility.charge_bytes,
                             )
-                        self._remove_waiter_locked(request.job_id, digest, group)
+                        try:
+                            self._remove_waiter_locked(request.job_id, digest, group)
+                        except AdmissionError:
+                            # The admitted record and executor flock are already durable.
+                            # Releasing the waiter flock makes any leftover WAITING file dead.
+                            _unlock_close(waiter_fd)
+                            waiter_fd = None
+                            return result
                         _unlock_close(waiter_fd)
                         waiter_fd = None
                         return result
@@ -1533,7 +1574,7 @@ class AdmissionBook:
 
                 now = _nonnegative_number(self.clock(), "clock")
                 if now >= deadline:
-                    return self._expire_waiter(request.job_id, group, digest, is_lease=is_lease)
+                    return self._expire_waiter(request.job_id, group, digest)
                 self.waiter(min(QUEUE_RECHECK_S, deadline - now))
         finally:
             if waiter_fd is not None:
@@ -1616,20 +1657,25 @@ class AdmissionBook:
                 raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
             if record["released"] or record["state"] == "tombstone":
                 return AdmissionResult(record, None, True)
+            prior = record["container_id"]
             if container_id is not None:
                 if not isinstance(container_id, str) or not container_id:
                     raise AdmissionError(ExitCode.REFUSAL, "container id must be non-empty")
-                prior = record["container_id"]
                 if prior is not None and prior != container_id:
-                    raise AdmissionError(ExitCode.REFUSAL, "reconnect container id does not match the immutable binding")
-                if prior is None:
-                    record["container_id"] = container_id
-                    record["state"] = "bound"
-                    _atomic_json(path, record)
+                    raise AdmissionError(ExitCode.REFUSAL,
+                                         "reconnect container id does not match the immutable binding")
             lock_fd = _open_lock(self._job_lock_path(lease_id), blocking=False)
             if lock_fd is None:
                 return AdmissionResult(record, None, True)
-            return AdmissionResult(record, LeaseHandle(self, record, lock_fd), False)
+            try:
+                if container_id is not None and prior is None:
+                    record["container_id"] = container_id
+                    record["state"] = "bound"
+                    _atomic_json(path, record)
+                return AdmissionResult(record, LeaseHandle(self, record, lock_fd), False)
+            except BaseException:
+                _unlock_close(lock_fd)
+                raise
         finally:
             _unlock_close(queue_fd)
 
@@ -1641,6 +1687,12 @@ class AdmissionBook:
         queue_fd = self._queue_lock()
         try:
             path = self._record_path(job_id)
+            terminal_path = self._terminal_path(job_id)
+            if terminal_path.exists() or terminal_path.is_symlink():
+                terminal = _read_terminal_record(terminal_path, expected_id=job_id)
+                if terminal["group"] != authenticated_group:
+                    raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+                return AdmissionResult(terminal, None, True)
             if not path.exists() and not path.is_symlink():
                 raise AdmissionError(ExitCode.REFUSAL, "unknown admitted job id")
             record = _read_json_record(path, expected_id=job_id)
@@ -1665,9 +1717,8 @@ class AdmissionBook:
                 raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
             if record["state"] != "bound":
                 raise AdmissionError(ExitCode.REFUSAL, "an unbound lease has no cgroup warm-set observation")
-            if not record["released"]:
-                record["current_warm_bytes"] = warm
-                _atomic_json(path, record)
+            record["current_warm_bytes"] = warm
+            _atomic_json(path, record)
             return record
         finally:
             _unlock_close(queue_fd)
@@ -1691,7 +1742,9 @@ class AdmissionBook:
                 raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
             if record["released"]:
                 return record
-            if record["state"] == "pending":
+            if record["state"] == "pending" or (
+                record["state"] == "tombstone" and record["container_id"] is None
+            ):
                 lease_fd = _open_lock(self._job_lock_path(lease_id), blocking=False)
                 if lease_fd is None:
                     return record
@@ -1736,6 +1789,12 @@ class AdmissionBook:
         queue_fd = self._queue_lock()
         try:
             admitted_path = self._record_path(job_id)
+            terminal_path = self._terminal_path(job_id)
+            if terminal_path.exists() or terminal_path.is_symlink():
+                terminal = _read_terminal_record(terminal_path, expected_id=job_id)
+                if terminal["group"] != authenticated_group:
+                    raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+                return terminal
             if admitted_path.exists() or admitted_path.is_symlink():
                 admitted = _read_json_record(admitted_path, expected_id=job_id)
                 if admitted["group"] != authenticated_group:
@@ -1777,6 +1836,12 @@ class AdmissionBook:
         _validate_name(authenticated_group, "authenticated_group")
         queue_fd = self._queue_lock()
         try:
+            terminal_path = self._terminal_path(job_id)
+            if terminal_path.exists() or terminal_path.is_symlink():
+                record = _read_terminal_record(terminal_path, expected_id=job_id)
+                if record["group"] != authenticated_group:
+                    raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+                return record
             path = self._record_path(job_id)
             if path.exists() or path.is_symlink():
                 record = _read_json_record(path, expected_id=job_id)
@@ -1816,6 +1881,10 @@ class AdmissionBook:
         _validate_name(job_id, "job_id")
         queue_fd = self._queue_lock()
         try:
+            terminal_path = self._terminal_path(job_id)
+            if terminal_path.exists() or terminal_path.is_symlink():
+                _read_terminal_record(terminal_path, expected_id=job_id)
+                return False
             path = self._record_path(job_id)
             lease_path = self._lease_path(job_id)
             if path.exists() or path.is_symlink():
@@ -1847,7 +1916,7 @@ class AdmissionBook:
             _unlock_close(queue_fd)
 
     def complete(self, handle: AdmissionHandle) -> None:
-        """Release a charge only after the executor has completed cleanup."""
+        """Persist completion before removing the charge-bearing admission record."""
 
         if handle._book is not self or not handle.live:
             raise AdmissionError(ExitCode.REFUSAL, "completion requires this book's live job handle")
@@ -1855,15 +1924,30 @@ class AdmissionBook:
         queue_fd = self._queue_lock()
         try:
             path = self._record_path(job_id)
-            record = _read_json_record(path, expected_id=job_id)
-            if record["group"] != handle.record["group"] or record["digest"] != handle.record["digest"]:
-                raise AdmissionError(ExitCode.REFUSAL, "admission record changed before completion")
+            terminal_path = self._terminal_path(job_id)
+            if terminal_path.exists() or terminal_path.is_symlink():
+                terminal = _read_terminal_record(terminal_path, expected_id=job_id)
+                if terminal["group"] != handle.record["group"] or terminal["digest"] != handle.record["digest"]:
+                    raise AdmissionError(ExitCode.REFUSAL, "terminal record changed before completion")
+            else:
+                record = _read_json_record(path, expected_id=job_id)
+                if record["group"] != handle.record["group"] or record["digest"] != handle.record["digest"]:
+                    raise AdmissionError(ExitCode.REFUSAL, "admission record changed before completion")
+                terminal = {
+                    "schema": "fleet-admission-terminal/1",
+                    "job_id": job_id,
+                    "group": record["group"],
+                    "digest": record["digest"],
+                    "state": "completed",
+                    "completed_at": _nonnegative_number(self.clock(), "clock"),
+                }
+                _atomic_new_json(terminal_path, terminal)
             try:
                 path.unlink()
                 _fsync_dir(self.admitted_dir)
-            except OSError as exc:
-                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
-                                     f"cannot remove completed admission record: {exc}") from exc
+            except OSError:
+                # The durable terminal record takes precedence over a stale active file.
+                pass
             handle.close()
         finally:
             _unlock_close(queue_fd)
