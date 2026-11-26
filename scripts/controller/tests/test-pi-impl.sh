@@ -403,6 +403,19 @@ assert_mode_prompt() {
   prompt_starts_with "$PROMPT" "$prefix: the brief is launched unchanged at the front"
   prompt_ends_with "$rules" "$prefix: the $mode rule paragraph is the last text pi reads"
 }
+# An EMPTY-COMPLETION continuation does not resend the brief: pi receives the
+# canonical continue prompt, one newline, then the mode's rule paragraph, and
+# nothing else. Compared whole and byte for byte.
+assert_continuation_prompt() {
+  local mode=$1 prefix=$2 rules=$IMPLEMENTER_RULES continue_text='' rules_text=''
+  [[ $mode != review ]] || rules=$REVIEW_RULES
+  IFS= read -r -d '' continue_text < "$SCRIPT_DIR/../continue-empty-completion.md" || :
+  IFS= read -r -d '' rules_text < "$rules" || :
+  [[ -n $continue_text && -n $rules_text ]] || fail "$prefix: the continue prompt or the $mode rule file is empty"
+  argv_elements
+  [[ ${ARGV[${#ARGV[@]}-1]} == "$continue_text"$'\n'"$rules_text" ]] \
+    || fail "$prefix: the prompt is not exactly the continue prompt plus the $mode rule paragraph"
+}
 
 check_pi_default_thinking_max() {
   local home=$ROOT/default-thinking-controller rc=0 argv=''
@@ -2093,8 +2106,7 @@ check_review_mode_argv() {
   after=$(pi_invocations)
   [[ $(( after - before )) == 2 ]] || fail "a review continuation used $(( after - before )) pi invocations, expected 2"
   assert_review_argv 'continuation'
-  argv_elements
-  assert_mode_prompt review 'continuation'
+  assert_continuation_prompt review 'continuation'
   [[ $(head -n 1 "$CONTROLLER_ROOT/runs/review-mode-continue.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
     || fail 'a review that recovered on its continuation is not SUCCESS'
 }
