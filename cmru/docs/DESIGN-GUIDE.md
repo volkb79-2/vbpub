@@ -789,9 +789,10 @@ verified against origin.
 
 The gate also verifies every CMRU release tag at HEAD against its exact origin
 commit, including older tag names that point to the same commit.
-If HEAD is a merge, CMRU's R2 tools resolve the base as delegated: they pass
-`delegated=True` to Assay's `git.resolve_base` (Assay B552). The baseline
-checker includes the result of `git.base_resolution_mode` in its refusal
+Both of CMRU's R2 tools resolve the base as delegated: they pass
+`delegated=True` to Assay's `git.resolve_base` (Assay B552); on a merge HEAD
+that is what makes the answer the requested comparison instead of the first
+parent. The baseline checker includes the result of `git.base_resolution_mode` in its refusal
 detail when the effective base differs; it does not report the mode on a
 passing path. The campaign does not call that helper or report the mode. This
 is a call-site keyword, not a lane setting -- CMRU's own Assay lanes are

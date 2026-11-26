@@ -7339,7 +7339,7 @@ plus an inline controlled-wrong message that fails the same three assertions).
 
 **Observed.**
 - (a) `ciu up`, run from inside `voice-screen-share/jitsi-server` (also `fluxer-server`) in a vbpub checkout, used to print `No phases/stacks selected to deploy` and exit 0. `deploy._implicit_stack_remedy` and `deploy.action_deploy` now refuse that empty selection with rc 2 and the `ciu up --dir .` remedy. Plain `ciu up` does deploy in a single-stack root (the tls-edge instance stack dir).
-- (b) On 7.26.0 and 7.28.0, `ciu down --dir <repo-relative stack dir> --yes` from the checkout root without `--root-folder` exits 2 with `[no-ciu-root]` because `deploy.resolve_repo_root` starts `workspace.resolve_ciu_root` at `Path.cwd()`, which searches for `ciu.global.defaults.toml.j2`; the checkout root has no such marker. This refusal occurs before CIU reads the `--dir` selector. CIU-228 is a separate issue: `ciu up --dir <relative> --root-folder <root>` joins the root and path twice. From a stack dir, `ciu down --dir . --yes` still refuses with `[S18]` once required environment values are available: `deploy.stop_stack` resolves `.` against the CIU root, producing `relative_stack == '.'`, not an empty string. `deploy.resolve_identities` passes that selector to `deploy._resolve_identity_stack_paths`, which finds no match because selection entries name stack sub-directories. `eval "$(ciu env print)"` does not change selector resolution. The usable form observed was `eval "$(ciu env print)"; ciu down --yes` in the stack dir.
+- (b) On 7.26.0 and 7.28.0, `ciu down --dir <repo-relative stack dir> --yes` from the checkout root without `--root-folder` exits 2 with `[no-ciu-root]` because `deploy.resolve_repo_root` starts `workspace.resolve_ciu_root` at `Path.cwd()`, which searches for `ciu.global.defaults.toml.j2`; the checkout root has no such marker. This refusal occurs before CIU reads the `--dir` selector. CIU-228 owns the undefined rule for a relative `--dir` given together with `--root-folder`; its report records `[no-ciu-root]` and says the two paths *appear* to be joined twice, which is not verified (no join of the two is visible in `ciu/src/ciu`, and `workspace_env.resolve_env_root` gives the same refusal whenever the named root has no `ciu.global.defaults.toml.j2`). From a stack dir, `ciu down --dir . --yes` still refuses with `[S18]` once required environment values are available: `deploy.stop_stack` resolves `.` against the CIU root, producing `relative_stack == '.'`, not an empty string. `deploy.resolve_identities` passes that selector to `deploy._resolve_identity_stack_paths`, which finds no match because selection entries name stack sub-directories. `eval "$(ciu env print)"` does not change selector resolution. The usable form observed was `eval "$(ciu env print)"; ciu down --yes` in the stack dir.
 
 Evidence (a): `.controller-state/edge/reports/r1002-drain-20261124.md` (Bring-up section). Evidence (b): `/workspaces/vbpub/.controller-state/edge/reports/P-edge-11b-400-report.md`, sections 3, 7 and 12 (V1).
 
@@ -7361,7 +7361,7 @@ and a directory that is not a stack (a shipped stack dir counts as a stack).
 Evidence: `tests/tests/test_ciu_231_implicit_stack_selection.py` (the refusal,
 the shipped-stack form, and each unchanged rc-0 case). (b) remains open; its
 root-discovery and selected-stack behavior are separate from CIU-228's
-`--dir` plus `--root-folder` join.
+rule for a relative `--dir` given together with `--root-folder`.
 
 ## CIU-232 — procio replaced the foreground one-shot's termination handlers
 

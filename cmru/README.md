@@ -1186,8 +1186,9 @@ Python bytecode is directed to private temporary caches so stale `.pyc` files
 cannot change which source the controller or a candidate executes.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
-If HEAD is a merge, CMRU's R2 tools pass `delegated=True` to Assay's
-`git.resolve_base` (B552). The baseline checker includes the result of
+Both of CMRU's R2 tools pass `delegated=True` to Assay's `git.resolve_base`
+(B552); on a merge HEAD that is what makes the answer the requested comparison
+instead of the first parent. The baseline checker includes the result of
 `git.base_resolution_mode` in its refusal detail when the effective base
 differs; it does not report the mode on a passing path. The mutation campaign
 does not call that helper or report the mode. This call-site keyword means

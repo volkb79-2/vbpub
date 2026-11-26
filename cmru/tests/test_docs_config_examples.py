@@ -227,6 +227,7 @@ def _assert_cmru_assay_lane_contract(lanes):
     for lane_name, expected_mode in expected_modes.items():
         judge = lanes[lane_name]["judge"]
         assert "base_source" not in judge, f"{lane_name} declares judge.base_source"
+        assert "base" not in judge, f"{lane_name} declares judge.base"
         assert judge["mode"] == expected_mode, lane_name
 
 
