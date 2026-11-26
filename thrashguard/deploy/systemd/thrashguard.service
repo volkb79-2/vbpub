@@ -1,0 +1,50 @@
+[Unit]
+Description=thrashguard PSI-driven park/thaw guard (TG-1 P1 `observe`: report mode only)
+Documentation=https://github.com/example/thrashguard
+# Both sockets are activated, so this service is started by the first client that
+# connects, and a daemon restart never refuses one (`Accept=no`, design §3 D7).
+Requires=thrashguard-registrant.socket thrashguard-reader.socket
+After=systemd-tmpfiles-setup.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/thrashguard serve --config /etc/thrashguard/thrashguard.toml
+# Design §2, §5: the unit lives OUTSIDE dev.slice so it keeps running while the
+# tiers it protects are starved (`units/mdt-psi-guard.service:2-3`). The slice unit
+# itself is installed by the host (deploy/systemd/thrashguard.slice).
+Slice=thrashguard.slice
+Sockets=thrashguard-registrant.socket thrashguard-reader.socket
+User=root
+# A configuration or socket-activation refusal is permanent until an operator acts.
+RestartPreventExitStatus=2
+Restart=on-failure
+RestartSec=5
+
+# Design §5 D8: root, minimal set, mirroring hostobs-act.
+# ProtectControlGroups is deliberately NOT set: writing cgroupfs is P2's act, and
+# hiding it here would only make P2's unit differ from this one.
+ReadWritePaths=/var/lib/thrashguard /run/thrashguard
+ProtectSystem=strict
+ProtectHome=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+NoNewPrivileges=yes
+# Design §5 D8 leaves the final capability set to the VM acceptance: cgroupfs
+# writes are P2's, so P1 needs none. An empty set is the tightest starting point
+# and a P2 wave that needs a capability must say so here with measured evidence.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
