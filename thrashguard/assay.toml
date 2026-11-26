@@ -93,7 +93,7 @@ targets = [
 # point, and TG-6 is closed by this declaration (the placeholder 90.0 it tracked
 # is gone).
 #
-# Measured in the registered `r0-r1` lane on the tree of commit `3b25e6e11`
+# Measured in the registered `r0-r1` lane on the tree of commit `8ac6b6bc22ff32688799886e40fa0e6803cbd9d5`
 # (image `tester-unified-rust:rs-20261124v`, `--locked --offline`, profile `ci`):
 #
 #   judged set: 12 `src/*.rs` files (activation, clock, config, daemon, events,

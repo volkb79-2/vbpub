@@ -8,13 +8,12 @@ Three checks, all cheap and all able to go red:
    (`--pressure-path`). Exactly ONE file may spell the real default (the CLI's
    flag default, the place a run resolves it), and the count is asserted, so the
    allowance cannot silently grow.
-2. **No act path.** Cgroup control files are named only in prose: an executable
-   (non-comment) line mentioning `cgroup.freeze`, `cgroup.events`,
-   `memory.reclaim` or `memory.max` fails, and a file-write API
-   (`fs::write`, `File::create`, `OpenOptions::new`, `fs::remove_*`) is allowed
-   only in the journal writer (`src/events.rs`) and the test-only fixture helper
-   (`src/testutil.rs`, which `lib.rs` must gate with `#[cfg(test)]`). A write to a
-   cgroup file therefore has no way to exist.
+2. **No act path.** A lexical scan strips comments without stripping `//` inside
+   strings, then rejects known cgroup control names, signal/process entry points
+   and file-writing APIs outside the journal. `src/testutil.rs` is exempt from
+   write checks only when both crate entry points gate it with `#[cfg(test)]`.
+   This is not a Rust parser or proof: aliases, macro expansion, generated code,
+   indirect APIs, FFI and unlisted spellings can evade these patterns.
 3. **One audited `unsafe` item, at most.** `activation.rs` claims a
    systemd-owned descriptor, which `std` can only do through `unsafe`. The crate
    denies `unsafe_code`, so the number of `#[allow(unsafe_code)]` attributes must
@@ -35,13 +34,24 @@ CGROUP_LITERAL = '"/sys/fs/cgroup"'
 # in `src/cli.rs`, so exactly one literal is allowed there and the count is
 # asserted: a second spelling anywhere else fails this check.
 CGROUP_LITERAL_ALLOWED: dict[str, int] = {"src/cli.rs": 1}
-# The ONLY files allowed to write anything at all.
-WRITERS = {"src/events.rs", "src/testutil.rs"}
+# The ONLY release source file allowed to write anything at all.
+WRITERS = {"src/events.rs"}
 # The ONLY file allowed an `unsafe` block.
 UNSAFE_FILE = "src/activation.rs"
 
 FORBIDDEN_TARGETS = ("cgroup.freeze", "cgroup.events", "memory.reclaim", "memory.max")
-WRITE_CALLS = re.compile(r"(fs::write|File::create|OpenOptions::new|fs::remove_file|fs::remove_dir)")
+FORBIDDEN_CALLS = (
+    "libc::kill",
+    "nix::sys::signal",
+    "Command::new(",
+    "process::Command",
+    "std::process::Command",
+    "process::abort",
+    "std::process::abort",
+)
+WRITE_CALLS = re.compile(
+    r"(fs::write|File::create|File::options|OpenOptions::new|fs::remove_file|fs::remove_dir|fs::rename)"
+)
 UNSAFE_ALLOW = re.compile(r"allow\(unsafe_code\)")
 UNSAFE_BLOCK = re.compile(r"unsafe\s*{")
 
@@ -54,16 +64,114 @@ def relative(project: Path, path: Path) -> str:
     return path.relative_to(project).as_posix()
 
 
+def code_without_comments(source: str) -> str:
+    """Strip Rust comments without treating markers inside strings as comments.
+
+    This handles lexical forms needed by the guard, not the whole Rust grammar.
+    """
+    chars = list(source)
+    index = 0
+    in_string = False
+    escaped = False
+    raw_hashes: int | None = None
+    block_depth = 0
+    while index < len(chars):
+        if raw_hashes is not None:
+            if chars[index] == '"':
+                end = index + 1
+                while end < len(chars) and chars[end] == "#":
+                    end += 1
+                if end - (index + 1) == raw_hashes:
+                    raw_hashes = None
+                    index = end
+                    continue
+            index += 1
+            continue
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif chars[index] == "\\":
+                escaped = True
+            elif chars[index] == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if block_depth:
+            if index + 1 < len(chars) and chars[index : index + 2] == ["/", "*"]:
+                chars[index : index + 2] = [" ", " "]
+                block_depth += 1
+                index += 2
+            elif index + 1 < len(chars) and chars[index : index + 2] == ["*", "/"]:
+                chars[index : index + 2] = [" ", " "]
+                block_depth -= 1
+                index += 2
+            else:
+                if chars[index] not in "\r\n":
+                    chars[index] = " "
+                index += 1
+            continue
+
+        raw_prefix = index if chars[index] == "r" else (
+            index + 1
+            if chars[index] == "b" and index + 1 < len(chars) and chars[index + 1] == "r"
+            else None
+        )
+        if raw_prefix is not None:
+            quote = raw_prefix + 1
+            while quote < len(chars) and chars[quote] == "#":
+                quote += 1
+            if quote < len(chars) and chars[quote] == '"':
+                raw_hashes = quote - (raw_prefix + 1)
+                index = quote + 1
+                continue
+
+        if chars[index] == '"':
+            in_string = True
+            index += 1
+        elif index + 1 < len(chars) and chars[index : index + 2] == ["/", "/"]:
+            while index < len(chars) and chars[index] != "\n":
+                chars[index] = " "
+                index += 1
+        elif index + 1 < len(chars) and chars[index : index + 2] == ["/", "*"]:
+            chars[index : index + 2] = [" ", " "]
+            block_depth = 1
+            index += 2
+        else:
+            index += 1
+    return "".join(chars)
+
+
+def scanner_self_check() -> list[str]:
+    """Keep the comment handling and newly added lexical patterns observable."""
+    sample = (
+        'let url = "scheme://cgroup.freeze"; // cgroup.events\n'
+        'let raw = r#"https://memory.reclaim"#; /* memory.max */\n'
+    )
+    code = code_without_comments(sample)
+    problems = []
+    if "scheme://cgroup.freeze" not in code or "https://memory.reclaim" not in code:
+        problems.append("check-lints.py: comment stripping lost a marker inside a string")
+    if "cgroup.events" in code or "memory.max" in code:
+        problems.append("check-lints.py: comment stripping retained comment text")
+    if "Command::new(" not in FORBIDDEN_CALLS:
+        problems.append("check-lints.py: process-spawn pattern is missing")
+    if not WRITE_CALLS.search("File::options()"):
+        problems.append("check-lints.py: File::options writer pattern is missing")
+    return problems
+
+
 def find(project: Path) -> list[str]:
     """Return every violation, one `path:line: reason` each (empty means clean)."""
-    problems: list[str] = []
+    problems: list[str] = scanner_self_check()
     literal_count = 0
     unsafe_allows: list[tuple[str, int]] = []
     unsafe_blocks = 0
     for path in source_files(project):
         name = relative(project, path)
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            code = line.split("//", 1)[0]
+        code_text = code_without_comments(path.read_text(encoding="utf-8"))
+        for number, code in enumerate(code_text.splitlines(), 1):
             if CGROUP_LITERAL in code:
                 literal_count += 1
                 if name not in CGROUP_LITERAL_ALLOWED:
@@ -75,7 +183,12 @@ def find(project: Path) -> list[str]:
                     problems.append(
                         f"{name}:{number}: {target} is named in executable code; the observe cut compiles no act path"
                     )
-            if WRITE_CALLS.search(code) and name not in WRITERS:
+            for call in FORBIDDEN_CALLS:
+                if call in code:
+                    problems.append(
+                        f"{name}:{number}: {call} is a process or signal entry point forbidden in P1"
+                    )
+            if WRITE_CALLS.search(code) and name not in WRITERS and name != "src/testutil.rs":
                 problems.append(
                     f"{name}:{number}: a file is written here; only {sorted(WRITERS)} may write"
                 )
@@ -104,16 +217,20 @@ def find(project: Path) -> list[str]:
             "every unsafe block needs exactly one audited allowance"
         )
 
-    # The test-only fixture helper must stay test-only: `lib.rs` gates its module.
+    # The fixture helper is exempt only if both crate roots compile it under
+    # cfg(test); it is not part of the release library or binary.
     lib = project / "src" / "lib.rs"
-    if lib.is_file():
-        text = lib.read_text(encoding="utf-8")
-        if "#[cfg(test)]\npub mod testutil;" in text:
-            problems.append(
-                "src/lib.rs: pub mod testutil; is gated by #[cfg(test)] again; the binary's own "
-                "tests use the fixture helper too, so the helper is a documented test-support "
-                "module in the library (still the only file besides src/events.rs allowed to write)"
-            )
+    main = project / "src" / "main.rs"
+    if lib.is_file() and not re.search(
+        r"#\[cfg\(test\)\]\s*#\[doc\(hidden\)\]\s*pub\s+mod\s+testutil\s*;",
+        code_without_comments(lib.read_text(encoding="utf-8")),
+    ):
+        problems.append("src/lib.rs: the testutil module must be gated with #[cfg(test)]")
+    if main.is_file() and not re.search(
+        r"#\[cfg\(test\)\]\s*#\[path\s*=\s*\"testutil\.rs\"\]\s*mod\s+testutil\s*;",
+        code_without_comments(main.read_text(encoding="utf-8")),
+    ):
+        problems.append("src/main.rs: the testutil module must be included only under #[cfg(test)]")
     return problems
 
 

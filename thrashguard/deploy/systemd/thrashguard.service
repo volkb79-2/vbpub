@@ -1,6 +1,5 @@
 [Unit]
 Description=thrashguard PSI-driven park/thaw guard (TG-1 P1 `observe`: report mode only)
-Documentation=https://github.com/example/thrashguard
 # The reader socket is always needed. The registrant socket is optional and must
 # be enabled only when `registrant = true` in the configuration.
 Requires=thrashguard-reader.socket
@@ -22,7 +21,7 @@ RestartSec=5
 # Design §5 D8: root, minimal set, mirroring hostobs-act.
 # ProtectControlGroups is deliberately NOT set: writing cgroupfs is P2's act, and
 # hiding it here would only make P2's unit differ from this one.
-ReadWritePaths=/var/lib/thrashguard /run/thrashguard
+ReadWritePaths=/run/thrashguard
 ProtectSystem=strict
 ProtectHome=yes
 PrivateNetwork=yes

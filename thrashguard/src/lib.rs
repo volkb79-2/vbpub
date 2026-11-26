@@ -1,9 +1,11 @@
 //! thrashguard — the `observe` cut (TG-1, design §5 row P1).
 //!
-//! This crate contains **no act path**: it reads pressure and cgroupfs, it
-//! decides what it *would* freeze, and it journals that decision. Nothing here
-//! writes `cgroup.freeze`, `memory.reclaim` or any other cgroup file, and
-//! nothing sends a signal; `tests/no_act_path.rs` asserts that mechanically.
+//! This crate implements the observe cut: it reads pressure and cgroupfs, decides
+//! what it *would* freeze, and journals that decision. The lexical guard in
+//! `tests/no_act_path.rs` and `tools/check-lints.py` checks known cgroup-control,
+//! process/signal and file-writer patterns. It is not a Rust parser or proof;
+//! aliases, macro expansion, generated code, indirect APIs, FFI and unlisted
+//! spellings can evade those checks.
 //!
 //! The one hard boundary this crate keeps (design §3, D7/D12): a registrant
 //! names a **container**, never a cgroup path, and the guard resolves the scope
@@ -40,6 +42,7 @@ pub mod socket;
 pub mod units;
 pub mod wire;
 
+#[cfg(test)]
 #[doc(hidden)]
 pub mod testutil;
 

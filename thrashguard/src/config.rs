@@ -877,51 +877,162 @@ mod tests {
     use super::*;
     use crate::testutil::TempTree;
 
-    const DOCUMENTED: &str = r#"
-mode = "report"
-tick_s = 5
-trigger_avg10 = 3.00
-hold_s = 10
-release_avg10_factor = 2
-release_s = 60
-victim_rule = "newest"
-max_parked = 2
-max_park_s = 1800
-never_park_last = true
-thaw_grace_s = 30
-heartbeat_s = 30
-missed_heartbeats = 3
-reclaim_chunk_bytes = 268435456
-reclaim_max_chunks = 8
-boot_grace_s = 60
-allowed_ancestors = ["dev-gates.slice", "dev-background.slice", "dev-buildkitd.slice"]
-protected = ["dev-interactive.slice", "system.slice", "user.slice"]
-state_dir = "/run/thrashguard"
-registrant = true
+    const DOCUMENTS: [(&str, &str); 3] = [
+        ("README.md", include_str!("../README.md")),
+        ("docs/CONSUMERS.md", include_str!("../docs/CONSUMERS.md")),
+        ("docs/DESIGN-GUIDE.md", include_str!("../docs/DESIGN-GUIDE.md")),
+    ];
 
-[[static_unit]]
-name = "nightly-r2-campaign"
-cgroup = "dev-buildkitd.slice"
-"#;
+    fn toml_blocks(markdown: &str) -> (Vec<String>, bool) {
+        let mut blocks = Vec::new();
+        let mut current: Option<String> = None;
+        for line in markdown.lines() {
+            if current.is_none() && line.trim_start().starts_with("```toml") {
+                current = Some(String::new());
+            } else if line.trim() == "```" {
+                if let Some(block) = current.take() {
+                    blocks.push(block);
+                }
+            } else if let Some(block) = current.as_mut() {
+                block.push_str(line);
+                block.push('\n');
+            }
+        }
+        (blocks, current.is_some())
+    }
+
+    fn has_word(text: &str, word: &str) -> bool {
+        text.split(|character: char| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        })
+        .any(|token| token == word)
+    }
+
+    fn markdown_targets(text: &str) -> Vec<&str> {
+        let mut targets = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("](") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.find(')') else {
+                break;
+            };
+            let target = after[..end]
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_matches(&['<', '>'][..]);
+            targets.push(target);
+            rest = &after[end + 1..];
+        }
+        targets
+    }
+
+    fn heading_slug(line: &str) -> Option<String> {
+        let heading = line.trim_start_matches('#');
+        if heading.len() == line.len() {
+            return None;
+        }
+        let mut slug = String::new();
+        let mut pending_dash = false;
+        for character in heading.trim().chars() {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                if pending_dash && !slug.is_empty() && !slug.ends_with('-') {
+                    slug.push('-');
+                }
+                pending_dash = false;
+                slug.push(character.to_ascii_lowercase());
+            } else if character.is_whitespace() {
+                pending_dash = true;
+            }
+        }
+        Some(slug)
+    }
+
+    fn anchor_exists(text: &str, anchor: &str) -> bool {
+        text.lines()
+            .filter_map(heading_slug)
+            .any(|slug| slug == anchor)
+    }
 
     /// Every config example the three documents show must load with THIS loader.
     #[test]
     fn every_documented_example_loads() {
-        for (where_, text) in [
-            ("docs/CONSUMERS.md example", DOCUMENTED),
-            ("README.toml minimal", "mode = \"off\"\n"),
-            ("defaults only", ""),
-        ] {
-            let config = parse_layer(text, where_).and_then(|layer| merge(&[layer]));
-            assert!(config.is_ok(), "{where_}: {:?}", config.err());
+        let mut example_count = 0;
+        let mut all_docs = String::new();
+        for (path, markdown) in DOCUMENTS {
+            all_docs.push_str(markdown);
+            let (examples, unclosed) = toml_blocks(markdown);
+            assert!(!unclosed, "{path}: an opening TOML fence has no closing fence");
+            for (index, text) in examples.iter().enumerate() {
+                let label = format!("{path} TOML example {}", index + 1);
+                let config = parse_layer(text, &label).and_then(|layer| merge(&[layer]));
+                assert!(config.is_ok(), "{label}: {:?}", config.err());
+                example_count += 1;
+            }
         }
-        let config = merge(&[parse_layer(DOCUMENTED, "doc").expect("parses")]).expect("merges");
-        assert_eq!(config.trigger_avg10, 300);
-        assert_eq!(config.release_avg10(), 150);
-        assert_eq!(config.ttl_s(), 90);
-        assert_eq!(config.static_units.len(), 1);
-        assert_eq!(config.mode, Mode::Report);
-        assert!(config.check_for_run().is_ok());
+        assert!(example_count > 0, "the consumer docs must show a config example");
+
+        for (vocabulary, values) in [
+            ("mode", &["off", "report", "enforce"][..]),
+            (
+                "victim_rule",
+                &["newest", "refault", "smallest-enough"][..],
+            ),
+            ("priority", &["freezable", "last-resort"][..]),
+            (
+                "refusal reason",
+                &[
+                    "none",
+                    "several",
+                    "protected",
+                    "malformed",
+                    "unreadable",
+                    "duplicate",
+                    "missing",
+                    "wrong-socket",
+                    "unknown-key",
+                    "unknown-verb",
+                    "version",
+                    "too-large",
+                    "value",
+                ][..],
+            ),
+        ] {
+            for value in values {
+                assert!(
+                    has_word(&all_docs, value),
+                    "{vocabulary} value {value:?} is absent from the shipped docs"
+                );
+            }
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (source, markdown) in DOCUMENTS {
+            for target in markdown_targets(markdown) {
+                if target.is_empty() || target.contains("://") {
+                    continue;
+                }
+                if let Some(anchor) = target.strip_prefix('#') {
+                    assert!(
+                        anchor_exists(markdown, anchor),
+                        "{source}: link anchor #{anchor} is missing from this document"
+                    );
+                    continue;
+                }
+                let (path_part, anchor) = target.split_once('#').unwrap_or((target, ""));
+                let path = root.join(source).parent().expect("doc parent").join(path_part);
+                assert!(path.exists(), "{source}: broken local link {target:?}");
+                if !anchor.is_empty() {
+                    assert!(path.is_file(), "{source}: anchor link target is not a file: {target:?}");
+                    let linked = std::fs::read_to_string(&path)
+                        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+                    assert!(
+                        anchor_exists(&linked, anchor),
+                        "{source}: link anchor #{anchor} is missing from {path_part}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

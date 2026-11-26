@@ -29,13 +29,15 @@ thrashguard is the only actuator.
 
 ## 3. Report first, because an untested freeze is a silent wrong answer
 
-`mode` is `off | report | enforce`. P1 ships `report` as the only acting mode and
-compiles no act path at all: the crate cannot write `cgroup.freeze`, cannot call
-`memory.reclaim` and cannot signal a process. `mode = enforce` is refused with one
-line naming P2. The reason is not caution for its own sake: a freeze applied by
-code no VM has run against is exactly a default standing in for a fact, which the
-estate's rules call a hazard. `tests/no_act_path.rs` keeps the promise mechanical
-so a later commit cannot quietly add the write.
+`mode` is `off | report | enforce`. P1 ships `report` as its observe-only mode and
+`mode = enforce` is refused with one line naming P2. The no-act check is lexical:
+`tests/no_act_path.rs` and `tools/check-lints.py` strip comments while preserving
+ordinary and raw strings, then look for known cgroup-control names,
+process/signal calls and file-writing APIs. It is a guardrail, not a Rust parser
+or proof: aliases, macro expansion, generated code, indirect APIs, FFI and
+unlisted spellings can evade the patterns. The release writer allowance is the
+journal; the fixture helper is checked separately and compiled only under
+`cfg(test)`.
 
 ## 4. `unknown` is not zero
 
@@ -81,9 +83,10 @@ carries `boot_id` so two readings can never be joined across a reboot. The journ
 Every unit test takes `--cgroup-root` and `--pressure-path` and works in a temp
 tree. That is the only way to test hysteresis, expiry, thaw ordering and the death
 sweep without freezing the cockpit's own work. The production defaults are the
-real paths and are the *only* place this crate spells them;
-`tools/check-lints.py` refuses a host path anywhere else and refuses any file
-write at all.
+real paths and are the *only* place this crate spells them.
+`tools/check-lints.py` checks that literal count and applies the lexical no-act
+patterns described in §3; those patterns cannot prove safety against aliases,
+macro expansion, generated code, indirect APIs, FFI or unlisted spellings.
 
 ## 9. One crate, no third-party dependency
 

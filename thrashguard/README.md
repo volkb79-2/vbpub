@@ -6,9 +6,13 @@ overcommitted host loses time to one job instead of all of them.
 
 **Status: TG-1 P1 `observe` — the monitoring cut, complete.** What exists here
 runs the tick loop (`thrashguard serve`), resolves a registered container to its
-cgroup scope, journals what it *would* do, and reports it. **Nothing in this crate writes a cgroup file or sends
-a signal**, and `tests/no_act_path.rs` fails if that ever changes. `mode =
-enforce` is refused with one line until P2 (`act`) is reviewed, because an
+cgroup scope, journals what it *would* do, and reports it. Its no-act check is a
+lexical scan in `tests/no_act_path.rs` and `tools/check-lints.py`: it recognizes
+known cgroup-control names, process/signal calls and file-writing APIs after
+stripping comments while preserving string literals. This is a guardrail, not a
+Rust parser or proof; aliases, macro expansion, generated code, indirect APIs,
+FFI and unlisted spellings can evade the patterns. `mode = enforce` is refused
+with one line until P2 (`act`) is reviewed, because an
 untested freeze is exactly the kind of quiet wrong answer the estate's default
 rules forbid.
 

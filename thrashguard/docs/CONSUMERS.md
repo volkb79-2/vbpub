@@ -98,6 +98,10 @@ A refused registration stores nothing and says which refusal it is:
 `reason` is one of `none` (no scope found), `several` (more than one depth
 matches), `protected` (the only match is under a protected ancestor), `malformed`
 (the request itself) or `duplicate` (this id is already registered).
+`priority` is exactly `freezable` or `last-resort`. Other wire refusals use the
+closed reason vocabulary `unreadable`, `missing`, `wrong-socket`, `unknown-key`,
+`unknown-verb`, `version`, `too-large` and `value`; readers should preserve these
+names when reporting a refusal.
 
 ## 4. A reader asks what the guard sees
 

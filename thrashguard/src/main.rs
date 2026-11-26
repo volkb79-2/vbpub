@@ -308,13 +308,17 @@ fn ask_socket(path: &Path, args: &Args) -> Result<(), Fatal> {
 }
 
 #[cfg(test)]
+#[path = "testutil.rs"]
+mod testutil;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use thrashguard::config::{StaticUnit, VictimRule};
     use thrashguard::json::Value;
     use thrashguard::psi::Poller;
     use thrashguard::report::{self, ParkingState, Would};
-    use thrashguard::testutil::TempTree;
+    use crate::testutil::TempTree;
     use thrashguard::units::Store;
 
     #[test]
