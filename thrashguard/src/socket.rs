@@ -112,6 +112,24 @@ impl<R: std::io::Read, W: Write> Session<R, W> {
     pub fn role(&self) -> Role {
         self.role
     }
+
+    /// The client's half of the contract: write one request line, read one reply
+    /// line, and hand it back parsed.
+    ///
+    /// A reply that is not JSON is an I/O-level failure here, not an empty value:
+    /// a client must never read a garbled answer as "nothing happened".
+    pub fn request(&mut self, line: &str) -> std::io::Result<Value> {
+        let mut out = line.trim_end().to_string();
+        out.push('\n');
+        self.writer.write_all(out.as_bytes())?;
+        self.writer.flush()?;
+        let mut reply = String::new();
+        self.reader.read_line(&mut reply)?;
+        if reply.trim().is_empty() {
+            return Err(std::io::Error::other("the daemon closed the connection without a reply"));
+        }
+        Value::parse(reply.trim()).map_err(|error| std::io::Error::other(error.to_string()))
+    }
 }
 
 /// Turn one line into the reply value, given the daemon and the socket's role.

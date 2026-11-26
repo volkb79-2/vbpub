@@ -31,10 +31,10 @@ from pathlib import Path
 
 CGROUP_LITERAL = '"/sys/fs/cgroup"'
 # The ONLY file allowed to spell the real cgroup root, and how many times: the
-# CLI flag default. Empty today because no module has landed yet that needs it;
-# P1 subtask 4 (`cli.rs`) sets {"src/cli.rs": 1} in the same commit that adds the
-# flag, so the allowance never describes a file that does not exist.
-CGROUP_LITERAL_ALLOWED: dict[str, int] = {}
+# CLI flag default. `{worktree}` resolution and the injected `--cgroup-root` live
+# in `src/cli.rs`, so exactly one literal is allowed there and the count is
+# asserted: a second spelling anywhere else fails this check.
+CGROUP_LITERAL_ALLOWED: dict[str, int] = {"src/cli.rs": 1}
 # The ONLY files allowed to write anything at all.
 WRITERS = {"src/events.rs", "src/testutil.rs"}
 # The ONLY file allowed an `unsafe` block.
@@ -108,8 +108,12 @@ def find(project: Path) -> list[str]:
     lib = project / "src" / "lib.rs"
     if lib.is_file():
         text = lib.read_text(encoding="utf-8")
-        if "pub mod testutil;" in text and "#[cfg(test)]\npub mod testutil;" not in text:
-            problems.append("src/lib.rs: pub mod testutil; is not gated by #[cfg(test)]")
+        if "#[cfg(test)]\npub mod testutil;" in text:
+            problems.append(
+                "src/lib.rs: pub mod testutil; is gated by #[cfg(test)] again; the binary's own "
+                "tests use the fixture helper too, so the helper is a documented test-support "
+                "module in the library (still the only file besides src/events.rs allowed to write)"
+            )
     return problems
 
 

@@ -21,17 +21,19 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod cli;
 pub mod clock;
 pub mod config;
 pub mod events;
 pub mod hysteresis;
 pub mod json;
 pub mod psi;
+pub mod report;
 pub mod socket;
 pub mod units;
 pub mod wire;
 
-#[cfg(test)]
+#[doc(hidden)]
 pub mod testutil;
 
 /// The wire vocabulary version of a registration request and reply.

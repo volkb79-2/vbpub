@@ -127,6 +127,14 @@ impl Value {
         }
     }
 
+    /// The array items, or `None` for another kind.
+    pub fn as_array(&self) -> Option<&[Value]> {
+        match self {
+            Self::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
     /// The object members, or `None` for another kind.
     pub fn members(&self) -> Option<&[(String, Value)]> {
         match self {

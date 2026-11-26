@@ -1,9 +1,12 @@
-//! Small, test-only helpers shared by the module tests.
+//! Small helpers shared by the module tests and by the binary's own tests.
 //!
 //! Design §5 (D9): every test works on a temp tree it creates and removes, never
-//! on the real `/sys/fs/cgroup` and never on another test's directory. The
-//! directory name is unique per process and per call, because nextest runs each
-//! test in its own process and several calls inside one test must not collide.
+//! on the real `/sys/fs/cgroup` and never on another test's directory. It is a
+//! test-support module, `#[doc(hidden)]` so it never appears as product API, and
+//! it is one of the two files the lint boundary allows to write (the other is the
+//! journal). The directory name is unique per process and per call, because
+//! nextest runs each test in its own process and several calls inside one test
+//! must not collide.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

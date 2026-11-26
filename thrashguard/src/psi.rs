@@ -70,6 +70,33 @@ pub enum Unreadable {
     },
 }
 
+impl Unreadable {
+    /// The one-word reason a reply carries: `read`, `malformed` or `reset`.
+    ///
+    /// A reader must be able to tell *why* pressure is unknown: "could not read
+    /// it" and "the kernel reset its counters" predict different operator actions,
+    /// and folding them into one word is exactly the "absence for emptiness"
+    /// collapse the estate's rules forbid.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Read { .. } => "read",
+            Self::Malformed(_) => "malformed",
+            Self::Reset { .. } => "reset",
+        }
+    }
+
+    /// The human-readable detail, for a journal line or a refusal.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Read { path, detail } => format!("{}: {detail}", path.display()),
+            Self::Malformed(detail) => detail.clone(),
+            Self::Reset { row, previous_us, current_us } => format!(
+                "the {row} `total` fell from {previous_us} to {current_us} microseconds: the counters were reset"
+            ),
+        }
+    }
+}
+
 /// A pressure reading: a measured value, or the fact that it is unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reading {

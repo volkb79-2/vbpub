@@ -253,7 +253,10 @@ pub fn resolve_static_unit(
     unit: &StaticUnit,
     config: &Config,
 ) -> Result<Scope, Refusal> {
-    if unit.cgroup.ends_with(SCOPE_SUFFIX) {
+    // A cgroup path contains `/`; a scope *name* does not. So a dotted path such
+    // as `dev-gates.slice/runner.scope` is a path, and only a bare
+    // `docker-<id>.scope` is treated as a registration would be.
+    if !unit.cgroup.contains('/') && unit.cgroup.ends_with(SCOPE_SUFFIX) {
         return resolve_container(root, &unit.cgroup, config).map_err(|refusal| match refusal {
             // A static unit's refusal names the /etc entry, not a container.
             Refusal::NoneFound { searched, .. } => Refusal::NoneFound { container: unit.name.clone(), searched },
