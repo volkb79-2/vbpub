@@ -1,4 +1,5 @@
 import builtins
+import importlib.util
 import os
 import shlex
 import threading
@@ -185,6 +186,58 @@ def test_static_lines_without_function_or_source():
     ns = {}
     exec("def f():\n    pass\n", ns)
     assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == []
+
+
+def test_static_lines_tolerates_source_lookup_failure(monkeypatch):
+    ns = {}
+    exec("def f():\n    pass\n", ns)
+
+    def source_lookup_fails(function):
+        raise OSError("gone")
+
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", source_lookup_fails)
+
+    assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == []
+
+
+def test_static_lines_returns_empty_for_an_uncached_source_file(monkeypatch):
+    ns = {}
+    exec("def f():\n    pass\n", ns)
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename: [])
+
+    assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == []
+
+
+def test_static_lines_parses_a_nested_method_and_disambiguates_same_names(tmp_path):
+    source = (
+        "import time\n"
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        def test_same(self):\n"
+        "            command = \"\"\"\n"
+        "column-zero content stays inside the string\n"
+        "            \"\"\"\n"
+        "            time.sleep(1)\n"
+        "class Other:\n"
+        "    def test_same(self):\n"
+        "        pass\n"
+    )
+    path = tmp_path / "policy_methods.py"
+    path.write_text(source, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("policy_methods", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    nested = plugin._static_lines(types.SimpleNamespace(function=module.Outer.Inner.test_same), set(), 0.2)
+    other = plugin._static_lines(types.SimpleNamespace(function=module.Other.test_same), set(), 0.2)
+
+    assert nested == [
+        "[fixed-sleep] line 8: time.sleep(1) is a fixed sleep used as synchronisation; "
+        "wait on an event, condition or poll loop"
+    ]
+    assert other == []
 
 
 def test_settle_loop_waits_for_a_leak_that_goes_away(monkeypatch):

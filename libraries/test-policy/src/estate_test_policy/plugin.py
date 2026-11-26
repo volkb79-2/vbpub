@@ -11,6 +11,7 @@ a project opts in. In ``off`` the plugin only registers its markers.
 from __future__ import annotations
 
 import inspect
+import linecache
 import os
 import threading
 import time
@@ -125,13 +126,19 @@ def _static_lines(item: pytest.Item, allowed: set[str], threshold: float) -> lis
     if function is None:
         return []
     try:
-        lines, first = inspect.getsourcelines(function)
-    except (OSError, TypeError):  # dynamically created tests have no source
+        filename = inspect.getsourcefile(function)
+        code = function.__code__
+        if filename is None:
+            return []
+        source = "".join(linecache.getlines(filename))
+    except (AttributeError, OSError, TypeError):  # dynamically created tests have no source
+        return []
+    if not source:
         return []
     return [
         violation.render()
         for violation in policy.analyze_source(
-            "".join(lines), sleep_threshold=threshold, first_line=first
+            source, sleep_threshold=threshold, function_line=code.co_firstlineno
         )
         if violation.rule not in allowed
     ]

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- TP-14: report each unreaped `(pid, start_time)` child identity once and skip it in later settle and cleanup passes; a reused pid with a new start time is still handled.
+- TP-15: treat `EACCES` as foreign only when `waitid` confirms the pid is not our waitable child. An unreadable child or an ownership-check error still fails loudly.
+- TP-16: inject pidfd open/close through `PidfdOps` in tests, without patching global `os.close`.
+- TP-18: parse the module and analyze only the exact function selected by its source line; fragment fallback preserves multiline string contents.
+
 <!-- cmru: release history -->
 
 ## [0.1.0] - 2026-11-24

@@ -63,6 +63,67 @@ def test_violations_sorted_and_rendered():
     assert out[0].render().startswith("[fixed-sleep] line 2:")
 
 
+def test_analyze_source_handles_method_with_column_zero_string_lines():
+    source = (
+        "    def test_method():\n"
+        "        command = \"\"\"\n"
+        "column-zero content stays inside the string\n"
+        "        \"\"\"\n"
+        "        time.sleep(1)\n"
+    )
+
+    out = policy.analyze_source(source, first_line=40)
+
+    assert [(violation.rule, violation.lineno) for violation in out] == [("fixed-sleep", 44)]
+
+
+def test_analyze_source_selects_method_inside_nested_class():
+    source = (
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        def test_nested(self):\n"
+        "            command = \"\"\"\n"
+        "column-zero content stays inside the string\n"
+        "            \"\"\"\n"
+        "            time.sleep(1)\n"
+    )
+
+    out = policy.analyze_source(source, function_line=3)
+
+    assert [(violation.rule, violation.lineno) for violation in out] == [("fixed-sleep", 7)]
+
+
+def test_analyze_source_disambiguates_same_named_methods_in_different_classes():
+    source = (
+        "class First:\n"
+        "    def test_same(self):\n"
+        "        time.sleep(1)\n"
+        "class Second:\n"
+        "    def test_same(self):\n"
+        "        pass\n"
+    )
+
+    first = policy.analyze_source(source, function_line=2)
+    second = policy.analyze_source(source, function_line=5)
+
+    assert [(violation.rule, violation.lineno) for violation in first] == [("fixed-sleep", 3)]
+    assert second == []
+
+
+def test_analyze_source_does_not_fall_back_to_another_function():
+    source = "class First:\n    def test_one(self):\n        time.sleep(1)\n"
+
+    assert policy.analyze_source(source, function_line=20) == []
+
+
+def test_analyze_source_can_select_a_decorated_function_by_decorator_line():
+    source = "class Example:\n    @marker\n    def test_one(self):\n        time.sleep(1)\n"
+
+    out = policy.analyze_source(source, function_line=2)
+
+    assert [(violation.rule, violation.lineno) for violation in out] == [("fixed-sleep", 4)]
+
+
 @pytest.mark.parametrize(
     "args,kwargs,fragment",
     [

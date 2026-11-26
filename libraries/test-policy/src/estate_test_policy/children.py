@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import re
 import signal
@@ -37,6 +38,21 @@ class ProcessRecord:
     @property
     def identity(self) -> tuple[int, int]:
         return self.pid, self.start_time
+
+
+def _open_pidfd(pid: int) -> int:
+    return os.pidfd_open(pid)
+
+
+@dataclass(frozen=True)
+class PidfdOps:
+    """PIDFD open/close seam; tests can use fake descriptors without patching ``os.close``."""
+
+    open: Callable[[int], int] = _open_pidfd
+    close: Callable[[int], None] = os.close
+
+
+_SYSTEM_PIDFD_OPS = PidfdOps()
 
 
 def is_linux() -> bool:
@@ -93,6 +109,20 @@ def read_process(
     except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError as exc:
+        if exc.errno == errno.EACCES:
+            # hidepid can also block a child that changed credentials; procfs alone cannot establish ownership.
+            try:
+                os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except OSError as ownership_error:
+                if ownership_error.errno in (errno.ECHILD, errno.ESRCH):
+                    return None
+                raise ProcessGuardError(
+                    f"cannot verify whether process {pid} is our child after EACCES reading {path}: {ownership_error}"
+                ) from ownership_error
+            raise ProcessGuardError(
+                f"cannot read process stat file {path}: {exc}; waitid confirms pid {pid} is our child, "
+                "so refusing to skip it (the child may have changed credentials)"
+            ) from exc
         raise ProcessGuardError(f"cannot read process stat file {path}: {exc}") from exc
     open_paren = stat.find("(")
     close_paren = stat.rfind(")")
@@ -154,6 +184,7 @@ def wait_for_new_children(
     settle_seconds: float,
     root_pid: int | None = None,
     proc_root: Path = DEFAULT_PROC_ROOT,
+    ignore: set[tuple[int, int]] | frozenset[tuple[int, int]] = frozenset(),
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[tuple[int, int], ProcessRecord]:
@@ -162,7 +193,11 @@ def wait_for_new_children(
     A remaining zombie has already exited but needs the guard's reap, so it
     ends the wait immediately and is returned for reporting.
     """
-    current = new_children(before, root_pid=root_pid, proc_root=proc_root)
+    current = {
+        identity: record
+        for identity, record in new_children(before, root_pid=root_pid, proc_root=proc_root).items()
+        if identity not in ignore
+    }
     if not current or all(record.state == "Z" for record in current.values()):
         return current
     deadline = clock() + settle_seconds
@@ -171,7 +206,11 @@ def wait_for_new_children(
         if remaining <= 0:
             return current
         sleeper(min(SETTLE_POLL_SECONDS, remaining))
-        current = new_children(before, root_pid=root_pid, proc_root=proc_root)
+        current = {
+            identity: record
+            for identity, record in new_children(before, root_pid=root_pid, proc_root=proc_root).items()
+            if identity not in ignore
+        }
         if not current or all(record.state == "Z" for record in current.values()):
             return current
 
@@ -186,11 +225,12 @@ def remove_if_still_ours(
     sleeper: Callable[[float], None] = time.sleep,
     waiter: Callable[[int, int, int], os.siginfo_t | None] = os.waitid,
     reader: Callable[[Path], str] = _read_stat,
+    pidfd_ops: PidfdOps = _SYSTEM_PIDFD_OPS,
 ) -> str | None:
     """Kill/reap one pinned child; None means it vanished or was no longer ours."""
     parent = os.getpid() if root_pid is None else root_pid
     try:
-        pidfd = os.pidfd_open(record.pid)
+        pidfd = pidfd_ops.open(record.pid)
     except ProcessLookupError:
         return None
     try:
@@ -220,7 +260,7 @@ def remove_if_still_ours(
     except (ChildProcessError, ProcessLookupError):  # pragma: no cover - concurrent reap/exit race
         return None
     finally:
-        os.close(pidfd)
+        pidfd_ops.close(pidfd)
 
 
 def reap_new_zombies(
@@ -230,6 +270,7 @@ def reap_new_zombies(
     proc_root: Path = DEFAULT_PROC_ROOT,
     reader: Callable[[Path], str] = _read_stat,
     waiter: Callable[[int, int, int], os.siginfo_t | None] = os.waitid,
+    pidfd_ops: PidfdOps = _SYSTEM_PIDFD_OPS,
 ) -> int:
     """Reap only new zombie direct children; live allowlisted children are untouched."""
     parent = os.getpid() if root_pid is None else root_pid
@@ -239,7 +280,7 @@ def reap_new_zombies(
         if identity in before or record.state != "Z":
             continue
         try:
-            pidfd = os.pidfd_open(record.pid)
+            pidfd = pidfd_ops.open(record.pid)
         except ProcessLookupError:
             continue
         try:
@@ -251,7 +292,7 @@ def reap_new_zombies(
         except (ChildProcessError, ProcessLookupError):  # pragma: no cover - concurrent reap/exit race
             continue
         finally:
-            os.close(pidfd)
+            pidfd_ops.close(pidfd)
     return reaped
 
 
@@ -266,25 +307,30 @@ class ChildGuard:
         settle_seconds: float,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        pidfd_ops: PidfdOps = _SYSTEM_PIDFD_OPS,
     ) -> None:
         self.root_pid = os.getpid() if root_pid is None else root_pid
         self.proc_root = Path(proc_root)
         self.settle_seconds = settle_seconds
         self.clock = clock
         self.sleeper = sleeper
+        self.pidfd_ops = pidfd_ops
         self.before = direct_children(self.root_pid, self.proc_root)
 
     def check(self) -> list[str]:
         leaked = []
+        unreaped: set[tuple[int, int]] = set()
         for _pass in range(MAX_CLEANUP_PASSES):
             current = wait_for_new_children(
                 self.before,
                 settle_seconds=self.settle_seconds,
                 root_pid=self.root_pid,
                 proc_root=self.proc_root,
+                ignore=unreaped,
                 clock=self.clock,
                 sleeper=self.sleeper,
             )
+            current = {identity: record for identity, record in current.items() if identity not in unreaped}
             if not current:
                 return leaked
             for record in sorted(current.values(), key=lambda item: item.pid):
@@ -295,16 +341,18 @@ class ChildGuard:
                     reap_timeout=self.settle_seconds + REAP_GRACE_SECONDS,
                     clock=self.clock,
                     sleeper=self.sleeper,
+                    pidfd_ops=self.pidfd_ops,
                 )
                 if outcome is not None:
                     leaked.append(outcome)
+                    if "unreaped" in outcome:
+                        unreaped.add(record.identity)
         remaining = new_children(self.before, root_pid=self.root_pid, proc_root=self.proc_root)
         details = "; ".join(
             f"pid {record.pid} comm {record.command}"
             for record in sorted(remaining.values(), key=lambda item: item.pid)
+            if record.identity not in unreaped
         )
-        leaked.append(
-            f"child cleanup reached the {MAX_CLEANUP_PASSES}-pass bound; "
-            f"remaining new children: {details or 'none'}"
-        )
+        if details:
+            leaked.append(f"child cleanup reached the {MAX_CLEANUP_PASSES}-pass bound; remaining new children: {details}")
         return leaked

@@ -31,13 +31,18 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
   direct children by `(pid, starttime)`. A new child gets `estate_policy_settle_seconds` to exit; survivors and
   zombies are then pinned with a pidfd, re-checked for the same parent and start time, killed through the pidfd
   when alive, and reaped with bounded `waitid(P_PIDFD, WNOHANG)` polling. The scan/kill/reap sequence repeats so
-  grandchildren reparented by killing their parent are found too, with a 10-pass bound that is itself reported.
-  A zombie is reported as a zombie leak, a live child is reported after successful SIGKILL and reap, and a child
-  still unreaped at the deadline is reported as unreaped: cleanup never hangs or hides the leak. `fail` reports a
+  grandchildren reparented by killing their parent are found too. An identity that remains unreaped is reported
+  once and excluded from later settle and cleanup passes; a reused pid with a different start time is still
+  examined. The 10-pass bound is reported when new children remain after those passes. A zombie is reported as a
+  zombie leak, a live child is reported after successful SIGKILL and reap, and a child still unreaped at the
+  deadline is reported as unreaped: cleanup never hangs or hides the leak. `fail` reports a
   teardown error; `warn` warns and cleans up. A deliberate exception uses
   `@pytest.mark.estate_allow("children", reason="...", backlog="XX-NN")`. Non-Linux runs are a no-op and record
   one warning. Allowed tests leave live children alone but new direct-child zombies are reaped with
-  `waitid(WNOHANG)` so they do not accumulate (TP-12).
+  `waitid(WNOHANG)` so they do not accumulate (TP-12). With procfs `hidepid=1`, reading another user's
+  `/proc/<pid>/stat` can return `EACCES`; a child can also become unreadable if it changes credentials. The guard
+  uses non-reaping `waitid(P_PID, pid, WEXITED|WNOHANG|WNOWAIT)` to distinguish a waitable child from a non-child:
+  an unreadable child or an ownership-check error still fails loudly. See [proc(5)'s `hidepid` description](https://manpages.debian.org/trixie/manpages/proc.5.en.html).
 
   **Adopting the child guard:** a process created lazily by module or session code, or by a self-daemonizing tool
   (`gpg-agent`, SSH `ControlPersist`, git `gc.autoDetach` or automatic maintenance), is a new child of pytest and
