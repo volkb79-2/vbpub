@@ -1164,14 +1164,15 @@ mod tests {
     #[test]
     fn gone_peer_has_no_comm() {
         let fixture = peer_fixture_root();
-        let credentials = raw_ucred(42, 1000);
+        // The fixture proc tree has no entry for pid 43: the peer has gone.
+        let credentials = raw_ucred(43, 1000);
         let peer = peer_from_ucred(
             &credentials,
             credentials.len(),
             &fixture.join("proc"),
             &fixture.join("proc"),
         )
-        .expect("pid 42 credentials");
+        .expect("pid 43 credentials");
         assert_eq!(peer.comm, None);
     }
 
