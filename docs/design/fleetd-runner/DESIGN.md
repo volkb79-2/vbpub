@@ -517,4 +517,4 @@ Sizes are effort estimates, not lane time limits. No package adds a wall-clock l
 
 | # | open question | recommendation used until answered |
 |---|---|---|
-| N2 | How does a local controller-host client reach and authenticate to the agent, and which group may it act as? | candidate: local Unix socket and peer credentials, with no SSH; keep that worker disabled until settled |
+| N2 | Which local identity may call the controller-host agent, and what authorization group does it map to? | candidate: the host agent listens on a local Unix socket; the client uses peer credentials, with no SSH. Keep the worker disabled until this mapping is settled. |
