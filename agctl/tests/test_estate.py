@@ -408,6 +408,30 @@ def test_a_run_whose_lock_is_free_and_which_never_ended_is_died(tmp_path):
     assert "p-pi DIED (lock free, never ended)" in row.fields["runs"].detail
 
 
+def test_a_lock_table_that_could_not_be_read_leaves_the_run_undecided(tmp_path):
+    # An unreadable `/proc/locks` decides nothing: the run is `undecided`, never `DIED` (which
+    # would claim a free lock nobody observed) and never `active`.
+    path = tmp_path / "runs" / "p.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    record = ag_runs.RunRecord(
+        id="p-pi", source=str(tmp_path / "runs"), files=("live", "lock"), exit_code=None, outcome="",
+        review="", route="luna", thread="", worktree="", tokens=1, live_mtime=None,
+        last_state="", last_run="", gauge="", boundary="", mark="", paths={"lock": path},
+    )
+
+    (row,) = agg.rows_from_inputs(
+        _view(
+            _git(tmp_path, ()),
+            _run_set(tmp_path, (record,)),
+            locks=ag_sources.LockTable((), False, "cannot read /proc/locks"),
+        )
+    )
+
+    assert "1 undecided" in row.fields["runs"].value
+    assert "0 died" in row.fields["runs"].value
+
+
 def test_a_run_with_no_lock_file_is_undecided_rather_than_active(tmp_path):
     record = ag_runs.RunRecord(
         id="p-pi", source=str(tmp_path / "runs"), files=("live",), exit_code=None, outcome="", review="",
@@ -527,7 +551,7 @@ def test_the_header_lists_merge_candidates_leases_live_runs_and_ages(tmp_path):
     text = agg.render_header(agg.rows_from_inputs(view), view)
 
     assert text.splitlines() == [
-        "MERGE 1: plat-19m-acceptkit-20261125_020339 " + "2" * 40,
+        "MERGE 1: plat-19m-acceptkit-20261125_020339 " + "2" * 9,
         "LEASES 1: v1001 v1001.slot1 pid 7",
         "LIVE 1: plat-19m-pi-y1 luna <50k",
         "PEERS: core 6-24h",
@@ -674,7 +698,7 @@ def test_the_merge_line_falls_back_to_unmerged_branches_only_when_the_queue_is_a
 
     # The label itself says which source this is: `MERGE` is the DESIGN 8 item 1d fallback,
     # `MERGE QUEUE` is the handover line.
-    assert text.splitlines()[0] == "MERGE 1: plat-19m-acceptkit " + "2" * 40
+    assert text.splitlines()[0] == "MERGE 1: plat-19m-acceptkit " + "2" * 9
     assert "MERGE QUEUE" not in text
     assert view.merge_queue_detail == "no MERGE QUEUE line in the handover"
 

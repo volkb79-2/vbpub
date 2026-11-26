@@ -88,7 +88,10 @@ CTX_UNKNOWN = "ctx-unknown"
 # the LAST sections, and the leases and live runs are exactly the facts a reader must not
 # silently lose.
 HEADER_ITEMS = 8
-HEADER_ITEM_LIMIT = 64
+HEADER_ITEM_LIMIT = 96
+# A merge candidate's head is printed SHORT (the 9-character form run-gate itself prints): the
+# full 40-hex id is in the row's `head` cell, and a hook block does not need it twice.
+SHORT_HEAD = 9
 HEADER_NOTE_LIMIT = 120
 HEADER_LIMIT = 4096
 HEADER_MARKER = "[truncated]"
@@ -610,7 +613,9 @@ def _merge_line(rows: list[Row], view: View) -> str:
         return _bounded_line(
             "MERGE QUEUE", [view.merge_queue], 1, note=f"{MERGE_QUEUE_SOURCE}, unverified"
         )
-    candidates = [f"{branch} {row.fields['head'].value}" for row in rows for branch in row.unmerged]
+    candidates = [
+        f"{branch} {row.fields['head'].value[:SHORT_HEAD]}" for row in rows for branch in row.unmerged
+    ]
     # No note on the fallback: DESIGN 8 item 1d defines it ("absent: unmerged worktree branches
     # and heads"), and the label itself says which of the two sources this line is. The reason
     # a queue line was absent travels in the JSON (`sources.merge_queue.detail`).
