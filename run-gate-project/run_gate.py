@@ -226,6 +226,11 @@ LANE_KILL_GRACE_SECONDS = 5
 CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS = 60
 FAILED_EVIDENCE_KEEP = 10
 FAILED_NODE_LIMIT = 5
+JOB_EVENT_API = "fleet-host-agent/1"
+JOB_ID_MAX_LENGTH = 128
+JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+_ACTIVE_JOB_EVENT_WRITER = None
 
 SCRATCH_RUN_ID_RE = re.compile(r"[1-9][0-9]*-[0-9]{16,}-[0-9a-f]{16}")
 SCRATCH_LEGACY_PREFIXES = ("run-gate-gitcfg-", "run-gate-test-")
@@ -477,6 +482,167 @@ def finish(result: LaneResult) -> int:
         print(f"run-gate: lane {result._lane_name!r} " + "; ".join(details),
               flush=True)
     return result.gate_exit_code
+
+
+def validate_job_event_options(event_file: str | None,
+                               job_id: str | None) -> None:
+    """Validate the paired opt-in flags without consulting the environment."""
+    if (event_file is None) != (job_id is None):
+        fail("--event-file and --job-id must be supplied together")
+    if job_id is None:
+        return
+    if (not isinstance(job_id, str)
+            or len(job_id) > JOB_ID_MAX_LENGTH
+            or JOB_ID_RE.fullmatch(job_id) is None):
+        fail(f"--job-id must match [A-Za-z0-9][A-Za-z0-9._-]* and be at "
+             f"most {JOB_ID_MAX_LENGTH} characters")
+
+
+def _event_path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_job_event_destination(event_file: str,
+                                   *, worktree: Path | None = None,
+                                   repo: Path | None = None,
+                                   mount_sources=()) -> Path:
+    """Return the canonical event path after its pre-start safety checks.
+
+    The final component may be absent or a regular file, never a symlink or
+    another file type. Existing parent directories are resolved so a path
+    reached through a symlink is compared at its real location.
+    """
+    if not isinstance(event_file, str) or "\x00" in event_file:
+        fail("--event-file must be an absolute path")
+    path = Path(event_file)
+    if not path.is_absolute():
+        fail(f"--event-file {event_file!r} must be an absolute path")
+    try:
+        parent = path.parent.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        fail(f"--event-file parent {path.parent} must already exist: {exc}")
+    if not parent.is_dir():
+        fail(f"--event-file parent {path.parent} is not a directory")
+    canonical = parent / path.name
+    try:
+        info = canonical.lstat()
+    except FileNotFoundError:
+        info = None
+    except OSError as exc:
+        fail(f"cannot inspect --event-file {event_file!r}: {exc}")
+    if info is not None:
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"--event-file {event_file!r} must not be a symlink")
+        if not stat.S_ISREG(info.st_mode):
+            fail(f"--event-file {event_file!r} must be a regular file")
+
+    # `canonical` has a resolved parent and a verified non-symlink final
+    # component. Worktree/repository roots are local paths and can be resolved
+    # by this process. Docker mount sources are compared lexically because a
+    # source may be in the host namespace and must not be stat'd here.
+    resolved = canonical
+    protected_roots: list[Path] = []
+    for root in (worktree, repo):
+        if root is not None:
+            try:
+                protected_roots.append(root.resolve(strict=False))
+            except (OSError, RuntimeError):
+                protected_roots.append(Path(os.path.abspath(root)))
+    for root in protected_roots:
+        if _event_path_is_within(resolved, root):
+            fail(f"--event-file {event_file!r} resolves inside protected "
+                 f"checkout path {root}")
+    lexical = Path(os.path.normpath(event_file))
+    for source in mount_sources:
+        if not isinstance(source, (str, os.PathLike)):
+            continue
+        source_text = os.fspath(source)
+        if not source_text or not os.path.isabs(source_text):
+            continue
+        source_path = Path(os.path.normpath(source_text))
+        if (_event_path_is_within(resolved, source_path)
+                or _event_path_is_within(lexical, source_path)):
+            fail(f"--event-file {event_file!r} resolves inside a host path "
+                 f"mounted by this lane: {source_text}")
+    return resolved
+
+
+class JobEventWriter:
+    """Append one durable JSON object per event to a host-owned file."""
+
+    def __init__(self, fd: int, path: Path, job_id: str, lane: str):
+        self.fd = fd
+        self.path = path
+        self.job_id = job_id
+        self.lane = lane
+        self.failed = False
+        self.warned = False
+
+    def _warning(self, exc: BaseException) -> None:
+        if self.warned:
+            return
+        self.warned = True
+        print(f"{PROG}: WARNING: job event file {self.path} could not be "
+              f"written: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+    def emit(self, event: str, *, lane: str | None = None, **fields) -> None:
+        if self.failed:
+            return
+        record = {**fields, "api": JOB_EVENT_API, "event": event,
+                  "job_id": self.job_id,
+                  "lane": self.lane if lane is None else lane}
+        try:
+            payload = (json.dumps(record, sort_keys=True,
+                                  separators=(",", ":")) + "\n").encode()
+            written = os.write(self.fd, payload)
+            if written != len(payload):
+                raise OSError(f"short event write ({written}/{len(payload)} bytes)")
+            os.fsync(self.fd)
+        except Exception as exc:
+            self.failed = True
+            self._warning(exc)
+
+    def close(self) -> None:
+        if self.fd < 0:
+            return
+        fd, self.fd = self.fd, -1
+        try:
+            os.close(fd)
+        except OSError as exc:
+            self._warning(exc)
+
+
+def open_job_event_writer(event_file: str, job_id: str, lane: str,
+                          *, worktree: Path | None = None,
+                          repo: Path | None = None,
+                          mount_sources=()) -> JobEventWriter:
+    """Open the opt-in stream append-only, without following its final link."""
+    validate_job_event_options(event_file, job_id)
+    path = validate_job_event_destination(
+        event_file, worktree=worktree, repo=repo,
+        mount_sources=mount_sources)
+    flags = (os.O_WRONLY | os.O_APPEND | os.O_CREAT
+             | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        fail(f"cannot open --event-file {event_file!r}: {exc}")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            fail(f"--event-file {event_file!r} must be a regular file")
+        os.fchmod(fd, 0o600)
+    except OSError as exc:
+        os.close(fd)
+        fail(f"cannot secure --event-file {event_file!r} as mode 0600: {exc}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return JobEventWriter(fd, path, job_id, lane)
 
 
 def operation_result(code: int, reason: str) -> LaneResult:
@@ -21082,6 +21248,7 @@ def _dispatch(argv: list[str] | None = None, *,
               _admission_ticket=None,
               _admission_managed: bool = False,
               _workers_options: dict | None = None) -> LaneResult:
+    global _ACTIVE_JOB_EVENT_WRITER
     parser = RunGateArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("target", nargs="?")
@@ -21106,6 +21273,10 @@ def _dispatch(argv: list[str] | None = None, *,
                         "root {worktree} stands for (default: git toplevel of "
                         "the pointer file)")
     parser.add_argument("--worktree")
+    parser.add_argument("--event-file", metavar="ABSOLUTE_PATH",
+                        help="append host-owned lane events to this absolute path")
+    parser.add_argument("--job-id", metavar="ID",
+                        help="job identifier paired with --event-file")
     parser.add_argument("--base", help="RG-26: the comparison base for a lane "
                         "that delegates it (assay judge.base_source = "
                         "\"request\"), and for conjunction lanes carrying a "
@@ -21242,6 +21413,25 @@ def _dispatch(argv: list[str] | None = None, *,
         args.lane_args = lane_args
         args.jobs_request = parse_r2_jobs_cli(args.jobs)
         args.workers_request = parse_workers_cli(args.workers)
+        validate_job_event_options(args.event_file, args.job_id)
+        job_events_requested = args.event_file is not None
+        if job_events_requested:
+            validate_job_event_destination(args.event_file)
+            if (args.lane is None or args.list or args.check_env
+                    or args.help or args.version
+                    or args.lane in _NO_LANE_FACT_VERBS
+                    or args.lane in {"doctor", "history", "footprint",
+                                     "validate-pointers", "migrate-modes",
+                                     "admission", "status", "lanes"}):
+                fail("--event-file and --job-id apply to a lane run only")
+            if args.dry_run:
+                fail("--event-file and --job-id cannot be used with --dry-run")
+            if _ACTIVE_JOB_EVENT_WRITER is not None:
+                fail("nested run-gate invocations cannot use the active job "
+                     "event file")
+        if is_pid1_without_init() and not args.version:
+            return LaneResult("ERROR", reason="pid1-without-init",
+                              _json=args.json)
         if args.prune and args.lane != "doctor":
             fail("--prune is honored by the `doctor` verb only "
                  "(run-gate doctor --prune)")
@@ -21496,6 +21686,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail(f"--worktree {args.worktree!r} selects {target_config}, "
                      f"but that worktree has no {CONFIG_NAME}; refusing to use "
                      f"the invoking checkout's config")
+        if job_events_requested:
+            event_repo, event_worktree, _event_toplevel = \
+                resolve_repo_and_worktree(project_dir, None)
+            _ACTIVE_JOB_EVENT_WRITER = open_job_event_writer(
+                args.event_file, args.job_id, args.lane,
+                worktree=event_worktree, repo=event_repo)
         (cfg, cfg_path, central, central_path,
          cfg_sha256, central_cfg_sha256) = load_config_snapshot(project_dir)
         if args.lane == "status":
@@ -22382,10 +22578,17 @@ def is_pid1_without_init() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_JOB_EVENT_WRITER
     arguments = list(sys.argv[1:] if argv is None else argv)
     option_argv = (arguments[:arguments.index("--")]
                    if "--" in arguments else arguments)
-    if is_pid1_without_init() and "--version" not in option_argv:
+    event_flags_present = any(
+        token in ("--event-file", "--job-id")
+        or token.startswith("--event-file=")
+        or token.startswith("--job-id=")
+        for token in option_argv)
+    if (is_pid1_without_init() and "--version" not in option_argv
+            and not event_flags_present):
         print(f"{PROG}: run-gate is PID 1 with no init: start the container "
               "with `--init` (Docker) or `init: true` (Compose)",
               file=sys.stderr, flush=True)
@@ -22393,6 +22596,7 @@ def main(argv: list[str] | None = None) -> int:
             "ERROR", reason="pid1-without-init",
             _json="--json" in option_argv))
     previous_scratch = _active_scratch_run()
+    previous_event_writer = _ACTIVE_JOB_EVENT_WRITER
     scratch_state = _begin_scratch_run()
     previous_sigterm = None
     try:
@@ -22452,6 +22656,11 @@ def main(argv: list[str] | None = None) -> int:
             with deferred_sigterm():
                 _cleanup_scratch_run(scratch_state)
         finally:
+            active_event_writer = _ACTIVE_JOB_EVENT_WRITER
+            if active_event_writer is not previous_event_writer:
+                _ACTIVE_JOB_EVENT_WRITER = previous_event_writer
+                if active_event_writer is not None:
+                    active_event_writer.close()
             if previous_scratch is None:
                 _end_scratch_run()
             else:
