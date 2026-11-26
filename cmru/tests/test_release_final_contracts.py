@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from cmru import release as release_module
 from cmru.release import GitHubReleases
 
 
@@ -30,9 +31,45 @@ def test_release_list_paginates_until_short_page():
     assert client.list_releases(per_page=2) == [{"id": 1}, {"id": 2}, {"id": 3}]
 
 
-def test_release_publish_rejects_response_without_upload_coordinate():
+def test_release_publish_rejects_response_without_upload_coordinate(monkeypatch, capsys):
+    """The refusal is the release RECORD, not a transport answer, and no socket is opened.
+
+    Stubbing only ``get_release_by_tag`` left the update PATCH going out to
+    api.github.com, so this test needed the network to reach its assertion (it
+    failed with a transport error instead on a network-less gate host). The
+    transport boundary is ``cmru.release.urlopen``: faking it here lets the real
+    ``_request`` build its request (headers, method) while proving that nothing
+    leaves the process.
+    """
     client = GitHubReleases("owner", "repo", "token")
-    client.get_release_by_tag = lambda tag: {"id": 7}
+    client.get_release_by_tag = lambda tag: {"id": 7}  # a record with no upload_url
+
+    sent = []
+
+    class _Response:
+        status = 200
+
+        def read(self) -> bytes:
+            return json.dumps({"id": 7}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def urlopen(request, *args, **kwargs):
+        sent.append(request)
+        return _Response()
+
+    monkeypatch.setattr(release_module, "urlopen", urlopen)
+
     with pytest.raises(SystemExit) as error:
         client.publish("demo-v1", "title", "notes", [])
     assert error.value.code == 1
+
+    # It refused the record it read, after exactly the one metadata PATCH it needed
+    # to reach that check, and every request it built stayed inside the stub.
+    assert [request.get_method() for request in sent] == ["PATCH"]
+    assert all(request.full_url.startswith("https://api.github.com/") for request in sent)
+    assert "missing id/upload_url" in capsys.readouterr().err
