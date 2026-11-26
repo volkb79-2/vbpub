@@ -137,6 +137,25 @@ class EvalTests(unittest.TestCase):
         self.assertIn("verdict=FAIL", body)
         self.assertIn("containerd restarted", body)
 
+    def test_psi_guard_and_cgprofiled_growing_seconds_still_pass(self) -> None:
+        # H2: psi_guard's recorded seconds are the probe's OWN duration (formerly the RUN's elapsed time, which grew
+        # by a dwell per step), and its pass rule is "active + ticks advance" (3.3), never latency; the degraded
+        # cgprofiled probe is INFO by design. So steps whose psi_guard/cgprofiled samples grow monotonically past the
+        # step-0 p95 latency limit must still PASS. On 319aaeb86 the judge applied over_limit() to both of them and
+        # this fixture is a step-1 FAIL "psi_guard latency over its step-0 baseline".
+        d = F.write_run(self.tmp / "grow")
+        slow = [0.02, 0.05, 0.9, 2.0, 3.0, 4.0, 5.0, 6.0]
+        (d / "probes.csv").write_text(F.probes_text([0, 1, 2], seconds_at={(1, "psi_guard"): slow, (2, "psi_guard"): slow,
+                                                                              (1, "cgprofiled"): slow, (2, "cgprofiled"): slow}))
+        body = live(d, 1)
+        self.assertIn("verdict=PASS", body)
+        self.assertIn("probes 6/6 passed", body)
+        self.assertNotIn("psi_guard latency", body)
+        self.assertNotIn("cgprofiled latency", body)
+        # a real liveness defect on the same exemption is still a FAIL: the exemption is about latency only
+        (d / "probes.csv").write_text(F.probes_text([0, 1, 2], rc_of={"psi_guard": "1"}))
+        self.assertIn("psi_guard rc 1", live(d, 1))
+
     def test_a_missing_liveness_probe_is_inconclusive(self) -> None:
         d = F.write_run(self.tmp / "noprobe")
         lines = F.probes_text([0, 1, 2]).splitlines()
@@ -551,6 +570,15 @@ class ShellKitTests(F.ShellKitBase):
         self.assertIn("restore=ok", man)
         self.assertNotIn("restore=pending", man)
         self.assertFalse((self.ev / "squeeze-state.env").exists())
+        # H1: every step's MIN line carries the value read at START, so a multi-step finish returns the four
+        # files to their start values -- not to the previous step's (much higher) raise. The scope min goes away
+        # with the scope the dummy's `docker rm -f` removes, which the restore counts as restored.
+        self.assertEqual((self.cg / "dev.slice" / "memory.max").read_text().strip(), str(self.DEV_MAX_START))
+        self.assertEqual((self.cg / "dev.slice" / "dev-gates.slice" / "memory.max").read_text().strip(), str(self.DEV_MAX_START))
+        self.assertEqual((self.cg / "dev.slice" / "memory.min").read_text().strip(), str(512 * M))
+        self.assertEqual((self.cg / "dev.slice" / "dev-gates.slice" / "memory.min").read_text().strip(), str(self.TIER_MIN))
+        self.assertIn("restore=ok", man)
+        self.assertEqual(man.count("restore=ok"), 1, "accept-restore.sh writes restore=ok; finish never states it twice")
 
     def judge_steps(self) -> list[str]:
         return [ln.split()[1] for ln in (self.ev / "steps.env").read_text().splitlines() if ln.startswith("STEP ")]
@@ -605,6 +633,28 @@ class ShellKitTests(F.ShellKitBase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("mem_available", (self.ev / "steps" / "0.env").read_text())
         self.assertEqual(len(self.judge_steps()), 1)
+
+    def test_the_preflight_refuses_when_the_evidence_filesystem_cannot_hold_the_wal(self) -> None:
+        # M3: the WAL lives on the EVIDENCE filesystem, which may be a different filesystem than the Docker data root
+        # the old 4G check looked at; a full evidence disk degraded write-ahead to write-only. The preflight now asks
+        # the filesystem the WAL is written to. (The threshold is injected: a full disk cannot be faked hermetically.)
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="4", MDT_ACCEPT_MIN_EVID_DISK=str(1 << 62),
+                         **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("write-ahead log could not be trusted", r.stderr)
+        self.assertFalse((self.ev / "samples.csv").exists(), "refused before the dummy")
+
+    def test_a_leftover_min_from_an_interrupted_run_is_refused_by_the_preflight(self) -> None:
+        # L7: §7 gives every run a fresh evidence directory, so "a later run restores a stale WAL" never fires; the
+        # only guard left is the preflight. It checked dev.max but not the mins, so a run started before the
+        # reconcile tick would record the leftover raise as its "original" and write it back. systemd's MemoryMin is
+        # the start value (install.sh renders it), and the kit only ever raises.
+        (self.show / "MemoryMin-dev.slice").write_text(f"{512 * MIB}\n")
+        (self.cg / "dev.slice" / "memory.min").write_text(f"{640 * MIB}\n")
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="4", **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("a leftover raise of an interrupted run", r.stderr)
+        self.assertFalse((self.ev / "samples.csv").exists(), "refused before the dummy and before any write")
 
     def test_a_mid_run_drift_marks_the_step_inconclusive_and_stops_the_ladder(self) -> None:
         # 2.3: every tick reads the five files back and compares them with the kit's OWN write, and the comparison
@@ -761,6 +811,112 @@ class ShellKitTests(F.ShellKitBase):
         self.assertIn("restore=pending", man)
         self.assertIn("RESTORE-PENDING dev.slice/memory.max", man)
 
+    def test_a_stalled_docker_rm_is_bounded_and_the_restore_still_runs(self) -> None:
+        # M2: a squeezed dockerd stalls `docker rm -f` exactly as it stalls the dockerd probe. Without a timeout the
+        # guard abort's finish() hung there, the systemd TimeoutStopSec killed the unit, and the ExecStopPost restore
+        # hung on the same rm -- leaving the mins raised and the kdamond on. The rm gets a small injected bound here
+        # (1 s, never 30) and the min restore still runs and is still the start value.
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", **self.judge_env("PASS"),
+                         MDT_ACCEPT_RM_TIMEOUT="1", FAKE_RM_SLEEP="3")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("did not complete (rc 124, 1s bound)", r.stdout)
+        self.assertEqual((self.cg / "dev.slice" / "memory.min").read_text().strip(), str(512 * MIB),
+                         "the min restore ran although the rm was killed at its bound")
+
+    def test_an_unwritable_state_path_writes_no_cgroup_file(self) -> None:
+        # M3: every WAL append is checked BEFORE the cgroup write it protects, and a failed append aborts the run. An
+        # unwritable state path (a full or read-only evidence filesystem in production, a missing directory here) must
+        # stop the run with NO cgroup write at all -- the raised max would otherwise have no record the restore could
+        # prove, and the kit would squeeze blind on a WAL it could not write.
+        r = self.run_kit("--steps", "2", "--dwell", "0", ticks="8", **self.judge_env("PASS"),
+                         MDT_ACCEPT_SQUEEZE_STATE=str(self.tmp / "gone" / "squeeze-state.env"))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("write-ahead state file", r.stderr)
+        self.assertEqual((self.cg / "dev.slice" / "memory.max").read_text().strip(), str(self.DEV_MAX_START),
+                         "no memory.max write happened without a WAL line")
+        self.assertEqual((self.cg / "dev.slice" / "dev-gates.slice" / "memory.min").read_text().strip(), str(self.TIER_MIN),
+                         "no memory.min write happened without a WAL line")
+        self.assertNotIn("kill -s USR1", " ".join(self.calls()), "no dummy was even signalled")
+
+    def test_a_probe_whose_row_went_missing_is_named_and_never_silently_passed(self) -> None:
+        # 3.3/3.5: a probe that did not run is missing data, never a pass. 8 samples per step per probe (the old fixture
+        # wrote 1, which still satisfied the judge -- this pins the fixture's own shape too).
+        rows = F.probes_text([0, 1]).splitlines()
+        self.assertEqual(sum(1 for ln in rows if ",1,psi_guard," in ln), 8)
+
+    def test_a_wal_append_that_fails_mid_run_stops_the_step_before_its_cgroup_write(self) -> None:
+        # M3's second half: the state file is writable for the header, then stops accepting appends. The step's MAX
+        # append fails, so the memory.max write it protects must NOT happen; the step is marked FAIL cause=wal.
+        state = self.ev / "squeeze-state.env"
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", **self.judge_env("PASS"),
+                         FAKE_STATE_IS_DIR=str(state))
+        step1 = (self.ev / "steps" / "1.env").read_text()
+        self.assertIn("cause=wal", step1)
+        self.assertEqual((self.cg / "dev.slice" / "memory.max").read_text().strip(), str(self.DEV_MAX_START),
+                         "no memory.max write happened when its WAL line could not be appended")
+        self.assertIn("write-ahead state file", r.stdout + r.stderr)
+
+    def test_the_real_psi_guard_probe_records_its_own_seconds(self) -> None:
+        # H2, WITHOUT the seam: MDT_ACCEPT_PROBE_CMD_PSI_GUARD is unset, so accept-run.sh's own branch runs
+        # (`systemctl is-active` + MainPID + /proc/<pid>/stat). The column must be the probe's OWN duration; it used to
+        # record `SECONDS - T0`, the run's elapsed time. The fake host stalls a fixed 3 s on the USR1 (never host
+        # load), so by step 1's probes the run's elapsed time is >= 3 s while the probe itself takes ~0.2 s: the old
+        # code recorded >= 3 s here, the new code cannot -- and that elapsed-vs-own gap is what the judge's latency
+        # rule read as "psi_guard latency over its step-0 baseline".
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", FAKE_PSI_SHOW_SLEEP="0.2", FAKE_KILL_SLEEP="3",
+                         MDT_ACCEPT_PROBE_CMD_PSI_GUARD=None, **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = [ln.split(",") for ln in (self.ev / "probes.csv").read_text().splitlines() if ",psi_guard," in ln]
+        self.assertTrue(rows, "the real psi_guard branch wrote no row")
+        step1 = [float(r[5]) for r in rows if r[1] == "1"]
+        self.assertTrue(step1, "no psi_guard row in step 1")
+        self.assertLessEqual(max(step1), 1.0, f"psi_guard must record its own duration, not the run's: {step1}")
+        self.assertGreaterEqual(max(step1), 0.15, "the slow read is visible: the column measures something")
+        self.assertIn("ticks=", rows[0][6], "the real branch's tick advance is recorded")
+
+    def test_the_ssh_probe_keeps_is_active_and_the_banner_as_two_rcs(self) -> None:
+        # L1: `systemctl is-active` and the banner read are two commands with two rcs; the banner call used to
+        # overwrite is-active's T_RC, so an INACTIVE ssh.service whose :22 still answered passed. The port-22 read
+        # cannot run hermetically; MDT_ACCEPT_SSHD_BANNER_CMD supplies its argv.
+        for active, banner_ok, want in (("inactive", True, "1"), ("active", True, "0"), ("active", False, "1")):
+            with self.subTest(active=active, banner=banner_ok):
+                import shutil as _sh
+                _sh.rmtree(self.ev, ignore_errors=True)
+                self.log.write_text("")
+                bcmd = "printf 'SSH-2.0-'" if banner_ok else "printf 'HTTP/1.1'"
+                r = self.run_kit("--steps", "0", "--dwell", "0", ticks="4", FAKE_ACTIVE=active,
+                                 MDT_ACCEPT_SSHD_BANNER_CMD=bcmd,
+                                 MDT_ACCEPT_PROBE_CMD_SSHD=None, MDT_ACCEPT_PROBE_CMD_JOURNALD="true",
+                                 MDT_ACCEPT_PROBE_CMD_DOCKERD="true", MDT_ACCEPT_PROBE_CMD_CONTAINERD="true",
+                                 MDT_ACCEPT_PROBE_CMD_CGPROFILED="true", MDT_ACCEPT_PROBE_CMD_PSI_GUARD="true",
+                                 MDT_ACCEPT_PROBE_CMD_SSH="true", **self.judge_env("PASS"))
+                rows = [ln.split(",") for ln in (self.ev / "probes.csv").read_text().splitlines()
+                        if ln.split(",")[2:3] == ["sshd"]]
+                self.assertTrue(rows, r.stdout + r.stderr)
+                self.assertEqual(rows[0][4], want, f"active={active} banner={banner_ok}: {rows[0]}")
+
+    def test_the_guard_also_runs_while_the_dummy_grows(self) -> None:
+        # L5: the guard ran only at the START of each tick, so the <= 60 s grow wait (and a tick's back-to-back
+        # probes) was a hole. The fake drops MemAvailable under the floor on the USR1 signal, i.e. INSIDE the wait and
+        # before the dummy has grown by STEP - 16M, so the two codes differ in the step's cause: the old one runs
+        # out its grow tries (INCONCLUSIVE grow, after up to 60 s blind), the new one aborts mem_available at once.
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", **self.judge_env("PASS"),
+                         FAKE_LOW_MEM_AFTER_SIGNAL="1", FAKE_STEP_BYTES=str(16 * MIB),
+                         MDT_ACCEPT_GUARD_EVERY="0", MDT_ACCEPT_GROW_TRIES="5", MDT_ACCEPT_POLL_STEP="0")
+        steps = (self.ev / "steps.env").read_text()
+        step1 = (self.ev / "steps" / "1.env").read_text()
+        self.assertIn("cause=mem_available", step1, r.stdout + r.stderr)
+        self.assertNotIn("cause=grow", step1, "the grow wait must not run blind to the guard")
+        self.assertIn("STEP 1", steps)
+        self.assertNotIn("STEP 2", steps, "the grow-wait guard abort stopped the ladder at step 1")
+
+    def test_the_judged_window_holds_exactly_ten_ssh_samples(self) -> None:
+        # L6: ceil(judged / 10) samples, so the ">= 2 of 10" rule sees 10. `judged / 10` at 48 judged ticks gave 12.
+        # Guard and drift both run per tick, so the constant is checked where it is written.
+        src = (KIT / "accept-run.sh").read_text()
+        self.assertIn("every=$(( (judged + 9) / 10 ))", src)
+        self.assertNotIn("every=$(( judged / 10 ))", src)
+
     def test_the_dummy_body_is_incompressible_grows_per_signal_and_ends_by_itself(self) -> None:
         code = re.search(r"DUMMY_PY <<'PY' \|\| true\n(.*?)\nPY\n", (KIT / "accept-run.sh").read_text(), re.S).group(1)
         made: list[bytearray] = []
@@ -810,6 +966,9 @@ class RestoreTests(unittest.TestCase):
         self.tier = self.dev / "dev-gates.slice"
         for d in (self.dev, self.tier):
             d.mkdir(parents=True)
+        # current = 256M: every test below starts with 64M+ of headroom for a max lowering, unless it writes its own
+        (self.dev / "memory.current").write_text(f"{256 * MIB}\n")
+        (self.tier / "memory.current").write_text(f"{128 * MIB}\n")
         self.ev = self.tmp / "ev"
         self.ev.mkdir()
         self.state = self.ev / "squeeze-state.env"
@@ -934,10 +1093,49 @@ class RestoreTests(unittest.TestCase):
         self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
         self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
         (self.dev / "memory.max").write_text("6000000000\n")   # another writer has taken the file over
+        self.man.write_text("")   # a new run's manifest: the first phase above wrote its own restore=ok
+        r = self.restore()
+        # M1: a value the kit never wrote is left alone AND the restore must not claim `restore=ok`. The stricter
+        # of the two possible verdicts: exit 1 and keep the WAL, so a later write or the reconcile can still
+        # prove the file's original; exit 0 with the WAL deleted would lose that evidence forever.
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("another writer owns it, left alone", r.stdout)
+        self.assertIn("restore=foreign:dev.slice/memory.max", self.man.read_text())
+        self.assertNotIn("restore=ok", self.man.read_text())
+        self.assertTrue(self.state.exists(), "the foreign case keeps the WAL; the stricter choice")
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), "6000000000")
+
+    def test_a_three_line_chain_restores_the_first_original_while_the_file_holds_the_middle_value(self) -> None:
+        # H1: three steps wrote three values for one relpath; the ORIGINAL is the FIRST line's (the value read at
+        # start), and any of the kit's own writes counts as "the kit's". The file holding step 2's value is restored
+        # to the start value, not to step 1's (the old restore kept only the LAST line and wrote its original back).
+        self.maxes(dev_written=self.DEV_MAX + 256 * MIB, tier_orig=self.TIER_MAX, tier_written=self.TIER_MAX + 256 * MIB)
+        (self.dev / "memory.max").write_text(f"{self.DEV_MAX + 128 * MIB}\n")      # step 1's value: the middle one
+        (self.tier / "memory.max").write_text(f"{self.TIER_MAX + 128 * MIB}\n")
+        (self.dev / "memory.min").write_text(f"{self.MIN_DEV + 64 * MIB}\n")
+        (self.tier / "memory.min").write_text(f"{64 * MIB + 64 * MIB}\n")
+        self.wal([
+            f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0",
+            f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0",
+            f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 256 * MIB}|t0",
+            f"MAX=dev.slice/dev-gates.slice/memory.max|{self.TIER_MAX}|{self.TIER_MAX + 128 * MIB}|t0",
+            f"MAX=dev.slice/dev-gates.slice/memory.max|{self.TIER_MAX}|{self.TIER_MAX + 128 * MIB}|t0",
+            f"MAX=dev.slice/dev-gates.slice/memory.max|{self.TIER_MAX}|{self.TIER_MAX + 256 * MIB}|t0",
+            f"MIN=dev.slice/memory.min|{self.MIN_DEV}|{self.MIN_DEV + 64 * MIB}|t0",
+            f"MIN=dev.slice/memory.min|{self.MIN_DEV}|{self.MIN_DEV + 128 * MIB}|t0",
+            f"MIN=dev.slice/memory.min|{self.MIN_DEV}|{self.MIN_DEV + 192 * MIB}|t0",
+            f"MIN=dev.slice/dev-gates.slice/memory.min|{64 * MIB}|{64 * MIB + 64 * MIB}|t0",
+            f"MIN=dev.slice/dev-gates.slice/memory.min|{64 * MIB}|{64 * MIB + 128 * MIB}|t0",
+            f"MIN=dev.slice/dev-gates.slice/memory.min|{64 * MIB}|{64 * MIB + 192 * MIB}|t0",
+        ])
         r = self.restore()
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn("another writer owns it, left alone", r.stdout)
-        self.assertEqual((self.dev / "memory.max").read_text().strip(), "6000000000")
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX), r.stdout)
+        self.assertEqual((self.tier / "memory.max").read_text().strip(), str(self.TIER_MAX))
+        self.assertEqual((self.dev / "memory.min").read_text().strip(), str(self.MIN_DEV))
+        self.assertEqual((self.tier / "memory.min").read_text().strip(), str(64 * MIB))
+        self.assertIn("restore=ok", self.man.read_text())
+        self.assertFalse(self.state.exists())
 
     def test_a_max_lowering_without_64m_of_headroom_is_deferred_with_exit_1(self) -> None:
         self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
@@ -954,6 +1152,18 @@ class RestoreTests(unittest.TestCase):
                          "never a lowering without headroom")
         self.assertEqual((self.tier / "memory.reclaim").read_text().strip(), "256M",
                          "the load tiers are reclaimed, never dev.slice itself")
+
+    def test_an_unreadable_memory_current_defers_the_lowering(self) -> None:
+        # L2: the 64M rule read an unreadable memory.current as 0 ("plenty of headroom") and lowered the max blind;
+        # the cockpit lives in dev.slice, so an OOM there is a real host effect. Unreadable means "no headroom known".
+        self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
+        (self.dev / "memory.current").unlink()
+        self.wal([f"MAX=dev.slice/memory.max|{self.DEV_MAX}|{self.DEV_MAX + 128 * MIB}|t0"])
+        r = self.restore()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("no known headroom", r.stdout)
+        self.assertIn("RESTORE-PENDING dev.slice/memory.max", self.man.read_text())
+        self.assertEqual((self.dev / "memory.max").read_text().strip(), str(self.DEV_MAX + 128 * MIB))
 
     def test_restore_twice_is_idempotent_and_a_live_run_blocks_it(self) -> None:
         self.maxes(dev_written=self.DEV_MAX + 128 * MIB)
@@ -1060,6 +1270,19 @@ class AcceptLockPauseTests(unittest.TestCase):
         self.assertFalse((self.deferred / "memory-deferred").exists(), "the resumed tick converges and clears the deferral")
         self.assertNotIn("SKIPPED", r.stdout)
 
+    def test_the_reconcile_block_does_not_redirect_the_scripts_own_stderr(self) -> None:
+        # M4: `if exec 9>>"$lock" 2>/dev/null` redirected the SHELL's own stderr to /dev/null for the rest of the
+        # sweep (every dedicated-dev host, every tick): the journal lost every command's error text after the block.
+        r = subprocess.run(["bash", "-c",
+                            'set -uo pipefail\nlog(){ echo "[reconcile] $*"; }\nMDT_RC=0\n'
+                            f'CG="{self.cg}"\n_cv_dir="{self.deferred}"\n_mdt_converge_prop(){{ :; }}\n'
+                            f'MDT_ACCEPT_LOCK="{self.lock}"\nHOST_ROLE=dedicated-dev\n'
+                            + self.RECONCILE_BLOCK
+                            + '\necho "stderr-after-the-block" >&2\necho "stdout-after-the-block"\n'],
+                           capture_output=True, text=True, timeout=60)
+        self.assertIn("stderr-after-the-block", r.stderr, r.stdout + r.stderr)
+        self.assertIn("stdout-after-the-block", r.stdout)
+
     def test_a_lock_that_cannot_be_opened_is_named_and_does_not_pause_the_memory_block(self) -> None:
         r = self.run_reconcile_block(lock=self.tmp / "no" / "lock")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1084,6 +1307,25 @@ class AcceptLockPauseTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 3, missing.stdout)
         self.assertIn("indeterminate", missing.stderr)
         self.assertNotIn("reached-commit-point", missing.stdout)
+
+    HOLD_BLOCK_START = "— L3: the preflight above only TESTED the accept lock"
+
+    def test_install_sh_holds_the_lock_from_the_commit_point_to_the_converge(self) -> None:
+        # L3: the preflight only TESTED the lock; a kit starting between that test and the converge still raced
+        # install.sh's daemon-reload. The installer now takes the lock after the COMMIT POINT and holds fd 9 until
+        # the reconcile service has ended.
+        text = (ROOT / "install.sh").read_text()
+        start = text.index(self.HOLD_BLOCK_START)
+        commit = text.index("# === COMMIT POINT")
+        converge = text.index("systemctl start mdt-dev-governance-reconcile.service")
+        close = text.index("exec 9>&-", converge)
+        self.assertLess(commit, start, "the hold block sits after the commit point (the preflight may only read)")
+        self.assertLess(start, converge)
+        block = text[start:start + 1400]
+        self.assertIn(f'flock -w "${{MDT_ACCEPT_LOCK_WAIT:-30}}" 9', block)
+        self.assertNotIn("flock -n", block)
+        self.assertLess(converge, close, "the lock is held until the converge ended")
+        self.assertIn("exec 9>&-   # P-plat-19m L3", text)
 
     def test_the_install_refusal_stays_a_read_only_preflight_block(self) -> None:
         # test_hs02 scans the whole pre-COMMIT-POINT region for mutating commands; this pin keeps the new lines inside

@@ -8,7 +8,8 @@
 # Exit 0 PASS, 1 FAIL (step 0 failed), 4 INCONCLUSIVE, 3 refused, 2 usage.
 # Test hooks (env): MDT_ACCEPT_{CGROUP,PROC,HOST_ENV,BOOT_ID,INTERVAL,DWELL_TICKS,SETTLE_TICKS,MAX_TICKS,UNITS,
 # PAGESIZE,LOCK,MIN_DISK,SQUEEZE_STATE,HOTSET,HOTSET_JSON,HOTSET_EVERY,DAMON,DAMON_STAT,JUDGE,SSH_TARGET,EXTRA_UNITS,
-# PROBE_IMAGE,PROBE_CMD_<NAME>,PROBE_TIMEOUT,PROBE_TIMEOUT_<NAME>,POLL_STEP,GROW_TRIES,PSI_HOLD,RESTORE_TIMEOUT}.
+# PROBE_IMAGE,PROBE_CMD_<NAME>,PROBE_TIMEOUT,PROBE_TIMEOUT_<NAME>,POLL_STEP,GROW_TRIES,PSI_HOLD,RESTORE_TIMEOUT,
+# RM_TIMEOUT,GUARD_EVERY,MIN_EVID_DISK,SSHD_BANNER_CMD}.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CG=${MDT_ACCEPT_CGROUP:-/sys/fs/cgroup}
@@ -29,8 +30,10 @@ JUDGE=${MDT_ACCEPT_JUDGE:-}
 SSH_TARGET=${MDT_ACCEPT_SSH_TARGET:-}
 EXTRA_UNITS=${MDT_ACCEPT_EXTRA_UNITS:-}
 POLL=${MDT_ACCEPT_POLL_STEP:-1}
+RM_TIMEOUT=${MDT_ACCEPT_RM_TIMEOUT:-30}
 GROW_TRIES=${MDT_ACCEPT_GROW_TRIES:-60}
 PSI_HOLD=${MDT_ACCEPT_PSI_HOLD:-10}
+GUARD_EVERY=${MDT_ACCEPT_GUARD_EVERY:-5}   # L5: seconds between the guard runs inside one tick (test hook: 0 = every probe)
 UNITS=${MDT_ACCEPT_UNITS:-"ssh.service=system.slice/ssh.service docker.service=system.slice/docker.service containerd.service=system.slice/containerd.service systemd-journald.service=system.slice/systemd-journald.service mdt-psi-guard.service=system.slice/mdt-psi-guard.service cgprofiled.service=cgprofile.slice/cgprofiled.service user.slice=user.slice dev-interactive.slice=dev.slice/dev-interactive.slice"}
 EVID=""; STEPS=6; STEP=$((128 * MIB)); DWELL=300; SETTLE=60; WARMUP=600
 IMAGE=${MDT_ACCEPT_PROBE_IMAGE:-tester-unified:local}; CONTROL=auto
@@ -87,10 +90,28 @@ LIB="$HERE/../../../../scripts/damon-analysis/lib"
 if [ ! -d "$LIB" ] && [ -z "${MDT_ACCEPT_HOTSET_JSON:-}" ]; then
   echo "accept-run: $LIB is missing (an accept checkout needs mdt-cockpit/ AND scripts/damon-analysis/); refusing" >&2; exit 3
 fi
+# The five files' START values are captured here, ONCE, and are what every WAL line carries as its original and
+# what the restore writes back: a MIN read again at step s is the kit's own step s-1 value, never the original.
 DEV_MAX_START=$(rdnum "$CG/dev.slice/memory.max")
 TIER_MAX_START=$(rdnum "$CG/dev.slice/$PARENT/memory.max")
+DEV_MIN_START=$(rdnum "$CG/dev.slice/memory.min")
+TIER_MIN_START=$(rdnum "$CG/dev.slice/$PARENT/memory.min")
 [ -n "$DEV_MAX_START" ] || { echo "accept-run: dev.slice/memory.max is not numeric; the ladder cannot raise it; refusing" >&2; exit 3; }
 [ -n "$TIER_MAX_START" ] || { echo "accept-run: dev.slice/$PARENT/memory.max is not numeric (an absent tier would let docker make an unlimited transient slice); refusing" >&2; exit 3; }
+[ -n "$DEV_MIN_START" ] || { echo "accept-run: dev.slice/memory.min is not numeric, so its original could not be restored; refusing" >&2; exit 3; }
+[ -n "$TIER_MIN_START" ] || { echo "accept-run: dev.slice/$PARENT/memory.min is not numeric, so its original could not be restored; refusing" >&2; exit 3; }
+# L7: a run that starts before the reconcile tick would read a leftover (raised) MIN as its "original". The max is
+# checked below; the mins get the same readback: systemd's MemoryMin is what install.sh rendered, so a kernel min
+# ABOVE it is a leftover raise (the kit only ever raises), never a value to record as the start.
+for pair in dev.slice:$DEV_MIN_START "$PARENT:$TIER_MIN_START"; do
+  s=${pair%%:*}; have=${pair#*:}
+  sd=$(systemctl show -p MemoryMin --value "$s" 2>/dev/null); sd=$(parse_size "${sd:-}" 2>/dev/null) || sd=""
+  [ -n "$sd" ] || { echo "accept-run: cannot read $s's MemoryMin via systemctl; a leftover min would become this run's original; refusing" >&2; exit 3; }
+  if [ "$have" -gt "$sd" ]; then
+    echo "accept-run: $s/memory.min $have is above systemd's MemoryMin $sd: a leftover raise of an interrupted run (the kit only raises). Restore it first (tools/accept/accept-restore.sh --evidence <its EV>), then re-run; refusing, nothing done" >&2
+    exit 3
+  fi
+done
 if [ "$TIER_MAX_START" -gt "$DEV_MAX_START" ]; then
   echo "accept-run: $PARENT/memory.max $TIER_MAX_START is above dev.slice's $DEV_MAX_START; the ladder only raises and could not keep the tier on dev's ceiling; refusing" >&2; exit 3
 fi
@@ -139,19 +160,37 @@ F_INSTALLED=$((F_SYSTEM + F_CGP + F_USER))
 [ -n "$SSH_TARGET" ] || { echo "accept-run: MDT_ACCEPT_SSH_TARGET is required (this host over loopback, e.g. root@127.0.0.1); refusing" >&2; exit 3; }
 BOOT_ID=$(tr -d '[:space:]' < "$BOOTID_FILE" 2>/dev/null) || BOOT_ID=""
 [ -n "$BOOT_ID" ] || { echo "accept-run: cannot read $BOOTID_FILE; refusing (the restore's reboot rule needs it)" >&2; exit 3; }
-ssh_boot=$(timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" cat "$BOOTID_FILE" 2>/dev/null | tr -d '[:space:]') || ssh_boot=""
+# the LITERAL kernel path, never $BOOTID_FILE: a test override must not be able to change the remote command
+ssh_boot=$(timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '[:space:]') || ssh_boot=""
 if [ "$ssh_boot" != "$BOOT_ID" ]; then
   echo "accept-run: MDT_ACCEPT_SSH_TARGET=$SSH_TARGET reports boot_id '${ssh_boot:-<none>}' but this host is '$BOOT_ID': a remote target would time another machine's sshd (3.2); refusing" >&2
   exit 3
 fi
 rootdir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null); avail=$(df -Pk "${rootdir:-/}" 2>/dev/null | awk 'NR==2{print $4}')
 [ "${avail:-0}" -ge "${MDT_ACCEPT_MIN_DISK:-4194304}" ] || { echo "accept-run: less than 4G free in the Docker data root; refusing" >&2; exit 3; }
+# M3: the write-ahead log lives on the EVIDENCE filesystem, which may NOT be the Docker data root (/root vs /var/lib).
+# A full evidence disk would let every cgroup write go ahead unrecorded, and the restore would then find a value it
+# cannot prove. So the preflight checks the filesystem the WAL is actually written to.
+ev_avail=$(df -Pk "$EVID" 2>/dev/null | awk 'NR==2{print $4}')
+[ "${ev_avail:-0}" -ge "${MDT_ACCEPT_MIN_EVID_DISK:-65536}" ] || {
+  echo "accept-run: less than $(( ${MDT_ACCEPT_MIN_EVID_DISK:-65536} / 1024 ))M free in the evidence filesystem of $EVID (${ev_avail:-unreadable} KiB); the write-ahead log could not be trusted; refusing" >&2
+  exit 3
+}
 DAMON_STAT_OVERRIDE=${MDT_ACCEPT_DAMON_STAT:-}
 HOTSET_ARGS=(--evidence "$EVID" --admin "$DAMON_ADMIN" --state "$STATE" --units "$UNITS" --cgroup "$CG" --proc "$PROC")
 [ -d "$LIB" ] && HOTSET_ARGS+=(--lib "$LIB")
 [ -n "${MDT_ACCEPT_HOTSET_JSON:-}" ] && HOTSET_ARGS+=(--fixture "$MDT_ACCEPT_HOTSET_JSON")
 [ -n "$DAMON_STAT_OVERRIDE" ] && HOTSET_ARGS+=(--damon-stat "$DAMON_STAT_OVERRIDE")
 hotset() { python3 "$HOTSET" "$@" "${HOTSET_ARGS[@]}"; }
+# L4: the traps are armed BEFORE `hotset setup`, because setup writes the kdamond index to the WAL and switches it ON.
+# An INT/TERM/HUP in that window used to leave the kdamond to ExecStopPost only (not when the kit is run by hand).
+# The full finish() replaces these the moment the ladder state exists; until then the WAL is restored the same way.
+early_stop() { # <rc>
+  trap - EXIT INT TERM HUP
+  [ -s "$STATE" ] && "$HERE/accept-restore.sh" --evidence "$EVID" --in-run >/dev/null 2>&1
+  exit "$1"
+}
+trap 'early_stop $?' EXIT; trap 'early_stop 130' INT; trap 'early_stop 143' TERM; trap 'early_stop 129' HUP
 setup_out=$(hotset setup) || { say "the hot-set preflight refused (see above); nothing was changed"; exit 3; }
 DAMON_STATE=$(printf '%s\n' "$setup_out" | sed -n 's/^damon_stat_enabled=//p' | tail -n 1); DAMON_STATE=${DAMON_STATE:-absent}
 KDM=$(printf '%s\n' "$setup_out" | sed -n 's/^kdamond=//p' | tail -n 1)
@@ -159,8 +198,7 @@ DAMON_OK=1
 # ---------- traps and the finish path (2.6) ----------
 START_UTC=$(now); T0=$SECONDS; TICKS=0; EXIT_RC=0; FINISHED=""; SLP=""
 DEV_WRITTEN=$DEV_MAX_START; TIER_WRITTEN=$TIER_MAX_START
-DEV_MIN_WRITTEN=$(rdnum "$CG/dev.slice/memory.min"); DEV_MIN_WRITTEN=${DEV_MIN_WRITTEN:-0}
-TIER_MIN_WRITTEN=$(rdnum "$CG/dev.slice/$PARENT/memory.min"); TIER_MIN_WRITTEN=${TIER_MIN_WRITTEN:-0}
+DEV_MIN_WRITTEN=$DEV_MIN_START; TIER_MIN_WRITTEN=$TIER_MIN_START
 SCOPE=""; SCOPE_MIN_WRITTEN=0; SCOPE_ANON=0
 OOM0=$(awk '$1=="oom_kill"{print $2+0}' "$PROC/vmstat" 2>/dev/null); OOM0=${OOM0:-0}
 ABORT=""; ABORT_VERDICT=""; ABORT_CAUSE=""; STEP_VERDICT=""; STEP_CAUSE=""
@@ -173,16 +211,28 @@ finish() {
   EXIT_RC=${EXIT_RC:-$rc}
   [ -n "$SLP" ] && kill "$SLP" 2>/dev/null
   say "rm -f $DUMMY" # (1) the exact name; --rm is never relied on, and every rm is logged
-  docker rm -f "$DUMMY" >/dev/null 2>&1 || true
+  # M2: a squeezed dockerd can block exactly as it stalls the dockerd/containerd probes. A bare `docker rm -f` here
+  # would hang finish() and keep the ExecStopPost restore from ever running its cgroup writes; bound it and go on.
+  rc_rm=0
+  timeout -k 5 "$RM_TIMEOUT" docker rm -f "$DUMMY" >/dev/null 2>&1 || rc_rm=$?
+  [ "$rc_rm" = 0 ] || note "docker rm -f $DUMMY did not complete (rc $rc_rm, ${RM_TIMEOUT}s bound); the restore below runs anyway"
+  unset rc_rm
   if [ -s "$STATE" ]; then
     if "$HERE/accept-restore.sh" --evidence "$EVID" --in-run; then
-      echo "restore=ok" >>"$MAN"
+      : # accept-restore.sh wrote restore=ok itself, and only when nothing was left alone
     else
-      note "a lowering is deferred (RESTORE-PENDING in $MAN); the unlocked reconcile completes it"
-      echo "restore=pending" >>"$MAN"
+      # exit 1: a lowering is deferred (RESTORE-PENDING) or a value the kit never wrote was left alone
+      # (restore=foreign:<rel>); either way the kit cannot state that the host is back at its originals
+      if ! grep -q '^restore=' "$MAN" 2>/dev/null; then   # a crash/refusal wrote no line of its own
+        if grep -q '^restore=foreign:' "$MAN" 2>/dev/null; then echo "restore=foreign" >>"$MAN"
+        else echo "restore=pending" >>"$MAN"; fi
+      fi
+      note "the restore did not complete (see $MAN: RESTORE-PENDING / restore=foreign:<rel>); the unlocked reconcile and a later accept-restore.sh from the kept state file finish it"
       [ "$EXIT_RC" = 0 ] && EXIT_RC=4 # never a PASS while a lowering is still deferred: an install would apply it
     fi
   else
+    # nothing was written to a cgroup file: an absent state file is a clean run, never a restore claim about a host
+    # that was touched
     echo "restore=ok" >>"$MAN"
   fi
   if command -v journalctl >/dev/null 2>&1; then
@@ -265,7 +315,12 @@ DEEPEST=$((DEV_MAX_START + STEPS * STEP))
 dummy_deadline=$((WARMUP + (STEPS + 2) * DWELL + 600)) # a safety cap only: step 0, the control pass and slack are in it
 echo "dummy_a0=$A0" >>"$MAN"; echo "dummy_d0=$D0" >>"$MAN"; echo "dummy_deepest_ceiling=$DEEPEST" >>"$MAN"
 printf 'container=%s\nboot_id=%s\npid=%s\nstarted_utc=%s\nk_tested=%s\ndev_orig=%s\n' \
-  "$DUMMY" "$BOOT_ID" "$$" "$START_UTC" "$K0" "$DEV_MAX_START" >>"$STATE"
+  "$DUMMY" "$BOOT_ID" "$$" "$START_UTC" "$K0" "$DEV_MAX_START" >>"$STATE" || {
+  # M3: no cgroup write without its write-ahead record. The kdamond is already on and the traps are armed,
+  # so finish() still switches it off; no ceiling and no min has been touched at this point.
+  echo "accept-run: cannot append to the write-ahead state file $STATE (full or read-only evidence filesystem); the run is aborted before any cgroup write" >&2
+  exit 3
+}
 find_scope() { local d="$CG/dev.slice/$PARENT/docker-$1.scope"; [ -d "$d" ] && printf '%s\n' "$d"; }
 scope_stat() { awk -v k="$2" '$1==k{print $2+0}' "$1/memory.stat" 2>/dev/null || echo 0; }
 docker rm -f "$DUMMY" >/dev/null 2>&1 || true # a stale container of a killed run, by its exact name
@@ -316,9 +371,15 @@ abort() { # <verdict> <cause>: an abort is a step verdict plus a ladder stop (2.
   ABORT=1; ABORT_VERDICT=$1; ABORT_CAUSE=$2
   return 1
 }
+wal_add() { # <line>: the write-ahead record MUST land before the effect it protects (M3). A failed append aborts the
+            # run: without it the restore could never prove which value is the kit's, and the raised value would stay.
+  printf '%s\n' "$1" >>"$STATE" 2>/dev/null || { note "cannot append to the write-ahead state file $STATE; the run is aborted rather than writing a cgroup file unrecorded"; abort FAIL wal; return 1; }
+  return 0
+}
 psi_holding() { # <slice>: full avg10 >= 5 held for PSI_HOLD seconds (psi-guard's own trigger numbers)
   local v t
-  v=$(presfull "$CG/$1/memory.pressure"); case $v in ''|*[!0-9.]*) return 1 ;; esac
+  v=$(presfull "$CG/$1/memory.pressure")
+  case $v in ''|*[!0-9.]*) abort INCONCLUSIVE "psi_unreadable:$1"; return 2 ;; esac   # fail closed (nit: never "not holding")
   if awk -v v="$v" 'BEGIN{exit !(v >= 5)}'; then
     t=$(cat "$EVID/probes-state/psi-$1.since" 2>/dev/null) || t=""
     [ -z "$t" ] && { date +%s >"$EVID/probes-state/psi-$1.since"; return 1; }
@@ -327,6 +388,12 @@ psi_holding() { # <slice>: full avg10 >= 5 held for PSI_HOLD seconds (psi-guard'
   fi
   rm -f "$EVID/probes-state/psi-$1.since"; return 1
 }
+LAST_GUARD=0
+guard_if_stale() { # L5: run the guard when the last one is >= GUARD_EVERY s old (a fast fake tick pays nothing)
+  local now_s; now_s=$(date +%s)
+  [ $(( now_s - LAST_GUARD )) -ge "$GUARD_EVERY" ] || return 0
+  guard_tick
+}
 guard_tick() { # 2.4: the host is never squeezed into OOM
   local avail oomk
   avail=$(awk '/^MemAvailable:/{print $2*1024}' "$PROC/meminfo")
@@ -334,8 +401,14 @@ guard_tick() { # 2.4: the host is never squeezed into OOM
   [ "$avail" -ge $((128 * MIB)) ] || { abort FAIL mem_available; return 1; }
   oomk=$(awk '$1=="oom_kill"{print $2+0}' "$PROC/vmstat" 2>/dev/null)
   case ${oomk:-} in ''|*[!0-9]*) ;; *) [ "$oomk" -gt "$OOM0" ] && { abort FAIL oom_kill; return 1; } ;; esac
-  psi_holding system.slice && { abort FAIL psi_full:system.slice; return 1; }
-  psi_holding user.slice && { abort FAIL psi_full:user.slice; return 1; }
+  local ph
+  LAST_GUARD=$(date +%s)
+  psi_holding system.slice; ph=$?
+  [ "$ph" = 2 ] && return 1
+  [ "$ph" = 0 ] && { abort FAIL psi_full:system.slice; return 1; }
+  psi_holding user.slice; ph=$?
+  [ "$ph" = 2 ] && return 1
+  [ "$ph" = 0 ] && { abort FAIL psi_full:user.slice; return 1; }
   return 0
 }
 drift_tick() { # every tick reads all five files back (2.3): a foreign value aborts the ladder as drift:<file>
@@ -405,14 +478,21 @@ probe_run() { # <step> <name>
     ssh)
       timed 15 ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" true
       probe_record "$s" ssh ssh "$T_RC" "$T_SECONDS" "target=$SSH_TARGET" ;;
-    sshd) # 3.3: `active` AND the banner seen; the probe's own rc carries the rule, the judge reads rc
-      local act ban brc
-      timed 2 systemctl is-active ssh.service; act=$T_OUT; T_RC=0
-      [ "$act" = active ] || T_RC=1
-      timed 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22 && head -c 9 <&3'; brc=$T_RC
+    sshd) # 3.3: `active` AND the banner seen; the probe's own rc carries the rule, the judge reads rc.
+      # L1: is-active's rc is kept separately -- the banner read overwrites T_RC, so a socket-activated or foreign
+      # :22 listener answered a `inactive` ssh.service as a PASS. Both rcs have to be 0 (or the banner seen).
+      local act ban brc arc secs banner
+      timed 2 systemctl is-active ssh.service; act=$T_OUT; arc=$T_RC; secs=$T_SECONDS
+      [ "$act" = active ] || arc=1
+      # the banner reader: the real /dev/tcp read, unless a test names its own argv (port 22 cannot be exercised
+      # hermetically; the seam keeps L1's two-rc rule testable without a listener)
+      banner=${MDT_ACCEPT_SSHD_BANNER_CMD:-}
+      [ -n "$banner" ] || banner='exec 3<>/dev/tcp/127.0.0.1/22 && head -c 9 <&3'
+      timed 2 bash -c "$banner"; brc=$T_RC
       case $T_OUT in *SSH-2.0*) ban=yes ;; *) ban=no ;; esac
-      [ "$brc" = 0 ] && [ "$ban" = no ] && T_RC=1
-      probe_record "$s" sshd liveness "$T_RC" "$T_SECONDS" "active=$act banner=$ban" ;;
+      [ "$ban" = yes ] || brc=1
+      [ "$arc" = 0 ] && [ "$brc" = 0 ] && [ "$ban" = yes ] && T_RC=0 || T_RC=1
+      probe_record "$s" sshd liveness "$T_RC" "$((secs > T_SECONDS ? secs : T_SECONDS))" "active=$act banner=$ban is_active_rc=$arc banner_rc=$brc" ;;
     journald)
       local nonce tag start
       nonce=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n'); tag="mdt-accept-$nonce"; start=$(date +%s)
@@ -438,7 +518,8 @@ probe_run() { # <step> <name>
         probe_record "$s" cgprofiled liveness 0 "$T_SECONDS" "state=degraded active=$T_OUT socket=$([ -S /run/cgprofile/control.sock ] && echo yes || echo no)"
       fi ;;
     psi_guard) # 3.3: active AND its utime+stime advanced since the previous sample (user ticks, never a stopwatch)
-      local pid cur prev ticks=-1 act prc=0
+      local pid cur prev ticks=-1 act prc=0 t0 t1 us
+      t0=$(date +%s%N)
       act=$(systemctl is-active mdt-psi-guard.service 2>/dev/null)
       pid=$(systemctl show -p MainPID --value mdt-psi-guard.service 2>/dev/null)
       case ${pid:-} in ''|0|*[!0-9]*) cur="" ;; *) cur=$(awk '{print $14+$15}' "$PROC/$pid/stat" 2>/dev/null) ;; esac
@@ -451,7 +532,12 @@ probe_run() { # <step> <name>
       [ "$act" = active ] || prc=1
       [ "${ticks:--1}" -lt 1 ] && [ "${ticks:--1}" != -1 ] && prc=1   # a loop that burns no CPU does not run
       [ "${ticks:--1}" = -1 ] && prc=unmeasurable                     # no pid: missing data, never a pass (L-i)
-      probe_record "$s" psi_guard liveness "$prc" "$((SECONDS - T0))" "active=$act ticks=$ticks" ;;
+      # H2: the probe's OWN duration. `SECONDS - T0` was the RUN's elapsed time, which grows by one dwell per step,
+      # so the judge's step-0 latency baseline would FAIL a healthy daemon at step 3-4. The judge now exempts
+      # psi_guard from the latency rule (its pass rule is "active + ticks advance", 3.3); the column still has to
+      # measure the probe and not the run, because every other reader of probes.csv would read that growth as lag.
+      t1=$(date +%s%N); us=$(( (t1 - t0) / 1000 )); [ "$us" -lt 0 ] && us=0
+      probe_record "$s" psi_guard liveness "$prc" "$(printf '%d.%03d' $((us / 1000000)) $(( (us / 1000) % 1000 )))" "active=$act ticks=$ticks" ;;
     extra)
       local u st main ls
       for u in $EXTRA_UNITS; do
@@ -468,10 +554,15 @@ probe_cycle() { # <step> <i> <judged_ticks>: 8 liveness cycles and 10 ssh sample
   local s=$1 i=$2 judged=$3 every
   every=$(( judged / 8 )); [ "$every" -lt 1 ] && every=1
   if [ $(( i % every )) -eq 0 ]; then
-    local p; for p in sshd journald dockerd containerd cgprofiled psi_guard; do probe_run "$s" "$p"; done
+    local p; for p in sshd journald dockerd containerd cgprofiled psi_guard; do
+      guard_if_stale || return 1   # L5: a tick's probes run back to back; the guard runs between them
+      probe_run "$s" "$p"
+    done
     [ -n "$EXTRA_UNITS" ] && probe_run "$s" extra
   fi
-  every=$(( judged / 10 )); [ "$every" -lt 1 ] && every=1
+  # L6: ceil(judged / 10), so the window holds the 10 samples the p95 rule is written for (judged/10 gave 12 at
+  # 48 ticks, and a 6-step run then judged ">= 2 of 10" over 12).
+  every=$(( (judged + 9) / 10 )); [ "$every" -lt 1 ] && every=1
   [ $(( i % every )) -eq 0 ] && probe_run "$s" ssh
   return 0
 }
@@ -482,7 +573,7 @@ tick() { # <phase> <step> [judged_ticks] [i]
   SCOPE_ANON=$(scope_stat "$SCOPE" anon); SCOPE_ANON=${SCOPE_ANON:-0}
   write_row "$ph" "$s"
   if [ "$ph" = judge ]; then
-    probe_cycle "$s" "$i" "$judged"
+    probe_cycle "$s" "$i" "$judged" || return 1
     if [ "$HOTSET_EVERY" -le 1 ] || [ $(( i % HOTSET_EVERY )) -eq 0 ]; then
       hotset sample --step "$s" >>"$EVID/hotset-$s.log" 2>&1 ||
         note "the hot-set sample of step $s failed (see $EVID/hotset-$s.log)"
@@ -502,20 +593,20 @@ dwell() { # <phase> <step> <settling_ticks> <judged_ticks>
   return 0
 }
 step_write() { # <step>: the per-step sequence of 2.3; the dummy never grows before the ceiling is raised
-  local s=$1 target ts anon cur protect dmin0 tmin0 smin0 smin rootnew scope_cur got tries=0
+  local s=$1 target ts anon cur protect smin0 smin rootnew scope_cur got tries=0
   drift_tick || return 1   # a foreign value must never become this step's "original": the WAL would record it and the
                            # restore would write it BACK (2.3's compare-then-restore, checked before the first write)
   target=$((DEV_MAX_START + s * STEP))
   cur=$(rdnum "$CG/dev.slice/memory.max")
   case ${cur:-} in ''|*[!0-9]*) abort INCONCLUSIVE drift:dev.slice/memory.max; return 1 ;; esac
   [ "$target" -gt "$cur" ] || { abort INCONCLUSIVE drift:dev.slice/memory.max; return 1; }
-  printf 'MAX=%s|%s|%s|%s\n' dev.slice/memory.max "$DEV_MAX_START" "$target" "$(now)" >>"$STATE"
+  wal_add "MAX=dev.slice/memory.max|$DEV_MAX_START|$target|$(now)" || return 1
   echo "$target" >"$CG/dev.slice/memory.max" 2>/dev/null && [ "$(rdnum "$CG/dev.slice/memory.max")" = "$target" ] ||
     { abort FAIL write:dev.slice/memory.max; return 1; }
   DEV_WRITTEN=$target
   ts=$(rdnum "$CG/dev.slice/memory.max"); ts=${ts:-0}
   [ "$target" -le "$ts" ] || { abort FAIL tier_above_parent; return 1; }
-  printf 'MAX=%s|%s|%s|%s\n' "dev.slice/$PARENT/memory.max" "$TIER_MAX_START" "$target" "$(now)" >>"$STATE"
+  wal_add "MAX=dev.slice/$PARENT/memory.max|$TIER_MAX_START|$target|$(now)" || return 1
   echo "$target" >"$CG/dev.slice/$PARENT/memory.max" 2>/dev/null && [ "$(rdnum "$CG/dev.slice/$PARENT/memory.max")" = "$target" ] ||
     { abort FAIL "write:dev.slice/$PARENT/memory.max"; return 1; }
   TIER_WRITTEN=$target
@@ -527,31 +618,30 @@ step_write() { # <step>: the per-step sequence of 2.3; the dummy never grows bef
     [ "$got" -gt 0 ] && [ $((got - anon)) -ge $((STEP - 16 * MIB)) ] && break
     [ "$tries" -ge "$GROW_TRIES" ] && { abort INCONCLUSIVE grow; return 1; }
     [ "$POLL" != 0 ] && sleep "$POLL"
+    guard_if_stale || return 1   # L5: the <= 60 s grow wait is not a gap in the guard
   done
-  dmin0=$(rdnum "$CG/dev.slice/memory.min"); dmin0=${dmin0:-0}
-  tmin0=$(rdnum "$CG/dev.slice/$PARENT/memory.min"); tmin0=${tmin0:-0}
   smin0=$(rdnum "$SCOPE/memory.min"); smin0=${smin0:-0}
   anon=$(scope_stat "$SCOPE" anon); anon=${anon:-0}
   scope_cur=$(rdnum "$SCOPE/memory.current"); scope_cur=${scope_cur:-0}
   # bound 3: what may be protected under the new ceiling is (dev max - 1G - start), capped by the anon
-  protect=$((target - GIB - dmin0)); [ "$protect" -gt "$anon" ] && protect=$anon; [ "$protect" -lt 0 ] && protect=0
-  [ $((dmin0 + protect)) -le $((target - GIB)) ] || { abort FAIL bound3_dev; return 1; }
-  [ $((tmin0 + protect)) -le "$target" ] || { abort FAIL bound3_tier; return 1; }
+  protect=$((target - GIB - DEV_MIN_START)); [ "$protect" -gt "$anon" ] && protect=$anon; [ "$protect" -lt 0 ] && protect=0
+  [ $((DEV_MIN_START + protect)) -le $((target - GIB)) ] || { abort FAIL bound3_dev; return 1; }
+  [ $((TIER_MIN_START + protect)) -le "$target" ] || { abort FAIL bound3_tier; return 1; }
   smin=$scope_cur; [ "$anon" -lt "$smin" ] && smin=$anon
   [ "$smin" -le "$scope_cur" ] || { abort FAIL bound3_scope; return 1; }
   # bound 2: Sigma min over root children <= MemTotal - 256M before writes 3-5 (2.4). The dummy's scope is a leaf
   # under the tier, so only its own new protect enters the root sum.
   rootnew=$(( $(sum_root_min) + protect ))
   [ "$rootnew" -le $((MEM_TOTAL - SQUEEZE_UNPROTECTED)) ] || { abort FAIL bound_min; return 1; }
-  printf 'MIN=%s|%s|%s|%s\n' dev.slice/memory.min "$dmin0" "$((dmin0 + protect))" "$(now)" >>"$STATE"
-  echo "$((dmin0 + protect))" >"$CG/dev.slice/memory.min" 2>/dev/null &&
-    [ "$(rdnum "$CG/dev.slice/memory.min")" = "$((dmin0 + protect))" ] || { abort FAIL write:dev.slice/memory.min; return 1; }
+  wal_add "MIN=dev.slice/memory.min|$DEV_MIN_START|$((DEV_MIN_START + protect))|$(now)" || return 1
+  echo "$((DEV_MIN_START + protect))" >"$CG/dev.slice/memory.min" 2>/dev/null &&
+    [ "$(rdnum "$CG/dev.slice/memory.min")" = "$((DEV_MIN_START + protect))" ] || { abort FAIL write:dev.slice/memory.min; return 1; }
   DEV_MIN_WRITTEN=$(rdnum "$CG/dev.slice/memory.min")
-  printf 'MIN=%s|%s|%s|%s\n' "dev.slice/$PARENT/memory.min" "$tmin0" "$((tmin0 + protect))" "$(now)" >>"$STATE"
-  echo "$((tmin0 + protect))" >"$CG/dev.slice/$PARENT/memory.min" 2>/dev/null &&
-    [ "$(rdnum "$CG/dev.slice/$PARENT/memory.min")" = "$((tmin0 + protect))" ] || { abort FAIL "write:dev.slice/$PARENT/memory.min"; return 1; }
+  wal_add "MIN=dev.slice/$PARENT/memory.min|$TIER_MIN_START|$((TIER_MIN_START + protect))|$(now)" || return 1
+  echo "$((TIER_MIN_START + protect))" >"$CG/dev.slice/$PARENT/memory.min" 2>/dev/null &&
+    [ "$(rdnum "$CG/dev.slice/$PARENT/memory.min")" = "$((TIER_MIN_START + protect))" ] || { abort FAIL "write:dev.slice/$PARENT/memory.min"; return 1; }
   TIER_MIN_WRITTEN=$(rdnum "$CG/dev.slice/$PARENT/memory.min")
-  printf 'MIN=%s|%s|%s|%s\n' "dev.slice/$PARENT/$(basename "$SCOPE")/memory.min" "$smin0" "$smin" "$(now)" >>"$STATE"
+  wal_add "MIN=dev.slice/$PARENT/$(basename "$SCOPE")/memory.min|$smin0|$smin|$(now)" || return 1
   echo "$smin" >"$SCOPE/memory.min" 2>/dev/null && [ "$(rdnum "$SCOPE/memory.min")" = "$smin" ] ||
     { abort FAIL write:scope_min; return 1; }
   SCOPE_MIN_WRITTEN=$(rdnum "$SCOPE/memory.min")

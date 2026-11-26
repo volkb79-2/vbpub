@@ -49,14 +49,20 @@ PROBE_GOOD = ("sshd", "journald", "dockerd", "containerd", "cgprofiled", "psi_gu
 
 
 def probes_text(steps: list[int], *, seconds: float = 0.1, ssh: float = 0.4, ssh_of: dict[int, list[float]] | None = None,
-                rc_of: dict[str, str] | None = None, nrestarts_of: dict[int, int] | None = None) -> str:
-    """probes.csv: 8 liveness samples and 10 ssh samples per step. `ssh_of` overrides one step's 10 samples."""
+                rc_of: dict[str, str] | None = None, nrestarts_of: dict[int, int] | None = None,
+                seconds_of: dict[str, list[float]] | None = None,
+                seconds_at: dict[tuple[int, str], list[float]] | None = None) -> str:
+    """probes.csv: 8 liveness samples and 10 ssh samples per step. `ssh_of` overrides one step's 10 samples;
+    `seconds_of` overrides one probe's seconds for every step, `seconds_at` one probe's for one step."""
     out = [",".join(PROBE_HEAD)]
     for s in steps:
         for name in PROBE_GOOD:
             r = (rc_of or {}).get(name, "0")
             nr = (nrestarts_of or {}).get(s, 0)
-            out.append(f"2026-01-01T00:00:00Z,{s},{name},liveness,{r},{seconds},nrestarts={nr}")
+            secs = (seconds_at or {}).get((s, name)) or (seconds_of or {}).get(name) or [seconds] * 8
+            for k in range(8):   # 8 liveness samples per judged window (3.3)
+                sec = secs[k] if k < len(secs) else secs[-1]
+                out.append(f"2026-01-01T00:00:00Z,{s},{name},liveness,{r},{sec},nrestarts={nr}")
         samples = (ssh_of or {}).get(s, [ssh] * 10)
         for secs in samples:
             out.append(f"2026-01-01T00:00:00Z,{s},ssh,ssh,0,{secs},target=root@127.0.0.1")
@@ -131,6 +137,10 @@ FAKE_DOCKER = r'''printf '%s\n' "$*" >> "$FAKE_LOG"
 case "$1" in
   info) echo "${FAKE_DOCKER_ROOT:-/tmp}" ;;
   run)
+    # M3: the evidence filesystem stops accepting appends BEFORE the ladder's first cgroup write. The fake replaces
+    # the state FILE with a directory, so `printf >> $STATE` fails (EISDIR) exactly as a full or read-only evidence
+    # filesystem would; the header line is already there, so this breaks the step's MAX append.
+    [ -n "${FAKE_STATE_IS_DIR:-}" ] && { rm -f "$FAKE_STATE_IS_DIR"; mkdir -p "$FAKE_STATE_IS_DIR"; }
     name=; parent=; memmax=; swmax=
     while [ $# -gt 0 ]; do case "$1" in --name) name=$2 ;; --cgroup-parent) parent=$2 ;; --memory) memmax=$2 ;; --memory-swap) swmax=$2 ;; esac; shift; done
     [ "${FAKE_FAIL_RUN:-}" = "$name" ] && exit 1
@@ -142,12 +152,19 @@ case "$1" in
     echo "${FAKE_ANON:-0}" > "$d/memory.current"; printf 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n' > "$d/memory.events"
     echo "$id" ;;
   kill)  # -s USR1 <name>: the dummy's anon grows by one STEP (and an optional foreign write lands mid-run)
+    # FAKE_KILL_SLEEP: the host stalls on the signal for that long, so the RUN's elapsed time grows well past the
+    # probes' own durations before the next step's probes (H2's test relies on that, never on host load)
+    sleep "${FAKE_KILL_SLEEP:-0}"
     [ -n "${FAKE_DRIFT_FILE:-}" ] && echo "${FAKE_DRIFT_VALUE:-}" > "$FAKE_DRIFT_FILE"
     d=$(ls -d "$MDT_ACCEPT_CGROUP/dev.slice/"*"/docker-id-$4.scope" 2>/dev/null | head -n 1)
     [ -n "$d" ] || exit 1
     anon=$(awk '$1=="anon"{print $2}' "$d/memory.stat"); anon=$((anon + ${FAKE_STEP_BYTES:-134217728}))
-    printf 'anon %s\nfile 0\nkernel 0\nshmem 0\nfile_mapped 0\n' "$anon" > "$d/memory.stat"; echo "$anon" > "$d/memory.current" ;;
-  rm) [ "${2:-}" = -f ] && [ -n "${MDT_ACCEPT_CGROUP:-}" ] && rm -rf "$MDT_ACCEPT_CGROUP/dev.slice/"*"/docker-id-${3:-}.scope" ;;
+    printf 'anon %s\nfile 0\nkernel 0\nshmem 0\nfile_mapped 0\n' "$anon" > "$d/memory.stat"; echo "$anon" > "$d/memory.current"
+    # L5: the host falls under the 128M floor while the kit WAITS for the dummy to grow (the <= 60 s grow window)
+    [ -n "${FAKE_LOW_MEM_AFTER_SIGNAL:-}" ] && printf 'MemTotal: 8388608 kB\nMemFree: 1048576 kB\nMemAvailable: 65536 kB\nSwapTotal: 16777216 kB\nSwapFree: 16000000 kB\n' > "$MDT_ACCEPT_PROC/meminfo"
+    ;;
+  rm) [ "${2:-}" = -f ] && [ -n "${MDT_ACCEPT_CGROUP:-}" ] && rm -rf "$MDT_ACCEPT_CGROUP/dev.slice/"*"/docker-id-${3:-}.scope"
+      sleep "${FAKE_RM_SLEEP:-0}" ;;   # M2: a squeezed dockerd stalls `rm`; the kit must bound it
   exec) exit 0 ;;
 esac
 exit 0
@@ -156,9 +173,13 @@ FAKE_SYSTEMCTL = r'''printf 'systemctl %s\n' "$*" >> "$FAKE_LOG"
 case "$1" in
   show)
     if [ "$3" = MainPID ] && [ "$5" = mdt-psi-guard.service ]; then
+      sleep "${FAKE_PSI_SHOW_SLEEP:-0}"   # a slow read makes the probe's OWN duration visible in probes.csv
       # the daemon's utime+stime advances by one tick on every read: a 1 Hz loop inside a tick-driven window
       n=0; [ -f "$FAKE_TICKS" ] && n=$(cat "$FAKE_TICKS" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE_TICKS"
-      echo "${FAKE_PSI_PID:-4242}"
+      pid=${FAKE_PSI_PID:-4242}
+      # the REAL psi_guard probe branch reads /proc/<pid>/stat ($14+$15), never the seam: keep that file advancing
+      [ -n "${MDT_ACCEPT_PROC:-}" ] && printf '4242 (mdt-psi-guard) S 1 4242 0 0 0 0 0 0 0 0 0 %s 0 0\n' "$n" > "$MDT_ACCEPT_PROC/$pid/stat" 2>/dev/null
+      echo "$pid"
     else
       cat "$FAKE_SHOW/$3-$5" 2>/dev/null
     fi ;;
@@ -251,7 +272,8 @@ class ShellKitBase(unittest.TestCase):
                         FAKE_DEEPEST=str(self.DEV_MAX_START + 6 * 128 * MIB), FAKE_STEP_BYTES=str(128 * MIB),
                         MDT_ACCEPT_CGROUP=str(self.cg), MDT_ACCEPT_PROC=str(self.proc), MDT_ACCEPT_HOST_ENV=str(self.henv),
                         MDT_ACCEPT_BOOT_ID=str(self.boot), MDT_ACCEPT_INTERVAL="0", MDT_ACCEPT_PAGESIZE="4096",
-                        MDT_ACCEPT_LOCK=str(self.tmp / "lock"), MDT_ACCEPT_MIN_DISK="1", MDT_ACCEPT_SSH_TARGET="root@127.0.0.1",
+                        MDT_ACCEPT_LOCK=str(self.tmp / "lock"), MDT_ACCEPT_MIN_DISK="1", MDT_ACCEPT_MIN_EVID_DISK="1",
+                        MDT_ACCEPT_SSH_TARGET="root@127.0.0.1",
                         MDT_ACCEPT_HOTSET_JSON=str(self.fixture), MDT_ACCEPT_HOTSET_EVERY="1",
                         MDT_ACCEPT_DAMON_STAT=str(self.tmp / "damon_stat-N"),
                         # 2 ticks per step (one settling, one judged): every tick costs ~40 fake-process spawns plus one
@@ -271,7 +293,14 @@ class ShellKitBase(unittest.TestCase):
         return self.log.read_text().splitlines()
 
     def run_kit(self, *args: str, ticks: str = "12", **extra: str) -> subprocess.CompletedProcess:
-        env = dict(self.env, MDT_ACCEPT_MAX_TICKS=ticks, **{k: v for k, v in extra.items() if v is not None})
+        """`extra` overrides the fake host's env; a `None` value REMOVES the key from it (so a seam like
+        MDT_ACCEPT_PROBE_CMD_PSI_GUARD can be turned off and accept-run.sh's own branch runs)."""
+        env = dict(self.env, MDT_ACCEPT_MAX_TICKS=ticks)
+        for k, v in extra.items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
         return subprocess.run([str(KIT / "accept-run.sh"), "--evidence", str(self.ev), "--warmup", "0", *args],
                               env=env, capture_output=True, text=True, timeout=120)
 
