@@ -801,7 +801,10 @@ def test_ki143_documented_cleanup_refuses_when_origin_cannot_be_queried(tmp_path
     result = _run_ki143_cleanup(
         consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
     )
-    assert result.returncode != 0
+    assert result.returncode != 0, (
+        "documented cleanup unexpectedly succeeded when origin could not be queried; "
+        f"child stdout:\n{result.stdout}\nchild stderr:\n{result.stderr}"
+    )
     assert candidate.is_dir()
     assert _ki143_branch_exists(repo, KI143_BRANCH)
 
