@@ -44038,3 +44038,175 @@ class TestPrintLaneBoundsCompositionAndUnknownSignal:
         out = capsys.readouterr().out
         assert "signal not resolvable for this lane" in out
         assert "enforced by the owning client, pid 4242" in out
+
+
+class TestExecLaneOutputStreamWatch:
+    """RG-320 (P1): the exec lane's own wait-loop arm for the output-stream
+    watch, after the daemon watch (L1) and the progress fallback.
+
+    A watch that RAISES is dropped with a disclosure and the lane keeps
+    waiting — a broken liveness reader is not evidence about the child, the
+    same rule the fallback path below already states. A watch that REPORTS
+    silence ends the lane by the terminate-then-wait gradation, and the
+    STALLED line says the `docker exec` client (not the in-container command)
+    is what was stopped (the L1 sentence, asserted here through the path that
+    actually produces it)."""
+
+    _exec_lane_call = TestExecLaneProfilingWiring._exec_lane_call
+
+    @staticmethod
+    def _disabled_profiling(monkeypatch):
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "disabled", "client": None,
+                                "socket_path": None, "session": None,
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None,
+                                "disabled_reason": "disabled"})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+
+    def test_a_raising_stream_watch_is_dropped_and_the_lane_keeps_waiting(
+            self, tmp_path, monkeypatch):
+        streams = _capture_run_gate_prints(monkeypatch)
+        self._disabled_profiling(monkeypatch)
+
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                raise RuntimeError("planted output-stream reader failure")
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                return 0
+
+            def kill(self):
+                pass
+
+        watch = Watch()
+        monkeypatch.setattr(run_gate, "make_output_stream_watch",
+                            lambda *args, **kwargs: watch)
+        assert self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: Process()) == 0
+        # Dropped after the failure — never consulted again (a second poll
+        # would raise a second time and flood the log).
+        assert watch.calls == 1
+        assert _has_flushed_print(
+            streams, "stderr", "output-stream watch failed unexpectedly")
+
+    def test_a_stalled_stream_watch_stops_the_client_and_says_so(
+            self, tmp_path, monkeypatch):
+        self._disabled_profiling(monkeypatch)
+
+        class Watch:
+            def poll(self):
+                return "the lane subprocess has written nothing for 300s"
+
+        class Process:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+                self.returncode = None
+                self.reaped = False
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                assert self.killed, "child must be killed before unbounded reap"
+                self.returncode = 0
+                self.reaped = True
+                return 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+        process = Process()
+        monkeypatch.setattr(run_gate, "make_output_stream_watch",
+                            lambda *args, **kwargs: Watch())
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"STALLED.*client was stopped; the command "
+                                 r"inside the runner may STILL BE RUNNING"):
+            self._exec_lane_call(
+                tmp_path, monkeypatch, ["true"], {},
+                popen_factory=lambda *args, **kwargs: process)
+        assert process.terminated is True
+        assert process.killed is True
+        assert process.reaped is True
+
+
+class TestBareHostLaneNoWatchWaitPath:
+    """The bare-host wait loop's LAST arm: no daemon watch, no progress
+    watch, no output-stream watch. Nothing can report silence there, so the
+    lane simply waits for its child with no bound of its own — the ordinary
+    blocking wait, and the lane's own exit code.
+
+    Reachable only when no watch could be built at all (an assay lane's
+    `make_progress_watch` yielded nothing and no stream watch applies); the
+    arm is asserted directly so the wait-blocking rule is pinned rather than
+    assumed."""
+
+    def test_with_no_watch_the_lane_waits_without_a_bound(self, tmp_path,
+                                                          monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "head_commit",
+                            lambda *_a, **_k: "a" * 40)
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+
+        class Process:
+            pid = 4242
+
+            def __init__(self):
+                self.returncode = None
+                self.wait_timeouts = []
+
+            def wait(self, timeout=None):
+                self.wait_timeouts.append(timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        process = Process()
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *a, **k: None)
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *a, **k: process)
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
+                            lambda *_a, **_k: {"resources": None,
+                                               "profile_error": None,
+                                               "profile_ref": None})
+        monkeypatch.setattr(run_gate, "print_lane_artifacts",
+                            lambda *a, **k: None)
+        plan = {"enabled": False, "interval": "1s", "damon": False,
+                "source": "test", "token": None,
+                "disabled_reason": "disabled"}
+        assert run_gate.run_bare_host_lane(
+            {"kind": "assay", "assay_lane": "r2", "environment": "bare-host",
+             "clean_tree": False},
+            "suite", repo, repo, repo, run_record={}, profile_plan=plan) == 0
+        # An unbounded blocking wait: no timeout, and exactly one of them.
+        assert process.wait_timeouts == [None]
+        out, err = capsys.readouterr()
+        assert "STALLED" not in err
+        # No watch, so no in-process-watch line claims one is running.
+        assert "in-process watch" not in out
