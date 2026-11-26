@@ -64,7 +64,42 @@ fn sources(dir: &Path, into: &mut Vec<PathBuf>) {
     }
 }
 
-/// Remove Rust comments while preserving strings and line numbers.
+/// End offset for an actual Rust character literal, not a lifetime like `'static`.
+fn char_literal_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut cursor = start + 1;
+    match *chars.get(cursor)? {
+        '\\' => {
+            cursor += 1;
+            match *chars.get(cursor)? {
+                'x' => {
+                    let first = *chars.get(cursor + 1)?;
+                    let second = *chars.get(cursor + 2)?;
+                    if !first.is_ascii_hexdigit() || !second.is_ascii_hexdigit() {
+                        return None;
+                    }
+                    cursor += 3;
+                }
+                'u' => {
+                    if *chars.get(cursor + 1)? != '{' {
+                        return None;
+                    }
+                    cursor += 2;
+                    while *chars.get(cursor)? != '}' {
+                        cursor += 1;
+                    }
+                    cursor += 1;
+                }
+                '\n' | '\r' => return None,
+                _ => cursor += 1,
+            }
+        }
+        '\n' | '\r' | '\'' => return None,
+        _ => cursor += 1,
+    }
+    (chars.get(cursor) == Some(&'\'')).then_some(cursor + 1)
+}
+
+/// Remove Rust comments while preserving strings, character literals and line numbers.
 ///
 /// This is deliberately a lexical approximation, not a Rust parser. It handles
 /// ordinary/raw strings, line comments, and nested block comments so `//` inside
@@ -148,6 +183,8 @@ fn code_of(source: &str) -> String {
         if chars[index] == '"' {
             in_string = true;
             index += 1;
+        } else if chars[index] == '\'' {
+            index = char_literal_end(&chars, index).unwrap_or(index + 1);
         } else if index + 1 < chars.len() && chars[index] == '/' && chars[index + 1] == '/' {
             while index < chars.len() && chars[index] != '\n' {
                 chars[index] = ' ';
@@ -258,14 +295,16 @@ fn the_journal_is_the_only_release_write_surface_and_fixtures_are_test_only() {
 }
 
 #[test]
-fn comment_markers_inside_regular_and_raw_strings_remain_executable_text() {
+fn comment_markers_inside_strings_and_after_character_literals_remain_executable_text() {
     let code = code_of(
-        "let url = \"scheme://cgroup.freeze\"; // cgroup.events\nlet raw = r#\"https://memory.reclaim\"#; /* memory.max */\n",
+        "let url = \"scheme://cgroup.freeze\"; // cgroup.events\nlet raw = r#\"https://memory.reclaim\"#; /* memory.max */\nlet quote = '\"'; let block = \"/*\"; cgroup.freeze;\nlet slash = '/'; let line = \"//\"; after_line_marker;\n",
     );
     assert!(code.contains("scheme://cgroup.freeze"));
     assert!(code.contains("https://memory.reclaim"));
     assert!(!code.contains("cgroup.events"));
     assert!(!code.contains("memory.max"));
+    assert!(code.contains("cgroup.freeze;"), "block-marker text did not mask code after a char literal");
+    assert!(code.contains("after_line_marker;"), "line-marker text did not mask code after a char literal");
 }
 
 #[test]

@@ -189,3 +189,31 @@ issuer identity for each registration and refuse cross-issuer update, heartbeat
 and deregister with `not-yours`. The identity contract must address the process
 or cgroup incarnation as well as uid; client-supplied `owner`, `run` or pid is
 not identity. Until then, P2 enforce is blocked.
+
+## TG-13 — thrashguard's gdb command still uses the hostobs cache directory
+
+**State:** open · **Severity:** low · **Owner:** core · **Links:** scripts/controller/dev-profiles.toml, scripts/controller/dev_profile.py
+
+**Problem.** The shared Rust `gdb` verb's `set cwd` is intentionally restored to
+the exact hostobs cache path. The `thrashguard` profile has its own `cache`, but
+the controller does not substitute that value into command words. A gdb session
+for thrashguard therefore still uses `/home/gate/.cache/hostobs-target`.
+
+**Wanted.** Add profile-aware cwd substitution to the controller and a controller
+test that proves `gdb` receives the selected profile's cache path. Until then,
+keep the hostobs path explicit and described in the thrashguard profile comment.
+
+## TG-14 — Per-read socket timeouts have no request-line deadline
+
+**State:** open · **Severity:** medium · **Owner:** core · **Links:** thrashguard/src/daemon.rs, TG-1
+
+**Problem.** `SESSION_READ_TIMEOUT` is the maximum wait for one underlying socket
+read, not a deadline for a complete request line. A peer that keeps making
+progress can retain one of the 64 session slots indefinitely. The slot ceiling
+bounds thread count and rejects excess clients, but it does not bound how long
+one admitted peer may hold a slot.
+
+**Wanted.** Add an absolute request-line deadline with a deterministic test that
+uses the injected clock or an equivalent controllable read source. Until that
+testable contract exists, document the per-read timeout and the session-slot
+limit accurately; do not claim a whole-line deadline.

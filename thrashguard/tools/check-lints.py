@@ -64,10 +64,51 @@ def relative(project: Path, path: Path) -> str:
     return path.relative_to(project).as_posix()
 
 
+def char_literal_end(chars: list[str], start: int) -> int | None:
+    """Return the end of a Rust char literal, leaving lifetimes untouched."""
+    cursor = start + 1
+    if cursor >= len(chars):
+        return None
+    if chars[cursor] == "\\":
+        cursor += 1
+        if cursor >= len(chars):
+            return None
+        escaped = chars[cursor]
+        if escaped == "x":
+            if cursor + 2 >= len(chars):
+                return None
+            if chars[cursor + 1] not in "0123456789abcdefABCDEF":
+                return None
+            if chars[cursor + 2] not in "0123456789abcdefABCDEF":
+                return None
+            cursor += 3
+        elif escaped == "u":
+            if cursor + 1 >= len(chars) or chars[cursor + 1] != "{":
+                return None
+            cursor += 2
+            while cursor < len(chars) and chars[cursor] != "}":
+                cursor += 1
+            if cursor >= len(chars):
+                return None
+            cursor += 1
+        elif escaped in "\r\n":
+            return None
+        else:
+            cursor += 1
+    else:
+        if chars[cursor] in "\r\n'":
+            return None
+        cursor += 1
+    if cursor < len(chars) and chars[cursor] == "'":
+        return cursor + 1
+    return None
+
+
 def code_without_comments(source: str) -> str:
     """Strip Rust comments without treating markers inside strings as comments.
 
-    This handles lexical forms needed by the guard, not the whole Rust grammar.
+    This handles ordinary/raw strings, character literals and comments, not the
+    whole Rust grammar.
     """
     chars = list(source)
     index = 0
@@ -130,6 +171,8 @@ def code_without_comments(source: str) -> str:
         if chars[index] == '"':
             in_string = True
             index += 1
+        elif chars[index] == "'":
+            index = char_literal_end(chars, index) or index + 1
         elif index + 1 < len(chars) and chars[index : index + 2] == ["/", "/"]:
             while index < len(chars) and chars[index] != "\n":
                 chars[index] = " "
@@ -155,6 +198,13 @@ def scanner_self_check() -> list[str]:
         problems.append("check-lints.py: comment stripping lost a marker inside a string")
     if "cgroup.events" in code or "memory.max" in code:
         problems.append("check-lints.py: comment stripping retained comment text")
+    chars = code_without_comments(
+        """let quote = '"'; let block = "/*"; cgroup.freeze;
+let slash = '/'; let line = "//"; memory.max;
+"""
+    )
+    if "cgroup.freeze;" not in chars or "memory.max;" not in chars:
+        problems.append("check-lints.py: a char literal inverted comment/string state")
     if "Command::new(" not in FORBIDDEN_CALLS:
         problems.append("check-lints.py: process-spawn pattern is missing")
     if not WRITE_CALLS.search("File::options()"):

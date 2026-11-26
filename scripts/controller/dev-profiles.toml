@@ -40,7 +40,7 @@ fmt = ["tools/cargo-offline.sh", "fmt", "--all", "{args}"]
 test = ["tools/cargo-offline.sh", "nextest", "run", "--offline", "--locked", "{args}"]
 test-plain = ["tools/cargo-offline.sh", "test", "--offline", "--locked", "{args}"]   # `test --no-nextest`
 example = ["tools/cargo-offline.sh", "run", "--offline", "--locked", "-p", "{1}", "--example", "{2}", "{rest}"]
-gdb = ["rust-gdb", "-iex", "set cwd {cache}", "-iex", "set disable-randomization off", "{args}"]
+gdb = ["rust-gdb", "-iex", "set cwd /home/gate/.cache/hostobs-target", "-iex", "set disable-randomization off", "{args}"]
 strace = ["strace", "{args}"]
 run = ["{args}"]
 shell = ["bash"]
@@ -69,6 +69,8 @@ environment = "tester-unified-rust"
 dev_image = "tester-unified-rust-dev:rs-20261124b"
 workdir = "thrashguard"
 cache = "/home/gate/.cache/thrashguard-target"
+# The inherited `gdb` verb still sets cwd to the hostobs cache directory above,
+# not this selected cache path. TG-13 tracks profile-specific gdb cwd support.
 
 [profiles.run-gate-project]
 kind = "python"

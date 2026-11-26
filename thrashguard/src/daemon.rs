@@ -59,7 +59,8 @@ use crate::{EVENT_VERSION, STATE_VERSION};
 /// clients has a different problem.
 pub const MAX_SESSIONS: usize = 64;
 
-/// How long one client may take to send its request line.
+/// Maximum wait for one underlying socket read while a request line is arriving.
+/// This is not an absolute line deadline: progress resets the kernel's read wait.
 pub const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long one client may take to receive its reply before its thread is dropped.
@@ -643,7 +644,9 @@ pub struct Endpoint {
 ///
 /// Two kinds of thread, deliberately: the tick thread owns the machine, and each
 /// accepted client gets one bounded session. A client that connects and says
-/// nothing blocks only its own handler, for [`SESSION_READ_TIMEOUT`].
+/// nothing blocks only its own handler, until one read reaches
+/// [`SESSION_READ_TIMEOUT`]. A peer that keeps making progress can occupy one of
+/// the [`MAX_SESSIONS`] slots until it finishes its line (TG-14).
 pub fn serve(core: Core, endpoints: &Endpoint, tick_s: u64) -> io::Result<()> {
     let shared = Arc::new(Mutex::new(core));
     let ticker = Arc::clone(&shared);
@@ -664,12 +667,11 @@ pub fn serve(core: Core, endpoints: &Endpoint, tick_s: u64) -> io::Result<()> {
             .map(|listener| (Role::Registrant, listener));
         for (role, listener) in registrant.chain(std::iter::once((Role::Reader, &endpoints.reader)))
         {
-            let accepted = match listener.accept() {
-                Ok((stream, _)) => stream,
+            let accepted = match accept_with_write_timeout(listener) {
+                Ok(stream) => stream,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error),
             };
-            accepted.set_write_timeout(Some(SESSION_WRITE_TIMEOUT))?;
             if sessions.load(Ordering::SeqCst) >= MAX_SESSIONS {
                 let mut refused = socket::Session::new(std::io::empty(), accepted, role);
                 let _ = refused.write_reply(&crate::wire::refused_reader(
@@ -696,6 +698,15 @@ pub fn serve(core: Core, endpoints: &Endpoint, tick_s: u64) -> io::Result<()> {
     }
 }
 
+/// Accept one client and install the write bound before either refusal or spawn.
+fn accept_with_write_timeout(
+    listener: &std::os::unix::net::UnixListener,
+) -> io::Result<std::os::unix::net::UnixStream> {
+    let (stream, _) = listener.accept()?;
+    stream.set_write_timeout(Some(SESSION_WRITE_TIMEOUT))?;
+    Ok(stream)
+}
+
 /// Serve one accepted connection: one request line, one reply, then close.
 fn handle_session(
     role: Role,
@@ -704,7 +715,6 @@ fn handle_session(
 ) -> io::Result<()> {
     let peer = stream.try_clone()?;
     stream.set_read_timeout(Some(SESSION_READ_TIMEOUT))?;
-    stream.set_write_timeout(Some(SESSION_WRITE_TIMEOUT))?;
     let mut session = socket::Session::new(stream, peer, role);
     match session.read_request()? {
         None => Ok(()),
@@ -734,7 +744,7 @@ mod tests {
     use crate::config::StaticUnit;
     use crate::testutil::TempTree;
     use std::io::Write;
-    use std::os::unix::net::UnixStream;
+    use std::os::unix::net::{UnixListener, UnixStream};
 
     fn static_unit(name: &str, cgroup: &str) -> StaticUnit {
         StaticUnit {
@@ -1368,6 +1378,19 @@ mod tests {
         let mut reader = socket::Session::new(std::io::empty(), Vec::<u8>::new(), Role::Reader);
         assert_eq!(reader.read_request().expect("a closed peer"), None);
         let _ = &mut reader;
+    }
+
+    #[test]
+    fn accepted_stream_has_a_write_timeout_before_any_session_path() {
+        let tree = TempTree::new("daemon-accept-write-timeout");
+        let listener = UnixListener::bind(tree.at("reader.sock")).expect("listener");
+        let _client = UnixStream::connect(tree.at("reader.sock")).expect("queued client");
+        let accepted = accept_with_write_timeout(&listener).expect("accepted stream");
+        assert_eq!(
+            accepted.write_timeout().expect("write timeout query"),
+            Some(SESSION_WRITE_TIMEOUT),
+            "the bound applies before either a normal handler or a capacity refusal"
+        );
     }
 
     #[test]

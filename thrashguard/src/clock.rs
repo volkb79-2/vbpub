@@ -181,6 +181,17 @@ mod tests {
     }
 
     #[test]
+    fn system_clock_keeps_the_injected_boot_relative_base() {
+        let tree = crate::testutil::TempTree::new("clock-boot-base");
+        let uptime = tree.write("proc/uptime", "123456.789 987.654\n");
+        let clock = SystemClock::from_uptime_path(&uptime).expect("injected uptime");
+        assert!(
+            clock.mono_ns() >= 123_456_789_000_000,
+            "monotonic time includes the boot-relative base, not just process elapsed time"
+        );
+    }
+
+    #[test]
     fn uptime_is_parsed_as_boot_relative_nanoseconds() {
         assert_eq!(
             parse_uptime_ns("12345.067 888.00\n").expect("uptime"),

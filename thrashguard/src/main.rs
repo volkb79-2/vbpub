@@ -90,6 +90,11 @@ fn run(args: &Args) -> Result<(), Fatal> {
         );
         return Ok(());
     }
+    if args.verb != Verb::Serve {
+        if let Some(path) = &args.socket {
+            return ask_socket(path, args);
+        }
+    }
     let config = load_config(args, Path::new(config::DEFAULT_CONFIG))?;
     if args.verb == Verb::Serve {
         // `enforce` is valid vocabulary, and `status` must be able to report it,
@@ -97,9 +102,6 @@ fn run(args: &Args) -> Result<(), Fatal> {
         config
             .check_for_run()
             .map_err(|error| Fatal::usage(error.to_string()))?;
-    }
-    if let Some(path) = &args.socket {
-        return ask_socket(path, args);
     }
     match args.verb {
         Verb::Version => unreachable!("handled above"),
@@ -382,6 +384,42 @@ mod tests {
         let loaded = load_config(&args, &path).expect("default configuration file");
         assert_eq!(loaded.mode, config::Mode::Off);
         assert_eq!(loaded.trigger_avg10, 450);
+    }
+
+    #[test]
+    fn a_socket_reader_does_not_load_a_local_config() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::{UnixListener, UnixStream};
+
+        let tree = TempTree::new("main-socket-without-config");
+        let socket_path = tree.at("reader.sock");
+        let listener = UnixListener::bind(&socket_path).expect("reader socket");
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client connection");
+            let mut request = String::new();
+            std::io::BufReader::new(stream.try_clone().expect("clone"))
+                .read_line(&mut request)
+                .expect("request line");
+            stream
+                .write_all(b"{\"v\":\"thrashguard-state/1\",\"ok\":true}\n")
+                .expect("reply line");
+        });
+        let args = Args {
+            verb: Verb::Status,
+            config: Some(tree.at("missing.toml")),
+            socket: Some(socket_path.clone()),
+            ..Args::defaults()
+        };
+        let result = run(&args);
+        if result.is_err() {
+            // Release the server thread even if a regression loads the absent
+            // config before connecting to the already-bound reader socket.
+            if let Ok(mut peer) = UnixStream::connect(&socket_path) {
+                let _ = peer.write_all(b"{}\n");
+            }
+        }
+        worker.join().expect("server worker");
+        result.expect("socket mode is independent of local configuration");
     }
 
     fn static_unit(name: &str, cgroup: &str) -> StaticUnit {

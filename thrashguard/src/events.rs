@@ -268,7 +268,12 @@ impl Journal {
             }
         }
         let line = value.to_json();
-        debug_assert!(line.len() + 1 <= MAX_JOURNAL_TEXT_BYTES);
+        if line.len() + 1 > MAX_JOURNAL_TEXT_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bounded journal row exceeds its byte limit",
+            ));
+        }
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         file.flush()?;

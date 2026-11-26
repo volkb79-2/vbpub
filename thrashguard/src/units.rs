@@ -224,6 +224,7 @@ pub fn scope_name(container: &str) -> Result<String, Refusal> {
 struct Found {
     components: Vec<String>,
     path: PathBuf,
+    cgroup_id: u64,
     under_allowed: bool,
     under_protected: bool,
 }
@@ -382,7 +383,8 @@ fn path_components(text: &str) -> Result<Vec<String>, String> {
 ///
 /// Bounded by [`MAX_DEPTH`], no symlink is followed, and a directory that cannot
 /// be read is reported rather than read as empty (an unreadable tree must not be
-/// mistaken for "nothing there").
+/// mistaken for "nothing there"). A `NotFound` below `root` means a cgroup was
+/// removed during the walk, so that vanished branch cannot hide a live match.
 fn walk(
     root: &Path,
     scope: &str,
@@ -412,6 +414,11 @@ where
         }
         let entries = match read_dir(&directory) {
             Ok(entries) => entries,
+            Err(error)
+                if directory != root && error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                continue;
+            }
             Err(error) => {
                 errors.push((directory.display().to_string(), error.to_string()));
                 continue;
@@ -420,6 +427,7 @@ where
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => {
                     errors.push((directory.display().to_string(), error.to_string()));
                     continue;
@@ -427,6 +435,7 @@ where
             };
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => {
                     errors.push((entry.path().display().to_string(), error.to_string()));
                     continue;
@@ -447,9 +456,18 @@ where
                 .iter()
                 .any(|component| protected.iter().any(|p| p == component));
             if name == scope {
+                let cgroup_id = match entry.metadata() {
+                    Ok(metadata) => metadata.ino(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        errors.push((entry.path().display().to_string(), error.to_string()));
+                        continue;
+                    }
+                };
                 found.push(Found {
                     components,
                     path: entry.path(),
+                    cgroup_id,
                     under_allowed,
                     under_protected,
                 });
@@ -513,12 +531,6 @@ fn decide(container: &str, found: Vec<Found>, allowed: &[String]) -> Result<Scop
         .filter(|f| f.components.len() != shallowest)
         .map(|f| f.relative())
         .collect();
-    let cgroup_id = std::fs::metadata(&winner.path)
-        .map_err(|error| Refusal::Unreadable {
-            path: winner.path.display().to_string(),
-            detail: error.to_string(),
-        })?
-        .ino();
     Ok(Scope {
         name: winner
             .components
@@ -527,7 +539,7 @@ fn decide(container: &str, found: Vec<Found>, allowed: &[String]) -> Result<Scop
             .expect("a match has components"),
         relative: winner.relative(),
         path: winner.path.clone(),
-        cgroup_id,
+        cgroup_id: winner.cgroup_id,
         shadowed,
     })
 }
@@ -979,6 +991,32 @@ mod tests {
         );
         assert_eq!(refusal.reason(), "unreadable");
         assert!(refusal.detail().contains("dev-background.slice"));
+    }
+
+    #[test]
+    fn a_vanished_subtree_does_not_hide_a_unique_live_match() {
+        let tree = TempTree::new("units-vanished-branch");
+        let root = tree.path();
+        let id = gate_scope(&tree, "dev-gates.slice", "abc");
+        let vanished = tree.at("dev.slice/vanished.slice");
+        std::fs::create_dir_all(&vanished).expect("transient subtree");
+        let config = config();
+        let found = walk_using(
+            root,
+            "docker-abc.scope",
+            &config.allowed_ancestors,
+            &config.protected,
+            &mut |directory| {
+                if directory == vanished {
+                    Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+                } else {
+                    std::fs::read_dir(directory)
+                }
+            },
+        )
+        .expect("a removed branch cannot hide a live scope");
+        let scope = decide(&id, found, &config.allowed_ancestors).expect("unique live match");
+        assert_eq!(scope.relative, "dev.slice/dev-gates.slice/docker-abc.scope");
     }
 
     #[test]
