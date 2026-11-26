@@ -11904,7 +11904,7 @@ class TestResourceObserverLane:
         monkeypatch.setattr(run_gate, "write_inflight_record", lambda *_a, **_k: True)
         monkeypatch.setattr(run_gate, "await_container", lambda *_a, **_k: 0)
         monkeypatch.setattr(run_gate, "make_progress_watch", lambda *_a, **_k: None)
-        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a, **_k: None)
         monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_a: None)
         monkeypatch.setattr(run_gate, "print_profile_plan_dry_run", lambda *_a: None)
 
@@ -12351,7 +12351,7 @@ class TestResourceObserverLane:
         monkeypatch.setattr(run_gate, "build_assay_inner", lambda *_a, **_kw: "true")
         monkeypatch.setattr(run_gate, "assure_assay_state_root", lambda *_a, **_kw: None)
         monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_a: None)
-        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a, **_k: None)
         monkeypatch.setattr(run_gate, "print_profile_plan_dry_run", lambda *_a: None)
         monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
         monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a, **_kw: "true")
@@ -23842,7 +23842,7 @@ class TestInflightRecordStore:
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
         monkeypatch.setattr(run_gate, "assure_assay_state_root",
                             lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_args, **_kw: None)
         monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_args: None)
         monkeypatch.setattr(run_gate, "save_container_logs", lambda *_args: None)
 
@@ -37119,7 +37119,7 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
         monkeypatch.setattr(run_gate, "build_command_inner",
                             lambda *_args: "true")
-        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_args, **_kw: None)
         monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_args: None)
         monkeypatch.setattr(run_gate, "print_profile_plan_dry_run",
                             lambda *_args: None)
