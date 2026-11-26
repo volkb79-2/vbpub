@@ -54,6 +54,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   not the selected tag (KI-211).
 - tests(cmru): the upload-coordinate refusal stubs the release transport, so
   it no longer needs api.github.com to reach its assertion (KI-210).
+- docs: correct the 2026-11-26 CMRU/CIU review claims. KI-215 is closed by
+  design with prose left to review and `assay.toml` lane facts structurally
+  pinned; KI-213 records the silent command-lane log, the temporary evidence
+  location and separate Run-Gate owner; CIU-231(b) distinguishes cwd root
+  discovery from CIU-228's `--dir`/`--root-folder` join.
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
