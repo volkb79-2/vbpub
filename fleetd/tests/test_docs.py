@@ -232,7 +232,7 @@ def test_the_consumer_guide_records_every_adoption_checklist_judgement():
         assert f"AC-{row:02d}" in text, f"AC-{row:02d} is unrecorded"
     # The two manual rows must say WHY, not only that they are manual.
     assert "AC-12" in text and "idempotent" in text
-    assert "AC-20" in text and "host-facts/1" in text
+    assert "AC-20" in text and "host-facts/2" in text
 
 
 def test_the_skill_ships_and_the_cli_registers_the_library_verbs():

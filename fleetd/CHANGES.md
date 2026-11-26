@@ -4,6 +4,10 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Added
+- Collect, validate and consume `host-facts/2` with explicit null reasons, load, gate-slice, disk, guard and policy facts; `fleet facts validate` retains `/1` for one migration release.
+- Document the new facts and optional host policy keys without changing planner placement decisions; close FD-049's guard fact reshape.
+
 <!-- cmru: release history -->
 
 ## [0.1.0] - 2026-11-24

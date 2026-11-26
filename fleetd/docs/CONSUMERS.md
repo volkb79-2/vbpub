@@ -116,7 +116,7 @@ audit is mechanical; the two `manual` rows are judgements recorded here.
 | AC-17 surface check | pass | `cli-extended surface check` exits 0 (manifest, spec region, 130 reviewed cases, no open finding) |
 | AC-18 syntax complete | pass | `syntax_complete: true` in `docs/cli-surface.json` |
 | AC-19 skills packaged | pass | `fleetd/skills/fleetd-campaigns` as package data, no checkout install tree (`tests/test_cli_skills.py`) |
-| AC-20 doctor | **manual, deferred** | needs a doctor only when it has an environment to verify. `facts collect` already *is* the environment report for a host (it emits `host-facts/1` with a reason for every unavailable leaf), and the controller's environment is the runner checkout it already refuses to guess. A separate `fleet doctor` would duplicate both; revisit if a third environment appears. |
+| AC-20 doctor | **manual, deferred** | needs a doctor only when it has an environment to verify. `facts collect` already *is* the environment report for a host (it emits `host-facts/2` with a reason for every unavailable value), and the controller's environment is the runner checkout it already refuses to guess. A separate `fleet doctor` would duplicate both; revisit if a third environment appears. |
 | AC-21 contract tests | pass | `tests/test_cli_characterization.py` pins the pre-migration contract; `tests/test_cli_review_cases.py` replays the reviewed catalog |
 | AC-22 pytest plugin | pass | `pytest_plugins = ["cli_extended.pytest_plugin"]` in `tests/conftest.py`. A focused run — a single test file, or the `campaign-contract` lane, which collects only `tests/test_campaign.py` — passes `--cli-case-partial`; `r0-r1` collects the whole suite and stays strict. |
 | AC-23 invoker helpers | not applicable | fleetd's tests do not wrap `subprocess` for the CLI; they call `main()` and, where a real process matters, the library's helpers |
@@ -134,15 +134,22 @@ fleet facts validate host-facts.json
 ```
 
 On a host, `fleet facts collect` requires `/etc/fleetd/facts.toml`. The file is
-host-owned and must declare schema version 1, the control-plane slice, policy
-limits, and source paths. It may set `control_plane.profile_reserve_bytes` to
+host-owned and must declare schema version 1, the control-plane slice, the
+existing planner policy, and source paths. It may set
+`control_plane.profile_reserve_bytes` to
 the fixed fallback for that host profile; if omitted, fleetd uses the 768 MiB
 compatibility profile constant. `--root DIR` maps both this config path and the
 config's absolute source paths beneath `DIR`; tests can collect facts without
 reading the calling machine. The Geekbench JSON path is host-owned config;
 fleetd reads the record and never invokes Geekbench. It exports only the
 matching model/count score fields. A missing, stale, or invalid record leaves
-`speed` as `null` with a reason. The JSON schema version is `host-facts/1`.
+`speed` as `{"v": null, "reason": "..."}`. Collection emits
+`host-facts/2`; measured and configured values use `{"v": value}` or
+`{"v": null, "reason": "..."}`. `reason` appears if and only if `v` is
+null. `schema`, `agent_version`, and `collected_utc` remain plain metadata.
+`fleet facts validate` accepts `/1` for this migration release and `/2`, and
+prints the schema it validated. The planner, campaign and CLI consumers read
+`/2` only; a needed null value refuses with its recorded reason.
 
 ```toml
 schema_version = 1
@@ -151,32 +158,72 @@ schema_version = 1
 geekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"
 host_setup_env = "/etc/mdt/host-setup.env"
 guard_config = "/etc/cgprofile/guard.toml"
+guard_state = "/run/cgprofile/guard-state"
+checkout_root = "/var/lib/fleetd"
+docker_root = "/var/lib/docker"
 
 [control_plane]
 slice = "ctl.slice"
 profile_reserve_bytes = 805306368
+
+[gate_slice]
+slice = "dev-gates.slice"
 
 [policy]
 overcommit = 1.5
 oversubscribe_max = 1.25
 psi_refuse_some_avg10 = 25
 max_lane_containers = 8
+host_reserve_bytes = 805306368
+planning_cap = 5
+max_footprint = "large"
+max_planned_bytes = 7516192768
+max_upload_bytes = 1073741824
+
+[policy.footprint_charges_bytes]
+tiny = 67108864
+small = 268435456
+medium = 1073741824
+large = 4294967296
+
+[policy.priority_classes_by_principal]
+worker = ["dev", "gate", "campaign"]
+
+[policy.disk_floors]
+checkout = 1073741824
+docker = 2147483648
+
+[policy.admission]
+queue_path = "/run/fleetd/queue"
+wait_s = 30
+settle_s = 5
 ```
 
 `overcommit`, `oversubscribe_max`, and the PSI refusal threshold are explicit
 host policy inputs, so an incomplete file fails with a field-specific error.
+The added policy settings in this example are optional facts: omitting one
+does not supply a default and emits null with a `not-configured` reason. The
+`host_reserve_bytes` setting is emitted once as `memory.host_reserve_bytes`;
+the other policy settings remain under `policy.*`. `planning_cap` is the
+configured policy value; `cpu.planning_cap` is separately derived from the
+gate-slice CPU limit. Checkout and Docker roots enable `disks[]` collection;
+without either configured root, the disk list is null with a reason, and a
+missing per-disk floor is null in that disk's row.
 The host role is read from `host_setup_env`, which points to the existing
 host-owned `HOST_ROLE` setting. `max_lane_containers`, `guard_state`, and
-`ksm_optin_shim` may be omitted; their facts stay `null` with a reason. The
+`ksm_optin_shim` may be omitted; their facts stay null with a reason. The
 collector reads guard config plus lexically ordered `.toml` drop-ins for its
-digest and effective `enabled` value. It reports but does not apply guard
-rules. It reads cgroup v2 controllers, configured slice presence and
-`cpu.weight`, PSI avg10, swap counters, and KSM sysfs values. It also reads
+digest and reads runtime state from its configured source. It reports
+`guard_present`, `guard_state`, `config_digest`, and `frozen_units` but does not
+apply guard rules. Freeze events are not collected yet, so
+`guard.frozen_units` is null with a reason. It reads cgroup v2 controllers,
+configured slice presence and `cpu.weight`, PSI, load averages, swap counters,
+and KSM sysfs values. It also reads
 `MemoryMin` for the fixed, bounded `CONTROL_PLANE_SERVICE_UNITS` list in
 `fleetd.contracts` with `systemctl show -p MemoryMin`. A fixture root does not
 invoke systemctl; its service entries remain null with reasons. `0`,
-`infinity`, unset, and failed queries are not reported values. `memory.for_lanes`
-is raw `MemTotal`. Each listed unit's row also carries its systemd `load_state`
+`infinity`, unset, and failed queries are not reported values.
+`memory.total_bytes` is raw `MemTotal`. Each listed unit's row also carries its systemd `load_state`
 (`null` with a reason when it was not queried). Planning resolves one term per
 listed unit: the reported positive value, that unit's documented per-service
 default when the fact is missing or implausible, or `0` when a declared-optional
@@ -226,7 +273,7 @@ baseline_seconds = 400
 The input envelopes are closed and versioned. Candidate files use
 candidate-table/1; host files use fleet-host-set/1. The host envelope
 contains { "id", "facts", "other_running" } per host, with optional f_h.
-facts is a validated host-facts/1 record from fleet facts collect.
+facts is a validated host-facts/2 record from fleet facts collect.
 other_running is always explicit (use [] when empty) and each row gives the
 job id, expected memory charge, worker count, and container count. Every
 running name present in facts.jobs must be represented. f_h defaults to 1.0
@@ -424,7 +471,7 @@ falls below the sum of what was actually reported. The fixed profile constant
 fact exists at all. An implausible report is refused with a reason instead of
 being summed, and the per-service provenance appears as `reserve_services`.
 The legacy parent `control_plane.memory_min_bytes` is accepted but ignored.
-`P = memory.for_lanes_bytes - reserve_h`, O = other running charges + one
+`P = memory.total_bytes - reserve_h`, O = other running charges + one
 campaign instance's `instance_memory`, and B = P × overcommit - O. Each host
 plan and campaign status record `reserve_bytes`, `reserve_source`, and
 `reserve_missing_services` so the input to P is visible. Worker slots are the
@@ -618,5 +665,5 @@ record through duplicate ownership. Pass that file to
 Strict shard merging belongs to assay: use `--merge-shard-store` (driven by
 run-gate's `--merge-shards N`) with B565's `strict-shard` policy. Fleetd copies shard stores but does not compare
 identities or synthesize a merge document. Guard rule validation belongs to
-thrashguard (TG-1); fleetd only reports the guard's merged `enabled` flag,
-configuration digest and owner-emitted runtime state in `host-facts/1`.
+thrashguard (TG-1); fleetd only reports `guard_present`, the configuration
+digest and owner-emitted runtime state in `host-facts/2`.

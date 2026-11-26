@@ -230,7 +230,7 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `freeze.since_utc`, `freeze.by`, `freeze_reason` | time, strings | hostobs events | `not-collected` until thrashguard P4 |
 | `freeze.queued` | int | none (agctl draft has no source, `agctl-estate-snapshot-draft.md:38-39`) | `not-collected` |
 | `policy.host_role`, `.psi_refuse_some_avg10`, `.max_lane_containers` | as /1 (`fleetd/src/fleetd/contracts.py:510-524`) | `/etc/fleetd/facts.toml` | role null → refuse (`fleetd/src/fleetd/plan.py:480-483`) |
-| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.host_reserve_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors` | number, class, bytes | required `/etc/fleetd/facts.toml`; charges and allowed priorities are per host/principal | missing value → refuse placement; no defaults |
+| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors` | number, class, bytes | optional `/etc/fleetd/facts.toml` host policy | missing value → `null`+reason; host admission consumes these later, current planner does not require them |
 | `policy.max_upload_bytes` | bytes | required `/etc/fleetd/facts.toml` | null+reason; refuse `put` |
 | `policy.admission` | `{queue_path, wait_s, settle_s}` | host config | refuse; admission is not optional |
 | `queue.planned_cores`, `.charged_bytes`, `.waiting` | number, bytes, count | host agent's admission book | `null`+reason |
