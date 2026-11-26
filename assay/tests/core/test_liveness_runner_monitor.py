@@ -1801,3 +1801,226 @@ def test_the_runner_never_invents_a_cpu_bound_of_its_own() -> None:
         events_dir=Path("/tmp/assay-no-such-dir"), expect_next_event_within_s=1.0
     )
     assert runner.cpu_without_progress_bound_s is None
+
+
+# --------------------------------------------------------------------------
+# P4/S2: the per-test CPU bound. `pytest_runtest_logstart` dates each test's
+# own window; a candidate whose single in-flight test burns
+# `max(10 x its baseline duration, 60 s)` CPU seconds is killed as `hung`.
+# --------------------------------------------------------------------------
+
+
+def test_a_looping_test_is_caught_near_its_own_per_test_bound(
+    tmp_path: Path,
+) -> None:
+    """The operator's own item (A): a looping test is caught at about its
+    normal duration, not at a whole-suite budget. The baseline says this test
+    takes 3 s, so the bound is max(10 x 3, 60) = 60 CPU seconds; the candidate
+    loops at ~1 CPU-s per virtual second with the test still in flight.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7101)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    started = {"done": False}
+
+    def reader(pid: int) -> float:
+        if not started["done"]:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "tests/test_x.py::test_slow", "pid": pid},
+            )
+            started["done"] = True
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"tests/test_x.py::test_slow": 3.0},
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound"
+    assert evidence["policy"] == liveness.CPU_PROGRESS_POLICY
+    assert evidence["test_nodeid"] == "tests/test_x.py::test_slow"
+    assert evidence["per_test_baseline_s"] == 3.0
+    assert evidence["required_cpu_s"] == 60.0  # the floor, not 30 s.
+    assert evidence["per_test_cpu_s"] >= 60.0
+    assert evidence["cpu_since_last_completed_event_s"] >= 60.0
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+    # Caught at its own bound, not at any suite-length budget.
+    assert clock.t >= 60.0
+
+
+def test_a_slow_test_under_its_own_bound_survives(tmp_path: Path) -> None:
+    """The same shape, one CPU second per virtual second, but the test FINISHES
+    before its bound: it is not a hang, and the CPU it burned is then part of
+    a completed unit rather than a stall."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7102)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    wrote = {"start": False}
+
+    def reader(pid: int) -> float:
+        if not wrote["start"]:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "t", "pid": pid},
+            )
+            wrote["start"] = True
+        # The test completes at t=30, well inside the 60 s bound.
+        if clock.t == 30.0:
+            _append_event(
+                events_path,
+                {"event": "test", "nodeid": "t", "outcome": "passed", "pid": pid},
+            )
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t": 1.0},
+        expect_next_event_within_s=600.0,
+    )
+
+    def stop_at_120(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t >= 120.0:
+            proc.finish(0)
+
+    runner._sleep = stop_at_120  # type: ignore[assignment]
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert result.returncode == 0
+
+
+def test_an_unknown_nodeid_gets_no_per_test_bound(tmp_path: Path) -> None:
+    """A nodeid the baseline never measured has no baseline duration to
+    multiply, so there is no per-test bound for it. Inventing one would be a
+    guessed bound; S1 is the backstop instead."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7103)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    wrote = {"n": 0}
+
+    def reader(pid: int) -> float:
+        if wrote["n"] == 0:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "not-in-baseline", "pid": pid},
+            )
+            wrote["n"] = 1
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"some-other-test": 1.0},
+        cpu_without_progress_bound_s=100.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    # S1 decided it, NOT a fabricated per-test bound.
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["required_cpu_s"] == 100.0
+    assert evidence["test_nodeid"] is None
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+
+
+def test_xdist_disables_the_per_test_bound(tmp_path: Path) -> None:
+    """Under `-n` several tests run concurrently in several processes, so
+    "exactly one test in flight" is false by construction: the per-test bound
+    is skipped entirely and S1 remains."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7104)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    wrote = {"n": 0}
+
+    def reader(pid: int) -> float:
+        if wrote["n"] == 0:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "t", "pid": pid},
+            )
+            wrote["n"] = 1
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t": 0.1},  # would bound at 60 CPU-s
+        per_test_xdist=True,
+        cpu_without_progress_bound_s=100.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["required_cpu_s"] == 100.0
+    assert verify_per_test_never_armed(evidence)
+    assert clock.t >= 100.0
+
+
+def verify_per_test_never_armed(evidence) -> bool:
+    """The per-test decision appears nowhere in an xdist run's evidence."""
+    return evidence["decision"] != liveness.per_test_cpu_bound_decision
+
+
+def test_the_per_test_bound_requires_exactly_one_in_flight_test(
+    tmp_path: Path,
+) -> None:
+    """A file that opened a second test before the first completed proves two
+    tests were in flight, so no single window can be attributed -- the
+    per-test bound disables itself for the rest of that file."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7105)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    wrote = {"n": 0}
+
+    def reader(pid: int) -> float:
+        if wrote["n"] == 0:
+            for nodeid in ("a", "b"):
+                _append_event(
+                    events_path, {"event": "test_start", "nodeid": nodeid, "pid": pid}
+                )
+            wrote["n"] = 1
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"a": 0.1, "b": 0.1},
+        cpu_without_progress_bound_s=110.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert excinfo.value.resource_evidence["decision"] == "cpu-without-progress"
+    assert clock.t >= 110.0
+
+
+def test_the_plugin_writes_a_test_start_event_with_the_nodeid() -> None:
+    """The plugin source is the writer of this event, so the event's shape is
+    asserted from the SHIPPED source, not from a hand-built record."""
+    source = liveness._PLUGIN_SOURCE
+    assert "def pytest_runtest_logstart(nodeid, location):" in source
+    assert '{"event": "test_start", "nodeid": nodeid}' in source
+    # The hook body must stay exception-safe: a bug in the plugin may never
+    # change a test outcome.
+    block = source.split("def pytest_runtest_logstart(nodeid, location):", 1)[1]
+    block = block.split("def ", 1)[0]
+    assert "except Exception" in block

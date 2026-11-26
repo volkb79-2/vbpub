@@ -842,8 +842,10 @@ cpu_without_progress_decision = "cpu-without-progress"
 #: (P4/S2) The per-test CPU bound's own vocabulary: ``max(10 x the baseline's
 #: setup+call+teardown duration for THIS nodeid, 60 s)`` CPU seconds. Ten
 #: suite-lengths of CPU for one test is the same generous multiple the
-#: derived bound uses for a whole suite, and the 60 s floor keeps a
-#: sub-second test from deriving a bound too tight for one interpreter.
+#: derived bound uses for a whole suite, and the absolute 60 s floor keeps a
+#: sub-second test from deriving a bound too tight for one interpreter
+#: (deliberately NOT `baseline + 60`: that would scale the floor with the
+#: test's own trivial duration).
 PER_TEST_CPU_MULTIPLIER_S = 10.0
 PER_TEST_CPU_FLOOR_S = 60.0
 per_test_cpu_bound_decision = "per-test-cpu-bound"
@@ -858,11 +860,16 @@ IDLE_HANG_DECISIONS = frozenset({"idle-hang", "session-finish-hang"})
 IDLE_HANG_POLICY = "pressure-adjusted-idle-v1"
 
 def per_test_cpu_bound_from_baseline(baseline_s: float) -> float:
-    """``max(10 x baseline_s, 60 s)`` -- the per-test bound, one formula."""
-    return max(
-        PER_TEST_CPU_MULTIPLIER_S * baseline_s,
-        baseline_s + PER_TEST_CPU_FLOOR_S,
-    )
+    """``max(10 x baseline_s, 60 s)`` -- the per-test bound, one formula.
+
+    Operator item (A), binding (`p4-operator-input-20261125.md`): "each test
+    gets a multiple of its own baseline duration ... so a looping test is
+    caught at about its normal duration". Ten suite-lengths of CPU for one
+    test is the same generous multiple the derived bound uses for a whole
+    suite; the 60 s floor is an ABSOLUTE one (not `baseline + 60`), because a
+    fast test's bound must not scale with its own trivial duration.
+    """
+    return max(PER_TEST_CPU_MULTIPLIER_S * baseline_s, PER_TEST_CPU_FLOOR_S)
 
 #: (P4/S1) The floor in the derived bound
 #: :func:`derived_bound_from_baseline` -- the `+60 s` half of
