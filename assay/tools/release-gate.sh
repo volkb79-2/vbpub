@@ -503,8 +503,11 @@ if wait "$remote_gate_pid"; then
 else
   remote_status=$?
 fi
-stop_heartbeat
+# Bash may run a trap after wait returns but before this assignment; after it, a
+# signal cannot target the reaped client. If metadata exists, the handler still
+# requests remote cancellation because a failed client does not prove the host job ended.
 remote_gate_pid=""
+stop_heartbeat
 
 if receipt="$(python3 - "$run_dir/meta.json" "$run_dir/result.json" <<'PYEOF'
 import json
