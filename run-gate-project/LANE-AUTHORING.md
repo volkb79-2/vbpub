@@ -117,7 +117,24 @@ Rules of thumb:
    under a run-gate pin table is refused from 23.4.0 (RG-32). Pair the two
    deliberately: assay's bound must fit inside whatever the outer caller
    allows (`CONSUMERS.md` "Consumer timeouts must not cut lanes short").
-6. **Integration lanes name the instance they need.** Today that is a
+6. **Every watchable lane is bounded, and the bound names its signal
+   (RG-320).** You do not have to declare anything: a lane that writes no
+   `stall_timeout` gets 300 s from `DEFAULT_STALL_BOUND_SECONDS`, and the run
+   prints `stall bound 300s (source: auto)` and records it as
+   `run_record["stall_bound"]`. What judges the silence depends on your
+   lane's kind — assay → its progress file; container `command` → its
+   `docker logs -f` arrivals; exec/`bare-host` `command` → its own stdout
+   chunks; `sequence` → nothing of its own, its members carry the watches
+   (`stall_timeout` on a sequence is REFUSED at load by name). Declare a
+   number when the default would be wrong for your lane, and say why in a
+   comment. The one shape the default cannot save is a **buffered child**: a
+   process that writes nothing to stdout until it exits is silent for its
+   whole run by this definition, so a lane whose command is known to block on
+   its own buffering must declare a `stall_timeout` sized for the longest
+   legitimate silent stretch. Declaring one never pauses under host
+   pressure (that pause belongs to the AUTO bound only, because an auto bound
+   is this tool's guess and a declared one is yours).
+7. **Integration lanes name the instance they need.** Today that is a
    command lane whose argv reaches a running stack; under ciu v8 it becomes
    a ciu gate lane with an `exec` environment. Either way the lane declares
    the dependency; it never assumes the server is up.
@@ -201,7 +218,12 @@ kind = "assay"
 environment = "tester-unified"
 assay_lane = "r2"                    # T3 rigor R2; assay.toml owns the budget
 assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<ver>.pyz"]
-# stall_timeout = "15m"              # from run-gate 23.4.0: silence, never elapsed time
+# stall_timeout = "15m"              # silence, never elapsed time. Optional: a
+                                     # lane declaring nothing is bounded at 300s
+                                     # anyway (RG-320), and the disclosure line
+                                     # tells you which number and whose. Raise
+                                     # it only for a lane that is legitimately
+                                     # silent longer (it then never pauses).
 [lanes.r2.pins.assay]
 version = "<ver>"
 sha256 = "tools/assay/assay-<ver>.pyz.sha256"
@@ -334,7 +356,8 @@ with sqlfluff in a command lane if the project wants it.
   body from running and returns an infrastructure refusal, not a candidate
   verdict; daemon/transport unavailability before a placement result retains
   the disclosed R-36h fallback.
-- From 23.4.0 a mutation lane gets `stall_timeout`: it stops the lane only
+- A mutation lane gets `stall_timeout` (from 23.4.0; since RG-320 the bound
+  exists even without it, at 300 s): it stops the lane only
   when the container is still running AND the progress file has been silent
   that long, never on elapsed time. That plus a generous `budget` plus
   `budget_per_candidate` is the whole bounding story for R2 (RW-6).
@@ -449,9 +472,13 @@ carry them, by the no-second-parser rule — so its upload globs are fixed:
 `<project>/.run-gate/history.json`; a declared artifact anywhere else, such
 as `run-gate-project/selftest`'s `coverage.json`, does not travel back until
 RG-45 exposes `artifacts` through `--list --json`), and **a budget that
-assumes nobody is watching** — `stall_timeout` for silence, `budget` for the
-honest maximum, and assay's `--resume` (already passed by R-38) so a re-run
-picks up where the last one stopped.
+assumes nobody is watching** — `budget` for the honest maximum, and assay's
+`--resume` (already passed by R-38) so a re-run picks up where the last one
+stopped. A remote lane is watched by ITS OWN run-gate's stall bound (300 s
+when it declares nothing, RG-320), not by the controller's `job.log`: a shard
+that stalls is detected on the host that runs it, which is why that local
+bound, not the controller's log silence, is the evidence a remote run
+produces.
 
 ---
 

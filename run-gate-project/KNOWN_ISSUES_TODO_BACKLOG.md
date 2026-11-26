@@ -205,6 +205,7 @@ SPEC §9.
 | RG-312 | R-59 does not cover enclosing `kind = "command"` lanes or consumer timeouts; P-core-RG307 r1 follow-ups | Minor | OPEN 2026-11-24 (P-core-RG307 review r1; the two known enclosing budgets were fixed forward) |
 | RG-313 | `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record` asserts "no direct child left" immediately after the client exits, racing the fake `docker logs -f` shell's 0.2 s `sleep` window | Minor | OPEN 2026-11-24 (rg307b gate-full on v1001, assay-r1 R0; passed in the selftest lane on the same sha) |
 | RG-314 | `lanes --check` does not warn when a lane's env value contains `{worktree}` AND the same variable is in the Assay lane's `env_passthrough`: Assay folds passthrough values into `judge_sha256`, so every remote-gate throwaway checkout rejects a seeded resume | Minor | OPEN 2026-11-24 (rollback `rgw-r2-20261124T162538-r1002`, `rejected_total=14`, Assay B577) |
+| RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto 300 s bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source; sequence stays unwatched by decision (members carry the watches); `budget = "unbounded"` remains P2 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9885,3 +9886,50 @@ Source: vbpub-core, rg307b gate-full failure 2026-11-24 (`~/controller/remote-ga
 - **Close when.** `lanes --check` warns for the debian-install-v2 pairing before it is fixed, and a seeded resume across two throwaway checkouts is accepted once the pairing is removed.
 
 Source: vbpub-core, filed on vbpub-rollback's report 2026-11-24.
+
+## RG-320 — a stall watch on every watchable lane kind (P1 of the no-time-budgets design)
+
+**Status:** FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`,
+operator decision 2026-11-25 "no time budgets that constrain a run"). No cap is
+removed here and `budget = "unbounded"` is still refused (that is P2). Severity: Enhancement.
+
+- **What was wrong.** Silence was bounded only where somebody had declared
+  `stall_timeout`: exactly two lanes in the estate
+  (`truenas/tnt/run-gate.toml` `live-v27`, `live-update`). An assay lane at least
+  had RG-7's auto bound; a `kind = "command"` lane that declared nothing was
+  unwatched, and G1 of the design (exec/bare-host command lanes) had NO signal at
+  all — RG-58's load-time WARN said so out loud ("accepted, but inert").
+- **What ships.** (1) `stall_bound_facts(lane)` is the one derivation of the
+  bound, its SOURCE (`declared`/`auto`) and the text; a lane that declares
+  nothing is armed with `DEFAULT_STALL_BOUND_SECONDS` = 300 s (operator answer
+  Q4), disclosed as `run-gate: stall bound 300s (source: auto)` and recorded as
+  `run_record["stall_bound"] = {seconds, source, signal}` (never
+  `run_record["watch"]`, which is the cgprofile payload). (2) A NEW signal for
+  the exec and bare-host runners: `StreamWatch` over `OutputTee`'s chunk
+  arrivals (`make_output_stream_watch` returns `None` for any non-command kind —
+  an assay lane's liveness stays its progress file, and two differently shaped
+  bounds on one lane would double-report). (3) Container command lanes arm
+  `LogStreamWatch` for EVERY such lane, not only the ones declaring the key.
+  (4) Both watches pause under host memory/IO PSI — but ONLY on an auto bound: a
+  declared number is the operator's own and is never paused. (5) Doctors/load
+  WARN retire with the fact they asserted (`host_mode_stall_timeout_inert_reason`
+  survives only as an unused compatibility helper).
+- **Sequence lanes stay unwatched BY DECISION (design G2).** `lane_stall_signal`
+  returns `"none"`, the disclosure says "each member carries its own watch",
+  `record_stall_bound` writes `null`, and `_validate_lane` still REFUSES
+  `stall_timeout` by name there — no accepted-and-inert key is possible.
+  Rejected alternative: a "did the member history move" heartbeat, which is
+  written only on member completion and therefore cannot show progress.
+- **Docs in this change:** README, SPEC (`R-40f` extended, new `R-40i`, `R-08`,
+  `R-30`), CONSUMERS, LANE-AUTHORING, CHANGES.
+- **Open, reported not fixed:** no archived measurement of COMMAND-lane log
+  silence exists, so the 300 s default is a judgement for those lanes rather
+  than a measurement. Known quiet-by-design candidates that may legitimately
+  exceed it are `ciu` `enroll` and `ciu-run-os-integration` (both host-mode, 20 m)
+  and any lane whose child blocks on its own stdout buffering; a false STALL on
+  such a lane is answered by an explicit `stall_timeout` in ITS toml with the
+  measured reason, not by widening the default. The assay side of this (legit
+  1935 s inter-event gaps measured on healthy runs, saved only by the PSI pause)
+  belongs to P4.
+
+Source: vbpub-core, P1 of `docs/design/no-time-budgets/DESIGN.md`.

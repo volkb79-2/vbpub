@@ -9,6 +9,29 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- run-gate: a stall watch on every watchable lane kind (RG-320, P1 of
+  `docs/design/no-time-budgets/DESIGN.md`) — a lane declaring no
+  `stall_timeout` is armed with a 300 s bound, and the exec/bare-host command
+  runners get their first liveness signal (`StreamWatch` over their own output
+  stream). The bound, its source (`declared`/`auto`) and the signal it judges
+  are disclosed on the line and recorded as `stall_bound`; an AUTO bound (only)
+  pauses under host memory/IO pressure. No cap is removed and
+  `budget = "unbounded"` is still refused (that is P2).
+
+### Changed
+- run-gate: a container command lane is watched by `LogStreamWatch` whether or
+  not it declares `stall_timeout` (RG-320), so every command lane is now bounded
+  by silence rather than left unbounded when silent.
+- run-gate: RG-58's bare-host "`stall_timeout` is inert" load-time WARN and its
+  matching `doctor` 2d line are RETIRED, not reworded — the bare-host runner has
+  a watch now, so the message had outlived the fact it asserted.
+
+### Documentation
+- docs(run-gate): README/SPEC/CONSUMERS/LANE-AUTHORING describe the per-kind
+  signal table, the 300 s auto bound with its disclosed source, and the
+  buffered-child caveat (RG-320, rev 75: new `R-40i`, `R-40f` extended).
+
 <!-- cmru: release history -->
 
 ## [25.9.0] - 2026-11-24

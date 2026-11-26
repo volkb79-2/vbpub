@@ -20355,15 +20355,23 @@ class TestInflightRecordDecisions:
         assert (f"never on total elapsed time — enforced by the owning "
                 f"client, pid {os.getpid()}; this one only watches") in out
 
-    def test_a_lane_without_bounds_discloses_neither(
-            self, tmp_path, monkeypatch, capsys):
-        """Disclosure, not noise: a lane that declares neither key says
-        nothing about either, on every path."""
+    def test_a_lane_without_bounds_discloses_the_auto_bound_and_no_budget(
+            self, tmp_path, monkeypatch, capfd):
+        """RG-320 (P1) CHANGES what "no bounds declared" means.
+
+        Before P1 a lane declaring neither key said nothing about either.
+        Now an undeclared lane is still BOUNDED by the default silence
+        window, so saying nothing would hide the number that can stop it —
+        the exact disclosure gap P1 exists to close. The budget half is
+        unchanged: nothing is declared, so nothing is printed for it."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         plant_inflight(proj, repo, state, status="running")
         assert run_gate.main(["suite"]) == 0
-        out = capsys.readouterr().out
-        assert "budget" not in out and "stall_timeout" not in out
+        out = capfd.readouterr().out
+        assert "run-gate: budget" not in out
+        assert ("run-gate: stall bound 300s (source: auto) — no "
+                "stall_timeout is declared") in out
+        assert "its own log output (log stream) is watched" in out
 
     def test_a_gone_container_is_reported_cleared_and_the_lane_runs_fresh(
             self, tmp_path, monkeypatch, capsys):
@@ -22192,6 +22200,360 @@ class ProgressWatchFixture:
         self.watch, self.path, self.clock = watch, path, clock
 
 
+class FakeTee:
+    """What `StreamWatch` actually reads from `OutputTee`: the arrival
+    instant of the last chunk, and how many chunks ever arrived. A test
+    drives those two facts directly instead of pumping a real subprocess
+    (the end-to-end tests below do the real thing)."""
+
+    def __init__(self, clock):
+        self.clock = clock
+        self.chunks = 0
+        self.last_chunk_at = None
+
+    def chunk(self, text: str = "x") -> None:
+        self.chunks += 1
+        self.last_chunk_at = self.clock()
+
+
+class TestStreamWatch:
+    """RG-320 (P1). Silence judged from a bare-host/exec child's OWN output
+    arrivals — the signal G1 said did not exist, and the reason `stall_timeout`
+    used to be accepted-and-inert on those two runners."""
+
+    def _watch(self, stall, *, auto_bound=False, psi=None):
+        clock = FakeClock()
+        tee = FakeTee(clock)
+        reader = (lambda: psi[0]) if psi is not None else None
+        watch = run_gate.StreamWatch(tee, stall, "unit", clock, reader,
+                                     auto_bound=auto_bound)
+        return watch, tee, clock, psi
+
+    def test_no_bound_never_checks_anything(self):
+        watch, _tee, clock, _ = self._watch(None)
+        clock.advance(10**9)
+        assert watch.poll() is None
+
+    def test_a_lane_that_keeps_printing_is_never_stopped(self):
+        watch, tee, clock, _ = self._watch(300)
+        tee.chunk()
+        clock.advance(299)
+        assert watch.poll() is None
+        tee.chunk()
+        clock.advance(299)
+        assert watch.poll() is None
+
+    def test_silence_past_the_window_stalls_naming_the_age(self):
+        watch, tee, clock, _ = self._watch(300)
+        tee.chunk("partial output")
+        clock.advance(299)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "still RUNNING" in stalled
+        assert "has written nothing for 300s" in stalled
+        assert "stall_timeout 300s" in stalled
+        assert "1 chunk(s) of output" in stalled
+
+    def test_silence_before_the_first_chunk_stalls_from_construction(self):
+        """A child that never writes anything at all is silent from the
+        moment the watch exists — measured from its own construction, not
+        from an unset `last_chunk_at` (which would mean `None` and no
+        age at all)."""
+        watch, tee, clock, _ = self._watch(300)
+        clock.advance(300)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "(no output yet)" in stalled
+
+    def test_the_auto_bound_names_itself_as_auto(self):
+        """The stall message must not claim a `stall_timeout` an operator
+        never declared — a lane stopped by the DEFAULT number has to say which
+        number it was."""
+        watch, tee, clock, _ = self._watch(300, auto_bound=True)
+        clock.advance(300)
+        assert "auto stall bound 300s" in watch.poll()
+
+    def test_real_output_restarts_the_clock(self):
+        watch, tee, clock, _ = self._watch(300)
+        clock.advance(300)
+        assert watch.poll() is not None          # would have stalled
+        tee.chunk()
+        assert watch.poll() is None              # movement reset it
+
+    def test_pressure_pauses_the_auto_clock_only(self):
+        """The pause is what makes a guessed 300 s sound on a shared host:
+        while host PSI is above the threshold the silence is not the lane's.
+        A DECLARED bound is the operator's own number and is never paused."""
+        psi = [6.0]
+        watch, tee, clock, psi = self._watch(300, auto_bound=True, psi=psi)
+        # The clock credits pressure only for intervals it OBSERVED (the same
+        # rule ProgressWatch's own pause follows — the watch learns about
+        # pressure when it polls, nothing earlier).
+        assert watch.poll() is None               # pressure seen: pause opens
+        tee.chunk()                               # one real output arrival
+        clock.advance(1000)                       # 1000 s under pressure
+        assert watch.poll() is None               # still open, nothing charged
+        psi[0] = 0.0
+        assert watch.poll() is None               # pause closes: 1000 s credited
+        clock.advance(299)
+        assert watch.poll() is None
+        clock.advance(2)
+        assert watch.poll() is not None
+        declared, _tee2, clock2, psi2 = self._watch(300, psi=[6.0])
+        clock2.advance(301)
+        assert declared.poll() is not None        # no pause for a declaration
+
+    def test_the_pause_is_capped_so_a_wedged_lane_still_stalls(self):
+        """`PRESSURE_PAUSE_MAX_SECONDS` bounds the credit: a lane that is
+        genuinely wedged must not be shielded forever by a host that is
+        permanently loaded."""
+        psi = [7.0]
+        watch, _tee, clock, _psi = self._watch(300, auto_bound=True, psi=psi)
+        clock.advance(run_gate.PRESSURE_PAUSE_MAX_SECONDS + 301)
+        assert watch.poll() is not None
+
+    def test_a_broken_pressure_reader_is_unknown_not_high(self):
+        def boom():
+            raise RuntimeError("guest unavailable")
+        clock = FakeClock()
+        watch = run_gate.StreamWatch(FakeTee(clock), 300, "unit", clock, boom,
+                                     auto_bound=True)
+        assert watch._pressure_high() is False
+
+
+class TestStallEndToEndBareHostLane:
+    """RG-320 (P1), G1 closed: a BARE-HOST lane is really watched now.
+
+    Proven through `main()` against real child processes (this is the runner
+    `stall_timeout` used to load clean and then ignore for the whole run):
+    a silent child is stopped and reported STALLED, a chatty one is not,
+    and a lane that declares NOTHING is still bounded by the default.
+    """
+
+    def _proj(self, tmp_path, body: str, stall: str = "") -> tuple[Path, Path]:
+        repo = make_history_repo(tmp_path, f"""\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            {body}
+            {stall}
+            clean_tree = false
+        """)
+        return repo
+
+    def test_a_silent_bare_host_lane_is_stopped_and_reported_as_stalled(
+            self, tmp_path, monkeypatch, capsys):
+        with _test_child_scope():
+            with alarm_guard("RG-320 silent bare-host stall", seconds=90):
+                repo, proj = self._proj(
+                    tmp_path,
+                    'argv = ["bash", "-c", "exec sleep 60"]',
+                    'stall_timeout = "1s"')
+                monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+                monkeypatch.chdir(proj)
+                monkeypatch.setattr(sys, "argv", ["run-gate"])
+                assert run_gate.main(["suite"]) == 2
+                out, err = capsys.readouterr()
+                assert "lane 'suite' STALLED" in err
+                assert "still RUNNING but has written nothing" in err
+                assert "(stall_timeout 1s)" in err
+                assert "(no output yet)" in err
+                # The disclosure says WHICH signal judged this lane, and that
+                # this runner's own output is the one P1 added.
+                assert ("run-gate: stall_timeout 1s (source: output stream) — "
+                        "the lane is stopped only if its own output stream "
+                        "goes silent that long") in out
+                # The child is gone: a stall stops the lane, it does not leave
+                # the thing that stalled running. Reaped rather than sampled
+                # once, so this cannot race the teardown (RG-313's own
+                # lesson one lane kind over).
+                deadline = time.time() + 30
+                while time.time() < deadline and _direct_child_pids():
+                    time.sleep(0.05)
+                assert _direct_child_pids() == []
+
+    def test_a_chatty_bare_host_lane_is_never_stopped(
+            self, tmp_path, monkeypatch, capsys):
+        with _test_child_scope():
+            with alarm_guard("RG-320 chatty bare-host lane", seconds=90):
+                repo, proj = self._proj(
+                    tmp_path,
+                    'argv = ["bash", "-c", '
+                    '"for i in $(seq 1 8); do echo tick $i; sleep 0.2; done"]',
+                    'stall_timeout = "1s"')
+                monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+                monkeypatch.chdir(proj)
+                monkeypatch.setattr(sys, "argv", ["run-gate"])
+                assert run_gate.main(["suite"]) == 0
+                out, err = capsys.readouterr()
+                assert "STALLED" not in out + err
+                # And the output really passed through (the watch times
+                # arrivals; it must never capture-and-replay instead).
+                assert "tick 8" in out
+
+    def test_an_undeclared_bare_host_lane_is_bounded_by_the_default(
+            self, tmp_path, monkeypatch, capsys):
+        """The core of P1: a lane that declares NO `stall_timeout` is still
+        bounded, and the message names the bound as AUTO rather than
+        pretending the operator declared it. The default is shortened here
+        (test-only) so the assertion does not cost five minutes; the shipped
+        value is pinned by `TestAutoStallBoundFacts`."""
+        with _test_child_scope():
+            with alarm_guard("RG-320 auto-bound bare-host stall", seconds=90):
+                repo, proj = self._proj(
+                    tmp_path, 'argv = ["bash", "-c", "exec sleep 60"]')
+                monkeypatch.setattr(run_gate, "DEFAULT_STALL_BOUND_SECONDS", 1.0)
+                monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+                monkeypatch.chdir(proj)
+                monkeypatch.setattr(sys, "argv", ["run-gate"])
+                assert run_gate.main(["suite"]) == 2
+                out, err = capsys.readouterr()
+                assert ("run-gate: stall bound 1s (source: auto) — no "
+                        "stall_timeout is declared") in out
+                assert "auto stall bound 1s" in err
+                deadline = time.time() + 30
+                while time.time() < deadline and _direct_child_pids():
+                    time.sleep(0.05)
+                assert _direct_child_pids() == []
+
+
+class TestAutoStallBoundFacts:
+    """RG-320: one derivation of the bound, its source, and the signal — so
+    the disclosure line, the watch and the run record cannot disagree."""
+
+    def test_a_declared_value_is_the_lane_own(self):
+        assert run_gate.stall_bound_facts({"stall_timeout": "15m"}) == {
+            "seconds": 900.0, "source": "declared", "text": "15m"}
+
+    def test_an_absent_value_is_the_documented_default(self):
+        facts = run_gate.stall_bound_facts({})
+        assert facts["source"] == "auto"
+        assert facts["seconds"] == 300.0
+        assert facts["text"] == "300s"
+        assert run_gate.DEFAULT_STALL_BOUND_SECONDS == 300.0
+
+    def test_the_signal_is_derived_from_kind_and_runner_not_from_a_key(self):
+        assert run_gate.lane_stall_signal({"kind": "assay"}) == \
+            run_gate.STALL_SIGNAL_PROGRESS_FILE
+        assert run_gate.lane_stall_signal({"kind": "sequence"}) == "none"
+        assert run_gate.lane_stall_signal({"kind": "command"},
+                                          run_gate.STALL_SIGNAL_LOG_STREAM) == \
+            run_gate.STALL_SIGNAL_LOG_STREAM
+        assert run_gate.lane_stall_signal({"kind": "command"},
+                                          run_gate.STALL_SIGNAL_OUTPUT_STREAM) \
+            == run_gate.STALL_SIGNAL_OUTPUT_STREAM
+        # Loaded from the declaration, for the re-attach/follow paths that no
+        # longer hold a resolved environment.
+        assert run_gate.lane_stall_signal(
+            {"kind": "command", "_environment_mode": "exec"}) == \
+            run_gate.STALL_SIGNAL_OUTPUT_STREAM
+        assert run_gate.lane_stall_signal(
+            {"kind": "command", "_environment_mode": "ephemeral"}) == \
+            run_gate.STALL_SIGNAL_LOG_STREAM
+
+    def test_an_inherited_central_lane_is_stamped_with_its_declared_mode(
+            self, tmp_path):
+        """RG-320 follow-up: the mode is read from the DECLARATION the lane is
+        actually merged with. An inherited central lane used to reach the
+        disclosure unsigned (`_validate_config` only stamps the project's own
+        lanes), so it silently defaulted to the container signal even when its
+        environment runs a bare `exec` child."""
+        repo = make_repo(tmp_path)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.shared-exec]
+            mode = "exec"
+            image = "runner:v1"
+            [environments.shared-container]
+            mode = "ephemeral"
+            image = "tester:v1"
+            [lanes.exec-shared]
+            kind = "command"
+            environment = "shared-exec"
+            argv = ["true"]
+            clean_tree = false
+            [lanes.container-shared]
+            kind = "command"
+            environment = "shared-container"
+            argv = ["true"]
+            clean_tree = false
+        """))
+        commit_all(repo, "central lanes and environments")
+        proj = make_project(repo, SIMPLE_LANE)
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        merged = run_gate.merge_lanes(cfg.get("lanes", {}), central, proj,
+                                      cfg_path, cpath, project=cfg)
+        assert run_gate.lane_stall_signal(merged["exec-shared"]) == \
+            run_gate.STALL_SIGNAL_OUTPUT_STREAM
+        assert run_gate.lane_stall_signal(merged["container-shared"]) == \
+            run_gate.STALL_SIGNAL_LOG_STREAM
+
+    def test_a_project_environment_shadows_the_central_mode(self, tmp_path):
+        """`resolve_environment` prefers the project's `[environments.*]`; the
+        stamped mode must be the same one, or the disclosure would name a
+        signal the runner is not using."""
+        repo = make_repo(tmp_path)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.shared]
+            mode = "exec"
+            image = "runner:v1"
+            [lanes.shared]
+            kind = "command"
+            environment = "shared"
+            argv = ["true"]
+            clean_tree = false
+        """))
+        commit_all(repo, "central lane with an exec environment")
+        proj = make_project(repo, SIMPLE_LANE + """
+            [environments.shared]
+            mode = "ephemeral"
+            image = "tester:v1"
+        """)
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        merged = run_gate.merge_lanes(cfg.get("lanes", {}), central, proj,
+                                      cfg_path, cpath, project=cfg)
+        assert run_gate.lane_stall_signal(merged["shared"]) == \
+            run_gate.STALL_SIGNAL_LOG_STREAM
+
+    def test_the_factory_watches_a_command_lane_and_leaves_assay_alone(self):
+        """RG-320: an exec/bare-host COMMAND lane gets a watch; an ASSAY lane
+        does not (its liveness is its progress file, armed separately) — two
+        differently-shaped bounds on one lane would double-report."""
+        clock = FakeClock()
+        tee = FakeTee(clock)
+        command = run_gate.make_output_stream_watch(
+            {"kind": "command", "stall_timeout": "15m"}, "unit", tee, clock=clock)
+        assert command is not None
+        assert command.stall_seconds == 900 and command.auto_bound is False
+        assert run_gate.make_output_stream_watch(
+            {"kind": "assay", "assay_lane": "x"}, "unit", tee,
+            clock=clock) is None
+        auto = run_gate.make_output_stream_watch({"kind": "command"}, "unit",
+                                                 tee, clock=clock)
+        assert auto is not None and auto.auto_bound is True
+        assert auto.pressure_reader is not None   # only the AUTO clock pauses
+
+    def test_the_record_names_the_bound_its_source_and_its_signal(self):
+        record: dict = {}
+        run_gate.record_stall_bound(record, {"kind": "command",
+                                            "stall_timeout": "15m"},
+                                    command_signal="output-stream")
+        assert record["stall_bound"] == {"seconds": 900, "source": "declared",
+                                        "signal": "output-stream"}
+        run_gate.record_stall_bound(record, {"kind": "command"},
+                                    command_signal="output-stream")
+        assert record["stall_bound"] == {"seconds": 300, "source": "auto",
+                                        "signal": "output-stream"}
+        # A kind with no watch records the ABSENCE, never a fabricated bound.
+        record["stall_bound"] = {"seconds": 1}
+        run_gate.record_stall_bound(record, {"kind": "sequence"})
+        assert record["stall_bound"] is None
+
+
 class TestStallTimeoutLaneKey:
     """The key is validated like `budget` (same grammar, read side by side).
     Legal on both `assay` and `command` lanes since RG-41 — a malformed
@@ -22258,11 +22620,17 @@ class TestStallTimeoutLaneKey:
 
 
 class TestBareHostStallTimeoutWarning:
-    """RG-58 (RW-27a): D5's option 2 -- warn, never refuse. A bare-host
-    lane's `run_bare_host_lane` is a plain `subprocess.run` with no watch
-    of any kind, so a `stall_timeout` key there loads clean and then does
-    nothing for the lane's whole run; a future author copying a container
-    lane's config as a template can reasonably believe it is enforced."""
+    """RG-58's WARN is GONE as of RG-320 (P1).
+
+    The warning existed because `run_bare_host_lane` had no watch at all, so
+    a `stall_timeout` there loaded clean and did nothing. P1 arms
+    `StreamWatch` over that runner's own output stream and gives every
+    command lane a default bound when it declares nothing, so the warning's
+    own claim ("no watch, no timer") is false — and this project's most
+    expensive defect class is a check whose message states a conclusion its
+    code no longer supports. These tests now pin the ABSENCE of the warning
+    (nothing left to warn about) and that the config still loads.
+    """
 
     def _cfg(self, kind="command"):
         body = ('argv = ["true"]' if kind == "command"
@@ -22278,39 +22646,21 @@ class TestBareHostStallTimeoutWarning:
             clean_tree = false
         """
 
-    def test_load_time_warning_present_exactly_once(self, tmp_path, capsys):
+    def test_load_no_longer_claims_a_bare_host_bound_is_inert(
+            self, tmp_path, capsys):
+        """RG-320: the load path says NOTHING about a bare-host
+        `stall_timeout` any more, because that runner has a real watch now.
+        A remaining "is inert" line here would be a false certification."""
         repo = make_repo(tmp_path)
         proj = make_project(repo, self._cfg())
         cfg, _, _, _ = run_gate.load_config(proj)
         err = capsys.readouterr().err
-        lines = [ln for ln in err.splitlines()
-                if "stall_timeout is inert" in ln]
-        assert len(lines) == 1, err
-        assert "lane 'selftest'" in lines[0]
-        assert "host-mode" in lines[0]
-        # Config still loads, exit code / behavior otherwise unchanged.
+        assert "stall_timeout is inert" not in err
+        # Config still loads, and the declared value is untouched.
         assert cfg["lanes"]["selftest"]["stall_timeout"] == "5m"
 
-    def test_load_time_warning_is_flushed_for_immediate_disclosure(
-            self, tmp_path, monkeypatch):
-        # The warning is emitted before the lane starts. Keep its deliberate
-        # flush so a redirected long-running gate does not hide the operator
-        # action until process exit.
-        calls = []
-
-        def spy(*args, **kwargs):
-            if args and "stall_timeout is inert" in args[0]:
-                calls.append(kwargs)
-
-        monkeypatch.setattr(run_gate, "print", spy, raising=False)
-        repo = make_repo(tmp_path)
-        proj = make_project(repo, self._cfg())
-        run_gate.load_config(proj)
-        assert len(calls) == 1
-        assert calls[0]["flush"] is True
-
-    def test_doctor_warns_too_same_wording(self, tmp_path, monkeypatch,
-                                           capsys):
+    def test_doctor_no_longer_warns_for_a_bare_host_stall_timeout(
+            self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, self._cfg())
         fake_docker(tmp_path, monkeypatch)
@@ -22318,9 +22668,9 @@ class TestBareHostStallTimeoutWarning:
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
-        assert "[WARN] lane 'selftest' stall_timeout (RG-58)" in out
-        assert "stall_timeout is inert on a host-mode lane" in out
-        assert code == 0   # WARN only, never FAIL (D5's option 1 rejected)
+        assert "stall_timeout (RG-58)" not in out
+        assert "stall_timeout is inert" not in out
+        assert code == 0
 
     def test_container_and_exec_lanes_are_untouched(self, tmp_path, capsys):
         repo = make_repo(tmp_path)
@@ -35968,8 +36318,9 @@ class TestFinalChangedLineCoverageOracles:
         assert "lane 'broken' environment" in output
         assert "lane 'broken-assay' environment" in output
         assert "Assay state root for env broken-assay" not in output
-        assert "lane 'bare' stall_timeout (RG-58)" in output
-        assert "lane 'container' stall_timeout (RG-58)" not in output
+        # RG-320: doctor no longer reports a bare-host lane's stall_timeout
+        # as inert — that runner has its own watch now (`StreamWatch`).
+        assert "stall_timeout (RG-58)" not in output
 
     @pytest.mark.parametrize(
         ("probe_result", "expected_code", "expected_status"),
