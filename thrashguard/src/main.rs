@@ -280,7 +280,7 @@ fn local_events_reply(state_dir: &Path, boot_id: &str, since_seq: u64) -> Result
 
     loop {
         let reply = daemon::events_reply(boot_id, page.clone(), truncated);
-        if reply.to_json().len() + 1 <= thrashguard::json::MAX_DOCUMENT_BYTES {
+        if reply.to_json().len() < thrashguard::json::MAX_DOCUMENT_BYTES {
             return Ok(reply);
         }
         if page.pop().is_none() {
