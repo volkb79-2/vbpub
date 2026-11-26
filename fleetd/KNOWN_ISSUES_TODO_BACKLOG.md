@@ -54,8 +54,12 @@
 | FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | DONE in P-fd-05 C1 | 2026-11-24 |
 | FD-050 | Add admission queue and legacy charges to the host policy schema before deployment | P1 | OPEN | 2026-11-26 |
 | FD-051 | Retain and prune completed admission terminal records in host agent package C | P2 | OPEN | 2026-11-26 |
-| FD-052 | An inspector ERROR at a fitting lease head blocks its priority class until expiry | P2 | OPEN (known limit) | 2026-11-26 |
+| FD-052 | An inspector ERROR at a fitting lease waiter blocks every later waiter until expiry | P2 | OPEN (known limit) | 2026-11-26 |
 | FD-053 | Prevent overlapping authenticated group prefixes in package C policy | P2 | OPEN | 2026-11-26 |
+| FD-054 | Package C must bound every provider and inspector call made under the queue lock | P1 | OPEN | 2026-11-26 |
+| FD-055 | A stray record after an unconfirmed rollback can leave a charge the waiter never claims | P2 | OPEN | 2026-11-26 |
+| FD-056 | The wait deadline is not rechecked after the queue lock is taken | P3 | OPEN | 2026-11-26 |
+| FD-057 | Admission subprocess tests have no timeout, and the two-process test is weak | P3 | OPEN | 2026-11-26 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1007,13 +1011,14 @@ package C owns the retention policy and safe pruning boundary.
 
 Source: P-fd-05 C2 controller ruling M2.
 
-## FD-052 Lease inspector ERROR can block its priority class
+## FD-052 Lease inspector ERROR can block later waiters
 
 **State:** OPEN (known limit). **Priority:** P2. **Filed:** 2026-11-26.
 
-A fitting lease head whose inspector keeps answering `ERROR` remains charged
-and can block later same-priority waiters until the admission wait expires.
-The book fails closed; package C may add an explicit recovery or retry policy.
+A fitting lease waiter whose inspector keeps answering `ERROR` holds no charge
+but can block every waiter that sorts after it, in lower priority classes too,
+until its admission wait expires. The book fails closed; package C may add an
+explicit recovery or retry policy.
 
 Source: P-fd-05 review r1 Low 2 and controller ruling.
 
@@ -1028,3 +1033,48 @@ group-specific id namespace. This package records the limit without changing
 the `/1` grammar.
 
 Source: P-fd-05 C2 controller ruling for FU12 group-prefix ambiguity.
+
+## FD-054 Bound every call made under the admission queue lock
+
+**State:** OPEN for host agent package C. **Priority:** P1. **Filed:** 2026-11-26.
+
+`capacity_provider`, `legacy_jobs_provider` and the Docker `inspector` run while
+`queue.lock` is held, and that flock blocks without a timeout. One hung call
+stops every submit, completion, status, cancel and wait expiry, so a merge gate
+waits for ever and a finished job keeps its charge. Nothing over-admits.
+Package C must bound each call and map a timeout to 75 or `ERROR`, before the
+book is wired to a host.
+
+Source: P-fd-05 C2 review r2 M-2.
+
+## FD-055 Stray charged record after an unconfirmed rollback
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-26.
+
+`_atomic_new_json` unlinks the path even when the write failed before the rename,
+and the wait loop does not look for an existing record before admitting. If a
+rollback cannot be confirmed, the waiter counts the stray record against itself
+and expires with "never started" while the record stays charged. Unlink only
+after a successful rename, and check for the record inside the loop.
+
+Source: P-fd-05 C2 review r2 L-5.
+
+## FD-056 Wait deadline is not rechecked under the lock
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-26.
+
+The wait loop checks its deadline before it takes `queue.lock`, so a decision
+delayed by lock contention can admit after the deadline. Harmless for an
+in-process caller; the socket agent must handle a late grant.
+
+Source: P-fd-05 C2 review r2 L-6.
+
+## FD-057 Admission subprocess tests: no timeout, weak two-process case
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-26.
+
+A stalled child hangs the test run instead of failing it, and the two-process
+admission test detects a missing lock only when the interleaving is unlucky. It
+cannot fail spuriously.
+
+Source: P-fd-05 C2 review r2 L-8.

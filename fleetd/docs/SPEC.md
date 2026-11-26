@@ -48,14 +48,24 @@ load, memory PSI, required checkout and Docker disk floors, cgroup v2, and the
 freeze rule. Each listed legacy job without an `EXIT` marker is charged
 `legacy_charge_bytes` and `legacy_planned_cores`; its directory remains charged
 until an `EXIT` marker removes it from the required provider's list. Unknown
-needed policy values return 75 with the key named in the reason.
+needed policy values return 75 with the key named in the reason; an expired wait
+appends its last refusal reason. `legacy_planned_cores` may be 0. A known but
+invalid policy value (for example `aging_s` of 0) refuses with 2. A capacity
+provider that raises returns 75.
 
-The shared wait queue clamps priority to the authenticated group's host policy,
-orders by priority, submission time, then group-prefixed job id, and reserves
-RAM and planned cores for the first aged, statically eligible, non-fitting
-waiter in that order. While that holder does not fit, no candidate may consume
-its reserved RAM or cores; only a strictly higher-priority `merge-gate` may
-pass. There is no other backfill. A request that cannot ever fit refuses with
+The capacity provider, the legacy job provider and the inspector run under
+`queue.lock`, whose lock has no timeout. Package C must bound every one of those
+calls and turn a timeout into 75 or an `ERROR` answer; one hung call would stop
+every submit, completion and wait expiry on the host (FD-054).
+
+The shared wait queue clamps priority to the authenticated group's host policy
+and orders by priority, submission time, then group-prefixed job id. The first
+aged, statically eligible waiter in that order holds the reservation, whether it
+fits now or not. While one exists, nothing else is admitted except the holder
+itself and a strictly higher-priority `merge-gate`; the holder passes
+earlier-sorting waiters that are not aged and yields only to an earlier
+fitting `merge-gate`. Without a holder, a candidate waits only for an
+earlier-sorting waiter that fits. A request that cannot ever fit refuses with
 2. Expiry withdraws the waiter and confirms that it never started before
 returning 75. The injected clock controls queue aging and wait expiry; there is
 no run wall-clock limit.
@@ -77,7 +87,9 @@ and completed state, with no charge, before removing the admitted record. If a
 crash occurs between those writes, the terminal record wins and the job is
 completed. Replaying the same id and digest returns that terminal state without
 a handle; another digest or group is refusal (2), and an unreadable terminal
-record returns 75. This package does not prune terminal records; package C's
+record returns 75 for that id. An admission decision reads a terminal record
+only while the same id still has an active record, so unrelated finished history
+cannot block admission. This package does not prune terminal records; package C's
 host agent owns their retention policy.
 
 Lease records use the same queue and capacity charges. They persist pending and
@@ -87,8 +99,9 @@ charge. Reconcile is an observation: it tombstones and releases only for an
 explicit no-such-object answer; a pending lease also requires an acquirable
 flock. `PRESENT`, `ERROR`, other answers, and inspector exceptions leave the
 record unchanged. Released lease names remain tombstoned and cannot be reused.
-A lease head whose inspector keeps answering `ERROR` can block its priority
-class until its admission wait expires; this is a known limit. The package does
+A fitting lease waiter whose inspector keeps answering `ERROR` can block every
+waiter that sorts after it, in lower priority classes too, until its admission
+wait expires; a waiter holds no charge. This is a known limit (FD-052). The package does
 not perform Docker operations; the host agent must enforce bind/start and
 reconciliation around this accounting API.
 

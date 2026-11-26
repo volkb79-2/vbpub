@@ -12,7 +12,7 @@ All notable changes to this project are recorded here.
 
 ### Changed
 - Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.
-- An aged non-fitting reservation holder blocks all admissions that consume its RAM or planned cores; only a strictly higher-priority merge gate may pass. Lease reconciliation changes a record only on confirmed absence; explicit revoke tombstones while retaining its charge.
+- The first aged waiter in queue order holds the reservation, fitting or not: nothing else is admitted before it except a strictly higher-priority merge gate. An expired wait names its last refusal, a raising capacity provider refuses with 75, and only the terminal record of a still-active job is read during admission. Lease reconciliation changes a record only on confirmed absence; explicit revoke tombstones while retaining its charge.
 - `fleet facts collect` emits `host-facts/2` only.
 - The planner reads `/2` `cpu.online` and `memory.total_bytes`, and refuses `/1`; legacy `/1` `cpu.for_lanes` and `memory.for_lanes_bytes` are therefore accepted only by `fleet facts validate` during the migration release and no longer affect placement.
 - The collector reads the parent control-plane slice's `memory.min` again and reports it as `control_plane.memory_min_bytes`; the planner ignores it.

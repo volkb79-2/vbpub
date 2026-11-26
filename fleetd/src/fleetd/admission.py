@@ -939,17 +939,16 @@ class AdmissionBook:
     def _load_records(self) -> dict[str, dict[str, object]]:
         try:
             job_paths = sorted(path for path in self.admitted_dir.iterdir() if path.name.endswith(".json"))
-            terminal_paths = sorted(path for path in self.completed_dir.iterdir() if path.name.endswith(".json"))
+            terminal_names = {path.name for path in self.completed_dir.iterdir() if path.name.endswith(".json")}
             lease_paths = sorted(path for path in self.leases_dir.iterdir() if path.name.endswith(".json"))
         except OSError as exc:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read admission records: {exc}") from exc
-        terminal_records: dict[str, dict[str, object]] = {}
-        for path in terminal_paths:
-            terminal_records[path.stem] = _read_terminal_record(path, expected_id=path.stem)
         records: dict[str, dict[str, object]] = {}
         for path in job_paths:
-            terminal = terminal_records.get(path.stem)
-            if terminal is not None:
+            # A terminal record decides something only while its job is still
+            # active; finished history is not read and cannot block admission.
+            if path.name in terminal_names:
+                terminal = _read_terminal_record(self.completed_dir / path.name, expected_id=path.stem)
                 try:
                     active = _read_json_record(path, expected_id=path.stem)
                 except AdmissionError:
@@ -1356,9 +1355,16 @@ class AdmissionBook:
         if not candidate_fits or candidate_metrics is None:
             return False
         candidate_key = self._queue_key(candidate)
+        # The reservation belongs to the first aged waiter in queue order, whether
+        # it fits now or not. Exactly one waiter holds it, so two waiters can
+        # never block each other.
         reservation_holder: Mapping[str, object] | None = None
+        earlier_fitting: list[Mapping[str, object]] = []
         for row in ordered:
             if row["job_id"] == candidate["job_id"]:
+                if now - float(candidate["submitted_at"]) >= aging_s:
+                    reservation_holder = candidate
+                    break
                 continue
             try:
                 static_eligibility(capacity, str(row["footprint"]), float(row["planned_cores"]))
@@ -1366,22 +1372,23 @@ class AdmissionBook:
                 # Candidate feasibility already established every shared host fact;
                 # a waiter-specific footprint or core request can only be refused.
                 continue
-            row_fits, _row_metrics = self._candidate_fits(row, capacity, records, legacy_ids)
-            if row_fits and self._queue_key(row) < candidate_key:
-                return False
-            if row_fits:
-                continue
-            age = max(0.0, now - float(row["submitted_at"]))
-            if age >= aging_s:
+            if now - float(row["submitted_at"]) >= aging_s:
                 reservation_holder = row
                 break
+            if self._queue_key(row) < candidate_key:
+                row_fits, _row_metrics = self._candidate_fits(row, capacity, records, legacy_ids)
+                if row_fits:
+                    earlier_fitting.append(row)
 
         if reservation_holder is None:
-            return True
+            return not earlier_fitting
+        if reservation_holder["job_id"] == candidate["job_id"]:
+            return all(str(row["priority"]) != "merge-gate" for row in earlier_fitting)
         return (
             str(candidate["priority"]) == "merge-gate"
             and PRIORITIES.index(str(candidate["priority"]))
             < PRIORITIES.index(str(reservation_holder["priority"]))
+            and not earlier_fitting
         )
 
     @staticmethod
@@ -1401,17 +1408,27 @@ class AdmissionBook:
         return _nonnegative_number(policy["wait_s"], "policy.admission.wait_s")
 
     def _expire_waiter(
-        self, job_id: str, authenticated_group: str, digest: str
+        self, job_id: str, authenticated_group: str, digest: str, last_refusal: str | None
     ) -> AdmissionResult:
         queue_fd = self._queue_lock()
         try:
             self._remove_waiter_locked(job_id, digest, authenticated_group)
         finally:
             _unlock_close(queue_fd)
-        raise AdmissionError(
-            ExitCode.QUEUED_WITHDRAWN,
-            "wait expired; waiter withdrawn and the book confirms the job never started",
-        )
+        reason = "wait expired; waiter withdrawn and the book confirms the job never started"
+        if last_refusal is not None:
+            reason = f"{reason}; last refusal: {last_refusal}"
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, reason)
+
+    @staticmethod
+    def _host_capacity(provider: Callable[[], HostCapacity]) -> HostCapacity:
+        try:
+            return provider()
+        except AdmissionError:
+            raise
+        except Exception as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"host capacity unavailable: {exc}") from exc
 
     def submit(
         self,
@@ -1448,7 +1465,7 @@ class AdmissionBook:
             existing_waiter = self._existing_waiter_locked(request.job_id, group, digest, record_kind)
             if existing_waiter is not None:
                 return existing_waiter
-            capacity = capacity_provider()
+            capacity = self._host_capacity(capacity_provider)
             if is_lease:
                 self._lease_name_available_locked(request.lease_id, request.container_name, inspector)
             eligibility = static_eligibility(capacity, request.resources.footprint, requested_cores)
@@ -1504,10 +1521,12 @@ class AdmissionBook:
             _unlock_close(queue_fd)
 
         deadline = submitted_at + wait_limit
+        # Why the latest decision did not admit; reported when the wait expires.
+        last_refusal: str | None = None
         try:
             while True:
                 if _nonnegative_number(self.clock(), "clock") >= deadline:
-                    return self._expire_waiter(request.job_id, group, digest)
+                    return self._expire_waiter(request.job_id, group, digest, last_refusal)
                 queue_fd = self._queue_lock()
                 try:
                     waiter_path = self._waiting_path(request.job_id)
@@ -1517,7 +1536,7 @@ class AdmissionBook:
                         _unlock_close(waiter_fd)
                         waiter_fd = None
                         raise AdmissionError(ExitCode.CANCELLED, "queued request was cancelled and withdrawn")
-                    capacity = capacity_provider()
+                    capacity = self._host_capacity(capacity_provider)
                     current_priority = _clamp_priority(capacity, group, request.priority)
                     legacy_ids = self._legacy_job_ids(legacy_jobs_provider)
                     if is_lease:
@@ -1562,7 +1581,9 @@ class AdmissionBook:
                         _unlock_close(waiter_fd)
                         waiter_fd = None
                         return result
+                    last_refusal = "capacity or an earlier queue reservation"
                 except AdmissionError as exc:
+                    last_refusal = exc.reason
                     if exc.exit_code != ExitCode.QUEUED_WITHDRAWN:
                         self._remove_waiter_locked(request.job_id, digest, group)
                         if waiter_fd is not None:
@@ -1574,7 +1595,7 @@ class AdmissionBook:
 
                 now = _nonnegative_number(self.clock(), "clock")
                 if now >= deadline:
-                    return self._expire_waiter(request.job_id, group, digest)
+                    return self._expire_waiter(request.job_id, group, digest, last_refusal)
                 self.waiter(min(QUEUE_RECHECK_S, deadline - now))
         finally:
             if waiter_fd is not None:
