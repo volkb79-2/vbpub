@@ -119,8 +119,15 @@ fn cpu_max_fixture_quota_period_absence_and_parse_failure_are_distinct() {
     let topology = FixedTopology::with_default(DeviceTopology::Bottom);
     let unlimited = read_cgroup(&RealFs::new(), &fixtures(), Bounds::POLICY, &topology);
     let max = unlimited.readings_of("cpu.max").expect("cpu.max fixture");
-    assert_eq!(max.quality("limit.cpu.max.quota"), Some(QualityCode::Unsupported));
-    assert_eq!(max.u64("limit.cpu.max.quota"), None, "max is not a measurement");
+    assert_eq!(
+        max.quality("limit.cpu.max.quota"),
+        Some(QualityCode::Unsupported)
+    );
+    assert_eq!(
+        max.u64("limit.cpu.max.quota"),
+        None,
+        "max is not a measurement"
+    );
     assert_eq!(max.u64("limit.cpu.max.period"), Some(100_000));
 
     let numeric_path = Path::new("system.slice")
