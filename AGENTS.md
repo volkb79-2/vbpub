@@ -288,6 +288,10 @@ identity (passwd+group+HOME+XDG). "Green in the devcontainer venv" is not a ship
 signal.
 `tester-unified` builds FROM `tester-base` (`tester-base/`: python:3.14-trixie
 plus docker client, minisign and shellcheck), not from the MDT cockpit image.
+Estate-wide checks (the real release graph, Run-Gate lane budgets) live in
+**`estate-lint/`** (lane `suite`), not in any one project's lane: each tool judges
+only its own rules (P-core-12, KI-194). A change that edits only a `run-gate.toml`
+or `assay.toml` also runs `estate-lint/suite`.
 
 **Do not execute tests from the devcontainer cockpit.** This includes pytest,
 Hypothesis, unittest, project test scripts, and focused test selections. Run
