@@ -4,6 +4,51 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed (R2 is a native Assay lane: shardable, resumable, load-independent)
+- `run-gate.toml`'s `[lanes.r2]` is `kind = "assay"` with `assay_lane = "r2"`
+  instead of a `kind = "command"` lane that drove Assay by hand (DIV2-BL-22). A
+  command lane could not shard: Run-Gate refuses `--shard`, `--merge-shards`,
+  `--carry-over` and `--only-candidates` on anything but a native R2 lane.
+  The lane declares `environment = "tester-unified"` (ephemeral),
+  `resource_observer = "cgprofile"`, `jobs = 2`, `clean_tree = false`, `budget =
+  "450m"` and `resources = {pids = 8192, memory = "2g", io_sync = "durable"}`
+  (no `resources.shared`: Run-Gate refuses sharding on a lane that declares
+  one). The judge binds from the judged worktree's own `assay/` source (RG-285),
+  never a pinned zipapp.
+- `assay.toml`'s `[lanes.r2]` keeps its scope, rigor, argv, isolation and judge
+  policy, and its env is now DECLARED and checkout-RELATIVE
+  (`PYTHONPATH = ".:../../libraries/cowtree/src"`, `env_passthrough = ["PATH"]`).
+  `PYTHONPATH` was in `env_passthrough` with an absolute `{worktree}` before, so
+  `judge_sha256` folded the checkout path in and a seeded resume in a new
+  checkout rejected all 186 records (assay B577, `resumed_total: 0`).
+  cli-extended is deliberately NOT on that path: the tester-unified image installs
+  the released wheel, so the lane tests against it (AC-25, as `ciu/assay.toml`
+  does).
+- `judge.mutation.budget_per_candidate = "10m"`, explicit, replacing `auto`
+  (DIV2-BL-22). `auto` derives the bound from the baseline measured at START
+  (`max(3 x baseline, baseline + 60)`), so a quiet baseline (46.5 s -> 139.6 s)
+  followed by a loaded host ended eight `layout_policy.py` candidates as
+  `budget_exceeded` where a loaded baseline (97.8 s -> 293 s) let the same head
+  finish. 10m is twice that 293 s bound, under which all 194 candidates
+  completed: a CEILING for a slow or contended mutant, not a target. It is part
+  of the judge identity, so changing it rebinds every stored record.
+  `liveness = false`, as `libraries/iobench`'s `iobench-diff` lane declares.
+- The shard artifacts are `.assay/verdict-r2.r2.shard<K>of3.json` and
+  `.assay/progress-r2.r2.shard<K>of3.jsonl`; the declared `artifacts` list keeps
+  the UNSHARDED spelling (`.assay/verdict-r2.json`, `.assay/progress-r2.jsonl`)
+  as `libraries/iobench/run-gate.toml` does -- Run-Gate appends the shard suffix
+  itself, and the list is disclosure only.
+- New `docs/R2-RUNBOOK.md` (the procedure the two TOML files point at): plan the
+  split, the three shard commands with `--base` and `--collect-store`, the merge
+  run seeded from all three stores with `--merge-shards 3` (the binding verdict),
+  and a seeded resume proved from the progress stream (`resumed_total > 0`;
+  the verdict JSON has no such field). No campaign was run from this change:
+  the documented plan is whole 194 / shards 58 + 72 + 64, and the host proof
+  stays DIV2-BL-22's open half.
+- The `installer.py:4044` survivor test now also asserts that NO create-path
+  `btrfs subvolume create` argv is planned (`actions.planned`), the same class of
+  assertion the other survivors got.
+
 ### Changed (R2 lane budget)
 - The `r2` budgets are 430m (assay) and 450m (run-gate). This is headroom for
   slow or loaded hosts, not a measured need: complete 194-candidate runs took

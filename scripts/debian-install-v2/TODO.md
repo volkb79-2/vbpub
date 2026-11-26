@@ -599,13 +599,17 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** The factor and the major rule are written in one consumer-facing spec, assay and fleetd use it, and every estate host has a record or a named reason for none.
 
-## OPEN (DIV2-BL-22, 2026-11-26): the R2 lane depends on host load through the derived per-candidate bound, and cannot resume
+## OPEN (DIV2-BL-22, 2026-11-26): R2 host-load dependence and cross-checkout resume -- lane converted, host proof owed
 
 **Source.** Survivors round 2 R2 campaigns and the pi final review (2026-11-25/26).
 
 **Finding.** `budget_per_candidate` is `auto`, derived from the baseline measured at start. A quiet baseline (46.5 s, bound 139.6 s) followed by a loaded host ended eight slow `layout_policy.py` candidates as `budget_exceeded` with reason `LANE_TIMEOUT` although the lane bound was far off; under a loaded baseline (97.8 s, bound 293 s) the same head had none. Resume rejects every earlier record in a new checkout (assay B577: the `PYTHONPATH` passthrough digest differs), and a `kind = "command"` lane cannot shard.
 
 **Do.** Convert the lane to a native R2 assay lane (shards, resume across checkouts) and take the verdict off host load: assay's CPU-time bound when it lands, else an explicit `budget_per_candidate` from the measured slow candidates (it is part of the judge identity, so it rebinds records). Check whether one per-candidate timeout should stop the remaining candidates. Record the four equivalent survivors (`installer.py:807`, `:811`, `:4109`, `layout_policy.py:236`; proofs in CHANGES.md, not waivers). In the `installer.py:4044` survivor test, also assert that no create-path `btrfs subvolume create` is planned.
+
+**Done (2026-11-26, this worktree).** `run-gate.toml [lanes.r2]` is `kind = "assay"` / `assay_lane = "r2"` (tester-unified, cgprofile observer, `jobs = 2`, `budget = "450m"`, `resources` 2g/8192 pids/durable, no `shared`), so `--shard`, `--merge-shards`, `--carry-over`, `--merge-state` and `--only-candidates` are legal on it. `assay.toml [lanes.r2]` keeps its judge policy and now declares a checkout-RELATIVE env (`PYTHONPATH = ".:../../libraries/cowtree/src"`, `PATH` the only passthrough), so `judge_sha256` no longer folds the checkout path in (the B577 cause). `judge.mutation.budget_per_candidate = "10m"` replaces `auto` (twice the 293 s bound under which all 194 candidates completed). The `installer.py:4044` test asserts no create-path argv is planned. `docs/R2-RUNBOOK.md` carries the procedure. Verified locally: `assay.cli lanes` accepts the lane, and `assay.cli plan r2 --request-base fdf60ffdc` plans 194 (shards 0/3 58, 1/3 72, 2/3 64); `run-gate r2 --shard 0/3 --dry-run` builds the native argv with `--shard`, `--merge-state` and `--jobs 2`; `run-gate r2 --merge-shards 3 --dry-run` REFUSES with the three missing store paths, which is the strict-merge proof.
+
+**Still owed (not provable here: no host access, no mutation run).** The 3-shard campaign plus `--merge-shards 3` on two hosts, and a second run that resumes (`resumed_total > 0` in the progress stream). Each shard takes 2 of a host's 4 admission slots, so the campaign needs two hosts. Also unverified live: the image's `cli_extended-0.8.0` wheel import and Assay's editable install from the judged worktree (both fail loudly as an early lane ERROR, never a false pass).
 
 **Close when.** A 3-shard run with `--merge-shards` passes on two hosts, a second run resumes finished records, and the verdict does not change with host load.
 
