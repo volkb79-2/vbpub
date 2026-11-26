@@ -369,6 +369,22 @@ def pytest_runtest_logreport(report):
     _append(record)
 
 
+def pytest_runtest_logfinish(nodeid, location):
+    # (P4 fix 1, review finding 1) pytest calls this ONCE per item, after its
+    # whole runtest protocol -- `setup`, `call` AND `teardown` -- has run
+    # (pytest 9's `pytest_runtest_protocol` brackets the item with
+    # `pytest_runtest_logstart`/`pytest_runtest_logfinish`). It is the ONLY
+    # record that proves a test is no longer in flight: its `setup`/`call`/
+    # `teardown` reports arrive while it still runs, and `phase` is a
+    # COMPLETED event for the CPU-without-progress bound. Written under its
+    # own kind, deliberately NOT in `COMPLETED_EVENT_KINDS`, so it neither
+    # re-dates that bound nor changes `tests_completed`.
+    try:
+        _append({"event": "test_finish", "nodeid": nodeid})
+    except Exception:
+        pass
+
+
 def pytest_sessionfinish(session, exitstatus):
     global _EXIT_STATUS
     try:
@@ -822,13 +838,21 @@ PHASE_EVENT = "phase"
 SESSION_START_EVENT = "session_start"
 SESSION_FINISH_EVENT = "session_finish"
 TEST_START_EVENT = "test_start"
+#: (P4 fix 1, review finding 1) `pytest_runtest_logfinish`: pytest calls it
+#: once per item, AFTER its whole runtest protocol (setup, call, teardown),
+#: so it is the only proof that a test is no longer in flight. It closes
+#: the per-test CPU window (see `_EventProgressReader.in_flight`) and is
+#: deliberately NOT a completed event: nothing new finished when it arrives.
+TEST_FINISH_EVENT = "test_finish"
 
 #: (P4/S1) What counts as a COMPLETED plugin event for the
 #: CPU-without-progress bound: a `test` (`call`) report or a `phase`
 #: (`setup`/`teardown`) report -- i.e. a unit of work the suite FINISHED.
 #: `session_start`/`session_finish` are deliberately NOT here (a session that
-#: started and then spun forever has still completed nothing), and neither is
-#: `test_start` (a report that a test BEGAN proves nothing finished).
+#: started and then spun forever has still completed nothing), and neither are
+#: `test_start` (a report that a test BEGAN proves nothing finished) nor
+#: `test_finish` (the wrapper around those phases completes nothing itself --
+#: the `teardown` report just before it already did).
 COMPLETED_EVENT_KINDS = frozenset({TEST_EVENT, PHASE_EVENT})
 
 #: (P4/S1) The resource-evidence vocabulary of the CPU-without-progress
@@ -1626,9 +1650,26 @@ class _EventProgressReader:
         elif kind == TEST_START_EVENT:
             nodeid = record.get("nodeid")
             if isinstance(nodeid, str) and nodeid:
+                # (P4 fix 1, review finding 1) A start while a window is
+                # still open proves two tests really were in flight. Every
+                # start that follows a `test_finish` opens its OWN window --
+                # `_count` keys it, so a rerun of one nodeid gets a new one.
                 if self.in_flight is not None:
                     self.overlapping_tests = True
                 self.in_flight = (nodeid, self.completed_events, self._count)
+        elif kind == TEST_FINISH_EVENT:
+            # (P4 fix 1, review finding 1) The MATCHING finish is the only
+            # thing that closes a test's window: its setup/call/teardown
+            # reports arrive while it still runs, and a finish for another
+            # nodeid belongs to a different test.
+            nodeid = record.get("nodeid")
+            if (
+                isinstance(nodeid, str)
+                and nodeid
+                and self.in_flight is not None
+                and self.in_flight[0] == nodeid
+            ):
+                self.in_flight = None
 
     def _summary(self) -> tuple[int, bool]:
         tail = self._parse_line(self._pending.decode("utf-8"))
@@ -1803,13 +1844,17 @@ class _PerTestWindow(NamedTuple):
     *started_cpu* is the MONOTONIC process-tree series at the instant the
     candidate reported that it began this nodeid, so the bound measures that
     test's own CPU and not the suite's; *baseline_s* is the sum of its
-    baseline setup+call+teardown durations.
+    baseline setup+call+teardown durations. *start_index* is the reader's
+    record index of the `test_start` that OPENED this window, so a rerun of
+    one nodeid (a retry, a repeated parameter) opens a NEW window rather than
+    inheriting the first run's already-spent CPU.
     """
 
     nodeid: str
     baseline_s: float
     started_cpu: float | None
     started_wall: float
+    start_index: int
 
 
 def per_test_bound_enabled(
@@ -2510,13 +2555,19 @@ class LivenessRunner:
                 cpu_last = cpu_now
             # (P4/S2) Track the single in-flight test (never under xdist, never
             # with more than one in flight -- see `_PerTestWindow`).
+            #
+            # (P4 fix 1, review finding 1) The window is OPEN from
+            # `test_start` to the matching `test_finish` -- across `setup`,
+            # `call` and `teardown` -- and keyed on the START RECORD, so a
+            # rerun of one nodeid opens its own window. Before this it was
+            # closed by the first COMPLETED event (`setup` is one), which
+            # meant the body of every test ran unbounded.
             in_flight = event_reader.in_flight
-            if in_flight is not None:
-                nodeid, started_after, _index = in_flight
-                if event_reader.completed_events > started_after:
-                    # That test completed; no window is open any more.
-                    per_test_window = None
-                elif per_test_window is None or per_test_window.nodeid != nodeid:
+            if in_flight is None:
+                per_test_window = None
+            else:
+                nodeid, _started_after, start_index = in_flight
+                if per_test_window is None or per_test_window.start_index != start_index:
                     baseline_s = self._per_test_cpu_baseline_s.get(nodeid)
                     if baseline_s is None or not per_test_bound_enabled(
                         per_test_xdist=self._per_test_xdist,
@@ -2529,9 +2580,8 @@ class LivenessRunner:
                             baseline_s=baseline_s,
                             started_cpu=cpu_series,
                             started_wall=now,
+                            start_index=start_index,
                         )
-            else:
-                per_test_window = None
             # (P4/S1) A completed event re-dates the process-tree window.
             if event_reader.completed_events > completed_marker_count:
                 completed_marker_count = event_reader.completed_events

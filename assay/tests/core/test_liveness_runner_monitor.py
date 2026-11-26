@@ -1866,7 +1866,7 @@ def test_a_slow_test_under_its_own_bound_survives(tmp_path: Path) -> None:
     clock = _FakeClock()
     proc = _ScriptedProc(pid=7102)
     events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
-    wrote = {"start": False}
+    wrote: dict[str, bool] = {"start": False}
 
     def reader(pid: int) -> float:
         if not wrote["start"]:
@@ -1875,11 +1875,22 @@ def test_a_slow_test_under_its_own_bound_survives(tmp_path: Path) -> None:
                 {"event": "test_start", "nodeid": "t", "pid": pid},
             )
             wrote["start"] = True
-        # The test completes at t=30, well inside the 60 s bound.
-        if clock.t == 30.0:
+        # (P4 fix 1) The test COMPLETES at t=30, well inside the 60 s bound,
+        # and the records below are the real order a pytest item emits: the
+        # `call` report, then teardown, then the `test_finish` that closes the
+        # window (`call`/`teardown` alone must not -- see finding 1).
+        if clock.t == 30.0 and not wrote.get("finished"):
+            wrote["finished"] = True
             _append_event(
                 events_path,
-                {"event": "test", "nodeid": "t", "outcome": "passed", "pid": pid},
+                {"event": "test", "when": "call", "nodeid": "t", "outcome": "passed", "pid": pid},
+            )
+            _append_event(
+                events_path,
+                {"event": "phase", "when": "teardown", "nodeid": "t", "pid": pid},
+            )
+            _append_event(
+                events_path, {"event": "test_finish", "nodeid": "t", "pid": pid}
             )
         return clock.t
 
@@ -2027,3 +2038,390 @@ def test_the_plugin_writes_a_test_start_event_with_the_nodeid() -> None:
     block = source.split("def pytest_runtest_logstart(nodeid, location):", 1)[1]
     block = block.split("def ", 1)[0]
     assert "except Exception" in block
+
+
+# --------------------------------------------------------------------------
+# P4 fix round 1, finding 1: a test's own window is dated by `test_start` and
+# closed ONLY by that test's `test_finish`. Before this, the reader never
+# cleared `in_flight`, so (a) the `setup` report closed the window before the
+# test body ever ran (it is in `COMPLETED_EVENT_KINDS`) and (b) any suite with
+# two tests disabled the bound for the whole file. Every scripted record set
+# below is the REAL emission order of a pytest run -- logstart, setup, call,
+# teardown, logfinish -- never a hand-picked subset of it.
+# --------------------------------------------------------------------------
+
+
+def _real_runtest_records(
+    nodeid: str, *, t: float, finished: bool = True
+) -> list[tuple[float, dict]]:
+    """The five records one pytest item emits, in that order and at *t*."""
+    records = [
+        (t, {"event": "test_start", "nodeid": nodeid}),
+        (t, {"event": "phase", "when": "setup", "nodeid": nodeid}),
+        (t, {"event": "test", "when": "call", "nodeid": nodeid, "outcome": "passed"}),
+        (t, {"event": "phase", "when": "teardown", "nodeid": nodeid}),
+    ]
+    if finished:
+        records.append((t, {"event": "test_finish", "nodeid": nodeid}))
+    return records
+
+
+def test_a_real_two_test_emission_order_keeps_a_window_for_the_second_test(
+    tmp_path: Path,
+) -> None:
+    """The review's first fatal state: a suite with two tests must NOT disable
+    the bound. Test `a` runs to completion in the real order; test `b` then
+    spins inside its `call`. Only the SECOND test's own window may bound it,
+    and the first test's window must be gone by then."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7110)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    pending = [(1.0, {"event": "session_start"})]
+    pending.extend(_real_runtest_records("t::a", t=2.0))
+    pending.append((3.0, {"event": "test_start", "nodeid": "t::b"}))
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            _append_event(events_path, {**pending.pop(0)[1], "pid": pid})
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::a": 1.0, "t::b": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound", (
+        "with the real emission order the per-test bound must stay armed for "
+        "a suite of two or more tests; got "
+        f"{evidence['decision']!r}"
+    )
+    assert evidence["test_nodeid"] == "t::b"
+    assert evidence["per_test_cpu_s"] >= 60.0
+    # b's window opens at t=3 (cpu=3) and bounds at 60 CPU-s: never before
+    # the first test has finished.
+    assert clock.t >= 63.0
+
+
+def test_the_window_stays_open_across_setup_and_a_slow_call(
+    tmp_path: Path,
+) -> None:
+    """The review's second fatal state: the `setup` report used to close the
+    window before the body ran. Here the fixture is tiny and the `call` body
+    spins: the window must still be open (and still be the one that fires)."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7111)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    pending = [(1.0, {"event": "session_start"})]
+    pending.extend(_real_runtest_records("t::slow", t=2.0, finished=False)[:2])
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            _append_event(events_path, {**pending.pop(0)[1], "pid": pid})
+        # From here the test body spins: no further record until it is killed.
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::slow": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound", (
+        "a test that spins inside its own `call` must be bounded by its own "
+        f"window; got {evidence['decision']!r}"
+    )
+    assert evidence["test_nodeid"] == "t::slow"
+    assert clock.t >= 61.0
+
+
+def test_a_rerun_of_one_nodeid_opens_a_new_window(tmp_path: Path) -> None:
+    """The window is keyed on the `test_start` RECORD, not on the nodeid: a
+    suite that runs one nodeid twice (a retry, a repeated parameter) must give
+    the second run its own window, counted from its own start, never from the
+    first run's."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7112)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    pending = [(1.0, {"event": "session_start"})]
+    pending.extend(_real_runtest_records("t::again", t=2.0))
+    # A rerun of the SAME nodeid, 50 CPU-s later, and it then spins alone.
+    pending.append((52.0, {"event": "test_start", "nodeid": "t::again"}))
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            _append_event(events_path, {**pending.pop(0)[1], "pid": pid})
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::again": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound"
+    assert evidence["test_nodeid"] == "t::again"
+    # Restamped at 52 CPU-s, bounded 60 CPU-s later: NOT at 60 CPU-s total.
+    assert evidence["per_test_cpu_s"] >= 60.0
+    assert clock.t >= 112.0
+
+
+def test_a_test_start_without_a_finish_still_disables_the_per_test_bound(
+    tmp_path: Path,
+) -> None:
+    """The must-fail CONTROL for the fix: `a` runs its whole setup/call/
+    teardown in the real order but never emits `test_finish`, then `b` starts.
+    Two tests really were in flight (the file cannot prove otherwise), so the
+    per-test bound must stay OFF for that file -- a fix that cleared the
+    window on `teardown` instead of on `test_finish` would pass the tests
+    above and fail this one."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7113)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    pending = [(1.0, {"event": "session_start"})]
+    pending.extend(_real_runtest_records("t::a", t=2.0, finished=False))
+    pending.append((3.0, {"event": "test_start", "nodeid": "t::b"}))
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            _append_event(events_path, {**pending.pop(0)[1], "pid": pid})
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::a": 1.0, "t::b": 1.0},
+        cpu_without_progress_bound_s=110.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["test_nodeid"] is None
+    assert verify_per_test_never_armed(evidence)
+    assert clock.t >= 110.0
+
+
+def _write_stamped_records(
+    events_path: Path, records: list[dict], *, pid: int
+) -> None:
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    with events_path.open("a", encoding="utf-8") as stream:
+        for record in records:
+            stream.write(json.dumps({**record, "pid": pid}) + "\n")
+
+
+def test_the_reader_clears_in_flight_only_on_the_matching_test_finish(
+    tmp_path: Path,
+) -> None:
+    """The reader half of finding 1: the window is closed by the matching
+    `test_finish` and by nothing else. Its setup/call/teardown reports are
+    COMPLETED events for the CPU bound but do not end the test, and a
+    `test_finish` for another nodeid must not clear the open window."""
+    events_path = tmp_path / "reader-finish.ndjson"
+    reader = liveness._EventProgressReader(100)
+
+    _write_stamped_records(
+        events_path,
+        [{"event": "session_start"}, {"event": "test_start", "nodeid": "t::a"}]
+        + [
+            {"event": "phase", "when": "setup", "nodeid": "t::a"},
+            {"event": "test", "when": "call", "nodeid": "t::a"},
+            {"event": "phase", "when": "teardown", "nodeid": "t::a"},
+        ],
+        pid=100,
+    )
+    reader.read(events_path)
+    assert reader.in_flight is not None, (
+        "setup, call and teardown reports must not close a test's window"
+    )
+    assert reader.completed_events == 3
+
+    _write_stamped_records(
+        events_path, [{"event": "test_finish", "nodeid": "t::a"}], pid=100
+    )
+    reader.read(events_path)
+    assert reader.in_flight is None
+    assert reader.overlapping_tests is False
+    # `test_finish` is NOT a completed event: the CPU bound's marker must not
+    # move on it.
+    assert reader.completed_events == 3
+
+    _write_stamped_records(
+        events_path,
+        [
+            {"event": "test_start", "nodeid": "t::b"},
+            {"event": "test_finish", "nodeid": "t::a"},
+        ],
+        pid=100,
+    )
+    reader.read(events_path)
+    assert reader.in_flight is not None, (
+        "a test_finish for a DIFFERENT nodeid must not close the open window"
+    )
+
+    _write_stamped_records(
+        events_path, [{"event": "test_finish", "nodeid": "t::b"}], pid=100
+    )
+    reader.read(events_path)
+    assert reader.in_flight is None
+
+
+def test_the_reader_tracks_two_real_tests_without_overlap(tmp_path: Path) -> None:
+    """The reader sees exactly the sequence a real two-test run writes; the
+    second test's start must NOT be reported as an overlap, and both windows
+    must be closed by their own finishes."""
+    events_path = tmp_path / "reader-two-tests.ndjson"
+    records: list[dict] = [{"event": "session_start"}]
+    for nodeid in ("t::a", "t::b"):
+        records.extend(
+            record for _t, record in _real_runtest_records(nodeid, t=1.0)
+        )
+    _write_stamped_records(events_path, records, pid=100)
+    reader = liveness._EventProgressReader(100)
+    count, saw_finish = reader.read(events_path)
+    assert (count, saw_finish) == (len(records), False)
+    assert reader.in_flight is None
+    assert reader.overlapping_tests is False
+    assert reader.completed_events == 6  # two tests x setup/call/teardown
+    # The forwarded baseline stream and `tests_completed` are unchanged by the
+    # extra records: exactly the two `call` events remain.
+    assert liveness.count_test_events(events_path) == 2
+    assert [record["nodeid"] for record in liveness.baseline_test_events(events_path)] == [
+        "t::a",
+        "t::b",
+    ]
+    # Every record is counted for the progress heartbeat, `test_finish`
+    # included: nothing here may look like a stall.
+    assert liveness._read_events_progress(events_path, 0)[0] == len(records)
+
+
+def test_a_rerun_of_one_nodeid_is_not_an_overlap_in_the_reader(
+    tmp_path: Path,
+) -> None:
+    """A nodeid the suite runs twice reports two `test_start`s, and neither
+    follows an unfinished one: that is a rerun, not two tests in flight."""
+    events_path = tmp_path / "reader-rerun.ndjson"
+    records: list[dict] = [{"event": "session_start"}]
+    for _t, record in _real_runtest_records("t::again", t=1.0):
+        records.append(record)
+    records.append({"event": "test_start", "nodeid": "t::again"})
+    _write_stamped_records(events_path, records, pid=100)
+    reader = liveness._EventProgressReader(100)
+    reader.read(events_path)
+    assert reader.overlapping_tests is False
+    assert reader.in_flight is not None, "the rerun's window is open"
+
+
+def test_the_plugin_writes_a_test_finish_event_in_the_real_hook() -> None:
+    """The plugin source is the writer of this event, and pytest calls
+    `pytest_runtest_logfinish` once per item after its whole runtest protocol
+    (teardown included) -- the identity the reader closes a window on."""
+    source = liveness._PLUGIN_SOURCE
+    assert liveness.TEST_FINISH_EVENT == "test_finish"
+    assert "def pytest_runtest_logfinish(nodeid, location):" in source
+    assert '{"event": "test_finish", "nodeid": nodeid}' in source
+    assert liveness.TEST_FINISH_EVENT not in liveness.COMPLETED_EVENT_KINDS
+    block = source.split("def pytest_runtest_logfinish(nodeid, location):", 1)[1]
+    block = block.split("def ", 1)[0]
+    assert "except Exception" in block
+
+
+def test_a_real_two_test_pytest_run_feeds_the_reader_a_finish_per_test(
+    tmp_path: Path,
+) -> None:
+    """The end-to-end proof a fake cannot give: a REAL pytest process runs two
+    tests with the MATERIALIZED plugin, writes its own events file, and the
+    reader must see one open-then-closed window per test (`in_flight` back to
+    ``None``, no overlap) whatever the plugin's own timing is."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "test_two.py").write_text(
+        "def test_one():\n    assert True\n\n"
+        "def test_two():\n    assert True\n",
+        encoding="utf-8",
+    )
+    liveness_dir = tmp_path / "liveness"
+    assert liveness.materialize_liveness_plugin(liveness_dir).is_file()
+    events_path = tmp_path / "events.ndjson"
+    child_env = dict(os.environ)
+    child_env[liveness.ASSAY_LIVENESS_EVENTS_ENV] = str(events_path)
+    child_env.pop(liveness.ASSAY_LIVENESS_EXIT_ENV, None)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(liveness_dir), child_env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            liveness.LIVENESS_PLUGIN_MODULE_NAME,
+            str(project / "test_two.py"),
+        ],
+        cwd=project,
+        env=child_env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=600.0,
+    )
+    assert result.returncode == 0, result.stderr
+    records = [
+        json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    kinds = [record["event"] for record in records]
+    assert kinds.count("test_start") == 2
+    assert kinds.count("test_finish") == 2
+    # The real per-test order, anchored on the two nodeids pytest reported.
+    nodeids = [record["nodeid"] for record in records if record.get("event") == "test"]
+    assert len(nodeids) == 2
+    for nodeid in nodeids:
+        own = [
+            (index, record)
+            for index, record in enumerate(records)
+            if record.get("nodeid") == nodeid
+            and record.get("event") in {"test_start", "phase", "test", "test_finish"}
+        ]
+        kinds = [record["event"] for _index, record in own]
+        # logstart, then setup (and teardown) phases, then call, then logfinish.
+        assert kinds[0] == "test_start"
+        assert kinds[-1] == "test_finish"
+        call_at = kinds.index("test")
+        assert any(
+            record.get("when") == "setup" for _index, record in own[:call_at]
+        )
+        assert any(
+            record.get("when") == "teardown" for _index, record in own[call_at:]
+        )
+    pid = records[0]["pid"]
+    reader = liveness._EventProgressReader(pid)
+    assert reader.read(events_path) == (len(records), True)
+    assert reader.in_flight is None, (
+        "the reader must close both windows on the two real test_finish records"
+    )
+    assert reader.overlapping_tests is False
+    assert reader.completed_events == 6
+    assert liveness.count_test_events(events_path) == 2

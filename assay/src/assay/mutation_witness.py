@@ -1544,6 +1544,11 @@ _LIVENESS_PLUGIN_HOOKS = (
     # pytest_runtest_logstart") -- a capability lost, not a hook ignored.
     "pytest_runtest_logstart",
     "pytest_runtest_logreport",
+    # (P4 fix 1) `pytest_runtest_logfinish` writes the `test_finish` record the
+    # reader closes that window on. Same rule as above: it is named in
+    # `HOOK_FINGERPRINT_HOOKS`, so leaving it unpinned would mark every
+    # liveness lane's baseline unsupported.
+    "pytest_runtest_logfinish",
     "pytest_sessionfinish",
     "pytest_unconfigure",
 )
