@@ -231,6 +231,8 @@ for pi_case in \
   pi-resume-block-inverted:accepted-resume-records \
   pi-record-owner-new-only:accepted-resume-records \
   pi-mode-value-guard:mode-value pi-mode-argv-append-dropped:review-argv \
+  pi-mode-argv-missing-guard:mode-no-argv-file \
+  pi-mode-argv-empty-guard:mode-empty-argv \
   pi-mode-record-not-written:mode-record pi-mode-sticky-refusal-dropped:mode-sticky \
   pi-mode-record-ignored:mode-sticky pi-mode-narrow-dropped:mode-sticky \
   pi-mode-invalid-record-guessed:mode-sticky pi-mode-evidence-dropped:mode-evidence \

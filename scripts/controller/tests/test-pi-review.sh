@@ -453,27 +453,29 @@ argv0_elements() {
   [[ -s $PI_ARGV_LOG0 ]] || fail "pi never ran (no argv log at $PI_ARGV_LOG0)"
   mapfile -d '' -t ARGV0 < "$PI_ARGV_LOG0"
 }
-argv0_has() {
+assert_review_argv0() {
+  local i model thinking session_dir prompt_arg
+  local -a permitted_review=(--tools 'read,grep,find,ls' --exclude-tools 'mcp__*' --no-extensions --no-mcp) expected=()
   argv0_elements
-  local element found=0
-  for element in "${ARGV0[@]}"; do [[ $element == "$1" ]] && found=1; done
-  (( found == 1 )) || fail "$2 (argv: ${ARGV0[*]})"
-}
-argv0_lacks() {
-  argv0_elements
-  local element
-  for element in "${ARGV0[@]}"; do
-    [[ $element == "$1" ]] && fail "$2 (argv: ${ARGV0[*]})"
+  if (( ${#ARGV0[@]} != 17 )); then
+    fail "review argv has ${#ARGV0[@]} elements, expected 17 (${ARGV0[*]})"
+  fi
+  [[ ${ARGV0[0]} == -p && ${ARGV0[1]} == --mode && ${ARGV0[2]} == json && ${ARGV0[3]} == --model \
+    && ${ARGV0[5]} == --thinking && ${ARGV0[7]} == --session-dir && ${ARGV0[15]} == -- ]] \
+    || fail "review argv base or prompt separator is not in the permitted position (${ARGV0[*]})"
+  model=${ARGV0[4]}
+  thinking=${ARGV0[6]}
+  session_dir=${ARGV0[8]}
+  prompt_arg=${ARGV0[16]}
+  expected=(-p --mode json --model "$model" --thinking "$thinking" --session-dir "$session_dir" \
+    "${permitted_review[@]}" -- "$prompt_arg")
+  if (( ${#ARGV0[@]} != ${#expected[@]} )); then
+    fail "review argv has an unexpected element (${ARGV0[*]})"
+  fi
+  for (( i = 0; i < ${#expected[@]}; i++ )); do
+    [[ ${ARGV0[i]} == "${expected[i]}" ]] \
+      || fail "review argv element $i is not permitted (${ARGV0[i]})"
   done
-  return 0
-}
-argv0_pair() {
-  argv0_elements
-  local i found=0
-  for (( i = 0; i + 1 < ${#ARGV0[@]}; i++ )); do
-    [[ ${ARGV0[i]} == "$1" && ${ARGV0[i + 1]} == "$2" ]] && found=1
-  done
-  (( found == 1 )) || fail "$3 (argv: ${ARGV0[*]})"
 }
 
 # pi's docs: the default tools are read, bash, edit and write, and `--tools` REPLACES
@@ -486,14 +488,7 @@ check_read_only_tool_set() {
     cat "$ROOT/rev-toolset.launch.log" >&2
     fail "a review with the read-only tool set exited $rc"
   fi
-  argv0_pair '--tools' 'read,grep,find,ls' '--tools names exactly the read-only set, as ONE argv element'
-  argv0_pair '--exclude-tools' 'mcp__*' 'MCP tools are excluded for the review'
-  argv0_has '--no-extensions' 'the review loads no extension'
-  argv0_has '--no-mcp' 'the review connects no MCP server'
-  argv0_lacks 'bash' 'the reviewer argv does not name bash'
-  argv0_lacks 'edit' 'the reviewer argv does not name edit'
-  argv0_lacks 'write' 'the reviewer argv does not name write'
-  argv0_lacks 'powershell' 'the reviewer argv does not name powershell'
+  assert_review_argv0
 }
 
 # The launcher no longer exports the read-only list: it sets pi-impl.sh's REVIEW

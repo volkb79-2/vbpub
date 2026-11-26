@@ -833,6 +833,23 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-value-guard.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-mode-argv-append-dropped.sh",
        '  base_pi_args+=("${review_argv[@]}")',
        '  : # review argv left out of the launch')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-argv-missing-guard.sh",
+       '  if [[ ! -r $review_argv_file ]]; then\n'
+       '    echo "the review argv file is missing or unreadable: $review_argv_file" >&2\n'
+       "    echo '  the read-only tool set is defined once there; a review cannot launch without it' >&2\n"
+       '    exit 2\n'
+       '  fi\n'
+       '  review_argv=()\n'
+       '  mapfile -t review_argv < "$review_argv_file" || exit 2',
+       '  if [[ -r $review_argv_file ]]; then\n'
+       '    review_argv=()\n'
+       '    mapfile -t review_argv < "$review_argv_file" || exit 2\n'
+       '  else\n'
+       "    review_argv=(--tools 'read,grep,find,ls' --exclude-tools 'mcp__*' --no-extensions --no-mcp)\n"
+       '  fi')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-argv-empty-guard.sh",
+       '  (( ${#review_argv[@]} > 0 )) || { echo "the review argv file is empty: $review_argv_file" >&2; exit 2; }',
+       '  : # empty review argv accepted')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-record-not-written.sh",
        'printf \'%s\\n\' "$run_mode" > "$out/$name.mode"',
        ': # mode record not written')

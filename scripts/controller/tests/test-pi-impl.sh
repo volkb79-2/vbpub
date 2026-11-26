@@ -291,7 +291,14 @@ expect_rc() {
 # read this, and an empty argv file means pi never ran.
 argv_elements() {
   [[ -s $PI_ARGV0_LOG ]] || fail "pi never ran (no argv log at $PI_ARGV0_LOG)"
-  mapfile -d '' -t ARGV < "$PI_ARGV0_LOG"
+  local i last_start=-1
+  local -a all=()
+  mapfile -d '' -t all < "$PI_ARGV0_LOG"
+  for (( i = 0; i < ${#all[@]}; i++ )); do
+    [[ ${all[i]} == -p ]] && last_start=$i
+  done
+  (( last_start >= 0 )) || fail 'pi argv log has no invocation boundary'
+  ARGV=("${all[@]:last_start}")
 }
 last_prompt_element() {
   argv_elements
@@ -319,52 +326,61 @@ prompt_ends_with() {
 }
 
 # --- the run mode (P-plat-26c) ----------------------------------------------
-# The read-only set has ONE definition; the checks below compare against that
-# file rather than a copy of its text, so a check cannot certify a list the
-# wrapper stopped using.
+# The read-only set has ONE production definition. The independent test
+# allow-list below makes added argv elements visible instead of trusting that
+# definition to certify itself.
 REVIEW_ARGV_FILE=$SCRIPT_DIR/../pi-review-argv
 IMPLEMENTER_RULES=$SCRIPT_DIR/../implementer-prompt-rules.md
 REVIEW_RULES=$SCRIPT_DIR/../review-prompt-rules.md
 argv_reset() { : > "$PI_ARGV0_LOG"; }
-argv_has() {
-  local element found=0
-  argv_elements
-  for element in "${ARGV[@]}"; do [[ $element == "$1" ]] && found=1; done
-  (( found == 1 )) || fail "$2 (argv: ${ARGV[*]})"
-}
 argv_absent() {
   local element
   argv_elements
   for element in "${ARGV[@]}"; do [[ $element == "$1" ]] && fail "$2 (argv: ${ARGV[*]})"; done
   return 0
 }
-argv_has_pair() {
-  local i found=0
-  argv_elements
-  for (( i = 0; i + 1 < ${#ARGV[@]}; i++ )); do
-    [[ ${ARGV[i]} == "$1" && ${ARGV[i + 1]} == "$2" ]] && found=1
-  done
-  (( found == 1 )) || fail "$3 (argv: ${ARGV[*]})"
-}
-# Assert the LAST invocation carried the read-only set defined by
-# pi-review-argv, and nothing that could run a program or write a file.
+# Assert the LAST invocation has exactly the allowed review argv elements.
+# The explicit allow-list is independent of pi-review-argv, so a new flag in
+# that file or in base_pi_args cannot certify itself by appearing in both.
 assert_review_argv() {
-  # $1 = the description prefix of every message.
-  local prefix=$1 i expect=()
-  mapfile -t expect < "$REVIEW_ARGV_FILE"
-  for (( i = 0; i + 1 < ${#expect[@]}; i += 2 )); do
-    argv_has_pair "${expect[i]}" "${expect[i + 1]}" "$prefix: the review argv carries ${expect[i]} ${expect[i + 1]}"
+  local prefix=$1 i model thinking session_dir prompt_arg delimiter_index
+  local -a file_argv=() permitted_review=(--tools 'read,grep,find,ls' --exclude-tools 'mcp__*' --no-extensions --no-mcp) expected=()
+  mapfile -t file_argv < "$REVIEW_ARGV_FILE"
+  if (( ${#file_argv[@]} != ${#permitted_review[@]} )); then
+    fail "$prefix: pi-review-argv has ${#file_argv[@]} elements, expected ${#permitted_review[@]}"
+  fi
+  for (( i = 0; i < ${#permitted_review[@]}; i++ )); do
+    [[ ${file_argv[i]} == "${permitted_review[i]}" ]] \
+      || fail "$prefix: pi-review-argv element $i is not permitted (${file_argv[i]})"
   done
-  for (( i = 0; i < ${#expect[@]}; i++ )); do
-    case ${expect[i]} in
-      --exclude-tools | --tools) ((i += 1)) ;;
-      *) argv_has "${expect[i]}" "$prefix: the review argv carries ${expect[i]}" ;;
-    esac
+  argv_elements
+  if (( ${#ARGV[@]} != 17 && ${#ARGV[@]} != 19 )); then
+    fail "$prefix: review argv has ${#ARGV[@]} elements, expected 17 or 19 (${ARGV[*]})"
+  fi
+  [[ ${ARGV[0]} == -p && ${ARGV[1]} == --mode && ${ARGV[2]} == json && ${ARGV[3]} == --model \
+    && ${ARGV[5]} == --thinking && ${ARGV[7]} == --session-dir ]] \
+    || fail "$prefix: the review argv base flags are not in the permitted positions (${ARGV[*]})"
+  model=${ARGV[4]}
+  thinking=${ARGV[6]}
+  session_dir=${ARGV[8]}
+  expected=(-p --mode json --model "$model" --thinking "$thinking" --session-dir "$session_dir" "${permitted_review[@]}")
+  if (( ${#ARGV[@]} == 19 )); then
+    [[ ${ARGV[15]} == --session && -n ${ARGV[16]} ]] \
+      || fail "$prefix: the resume suffix is not the permitted --session pair (${ARGV[*]})"
+    expected+=(--session "${ARGV[16]}")
+  fi
+  delimiter_index=$((${#ARGV[@]} - 2))
+  [[ ${ARGV[delimiter_index]} == -- ]] \
+    || fail "$prefix: the prompt separator is not the last flag (${ARGV[*]})"
+  prompt_arg=${ARGV[${#ARGV[@]}-1]}
+  expected+=(-- "$prompt_arg")
+  if (( ${#ARGV[@]} != ${#expected[@]} )); then
+    fail "$prefix: review argv has an unexpected element (${ARGV[*]})"
+  fi
+  for (( i = 0; i < ${#expected[@]}; i++ )); do
+    [[ ${ARGV[i]} == "${expected[i]}" ]] \
+      || fail "$prefix: review argv element $i is not permitted (${ARGV[i]})"
   done
-  argv_absent bash "$prefix: the reviewer argv does not name a shell"
-  argv_absent edit "$prefix: the reviewer argv does not name a writer"
-  argv_absent write "$prefix: the reviewer argv does not name a writer"
-  argv_absent powershell "$prefix: the reviewer argv does not name a shell"
 }
 # The prompt pi received must be the caller's brief PLUS the mode's rule
 # paragraph: never rewritten in the middle, never launched without the rule.
@@ -3236,6 +3252,7 @@ PY
     mode-no-argv-file)
       # A review that cannot read its one definition is refused before the name
       # is claimed, instead of launching with a tool set nobody defined.
+      before=$(pi_invocations)
       mutilated=$ROOT/mode-no-argv-tree
       rm -rf "$mutilated"; mkdir -p "$mutilated"
       ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
@@ -3243,14 +3260,19 @@ PY
       rm -f "$mutilated/pi-shims"
       cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
-        PI_RUN_MODE=review "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" mode-no-argv
+        PI_RUN_MODE=review PI_LIVE=0 CONTROLLER_OD_STATE="$ROOT/mode-no-argv-state.json" \
+        FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+        FAKE_PI_SESSION_ID=mode-no-argv-session FAKE_PI_RC=0 \
+        "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" mode-no-argv
       contains "$ROOT/focused-command.out" 'the review argv file is missing or unreadable' \
         'a review launch without its argv definition is refused'
+      [[ $(pi_invocations) == "$before" ]] || fail 'a review launched without its argv definition'
       [[ ! -e $CONTROLLER_ROOT/runs/mode-no-argv.lock ]] || fail 'a refused review claimed the run name'
       ;;
-    mode-lists-retired)
+    mode-empty-argv|mode-lists-retired)
       # The review argv definition is emptied: that is refused too, because an
       # empty file would leave pi with its own default (bash, edit, write) tools.
+      before=$(pi_invocations)
       mutilated=$ROOT/mode-empty-argv-tree
       rm -rf "$mutilated"; mkdir -p "$mutilated"
       ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
@@ -3258,9 +3280,15 @@ PY
       rm -f "$mutilated/pi-shims"
       cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
-        PI_RUN_MODE=review "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" mode-empty-argv
+        PI_RUN_MODE=review PI_LIVE=0 CONTROLLER_OD_STATE="$ROOT/mode-empty-argv-state.json" \
+        FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+        FAKE_PI_SESSION_ID=mode-empty-argv-session FAKE_PI_RC=0 \
+        "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" mode-empty-argv
       contains "$ROOT/focused-command.out" 'the review argv file is empty' \
         'an empty review argv definition is refused'
+      [[ $(pi_invocations) == "$before" ]] || fail 'a review launched with an empty argv definition'
+      [[ ! -e $CONTROLLER_ROOT/runs/mode-empty-argv.lock ]] \
+        || fail 'a refused empty review argv claimed the run name'
       ;;
     mode-rule-paragraph)
       # The paragraph every implementer prompt carries must say the three things
