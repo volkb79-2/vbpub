@@ -169,6 +169,7 @@ fn bad_args(corr: u32, error: &args::ArgError) -> Refusal {
 }
 
 /// Apply the selector feature gate after the full argument schema (request step 11).
+/// JSON has no BLK verbs; `current` and `subscribe` fail the level gate before this check.
 fn cgroup_id_feature(
     query: &Query<'_>,
     corr: u32,

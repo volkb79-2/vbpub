@@ -12,9 +12,11 @@ Offsets are bytes from the start of the named structure. `align8(x)` = smallest 
 1.1 **Transport.** `AF_UNIX` `SOCK_STREAM` sockets from systemd `.socket` units (plan §A.2): observe,
 operator, observer (served by the probe) and control (served by act). Access is the socket's file
 permission; issuer identity and peer binding come from `SO_PEERCRED`/`SO_PEERPIDFD` on the
-**server** side only; a client never sends a uid, pid or cgroup and a request key naming one is
-`bad-request`. Because the listening socket is held by systemd, a probe restart does not refuse new
-connections; it closes every accepted connection (EOF or `ECONNRESET` for the client).
+**server** side only; a top-level args key naming the caller's identity (`uid`, `gid`, `pid`,
+`cgroup`, `peer`) is `bad-request` in every verb; a selector or attrs value that names a *subject*
+cgroup is data, never identity (§4.2, §4.12). Because the listening socket is held by systemd, a
+probe restart does not refuse new connections; it closes every accepted connection (EOF or
+`ECONNRESET` for the client).
 
 1.2 **Who speaks first.** The client. The server sends nothing before the client's first byte; a
 connection over a cap is closed without a byte (§5.4 `refuse`), and one that sends nothing is closed
@@ -382,8 +384,9 @@ with `detail.key` `proto.major` or `proto.minor`; JSON: a `proto.major` other th
 C). The result carries `proto.minor` N = min(C, the server's minor), in both modes; a second `hello` on a
 connection, either mode, is `bad-request` `{"key":"verb"}` (JSON mode accepts `hello` only as the first
 line). `client` is 0 to 64 decoded bytes without a control character (below 0x20 or 0x7F) and without a
-lone surrogate; it is a free label, never an identity, and a request key naming a uid, pid or cgroup is
-`bad-request`. Result:
+lone surrogate; it is a free label, never an identity. A top-level args key naming the caller's
+identity (`uid`, `gid`, `pid`, `cgroup`, `peer`) is `bad-request` in every verb; a selector or attrs
+value that names a *subject* cgroup is data, never identity (§4.2, §4.12). Result:
 `{"proto": {"major": 1, "minor": N}, "level": "observe|operator|observer|control", "server": str,
 "boot_id": "<uuid text>", "epoch": u64, "features": [str], "verbs": [str], "quality_codes":
 [{"code": u8, "name": str}], "limits": {"max_frame_bytes": u32, "max_request_bytes": u32,
@@ -456,9 +459,15 @@ Derived metrics are not produced. A selection resolving to no rows is successful
 `limit.cpu.max.quota` and `limit.cpu.max.period` are Gauge metrics in microseconds, cgroup scope,
 `cgroupfs` source, with the Gauge-derived aggregation mask. For a readable `Q P` line, quota `Q` and
 period `P` are measured. For a readable `max P` line, quota is `unsupported` and period `P` is measured.
-If `cpu.max` is absent, quota is `unsupported` and period is `absent`. An unreadable or unparseable
-line marks both readings `unreadable`; no case publishes a measured zero. The effective CPU cap also
-depends on ancestor cgroups.
+If `cpu.max` is absent, quota is also `unsupported`, while period keeps the file's own quality
+(`absent` when the file is missing). Thus `unsupported` quota does not by itself say that `cpu.max`
+exists. An unreadable or unparseable line marks both readings `unreadable`; no case publishes a
+measured zero. The effective CPU cap also depends on ancestor cgroups.
+
+The `(dev, inode)` pair selects a cgroup from the tick being served. It is not a durable record key,
+and hostobs does not guarantee that a key never names a later cgroup, including after a reboot or on
+another host. A record that needs stable identity keeps the reply's `inc` together with `boot_id` and
+`epoch` and compares those fields.
 
 4.8 **snapshot_at** — args `{"selection": Selection, "real_ns": i64, "tier": "auto|hot|warm|cold",
 "provenance": bool}`. REP result `{"resolved": {"tier": str, "bucket_real_ns": i64, "step_ms": u32,
@@ -1021,7 +1030,7 @@ unknown version is refused, `frame.rs` `decode_block`). Unknown optional section
 selector (§4.2). `PROTO_MINOR` is 2 (`HOB-48`, B9). The §3.6 time length is not a minor: it is layout
 version 1 (§13 V-1).
 
-## 10. Wire error codes (closed list, minor 0 + 1)
+## 10. Wire error codes (closed list, minor 0 + 1 + 2)
 
 `unknown-mode`, `binary-required`, `unsupported-version`, `hello-required`, `bad-frame`,
 `frame-too-large`, `deadline`, `idle`, `slow-client`, `shutting-down` (the §5.4 fatal set),
@@ -1318,7 +1327,7 @@ zipimport}.py` with the scripted fake probe `fake_probe.py`. Decisions and ambig
   with kinds `json-text`, `duplicate-key`, `unknown-key`, `missing-key`, `wrong-type`); the connection closes.
   `ProtocolError` (also a `WireError` subclass) names what is not a decoder error: `unexpected-frame`,
   `unknown-corr`, `bad-reply`, `end-counts`, `hello-mismatch`, `queue-overflow`, `corr-exhausted`.
-- **Handshake.** The prefix (`HOB\x01`, major 1, minor 1) is sent alone, the 8-byte server prefix is read with a
+- **Handshake.** The prefix (`HOB\x01`, major 1, minor 2) is sent alone, the 8-byte server prefix is read with a
   `recv_into` that never over-reads, then the `hello` REQ goes out with `corr` 1. A closed socket before the
   prefix is `ConnectionLost`; a wrong magic is `unknown-mode`; another major is `unsupported-version`; a server
   minor above the client's, a `proto` that disagrees with the prefix, another `level` than requested and a missing or

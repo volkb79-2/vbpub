@@ -423,7 +423,7 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
 }
 
 #[test]
-fn cgroup_id_resolves_one_published_row_and_an_unknown_key_returns_zero_rows() {
+fn cgroup_id_selects_one_row_by_all_keys_and_rejects_unpublished_keys() {
     let (_, published, tick) = first_tick();
     let target = format!("/system.slice/docker-{}.scope", "a".repeat(64));
     let target_inc = inc(&tick, &target);
@@ -436,7 +436,10 @@ fn cgroup_id_resolves_one_published_row_and_an_unknown_key_returns_zero_rows() {
         id,
         1_003_000_000,
         2,
-        selection(vec![cgroup_id(&target)], &["cpu.usage_usec"]),
+        selection(
+            vec![Sel::Inc(target_inc), Sel::Path(target.clone()), cgroup_id(&target)],
+            &["cpu.usage_usec"],
+        ),
     );
     assert!(rep.contains(r#""ok":true"#), "{rep}");
     assert_eq!(selected.rows.len(), 1);
@@ -445,13 +448,50 @@ fn cgroup_id_resolves_one_published_row_and_an_unknown_key_returns_zero_rows() {
         metric(&selected, "cpu.usage_usec", 0),
         (5_000_000, Quality::Ok.code())
     );
-    assert_ne!(target_inc, 0);
+    let Sel::CgroupId { dev, inode } = cgroup_id(&target) else {
+        panic!("cgroup_id helper returned another selector");
+    };
+    let wrong_dev = if dev == u64::MAX { dev - 1 } else { dev + 1 };
+    let (wrong_device, rep) = current(
+        &mut server,
+        id,
+        1_003_000_000,
+        3,
+        selection(
+            vec![Sel::CgroupId {
+                dev: wrong_dev,
+                inode,
+            }],
+            &["cpu.usage_usec"],
+        ),
+    );
+    assert!(rep.contains(r#""ok":true""#), "{rep}");
+    assert!(wrong_device.rows.is_empty());
+
+    let outside_root = fixture_base().join("cgroupfs-files/state");
+    let outside_identity = cgroup_identity(&RealFs::new(), &outside_root)
+        .expect("fixture directory identity outside configured cgroup root");
+    let (unpublished, rep) = current(
+        &mut server,
+        id,
+        1_003_000_000,
+        4,
+        selection(
+            vec![Sel::CgroupId {
+                dev: outside_identity.device(),
+                inode: outside_identity.inode(),
+            }],
+            &["cpu.usage_usec"],
+        ),
+    );
+    assert!(rep.contains(r#""ok":true""#), "{rep}");
+    assert!(unpublished.rows.is_empty());
 
     let (unknown, rep) = current(
         &mut server,
         id,
         1_003_000_000,
-        3,
+        5,
         selection(
             vec![Sel::CgroupId {
                 dev: u64::MAX,

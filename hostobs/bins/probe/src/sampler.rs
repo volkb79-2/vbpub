@@ -154,7 +154,8 @@ pub struct Tick {
 }
 
 impl Tick {
-    /// Build a tick, indexing the metric dictionary entries clients may request.
+    /// Build a tick, indexing the metric dictionary entries clients may request. This constructor
+    /// has no cgroup key index, so no `cgroup_id` selector can select its rows.
     #[must_use]
     pub fn new(data: TickData, scan_ms: u32) -> Tick {
         let metric_columns = Arc::new(metric_column_index(&data));
@@ -428,12 +429,7 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
             &all_samples,
         );
         let entity_key = cgroup_key_index(&rows);
-        Tick::with_metric_columns(
-            data,
-            scan_ms,
-            Arc::clone(&self.metric_columns),
-            entity_key,
-        )
+        Tick::with_metric_columns(data, scan_ms, Arc::clone(&self.metric_columns), entity_key)
     }
 
     fn absent_samples(&self) -> Vec<Sample> {
@@ -536,10 +532,11 @@ struct WalkedRow {
 }
 
 fn cgroup_key_index(rows: &[WalkedRow]) -> CgroupKeyIndex {
-    rows.iter()
-        .enumerate()
-        .map(|(row, walked)| (walked.key, row))
-        .collect()
+    let mut index = CgroupKeyIndex::new();
+    for (row, walked) in rows.iter().enumerate() {
+        index.entry(walked.key).or_insert(row);
+    }
+    index
 }
 
 fn empty_tick_data() -> TickData {
