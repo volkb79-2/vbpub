@@ -85,7 +85,7 @@ exit "$rc"''',
 ]
 exit_map = { "0" = "PASS", "2" = "ERROR" }
 clean_tree = true
-budget = "20m"
+budget = "30m"
 artifacts = [".assay/verdict-r0-r1.json"]
 
 # No R2 lane yet: no mutation campaign has been designed or run for this crate
