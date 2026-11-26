@@ -352,9 +352,9 @@ the runner and `agent_version` says which; and `remote-gate.py`'s three-command 
 choreography (`:1068-1086`, `:1096-1320`), which becomes the five agent verbs.
 
 The job script becomes the agent's `executor` module: stdlib, shipped as source like
-`fleetd/src/fleetd/hostside.py`, with the one-implementation-for-probe-and-fake discipline
-FD-039 part 1 established (`fleetd/KNOWN_ISSUES_TODO_BACKLOG.md:854-875`). It runs as the agent's
-own child, `nice`d, so a controller restart cannot orphan it (§4.5).
+`fleetd/src/fleetd/hostside.py`, with FD-039's one-implementation-for-probe-and-fake rule
+(`fleetd/KNOWN_ISSUES_TODO_BACKLOG.md:854-875`). Each executor runs in its own transient systemd
+scope, outside the agent service cgroup; restart or downgrade of the agent cannot kill it (§4.5).
 
 ### 4.2 Result transport
 
@@ -365,28 +365,23 @@ own child, `nice`d, so a controller restart cannot orphan it (§4.5).
 - **Byte-range fetch** for every artifact (§2.2), so a dropped connection costs one range, not the
   file. The client verifies the whole-file sha256 at `next_offset == size` and renames a mismatch
   to `.rejected` (today's rule, `remote-gate.py:1213-1219`).
-- **Store collection**: the agent packs `store-<rel>.tgz` + `.sha256` exactly as `collect_stores`
-  does (`:496-528`), including the regular-files-only and size checks, and `fetch` returns it.
+- **Store collection**: keep the existing single `assay-store.tgz` plus checksum for all rels
+  (`remote-gate.py:470-503`, `:1193-1222`); `fetch` accepts only that closed name.
 - **Nothing result-shaped travels in a log line**: the one machine-readable line is §2.2's event,
   plus `result.json` as an artifact.
 
-### 4.3 Collection on EVERY exit path (D7)
+### 4.3 Stop, collect, then teardown (D7)
 
-The collector is a step **before** teardown, called from a trap that covers normal end, lane
-failure, **cancel**, **agent restart** and **controller loss**:
+On normal completion, lane failure, cancel or TERM: deregister the container from thrashguard,
+request lane termination when it has not exited, and wait for the lane process/container to stop.
+Only then run `collect_once`, verify the archive, remove this job's containers by labels, remove
+the checkout, and release its admission charge. Collection is idempotent and store errors do not
+rewrite the lane verdict.
 
-```
-executor:
-  trap 'collect_once' EXIT TERM INT HUP
-  ... run lane ...
-  collect_once
-```
-
-`collect_once` is idempotent (its own marker plus atomic rename), never changes the job's exit
-code (today's rule: a store problem never edits the verdict), and teardown (container removal,
-checkout removal) happens strictly after it. That is the whole point: the shard's progress lives
-in the throwaway checkout (`no-time-budgets` :330-345), and today's TERM path at `:634` destroys it.
-A `cancel` verb runs `collect_once` and then stops the lane.
+If termination fails or the lane remains alive, do not collect from its changing store and do
+not tear anything down. Keep the checkout, containers and admission charge, report `stopping`,
+and let the executor/reaper retry. When the lane exits, collect every flushed record then. There
+is no wall-clock limit on this wait: stopping a run never silently discards its last writes.
 
 ### 4.4 Identity binding of a verdict to a commit
 
@@ -398,21 +393,25 @@ Four facts, all host-written, none client-asserted: (1) `sha` in `request.json`;
 missing binding is exit 3, not a pass. Rejected: trusting the client's `--commit` echo — that is
 the name-for-object anti-pattern `AGENTS.md` names.
 
-### 4.5 Host loss and restart
+### 4.5 Host loss, agent restart and reboot
 
-- **Controller lost, host alive**: nothing stops. The agent keeps the executor as its own child
-  and keeps collecting; the client re-attaches by `job_id`. This is strictly better than today,
-  where the client holding the `docker exec` stream is the only thing watching. run-gate's own
-  inflight record already proves the re-attach pattern is sound (`run_gate.py:7350-7399`).
-- **Agent restarted**: `state.json` is read back and every job marked running is **probed**: the
-  container state first, then the `EXIT`/`rc` markers. Container gone → `lost` and the charge is
-  reclaimed; still running → adopted back into `state.json`. "Gone" means only docker's own "no
-  such object"; every other inspect failure is a transport error with the book untouched — the
-  rule `container_state` documents at `:7601-7660`.
-- **Host reboot**: `boot_id` differs → every recorded job is `lost`, no charge is carried, the
-  client sees `state: lost` with the reason. Collected progress is kept.
-- **Host unreachable**: `3`, unchanged (`remote-gate.sh:17-20`); a campaign pauses that host
-  (`campaign.py:931-989`) and never reads unreachable as gone.
+- **Controller lost, host alive:** the separate executor scope and its job id remain live; the
+  client reattaches by `job_id`. `run-gate` already writes an in-flight container record
+  (`run_gate.py:7350-7399`), but the agent owns the job lifecycle.
+- **Agent restart or downgrade:** the executor is outside the agent cgroup and continues. On
+  startup the reaper scans every job without an `EXIT` marker and reconnects to its transient
+  scope. It does not signal or restart a live executor.
+- **Dead executor, lane still alive:** the reaper finds containers by this job's labels, stops
+  the lane, waits for exit, collects from the surviving checkout, then removes those containers
+  and checkout. An inspect error other than Docker's explicit "no such object" leaves the job
+  and charge untouched (`run_gate.py:7601-7645`).
+- **Host reboot:** `boot_id` changed, so no old pid or executor is trusted. Before marking the job
+  `lost`, the reaper checks job-labeled containers; if one is running, it stops and waits for it.
+  It then collects the surviving checkout and artifacts, removes only that job's labeled
+  containers, and records `lost`. If stop or collection fails, it keeps the checkout and reports
+  the failure for retry; it does not claim the progress was collected.
+- **Host unreachable:** `3`; fleetd pauses that host and never reads unreachable as gone
+  (`remote-gate.sh:17-20`; `campaign.py:931-989`).
 
 ### 4.6 R2 store carry (RG-298)
 
@@ -429,20 +428,26 @@ today's behaviour verbatim. The carry's *format* belongs to assay's `assay-merge
 - **Credentials cover fleetd-owned hosts only** (operator: "host credentials in fleetd applies to
   fleetd-owned hosts only"). ciu-direct keeps its own keys and shares only the agent's queue;
   fleetd never sees ciu's credentials and ciu never sees fleetd's.
-- **Forced command (FD-009).** The agent is installed as the account's `command=`, accepting the
-  verbs of §2.2 and refusing general shell access (`fleetd/KNOWN_ISSUES_TODO_BACKLOG.md:895-905`
-  names the same contract; owner CIU-218 for enrollment). Each request is one JSON object; no verb
-  executes a client shell string. `extra_argv` must be run-gate options the client already
-  validated locally, `env` names the per-repo profile table only (RG-319), and both are passed as
-  an argv array. Rejected: a sudoers rule restricting a shell — it still starts a shell.
-- **What a client may ask.** Read: `facts`, `status`, `progress`, and `fetch` of its own job.
-  Write: `submit`/`cancel` of a job whose `requested_by` matches its own credential group, and
-  only for a `repo` in that group's allowed list. A cross-group read is a refusal (2) with the
-  reason. There is no admin verb.
-- **No secret in a job record or a log.** `request.json` carries no token, key path, URL or host
-  address (§2.2 lists every field); `~jobs/<id>/` is written `umask 077` (`run-job:4`) and the
-  client's `--extra`/`env` are recorded as the validated argv, never as a shell string. This
-  document names no host address, no `user@host`, no key path and no secret.
+- **Identity.** For cross-host sessions, check the provider identity before connecting, require
+  the pinned host key, then compare the agent's `probe` `host_id` and `boot_id` with the host
+  table. On the controller host the candidate is a local agent call over a Unix socket, no SSH;
+  its transport and peer-credential mapping are OPEN [N2].
+- **Forced command (FD-009).** Each authorized key is bound on the host to a group and priority
+  class by its forced command (`fleetd/KNOWN_ISSUES_TODO_BACKLOG.md:895-905`; enrollment belongs
+  to CIU-218). The agent derives identity and priority from that key, never `requested_by` or
+  another client field. Requests are JSON; the agent validates schema, repo membership, project
+  paths, store paths, resource values and every argv on the host. `project` and store paths must
+  be relative and resolve inside the job checkout. `extra_argv` uses a server-side allow-list of
+  run-gate options; `env` uses the host's per-repo profile table (RG-319). `fetch` accepts only
+  §2.2's closed artifact names. No verb runs a client shell string. The forced command narrows
+  SSH access; it does not sandbox the job.
+- **Trust boundary.** Submit runs arbitrary code from the named commit beside the host Docker
+  socket. A key that can submit is root-equivalent on that host; the forced command is not a
+  containment boundary.
+- **Scope and records.** Read only the authenticated group's facts and jobs; submit, cancel and
+  fetch only its own jobs and allowed repos. The client-supplied `requested_by` is audit text,
+  not authorization. Records and logs contain no secret, key path, host address or token; job
+  directories use `umask 077` (`run-job:4`).
 
 ## 6. thrashguard and hostobs
 
