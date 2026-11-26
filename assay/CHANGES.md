@@ -4,6 +4,54 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+- A native Python/pytest R2 lane now detects a candidate that stops making
+  progress, instead of ending it on elapsed wall time. Three bounds, all
+  reported as `hung` (never `killed`) and both new decisions accepted by the
+  durable evidence path, resume and `--rejudge-outcome`:
+  * **CPU without progress** -- process-tree CPU seconds since the last
+    COMPLETED plugin event (a `test` or a `phase` report; stdout/stderr growth
+    and `test_start` do not reset it) exceeds `max(3x baseline wall,
+    baseline wall + 60s)`. The CPU series is monotonic: a descendant exiting
+    banks its peak instead of lowering the total, so a spinning candidate
+    cannot erase work it did. It ignores pressure state entirely -- no pause,
+    no eligibility.
+  * **Per-test CPU bound** -- while exactly one test is in flight, CPU seconds
+    since its `test_start` exceed `max(10x that nodeid's baseline
+    setup+call+teardown seconds, 60s)`. Skipped under xdist and when more than
+    one test is in flight (the process-tree bound is then the backstop), and
+    skipped for a nodeid the baseline never measured. The evidence names the
+    nodeid, the bound and the measured value.
+  * The existing pressure-adjusted idle rule is unchanged.
+  A retained resource trace is now COMPACTED past its 1024-sample cap instead of
+  being marked incomplete, so no hang verdict is disabled by trace length and
+  the stored evidence stays bounded.
+- `judge.mutation.budget_per_candidate` is **advisory** on a lane whose
+  progress watch is armed -- liveness injected, the baseline produced plugin
+  events, and the candidate's process-tree CPU is readable -- and still
+  **binding** on every other run (non-pytest argv, non-Python, ingested, a
+  plugin that wrote nothing, an unreadable CPU series). The sweep's `plan`
+  progress record states which regime applied in `progress_bound`
+  (`{armed, reason, cpu_without_progress_s, per_test_baseline_tests,
+  budget_per_candidate_role}`), and one WARN is printed the first time a
+  candidate overruns an advisory budget. `budget_per_candidate = "none"` is
+  still refused under `budget = "unbounded"`: unbounded admission is
+  unchanged, and its docstring/message now describe the advisory semantics.
+- README publishes a generated "what each runtime actually watches" matrix
+  (anchor `#mutation-runtime-matrix`), rendered from
+  `src/assay/mutation_runtime.py` and pinned byte for byte by
+  `tests/core/test_mutation_runtime_matrix.py`. It corrects a stale cell: SQL
+  never produces a `hung` result, because liveness is injected only for a
+  Python/pytest lane. `docs/CONSUMERS.md` gains the advisory-budget migration
+  note, and `docs/DESIGN-GUIDE.md` explains why the matrix is generated. The
+  `assay-capabilities/2` output is unchanged.
+
+### Fixed
+- The CPU-without-progress bound no longer loses a descendant's work when that
+  descendant exits mid-candidate (the process-tree total used to drop, which
+  could have handed a spinning candidate a "no CPU burned" verdict).
+- A resource trace longer than 1024 samples no longer disables the hang
+  verdict it supports.
 <!-- cmru: release history -->
 
 ## [12.3.0] - 2026-11-25

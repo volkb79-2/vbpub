@@ -2096,16 +2096,54 @@ Assay follows cargo-mutants' structure, and the reason is the one above: with
 five buckets and a stated denominator, a consumer can decide for itself how to
 weigh a hang. Folding it into `killed` would take that decision away silently.
 
-**The counter-argument is real and is filed as B582.** A CPU-based bound that
-the unmutated BASELINE satisfies is arguably a statement about the mutant
-(a suite that finishes inside the bound, a mutant that does not), which is
-exactly PIT's and Stryker's position. P4 does not act on it because it would
-be a verdict-schema change -- a new closed-vocabulary value, a new score rule,
-a new analysis reading, and a decision about whether `hung` survives beside it.
-B582 records the precise shape proposed for the next schema cut: a `timeout`
-bucket counted as detected ONLY for a CPU-based bound that the unmutated
-baseline also satisfies, with an idle hang and a wall-budget expiry staying
-non-detected. Until that cut, a hang is `hung`.
+**The counter-argument is settled as a v21 rule, and P4 does not implement it.**
+A CPU-based bound that the unmutated BASELINE satisfies is a statement about
+the mutant (a suite that finishes inside the bound, a mutant that does not),
+which is exactly PIT's and Stryker's position. The operator DECIDED on
+2026-11-26 that a load-independent (CPU-based) timeout counts as DETECTED, with
+its own per-candidate `timeout_kind` -- `endless-loop` only with stack
+evidence, otherwise the bound that fired. That is a verdict-schema change (a
+new closed-vocabulary value, a new score rule, a new `assay analyze` reading,
+and a decision about whether `hung` survives beside it), so it belongs to the
+v21 cut and not to P4: P4 changes no schema and no verdict vocabulary, and a
+hang from any bound it adds stays `hung`. B582 records the decided rule and the
+three conditions it applies under (the candidate was ended by a CPU-based
+bound rather than the idle rule, the baseline completed inside the same bound,
+and the bound is assay's derived formula rather than a declared wall clock);
+an idle hang and a wall-budget expiry stay NON-detected. Until v21 lands, this
+package's behaviour is what is described above: `hung`, and nothing else.
+
+### Why the runtime matrix is generated from code (P4/S4)
+
+The README's language matrix answered "which rigor levels are registered" and
+said nothing about *what watches a candidate while it runs* -- which, after P4,
+is the question a lane author actually has to answer before declaring
+`budget_per_candidate`, `liveness` or a shard. It also carried a cell that had
+become false without anyone noticing: the SQL row claimed SQL shared Python's
+`hung` results, and `hung` is unreachable on a SQL lane because liveness is
+injected only for a Python/pytest adapter (`runner.py:5081`) with a pytest argv
+(`liveness.py:argv_invokes_pytest`). Nothing failed when that cell went stale,
+which is the defect shape this estate treats as the most expensive one: a
+document that certifies a capability no code path can produce.
+
+So the matrix has ONE source, `src/assay/mutation_runtime.py`, and
+`render_markdown()` prints the README block between two marker comments.
+`tests/core/test_mutation_runtime_matrix.py` compares the rendered block against
+the README byte for byte, refuses a missing or duplicated marker, derives the
+set of languages that must have a row from
+`assay.cli._built_in_registry` (so a newly registered R2 language cannot ship
+undocumented), and carries two must-fail controls: an edited README block, and
+a mutated row whose render must differ. The rejected alternative was a
+hand-written README section plus a parallel list in the test -- two sources that
+drift, with a check that could not fail for the right reason.
+
+Two cells are deliberately dull, because the honest answer is that nothing
+exists: an ingested JavaScript or Rust campaign has no assay candidate watch,
+store, resume or shard, and assay sets none of those tools' timeouts. The
+module says so in words rather than leaving a blank a reader would fill with an
+assumption. The matrix is also NOT exported through `assay-capabilities/2`:
+that output is a closed schema, so publishing this table there is a `/3` bump,
+not an additive tweak.
 
 ### Infrastructure fact injection (B013)
 

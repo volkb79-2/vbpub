@@ -4576,6 +4576,37 @@ but note two consequences:
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates.
 
+### Migration: the per-candidate budget is ADVISORY when a progress watch is armed (P4/S3)
+
+P4 replaced "a wall budget ends every candidate" with "a progress watch ends it,
+and the wall budget is advice", on exactly the lanes where a watch really
+exists. **Nothing you declare changes**; what changes is what the declaration
+does on one class of lane.
+
+**The arming rule, all three conditions.** `assay run` prints it on the `plan`
+progress event as `progress_bound`, and records why when it is not armed:
+
+| `progress_bound.armed` | When | What `judge.mutation.budget_per_candidate` does |
+| --- | --- | --- |
+| `true` | liveness was injected (native Python lane whose argv invokes pytest), the BASELINE's own events file carries at least one plugin record, and the candidate's process-tree CPU was readable | **advisory**: it never ends a candidate. One `assay: WARN: candidate overran judge.mutation.budget_per_candidate ...` line is printed the first time a candidate passes it, and the candidate continues under the CPU-without-progress and per-test bounds |
+| `false` | every other run: a non-pytest argv, a non-Python language, an ingested R2 lane, or a plugin that wrote nothing | **binding**, exactly as before: a candidate that reaches it is `budget_exceeded` and the lane continues with the next one |
+
+`progress_bound.reason` names the failing precondition
+(`liveness-not-injected:<reason>`, `baseline-produced-no-plugin-events`, or the
+runtime fallback `candidate-cpu-unreadable` when the CPU series could not be
+read at all after the watch was armed in intent). The two new bounds and the
+bucket they produce are in [what each runtime actually watches](../README.md#mutation-runtime-matrix);
+`hung` remains native-Python-only.
+
+**What to do about it.** If a `budget_per_candidate` you declared was really a
+ceiling on a slow-but-progressing suite, expect it to stop binding on a
+Python/pytest lane and to keep binding everywhere else; the WARN is the signal
+that your number was passed, not that the run stopped. If you *want* a wall
+ceiling to end candidates there, `judge.mutation.liveness = false` restores the
+old behaviour exactly (no watch, no advisory budget), at the cost of all hang
+detection. `budget_per_candidate = "none"` and the `budget = "unbounded"`
+admission rule are untouched.
+
 ### Liveness for a native R2 python/pytest lane: the `hung` bucket (B091/RW-33)
 
 `budget_per_candidate` (above) only catches a candidate that eventually
@@ -4904,7 +4935,7 @@ never says `coverage_parsed`.
 | `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
 | `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended`; when processes outlived the command leader (`leaked-process-tree`), also `leaked_descendants` (at most the first 20 of `{pid, ppid, comm}` plus an optional `cmdline` list of strings; `ppid` and `comm` are `null` when the process vanished before it was read; a zombie has no `cmdline`) and `leaked_descendants_total` (the full count). Additive (B233) |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
-| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`) |
+| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`), `cpu_window_s`, `idle_floor_s`, and (P4/S3) `progress_bound` (`{armed, reason, cpu_without_progress_s, per_test_baseline_tests, budget_per_candidate_role}` — which bound stops a candidate on this run, and whether `budget_per_candidate` is `advisory` or `binding`) |
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5, and `locus_unavailable_total` from advisory locus metadata dropped on load) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`, `locus_unavailable_total`) |
