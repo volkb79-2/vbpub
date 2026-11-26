@@ -4,6 +4,31 @@
 
 ## Known limitations
 
+### 4.0.0's `scripts/verify.sh`: check 5 always fails, the canary orders a real certificate, exit 127
+
+Three defects in 4.0.0's `scripts/verify.sh`; TE-15 is their fix (planned for
+4.0.1). The script ships unchanged with 4.0.0.
+
+- **Check 5 (socket-proxy policy) always reports FAIL.** The probe is
+  single-quoted, so the proxy name never expands inside the probe container and
+  the request goes to `http://:2375/version`; its POST half is vacuous for the
+  same reason. The proxy and its allowlist are fine; the check's verdict is not
+  evidence.
+- **The canary orders a real certificate.** Check 9 routes
+  `Host(verify.<--domain>)` on `websecure` with no router-level `tls=true`, so the
+  entrypoint's `certResolver` orders a real certificate for `verify.<domain>`
+  (public CT entry, CA rate-limit count), then probes 5 s later while issuance is
+  still running, so it normally FAILs. Run with `--no-canary` (INSTALL section 3)
+  until 4.0.1: it orders nothing.
+- **A run that reaches the canary exits 127.** The EXIT trap calls
+  `cleanup_tmp`, which 4.0.0 does not define, so the script ends with
+  `cleanup_tmp: command not found`. The checks already ran; the exit status is
+  not usable as a verdict.
+
+Source: P-edge-11b 4.0.0 acceptance report sections 9 and 12 (2026-11-26).
+
+---
+
 ### acme-data volume loss triggers certificate re-issuance (`store = "volume"`)
 
 This limitation applies only with `[tls_edge.acme] store = "volume"`. Running
@@ -80,6 +105,27 @@ credential in the gitignored `edge-proxy/.env` file and relying on Compose
 
 ---
 
+### TE-13 — rootless Docker ownership of `vol-traefik-acme`
+
+Under rootless Docker the S6.5 helper's `chown 0:0` of `ciu-stack/vol-traefik-acme`
+maps to the user's uid, so the directory a rootless run creates is not the
+`0:0 0700` directory a rootful run expects. CIU's S6.3 check
+(`ciu/src/ciu/engine.py:899-914`) compares the existing dir against the
+declared owner and may then refuse it on the next run (the ciu S6.3 refusal of
+the existing directory).
+
+Known issue, not a verified defect: no rootless host was available, and 4.0.0
+was not checked for this before release. The main controller waived the check
+on 2026-11-26 (the P-edge-11b 4.0.0 acceptance did not test rootless Docker),
+and no host is known to have failed this way. Workaround if it happens: remove
+the directory and let the next run create it, or run the instance as the user
+that owns it.
+
+Source: P-edge-04b fix review (2026-11-24); moved here from the Roadmap after
+4.0.0 (P-edge-12).
+
+---
+
 ### `ingress_public` east-west visibility
 
 All containers that join `ingress_public` can attempt TCP connections to each
@@ -108,7 +154,58 @@ deployment.
 
 ---
 
+### py314 bundle: gates only
+
+The release publishes one bundle per interpreter. The `py314` bundle of 4.0.0
+passed the release gates but was never installed on a host: no host in the
+estate runs python 3.14, so `get.py install --variant py314` on a real
+installation is unverified. Use `--variant py313` (see INSTALL section 3) until
+a py314 host exercises it.
+
+---
+
 ## Roadmap
+
+### TE-15 — `scripts/verify.sh` defects found by the 4.0.0 acceptance (planned 4.0.1)
+
+4.0.0's `scripts/verify.sh` is wrong in three ways (P-edge-11b report sections 9
+and 12, D1-D3; the known-limitation entry states the operator-visible effect):
+
+- **Canary (check 9) orders a real certificate.** It routes
+  `Host(verify.<--domain>)` on `websecure` without router-level `tls=true`, so
+  the entrypoint's `certResolver` applies and one real certificate is ordered
+  for `verify.<domain>` (public CT entry, CA rate limit). It is the same code in
+  3.2.0 and 3.0.0. Fix: label the router `tls=true` and no certresolver, and
+  probe with the SNI of `--domain` plus its own `Host` header (the method the
+  TE-14 acceptance used), so routing is proven without an ACME order and the
+  5 s wait is not a race against issuance.
+- **Check 5 (socket-proxy policy) can never pass.** The probe script is
+  single-quoted (`scripts/verify.sh:201-212`), so `$EDGE_DOCKERPROXY` is empty
+  inside the container and it requests `http://:2375/version`; the POST half is
+  vacuous for the same reason. The proxy itself is fine. Fix: quote correctly and
+  add a test proving the resolved name reaches the probe.
+- **The EXIT trap calls an undefined function.** `scripts/verify.sh:355` traps
+  `_canary_cleanup; cleanup_tmp`, but `cleanup_tmp` is defined nowhere in 4.0.0
+  (3.2.0 defined it for its render tempdir), so any run that reaches the canary
+  ends with `cleanup_tmp: command not found` and exit 127. Fix: define the
+  cleanup the trap needs, or trap only what exists.
+- A test that runs `verify.sh` with a stubbed proxy must let each check PASS and
+  FAIL, so neither a quoting bug nor a vacuous probe can pass as green.
+
+Source: P-edge-11b 4.0.0 acceptance report sections 9 and 12 (2026-11-26).
+
+### TE-16 — a volume-store instance still creates an unused `vol-traefik-acme` (planned)
+
+A volume-store instance (an adopted external ACME volume, or the default
+volume) still makes ciu create `ciu-stack/vol-traefik-acme` through the S6.5
+root helper, although nothing mounts it: the compose template mounts the
+external volume instead. On a non-root host this means the root helper and
+`CGROUP_PARENT_DEV_INTERACTIVE` are required for a directory that is never used
+(P-edge-11b report section 5, P1). Fix: have the stack declare no hostdir volume
+when `store = "volume"`, so a non-root run needs no root helper; then drop the
+known-limitation caveat about it and the INSTALL section 9 note.
+
+Source: P-edge-11b 4.0.0 acceptance report section 5 (2026-11-26).
 
 ### TE-08 — tests exercise the wrong renderer; coverage rule
 
@@ -117,26 +214,6 @@ private-helper, source-grep and config-literal oracles in P-edge-04. P-edge-03
 covers the standalone/ciu renderer oracles and D10's coverage-exclusion policy.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M5, M6
-
-### TE-13 — rootless Docker ownership of vol-traefik-acme
-
-Question: Under rootless Docker, the S6.5 helper's `chown 0:0` of
-`vol-traefik-acme` maps to the user's uid; ciu's S6.3 check
-(`ciu/src/ciu/engine.py:899-914`) may then reject the existing dir on the next
-run. Unverified; check on a rootless host before 4.0.0.
-
-Source: P-edge-04b fix review (2026-11-24).
-
-### TE-14 — docker provider `watch` vs socket-proxy `EVENTS`
-
-Question: `ciu-stack/traefik.yml.j2:116` sets the Docker provider `watch: true`,
-but the socket proxy's allowlist (`ciu-stack/ciu.compose.yml.j2:29-33`) does not
-enable `EVENTS`. Unverified whether containers created after Traefik starts are
-routed; check on a host (start a labelled container alongside a running
-Traefik). If they are not, enable `EVENTS: 1` in both files and update
-ARCHITECTURE's socket-proxy section accordingly.
-
-Source: P-edge-09 review r1b (2026-11-24).
 
 ### FEAT-01 — bearer-token authentication middleware for routed services
 
