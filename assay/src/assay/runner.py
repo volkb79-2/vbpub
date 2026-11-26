@@ -6030,18 +6030,20 @@ def _run_prepared_lane(
             # was not injected into `plan` (non-pytest argv, non-python
             # language, or an ingested lane), `process_runner` is used
             # verbatim -- byte-for-byte the pre-B091 candidate path.
-            # (P4/S3) THE arming decision, made here, once, from the three
-            # facts that decide it -- and disclosed on the `plan` progress
-            # event and in the verdict's `judgment.r2` so a reader learns
-            # which regime judged this run from the artifact itself:
+            # (P4/S3) The plan-time eligibility decision is disclosed by
+            # `plan.progress_bound` on the progress stream only. It is not a
+            # verdict field. CPU readability cannot be known until a
+            # candidate starts, so an unreadable first CPU series demotes
+            # that candidate at runtime and records the evidence decision
+            # `budget-expired-watch-unarmed` instead:
             #
             #   * liveness was injected (the plugin is in the plan), AND
             #   * the BASELINE's own events file carries plugin records (the
             #     plugin really ran, so a candidate's progress is observable),
             #     AND
-            #   * the candidate's process-tree CPU is readable (checked at the
-            #     first successful `/proc` read; `LivenessRunner` falls back to
-            #     a binding budget if it never is).
+            #   * the candidate's process-tree CPU is readable at runtime
+            #     (checked at its first successful `/proc` read; if it never
+            #     is, `LivenessRunner` falls back to a binding budget).
             #
             # Every other run -- non-pytest argv, non-Python language, an
             # ingested lane, a plugin that never wrote anything -- keeps its

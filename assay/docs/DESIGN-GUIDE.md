@@ -2125,6 +2125,17 @@ and the bound is assay's derived formula rather than a declared wall clock);
 an idle hang and a wall-budget expiry stay NON-detected. Until v21 lands, this
 package's behaviour is what is described above: `hung`, and nothing else.
 
+#### P4 candidate visibility is not tamper-proof
+
+The liveness events file is writable by the candidate it judges, and the
+materialized pytest plugin lives outside the candidate snapshot. Candidate code
+can read the absolute events path from its environment and append forged
+progress records, which can defeat the CPU bounds while it spins; it can also
+rewrite the plugin file for a later candidate. P4's event stream is a liveness
+signal, not an authenticated boundary against hostile candidate code. Backlog
+B585 records the trust limitation and a future protected-path or authenticated
+record design.
+
 ### Why the runtime matrix is generated from code (P4/S4)
 
 The README's language matrix answered "which rigor levels are registered" and

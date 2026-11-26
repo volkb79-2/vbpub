@@ -1373,3 +1373,50 @@ def test_native_r2_resume_and_progress_contract_is_documented_across_public_docs
         assert "resource_limit_changes" in text, (
             f"{document.name} omits the candidate progress field"
         )
+
+
+def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
+    changes = " ".join(
+        _current_changes_text(
+            (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+        ).split()
+    )
+    consumers = " ".join(CONSUMERS.read_text(encoding="utf-8").split())
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+
+    assert "### Known issues" in changes
+    assert "max(3 x baseline wall, baseline wall + 60s)" in changes
+    assert "parallel suite can consume more baseline tree CPU than wall time" in changes
+    assert "never counts as `killed`" in changes
+    assert "max(10 x that test's baseline seconds, 60s)" in changes
+    assert "randomized test order can stop a healthy candidate as `hung`" in changes
+
+    for text, paragraph in (
+        (
+            readme,
+            "Where the progress watch is not armed (see the P4 migration note), "
+            "a configured candidate budget that expires before a complete clean "
+            "idle window remains an incomplete `budget_exceeded` result",
+        ),
+        (
+            readme,
+            "Where the progress watch is not armed (see the P4 migration note), "
+            "continued CPU work reaches the configured budget",
+        ),
+        (
+            consumers,
+            "Where the progress watch is not armed (see the P4 migration note), "
+            "if CPU keeps growing, the candidate remains incomplete until its "
+            "configured budget",
+        ),
+    ):
+        assert paragraph in text
+
+    assert (
+        "progress_bound` on the `plan` progress event only; it is not included "
+        "in the verdict"
+    ) in consumers
+    assert "`candidate-cpu-unreadable` is not a `progress_bound.reason`" in consumers
+    assert "`budget-expired-watch-unarmed`" in consumers
+    assert "The first `session_finish` closes the per-test window" in consumers
+    assert "session or module fixture cost moving to another nodeid under randomized order" in consumers

@@ -4544,13 +4544,12 @@ mutation sweep's own `plan` progress event (below) and recorded in the verdict a
 present when the lane declared an explicit duration (that duration is already on the wire, as the lane
 file itself) or the `"none"` opt-out below.
 
-`budget_per_candidate = "none"` is the explicit, written-down opt-out: every mutant command genuinely
-runs unbounded, exactly as an OMITTED key used to behave before B091. Declaring it prints a WARN
-(`assay: WARN: lane ... declares judge.mutation.budget_per_candidate = 'none' ...`) naming the B090
-incident, because the whole point of B091 is that this shape should be a deliberate choice a human can
-see, not a silent default. `budget = "unbounded"` (below) still refuses a lane that declares `"none"`
-for this reason — genuinely no per-mutant bound is exactly what that admission rule exists to catch —
-but admits an omitted key or an explicit `"auto"` on the same terms as an explicit duration.
+`budget_per_candidate = "none"` is the explicit, written-down opt-out: there is no per-candidate
+wall timeout. A finite lane still passes its remaining lane time as the command timeout, so without
+an armed progress watch one candidate may consume that remainder. Declaring it prints a WARN
+(`assay: WARN: lane ... declares judge.mutation.budget_per_candidate = 'none' ...`) naming why no
+per-candidate wall timeout exists. `budget = "unbounded"` (below) still refuses a lane that declares
+`"none"`; it admits an omitted key or an explicit `"auto"` on the same terms as an explicit duration.
 
 `python:uuid-equality-swap` and `python:enum-comparison-swap` are **withdrawn**
 (A-326). They shipped in 2.3.0 and were measured to produce a byte-identical
@@ -4584,20 +4583,42 @@ and the wall budget is advice", on exactly the lanes where a watch really
 exists. **Nothing you declare changes**; what changes is what the declaration
 does on one class of lane.
 
-**The arming rule, all three conditions.** `assay run` prints it on the `plan`
-progress event as `progress_bound`, and records why when it is not armed:
+**Plan-time eligibility.** `assay run` prints `progress_bound` on the `plan`
+progress event only; it is not included in the verdict. At plan time, `armed`
+means liveness was injected and the baseline produced at least one plugin
+record. Candidate CPU readability is only known after the candidate starts:
+if its first CPU reads all fail, its wall budget becomes binding at runtime
+and the evidence decision is `budget-expired-watch-unarmed`.
 
 | `progress_bound.armed` | When | What `judge.mutation.budget_per_candidate` does |
 | --- | --- | --- |
-| `true` | liveness was injected (native Python lane whose argv invokes pytest), the BASELINE's own events file carries at least one plugin record, and the candidate's process-tree CPU was readable | **advisory**: it never ends a candidate. One `assay: WARN: candidate overran judge.mutation.budget_per_candidate ...` line is printed the first time a candidate passes it, and the candidate continues under the CPU-without-progress and per-test bounds |
+| `true` | liveness was injected for a native Python lane whose argv invokes pytest, and the BASELINE's own events file carries at least one plugin record | **advisory** once that candidate's process-tree CPU is readable: the wall budget never ends it. If CPU remains unreadable, the runtime demotes the candidate to a binding budget and writes the evidence decision above. One `assay: WARN: candidate overran judge.mutation.budget_per_candidate ...` line is printed the first time a candidate passes an advisory budget |
 | `false` | every other run: a non-pytest argv, a non-Python language, an ingested R2 lane, or a plugin that wrote nothing | **binding**, exactly as before: a candidate that reaches it is `budget_exceeded` and the lane continues with the next one |
 
-`progress_bound.reason` names the failing precondition
-(`liveness-not-injected:<reason>`, `baseline-produced-no-plugin-events`, or the
-runtime fallback `candidate-cpu-unreadable` when the CPU series could not be
-read at all after the watch was armed in intent). The two new bounds and the
-bucket they produce are in [what each runtime actually watches](../README.md#mutation-runtime-matrix);
+`progress_bound.reason` describes the plan-time state (`armed`,
+`liveness-not-injected:<reason>`, or `baseline-produced-no-plugin-events`).
+`candidate-cpu-unreadable` is not a `progress_bound.reason`; the runtime
+fallback appears on that candidate's evidence as
+`budget-expired-watch-unarmed`. The two CPU bounds and their bucket are in
+[what each runtime actually watches](../README.md#mutation-runtime-matrix);
 `hung` remains native-Python-only.
+
+**Known false-stop cases.** The CPU-without-progress threshold is derived
+from baseline wall seconds (`max(3 x baseline wall, baseline wall + 60s)`) but
+compared with process-tree CPU. It is lenient for a serial suite. A parallel
+suite whose baseline tree CPU exceeds wall time can stop a healthy candidate
+as `hung`, never `killed`. The per-test bound is
+`max(10 x that test's baseline seconds, 60s)`, also compared with process-tree
+CPU. Background processes, tests that fan out far beyond 10x, and session or
+module fixture cost moving to another nodeid under randomized order can stop a
+healthy candidate as `hung`. The first `session_finish` closes the per-test
+window and re-dates the CPU-without-progress window once, giving teardown and
+cleanup one full CPU bound from that event.
+
+If a lane has these conditions and needs a finite candidate wall timeout to
+remain the stop, `judge.mutation.liveness = false` is supported; it disables
+all P4 watches and restores the binding per-candidate budget. A smaller
+`budget_per_candidate` does not protect candidates while the watch is armed.
 
 With `budget_per_candidate = "none"`, there is no per-candidate wall timeout.
 When the progress watch is not armed, one candidate can use the lane's
@@ -4744,7 +4765,8 @@ making progress, on EITHER of two branches:
 - a `session_finish` event was seen but the process is still alive 30 s
   later AND no new event or stdout/stderr growth has occurred for a full
   30 s grace AND process-tree CPU has stayed below the quiet threshold over
-  the complete trailing 30 s CPU window (P7 round-2 B6, RW-57). If CPU keeps
+  the complete trailing 30 s CPU window (P7 round-2 B6, RW-57). Where the
+  progress watch is not armed (see the P4 migration note), if CPU keeps
   growing, the candidate remains incomplete until its configured budget
   rather than being classified `hung`.
 
@@ -4773,7 +4795,8 @@ window exists, the result is `budget_exceeded` and the mutation lane remains
 incomplete. It is not evidence that the mutant was killed, survived, or hung.
 The candidate's `liveness_resource_evidence` is retained in the mutation
 progress record and resumable state record. Its top-level `decision` is
-`idle-hang`, `session-finish-hang`, or `configured-budget-expired`; each sample
+`idle-hang`, `session-finish-hang`, `configured-budget-expired`, or
+`budget-expired-watch-unarmed`; each sample
 has wall/eligible time, candidate-tree CPU, resource-counter deltas, and the
 observed snapshots. `trace_complete = false` or `trace_truncated = true`
 cannot support a `hung` bucket. A cached `hung` record without valid complete
@@ -4942,7 +4965,7 @@ never says `coverage_parsed`.
 | `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
 | `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended`; when processes outlived the command leader (`leaked-process-tree`), also `leaked_descendants` (at most the first 20 of `{pid, ppid, comm}` plus an optional `cmdline` list of strings; `ppid` and `comm` are `null` when the process vanished before it was read; a zombie has no `cmdline`) and `leaked_descendants_total` (the full count). Additive (B233) |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
-| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`), `cpu_window_s`, `idle_floor_s`, and (P4/S3) `progress_bound` (`{armed, reason, cpu_without_progress_s, per_test_baseline_tests, budget_per_candidate_role}` — which bound stops a candidate on this run, and whether `budget_per_candidate` is `advisory` or `binding`) |
+| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`), `cpu_window_s`, `idle_floor_s`, and (P4/S3) `progress_bound` (`{armed, reason, cpu_without_progress_s, per_test_baseline_tests, budget_per_candidate_role}` — plan-time watch eligibility and budget role; candidate CPU readability can still demote the watch at runtime. This field appears on the plan event only, not in the verdict.) |
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5, and `locus_unavailable_total` from advisory locus metadata dropped on load) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`, `locus_unavailable_total`) |

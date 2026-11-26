@@ -10,8 +10,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   reported as `hung` (never `killed`) and both new decisions accepted by the
   durable evidence path, resume and `--rejudge-outcome`:
   * **CPU without progress** -- process-tree CPU seconds since the last
-    COMPLETED plugin event (a `test` or a `phase` report; stdout/stderr growth
-    and `test_start` do not reset it) exceeds `max(3x baseline wall,
+    COMPLETED plugin event (a `test` or a `phase` report; stdout/stderr growth,
+    `test_start` and `test_finish` do not reset it) exceeds `max(3x baseline wall,
     baseline wall + 60s)`. The CPU series is monotonic: a descendant exiting
     banks its peak instead of lowering the total, so a spinning candidate
     cannot erase work it did. It ignores pressure state entirely -- no pause,
@@ -52,6 +52,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   could have handed a spinning candidate a "no CPU burned" verdict).
 - A resource trace longer than 1024 samples no longer disables the hang
   verdict it supports.
+
+### Known issues
+- The CPU-without-progress threshold is derived from baseline **wall** seconds
+  (`max(3 x baseline wall, baseline wall + 60s)`) and compared with
+  process-tree CPU. This is lenient for a serial suite because tree CPU grows
+  no faster than wall time. A parallel suite can consume more baseline tree
+  CPU than wall time, so a healthy candidate can be stopped as `hung`; this
+  never counts as `killed`.
+- The per-test threshold (`max(10 x that test's baseline seconds, 60s)`) is
+  also compared with process-tree CPU. Background processes, tests that fan
+  out far beyond 10x, or setup cost moving to another nodeid under randomized
+  test order can stop a healthy candidate as `hung`.
+- The P4 behavior is not yet synchronized with SPEC LIV-070/075/080 and
+  LIV-110..140. Backlog B584 tracks that documentation update.
 <!-- cmru: release history -->
 
 ## [12.3.0] - 2026-11-25

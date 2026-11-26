@@ -2115,7 +2115,6 @@ class LivenessRunner:
         self.advisory_budget_s = advisory_budget_s
         self.advisory_exceeded_at_s: float | None = None
         self._advisory_warned = False
-        self.watch_armed: bool | None = None
 
     def assay_window_host_spec(self) -> Mapping[str, object] | None:
         """Describe a production-configured runner for an isolated host.
@@ -2767,7 +2766,6 @@ class LivenessRunner:
                     if cpu_readable:
                         if self.advisory_exceeded_at_s is None:
                             self.advisory_exceeded_at_s = elapsed_wall
-                            self.watch_armed = True
                             if not self._advisory_warned:
                                 self._advisory_warned = True
                                 print(
@@ -2794,9 +2792,6 @@ class LivenessRunner:
                         exc.liveness_resource_evidence = evidence(
                             "budget-expired-watch-unarmed",
                             required_idle_s=bound,
-                        )
-                        exc.liveness_watch_unarmed_reason = (
-                            "candidate-cpu-unreadable"
                         )
                         raise exc
 

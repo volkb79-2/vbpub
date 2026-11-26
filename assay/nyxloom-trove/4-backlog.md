@@ -15985,13 +15985,11 @@ The single error is at `descendants[0]`, so the only difference between an accep
 - Chunk 2, rgw-r2-20261124T162538-r1002, was seeded with them (STORE-SEEDED). Its `resume` event read `rejected_total: 14, resumed_total: 0`, it re-ran candidates 0-13, and it hit the budget again at candidate 13.
 - The stores are kept at `.controller-state/rollback/gates/icm1a-r2-store-c{1,2}`.
 
-**Cause (verified by the assay controller).** The same candidate record differs between the two chunks only in `judge_sha256` (`bf64c0b6…` vs `7e34b992…`) and in timings.
-- The lane exports `PYTHONPATH={worktree}/assay/src:…` (`scripts/debian-install-v2/run-gate.toml:78`), and `{worktree}` is a fresh throwaway checkout per remote run (`…/.worktrees/rg-<run-id>-<sha>`).
-- `PYTHONPATH` is in the lane's `env_passthrough` (`scripts/debian-install-v2/assay.toml:35`).
-- `judge_sha256` (`src/assay/mutation.py:1531`) folds the SHA-256 of every present passthrough value, so every run has a new judge.
-- This is assay working as designed (B142; its docstring states "changed per-worktree paths … cause a safe cache miss"), not a remote-gate defect.
-- The consumer fix is a checkout-independent value: a relative `PYTHONPATH` (the command already `cd`s into the project), or a declared `env` entry.
-- cmru's and assay's own R2 lanes pass through `PATH` only, so the cross-host backfill (P-assay-08) is not affected by this. Its pilots compare `judge_sha256` across hosts to confirm it.
+**Cause (re-verified in assay source).** `judge_sha256` fingerprints the effective value of every present `env_passthrough` name (`src/assay/mutation.py:1603-1610`). When native liveness is injected, assay prepends a per-run temporary plugin directory to the candidate's `PYTHONPATH` (`src/assay/liveness.py:630-636`); cold-witness execution also prepends its receipt-plugin directory (`src/assay/mutation_witness.py:1165-1168`). The injected path changes between runs, so any `PYTHONPATH` included in `env_passthrough` changes the judge identity even when the consumer's own path spelling is relative.
+
+**Correction to the earlier advice.** The relative-path workaround recorded here does not work: it cannot remove assay's per-run injected entries from the effective value that is fingerprinted. The consumer's declared path is not the changing component; assay's injection is.
+
+**Decided design and workaround.** Fingerprint the pre-injection `PYTHONPATH` value and exclude assay's own injected entries. Do not ask lane authors to encode a workaround in their ambient path. Until that code change lands, the supported workaround is a declared `env` `PYTHONPATH`, which is not hashed as a passthrough value. Assay's own R2 lanes pass through `PATH` only and are unaffected.
 
 **Gap (the assay part).** Nothing tells the operator why. `resume` counts `rejected_total`, but neither the event nor the log names which judge component moved. Diagnosing this took a manual record diff and reading the judge docstring.
 
@@ -16118,3 +16116,45 @@ When `budget_per_candidate_seconds` is `None`, the first attempt receives the en
 **Wanted.** Decide a retry rule for the no-per-candidate-budget case that is derived from recorded attempt/lane facts. Keep the existing finite lane deadline; do not add a guessed duration or a new config refusal.
 
 **Close when.** A test demonstrates the no-budget retry decision near the lane deadline, the chosen rule is documented, and the retry either proceeds or is skipped for that measured reason.
+
+## B584 — synchronize the normative liveness SPEC with P4
+
+**Status: OPEN (filed 2026-11-26 from P-assay-P4 fix round 1, finding 5); severity: medium (the normative contract currently contradicts shipped behavior).**
+
+P4 changed the pytest event lifecycle, CPU-derived stop rules, per-test windows,
+and post-`session_finish` handling. `docs/SPEC.md` LIV-070/075/080 and
+LIV-110..140 have not been synchronized and still describe pre-P4 behavior.
+The P4 fix round was explicitly forbidden from editing the SPEC, so this entry
+tracks the required follow-up rather than treating the stale text as a second
+contract.
+
+**Wanted.** Update each listed LIV section to describe the shipped `test_finish`
+event and its progress-counting exclusion, the CPU bounds and their resource
+evidence, the complete per-test window lifecycle, runtime watch demotion, and
+the one-time post-`session_finish` window reset. Preserve the fixed rule that a
+stop is never `killed` and make no schema change unless a separate decision
+authorizes it.
+
+**Close when.** Every listed section is checked against the code and tests,
+the SPEC no longer asserts the pre-P4 behavior, and a docs test or review check
+pins the updated normative wording.
+
+## B585 — candidate code can forge P4 liveness progress
+
+**Status: OPEN (filed 2026-11-26 from P-assay-P4 fix round 1, finding 10); severity: low (trust-boundary limitation, not an ordinary candidate defect).**
+
+The candidate receives the liveness events path and can append records that
+look like progress while burning CPU. The materialized plugin is outside the
+snapshot but lives on the same accessible filesystem, so candidate code can
+also rewrite it for a later attempt. Current evidence is `src/assay/liveness.py`
+(`_append` and `PYTHONPATH` injection) and `src/assay/runner.py` (the plugin
+and event directories); the P4 design guide now discloses this boundary.
+
+**Wanted.** Decide and implement a candidate-inaccessible write channel or an
+authenticated event stream whose per-run key is unavailable to candidate code.
+Preserve the current read-only consumer interface and the rule that progress
+records do not alter completion counts or candidate verdict vocabulary.
+
+**Close when.** A hostile candidate test attempts to forge progress and rewrite
+the plugin, and the liveness bounds remain enforceable for later candidates
+without changing ordinary pytest event behavior.

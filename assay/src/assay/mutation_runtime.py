@@ -111,7 +111,8 @@ RUNTIME_MATRIX: tuple[LanguageRuntimeRow, ...] = (
         # plugin-inactive fallback the same monitor reads.
         progress_signal=(
             "pytest plugin events (`session_start`, `test_start`, per-phase "
-            "`test`/`phase`, `session_finish`) plus stdout/stderr file growth, "
+            "`test`/`phase`, `test_finish`, `session_finish`) plus "
+            "stdout/stderr file growth, "
             "only when the lane argv invokes pytest"
         ),
         # liveness.py:IDLE_HANG_POLICY -- a complete resource trace plus the
@@ -121,14 +122,18 @@ RUNTIME_MATRIX: tuple[LanguageRuntimeRow, ...] = (
         # liveness.py:cpu_without_progress_decision + derived_bound_from_baseline.
         cpu_without_progress=(
             "provided: process-tree CPU seconds since the last COMPLETED plugin "
-            "event, bound max(3x baseline wall, baseline wall + 60s)"
+            "event, bound max(3x baseline wall seconds, baseline wall seconds "
+            "+ 60s); a parallel suite whose baseline tree CPU exceeds wall "
+            "can stop a healthy candidate as `hung`"
         ),
         # liveness.py:per_test_cpu_bound_decision +
         # per_test_cpu_bound_from_baseline + per_test_bound_enabled.
         per_test_bound=(
-            "provided: max(10x that nodeid's baseline setup+call+teardown "
-            "seconds, 60s) CPU seconds, skipped under xdist or with more than "
-            "one test in flight"
+            "provided: process-tree CPU max(10x that nodeid's baseline "
+            "setup+call+teardown seconds, 60s); background workers, tests "
+            "that fan out far beyond 10x, or random-order fixture-cost shifts "
+            "can stop a healthy candidate as `hung`; skipped under xdist or "
+            "with more than one test in flight"
         ),
         # termination.py:52 (TIMED_OUT -> budget_exceeded), :53 (HUNG -> hung);
         # liveness.py:advisory_budget_s + runner.py:6070 (watch_armed).

@@ -127,7 +127,8 @@ def test_an_unreadable_cpu_series_falls_back_to_a_binding_budget(
     """The third arming precondition -- a readable CPU series -- is answered
     by the FIRST read. When every read fails, no CPU bound could ever fire,
     so the advisory budget must become binding again rather than let a
-    candidate run with nothing watching it. The exception names that fact.
+    candidate run with nothing watching it. The evidence decision records
+    that runtime demotion; no extra exception attribute is needed.
     """
     clock = _FakeClock()
     proc = _ScriptedProc(pid=7203)
@@ -151,7 +152,7 @@ def test_an_unreadable_cpu_series_falls_back_to_a_binding_budget(
 
     assert isinstance(excinfo.value, subprocess.TimeoutExpired)
     assert not isinstance(excinfo.value, liveness.LivenessHungExpired)
-    assert excinfo.value.liveness_watch_unarmed_reason == "candidate-cpu-unreadable"
+    assert not hasattr(excinfo.value, "liveness_watch_unarmed_reason")
     assert (
         excinfo.value.liveness_resource_evidence["decision"]
         == "budget-expired-watch-unarmed"
