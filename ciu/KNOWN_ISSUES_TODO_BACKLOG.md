@@ -703,7 +703,7 @@ entries.
 | CIU-228 | `ciu up --dir <relative> --root-folder <root>` fails with `[no-ciu-root]`; how a relative `--dir` resolves with `--root-folder` is undefined | Minor | OPEN 2026-11-24 |
 | CIU-229 | `ciu worktree rm`: a spurious first-attempt refusal, sibling roots without a generated identity refused, `--dry-run` reporting merged branches as kept-unmerged | Minor | OPEN 2026-11-24 |
 | CIU-230 | The S6.5 root helper has no default cgroup parent, and its refusal (`CGROUP_PARENT_DEV_INTERACTIVE` required) gives no remedy | Medium | FIXED IN THIS BRANCH (P-core-11) |
-| CIU-231 | (a) `ciu up` with no `--dir` inside a stack dir of a multi-stack root used to be a silent rc-0 no-op; (b) `ciu down --dir <stack>` from the root refuses `[no-ciu-root]`, and `down --dir .` from a stack dir refuses `[S18]` after environment values are available | Medium | FIXED IN THIS BRANCH (P-core-11) for (a); (b) remains open and overlaps CIU-228 |
+| CIU-231 | (a) `ciu up` with no `--dir` inside a stack dir of a multi-stack root used to be a silent rc-0 no-op; (b) `ciu down --dir <stack>` from the root refuses `[no-ciu-root]`, and `down --dir .` from a stack dir selects no stack | Medium | FIXED IN THIS BRANCH (P-core-11) for (a); (b) remains open |
 | CIU-232 | procio's signal scope replaced the foreground one-shot's SIGTERM/SIGHUP forwarding handlers during `run_cmd` | Minor | FIXED IN THIS BRANCH (P-core-10 fix round 1) |
 | CIU-233 | Seventeen deferred direct `subprocess.run(capture_output=True)` sites still have no bounded post-exit drain | Minor | OPEN 2026-11-24 (P-core-10 review) |
 | CIU-234 | `procutil.run_cmd`'s helper-thread branch leaves the child running when a main-thread `KeyboardInterrupt` or `SystemExit` interrupts `worker.join()` | Minor | OPEN 2026-11-24 (P-core-10 review r2, M2) |
@@ -7335,17 +7335,17 @@ plus an inline controlled-wrong message that fails the same three assertions).
 
 ## CIU-231 — `ciu up` with no `--dir` inside a stack dir of a multi-stack root is a silent rc-0 no-op
 
-**Status:** FIXED IN THIS BRANCH (P-core-11) for (a); (b) remains open and overlaps CIU-228 (filed 2026-11-24, from vbpub-edge via the main controller, r1002 bring-up, ciu from the tls-edge v3.2.0 instance); severity: Medium.
+**Status:** FIXED IN THIS BRANCH (P-core-11) for (a); (b) remains open (filed 2026-11-24, from vbpub-edge via the main controller, r1002 bring-up, ciu from the tls-edge v3.2.0 instance); severity: Medium.
 
 **Observed.**
 - (a) `ciu up`, run from inside `voice-screen-share/jitsi-server` (also `fluxer-server`) in a vbpub checkout, used to print `No phases/stacks selected to deploy` and exit 0. `deploy._implicit_stack_remedy` and `deploy.action_deploy` now refuse that empty selection with rc 2 and the `ciu up --dir .` remedy. Plain `ciu up` does deploy in a single-stack root (the tls-edge instance stack dir).
-- (b) On 7.26.0 and 7.28.0, `ciu down --dir <repo-relative stack dir> --yes` from the checkout root exits 2 with `[no-ciu-root]`; CIU-228 owns that relative-`--dir`/`--root-folder` resolution family. From a stack dir, `ciu down --dir . --yes` still refuses with `[S18]` once required environment values are available: `deploy.stop_stack` resolves the selector against the CIU root, producing an empty repo-relative stack, and `deploy.resolve_identities` passes that selector to `deploy._resolve_identity_stack_paths`, which finds no selected stack. `eval "$(ciu env print)"` does not change selector resolution. The usable form observed was `eval "$(ciu env print)"; ciu down --yes` in the stack dir.
+- (b) On 7.26.0 and 7.28.0, `ciu down --dir <repo-relative stack dir> --yes` from the checkout root without `--root-folder` exits 2 with `[no-ciu-root]` because `deploy.resolve_repo_root` starts `workspace.resolve_ciu_root` at `Path.cwd()`, which searches for `ciu.global.defaults.toml.j2`; the checkout root has no such marker. This refusal occurs before CIU reads the `--dir` selector. CIU-228 is a separate issue: `ciu up --dir <relative> --root-folder <root>` joins the root and path twice. From a stack dir, `ciu down --dir . --yes` still refuses with `[S18]` once required environment values are available: `deploy.stop_stack` resolves `.` against the CIU root, producing `relative_stack == '.'`, not an empty string. `deploy.resolve_identities` passes that selector to `deploy._resolve_identity_stack_paths`, which finds no match because selection entries name stack sub-directories. `eval "$(ciu env print)"` does not change selector resolution. The usable form observed was `eval "$(ciu env print)"; ciu down --yes` in the stack dir.
 
 Evidence (a): `.controller-state/edge/reports/r1002-drain-20261124.md` (Bring-up section). Evidence (b): `/workspaces/vbpub/.controller-state/edge/reports/P-edge-11b-400-report.md`, sections 3, 7 and 12 (V1).
 
-**Wanted.** (a) Keep refusing with rc 2 and the `ciu up --dir .` remedy when an invocation inside a stack directory selects no stack; do not widen the active profile selection implicitly. (b) Resolve `down --dir <relative>` from the checkout root consistently with CIU-228's relative-`--dir` rule, and make `down --dir .` identify the invocation stack from inside that stack directory, or refuse with a valid working form.
+**Wanted.** (a) Keep refusing with rc 2 and the `ciu up --dir .` remedy when an invocation inside a stack directory selects no stack; do not widen the active profile selection implicitly. (b) Make `down --dir <stack>` from the checkout root resolve the CIU root associated with that named stack, and make `down --dir .` identify the invocation stack from inside that stack directory, or refuse with a valid working form.
 
-**Close when.** The test for `deploy.action_deploy` keeps the empty-selection refusal and `ciu up --dir .` remedy; `down --dir <relative>` from the root resolves consistently with CIU-228; and `down --dir .` from the stack dir names that stack or refuses with a valid working form.
+**Close when.** The test for `deploy.action_deploy` keeps the empty-selection refusal and `ciu up --dir .` remedy; `down --dir <stack>` from the checkout root resolves the intended CIU root and stack; and `down --dir .` from the stack dir names that stack or refuses with a valid working form.
 
 **Resolution (a) (P-core-11).** The refusal was chosen over implicit selection:
 `build_selection` reads the PROFILE, so a stack the active profile does not name
@@ -7359,8 +7359,9 @@ shipped `docker-compose.yml`); `deploy.action_deploy` then prints
 rc 0: the root's own profile selecting nothing, an invocation outside this root,
 and a directory that is not a stack (a shipped stack dir counts as a stack).
 Evidence: `tests/tests/test_ciu_231_implicit_stack_selection.py` (the refusal,
-the shipped-stack form, and each unchanged rc-0 case). (b) is untouched here —
-CIU-228 owns the relative-`--dir` resolution rule this item defers to.
+the shipped-stack form, and each unchanged rc-0 case). (b) remains open; its
+root-discovery and selected-stack behavior are separate from CIU-228's
+`--dir` plus `--root-folder` join.
 
 ## CIU-232 — procio replaced the foreground one-shot's termination handlers
 

@@ -1187,10 +1187,10 @@ cannot change which source the controller or a candidate executes.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
 If HEAD is a merge, CMRU's R2 tools pass `delegated=True` to Assay's
-`git.resolve_base` (B552). The baseline checker also passes it to
-`git.base_resolution_mode` to report the mode; the mutation campaign does not
-call that helper (its `_judged_base` docstring explains delegated resolution,
-but the campaign does not report the mode). This call-site keyword means
+`git.resolve_base` (B552). The baseline checker includes the result of
+`git.base_resolution_mode` in its refusal detail when the effective base
+differs; it does not report the mode on a passing path. The mutation campaign
+does not call that helper or report the mode. This call-site keyword means
 comparison is `merge-base(selected tag, HEAD)` — the tag itself, because the
 tag is proven to be in HEAD's ancestry. A merge HEAD is therefore judged
 against the selected tag like any other, covering the merged-in parent's

@@ -42,10 +42,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   instead of failing the known-good control before any mutant is judged
   (KI-209).
 - fix(cmru): cmru's R2 lane accepts a merge HEAD. Both R2 tools pass
-  `delegated=True` to Assay's `git.resolve_base`; the baseline checker also
-  passes it to `git.base_resolution_mode` to report the mode, while the
-  mutation campaign does not call that helper (its `_judged_base` docstring
-  explains delegated resolution, but the campaign does not report the mode).
+  `delegated=True` to Assay's `git.resolve_base`; the baseline checker includes
+  the result of `git.base_resolution_mode` in its refusal detail when the
+  effective base differs, but does not report it on a passing path. The
+  mutation campaign does not call that helper or report the mode.
   The lane supplies its own comparison base (`judge.base_source` is not
   involved: cmru's own Assay lanes are `whole_target` and declare no base),
   so the judged diff is
