@@ -136,11 +136,7 @@ fn fixed_array<const N: usize>(body: &[u8], offset: usize) -> Result<[u8; N], Pr
     Ok(result)
 }
 
-fn take_range(
-    body: &[u8],
-    offset: &mut usize,
-    len: usize,
-) -> Result<ByteRange, ProtoError> {
+fn take_range(body: &[u8], offset: &mut usize, len: usize) -> Result<ByteRange, ProtoError> {
     let end = offset.checked_add(len).ok_or(ProtoError::LengthOverflow)?;
     if end > body.len() {
         return Err(section_length(body.len(), end));
@@ -236,7 +232,9 @@ fn parse_layout(body: &[u8]) -> Result<BodyLayout, ProtoError> {
 
 fn validate_reserved(body: &[u8], layout: &BodyLayout) -> Result<(), ProtoError> {
     if layout.fixed.flags & !1 != 0 {
-        return Err(ProtoError::NonZeroReserved(u32::from(layout.fixed.flags & !1)));
+        return Err(ProtoError::NonZeroReserved(u32::from(
+            layout.fixed.flags & !1,
+        )));
     }
     if layout.fixed.reserved_byte != 0 {
         return Err(ProtoError::NonZeroReserved(u32::from(
@@ -372,9 +370,7 @@ fn checked_text<'a>(
         .get(range.start..range.end)
         .ok_or_else(|| section_length(body.len(), range.end))?;
     let text = std::str::from_utf8(bytes).map_err(|_| ProtoError::EventText { field })?;
-    if bytes.iter().any(|byte| *byte < 0x20 || *byte == 0x7f)
-        || (name_grammar && !is_name(bytes))
-    {
+    if bytes.iter().any(|byte| *byte < 0x20 || *byte == 0x7f) || (name_grammar && !is_name(bytes)) {
         return Err(ProtoError::EventText { field });
     }
     Ok(text)
@@ -580,15 +576,9 @@ pub fn encode_event_payload(event: &EventPayload) -> Result<Vec<u8>, ProtoError>
     Ok(writer.finish())
 }
 
-fn validate_string(
-    text: &str,
-    field: &'static str,
-    name_grammar: bool,
-) -> Result<(), ProtoError> {
+fn validate_string(text: &str, field: &'static str, name_grammar: bool) -> Result<(), ProtoError> {
     let bytes = text.as_bytes();
-    if bytes.iter().any(|byte| *byte < 0x20 || *byte == 0x7f)
-        || (name_grammar && !is_name(bytes))
-    {
+    if bytes.iter().any(|byte| *byte < 0x20 || *byte == 0x7f) || (name_grammar && !is_name(bytes)) {
         return Err(ProtoError::EventText { field });
     }
     Ok(())
@@ -980,15 +970,24 @@ mod tests {
 
         let mut wrong_kind = valid.clone();
         wrong_kind[16..18].copy_from_slice(&8u16.to_le_bytes());
-        assert_kind(decode_event_frame(&wrong_kind), "unsupported-required-section");
+        assert_kind(
+            decode_event_frame(&wrong_kind),
+            "unsupported-required-section",
+        );
 
         let mut wrong_version = valid.clone();
         wrong_version[18] = 2;
-        assert_kind(decode_event_frame(&wrong_version), "unsupported-section-version");
+        assert_kind(
+            decode_event_frame(&wrong_version),
+            "unsupported-section-version",
+        );
 
         let mut wrong_section_flags = valid.clone();
         wrong_section_flags[19] = 0;
-        assert_kind(decode_event_frame(&wrong_section_flags), "unknown-section-flags");
+        assert_kind(
+            decode_event_frame(&wrong_section_flags),
+            "unknown-section-flags",
+        );
 
         let mut wrong_body_len = valid;
         wrong_body_len[20..24].copy_from_slice(&1u32.to_le_bytes());
@@ -1067,14 +1066,14 @@ mod tests {
     #[test]
     fn field_bounds_text_and_context_order_have_inside_and_outside_cases() {
         let full = encode_event_payload(&full_event()).expect("full event body");
-        assert!(decode_event_payload(&full).is_ok(), "maximum values are accepted");
+        assert!(
+            decode_event_payload(&full).is_ok(),
+            "maximum values are accepted"
+        );
 
         let layout = super::parse_layout(&full).expect("the full body is well-formed");
         let mut too_many_contexts = full[..layout.content_end].to_vec();
-        drop(too_many_contexts.splice(
-            layout.attrs_start..layout.attrs_start,
-            [0, 1, 0, b'x'],
-        ));
+        drop(too_many_contexts.splice(layout.attrs_start..layout.attrs_start, [0, 1, 0, b'x']));
         too_many_contexts[43] = 6;
         let aligned = too_many_contexts
             .len()
@@ -1103,8 +1102,8 @@ mod tests {
         let value_layout =
             super::parse_layout(&long_value).expect("the full fixture is well-formed");
         let mut offset = value_layout.attrs_start;
-        let _first_key = super::read_len_range(&long_value, &mut offset)
-            .expect("first attribute key");
+        let _first_key =
+            super::read_len_range(&long_value, &mut offset).expect("first attribute key");
         let value_len_offset = offset;
         let value_end = super::read_len_range(&long_value, &mut offset)
             .expect("first attribute value")
@@ -1113,7 +1112,11 @@ mod tests {
         drop(oversized_value.splice(value_end..value_end, vec![b'v'; 257]));
         oversized_value[value_len_offset..value_len_offset + 2]
             .copy_from_slice(&257u16.to_le_bytes());
-        let new_len = oversized_value.len().checked_add(7).expect("aligned length") & !7;
+        let new_len = oversized_value
+            .len()
+            .checked_add(7)
+            .expect("aligned length")
+            & !7;
         oversized_value.resize(new_len, 0);
         assert_kind(decode_event_payload(&oversized_value), "event-field-bound");
 
@@ -1137,7 +1140,9 @@ mod tests {
             value: String::new(),
         });
         assert_eq!(
-            encode_event_payload(&too_many).expect_err("nine attributes exceed the bound").kind(),
+            encode_event_payload(&too_many)
+                .expect_err("nine attributes exceed the bound")
+                .kind(),
             "event-field-bound"
         );
 
@@ -1174,12 +1179,16 @@ mod tests {
         let total = 12 + 4 + 16 + 80 + body.len();
         let mut block = WriterForTest::block_with_event(&body, total);
         assert_eq!(
-            decode_block(&block).expect_err("kind 7 is not a BLOCK section").kind(),
+            decode_block(&block)
+                .expect_err("kind 7 is not a BLOCK section")
+                .kind(),
             "unsupported-required-section"
         );
         block[27] = 0;
         assert_eq!(
-            decode_block(&block).expect("unknown optional kind is skipped").skipped_sections,
+            decode_block(&block)
+                .expect("unknown optional kind is skipped")
+                .skipped_sections,
             vec![EVENT_SECTION_KIND]
         );
     }

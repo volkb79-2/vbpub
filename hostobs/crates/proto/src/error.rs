@@ -539,7 +539,10 @@ impl fmt::Display for ProtoError {
                 )
             }
             ProtoError::EventUnknownCode { field, code } => {
-                write!(f, "event field {field} has unknown or inconsistent code {code}")
+                write!(
+                    f,
+                    "event field {field} has unknown or inconsistent code {code}"
+                )
             }
             ProtoError::EventFieldBound { field } => {
                 write!(f, "event field {field} is outside its bound")
