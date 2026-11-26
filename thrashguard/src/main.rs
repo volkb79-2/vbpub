@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 use std::path::Path;
+use std::io::Read;
 use std::process::ExitCode;
 
 use std::sync::Arc;
@@ -169,48 +170,124 @@ fn candidates(config: &Config, args: &Args) -> Result<(), Fatal> {
 /// `--since-seq`. Reading it writes nothing.
 fn events(config: &Config, args: &Args) -> Result<(), Fatal> {
     let boot_id = daemon::boot_id();
-    let current = config.state_dir.join(events::JOURNAL_FILE);
-    let rotated = config.state_dir.join(events::ROTATED_FILE);
-    let file = if current.is_file() {
-        current
-    } else if rotated.is_file() {
-        rotated
-    } else {
-        // No journal is an empty page with a false `truncated`, not an error: a
-        // guard that has not run yet has recorded nothing, which is a fact.
-        println!(
-            "{}",
-            daemon::events_reply(&boot_id, Vec::new(), false).to_json()
-        );
-        return Ok(());
-    };
-    let text = std::fs::read_to_string(&file)
-        .map_err(|error| Fatal::unknown(format!("cannot read {}: {error}", file.display())))?;
-    let mut rows = Vec::new();
-    let mut skipped = 0u64;
-    let mark = i64::try_from(args.since_seq).unwrap_or(i64::MAX);
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+    let reply = local_events_reply(&config.state_dir, &boot_id, args.since_seq)
+        .map_err(Fatal::unknown)?;
+    println!("{}", reply.to_json());
+    Ok(())
+}
+
+/// Read the rotated and current journal generations into one bounded page.
+fn local_events_reply(state_dir: &Path, boot_id: &str, since_seq: u64) -> Result<Value, String> {
+    let mut selected = Vec::<(u64, Value)>::new();
+    let mut damaged = false;
+    for name in [events::ROTATED_FILE, events::JOURNAL_FILE] {
+        let path = state_dir.join(name);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => return Err(format!("{} is not a journal file", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("cannot inspect {}: {error}", path.display())),
+        };
+        if metadata.len() > events::MAX_JOURNAL_FILE_BYTES {
+            return Err(format!(
+                "{} is {} bytes, above the {}-byte journal-file bound",
+                path.display(),
+                metadata.len(),
+                events::MAX_JOURNAL_FILE_BYTES
+            ));
         }
-        match Value::parse(line) {
-            Ok(value) => {
-                let seq = value.get("seq").and_then(Value::as_i64).unwrap_or(0);
-                if seq > mark {
-                    rows.push(value);
+        let mut text = String::new();
+        std::fs::File::open(&path)
+            .map_err(|error| format!("cannot open {}: {error}", path.display()))?
+            .take(events::MAX_JOURNAL_FILE_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        if text.len() as u64 > events::MAX_JOURNAL_FILE_BYTES {
+            return Err(format!(
+                "{} grew beyond the {}-byte journal-file bound while reading",
+                path.display(),
+                events::MAX_JOURNAL_FILE_BYTES
+            ));
+        }
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            match Value::parse(line) {
+                Ok(value) if value.get("boot_id").and_then(Value::as_str) == Some(boot_id) => {
+                    let Some(seq) = value
+                        .get("seq")
+                        .and_then(Value::as_i64)
+                        .and_then(|seq| u64::try_from(seq).ok())
+                    else {
+                        damaged = true;
+                        continue;
+                    };
+                    if seq > since_seq {
+                        selected.push((seq, value));
+                    }
                 }
+                Ok(_) => {}
+                // A torn or malformed line may contain a missing sequence.
+                Err(_) => damaged = true,
             }
-            // A torn line at a rotation is a fact about the file, not a reason to
-            // call the whole journal unreadable; it is counted, never served.
-            Err(_) => skipped += 1,
         }
     }
-    println!(
-        "{}",
-        daemon::events_reply(&boot_id, rows, skipped > 0).to_json()
-    );
-    Ok(())
+
+    selected.sort_by_key(|(seq, _)| *seq);
+    let mut duplicate = false;
+    selected.dedup_by(|next, prior| {
+        if next.0 == prior.0 {
+            duplicate = true;
+            true
+        } else {
+            false
+        }
+    });
+    let mut truncated = damaged || duplicate;
+    let mut expected = since_seq.saturating_add(1);
+    for (seq, _) in &selected {
+        if *seq > expected {
+            truncated = true;
+        }
+        expected = seq.saturating_add(1);
+    }
+
+    let mut page = Vec::new();
+    let mut limited = false;
+    for (_, row) in selected {
+        if page.len() == events::RECENT_ROWS {
+            limited = true;
+            break;
+        }
+        let mut candidate = page.clone();
+        candidate.push(row.clone());
+        if daemon::events_reply(boot_id, candidate, truncated)
+            .to_json()
+            .len()
+            + 1
+            > thrashguard::json::MAX_DOCUMENT_BYTES
+        {
+            if page.is_empty() {
+                return Err(format!(
+                    "the next event row exceeds the {}-byte reply bound",
+                    thrashguard::json::MAX_DOCUMENT_BYTES
+                ));
+            }
+            limited = true;
+            break;
+        }
+        page.push(row);
+    }
+    truncated |= limited;
+
+    loop {
+        let reply = daemon::events_reply(boot_id, page.clone(), truncated);
+        if reply.to_json().len() + 1 <= thrashguard::json::MAX_DOCUMENT_BYTES {
+            return Ok(reply);
+        }
+        if page.pop().is_none() {
+            return Err("the empty events reply exceeds its document bound".to_string());
+        }
+        truncated = true;
+    }
 }
 
 /// `serve`: the tick loop and the two sockets (design §2, §3 D7, §5 row P1).
@@ -339,6 +416,16 @@ mod tests {
             name: name.to_string(),
             cgroup: cgroup.to_string(),
         }
+    }
+
+    fn local_event_line(boot_id: &str, seq: u64, detail: &str) -> String {
+        Value::Object(vec![
+            ("boot_id".to_string(), Value::String(boot_id.to_string())),
+            ("seq".to_string(), Value::Integer(seq as i64)),
+            ("event".to_string(), Value::String("x".to_string())),
+            ("detail".to_string(), Value::String(detail.to_string())),
+        ])
+        .to_json()
     }
 
     fn would_for(config: &Config, store: &Store) -> Would {
@@ -528,6 +615,91 @@ mod tests {
             !config.state_dir.exists(),
             "reading a journal creates nothing"
         );
+    }
+
+    #[test]
+    fn local_events_reads_both_generations_and_marks_a_lost_prefix() {
+        let tree = TempTree::new("main-events-rotated");
+        tree.write(
+            "run/events.jsonl.1",
+            format!(
+                "{}\n{}\n",
+                local_event_line("boot-x", 3, ""),
+                local_event_line("boot-x", 4, "")
+            )
+            .as_str(),
+        );
+        tree.write(
+            "run/events.jsonl",
+            format!(
+                "{}\n{}\n",
+                local_event_line("boot-x", 5, ""),
+                local_event_line("boot-x", 6, "")
+            )
+            .as_str(),
+        );
+
+        let reply = local_events_reply(&tree.path().join("run"), "boot-x", 0)
+            .expect("bounded combined page");
+        let seqs: Vec<i64> = reply
+            .get("rows")
+            .and_then(Value::as_array)
+            .expect("rows")
+            .iter()
+            .filter_map(|row| row.get("seq").and_then(Value::as_i64))
+            .collect();
+        assert_eq!(seqs, vec![3, 4, 5, 6]);
+        assert_eq!(reply.get("truncated").and_then(Value::as_bool), Some(true));
+
+        let complete = local_events_reply(&tree.path().join("run"), "boot-x", 2)
+            .expect("page after available prefix");
+        assert_eq!(
+            complete.get("truncated").and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn local_events_limits_rows_to_the_daemon_window() {
+        let tree = TempTree::new("main-events-row-bound");
+        let text = (1..=events::RECENT_ROWS as u64 + 1)
+            .map(|seq| local_event_line("boot-x", seq, ""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        tree.write("run/events.jsonl", &text);
+        let reply = local_events_reply(&tree.path().join("run"), "boot-x", 0)
+            .expect("bounded rows");
+        let rows = reply.get("rows").and_then(Value::as_array).expect("rows");
+        assert_eq!(rows.len(), events::RECENT_ROWS);
+        assert_eq!(rows[0].get("seq").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            rows.last().and_then(|row| row.get("seq")).and_then(Value::as_i64),
+            Some(events::RECENT_ROWS as i64)
+        );
+        assert_eq!(reply.get("truncated").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn local_events_refuses_a_single_row_that_exceeds_the_reply_byte_bound() {
+        let tree = TempTree::new("main-events-byte-bound");
+        let row = local_event_line(
+            "boot-x",
+            1,
+            &"x".repeat(thrashguard::json::MAX_DOCUMENT_BYTES - 64),
+        );
+        assert!(row.len() <= thrashguard::json::MAX_DOCUMENT_BYTES);
+        let parsed = Value::parse(&row).expect("the journal row is within its input bound");
+        assert!(
+            daemon::events_reply("boot-x", vec![parsed], false)
+                .to_json()
+                .len()
+                + 1
+                > thrashguard::json::MAX_DOCUMENT_BYTES
+        );
+        tree.write("run/events.jsonl", &row);
+        let error = local_events_reply(&tree.path().join("run"), "boot-x", 0)
+            .expect_err("one oversized row is refused rather than printed unbounded");
+        assert!(error.contains("reply bound"), "{error}");
     }
 
     #[test]

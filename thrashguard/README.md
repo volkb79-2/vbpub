@@ -67,8 +67,10 @@ directories from [`deploy/tmpfiles.d/thrashguard.conf`](deploy/tmpfiles.d/thrash
 [docs/CONSUMERS.md](docs/CONSUMERS.md) §2 installs them.
 
 Both are systemd-owned `.socket` units with `Accept=no`, so a daemon restart does
-not refuse a client. Group gating is **advisory** — container root bypasses socket
-DAC — and the real boundary is the scope resolution above.
+not refuse a client. Group gating controls which socket a process can reach; it
+does not bind a registration id to its creator. Container root can bypass socket
+DAC, and scope resolution constrains the target cgroup but does not establish
+ownership (TG-12, a blocker for P2 enforce).
 
 ## CLI
 

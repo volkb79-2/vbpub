@@ -347,7 +347,8 @@ impl socket::Dispatch for Core {
                                 Some(&stored.id),
                                 Some(&cgroup),
                                 Some(cgroup_id),
-                            ),
+                            )
+                            .with_shadowed(&stored.scope.shadowed),
                         );
                         crate::wire::register_ok(&body.id, &cgroup, cgroup_id, self.store.ttl_s())
                     }
@@ -883,6 +884,8 @@ mod tests {
         let tree = TempTree::new("daemon-register");
         std::fs::create_dir_all(tree.at("dev.slice/dev-gates.slice/docker-abc.scope"))
             .expect("scope");
+        std::fs::create_dir_all(tree.at("dev.slice/dev-gates.slice/rg-abc.slice/docker-abc.scope"))
+            .expect("shadowed nested scope");
         let clock = Arc::new(ManualClock::new(1));
         let mut core = guard(
             &tree,
@@ -915,6 +918,17 @@ mod tests {
             Some("registered")
         );
         assert_eq!(rows[0].get("unit").and_then(Value::as_str), Some("rg-1"));
+        let shadowed: Vec<&str> = rows[0]
+            .get("shadowed")
+            .and_then(Value::as_array)
+            .expect("registered event records shadowed matches")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            shadowed,
+            vec!["dev.slice/dev-gates.slice/rg-abc.slice/docker-abc.scope"]
+        );
 
         // A second registration with the same id is refused by name.
         let again = socket::answer(&mut core, Role::Registrant, &register);

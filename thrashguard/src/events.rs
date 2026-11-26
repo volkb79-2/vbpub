@@ -35,6 +35,8 @@ pub const JOURNAL_FILE: &str = "events.jsonl";
 pub const ROTATED_FILE: &str = "events.jsonl.1";
 /// Rotate before the file is larger than this.
 pub const ROTATE_BYTES: u64 = 1024 * 1024;
+/// Maximum accepted size for one journal generation, including one final row.
+pub const MAX_JOURNAL_FILE_BYTES: u64 = ROTATE_BYTES + crate::json::MAX_DOCUMENT_BYTES as u64;
 /// How many recent rows the reader verb answers from memory.
 pub const RECENT_ROWS: usize = 1024;
 /// Where the host's boot id is read from in production.
@@ -68,6 +70,8 @@ pub struct Event {
     pub detail: Option<String>,
     /// Read-back reclaim bytes; `null` in P1 (no reclaim exists).
     pub reclaim_bytes: Option<u64>,
+    /// Deeper matching scopes that lost to the selected shallow scope, when any.
+    pub shadowed: Option<Vec<String>>,
 }
 
 impl Event {
@@ -90,6 +94,7 @@ impl Event {
             simulated: true,
             detail: None,
             reclaim_bytes: None,
+            shadowed: None,
         }
     }
 
@@ -112,6 +117,14 @@ impl Event {
         self
     }
 
+    /// Attach the deeper matching scopes that were shadowed by this selection.
+    pub fn with_shadowed(mut self, shadowed: &[String]) -> Self {
+        if !shadowed.is_empty() {
+            self.shadowed = Some(shadowed.to_vec());
+        }
+        self
+    }
+
     /// The interval's length in seconds (0 in P1 by construction).
     pub fn seconds(&self) -> u64 {
         crate::clock::seconds_of_ns(self.mono_end_ns.saturating_sub(self.mono_start_ns))
@@ -120,7 +133,7 @@ impl Event {
     /// The row as a journal object, with the two facts the journal stamps added.
     pub fn to_value(&self, boot_id: &str, seq: u64) -> Value {
         let optional = |value: Option<String>| value.map_or(Value::Null, Value::String);
-        Value::Object(vec![
+        let mut fields = vec![
             ("v".to_string(), Value::String(EVENT_VERSION.to_string())),
             ("boot_id".to_string(), Value::String(boot_id.to_string())),
             ("seq".to_string(), Value::Integer(seq as i64)),
@@ -150,7 +163,14 @@ impl Event {
                     .map_or(Value::Null, |b| Value::Integer(b as i64)),
             ),
             ("detail".to_string(), optional(self.detail.clone())),
-        ])
+        ];
+        if let Some(shadowed) = &self.shadowed {
+            fields.push((
+                "shadowed".to_string(),
+                Value::Array(shadowed.iter().cloned().map(Value::String).collect()),
+            ));
+        }
+        Value::Object(fields)
     }
 }
 
@@ -290,7 +310,7 @@ fn existing_sequence(dir: &Path, boot_id: &str) -> io::Result<u64> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         };
-        let maximum = ROTATE_BYTES + crate::json::MAX_DOCUMENT_BYTES as u64;
+        let maximum = MAX_JOURNAL_FILE_BYTES;
         if metadata.len() > maximum {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

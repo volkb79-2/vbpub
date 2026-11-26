@@ -166,3 +166,22 @@ image with the existing `oci-image-build` handler; (c) leave it unregistered unt
 the first release wave and record that in the design. Until one is chosen do not
 touch `cmru.orchestration.toml`: a half-valid config breaks `cmru dependencies`
 for the whole estate, and every test that loads the root orchestration parses it.
+
+## TG-12 — Registrations are not bound to their socket issuer
+
+**State:** open · **Severity:** high · **Owner:** core · **Links:** thrashguard/src/daemon.rs, docs/design/thrashguard/DESIGN.md §3, §4e
+
+**Problem.** The registrant group controls who can pass the socket's DAC check,
+but the daemon stores no kernel-derived issuer with a registration. Any peer that
+can reach the registrant socket can `update`, `heartbeat` or `deregister` any
+registration id. Container root may bypass socket DAC, and scope resolution
+constrains the target cgroup but does not prove ownership. Stable Rust does not
+expose [`UnixStream::peer_cred`](https://doc.rust-lang.org/stable/std/os/unix/net/struct.UnixStream.html#method.peer_cred);
+the standard-library API is nightly-only, so P1
+does not add unsafe code or a dependency to guess at peer identity.
+
+**Wanted.** Before P2 enables `enforce`, define and capture a kernel-derived
+issuer identity for each registration and refuse cross-issuer update, heartbeat
+and deregister with `not-yours`. The identity contract must address the process
+or cgroup incarnation as well as uid; client-supplied `owner`, `run` or pid is
+not identity. Until then, P2 enforce is blocked.

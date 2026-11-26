@@ -67,7 +67,13 @@ sudo systemctl enable --now thrashguard-registrant.socket thrashguard-reader.soc
 ```
 
 `Accept=no` on both sockets means one long-lived daemon owns the listener, so a
-restart never refuses a client that connects during it.
+restart never refuses a client that connects during it. Group gating controls
+which socket a process can reach; it does not bind a registration id to the peer
+that created it. Any process that can reach the registrant socket can update,
+heartbeat or deregister any id. Container root can bypass socket DAC, and scope
+resolution constrains which cgroup is named but does not establish registration
+ownership. That ownership check is not implemented in P1 and blocks P2 enforce
+(TG-12).
 
 ## 3. A registrant writes one line per verb
 
@@ -113,6 +119,12 @@ printf '%s\n' '{"v":"thrashguard-event/1","verb":"events","since_seq":17}' \
   | socat - UNIX-CONNECT:/run/thrashguard/reader/thrashguard.sock
 ```
 
+The local `events` command reads the rotated generation before the current one.
+It returns at most 1024 rows and a 64 KiB JSON line; `truncated: true` means the
+requested window has a missing prefix or the page hit one of those bounds. Page
+again using the last returned row's `seq` as `--since-seq`. A single row too large
+to fit is refused with a named error.
+
 ## 5. What an operator should expect from P1
 
 - **Nothing is ever frozen.** `mode = report` journals `would-freeze` and
@@ -126,6 +138,9 @@ printf '%s\n' '{"v":"thrashguard-event/1","verb":"events","since_seq":17}' \
   `never-park-last` or `thaw-grace`); a release writes one `would-thaw`; silent
   registrations write one `expired` each. The same decision is not repeated every
   tick — ask `status`/`candidates` for the current one.
+- **A `registered` row may include `shadowed`.** It lists deeper same-name
+  scopes that lost to the selected shallow scope, as paths relative to the
+  injected cgroup root.
 - **`rule-unknown` means the configured rule has no readable input.** `refault`
   and `smallest-enough` are P3; until then the replies carry
   `"rule":"newest","rule_reason":"rule-unknown"` rather than a zero rate.

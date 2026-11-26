@@ -10,9 +10,10 @@
 //! The registrant socket serves the four registrant verbs and the reader socket
 //! the four reader verbs. A reader verb arriving on the registrant socket is
 //! refused (`reason: wrong-socket`) rather than served, because serving it would
-//! hand a registrant the right to read what it may park. Group gating is
-//! advisory (container root bypasses socket DAC, design §3), so this check plus
-//! the scope resolution are the two boundaries that exist.
+//! hand a registrant the right to read what it may park. Group gating controls
+//! socket access but is advisory (container root bypasses socket DAC, design §3).
+//! Scope resolution bounds the target cgroup, not ownership of a registration id;
+//! P1 does not enforce that issuer relationship (TG-12).
 //!
 //! ## Why nothing here binds a path in tests
 //!

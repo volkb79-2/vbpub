@@ -157,9 +157,12 @@ standalone hosts. Unknown keys are errors.
 ```
 
 systemd `.socket` units own them (`LISTEN_FDS`, `Accept=no`), so a daemon restart does not refuse clients
-(`hostobs/docs/WIRE.md:12-16`). Group gating is **advisory**: "container root bypasses socket DAC, and container
-root can `setgroups()` any GID" (`mdtd/DESIGN-rev4-2026-11-07.md:109`); containment is the scope resolution
-below, re-checked on every act. Rejected: one read/write socket (readers would gain the right to park jobs); TCP
+(`hostobs/docs/WIRE.md:12-16`). Group gating is **admission to a socket**, not registration ownership. It is
+advisory because container root can bypass socket DAC and can `setgroups()` any GID
+(`mdtd/DESIGN-rev4-2026-11-07.md:109`). Scope resolution bounds which cgroup a registration names; it does not bind
+an id to the peer that created it. P1 does not capture or enforce that issuer relationship, and cross-issuer
+`update`, `heartbeat` and `deregister` therefore remain possible. TG-12 blocks P2 `enforce` until an issuer check
+can return `not-yours`. Rejected: one read/write socket (readers would gain the right to park jobs); TCP
 (nothing leaves the host). Wire is newline-delimited JSON, versioned (`thrashguard-registration/1`,
 `-event/1`, `-state/1`), one request one reply, unknown keys rejected (`fleetd/docs/SPEC.md:26`) — not hostobs'
 binary codec (`hostobs/docs/WIRE.md:24-40`): a handful of clients per tick, and legibility matters.
@@ -175,8 +178,9 @@ cgroup namespace reads `0::/` and nothing else (`run_gate.py:4296-4312` `cgroup_
 `:18405` `cgroup = None` for the same reason). The guard runs with the host view and resolves the scope itself: it
 finds exactly one `/sys/fs/cgroup/**/<scope>` under `allowed_ancestors`, takes the *shallowest* match (the docker
 scope, D1), and **refuses the registration naming the reason** when it finds none, several, or a match under
-`protected`. Nothing is stored on a refusal; that resolution, not the socket group, is the real boundary (D7). A
-resolved scope is re-checked on every act: still under `allowed_ancestors`, `cgroup.events` readable, not a
+`protected`. Nothing is stored on a refusal; resolution bounds the target cgroup, not ownership of the
+registration id (D7, TG-12). A resolved scope is re-checked on every act: still under `allowed_ancestors`,
+`cgroup.events` readable, not a
 `protected` ancestor, inode unchanged.
 
 **Lifetime is heartbeat liveness, never a job bound (M2).** `ttl_s` is *derived* by the guard as
@@ -311,7 +315,8 @@ stall-pause bound (§4c); (ii) optionally read thrashguard's reader socket from 
 pause a wall-based stall watch — an extra, never a requirement.
 
 This is delivered by **P4 `estate`**, the first cut that needs a registrant at all; fleetd later replaces only the
-*caller*, not the contract. run-gate needs the `thrashguard-registrant` group membership (Q5) and nothing else.
+*caller*, not the contract. run-gate needs `thrashguard-registrant` group membership to pass socket DAC (Q5).
+That membership does not authorize only its own ids; issuer binding remains a P2 enforce blocker (TG-12).
 
 ## 5. Packaging, privileges, deploy, tests, MVP
 

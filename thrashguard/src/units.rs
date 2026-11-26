@@ -8,8 +8,8 @@
 //!    cgroup root, finds the `docker-<id>.scope` directory under an
 //!    `allowed_ancestors` slice, and **refuses with a named reason** when it
 //!    finds none, several, a protected match, or a tree it cannot read. Nothing
-//!    is stored on a refusal, so the resolution — not the socket group — is the
-//!    real boundary (D7).
+//!    is stored on a refusal, so resolution bounds the target cgroup rather than
+//!    trusting a client path. It does not bind an id to its registrant (TG-12).
 //! 2. **[`Store`]**: the registered candidate set with heartbeat liveness. Its
 //!    expiry is `missed_heartbeats x heartbeat_s`, derived by the guard from
 //!    config keys only — never a job duration (M2/D13).
@@ -286,23 +286,50 @@ pub fn resolve_static_unit(
     })?;
     let relative = components.join("/");
     let path = root.join(&relative);
-    let metadata = match std::fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Refusal::NoneFound {
+    let mut checked_path = root.to_path_buf();
+    let mut metadata = None;
+    for (index, component) in components.iter().enumerate() {
+        checked_path.push(component);
+        let current = match std::fs::symlink_metadata(&checked_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Refusal::NoneFound {
+                    container: unit.name.clone(),
+                    searched: vec![relative],
+                })
+            }
+            // An existing but unreadable path is NOT "absent": that would be a claim
+            // the guard cannot make from a failed read.
+            Err(error) => {
+                return Err(Refusal::Unreadable {
+                    path: checked_path.display().to_string(),
+                    detail: error.to_string(),
+                })
+            }
+        };
+        if current.file_type().is_symlink() {
+            return Err(Refusal::Malformed {
                 container: unit.name.clone(),
-                searched: vec![relative],
-            })
+                detail: format!(
+                    "[[static_unit]] {} crosses symlink component {}",
+                    unit.name,
+                    checked_path.display()
+                ),
+            });
         }
-        // An existing but unreadable path is NOT "absent": that would be a claim
-        // the guard cannot make from a failed read.
-        Err(error) => {
-            return Err(Refusal::Unreadable {
-                path: path.display().to_string(),
-                detail: error.to_string(),
-            })
+        if index + 1 < components.len() && !current.is_dir() {
+            return Err(Refusal::Malformed {
+                container: unit.name.clone(),
+                detail: format!(
+                    "[[static_unit]] {} has non-directory path component {}",
+                    unit.name,
+                    checked_path.display()
+                ),
+            });
         }
-    };
+        metadata = Some(current);
+    }
+    let metadata = metadata.expect("a validated path has at least one component");
     if !metadata.is_dir() {
         return Err(Refusal::Malformed {
             container: unit.name.clone(),
@@ -362,6 +389,20 @@ fn walk(
     allowed: &[String],
     protected: &[String],
 ) -> Result<Vec<Found>, Refusal> {
+    let mut read_dir = |directory: &Path| std::fs::read_dir(directory);
+    walk_using(root, scope, allowed, protected, &mut read_dir)
+}
+
+fn walk_using<F>(
+    root: &Path,
+    scope: &str,
+    allowed: &[String],
+    protected: &[String],
+    read_dir: &mut F,
+) -> Result<Vec<Found>, Refusal>
+where
+    F: FnMut(&Path) -> std::io::Result<std::fs::ReadDir>,
+{
     let mut found = Vec::new();
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut stack: Vec<(PathBuf, Vec<String>)> = vec![(root.to_path_buf(), Vec::new())];
@@ -369,7 +410,7 @@ fn walk(
         if ancestors.len() >= MAX_DEPTH {
             continue;
         }
-        let entries = match std::fs::read_dir(&directory) {
+        let entries = match read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) => {
                 errors.push((directory.display().to_string(), error.to_string()));
@@ -419,13 +460,16 @@ fn walk(
             stack.push((entry.path(), components));
         }
     }
-    if found.is_empty() {
-        if let Some((path, detail)) = errors.first() {
-            return Err(Refusal::Unreadable {
-                path: path.clone(),
-                detail: detail.clone(),
-            });
-        }
+    if let Some((path, _)) = errors.first() {
+        let detail = errors
+            .iter()
+            .map(|(path, error)| format!("{path}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(Refusal::Unreadable {
+            path: path.clone(),
+            detail,
+        });
     }
     Ok(found)
 }
@@ -905,6 +949,36 @@ mod tests {
     }
 
     #[test]
+    fn a_partial_walk_is_unreadable_even_after_finding_one_candidate() {
+        let tree = TempTree::new("units-partial-walk");
+        let root = tree.path().join("cgroup");
+        std::fs::create_dir_all(root.join("dev.slice/dev-gates.slice/docker-abc.scope"))
+            .expect("readable candidate");
+        std::fs::create_dir_all(root.join("dev.slice/dev-background.slice"))
+            .expect("unreadable sibling");
+        let config = config();
+        let mut rejected_branch = false;
+        let refusal = walk_using(
+            &root,
+            "docker-abc.scope",
+            &config.allowed_ancestors,
+            &config.protected,
+            &mut |directory| {
+                if directory.ends_with("dev-background.slice") {
+                    rejected_branch = true;
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                } else {
+                    std::fs::read_dir(directory)
+                }
+            },
+        )
+        .expect_err("a partial search cannot prove uniqueness");
+        assert!(rejected_branch, "the injected unreadable branch was visited");
+        assert_eq!(refusal.reason(), "unreadable");
+        assert!(refusal.detail().contains("dev-background.slice"));
+    }
+
+    #[test]
     fn malformed_container_names_are_refused_rather_than_looked_up() {
         let tree = TempTree::new("units-malformed");
         let root = tree.path();
@@ -952,6 +1026,22 @@ mod tests {
         assert_eq!(slice.relative, "dev-buildkitd.slice");
         assert_eq!(slice.name, "dev-buildkitd.slice");
         assert!(slice.path.is_dir());
+    }
+
+    #[test]
+    fn a_static_path_refuses_a_symlink_before_protected_ancestor_checks() {
+        let tree = TempTree::new("units-static-symlink");
+        std::fs::create_dir_all(tree.at("system.slice/ssh.service"))
+            .expect("protected target");
+        let link = tree.at("dev-gates.slice/ssh.service");
+        std::os::unix::fs::symlink("../system.slice/ssh.service", &link).expect("symlink");
+        let unit = StaticUnit {
+            name: "not-ssh".to_string(),
+            cgroup: "dev-gates.slice/ssh.service".to_string(),
+        };
+        let refusal = resolve_static_unit(tree.path(), &unit, &config()).expect_err("symlink");
+        assert_eq!(refusal.reason(), "malformed", "{refusal}");
+        assert!(refusal.detail().contains("symlink"), "{refusal}");
     }
 
     #[test]
