@@ -243,6 +243,7 @@ mod raw {
     const SOL_SOCKET: c_int = 1;
     const SO_PEERCRED: c_int = 17;
     const UCRED_BYTES: usize = 12;
+    const _: [(); 12] = [(); UCRED_BYTES];
 
     extern "C" {
         fn getsockopt(
@@ -323,7 +324,7 @@ mod raw {
     /// the pid as raw bytes lets the caller handle pid 0 without rustix's `NonZeroI32` conversion.
     pub fn peer_credentials_raw<Fd: AsFd>(fd: Fd) -> io::Result<([u8; UCRED_BYTES], u32)> {
         let mut credentials = [0_u8; UCRED_BYTES];
-        let mut length = u32::try_from(UCRED_BYTES).unwrap_or(u32::MAX);
+        let mut length = 12_u32;
         // SAFETY: `fd` is a live borrowed socket descriptor. `credentials` has exactly 12 writable
         // bytes, and `length` points to a live socklen_t initialized to that capacity. Linux's
         // `SO_PEERCRED` writes no more than the supplied capacity and reports the returned length.

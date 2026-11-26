@@ -132,13 +132,16 @@ std has no `poll`, no eventfd and no absolute `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`
   existing raw-fd boundary. Its `raw` submodule carries the one `#[allow(unsafe_code)]`; the lint pins
   exactly two unsafe expressions, each with a `// SAFETY:` comment: `OwnedFd::from_raw_fd` in
   `adopt_raw`, and raw `getsockopt(SO_PEERCRED)` in `peer_credentials_raw`.
-  - **Public API, the only one:** `kernel::activation::take(listen_pid, listen_fds,
+  - **Socket activation API:** `kernel::activation::take(listen_pid, listen_fds,
     listen_fdnames, my_pid) -> Result<Vec<(String, UnixListener)>, ActivationError>`. It calls
     `parse` (§(e)), refuses a second call through a process-wide `AtomicBool`, and passes only
     fds in `parse`'s range `3..3+LISTEN_FDS` to `adopt_raw`. `take` checks and sets its
     once-guard before calling `parse`, so a second call is refused even when the first call
-    failed. No safe public function takes a raw fd number, so no caller can adopt an fd something
-    else owns.
+    failed. It is the only entry point that can adopt a raw fd number; no safe public function
+    accepts one directly, so no caller can adopt an fd something else owns.
+  - **Peer credential API:** `kernel::activation::peer_credentials_raw(fd: impl AsFd)` borrows a
+    safe fd handle and returns the raw `SO_PEERCRED` bytes plus their returned length. It neither
+    takes ownership of the descriptor nor accepts a raw fd number.
   - **`adopt_raw`:** before `from_raw_fd` it checks, with the safe
     `std::fs::read_link("/proc/self/fd/<n>")`, that the target starts with `socket:`, which
     proves the fd is open and is a socket (no `mem::forget` path). The SAFETY argument:

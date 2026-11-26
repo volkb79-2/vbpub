@@ -112,7 +112,7 @@ class DeployUnits(unittest.TestCase):
         forbidden = {
             "ProtectProc": "the probe needs host-wide /proc",
             "ProcSubset": "the probe needs host-wide /proc",
-            "PrivatePIDs": "HOB-90 requires one PID namespace",
+            "PrivatePIDs": "peer process labels need visible peer PIDs in /proc",
             "PrivateUsers": "CAP_DAC_READ_SEARCH must retain host ownership checks",
         }
         for key, reason in forbidden.items():

@@ -100,7 +100,8 @@ pub struct Peer {
     pub pid: Option<u32>,
     /// The peer's process name when readable as UTF-8.
     pub comm: Option<String>,
-    /// The peer's cgroup device and inode when verified to be under the probe's cgroup root.
+    /// The peer's cgroup device and inode for a directory joined under the configured root and
+    /// found on that root's device.
     pub cgroup: Option<CgroupKey>,
 }
 

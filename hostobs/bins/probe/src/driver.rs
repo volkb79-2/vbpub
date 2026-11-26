@@ -121,17 +121,43 @@ fn unified_cgroup_path(contents: &str) -> Option<PathBuf> {
 fn read_cgroup_key(
     proc_cgroup: &Path,
     cgroup_root: &Path,
-    mut file_identity: impl FnMut(&Path) -> io::Result<(u64, u64)>,
+    mut file_identity: impl FnMut(&Path) -> io::Result<(u64, u64, bool)>,
 ) -> Option<CgroupKey> {
     let bytes = read_bounded(proc_cgroup, MAX_CGROUP_BYTES)?;
     let contents = std::str::from_utf8(&bytes).ok()?;
     let relative = unified_cgroup_path(contents)?;
-    let (root_dev, _) = file_identity(cgroup_root).ok()?;
-    let (target_dev, inode) = file_identity(&cgroup_root.join(relative)).ok()?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    let (root_dev, root_inode, root_is_dir) = file_identity(cgroup_root).ok()?;
+    if !root_is_dir {
+        return None;
+    }
+    let mut target = cgroup_root.to_path_buf();
+    let mut identity = (root_dev, root_inode, true);
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return None;
+        };
+        target.push(name);
+        identity = file_identity(&target).ok()?;
+        if !identity.2 {
+            return None;
+        }
+    }
+    let (target_dev, inode, _) = identity;
     (target_dev == root_dev).then_some(CgroupKey {
         dev: target_dev,
         inode,
     })
+}
+
+fn cgroup_path_identity(path: &Path) -> io::Result<(u64, u64, bool)> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    Ok((metadata.dev(), metadata.ino(), metadata.is_dir()))
 }
 
 fn peer_labels(
@@ -142,10 +168,7 @@ fn peer_labels(
     let pid_root = proc_root.join(pid.to_string());
     let comm =
         read_bounded(&pid_root.join("comm"), MAX_COMM_BYTES).and_then(|bytes| parse_comm(&bytes));
-    let cgroup = read_cgroup_key(&pid_root.join("cgroup"), cgroup_root, |path| {
-        let metadata = std::fs::metadata(path)?;
-        Ok((metadata.dev(), metadata.ino()))
-    });
+    let cgroup = read_cgroup_key(&pid_root.join("cgroup"), cgroup_root, cgroup_path_identity);
     (comm, cgroup)
 }
 
@@ -555,7 +578,9 @@ mod tests {
     use hostobs_proto::frame::{decode_block, FrameHeader, FrameType};
     use rustix::event::{eventfd, EventfdFlags};
 
-    use super::{parse_comm, peer_from_ucred, read_cgroup_key, run};
+    use super::{
+        cgroup_path_identity, parse_comm, peer_from_ucred, read_bounded, read_cgroup_key, run,
+    };
     use hostobs_serve::backend::{
         Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, Turn,
     };
@@ -571,6 +596,7 @@ mod tests {
     const CURRENT_ARGS: &str = r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
 
     static NEXT_SOCKET: AtomicU32 = AtomicU32::new(0);
+    static NEXT_TEMP_DIR: AtomicU32 = AtomicU32::new(0);
 
     fn peer_fixture_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-label")
@@ -1102,6 +1128,15 @@ mod tests {
         )
         .expect("pid 42 credentials");
         assert_eq!(peer.pid, Some(42));
+        assert_eq!(peer.comm, Some(String::from("probe")));
+        assert_eq!(parse_comm(b"probe\n"), Some(String::from("probe")));
+    }
+
+    #[test]
+    fn read_bounded_refuses_content_over_limit() {
+        let fixture = peer_fixture_root();
+        assert_eq!(read_bounded(&fixture.join("proc/42/comm"), 5), None);
+        assert_eq!(read_bounded(&fixture.join("proc/18/cgroup"), 8), None);
     }
 
     #[test]
@@ -1160,23 +1195,53 @@ mod tests {
         let root = Path::new("fixture-cgroup-root");
         let key = read_cgroup_key(&fixture, root, |path| {
             if path == root {
-                Ok((10, 1))
+                Ok((10, 1, true))
             } else {
                 assert_eq!(path, root.join("child"));
-                Ok((11, 2))
+                Ok((11, 2, true))
             }
         });
         assert_eq!(key, None);
 
         let key = read_cgroup_key(&fixture, root, |path| {
             if path == root {
-                Ok((10, 1))
+                Ok((10, 1, true))
             } else {
                 assert_eq!(path, root.join("child"));
-                Ok((10, 23))
+                Ok((10, 23, true))
             }
         });
         assert_eq!(key, Some(CgroupKey { dev: 10, inode: 23 }));
+    }
+
+    #[test]
+    fn symlinked_or_non_directory_peer_cgroup_path_is_omitted() {
+        let serial = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+        let temporary = std::env::temp_dir().join(format!(
+            "hostobs-peer-label-{}-{serial}",
+            std::process::id()
+        ));
+        let cgroup_root = temporary.join("cgroup");
+        let outside = temporary.join("outside");
+        let proc_cgroup = temporary.join("proc-cgroup");
+        std::fs::create_dir(&temporary).expect("temporary fixture root");
+        std::fs::create_dir(&cgroup_root).expect("temporary cgroup root");
+        std::fs::create_dir_all(outside.join("grandchild")).expect("outside target");
+        std::fs::write(&proc_cgroup, b"0::/child/grandchild\n").expect("proc cgroup fixture");
+        std::os::unix::fs::symlink(&outside, cgroup_root.join("child")).expect("child symlink");
+        assert_eq!(
+            read_cgroup_key(&proc_cgroup, &cgroup_root, cgroup_path_identity),
+            None
+        );
+
+        std::fs::remove_file(cgroup_root.join("child")).expect("remove child symlink");
+        std::fs::write(cgroup_root.join("child"), b"not a directory").expect("child file");
+        std::fs::write(&proc_cgroup, b"0::/child\n").expect("proc cgroup file fixture");
+        assert_eq!(
+            read_cgroup_key(&proc_cgroup, &cgroup_root, cgroup_path_identity),
+            None
+        );
+        std::fs::remove_dir_all(temporary).expect("remove temporary cgroup fixture");
     }
 
     #[test]
