@@ -132,14 +132,14 @@ controller: run name 'pi-run' is already owned by pid 12345 (started 2026-11-16T
 set to `retired/<run>/<utc-stamp>/` (with `PREVIOUS-OWNER.txt`) and starts
 fresh, so a deliberate restart never destroys the previous run's evidence.
 
-Every pi launch also carries a **signal guard** (see the
+Every pi launch keeps the **PATH signal shims** (see the
 [design rationale](DESIGN-GUIDE.md#why-the-pi-signal-guard-is-mechanical-not-advisory)):
-`pi-impl.sh` puts `pi-shims/` first on the agent's `PATH`, so the agent's
-`pkill` and `killall` refuse with `pi-shim: refused <name>` and exit 126, and a
-`pgrep` carrying a signal argument refuses the same way while a plain `pgrep`
-still works. Nothing to configure — but a launch can therefore be **refused
-with exit 2 before pi starts**, naming the reason, and both are facts you can
-fix rather than retry:
+`pi-impl.sh` puts `pi-shims/` first on the agent's `PATH`, so `pkill` and
+`killall` refuse with `pi-shim: refused <name>` and exit 126, and `pgrep` with a
+signal argument refuses the same way while plain `pgrep` still works. In
+implementer mode, a separate kernel boundary runs every bash command in a fresh
+user and PID namespace; details and limits follow below. A launch can be
+**refused with exit 2 before pi starts**, naming a shim misconfiguration:
 
 ```text
 pi signal guard is incomplete: …/scripts/controller/pi-shims/pkill is missing or not executable
@@ -158,11 +158,10 @@ move it out of the way. Both refusals happen before the run name is claimed, so
 a refused launch leaves no `.done`, no `.lock` owner record and no evidence
 that would refuse the retry.
 
-An agent that meets the refusal is not to work around it: signal only the exact
-pid you started, and never `pkill`/`killall` by pattern in a shared devcontainer.
-The guard does not cover the bash builtin `kill` on a negative or foreign pid,
-an absolute `/usr/bin/pkill`, a shell loop over `/proc`, or a script that resets
-`PATH`; a brief still has to say so.
+An agent that meets a shim refusal must not work around it: never use
+`pkill`/`killall` by pattern in a shared devcontainer. The shims still do not
+cover absolute command paths or a script that resets `PATH`; the PID namespace
+is the process-signal boundary for implementer bash.
 
 ### Run mode: implementer or review
 
@@ -210,12 +209,29 @@ merged: any element at all, and every spelling pi accepts for tools
 Every launch also needs both rule files (`implementer-prompt-rules.md`,
 `review-prompt-rules.md`) beside the wrapper; a missing one refuses the launch.
 
-**The limit, stated plainly:** the rule paragraph is an INSTRUCTION. In
-implementer mode the agent has `bash`, so the bash builtin `kill`, a TERM-trap
-script and a direct syscall are **not** technically prevented — only the
-mechanical `pi-shims` PATH guard covers the ordinary `pkill`/`killall`/signalling
-`pgrep` spellings. Review mode is a tool-set enforcement (no tool that can
-execute or write at all), not a sandbox, and even it leaves `read` unconfined.
+**Implementer bash runs in a user and PID namespace.** `pi-impl.sh` explicitly
+loads `pi-pidns-extension.js` with `--no-extensions -e` for every first launch,
+resume, and automatic continuation. The extension replaces the built-in bash
+tool and routes user `!`/`!!` commands through `pi-pidns-bash`. The launcher
+refuses extension-control values in implementer `PI_EXTRA_ARGS`, writes no
+settings files, and probes `pi-pidns-bash -c true` before claiming the run name.
+If the extension or wrapper is missing, or bwrap or namespace setup is
+unavailable, pi does not start.
+Worktree `.pi/settings.json` extension and `shellPath` values cannot replace
+the explicitly selected extension.
+
+The PID namespace prevents bash from addressing outer processes by PID. `/proc`
+is left as the host procfs because `--proc /proc` is unavailable in the
+supported container, so listings show outer PIDs and `/proc/$$` does not match
+`$$`. PID 1 inside is bwrap, so `kill -0 1` succeeds by design. `sudo` fails
+inside, and background jobs end with their command. The mount namespace is not a
+filesystem sandbox: file writes, network access, and other Unix sockets remain
+available. The wrapper hides the tmux socket directory and `/run/docker-api`,
+unsets `TMUX`, `TMUX_PANE`, and `DOCKER_HOST`, and covers an existing
+`/var/run/docker.sock` or `DOCKER_HOST=unix://` socket outside
+`/run/docker-api`. The prompt still forbids shell experiments in the shared
+devcontainer; that shell is not guarded. Review mode remains tool-set
+enforcement, not a sandbox, and its `read` tool remains unconfined.
 
 Read the `.done` marker's outcome word before deciding what to do next:
 

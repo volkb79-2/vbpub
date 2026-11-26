@@ -7,6 +7,7 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Added
+- **Kernel-enforced PID isolation for every pi implementer bash command (P-plat-26d).** A tracked `pi-pidns-extension.js`, explicitly selected with `--no-extensions -e` on first launches, resumes and automatic continuations, replaces both the built-in bash tool and user `!`/`!!` operations with `pi-pidns-bash`. The wrapper starts a fresh user and PID namespace, hides the tmux socket directory and Docker API socket paths, and refuses with exit 125 before running a command if bwrap cannot set it up; `pi-impl.sh` probes it before claiming the run name and refuses with exit 2 on failure. Worktree settings cannot replace the CLI extension and no settings file is written. This boundary covers process signals to outer PIDs, not file writes, network access or other Unix sockets; `/proc` remains the outer procfs (`kill -0 1` succeeds for namespace PID 1). Tests and mutants cover argv, fail-closed behavior, launch refusal, all pi launch paths, review-mode invariance and a live signal-zero isolation probe that skips loudly if the gate forbids user namespaces.
 - **A pi run mode, and review mode is the wrapper's own switch (P-plat-26c).**
   `pi-impl.sh` takes `PI_RUN_MODE=implementer` (default) or `review`. Review
   mode puts the read-only set defined ONCE in `scripts/controller/pi-review-argv`
