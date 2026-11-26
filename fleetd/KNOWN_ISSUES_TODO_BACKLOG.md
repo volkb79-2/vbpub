@@ -51,7 +51,7 @@
 | FD-046 | Facts tables and one lane-cost store | P2 | OPEN | 2026-11-24 |
 | FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
 | FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
-| FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | OPEN | 2026-11-24 |
+| FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | DONE in P-fd-05 C1 | 2026-11-24 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -143,8 +143,9 @@ missing service units. The compatibility profile constant is 768 MiB, the
 former lower bound and above the measured 450–500 MB near-idle hot RSS on the
 two 8 GiB hosts (2026-11-14). No reserve term depends on installed RAM.
 
-The collector does not read parent `ctl.slice/memory.min`; older facts may
-contain that field, which is accepted for compatibility and ignored. Fleetd
+Parent `ctl.slice/memory.min` plays no part in the reserve: the planner ignores
+`control_plane.memory_min_bytes`. (`host-facts/2` collects that field again, for
+reporting only.) Fleetd
 emits `reserve_bytes`, `reserve_source`, and
 `reserve_missing_services` in plan and campaign status output. Old host facts
 without the new service values use their profile constant, allowing host
@@ -966,11 +967,13 @@ nothing reads it except tests. Document it as a status marker or drop it.
 
 ## FD-049 host-facts/2: guard_present reshape together with FD-012
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-24.
+**State:** DONE in P-fd-05 C1. **Priority:** P2. **Filed:** 2026-11-24.
 
-Replace the current `host-facts/1` guard block with `guard_present` plus the
-owner's own runtime state. FD-012 becomes registration of each started
-campaign job on thrashguard's registrant socket when present; fleetd does not
-validate or enforce guard rules.
+`host-facts/2` now reports `guard_present`, `guard_state`, `config_digest`, and
+`frozen_units` with explicit wrapped values and null reasons. Freeze events
+remain null until their source is available. This closes the guard-fact reshape
+only. FD-012 remains the separate follow-up to register each started campaign
+job on thrashguard's registrant socket when present; fleetd does not validate
+or enforce guard rules.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md M1; FD-012
