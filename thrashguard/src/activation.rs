@@ -18,11 +18,10 @@
 //!
 //! ## What is checked before a descriptor is trusted
 //!
-//! [`plan`] is the pure part: `LISTEN_FDS` must be exactly two, `LISTEN_FDNAMES`
-//! must name them `registrant` and `reader` (in either order), and nothing else
-//! is accepted. It is tested without a descriptor, so the vocabulary is covered
-//! even though the `from_raw_fd` call itself cannot be (a real adoption needs a
-//! service start; that is a live acceptance fact, not a unit test).
+//! [`plan`] validates `LISTEN_PID` against this process and requires exactly the
+//! configured roles: `registrant` and `reader` when registration is enabled,
+//! otherwise `reader` alone. Names may arrive in either order; no other shape is
+//! accepted. These facts are unit-tested independently of systemd.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -67,6 +66,13 @@ pub enum ActivationError {
     Count {
         /// What was found.
         found: String,
+        /// How many descriptors the configured roles require.
+        expected: u32,
+    },
+    /// A role was announced while that role is disabled in configuration.
+    DisabledRole {
+        /// The disabled role that was announced.
+        name: String,
     },
     /// `LISTEN_PID` does not name this process.
     Process {
@@ -104,10 +110,13 @@ pub enum ActivationError {
 impl fmt::Display for ActivationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Count { found } => write!(
+            Self::Count { found, expected } => write!(
                 f,
-                "{LISTEN_FDS}={found:?} is not the {MAX_LISTEN_FDS} descriptors this daemon expects"
+                "{LISTEN_FDS}={found:?} is not the {expected} descriptors the configured roles expect"
             ),
+            Self::DisabledRole { name } => {
+                write!(f, "{LISTEN_FDNAMES} announces disabled role {name:?}")
+            }
             Self::Process { found, expected } => write!(
                 f,
                 "{LISTEN_PID}={found:?} does not match this process ({expected})"
@@ -156,11 +165,14 @@ pub fn plan(
     fds: Option<&str>,
     listen_pid: Option<&str>,
     names: Option<&str>,
+    registrant_enabled: bool,
 ) -> Result<Option<Plan>, ActivationError> {
+    let expected_count = if registrant_enabled { 2 } else { 1 };
     let Some(fds) = fds else {
         if names.is_some() || listen_pid.is_some() {
             return Err(ActivationError::Count {
                 found: format!("{LISTEN_PID}/{LISTEN_FDNAMES} without {LISTEN_FDS}"),
+                expected: expected_count,
             });
         }
         return Ok(None);
@@ -178,10 +190,12 @@ pub fn plan(
     }
     let count: u32 = fds.trim().parse().map_err(|_| ActivationError::Count {
         found: fds.trim().to_string(),
+        expected: expected_count,
     })?;
-    if count != MAX_LISTEN_FDS {
+    if count != expected_count {
         return Err(ActivationError::Count {
             found: count.to_string(),
+            expected: expected_count,
         });
     }
     let raw_names = names.ok_or(ActivationError::Names {
@@ -203,6 +217,11 @@ pub fn plan(
     for (index, name) in parse_names.iter().enumerate() {
         if !FD_NAMES.contains(name) {
             return Err(ActivationError::UnknownName {
+                name: (*name).to_string(),
+            });
+        }
+        if !registrant_enabled && *name == "registrant" {
+            return Err(ActivationError::DisabledRole {
                 name: (*name).to_string(),
             });
         }
@@ -236,14 +255,14 @@ pub struct Adopted {
 /// as `SOCK_STREAM` listeners at these exact numbers (its documented contract,
 /// `sd_listen_fds`), the process is the one it started, and the two numbers come
 /// from `LISTEN_FDS`/`LISTEN_FDNAMES` validated by [`plan`]. Each descriptor is
-/// taken at most once, so no two `UnixListener`s own one number.
+/// taken at most once, and only roles present in the plan are adopted.
 pub fn adopt(plan: Plan) -> Result<Adopted, ActivationError> {
     let mut registrant = None;
     let mut reader = None;
     for role in [Role::Registrant, Role::Reader] {
-        let fd = plan.descriptor(role).ok_or_else(|| ActivationError::UnknownName {
-            name: format!("missing {} descriptor", role.as_str()),
-        })?;
+        let Some(fd) = plan.descriptor(role) else {
+            continue;
+        };
         let mut socket_type: c_int = 0;
         let mut socket_type_len = std::mem::size_of::<c_int>() as u32;
         let mut accepting: c_int = 0;
@@ -300,15 +319,23 @@ mod tests {
         names: Option<&str>,
     ) -> Result<Option<Plan>, ActivationError> {
         let pid = std::process::id().to_string();
-        plan(fds, Some(&pid), names)
+        plan(fds, Some(&pid), names, true)
+    }
+
+    fn reader_only_plan(
+        fds: Option<&str>,
+        names: Option<&str>,
+    ) -> Result<Option<Plan>, ActivationError> {
+        let pid = std::process::id().to_string();
+        plan(fds, Some(&pid), names, false)
     }
 
     #[test]
     fn absent_variables_mean_a_foreground_run_and_nothing_is_invented() {
-        assert_eq!(plan(None, None, None), Ok(None));
+        assert_eq!(plan(None, None, None, true), Ok(None));
         // `LISTEN_FDNAMES` alone is a half-written environment: refused, not ignored.
         assert!(matches!(
-            plan(None, None, Some("reader")),
+            plan(None, None, Some("reader"), true),
             Err(ActivationError::Count { .. })
         ));
     }
@@ -334,14 +361,32 @@ mod tests {
     }
 
     #[test]
+    fn disabled_registrant_activation_adopts_only_the_reader_role() {
+        let plan = reader_only_plan(Some("1"), Some("reader"))
+            .expect("plan")
+            .expect("activation");
+        assert_eq!(plan.descriptor(Role::Registrant), None);
+        assert_eq!(plan.descriptor(Role::Reader), Some(FIRST_FD));
+        assert!(matches!(
+            reader_only_plan(Some("1"), Some("registrant")),
+            Err(ActivationError::DisabledRole { .. })
+        ));
+    }
+
+    #[test]
     fn activation_is_refused_when_listen_pid_is_missing_or_foreign() {
         let foreign_pid = std::process::id().saturating_add(1).to_string();
         assert!(matches!(
-            plan(Some("2"), None, Some("registrant:reader")),
+            plan(Some("2"), None, Some("registrant:reader"), true),
             Err(ActivationError::Process { .. })
         ));
         assert!(matches!(
-            plan(Some("2"), Some(&foreign_pid), Some("registrant:reader")),
+            plan(
+                Some("2"),
+                Some(&foreign_pid),
+                Some("registrant:reader"),
+                true
+            ),
             Err(ActivationError::Process { .. })
         ));
     }
@@ -385,7 +430,10 @@ mod tests {
     #[test]
     fn every_error_names_the_variable_it_refused() {
         for error in [
-            ActivationError::Count { found: "0".into() },
+            ActivationError::Count {
+                found: "0".into(),
+                expected: 2,
+            },
             ActivationError::Process {
                 found: "1".into(),
                 expected: 2,

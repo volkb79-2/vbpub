@@ -19,6 +19,8 @@ use core::fmt;
 
 /// The largest accepted input document (one wire line or one config value).
 pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+/// The maximum number of nested arrays/objects accepted in a document.
+pub const MAX_DEPTH: usize = 32;
 
 /// A JSON value.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,7 +99,7 @@ impl Value {
             bytes: text.as_bytes(),
             at: 0,
         };
-        let value = reader.value()?;
+        let value = reader.value(0)?;
         reader.skip_whitespace();
         if reader.at != reader.bytes.len() {
             return Err(JsonError::TrailingData { at: reader.at });
@@ -276,12 +278,12 @@ impl Reader<'_> {
         }
     }
 
-    fn value(&mut self) -> Result<Value, JsonError> {
+    fn value(&mut self, depth: usize) -> Result<Value, JsonError> {
         self.skip_whitespace();
         match self.peek() {
             None => Err(JsonError::UnexpectedEnd),
-            Some(b'{') => self.object(),
-            Some(b'[') => self.array(),
+            Some(b'{') => self.object(depth + 1),
+            Some(b'[') => self.array(depth + 1),
             Some(b'"') => Ok(Value::String(self.string()?)),
             Some(b't') => {
                 self.expect("true")?;
@@ -300,7 +302,8 @@ impl Reader<'_> {
         }
     }
 
-    fn object(&mut self) -> Result<Value, JsonError> {
+    fn object(&mut self, depth: usize) -> Result<Value, JsonError> {
+        self.check_depth(depth)?;
         self.expect("{")?;
         let mut pairs = Vec::new();
         self.skip_whitespace();
@@ -313,7 +316,7 @@ impl Reader<'_> {
             let key = self.string()?;
             self.skip_whitespace();
             self.expect(":")?;
-            let value = self.value()?;
+            let value = self.value(depth)?;
             if pairs.iter().any(|(existing, _)| existing == &key) {
                 return Err(self.syntax(format!("duplicate key {key:?}")));
             }
@@ -333,7 +336,8 @@ impl Reader<'_> {
         }
     }
 
-    fn array(&mut self) -> Result<Value, JsonError> {
+    fn array(&mut self, depth: usize) -> Result<Value, JsonError> {
+        self.check_depth(depth)?;
         self.expect("[")?;
         let mut items = Vec::new();
         self.skip_whitespace();
@@ -342,7 +346,7 @@ impl Reader<'_> {
             return Ok(Value::Array(items));
         }
         loop {
-            items.push(self.value()?);
+            items.push(self.value(depth)?);
             self.skip_whitespace();
             match self.peek() {
                 Some(b',') => self.at += 1,
@@ -355,6 +359,14 @@ impl Reader<'_> {
                     return Err(self.syntax(format!("expected ',' or ']', found {byte:#04x}")))
                 }
             }
+        }
+    }
+
+    fn check_depth(&self, depth: usize) -> Result<(), JsonError> {
+        if depth > MAX_DEPTH {
+            Err(self.syntax(format!("deeper than {MAX_DEPTH} levels")))
+        } else {
+            Ok(())
         }
     }
 
@@ -462,6 +474,17 @@ mod tests {
         assert!(matches!(
             Value::parse(&big),
             Err(JsonError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn nesting_at_32_levels_parses_but_33_levels_is_refused() {
+        let at_limit = format!("{}0{}", "[".repeat(32), "]".repeat(32));
+        assert!(Value::parse(&at_limit).is_ok());
+        let too_deep = format!("{}0{}", "[".repeat(33), "]".repeat(33));
+        assert!(matches!(
+            Value::parse(&too_deep),
+            Err(JsonError::Syntax { ref detail, .. }) if detail.contains("deeper than 32 levels")
         ));
     }
 

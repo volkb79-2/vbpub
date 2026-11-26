@@ -7,7 +7,8 @@
 //! Verbs (design §3 "Standalone", §6d):
 //!
 //! ```text
-//! thrashguard serve|status|candidates|events|version [--config P] [--cgroup-root P]
+//! thrashguard serve|status|candidates|events|version [--config P]
+//!             (default: /etc/thrashguard/thrashguard.toml) [--cgroup-root P]
 //!             [--pressure-path P] [--socket P] [--since-seq N] [--registrant-socket P]
 //!             [--reader-socket P]
 //! ```
@@ -76,7 +77,7 @@ impl Verb {
 pub struct Args {
     /// The verb.
     pub verb: Verb,
-    /// Where the configuration is (`--config`).
+    /// Where the configuration is (`--config`); `None` selects `DEFAULT_CONFIG`.
     pub config: Option<PathBuf>,
     /// The injected cgroup root (`--cgroup-root`).
     pub cgroup_root: PathBuf,
@@ -93,7 +94,7 @@ pub struct Args {
 }
 
 impl Args {
-    /// The default invocation: `serve` with the host's own paths.
+    /// The default invocation: `serve` with the host's own paths and config file.
     pub fn defaults() -> Self {
         Self {
             verb: Verb::Serve,

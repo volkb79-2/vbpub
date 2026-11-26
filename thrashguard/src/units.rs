@@ -524,6 +524,15 @@ impl Priority {
     }
 }
 
+/// Where a stored candidate came from, which controls heartbeat expiry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistrationSource {
+    /// A live registrant whose heartbeat may go silent.
+    Registrant,
+    /// A static `[[static_unit]]` configured by the host; it has no heartbeat.
+    Static,
+}
+
 /// What a registrant sends to `register`, minus the facts the guard derives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registration {
@@ -539,6 +548,8 @@ pub struct Registration {
     pub priority: Priority,
     /// The kind of unit (`gate`, `campaign`, ...), free text.
     pub kind: String,
+    /// The source that determines whether heartbeat expiry applies.
+    pub source: RegistrationSource,
     /// The owning tool.
     pub owner: String,
     /// The run/lane id the frozen interval belongs to.
@@ -717,7 +728,10 @@ impl Store {
         let expired_ids: Vec<String> = self
             .entries
             .values()
-            .filter(|entry| entry.silent_s(now_ns) >= self.ttl_s)
+            .filter(|entry| {
+                entry.source == RegistrationSource::Registrant
+                    && entry.silent_s(now_ns) >= self.ttl_s
+            })
             .map(|entry| entry.id.clone())
             .collect();
         expired_ids
@@ -978,6 +992,7 @@ mod tests {
             score: 1,
             priority,
             kind: "gate".to_string(),
+            source: RegistrationSource::Registrant,
             owner: "run-gate".to_string(),
             run: format!("run-{id}"),
             heartbeat_s: None,

@@ -41,12 +41,12 @@ use std::time::Duration;
 use crate::clock::Clock;
 use crate::config::{Config, Mode};
 use crate::events::{self, Event, Journal};
-use crate::hysteresis::{Action, Hysteresis};
+use crate::hysteresis::{Action, Decision, Hysteresis};
 use crate::json::Value;
 use crate::psi::{Poller, Reading};
 use crate::report::{self, ParkingState, Would};
 use crate::socket::{self, Role};
-use crate::units::{self, Priority, Registration, Store};
+use crate::units::{self, Priority, Registration, RegistrationSource, Store};
 use crate::wire;
 use crate::{EVENT_VERSION, STATE_VERSION};
 
@@ -168,7 +168,16 @@ impl Core {
         let reading = self.poller.poll();
         self.last_reading = reading.clone();
         let mode = self.config.mode.as_str();
-        let decision = self.hysteresis.observe(&reading, now);
+        let boot_grace_ns = self.config.boot_grace_s.saturating_mul(1_000_000_000);
+        let decision = if now < boot_grace_ns && reading.avg10().is_some() {
+            Decision {
+                phase: self.hysteresis.phase(),
+                parking: self.hysteresis.is_parking(),
+                action: Action::None,
+            }
+        } else {
+            self.hysteresis.observe(&reading, now)
+        };
         let state = ParkingState {
             // P1 compiles no act path: nothing is parked, ever. Asking the planner
             // with an invented `parked` count would be the silent-wrong-answer shape.
@@ -279,6 +288,7 @@ pub fn store_for(config: &Config, root: &Path, now_ns: u64) -> Result<Store, Str
                 score: 0,
                 priority: Priority::Freezable,
                 kind: "static".to_string(),
+                source: RegistrationSource::Static,
                 owner: "/etc".to_string(),
                 run: unit.name.clone(),
                 heartbeat_s: None,
@@ -323,6 +333,7 @@ impl socket::Dispatch for Core {
                     score: body.score,
                     priority: body.priority,
                     kind: body.kind.clone(),
+                    source: RegistrationSource::Registrant,
                     owner: body.owner.clone(),
                     run: body.run.clone(),
                     heartbeat_s: body.heartbeat_s,
@@ -575,9 +586,9 @@ pub fn boot_id() -> String {
 ///
 /// A bind that fails because something else is listening is loud; it is never
 /// "fixed" by deleting another process's socket.
-pub fn bind(registrant: &Path, reader: &Path) -> Result<Endpoint, String> {
+pub fn bind(registrant: Option<&Path>, reader: &Path) -> Result<Endpoint, String> {
     Ok(Endpoint {
-        registrant: bind_one(registrant)?,
+        registrant: registrant.map(bind_one).transpose()?,
         reader: bind_one(reader)?,
     })
 }
@@ -597,8 +608,8 @@ fn bind_one(path: &Path) -> Result<std::os::unix::net::UnixListener, String> {
 /// The two listeners this daemon serves.
 #[derive(Debug)]
 pub struct Endpoint {
-    /// The registrant socket.
-    pub registrant: std::os::unix::net::UnixListener,
+    /// The registrant socket, absent when `registrant = false`.
+    pub registrant: Option<std::os::unix::net::UnixListener>,
     /// The reader socket.
     pub reader: std::os::unix::net::UnixListener,
 }
@@ -616,14 +627,17 @@ pub fn serve(core: Core, endpoints: &Endpoint, tick_s: u64) -> io::Result<()> {
         let mut guard = ticker.lock().unwrap_or_else(|poison| poison.into_inner());
         guard.tick();
     });
-    endpoints.registrant.set_nonblocking(true)?;
+    if let Some(registrant) = &endpoints.registrant {
+        registrant.set_nonblocking(true)?;
+    }
     endpoints.reader.set_nonblocking(true)?;
     let sessions = Arc::new(AtomicUsize::new(0));
     loop {
-        for (role, listener) in [
-            (Role::Registrant, &endpoints.registrant),
-            (Role::Reader, &endpoints.reader),
-        ] {
+        let registrant = endpoints
+            .registrant
+            .iter()
+            .map(|listener| (Role::Registrant, listener));
+        for (role, listener) in registrant.chain(std::iter::once((Role::Reader, &endpoints.reader))) {
             let accepted = match listener.accept() {
                 Ok((stream, _)) => stream,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
@@ -727,6 +741,7 @@ mod tests {
         clock: Arc<ManualClock>,
         pressure: &Path,
     ) -> Core {
+        config.boot_grace_s = 0;
         config.state_dir = tree.at("run");
         Core::new(config, clock, pressure, tree.path(), "boot-test").expect("a guard over the tree")
     }
@@ -1006,6 +1021,47 @@ mod tests {
     }
 
     #[test]
+    fn static_units_remain_candidates_after_multiple_heartbeat_ttls() {
+        let tree = TempTree::new("daemon-static-lifetime");
+        std::fs::create_dir_all(tree.at("dev-gates.slice/static.scope"))
+            .expect("static scope");
+        let mut config = Config::defaults();
+        config.static_units = vec![static_unit("static", "dev-gates.slice/static.scope")];
+        let clock = Arc::new(ManualClock::new(1));
+        let mut core = guard(&tree, config, Arc::clone(&clock), &tree.at("absent.pressure"));
+        let ttl_s = core.store().ttl_s();
+
+        for _ in 0..2 {
+            clock.advance_s(ttl_s + 1);
+            core.tick();
+            assert_eq!(core.store().len(), 1, "the configured candidate remains");
+        }
+        assert!(
+            journal_rows(&core)
+                .iter()
+                .all(|row| row.get("event").and_then(Value::as_str) != Some("expired")),
+            "a static unit has no heartbeat whose silence can expire"
+        );
+    }
+
+    #[test]
+    fn boot_grace_prevents_a_trigger_until_boot_relative_time_reaches_the_limit() {
+        let tree = TempTree::new("daemon-boot-grace");
+        let pressure = tree.write("memory.pressure", &pressure_text("3.50", 0));
+        let mut config = Config::defaults();
+        config.boot_grace_s = 60;
+        config.hold_s = 0;
+        config.state_dir = tree.at("run");
+        let clock = Arc::new(ManualClock::at(59_000_000_000, 1_700_000_000_000_000_000));
+        let mut core = Core::new(config, clock.clone(), &pressure, tree.path(), "boot-test")
+            .expect("guard over the tree");
+
+        assert_eq!(core.tick(), Action::None, "pressure is ignored during grace");
+        clock.advance_s(1);
+        assert_eq!(core.tick(), Action::Freeze, "the threshold applies at 60 s");
+    }
+
+    #[test]
     fn deregister_removes_the_candidate_and_journals_the_unit() {
         let tree = TempTree::new("daemon-deregister");
         std::fs::create_dir_all(tree.at("dev.slice/dev-gates.slice/docker-abc.scope"))
@@ -1218,13 +1274,24 @@ mod tests {
         let registrant = tree.at("reg/thrashguard.sock");
         let reader = tree.at("reader/thrashguard.sock");
         // Two distinct directories: the bind succeeds and the two paths exist.
-        let endpoint = bind(&registrant, &reader).expect("a temp tree binds");
+        let endpoint = bind(Some(&registrant), &reader).expect("a temp tree binds");
         assert!(registrant.exists());
         assert!(reader.exists());
         drop(endpoint);
         // Binding the same path twice is a loud refusal, never a silent takeover.
         let taken = registrant.parent().expect("a parent").join("taken.sock");
-        let first = bind(&taken, &taken).expect_err("the same path twice");
+        let first = bind(Some(&taken), &taken).expect_err("the same path twice");
         assert!(first.contains("cannot bind"), "{first}");
+    }
+
+    #[test]
+    fn a_disabled_registrant_role_binds_only_the_reader_path() {
+        let tree = TempTree::new("daemon-reader-only-bind");
+        let registrant = tree.at("reg/thrashguard.sock");
+        let reader = tree.at("reader/thrashguard.sock");
+        let endpoint = bind(None, &reader).expect("reader-only bind");
+        assert!(endpoint.registrant.is_none());
+        assert!(reader.exists());
+        assert!(!registrant.exists());
     }
 }

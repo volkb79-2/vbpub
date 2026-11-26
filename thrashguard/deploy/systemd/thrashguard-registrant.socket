@@ -1,6 +1,7 @@
 [Unit]
 Description=thrashguard registrant UNIX socket
-After=systemd-tmpfiles-setup.service
+After=systemd-tmpfiles-setup.service thrashguard-reader.socket
+Requires=thrashguard-reader.socket
 # The socket outlives the daemon on purpose (`Accept=no`): a client that connects
 # during a restart waits for the listener instead of being refused (design §3, D7).
 

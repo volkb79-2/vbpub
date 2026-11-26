@@ -89,11 +89,7 @@ fn run(args: &Args) -> Result<(), Fatal> {
         );
         return Ok(());
     }
-    let config = match &args.config {
-        Some(path) => config::load(path)
-            .map_err(|error| Fatal::usage(format!("cannot load the configuration: {error}")))?,
-        None => Config::defaults(),
-    };
+    let config = load_config(args, Path::new(config::DEFAULT_CONFIG))?;
     if args.verb == Verb::Serve {
         // `enforce` is valid vocabulary, and `status` must be able to report it,
         // but this build cannot honour it: one line, at the run boundary.
@@ -111,6 +107,17 @@ fn run(args: &Args) -> Result<(), Fatal> {
         Verb::Events => events(&config, args),
         Verb::Serve => serve(&config, args),
     }
+}
+
+/// Load the explicit config path, or the package's documented host default.
+fn load_config(args: &Args, default_path: &Path) -> Result<Config, Fatal> {
+    let path = args.config.as_deref().unwrap_or(default_path);
+    config::load(path).map_err(|error| {
+        Fatal::usage(format!(
+            "cannot load the configuration {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 /// The candidate store for this configuration, with every `[[static_unit]]`
@@ -235,26 +242,32 @@ fn serve(config: &Config, args: &Args) -> Result<(), Fatal> {
         std::env::var(activation::LISTEN_FDS).ok().as_deref(),
         std::env::var(activation::LISTEN_PID).ok().as_deref(),
         std::env::var(activation::LISTEN_FDNAMES).ok().as_deref(),
+        config.registrant,
     )
     .map_err(|error| Fatal::usage(format!("socket activation: {error}")))?;
     let endpoints = match announced {
         Some(plan) => {
             let adopted = activation::adopt(plan)
                 .map_err(|error| Fatal::usage(format!("socket activation: {error}")))?;
-            let registrant = adopted
-                .registrant
-                .ok_or_else(|| Fatal::usage("systemd announced no registrant socket"))?;
             let reader = adopted
                 .reader
                 .ok_or_else(|| Fatal::usage("systemd announced no reader socket"))?;
-            daemon::Endpoint { registrant, reader }
+            if config.registrant && adopted.registrant.is_none() {
+                return Err(Fatal::usage("systemd announced no registrant socket"));
+            }
+            daemon::Endpoint {
+                registrant: adopted.registrant,
+                reader,
+            }
         }
         None => {
             // A foreground run: the paths come from the flags, the daemon's own
             // defaults otherwise.
-            let registrant = cli::registrant_path(args);
+            let registrant = config
+                .registrant
+                .then(|| cli::registrant_path(args));
             let reader = cli::reader_path(args);
-            daemon::bind(&registrant, &reader).map_err(Fatal::usage)?
+            daemon::bind(registrant.as_deref(), &reader).map_err(Fatal::usage)?
         }
     };
     let tick_s = config.tick_s;
@@ -303,6 +316,19 @@ mod tests {
     use thrashguard::report::{self, ParkingState, Would};
     use thrashguard::testutil::TempTree;
     use thrashguard::units::Store;
+
+    #[test]
+    fn an_omitted_config_reads_the_injected_default_file() {
+        let tree = TempTree::new("main-default-config");
+        let path = tree.write("thrashguard.toml", "mode = \"off\"\ntrigger_avg10 = 4.50\n");
+        let args = Args {
+            verb: Verb::Status,
+            ..Args::defaults()
+        };
+        let loaded = load_config(&args, &path).expect("default configuration file");
+        assert_eq!(loaded.mode, config::Mode::Off);
+        assert_eq!(loaded.trigger_avg10, 450);
+    }
 
     fn static_unit(name: &str, cgroup: &str) -> StaticUnit {
         StaticUnit {

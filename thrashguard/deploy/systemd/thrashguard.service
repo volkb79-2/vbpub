@@ -1,10 +1,10 @@
 [Unit]
 Description=thrashguard PSI-driven park/thaw guard (TG-1 P1 `observe`: report mode only)
 Documentation=https://github.com/example/thrashguard
-# Both sockets are activated, so this service is started by the first client that
-# connects, and a daemon restart never refuses one (`Accept=no`, design §3 D7).
-Requires=thrashguard-registrant.socket thrashguard-reader.socket
-After=systemd-tmpfiles-setup.service
+# The reader socket is always needed. The registrant socket is optional and must
+# be enabled only when `registrant = true` in the configuration.
+Requires=thrashguard-reader.socket
+After=systemd-tmpfiles-setup.service thrashguard-reader.socket
 
 [Service]
 Type=simple
@@ -13,7 +13,6 @@ ExecStart=/usr/local/bin/thrashguard serve --config /etc/thrashguard/thrashguard
 # tiers it protects are starved (`units/mdt-psi-guard.service:2-3`). The slice unit
 # itself is installed by the host (deploy/systemd/thrashguard.slice).
 Slice=thrashguard.slice
-Sockets=thrashguard-registrant.socket thrashguard-reader.socket
 User=root
 # A configuration or socket-activation refusal is permanent until an operator acts.
 RestartPreventExitStatus=2
