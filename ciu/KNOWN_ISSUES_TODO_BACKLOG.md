@@ -11,7 +11,15 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-11-26 — CIU-231 part (b) amended with the `down --dir` refusals; CIU-162 still reproduces on 7.28.0. Previous update 2026-11-24 — **CIU-227, CIU-230 and CIU-231 FIXED IN THIS BRANCH (P-core-11)** (hostdirs only after the S6.5 preconditions and none under `--dry-run`, the helper's refusal remedy, an empty selection from inside a stack dir refusing with the `--dir .` remedy). Before that on 2026-11-24 — **CIU-230 and CIU-231 FILED; CIU-227 and CIU-229 AMENDED** (T2 core controller, P-core-10 branch: no default cgroup parent for the S6.5 root helper; plain `ciu up` in a stack dir is an rc-0 no-op; a second dry-run hostdir specimen; `worktree rm` on a git-created worktree refuses once per nested root). Previous update 2026-11-24 — **CIU-220 and CIU-224 FIXED IN THIS BRANCH (P-core-10)** (bounded process I/O and the shared renderer; CIU-224..229 had been filed together on P-core-10). Previous update 2026-11-24 — **CIU-224..229 FILED** (T2 core, P-core-10 branch): the renderer adoption, the tester-gate retirement, an override that drops required hooks, hostdirs created before S6.5 preconditions, relative `--dir` with `--root-folder`, and three `ciu worktree rm` defects; CIU-220 design amended (cli-extended 0.8 procio); CIU-162 amended (consumer-stack networks). Previous update 2026-11-18 — **CIU-223 FIXED** (the four CIU-215 test files disable git's automatic gc and maintenance, and an autouse guard reports leftover direct children without signalling them; tests only, no release or consumer action). Previous update 2026-11-18 — **CIU-221 FILED** (`ciu up --dir` applies no profile `topology_overrides`; split from CIU-208, whose profile-mode fix is merged to main as `66db19734`, unreleased). Previous update 2026-11-13 — **CIU-214, CIU-215 and CIU-216 FILED** from the netcup-api-filter migration (`ciu down --dir` parser rejects flags the help lists; CIU 7 linked-worktree exec runners lack the git common-dir mount; `ciu worktree create` renders no `ciu.global.toml` without `DOCKER_HOST`). Previous update 2026-11-11 — **CIU-193 FIXED** on `ciu-193-down-owner-20261111` (`ciu down` ownership-filtered like `clean`; unlabelled candidates fail closed in worktrees). **CIU-205 and CIU-206 FILED and FIXED** (on `ciu-205-dir-selection-20261111` and `ciu-206-host-secret-20261111`, unreleased) from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. **CIU-208 and CIU-209 FILED** from side findings in the CIU-205 implementation report: profile-mode `ciu up` does not carry a profile's `topology_overrides` into the per-stack engine render even though preflight renders and `ciu resolve` apply them; `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check by calling the profile-package resolver directly. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
+Last updated: 2026-11-26 — CIU-231 part (b) amended with the `down --dir` refusals; CIU-162 still reproduces on 7.28.0. Previous update 2026-11-25 — **CIU-235 FIXED IN THIS BRANCH (P-core-11 r2fix)** (the R2 per-candidate bound is now derived from the lane's own baseline instead of a fixed 5m guess, so a survivor can be reported; liveness keeps ending idle stalls only; the `ciu-gate` canary bound rises to 45m, and the three unjudged candidates are killed). Previous update 2026-11-24 — **CIU-227, CIU-230 and CIU-231 FIXED IN THIS BRANCH (P-core-11)** (hostdirs only after the S6.5 preconditions and none under `--dry-run`, the helper's refusal remedy, an empty selection from inside a stack dir refusing with the `--dir .` remedy). Before that on 2026-11-24 — **CIU-230 and CIU-231 FILED; CIU-227 and CIU-229 AMENDED** (T2 core controller, P-core-10 branch: no default cgroup parent for the S6.5 root helper; plain `ciu up` in a stack dir is an rc-0 no-op; a second dry-run hostdir specimen; `worktree rm` on a git-created worktree refuses once per nested root). Previous update 2026-11-24 — **CIU-220 and CIU-224 FIXED IN THIS BRANCH (P-core-10)** (bounded process I/O and the shared renderer; CIU-224..229 had been filed together on P-core-10). Previous update 2026-11-24 — **CIU-224..229 FILED** (T2 core, P-core-10 branch): the renderer adoption, the tester-gate retirement, an override that drops required hooks, hostdirs created before S6.5 preconditions, relative `--dir` with `--root-folder`, and three `ciu worktree rm` defects; CIU-220 design amended (cli-extended 0.8 procio); CIU-162 amended (consumer-stack networks). Previous update 2026-11-18 — **CIU-223 FIXED** (the four CIU-215 test files disable git's automatic gc and maintenance, and an autouse guard reports leftover direct children without signalling them; tests only, no release or consumer action). Previous update 2026-11-18 — **CIU-221 FILED** (`ciu up --dir` applies no profile `topology_overrides`; split from CIU-208, whose profile-mode fix is merged to main as `66db19734`, unreleased). Previous update 2026-11-13 — **CIU-214, CIU-215 and CIU-216 FILED** from the netcup-api-filter migration (`ciu down --dir` parser rejects flags the help lists; CIU 7 linked-worktree exec runners lack the git common-dir mount; `ciu worktree create` renders no `ciu.global.toml` without `DOCKER_HOST`). Previous update 2026-11-11 — **CIU-193 FIXED** on `ciu-193-down-owner-20261111` (`ciu down` ownership-filtered like `clean`; unlabelled candidates fail closed in worktrees). **CIU-205 and CIU-206 FILED and FIXED** (on `ciu-205-dir-selection-20261111` and `ciu-206-host-secret-20261111`, unreleased) from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. **CIU-208 and CIU-209 FILED** from side findings in the CIU-205 implementation report: profile-mode `ciu up` does not carry a profile's `topology_overrides` into the per-stack engine render even though preflight renders and `ciu resolve` apply them; `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check by calling the profile-package resolver directly. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
+
+Later update, 2026-11-25 — **CIU-235 FIXED IN THIS BRANCH (P-core-11 r2fix)**
+(the R2 lane's 5m per-candidate wall budget was shorter than the ~416 s suite it
+bounds, so an unkillable mutant was reported `BUDGET_EXCEEDED` instead of
+`survived`; the bound is now DERIVED from the run's own baseline
+(`budget_per_candidate = "auto"`), liveness ends IDLE stalls only, and the
+`ciu-gate` canary's per-attempt bound rises to 45m; the three unjudged
+candidates are killed by behavioural tests).
 
 Later update, 2026-11-24 — **CIU-227, CIU-230 and CIU-231 FIXED IN THIS BRANCH
 (P-core-11)** (S6.5 preconditions are evaluated before the first hostdir and
@@ -699,6 +707,7 @@ entries.
 | CIU-232 | procio's signal scope replaced the foreground one-shot's SIGTERM/SIGHUP forwarding handlers during `run_cmd` | Minor | FIXED IN THIS BRANCH (P-core-10 fix round 1) |
 | CIU-233 | Seventeen deferred direct `subprocess.run(capture_output=True)` sites still have no bounded post-exit drain | Minor | OPEN 2026-11-24 (P-core-10 review) |
 | CIU-234 | `procutil.run_cmd`'s helper-thread branch leaves the child running when a main-thread `KeyboardInterrupt` or `SystemExit` interrupts `worker.join()` | Minor | OPEN 2026-11-24 (P-core-10 review r2, M2) |
+| CIU-235 | The CIU R2 lane's 5m per-candidate wall budget was shorter than the full suite, so an unkillable mutant was reported `BUDGET_EXCEEDED` and the lane could never report a survivor (now `budget_per_candidate = "auto"`, derived from the run's own baseline; liveness ends idle stalls only, and the working-candidate bound is the interim until Assay P4) | Major for CIU R2 evidence | FIXED IN THIS BRANCH (P-core-11 r2fix) |
 
 
 The approved milestone decisions and serial package order are in
@@ -6216,7 +6225,7 @@ Acceptance: `ciu worktree create` + `ciu up --dir <stack>` works in a worktree o
 
 ## CIU-190 - the `ciu` R2 mutation lane always ended NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE (no `resource_observer`)
 
-**Status: FIXED 2026-11-05 on branch ciu-r2-observer-20261105 (unreleased; config-only, no src change). Evidence extended 2026-11-11 by the host campaign.** Found by the R2 board agent on a test host running ciu 7.22.0. `[lanes.ciu]` in run-gate.toml lacked `resource_observer = "cgprofile"` while assay.toml sets `liveness = true`; adding the observer also requires `resources.pids`. Fix: both keys added (pattern of pwmcp/run-gate-project R2 lanes); the `ciu` (async R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) distinction is explicit in run-gate.toml, assay.toml and README; pinned by `test_run_gate_ciu_lane_declares_cgroup_observer_for_r2` in `tests/tests/test_ciu_documentation_contract.py`.
+**Status: FIXED 2026-11-05 on branch ciu-r2-observer-20261105 (unreleased; config-only, no src change). Evidence extended 2026-11-11 by the host campaign.** Found by the R2 board agent on a test host running ciu 7.22.0. `[lanes.ciu]` in run-gate.toml lacked `resource_observer = "cgprofile"` while assay.toml also sets `liveness = true`; the observer supplies separate candidate resource-limit evidence, not liveness, and its lane declaration also requires `resources.pids`. Fix: both keys added (pattern of pwmcp/run-gate-project R2 lanes); the `ciu` (async R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) distinction is explicit in run-gate.toml, assay.toml and README; pinned by `test_run_gate_ciu_lane_declares_cgroup_observer_for_r2` in `tests/tests/test_ciu_documentation_contract.py`.
 
 **Acceptance criteria.** An R2 campaign on lane `ciu` reaches mutation judgment instead of NO_MEASUREMENT; `ciu-gate` is unchanged and declares no observer.
 
@@ -7386,3 +7395,111 @@ CIU-228 owns the relative-`--dir` resolution rule this item defers to.
 **Wanted.** In the helper-thread branch, catch `BaseException` around `worker.join()`, terminate the child's process group through procio's own reap path, join the worker, then re-raise; one real-child test with a handler that raises. Moot once CLI-EXT-51 is released and the branch is removed.
 
 **Close when.** The branch reaps its child on a main-thread interrupt with a pinning test, or CLI-EXT-51 is released and the helper-thread branch is deleted.
+
+## CIU-235 — the CIU R2 lane's per-candidate budget is shorter than the full suite, so a survivor cannot be reported
+
+**Status:** FIXED IN THIS BRANCH (P-core-11 r2fix, 2026-11-25). Source: remote
+run `rgw-ciu-20261125T202211-v1001` (lane `ciu`, head `1acc46a42`, base
+`ciu-v7.27.0`).
+
+**Problem.** `budget_per_candidate` bounds ONE candidate's whole suite run, and
+a mutant that no test kills runs all of it. At `5m` (300 s) against a ~416 s
+measured suite, every such candidate was cut at 302 s and classified
+`budget_exceeded` — twice, because the retry repeats the same work. The run's
+19 candidates therefore ended 16 killed, **0 survived, 3 not judged**, and
+`BUDGET_EXCEEDED` (exit 4) as the lane outcome. An adverse bucket is a
+measurement failure, not a verdict about the tests: the lane could not report a
+survivor at all, which is the one thing an R2 campaign exists to do. Killed
+mutants were never at risk (104-129 s under `--maxfail=1`).
+
+**Evidence.** Run `rgw-ciu-20261125T202211-v1001` (artifacts `.assay/`):
+`progress-ciu.jsonl`'s first record declares `budget_per_candidate_s: 300.0`; the
+baseline `command_started`/`command_finished` pair measures the full suite at
+~416 s; three `candidate_retry` records with `final_bucket: budget_exceeded` sit
+~301 s apart; the `end` record reports `{"budget_exceeded": 3, "killed": 16,
+"survived": 0}`. The three are `ciu/src/ciu/engine.py` line 921
+(`helper_needed = False` → `True`) and the two dry-run `flush=True` lines at 999
+and 1073 (line numbers as of that head).
+
+**Fix.** `ciu/assay.toml` declares `budget_per_candidate = "auto"` (CIU-235;
+review r1 H1 and the controller's 2026-11-26 ruling). The bound is DERIVED from
+this run's own measurement rather than guessed: assay takes the lane command's
+measured baseline wall time once the baseline passes and before any candidate
+is submitted (`assay/src/assay/mutation.py:2636-2641` calls
+`baseline_wall_seconds` (`:2121-2134`) and `auto_budget_per_candidate_seconds`
+(`:2136-2153`), the formula `max(3 x baseline, baseline + 60 s)`), so it scales
+with the host the lane runs on. At the measured 416 s that is ~1249 s (~21
+min): above the whole suite there, and above it by construction on a loaded
+host. The verdict's `judgment.r2.budget_per_candidate_derived_s` carries the
+value THIS invocation derived; a candidate resumed or carried over keeps the
+bound from the run that judged it, and the store records that run's resource
+digest (`mutation_store.py:4264-4274`, `:3743-3753`) (B088).
+
+Why the bound cannot be `"none"` (the shape this branch carried first):
+liveness ends an **idle** stall only. `hung` needs an idle window with a flat CPU
+(`assay/src/assay/liveness.py:2073`, `:2080`) and a complete, pressure-free
+resource trace (`:2020-2025`, `:1975-1979`); growing CPU is what PREVENTS `hung`,
+and stdout/stderr growth also counts as progress (`:2029-2033`). So a candidate
+that keeps working — spinning on CPU, printing without end, or blocked under a
+busy child — is never `hung`. With `"none"` nothing bounded it: assay's own 8h
+lane deadline (`assay/src/assay/runner.py:307-350`; `ciu/assay.toml` declares
+`budget = "8h"`) ended the whole lane, leaving that candidate as an unclassified
+attempt retried on resume (`mutation.py:3838-3850`) and then a
+`budget_exceeded` placeholder that claims `ProcessTreeEvidence.not_started()`
+(`mutation.py:4871-4878`) — no candidate classification at all, for up to eight
+hours of a 3-worker gate slot (the run-gate wrapper's 485m is only the outer,
+five minutes behind it).
+
+`liveness = true` therefore stays, and does exactly what it can certify: an idle
+stall becomes `hung` (`liveness.py:2086-2095` → `runner.py:1840-1843`
+`ReasonCode.CANDIDATE_HUNG` → `termination.py:53`, `:80-83` →
+`mutation.py:5696-5706`), its own bucket, outside `mutation_pct`. A candidate
+that keeps working is ended by the per-candidate bound and reported
+`budget_exceeded` while more than that bound remains in the lane. If no more
+than the bound remains, the lane deadline can instead leave the attempt
+unclassified and end the lane `BUDGET_EXCEEDED`/`LANE_TIMEOUT`; see
+[SPEC S18.2](docs/SPEC.md#s18--implementation-gate-assay-backed).
+**That bound is a wall clock, and it is the interim**:
+assay's CPU-seconds-without-progress bound is design P4
+(`docs/design/no-time-budgets/DESIGN.md` S7.1), which replaces it when it ships.
+
+The cgroup observer is needed for the **candidate resource-limit evidence**
+every native R2 candidate is judged against (`mutation.py:3504-3505` calls
+`_read_candidate_resource_counters` (`:1704-1721`), and
+`mutation_store.py:4608` passes `observation_required=True`), not by liveness,
+which reads its own procfs sources (`/proc/<pid>/cgroup`, `mountinfo`, PSI,
+`cpu.stat`: `assay/src/assay/liveness_resources.py:124-164`).
+
+SPEC S18.2 states the change and the mechanism. The three candidates were
+replayed by hand against new behavioural tests in
+`ciu/tests/tests/test_ciu_235_dryrun_flush_and_helper_need.py`: the helper
+verdict (`helper_needed`) is read from a `plan_only` dry run whose target
+ownership the process can apply itself (the `REQUIRED` case stays pinned by
+`test_ciu_227_230_hostdir_preconditions.py`), and each dry-run line is asserted
+FLUSHED as emitted through a recording stdout that separates written from
+flushed text. Each mutation was applied alone and failed that test; the source
+tree is unchanged.
+
+**Assay-side findings (M2, M3 — recorded here, not fixed here, and moot for
+this lane now that it no longer uses the `"none"` spelling).** M2: nothing
+refuses or even WARNs when `budget_per_candidate = "none"` and this run's
+liveness cannot arm or enforce itself. The only refusal,
+`_refuse_unbounded_without_unit_bounds` (`assay/src/assay/config.py:2621`), runs
+only when the lane's top-level `budget` is `"unbounded"` (`:1942-1943`; the
+`"none"` arm is `:2733-2745`), and an inert or incomplete resource trace simply
+never certifies `hung` (`liveness.py:1969-1982`, `:2080`), with nothing on the
+verdict saying so (`judgment.r2.liveness` carries only
+`active`/`reason`/`plugin`/`cpu_window_s`/`idle_floor_s`,
+`assay/src/assay/verdict.py:3955-3960`). `"none"` plus an unusable liveness
+source was therefore a silently unbounded lane. M3: `None` also silently
+disabled the retry guard — `if budget_per_candidate_seconds is not None and
+remaining < budget_per_candidate_seconds: break` (`assay/src/assay/mutation.py:4814-4819`)
+— so a `crashed`/`hung` candidate was retried even with the lane budget nearly
+gone.
+
+**Close when.** A fresh R2 campaign on a released head with a slow-suite
+candidate records no `budget_exceeded` candidate that a test would have
+survived, and **no candidate was ended as `hung` or `STALLED` while it was
+working**; the last-candidate lane window (M2) and resumed campaigns' per-run
+bound (L2) are documented with the store evidence. Not a per-test deadline —
+that remains CIU-212.
