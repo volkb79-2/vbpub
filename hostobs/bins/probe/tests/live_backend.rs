@@ -437,7 +437,11 @@ fn cgroup_id_selects_one_row_by_all_keys_and_rejects_unpublished_keys() {
         1_003_000_000,
         2,
         selection(
-            vec![Sel::Inc(target_inc), Sel::Path(target.clone()), cgroup_id(&target)],
+            vec![
+                Sel::Inc(target_inc),
+                Sel::Path(target.clone()),
+                cgroup_id(&target),
+            ],
             &["cpu.usage_usec"],
         ),
     );
@@ -465,7 +469,7 @@ fn cgroup_id_selects_one_row_by_all_keys_and_rejects_unpublished_keys() {
             &["cpu.usage_usec"],
         ),
     );
-    assert!(rep.contains(r#""ok":true""#), "{rep}");
+    assert!(rep.contains(r#""ok":true"#), "{rep}");
     assert!(wrong_device.rows.is_empty());
 
     let outside_root = fixture_base().join("cgroupfs-files/state");
@@ -484,7 +488,7 @@ fn cgroup_id_selects_one_row_by_all_keys_and_rejects_unpublished_keys() {
             &["cpu.usage_usec"],
         ),
     );
-    assert!(rep.contains(r#""ok":true""#), "{rep}");
+    assert!(rep.contains(r#""ok":true"#), "{rep}");
     assert!(unpublished.rows.is_empty());
 
     let (unknown, rep) = current(
