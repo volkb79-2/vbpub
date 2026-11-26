@@ -9,8 +9,9 @@ what makes the Rust test that consumes them a cross-language check, and what mak
 ``docs/SEGMENT-FORMAT.md`` a specification rather than a description of the code.
 
 Every case is a whole segment file, ``<case>.seg``, with its decoded description in
-``<case>.json``. The payloads are real ``proto`` BLOCK frames taken from
-``fixtures/wire/`` so the store's payload check is exercised on genuine wire bytes.
+``<case>.json``. History payloads are real ``proto`` BLOCK frames; the events payload is a real
+``event/1`` EVT frame from ``fixtures/event/``; history BLOCK frames come from
+``fixtures/wire/``.
 
 Never edit ``.seg`` by hand: change the description here and regenerate.
 """
@@ -24,6 +25,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "fixtures" / "segment"
 WIRE = REPO / "fixtures" / "wire"
+EVENTS = REPO / "fixtures" / "event"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hostobs_segment_ref as segment  # noqa: E402
@@ -32,6 +34,11 @@ import hostobs_segment_ref as segment  # noqa: E402
 def wire(name: str) -> bytes:
     """One committed wire frame, used verbatim as a record payload."""
     return (WIRE / f"{name}.bin").read_bytes()
+
+
+def event(name: str) -> bytes:
+    """One committed stored event frame, used verbatim as a record payload."""
+    return (EVENTS / f"{name}.bin").read_bytes()
 
 
 def header(
@@ -124,7 +131,7 @@ def cases() -> dict[str, dict]:
                 {
                     "real_ns": 1_700_000_000_000_000_000,
                     "incarnations": [],
-                    "payload_hex": evt_frame().hex(),
+                    "payload_hex": event("event-minimal").hex(),
                 },
             ],
         },
@@ -150,34 +157,6 @@ def cases() -> dict[str, dict]:
             ],
         },
     }
-
-
-def evt_frame() -> bytes:
-    """A minimal well-formed ``proto`` EVT frame: the header and a section directory.
-
-    The store checks the four frame-header facts and nothing else; the section bodies are
-    ``proto``'s business. A header section is enough for the frame to be a real ``proto``
-    frame rather than a hand-made stub: the header body is 80 bytes and required.
-    """
-    sections = [(1, 1, 1, bytes(80))]
-    body = b"".join(payload for _, _, _, payload in sections)
-    directory = b""
-    for kind, version, flags, payload in sections:
-        directory += kind.to_bytes(2, "little")
-        directory += bytes((version, flags))
-        directory += len(payload).to_bytes(4, "little")
-    total = segment.FRAME_HEADER_LEN + 4 + len(directory) + len(body)
-    out = bytearray()
-    out += total.to_bytes(4, "little")
-    out += bytes((segment.FRAME_TYPES["evt"], segment.FRAME_FLAG_SECTIONED))
-    out += b"\x00\x00"
-    out += (1).to_bytes(4, "little")
-    out += len(sections).to_bytes(2, "little")
-    out += b"\x00\x00"
-    out += directory
-    out += body
-    assert len(out) == total, "the declared frame length is the encoded length"
-    return bytes(out)
 
 
 def main() -> int:
