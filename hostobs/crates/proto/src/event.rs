@@ -847,8 +847,7 @@ mod tests {
     fn fixture_spec(name: &str) -> Json {
         let path = format!("{FIXTURE_DIR}/{name}.json");
         let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
-        fixture_json::parse(&bytes)
-            .unwrap_or_else(|error| panic!("parse {path}: {error:?}"))
+        fixture_json::parse(&bytes).unwrap_or_else(|error| panic!("parse {path}: {error:?}"))
     }
 
     fn event_from_spec(spec: &Json) -> EventPayload {
@@ -885,7 +884,11 @@ mod tests {
             .expect("attrs array")
             .iter()
             .map(|entry| EventAttribute {
-                key: entry.field("key").as_str().expect("attribute key").to_string(),
+                key: entry
+                    .field("key")
+                    .as_str()
+                    .expect("attribute key")
+                    .to_string(),
                 value: entry
                     .field("value")
                     .as_str()
