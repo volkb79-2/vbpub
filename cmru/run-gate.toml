@@ -371,3 +371,8 @@ argv = [
 ]
 clean_tree = false
 budget = "3h"
+# RG-320/H1: SILENT BY CONSTRUCTION. run_release_gate.py relays the nested
+# installed-wheel-live lane, whose wheel build, venv install and offline render
+# are captured before the producer prints. No silence bound is measured for
+# that step; RG-326 tracks a real progress signal.
+stall_timeout = "3h"

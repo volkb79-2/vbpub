@@ -8810,15 +8810,10 @@ class StreamWatch:
     about and then silently inert).
 
     Same rule as both existing watches -- SILENCE, never total elapsed time
-    -- with the pressure pause `ProgressWatch` already applies: a host under
-    memory/IO pressure delays these bytes just as it delays a progress-file
-    write, so the clock must not charge a lane for host contention (the pause
-    is credited at most `PRESSURE_PAUSE_MAX_SECONDS` in total, so sustained
-    pressure still eventually stalls a genuinely wedged lane).
-    `LogStreamWatch` still has no pause; RG-320 does not add one there
-    because `docker logs -f` re-stamps every line with the CONTAINER's own
-    clock (RG-41 round 2), a domain in which this host's PSI reading means
-    nothing.
+    -- with `ProgressWatch`'s pressure pause. An AUTO bound pauses only for
+    host memory PSI (`full avg10 > 5`), capped at
+    `PRESSURE_PAUSE_MAX_SECONDS`; CPU contention and IO PSI alone never pause
+    the 300 s clock. Declared bounds do not pause.
 
     A child that BUFFERS its output is silent for its whole run and this
     watch cannot tell that apart from a hang; a lane that genuinely prints
@@ -17543,14 +17538,6 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None, *,
               f"after admission and lock waits)", flush=True)
     print_assay_lane_budget(lane)
     signal = lane_stall_signal(lane, command_signal)
-    if signal == "none":
-        # A sequence lane is a composition: its members carry the watches,
-        # and the sequence itself has no signal to judge (G2). Say so rather
-        # than staying silent about a lane nobody bounds at this level.
-        if lane.get("stall_timeout"):
-            print("run-gate: stall_timeout is inert on a sequence lane "
-                  "(each member carries its own watch)", flush=True)
-        return
     facts = stall_bound_facts(lane)
     where, source = _STALL_SIGNAL_TEXT[signal]
     enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
@@ -17634,9 +17621,6 @@ def record_stall_bound(run_record: dict | None, lane: dict, *,
     if run_record is None:
         return
     signal = lane_stall_signal(lane, command_signal)
-    if signal == "none":
-        run_record["stall_bound"] = None
-        return
     facts = stall_bound_facts(lane)
     run_record["stall_bound"] = {
         "seconds": (None if facts["seconds"] is None

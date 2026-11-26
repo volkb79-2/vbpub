@@ -1,4 +1,4 @@
-<!-- status: design (P1 SHIPPED in run-gate rev 75); scope: run-gate + assay + fleetd/host-runner; operator decision 2026-11-25, questions answered 2026-11-25 (§8) -->
+<!-- status: design (P1 SHIPPED in run-gate rev 77); scope: run-gate + assay + fleetd/host-runner; operator decision 2026-11-25, questions answered 2026-11-25 (§8) -->
 # Design: no constraining time budgets — progress and stall detection replace wall-time caps
 
 ## 0. The decision this document implements
@@ -54,7 +54,7 @@ ends a run with a verdict.
 | RG-5 | `stall_timeout` (assay lane) | `:1741-1769` (legal on both kinds), `ProgressWatch._idle_bound :16961-16979` | absent = auto bound | `ProgressWatch` from the progress file | `fail_infra` → `ERROR`, exit 2 (`:18207`, `:19875`, `:20359`) |
 | RG-6 | `stall_timeout` (command container lane) | `:1741-1769` (legal for both kinds), `LogStreamWatch :17212-17401` | absent = 300 s auto bound (P1) | log-line arrival age | `ERROR` exit 2, "STALLED" (`:18207`) |
 | RG-7 | auto idle bound (assay lane, no declared key) | `:743` (600 s post-command), `:16979` (`max(300, 3*cadence)`), `:752` (the 300 s floor) | 300 s floor | `ProgressWatch(auto_bound=True)` armed on container/exec/bare-host lanes (`:17962`, `:18044`, `:19628`, `:20125`) | `ERROR` exit 2 |
-| RG-8 | host-mode `stall_timeout` | was `:1443-1453`, `:2102-2105` — **CLOSED by P1 (run-gate rev 75)** | — | `StreamWatch` over the runner's own output stream; the RG-58 WARN and `doctor` 2d are retired with the fact they asserted | none left: the key is no longer inert anywhere |
+| RG-8 | host-mode `stall_timeout` | was `:1443-1453`, `:2102-2105` — **CLOSED by P1 (run-gate rev 77)** | — | `StreamWatch` over the runner's own output stream; the RG-58 WARN and `doctor` 2d are retired with the fact they asserted | none left: the key is no longer inert anywhere |
 | RG-9 | `lanes --check` outer/inner margin | `:217` (300 s), `:20133-20149` | 5 m | the check verb only | check finding (no run stops); `--strict` fails the estate-lint lane |
 | RG-10 | `lanes --check` canary attempt ≤ lane budget | `:20152-20168` | — | check verb only | finding |
 | RG-11 | admission wait | `:216`, `run_gate_admission.py` ticket | `10m` | `_admit_lane` | **not a stop**: WARN then proceeds (`:6766-6772`) |
@@ -173,8 +173,8 @@ Gaps where nothing reports progress today:
 
 | G | unit | gap | evidence |
 |---|---|---|---|
-| G1 | bare-host lane (and the `exec` command lane, same one-line runner) | **CLOSED by P1** — was: `stall_timeout` inert, no signal of any kind | shipped in run-gate rev 75: `OutputTee` chunk arrivals → `StreamWatch`; out-of-tree `host_mode_stall_timeout_inert_reason` is a labelled no-op |
-| G2 | sequence lane | no own watch; only leaves' watches apply — **BY DECISION, not fixed**: a sequence composes members, and a heartbeat of "did a member finish" cannot show progress. `stall_timeout` on a sequence is REFUSED by name, so no accepted-and-inert key is possible; its disclosure says "each member carries its own watch" and its run record writes `stall_bound: null` | `cmru/run-gate.toml:169` has one today (run-gate rev 75) |
+| G1 | bare-host lane (and the `exec` command lane, same one-line runner) | **CLOSED by P1** — was: `stall_timeout` inert, no signal of any kind | shipped in run-gate rev 77: `OutputTee` chunk arrivals → `StreamWatch`; out-of-tree `host_mode_stall_timeout_inert_reason` is a labelled no-op |
+| G2 | sequence lane | no own watch; only leaves' watches apply — **BY DECISION, not fixed**: a sequence composes members, and a heartbeat of "did a member finish" cannot show progress. `stall_timeout` on a sequence is REFUSED by name; the sequence validator returns before runner keys are read, so it has no runner disclosure or run-record stall bound | — |
 | G3 | canary probe | liveness is native-R2 only | verdict schema `schemas/verdict.schema.json:2538` |
 | G4 | cmru release/build step | watchdog sees output only | `runner.py:487-496` (`progress_paths=()`) |
 | G5 | remote-gate follower | no independent stall detection | RG-46, `run_gate.py:16916-16917` |
@@ -521,7 +521,7 @@ rule that decides when a cap may fall — a cap is removed only where a stall wa
 exists, and a lane that declares `unbounded` without that watch is refused by
 name.
 
-**P1 has since shipped** (run-gate rev 75, package `P1` in §5): every watchable
+**P1 has since shipped** (run-gate rev 77, package `P1` in §5): every watchable
 lane kind is armed with a stall bound. What P1 newly ARMED is the *command*
 kinds — the exec/bare-host runners that had no signal at all (RG-41's
 `LogStreamWatch` already covered a container command lane), and the flat 300 s

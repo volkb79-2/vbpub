@@ -1094,9 +1094,9 @@ Three choices, each of which had a plausible alternative:
   would otherwise hardcode the container signal — the exact class of silent
   wrong answer this project files as a false certification.
 - **Pressure pauses only an AUTO bound.** An auto bound is this tool's guess, so
-  a host under memory/IO pressure that delivers output late must not be charged
-  as the lane's silence; a declared number is the operator's own and is never
-  paused (the same rule `ProgressWatch` already followed).
+  host memory `full avg10` PSI above 5 pauses its silence clock; CPU contention
+  and IO PSI alone never do. A declared number is the operator's own and is
+  never paused (the same rule `ProgressWatch` already followed).
 
 What the default could not fix is stated rather than hidden: a child that blocks
 on its own stdout buffering is silent for its whole run under this definition of

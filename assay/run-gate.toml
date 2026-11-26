@@ -46,6 +46,11 @@ clean_tree = false
 # launch/wait/log/removal bounds, and the SQL runner's bounded wait. Keep a
 # further 20m for clone/startup/cleanup; test_self_lane.py derives these bounds.
 budget = "5h"
+# RG-320/H1: SILENT BY CONSTRUCTION. tester-unified-gate.sh runs `assay run`
+# in a container and relays `docker logs --follow`; the judged command output
+# is captured, so this phase can be silent for the whole run. No silence bound
+# is measured; RG-326 tracks a real progress signal.
+stall_timeout = "5h"
 
 # Pre-merge verification for tooling, lane-table and waiver-document changes.
 # It includes the three groups that escaped the 12.1.0 pre-merge set (the B105
@@ -221,6 +226,11 @@ clean_tree = true
 # the run fails and any verdict is untrusted. The timeout starts inside
 # tester-unified, so it excludes run-gate/container startup.
 budget = "8h"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "8h"
 artifacts = [
   ".assay/verdict-self-qualification.json",
   ".assay/progress-self-qualification.jsonl",
@@ -239,6 +249,11 @@ resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "75m"
 # This standalone preflight creates its own b105-pre-* campaign deadline.
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "75m"
 artifacts = [
   ".assay/verdict-self-qualification-preflight.json",
   ".assay/progress-self-qualification-preflight.jsonl",
@@ -262,6 +277,11 @@ exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "210m"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "210m"
 artifacts = [
   ".assay/verdict-self-qualification-provisional.json",
   ".assay/progress-self-qualification-provisional.jsonl",
@@ -310,6 +330,11 @@ exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "140m"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "140m"
 artifacts = [
   ".assay",
   ".assay/b110-pilot-plan.json",
@@ -349,6 +374,11 @@ exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "140m"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "140m"
 artifacts = [
   ".assay",
   ".assay/analysis-r2-pilot-plan.json",
@@ -375,6 +405,11 @@ exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "8h"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "8h"
 artifacts = [
   ".assay/b110-screen-plan.json",
   ".assay/verdict-b110-screen.json",

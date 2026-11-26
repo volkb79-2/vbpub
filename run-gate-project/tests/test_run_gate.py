@@ -22734,11 +22734,6 @@ class TestAutoStallBoundFacts:
         assert record["stall_bound"] == {
             "seconds": 300, "source": "auto", "signal": "output-stream",
             "rule": None}
-        # A kind with no watch records the ABSENCE, never a fabricated bound.
-        record["stall_bound"] = {"seconds": 1}
-        run_gate.record_stall_bound(record, {"kind": "sequence"})
-        assert record["stall_bound"] is None
-
     def test_an_assay_lane_records_the_rule_its_watch_enforces(self):
         """M1: the RECORD must not claim a number nothing enforces. An assay
         lane's watch derives its window at run time (`_idle_bound`), so the
@@ -43964,9 +43959,10 @@ class TestOutputTeeJoinTimeoutArgument:
 
 class TestLogStreamWatchPressurePause:
     """RG-320 (P1): `LogStreamWatch`'s AUTO bound pauses while the host is
-    under memory/IO pressure, credited at most `PRESSURE_PAUSE_MAX_SECONDS`
-    in total — the same rule `ProgressWatch` and `StreamWatch` already
-    follow, so a delayed `docker logs -f` line is not charged to the lane.
+    above the host memory PSI threshold (`full avg10 > 5`), credited at most
+    `PRESSURE_PAUSE_MAX_SECONDS` in total — the same rule `ProgressWatch` and
+    `StreamWatch` already follow. CPU contention and IO PSI alone do not pause
+    the clock.
 
     The pause is only ever credited for intervals the watch OBSERVED: it
     learns about pressure when it polls, and nothing earlier, so the one
@@ -44061,42 +44057,9 @@ class TestLogStreamWatchPressurePause:
         assert watch._paused_total == 0.0
 
 
-class TestPrintLaneBoundsCompositionAndUnknownSignal:
-    """RG-320 (P1): the two disclosures that are NOT a lane's own bound.
-
-    A sequence lane is a composition — its members carry the watches — so the
-    line either says `stall_timeout` is inert there (when one was declared and
-    a reader would otherwise expect it to bite) or says nothing at all. And a
-    lane whose signal this invocation cannot resolve gets a line that names
-    the BOUND but never wears a plausible stream name (M2)."""
-
-    def test_a_sequence_lane_declaring_a_bound_says_where_it_does_not_apply(
-            self, capsys):
-        run_gate.print_lane_bounds({"kind": "sequence", "stall_timeout": "15m",
-                                    "members": ["a", "b"]})
-        out = capsys.readouterr().out
-        assert "stall_timeout is inert on a sequence lane" in out
-        assert "each member carries its own watch" in out
-        # It never claims a bound of its own: the inert sentence is the whole
-        # disclosure for this lane.
-        assert "stall bound" not in out
-
-    def test_a_sequence_lane_declaring_nothing_prints_no_stall_line(
-            self, capsys):
-        run_gate.print_lane_bounds({"kind": "sequence", "members": ["a"]})
-        out = capsys.readouterr().out
-        assert "stall_timeout" not in out
-        assert "stall bound" not in out
-
-    def test_a_hard_budget_is_still_disclosed_on_a_sequence_lane(self,
-                                                                 capsys):
-        """The early return is about the STALL bound alone; the budget line
-        above it is a different fact and must survive."""
-        run_gate.print_lane_bounds({"kind": "sequence", "budget": "90m",
-                                    "stall_timeout": "15m"})
-        out = capsys.readouterr().out
-        assert "budget 90m (hard limit" in out
-        assert "stall_timeout is inert on a sequence lane" in out
+class TestPrintLaneBoundsUnknownSignal:
+    """RG-320 (P1): a lane whose signal this invocation cannot resolve gets a
+    bound disclosure but never wears a plausible stream name (M2)."""
 
     def test_an_unresolvable_signal_names_the_bound_not_a_stream(self, capsys):
         """M2: no `command_signal` and no stamped `_environment_mode` means
@@ -44169,7 +44132,7 @@ class TestExecLaneOutputStreamWatch:
 
             def wait(self, timeout=None):
                 self.wait_calls += 1
-                if timeout is not None and self.wait_calls == 1:
+                if timeout is not None and self.wait_calls <= 3:
                     raise subprocess.TimeoutExpired("docker exec", timeout)
                 return 0
 
@@ -44177,16 +44140,26 @@ class TestExecLaneOutputStreamWatch:
                 pass
 
         watch = Watch()
+        process = Process()
+        record = {}
         monkeypatch.setattr(run_gate, "make_output_stream_watch",
                             lambda *args, **kwargs: watch)
         assert self._exec_lane_call(
-            tmp_path, monkeypatch, ["true"], {},
-            popen_factory=lambda *args, **kwargs: Process()) == 0
+            tmp_path, monkeypatch, ["true"], record,
+            popen_factory=lambda *args, **kwargs: process) == 0
         # Dropped after the failure — never consulted again (a second poll
-        # would raise a second time and flood the log).
+        # would raise a second time and flood the log). Several fake waits
+        # time out first, so the process cannot exit before a second poll.
         assert watch.calls == 1
+        assert process.wait_calls == 4
         assert _has_flushed_print(
             streams, "stderr", "output-stream watch failed unexpectedly")
+        assert _has_flushed_print(
+            streams, "stdout", "stall bound 300s (source: auto)")
+        assert "its own output stream (output stream)" in "\n".join(
+            str(item) for item in streams["stdout"])
+        assert record["stall_bound"]["signal"] == \
+            run_gate.STALL_SIGNAL_OUTPUT_STREAM
 
     def test_a_stalled_stream_watch_stops_the_client_and_says_so(
             self, tmp_path, monkeypatch):

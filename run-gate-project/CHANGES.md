@@ -18,8 +18,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   (`max(300s, 3x its published cadence)`, 600 s post-command); for it P1 changed
   what is disclosed and recorded, not the number enforced. The bound, its source
   (`declared`/`auto`/`auto-derived`) and the signal it judges are disclosed on
-  the line and recorded as `stall_bound`; an AUTO bound (only) pauses under host
-  memory/IO pressure. No cap is removed and `budget = "unbounded"` is still
+  the line and recorded as `stall_bound`; an AUTO bound (only) pauses when host
+  memory `full avg10` PSI exceeds 5; CPU contention and IO PSI alone never pause
+  the clock. No cap is removed and `budget = "unbounded"` is still
   refused (that is P2).
 
 ### Changed
@@ -32,6 +33,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `stall_timeout` equal to their own budget (`assay` Rust R1/R2 and replay-pilot;
   `cmru` installed-wheel and installed-wheel-live), following RG-326 pending a
   real progress signal.
+- run-gate: `cmru` `release-gate` and seven `assay` wrapper lanes now declare
+  budget-length `stall_timeout` values because their nested/captured `assay run`
+  or `installed-wheel-live` steps can be silent; no silence bound is measured
+  yet (RG-320/H1, tracked by RG-326).
 - run-gate: `OutputTee.join()` now waits at most `OUTPUT_DRAIN_TIMEOUT_SECONDS`
   (5 s) and DISCLOSES an incomplete drain, instead of blocking until EOF on a
   lane's output pipe — a grandchild that outlived the terminated process group

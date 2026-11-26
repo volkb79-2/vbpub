@@ -2493,12 +2493,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     kind says `source: declared` and is NEVER paused by host pressure (it is
     the operator's own number). `stall_bound_facts(lane)` is the single
     derivation all three read, so the number, the source and the signal cannot
-    disagree. Where the kind has no signal at its own level, nothing is
-    claimed: a SEQUENCE lane's `record_stall_bound` writes `null` and its
-    disclosure prints `stall_timeout is inert on a sequence lane (each
-    member carries its own watch)` — the members' watches are the bound, and
-    `_validate_lane` still refuses the key there by name rather than
-    accepting an inert one. Nothing in this rule removes a cap: `budget`
+    disagree. A SEQUENCE lane has no runner-level signal and does not invoke
+    these runner disclosure or record helpers; its schema rejects runner keys
+    such as `stall_timeout`, while each member carries its own watch. Nothing
+    in this rule removes a cap: `budget`
     stays exactly as binding as it was (`R-40e`), and `budget = "unbounded"`
     is P2's, not this one. **One limit is stated here rather than buried:**
     the 300 s floor is NOT sound for a mutation shard whose SINGLE candidate

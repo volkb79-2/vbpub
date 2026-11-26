@@ -87,8 +87,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    times; an exec or bare-host command lane's own output stream (RG-320 added
    that signal — before it, a host/exec lane's `stall_timeout` loaded clean and
    did nothing); a SEQUENCE lane has none of its own, its members carry the
-   watches (`SPEC` `R-40i`). An AUTO bound (only) pauses under host memory/IO
-   pressure, exactly as `ProgressWatch` does
+   watches (`SPEC` `R-40i`). An AUTO bound (only) pauses when host memory
+   `full avg10` PSI exceeds 5; CPU contention and IO PSI alone never pause its
+   300 s clock, exactly as `ProgressWatch` does
    ([design rationale](docs/DESIGN-GUIDE.md#every-watchable-lane-is-bounded-and-which-signal-is-never-guessed-rg-320)).
    The documented shape for
    a mutation lane is a generous assay `budget` +
