@@ -10,9 +10,9 @@
 use std::path::{Path, PathBuf};
 
 use hostobs_kernel::cgroup::{
-    cgroup_dir, parse_cpu_max, parse_cpu_stat, parse_io_stat, parse_limit, parse_memory_events,
-    parse_memory_stat, parse_pressure, parse_single_u64, read_cgroup, DeviceTopology,
-    FixedTopology, PressureResource, UnknownTopology, CGROUP_FILES,
+    cgroup_dir, parse_cgroup_events, parse_cpu_max, parse_cpu_stat, parse_io_stat, parse_limit,
+    parse_memory_events, parse_memory_stat, parse_pressure, parse_single_u64, read_cgroup,
+    DeviceTopology, FixedTopology, KernelError, PressureResource, UnknownTopology, CGROUP_FILES,
 };
 use hostobs_kernel::fs::{Fs, MemFs, RealFs};
 use hostobs_kernel::quality::QualityCode;
@@ -143,6 +143,76 @@ fn memory_stat_and_events_keep_every_key_the_files_write() {
     for entry in local.entries() {
         assert!(entry.metric.starts_with("memevl."), "{}", entry.metric);
     }
+}
+
+#[test]
+fn freezer_state_parsers_read_zero_one_and_frozen_but_empty() {
+    let thawed = parse_single_u64("cgroup.freeze", &read("state/cgroup.freeze.zero"))
+        .expect("cgroup.freeze zero");
+    assert_eq!(thawed.u64(), Some(0));
+    let frozen = parse_single_u64("cgroup.freeze", &read("state/cgroup.freeze.one"))
+        .expect("cgroup.freeze one");
+    assert_eq!(frozen.u64(), Some(1));
+
+    let events = parse_cgroup_events(&read("state/cgroup.events.frozen-empty"), Bounds::POLICY)
+        .expect("cgroup.events frozen but empty");
+    assert_eq!(events.u64("cgevents.frozen"), Some(1));
+    assert_eq!(events.u64("cgevents.populated"), Some(0));
+}
+
+#[test]
+fn an_unparseable_cgroup_event_only_marks_its_metric_unreadable() {
+    let events = parse_cgroup_events(&read("state/cgroup.events.unparseable"), Bounds::POLICY)
+        .expect("valid keyed lines remain readable");
+    assert_eq!(
+        events.quality("cgevents.frozen"),
+        Some(QualityCode::Unreadable)
+    );
+    assert_eq!(events.u64("cgevents.frozen"), None, "no invented zero");
+    assert_eq!(events.u64("cgevents.populated"), Some(0));
+}
+
+#[test]
+fn a_missing_freezer_file_is_unsupported_and_not_a_measured_zero() {
+    let mut fs = MemFs::new();
+    fs.directory("/cg", 1);
+    let topology = FixedTopology::with_default(DeviceTopology::Bottom);
+    let snapshot = read_cgroup(&fs, Path::new("/cg"), Bounds::POLICY, &topology);
+
+    let failure = snapshot
+        .failure_of("cgroup.freeze")
+        .expect("missing freezer feature is recorded");
+    assert_eq!(failure, &KernelError::Absent(QualityCode::Unsupported));
+    assert_eq!(failure.quality(), QualityCode::Unsupported);
+    assert!(
+        snapshot.readings_of("cgroup.freeze").is_none(),
+        "an absent file cannot produce a measured zero"
+    );
+    assert_eq!(
+        snapshot
+            .failure_of("cgroup.events")
+            .map(KernelError::quality),
+        Some(QualityCode::Unsupported),
+        "cgroup.events is a kernel feature too"
+    );
+}
+
+#[test]
+fn cgroup_freeze_rejects_values_outside_zero_and_one() {
+    let mut fs = MemFs::new();
+    fs.directory("/cg", 1);
+    fs.file("/cg/cgroup.freeze", "2\n", 2);
+    let topology = FixedTopology::with_default(DeviceTopology::Bottom);
+    let snapshot = read_cgroup(&fs, Path::new("/cg"), Bounds::POLICY, &topology);
+
+    assert_eq!(
+        snapshot
+            .failure_of("cgroup.freeze")
+            .map(KernelError::quality),
+        Some(QualityCode::Unreadable),
+        "the kernel's boolean state is only zero or one"
+    );
+    assert!(snapshot.readings_of("cgroup.freeze").is_none());
 }
 
 #[test]

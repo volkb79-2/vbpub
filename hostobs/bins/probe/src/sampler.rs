@@ -55,6 +55,13 @@ impl std::error::Error for SamplerError {}
 
 type MetricMapping = (&'static str, &'static str, &'static str);
 const METRIC_MAPPINGS: &[MetricMapping] = &[
+    ("cgroup.freeze", "cgroup.freeze", "cgroup.freeze"),
+    ("cgroup.events", "cgevents.frozen", "cgevents.frozen"),
+    (
+        "cgroup.events",
+        "cgevents.populated",
+        "cgevents.populated",
+    ),
     ("cpu.stat", "cpu.usage_usec", "cpu.usage_usec"),
     ("cpu.stat", "cpu.user_usec", "cpu.user_usec"),
     ("cpu.stat", "cpu.system_usec", "cpu.system_usec"),
@@ -1030,6 +1037,32 @@ mod tests {
                 "{daemon} is root-row only"
             );
         }
+    }
+
+    #[test]
+    fn one_tick_publishes_freezer_state_as_u64_columns() {
+        let mut fs = MemFs::new();
+        fs.directory("/cg", 1);
+        fs.file("/cg/cgroup.freeze", "1\n", 2);
+        fs.file("/cg/cgroup.events", "populated 0\nfrozen 1\n", 3);
+
+        let mut sampler = sampler(fs, "/cg", 16, 64);
+        let tick = sampler.tick();
+        for name in ["cgroup.freeze", "cgevents.frozen", "cgevents.populated"] {
+            let (_, column) = tick.metric_column(name).expect("freezer metric column");
+            assert_eq!(
+                column.value_type,
+                hostobs_proto::dict::MetricValueType::U64,
+                "{name} is published as u64"
+            );
+        }
+        assert_eq!(value(&tick, "cgroup.freeze", 0), (1, Quality::Ok.code()));
+        assert_eq!(value(&tick, "cgevents.frozen", 0), (1, Quality::Ok.code()));
+        assert_eq!(
+            value(&tick, "cgevents.populated", 0),
+            (0, Quality::Ok.code()),
+            "a frozen but empty cgroup has a measured populated=0"
+        );
     }
 
     #[test]

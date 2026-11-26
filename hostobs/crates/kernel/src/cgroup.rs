@@ -1,4 +1,4 @@
-//! cgroupfs readers: `cpu.stat`, `memory.*`, `io.stat`, `pids.current`, PSI.
+//! cgroupfs readers: freezer state, `cpu.stat`, `memory.*`, `io.stat`, `pids.current`, PSI.
 //!
 //! This is the port of `topos/sampler/src/collect.rs` (`Ids::new`, `CG_FILES`,
 //! `read_cg`/`limit_vals`/`is_bottom`) with the behaviours plan v4 requires to change.
@@ -286,8 +286,8 @@ pub fn parse_cpu_stat(text: &[u8], bounds: Bounds) -> Result<Readings, KernelErr
 
 // ---------------------------------------------------------------- memory.current and friends
 
-/// Parse a single-number file (`memory.current`, `pids.current`, `memory.swap.current`,
-/// `memory.zswap.current`): one unsigned number, nothing else.
+/// Parse a single-number file (`cgroup.freeze`, `memory.current`, `pids.current`,
+/// `memory.swap.current`, `memory.zswap.current`): one unsigned number, nothing else.
 ///
 /// # Errors
 ///
@@ -386,6 +386,14 @@ pub fn parse_memory_events(
         }
     }
     Ok(readings)
+}
+
+/// Parse `cgroup.events` into its `cgevents.*` readings.
+///
+/// This uses the same keyed event parser as `memory.events`; an unparseable value is
+/// unreadable only for the metric named by that line.
+pub fn parse_cgroup_events(text: &[u8], bounds: Bounds) -> Result<Readings, KernelError> {
+    parse_memory_events("cgevents.", "cgroup.events", text, bounds)
 }
 
 // ---------------------------------------------------------------- io.stat
@@ -857,7 +865,9 @@ pub fn read_file_error(error: FsError, absent: Absence) -> KernelError {
 }
 
 /// The cgroup files one pass reads, with their absence semantics.
-pub const CGROUP_FILES: [(&str, Absence); 11] = [
+pub const CGROUP_FILES: [(&str, Absence); 13] = [
+    ("cgroup.events", Absence::Feature),
+    ("cgroup.freeze", Absence::Feature),
     ("cpu.stat", Absence::Controller),
     ("cpu.max", Absence::Controller),
     ("cpu.weight", Absence::Controller),
@@ -934,6 +944,19 @@ fn parse_cgroup_file(
     topology: &dyn TopologySource,
 ) -> Result<Readings, KernelError> {
     match file {
+        "cgroup.events" => parse_cgroup_events(bytes, bounds),
+        "cgroup.freeze" => {
+            let reading = parse_single_u64("cgroup.freeze", bytes)?;
+            if !matches!(reading.u64(), Some(0 | 1)) {
+                return Err(KernelError::Parse {
+                    file: "cgroup.freeze",
+                    line: None,
+                });
+            }
+            let mut readings = Readings::new();
+            readings.push("cgroup.freeze", reading);
+            Ok(readings)
+        }
         "cpu.stat" => parse_cpu_stat(bytes, bounds),
         "cpu.max" => {
             let limit = parse_cpu_max(bytes)?;
