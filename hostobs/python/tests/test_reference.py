@@ -515,6 +515,158 @@ class WireFixtures(unittest.TestCase):
         self.assertTrue(all(not entry["measurement"] for entry in vocabulary["codes"][1:]))
 
 
+class EventPayloadFixtures(unittest.TestCase):
+    def test_event_fixtures_round_trip_and_pin_each_refusal(self):
+        paths = sorted(FIXTURES.glob("event-*.json"))
+        self.assertEqual(len(paths), 7)
+        expected = {
+            "event-unknown-code": "event-unknown-code",
+            "event-overflow": "event-field-bound",
+            "event-unsorted-attrs": "event-order",
+            "event-control-text": "event-text",
+        }
+        for spec_path in paths:
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            frame = spec_path.with_suffix(".bin").read_bytes()
+            body = hostobs_wire_ref.event_body_from_frame(frame)
+            with self.subTest(case=spec_path.stem):
+                if spec_path.stem in expected:
+                    self.assertEqual(spec["expect_error"]["kind"], expected[spec_path.stem])
+                    with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+                        hostobs_wire_ref.decode_event_payload(body)
+                    self.assertEqual(caught.exception.as_dict()["kind"], expected[spec_path.stem])
+                    continue
+                self.assertEqual(hostobs_wire_ref.encode_event_frame(spec["event"]), frame)
+                self.assertEqual(hostobs_wire_ref.encode_event_payload(spec["event"]), body)
+                self.assertEqual(hostobs_wire_ref.decode_event_payload(body), spec["event"])
+
+    def test_event_body_boundaries_and_truncation_are_typed(self):
+        full = json.loads((FIXTURES / "event-full.json").read_text(encoding="utf-8"))["event"]
+        full_frame = (FIXTURES / "event-full.bin").read_bytes()
+        body = hostobs_wire_ref.event_body_from_frame(full_frame)
+        self.assertEqual(hostobs_wire_ref.decode_event_payload(body), full)
+
+        for end in range(len(body)):
+            with self.subTest(prefix=end), self.assertRaises(hostobs_wire_ref.WireError) as caught:
+                hostobs_wire_ref.decode_event_payload(body[:end])
+            expected = "truncated" if end < 48 else "section-length"
+            self.assertEqual(caught.exception.as_dict()["kind"], expected)
+
+        minimal = json.loads(
+            (FIXTURES / "event-minimal.json").read_text(encoding="utf-8")
+        )["event"]
+        minimal_body = hostobs_wire_ref.encode_event_payload(minimal)
+        self.assertEqual(hostobs_wire_ref.decode_event_payload(minimal_body), minimal)
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(minimal_body + bytes(8))
+        self.assertEqual(caught.exception.as_dict()["kind"], "section-length")
+
+        for offset in (45, len(minimal_body) - 1):
+            corrupt = bytearray(minimal_body)
+            corrupt[offset] = 1
+            with self.subTest(reserved_offset=offset), self.assertRaises(
+                hostobs_wire_ref.WireError
+            ) as caught:
+                hostobs_wire_ref.decode_event_payload(bytes(corrupt))
+            self.assertEqual(caught.exception.as_dict()["kind"], "non-zero-reserved")
+
+    def test_event_code_bounds_text_and_order_match_the_rust_kinds(self):
+        point = json.loads(
+            (FIXTURES / "event-point-ctx.json").read_text(encoding="utf-8")
+        )["event"]
+        body = bytearray(hostobs_wire_ref.encode_event_payload(point))
+        for offset, value in ((40, 4), (41, 8)):
+            corrupt = bytearray(body)
+            corrupt[offset] = value
+            with self.subTest(code_offset=offset), self.assertRaises(
+                hostobs_wire_ref.WireError
+            ) as caught:
+                hostobs_wire_ref.decode_event_payload(bytes(corrupt))
+            self.assertEqual(caught.exception.as_dict()["kind"], "event-unknown-code")
+
+        unknown_pair = bytearray(body)
+        unknown_pair[40] = 1
+        unknown_pair[41] = 1
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(unknown_pair))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-unknown-code")
+
+        unknown_ctx = bytearray(body)
+        unknown_ctx[80] = 5
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(unknown_ctx))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-unknown-code")
+
+        bad_order = bytearray(body)
+        bad_order[80], bad_order[88] = bad_order[88], bad_order[80]
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(bad_order))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-order")
+
+        bad_text = bytearray(body)
+        bad_text[50] = 0xFF
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(bad_text))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-text")
+
+        out_of_bound = dict(point)
+        out_of_bound["span"] = 1
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.encode_event_payload(out_of_bound)
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
+
+        full_frame = (FIXTURES / "event-full.bin").read_bytes()
+        full_body = hostobs_wire_ref.event_body_from_frame(full_frame)
+        _, _, _, attrs_start, content_end = hostobs_wire_ref._event_layout(full_body)
+        key_length = struct.unpack_from("<H", full_body, attrs_start)[0]
+        value_length_offset = attrs_start + 2 + key_length
+        value_start = value_length_offset + 2
+        value_end = value_start + struct.unpack_from("<H", full_body, value_length_offset)[0]
+        oversized_value = bytearray(full_body[:content_end])
+        oversized_value[value_end:value_end] = b"v" * 257
+        struct.pack_into("<H", oversized_value, value_length_offset, 257)
+        oversized_value.extend(bytes(-len(oversized_value) % 8))
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(oversized_value))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
+
+    def test_section_seven_stays_unknown_to_blocks_and_evt_sectioned_stays_non_socket(self):
+        event_frame = (FIXTURES / "event-minimal.bin").read_bytes()
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_frame(event_frame)
+        self.assertEqual(caught.exception.as_dict()["kind"], "unknown-frame-flags")
+        self.assertEqual(hostobs_wire_ref.SECTION_KINDS_BY_CODE.get(7), None)
+
+        body = hostobs_wire_ref.event_body_from_frame(event_frame)
+
+        def block_with_event(section_flags: int) -> bytes:
+            header = bytes(80)
+            directory = struct.pack("<HBBI", 1, 1, 1, len(header)) + struct.pack(
+                "<HBBI", 7, 1, section_flags, len(body)
+            )
+            payload = header + body
+            total = 12 + 4 + len(directory) + len(payload)
+            return (
+                struct.pack(
+                    "<IBBHI",
+                    total,
+                    hostobs_wire_ref.FRAME_TYPES["block"],
+                    hostobs_wire_ref.FRAME_SECTIONED,
+                    0,
+                    0,
+                )
+                + struct.pack("<HH", 2, 0)
+                + directory
+                + payload
+            )
+
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_frame(block_with_event(1))
+        self.assertEqual(caught.exception.as_dict()["kind"], "unsupported-required-section")
+        decoded = hostobs_wire_ref.decode_frame(block_with_event(0))
+        self.assertEqual(decoded["skipped"], [7])
+
+
 class RateFixtures(unittest.TestCase):
     def test_every_hand_computed_case_is_reproduced(self):
         cases = json.loads((RATES / "rates.json").read_text(encoding="utf-8"))["cases"]

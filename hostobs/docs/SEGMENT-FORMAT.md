@@ -170,7 +170,7 @@ ids become unreachable at exactly the moment its bytes do.
 | `kind` | 1 | `history`: sampled column blocks (hot, warm, cold, focus tiers) |
 | | 2 | `events`: typed events and spans |
 | `payload` | 1 | the payload is a `proto` BLOCK frame (frame type 5) |
-| | 2 | the payload is a `proto` EVT frame (frame type 3) |
+| | 2 | the payload is a `proto` EVT frame (frame type 3) with the single required kind-7 `event/1` section (§3.11) |
 
 `kind` and `payload` must agree, in both directions, and are checked on encode *and* on decode: a
 history segment can never declare an events payload, and a record's kind must be the one its
@@ -336,7 +336,7 @@ removes what it can prove it wrote. "Could not determine what this file is" is n
 | `open-history` | two block records, no footer, two incarnations |
 | `sealed-history` | three records and the footer that closes them, two payload shapes |
 | `sealed-empty` | a sealed segment with no records: count 0, offsets at the header |
-| `open-events` | the events corpus: one EVT record, `kind = events` |
+| `open-events` | the events corpus: one `event/1` EVT record carrying `event-minimal` |
 | `open-second-generation` | a later epoch and dictionary generation, four ids |
 
 Regenerate with `python3 python/reference/make_segment_fixtures.py` from `hostobs/`.

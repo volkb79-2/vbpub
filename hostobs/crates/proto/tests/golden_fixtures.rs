@@ -53,7 +53,9 @@ fn fixture_names() -> Vec<String> {
         .unwrap_or_else(|error| panic!("read {FIXTURE_DIR}: {error}"))
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.ends_with(".json") && name != "quality.json")
+        .filter(|name| {
+            name.ends_with(".json") && name != "quality.json" && !name.starts_with("event-")
+        })
         .map(|name| name.trim_end_matches(".json").to_string())
         .collect();
     names.sort();

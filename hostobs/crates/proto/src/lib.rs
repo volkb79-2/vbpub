@@ -93,6 +93,7 @@
 pub mod dict;
 pub mod envelope;
 pub mod error;
+pub mod event;
 pub mod frame;
 pub mod quality;
 pub mod read;

@@ -1234,6 +1234,171 @@ def build(name: str, frame: dict, edits: object) -> tuple[bytes, dict | None]:
     raise SystemExit(f"unknown edit {edits!r} for case {name}")
 
 
+def event_minimal() -> dict:
+    return {
+        "t_mono_ns": 0,
+        "span": 0,
+        "peer_dev": 0,
+        "peer_inode": 0,
+        "uid": 0,
+        "peer_pid": 0,
+        "kind": 3,
+        "outcome": 0,
+        "inferred": False,
+        "ctx": [],
+        "attrs": [],
+        "name": "a",
+        "key": "k",
+        "code": None,
+        "comm": None,
+    }
+
+
+def event_full() -> dict:
+    return {
+        "t_mono_ns": (1 << 63) - 1,
+        "span": (1 << 64) - 1,
+        "peer_dev": 1,
+        "peer_inode": (1 << 64) - 1,
+        "uid": (1 << 32) - 1,
+        "peer_pid": (1 << 32) - 1,
+        "kind": 2,
+        "outcome": 7,
+        "inferred": True,
+        "ctx": [{"key": key, "value": "x" * 128} for key in range(5)],
+        "attrs": [
+            {
+                "key": chr(key),
+                "value": "" if key == ord("a") else "v" * 256,
+            }
+            for key in range(ord("a"), ord("i"))
+        ],
+        "name": "n" * 64,
+        "key": "k" * 64,
+        "code": "c" * 64,
+        "comm": "m" * 15,
+    }
+
+
+def event_point_ctx() -> dict:
+    return {
+        "t_mono_ns": 1,
+        "span": 0,
+        "peer_dev": 0,
+        "peer_inode": 0,
+        "uid": 1000,
+        "peer_pid": 42,
+        "kind": 3,
+        "outcome": 0,
+        "inferred": False,
+        "ctx": [
+            {"key": 0, "value": "run-1"},
+            {"key": 4, "value": "session-1"},
+        ],
+        "attrs": [],
+        "name": "run.point",
+        "key": "run.point",
+        "code": None,
+        "comm": "worker",
+    }
+
+
+def raw_event_frame(body: bytes) -> bytes:
+    total = 24 + len(body)
+    return (
+        struct.pack("<IBBHI", total, wire.FRAME_TYPES["evt"], wire.FRAME_SECTIONED, 0, 0)
+        + struct.pack(
+            "<HHHBBI",
+            1,
+            0,
+            wire.EVENT_SECTION_KIND,
+            wire.EVENT_SECTION_VERSION,
+            wire.EVENT_SECTION_REQUIRED_FLAGS,
+            len(body),
+        )
+        + body
+    )
+
+
+def corrupt_event_body(event: dict, operation: str) -> bytes:
+    body = bytearray(wire.encode_event_payload(event))
+    if operation == "unknown-kind":
+        body[40] = 4
+        return bytes(body)
+    if operation == "control-name":
+        body[50] = 1
+        return bytes(body)
+
+    offset = 48
+    for _ in range(4):
+        length = struct.unpack_from("<H", body, offset)[0]
+        offset += 2 + length
+    for _ in event["ctx"]:
+        length = struct.unpack_from("<H", body, offset + 1)[0]
+        offset += 3 + length
+    attrs = []
+    for _ in event["attrs"]:
+        start = offset
+        key_length = struct.unpack_from("<H", body, offset)[0]
+        offset += 2 + key_length
+        value_length = struct.unpack_from("<H", body, offset)[0]
+        offset += 2 + value_length
+        attrs.append((start, offset))
+
+    if operation == "unsorted-attrs":
+        first_start, first_end = attrs[0]
+        second_start, second_end = attrs[1]
+        return bytes(
+            body[:first_start]
+            + body[second_start:second_end]
+            + body[first_start:first_end]
+            + body[second_end:]
+        )
+    if operation == "nine-attrs":
+        raw = bytearray(body[:offset])
+        raw.extend(struct.pack("<H", 1) + b"i" + struct.pack("<H", 0))
+        raw[44] = 9
+        raw.extend(b"\x00" * (-len(raw) % 8))
+        return bytes(raw)
+    raise SystemExit(f"unknown event corruption {operation!r}")
+
+
+def write_event_fixtures(out: Path) -> list[tuple[str, int, str | None]]:
+    minimum = event_minimal()
+    full = event_full()
+    point_ctx = event_point_ctx()
+    cases = [
+        ("event-minimal", minimum, None, None),
+        ("event-full", full, None, None),
+        ("event-point-ctx", point_ctx, None, None),
+        ("event-unknown-code", minimum, "unknown-kind", "event-unknown-code"),
+        ("event-overflow", full, "nine-attrs", "event-field-bound"),
+        ("event-unsorted-attrs", full, "unsorted-attrs", "event-order"),
+        ("event-control-text", full, "control-name", "event-text"),
+    ]
+    written = []
+    for name, event, operation, refusal in cases:
+        if operation is None:
+            data = wire.encode_event_frame(event)
+        else:
+            data = raw_event_frame(corrupt_event_body(event, operation))
+        document = {
+            "case": name,
+            "doc": "event/1 body fixture generated from the independent Python codec",
+            "event": event,
+        }
+        if operation is not None:
+            document["corrupt"] = {"operation": operation}
+            document["expect_error"] = {"kind": refusal}
+        (out / f"{name}.json").write_text(
+            json.dumps(document, indent=2, sort_keys=False, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        (out / f"{name}.bin").write_bytes(data)
+        written.append((name, len(data), refusal))
+    return written
+
+
 def main() -> int:
     out = Path(OUT)
     out.mkdir(parents=True, exist_ok=True)
@@ -1266,10 +1431,17 @@ def main() -> int:
     (out / "quality.json").write_text(
         json.dumps(vocabulary, indent=2) + "\n", encoding="utf-8"
     )
+    event_written = write_event_fixtures(out)
     for name, size, refusal in written:
         detail = "refusal" if refusal else "valid"
         print(f"{name}.bin: {size} bytes ({detail})")
-    print(f"wrote {len(written)} fixtures plus quality.json into {out}")
+    for name, size, refusal in event_written:
+        detail = "refusal" if refusal else "valid"
+        print(f"{name}.bin: {size} bytes ({detail})")
+    print(
+        f"wrote {len(written)} block fixtures and {len(event_written)} event fixtures "
+        f"plus quality.json into {out}"
+    )
     return 0
 
 

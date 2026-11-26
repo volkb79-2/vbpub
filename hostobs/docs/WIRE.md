@@ -220,7 +220,8 @@ is a measurement. Codes are append-only and announced in `hello.quality_codes`.
 
 3.10 **Decoder error kinds** are the `ProtoError::kind()` names (`ProtoError::kind`), e.g.
 `truncated`, `oversized-frame`, `section-order`, `stale-dictionary-generation`,
-`aggregation-not-permitted`, `subject-without-time` (46 kinds in all: `deadline` is the reader's
+`aggregation-not-permitted`, `subject-without-time`, `event-unknown-code`, `event-field-bound`,
+`event-text`, `event-order` (50 kinds in all: `deadline` is the reader's
 completion-age kind, `generation-regressed` the stream layer's, §6.2). They are local outcomes
 (fixtures `expect_error.kind`), never sent on the wire; §5.2 maps the reader's ones to wire codes.
 There are exactly two vocabularies: wire codes (§10, sent) and decoder kinds (local). Client APIs
@@ -273,6 +274,32 @@ reserved word names the type; bad flags and a reserved word name the flags.
 rules (passes 1 to 8) and by pass 10, whose mask is the column's own kind's. It has no generation or
 reference judgement: that belongs to the stream layer, which always has a held dictionary or knows it
 has none (`HOB-54`, §6.1).
+
+3.11 **Event payload (stored only).** The events corpus stores each event as one frame: header
+`type 3`, `flags 0x01`, reserved 0, `corr 0`, `len` a multiple of 8, then the §3.1 directory with
+`n_sec 1`: kind 7, ver 1, flags `0x01` (required). It never crosses a socket (§2.1 keeps
+EVT+SECTIONED `unknown-frame-flags`). In a BLOCK, kind 7 is an unknown kind (§3.2). Body, LE:
+- @0 i64 `t_mono_ns` ≥ 0; @8 u64 `span` (0 iff `point`); @16 u64 `peer_dev`, @24 u64
+  `peer_inode` (both 0 = `null`, else both ≠ 0); @32 u32 `uid`; @36 u32 `peer_pid` (0 = `null`).
+- @40 u8 `kind` 1..3; @41 u8 `outcome` 0..7 (0 iff kind ≠ end); @42 u8 flags (bit0 `inferred`,
+  bits 1-7 zero); @43 u8 `n_ctx` 0..5; @44 u8 `n_attrs` 0..8; @45 u8 and @46 u16 reserved 0.
+- @48 four strings, each `u16 len` + UTF-8: `name` 1..64 (grammar), `key` 1..64, `code` 0..64
+  (0 = `null`), `comm` 0..15 (0 = `null`).
+- Then `n_ctx` × (u8 key 0..4, u16 len 1..128, text), with keys strictly ascending.
+- Then `n_attrs` × (u16 klen 1..64 name-grammar key, key, u16 vlen 0..256, value), with bytewise
+  keys strictly ascending.
+- Then zero pad under 8 B. Text is valid UTF-8 without U+0000-U+001F or U+007F. `issuer` renders
+  as `uid:<uid>`; it is derived and not stored.
+
+The event body decoder judges kinds in this order: `truncated` (context "event body");
+`section-length` (fields end past the section length, or padding is 8 B or more);
+`non-zero-reserved` (reserved bytes or padding); `event-unknown-code` (`kind`, `outcome`, context
+key, or outcome/kind pairing); `event-field-bound` (count, length, span/kind, or half-null peer);
+`event-text` (UTF-8, control character, or name grammar); `event-order` (unsorted or duplicate
+context or attribute keys). These four `event-*` kinds are decoder outcomes local to §3.10 and
+are never wire error codes (§10).
+The event fixture set is `event-minimal`, `event-full`, `event-point-ctx`,
+`event-unknown-code`, `event-overflow`, `event-unsorted-attrs`, and `event-control-text`.
 
 ## 4. Requests and replies
 
