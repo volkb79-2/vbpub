@@ -81,51 +81,65 @@ are never folded into numeric zero.
 
 ## Part (b): Debian VM/systemd outline
 
-Install `/usr/local/bin/hostobs-probe`, `/etc/hostobs/hostobsd.toml`, the three
-units from [`deploy/systemd/`](../deploy/systemd/), and
-[`deploy/tmpfiles.d/hostobs.conf`](../deploy/tmpfiles.d/hostobs.conf) as
-`/etc/tmpfiles.d/hostobs.conf`. The socket paths and modes from plan v4 §A.2 are:
+Follow these steps in order, for a fresh install and for an upgrade.
+
+The three socket units and the `levels` list in `hostobsd.toml` are one set.
+Install all of them. If a configured level has no socket, or a passed socket has
+no configured level, the probe exits 2 before it serves anything, so every level
+stops, and `RestartPreventExitStatus=2` keeps it stopped until an operator acts
+(`systemctl status hostobs-probe.service` shows the refusal).
+
+**1. Install the files.** `/usr/local/bin/hostobs-probe`,
+`/etc/hostobs/hostobsd.toml`, all four units from
+[`deploy/systemd/`](../deploy/systemd/) (three socket units and the service
+unit), and [`deploy/tmpfiles.d/hostobs.conf`](../deploy/tmpfiles.d/hostobs.conf)
+as `/etc/tmpfiles.d/hostobs.conf`. The socket paths and modes from plan v4 §A.2
+are:
 
 - `/run/hostobs`, directory `root:root 0755`;
 - `/run/hostobs/observe/hostobs.sock`, directory `root:hostobs-observe 0750`,
   socket `root:hostobs-observe 0660`;
 - `/run/hostobs/operator/hostobs.sock`, directory `root:hostobs-operator 0750`,
-  socket `root:hostobs-operator 0660`.
+  socket `root:hostobs-operator 0660`;
+- `/run/hostobs/observer/hostobs.sock`, directory `root:hostobs-observer 0750`,
+  socket `root:hostobs-observer 0660`.
 
 The directory ownership comes from the tmpfiles file, not systemd's
 `DirectoryMode=`: when the socket unit creates a missing parent itself, systemd
-uses `root:root` and ignores the `SocketGroup=` for that directory. Both socket
-units order after `systemd-tmpfiles-setup.service` so boot-time creation happens
-first.
+uses `root:root` and ignores the `SocketGroup=` for that directory. All three
+socket units order after `systemd-tmpfiles-setup.service` so boot-time creation
+happens first.
 
-Create the service user and access groups as part (b)'s setup, not in a
-committed sysusers file:
+**2. Create the service user and the three access groups.** This is part of
+setup, not a committed sysusers file:
 
 - service user `hostobs`, primary group `hostobs` (no login shell, no home
   needed by this slice);
-- access groups `hostobs-observe` and `hostobs-operator`;
-- all three group IDs are distinct and neither 0 nor the host's Docker GID.
+- access groups `hostobs-observe`, `hostobs-operator` and `hostobs-observer`;
+- all four group IDs are distinct and neither 0 nor the host's Docker GID.
   Prefer an allocator such as `systemd-sysusers` that assigns system IDs; if
   `groupadd`/`useradd` are used, verify the resulting numbers with `getent`.
 
-Add only the intended human or service identities to `hostobs-observe` or
-`hostobs-operator`; group membership is the access-control boundary. The probe
-runs as `hostobs` and never binds the sockets itself: systemd passes the two
-root-owned listening fds by their `FileDescriptorName`.
+Add only the intended human or service identities to the three access groups;
+group membership is the access-control boundary. The probe runs as `hostobs` and
+never binds the sockets itself: systemd passes the three root-owned listening
+fds by their `FileDescriptorName`.
 
-After the users and groups exist, create the directories and enable the socket
-units:
+**3. Create the directories, then restart the sockets and the probe.** All three
+groups must exist first: `systemd-tmpfiles` fails on a line whose group is
+unknown and does not create that directory.
 
 ```sh
 systemd-tmpfiles --create /etc/tmpfiles.d/hostobs.conf
 systemctl daemon-reload
-systemctl enable --now hostobs-observe.socket hostobs-operator.socket
+systemctl stop hostobs-observe.socket hostobs-operator.socket hostobs-observer.socket hostobs-probe.service
+systemctl enable --now hostobs-observe.socket hostobs-operator.socket hostobs-observer.socket
+systemctl start hostobs-probe.service
 ```
 
-Create `hostobs-observer` by the same system-group procedure above, with a GID
-distinct from `hostobs`, `hostobs-observe`, `hostobs-operator`, 0 and the host's
-Docker GID. Add only intended observer clients to it, and add
-`hostobs-observer.socket` to the `systemctl enable --now` command above.
+The `stop` matters on an upgrade. A running probe keeps the sockets it was
+started with, and systemd refuses to start a socket unit while its service is
+active.
 
 For a 60-second observe check, run the same example installed as
 `/usr/local/bin/hostobs-watch` from an identity in the `hostobs-observe` group.

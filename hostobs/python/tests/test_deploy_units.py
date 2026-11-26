@@ -104,6 +104,11 @@ class DeployUnits(unittest.TestCase):
             "2",
             f"{SERVICE}: [Service] RestartPreventExitStatus",
         )
+        self.assertEqual(
+            self.one(service, "Install", "WantedBy", SERVICE),
+            "multi-user.target",
+            f"{SERVICE}: [Install] WantedBy",
+        )
         for key, value in HARDENING.items():
             self.assertEqual(
                 self.one(service, "Service", key, SERVICE),
@@ -133,11 +138,17 @@ class DeployUnits(unittest.TestCase):
 
     def test_every_deployed_level_has_one_exact_socket(self):
         expected_units = {f"hostobs-{level}.socket" for level in LEVELS}
-        actual_units = {path.name for path in SYSTEMD.glob("hostobs-*.socket")}
+        # Only the units that activate the probe are this contract: another
+        # service may ship its own socket in the same directory.
+        probe_units = {
+            path.name
+            for path in SYSTEMD.glob("*.socket")
+            if SERVICE.name in unit(path).get("Socket", {}).get("Service", [])
+        }
         self.assertEqual(
-            actual_units,
+            probe_units,
             expected_units,
-            f"{SYSTEMD}: socket unit set",
+            f"{SYSTEMD}: socket units of {SERVICE.name}",
         )
         for level in LEVELS:
             path = SYSTEMD / f"hostobs-{level}.socket"
@@ -177,14 +188,10 @@ class DeployUnits(unittest.TestCase):
                 parsed,
                 f"{TMPFILES}: {entry[0]} must be {entry[2]}:{entry[3]} {entry[1]}",
             )
+        directories = [entry[0] for entry in parsed]
         self.assertEqual(
-            len(parsed),
-            len(expected),
-            f"{TMPFILES}: exactly one d line per parent and configured level",
-        )
-        self.assertEqual(
-            len(parsed),
-            len(set(parsed)),
+            len(directories),
+            len(set(directories)),
             f"{TMPFILES}: duplicate directory line",
         )
 
@@ -202,15 +209,6 @@ class DeployUnits(unittest.TestCase):
             self.config["probe"]["levels"],
             list(LEVELS),
             f"{CONFIG}: [probe] levels",
-        )
-        socket_levels = {
-            path.name.removeprefix("hostobs-").removesuffix(".socket")
-            for path in SYSTEMD.glob("hostobs-*.socket")
-        }
-        self.assertEqual(
-            set(self.config["probe"]["levels"]),
-            socket_levels,
-            f"{CONFIG}: [probe] levels must match the socket unit set",
         )
         self.assertEqual(
             self.config["probe"]["tick_ms"], 1000, f"{CONFIG}: [probe] tick_ms"

@@ -504,6 +504,16 @@ max_rows = 1024
     }
 
     #[test]
+    fn the_shipped_configuration_is_accepted_and_serves_the_three_probe_levels() {
+        let config = parse(include_str!("../../../deploy/hostobsd.toml"))
+            .expect("deploy/hostobsd.toml");
+        assert_eq!(
+            config.levels,
+            vec![Level::Observe, Level::Operator, Level::Observer]
+        );
+    }
+
+    #[test]
     fn the_documented_example_parses_and_sets_only_the_two_probe_wide_keys() {
         let config = parse(EXAMPLE).expect("example configuration");
         assert_eq!(
