@@ -11,3 +11,6 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/scripts/telegram && \"$TESTER_VENV/bin/python\" -m pytest tests/ -q"]
 budget = "2m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during pytest -q; no <=300s output
+# cadence is guaranteed by every test; no bound is measured; see RG-326.
+stall_timeout = "2m"

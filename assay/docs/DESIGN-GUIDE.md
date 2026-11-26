@@ -995,6 +995,10 @@ test pins the pre-first-fork window by holding the heartbeat inside its own
 trap builtin, and a third pins the opposite direction: the trap still kills the
 live sleep the loop is waiting on, so the pipe is not held for an interval.
 
+The trap reads `jobs -p` through process substitution and has no fork-free fallback
+or cleanup path if that fork cannot start. In that case, a live `sleep` can survive
+until its current interval ends (up to 1500 s).
+
 A wrapper killed by `SIGKILL` cannot stop that heartbeat, so the loop's own
 `kill -0 "$parent_pid"` guard is the fallback: it ends the loop within one
 iteration, which means at most one more line can reach the caller's still-open

@@ -31,6 +31,9 @@
 
 use std::collections::BTreeMap;
 
+use hostobs_proto::error::ProtoError;
+use hostobs_proto::event::{EventAttribute, EventContext, EventPayload};
+
 use crate::error::StoreError;
 use crate::format::TierKind;
 use crate::queue::Job;
@@ -55,6 +58,67 @@ pub const MAX_OPEN_SPANS: usize = 4096;
 /// The largest event RAM ring the configuration accepts (the plan's proposal is 4 MiB, well
 /// under the 64 MiB events cap).
 pub const MAX_RING_BYTES: u64 = 1 << 30;
+
+/// One of the five event/1 context keys, ordered by its stored code.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CtxKey {
+    /// Context code 0: `run`.
+    Run,
+    /// Context code 1: `lane`.
+    Lane,
+    /// Context code 2: `candidate`.
+    Candidate,
+    /// Context code 3: `txn`.
+    Txn,
+    /// Context code 4: `session`.
+    Session,
+}
+
+impl CtxKey {
+    /// The event/1 context-key code.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            CtxKey::Run => 0,
+            CtxKey::Lane => 1,
+            CtxKey::Candidate => 2,
+            CtxKey::Txn => 3,
+            CtxKey::Session => 4,
+        }
+    }
+
+    /// The event/1 context-key name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            CtxKey::Run => "run",
+            CtxKey::Lane => "lane",
+            CtxKey::Candidate => "candidate",
+            CtxKey::Txn => "txn",
+            CtxKey::Session => "session",
+        }
+    }
+}
+
+/// An unverified cgroup identity carried as an advisory peer label.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventCgroupKey {
+    /// The device number from `st_dev`.
+    pub dev: u64,
+    /// The cgroup directory inode.
+    pub inode: u64,
+}
+
+/// Advisory process labels copied from the serving connection.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EventPeer {
+    /// The peer pid, or `None` when it is not visible.
+    pub pid: Option<u32>,
+    /// The peer command label, or `None` when it is unavailable or invalid for event/1.
+    pub comm: Option<String>,
+    /// The peer's unverified cgroup label, or `None` when unavailable.
+    pub cgroup: Option<EventCgroupKey>,
+}
 
 /// The kind of an event (§C.4, closed vocabulary).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -238,6 +302,46 @@ pub fn check_bounded(field: &'static str, value: &str, max: usize) -> Result<(),
     Ok(())
 }
 
+fn check_event_text(field: &'static str, value: &str) -> Result<(), StoreError> {
+    if value
+        .chars()
+        .any(|character| character <= '\u{1f}' || character == '\u{7f}')
+    {
+        return Err(StoreError::EventVocabularyName {
+            field,
+            found: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn check_attribute_key(value: &str) -> Result<(), StoreError> {
+    check_bounded("attrs.key", value, MAX_NAME)?;
+    let mut bytes = value.bytes();
+    match bytes.next() {
+        Some(first) if first.is_ascii_lowercase() => {}
+        _ => {
+            return Err(StoreError::EventVocabularyName {
+                field: "attrs.key",
+                found: value.to_string(),
+            })
+        }
+    }
+    if !bytes.all(|byte| {
+        byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || byte == b'.'
+            || byte == b'_'
+            || byte == b'-'
+    }) {
+        return Err(StoreError::EventVocabularyName {
+            field: "attrs.key",
+            found: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// One event, with the facts a consumer queries and the payload the store keeps.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Event {
@@ -247,10 +351,22 @@ pub struct Event {
     pub name: String,
     /// The client key; `name` when the issuer did not give one.
     pub key: String,
-    /// The issuer (uid plus, at observe level, the peer's cgroup incarnation).
+    /// The issuer (`uid:<uid>` for production events; retained for legacy store callers).
     pub issuer: String,
+    /// The kernel-reported peer uid.
+    pub uid: u32,
+    /// The event/1 span id, or zero for a point event.
+    pub span: u64,
     /// The monotonic time the probe stamped at receipt (§C.4: never trusted from the client).
     pub t_mono_ns: i64,
+    /// The wall-clock time used for segment placement and retention.
+    pub real_ns: i64,
+    /// Advisory process labels from the serving connection.
+    pub peer: Option<EventPeer>,
+    /// Event context in event/1 code order.
+    pub ctx: BTreeMap<CtxKey, String>,
+    /// Event attributes in bytewise key order.
+    pub attrs: BTreeMap<String, String>,
     /// The outcome, for `end` and an inferred `end`.
     pub outcome: Option<Outcome>,
     /// The outcome's code, ≤ 64 B.
@@ -303,20 +419,143 @@ impl Event {
             name: name.to_string(),
             key: key.to_string(),
             issuer: issuer.to_string(),
+            uid: 0,
+            span: 0,
             t_mono_ns,
+            real_ns: 0,
+            peer: None,
+            ctx: BTreeMap::new(),
+            attrs: BTreeMap::new(),
             outcome,
             code: None,
             inferred: false,
         })
     }
 
+    /// Build a production event after validating every event/1 field.
+    ///
+    /// The issuer is derived from `uid`; peer labels are advisory and carry no authority.
+    ///
+    /// # Errors
+    ///
+    /// The existing name/key/time/outcome refusals, [`StoreError::NegativeTime`],
+    /// [`StoreError::EventVocabulary`], [`StoreError::EventVocabularyName`] and
+    /// [`StoreError::EventFieldTooLong`] for event/1 bounds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_record(
+        kind: EventKind,
+        name: &str,
+        key: Option<&str>,
+        uid: u32,
+        t_mono_ns: i64,
+        real_ns: i64,
+        outcome: Option<Outcome>,
+        span: u64,
+        peer: Option<EventPeer>,
+        ctx: BTreeMap<CtxKey, String>,
+        attrs: BTreeMap<String, String>,
+    ) -> Result<Event, StoreError> {
+        let issuer = format!("uid:{uid}");
+        let key_text = key.unwrap_or(name);
+        let mut event = Event::new(kind, name, Some(key_text), &issuer, t_mono_ns, outcome)?;
+        if key_text.is_empty() {
+            return Err(StoreError::EventVocabularyName {
+                field: "key",
+                found: key_text.to_string(),
+            });
+        }
+        check_event_text("key", key_text)?;
+        if real_ns < 0 {
+            return Err(StoreError::NegativeTime { ns: real_ns });
+        }
+        match (kind, span) {
+            (EventKind::Begin | EventKind::End, 0) => {
+                return Err(StoreError::EventVocabulary {
+                    field: "span",
+                    found: 0,
+                });
+            }
+            (EventKind::Point, found) if found != 0 => {
+                return Err(StoreError::EventVocabulary {
+                    field: "span",
+                    found: 1,
+                });
+            }
+            _ => {}
+        }
+        if ctx.len() > 5 {
+            return Err(StoreError::EventFieldTooLong {
+                field: "ctx",
+                len: ctx.len(),
+                max: 5,
+            });
+        }
+        for value in ctx.values() {
+            check_bounded("ctx.value", value, MAX_CTX)?;
+            if value.is_empty() {
+                return Err(StoreError::EventVocabularyName {
+                    field: "ctx.value",
+                    found: String::new(),
+                });
+            }
+            check_event_text("ctx.value", value)?;
+        }
+        if attrs.len() > MAX_ATTRS {
+            return Err(StoreError::EventFieldTooLong {
+                field: "attrs",
+                len: attrs.len(),
+                max: MAX_ATTRS,
+            });
+        }
+        for (attr_key, value) in &attrs {
+            check_attribute_key(attr_key)?;
+            check_bounded("attrs.value", value, MAX_ATTR_VALUE)?;
+            check_event_text("attrs.value", value)?;
+        }
+        if let Some(peer) = &peer {
+            if let Some(comm) = &peer.comm {
+                check_bounded("comm", comm, 15)?;
+                if comm.is_empty() {
+                    return Err(StoreError::EventVocabularyName {
+                        field: "comm",
+                        found: String::new(),
+                    });
+                }
+                check_event_text("comm", comm)?;
+            }
+            if let Some(cgroup) = peer.cgroup {
+                if cgroup.dev == 0 || cgroup.inode == 0 {
+                    return Err(StoreError::EventVocabulary {
+                        field: "peer.cgroup",
+                        found: 0,
+                    });
+                }
+            }
+        }
+        event.uid = uid;
+        event.span = span;
+        event.real_ns = real_ns;
+        event.peer = peer;
+        event.ctx = ctx;
+        event.attrs = attrs;
+        Ok(event)
+    }
+
     /// Attach the outcome code (≤ 64 B).
     ///
     /// # Errors
     ///
-    /// [`StoreError::EventFieldTooLong`].
+    /// [`StoreError::EventFieldTooLong`] for an overlong value and
+    /// [`StoreError::EventVocabularyName`] for an empty value or control text.
     pub fn with_code(mut self, code: &str) -> Result<Event, StoreError> {
         check_bounded("code", code, MAX_CODE)?;
+        if code.is_empty() {
+            return Err(StoreError::EventVocabularyName {
+                field: "code",
+                found: String::new(),
+            });
+        }
+        check_event_text("code", code)?;
         self.code = Some(code.to_string());
         Ok(self)
     }
@@ -331,15 +570,85 @@ impl Event {
     /// The bytes this event occupies in a RAM ring (its fields plus a fixed envelope).
     #[must_use]
     pub fn bytes(&self) -> u64 {
-        let fields = self
-            .name
-            .len()
-            .saturating_add(self.key.len())
-            .saturating_add(self.issuer.len())
-            .saturating_add(self.code.as_ref().map_or(0, String::len));
-        u64::try_from(fields)
-            .unwrap_or(u64::MAX)
-            .saturating_add(EVENT_OVERHEAD)
+        let mut bytes = EVENT_OVERHEAD;
+        for field in [
+            self.name.len(),
+            self.key.len(),
+            self.issuer.len(),
+            self.code.as_ref().map_or(0, String::len),
+            self.peer
+                .as_ref()
+                .and_then(|peer| peer.comm.as_ref())
+                .map_or(0, String::len),
+        ] {
+            bytes = bytes.saturating_add(u64::try_from(field).unwrap_or(u64::MAX));
+        }
+        for (key, value) in &self.ctx {
+            bytes = bytes
+                .saturating_add(u64::try_from(key.name().len()).unwrap_or(u64::MAX))
+                .saturating_add(u64::try_from(value.len()).unwrap_or(u64::MAX))
+                .saturating_add(32);
+        }
+        for (key, value) in &self.attrs {
+            bytes = bytes
+                .saturating_add(u64::try_from(key.len()).unwrap_or(u64::MAX))
+                .saturating_add(u64::try_from(value.len()).unwrap_or(u64::MAX))
+                .saturating_add(32);
+        }
+        bytes
+    }
+
+    /// Convert the event to the frozen event/1 code and ordering vocabulary.
+    pub fn to_payload(&self) -> Result<EventPayload, ProtoError> {
+        let outcome = self.outcome.map_or(0, |outcome| match outcome {
+            Outcome::Ok => 1,
+            Outcome::Fail => 2,
+            Outcome::Error => 3,
+            Outcome::Skipped => 4,
+            Outcome::Cancelled => 5,
+            Outcome::Timeout => 6,
+            Outcome::Abandoned => 7,
+        });
+        let (peer_pid, peer_dev, peer_inode, comm) =
+            self.peer.as_ref().map_or((0, 0, 0, None), |peer| {
+                let (dev, inode) = peer
+                    .cgroup
+                    .map_or((0, 0), |cgroup| (cgroup.dev, cgroup.inode));
+                (peer.pid.unwrap_or(0), dev, inode, peer.comm.clone())
+            });
+        let ctx = self
+            .ctx
+            .iter()
+            .map(|(key, value)| EventContext {
+                key: key.code(),
+                value: value.clone(),
+            })
+            .collect();
+        let attrs = self
+            .attrs
+            .iter()
+            .map(|(key, value)| EventAttribute {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .collect();
+        Ok(EventPayload {
+            t_mono_ns: self.t_mono_ns,
+            span: self.span,
+            peer_dev,
+            peer_inode,
+            uid: self.uid,
+            peer_pid,
+            kind: self.kind.code(),
+            outcome,
+            inferred: self.inferred,
+            ctx,
+            attrs,
+            name: self.name.clone(),
+            key: self.key.clone(),
+            code: self.code.clone(),
+            comm,
+        })
     }
 }
 
@@ -533,8 +842,18 @@ pub struct OpenSpan {
     pub name: String,
     /// The issuer that opened it.
     pub issuer: String,
+    /// The event/1 span id from the opening event.
+    pub span: u64,
+    /// The uid from the opening event.
+    pub uid: u32,
     /// The monotonic start time the probe stamped.
     pub t_mono_ns: i64,
+    /// The advisory peer label from the opening event.
+    pub peer: Option<EventPeer>,
+    /// The context from the opening event.
+    pub ctx: BTreeMap<CtxKey, String>,
+    /// The attributes from the opening event.
+    pub attrs: BTreeMap<String, String>,
 }
 
 /// What closing a span produced: the span and the event describing its end.
@@ -635,7 +954,12 @@ impl SpanTable {
             .push(OpenSpan {
                 name: event.name.clone(),
                 issuer: event.issuer.clone(),
+                span: event.span,
+                uid: event.uid,
                 t_mono_ns: event.t_mono_ns,
+                peer: event.peer.clone(),
+                ctx: event.ctx.clone(),
+                attrs: event.attrs.clone(),
             });
         *self.per_issuer.entry(event.issuer.clone()).or_insert(0) += 1;
         self.total += 1;
@@ -811,6 +1135,9 @@ impl EventsStore {
 
     /// Record one event: validate it, push it into the ring, and append its payload.
     ///
+    /// This compatibility entry point keeps the historical `t_mono_ns` segment timestamp;
+    /// callers with a serve-side wall timestamp use [`EventsStore::record_at`].
+    ///
     /// The *payload* is what makes the event durable; it must be a `proto` EVT frame (the
     /// store checks the four frame-header facts, and the consumer's decoder checks the
     /// sections). The typed [`Event`] is what the RAM ring answers, so a live subscriber
@@ -829,7 +1156,22 @@ impl EventsStore {
         epoch: u64,
         dict_generation: u32,
     ) -> Result<AppendOutcome, StoreError> {
-        let job = Job::new(payload.to_vec(), event.t_mono_ns, Vec::new());
+        self.record_at(event, payload, event.t_mono_ns, epoch, dict_generation)
+    }
+
+    /// Record one event using the real timestamp assigned at the serving boundary.
+    ///
+    /// `t_mono_ns` stays on the event for event/1 and in-memory ordering; `real_ns` names,
+    /// buckets and evicts the stored segment.
+    pub fn record_at(
+        &mut self,
+        event: &Event,
+        payload: &[u8],
+        real_ns: i64,
+        epoch: u64,
+        dict_generation: u32,
+    ) -> Result<AppendOutcome, StoreError> {
+        let job = Job::new(payload.to_vec(), real_ns, Vec::new());
         let outcome = self.tier.append(&job, epoch, dict_generation)?;
         self.ring.push(event.clone())?;
         self.stored = self.stored.saturating_add(1);
@@ -885,15 +1227,16 @@ impl EventsStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_bounded, check_name, Event, EventKind, EventRing, EventsStore, Outcome, SpanTable,
-        EVENT_OVERHEAD, MAX_ATTRS, MAX_CODE, MAX_KEY, MAX_NAME, MAX_OPEN_SPANS,
-        MAX_OPEN_SPANS_PER_ISSUER, MAX_RING_BYTES,
+        check_bounded, check_name, CtxKey, Event, EventCgroupKey, EventKind, EventPeer, EventRing,
+        EventsStore, Outcome, SpanTable, EVENT_OVERHEAD, MAX_ATTRS, MAX_CODE, MAX_KEY, MAX_NAME,
+        MAX_OPEN_SPANS, MAX_OPEN_SPANS_PER_ISSUER, MAX_RING_BYTES,
     };
     use crate::error::StoreError;
     use crate::format::{TierKind, EVT_FRAME_TYPE, FRAME_FLAG_SECTIONED};
     use crate::fsio::testdir::TempDir;
     use crate::fsio::StoreDir;
     use crate::tier::TierConfig;
+    use std::collections::BTreeMap;
 
     /// A minimal `proto` EVT frame: a 12-byte header and `data` zero bytes.
     fn evt(extra: usize) -> Vec<u8> {
@@ -913,6 +1256,23 @@ mod tests {
 
     fn end(name: &str, key: &str, issuer: &str, t: i64, outcome: Outcome) -> Event {
         Event::new(EventKind::End, name, Some(key), issuer, t, Some(outcome)).expect("end")
+    }
+
+    fn point_record(name: &str, key: Option<&str>) -> Event {
+        Event::new_record(
+            EventKind::Point,
+            name,
+            key,
+            7,
+            10,
+            20,
+            None,
+            0,
+            None,
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("point event")
     }
 
     #[test]
@@ -1050,6 +1410,549 @@ mod tests {
                 max: MAX_CODE
             })
         );
+    }
+
+    #[test]
+    fn production_events_enforce_event_one_bounds_and_text_rules() {
+        let eight_attrs = (0..8)
+            .map(|index| (format!("a{index}"), String::from("value")))
+            .collect::<BTreeMap<_, _>>();
+        assert!(Event::new_record(
+            EventKind::Point,
+            "run",
+            None,
+            7,
+            10,
+            20,
+            None,
+            0,
+            None,
+            BTreeMap::new(),
+            eight_attrs,
+        )
+        .is_ok());
+        let mut attrs = BTreeMap::new();
+        attrs.insert(String::from("value"), "x".repeat(256));
+        assert!(Event::new_record(
+            EventKind::Point,
+            "run",
+            None,
+            7,
+            10,
+            20,
+            None,
+            0,
+            None,
+            BTreeMap::new(),
+            attrs,
+        )
+        .is_ok());
+        let nine_attrs = (0..9)
+            .map(|index| (format!("a{index}"), String::from("value")))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                None,
+                0,
+                None,
+                BTreeMap::new(),
+                nine_attrs,
+            ),
+            Err(StoreError::EventFieldTooLong {
+                field: "attrs",
+                len: 9,
+                max: 8,
+            })
+        );
+
+        let mut ctx = BTreeMap::new();
+        ctx.insert(CtxKey::Run, "x".repeat(128));
+        assert!(Event::new_record(
+            EventKind::Point,
+            "run",
+            None,
+            7,
+            10,
+            20,
+            None,
+            0,
+            None,
+            ctx,
+            BTreeMap::new(),
+        )
+        .is_ok());
+        let mut ctx = BTreeMap::new();
+        ctx.insert(CtxKey::Run, "x".repeat(129));
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                None,
+                0,
+                None,
+                ctx,
+                BTreeMap::new(),
+            ),
+            Err(StoreError::EventFieldTooLong {
+                field: "ctx.value",
+                len: 129,
+                max: 128,
+            })
+        );
+        let mut ctx = BTreeMap::new();
+        ctx.insert(CtxKey::Run, String::new());
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                None,
+                0,
+                None,
+                ctx,
+                BTreeMap::new(),
+            ),
+            Err(StoreError::EventVocabularyName {
+                field: "ctx.value",
+                found: String::new(),
+            })
+        );
+        let mut ctx = BTreeMap::new();
+        ctx.insert(CtxKey::Run, String::from("bad\u{1f}text"));
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                None,
+                0,
+                None,
+                ctx,
+                BTreeMap::new(),
+            ),
+            Err(StoreError::EventVocabularyName {
+                field: "ctx.value",
+                found: String::from("bad\u{1f}text"),
+            })
+        );
+
+        for (key, value, expected) in [
+            (
+                String::from("Bad"),
+                String::from("value"),
+                StoreError::EventVocabularyName {
+                    field: "attrs.key",
+                    found: String::from("Bad"),
+                },
+            ),
+            (
+                String::from("good"),
+                String::from("line\nfeed"),
+                StoreError::EventVocabularyName {
+                    field: "attrs.value",
+                    found: String::from("line\nfeed"),
+                },
+            ),
+            (
+                String::from("good"),
+                "v".repeat(257),
+                StoreError::EventFieldTooLong {
+                    field: "attrs.value",
+                    len: 257,
+                    max: 256,
+                },
+            ),
+        ] {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(key, value);
+            assert_eq!(
+                Event::new_record(
+                    EventKind::Point,
+                    "run",
+                    None,
+                    7,
+                    10,
+                    20,
+                    None,
+                    0,
+                    None,
+                    BTreeMap::new(),
+                    attrs,
+                ),
+                Err(expected)
+            );
+        }
+
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                None,
+                0,
+                None,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+            .expect("point")
+            .with_code(""),
+            Err(StoreError::EventVocabularyName {
+                field: "code",
+                found: String::new(),
+            })
+        );
+        assert_eq!(
+            point_record("run", None).with_code("bad\u{7f}code"),
+            Err(StoreError::EventVocabularyName {
+                field: "code",
+                found: String::from("bad\u{7f}code"),
+            })
+        );
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                Some("key\n"),
+                7,
+                10,
+                20,
+                None,
+                0,
+                None,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ),
+            Err(StoreError::EventVocabularyName {
+                field: "key",
+                found: String::from("key\n"),
+            })
+        );
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                None,
+                0,
+                Some(EventPeer {
+                    pid: None,
+                    comm: Some("c".repeat(16)),
+                    cgroup: None,
+                }),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ),
+            Err(StoreError::EventFieldTooLong {
+                field: "comm",
+                len: 16,
+                max: 15,
+            })
+        );
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                None,
+                0,
+                Some(EventPeer {
+                    pid: None,
+                    comm: Some(String::from("bad\tcomm")),
+                    cgroup: None,
+                }),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ),
+            Err(StoreError::EventVocabularyName {
+                field: "comm",
+                found: String::from("bad\tcomm"),
+            })
+        );
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                -1,
+                None,
+                0,
+                None,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ),
+            Err(StoreError::NegativeTime { ns: -1 })
+        );
+        for (kind, span, found) in [
+            (EventKind::Begin, 0, 0),
+            (EventKind::End, 0, 0),
+            (EventKind::Point, 1, 1),
+        ] {
+            let outcome = (kind == EventKind::End).then_some(Outcome::Ok);
+            assert_eq!(
+                Event::new_record(
+                    kind,
+                    "run",
+                    None,
+                    7,
+                    10,
+                    20,
+                    outcome,
+                    span,
+                    None,
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                ),
+                Err(StoreError::EventVocabulary {
+                    field: "span",
+                    found,
+                })
+            );
+        }
+        let peer = EventPeer {
+            pid: None,
+            comm: None,
+            cgroup: Some(EventCgroupKey { dev: 0, inode: 4 }),
+        };
+        assert_eq!(
+            Event::new_record(
+                EventKind::Point,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                None,
+                0,
+                Some(peer),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ),
+            Err(StoreError::EventVocabulary {
+                field: "peer.cgroup",
+                found: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn production_conversion_pins_event_one_kind_outcome_context_and_peer_codes() {
+        let kinds = [
+            (EventKind::Begin, 1),
+            (EventKind::End, 2),
+            (EventKind::Point, 3),
+        ];
+        for (kind, code) in kinds {
+            let outcome = (kind == EventKind::End).then_some(Outcome::Ok);
+            let span = if kind == EventKind::Point { 0 } else { 9 };
+            let event = Event::new_record(
+                kind,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                outcome,
+                span,
+                None,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+            .expect("typed event");
+            let payload = event.to_payload().expect("payload");
+            assert_eq!(payload.kind, code);
+            assert_eq!(payload.outcome, if kind == EventKind::End { 1 } else { 0 });
+            assert_eq!(payload.uid, 7);
+            assert_eq!(payload.span, span);
+            assert_eq!(event.issuer, "uid:7");
+        }
+        let outcomes = [
+            (Outcome::Ok, 1),
+            (Outcome::Fail, 2),
+            (Outcome::Error, 3),
+            (Outcome::Skipped, 4),
+            (Outcome::Cancelled, 5),
+            (Outcome::Timeout, 6),
+            (Outcome::Abandoned, 7),
+        ];
+        for (outcome, code) in outcomes {
+            let event = Event::new_record(
+                EventKind::End,
+                "run",
+                None,
+                7,
+                10,
+                20,
+                Some(outcome),
+                9,
+                None,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+            .expect("end event");
+            assert_eq!(event.to_payload().expect("payload").outcome, code);
+        }
+        let mut ctx = BTreeMap::new();
+        for key in [
+            CtxKey::Run,
+            CtxKey::Lane,
+            CtxKey::Candidate,
+            CtxKey::Txn,
+            CtxKey::Session,
+        ] {
+            ctx.insert(key, key.name().to_string());
+        }
+        let payload = Event::new_record(
+            EventKind::Point,
+            "run",
+            None,
+            7,
+            10,
+            20,
+            None,
+            0,
+            None,
+            ctx,
+            BTreeMap::new(),
+        )
+        .expect("point")
+        .to_payload()
+        .expect("payload");
+        assert_eq!(
+            payload
+                .ctx
+                .iter()
+                .map(|entry| entry.key)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+        assert_eq!(
+            (payload.peer_pid, payload.peer_dev, payload.peer_inode),
+            (0, 0, 0)
+        );
+
+        let legacy_begin =
+            Event::new(EventKind::Begin, "run", None, "legacy", 10, None).expect("legacy begin");
+        let legacy_payload = legacy_begin.to_payload().expect("legacy payload");
+        assert!(hostobs_proto::event::encode_event_frame(&legacy_payload).is_err());
+    }
+
+    #[test]
+    fn event_bytes_charge_each_string_and_map_entry_with_saturating_envelope_math() {
+        let event = point_record("run", None);
+        let base = event.bytes();
+        let mut with_ctx = event.clone();
+        with_ctx.ctx.insert(CtxKey::Run, String::from("abc"));
+        assert_eq!(with_ctx.bytes(), base + 38);
+        let mut with_attrs = event.clone();
+        with_attrs
+            .attrs
+            .insert(String::from("x"), String::from("yz"));
+        assert_eq!(with_attrs.bytes(), base + 35);
+        assert_eq!(
+            event.clone().with_code("abc").expect("code").bytes(),
+            base + 3
+        );
+        let mut with_peer = event;
+        with_peer.peer = Some(EventPeer {
+            pid: Some(42),
+            comm: Some(String::from("cmd")),
+            cgroup: None,
+        });
+        assert_eq!(with_peer.bytes(), base + 3);
+
+        let mut maximum = Event::new(
+            EventKind::Point,
+            &"a".repeat(64),
+            Some(&"k".repeat(64)),
+            &"i".repeat(128),
+            0,
+            None,
+        )
+        .expect("legacy-compatible maximum envelope")
+        .with_code(&"c".repeat(64))
+        .expect("maximum code");
+        maximum.peer = Some(EventPeer {
+            pid: None,
+            comm: Some("m".repeat(15)),
+            cgroup: None,
+        });
+        for key in [
+            CtxKey::Run,
+            CtxKey::Lane,
+            CtxKey::Candidate,
+            CtxKey::Txn,
+            CtxKey::Session,
+        ] {
+            maximum.ctx.insert(key, "v".repeat(128));
+        }
+        for letter in b'a'..=b'h' {
+            let first = char::from(letter);
+            maximum
+                .attrs
+                .insert(format!("{first}{}", "a".repeat(63)), "v".repeat(256));
+        }
+        assert_eq!(maximum.bytes(), 4_057);
+    }
+
+    #[test]
+    fn an_open_span_copies_the_start_event_payload_facts() {
+        let mut ctx = BTreeMap::new();
+        ctx.insert(CtxKey::Run, String::from("run-1"));
+        let mut attrs = BTreeMap::new();
+        attrs.insert(String::from("subject"), String::from("worker"));
+        let event = Event::new_record(
+            EventKind::Begin,
+            "candidate.build",
+            Some("build-1"),
+            17,
+            100,
+            200,
+            None,
+            42,
+            Some(EventPeer {
+                pid: Some(5),
+                comm: Some(String::from("builder")),
+                cgroup: Some(EventCgroupKey { dev: 4, inode: 9 }),
+            }),
+            ctx,
+            attrs,
+        )
+        .expect("begin event");
+        let mut spans = SpanTable::new();
+        spans.begin(&event).expect("open");
+        let opened = spans.peek(&event.issuer, "build-1").expect("span");
+        assert_eq!(opened.span, 42);
+        assert_eq!(opened.uid, 17);
+        assert_eq!(opened.peer, event.peer);
+        assert_eq!(opened.ctx, event.ctx);
+        assert_eq!(opened.attrs, event.attrs);
     }
 
     #[test]
@@ -1325,6 +2228,54 @@ mod tests {
             )
             .is_ok(),
             "one events tier per directory is enough"
+        );
+    }
+
+    #[test]
+    fn event_frame_is_accepted_and_record_at_uses_real_time_for_its_segment() {
+        let temp = TempDir::new("events-real-time");
+        let config =
+            TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false).expect("config");
+        let mut store = EventsStore::open(
+            config,
+            EVENT_OVERHEAD * 16,
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("events store");
+        let event = Event::new_record(
+            EventKind::Point,
+            "probe.point",
+            Some("point-1"),
+            7,
+            10,
+            65_000_000_000,
+            None,
+            0,
+            None,
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("event");
+        let frame =
+            hostobs_proto::event::encode_event_frame(&event.to_payload().expect("event payload"))
+                .expect("event/1 frame");
+        let outcome = store
+            .record_at(&event, &frame, 125_000_000_000, 3, 1)
+            .expect("record event");
+        assert_eq!(outcome.segment, "events-120-0.seg.open");
+        let dir = StoreDir::open(temp.path(), false).expect("dir");
+        let scanned = crate::segment::scan(&dir, &outcome.segment, 1 << 22, 1024)
+            .expect("scan event segment");
+        assert_eq!(scanned.header.epoch, 3);
+        assert_eq!(scanned.header.dict_generation, 1);
+        assert_eq!(scanned.header.start_real_ns, 120_000_000_000);
+        assert_eq!(scanned.records[0].real_ns, 125_000_000_000);
+        assert_eq!(scanned.records[0].payload, frame);
+        assert_eq!(event.real_ns, 65_000_000_000);
+        assert_eq!(
+            event.t_mono_ns, 10,
+            "monotonic event time stays independent"
         );
     }
 

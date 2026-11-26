@@ -1,0 +1,16 @@
+[Unit]
+Description=thrashguard reader UNIX socket
+After=systemd-tmpfiles-setup.service
+
+[Socket]
+ListenStream=/run/thrashguard/reader/thrashguard.sock
+FileDescriptorName=reader
+Accept=no
+SocketUser=root
+SocketGroup=thrashguard-reader
+SocketMode=0660
+DirectoryMode=0750
+Service=thrashguard.service
+
+[Install]
+WantedBy=sockets.target

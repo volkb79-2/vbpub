@@ -462,6 +462,7 @@ handle_remote_signal() {
     return 0
   fi
 
+  exec 2>&"$gate_stderr"
   trap ':' INT TERM
   stop_heartbeat
   if [[ -n "$remote_gate_pid" ]]; then
@@ -484,6 +485,7 @@ handle_remote_signal() {
   exit "$exit_status"
 }
 
+exec {gate_stderr}>&2
 trap 'handle_remote_signal INT 130' INT
 trap 'handle_remote_signal TERM 143' TERM
 
@@ -503,8 +505,11 @@ if wait "$remote_gate_pid"; then
 else
   remote_status=$?
 fi
-stop_heartbeat
+# Bash may run a trap after wait returns but before this assignment; after it, a
+# signal cannot target the reaped client. If metadata exists, the handler still
+# requests remote cancellation because a failed client does not prove the host job ended.
 remote_gate_pid=""
+stop_heartbeat
 
 if receipt="$(python3 - "$run_dir/meta.json" "$run_dir/result.json" <<'PYEOF'
 import json

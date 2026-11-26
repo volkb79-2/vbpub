@@ -185,7 +185,7 @@ def _run_container(monkeypatch, tmp_path: Path, lane: dict, environment: dict,
     monkeypatch.setattr(run_gate, "boot_id", lambda: "boot")
     monkeypatch.setattr(run_gate, "process_start_ticks", lambda _pid: 1)
     monkeypatch.setattr(run_gate, "pid_ns_inode", lambda: "pid-ns")
-    monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
+    monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a, **_k: None)
     monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_a: None)
     monkeypatch.setattr(run_gate, "log_resource_forwarded_env", lambda *_a: None)
     monkeypatch.setattr(run_gate.subprocess, "run", docker_run)

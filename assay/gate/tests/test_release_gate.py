@@ -138,7 +138,10 @@ if config.get("write_result", True):
     }),
     encoding="utf-8",
 )
-(remote_out / "remote-child.pid").write_text(str(os.getpid()), encoding="utf-8")
+child_pid_path = remote_out / "remote-child.pid"
+child_pid_tmp_path = child_pid_path.with_name(child_pid_path.name + ".tmp")
+child_pid_tmp_path.write_text(str(os.getpid()), encoding="utf-8")
+child_pid_tmp_path.replace(child_pid_path)
 hold_until = config.get("hold_until")
 if hold_until:
     # Event-driven, so the test's assertions never rest on a duration: the wrapper's
@@ -485,6 +488,13 @@ def _wait_for_value(producer, what: str, *, timeout_s: float = 60.0):
     raise AssertionError(f"timed out after {timeout_s} s waiting for {what}")
 
 
+def _publish_text(path: Path, text: str) -> None:
+    """Publish a whole event file under its final name."""
+    side = path.with_name(path.name + ".tmp")
+    side.write_text(text, encoding="utf-8")
+    side.replace(path)
+
+
 def _hold_ticks_reached(path: Path, wanted: int) -> bool:
     """Has the fake's held-cancel counter reached `wanted`?
 
@@ -500,7 +510,7 @@ def _hold_ticks_reached(path: Path, wanted: int) -> bool:
 
 
 def _parent_pid(pid: int) -> int | None:
-    """The kernel's recorded parent of `pid`, or None when it is gone or a zombie."""
+    """The kernel's recorded parent of `pid`, or None when its stat cannot be read."""
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:
@@ -560,7 +570,7 @@ def _heartbeat_sleep(ancestor: int, interval: int) -> tuple[int, int] | None:
 # publishes the seam under a side name and renames it into place, so a reader that
 # sees the file at all sees a whole one, and it holds until the test's release file
 # appears (the `finally` block always writes it) rather than for a counted number of
-# ticks.
+# ticks, and the `$PPID` check releases it if its pytest parent exits first.
 HEARTBEAT_TRAP_HOOK = (
     "trap() {\n"
     '  case "$*" in\n'
@@ -573,7 +583,7 @@ HEARTBEAT_TRAP_HOOK = (
     '  { printf \'%s\\t%s\\n\' "$BASHPID" "${!:-}"; jobs -p; } >"$ASSAY_HEARTBEAT_TRAP_SEAM.tmp"\n'
     '  mv -f -- "$ASSAY_HEARTBEAT_TRAP_SEAM.tmp" "$ASSAY_HEARTBEAT_TRAP_SEAM"\n'
     '  builtin trap "$@"\n'
-    '  while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" ]]; do\n'
+    '  while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" ]] && builtin kill -0 "$PPID" 2>/dev/null; do\n'
     "    /bin/sleep 0.01\n"
     "  done\n"
     "}\n"
@@ -736,6 +746,88 @@ def test_release_gate_heartbeat_still_cancels_the_remote_run_on_term(
     assert all(cancel_secrets[name] is False for name in secret_names)
     # And still nothing after the cancel once the run has ended.
     assert _heartbeat_lines(stderr[stderr.index("attempting to cancel remote run"):]) == []
+
+
+def test_release_gate_does_not_signal_the_reaped_client_while_stopping_heartbeat(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    held = tmp_path / "stop-heartbeat-held.txt"
+    release = tmp_path / "stop-heartbeat-release.txt"
+    signal_target = tmp_path / "reaped-client-signal.txt"
+    hook = tmp_path / "stop-heartbeat-hook.sh"
+    hook.write_text(
+        "publish_event() {\n"
+        '  local path="$1" text="$2" side="$1.tmp"\n'
+        '  printf "%s\\n" "$text" >"$side"\n'
+        '  mv -f -- "$side" "$path"\n'
+        "}\n"
+        "kill() {\n"
+        "  local child_pid arg prior= includes_child=false is_liveness=false\n"
+        '  if [[ -f "$ASSAY_REMOTE_CHILD_PID" ]]; then\n'
+        '    IFS= read -r child_pid <"$ASSAY_REMOTE_CHILD_PID"\n'
+        '    for arg in "$@"; do\n'
+        '      [[ "$arg" == "$child_pid" ]] && includes_child=true\n'
+        '      [[ "$arg" == "-0" ]] && is_liveness=true\n'
+        "    done\n"
+        '    if [[ "$includes_child" == true && "$is_liveness" == false ]]; then\n'
+        '      if [[ -f "$ASSAY_REAPED_CLIENT_SIGNAL" ]]; then\n'
+        '        prior="$(<"$ASSAY_REAPED_CLIENT_SIGNAL")"\n'
+        "        prior+=$'\\n'\n"
+        "      fi\n"
+        '      publish_event "$ASSAY_REAPED_CLIENT_SIGNAL" "${prior}$*"\n'
+        "      return 0\n"
+        "    fi\n"
+        "  fi\n"
+        '  if [[ "$#" == 1 && ! -e "$ASSAY_STOP_HEARTBEAT_HELD" ]]; then\n'
+        '    publish_event "$ASSAY_STOP_HEARTBEAT_HELD" "$1"\n'
+        '    while [[ ! -e "$ASSAY_STOP_HEARTBEAT_RELEASE" ]] && builtin kill -0 "$PPID" 2>/dev/null; do\n'
+        '      /bin/sleep 0.01\n'
+        "    done\n"
+        "  fi\n"
+        '  command kill "$@"\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    env.update(
+        {
+            "BASH_ENV": str(hook),
+            "ASSAY_STOP_HEARTBEAT_HELD": str(held),
+            "ASSAY_STOP_HEARTBEAT_RELEASE": str(release),
+            "ASSAY_REMOTE_CHILD_PID": str(Path(env["REMOTE_GATE_OUT"]) / "remote-child.pid"),
+            "ASSAY_REAPED_CLIENT_SIGNAL": str(signal_target),
+        }
+    )
+    child_pid_path = Path(env["REMOTE_GATE_OUT"]) / "remote-child.pid"
+    wrapper = Wrapper(tmp_path, env)
+    try:
+        _wait_until(
+            lambda: held.exists() and child_pid_path.exists(),
+            "the wrapper to hold inside stop_heartbeat after the remote wait",
+        )
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        assert _pid_state(child_pid) is None, (
+            "the remote client must already be reaped while stop_heartbeat is held"
+        )
+        wrapper.proc.send_signal(signal.SIGTERM)
+        _publish_text(release, "go")
+        wrapper.wait_for(
+            lambda text: "attempting to cancel remote run" in text,
+            "to request cancellation after the remote client was reaped",
+        )
+        status = wrapper.reap()
+    finally:
+        _publish_text(release, "go")
+        wrapper.kill_leftovers()
+
+    stderr = wrapper.stderr()
+    assert status == 143, stderr
+    assert not signal_target.exists(), (
+        f"the reaped remote client {child_pid} was signalled: "
+        f"{signal_target.read_text(encoding='utf-8') if signal_target.exists() else ''}"
+    )
+    assert [call[0] for call in _remote_calls(env)] == ["run", "cancel"]
+    assert "remote cancellation was requested" in stderr
 
 
 def _trap_seam_lines(seam: Path) -> tuple[int, int, list[int]]:
@@ -1095,7 +1187,7 @@ def test_release_gate_judges_the_missing_remote_gate_file_before_the_settings(
 ) -> None:
     env = _environment(tmp_path, host="")
     # Finding 3: CONSUMERS.md says which check runs first. The missing-script check
-    # (tools/release-gate.sh:54-56) is before the settings resolution, so a fresh
+    # (tools/release-gate.sh:55-57) is before the settings resolution, so a fresh
     # clone that also has no host hears only the exit-3 file refusal and a SECOND
     # run is needed for the settings -- the two-attempt cost B579 removed for the
     # settings themselves. Running the real script (an absolute path) in a directory

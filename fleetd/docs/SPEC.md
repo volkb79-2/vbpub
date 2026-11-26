@@ -7,6 +7,113 @@ collector, a deterministic RAM-first planner, and a one-shot lite campaign
 controller. The controller uses the existing identity-checked hx wrapper and
 runner jobs; it is not a daemon and has no socket or lease protocol.
 
+## Host admission core (P-fd-05 C2)
+
+`fleetd.admission` is a standard-library-only host admission library. It adds
+accounting and decisions only: it does not open sockets, create containers, or
+add CLI verbs, and fleetd's current planner and runners do not call it yet. The
+host agent package will wire callers to this book.
+
+`HostCapacity` is the typed projection of the admission-relevant `host-facts/2`
+fields. Each input is a `Fact[T]`: a known value has no reason; an unavailable
+value must carry a non-empty reason. A required unknown fact keeps that reason
+and returns 75; the library never substitutes a guessed capacity, policy, or
+guard value. The capacity provider supplies fresh warm samples for live jobs
+and leases for each admission decision; a missing sample is `current_j = 0`,
+so the full charge remains reserved. Stored observations never reduce a
+reservation. Policy is host-owned and includes footprint charges, planned RAM
+and CPU caps, PSI and disk floors, allowed priorities, and required `aging_s`.
+`legacy_charge_bytes` and `legacy_planned_cores` are required when the legacy
+job provider lists any job. Design package C adds these values to the host
+policy schema; it must extend the closed `facts.toml.policy` key set in
+`facts.py` before deployment writes those keys.
+
+`AdmissionBook(state_dir, clock, waiter)` makes one serialized decision at a
+time. The caller supplies the state directory (production uses
+`/var/lib/fleetd-agent/`). Under `queue.lock`, it reloads admitted records and
+waiters, calls the required `legacy_jobs_provider` and capacity provider,
+checks live facts, writes the admitted record atomically, and holds the
+executor flock before releasing the lock. The executor holds that job's flock
+for its lifetime; `resume_job` reacquires it after a dead holder, and `handoff`
+closes only the parent descriptor after an executor inherits it. A corrupt or
+unreadable charged record refuses further admission with 75 and keeps its
+charge. Dead waiting entries are removed only after their waiter flock can be
+acquired; they cannot reserve capacity.
+
+The RAM fit is the minimum of physical RAM after host reserve and existing
+charges, gate-slice ceiling after warm use and unconsumed reservations, and the
+per-host planned-byte cap after existing charges. Static eligibility refuses
+an impossible class or planned-core request with 2. Live admission also checks
+load, memory PSI, required checkout and Docker disk floors, cgroup v2, and the
+freeze rule. Each listed legacy job without an `EXIT` marker is charged
+`legacy_charge_bytes` and `legacy_planned_cores`; its directory remains charged
+until an `EXIT` marker removes it from the required provider's list. Unknown
+needed policy values return 75 with the key named in the reason; an expired wait
+appends its last refusal reason. `legacy_planned_cores` may be 0. A known but
+invalid policy value (for example `aging_s` of 0) refuses with 2. A capacity
+provider that raises returns 75.
+
+The capacity provider, the legacy job provider and the inspector run under
+`queue.lock`, whose lock has no timeout. Package C must bound every one of those
+calls and turn a timeout into 75 or an `ERROR` answer; one hung call would stop
+every submit, completion and wait expiry on the host (FD-054).
+
+The shared wait queue clamps priority to the authenticated group's host policy
+and orders by priority, submission time, then group-prefixed job id. The first
+aged, statically eligible waiter in that order holds the reservation, whether it
+fits now or not. While one exists, nothing else is admitted except the holder
+itself and a strictly higher-priority `merge-gate`; the holder passes
+earlier-sorting waiters that are not aged and yields only to an earlier
+fitting `merge-gate`. Without a holder, a candidate waits only for an
+earlier-sorting waiter that fits. A request that cannot ever fit refuses with
+2. Expiry withdraws the waiter and confirms that it never started before
+returning 75. The injected clock controls queue aging and wait expiry; there is
+no run wall-clock limit.
+
+Job ids use `^[A-Za-z0-9][A-Za-z0-9._-]*$`, with a maximum length of 128
+(`MAX_JOB_ID_LENGTH`), and the authenticated group must match the id prefix.
+Status and cancellation compare that group with the stored record. The /1
+request digest covers its contract fields except `job_id` and
+`requested_by.version`. A non-null `shard` or `resources.cpu_set` is refused
+with 2; both remain reserved in /1.
+
+The textual group-prefix check has a known ambiguity: group `ops` can claim
+`ops-ci-run-1`, which also appears prefixed by group `ops-ci`. Package C's
+authenticated group policy must prevent overlapping prefixes or provide an
+unambiguous group-specific id namespace.
+
+`complete` writes a durable terminal record containing `job_id`, group, digest,
+and completed state, with no charge, before removing the admitted record. If a
+crash occurs between those writes, the terminal record wins and the job is
+completed. Replaying the same id and digest returns that terminal state without
+a handle; another digest or group is refusal (2), and an unreadable terminal
+record returns 75 for that id. An admission decision reads a terminal record
+only while the same id still has an active record, so unrelated finished history
+cannot block admission. This package does not prune terminal records; package C's
+host agent owns their retention policy.
+
+Lease records use the same queue and capacity charges. They persist pending and
+bound state and bind once to an immutable container id. The caller supplies the
+group-prefixed `lease_id`. Explicit revoke tombstones the lease but keeps its
+charge. Reconcile is an observation: it tombstones and releases only for an
+explicit no-such-object answer; a pending lease also requires an acquirable
+flock. `PRESENT`, `ERROR`, other answers, and inspector exceptions leave the
+record unchanged. Released lease names remain tombstoned and cannot be reused.
+A fitting lease waiter whose inspector keeps answering `ERROR` can block every
+waiter that sorts after it, in lower priority classes too, until its admission
+wait expires; a waiter holds no charge. This is a known limit (FD-052). The package does
+not perform Docker operations; the host agent must enforce bind/start and
+reconciliation around this accounting API.
+
+Only an enforce guard requires `frozen_units`: a known positive count holds
+admission with 75, unknown count returns 75, and zero permits admission. An
+absent guard (`guard_present` false), `off`, and `report` do not block; an
+unknown guard state returns 75. This applies to jobs and leases.
+
+The closed exit-code table assigns 79 to prerequisite-missing; 73 is reserved
+by fleetd's runner. Code 75 is a missing required fact, a held admission, or a
+wait withdrawn before start; code 2 is a request or static-eligibility refusal.
+
 ## Contracts
 
 - `host-facts/2` carries CPU, load, Geekbench, memory, PSI, gate-slice, disks,

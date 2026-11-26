@@ -715,10 +715,10 @@ match the worktree `HEAD`) is judged AFTER them, so a run outside CMRU hears
 what is wrong with its settings first.
 
 One cause reaches two exit codes, and deliberately so: if `mktemp` cannot create
-its temporary file, the controller-configuration reader refuses on its own with
-exit 3 (`cannot create a temporary file to read the controller configuration`),
-because it cannot resolve a source the run may depend on and has no way to join a
-refusal that is built later; the `remote-gate.py` defaults loader instead adds
+its temporary file, the controller-configuration reader deliberately stops at
+once with exit 3 (`cannot create a temporary file to read the controller
+configuration`), because it cannot resolve a source the run may depend on; the
+`remote-gate.py` defaults loader instead adds
 `cannot create a temporary file for the remote-gate.py defaults import` to the
 combined refusal (exit 2), because it supplies only a fallback and the run can
 still report every other unusable setting in the same attempt. Read the message,

@@ -3051,6 +3051,42 @@ def test_a_killed_lock_holder_never_wedges_the_campaign(tmp_path):
     assert (tmp_path / "campaign.lock").exists()
 
 
+def test_lock_holder_exit_never_wedges_the_campaign(tmp_path):
+    plan = _plan(4)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    source = Path(__file__).resolve().parents[1] / "src"
+    holder = subprocess.Popen(
+        [
+            "python3", "-c",
+            "import fcntl, os, sys\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "print('held', flush=True)\n"
+            "sys.stdin.read(1)\n",
+            str(tmp_path / "campaign.lock"),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(source)},
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(ContractError, match="is busy"):
+            manager.tick("campaign")
+    finally:
+        if holder.poll() is None:
+            holder.stdin.write("x")
+            holder.stdin.flush()
+            holder.stdin.close()
+        holder.wait()
+    assert manager.tick("campaign")["campaign"] == "campaign"
+    assert (tmp_path / "campaign.lock").exists()
+
+
 def test_the_lock_is_released_when_a_command_fails(tmp_path):
     manager = CampaignManager(tmp_path, FakeTransport())
     with pytest.raises(ContractError, match="does not exist"):
