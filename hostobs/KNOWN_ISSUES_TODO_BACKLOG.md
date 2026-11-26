@@ -90,6 +90,7 @@ holds the full bodies.
 | HOB-96 | The `conformance` lane never exercises the live demo | Minor | OPEN (P-hostobs-11(a) r1/r2) |
 | HOB-97 | `watch`'s hello-derived interval default loses its reason and can refuse a legal hello | Minor | OPEN (P-hostobs-11(a) r2) |
 | HOB-98 | P-hostobs-11/P-12 residual doc, lane-comment and coverage-header nits | Minor | OPEN (P-hostobs-12 r1/r2, P-11(b) VM report) |
+| HOB-102 | Freeze state is not a sampled metric | Major | FIXED in tree (M3 B8); live frozen-scope evidence open |
 
 ---
 
@@ -1325,3 +1326,19 @@ Source: `reviews/p12-r1-3e8ce04b4.md` notes "Stale counts in `run-gate.toml`" an
 docstrings"; `reviews/p12-r2-eb9151fd5.md` Nit 5 and new Nit 8; `reviews/p11a-r2-dda3fe69f.md`
 candidate 4 (the `systemd-analyze` evidence request, which r1 makes at `:152`);
 `runs/p11b-vm-demo.report.md` "Deviations", follow-up candidate 1.
+
+## HOB-102 — Freeze state is not a sampled metric
+
+**Where:** `crates/kernel/src/cgroup.rs`, `crates/model/src/metric.rs`, `bins/probe/src/sampler.rs`.
+
+**Problem.** The probe sampled no freeze state, so a reader could not check a freeze or thaw event
+(thrashguard reports them best-effort) against the cgroup's own `cgroup.freeze` and `cgroup.events`.
+
+**Status.** Fixed by M3 package B8: the sampler publishes `cgroup.freeze`, `cgevents.frozen` and
+`cgevents.populated` as last-only state metrics; an absent or unreadable file never renders as a
+measured `0`. Fixture tests cover the parsers and one sampler tick.
+
+**Open.** No run has shown these columns for a frozen scope on a real host.
+
+**Exit criteria.** One recorded VM run in which a frozen scope shows `cgroup.freeze` 1 and
+`cgevents.frozen` 1, and 0 for both after the thaw, with the kernel files captured beside the ticks.
