@@ -383,8 +383,7 @@ impl socket::Dispatch for Core {
             wire::Request::Candidates => self.candidates_document(),
             wire::Request::Events { since_seq } => {
                 let (rows, truncated) = self.journal.rows_since(since_seq);
-                let rows = rows.to_vec();
-                events_reply(self.journal.boot_id(), rows, truncated)
+                bounded_events_reply(self.journal.boot_id(), rows, truncated)
             }
             wire::Request::Version => crate::wire::version(),
         }
@@ -522,6 +521,29 @@ pub fn events_reply(boot_id: &str, rows: Vec<Value>, truncated: bool) -> Value {
             ("truncated".to_string(), Value::Bool(truncated)),
         ],
     )
+}
+
+/// Build the same bounded page for the daemon socket and the local CLI reader.
+/// Rows omitted by either the row-count or encoded-byte ceiling make the page
+/// explicitly incomplete.
+pub fn bounded_events_reply(boot_id: &str, rows: &[Value], truncated: bool) -> Value {
+    let mut page = Vec::new();
+    let mut incomplete = truncated;
+    for row in rows {
+        if page.len() == crate::events::RECENT_ROWS {
+            incomplete = true;
+            break;
+        }
+        page.push(row.clone());
+        if events_reply(boot_id, page.clone(), incomplete).to_json().len()
+            > crate::json::MAX_DOCUMENT_BYTES
+        {
+            page.pop();
+            incomplete = true;
+            break;
+        }
+    }
+    events_reply(boot_id, page, incomplete)
 }
 
 /// One decision as a document, with `simulated: true` — the marker that tells a
@@ -1123,6 +1145,95 @@ mod tests {
             Some("deregistered")
         );
         assert_eq!(core.store().len(), 0);
+    }
+
+    #[test]
+    fn restart_survives_a_maximum_registration_and_a_refused_oversized_request() {
+        let tree = TempTree::new("daemon-max-registration-restart");
+        let id = "i".repeat(crate::wire::MAX_ID_BYTES);
+        let container = "c".repeat(crate::wire::MAX_CONTAINER_BYTES);
+        std::fs::create_dir_all(tree.at(&format!(
+            "dev.slice/dev-gates.slice/docker-{container}.scope"
+        )))
+        .expect("maximum-length scope component");
+        let mut core = guard(
+            &tree,
+            Config::defaults(),
+            Arc::new(ManualClock::new(1)),
+            &tree.at("absent.pressure"),
+        );
+        let register = format!(
+            "{{\"v\":\"{}\",\"verb\":\"register\",\"id\":\"{id}\",\"container\":\"{container}\"}}",
+            crate::REGISTRATION_VERSION
+        );
+        let reply = socket::answer(&mut core, Role::Registrant, &register);
+        assert_eq!(reply.get("ok").and_then(Value::as_bool), Some(true));
+        let line = std::fs::read_to_string(core.journal().file()).expect("maximum row");
+        assert!(line.len() <= crate::json::MAX_DOCUMENT_BYTES);
+        drop(core);
+
+        let mut restarted = guard(
+            &tree,
+            Config::defaults(),
+            Arc::new(ManualClock::new(2)),
+            &tree.at("absent.pressure"),
+        );
+        assert_eq!(restarted.journal().seq(), 1, "the largest accepted request recovers");
+        let too_long_id = "i".repeat(crate::wire::MAX_ID_BYTES + 1);
+        let oversized = format!(
+            "{{\"v\":\"{}\",\"verb\":\"heartbeat\",\"id\":\"{too_long_id}\"}}",
+            crate::REGISTRATION_VERSION
+        );
+        let refusal = socket::answer(&mut restarted, Role::Registrant, &oversized);
+        assert_eq!(
+            refusal.get("reason").and_then(Value::as_str),
+            Some("too-large")
+        );
+        assert_eq!(restarted.journal().seq(), 1, "the request adds no journal row");
+        drop(restarted);
+
+        let after_refusal = guard(
+            &tree,
+            Config::defaults(),
+            Arc::new(ManualClock::new(3)),
+            &tree.at("absent.pressure"),
+        );
+        assert_eq!(
+            after_refusal.journal().seq(),
+            1,
+            "restart also succeeds after refusing an oversized request"
+        );
+    }
+
+    #[test]
+    fn socket_events_reply_fits_the_document_and_marks_rows_outside_its_page() {
+        let tree = TempTree::new("daemon-events-reply-bound");
+        let mut core = guard(
+            &tree,
+            Config::defaults(),
+            Arc::new(ManualClock::new(1)),
+            &tree.at("absent.pressure"),
+        );
+        let detail = "x".repeat(700);
+        for at in 0..200 {
+            core.journal
+                .append(&Event::decision("would-freeze", "pressure", "report", at)
+                    .with_detail(&detail))
+                .expect("append event row");
+        }
+        let reply = socket::answer(
+            &mut core,
+            Role::Reader,
+            &format!("{{\"v\":\"{EVENT_VERSION}\",\"verb\":\"events\",\"since_seq\":0}}"),
+        );
+        let text = reply.to_json();
+        assert!(text.len() <= crate::json::MAX_DOCUMENT_BYTES);
+        assert!(Value::parse(&text).is_ok(), "the client document parser accepts it");
+        assert_eq!(reply.get("truncated").and_then(Value::as_bool), Some(true));
+        assert!(
+            reply.get("rows").and_then(Value::as_array).unwrap().len() < 200,
+            "the reply is byte-paged rather than returning the entire ring"
+        );
     }
 
     #[test]

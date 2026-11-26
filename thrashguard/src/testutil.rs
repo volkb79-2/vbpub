@@ -49,6 +49,13 @@ impl TempTree {
         std::fs::write(&path, text).expect("write fixture");
         path
     }
+
+    /// Write arbitrary fixture bytes inside the temp tree.
+    pub fn write_bytes(&self, relative: &str, bytes: &[u8]) -> PathBuf {
+        let path = self.at(relative);
+        std::fs::write(&path, bytes).expect("write fixture bytes");
+        path
+    }
 }
 
 impl Drop for TempTree {

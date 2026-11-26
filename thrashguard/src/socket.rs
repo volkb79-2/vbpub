@@ -177,7 +177,7 @@ fn refuse(role: Role, error: &WireError) -> Value {
         WireError::UnknownKey(_) => "unknown-key",
         WireError::UnknownVerb(_) => "unknown-verb",
         WireError::Version { .. } => "version",
-        WireError::TooLarge { .. } => "too-large",
+        WireError::TooLarge { .. } | WireError::FieldTooLarge { .. } => "too-large",
         WireError::Value { .. } => "value",
         WireError::Empty
         | WireError::Json(_)
@@ -429,5 +429,21 @@ mod tests {
         );
         assert_eq!(reply.get("reason").and_then(Value::as_str), Some("version"));
         assert_eq!(reply.get("v").and_then(Value::as_str), Some(EVENT_VERSION));
+    }
+
+    #[test]
+    fn an_over_limit_registration_field_gets_the_named_too_large_reason() {
+        let mut recorder = Recorder::default();
+        let id = "i".repeat(crate::wire::MAX_ID_BYTES + 1);
+        let line = format!(
+            "{{\"v\":\"{REGISTRATION_VERSION}\",\"verb\":\"heartbeat\",\"id\":\"{id}\"}}"
+        );
+        let reply = answer(&mut recorder, Role::Registrant, &line);
+        assert_eq!(reply.get("ok").and_then(Value::as_bool), Some(false));
+        assert_eq!(reply.get("reason").and_then(Value::as_str), Some("too-large"));
+        assert!(
+            recorder.seen.is_empty(),
+            "oversized fields never reach dispatch"
+        );
     }
 }

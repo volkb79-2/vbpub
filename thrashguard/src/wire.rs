@@ -26,6 +26,10 @@ use crate::{EVENT_VERSION, REGISTRATION_VERSION, STATE_VERSION, VERSION};
 
 /// The largest accepted request line, in bytes.
 pub const MAX_LINE_BYTES: usize = MAX_DOCUMENT_BYTES;
+/// The largest registrant id, in UTF-8 bytes.
+pub const MAX_ID_BYTES: usize = 128;
+/// The largest container id or scope name, in UTF-8 bytes.
+pub const MAX_CONTAINER_BYTES: usize = 128;
 
 /// The version tag of a registrant verb.
 pub const fn registration_version() -> &'static str {
@@ -149,6 +153,15 @@ pub enum WireError {
         /// The observed size.
         bytes: usize,
     },
+    /// A bounded identifier field exceeded its own byte limit.
+    FieldTooLarge {
+        /// The field.
+        key: &'static str,
+        /// The observed size.
+        bytes: usize,
+        /// The field's accepted maximum.
+        limit: usize,
+    },
     /// The document is not valid JSON.
     Json(String),
     /// A required protocol member is missing.
@@ -194,6 +207,9 @@ impl fmt::Display for WireError {
                     f,
                     "the request is {bytes} bytes, above the {MAX_LINE_BYTES}-byte bound"
                 )
+            }
+            Self::FieldTooLarge { key, bytes, limit } => {
+                write!(f, "{key:?} is {bytes} bytes, above its {limit}-byte bound")
             }
             Self::Json(detail) => write!(f, "malformed JSON: {detail}"),
             Self::MissingMember { member } => write!(f, "the request lacks {member:?}"),
@@ -386,6 +402,18 @@ fn required_str(pairs: &[(String, Value)], name: &'static str) -> Result<String,
         return Err(WireError::Value {
             key: name,
             detail: "must not be empty".into(),
+        });
+    }
+    let limit = match name {
+        "id" => MAX_ID_BYTES,
+        "container" => MAX_CONTAINER_BYTES,
+        _ => usize::MAX,
+    };
+    if text.len() > limit {
+        return Err(WireError::FieldTooLarge {
+            key: name,
+            bytes: text.len(),
+            limit,
         });
     }
     Ok(text.to_string())
@@ -613,6 +641,42 @@ mod tests {
             Request::Deregister {
                 id: "rg-1".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn registration_identifiers_accept_the_limit_and_refuse_excess_bytes() {
+        let id = "i".repeat(MAX_ID_BYTES);
+        let container = "c".repeat(MAX_CONTAINER_BYTES);
+        let line = registration_line(&format!(
+            "\"verb\":\"register\",\"id\":\"{id}\",\"container\":\"{container}\""
+        ));
+        assert!(matches!(parse_request(&line), Ok(Request::Register(_))));
+
+        let too_long_id = "i".repeat(MAX_ID_BYTES + 1);
+        let line = registration_line(&format!(
+            "\"verb\":\"heartbeat\",\"id\":\"{too_long_id}\""
+        ));
+        assert_eq!(
+            parse_request(&line),
+            Err(WireError::FieldTooLarge {
+                key: "id",
+                bytes: MAX_ID_BYTES + 1,
+                limit: MAX_ID_BYTES,
+            })
+        );
+
+        let too_long_container = "é".repeat(MAX_CONTAINER_BYTES / 2 + 1);
+        let line = registration_line(&format!(
+            "\"verb\":\"register\",\"id\":\"i\",\"container\":\"{too_long_container}\""
+        ));
+        assert_eq!(
+            parse_request(&line),
+            Err(WireError::FieldTooLarge {
+                key: "container",
+                bytes: MAX_CONTAINER_BYTES + 2,
+                limit: MAX_CONTAINER_BYTES,
+            })
         );
     }
 

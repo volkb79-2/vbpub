@@ -23,7 +23,7 @@
 //! pretending the missing rows never existed. The file itself is the durable
 //! record for a human, and it is never rewritten by a reader.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::json::Value;
@@ -37,6 +37,14 @@ pub const ROTATED_FILE: &str = "events.jsonl.1";
 pub const ROTATE_BYTES: u64 = 1024 * 1024;
 /// Maximum accepted size for one journal generation, including one final row.
 pub const MAX_JOURNAL_FILE_BYTES: u64 = ROTATE_BYTES + crate::json::MAX_DOCUMENT_BYTES as u64;
+/// Leave room for the `events` reply envelope when an individual row is paged.
+const MAX_JOURNAL_TEXT_BYTES: usize = crate::json::MAX_DOCUMENT_BYTES - 1024;
+const TRUNCATED_MARKER: &str = "...[truncated]";
+const MAX_BOOT_ID_BYTES: usize = 128;
+const MAX_SCOPE_FIELD_BYTES: usize = 256;
+const MAX_DETAIL_BYTES: usize = 1024;
+const MAX_SHADOWED_ROWS: usize = 8;
+const MAX_SHADOWED_FIELD_BYTES: usize = 256;
 /// How many recent rows the reader verb answers from memory.
 pub const RECENT_ROWS: usize = 1024;
 /// Where the host's boot id is read from in production.
@@ -208,7 +216,7 @@ impl Journal {
             boot_id: boot_id.to_string(),
             seq,
             rows: Vec::new(),
-            truncated_from: None,
+            truncated_from: (seq > 0).then_some(seq),
         })
     }
 
@@ -241,15 +249,28 @@ impl Journal {
     /// ring, and hand the stamped object back so a reply can report the `seq`.
     pub fn append(&mut self, event: &Event) -> io::Result<Value> {
         self.seq = self.seq.saturating_add(1);
-        let value = event.to_value(&self.boot_id, self.seq);
+        let mut value = event.to_value(&self.boot_id, self.seq);
+        bound_journal_fields(&mut value);
         self.rotate_if_full()?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(self.file())?;
-        let mut line = value.to_json();
-        line.push('\n');
+        let end = file.seek(SeekFrom::End(0))?;
+        if end > 0 {
+            file.seek(SeekFrom::End(-1))?;
+            let mut last = [0];
+            file.read_exact(&mut last)?;
+            file.seek(SeekFrom::End(0))?;
+            if last[0] != b'\n' {
+                file.write_all(b"\n")?;
+            }
+        }
+        let line = value.to_json();
+        debug_assert!(line.len() + 1 <= MAX_JOURNAL_TEXT_BYTES);
         file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
         file.flush()?;
         if self.rows.len() >= RECENT_ROWS {
             let dropped = self.rows.remove(0);
@@ -299,8 +320,8 @@ impl Journal {
     }
 }
 
-/// Recover the highest sequence for this boot from the current and rotated file.
-/// The files are each bounded by the journal's rotation threshold plus one row.
+/// Recover the highest sequence for this boot from a bounded tail of each file.
+/// Only complete, newline-terminated UTF-8 rows can recover a sequence.
 fn existing_sequence(dir: &Path, boot_id: &str) -> io::Result<u64> {
     let mut highest = 0;
     for name in [JOURNAL_FILE, ROTATED_FILE] {
@@ -310,21 +331,26 @@ fn existing_sequence(dir: &Path, boot_id: &str) -> io::Result<u64> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         };
-        let maximum = MAX_JOURNAL_FILE_BYTES;
-        if metadata.len() > maximum {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "journal {} exceeds its {maximum}-byte recovery bound",
-                    path.display()
-                ),
-            ));
-        }
-        let mut contents = String::new();
-        std::fs::File::open(&path)?
-            .take(maximum + 1)
-            .read_to_string(&mut contents)?;
-        for line in contents.lines().filter(|line| !line.trim().is_empty()) {
+        let tail_bytes = crate::json::MAX_DOCUMENT_BYTES as u64;
+        let start = metadata.len().saturating_sub(tail_bytes);
+        let mut file = std::fs::File::open(&path)?;
+        file.seek(SeekFrom::Start(start))?;
+        let mut contents = Vec::with_capacity((metadata.len() - start) as usize);
+        file.take(tail_bytes).read_to_end(&mut contents)?;
+        let first_line = if start == 0 {
+            0
+        } else if let Some(newline) = contents.iter().position(|byte| *byte == b'\n') {
+            newline + 1
+        } else {
+            continue;
+        };
+        for line in complete_lines(&contents[first_line..]) {
+            let Ok(line) = std::str::from_utf8(line) else {
+                continue;
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
             let Ok(row) = Value::parse(line) else {
                 continue;
             };
@@ -339,6 +365,62 @@ fn existing_sequence(dir: &Path, boot_id: &str) -> io::Result<u64> {
         }
     }
     Ok(highest)
+}
+
+/// Iterate only newline-terminated rows, stripping a CR from CRLF input.
+pub fn complete_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes.split_inclusive(|byte| *byte == b'\n').filter_map(|line| {
+        let line = line.strip_suffix(b"\n")?;
+        Some(line.strip_suffix(b"\r").unwrap_or(line))
+    })
+}
+
+/// Bound every peer-influenced string before it reaches the append-only file.
+/// The per-field ceilings keep the worst-case JSON-escaped row well below the
+/// document limit, and every shortened field carries a visible marker.
+fn bound_journal_fields(value: &mut Value) {
+    let Value::Object(fields) = value else {
+        return;
+    };
+    for (name, field) in fields {
+        let limit = match name.as_str() {
+            "boot_id" => Some(MAX_BOOT_ID_BYTES),
+            "unit" | "cgroup" => Some(MAX_SCOPE_FIELD_BYTES),
+            "detail" => Some(MAX_DETAIL_BYTES),
+            _ => None,
+        };
+        if let Some(limit) = limit {
+            truncate_value_string(field, limit);
+        }
+        if name == "shadowed" {
+            let Value::Array(items) = field else {
+                continue;
+            };
+            if items.len() > MAX_SHADOWED_ROWS {
+                items.truncate(MAX_SHADOWED_ROWS - 1);
+                items.push(Value::String(TRUNCATED_MARKER.to_string()));
+            }
+            for item in items {
+                truncate_value_string(item, MAX_SHADOWED_FIELD_BYTES);
+            }
+        }
+    }
+}
+
+fn truncate_value_string(value: &mut Value, max_bytes: usize) {
+    let Value::String(text) = value else {
+        return;
+    };
+    if text.len() <= max_bytes {
+        return;
+    }
+    let prefix_limit = max_bytes.saturating_sub(TRUNCATED_MARKER.len());
+    let mut end = prefix_limit.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push_str(TRUNCATED_MARKER);
 }
 
 #[cfg(test)]
@@ -389,6 +471,89 @@ mod tests {
             row.to_json(),
             "the file holds exactly the replied bytes"
         );
+    }
+
+    #[test]
+    fn append_truncates_peer_influenced_fields_with_a_visible_marker() {
+        let tree = TempTree::new("events-row-bound");
+        let boot = "boot".repeat(MAX_BOOT_ID_BYTES);
+        let mut journal = Journal::new(tree.path().join("run"), &boot).expect("journal");
+        let shadowed = (0..MAX_SHADOWED_ROWS + 2)
+            .map(|index| format!("{}-{index}", "界".repeat(400)))
+            .collect::<Vec<_>>();
+        let event = Event::decision("registered", "registered", "report", 1)
+            .with_scope(
+                Some(&"x".repeat(MAX_SCOPE_FIELD_BYTES + 20)),
+                Some(&"y".repeat(MAX_SCOPE_FIELD_BYTES + 20)),
+                Some(1),
+            )
+            .with_detail(&"é".repeat(MAX_DETAIL_BYTES + 100))
+            .with_shadowed(&shadowed);
+        let row = journal.append(&event).expect("bounded append");
+        let line = std::fs::read_to_string(journal.file()).expect("journal line");
+        assert!(line.len() <= crate::json::MAX_DOCUMENT_BYTES);
+        assert!(line.trim_end().len() < MAX_JOURNAL_TEXT_BYTES);
+        for field in ["boot_id", "unit", "cgroup", "detail"] {
+            assert!(
+                row.get(field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.ends_with(TRUNCATED_MARKER)),
+                "{field} was shortened with a visible marker"
+            );
+        }
+        let shadowed = row.get("shadowed").and_then(Value::as_array).expect("shadowed");
+        assert_eq!(shadowed.len(), MAX_SHADOWED_ROWS);
+        assert_eq!(shadowed.last().and_then(Value::as_str), Some(TRUNCATED_MARKER));
+        assert_eq!(Value::parse(line.trim()).expect("valid row"), row);
+    }
+
+    #[test]
+    fn recovery_scans_a_bounded_tail_instead_of_rejecting_a_large_generation() {
+        let tree = TempTree::new("events-large-generation");
+        let dir = tree.at("run");
+        std::fs::create_dir_all(&dir).expect("state dir");
+        let prior = Event::decision("would-freeze", "pressure", "report", 1)
+            .to_value(BOOT, 77)
+            .to_json();
+        let mut contents = vec![b'x'; MAX_JOURNAL_FILE_BYTES as usize + 4096];
+        contents.push(b'\n');
+        contents.extend_from_slice(prior.as_bytes());
+        contents.push(b'\n');
+        std::fs::write(dir.join(JOURNAL_FILE), contents).expect("large generation");
+
+        let mut journal = Journal::new(&dir, BOOT).expect("large file does not block restart");
+        let next = journal
+            .append(&Event::decision("would-thaw", "pressure", "report", 2))
+            .expect("append after restart");
+        assert_eq!(next.get("seq").and_then(Value::as_i64), Some(78));
+    }
+
+    #[test]
+    fn a_torn_utf8_tail_is_skipped_and_append_starts_a_new_line() {
+        let tree = TempTree::new("events-torn-utf8");
+        let dir = tree.at("run");
+        std::fs::create_dir_all(&dir).expect("state dir");
+        let prior = Event::decision("would-freeze", "pressure", "report", 1)
+            .to_value(BOOT, 4)
+            .to_json();
+        let mut contents = format!("{prior}\n{{\"boot_id\":\"").into_bytes();
+        contents.extend_from_slice(&[0xf0, 0x9f]);
+        std::fs::write(dir.join(JOURNAL_FILE), contents).expect("torn tail");
+
+        let mut journal = Journal::new(&dir, BOOT).expect("invalid UTF-8 tail is ignored");
+        let row = journal
+            .append(&Event::decision("would-thaw", "pressure", "report", 2))
+            .expect("append after torn tail");
+        assert_eq!(row.get("seq").and_then(Value::as_i64), Some(5));
+        let bytes = std::fs::read(journal.file()).expect("journal bytes");
+        let complete: Vec<&[u8]> = complete_lines(&bytes).collect();
+        assert_eq!(complete.len(), 3, "the torn fragment is isolated by a newline");
+        assert_eq!(
+            std::str::from_utf8(complete[2]).expect("new row is valid UTF-8"),
+            row.to_json()
+        );
+        let restarted = Journal::new(&dir, BOOT).expect("second restart");
+        assert_eq!(restarted.seq(), 5, "the complete row's sequence is recovered");
     }
 
     #[test]
@@ -493,6 +658,23 @@ mod tests {
             "a client behind the window is told it missed rows"
         );
         assert_eq!(journal.retained(), RECENT_ROWS);
+    }
+
+    #[test]
+    fn restart_marks_the_pre_restart_prefix_as_truncated() {
+        let tree = TempTree::new("events-restart-truncated");
+        let mut first = journal(&tree);
+        first
+            .append(&Event::decision("would-freeze", "pressure", "report", 1))
+            .expect("first row");
+        drop(first);
+
+        let restarted = journal(&tree);
+        let (rows, truncated) = restarted.rows_since(0);
+        assert!(rows.is_empty());
+        assert!(truncated, "a new in-memory ring cannot claim the old prefix");
+        let (_, truncated) = restarted.rows_since(restarted.seq());
+        assert!(!truncated, "a caller already at the recovered sequence is current");
     }
 
     #[test]

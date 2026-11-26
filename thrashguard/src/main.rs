@@ -196,20 +196,31 @@ fn local_events_reply(state_dir: &Path, boot_id: &str, since_seq: u64) -> Result
                 events::MAX_JOURNAL_FILE_BYTES
             ));
         }
-        let mut text = String::new();
+        let mut contents = Vec::new();
         std::fs::File::open(&path)
             .map_err(|error| format!("cannot open {}: {error}", path.display()))?
             .take(events::MAX_JOURNAL_FILE_BYTES + 1)
-            .read_to_string(&mut text)
+            .read_to_end(&mut contents)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        if text.len() as u64 > events::MAX_JOURNAL_FILE_BYTES {
+        if contents.len() as u64 > events::MAX_JOURNAL_FILE_BYTES {
             return Err(format!(
                 "{} grew beyond the {}-byte journal-file bound while reading",
                 path.display(),
                 events::MAX_JOURNAL_FILE_BYTES
             ));
         }
-        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if !contents.is_empty() && !contents.ends_with(b"\n") {
+            damaged = true;
+        }
+        for bytes in events::complete_lines(&contents) {
+            let Ok(line) = std::str::from_utf8(bytes) else {
+                damaged = true;
+                continue;
+            };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
             match Value::parse(line) {
                 Ok(value) if value.get("boot_id").and_then(Value::as_str) == Some(boot_id) => {
                     let Some(seq) = value
@@ -250,44 +261,8 @@ fn local_events_reply(state_dir: &Path, boot_id: &str, since_seq: u64) -> Result
         expected = seq.saturating_add(1);
     }
 
-    let mut page = Vec::new();
-    let mut limited = false;
-    for (_, row) in selected {
-        if page.len() == events::RECENT_ROWS {
-            limited = true;
-            break;
-        }
-        let mut candidate = page.clone();
-        candidate.push(row.clone());
-        if daemon::events_reply(boot_id, candidate, truncated)
-            .to_json()
-            .len()
-            + 1
-            > thrashguard::json::MAX_DOCUMENT_BYTES
-        {
-            if page.is_empty() {
-                return Err(format!(
-                    "the next event row exceeds the {}-byte reply bound",
-                    thrashguard::json::MAX_DOCUMENT_BYTES
-                ));
-            }
-            limited = true;
-            break;
-        }
-        page.push(row);
-    }
-    truncated |= limited;
-
-    loop {
-        let reply = daemon::events_reply(boot_id, page.clone(), truncated);
-        if reply.to_json().len() < thrashguard::json::MAX_DOCUMENT_BYTES {
-            return Ok(reply);
-        }
-        if page.pop().is_none() {
-            return Err("the empty events reply exceeds its document bound".to_string());
-        }
-        truncated = true;
-    }
+    let rows: Vec<Value> = selected.into_iter().map(|(_, row)| row).collect();
+    Ok(daemon::bounded_events_reply(boot_id, &rows, truncated))
 }
 
 /// `serve`: the tick loop and the two sockets (design §2, §3 D7, §5 row P1).
@@ -680,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn local_events_refuses_a_single_row_that_exceeds_the_reply_byte_bound() {
+    fn local_events_marks_a_row_outside_the_reply_byte_bound_as_truncated() {
         let tree = TempTree::new("main-events-byte-bound");
         let row = local_event_line(
             "boot-x",
@@ -697,9 +672,29 @@ mod tests {
                 > thrashguard::json::MAX_DOCUMENT_BYTES
         );
         tree.write("run/events.jsonl", &row);
-        let error = local_events_reply(&tree.path().join("run"), "boot-x", 0)
-            .expect_err("one oversized row is refused rather than printed unbounded");
-        assert!(error.contains("reply bound"), "{error}");
+        let reply = local_events_reply(&tree.path().join("run"), "boot-x", 0)
+            .expect("one oversized row is excluded from the bounded page");
+        assert!(reply.to_json().len() <= thrashguard::json::MAX_DOCUMENT_BYTES);
+        assert_eq!(reply.get("truncated").and_then(Value::as_bool), Some(true));
+        assert_eq!(reply.get("rows").and_then(Value::as_array).map(<[_]>::len), Some(0));
+    }
+
+    #[test]
+    fn local_events_skips_a_torn_utf8_tail_and_says_the_page_is_incomplete() {
+        let tree = TempTree::new("main-events-torn-utf8");
+        let row = local_event_line("boot-x", 1, "");
+        let path = tree.write("run/events.jsonl", &format!("{row}\n"));
+        let mut bytes = std::fs::read(&path).expect("valid row bytes");
+        bytes.extend_from_slice(b"{\"detail\":\"");
+        bytes.extend_from_slice(&[0xf0, 0x9f]);
+        tree.write_bytes("run/events.jsonl", &bytes);
+
+        let reply = local_events_reply(&tree.path().join("run"), "boot-x", 0)
+            .expect("a malformed tail does not prevent reading complete rows");
+        assert_eq!(reply.get("truncated").and_then(Value::as_bool), Some(true));
+        let rows = reply.get("rows").and_then(Value::as_array).expect("rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("seq").and_then(Value::as_i64), Some(1));
     }
 
     #[test]
