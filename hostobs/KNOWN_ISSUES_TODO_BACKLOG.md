@@ -1151,11 +1151,12 @@ in **three** copies, only one of them pinned:
 - `python/tests/fake_probe.py:26-31` (`ERROR_CODES`), iterated by
   `test_client_conn.py:171`; no test asserts its length, its order or that it equals §10.
 
-**Impact.** The first client after a socket-activated start usually lands in the window;
-`deploy/systemd/hostobs-observe.socket:8` sets `Accept=no` and LIVE-DEMO part (b) enables only the
-socket units (`docs/LIVE-DEMO.md:122`), so that client starts the probe. It is a race, not a
-certainty: the sampler publishes its first tick before its first sleep (`bins/probe/src/sampler.rs:849-858`)
-and `main.rs:109` spawns it before `driver::run` at `:119`, so a start-on-demand probe closes the
+**Impact.** The first client after a socket-activated start usually lands in the window:
+`deploy/systemd/hostobs-observe.socket:8` sets `Accept=no`, so where the probe is not already
+running that client starts it. LIVE-DEMO part (b) step 3 enables and starts the service, which
+leaves such a client only on a host where the service is stopped or not enabled, or during
+start-up. It is a race, not a certainty: the sampler publishes its first tick before its first
+sleep (`bins/probe/src/sampler.rs:849-858`) and `main.rs:109` spawns it before `driver::run` at `:119`, so a start-on-demand probe closes the
 window within one scan; a probe already sampling (the unit is `WantedBy=multi-user.target`,
 `deploy/systemd/hostobs-probe.service:50-51`) has closed it for every later client. When the client
 does land in it, `internal` is indistinguishable from a real server fault. The shipped `watch`
