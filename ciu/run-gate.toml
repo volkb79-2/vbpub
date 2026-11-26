@@ -12,9 +12,13 @@ schema_version = 1
 # LANE DISTINCTION (CIU-190):
 #   `ciu`      = the ASYNC R2 mutation lane (R0-R3, native mutation + liveness). It is
 #                NOT a release gate; run it only on the latest release, as a campaign.
-#                Native R2 with liveness needs the cgroup observer, hence
+#                Native R2 needs the cgroup observer because EVERY candidate is judged
+#                against observed candidate resource-limit counters (assay
+#                `_read_candidate_resource_counters`, `observation_required=True`), hence
 #                resource_observer = "cgprofile" and resources.pids below; without them
 #                the verdict is always NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE.
+#                (Liveness itself reads its own procfs sources; the observer is not its
+#                dependency, and `liveness = true` is a separate declaration.)
 #   `ciu-gate` = the RELEASE gate (R0+R1+R3, no mutation, no observer needed).
 # Same observer pattern as pwmcp/run-gate.toml [lanes.r2] and
 # run-gate-project/run-gate.toml [lanes.assay-r2].

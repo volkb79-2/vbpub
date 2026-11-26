@@ -361,11 +361,20 @@ at it.
 ### 1. Run the codified check suite
 
 ```sh
-tls-edge/scripts/verify.sh
+tls-edge/scripts/verify.sh --domain app.example.test
 ```
 
-Checks: template freshness, socket-proxy policy, TLS cert loaded (not the
-Traefik self-signed default), canary route end-to-end, ops isolation probe.
+Checks: the bundled `<root>/ciu check`, the rendered compose, container health,
+the `ingress_public` and internal networks, the socket-proxy policy, the
+optional HTTP redirect, the served certificate, the ACME state, the canary
+route, access-log format, and the optional `--ops-check` isolation probe.
+`--domain` must be a host name the edge already serves a certificate for.
+Check 9 uses that name for TLS SNI and the fixed
+`tls-edge-verify-canary.invalid` value for the HTTP Host; its router has
+`tls=true` and no `certresolver`, so the canary orders no certificate.
+For `--ops-check`, a mistyped container name or port, or a timeout, also reads
+as unreachable, so check the arguments.
+`--no-canary` remains an optional way to skip check 9.
 
 ### 2. Check Traefik saw your service
 
