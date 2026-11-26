@@ -343,12 +343,9 @@ impl socket::Dispatch for Core {
                 match self.store.register(registration) {
                     Ok(stored) => {
                         self.write(
-                            Event::decision("registered", "registered", mode, now).with_scope(
-                                Some(&stored.id),
-                                Some(&cgroup),
-                                Some(cgroup_id),
-                            )
-                            .with_shadowed(&stored.scope.shadowed),
+                            Event::decision("registered", "registered", mode, now)
+                                .with_scope(Some(&stored.id), Some(&cgroup), Some(cgroup_id))
+                                .with_shadowed(&stored.scope.shadowed),
                         );
                         crate::wire::register_ok(&body.id, &cgroup, cgroup_id, self.store.ttl_s())
                     }
@@ -643,7 +640,8 @@ pub fn serve(core: Core, endpoints: &Endpoint, tick_s: u64) -> io::Result<()> {
             .registrant
             .iter()
             .map(|listener| (Role::Registrant, listener));
-        for (role, listener) in registrant.chain(std::iter::once((Role::Reader, &endpoints.reader))) {
+        for (role, listener) in registrant.chain(std::iter::once((Role::Reader, &endpoints.reader)))
+        {
             let accepted = match listener.accept() {
                 Ok((stream, _)) => stream,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
@@ -1042,12 +1040,16 @@ mod tests {
     #[test]
     fn static_units_remain_candidates_after_multiple_heartbeat_ttls() {
         let tree = TempTree::new("daemon-static-lifetime");
-        std::fs::create_dir_all(tree.at("dev-gates.slice/static.scope"))
-            .expect("static scope");
+        std::fs::create_dir_all(tree.at("dev-gates.slice/static.scope")).expect("static scope");
         let mut config = Config::defaults();
         config.static_units = vec![static_unit("static", "dev-gates.slice/static.scope")];
         let clock = Arc::new(ManualClock::new(1));
-        let mut core = guard(&tree, config, Arc::clone(&clock), &tree.at("absent.pressure"));
+        let mut core = guard(
+            &tree,
+            config,
+            Arc::clone(&clock),
+            &tree.at("absent.pressure"),
+        );
         let ttl_s = core.store().ttl_s();
 
         for _ in 0..2 {
@@ -1075,7 +1077,11 @@ mod tests {
         let mut core = Core::new(config, clock.clone(), &pressure, tree.path(), "boot-test")
             .expect("guard over the tree");
 
-        assert_eq!(core.tick(), Action::None, "pressure is ignored during grace");
+        assert_eq!(
+            core.tick(),
+            Action::None,
+            "pressure is ignored during grace"
+        );
         clock.advance_s(1);
         assert_eq!(core.tick(), Action::Freeze, "the threshold applies at 60 s");
     }

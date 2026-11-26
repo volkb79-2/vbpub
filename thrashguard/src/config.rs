@@ -880,7 +880,10 @@ mod tests {
     const DOCUMENTS: [(&str, &str); 3] = [
         ("README.md", include_str!("../README.md")),
         ("docs/CONSUMERS.md", include_str!("../docs/CONSUMERS.md")),
-        ("docs/DESIGN-GUIDE.md", include_str!("../docs/DESIGN-GUIDE.md")),
+        (
+            "docs/DESIGN-GUIDE.md",
+            include_str!("../docs/DESIGN-GUIDE.md"),
+        ),
     ];
 
     fn toml_blocks(markdown: &str) -> (Vec<String>, bool) {
@@ -962,7 +965,10 @@ mod tests {
         for (path, markdown) in DOCUMENTS {
             all_docs.push_str(markdown);
             let (examples, unclosed) = toml_blocks(markdown);
-            assert!(!unclosed, "{path}: an opening TOML fence has no closing fence");
+            assert!(
+                !unclosed,
+                "{path}: an opening TOML fence has no closing fence"
+            );
             for (index, text) in examples.iter().enumerate() {
                 let label = format!("{path} TOML example {}", index + 1);
                 let config = parse_layer(text, &label).and_then(|layer| merge(&[layer]));
@@ -970,14 +976,14 @@ mod tests {
                 example_count += 1;
             }
         }
-        assert!(example_count > 0, "the consumer docs must show a config example");
+        assert!(
+            example_count > 0,
+            "the consumer docs must show a config example"
+        );
 
         for (vocabulary, values) in [
             ("mode", &["off", "report", "enforce"][..]),
-            (
-                "victim_rule",
-                &["newest", "refault", "smallest-enough"][..],
-            ),
+            ("victim_rule", &["newest", "refault", "smallest-enough"][..]),
             ("priority", &["freezable", "last-resort"][..]),
             (
                 "refusal reason",
@@ -1020,10 +1026,17 @@ mod tests {
                     continue;
                 }
                 let (path_part, anchor) = target.split_once('#').unwrap_or((target, ""));
-                let path = root.join(source).parent().expect("doc parent").join(path_part);
+                let path = root
+                    .join(source)
+                    .parent()
+                    .expect("doc parent")
+                    .join(path_part);
                 assert!(path.exists(), "{source}: broken local link {target:?}");
                 if !anchor.is_empty() {
-                    assert!(path.is_file(), "{source}: anchor link target is not a file: {target:?}");
+                    assert!(
+                        path.is_file(),
+                        "{source}: anchor link target is not a file: {target:?}"
+                    );
                     let linked = std::fs::read_to_string(&path)
                         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
                     assert!(

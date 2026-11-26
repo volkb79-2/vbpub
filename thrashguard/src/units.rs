@@ -973,7 +973,10 @@ mod tests {
             },
         )
         .expect_err("a partial search cannot prove uniqueness");
-        assert!(rejected_branch, "the injected unreadable branch was visited");
+        assert!(
+            rejected_branch,
+            "the injected unreadable branch was visited"
+        );
         assert_eq!(refusal.reason(), "unreadable");
         assert!(refusal.detail().contains("dev-background.slice"));
     }
@@ -1031,8 +1034,7 @@ mod tests {
     #[test]
     fn a_static_path_refuses_a_symlink_before_protected_ancestor_checks() {
         let tree = TempTree::new("units-static-symlink");
-        std::fs::create_dir_all(tree.at("system.slice/ssh.service"))
-            .expect("protected target");
+        std::fs::create_dir_all(tree.at("system.slice/ssh.service")).expect("protected target");
         let link = tree.at("dev-gates.slice/ssh.service");
         std::os::unix::fs::symlink("../system.slice/ssh.service", &link).expect("symlink");
         let unit = StaticUnit {

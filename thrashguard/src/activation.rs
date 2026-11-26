@@ -25,9 +25,9 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::os::raw::{c_int, c_void};
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixListener;
-use std::os::raw::{c_int, c_void};
 
 use crate::socket::Role;
 
@@ -404,7 +404,10 @@ mod tests {
                 ("reader".to_string(), fd + 1),
             ]),
         };
-        assert!(matches!(adopt(plan), Err(ActivationError::Descriptor { .. })));
+        assert!(matches!(
+            adopt(plan),
+            Err(ActivationError::Descriptor { .. })
+        ));
     }
 
     #[test]

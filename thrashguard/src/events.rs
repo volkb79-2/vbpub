@@ -314,7 +314,10 @@ fn existing_sequence(dir: &Path, boot_id: &str) -> io::Result<u64> {
         if metadata.len() > maximum {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("journal {} exceeds its {maximum}-byte recovery bound", path.display()),
+                format!(
+                    "journal {} exceeds its {maximum}-byte recovery bound",
+                    path.display()
+                ),
             ));
         }
         let mut contents = String::new();

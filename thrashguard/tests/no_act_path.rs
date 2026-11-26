@@ -280,10 +280,8 @@ fn process_spawn_and_file_options_patterns_are_in_the_lexical_boundary() {
 #[test]
 fn the_service_write_path_is_created_by_tmpfiles_on_each_boot() {
     let project = manifest_dir();
-    let service = std::fs::read_to_string(
-        project.join("deploy/systemd/thrashguard.service"),
-    )
-    .expect("service unit is readable");
+    let service = std::fs::read_to_string(project.join("deploy/systemd/thrashguard.service"))
+        .expect("service unit is readable");
     let tmpfiles = std::fs::read_to_string(project.join("deploy/tmpfiles.d/thrashguard.conf"))
         .expect("tmpfiles declaration is readable");
     assert!(!service.contains("github.com/example"));

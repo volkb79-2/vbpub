@@ -13,8 +13,8 @@
 
 #![forbid(unsafe_code)]
 
-use std::path::Path;
 use std::io::Read;
+use std::path::Path;
 use std::process::ExitCode;
 
 use std::sync::Arc;
@@ -170,8 +170,8 @@ fn candidates(config: &Config, args: &Args) -> Result<(), Fatal> {
 /// `--since-seq`. Reading it writes nothing.
 fn events(config: &Config, args: &Args) -> Result<(), Fatal> {
     let boot_id = daemon::boot_id();
-    let reply = local_events_reply(&config.state_dir, &boot_id, args.since_seq)
-        .map_err(Fatal::unknown)?;
+    let reply =
+        local_events_reply(&config.state_dir, &boot_id, args.since_seq).map_err(Fatal::unknown)?;
     println!("{}", reply.to_json());
     Ok(())
 }
@@ -340,9 +340,7 @@ fn serve(config: &Config, args: &Args) -> Result<(), Fatal> {
         None => {
             // A foreground run: the paths come from the flags, the daemon's own
             // defaults otherwise.
-            let registrant = config
-                .registrant
-                .then(|| cli::registrant_path(args));
+            let registrant = config.registrant.then(|| cli::registrant_path(args));
             let reader = cli::reader_path(args);
             daemon::bind(registrant.as_deref(), &reader).map_err(Fatal::usage)?
         }
@@ -391,11 +389,11 @@ mod testutil;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::TempTree;
     use thrashguard::config::{StaticUnit, VictimRule};
     use thrashguard::json::Value;
     use thrashguard::psi::Poller;
     use thrashguard::report::{self, ParkingState, Would};
-    use crate::testutil::TempTree;
     use thrashguard::units::Store;
 
     #[test]
@@ -667,13 +665,15 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         tree.write("run/events.jsonl", &text);
-        let reply = local_events_reply(&tree.path().join("run"), "boot-x", 0)
-            .expect("bounded rows");
+        let reply =
+            local_events_reply(&tree.path().join("run"), "boot-x", 0).expect("bounded rows");
         let rows = reply.get("rows").and_then(Value::as_array).expect("rows");
         assert_eq!(rows.len(), events::RECENT_ROWS);
         assert_eq!(rows[0].get("seq").and_then(Value::as_i64), Some(1));
         assert_eq!(
-            rows.last().and_then(|row| row.get("seq")).and_then(Value::as_i64),
+            rows.last()
+                .and_then(|row| row.get("seq"))
+                .and_then(Value::as_i64),
             Some(events::RECENT_ROWS as i64)
         );
         assert_eq!(reply.get("truncated").and_then(Value::as_bool), Some(true));

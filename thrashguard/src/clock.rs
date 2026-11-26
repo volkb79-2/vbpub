@@ -14,8 +14,8 @@
 //! reading still comes from `SystemTime` and is never authoritative.
 
 use core::fmt;
-use std::sync::Mutex;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The kernel's boot-relative uptime source.
@@ -65,9 +65,9 @@ fn parse_uptime_ns(text: &str) -> std::io::Result<u64> {
             "uptime fraction is not a decimal nanosecond value",
         ));
     }
-    let seconds = seconds.parse::<u64>().map_err(|error| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-    })?;
+    let seconds = seconds
+        .parse::<u64>()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
     let mut nanos = if fraction.is_empty() {
         0
     } else {
@@ -86,9 +86,8 @@ fn parse_uptime_ns(text: &str) -> std::io::Result<u64> {
 
 impl Clock for SystemClock {
     fn mono_ns(&self) -> u64 {
-        self.boot_ns.saturating_add(
-            self.start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-        )
+        self.boot_ns
+            .saturating_add(self.start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64)
     }
 
     fn wall_ns(&self) -> u64 {
@@ -183,7 +182,10 @@ mod tests {
 
     #[test]
     fn uptime_is_parsed_as_boot_relative_nanoseconds() {
-        assert_eq!(parse_uptime_ns("12345.067 888.00\n").expect("uptime"), 12_345_067_000_000);
+        assert_eq!(
+            parse_uptime_ns("12345.067 888.00\n").expect("uptime"),
+            12_345_067_000_000
+        );
         assert_eq!(parse_uptime_ns("7 1\n").expect("uptime"), 7_000_000_000);
         assert!(parse_uptime_ns(" ").is_err());
     }
