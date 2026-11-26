@@ -178,10 +178,13 @@ def _selection_object(value: object, path: str, keys: tuple[str, ...]) -> dict:
     for member in value:
         if member not in keys:
             _selection_bad(_unknown_member_path(path, member))
-    for member in keys:
-        if member not in value:
-            _selection_bad(f"{path}.{member}")
     return value
+
+
+def _selection_member(value: dict, member: str, path: str) -> object:
+    if member not in value:
+        _selection_bad(f"{path}.{member}")
+    return value[member]
 
 
 def _selection_u64(value: object, path: str) -> int:
@@ -212,7 +215,7 @@ def canonical_selection(
     tuples use the wire's variant order: ``inc``, ``cgroup_id``, ``path``, ``prefix``, ``all``.
     """
     selection = _selection_object(value, "selection", ("entities", "metrics"))
-    entities = selection["entities"]
+    entities = _selection_member(selection, "entities", "selection")
     if not isinstance(entities, list) or not 1 <= len(entities) <= 16:
         _selection_bad("selection.entities")
     canonical_entities: list[tuple[object, ...]] = []
@@ -225,10 +228,10 @@ def canonical_selection(
         elif selector == "cgroup_id":
             path = "selection.entities.cgroup_id"
             key = _selection_object(contents, path, ("dev", "inode"))
-            dev = _selection_u64(key["dev"], f"{path}.dev")
+            dev = _selection_u64(_selection_member(key, "dev", path), f"{path}.dev")
             if dev == 0:
                 _selection_bad(f"{path}.dev")
-            inode = _selection_u64(key["inode"], f"{path}.inode")
+            inode = _selection_u64(_selection_member(key, "inode", path), f"{path}.inode")
             if inode == 0:
                 _selection_bad(f"{path}.inode")
             canonical_entities.append(("cgroup_id", dev, inode))
@@ -243,12 +246,7 @@ def canonical_selection(
         else:
             _selection_bad(_unknown_member_path("selection.entities", selector))
 
-    if len(set(canonical_entities)) != len(canonical_entities):
-        _selection_bad("selection.entities")
-    ranks = {"inc": 0, "cgroup_id": 1, "path": 2, "prefix": 3, "all": 4}
-    canonical_entities.sort(key=lambda entity: (ranks[entity[0]], *entity[1:]))
-
-    metrics = selection["metrics"]
+    metrics = _selection_member(selection, "metrics", "selection")
     if not isinstance(metrics, list) or not 1 <= len(metrics) <= 64:
         _selection_bad("selection.metrics")
     if any(
@@ -261,6 +259,12 @@ def canonical_selection(
         for metric in metrics
     ):
         _selection_bad("selection.metrics")
+
+    if len(set(canonical_entities)) != len(canonical_entities):
+        _selection_bad("selection.entities")
+    ranks = {"inc": 0, "cgroup_id": 1, "path": 2, "prefix": 3, "all": 4}
+    canonical_entities.sort(key=lambda entity: (ranks[entity[0]], *entity[1:]))
+
     if len(set(metrics)) != len(metrics):
         _selection_bad("selection.metrics")
 

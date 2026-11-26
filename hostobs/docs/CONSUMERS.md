@@ -445,6 +445,12 @@ including after a reboot or on another host. Keep the reply's `inc` together wit
 absent `cpu.max`; period reports `P` for a readable `Q P` or `max P` line and is `absent` when the
 file is missing.
 
+Send `cgroup_id` only when the negotiated minor is 2 or higher. A pre-minor-2 server refuses the
+member as `bad-request` with `detail.key` `selection.entities.cgroup_id`; a minor-2 server whose
+negotiated minor is below 2 refuses it as `unsupported-feature` with `detail.feature`
+`cgroup_id`. A consumer inside a container uses the host key its launcher passes in (HOB-105);
+this document makes no claim about a container-local `stat`.
+
 ## Status: the live slice
 
 The hostobs live slice is on `main`. It is **not** a versioned release: no tag, package or
