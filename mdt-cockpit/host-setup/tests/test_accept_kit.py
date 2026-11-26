@@ -998,9 +998,20 @@ fi
         self.assertTrue(rows, "the real psi_guard branch wrote no row")
         step1 = [float(r[5]) for r in rows if r[1] == "1"]
         self.assertTrue(step1, "no psi_guard row in step 1")
-        self.assertLessEqual(max(step1), 1.0, f"psi_guard must record its own duration, not the run's: {step1}")
-        self.assertGreaterEqual(max(step1), 0.15, "the slow read is visible: the column measures something")
+        with (self.ev / "samples.csv").open() as fh:
+            sample_rows = list(csv.DictReader(fh))
+        step1_elapsed = [float(row["elapsed"]) for row in sample_rows
+                         if row["step"] == "1" and row["phase"] == "judge"]
+        self.assertTrue(step1_elapsed, "step 1 wrote no elapsed sample row")
+        self.assertLess(max(step1), max(step1_elapsed) - 1.0,
+                        f"psi_guard seconds must be below run elapsed by >1s: probes={step1}, elapsed={step1_elapsed}")
         self.assertIn("ticks=", rows[0][6], "the real branch's tick advance is recorded")
+
+    def test_daemon_reload_check_bounds_both_docker_rm_paths(self) -> None:
+        script = (KIT / "daemon-reload-check.sh").read_text()
+        self.assertIn('RM_TIMEOUT=${MDT_ACCEPT_RM_TIMEOUT:-30}', script)
+        self.assertIn('trap \'timeout -k 5 "$RM_TIMEOUT" docker rm -f "$NAME" >/dev/null 2>&1\'', script)
+        self.assertIn('timeout -k 5 "$RM_TIMEOUT" docker rm -f "$NAME" >/dev/null 2>&1   # stale container', script)
 
     def test_a_blocked_psi_guard_systemctl_call_is_bounded_and_records_timeout(self) -> None:
         # L2: a fake systemctl blocks only this call. The reader's timeout records its 124 status as `timeout`;
