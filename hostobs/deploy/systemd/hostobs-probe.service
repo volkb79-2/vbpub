@@ -1,14 +1,14 @@
 [Unit]
 Description=hostobs host and cgroup sampler
-After=hostobs-observe.socket hostobs-operator.socket
+After=hostobs-observe.socket hostobs-operator.socket hostobs-observer.socket
 
 [Service]
 ExecStart=/usr/local/bin/hostobs-probe --config /etc/hostobs/hostobsd.toml
-Sockets=hostobs-observe.socket hostobs-operator.socket
+Sockets=hostobs-observe.socket hostobs-operator.socket hostobs-observer.socket
 User=hostobs
 Group=hostobs
 Restart=on-failure
-# A configuration or socket-activation refusal is permanent until an operator acts.
+# Socket activation can retry a start-up refusal until the start limit.
 RestartPreventExitStatus=2
 
 # Plan v4 §A.1: NoNewPrivileges=yes.

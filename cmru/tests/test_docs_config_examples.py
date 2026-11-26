@@ -9,6 +9,8 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from cmru import config
 from cmru.config import load_forge_config
 from cmru.version_config import SOURCE_FIELDS
@@ -215,6 +217,27 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
     assert roots == ["src", "../libraries/worktree/src"]
 
 
+def _assert_cmru_assay_lane_contract(lanes):
+    expected_modes = {
+        "cmru": "whole_target",
+        "cmru-r0-r1": "whole_target",
+        "cmru-first-release-r2": "whole_target",
+    }
+    assert set(lanes) == set(expected_modes)
+    for lane_name, expected_mode in expected_modes.items():
+        judge = lanes[lane_name]["judge"]
+        assert "base_source" not in judge, f"{lane_name} declares judge.base_source"
+        assert "base" not in judge, f"{lane_name} declares judge.base"
+        assert judge["mode"] == expected_mode, lane_name
+
+
+def test_cmru_assay_lane_contract_rejects_an_injected_base_source():
+    lanes = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    lanes["cmru"]["judge"]["base_source"] = "request"
+    with pytest.raises(AssertionError, match="cmru declares judge.base_source"):
+        _assert_cmru_assay_lane_contract(lanes)
+
+
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
     # KI-211: cmru's two R2 tools pass `delegated=True` to Assay's base
@@ -233,16 +256,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
             rf"assay_git\.{function}\([^)]*delegated=True", source,
         ), f"{tool} must delegate its base to Assay ({function})"
     assert "delegated=True" in spec
-    # The docs must not claim a lane declares the base (M1): no cmru lane does.
-    for document in ("docs/SPEC.md", "docs/DESIGN-GUIDE.md", "docs/CONSUMERS.md", "README.md", "CHANGES.md"):
-        assert 'judge.base_source = "request"' not in (ROOT / document).read_text(encoding="utf-8"), document
     assert "source roots MUST be unchanged between them" not in spec
 
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
-    for lane_name in ("cmru", "cmru-r0-r1", "cmru-first-release-r2"):
-        # No cmru lane declares a base; the delegation is the tools' own call.
-        assert "base_source" not in assay_config[lane_name]["judge"]
-        assert "base" not in assay_config[lane_name]["judge"]
+    _assert_cmru_assay_lane_contract(assay_config)
     lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
     # R1 needs the complete baseline run to produce its whole-target coverage judgment.

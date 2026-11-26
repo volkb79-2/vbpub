@@ -780,6 +780,15 @@ def test_installer_line_4044_recovering_nocow_is_a_dangerous_action(
     recovered = [action for action in actions.planned if action.argv == chattr]
     assert recovered and recovered[0].dangerous is True
 
+    # DIV2-BL-22: this call takes the EXISTING-subvolume branch, so no create
+    # path may be planned at all. A mutant that turns `if not exists` into a
+    # truthy/negated guard silently plans `btrfs subvolume create` for a
+    # subvolume that is already there -- which on a real host is a destructive
+    # data-placement change, not the harmless NOCOW recovery this test covers.
+    # Assert the ABSENCE of the create argv (never an ordering assumption).
+    create = ("/usr/bin/btrfs", "subvolume", "create", "/.top/@cow")
+    assert not [action for action in actions.planned if action.argv == create]
+
 
 def test_installer_line_4065_a_commented_root_line_is_not_a_fstab_entry(
     tmp_path: Path, monkeypatch,

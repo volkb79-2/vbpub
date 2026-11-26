@@ -8,21 +8,28 @@
 # is the one deliberate exception that mutates a disposable disk image, but
 # only inside the QEMU guest's separate kernel via testing/vm/.
 # Neither fake-integration nor r1-vm-real-commit is part of [lanes.gate];
-# run them by explicit name. r2 joined that list 2026-09-03: it's a NATIVE
-# assay mutation lane, which can only ever be 100%-or-FAIL by assay's own
+# run them by explicit name. r2 joined that list 2026-09-03: it is a native
+# Assay mutation lane, which can only ever be 100%-or-FAIL by assay's own
 # design (no fail_under floor exists for a native lane, unlike an ingested
-# report) -- measured baseline 113 killed / 118 survived = 48.9% against
-# base=origin/main, where the whole debian_install_v2 subtree counts as
-# "changed" (it doesn't exist on main yet), not just any one session's
-# edits, so this reflects the package's overall test-suite maturity, not a
-# regression. r2 still runs and reports its real, complete result whenever
-# invoked by name (`run-gate r2`) or as part of `assay lanes --file
-# assay.toml` inventories -- it's excluded from the aggregate specifically
-# so a pre-existing, estate-typical mutation-coverage gap doesn't block
-# every debian-install-v2 change from merging while closing it properly is
-# out of scope for one session (assay/docs/CONSUMERS.md's own R2-adoption
-# guidance: "adopt R2 deliberately... expand only after observing real
-# runs"). Fold it back into [lanes.gate] once real coverage closes the gap.
+# report) -- the measured whole-tree baseline was 113 killed / 118 survived =
+# 48.9% against base=origin/main, where the whole debian_install_v2 subtree
+# counts as "changed" (it does not exist on main yet), not just any one
+# session's edits, so this reflects the package's overall test-suite maturity,
+# not a regression. r2 still runs and reports its real, complete result
+# whenever invoked by name (`run-gate r2 --base <ref>`) or as part of an
+# `assay lanes --file assay.toml` inventory -- it is excluded from the
+# aggregate specifically so a pre-existing, estate-typical mutation-coverage
+# gap does not block every debian-install-v2 change from merging, while
+# closing it properly is out of scope for one session
+# (assay/docs/CONSUMERS.md's own R2-adoption guidance: "adopt R2
+# deliberately... expand only after observing real runs"). Fold it back into
+# [lanes.gate] once real coverage closes the gap. DIV2-BL-22 (2026-11-26)
+# converted it from a `kind = "command"` lane that drove Assay by hand to the
+# native lane below: a command lane could not shard, its PYTHONPATH went
+# through assay's env_passthrough so judge_sha256 folded in the checkout path
+# and a seeded resume in a new checkout reused nothing (assay B577), and its
+# per-candidate bound was derived from the baseline measured at start, so the
+# verdict moved with host load.
 #
 # Ordinary lanes use environment = "tester-unified", deliberately
 # (run-gate RG-43): as of rev 36, plain "host" is a CONTAINER default
@@ -54,34 +61,62 @@ argv = [
 clean_tree = false
 budget = "5m"
 
-# Mutation testing via a live worktree assay (never a pinned zipapp for an
-# in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md). PYTHONPATH straight
-# at assay/src, not `pip install -e assay`: /opt/tester-venv's
-# site-packages is root-owned (read-only for the tester user this
-# container runs as), and INTERNAL-CONSUMERS.md's own documented mechanism
-# text (`pip install -e assay`) turns out not to actually be exercisable
-# against this image as shipped — `--user` fails too (a real venv without
-# system-site-packages has no user site at all). Verified equivalent: even
-# `pip install -e` never gave assay a real installed-distribution identity
-# either (assay's own "no judge_provenance recorded... imported ... outside
-# the installed distribution" notice already fired on every run this
-# session regardless of install mechanism) — so this isn't a regression,
-# just skipping a step that wasn't doing anything `pip install -e` alone
-# doesn't already concede. The judge policy (source roots, operators,
-# budget) lives in this project's own assay.toml [lanes.r2].
+# Mutation testing as a NATIVE Assay lane (DIV2-BL-22). The judge policy --
+# source roots, operators, budgets, the explicit per-candidate bound -- lives
+# in this project's own assay.toml [lanes.r2]; run-gate binds the JUDGE itself
+# from the judged worktree's own assay/ source (RG-285: editable install of
+# that checkout, import identity verified) and never from a pinned zipapp, so
+# an in-repo consumer needs no `pip install -e assay` here
+# (assay/docs/INTERNAL-CONSUMERS.md).
+#
+# THE PYTHONPATH HISTORY, because two different defects are easy to conflate:
+# an absolute `{worktree}` PYTHONPATH existed from c2d7d6729 (2026-09-03) to
+# 2ea1912ca (2026-11-24) and is what rejected 14 seeded records on 2026-11-24
+# (B577; the digest folded a fresh throwaway-checkout path). c17b2f5f9 that
+# same evening made the value checkout-RELATIVE, and the base commit this
+# change starts from ALREADY carried that relative value together with
+# `env_passthrough = ["PATH", "PYTHONPATH"]`. The 186-record rejection
+# (2026-11-25, run rgw-r2-20261125T223500-r1002) therefore happened WITH the
+# relative value in place: the old lane ran with liveness on, Assay prepends a
+# per-run temp dir to PYTHONPATH then, and the passthrough fingerprinted it
+# (liveness.py:600-603, mutation.py:1601-1609; from code, not reproduced).
+# What still changes here: PYTHONPATH leaves `env_passthrough` entirely and
+# becomes DECLARED, so no passthrough value can carry a checkout path at all
+# and the identity is stable by construction rather than by a value that
+# happens to be identical between checkouts.
+#
+# What run-gate itself supplies to the inner command (build_assay_inner):
+# `--resume --progress .assay/progress-r2.jsonl --state-dir
+# <repo>/.run-gate/assay-state/<project>[/assay-shards/...]` unconditionally
+# (RG-33/RG-38), `--jobs` from `jobs` below (R-53), and `--request-base` from
+# `--base` because the assay lane declares judge.base_source = "request"
+# (RG-26/R-35). Without `--base` the ref is the judged tree's ciu-recorded
+# fork point, else `merge-base HEAD @{upstream}`; a throwaway remote checkout
+# has neither, so a remote run MUST pass `--base` (docs/R2-RUNBOOK.md does).
+#
+# jobs = 2 is EXPLICIT, not "auto", so every host gets the same worker count;
+# it equals the assay lane's own jobs_max, and any count above one additionally
+# requires a Cowtree-confirmed btrfs cheap-clone workspace (a host without that
+# CoW area refuses `--jobs 2` by name; pass `-- --jobs 1` there).
+#
+# No `resources.shared`: a shared-infra lock would serialise the shards of one
+# campaign, and run-gate refuses `--shard` on a lane that declares one.
+#
+# budget 450m = the assay lane's own 430m plus the >= 5m wrapper margin
+# run-gate `lanes --check` requires (R-59). Headroom, not a measured need
+# (complete 194-candidate runs took 174-224 min at 2 jobs).
 [lanes.r2]
-kind = "command"
+kind = "assay"
+assay_lane = "r2"
 resource_observer = "cgprofile"
 environment = "tester-unified"
-argv = [
-    "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && export PYTHONPATH=../../assay/src:../../libraries/cowtree/src:../../libraries/cli-extended/src && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run r2 --request-base \"{base}\" --jobs 2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
-]
+jobs = 2
 clean_tree = false
-# 430m assay bound + 20m orchestration headroom = 450m here. Headroom, not a
-# measured need (see assay.toml).
 budget = "450m"
-artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
+# Keyed by the ASSAY lane name, which is what run-gate itself writes
+# (assay_verdict_rel/assay_progress_rel); a shard instance appends
+# `.shard<K>of<N>` to these names.
+artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 # Proves the gate REJECTS known-bad code — each canary breaks exactly one
 # contract a named test claims to assert, and that test must go red.
@@ -148,6 +183,33 @@ argv = [
 clean_tree = false
 budget = "1h"
 
+# `memory` and `pids` are both REQUIRED by resource_observer = "cgprofile"
+# (run-gate needs them to attribute candidate-local memory and PID-limit
+# events). 2g is the cap the preceding command lane already ran two workers
+# under, so this conversion changes the lane's shape, not its cap.
+# `candidate_ram` is absent on purpose: it is the estimate `jobs = "auto"`
+# reads (R-53), and an explicit count does not consult it.
+#
+# `io_sync = "durable"`, and the reason, because the inherited value is the
+# opposite (run-gate.root.toml sets `relaxed` for tester-unified after the W0
+# host A/B): `durable` REPLACES the environment's relaxed preload and refuses
+# EVERY `--io-sync` override, `strict` included (run_gate.py:1187-1194,
+# :2188-2193; SPEC.md:961-966). It is declared here so that every shard, merge
+# and resume of this lane runs under ONE I/O mode -- an override would produce
+# a series that `[history]` keeps separate (`(lane, commit, io_sync)` is the
+# replacement identity, SPEC.md:974) -- and so the installer's own
+# durability-ordered writes stay real fsyncs: `debian_install_v2/state.py:26`,
+# `actions.py:388`, `config.py:733`, `failure_notify.py:232` all call
+# `os.fsync`, which a relaxed lane's eatmydata preload intercepts. It does NOT
+# slow the Assay store: assay's own verdict/state writes use the raw
+# `syscall(SYS_fsync)` in `assay/src/assay/_durable.py:96-107`, which the
+# preload cannot intercept (CONSUMERS.md:537), so the mutation bookkeeping
+# stays durable either way.
+# The 174-224 min (2026-11-24/25) and 293 s (loaded baseline) figures quoted
+# here and in assay.toml were measured on the PRECEDING lane, which declared
+# no `io_sync` and therefore ran under the environment's RELAXED mode. They are
+# history for the budget sizing, not measurements of this lane.
 [lanes.r2.resources]
-memory = "2g"
 pids = 8192
+memory = "2g"
+io_sync = "durable"

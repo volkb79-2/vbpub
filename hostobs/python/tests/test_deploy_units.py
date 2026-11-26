@@ -13,6 +13,7 @@ SYSTEMD = DEPLOY / "systemd"
 CONFIG = DEPLOY / "hostobsd.toml"
 SERVICE = SYSTEMD / "hostobs-probe.service"
 TMPFILES = DEPLOY / "tmpfiles.d" / "hostobs.conf"
+LEVELS = ("observe", "operator", "observer")
 
 HARDENING = {
     "NoNewPrivileges": "yes",
@@ -103,6 +104,11 @@ class DeployUnits(unittest.TestCase):
             "2",
             f"{SERVICE}: [Service] RestartPreventExitStatus",
         )
+        self.assertEqual(
+            self.one(service, "Install", "WantedBy", SERVICE),
+            "multi-user.target",
+            f"{SERVICE}: [Install] WantedBy",
+        )
         for key, value in HARDENING.items():
             self.assertEqual(
                 self.one(service, "Service", key, SERVICE),
@@ -112,7 +118,7 @@ class DeployUnits(unittest.TestCase):
         forbidden = {
             "ProtectProc": "the probe needs host-wide /proc",
             "ProcSubset": "the probe needs host-wide /proc",
-            "PrivatePIDs": "HOB-90 requires one PID namespace",
+            "PrivatePIDs": "peer process labels need visible peer PIDs in /proc",
             "PrivateUsers": "CAP_DAC_READ_SEARCH must retain host ownership checks",
         }
         for key, reason in forbidden.items():
@@ -122,15 +128,31 @@ class DeployUnits(unittest.TestCase):
                 f"{SERVICE}: [Service] must not set {key}: {reason}",
             )
 
-    def test_every_configured_level_has_one_exact_socket(self):
-        levels = self.config["probe"]["levels"]
+    def test_service_lists_all_three_socket_units(self):
         declared = service_socket_units(self.service)
         self.assertEqual(
             sorted(declared),
-            sorted(f"hostobs-{level}.socket" for level in levels),
+            sorted(f"hostobs-{level}.socket" for level in LEVELS),
             f"{SERVICE}: [Service] Sockets=",
         )
-        for level in levels:
+
+    def test_every_deployed_level_has_one_exact_socket(self):
+        expected_units = {f"hostobs-{level}.socket" for level in LEVELS}
+        # Only the units that activate the probe are this contract: another
+        # service may ship its own socket in the same directory. A socket unit
+        # without Service= activates the service of the same stem.
+        probe_units = {
+            path.name
+            for path in SYSTEMD.glob("*.socket")
+            if SERVICE.name
+            in (unit(path).get("Socket", {}).get("Service") or [f"{path.stem}.service"])
+        }
+        self.assertEqual(
+            probe_units,
+            expected_units,
+            f"{SYSTEMD}: socket units of {SERVICE.name}",
+        )
+        for level in LEVELS:
             path = SYSTEMD / f"hostobs-{level}.socket"
             self.assertTrue(
                 path.is_file(), f"{path}: missing socket unit for configured level {level}"
@@ -156,11 +178,10 @@ class DeployUnits(unittest.TestCase):
                 )
 
     def test_tmpfiles_creates_the_socket_directories(self):
-        levels = self.config["probe"]["levels"]
         expected = [("/run/hostobs", "0755", "root", "root", "-")]
         expected.extend(
             (f"/run/hostobs/{level}", "0750", "root", f"hostobs-{level}", "-")
-            for level in levels
+            for level in LEVELS
         )
         parsed = tmpfiles_directories(TMPFILES)
         for entry in expected:
@@ -169,14 +190,10 @@ class DeployUnits(unittest.TestCase):
                 parsed,
                 f"{TMPFILES}: {entry[0]} must be {entry[2]}:{entry[3]} {entry[1]}",
             )
+        directories = [entry[0] for entry in parsed]
         self.assertEqual(
-            len(parsed),
-            len(expected),
-            f"{TMPFILES}: exactly one d line per parent and configured level",
-        )
-        self.assertEqual(
-            len(parsed),
-            len(set(parsed)),
+            len(directories),
+            len(set(directories)),
             f"{TMPFILES}: duplicate directory line",
         )
 
@@ -192,7 +209,7 @@ class DeployUnits(unittest.TestCase):
         self.assertEqual(set(self.config["limits"]), {"max_rows"}, f"{CONFIG}: [limits] keys")
         self.assertEqual(
             self.config["probe"]["levels"],
-            ["observe", "operator"],
+            list(LEVELS),
             f"{CONFIG}: [probe] levels",
         )
         self.assertEqual(

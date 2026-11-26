@@ -17,6 +17,7 @@ shutil.copy2(repo / "scripts/controller/ctl-hygiene.sh", controller / "ctl-hygie
 shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
 shutil.copy2(repo / "scripts/controller/pi-live.py", controller / "pi-live.py")
 shutil.copy2(repo / "scripts/controller/job-status.sh", controller / "job-status.sh")
+
 # A mutant wrapper must be judged on the change it carries, not on a missing
 # sibling file: the continuation prompt is read from SCRIPT_DIR.
 shutil.copy2(repo / "scripts/controller/continue-empty-completion.md", controller / "continue-empty-completion.md")
@@ -48,6 +49,100 @@ def mutant(source: str, name: str, before: str, after: str, destination: Path = 
     target.chmod(0o755)
     return target
 
+def pi_review_mutant(name: str, before: str, after: str) -> Path:
+    """A pi-review.sh mutant keeps its siblings: the launcher runs
+    "$SCRIPT_DIR/pi-impl.sh", so a copy without them would fail for every check
+    and be "killed" by a missing file instead of by the mutation."""
+    source = repo / "scripts/controller/pi-review.sh"
+    original = source.read_text(encoding="utf-8")
+    if original.count(before) != 1:
+        raise SystemExit(f"{source}: expected one mutation target, found {original.count(before)}: {before!r}")
+    variant = controller / name
+    variant.mkdir(parents=True)
+    for filename in ("lib.sh", "pi-impl.sh", "pi-live.py", "opendesign-accounts.py", "continue-empty-completion.md"):
+        shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
+    # pi-impl.sh refuses to launch without its signal-guard shims beside it.
+    shutil.copytree(repo / "scripts/controller/pi-shims", variant / "pi-shims")
+    target = variant / "pi-review.sh"
+    target.write_text(original.replace(before, after, 1), encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
+
+pi_review_mutant("pi-review-account-inverted",
+       "    volker) review_account=github2 ;;\n    github2) review_account=volker ;;",
+       "    volker) review_account=volker ;;\n    github2) review_account=github2 ;;")
+pi_review_mutant("pi-review-head-only",
+       '  [[ $TREE_SYMHEAD == "$before_symhead" ]] || changed="${changed:+$changed, }head-branch"',
+       '  :')
+pi_review_mutant("pi-review-index-only",
+       '  [[ $TREE_INDEX == "$before_index" ]] || changed="${changed:+$changed, }index-flags"',
+       '  :')
+pi_review_mutant("pi-review-exclude-only",
+       '  [[ $TREE_EXCLUDE == "$before_exclude" ]] || changed="${changed:+$changed, }exclude"',
+       '  :')
+pi_review_mutant("pi-review-untracked-content-only",
+       '  [[ $TREE_UNTRACKED == "$before_untracked" ]] || changed="${changed:+$changed, }untracked-content"',
+       '  :')
+pi_review_mutant("pi-review-diff-only",
+       '  [[ $TREE_DIFF == "$before_diff" ]] || changed="${changed:+$changed, }diff"',
+       '  :')
+pi_review_mutant("pi-review-tools-wide",
+       "printf '%s|n' --tools read,grep,find,ls --exclude-tools".replace("|", chr(92)),
+       "printf '%s|n' --tools read,grep,find,ls,bash --exclude-tools".replace("|", chr(92)))
+pi_review_mutant("pi-review-status-no-uall",
+       '  status=$(git -C "$wt" --no-optional-locks status --porcelain=v1 -uall 2>/dev/null) || return 1',
+       '  status=$(git -C "$wt" --no-optional-locks status --porcelain=v1 2>/dev/null) || return 1')
+pi_review_mutant("pi-review-budget-off",
+       '  if (( now_epoch - started_epoch >= review_max_seconds )); then',
+       '  if (( 0 )); then')
+pi_review_mutant("pi-review-budget-bytes-off",
+       '      if [[ $stream_bytes =~ ^[0-9]+$ ]] && (( stream_bytes >= review_max_bytes )); then',
+       '      if (( 0 )); then')
+pi_review_mutant("pi-review-stale-report-overwrite",
+       'if report_path_taken; then\n  echo "the review report already exists',
+       'if false; then\n  echo "the review report already exists')
+# M1' (r2): the two post-launch write branches must record REVIEW-NO-REPORT in
+# the marker before exiting 2, or their `EXIT=0 OUTCOME=SUCCESS` line 1 certifies
+# a review whose report was never saved. The mutant drops the `cp` failure
+# branch body, so a failed write falls through to exit 0: the test's rc-2 and
+# marker assertions both catch it. The sibling branch (the pre-write re-check)
+# needs no mutant of its own -- its test asserts rc 2 AND that the racing
+# writer's file is untouched, which the same mutation would break -- so this
+# suite pays one extra full run for the pair, not two.
+pi_review_mutant("pi-review-report-write-failure-silent",
+       'if ! cp -- "$CONTROLLER_RUNS_DIR/$name.last.txt" "$review_path"; then',
+       'if false; then')
+# M1: the report is persisted only for a settled-success class. The mutant keeps
+# the old rule (any text in last.txt) and must be killed by the CONTEXT-FULL
+# fixture, which carries partial text and a zero pi exit.
+pi_review_mutant("pi-review-report-on-any-text",
+       'if (( launch_rc == 0 )) && [[ $run_outcome == SUCCESS || $run_outcome == UNCOMMITTED ]] &&',
+       'if (( launch_rc == 0 )) && [[ 1 == 1 ]] &&')
+# M2: the earlier review's before-state must survive a retried run name. The
+# mutant drops the refusal, so the material is re-rendered (and pi-impl then
+# refuses), which the byte-identical assertion catches.
+pi_review_mutant("pi-review-material-overwrite",
+       'if [[ -e $REVIEW_MATERIAL_DIR/before-state.txt ]]; then',
+       'if false; then')
+# M3: the process group must be VERIFIED before it is signalled. The mutant
+# signals the group unconditionally, which the pgid shim makes an ESRCH: the log
+# then claims a group stop it never made, and the pid-only message is gone.
+pi_review_mutant("pi-review-group-unverified",
+       'if [[ $launch_pgid =~ ^[0-9]+$ ]] && (( launch_pgid == launch_pid )); then',
+       'if true; then')
+# NOTE: the "a launch not confirmed stopped must not be waited on" branch has no
+# mutant. Nothing in this suite can construct a child that survives TERM+KILL
+# (a KILL to the wrapper's own child always works), so a mutant of it would
+# survive on behaviour the suite cannot observe -- a false green, which is worse
+# than an uncertified safety valve. The branch is stated in the script header
+# and the README instead.
+pi_review_mutant("pi-review-foreign-marker",
+       'if ! marker_is_ours && [[ $marker_before != absent ]]; then',
+       'if false; then')
+pi_review_mutant("pi-review-realpath-fallback",
+       'review_path=$(realpath -m -- "$report_path") || {',
+       'review_path=$(realpath -m -- "$report_path") || review_path=$report_path; false || {')
 
 mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
        "if (( streak >= 2 || flag_newer == 1 )); then",
@@ -1030,6 +1125,14 @@ mutant("scripts/controller/job-status.sh", "job-status-wrapper-dead.sh",
 mutant("scripts/controller/job-status.sh", "job-status-finished.sh",
        '    if (runs_dir / f"{name}.done").is_file():',
        '    if False:')
+# L3' (r2): the three .done readers share ONE rule -- the verdict is any line
+# of the marker that CONTAINS it. job-status used to scan lines 2+ only, so a
+# marker whose line 1 carries the verdict (the launcher's no-marker fallback,
+# `EXIT=5 OUTCOME=REVIEW-BUDGET`) was named only because line 1 was printed
+# verbatim; the class word was never put in front of it the way ctl-status does.
+mutant("scripts/controller/job-status.sh", "job-status-verdict-scan-line1.sh",
+       '        if any(verdict in line for line in marker):',
+       '        if any(verdict in line for line in marker[1:]):')
 # A run without a snapshot must say so instead of reading as healthy.
 mutant("scripts/controller/job-status.sh", "job-status-no-live.sh",
        '    if not live_path.is_file():',

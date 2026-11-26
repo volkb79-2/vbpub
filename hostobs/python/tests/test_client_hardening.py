@@ -148,7 +148,12 @@ class HelloValidation(unittest.TestCase):
         return conn
 
     def test_proto_fields_must_be_exact_integers(self) -> None:
-        for proto in ({"major": 1.0, "minor": 1}, {"major": True, "minor": 1}, {"major": 1, "minor": True}, {"major": 1, "minor": 1.0}):
+        for proto in (
+            {"major": 1.0, "minor": 2},
+            {"major": True, "minor": 2},
+            {"major": 1, "minor": True},
+            {"major": 1, "minor": 2.0},
+        ):
             with self.subTest(proto=proto):
                 self.refused(proto=proto)
 
@@ -160,7 +165,12 @@ class HelloValidation(unittest.TestCase):
         self.assertEqual(self.accepted(epoch=0).epoch, 0)
 
     def test_limits_must_carry_the_clients_own_hello_and_a_frame_header(self) -> None:
-        hello_len = 12 + len(build_request("hello", {"client": "test-client", "proto": {"major": 1, "minor": 1}}))
+        hello_len = 12 + len(
+            build_request(
+                "hello",
+                {"client": "test-client", "proto": {"major": 1, "minor": 2}},
+            )
+        )
         limits = hello_result()["limits"]
         self.refused(limits={**limits, "max_request_bytes": hello_len - 1})
         self.refused(limits={**limits, "max_request_bytes": 0})

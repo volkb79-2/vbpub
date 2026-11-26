@@ -1289,14 +1289,66 @@ def test_b145_probe_cleanup_failure_is_reported_and_exit_trap_retries(
     assert removals[0] == removals[1]
 
 
-def test_gate_script_passes_shellcheck_when_available() -> None:
+RELEASE_GATE_SCRIPT = PROJECT_ROOT / "tools" / "release-gate.sh"
+# release-gate.sh's ONE intended shellcheck note: SC2016 on the single-quoted
+# program the wrapper hands to `bash -c` (tools/release-gate.sh:108). That program
+# must not expand in the wrapper, so the note is deliberate; the companion test
+# below asserts it stays the only finding, which is what keeps this exclusion from
+# hiding a new one.
+RELEASE_GATE_SHELLCHECK_EXCLUDED = "SC2016"
+
+
+@pytest.mark.parametrize(
+    ("script", "excluded"),
+    [
+        pytest.param(GATE_SCRIPT, None, id="tester-unified-gate"),
+        pytest.param(
+            RELEASE_GATE_SCRIPT, RELEASE_GATE_SHELLCHECK_EXCLUDED, id="release-gate"
+        ),
+    ],
+)
+def test_gate_script_passes_shellcheck_when_available(
+    script: Path, excluded: str | None
+) -> None:
+    # nit 5 (P14 round 2): the row that claimed this test covered release-gate.sh
+    # named a test whose GATE_SCRIPT is tools/tester-unified-gate.sh, so
+    # release-gate.sh was clean only because a human ran shellcheck. Both scripts are
+    # checked here at shellcheck's own default severity, so a new unquoted expansion
+    # (SC2086) fails either one.
+    shellcheck = shutil.which("shellcheck")
+    if shellcheck is None:
+        pytest.skip("shellcheck is not installed in this environment")
+    argv = [shellcheck]
+    if excluded is not None:
+        argv.append(f"--exclude={excluded}")
+    argv.append(str(script))
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_release_gate_shellcheck_excludes_exactly_one_intended_note() -> None:
+    """The exclusion above is the intended SC2016 note and nothing else.
+
+    An exclusion is a blind spot by construction, so it is worth a separate check:
+    the JSON form lists EVERY finding at the default severity, and this test fails if
+    a later edit adds a second one or moves the intended note off its line.
+    shellcheck exits non-zero whenever it reports a finding, so the exit status is
+    not the assertion here; the list is.
+    """
     shellcheck = shutil.which("shellcheck")
     if shellcheck is None:
         pytest.skip("shellcheck is not installed in this environment")
     proc = subprocess.run(
-        [shellcheck, str(GATE_SCRIPT)], capture_output=True, text=True, timeout=30
+        [shellcheck, "-f", "json", str(RELEASE_GATE_SCRIPT)],
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    findings = json.loads(proc.stdout or "[]")
+    assert [finding["code"] for finding in findings] == [2016], proc.stdout
+    lines = RELEASE_GATE_SCRIPT.read_text(encoding="utf-8").splitlines()
+    intended = lines[findings[0]["line"] - 1]
+    assert "CONTROLLER_INIT_READONLY=1 bash -c '" in intended, intended
 
 
 def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:

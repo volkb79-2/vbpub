@@ -194,8 +194,17 @@ remote_gate_defaults_loaded=false
 load_remote_gate_defaults() {
   [[ "$remote_gate_defaults_loaded" == true ]] && return 0
   remote_gate_defaults_loaded=true
-  local stderr_file
-  stderr_file=$(mktemp "${TMPDIR:-/tmp}/assay-release-gate-defaults.XXXXXX") || return 0
+  local stderr_file defaults_status
+  if ! stderr_file=$(mktemp "${TMPDIR:-/tmp}/assay-release-gate-defaults.XXXXXX" 2>/dev/null); then
+    # A temporary file that cannot be created is not an empty default: the module was
+    # never imported, so the refusal has to say THAT instead of certifying a path
+    # nothing supplied (absence reported as emptiness). The controller reader above
+    # dies on the same condition because it cannot continue without the file; this
+    # loader only supplies a default, so the problem joins the combined refusal and
+    # the operator still hears about every other unusable setting.
+    remote_gate_defaults_error='cannot create a temporary file for the remote-gate.py defaults import'
+    return 0
+  fi
   if remote_gate_defaults="$(env "${remote_gate_base_env[@]}" python3 - "$remote_gate" 2>"$stderr_file" <<'PYEOF'
 import importlib.util
 import sys
@@ -214,10 +223,18 @@ PYEOF
     :
   else
     # An import that failed is not an empty default: saying so keeps the refusal from
-    # certifying a path the module never supplied.
+    # certifying a path the module never supplied. An import that died without printing
+    # anything at all (a host SIGKILL or cgroup OOM-kill, or a bare SystemExit) leaves no
+    # line to quote, and an empty reason would send BOTH consumers down their
+    # success-side branch and report "DEFAULT_HOSTS resolved to an empty path" -- the
+    # false-source message this change removed, reached through its sibling door. Its
+    # exit status is the one fact such a death leaves behind, so the replacement reason
+    # is set here once, before either consumer tests the value, and they agree on it.
+    defaults_status=$?
     remote_gate_defaults=""
     remote_gate_defaults_error="$(<"$stderr_file")"
     remote_gate_defaults_error=${remote_gate_defaults_error##*$'\n'}
+    remote_gate_defaults_error="${remote_gate_defaults_error:-remote-gate.py defaults import exited $defaults_status}"
   fi
   rm -f -- "$stderr_file"
 }
@@ -377,14 +394,32 @@ start_heartbeat() {
   (
     set +e
     sleep_pid=""
-    # `$!` is the pid of the sleep current at trap time. The first loop iteration forks
-    # its `sleep` BEFORE `sleep_pid=$!` assigns it, so a TERM landing in that window
-    # would have killed the empty string, left the real sleep running for up to
-    # `interval` seconds and held the caller's pipe open. `${!:-}` names the fork
-    # itself, which is the very job the trap exists to kill.
-    trap 'kill "${!:-}" 2>/dev/null; kill "${sleep_pid:-}" 2>/dev/null; exit 0' INT TERM
+    # The trap below takes its targets from THIS subshell's own job table and never
+    # from `$!`. A bash subshell INHERITS `$!` from its parent, and at this point that
+    # is the `remote-gate.py` child the wrapper forked and recorded moments before it
+    # started this heartbeat (`remote_gate_pid`): a TERM before the loop's first
+    # `sleep ... &` must not reach the run the trap exists to protect. Just as
+    # important, after a `wait` has reaped the sleep `$!` names that reaped pid -- a
+    # freed number the kernel may already have handed to an unrelated process -- so a
+    # TERM landing in the next iteration's `kill -0`/`print_wait_line` window must not
+    # reach a stranger's job either. `jobs -p` lists only the jobs this subshell
+    # forked and has not reaped: empty before the first fork, the `sleep` while it
+    # runs (even before `sleep_pid=$!` records it), and empty again once `wait` has
+    # reaped it. So the trap can name a job this loop still owns, or nothing at all.
+    # shellcheck disable=SC2329  # invoked from the INT/TERM trap below, never called
+    stop_heartbeat_sleeps() {
+      local target
+      local -a targets=()
+      mapfile -t targets < <(jobs -p)
+      for target in "${targets[@]}"; do
+        kill "$target" 2>/dev/null
+      done
+      exit 0
+    }
+    trap 'stop_heartbeat_sleeps' INT TERM
     # `$$` is the wrapper's own pid inside a subshell, so a wrapper that dies by SIGKILL
-    # cannot leave a heartbeat printing into a closed terminal: the loop ends with it.
+    # stops this loop within one iteration: the `kill -0` check ends it, so at most one
+    # more line is printed into the caller's still-open pipe and then the subshell exits.
     while kill -0 "$parent_pid" 2>/dev/null; do
       sleep "$interval" &
       sleep_pid=$!
