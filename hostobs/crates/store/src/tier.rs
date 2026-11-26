@@ -1052,10 +1052,12 @@ impl Tier {
                     || self.config.segment_bytes() <= open.len()
             }
         };
+        let sealed = if needs_new && self.open.is_some() {
+            self.seal_open_segment()?
+        } else {
+            None
+        };
         if needs_new {
-            if self.open.is_some() {
-                self.seal_open_segment()?;
-            }
             self.open_segment(start_s, epoch, dict_generation)?;
         }
         if job.incarnations.len()
@@ -1111,6 +1113,7 @@ impl Tier {
         let evicted = self.evict(job.real_ns)?;
         Ok(AppendOutcome {
             segment: landed,
+            sealed,
             records,
             bytes_written: added,
             evicted,
@@ -1538,6 +1541,8 @@ fn ring_segment(name: &str, parsed: SegmentFileName, scan: SegmentScan) -> RingS
 pub struct AppendOutcome {
     /// The segment the record landed in.
     pub segment: String,
+    /// The segment sealed by this append, if it had to open a new segment.
+    pub sealed: Option<String>,
     /// The record's sequence number within that segment.
     pub records: u64,
     /// Bytes this record added.

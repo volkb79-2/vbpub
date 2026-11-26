@@ -11,10 +11,8 @@ Offsets are bytes from the start of the named structure. `align8(x)` = smallest 
 
 1.1 **Transport.** `AF_UNIX` `SOCK_STREAM` sockets from systemd `.socket` units (plan §A.2): observe,
 operator, observer (served by the probe) and control (served by act). Access is the socket's file
-permission; issuer identity and peer binding come from `SO_PEERCRED`/`SO_PEERPIDFD` on the
-**server** side only; a top-level args key naming the caller's identity (`uid`, `gid`, `pid`,
-`cgroup`, `peer`) is `bad-request` in every verb; a selector or attrs value that names a *subject*
-cgroup is data, never identity (§4.2, §4.12). Because the listening socket is held by systemd, a
+permission; issuer identity comes from `SO_PEERCRED` on the **server** side only (§4.12); a client
+never claims its own uid, pid or cgroup (§4.4). Because the listening socket is held by systemd, a
 probe restart does not refuse new connections; it closes every accepted connection (EOF or
 `ECONNRESET` for the client).
 
@@ -434,7 +432,7 @@ at observer and control, which serve no BLK verb, §1.3):
 
 P5b-2d serves `current`, `subscribe` and `unsubscribe` at observe and operator. The `hello.verbs`
 array at those levels lists exactly `hello`, `status`, `current`, `subscribe`, `unsubscribe`;
-observer remains `hello`.
+observer lists `hello`, `annotate`.
 
 | Verb | observe | operator | observer | control | Shape | Since |
 |---|---|---|---|---|---|---|
@@ -444,9 +442,9 @@ observer remains `hello`.
 | subscribe / unsubscribe | ✓ | ✓ | | | BLK / JSON | M2 |
 | snapshot_at | ✓ | ✓ | | | BLK | M2 |
 | series_batch | ✓ | ✓ | | | BLK | M2 |
-| events, spans | ✓ | ✓ | | ✓ (relayed, `session.spans`) | JSON | M3 |
+| events, spans | | | | M6, relayed by `act`; `unknown-verb` until then | JSON | M6 |
 | procs | ✓ (no cmdline) | ✓ (+cmdline) | | | JSON | M2 |
-| annotate | | | ✓ (peer-bound) | ✓ (any ctx) | JSON | M3 |
+| annotate | | | ✓ | M6, relayed by `act`; `unknown-verb` until then | JSON | M3 |
 | export | | ✓ | | | BLK | M6 reserved |
 | resource-limits, window-open, window-close | | | ✓ | | JSON | M5 reserved |
 | version, host, session.start/stop/status/watch/list/spans, gc, reload | | | | ✓ | JSON (`watch`: REP + EVT* + END) | M6 reserved |
@@ -461,8 +459,9 @@ C). The result carries `proto.minor` N = min(C, the server's minor), in both mod
 connection, either mode, is `bad-request` `{"key":"verb"}` (JSON mode accepts `hello` only as the first
 line). `client` is 0 to 64 decoded bytes without a control character (below 0x20 or 0x7F) and without a
 lone surrogate; it is a free label, never an identity. A top-level args key naming the caller's
-identity (`uid`, `gid`, `pid`, `cgroup`, `peer`) is `bad-request` in every verb; a selector or attrs
-value that names a *subject* cgroup is data, never identity (§4.2, §4.12). Result:
+identity (`uid`, `gid`, `pid`, `cgroup`, `peer`) is `bad-request` in every verb, and `annotate`
+refuses those names, plus `comm` and `issuer`, as `attrs` keys (§4.12). A selector or an attrs value
+that names a *subject* cgroup is data, never identity. Result:
 `{"proto": {"major": 1, "minor": N}, "level": "observe|operator|observer|control", "server": str,
 "boot_id": "<uuid text>", "epoch": u64, "features": [str], "verbs": [str], "quality_codes":
 [{"code": u8, "name": str}], "limits": {"max_frame_bytes": u32, "max_request_bytes": u32,
@@ -602,15 +601,59 @@ push the REP over `max_reply_bytes` (§5.1 reply sizes).
 
 4.12 **annotate** — args `{"kind": "begin|end|point", "name": name, "key": str ≤ 64 | null, "ctx": {...}
 (as 4.10), "outcome": str|null (end only), "code": str ≤ 64 | null, "attrs": {key: str} (≤ 8 pairs,
-key a `name` ≤ 64 B, value ≤ 256 B)}`. Result `{"t_mono_ns": u64, "span": u64|null}`. Errors:
-`span-unknown`, `rate-limited` (50/s per issuer), `budget` (64 open per issuer, 4,096 global).
-Worst case at 3× per string (§4.2): name 64, key 192, ctx 5 × (13 + 384) = 1,985, outcome 24, code
-192, attrs 8 × (64 + 768 + 8) = 6,720, envelope < 300: < 9,500 B ≤ 16 KiB (observer
-`max_request_bytes`). **Issuer** (plan §C.4), fixed at accept: uid from `SO_PEERCRED` (the
-credentials the kernel recorded at `connect()`), cgroup inc from the cgroup of the process behind
-`SO_PEERPIDFD` read at accept (a pidfd cannot be confused by pid reuse); if the peer already exited,
-the connection is closed (`refuse`). A child that inherits the connected fd annotates as the original
-connector, by design. Observer level requires `SO_PEERPIDFD` (kernel ≥ 6.5; estate 7.2).
+key a `name` ≤ 64 B, value ≤ 256 B)}`.
+
+> Result `{"t_mono_ns": u64, "span": u64|null}` (the opened or closed span's id; `null` for `point`). All seven args
+> members are required (`key`, `outcome`, `code` may be `null`; `ctx`, `attrs` may be `{}`); a client `t_mono_ns`
+> is an unknown key. Every `key`, `code`, `ctx` value, `attrs` key and `attrs` value refuses U+0000-U+001F and
+> U+007F (`bad-request` at its path: `attrs.<k>` under the §4.2 echo rule, else `attrs`); `"` and `\` are allowed.
+> `attrs` keys `uid gid pid comm peer issuer` are refused at `attrs.<k>`. After the schema, in order: idempotent
+> repeat (answered `ok`), `rate-limited`, `budget {"pool":"spans"}` (64 open per uid, 4,096 per probe),
+> `span-unknown` (no open span of that `key` on this connection). Worst request at 3× per string (§4.2): name 64, key
+> 192, ctx 5 × (13 + 384) = 1,985, outcome 24, code 192, attrs 8 × (64 + 768 + 8) = 6,720, envelope < 300: < 9,500 B
+> ≤ 16 KiB.
+>
+> **Issuer and forgeability.** `issuer` is `uid:<n>`, the uid `SO_PEERCRED` reports for the connection (the
+> credentials of the `connect()` caller, read once at accept). It is the only provenance a reader may rely on, and
+> only a process with `CAP_SETUID` chooses it. At accept the probe also records an advisory label `peer`: the
+> `SO_PEERCRED` pid as seen from the probe's PID namespace (`null` when 0), that pid's `comm`, and the cgroup key
+> read from `/proc/<pid>/cgroup` (`null` when unreadable, outside the probe's cgroup namespace or not on cgroup2).
+> The label MAY be wrong (pid reuse between `connect()` and the read; a containerized probe sees no pid) and MUST NOT
+> carry authorization, dedupe, rate-limit or quota weight; a connection whose label is all `null` is served
+> normally. No name is authorized by issuer in M3 (HOB-106). A child that inherits the connected fd annotates as the
+> original connector. The **subject** of an event (cgroup, run, candidate) is client data in `ctx`/`attrs` and is
+> never verified; `ctx.session` at observer never attaches an event to a session (M6, control only).
+>
+> **Spans** belong to the connection: `end` closes the innermost open span with that `key` opened on the same
+> connection; when the connection closes, each span it left open gets one `end` with `outcome: abandoned`,
+> `inferred: true`, stamped at the close and recorded without a token. A probe that exits without that close leaves
+> the span open.
+>
+> **Rate.** One token bucket per uid, probe-wide and shared by all of the uid's connections. It holds integer credit
+> in ns: capacity 64 × 20,000,000, cost 20,000,000, credit += elapsed ns capped at capacity (50/s sustained, 64-event
+> burst). Too little credit is `rate-limited {"retry_after_ms": ceil(deficit_ns / 1,000,000)}` (1..20). A bucket
+> outlives its connections until it is full again; at most 1,024 non-full buckets are held, and a new uid beyond
+> that is `rate-limited {"retry_after_ms": 20}`. Every request that passes the schema and is not an idempotent
+> repeat costs one token, also when it is then refused `budget` or `span-unknown`. Config keys
+> `annotate_rate_per_s` 50, `annotate_burst` 64; not announced in `hello.limits`.
+>
+> **Idempotency.** On `kind: point`, `attrs` may carry `boot_id` (1..128 B) and `seq` (`0|[1-9][0-9]{0,19}`, ≤ u64)
+> together; one without the other is `bad-request` at the missing one, and either on `begin`/`end` is `bad-request`
+> `attrs.boot_id`. The probe keeps the reply of each keyed event under `(uid, name, boot_id, seq)` (4,096 entries
+> probe-wide, 900 s of `CLOCK_MONOTONIC`, oldest first out, emptied by a probe restart); a repeat inside that
+> retention returns the first reply, records nothing and costs no token. Outside it a repeat is a second event:
+> readers MUST dedupe on `(name, boot_id, seq)`.
+>
+> **Registered names** (append-only, `fixtures/wire/event-names.json`): `run`, `lane`, `candidate`,
+> `candidate.prep`, `candidate.build`, `candidate.run`, `txn`, `txn.step`, `thrashguard.freeze`,
+> `thrashguard.thaw`. Any grammar-valid name is accepted, except that under the registered prefix `thrashguard.`
+> only the table's names are (`bad-request` `name`). `thrashguard.freeze`/`.thaw` are `point`s with `ctx.run`,
+> `key` = unit, `attrs` `cgroup`, `cgroup_id`, `boot_id`, `seq` (the interval's, on both), `seconds` on the thaw
+> only (a freeze never carries it), `code` = the thaw reason.
+
+A segment seal can fsync inside an append and stall this server turn. Every client's reply and every
+subscription tick waits for that turn: a stall shorter than a tick interval delays the tick, while a longer
+stall lets the sampler publish several ticks and the server delivers only the newest one on the next turn.
 
 4.13 **M5/M6 reserved.** `resource-limits`, `window-open`, `window-close`, `export`, `version`, `host`,
 `session.*`, `gc`, `reload` use the envelopes, strictness, errors and budgets of this document now;
@@ -1122,7 +1165,6 @@ version 1 (§13 V-1).
 `bad-request`, `unknown-verb`, `forbidden`, `too-many-requests`, `budget`, `rate-limited`, `not-found`,
 `cursor-invalid`, `span-unknown`, `unsupported-feature`, `session-lost`, `window-lost`, `internal`.
 `detail` keys: `budget` → `{"pool": "subscriptions"|"uid-selections"|"selections"|"rows"|"query"|"spans"}`
-(`spans` is reserved until P5b-3);
 `rate-limited` → `{"retry_after_ms": u32}`; `bad-request` → `{"key": str}` (dotted path of the
 offending key, `""` for a JSON text error); `unsupported-feature` → `{"feature": str}`; every other
 code `{}`. Mapping of local errors: §5.2 (reader), §4.2 (JSON text). There is no `busy`: a

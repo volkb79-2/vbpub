@@ -253,7 +253,7 @@ impl Counts {
 /// took it out of the map for the call, see `Server::drive`); it is open and counts as one of
 /// level `mine`.
 struct StatusView<'a, B> {
-    backend: &'a B,
+    backend: &'a mut B,
     others: &'a BTreeMap<ConnId, Conn>,
     mine: Level,
 }
@@ -288,6 +288,19 @@ impl<B: Backend> Backend for StatusView<'_, B> {
 
     fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
         self.backend.current(selection, max_rows)
+    }
+
+    fn annotate(
+        &mut self,
+        conn: ConnId,
+        peer: &Peer,
+        args: &crate::backend::AnnotateArgs,
+    ) -> Result<crate::backend::AnnotateReply, crate::backend::AnnotateRefusal> {
+        self.backend.annotate(conn, peer, args)
+    }
+
+    fn connection_closed(&mut self, conn: ConnId) {
+        self.backend.connection_closed(conn);
     }
 }
 
@@ -429,6 +442,7 @@ impl<B: Backend> Server<B> {
         let Some(conn) = self.conns.remove(&id) else {
             return;
         };
+        self.backend.connection_closed(id);
         self.counts.release(conn.level(), conn.peer().uid);
         self.streams.release_conn(id);
         self.hub.remove(id);
@@ -517,17 +531,18 @@ impl<B: Backend> Server<B> {
     /// others; an unknown id does nothing.
     fn drive<F>(&mut self, id: ConnId, act: F)
     where
-        F: FnOnce(&mut Conn, &mut SendHub, &dyn Backend, &mut SelectionStreams),
+        F: FnOnce(&mut Conn, &mut SendHub, &mut dyn Backend, &mut SelectionStreams),
     {
         let Some(mut conn) = self.conns.remove(&id) else {
             return;
         };
         let view = StatusView {
-            backend: &self.backend,
+            backend: &mut self.backend,
             others: &self.conns,
             mine: conn.level(),
         };
-        let backend: &dyn Backend = &view;
+        let mut view = view;
+        let backend: &mut dyn Backend = &mut view;
         act(&mut conn, &mut self.hub, backend, &mut self.streams);
         self.conns.insert(id, conn);
         self.enforce_control(id);
@@ -568,7 +583,7 @@ impl<B: Backend> Server<B> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use crate::hub::{Close, ConnId, LiveOutcome, Pools, QueryOutcome, TickForms};
     use hostobs_proto::dict::Entry;
@@ -577,7 +592,10 @@ mod tests {
     use hostobs_proto::stream_dicts::StreamDicts;
 
     use super::{Accept, Server, ServerLimits, SERVED};
-    use crate::backend::{BackendError, FixedBackend, TickData, TickInfo, TierInfo};
+    use crate::backend::{
+        AnnotateArgs, AnnotateRefusal, AnnotateReply, Backend, BackendError, FixedBackend,
+        Identity, StatusInfo, TickData, TickInfo, TierInfo,
+    };
     use crate::codes::{Code, Detail};
     use crate::conn::{Peer, State, SERVER_MINOR};
     use crate::encode::{control_frame, error_line, server_prefix};
@@ -760,6 +778,41 @@ mod tests {
         out: BTreeMap<ConnId, Vec<u8>>,
         opened: Vec<ConnId>,
         uids: Vec<u32>,
+    }
+
+    struct CloseRecordingBackend {
+        fixed: FixedBackend,
+        closed: Arc<Mutex<Vec<ConnId>>>,
+    }
+
+    impl Backend for CloseRecordingBackend {
+        fn identity(&self) -> Identity {
+            self.fixed.identity()
+        }
+
+        fn status(&self) -> StatusInfo {
+            self.fixed.status()
+        }
+
+        fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
+            self.fixed.current(selection, max_rows)
+        }
+
+        fn annotate(
+            &mut self,
+            conn: ConnId,
+            peer: &Peer,
+            args: &AnnotateArgs,
+        ) -> Result<AnnotateReply, AnnotateRefusal> {
+            self.fixed.annotate(conn, peer, args)
+        }
+
+        fn connection_closed(&mut self, conn: ConnId) {
+            self.closed
+                .lock()
+                .expect("close-recording lock")
+                .push(conn);
+        }
     }
 
     impl Driver {
@@ -1678,6 +1731,33 @@ mod tests {
         assert_eq!(d.server.take_final(partial), None);
         d.settle_all();
         assert_clean(&d, "shutdown");
+    }
+
+    #[test]
+    fn shutdown_finishes_each_removed_connection_through_the_close_hook_once() {
+        let closed = Arc::new(Mutex::new(Vec::new()));
+        let backend = CloseRecordingBackend {
+            fixed: FixedBackend::new(),
+            closed: Arc::clone(&closed),
+        };
+        let mut server = Server::new(ServerLimits::new(), backend);
+        let id = match server.accept(
+            Level::Observer,
+            Some(Peer {
+                uid: 31,
+                pid: None,
+                comm: None,
+                cgroup: None,
+            }),
+            0,
+        ) {
+            Accept::Accepted(id) => id,
+            Accept::Refused => panic!("observer connection should be accepted"),
+        };
+
+        assert_eq!(server.shutdown(), vec![id]);
+        server.finish(id);
+        assert_eq!(*closed.lock().expect("close-recording lock"), vec![id]);
     }
 
     // ---- interleaving, status, control cap ----

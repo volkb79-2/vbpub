@@ -76,15 +76,17 @@ class RealProbeSocket(unittest.TestCase):
                 "the real-probe test cannot use /tmp"
             )
 
-    def write_config(self, tmpfs_dir: Path, store_dir: Path) -> None:
+    def write_config(self, tmpfs_dir: Path, store_dir: Path, *, level: str = "observe") -> None:
         self.config.write_text(
             "[probe]\n"
-            'levels = ["observe"]\n'
+            f'levels = ["{level}"]\n'
             "tick_ms = 100\n"
             f'cgroup_root = "{FIXTURE_CGROUP}"\n'
             "\n"
             "[limits]\n"
             "max_rows = 1024\n"
+            "annotate_rate_per_s = 50\n"
+            "annotate_burst = 64\n"
             "\n"
             "[store]\n"
             f'dir = "{store_dir}"\n'
@@ -116,6 +118,17 @@ class RealProbeSocket(unittest.TestCase):
         listener.bind(path)
         listener.listen(8)
         return listener, path
+
+    def use_filesystem_socket(self) -> None:
+        """Replace the activated listener with a path that a child process can receive in env."""
+        self.listener.close()
+        path = str(Path(self.temp.name) / "observer.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(path)
+        listener.listen(8)
+        self.listener = listener
+        self.address = path
+        self.addCleanup(listener.close)
 
     def spawn_probe(self, *, fdnames: str = "observe", with_config: bool = True):
         """Spawn the shell shape from PROBE-PROCESS §(h), with the listener at fd 3."""
@@ -224,6 +237,125 @@ class RealProbeSocket(unittest.TestCase):
                 subscription.close()
             if connection is not None:
                 connection.close()
+            self.reap(child)
+
+    def test_observer_serves_annotate_and_hostobs_mark_persists_a_point(self) -> None:
+        self.use_filesystem_socket()
+        self.write_config(self.tmpfs_dir, self.store_dir, level="observer")
+        child = self.spawn_probe(fdnames="observer")
+        connection = None
+        try:
+            connection = Connection.open(
+                self.address, "observer", client="m3-b5-annotate", timeout_s=CHILD_WAIT_S
+            )
+            self.assertEqual(connection.verbs, ["hello", "annotate"])
+            self.assertEqual(connection.limits["max_rows"], 1024)
+
+            key = f"span-{os.getpid()}-{time.monotonic_ns()}"
+            begin = connection.request(
+                "annotate",
+                {
+                    "kind": "begin",
+                    "name": "probe.conformance",
+                    "key": key,
+                    "ctx": {},
+                    "outcome": None,
+                    "code": None,
+                    "attrs": {},
+                },
+            )
+            self.assertEqual(set(begin), {"t_mono_ns", "span"})
+            self.assertIsInstance(begin["t_mono_ns"], int)
+            self.assertIsInstance(begin["span"], int)
+
+            end = connection.request(
+                "annotate",
+                {
+                    "kind": "end",
+                    "name": "probe.conformance.done",
+                    "key": key,
+                    "ctx": {},
+                    "outcome": "ok",
+                    "code": None,
+                    "attrs": {},
+                },
+            )
+            self.assertEqual(set(end), {"t_mono_ns", "span"})
+            self.assertEqual(end["span"], begin["span"])
+
+            point = connection.request(
+                "annotate",
+                {
+                    "kind": "point",
+                    "name": "probe.conformance.point",
+                    "key": f"direct-{os.getpid()}-{time.monotonic_ns()}",
+                    "ctx": {},
+                    "outcome": None,
+                    "code": None,
+                    "attrs": {},
+                },
+            )
+            self.assertEqual(set(point), {"t_mono_ns", "span"})
+            self.assertIsNone(point["span"])
+
+            env = os.environ.copy()
+            env["HOSTOBS_OBSERVER_SOCKET"] = self.address
+            source = str(HOSTOBS_ROOT / "python")
+            env["PYTHONPATH"] = os.pathsep.join(
+                item for item in (source, env.get("PYTHONPATH", "")) if item
+            )
+            marked_key = f"mark-{os.getpid()}-{time.monotonic_ns()}"
+            marked = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "hostobs_client.mark",
+                    "point",
+                    "probe.mark",
+                    "--key",
+                    marked_key,
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+                timeout=CHILD_WAIT_S,
+            )
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+
+            missing_env = env.copy()
+            missing_env["HOSTOBS_OBSERVER_SOCKET"] = str(Path(self.temp.name) / "missing.sock")
+            required = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "hostobs_client.mark",
+                    "point",
+                    "probe.missing",
+                    "--require",
+                ],
+                capture_output=True,
+                text=True,
+                env=missing_env,
+                check=False,
+                timeout=CHILD_WAIT_S,
+            )
+            self.assertEqual(required.returncode, 1)
+
+            event_dir = self.store_dir / "events"
+            stored = [
+                path.read_bytes()
+                for path in event_dir.rglob("*")
+                if path.is_file()
+            ]
+            self.assertTrue(
+                any(marked_key.encode("utf-8") in contents for contents in stored),
+                f"hostobs-mark key {marked_key!r} was not recorded below {event_dir}",
+            )
+        finally:
+            if connection is not None:
+                connection.close()
+            child.send_signal(signal.SIGTERM)
             self.reap(child)
 
     def test_control_name_is_refused_before_any_client_byte(self) -> None:

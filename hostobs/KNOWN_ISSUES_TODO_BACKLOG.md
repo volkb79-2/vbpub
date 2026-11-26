@@ -83,7 +83,7 @@ holds the full bodies.
 | HOB-89 | The conformance lane's 10-minute budget was never measured on a complete cold run | Minor | OPEN (P-hostobs-09 r1/r2) |
 | HOB-90 | rustix 1.1.6 `socket_peercred` has undefined behavior when the peer pid is invisible | Major | RESOLVED (M3 B1 raw `SO_PEERCRED` guard) |
 | HOB-91 | `max_rows` up to 4,096 is accepted but the default `max_block_bytes` fits only about 1,200 rows | Minor | OPEN (P-hostobs-09 report) |
-| HOB-92 | `SIGTERM` keeps its default action; the graceful stop path is required before P-16 | Major | OPEN (P-hostobs-09 decision) |
+| HOB-92 | `SIGTERM` keeps its default action; only the internal stop path writes inferred span ends | Major | OPEN (P-hostobs-09 decision) |
 | HOB-93 | P-hostobs-09 residual doc and test nits | Minor | OPEN (P-hostobs-09 r2) |
 | HOB-94 | `current` before the first tick answers `internal`, but WIRE §4.7's live-block rule names `unavailable` | Major | OPEN (P-hostobs-11(a) r1 candidate 3) |
 | HOB-95 | The `selftest` lane never builds or runs the example tests | Minor | OPEN (P-hostobs-11(a) r1/r2) |
@@ -98,7 +98,9 @@ holds the full bodies.
 | HOB-104 | CPU model and benchmark records are outside the current hostobs metric model | Major | OPEN (M6 host/1) |
 | HOB-105 | Containerized assay has no launcher handoff for the host cgroup key | Major | OPEN (core launcher) |
 | HOB-106 | Event issuer cgroup attribution is not verified against a sampled cgroup | Major | OPEN (consumer policy and verified peer binding) |
-| HOB-107 | Inferred span ends lose the initiating event's event/1 fields | Minor | OPEN (M3 B4 r1 L5) |
+| HOB-107 | Inferred span ends lose the initiating event's event/1 fields | Minor | RESOLVED (M3 B5) |
+| HOB-108 | Build the writer thread when measured seal stalls exceed one tick interval in practice | Major | OPEN (M3 B5 decision) |
+| HOB-109 | `SpanTable` has no production caller after M3 B5 | Minor | OPEN (M3 B5) |
 
 ---
 
@@ -1144,13 +1146,13 @@ Source: `runs/p09-driver.report.md` Backlog candidates 1; `reviews/p09-r1-26c204
 
 Source: `runs/p09-driver.report.md` Backlog candidates 2.
 
-## HOB-92 — `SIGTERM` keeps its default action; the graceful stop path is required before P-16
+## HOB-92 — `SIGTERM` keeps its default action; only the internal stop path writes inferred span ends
 
 **Where:** `bins/probe/src/main.rs` and `bins/probe/src/driver.rs` (the stop flag and `Server::shutdown`), `docs/PROBE-PROCESS.md` §(f).
 
-By decision the probe installs no signal handler. `SIGTERM` kills the process, the kernel closes every socket, and clients see EOF or `ECONNRESET`. The internal stop path (a drop guard sets the stop flag, the loop calls `Server::shutdown()`, and each client gets `closing shutting-down`) exists and is exercised by sampler panic and return, but nothing connects `SIGTERM` to it. That is acceptable while there is no store writer to drain. P-16 spawns the writer, so a kill then loses buffered store data. rustix 1.1.6 has no safe `sigprocmask` or `signalfd`. `libc` 0.2.191 is already locked and image-cached, so a `signalfd` module needs audited `unsafe` calls but no image rebuild.
+By decision the probe installs no signal handler. `SIGTERM` keeps its default action, kills the process, closes every socket, and makes clients see EOF or `ECONNRESET`. A stopped probe writes no inferred span ends; its open spans stay open, as after a crash. The internal stop path (a drop guard sets the stop flag, the loop calls `Server::shutdown()`, and each client gets `closing shutting-down`) closes each connection through `finish`, which writes inferred abandoned ends for spans it left open. That internal path is the only shutdown path that writes those ends. Nothing connects `SIGTERM` to it. HOB-92 remains outside M3 B5. A future graceful signal path needs an audited signal-mask call or another crate; rustix 1.1.6 has no safe `sigprocmask` or `signalfd`.
 
-**Exit criteria.** `SIGTERM` is wired to the internal stop path through a signalfd (or equivalent) in the existing poll loop. A real-process Python test sends `SIGTERM` to an activated probe with a connected client. The client reads `closing shutting-down`, and the process exits 0 within 2 × `tick_ms` of the signal. The conformance case that now asserts the default `SIGTERM` action is replaced by it. The new `unsafe` sites are audited in `check-lints.py` (`expected_uses`) and in PROBE-PROCESS §(e), and §(f) drops the "filed backlog item" wording. This lands before P-16 spawns the store writer.
+**Exit criteria.** `SIGTERM` is wired to the internal stop path through a signalfd (or equivalent) in the existing poll loop. A real-process Python test sends `SIGTERM` to an activated probe with a connected client. The client reads `closing shutting-down`, and the process exits 0 within 2 × `tick_ms` of the signal. The conformance case that asserts the default `SIGTERM` action is replaced by it. The new `unsafe` sites are audited in `check-lints.py` (`expected_uses`) and in PROBE-PROCESS §(e). This lands before any P-16 writer thread.
 
 Source: `runs/p09-driver.report.md` Backlog candidates 3; `docs/PROBE-PROCESS.md` §(f); `STATE.md` accepted design decisions.
 
@@ -1612,16 +1614,46 @@ Source: operator ruling 2026-11-26; PLAN-M3-carve.md HOB-106; WIRE §4.12 and pl
 
 **Where:** `crates/store/src/events.rs` (`SpanTable::abandon_issuer`).
 
-`abandon_issuer` currently creates the inferred end through `Event::new`, which drops the
-initiating `OpenSpan`'s `span`, `uid`, `peer`, `ctx` and `attrs`; the generated event also has
-`real_ns = 0`. The event/1 encoder refuses the span-zero end. B4 has no production caller, so
-this does not block the current probe startup path.
+`abandon_issuer` previously created the inferred end through `Event::new`, which dropped the
+initiating `OpenSpan`'s `span`, `uid`, `peer`, `ctx` and `attrs`; the generated event also had
+`real_ns = 0`. M3 B5 now constructs inferred ends from the `OpenSpan` through one helper, copies
+its identity and event fields, and takes `real_ns` from the caller. The probe's connection-close
+path uses that helper through the connection span table.
 
 **Impact.** The first B5/B7 production caller cannot persist an inferred `abandoned` end with
 event/1 until those fields are carried over.
 
-**Exit criteria.** Before the first production caller, construct the inferred end with `span`,
-`uid`, `peer`, `ctx` and `attrs` copied from the `OpenSpan`, and take `real_ns` from the caller.
-Tests prove the event/1 payload retains the initiating identity and the caller's real time.
+**Status.** Resolved in M3 B5. A payload test proves the event/1 encoding retains the initiating
+identity and the caller's real time.
 
 Source: M3 B4 r1 L5; PLAN-M3-carve.md §C.4.
+
+## HOB-108 — Build the writer thread when measured seal stalls exceed one tick interval in practice
+
+**Where:** `bins/probe/src/live.rs` (server-thread append), `bins/probe/src/driver.rs` and
+`docs/PROBE-PROCESS.md` §(a)–(b).
+
+M3 B5 appends events synchronously on the server thread. A segment-seal append can fsync and stall
+the turn, delaying every reply and subscription tick. The probe now measures each append with an
+injected monotonic clock and logs the sealed segment and stall duration. No writer thread is
+justified until real measurements show stalls longer than the configured tick interval in practice.
+
+**Exit criteria.** Build the writer thread when measured seal stalls exceed one tick interval in
+practice. The events ring and span table stay on the server thread after that change. HOB-92 lands
+first so the internal shutdown path has the required signal behavior before writer ownership is
+introduced.
+
+Source: M3 B5 operator decision, 2026-11-26.
+
+## HOB-109 — `SpanTable` has no production caller after M3 B5
+
+**Where:** `crates/store/src/events.rs` (`SpanTable`) and `crates/store/src/annotate.rs`.
+
+The legacy issuer-keyed `SpanTable` remains for its existing API and tests, but M3 B5 production
+annotation uses the new connection-keyed span table. No production caller uses `SpanTable` after
+this package.
+
+**Exit criteria.** Remove `SpanTable` in a separately scoped cleanup once no compatibility caller
+depends on it; keep its tests until the API is removed.
+
+Source: M3 B5.

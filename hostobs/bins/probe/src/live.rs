@@ -7,30 +7,53 @@ use hostobs_model::identity::CgroupKey;
 use hostobs_proto::dict::Entry;
 use hostobs_proto::frame::{Column, Row};
 
-use hostobs_serve::backend::{Backend, BackendError, Identity, StatusInfo, TickData, TickInfo};
+use hostobs_serve::backend::{
+    AnnotateArgs, AnnotateCtxKey, AnnotateKind, AnnotateOutcome, AnnotateRefusal, AnnotateReply,
+    Backend, BackendError, Identity, StatusInfo, TickData, TickInfo,
+};
+use hostobs_serve::conn::{CgroupKey as PeerCgroupKey, Peer};
+use hostobs_serve::hub::ConnId;
 use hostobs_serve::selection::{Sel, Selection};
+use hostobs_store::annotate::{AnnotateError, Annotator, EventRequest, EventSink};
+use hostobs_store::error::StoreError;
+use hostobs_store::events::{CtxKey, Event, EventKind, EventPeer, EventCgroupKey, Outcome};
+use hostobs_store::store::Store;
+use hostobs_store::tier::AppendOutcome;
 
 use crate::sampler::{Published, Tick};
 
 /// The production backend over one immutable sampler publication.
-#[derive(Debug)]
 pub struct ProbeBackend {
     identity: Identity,
     published: Arc<Published>,
     tick: Arc<Tick>,
     now_ns: u64,
+    store: Store,
+    annotator: Annotator,
+    append_clock: Box<dyn Fn() -> u64 + Send + Sync>,
+    append_failed: bool,
 }
 
 impl ProbeBackend {
     /// Start on the published seq-0 state.
     #[must_use]
-    pub fn new(identity: Identity, published: Arc<Published>) -> ProbeBackend {
+    pub fn new(
+        identity: Identity,
+        published: Arc<Published>,
+        store: Store,
+        annotator: Annotator,
+        append_clock: impl Fn() -> u64 + Send + Sync + 'static,
+    ) -> ProbeBackend {
         let tick = published.load();
         ProbeBackend {
             identity,
             published,
             tick,
             now_ns: 0,
+            store,
+            annotator,
+            append_clock: Box::new(append_clock),
+            append_failed: false,
         }
     }
 
@@ -41,6 +64,122 @@ impl ProbeBackend {
         self.tick = tick;
         self.now_ns = now_ns;
         fresh
+    }
+}
+
+struct TimedEventSink<'a> {
+    store: &'a mut Store,
+    clock: &'a (dyn Fn() -> u64 + Send + Sync),
+    append_failed: &'a mut bool,
+}
+
+impl EventSink for TimedEventSink<'_> {
+    fn record_event(
+        &mut self,
+        event: &Event,
+        payload: &[u8],
+        real_ns: i64,
+    ) -> Result<AppendOutcome, StoreError> {
+        let started = (self.clock)();
+        let result = self.store.record_event(event, payload, real_ns);
+        let elapsed_ns = (self.clock)().saturating_sub(started);
+        let elapsed_ms = elapsed_ns.checked_div(1_000_000).unwrap_or(0);
+        match &result {
+            Ok(outcome) => {
+                if let Some(line) = seal_stall_line(outcome.sealed.as_deref(), elapsed_ns) {
+                    eprintln!("{line}");
+                }
+                if *self.append_failed {
+                    eprintln!(
+                        "hostobs-probe: events append succeeded again after {elapsed_ms} ms"
+                    );
+                    *self.append_failed = false;
+                }
+            }
+            Err(error) if !*self.append_failed => {
+                eprintln!(
+                    "hostobs-probe: events append started failing: {} after {elapsed_ms} ms",
+                    error
+                );
+                *self.append_failed = true;
+            }
+            Err(_) => {}
+        }
+        result
+    }
+}
+
+fn event_peer(peer: &Peer) -> EventPeer {
+    let comm = peer.comm.as_ref().and_then(|comm| {
+        (!comm.is_empty()
+            && comm.len() <= 15
+            && !comm
+                .chars()
+                .any(|character| character <= '\u{1f}' || character == '\u{7f}'))
+        .then(|| comm.clone())
+    });
+    let cgroup = peer.cgroup.and_then(|key: PeerCgroupKey| {
+        (key.dev != 0 && key.inode != 0).then_some(EventCgroupKey {
+            dev: key.dev,
+            inode: key.inode,
+        })
+    });
+    EventPeer {
+        pid: peer.pid.filter(|pid| *pid != 0),
+        comm,
+        cgroup,
+    }
+}
+
+fn event_request(args: &AnnotateArgs) -> EventRequest {
+    let kind = match args.kind {
+        AnnotateKind::Begin => EventKind::Begin,
+        AnnotateKind::End => EventKind::End,
+        AnnotateKind::Point => EventKind::Point,
+    };
+    let outcome = args.outcome.map(|outcome| match outcome {
+        AnnotateOutcome::Ok => Outcome::Ok,
+        AnnotateOutcome::Fail => Outcome::Fail,
+        AnnotateOutcome::Error => Outcome::Error,
+        AnnotateOutcome::Skipped => Outcome::Skipped,
+        AnnotateOutcome::Cancelled => Outcome::Cancelled,
+        AnnotateOutcome::Timeout => Outcome::Timeout,
+        AnnotateOutcome::Abandoned => Outcome::Abandoned,
+    });
+    let ctx = args
+        .ctx
+        .iter()
+        .map(|(key, value)| {
+            let key = match key {
+                AnnotateCtxKey::Run => CtxKey::Run,
+                AnnotateCtxKey::Lane => CtxKey::Lane,
+                AnnotateCtxKey::Candidate => CtxKey::Candidate,
+                AnnotateCtxKey::Txn => CtxKey::Txn,
+                AnnotateCtxKey::Session => CtxKey::Session,
+            };
+            (key, value.clone())
+        })
+        .collect();
+    EventRequest {
+        kind,
+        name: args.name.clone(),
+        key: args.key.clone(),
+        ctx,
+        outcome,
+        code: args.code.clone(),
+        attrs: args.attrs.clone(),
+        idempotency: args.idempotency.clone(),
+    }
+}
+
+fn annotate_refusal(error: AnnotateError) -> AnnotateRefusal {
+    match error {
+        AnnotateError::RateLimited { retry_after_ms } => {
+            AnnotateRefusal::RateLimited { retry_after_ms }
+        }
+        AnnotateError::Budget => AnnotateRefusal::Budget,
+        AnnotateError::SpanUnknown => AnnotateRefusal::SpanUnknown,
+        AnnotateError::Internal => AnnotateRefusal::Internal,
     }
 }
 
@@ -173,6 +312,66 @@ impl Backend for ProbeBackend {
             columns,
         })
     }
+
+    fn annotate(
+        &mut self,
+        conn: ConnId,
+        peer: &Peer,
+        args: &AnnotateArgs,
+    ) -> Result<AnnotateReply, AnnotateRefusal> {
+        let real_ns = real_at(&self.published, self.now_ns).ok_or(AnnotateRefusal::Internal)?;
+        let request = event_request(args);
+        let mut sink = TimedEventSink {
+            store: &mut self.store,
+            clock: self.append_clock.as_ref(),
+            append_failed: &mut self.append_failed,
+        };
+        self.annotator
+            .annotate(
+                &mut sink,
+                u64::from(conn.0),
+                peer.uid,
+                event_peer(peer),
+                &request,
+                self.now_ns,
+                real_ns,
+            )
+            .map(|reply| AnnotateReply {
+                t_mono_ns: reply.t_mono_ns,
+                span: reply.span,
+            })
+            .map_err(annotate_refusal)
+    }
+
+    fn connection_closed(&mut self, conn: ConnId) {
+        let Some(real_ns) = real_at(&self.published, self.now_ns) else {
+            self.annotator.forget_connection(u64::from(conn.0));
+            eprintln!("hostobs-probe: could not derive time for inferred event ends");
+            return;
+        };
+        let mut sink = TimedEventSink {
+            store: &mut self.store,
+            clock: self.append_clock.as_ref(),
+            append_failed: &mut self.append_failed,
+        };
+        self.annotator
+            .connection_closed(&mut sink, u64::from(conn.0), self.now_ns, real_ns);
+    }
+}
+
+fn real_at(published: &Published, now_ns: u64) -> Option<i64> {
+    let elapsed = now_ns.checked_sub(published.started_mono_ns())?;
+    let elapsed = i64::try_from(elapsed).ok()?;
+    published.started_real_ns().checked_add(elapsed)
+}
+
+fn seal_stall_line(sealed: Option<&str>, elapsed_ns: u64) -> Option<String> {
+    sealed.map(|name| {
+        let elapsed_ms = elapsed_ns / 1_000_000;
+        format!(
+            "hostobs-probe: events segment {name} sealed, the append stalled the server turn {elapsed_ms} ms"
+        )
+    })
 }
 
 fn matches_scan_selector(selector: &Sel, label: &str) -> bool {
@@ -186,5 +385,30 @@ fn matches_scan_selector(selector: &Sel, label: &str) -> bool {
 impl hostobs_serve::backend::Turn for ProbeBackend {
     fn begin_turn(&mut self, now_ns: u64) -> bool {
         ProbeBackend::begin_turn(self, now_ns)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{real_at, seal_stall_line};
+    use crate::sampler::Published;
+
+    #[test]
+    fn real_time_is_startup_wall_time_plus_checked_monotonic_elapsed() {
+        let published = Published::new(100, 1_000);
+        assert_eq!(real_at(&published, 250), Some(1_150));
+        assert_eq!(real_at(&published, 99), None);
+        assert_eq!(real_at(&Published::new(0, i64::MAX), 1), None);
+    }
+
+    #[test]
+    fn the_segment_seal_line_exists_only_for_a_sealed_append() {
+        assert_eq!(seal_stall_line(None, 25_000_000), None);
+        assert_eq!(
+            seal_stall_line(Some("events-1-2.seg"), 25_000_000),
+            Some(String::from(
+                "hostobs-probe: events segment events-1-2.seg sealed, the append stalled the server turn 25 ms"
+            ))
+        );
     }
 }

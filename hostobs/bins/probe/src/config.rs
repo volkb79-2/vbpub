@@ -31,6 +31,8 @@ const KEY_LEVELS: &str = "probe.levels";
 const KEY_TICK_MS: &str = "probe.tick_ms";
 const KEY_CGROUP_ROOT: &str = "probe.cgroup_root";
 const KEY_MAX_ROWS: &str = "limits.max_rows";
+const KEY_ANNOTATE_RATE: &str = "limits.annotate_rate_per_s";
+const KEY_ANNOTATE_BURST: &str = "limits.annotate_burst";
 const KEY_STORE_DIR: &str = "store.dir";
 const KEY_STORE_TMPFS_DIR: &str = "store.tmpfs_dir";
 const KEY_EVENTS_CAP_BYTES: &str = "store.events_cap_bytes";
@@ -48,6 +50,10 @@ pub(crate) struct Config {
     pub(crate) cgroup_root: PathBuf,
     /// The largest row count a selection may resolve to.
     pub(crate) max_rows: u32,
+    /// Sustained annotation rate per uid.
+    pub(crate) annotate_rate_per_s: u32,
+    /// Annotation burst capacity per uid.
+    pub(crate) annotate_burst: u32,
     /// The explicit durable and tmpfs store paths and event bounds.
     pub(crate) store: StoreSettings,
 }
@@ -276,6 +282,8 @@ struct Probe {
 #[serde(deny_unknown_fields)]
 struct Limits {
     max_rows: Spanned<u32>,
+    annotate_rate_per_s: Spanned<u32>,
+    annotate_burst: Spanned<u32>,
 }
 
 #[derive(Deserialize)]
@@ -331,6 +339,24 @@ fn parse(text: &str) -> Result<Config, ConfigError> {
             "must be in 1..=4096",
         ));
     }
+    let annotate_rate_per_s = *document.limits.annotate_rate_per_s.get_ref();
+    if !(1..=1000).contains(&annotate_rate_per_s) {
+        return Err(ConfigError::semantic(
+            text,
+            &document.limits.annotate_rate_per_s.span(),
+            KEY_ANNOTATE_RATE,
+            "must be in 1..=1000",
+        ));
+    }
+    let annotate_burst = *document.limits.annotate_burst.get_ref();
+    if !(1..=1024).contains(&annotate_burst) {
+        return Err(ConfigError::semantic(
+            text,
+            &document.limits.annotate_burst.span(),
+            KEY_ANNOTATE_BURST,
+            "must be in 1..=1024",
+        ));
+    }
     let store = parse_store(text, document.store)?;
 
     Ok(Config {
@@ -338,6 +364,8 @@ fn parse(text: &str) -> Result<Config, ConfigError> {
         tick_ms,
         cgroup_root: PathBuf::from(cgroup_root),
         max_rows,
+        annotate_rate_per_s,
+        annotate_burst,
         store,
     })
 }
@@ -622,6 +650,8 @@ cgroup_root = "/sys/fs/cgroup"     # absolute, no ..
 
 [limits]
 max_rows = 1024
+annotate_rate_per_s = 50
+annotate_burst = 64
 
 [store]
 dir = "/var/lib/hostobs/probe"
@@ -668,11 +698,19 @@ events_ring_bytes = 4194304
     }
 
     fn with_store(text: &str) -> String {
-        if text.contains("[store]") {
+        let mut complete = if text.contains("[store]") {
             text.to_string()
         } else {
             format!("{text}{TEST_STORE}")
+        };
+        if complete.contains("[limits]") && !complete.contains("annotate_rate_per_s") {
+            let insert_at = complete.find("\n[store]").unwrap_or(complete.len());
+            complete.insert_str(
+                insert_at,
+                "\nannotate_rate_per_s = 50\nannotate_burst = 64\n",
+            );
         }
+        complete
     }
 
     #[test]
@@ -695,6 +733,8 @@ events_ring_bytes = 4194304
                 tick_ms: 1_000,
                 cgroup_root: "/sys/fs/cgroup".into(),
                 max_rows: 1_024,
+                annotate_rate_per_s: 50,
+                annotate_burst: 64,
                 store: StoreSettings {
                     dir: "/var/lib/hostobs/probe".into(),
                     tmpfs_dir: "/run/hostobs/tiers".into(),
@@ -920,8 +960,24 @@ max_rows = 1
                 "max_rows",
                 "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n[limits]\n",
             ),
+            (
+                "annotate_rate_per_s",
+                "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n\
+                 [limits]\nmax_rows=1\nannotate_burst=64\n",
+            ),
+            (
+                "annotate_burst",
+                "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n\
+                 [limits]\nmax_rows=1\nannotate_rate_per_s=50\n",
+            ),
         ] {
-            missing_key_refusal(text, key);
+            let complete = if key.starts_with("annotate_") {
+                format!("{text}{TEST_STORE}")
+            } else {
+                with_store(text)
+            };
+            let error = one_line(parse(&complete).expect_err("required key is missing"));
+            assert!(error.contains(key), "missing {key:?}: {error}");
         }
     }
 
@@ -981,6 +1037,19 @@ max_rows = 1
                     .max_rows,
                 expected
             );
+        }
+        for (key, original, invalid) in [
+            ("annotate_rate_per_s", "50", ["0", "1001", "-1", "01"]),
+            ("annotate_burst", "64", ["0", "1025", "-1", "01"]),
+        ] {
+            for value in invalid {
+                let text = EXAMPLE.replace(
+                    &format!("{key} = {original}"),
+                    &format!("{key} = {value}"),
+                );
+                let error = one_line(parse(&text).expect_err("annotation limit out of range"));
+                assert!(error.contains(key), "missing {key:?}: {error}");
+            }
         }
     }
 

@@ -51,7 +51,14 @@ MEM_CURRENT_FACTS = {
 
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
-        cases = hostobs_wire_ref.load_cases(FIXTURES)
+        with tempfile.TemporaryDirectory(prefix="hostobs-wire-fixtures-") as temporary:
+            fixture_dir = Path(temporary)
+            for path in FIXTURES.iterdir():
+                if path.name == "event-names.json":
+                    continue
+                if path.suffix in {".bin", ".json"}:
+                    (fixture_dir / path.name).write_bytes(path.read_bytes())
+            cases = hostobs_wire_ref.load_cases(fixture_dir)
         self.assertEqual(len(cases), 70, "the fixture case list is part of the contract")
         valid = [path.stem for path, spec, _data in cases if "expect_error" not in spec]
         self.assertEqual(len(valid), 11)

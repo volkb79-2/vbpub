@@ -25,6 +25,98 @@ use hostobs_proto::quality::Quality;
 
 use crate::limits::Level;
 use crate::selection::Selection;
+use crate::{conn::Peer, hub::ConnId};
+
+/// The checked `annotate` event kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnnotateKind {
+    /// Open a connection-owned span.
+    Begin,
+    /// Close the innermost matching span on this connection.
+    End,
+    /// Record a point event.
+    Point,
+}
+
+/// The checked outcome for an `end` event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnnotateOutcome {
+    /// Work completed successfully.
+    Ok,
+    /// Work completed unsuccessfully.
+    Fail,
+    /// Work failed with an error.
+    Error,
+    /// Work was skipped.
+    Skipped,
+    /// Work was cancelled.
+    Cancelled,
+    /// Work timed out.
+    Timeout,
+    /// Work was abandoned by connection close.
+    Abandoned,
+}
+
+/// The checked context keys accepted by `annotate`.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum AnnotateCtxKey {
+    /// `run`.
+    Run,
+    /// `lane`.
+    Lane,
+    /// `candidate`.
+    Candidate,
+    /// `txn`.
+    Txn,
+    /// `session`.
+    Session,
+}
+
+/// Schema-checked `annotate` arguments.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnnotateArgs {
+    /// Event kind.
+    pub kind: AnnotateKind,
+    /// Event name.
+    pub name: String,
+    /// Explicit key, or `None` to use `name`.
+    pub key: Option<String>,
+    /// Client-written context.
+    pub ctx: BTreeMap<AnnotateCtxKey, String>,
+    /// End outcome, required only for `end`.
+    pub outcome: Option<AnnotateOutcome>,
+    /// Optional event code.
+    pub code: Option<String>,
+    /// Client-written attributes.
+    pub attrs: BTreeMap<String, String>,
+    /// Validated point-only `(boot_id, seq)` idempotency key, when present.
+    pub idempotency: Option<(String, u64)>,
+}
+
+/// Successful `annotate` reply values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnnotateReply {
+    /// Server-stamped monotonic nanoseconds.
+    pub t_mono_ns: u64,
+    /// Opened or closed span id, or `None` for a point.
+    pub span: Option<u64>,
+}
+
+/// A typed refusal from the annotation engine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnnotateRefusal {
+    /// The per-uid token bucket refused the request.
+    RateLimited {
+        /// Milliseconds until one token is available.
+        retry_after_ms: u32,
+    },
+    /// The span table is at its uid or global bound.
+    Budget,
+    /// No span with this key is open on this connection.
+    SpanUnknown,
+    /// Timestamp derivation, event encoding or store append failed.
+    Internal,
+}
 
 /// What `hello` announces about the server (WIRE.md section 4.4).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,6 +280,15 @@ pub trait Backend {
     /// none. The backend stops resolving at `max_rows + 1` rows and answers
     /// [`BackendError::TooManyRows`], so one request costs at most that many rows of work.
     fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError>;
+    /// Append one schema-checked annotation on the server thread.
+    fn annotate(
+        &mut self,
+        conn: ConnId,
+        peer: &Peer,
+        args: &AnnotateArgs,
+    ) -> Result<AnnotateReply, AnnotateRefusal>;
+    /// Close spans owned by a connection that the server is removing.
+    fn connection_closed(&mut self, conn: ConnId);
 }
 
 /// The driver's per-turn hook (docs/PROBE-PROCESS.md §(b)).
@@ -259,6 +360,17 @@ impl Backend for FixedBackend {
             }
         }
     }
+
+    fn annotate(
+        &mut self,
+        _conn: ConnId,
+        _peer: &Peer,
+        _args: &AnnotateArgs,
+    ) -> Result<AnnotateReply, AnnotateRefusal> {
+        Err(AnnotateRefusal::Internal)
+    }
+
+    fn connection_closed(&mut self, _conn: ConnId) {}
 }
 
 impl Turn for FixedBackend {

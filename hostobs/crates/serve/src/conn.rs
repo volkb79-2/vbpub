@@ -61,14 +61,15 @@ use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, PROTO_MINOR};
 use hostobs_proto::quality;
 use hostobs_proto::stream::{ConnTimers, Detect, Feed, FrameReader, ModeDetect, RawFrame, Timer};
 
-use crate::backend::{Backend, Identity, StatusInfo};
+use crate::backend::{AnnotateRefusal, Backend, Identity, StatusInfo};
 use crate::classify::{
     classify_with, Call, ConnFacts, Dispatch, Mode, Phase, Prefix, Query, Refusal, SERVER_MAJOR,
 };
 use crate::codes::{Code, Detail, Pool};
 use crate::encode::{
-    closing_evt, current_result, end_error, end_ok, error_line, push_string, rep_error, rep_ok,
-    rep_ok_line, server_prefix, subscribe_result, unknown_mode_line, EndReason, UNSUBSCRIBE_RESULT,
+    annotate_result, closing_evt, current_result, end_error, end_ok, error_line, push_string,
+    rep_error, rep_ok, rep_ok_line, server_prefix, subscribe_result, unknown_mode_line,
+    EndReason, UNSUBSCRIBE_RESULT,
 };
 use crate::limits::{ConnLimits, Level};
 use crate::lines::{LineError, LineFeed, LineReader};
@@ -374,7 +375,7 @@ impl Conn {
         bytes: &[u8],
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         if bytes.is_empty() || self.state == State::Closed {
@@ -634,7 +635,7 @@ impl Conn {
         bytes: &[u8],
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         match self.detect.feed(bytes) {
@@ -671,7 +672,7 @@ impl Conn {
         rest: &[u8],
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         let [_, _, _, _, a0, a1, b0, b1] = prefix;
@@ -699,7 +700,7 @@ impl Conn {
         bytes: &[u8],
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         if bytes.is_empty() || self.state == State::Closed {
@@ -771,7 +772,7 @@ impl Conn {
         input: &Input,
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         let first_line = self.state == State::JsonNoHello;
@@ -799,7 +800,7 @@ impl Conn {
         dispatch: &Dispatch,
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         if self.is_closed() {
@@ -923,6 +924,24 @@ impl Conn {
                 self.push(hub, bytes, now_ns);
                 return;
             }
+            Call::Annotate(args) => match backend.annotate(self.id, &self.peer, args) {
+                Ok(reply) => annotate_result(reply.t_mono_ns, reply.span),
+                Err(refusal) => {
+                    let (code, detail) = match refusal {
+                        AnnotateRefusal::RateLimited { retry_after_ms } => {
+                            (Code::RateLimited, Detail::RetryAfterMs(retry_after_ms))
+                        }
+                        AnnotateRefusal::Budget => {
+                            (Code::Budget, Detail::Pool(Pool::Spans))
+                        }
+                        AnnotateRefusal::SpanUnknown => (Code::SpanUnknown, Detail::Empty),
+                        AnnotateRefusal::Internal => (Code::Internal, Detail::Empty),
+                    };
+                    let bytes = self.error_bytes(dispatch.corr, code, &detail);
+                    self.push(hub, bytes, now_ns);
+                    return;
+                }
+            },
         };
         let bytes = self.reply_bytes(dispatch.corr, &result);
         self.push(hub, bytes, now_ns);
@@ -941,7 +960,7 @@ impl Conn {
         selection: Selection,
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         self.execute(
@@ -1149,6 +1168,19 @@ mod tests {
             self.current_calls
                 .set(self.current_calls.get().saturating_add(1));
             self.inner.current(selection, max_rows)
+        }
+
+        fn annotate(
+            &mut self,
+            conn: ConnId,
+            peer: &Peer,
+            args: &crate::backend::AnnotateArgs,
+        ) -> Result<crate::backend::AnnotateReply, crate::backend::AnnotateRefusal> {
+            self.inner.annotate(conn, peer, args)
+        }
+
+        fn connection_closed(&mut self, conn: ConnId) {
+            self.inner.connection_closed(conn);
         }
     }
 
