@@ -1002,12 +1002,7 @@ mod tests {
         ];
         for (args, path) in cases {
             let text = req("current", args);
-            assert_refusal(
-                &binary(text.as_bytes()),
-                Code::BadRequest,
-                5,
-                &key(path),
-            );
+            assert_refusal(&binary(text.as_bytes()), Code::BadRequest, 5, &key(path));
         }
     }
 

@@ -160,8 +160,7 @@ fn handshake_sends_the_prefix_alone_then_hello_with_corr_one() {
 
 #[test]
 fn handshake_accepts_minor_one_server_and_status_request() {
-    let hello_result = hello_json("observe", &[], BOOT, 7)
-        .replace("\"minor\":2", "\"minor\":1");
+    let hello_result = hello_json("observe", &[], BOOT, 7).replace("\"minor\":2", "\"minor\":1");
     assert!(hello_result.contains("\"proto\":{\"major\":1,\"minor\":1}"));
     let mut incoming = prefix(1, 1);
     incoming.extend(rep_ok(1, &hello_result));
