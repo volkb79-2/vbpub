@@ -139,11 +139,13 @@ class DeployUnits(unittest.TestCase):
     def test_every_deployed_level_has_one_exact_socket(self):
         expected_units = {f"hostobs-{level}.socket" for level in LEVELS}
         # Only the units that activate the probe are this contract: another
-        # service may ship its own socket in the same directory.
+        # service may ship its own socket in the same directory. A socket unit
+        # without Service= activates the service of the same stem.
         probe_units = {
             path.name
             for path in SYSTEMD.glob("*.socket")
-            if SERVICE.name in unit(path).get("Socket", {}).get("Service", [])
+            if SERVICE.name
+            in (unit(path).get("Socket", {}).get("Service") or [f"{path.stem}.service"])
         }
         self.assertEqual(
             probe_units,

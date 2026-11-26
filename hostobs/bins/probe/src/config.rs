@@ -505,8 +505,8 @@ max_rows = 1024
 
     #[test]
     fn the_shipped_configuration_is_accepted_and_serves_the_three_probe_levels() {
-        let config = parse(include_str!("../../../deploy/hostobsd.toml"))
-            .expect("deploy/hostobsd.toml");
+        let config =
+            parse(include_str!("../../../deploy/hostobsd.toml")).expect("deploy/hostobsd.toml");
         assert_eq!(
             config.levels,
             vec![Level::Observe, Level::Operator, Level::Observer]

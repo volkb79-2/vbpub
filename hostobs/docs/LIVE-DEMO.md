@@ -86,13 +86,19 @@ Follow these steps in order, for a fresh install and for an upgrade.
 The three socket units and the `levels` list in `hostobsd.toml` are one set.
 Install all of them. If a configured level has no socket, or a passed socket has
 no configured level, the probe exits 2 before it serves anything, so every level
-stops, and `RestartPreventExitStatus=2` keeps it stopped until an operator acts
+stops until an operator corrects the set
 (`systemctl status hostobs-probe.service` shows the refusal).
+`RestartPreventExitStatus=2` stops the automatic restart, but a client that
+connects to a listening socket makes systemd start the service again, until a
+start limit marks the units failed (documented systemd behaviour, not measured
+here). After such a failure, correct the cause, run `systemctl reset-failed` on
+the failed units and repeat step 3.
 
 **1. Install the files.** `/usr/local/bin/hostobs-probe`,
 `/etc/hostobs/hostobsd.toml`, all four units from
 [`deploy/systemd/`](../deploy/systemd/) (three socket units and the service
-unit), and [`deploy/tmpfiles.d/hostobs.conf`](../deploy/tmpfiles.d/hostobs.conf)
+unit) in `/etc/systemd/system/`, and
+[`deploy/tmpfiles.d/hostobs.conf`](../deploy/tmpfiles.d/hostobs.conf)
 as `/etc/tmpfiles.d/hostobs.conf`. The socket paths and modes from plan v4 §A.2
 are:
 
@@ -134,8 +140,15 @@ systemd-tmpfiles --create /etc/tmpfiles.d/hostobs.conf
 systemctl daemon-reload
 systemctl stop hostobs-observe.socket hostobs-operator.socket hostobs-observer.socket hostobs-probe.service
 systemctl enable --now hostobs-observe.socket hostobs-operator.socket hostobs-observer.socket
+systemctl enable hostobs-probe.service
 systemctl start hostobs-probe.service
+systemctl status hostobs-probe.service
 ```
+
+Enabling the service makes the probe sample from boot; with only the sockets
+enabled, nothing is sampled after a reboot until a client connects. `start`
+returns success even if the probe then exits 2, so read the `status` output: it
+must say `active (running)`, also when you run it again a few seconds later.
 
 The `stop` matters on an upgrade. A running probe keeps the sockets it was
 started with, and systemd refuses to start a socket unit while its service is
