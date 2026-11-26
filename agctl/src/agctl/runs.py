@@ -46,8 +46,6 @@ READY_PREFIX = "READY run="
 YIELD_PREFIX = "YIELD run="
 # A generated id's stamp: `-20261125T042108` or `-20261124_183122`.
 STAMP_TOKEN_RE = re.compile(r"^[0-9]{8}[_T][0-9]{6}$")
-# A package/topic id token: `22c`, `19m`, `26b` -- the second token of `plat-22c-...`.
-ID_TOKEN_RE = re.compile(r"^[0-9]+[a-z]?$")
 CHAIN_RE = re.compile(r"^(.*)-y([0-9]+)$")
 BOUNDARY_RE = re.compile(r'boundary="([^"]*)"')
 
@@ -99,6 +97,9 @@ class RunSet:
     records: tuple[RunRecord, ...]
     dirs: tuple[str, ...]
     readable: tuple[str, ...]
+    # `(directory, reason)` for each configured directory that exists but could not be listed:
+    # one unreadable directory must not cost the records of the others.
+    unreadable: tuple[tuple[str, str], ...] = ()
 
     def by_id(self, run_id: str) -> RunRecord | None:
         for record in self.records:
@@ -107,9 +108,9 @@ class RunSet:
         return None
 
     def for_key(self, key: str) -> tuple[RunRecord, ...]:
-        """Records whose name belongs to the topic `key` (the label convention of 4a)."""
+        """Records whose name belongs to the package `key` (the label convention of 4a)."""
 
-        return tuple(record for record in self.records if topic_key(record.id) == key)
+        return tuple(record for record in self.records if package_key(record.id) == key)
 
 
 def _first_line(text: str | None) -> str:
@@ -167,11 +168,16 @@ def parse_last(text: str | None) -> tuple[str, str, str, str, str]:
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith(READY_PREFIX):
-            state, run = "READY", stripped[len(READY_PREFIX):].split()[0]
+            # `READY run=` with no value (an agent quoting the format, or a truncated write)
+            # has no run name: the position stays stated-empty instead of raising IndexError
+            # and losing the whole estate view.
+            tokens = stripped[len(READY_PREFIX):].split()
+            state, run = "READY", tokens[0] if tokens else ""
             gauge = boundary = ""
             mark = _token_value(stripped, "mark=")
         elif stripped.startswith(YIELD_PREFIX):
-            state, run = "YIELD", stripped[len(YIELD_PREFIX):].split()[0]
+            tokens = stripped[len(YIELD_PREFIX):].split()
+            state, run = "YIELD", tokens[0] if tokens else ""
             gauge = _token_value(stripped, "gauge=")
             match = BOUNDARY_RE.search(stripped)
             boundary = match.group(1) if match else ""
@@ -218,22 +224,41 @@ def parse_registry(text: str | None, directory: str) -> dict[str, object] | None
     return document if document.get("id") == directory else None
 
 
-def topic_key(name: str) -> str:
-    """The package/topic key of a branch name or a run label (DESIGN 4a's join key).
+def package_key(name: str) -> str:
+    """The package key of a branch name or a run label (DESIGN 4a's join key).
 
-    Branches and labels carry a stamp (`-20261125T042108`, `-20261124_183122`) and a topic id
-    (`plat-22c`, `hostobs-p11b`). The key drops the stamp and is the first token, plus the
-    second when that one is a numeric id, so `plat-22c` and `plat-19m` do not collapse into one
-    another. It is a prefix convention, and every cell built on it says so in its `source`.
+    Dropped: the generated stamp (`-20261125T042108`, `-20261124_183122`) and the yield-chain
+    suffix (`-y<N>`, E-021). KEPT: everything else, because everything else is what tells two
+    packages of one topic apart — `core-ciu-r2fix` and `core-cmru-ki208` are two packages, and
+    a key that collapsed them to `core` would print one row standing for four worktrees.
+
+    The real estate separates the two stages deliberately: a branch carries a topic and a slug
+    (`core-ciu-r2fix`, `edge-relgate-20261125`, `plat-22c-resumebusy-...`), while a run label
+    carries a topic and a designator (`plat-22c-pi`, `core-p08-fix1`). This function therefore
+    does NOT shift the package key onto the designator; `topic_of` is the other half of the
+    same convention and the `plan_id` cell reports the designator a `STATE.md` line names.
     """
 
     tokens = [token for token in name.split("-") if token]
     kept = [token for token in tokens if not STAMP_TOKEN_RE.match(token)]
     if not kept:
         return name
-    if len(kept) > 1 and ID_TOKEN_RE.match(kept[1]):
-        return f"{kept[0]}-{kept[1]}"
-    return kept[0]
+    base = "-".join(kept)
+    chain = CHAIN_RE.match(base)
+    return chain.group(1) if chain else base
+
+
+def topic_of(name: str) -> str:
+    """The topic of a branch name, run label or package key: its first token.
+
+    This is the ONLY thing a `STATE.md` line can be matched on today (`P-core-08` names the
+    designator, not the branch slug), and it is reported as `unverified` prose for exactly
+    that reason.
+    """
+
+    tokens = [token for token in name.split("-") if token]
+    kept = [token for token in tokens if not STAMP_TOKEN_RE.match(token)]
+    return kept[0] if kept else name
 
 
 def yield_chains(records: tuple[RunRecord, ...]) -> dict[str, tuple[str, ...]]:
@@ -281,7 +306,12 @@ def _record(
     exit_code, outcome, review = parse_done(bounded.head(paths["done"]) if "done" in paths else None)
     tokens, _updated = parse_live(bounded.head(paths["live"]) if "live" in paths else None)
     last_state, last_run, gauge, boundary, mark = parse_last(
-        bounded.tail(paths["last.txt"]) if "last.txt" in paths else None
+        # A STREAMING scan, not a tail window: `last.txt` can hold kilobytes of prose after the
+        # run's last READY/YIELD line, and a tail read would report no position at all — which
+        # is indistinguishable from a file that never had one (L3 of the round-1 review).
+        bounded.last_line_matching(paths["last.txt"], (READY_PREFIX, YIELD_PREFIX))
+        if "last.txt" in paths
+        else None
     )
     live_mtime = None
     if "live" in paths:
@@ -338,17 +368,22 @@ def read(config) -> RunSet:
     sources: dict[str, str] = {}
     registries: dict[str, dict[str, object]] = {}
     readable: list[str] = []
+    unreadable: list[tuple[str, str]] = []
     for directory in config.runs_dirs:
         if not directory.is_dir():
             continue
+        entries, reason = bounded.walk(directory)
+        if reason:
+            unreadable.append((str(directory), reason))
+            continue
         readable.append(str(directory))
-        for entry in sorted(directory.iterdir()):
+        for entry in entries:
             if entry.is_dir():
                 document = parse_registry(bounded.head(entry / RUN_JSON), entry.name)
                 if document is not None:
                     registries.setdefault(entry.name, document)
                     paths.setdefault(entry.name, {})
-                    sources.setdefault(entry.name, str(entry))
+                    sources.setdefault(entry.name, str(directory))
                 continue
             if not entry.is_file():
                 continue
@@ -366,4 +401,5 @@ def read(config) -> RunSet:
         records=records,
         dirs=tuple(str(path) for path in config.runs_dirs),
         readable=tuple(readable),
+        unreadable=tuple(unreadable),
     )

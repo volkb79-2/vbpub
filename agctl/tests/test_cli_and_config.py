@@ -13,16 +13,24 @@ from agctl import config as ag_config
 # --- config: defaults, environment, agctl.toml ---------------------------------------------
 
 
-def test_an_unset_environment_resolves_the_documented_defaults(tmp_path):
+def test_an_unset_environment_resolves_the_documented_defaults(tmp_path, monkeypatch):
+    # The default is `~/controller`, so the test must own `$HOME`: an operator's real
+    # `$CONTROLLER_HOME/agctl.toml` would otherwise be read here (it is where DESIGN 8a puts
+    # `[context.*]`), and the strict unknown-key refusal would make this test fail for a
+    # reason unrelated to the change.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CONTROLLER_HOME", raising=False)
+
     resolved = ag_config.load({}, cwd=tmp_path)
 
-    home = ag_config.Path("~").expanduser() / "controller"
+    home = tmp_path / "controller"
     assert resolved.home == home
     assert resolved.runs_dirs[0] == home / "runs"
-    assert ag_config.Path("~").expanduser() / "c5-runs" in resolved.runs_dirs
+    assert tmp_path / "c5-runs" in resolved.runs_dirs
     # The peers home is derived from CONTROLLER_HOME, never hard-coded to $HOME.
     assert resolved.peers_dir == home.parent / ag_config.PEERS_DIRNAME
     assert resolved.repo_state_dir is None
+    assert resolved.repo is None
     assert resolved.state_dirs == (resolved.peers_dir,)
     assert resolved.toml_state == "absent"
 
@@ -51,6 +59,16 @@ def test_the_repository_state_dir_is_read_only_reported_when_the_repo_is_named(t
 
     assert resolved.repo_state_dir == tmp_path / ".controller-state"
     assert resolved.state_dirs == (resolved.repo_state_dir, resolved.peers_dir)
+    # The declared repository is carried for the git reader, which takes it FIRST and the
+    # caller's cwd second. It is never the controller home.
+    assert resolved.repo == str(tmp_path)
+
+
+def test_a_relative_declared_repository_is_resolved_against_the_caller_cwd(tmp_path):
+    resolved = ag_config.load({"CONTROLLER_HOME": str(tmp_path / "home"), "CONTROLLER_REPO": "repo"}, cwd=tmp_path)
+
+    assert resolved.repo == "repo"
+    assert resolved.repo_state_dir == tmp_path / "repo" / ag_config.REPO_STATE_DIR
 
 
 def test_the_gate_paths_default_to_the_controller_home(tmp_path):
@@ -111,6 +129,13 @@ def test_a_malformed_agctl_toml_refuses_and_names_the_problem(tmp_path, text, ex
 def test_an_empty_path_value_refuses_instead_of_resolving_to_the_cwd():
     with pytest.raises(ag_config.ConfigError, match="names no directory"):
         ag_config.expand("   ", ag_config.Path("/tmp"))
+
+
+def test_a_config_refusal_carries_the_documented_exit_code_of_two():
+    # README, CHANGES and DESIGN section 4 all document 2; cli-extended reads
+    # `getattr(exc, "exit_code", 1)`, so an exception without the attribute would print 1.
+    assert ag_config.ConfigError.exit_code == 2
+    assert isinstance(ag_config.ConfigError("x"), ag_config.ConfigError)
 
 
 def test_a_toml_that_is_not_utf8_is_refused_with_the_decode_reason(tmp_path):

@@ -104,8 +104,29 @@ def test_a_block_without_a_path_carries_no_entry():
     assert gitstate.parse_worktree_porcelain("HEAD aaaaaaa\nbranch refs/heads/x\n") == ()
 
 
-def test_merged_parsing_is_one_short_name_per_line():
-    assert gitstate.parse_merged("main\nplat-22c\n\n  other \n") == frozenset({"main", "plat-22c", "other"})
+def test_merged_parsing_strips_the_ref_prefix():
+    # `--format=%(refname)` prints the full ref. `%(refname:short)` is not used: a tag sharing a
+    # branch name makes git print `heads/<name>` for the branch, which would silently turn a
+    # merged branch into a merge candidate.
+    assert gitstate.parse_merged("refs/heads/main\nrefs/heads/plat-22c\n\nrefs/heads/other \n") == frozenset(
+        {"main", "plat-22c", "other"}
+    )
+    # A listing this parser does not recognise keeps its text rather than inventing a name.
+    assert gitstate.parse_merged("main\n") == frozenset({"main"})
+
+
+def test_the_merge_command_asks_for_the_full_ref_and_not_the_short_one(monkeypatch):
+    seen: list[list[str]] = []
+
+    def runner(arguments, cwd):
+        seen.append(list(arguments))
+        return (PORCELAIN if "worktree" in arguments else "refs/heads/main\n"), 0, ""
+
+    monkeypatch.setattr(gitstate, "_run_git", runner)
+
+    gitstate.read_view("/repo")
+
+    assert seen[1][-1] == "--format=%(refname)"
 
 
 # --- the git view -----------------------------------------------------------------------------
@@ -175,6 +196,34 @@ def test_read_view_reads_the_merge_set_when_git_answers(tmp_path, monkeypatch):
 # --- the one subprocess ------------------------------------------------------------------------
 
 
+def test_run_git_carries_an_allow_listed_environment(monkeypatch, tmp_path):
+    seen: list[dict[str, object]] = []
+
+    class Completed:
+        stdout = "ok\n"
+        returncode = 0
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        seen.append({"argv": argv, **kwargs})
+        return Completed()
+
+    monkeypatch.setenv("GIT_DIR", "/elsewhere/.git")
+    monkeypatch.setenv("OPENDESIGN_API_KEY_VOLKER", "would-be-a-secret")
+    monkeypatch.setattr(gitstate.subprocess, "run", fake_run)
+
+    gitstate._run_git(["worktree", "list"], "/repo")
+
+    environment = seen[0]["env"]
+    # A caller-set GIT_DIR would make `worktree list` describe another repository; a credential
+    # variable has no business in a read-only local call.
+    assert "GIT_DIR" not in environment
+    assert "OPENDESIGN_API_KEY_VOLKER" not in environment
+    assert environment["GIT_OPTIONAL_LOCKS"] == "0"
+    assert environment["GIT_TERMINAL_PROMPT"] == "0"
+    assert environment["GIT_ASKPASS"] == ""
+
+
 def test_run_git_carries_no_optional_locks_and_a_bounded_timeout(monkeypatch, tmp_path):
     seen: list[dict[str, object]] = []
 
@@ -234,7 +283,7 @@ def test_discover_root_answers_the_repository_root_from_a_subdirectory(tmp_path)
     nested = repo / "agctl"
     nested.mkdir()
 
-    root, detail = gitstate.discover_root(nested)
+    root, detail = gitstate.discover_root(None, nested)
 
     assert root == str(repo)
     assert detail == ""
@@ -244,65 +293,95 @@ def test_discover_root_reports_no_repository_rather_than_a_traceback(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
 
-    root, detail = gitstate.discover_root(plain)
+    root, detail = gitstate.discover_root(None, plain)
 
     assert root is None
     assert detail
+    assert "no git work tree at" in detail
 
 
-def test_discover_root_falls_back_to_the_configured_repository(tmp_path, monkeypatch):
+def test_discover_root_takes_the_declared_repository_before_the_cwd(tmp_path, monkeypatch):
+    # `CONTROLLER_REPO` is the authoritative source (and the one the peer paths come from); the
+    # cwd is only the fallback. Asking the cwd first would answer for a different repository
+    # whenever the command is run inside a checkout that is not the declared one.
     elsewhere = tmp_path / "elsewhere" / "repo"
     elsewhere.mkdir(parents=True)
-    start = tmp_path / "start"
-    start.mkdir()
-    answers = {str(start): ("", 128, "not a work tree"), str(elsewhere): (str(elsewhere) + "\n", 0, "")}
-
-    def runner(arguments, cwd):
-        return answers[cwd]
-
-    monkeypatch.setattr(gitstate, "_run_git", runner)
-    monkeypatch.setenv("CONTROLLER_REPO", str(elsewhere))
-
-    root, detail = gitstate.discover_root(start)
-
-    assert root == str(elsewhere)
-    assert detail == ""
-
-
-def test_discover_root_names_the_directory_it_asked_when_nothing_answers(tmp_path, monkeypatch):
-    start = tmp_path / "start"
-    start.mkdir()
-    monkeypatch.setattr(gitstate, "_run_git", lambda arguments, cwd: ("", 128, ""))
-
-    root, detail = gitstate.discover_root(start)
-
-    assert root is None
-    assert detail == f"git rev-parse exited 128 in {start}"
-
-
-def test_discover_root_asks_the_configured_repository_that_is_itself_absent(tmp_path, monkeypatch):
-    start = tmp_path / "start"
-    start.mkdir()
-    configured = tmp_path / "absent-repo"
+    nested = tmp_path / "cwd" / "agctl"
+    nested.mkdir(parents=True)
     answers: list[str] = []
 
     def runner(arguments, cwd):
         answers.append(cwd)
+        return str(elsewhere) + "\n", 0, ""
+
+    monkeypatch.setattr(gitstate, "_run_git", runner)
+
+    root, detail = gitstate.discover_root(str(elsewhere), nested)
+
+    assert answers == [str(elsewhere)]
+    assert root == str(elsewhere)
+    assert detail == ""
+
+
+def test_discover_root_never_asks_the_controller_home(tmp_path, monkeypatch):
+    # The controller home is tool state, not a checkout, and it is not an input to this call at
+    # all: a home that happens to be a git checkout used to make the whole view describe THAT
+    # repository. It is a checkout on purpose here, and it must not be asked.
+    controller_home = tmp_path / "controller"
+    controller_home.mkdir()
+    _git(controller_home, "init", "-q", "-b", "main")
+    nested = tmp_path / "cwd"
+    nested.mkdir()
+    asked: list[str] = []
+
+    def runner(arguments, cwd):
+        asked.append(cwd)
+        return "", 128, "no work tree"
+
+    monkeypatch.setattr(gitstate, "_run_git", runner)
+
+    root, detail = gitstate.discover_root(None, nested)
+
+    assert asked == [str(nested)]
+    assert root is None
+    assert "no work tree" in detail
+
+
+def test_a_declared_repository_that_is_not_a_checkout_is_a_stated_error(tmp_path, monkeypatch):
+    configured = tmp_path / "absent-repo"
+    nested = tmp_path / "start"
+    nested.mkdir()
+    called: list[str] = []
+
+    def runner(arguments, cwd):
+        called.append(cwd)
         return "", 128, "nope"
 
     monkeypatch.setattr(gitstate, "_run_git", runner)
-    monkeypatch.setenv("CONTROLLER_REPO", str(configured))
 
-    root, detail = gitstate.discover_root(start)
+    root, detail = gitstate.discover_root(str(configured), nested)
 
-    # Both the start directory and the configured repository's PARENT were asked, and neither
-    # answered; the reason names the last one it tried.
-    assert answers == [str(start), str(tmp_path)]
+    # The caller named a repository: answering for the cwd instead would be a different
+    # repository's worktrees under the declared repository's peer paths.
+    assert called == []
     assert root is None
-    assert "nope" in detail
+    assert "is not a directory" in detail
+    assert "CONTROLLER_REPO" in detail
 
 
-def test_discover_root_answers_an_absent_start_without_calling_git(tmp_path, monkeypatch):
+def test_a_declared_repository_without_a_work_tree_says_so(tmp_path, monkeypatch):
+    configured = tmp_path / "repo"
+    configured.mkdir()
+    monkeypatch.setattr(gitstate, "_run_git", lambda arguments, cwd: ("", 128, "fatal: not a git repository"))
+
+    root, detail = gitstate.discover_root(str(configured), tmp_path)
+
+    assert root is None
+    assert "names no git work tree" in detail
+    assert "fatal: not a git repository" in detail
+
+
+def test_discover_root_answers_an_absent_cwd_without_calling_git(tmp_path, monkeypatch):
     absent = tmp_path / "absent"
     calls: list[str] = []
 
@@ -312,7 +391,7 @@ def test_discover_root_answers_an_absent_start_without_calling_git(tmp_path, mon
 
     monkeypatch.setattr(gitstate, "_run_git", runner)
 
-    root, detail = gitstate.discover_root(absent)
+    root, detail = gitstate.discover_root(None, absent)
 
     # The parent is asked, not the absent directory itself.
     assert calls == [str(tmp_path)]
@@ -320,18 +399,15 @@ def test_discover_root_answers_an_absent_start_without_calling_git(tmp_path, mon
     assert "nope" in detail
 
 
-def test_discover_root_names_a_configured_path_that_is_not_even_a_parent(tmp_path, monkeypatch):
+def test_discover_root_names_the_directory_it_asked_when_nothing_answers(tmp_path, monkeypatch):
     start = tmp_path / "start"
     start.mkdir()
-    monkeypatch.setenv("CONTROLLER_REPO", str(tmp_path / "absent" / "deeper" / "repo"))
-    monkeypatch.setattr(gitstate, "_run_git", lambda arguments, cwd: ("", 128, "nope"))
+    monkeypatch.setattr(gitstate, "_run_git", lambda arguments, cwd: ("", 128, ""))
 
-    root, detail = gitstate.discover_root(start)
+    root, detail = gitstate.discover_root(None, start)
 
-    # The configured path and its parent are both absent, so the reason names that rather than
-    # reporting a git failure for a directory nobody could enter.
     assert root is None
-    assert "is not a directory" in detail
+    assert detail == f"no git work tree at {start}: git rev-parse exited 128"
 
 
 def test_two_lines_after_a_locked_line_still_flush_once_per_block():

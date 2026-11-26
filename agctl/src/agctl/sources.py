@@ -167,6 +167,19 @@ class Slot:
         return payload
 
 
+@dataclass(frozen=True)
+class SlotScan:
+    """The gate lock files, and why their directory could not be listed when it could not.
+
+    A lock directory that exists but cannot be listed is ONE source's failure: it must not
+    take down the runs, the gate results or the peer prose, so the reason travels beside an
+    empty slot list instead of raising.
+    """
+
+    slots: tuple[Slot, ...]
+    detail: str = ""
+
+
 def split_lock_name(name: str) -> tuple[str, str] | None:
     """`(<host>, "admit"|"slot")` of a gate lock file name, else ``None``.
 
@@ -185,18 +198,27 @@ def split_lock_name(name: str) -> tuple[str, str] | None:
 def gate_slots(config, locks: LockTable) -> tuple[Slot, ...]:
     """Every gate lock file under `$CONTROLLER_HOME/remote-gate-locks`, with its state."""
 
+    return scan_gate_slots(config, locks).slots
+
+
+def scan_gate_slots(config, locks: LockTable) -> SlotScan:
+    """The slots plus the reason the directory could not be listed (one unreadable source)."""
+
     directory = config.gate_lock_dir
     if not directory.is_dir():
-        return ()
+        return SlotScan(())
+    entries, reason = bounded.walk(directory)
+    if reason:
+        return SlotScan((), reason)
     slots: list[Slot] = []
-    for path in sorted(directory.iterdir()):
+    for path in entries:
         parsed = split_lock_name(path.name)
         if parsed is None or not path.is_file():
             continue
         host, kind = parsed
         state, pid, detail = locks.state_of(path)
         slots.append(Slot(host=host, name=path.name, kind=kind, state=state, holder_pid=pid, detail=detail, path=str(path)))
-    return tuple(slots)
+    return SlotScan(tuple(slots))
 
 
 @dataclass(frozen=True)
@@ -260,11 +282,20 @@ def parse_lane_verdict(line: str | None, lane: str) -> str:
 def read_results(config) -> tuple[GateResult, ...]:
     """Every `remote-gates/<run>` directory, newest first by its own mtime."""
 
+    return scan_results(config).results
+
+
+def scan_results(config) -> GateScan:
+    """The gate results, plus the reason their directory could not be listed."""
+
     directory = config.remote_gate_out
     if not directory.is_dir():
-        return ()
+        return GateScan(())
+    entries, reason = bounded.walk(directory)
+    if reason:
+        return GateScan((), reason)
     results: list[GateResult] = []
-    for path in sorted(directory.iterdir(), key=lambda candidate: candidate.name):
+    for path in entries:
         if not path.is_dir():
             continue
         meta = json_object(path / META_JSON)
@@ -304,7 +335,15 @@ def read_results(config) -> tuple[GateResult, ...]:
             )
         )
     results.sort(key=lambda item: (-item.mtime, item.name))
-    return tuple(results)
+    return GateScan(tuple(results))
+
+
+@dataclass(frozen=True)
+class GateScan:
+    """The gate results, and why their directory could not be listed when it could not."""
+
+    results: tuple[GateResult, ...]
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -314,7 +353,9 @@ class StateLine:
     peer: str
     path: str
     line: int
-    package: str  # the join key the token carries, e.g. "plat-22c"
+    package: str  # the package id the token names, e.g. "plat-22c" or "core-08"
+    topic: str  # its first stage, e.g. "plat" / "core" -- the only join a branch slug allows
+    designator: str  # the id token, e.g. "22c" / "08"; "" when the token has no id stage
     token: str
     text: str  # the line, bounded: prose is quoted, never echoed whole
 
@@ -343,25 +384,56 @@ def mtime_of(path: Path) -> float | None:
 def read_peers(config) -> tuple[PeerState, ...]:
     """Read `STATE.md` package lines and handover ages of every configured state directory.
 
-    A state directory that is absent is reported as a peer with `missing` sources only when
-    it was explicitly configured; otherwise the estate simply has no peer there. What a
-    reader must never do is turn "the directory is not there" into "this peer has no work".
+    A state directory that is absent is not an unreadable source; it is simply not a peer
+    here. What a reader must never do is turn "the directory is not there" into "this peer
+    has no work".
+    """
+
+    return scan_peers(config).peers
+
+
+def scan_peers(config) -> PeerScan:
+    """The peers, plus the reason a state directory could not be listed.
+
+    A directory under the state home is a peer only when it holds a `STATE.md` or a
+    `HANDOFF.md`: `.controller-state/` also holds `archive`, `hooks`, `runs`, `handovers`,
+    `e021` and `scratch-*` directories, and printing those as sub-controllers with `unknown`
+    state says the estate is broken when it is not.
     """
 
     peers: list[PeerState] = []
     seen: set[str] = set()
+    unreadable: list[str] = []
     for directory in config.state_dirs:
         if not directory.is_dir():
             continue
-        for entry in sorted(directory.iterdir()):
-            if not entry.is_dir():
+        entries, reason = bounded.walk(directory)
+        if reason:
+            unreadable.append(reason)
+            continue
+        for entry in entries:
+            if not entry.is_dir() or not _is_peer(entry):
                 continue
             name = entry.name
             if name in seen:
                 continue
             seen.add(name)
             peers.append(_read_peer(name, entry))
-    return tuple(peers)
+    return PeerScan(tuple(peers), tuple(unreadable))
+
+
+def _is_peer(directory: Path) -> bool:
+    """A peer directory is one that holds a state file or a handover (a declared controller)."""
+
+    return (directory / STATE_FILE).exists() or (directory / HANDOVER_FILE).exists()
+
+
+@dataclass(frozen=True)
+class PeerScan:
+    """The peers, and the reasons a state directory could not be listed."""
+
+    peers: tuple[PeerState, ...]
+    unreadable: tuple[str, ...] = ()
 
 
 def _read_peer(name: str, directory: Path) -> PeerState:
@@ -394,12 +466,20 @@ def _package_lines(peer: str, path: str, text: str) -> tuple[StateLine, ...]:
         for match in PACKAGE_TOKEN_RE.finditer(line):
             token = match.group(0)
             package = token[len("P-"):]
+            tokens = [part for part in package.split("-") if part]
+            topic = tokens[0] if tokens else package
+            # The designator is the LAST stage (`core-08`, `plat-22c`, `hostobs-11`), and it is
+            # reported as its own cell: a row joined on its topic must not present another
+            # package's designator as its own state.
+            designator = tokens[-1] if len(tokens) > 1 else ""
             found.append(
                 StateLine(
                     peer=peer,
                     path=path,
                     line=number,
                     package=package,
+                    topic=topic,
+                    designator=designator,
                     token=token,
                     text=line.strip()[:240],
                 )

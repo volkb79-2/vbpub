@@ -123,6 +123,17 @@ def test_an_absent_lock_directory_has_no_slots(tmp_path):
     assert ag_sources.gate_slots(_config(tmp_path), ag_sources.read_proc_locks()) == ()
 
 
+def test_an_unlistable_lock_directory_is_stated_not_raised(monkeypatch, tmp_path):
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    monkeypatch.setattr(ag_sources.bounded, "walk", lambda path: ([], "cannot read locks: Permission denied"))
+
+    scan = ag_sources.scan_gate_slots(_config(tmp_path), ag_sources.read_proc_locks())
+
+    assert scan.slots == ()
+    assert scan.detail == "cannot read locks: Permission denied"
+
+
 def test_a_non_file_inside_the_lock_directory_is_skipped(tmp_path):
     locks = tmp_path / "locks"
     (locks / "r1002.slot1").mkdir(parents=True)
@@ -236,11 +247,22 @@ def test_results_are_newest_first_by_directory_mtime(tmp_path):
 
     results = ag_sources.read_results(_config(tmp_path))
 
-    assert [result.name for result in results] == ["rgw-b", "rgw-a"]
+    assert [result.name for result in results] == [newer.name, older.name]
 
 
 def test_an_absent_results_directory_has_no_results(tmp_path):
     assert ag_sources.read_results(_config(tmp_path)) == ()
+
+
+def test_an_unlistable_results_directory_is_stated_not_raised(monkeypatch, tmp_path):
+    gates = tmp_path / "gates"
+    gates.mkdir()
+    monkeypatch.setattr(ag_sources.bounded, "walk", lambda path: ([], "cannot read gates: Permission denied"))
+
+    scan = ag_sources.scan_results(_config(tmp_path))
+
+    assert scan.results == ()
+    assert scan.detail == "cannot read gates: Permission denied"
 
 
 def test_a_meta_file_that_is_not_json_and_a_result_file_that_is_not_json_are_unknown(tmp_path):
@@ -265,6 +287,34 @@ def test_a_file_in_the_results_directory_is_skipped_and_a_meta_stat_failure_is_t
 
 
 # --- peer state and handovers --------------------------------------------------------------------
+
+
+def test_a_package_line_reports_its_topic_and_designator_alongside_the_token(tmp_path):
+    peers = tmp_path / "state" / "core"
+    peers.mkdir(parents=True)
+    (peers / "STATE.md").write_text("- P-core-08 | head 957226065 | HANDED OVER\n", encoding="utf-8")
+
+    (peer,) = ag_sources.read_peers(_config(tmp_path, state_dirs=(tmp_path / "state",)))
+
+    (line,) = peer.lines
+    assert line.package == "core-08"
+    # The topic is the ONLY stage a branch slug (`core-ciu-r2fix`) can be matched on, and the
+    # designator is reported as its own cell rather than folded into the key.
+    assert line.topic == "core"
+    assert line.designator == "08"
+
+
+def test_a_package_token_with_a_single_stage_has_no_designator(tmp_path):
+    peers = tmp_path / "state" / "assay"
+    peers.mkdir(parents=True)
+    (peers / "STATE.md").write_text("- P-assay | x\n", encoding="utf-8")
+
+    (peer,) = ag_sources.read_peers(_config(tmp_path, state_dirs=(tmp_path / "state",)))
+
+    (line,) = peer.lines
+    assert line.package == "assay"
+    assert line.topic == "assay"
+    assert line.designator == ""
 
 
 def test_a_state_md_package_line_is_reported_unverified_with_its_line_number(tmp_path):
@@ -320,6 +370,48 @@ def test_a_file_in_the_state_directory_is_not_a_peer(tmp_path):
     (state / "stray").write_text("x", encoding="utf-8")
 
     assert ag_sources.read_peers(_config(tmp_path, state_dirs=(state,))) == ()
+
+
+def test_a_directory_without_state_or_handover_is_not_a_peer(tmp_path):
+    # `.controller-state/` also holds `archive`, `hooks`, `runs`, `handovers`, `e021` and
+    # `scratch-*` directories. Printing those as sub-controllers with `unknown` state says the
+    # estate is broken when only six real controllers exist.
+    state = tmp_path / "state"
+    (state / "platform").mkdir(parents=True)
+    (state / "platform" / "STATE.md").write_text("- P-plat-1 | x\n", encoding="utf-8")
+    for name in ("archive", "hooks", "runs", "e021", "scratch-x"):
+        (state / name).mkdir()
+
+    peers = ag_sources.read_peers(_config(tmp_path, state_dirs=(state,)))
+
+    assert [peer.peer for peer in peers] == ["platform"]
+
+
+def test_a_peer_with_a_handover_but_no_state_file_is_still_a_peer(tmp_path):
+    state = tmp_path / "state"
+    (state / "core").mkdir(parents=True)
+    (state / "core" / "HANDOFF.md").write_text("h\n", encoding="utf-8")
+
+    (peer,) = ag_sources.read_peers(_config(tmp_path, state_dirs=(state,)))
+
+    assert peer.peer == "core"
+    assert peer.state_state == "missing"
+
+
+def test_an_unlistable_state_directory_is_stated_not_raised(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+
+    def refuse(path):
+        return [], "cannot read state: Permission denied"
+
+    monkeypatch.setattr(ag_sources.bounded, "walk", refuse)
+    config = _config(tmp_path, state_dirs=(state,))
+
+    scan = ag_sources.scan_peers(config)
+
+    assert scan.peers == ()
+    assert scan.unreadable == ("cannot read state: Permission denied",)
 
 
 def test_the_same_peer_name_in_two_directories_is_read_once(tmp_path):

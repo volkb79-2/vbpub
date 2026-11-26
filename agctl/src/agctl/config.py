@@ -43,7 +43,14 @@ PEERS_DIRNAME = "controller-state"
 
 
 class ConfigError(Exception):
-    """A configuration file or value that cannot be read as declared (usage, exit 2)."""
+    """A configuration file or value that cannot be read as declared (usage, exit 2).
+
+    It carries `exit_code = 2` explicitly: cli-extended reads `getattr(exc, "exit_code", 1)`, so
+    without this the documented exit code (README "exit 2", DESIGN section 4) would silently be
+    1, and a script testing for a configuration refusal would see a runtime failure instead.
+    """
+
+    exit_code = 2
 
 
 @dataclass(frozen=True)
@@ -60,6 +67,11 @@ class Config:
     toml_path: Path
     toml_state: str  # "absent" | "loaded"
     toml_legacy_dirs: tuple[Path, ...]
+    # The repository the caller DECLARED (`CONTROLLER_REPO`), or None. The git reader takes this
+    # first and the caller's cwd second, never the controller home: a home that happens to be a
+    # checkout would otherwise silently describe a different repository than the one the peer
+    # paths come from.
+    repo: str | None = None
 
 
 def expand(value: str, base: Path) -> Path:
@@ -135,8 +147,9 @@ def load(env: Mapping[str, str] | None = None, *, cwd: Path | None = None) -> Co
     toml_state = "loaded" if toml_path.is_file() else "absent"
 
     repo_state: Path | None = None
-    if environment.get(REPO_VAR):
-        repo_state = expand(environment[REPO_VAR], base) / REPO_STATE_DIR
+    repo = environment.get(REPO_VAR) or None
+    if repo:
+        repo_state = expand(repo, base) / REPO_STATE_DIR
     peers = home.parent / PEERS_DIRNAME
     configured_out = environment.get(REMOTE_OUT_VAR)
     remote_gate_out = expand(configured_out, base) if configured_out else home / GATE_OUT_DIR
@@ -152,4 +165,5 @@ def load(env: Mapping[str, str] | None = None, *, cwd: Path | None = None) -> Co
         toml_path=toml_path,
         toml_state=toml_state,
         toml_legacy_dirs=legacy,
+        repo=repo,
     )

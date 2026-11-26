@@ -17,6 +17,19 @@ SMALL_LIMIT = 4096
 TAIL_LIMIT = 8192
 
 
+def walk(directory: Path) -> tuple[list[Path], str]:
+    """The entries of `directory`, or none plus the reason it could not be listed.
+
+    An unreadable directory (permissions, an ACL, a stale mount) is ONE source's problem, not
+    the command's: the caller reports that source as unreadable and keeps the others.
+    """
+
+    try:
+        return sorted(directory.iterdir()), ""
+    except OSError as error:
+        return [], f"cannot read {directory}: {error}"
+
+
 def head(path: Path, limit: int = SMALL_LIMIT) -> str | None:
     """The first `limit` bytes of `path` as text; ``None`` when it cannot be read."""
 
@@ -73,6 +86,18 @@ def last_line_with_prefix(path: Path, prefix: str, *, chunk: int = 65536) -> str
     Memory stays at one chunk plus one line.
     """
 
+    return last_line_matching(path, (prefix,), chunk=chunk)
+
+
+def last_line_matching(path: Path, prefixes: tuple[str, ...], *, chunk: int = 65536) -> str | None:
+    """The LAST line of `path` that starts with ANY of `prefixes`, in one streaming pass.
+
+    This is the primitive a consumer uses when the question is "where did this file leave off",
+    not "what is near its end": a `last.txt` can have kilobytes of prose after its last
+    `READY`/`YIELD` line, and a tail window would then report no position at all — the
+    "absence for emptiness" answer. One pass, one chunk plus one line of memory.
+    """
+
     found: str | None = None
     pending = ""
     try:
@@ -85,9 +110,9 @@ def last_line_with_prefix(path: Path, prefix: str, *, chunk: int = 65536) -> str
                 lines = pending.split("\n")
                 pending = lines.pop()
                 for line in lines:
-                    if line.startswith(prefix):
+                    if line.startswith(prefixes):
                         found = line
-            if pending.startswith(prefix):
+            if pending.startswith(prefixes):
                 found = pending
     except OSError:
         return None

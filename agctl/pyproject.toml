@@ -21,6 +21,16 @@ test = ["pytest>=8", "pytest-cov>=6"]
 [project.scripts]
 agctl = "agctl.cli:main"
 
+# Branch coverage as well as line coverage, with the same 100 % floor the lane declares: a
+# reader whose error path no test takes is exactly the reader that will crash in the field,
+# so the floor is a behavioural guard and not a number to be reached.
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

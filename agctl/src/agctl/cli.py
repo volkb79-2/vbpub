@@ -10,7 +10,6 @@ import argparse
 import sys
 
 from cli_extended import (
-    CliFailure,
     CliIdentity,
     CliRegistry,
     CliRuntime,

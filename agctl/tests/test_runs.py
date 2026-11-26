@@ -63,6 +63,22 @@ def test_tail_reports_an_unreadable_file_as_absent(tmp_path):
     assert bounded.tail(tmp_path / "absent") is None
 
 
+def test_walk_lists_a_directory_and_states_the_reason_it_cannot(tmp_path):
+    directory = tmp_path / "runs"
+    directory.mkdir()
+    (directory / "a.done").write_text("EXIT=0\n", encoding="utf-8")
+
+    entries, reason = bounded.walk(directory)
+
+    assert [entry.name for entry in entries] == ["a.done"]
+    assert reason == ""
+
+    entries, reason = bounded.walk(tmp_path / "absent")
+
+    assert entries == []
+    assert "cannot read" in reason
+
+
 def test_whole_reads_only_a_file_it_can_read_completely(tmp_path):
     path = tmp_path / "doc"
     path.write_text("{}", encoding="utf-8")
@@ -85,6 +101,15 @@ def test_last_line_with_prefix_is_the_last_matching_line_not_a_tail_window(tmp_p
     assert bounded.last_line_with_prefix(path, "run-gate: lane '", chunk=16) == "run-gate: lane 'tests' verdict PASS; exit_code 0"
     assert bounded.last_line_with_prefix(tmp_path / "absent", "x") is None
     assert bounded.last_line_with_prefix(path, "nothing-matches") is None
+
+
+def test_last_line_matching_takes_the_last_line_of_any_of_several_prefixes(tmp_path):
+    path = tmp_path / "last.txt"
+    path.write_text("READY run=a\nnoise\nYIELD run=b gauge=1k\nmore noise\n", encoding="utf-8")
+
+    assert bounded.last_line_matching(path, ("READY run=", "YIELD run=")) == "YIELD run=b gauge=1k"
+    assert bounded.last_line_matching(path, ("YIELD run=",)) == "YIELD run=b gauge=1k"
+    assert bounded.last_line_matching(tmp_path / "absent", ("READY run=",)) is None
 
 
 def test_last_line_with_prefix_sees_a_match_on_the_final_line_without_a_newline(tmp_path):
@@ -150,6 +175,16 @@ def test_a_last_text_without_a_readiness_line_is_not_a_position():
     assert ag_runs.parse_last(None) == ("", "", "", "", "")
 
 
+def test_a_readiness_line_with_no_run_value_is_a_stated_empty_position_not_a_crash():
+    # `last.txt` is written from the agent's final message, so an agent that QUOTES the format
+    # ("a line like `READY run=...`") produces exactly this. An IndexError here would take the
+    # whole estate view down for one bad line among hundreds of records.
+    assert ag_runs.parse_last("READY run=\n") == ("READY", "", "", "", "")
+    assert ag_runs.parse_last("READY run=   \nMARK=later\n") == ("READY", "", "", "", "")
+    assert ag_runs.parse_last("YIELD run=\n") == ("YIELD", "", "", "", "")
+    assert ag_runs.parse_last("YIELD run=   gauge=12k\n") == ("YIELD", "", "12k", "", "")
+
+
 # --- the live context ---------------------------------------------------------------------------
 
 
@@ -169,15 +204,25 @@ def test_a_malformed_or_odd_live_document_is_unknown_not_zero():
 # --- the join key -------------------------------------------------------------------------------
 
 
-def test_the_topic_key_drops_a_stamp_and_keeps_a_numeric_id():
-    assert ag_runs.topic_key("plat-22c-resumebusy-20261125_031456") == "plat-22c"
-    assert ag_runs.topic_key("plat-19k-fix1-pi") == "plat-19k"
-    assert ag_runs.topic_key("hostobs-p11b-vm-demo") == "hostobs"
-    assert ag_runs.topic_key("core-ciu-r2fix") == "core"
+def test_the_package_key_drops_the_stamp_and_the_chain_suffix_and_nothing_else():
+    # Everything that survives is what tells two packages of one topic apart: the real estate
+    # holds `core-ciu-r2fix`, `core-cmru-ki208` and `core-thrashguard-design` at the same time.
+    assert ag_runs.package_key("plat-22c-resumebusy-20261125_031456") == "plat-22c-resumebusy"
+    assert ag_runs.package_key("hostobs-20261124_183122-p11b-vm-demo") == "hostobs-p11b-vm-demo"
+    assert ag_runs.package_key("core-ciu-r2fix") == "core-ciu-r2fix"
+    assert ag_runs.package_key("edge-relgate-20261125") == "edge-relgate"
+    assert ag_runs.package_key("plat-22c-pi-y2") == "plat-22c-pi"
+    assert ag_runs.package_key("assay-p4-stall") == "assay-p4-stall"
+
+
+def test_the_topic_is_the_first_token_of_a_package_key():
+    assert ag_runs.topic_of("core-ciu-r2fix") == "core"
+    assert ag_runs.topic_of("plat-22c-resumebusy") == "plat"
+    assert ag_runs.topic_of("20261125T042108") == "20261125T042108"
 
 
 def test_a_name_without_any_usable_token_falls_back_to_itself():
-    assert ag_runs.topic_key("20261125T042108") == "20261125T042108"
+    assert ag_runs.package_key("20261125T042108") == "20261125T042108"
 
 
 # --- chains -------------------------------------------------------------------------------------
@@ -232,6 +277,18 @@ def test_a_record_set_merges_the_extensions_of_one_run_name(tmp_path):
     assert record.path("jsonl") is None
 
 
+def test_a_position_is_read_from_anywhere_in_last_txt_not_only_its_tail(tmp_path):
+    # A `last.txt` can hold kilobytes of prose after the run's last READY/YIELD line. A tail
+    # window would then report NO position, which is indistinguishable from a file that never
+    # had one ("absence for emptiness"). The scan streams the whole file instead.
+    _write(tmp_path, "runs", "p.last.txt", "READY run=p-y1 mark=2026-11-25T04:23:02Z\n" + "prose\n" * 3000)
+
+    record = ag_runs.read(_config(tmp_path)).by_id("p")
+
+    assert record.last_state == "READY"
+    assert record.mark == "2026-11-25T04:23:02Z"
+
+
 def test_a_record_without_a_done_file_is_active(tmp_path):
     _write(tmp_path, "runs", "p.live", '{"latest_total_tokens": 1}')
 
@@ -242,11 +299,34 @@ def test_a_record_without_a_done_file_is_active(tmp_path):
     assert record.exit_code is None
 
 
+def test_an_unlistable_runs_directory_costs_its_records_but_not_the_others(tmp_path, monkeypatch):
+    import agctl.bounded as bounded_module
+
+    (tmp_path / "runs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "other-runs").mkdir()
+    (tmp_path / "other-runs" / "q.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
+    real_walk = bounded_module.walk
+
+    def walk(path):
+        if path.name == "runs":
+            return [], f"cannot read {path}: Permission denied"
+        return real_walk(path)
+
+    monkeypatch.setattr(bounded_module, "walk", walk)
+
+    set_ = ag_runs.read(_config(tmp_path, "other-runs"))
+
+    assert [record.id for record in set_.records] == ["q"]
+    assert set_.unreadable == ((str(tmp_path / "runs"), f"cannot read {tmp_path / 'runs'}: Permission denied"),)
+    assert set_.readable == (str(tmp_path / "other-runs"),)
+
+
 def test_a_directory_that_is_absent_is_not_a_readable_source(tmp_path):
     set_ = ag_runs.read(_config(tmp_path))
 
     assert set_.records == ()
     assert set_.readable == ()
+    assert set_.unreadable == ()
     assert set_.dirs == (str(tmp_path / "runs"),)
 
 
@@ -281,7 +361,7 @@ def test_for_key_selects_the_records_of_one_topic(tmp_path):
 
     set_ = ag_runs.read(_config(tmp_path))
 
-    assert [record.id for record in set_.for_key("plat-22c")] == ["plat-22c-pi"]
+    assert [record.id for record in set_.for_key("plat-22c-pi")] == ["plat-22c-pi"]
     assert set_.for_key("nothing") == ()
 
 
