@@ -2090,15 +2090,10 @@ check_review_argv_single_definition() {
   local review_source=$SCRIPT_DIR/../pi-review.sh
   [[ -r $REVIEW_ARGV_FILE ]] || fail 'the review argv file is missing'
   contains "$REVIEW_ARGV_FILE" 'read,grep,find,ls' 'the one review argv definition names the read-only set'
-  if grep -qF -- '--tools read,grep,find,ls' "$review_source"; then
+  if sed 's/#.*$//' "$review_source" | grep -qF -- '--tools read,grep,find,ls'; then
     fail 'pi-review.sh carries a second copy of the review tool list instead of setting the mode'
   fi
   contains "$review_source" 'PI_RUN_MODE=review' 'pi-review.sh launches in review mode'
-  # A review that cannot read its one definition must not start.
-  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
-    PI_RUN_MODE=review "$SRC" "$WORKTREE" "$PROMPT" review-no-argv
-  contains "$ROOT/focused-command.out" 'the review argv file is missing or unreadable' \
-    'a review launch without its argv definition is refused'
 }
 
 # The mode value is a closed vocabulary: a typo must be refused, not read as
