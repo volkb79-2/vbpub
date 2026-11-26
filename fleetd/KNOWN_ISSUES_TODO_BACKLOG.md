@@ -143,8 +143,9 @@ missing service units. The compatibility profile constant is 768 MiB, the
 former lower bound and above the measured 450–500 MB near-idle hot RSS on the
 two 8 GiB hosts (2026-11-14). No reserve term depends on installed RAM.
 
-The collector does not read parent `ctl.slice/memory.min`; older facts may
-contain that field, which is accepted for compatibility and ignored. Fleetd
+Parent `ctl.slice/memory.min` plays no part in the reserve: the planner ignores
+`control_plane.memory_min_bytes`. (`host-facts/2` collects that field again, for
+reporting only.) Fleetd
 emits `reserve_bytes`, `reserve_source`, and
 `reserve_missing_services` in plan and campaign status output. Old host facts
 without the new service values use their profile constant, allowing host

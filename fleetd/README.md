@@ -204,8 +204,9 @@ each host plan carries `reserve_services` provenance. See the
 [facts and planning contract](docs/SPEC.md#facts-collection).
 
 `fleet facts collect` also requires installed `fleetd` distribution metadata
-from the wheel. A source-only checkout without `.dist-info` is refused with
-`fleetd agent version metadata is unavailable`; it does not invent a version.
+from the wheel. In a source-only checkout without `.dist-info`, `fleet` itself
+refuses with exit 3 and `cannot determine the fleetd version`; it does not invent
+a version.
 
 Serialized campaign inputs use `host-facts/2`, `work-request/1`,
 `candidate-table/1`, and `fleet-host-set/1`. `assay-merge-manifest/1` is

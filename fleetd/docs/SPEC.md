@@ -98,10 +98,11 @@ source is not available yet, so `frozen_units` is null with a reason
 `not-collected`). KSM opt-in shim facts stay null unless their paths are
 configured. `memory.total_bytes` is raw `MemTotal`; load averages come from
 `/proc/loadavg`. Gate-slice warm memory is `memory.current` minus
-`memory.stat[inactive_file]`. The collector does not collect the parent
-control-plane slice's `memory.min`. Older `/1` inputs may include
-`control_plane.memory_min_bytes`; validation accepts that legacy field and
-planning ignores it. The bounded
+`memory.stat[inactive_file]`. The collector reads the parent control-plane
+slice's `memory.min`, and `/2` carries it as `control_plane.memory_min_bytes`
+(null with a reason when the slice is absent or the value cannot be read). The
+planner ignores that field, in `/2` as in older `/1` inputs: no reserve term
+comes from the parent slice. The bounded
 `CONTROL_PLANE_SERVICE_UNITS` list in `fleetd.contracts` supplies one
 `service_memory_min` entry per service, and each entry may carry the unit's
 systemd `load_state` (`null` with a reason when it was not queried). `0`,
@@ -152,10 +153,9 @@ then refuses.
 `per-service-default` otherwise (with `reserve_missing_services` naming the
 units that were not reported). The fixed profile constant
 (`profile_reserve_bytes`, 768 MiB when the config has no override) is used
-**only** when no per-service fact exists at all — the table is absent, holds
-no listed unit, or every row is a failed query (no positive `memory_min_bytes`
-and no `load_state` in any row), which is the failed-collection case — and
-`reserve_source` then says `profile-constant`. One answering service (a positive
+**only** when no per-service fact exists at all — every row is a failed query
+(no positive `memory_min_bytes` and no `load_state` in any row), which is the
+failed-collection case — and `reserve_source` then says `profile-constant`. One answering service (a positive
 value or a load state) is enough for per-service terms, so the other rows
 contribute their defaults. A reported value refused above its ceiling counts as
 `default` and is listed in `reserve_missing_services`. A per-host plan carries `reserve_services`: one
@@ -602,9 +602,9 @@ declares `cli-extended>=0.5.0` as a real wheel dependency (never vendored, never
 put on `sys.path`); 0.5.0 is the library revision the registered gate image
 installs, so the host and the gate run the same contract.
 Collection also requires installed `fleetd` distribution metadata from that
-wheel. A source-only checkout without `.dist-info` is refused with
-`fleetd agent version metadata is unavailable`; the collector does not invent
-an agent version.
+wheel. In a source-only checkout without `.dist-info`, `fleet` itself refuses
+with exit 3 and `cannot determine the fleetd version`; no agent version is
+invented.
 
 `cli-extended` is published on GitHub Releases only (the bare name is unclaimed
 on PyPI), and the fleetd wheel does not vendor it, so both wheels come from the

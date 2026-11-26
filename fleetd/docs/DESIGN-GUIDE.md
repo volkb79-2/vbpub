@@ -73,8 +73,8 @@ were reported, `per-service-default` otherwise), while `reserve_services`
 carries the per-unit provenance (`reported` / `default` / `absent-optional`)
 so the plan evidence shows exactly which term produced each service's
 contribution. The fixed profile constant survives only for the
-no-per-service-fact case (a facts root that queried no service, or a table that
-never arrived). For `/2`, the collector still emits six service rows, with a
+no-per-service-fact case (every row is a failed query, as for a facts root that
+queried no service). For `/2`, the collector still emits six service rows, with a
 null reason on each unqueried `memory_min_bytes` and `load_state`; it does not
 emit `control_plane.service_memory_min_reason`. That optional-table field is
 retained only by the `/1` compatibility validator.
@@ -83,9 +83,10 @@ Two sanity bounds are DERIVED from the same table rather than hand-tuned
 beside it: one service above 4 x its own documented floor, or a total above
 twice the documented floors, is refused with a reason (the host is not planned
 this wave) rather than clamped or summed. A clamped reserve would hide a bad
-drop-in; a refused one puts it in the plan evidence. The collector does not
-read parent `ctl.slice/memory.min`. Older facts may include
-`control_plane.memory_min_bytes`, which is accepted for compatibility and ignored. Then `P = memory.total_bytes - reserve_h`, O = other
+drop-in; a refused one puts it in the plan evidence. The parent
+`ctl.slice/memory.min` plays no part in the reserve: the collector reports it as
+`control_plane.memory_min_bytes`, and the planner ignores that field, in `/2` as
+in older `/1` facts. Then `P = memory.total_bytes - reserve_h`, O = other
 running expected charges + campaign_slots × instance_memory, and B = P ×
 overcommit - O. It derives worker slots from CPU capacity after other running
 workers and bounds them by

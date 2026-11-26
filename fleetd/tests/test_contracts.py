@@ -165,8 +165,9 @@ def test_host_facts_v2_validates_wrapped_values_and_metadata():
 
 def test_host_facts_v2_applies_null_reason_rules_to_every_wrapped_field():
     data = _host_facts_2()
+    data["jobs"] = _v([_host_fact_job()])
     wrappers = list(_walk_v2_wrappers(data))
-    assert len(wrappers) >= 100
+    assert len(wrappers) >= 110
     for path, _wrapper in wrappers:
         candidate = json.loads(json.dumps(data))
         target = _at_path(candidate, path)
