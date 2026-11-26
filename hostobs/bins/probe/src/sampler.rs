@@ -1112,6 +1112,45 @@ mod tests {
     }
 
     #[test]
+    fn missing_freezer_files_publish_unsupported_not_a_measured_zero() {
+        let mut fs = MemFs::new();
+        fs.directory("/cg", 1);
+
+        let mut sampler = sampler(fs, "/cg", 16, 64);
+        let tick = sampler.tick();
+
+        // The state is unknown when these kernel feature files are absent; zero is a
+        // placeholder.
+        for name in ["cgroup.freeze", "cgevents.frozen", "cgevents.populated"] {
+            assert_eq!(
+                value(&tick, name, 0),
+                (0, Quality::Unsupported.code()),
+                "{name} must not publish unknown state as measured zero"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_cgroup_event_key_is_absent_when_the_file_is_present() {
+        let mut fs = MemFs::new();
+        fs.directory("/cg", 1);
+        fs.file("/cg/cgroup.events", "populated 0\n", 2);
+
+        let mut sampler = sampler(fs, "/cg", 16, 64);
+        let tick = sampler.tick();
+
+        assert_eq!(
+            value(&tick, "cgevents.frozen", 0),
+            (0, Quality::Absent.code()),
+            "the missing key is absent, not a missing kernel feature file"
+        );
+        assert_eq!(
+            value(&tick, "cgevents.populated", 0),
+            (0, Quality::Ok.code())
+        );
+    }
+
+    #[test]
     fn a_missing_compiled_metric_is_a_typed_startup_refusal() {
         assert!(matches!(
             supported_metrics(&MetricRegistry::new()),
@@ -1344,7 +1383,12 @@ mod tests {
             rustix::event::PollFlags::IN,
         )];
         assert!(rustix::event::poll(&mut polls, Some(&timeout)).expect("poll") > 0);
-        assert!(published.load().seq() >= 1);
+        let first = published.load();
+        assert!(first.seq() >= 1);
+        assert!(
+            !labels(&first).contains(&"/state"),
+            "parser-only fixtures must not become a walked cgroup row"
+        );
         stop.store(true, Ordering::Release);
         signal(&read);
         let deadline = Instant::now() + Duration::from_secs(30);
