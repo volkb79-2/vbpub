@@ -1026,7 +1026,9 @@ fi
 # "held" is distinct from "cannot even open the lock" (a missing /run/mdt-accept.lock is NOT evidence of no run).
 _cv_accept_lock="${MDT_ACCEPT_LOCK:-/run/mdt-accept.lock}"
 _cv_accept_rc=0
-flock -n -E 99 "$_cv_accept_lock" true || _cv_accept_rc=$?
+# The run and restore take an exclusive lock. This shared probe can coexist with install/reconcile, but still
+# refuses when either kit command owns the lock; an installer must not mistake its own shared hold for a live run.
+flock -n -s -E 99 "$_cv_accept_lock" true || _cv_accept_rc=$?
 case "$_cv_accept_rc" in
   0) ;;
   99) echo "ERROR: an acceptance squeeze run holds $_cv_accept_lock: the installer refuses (exit 3), nothing was changed. Let the run end and restore the host (tools/accept/accept-restore.sh --evidence <dir>), then re-run install.sh." >&2
@@ -1038,14 +1040,15 @@ esac
 # === COMMIT POINT: nothing above this line mutates the host (MDT-HS-02) ===
 # Every refusal above has been evaluated. Only now are /etc/mdt, the buildx config
 # directory, the installed config and the guard confirmation record touched.
-# P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3) — L3: the preflight above only TESTED the accept lock, so a run starting in the
-# window between that test and the converge below still raced this installer's daemon-reload and its own reconcile.
-# The descriptor is taken again here and HELD to the end of the script (the kernel releases it on any death of this
-# process), with a bounded wait: a run that won the window makes the wait fail and the install stops here rather than
-# fighting it. This block sits after the COMMIT POINT because the preflight region may only read (MDT-HS-02).
+# P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3) — L3/M1: the preflight above only TESTED the accept lock, so a run starting
+# between that test and these writes could race install's daemon-reload. Take a SHARED lock after the COMMIT POINT and
+# hold it through the drop-ins, daemon-reload, timer enable and explicit reconcile start. The reconcile also takes a
+# shared lock, so both timer and service starts can converge inside this hold; the run and restore stay exclusive and
+# cannot start in the gap. The bounded wait refuses if a run won it. This is after the COMMIT POINT because the
+# preflight region may only read (MDT-HS-02).
 _cv_accept_hold_rc=0
 { exec 9>>"$_cv_accept_lock"; } 2>/dev/null || _cv_accept_hold_rc=$?
-if [ "$_cv_accept_hold_rc" = 0 ] && ! flock -w "${MDT_ACCEPT_LOCK_WAIT:-30}" 9; then _cv_accept_hold_rc=1; fi
+if [ "$_cv_accept_hold_rc" = 0 ] && ! flock -s -w "${MDT_ACCEPT_LOCK_WAIT:-30}" 9; then _cv_accept_hold_rc=1; fi
 if [ "$_cv_accept_hold_rc" != 0 ]; then
   echo "ERROR: an acceptance squeeze run started between the preflight lock test and the commit point (accept lock $_cv_accept_lock, rc $_cv_accept_hold_rc): the install stops here (exit 3). The files above the commit point are already written and re-running install.sh is idempotent; let the run end and restore the host (tools/accept/accept-restore.sh --evidence <dir>) first." >&2
   exit 3
@@ -1654,7 +1657,7 @@ if [ "$WITH_BASELINE" = 1 ] && [ "$BASELINE_HANDLED" = 0 ]; then
 fi
 
 systemctl start mdt-dev-governance-reconcile.service           # apply runtime caps now
-exec 9>&-   # P-plat-19m L3: the converge (reconcile service above) has ended; a new acceptance run may start
+exec 9>&-   # P-plat-19m M1: both timer and explicit reconcile starts have finished; a new acceptance run may start
 # Both reactive watchers load their configuration and baseline once per
 # process. Restart after the optional baseline measurement so a re-run of this
 # installer cannot leave an already-running watcher applying stale values.

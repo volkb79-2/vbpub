@@ -1322,6 +1322,10 @@ class AcceptLockPauseTests(unittest.TestCase):
         (ROOT / "install.sh").read_text(encoding="utf-8"),
         "# P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3): while an acceptance squeeze run holds the accept lock",
         "# === COMMIT POINT")
+    INSTALL_HOLD = shell_block(
+        (ROOT / "install.sh").read_text(encoding="utf-8"),
+        "_cv_accept_hold_rc=0",
+        'mkdir -p "$CONFIG_DIR" /var/lib/mdt')
 
     def setUp(self) -> None:
         self._t = tempfile.TemporaryDirectory()
@@ -1341,12 +1345,15 @@ class AcceptLockPauseTests(unittest.TestCase):
         self.addCleanup(self.hold.close)
 
     def run_reconcile_block(self, lock: Path | None = None) -> subprocess.CompletedProcess:
-        # _mdt_converge_prop is stubbed: this test is about the pause, not the converge arithmetic
-        script = ('set -uo pipefail\nlog(){ echo "[reconcile] $*"; }\nMDT_RC=0\n'
-                  f'CG="{self.cg}"\n_cv_dir="{self.deferred}"\n_mdt_converge_prop(){{ :; }}\n'
-                  f'MDT_ACCEPT_LOCK="{lock or self.lock}"\nHOST_ROLE=dedicated-dev\n'
-                  + self.RECONCILE_BLOCK + f'\nflock -n -E 99 "{self.lock}" true; echo "after=$?"\n')
+        script = self.reconcile_script(lock) + f'\nflock -n -E 99 "{self.lock}" true; echo "after=$?"\n'
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+
+    def reconcile_script(self, lock: Path | None = None) -> str:
+        # _mdt_converge_prop is stubbed: this test is about the pause, not the converge arithmetic.
+        return ('set -uo pipefail\nlog(){ echo "[reconcile] $*"; }\nMDT_RC=0\n'
+                f'CG="{self.cg}"\n_cv_dir="{self.deferred}"\n_mdt_converge_prop(){{ :; }}\n'
+                f'MDT_ACCEPT_LOCK="{lock or self.lock}"\nHOST_ROLE=dedicated-dev\n'
+                + self.RECONCILE_BLOCK)
 
     def run_install_block(self, lock: Path | None = None) -> subprocess.CompletedProcess:
         script = ('set -uo pipefail\n'
@@ -1404,24 +1411,44 @@ class AcceptLockPauseTests(unittest.TestCase):
         self.assertIn("indeterminate", missing.stderr)
         self.assertNotIn("reached-commit-point", missing.stdout)
 
-    HOLD_BLOCK_START = "— L3: the preflight above only TESTED the accept lock"
+    HOLD_BLOCK_START = "— L3/M1: the preflight above only TESTED the accept lock"
 
-    def test_install_sh_holds_the_lock_from_the_commit_point_to_the_converge(self) -> None:
-        # L3: the preflight only TESTED the lock; a kit starting between that test and the converge still raced
-        # install.sh's daemon-reload. The installer now takes the lock after the COMMIT POINT and holds fd 9 until
-        # the reconcile service has ended.
+    def test_install_uses_a_shared_hold_through_both_reconcile_triggers(self) -> None:
+        # M1: install's shared hold lets both the timer tick from enable --now and the explicit service start
+        # converge. Its exclusive run/restore callers cannot start before the hold closes.
         text = (ROOT / "install.sh").read_text()
         start = text.index(self.HOLD_BLOCK_START)
         commit = text.index("# === COMMIT POINT")
+        timer = text.index("systemctl enable --now mdt-dev-governance-reconcile.timer")
         converge = text.index("systemctl start mdt-dev-governance-reconcile.service")
         close = text.index("exec 9>&-", converge)
         self.assertLess(commit, start, "the hold block sits after the commit point (the preflight may only read)")
-        self.assertLess(start, converge)
-        block = text[start:start + 1400]
-        self.assertIn(f'flock -w "${{MDT_ACCEPT_LOCK_WAIT:-30}}" 9', block)
-        self.assertNotIn("flock -n", block)
-        self.assertLess(converge, close, "the lock is held until the converge ended")
-        self.assertIn("exec 9>&-   # P-plat-19m L3", text)
+        self.assertLess(start, timer)
+        self.assertLess(timer, converge)
+        self.assertLess(converge, close, "the shared lock is held until the explicit converge ended")
+        self.assertIn(f'flock -s -w "${{MDT_ACCEPT_LOCK_WAIT:-30}}" 9', self.INSTALL_HOLD)
+        self.assertIn('flock -n -s -E 99 "$_cv_accept_lock" true', self.INSTALL_BLOCK)
+        reconcile_source = (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text()
+        self.assertIn("flock -n -s 9", reconcile_source)
+
+        # A fake systemctl starts a reconcile for both timer activation and the explicit start while the extracted
+        # install hold is still open. This reproduces the timer-first case where an explicit start can join a
+        # reconcile instance that is already running. Both shared holders must converge rather than report SKIPPED.
+        import shlex
+        child = shlex.quote(self.reconcile_script())
+        script = ('set -uo pipefail\n'
+                  f'MDT_ACCEPT_LOCK="{self.lock}"\n_cv_accept_lock="$MDT_ACCEPT_LOCK"\n'
+                  + self.INSTALL_HOLD
+                  + '\nsystemctl() { case "$*" in '
+                  + '"enable --now mdt-dev-governance-reconcile.timer"|"start mdt-dev-governance-reconcile.service") '
+                  + 'bash -c ' + child + ' ;; esac; }\n'
+                  + 'systemctl enable --now mdt-dev-governance-reconcile.timer\n'
+                  + 'systemctl start mdt-dev-governance-reconcile.service\n'
+                  + 'exec 9>&-\n')
+        started = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertNotIn("SKIPPED this tick", started.stdout)
+        self.assertFalse((self.deferred / "memory-deferred").exists(), "the timer/service converge runs under install's shared hold")
 
     def test_the_install_refusal_stays_a_read_only_preflight_block(self) -> None:
         # test_hs02 scans the whole pre-COMMIT-POINT region for mutating commands; this pin keeps the new lines inside

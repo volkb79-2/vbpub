@@ -353,8 +353,8 @@ if [ "${HOST_ROLE:-}" = dedicated-dev ]; then
   # P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3): the acceptance squeeze run (host-setup/tools/accept/accept-run.sh) writes
   # the SAME five files with its own ladder of raises, under a host squeezed on purpose; interleaving the two would
   # fight over memory.max and could write a ceiling below memory.current. The run holds /run/mdt-accept.lock for its
-  # whole life and this block HOLDS it (not merely tests it) while it converges, so a run and the converge can
-  # never interleave. A held lock means a live run: the block is SKIPPED with a NOTE, never stopped -- the run
+  # whole life with an exclusive lock. This block takes a shared lock while it converges, so it can run alongside
+  # install's shared hold but never interleave with a kit run or restore. An exclusive holder means a live run: the block is SKIPPED with a NOTE, never stopped -- the run
   # restores its own originals, and the next timer tick converges again (the kernel releases the lock on ANY
   # death of the run, SIGKILL included, so there is no stuck pause to undo).
   _cv_accept_lock="${MDT_ACCEPT_LOCK:-/run/mdt-accept.lock}"; _cv_accept_paused=0; _cv_accept_fd=0
@@ -363,7 +363,7 @@ if [ "${HOST_ROLE:-}" = dedicated-dev ]; then
   # systemctl error text lost from the journal on every dedicated-dev host, every tick).
   if { exec 9>>"$_cv_accept_lock"; } 2>/dev/null; then
     _cv_accept_fd=1
-    flock -n 9 || _cv_accept_paused=1
+    flock -n -s 9 || _cv_accept_paused=1
   else   # an accept run cannot hold the lock either, so "a run is live" would be an invention: converge
     log "NOTE: cannot open $_cv_accept_lock, so it is indeterminate whether an acceptance run is live; the memory block runs"
   fi
