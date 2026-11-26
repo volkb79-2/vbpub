@@ -1546,7 +1546,15 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
             if expected_status != interval_kind:
                 return False
         if interval_kind != "clear" and eligible_interval != 0:
-            return False
+            # A compacted `stalled` row can summarize clear time plus a later
+            # resource-counter increase. The endpoints still prove the exact
+            # eligible-time delta and the aggregate pressure deltas; an
+            # un-compacted stalled interval remains wholly ineligible.
+            if not (
+                interval_kind == "stalled"
+                and value.get("trace_compacted") is True
+            ):
+                return False
         deltas = sample.get("resource_deltas")
         if not isinstance(deltas, Mapping):
             return False
@@ -1574,6 +1582,8 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
                 rel_tol=0.0,
                 abs_tol=0.0011,
             ):
+                return False
+            if interval_kind == "stalled" and wall_delta + 0.0011 < eligible_interval:
                 return False
         if interval_kind == "clear" and cpu is not None:
             # A departed descendant can lower the live process-tree total.

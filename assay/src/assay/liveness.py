@@ -1754,9 +1754,11 @@ class _ResourceTrace:
     of 1 s polls, including one that went idle afterwards. A cap must bound
     the stored artifact, never the verdict.
 
-    Compaction MERGES two adjacent rows of the same interval kind (oldest
-    pair first), rather than dropping rows: dropping one would break
-    ``mutation_store``'s pairwise re-validation of the stored evidence.
+    Compaction MERGES adjacent known rows (oldest pair first), rather than
+    dropping rows: dropping one would break ``mutation_store``'s pairwise
+    re-validation of the stored evidence. A compacted `stalled` row can cover
+    clear time plus pressure deltas; its eligible interval remains the exact
+    difference between the retained endpoints.
 
     * the merged row keeps the newer row's endpoints
       (``wall_elapsed_s``/``eligible_elapsed_s``), CPU reading, progress
@@ -1766,22 +1768,28 @@ class _ResourceTrace:
       (``newer.eligible - predecessor.eligible``), never as a sum of two
       rounded intervals, so repeated merges cannot accumulate drift;
     * two `clear` rows merge into a `clear` row whose (empty)
-      ``resource_deltas`` stay empty -- a clear interval means no counter
-      moved, so the span's endpoints compare clear too;
-    * two `stalled` rows merge into a `stalled` row whose deltas are the SUM
-      of the pair's positive deltas -- exactly what
+      ``resource_deltas`` stay empty -- no counter moved, so the span's
+      endpoints compare clear too;
+    * any pair containing a `stalled` row merges into a `stalled` row whose
+      deltas are the SUM of the pair's positive deltas -- exactly what
       ``compare_resource_snapshots(predecessor, newer_snapshot)`` returns for
-      monotone counters;
+      monotone counters. When a clear interval is part of that span,
+      ``eligible_interval_s`` retains its clear-time contribution while the
+      resource deltas disclose that some pressure also occurred. The store
+      validator accepts that mixed summary only when ``trace_compacted`` is
+      true;
     * an `unknown` row is never merged (it can only be the first row, and it
       may carry ``previous_resources``), and **rows 0 and 1 are never merge
-      sources**, so the trace's opening anchor (which both the idle-span
-      derivation and the first interval's `previous_resources` are read off)
-      and the earliest clear row (which proves the trailing CPU window spans
-      its full length) both stay byte-identical.
+      sources**, so the opening anchor and first post-anchor interval stay
+      byte-identical. Compaction always chooses the oldest middle pair, which
+      leaves the latest 1021 original samples intact at the 1024-row cap; those
+      rows contain the trailing
+      CPU window needed by the validator (row 1 is also the earliest CPU point
+      when that first interval is clear).
 
-    ``compacted``/``merged`` disclose that older rows are summaries. If no
-    adjacent pair is mergeable the trace may exceed the cap rather than
-    discard an endpoint a verdict rests on.
+    ``compacted``/``merged`` disclose that older rows are summaries. Once the
+    opening two anchors are present, every adjacent pair of known rows can be
+    merged, so the retained trace stays within its configured cap.
     """
 
     def __init__(self, max_samples: int | None = None) -> None:
@@ -1820,27 +1828,37 @@ class _ResourceTrace:
     def _merge_one(self) -> bool:
         # Rows 0 and 1 are NEVER merge sources: row 0 anchors the evidence
         # window (`idle_eligible_s` and the first interval's
-        # `previous_resources` are read off it) and row 1 is the EARLIEST
-        # clear/stalled row, which is what proves the trailing CPU window
-        # really spans a full `_HUNG_CPU_WINDOW_S` (a trace that merged them
-        # away would fail the validator's own window check). Merging only
-        # the middle keeps both ends and the span intact.
+        # `previous_resources` are read off it) and row 1 is the first
+        # post-anchor interval. Searching from index 2 compacts the oldest
+        # middle pair first and leaves the latest 1021 original rows intact
+        # at the 1024-row cap; those are the rows that prove the trailing CPU window
+        # really spans a full
+        # `_HUNG_CPU_WINDOW_S`.
         for index in range(2, len(self._samples) - 1):
             older = self._samples[index]
             newer = self._samples[index + 1]
-            kind = older.get("resource_interval")
-            if kind != newer.get("resource_interval") or kind not in ("clear", "stalled"):
+            older_kind = older.get("resource_interval")
+            newer_kind = newer.get("resource_interval")
+            if older_kind not in ("clear", "stalled") or newer_kind not in (
+                "clear",
+                "stalled",
+            ):
                 continue
+            kind = (
+                "stalled"
+                if "stalled" in (older_kind, newer_kind)
+                else "clear"
+            )
             merged: dict[str, Any] = dict(newer)
+            merged["resource_interval"] = kind
+            merged["eligible_interval_s"] = round(
+                float(newer["eligible_elapsed_s"])
+                - float(self._samples[index - 1]["eligible_elapsed_s"]),
+                6,
+            )
             if kind == "clear":
-                merged["eligible_interval_s"] = round(
-                    float(newer["eligible_elapsed_s"])
-                    - float(self._samples[index - 1]["eligible_elapsed_s"]),
-                    6,
-                )
                 merged["resource_deltas"] = {}
             else:
-                merged["eligible_interval_s"] = 0.0
                 merged["resource_deltas"] = {
                     key: int(older.get("resource_deltas", {}).get(key, 0))
                     + int(newer.get("resource_deltas", {}).get(key, 0))

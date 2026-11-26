@@ -281,6 +281,143 @@ def _state_records(tmp_path: Path) -> list[dict]:
     ]
 
 
+def _alternating_idle_evidence() -> dict:
+    """A long trace with alternating clear/stalled intervals and a clear
+    trailing CPU window. The alternating prefix has no same-kind neighbors to
+    merge; compaction must retain a valid bounded summary for resume."""
+    trace = liveness._ResourceTrace()
+    previous = _SNAPSHOT
+    trace.reset(
+        {
+            "wall_elapsed_s": 0.0,
+            "eligible_elapsed_s": 0.0,
+            "eligible_interval_s": 0.0,
+            "candidate_cpu_s": 3.0,
+            "event_count": 0,
+            "stdout_bytes": 0,
+            "stderr_bytes": 0,
+            "resource_interval": "unknown",
+            "resource_deltas": {},
+            "previous_resources": None,
+            "resources": previous,
+        }
+    )
+    eligible = 0.0
+    for wall in range(1, 1101):
+        # Stall every other sample through t=1040, then leave 59 clear
+        # intervals so the retained tail proves the complete CPU window.
+        throttled = min(wall // 2, 520)
+        resources = {
+            **_SNAPSHOT,
+            "cgroup_cpu": {
+                "nr_throttled": throttled,
+                "throttled_usec": throttled * 100,
+            },
+        }
+        kind, deltas = liveness.compare_resource_snapshots(previous, resources)
+        if kind == "clear":
+            eligible += 1.0
+        sample = {
+            "wall_elapsed_s": float(wall),
+            "eligible_elapsed_s": eligible,
+            "eligible_interval_s": 1.0 if kind == "clear" else 0.0,
+            "candidate_cpu_s": 3.0,
+            "event_count": 0,
+            "stdout_bytes": 0,
+            "stderr_bytes": 0,
+            "resource_interval": kind,
+            "resource_deltas": deltas,
+            "resources": resources,
+        }
+        trace.append(sample)
+        previous = resources
+
+    samples = list(trace.samples)
+    assert len(samples) <= liveness._LIVENESS_RESOURCE_TRACE_MAX_SAMPLES
+    assert trace.compacted is True
+    assert any(
+        sample["resource_interval"] == "stalled"
+        and sample["eligible_interval_s"] > 0
+        for sample in samples
+    ), "compaction must preserve clear time inside a mixed stalled summary"
+    return {
+        "schema_version": 1,
+        "policy": liveness.IDLE_HANG_POLICY,
+        "decision": "idle-hang",
+        "candidate_pid": 4242,
+        "candidate_cpu_source": "process-tree-cpu-seconds",
+        "wall_elapsed_s": float(wall),
+        "eligible_elapsed_s": eligible,
+        "idle_eligible_s": eligible,
+        "required_idle_eligible_s": 15.0,
+        "required_cpu_growth_window_s": liveness._HUNG_CPU_WINDOW_S,
+        "required_cpu_growth_floor_s": liveness._HUNG_CPU_GROWTH_FLOOR_S,
+        "candidate_session_finish_seen": False,
+        "session_finish_eligible_s": None,
+        "trace_complete": True,
+        "trace_truncated": False,
+        "trace_compacted": trace.compacted,
+        "trace_samples_merged": trace.merged,
+        "samples": samples,
+    }
+
+
+def test_long_alternating_trace_idle_and_cpu_hangs_persist_and_resume(
+    tmp_path: Path,
+) -> None:
+    """The 1024-row cap also has to fit the state-record limit and survive
+    mutation-store validation for both trace-carrying idle evidence and the
+    separate CPU-evidence policy."""
+    idle_evidence = _alternating_idle_evidence()
+    assert len(idle_evidence["samples"]) <= liveness._LIVENESS_RESOURCE_TRACE_MAX_SAMPLES
+    assert len(json.dumps(idle_evidence).encode("utf-8")) < mutation_store.MUTATION_STATE_RECORD_LIMIT
+    assert mutation_store._valid_hung_resource_evidence(idle_evidence) is True
+
+    cpu_evidence = _cpu_evidence()
+    cpu_evidence["trace_compacted"] = True
+    assert mutation_store._valid_hung_resource_evidence(cpu_evidence) is True
+
+    finish_evidence = dict(idle_evidence)
+    finish_evidence.update(
+        decision="session-finish-hang",
+        candidate_session_finish_seen=True,
+        session_finish_eligible_s=(
+            idle_evidence["eligible_elapsed_s"]
+            - liveness._HUNG_SESSION_FINISH_GRACE_S
+        ),
+        required_idle_eligible_s=liveness._HUNG_SESSION_FINISH_GRACE_S,
+    )
+    assert mutation_store._valid_hung_resource_evidence(finish_evidence) is True
+
+    for name, evidence in (
+        ("idle", idle_evidence),
+        ("session-finish", finish_evidence),
+        ("cpu", cpu_evidence),
+    ):
+        case = tmp_path / name
+        case.mkdir()
+        first = _run_hung(case, evidence, resume=True)
+        assert len(first.hung) == first.total > 0
+        state_paths = sorted((case / "state").glob("*.json"))
+        assert state_paths
+        assert all(
+            path.stat().st_size <= mutation_store.MUTATION_STATE_RECORD_LIMIT
+            for path in state_paths
+        )
+        assert all(
+            record["liveness_resource_evidence"] == evidence
+            for record in _state_records(case)
+        )
+
+        def never_runs(argv, *, env, cwd, timeout):
+            raise AssertionError("a valid hung record must resume, not rerun")
+
+        resumed = _run_hung(
+            case, evidence, resume=True, process_runner=never_runs
+        )
+        assert len(resumed.hung) == resumed.total == first.total
+
+
 @pytest.mark.parametrize("decision", sorted(liveness.CPU_HANG_DECISIONS))
 def test_a_cpu_hang_record_is_persisted_and_resumes_as_is(
     tmp_path: Path, decision: str
