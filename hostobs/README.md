@@ -7,18 +7,6 @@ as a probe plus an actuator. The workspace has the planned `proto`, `serve`, `mo
 binary packages. The `client` crate is the Rust client of `hostobs/1` (handshake, JSON requests,
 block streams, subscriptions and reconnect over an injected transport and clock; WIRE.md §12 `P5a`).
 
-## Python client
-
-The `hostobs-client` distribution contains the standard-library `hostobs_client`
-package and the `hostobs-mark` command. No release exists yet, and this branch
-does not build a release wheel. See [packaging](docs/PACKAGING.md) and [consumer
-instructions](docs/CONSUMERS.md).
-
-No hostobs probe currently serves `annotate`, and `deploy/` does not install an
-observer socket yet. With no observer socket installed, `hostobs-mark` prints a
-notice and exits 0; `--require` exits 1. When the observer socket is installed,
-callers will need membership in the `hostobs-observer` group.
-
 **What is implemented today.** Five core libraries plus the Rust client described above are
 functional:
 
@@ -143,6 +131,18 @@ decoded `model` rows; the dependency exists, but decoding remains the caller's s
 scope). Workspace unification removes the duplication behind `HOB-3`/`HOB-10`/`HOB-17`/`HOB-26`/`HOB-27`:
 there is one model quality/value vocabulary, `proto` derives its metric codes from `model`, and
 SP-2 calls `model::derive_rate`.
+
+## Python client
+
+The `hostobs-client` distribution contains the standard-library `hostobs_client`
+package and the `hostobs-mark` command. No release exists yet, and this branch
+does not build a release wheel. See [packaging](docs/PACKAGING.md) and [consumer
+instructions](docs/CONSUMERS.md).
+
+No hostobs probe currently serves `annotate`, and `deploy/` does not install an
+observer socket yet. With no observer socket installed, `hostobs-mark` prints a
+notice and exits 0; `--require` exits 1. When the observer socket is installed,
+callers will need membership in the `hostobs-observer` group.
 
 ## Developing and debugging
 

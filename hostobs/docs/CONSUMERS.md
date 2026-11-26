@@ -27,8 +27,8 @@ notice and exits 0; adding `--require` makes it exit 1. When deployment installs
 the observer socket, callers will need membership in the `hostobs-observer`
 group. The serving and deployment pieces are not delivered yet.
 
-When that socket is installed, set its path and pass an annotation name accepted
-by WIRE §4.12:
+Once the socket is installed and the probe serves `annotate`, set its path and
+pass an annotation name accepted by WIRE §4.12:
 
 ```sh
 HOSTOBS_OBSERVER_SOCKET=/run/hostobs/observer/hostobs.sock \
