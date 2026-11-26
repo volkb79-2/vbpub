@@ -76,6 +76,7 @@
     "operation": "nine-attrs"
   },
   "expect_error": {
-    "kind": "event-field-bound"
+    "kind": "event-field-bound",
+    "field": "n_attrs"
   }
 }

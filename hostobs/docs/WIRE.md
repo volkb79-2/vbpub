@@ -280,29 +280,74 @@ has none (`HOB-54`, §6.1).
 3.11 **Event payload (stored only).** The events corpus stores each event as one frame: header
 `type 3`, `flags 0x01`, reserved 0, `corr 0`, `len` a multiple of 8, then the §3.1 directory with
 `n_sec 1`: kind 7, ver 1, flags `0x01` (required). It never crosses a socket (§2.1 keeps
-EVT+SECTIONED `unknown-frame-flags`). In a BLOCK, kind 7 is an unknown kind (§3.2). Body, LE:
+EVT+SECTIONED `unknown-frame-flags`). Section kind codes share one registry across frame types:
+7 is event/1 and MUST NOT be used for a BLOCK section (§3.2). Under D-W17, an event-body extension
+uses a new section kind; a v1 event reader refuses that required kind as
+`unsupported-required-section`.
+
+Body, LE:
 - @0 i64 `t_mono_ns` ≥ 0; @8 u64 `span` (0 iff `point`); @16 u64 `peer_dev`, @24 u64
   `peer_inode` (both 0 = `null`, else both ≠ 0); @32 u32 `uid`; @36 u32 `peer_pid` (0 = `null`).
-- @40 u8 `kind` 1..3; @41 u8 `outcome` 0..7 (0 iff kind ≠ end); @42 u8 flags (bit0 `inferred`,
-  bits 1-7 zero); @43 u8 `n_ctx` 0..5; @44 u8 `n_attrs` 0..8; @45 u8 and @46 u16 reserved 0.
+- @40 u8 `kind`; @41 u8 `outcome`; @42 u8 flags (bit0 `inferred`, bits 1-7 zero); @43 u8
+  `n_ctx` 0..5; @44 u8 `n_attrs` 0..8; @45 u8 and @46 u16 reserved 0.
 - @48 four strings, each `u16 len` + UTF-8: `name` 1..64 (grammar), `key` 1..64, `code` 0..64
   (0 = `null`), `comm` 0..15 (0 = `null`).
 - API note: an empty `code` or `comm` is wire-null. Rust refuses `Some("")` so
   `decode(encode(value))` preserves the `Option` value.
-- Then `n_ctx` × (u8 key 0..4, u16 len 1..128, text), with keys strictly ascending.
+- Then `n_ctx` × (u8 key, u16 len 1..128, text), with keys strictly ascending.
 - Then `n_attrs` × (u16 klen 1..64 name-grammar key, key, u16 vlen 0..256, value), with bytewise
   keys strictly ascending.
 - Then zero pad under 8 B. Text is valid UTF-8 without U+0000-U+001F or U+007F. `issuer` renders
   as `uid:<uid>`; it is derived and not stored.
 
+The closed event/1 code tables are:
+
+| kind code | name |
+|---:|---|
+| 1 | `begin` |
+| 2 | `end` |
+| 3 | `point` |
+
+| outcome code | name |
+|---:|---|
+| 0 | none (kind is not `end`) |
+| 1 | `ok` |
+| 2 | `fail` |
+| 3 | `error` |
+| 4 | `skipped` |
+| 5 | `cancelled` |
+| 6 | `timeout` |
+| 7 | `abandoned` |
+
+| context key | name |
+|---:|---|
+| 0 | `run` |
+| 1 | `lane` |
+| 2 | `candidate` |
+| 3 | `txn` |
+| 4 | `session` |
+
+The context names follow §4.10. These are event/1 codes: the `code()` bytes for kind and outcome
+in `crates/store/src/events.rs` are separate store codes and MUST NOT be used as event/1 codes.
+In particular, event/1 outcome 0 means none, while the store's outcome code 0 means `ok`.
+`inferred` MAY be set only when kind is `end`; setting it for `begin` or `point` is
+`event-unknown-code` (`inferred/kind`).
+
+The stored frame wrapper is judged before its body in this order: `truncated` if fewer than 24
+actual bytes; `unknown-frame-type`; `unknown-frame-flags`; `non-zero-reserved` for the header
+reserved field or non-zero `corr`; `oversized-frame`; `truncated` if declared and actual lengths
+differ (including trailing bytes); `section-length` if the actual frame length is not a multiple
+of 8; `section-reserved`; `section-length` if `n_sec` is not 1; `unsupported-required-section`;
+`unsupported-section-version`; `unknown-section-flags`; then `section-length` if the declared body
+length differs from the actual body length. Event frame `section-length` details use section kind 7.
+
 The event body decoder judges kinds in this order: `truncated` (context "event body");
 `section-length` (fields end past the section length, or padding is 8 B or more);
 `non-zero-reserved` (reserved bytes or padding); `event-unknown-code` (`kind`, `outcome`, context
-key, or outcome/kind pairing); `event-field-bound` (negative `t_mono_ns`, count, length, span/kind,
-or half-null peer);
-`event-text` (UTF-8, control character, or name grammar); `event-order` (unsorted or duplicate
-context or attribute keys). These four `event-*` kinds are decoder outcomes local to §3.10 and
-are never wire error codes (§10).
+key, outcome/kind pairing, or inferred/kind pairing); `event-field-bound` (negative `t_mono_ns`,
+count, length, span/kind, or half-null peer); `event-text` (UTF-8, control character, or name
+grammar); `event-order` (unsorted or duplicate context or attribute keys). These four `event-*`
+kinds are decoder outcomes local to §3.10 and are never wire error codes (§10).
 The stored event fixture set lives in `fixtures/event/`: `event-minimal`, `event-full`,
 `event-point-ctx`, `event-unknown-code`, `event-overflow`, `event-unsorted-attrs`, and
 `event-control-text`.

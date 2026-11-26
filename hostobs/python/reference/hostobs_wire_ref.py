@@ -41,6 +41,23 @@ SECTION_KINDS_BY_CODE = {code: name for name, code in SECTION_KINDS.items()}
 EVENT_SECTION_KIND = 7
 EVENT_SECTION_VERSION = 1
 EVENT_SECTION_REQUIRED_FLAGS = 1
+EVENT_KIND_NAMES = {1: "begin", 2: "end", 3: "point"}
+EVENT_OUTCOME_NAMES = {
+    1: "ok",
+    2: "fail",
+    3: "error",
+    4: "skipped",
+    5: "cancelled",
+    6: "timeout",
+    7: "abandoned",
+}
+EVENT_CONTEXT_KEY_NAMES = {
+    0: "run",
+    1: "lane",
+    2: "candidate",
+    3: "txn",
+    4: "session",
+}
 ONE_OF = {1, 2, 4, 5, 6}
 SUBJECT_BODY_LEN = 8
 
@@ -276,6 +293,21 @@ def _align8(value: int) -> int:
     return value if value % 8 == 0 else value + (8 - value % 8)
 
 
+def event_kind_name(code: int) -> str | None:
+    """Return the event/1 name for a kind code, or ``None`` outside its table."""
+    return EVENT_KIND_NAMES.get(code) if type(code) is int else None
+
+
+def event_outcome_name(code: int) -> str | None:
+    """Return the event/1 name for an outcome code; zero means no outcome."""
+    return EVENT_OUTCOME_NAMES.get(code) if type(code) is int else None
+
+
+def event_context_key_name(code: int) -> str | None:
+    """Return the event/1 name for a context key code, or ``None`` if unknown."""
+    return EVENT_CONTEXT_KEY_NAMES.get(code) if type(code) is int else None
+
+
 def _event_error(kind: str, **fields: object) -> None:
     raise WireError(kind, **fields)
 
@@ -285,7 +317,7 @@ def _event_take(body: bytes, offset: int, count: int) -> tuple[bytes, int]:
     if end > len(body):
         raise WireError(
             "section-length",
-            section="event",
+            section=EVENT_SECTION_KIND,
             declared=len(body),
             expected=end,
         )
@@ -334,7 +366,7 @@ def _event_layout(body: bytes) -> tuple[tuple, tuple, int, int, int]:
     if len(body) != aligned:
         raise WireError(
             "section-length",
-            section="event",
+            section=EVENT_SECTION_KIND,
             declared=len(body),
             expected=aligned,
         )
@@ -364,13 +396,15 @@ def _event_text(body: bytes, span: tuple[int, int], field: str, grammar: bool = 
 
 
 def _event_validate_codes(body: bytes, fixed: tuple, ctx_start: int) -> None:
-    kind, outcome, n_ctx = fixed[6], fixed[7], fixed[9]
+    kind, outcome, inferred, n_ctx = fixed[6], fixed[7], fixed[8], fixed[9]
     if kind not in (1, 2, 3):
         raise WireError("event-unknown-code", field="kind", code=kind)
     if outcome > 7:
         raise WireError("event-unknown-code", field="outcome", code=outcome)
     if (kind == 2) != (outcome != 0):
         raise WireError("event-unknown-code", field="outcome/kind", code=outcome)
+    if inferred & 1 and kind != 2:
+        raise WireError("event-unknown-code", field="inferred/kind", code=inferred & 1)
 
     offset = ctx_start
     for _ in range(n_ctx):
@@ -468,15 +502,20 @@ def _event_validate_order(body: bytes, fixed: tuple, ctx_start: int, attrs_start
         _value, offset = _event_take(body, offset, value_length)
 
 
-def _event_encode_text(value: object, field: str, minimum: int, maximum: int, grammar: bool = False) -> bytes:
+def _event_encode_raw(value: object, field: str) -> tuple[bytes | None, int]:
     if not isinstance(value, str):
         raise WireError("event-field-bound", field=field)
     try:
         raw = value.encode("utf-8")
     except UnicodeEncodeError:
-        raise WireError("event-text", field=field) from None
-    if len(raw) < minimum or len(raw) > maximum:
-        raise WireError("event-field-bound", field=field)
+        # Keep text validation in its decoder pass, after every measurable bound.
+        return None, len(value.encode("utf-8", errors="surrogatepass"))
+    return raw, len(raw)
+
+
+def _event_check_encoded_text(raw: bytes | None, field: str, grammar: bool = False) -> bytes:
+    if raw is None:
+        raise WireError("event-text", field=field)
     if any(byte < 0x20 or byte == 0x7F for byte in raw) or (grammar and not _event_name(raw)):
         raise WireError("event-text", field=field)
     return raw
@@ -493,12 +532,17 @@ def encode_event_payload(event: dict) -> bytes:
 
     kind = event["kind"]
     outcome = event["outcome"]
+    inferred = event["inferred"]
     if type(kind) is not int or kind not in (1, 2, 3):
         raise WireError("event-unknown-code", field="kind", code=kind)
     if type(outcome) is not int or outcome < 0 or outcome > 7:
         raise WireError("event-unknown-code", field="outcome", code=outcome)
     if (kind == 2) != (outcome != 0):
         raise WireError("event-unknown-code", field="outcome/kind", code=outcome)
+    if type(inferred) is not bool:
+        raise WireError("event-field-bound", field="inferred")
+    if inferred and kind != 2:
+        raise WireError("event-unknown-code", field="inferred/kind", code=1)
 
     ctx = event["ctx"]
     attrs = event["attrs"]
@@ -510,6 +554,9 @@ def encode_event_payload(event: dict) -> bytes:
         key = entry["key"]
         if type(key) is not int or key < 0 or key > 4:
             raise WireError("event-unknown-code", field="ctx", code=key)
+    for entry in attrs:
+        if not isinstance(entry, dict) or set(entry) != {"key", "value"}:
+            raise WireError("event-field-bound", field="attrs")
 
     def integer(field: str, minimum: int, maximum: int) -> int:
         value = event[field]
@@ -521,38 +568,76 @@ def encode_event_payload(event: dict) -> bytes:
     span = integer("span", 0, (1 << 64) - 1)
     peer_dev = integer("peer_dev", 0, (1 << 64) - 1)
     peer_inode = integer("peer_inode", 0, (1 << 64) - 1)
-    uid = integer("uid", 0, (1 << 32) - 1)
-    peer_pid = integer("peer_pid", 0, (1 << 32) - 1)
     if (kind == 3) != (span == 0):
         raise WireError("event-field-bound", field="span")
     if (peer_dev == 0) != (peer_inode == 0):
         raise WireError("event-field-bound", field="peer")
+    uid = integer("uid", 0, (1 << 32) - 1)
+    peer_pid = integer("peer_pid", 0, (1 << 32) - 1)
     if len(ctx) > 5:
         raise WireError("event-field-bound", field="n_ctx")
     if len(attrs) > 8:
         raise WireError("event-field-bound", field="n_attrs")
-    if type(event["inferred"]) is not bool:
-        raise WireError("event-field-bound", field="inferred")
 
-    name = _event_encode_text(event["name"], "name", 1, 64, grammar=True)
-    key = _event_encode_text(event["key"], "key", 1, 64)
-    code_value = event["code"]
-    comm_value = event["comm"]
-    code = b"" if code_value is None else _event_encode_text(code_value, "code", 1, 64)
-    comm = b"" if comm_value is None else _event_encode_text(comm_value, "comm", 1, 15)
+    fixed_values = (
+        (event["name"], "name", 1, 64, True, False),
+        (event["key"], "key", 1, 64, False, False),
+        (
+            "" if event["code"] is None else event["code"],
+            "code",
+            0,
+            64,
+            False,
+            event["code"] is not None,
+        ),
+        (
+            "" if event["comm"] is None else event["comm"],
+            "comm",
+            0,
+            15,
+            False,
+            event["comm"] is not None,
+        ),
+    )
+    fixed_raw = []
+    for value, field, minimum, maximum, _grammar, present in fixed_values:
+        raw, length = _event_encode_raw(value, field)
+        if length < minimum or length > maximum or (present and length == 0):
+            raise WireError("event-field-bound", field=field)
+        fixed_raw.append(raw)
 
+    ctx_raw = []
     for entry in ctx:
-        _event_encode_text(entry["value"], "ctx.value", 1, 128)
+        raw, length = _event_encode_raw(entry["value"], "ctx.value")
+        if not 1 <= length <= 128:
+            raise WireError("event-field-bound", field="ctx.value")
+        ctx_raw.append(raw)
+
+    attrs_raw = []
     for entry in attrs:
-        if not isinstance(entry, dict) or set(entry) != {"key", "value"}:
-            raise WireError("event-field-bound", field="attrs")
-        _event_encode_text(entry["key"], "attrs.key", 1, 64, grammar=True)
-        _event_encode_text(entry["value"], "attrs.value", 0, 256)
+        key_raw, key_length = _event_encode_raw(entry["key"], "attrs.key")
+        if not 1 <= key_length <= 64:
+            raise WireError("event-field-bound", field="attrs.key")
+        value_raw, value_length = _event_encode_raw(entry["value"], "attrs.value")
+        if value_length > 256:
+            raise WireError("event-field-bound", field="attrs.value")
+        attrs_raw.append((key_raw, value_raw))
+
+    texts = []
+    for raw, (_value, field, _minimum, _maximum, grammar, _present) in zip(
+        fixed_raw, fixed_values, strict=True
+    ):
+        texts.append(_event_check_encoded_text(raw, field, grammar))
+    for raw in ctx_raw:
+        _event_check_encoded_text(raw, "ctx.value")
+    for key_raw, value_raw in attrs_raw:
+        _event_check_encoded_text(key_raw, "attrs.key", grammar=True)
+        _event_check_encoded_text(value_raw, "attrs.value")
 
     for index in range(1, len(ctx)):
         if ctx[index - 1]["key"] >= ctx[index]["key"]:
             raise WireError("event-order", field="ctx", index=index)
-    attr_keys = [entry["key"].encode("utf-8") for entry in attrs]
+    attr_keys = [key_raw for key_raw, _value_raw in attrs_raw]
     for index in range(1, len(attr_keys)):
         if attr_keys[index - 1] >= attr_keys[index]:
             raise WireError("event-order", field="attrs", index=index)
@@ -568,7 +653,7 @@ def encode_event_payload(event: dict) -> bytes:
             peer_pid,
             kind,
             outcome,
-            int(event["inferred"]),
+            int(inferred),
             len(ctx),
             len(attrs),
             0,
@@ -580,15 +665,14 @@ def encode_event_payload(event: dict) -> bytes:
         out.extend(struct.pack("<H", len(value)))
         out.extend(value)
 
-    for value in (name, key, code, comm):
+    for value in texts:
         put_string(value)
-    for entry in ctx:
-        value = entry["value"].encode("utf-8")
+    for entry, value in zip(ctx, ctx_raw, strict=True):
         out.extend(struct.pack("<B", entry["key"]))
         put_string(value)
-    for entry in attrs:
-        put_string(entry["key"].encode("utf-8"))
-        put_string(entry["value"].encode("utf-8"))
+    for key_raw, value_raw in attrs_raw:
+        put_string(key_raw)
+        put_string(value_raw)
     out.extend(b"\x00" * (-len(out) % 8))
     return bytes(out)
 
@@ -701,7 +785,12 @@ def event_body_from_frame(frame: bytes) -> bytes:
     if directory_reserved != 0:
         raise WireError("section-reserved", value=directory_reserved)
     if n_sec != 1:
-        raise WireError("section-length", section="event directory", declared=n_sec, expected=1)
+        raise WireError(
+            "section-length",
+            section=EVENT_SECTION_KIND,
+            declared=n_sec,
+            expected=1,
+        )
     if kind != EVENT_SECTION_KIND:
         raise WireError("unsupported-required-section", kind_code=kind)
     if version != EVENT_SECTION_VERSION:
@@ -716,7 +805,7 @@ def event_body_from_frame(frame: bytes) -> bytes:
     if body_len != len(frame) - 24:
         raise WireError(
             "section-length",
-            section="event",
+            section=EVENT_SECTION_KIND,
             declared=body_len,
             expected=len(frame) - 24,
         )
@@ -1327,7 +1416,7 @@ def normalise(frame: dict) -> dict:
 def load_cases(fixtures_dir: Path) -> list[tuple[Path, dict, bytes]]:
     cases = []
     for spec_path in sorted(fixtures_dir.glob("*.json")):
-        if spec_path.name == "quality.json" or spec_path.stem.startswith("event-"):
+        if spec_path.name == "quality.json":
             continue
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         data_path = spec_path.with_suffix(".bin")

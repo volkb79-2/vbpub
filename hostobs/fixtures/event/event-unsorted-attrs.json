@@ -76,6 +76,8 @@
     "operation": "unsorted-attrs"
   },
   "expect_error": {
-    "kind": "event-order"
+    "kind": "event-order",
+    "field": "attrs",
+    "index": 1
   }
 }

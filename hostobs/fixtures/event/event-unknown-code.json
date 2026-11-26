@@ -22,6 +22,7 @@
     "operation": "unknown-kind"
   },
   "expect_error": {
-    "kind": "event-unknown-code"
+    "kind": "event-unknown-code",
+    "field": "kind"
   }
 }

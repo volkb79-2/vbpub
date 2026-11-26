@@ -73,9 +73,10 @@
     "comm": "mmmmmmmmmmmmmmm"
   },
   "corrupt": {
-    "operation": "control-name"
+    "operation": "control-key"
   },
   "expect_error": {
-    "kind": "event-text"
+    "kind": "event-text",
+    "field": "key"
   }
 }

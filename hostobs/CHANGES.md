@@ -5,7 +5,8 @@
 - **Added (M3 B3):** the stored event/1 payload codec, canonical section body ordering and
   padding, four typed decoder kinds, cross-language event fixtures, and an events segment
   fixture carrying event-minimal. The Rust and Python readers now agree on stored-frame
-  refusals, and Rust exposes `decode_event_frame` for stored events.
+  refusals, and Rust exposes `decode_event_frame` for stored events. The final format review
+  pins the closed code names, control-character edges, refusal fields and frame refusal order.
 - **Added (M3 A2):** package the standard-library `hostobs_client` distribution with the `hostobs-mark` entry point; conformance builds and checks its zipapp, while a CMRU wheel-build contract is planned for A1 and `hostobs/cmru.toml` is not present yet.
 - **Fixed (M3 A2 review):** packaging checks now reject namespace-only source directories, match package-data patterns by path segment, pin the complete setuptools table and legacy config absence, exercise `hostobs-mark` exit codes against an unavailable socket, and require fault probes to observe their expected rejection.
 - **Added (M3 B2):** the observer level is installable through its systemd socket, tmpfiles directory and shipped probe configuration; deploy regression checks pin all three levels, and the Debian setup notes cover its access group.

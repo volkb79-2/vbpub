@@ -1326,8 +1326,11 @@ def corrupt_event_body(event: dict, operation: str) -> bytes:
     if operation == "unknown-kind":
         body[40] = 4
         return bytes(body)
-    if operation == "control-name":
-        body[50] = 1
+    if operation == "control-key":
+        name_length = struct.unpack_from("<H", body, 48)[0]
+        key_length_offset = 50 + name_length
+        key_start = key_length_offset + 2
+        body[key_start] = 1
         return bytes(body)
 
     offset = 48
@@ -1369,16 +1372,16 @@ def write_event_fixtures(out: Path) -> list[tuple[str, int, str | None]]:
     full = event_full()
     point_ctx = event_point_ctx()
     cases = [
-        ("event-minimal", minimum, None, None),
-        ("event-full", full, None, None),
-        ("event-point-ctx", point_ctx, None, None),
-        ("event-unknown-code", minimum, "unknown-kind", "event-unknown-code"),
-        ("event-overflow", full, "nine-attrs", "event-field-bound"),
-        ("event-unsorted-attrs", full, "unsorted-attrs", "event-order"),
-        ("event-control-text", full, "control-name", "event-text"),
+        ("event-minimal", minimum, None, None, None, None),
+        ("event-full", full, None, None, None, None),
+        ("event-point-ctx", point_ctx, None, None, None, None),
+        ("event-unknown-code", minimum, "unknown-kind", "event-unknown-code", "kind", None),
+        ("event-overflow", full, "nine-attrs", "event-field-bound", "n_attrs", None),
+        ("event-unsorted-attrs", full, "unsorted-attrs", "event-order", "attrs", 1),
+        ("event-control-text", full, "control-key", "event-text", "key", None),
     ]
     written = []
-    for name, event, operation, refusal in cases:
+    for name, event, operation, refusal, error_field, error_index in cases:
         if operation is None:
             data = wire.encode_event_frame(event)
         else:
@@ -1390,7 +1393,10 @@ def write_event_fixtures(out: Path) -> list[tuple[str, int, str | None]]:
         }
         if operation is not None:
             document["corrupt"] = {"operation": operation}
-            document["expect_error"] = {"kind": refusal}
+            expected = {"kind": refusal, "field": error_field}
+            if error_index is not None:
+                expected["index"] = error_index
+            document["expect_error"] = expected
         (out / f"{name}.json").write_text(
             json.dumps(document, indent=2, sort_keys=False, ensure_ascii=False) + "\n",
             encoding="utf-8",

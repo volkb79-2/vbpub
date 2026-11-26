@@ -2,13 +2,14 @@
 //!
 //! The JSON descriptions define each expected event, and the committed `.bin` files are
 //! canonical stored EVT frames. Valid frames must decode to their descriptions and be
-//! reproduced byte for byte by the public encoder. Refusal frames must report the kind
-//! named by both their description and this test's case table.
+//! reproduced byte for byte by the public encoder. Refusal frames must report the kind and
+//! field named by their description; order refusals also pin the zero-based index.
 
 // The fixture parser is shared by integration tests as source, not as a workspace member.
 #[path = "../../../test-support/json.rs"]
 mod json;
 
+use hostobs_proto::error::ProtoError;
 use hostobs_proto::event::{
     decode_event_frame, encode_event_frame, EventAttribute, EventContext, EventPayload,
 };
@@ -154,6 +155,45 @@ fn expected_error_for(name: &str) -> Option<&'static str> {
     }
 }
 
+fn assert_refusal_detail(spec: &Json, error: &ProtoError, name: &str) {
+    let expected_field = spec
+        .field("field")
+        .as_str()
+        .unwrap_or_else(|| panic!("{name}: expect_error.field must be a string"));
+    match error {
+        ProtoError::EventUnknownCode { field, .. }
+        | ProtoError::EventFieldBound { field }
+        | ProtoError::EventText { field } => {
+            assert_eq!(
+                *field,
+                expected_field,
+                "{name}: refusal field matches description"
+            );
+            assert!(
+                spec.get("index").is_none(),
+                "{name}: only order refusals carry an index"
+            );
+        }
+        ProtoError::EventOrder { field, index } => {
+            assert_eq!(
+                *field,
+                expected_field,
+                "{name}: refusal field matches description"
+            );
+            let described_index = spec
+                .field("index")
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or_else(|| panic!("{name}: expect_error.index must be an integer"));
+            assert_eq!(
+                *index, described_index,
+                "{name}: refusal index matches description"
+            );
+        }
+        other => panic!("{name}: unexpected event fixture refusal {other:?}"),
+    }
+}
+
 #[test]
 fn every_event_fixture_matches_its_description_or_refusal() {
     for name in fixture_names() {
@@ -204,6 +244,7 @@ fn every_event_fixture_matches_its_description_or_refusal() {
                     expected,
                     "{name}: error kind matches case table"
                 );
+                assert_refusal_detail(spec.field("expect_error"), &error, &name);
             }
         }
     }

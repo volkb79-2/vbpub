@@ -15,6 +15,45 @@ pub const EVENT_SECTION_VERSION: u8 = 1;
 /// The event/1 directory flags; the section is required.
 pub const EVENT_SECTION_REQUIRED_FLAGS: u8 = 1;
 
+/// Return the event/1 name for a kind code.
+#[must_use]
+pub const fn event_kind_name(code: u8) -> Option<&'static str> {
+    match code {
+        1 => Some("begin"),
+        2 => Some("end"),
+        3 => Some("point"),
+        _ => None,
+    }
+}
+
+/// Return the event/1 name for an outcome code; zero means no outcome.
+#[must_use]
+pub const fn event_outcome_name(code: u8) -> Option<&'static str> {
+    match code {
+        1 => Some("ok"),
+        2 => Some("fail"),
+        3 => Some("error"),
+        4 => Some("skipped"),
+        5 => Some("cancelled"),
+        6 => Some("timeout"),
+        7 => Some("abandoned"),
+        _ => None,
+    }
+}
+
+/// Return the event/1 name for a context key code.
+#[must_use]
+pub const fn event_context_key_name(code: u8) -> Option<&'static str> {
+    match code {
+        0 => Some("run"),
+        1 => Some("lane"),
+        2 => Some("candidate"),
+        3 => Some("txn"),
+        4 => Some("session"),
+        _ => None,
+    }
+}
+
 const EVENT_FIXED_LEN: usize = 48;
 const EVENT_FRAME_FIXED_LEN: usize = FRAME_HEADER_LEN + 4 + 8;
 const EVENT_MAX_CONTEXT: u8 = 5;
@@ -65,7 +104,7 @@ pub struct EventPayload {
     pub kind: u8,
     /// The outcome code, zero except for end events.
     pub outcome: u8,
-    /// Whether the end was inferred.
+    /// Whether the end was inferred; only end events may set this flag.
     pub inferred: bool,
     /// Context entries, in strictly ascending key-code order.
     pub ctx: Vec<EventContext>,
@@ -276,6 +315,12 @@ fn validate_codes(body: &[u8], layout: &BodyLayout) -> Result<(), ProtoError> {
             code: layout.fixed.outcome,
         });
     }
+    if layout.fixed.flags & 1 != 0 && layout.fixed.kind != 2 {
+        return Err(ProtoError::EventUnknownCode {
+            field: "inferred/kind",
+            code: layout.fixed.flags & 1,
+        });
+    }
 
     let mut offset = layout.ctx_start;
     for _ in 0..layout.fixed.n_ctx {
@@ -461,6 +506,12 @@ pub fn encode_event_payload(event: &EventPayload) -> Result<Vec<u8>, ProtoError>
             code: event.outcome,
         });
     }
+    if event.inferred && event.kind != 2 {
+        return Err(ProtoError::EventUnknownCode {
+            field: "inferred/kind",
+            code: u8::from(event.inferred),
+        });
+    }
     for entry in &event.ctx {
         if entry.key > 4 {
             return Err(ProtoError::EventUnknownCode {
@@ -505,19 +556,17 @@ pub fn encode_event_payload(event: &EventPayload) -> Result<Vec<u8>, ProtoError>
             event.comm.is_some(),
         ),
     ];
-    for (text, min, max, field, grammar, present_must_be_nonempty) in fixed_strings {
+    for (text, min, max, field, _, present_must_be_nonempty) in fixed_strings {
         let len = text.len();
         if len < min || len > max || (present_must_be_nonempty && text.is_empty()) {
             return Err(field_bound(field));
         }
-        validate_string(text, field, grammar)?;
     }
 
     for entry in &event.ctx {
         if !(1..=EVENT_MAX_CONTEXT_TEXT).contains(&entry.value.len()) {
             return Err(field_bound("ctx.value"));
         }
-        validate_string(&entry.value, "ctx.value", false)?;
     }
     for entry in &event.attrs {
         if !(1..=EVENT_MAX_TEXT).contains(&entry.key.len()) {
@@ -526,22 +575,31 @@ pub fn encode_event_payload(event: &EventPayload) -> Result<Vec<u8>, ProtoError>
         if entry.value.len() > EVENT_MAX_ATTRIBUTE_VALUE {
             return Err(field_bound("attrs.value"));
         }
+    }
+
+    for (text, _, _, field, grammar, _) in fixed_strings {
+        validate_string(text, field, grammar)?;
+    }
+    for entry in &event.ctx {
+        validate_string(&entry.value, "ctx.value", false)?;
+    }
+    for entry in &event.attrs {
         validate_string(&entry.key, "attrs.key", true)?;
         validate_string(&entry.value, "attrs.value", false)?;
     }
-    for pair in event.ctx.windows(2) {
+    for (index, pair) in event.ctx.windows(2).enumerate() {
         if pair[0].key >= pair[1].key {
             return Err(ProtoError::EventOrder {
                 field: "ctx",
-                index: 1,
+                index: index + 1,
             });
         }
     }
-    for pair in event.attrs.windows(2) {
+    for (index, pair) in event.attrs.windows(2).enumerate() {
         if pair[0].key.as_bytes() >= pair[1].key.as_bytes() {
             return Err(ProtoError::EventOrder {
                 field: "attrs",
-                index: 1,
+                index: index + 1,
             });
         }
     }
@@ -792,7 +850,8 @@ pub fn decode_event_frame(frame: &[u8]) -> Result<EventPayload, ProtoError> {
 mod tests {
     use super::{
         decode_event_frame, decode_event_payload, encode_event_frame, encode_event_payload,
-        EventAttribute, EventContext, EventPayload, EVENT_SECTION_KIND,
+        event_context_key_name, event_kind_name, event_outcome_name, EventAttribute, EventContext,
+        EventPayload, EVENT_SECTION_KIND,
     };
     use crate::error::{ProtoError, MAX_FRAME_BYTES};
     use crate::frame::{decode_block, FrameHeader, SectionKind, FLAG_SECTIONED};
@@ -1051,6 +1110,175 @@ mod tests {
         let mut unknown_context = valid;
         unknown_context[80] = 5;
         assert_kind(decode_event_payload(&unknown_context), "event-unknown-code");
+    }
+
+    #[test]
+    fn event_code_tables_pin_every_name_and_reject_the_first_unknown_code() {
+        assert_eq!(event_kind_name(1), Some("begin"));
+        assert_eq!(event_kind_name(2), Some("end"));
+        assert_eq!(event_kind_name(3), Some("point"));
+        assert_eq!(event_kind_name(0), None);
+        assert_eq!(event_kind_name(4), None);
+
+        assert_eq!(event_outcome_name(1), Some("ok"));
+        assert_eq!(event_outcome_name(2), Some("fail"));
+        assert_eq!(event_outcome_name(3), Some("error"));
+        assert_eq!(event_outcome_name(4), Some("skipped"));
+        assert_eq!(event_outcome_name(5), Some("cancelled"));
+        assert_eq!(event_outcome_name(6), Some("timeout"));
+        assert_eq!(event_outcome_name(7), Some("abandoned"));
+        assert_eq!(event_outcome_name(0), None);
+        assert_eq!(event_outcome_name(8), None);
+
+        assert_eq!(event_context_key_name(0), Some("run"));
+        assert_eq!(event_context_key_name(1), Some("lane"));
+        assert_eq!(event_context_key_name(2), Some("candidate"));
+        assert_eq!(event_context_key_name(3), Some("txn"));
+        assert_eq!(event_context_key_name(4), Some("session"));
+        assert_eq!(event_context_key_name(5), None);
+    }
+
+    #[test]
+    fn inferred_is_only_valid_for_end_events_on_encode_and_decode() {
+        let mut end = minimal_event();
+        end.kind = 2;
+        end.span = 1;
+        end.outcome = 1;
+        end.inferred = true;
+        let end_body = encode_event_payload(&end)
+            .expect("an inferred end is valid");
+        assert_eq!(decode_event_payload(&end_body), Ok(end));
+
+        for kind in [1, 3] {
+            let mut event = minimal_event();
+            event.kind = kind;
+            event.span = if kind == 1 { 1 } else { 0 };
+            event.inferred = true;
+            let expected = ProtoError::EventUnknownCode {
+                field: "inferred/kind",
+                code: 1,
+            };
+            assert_eq!(
+                encode_event_payload(&event).expect_err("inferred is invalid on this kind"),
+                expected
+            );
+
+            event.inferred = false;
+            let mut body = encode_event_payload(&event)
+                .expect("the event without inferred is valid");
+            body[42] = 1;
+            assert_eq!(
+                decode_event_payload(&body).expect_err("inferred is invalid on this kind"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn text_controls_are_rejected_and_printable_edges_are_accepted() {
+        for byte in [0x1f, 0x7f] {
+            let mut body = encode_event_payload(&minimal_event())
+                .expect("valid event body");
+            let layout = super::parse_layout(&body).expect("valid event layout");
+            body[layout.strings[1].start] = byte;
+            assert_eq!(
+                decode_event_payload(&body),
+                Err(ProtoError::EventText { field: "key" })
+            );
+
+            let mut event = minimal_event();
+            event.key = char::from(byte).to_string();
+            assert_eq!(
+                encode_event_payload(&event),
+                Err(ProtoError::EventText { field: "key" })
+            );
+        }
+
+        for byte in [0x20, 0x7e] {
+            let mut event = minimal_event();
+            event.key = char::from(byte).to_string();
+            let body = encode_event_payload(&event)
+                .expect("printable edge is accepted");
+            assert_eq!(decode_event_payload(&body), Ok(event));
+        }
+
+        let mut event = minimal_event();
+        event.attrs.push(EventAttribute {
+            key: "a".to_string(),
+            value: "\u{7f}".to_string(),
+        });
+        assert_eq!(
+            encode_event_payload(&event),
+            Err(ProtoError::EventText {
+                field: "attrs.value"
+            })
+        );
+    }
+
+    #[test]
+    fn encoder_bounds_precede_text_and_order_errors_report_the_actual_index() {
+        let mut event = minimal_event();
+        event.name = "\u{1f}".to_string();
+        event.key = "k".repeat(65);
+        assert_eq!(
+            encode_event_payload(&event),
+            Err(ProtoError::EventFieldBound { field: "key" })
+        );
+
+        let mut body = encode_event_payload(&minimal_event())
+            .expect("valid event body");
+        let layout = super::parse_layout(&body).expect("valid event layout");
+        body[layout.strings[0].start] = 0x1f;
+        body[layout.strings[1].start - 2..layout.strings[1].start]
+            .copy_from_slice(&65u16.to_le_bytes());
+        let key_end = layout.strings[1].end;
+        drop(body.splice(key_end..key_end, vec![b'k'; 64]));
+        let body_len = body.len().checked_add(7).expect("aligned length") & !7;
+        body.resize(body_len, 0);
+        assert_eq!(
+            decode_event_payload(&body),
+            Err(ProtoError::EventFieldBound { field: "key" })
+        );
+
+        let mut ordered = minimal_event();
+        ordered.attrs = (b'a'..=b'g')
+            .map(|key| EventAttribute {
+                key: char::from(key).to_string(),
+                value: String::new(),
+            })
+            .collect();
+        let mut unordered_body = encode_event_payload(&ordered)
+            .expect("ordered attrs encode");
+        let attr_layout = super::parse_layout(&unordered_body)
+            .expect("valid attrs layout");
+        let mut offset = attr_layout.attrs_start;
+        let mut keys = Vec::new();
+        for _ in &ordered.attrs {
+            keys.push(
+                super::read_len_range(&unordered_body, &mut offset)
+                    .expect("attribute key range"),
+            );
+            let _value = super::read_len_range(&unordered_body, &mut offset)
+                .expect("attribute value range");
+        }
+        let previous = unordered_body[keys[4].start..keys[4].end].to_vec();
+        unordered_body[keys[5].start..keys[5].end].copy_from_slice(&previous);
+        assert_eq!(
+            decode_event_payload(&unordered_body),
+            Err(ProtoError::EventOrder {
+                field: "attrs",
+                index: 5,
+            })
+        );
+
+        ordered.attrs[5].key = ordered.attrs[4].key.clone();
+        assert_eq!(
+            encode_event_payload(&ordered),
+            Err(ProtoError::EventOrder {
+                field: "attrs",
+                index: 5,
+            })
+        );
     }
 
     #[test]
