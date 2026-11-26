@@ -789,9 +789,17 @@ verified against origin.
 
 The gate also verifies every CMRU release tag at HEAD against its exact origin
 commit, including older tag names that point to the same commit.
-If HEAD is a merge whose first parent comes after the base tag, the CMRU source
-roots must be unchanged across that gap, or the checker refuses: Assay would
-otherwise mutate only the merge's own changes.
+If HEAD is a merge, CMRU's R2 tools resolve the base as delegated: they pass
+`delegated=True` to Assay's `git.resolve_base` and `git.base_resolution_mode`
+(Assay B552), which is a call-site keyword argument, not a lane setting --
+CMRU's own Assay lanes are `whole_target` and declare no base. The comparison
+is therefore
+`merge-base(selected tag, HEAD)` — and because the tag is proven to be in
+HEAD's ancestry, that is the tag itself. A merge HEAD is therefore judged
+against the selected tag like any other, covering the merged-in parent's
+changes too; an undeligated Assay resolution would answer with the first
+parent and mutate only the merge's own changes, so the checker refuses any
+effective base that is not the selected tag commit.
 When no explicit base is supplied by the existing aggregate release flow, it
 retains
 the latest-published-ancestor selection for that flow. An empty source diff

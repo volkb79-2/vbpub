@@ -1038,6 +1038,22 @@ def run(argv: Sequence[str] | None = None) -> int:
             sys.pycache_prefix = old_pycache_prefix
 
 
+def _judged_base(repo_root: Path, base: str, assay_git) -> str:
+    """The commit this campaign judges the candidate against.
+
+    ``base`` is the caller's (the lane's ``--base``), never a base this script
+    declares, so Assay's resolution is DELEGATED (B552): an undeligated
+    ``resolve_base`` answers a merge ``HEAD`` with its FIRST PARENT and
+    discards the requested comparison, which narrowed a real R2 lane to the
+    merge's own payload (run ``rgw-r2-20261125T202359-r1002``). Delegated,
+    it answers ``merge-base(base, HEAD)``; the caller has already proven
+    ``base`` is in HEAD's ancestry (``check_assay_baseline.py``), so the
+    answer IS ``base`` and the diff below is ``base..HEAD`` -- every changed
+    source, including what a second parent brought in (KI-211).
+    """
+    return assay_git.resolve_base(repo_root, base, delegated=True)
+
+
 def _run_campaign(
     argv: Sequence[str] | None = None, *, template_root: Path,
 ) -> int:
@@ -1091,7 +1107,7 @@ def _run_campaign(
             "mutation campaign requires a clean Assay source tree across every packaged root and pyproject.toml"
         )
     assay_source_commit = _git_head(assay_source)
-    base = git.resolve_base(repo_root, args.base)
+    base = _judged_base(repo_root, args.base, git)
     head = _git_head(repo_root)
     diff_text = git.run(repo_root, "diff", "--unified=0", base, head)
     added = diff.parse_added_lines(diff_text)
