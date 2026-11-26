@@ -100,6 +100,17 @@ pi_review_mutant("pi-review-budget-bytes-off",
 pi_review_mutant("pi-review-stale-report-overwrite",
        'if report_path_taken; then\n  echo "the review report already exists',
        'if false; then\n  echo "the review report already exists')
+# M1' (r2): the two post-launch write branches must record REVIEW-NO-REPORT in
+# the marker before exiting 2, or their `EXIT=0 OUTCOME=SUCCESS` line 1 certifies
+# a review whose report was never saved. The mutant drops the `cp` failure
+# branch body, so a failed write falls through to exit 0: the test's rc-2 and
+# marker assertions both catch it. The sibling branch (the pre-write re-check)
+# needs no mutant of its own -- its test asserts rc 2 AND that the racing
+# writer's file is untouched, which the same mutation would break -- so this
+# suite pays one extra full run for the pair, not two.
+pi_review_mutant("pi-review-report-write-failure-silent",
+       'if ! cp -- "$CONTROLLER_RUNS_DIR/$name.last.txt" "$review_path"; then',
+       'if false; then')
 # M1: the report is persisted only for a settled-success class. The mutant keeps
 # the old rule (any text in last.txt) and must be killed by the CONTEXT-FULL
 # fixture, which carries partial text and a zero pi exit.
@@ -1112,6 +1123,14 @@ mutant("scripts/controller/job-status.sh", "job-status-wrapper-dead.sh",
 mutant("scripts/controller/job-status.sh", "job-status-finished.sh",
        '    if (runs_dir / f"{name}.done").is_file():',
        '    if False:')
+# L3' (r2): the three .done readers share ONE rule -- the verdict is any line
+# of the marker that CONTAINS it. job-status used to scan lines 2+ only, so a
+# marker whose line 1 carries the verdict (the launcher's no-marker fallback,
+# `EXIT=5 OUTCOME=REVIEW-BUDGET`) was named only because line 1 was printed
+# verbatim; the class word was never put in front of it the way ctl-status does.
+mutant("scripts/controller/job-status.sh", "job-status-verdict-scan-line1.sh",
+       '        if any(verdict in line for line in marker):',
+       '        if any(verdict in line for line in marker[1:]):')
 # A run without a snapshot must say so instead of reading as healthy.
 mutant("scripts/controller/job-status.sh", "job-status-no-live.sh",
        '    if not live_path.is_file():',

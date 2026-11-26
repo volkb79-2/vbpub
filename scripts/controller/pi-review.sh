@@ -43,7 +43,11 @@
 #    when the launch is not its own group leader, the fallback is a TERM to the
 #    launch pid alone and the log says which form was used. A launch that
 #    outlasts KILL is reported with its pid and NOT waited for, so a stop can
-#    never block the wrapper. The effective limits are printed at launch.
+#    never block the wrapper. The effective limits are printed at launch, and
+#    the marker records WHICH form the stop used (`REVIEW-BUDGET-STOP=group`
+#    or `=pid`): a pid stop reaches only the wrapper's child, so the pi it
+#    execs may still be running and a reader must not take it as confirmation
+#    that the reviewer stopped.
 #
 # 3. DETECTED after the fact (not prevented): before and after the launch the
 #    wrapper records the worktree's `git rev-parse HEAD`, `git status
@@ -73,8 +77,14 @@
 # Exit codes: 2 for the refusals above (usage, unreadable worktree, report
 # inside the worktree, an existing report, an earlier review of this name's own
 # before-state, unknown account, account records that name none, an invalid
-# budget value) and for REVIEW-NO-REPORT or a report that cannot be written; 4
-# is REVIEW-MODIFIED-TREE; 5 is REVIEW-BUDGET; 6 is REVIEW-NOT-SETTLED (pi-impl
+# budget value) and for REVIEW-NO-REPORT or a report that cannot be written --
+# including the two post-launch write failures (the path taken by another
+# writer after the checks, or a `cp` that fails), which record REVIEW-NO-REPORT
+# in the marker of THIS launch because its line 1 is still `EXIT=0
+# OUTCOME=SUCCESS`; 4 is REVIEW-MODIFIED-TREE; 5 is REVIEW-BUDGET, whose marker
+# line 2 is `REVIEW-BUDGET-STOP=group|pid` (a `pid` stop reaches only the
+# wrapper's child, so the pi it execs may still be running); 6 is
+# REVIEW-NOT-SETTLED (pi-impl
 # settled in a class that is not SUCCESS/UNCOMMITTED, so no report was written:
 # CONTEXT-FULL, TOOL-CALL-NO-TEXT, EMPTY-COMPLETION*, NO-REPORT, USAGE-LIMIT,
 # ERROR, INCOMPLETE). 0 means exactly one thing: the review settled in a
@@ -477,11 +487,14 @@ launch_pgid=''
 launch_pgid=$(ps -o pgid= -p "$launch_pid" 2>/dev/null | tr -d '[:space:]')
 if [[ $launch_pgid =~ ^[0-9]+$ ]] && (( launch_pgid == launch_pid )); then
   stop_group=1
+  stop_form=group
 else
   # Not its own group leader: signal the launch pid alone. That reaches
   # pi-impl.sh and NOT the pi it execs, which the message says -- a stop that
-  # cannot reach the reviewer's process is not the same guarantee.
+  # cannot reach the reviewer's process is not the same guarantee, and the
+  # marker records the form so a reader of the marker alone sees it too.
   stop_group=0
+  stop_form=pid
 fi
 
 # Three states, from two facts that really answer: `kill -0` (does the pid
@@ -583,25 +596,32 @@ if [[ -n $budget_reason ]]; then
     # pi-impl.sh settled while the stop was in flight: keep its outcome as the
     # record and add this invocation's verdict beside it (every reader scans the
     # whole marker). A marker written BY THIS LAUNCH is the one place the verdict
-    # belongs.
-    printf 'REVIEW-BUDGET\n' >> "$marker"
+    # belongs. The form the stop used is part of the record: a `pid` stop reaches
+    # pi-impl.sh only, so the reviewer's own `pi` may still be running and the
+    # marker must not read as "the review is over".
+    printf 'REVIEW-BUDGET\nREVIEW-BUDGET-STOP=%s\n' "$stop_form" >> "$marker"
   elif [[ $marker_before == absent ]]; then
     # The launch never wrote a marker of its own: record the verdict alone rather
     # than leaving the run with no evidence at all.
-    printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\n' > "$marker"
+    printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\nREVIEW-BUDGET-STOP=%s\n' "$stop_form" > "$marker"
   else
     echo "the review was stopped over budget ($budget_reason) but left no marker of its own: $name" >&2
     echo "  $marker is an earlier run's record; nothing was appended to it" >&2
   fi
-  printf 'REVIEW-BUDGET: the review was stopped over budget (%s); pi-impl exit %s\n' \
-    "$budget_reason" "$launch_rc" >&2
   if (( stopped_after_kill == 1 )); then
+    # The launch never returned, so there is no exit status to print: a `0`
+    # here would be an invented fact about a child nobody reaped.
+    printf 'REVIEW-BUDGET: the review was stopped over budget (%s); pi-impl exit unknown (the launch is still there)\n' \
+      "$budget_reason" >&2
     # The stop is NOT confirmed: a process still there after TERM and KILL, or a
     # liveness `ps` could not read (which is reported as unknown rather than as
     # either "alive" or "stopped"). Name the pid, say which was observed, exit
     # anyway: waiting here is what would block for the rest of the run.
     printf 'REVIEW-BUDGET: launch %s not confirmed stopped after TERM+KILL (last state: %s); not waiting for it\n' \
       "$launch_pid" "${launch_state:-unknown}" >&2
+  else
+    printf 'REVIEW-BUDGET: the review was stopped over budget (%s); pi-impl exit %s\n' \
+      "$budget_reason" "$launch_rc" >&2
   fi
   exit 5
 fi
@@ -676,14 +696,27 @@ if (( launch_rc == 0 )) && [[ $run_outcome == SUCCESS || $run_outcome == UNCOMMI
   grep -q '[^[:space:]]' "$CONTROLLER_RUNS_DIR/$name.last.txt"; then
   # Write to the RESOLVED path, the one every check above reasoned about, and
   # re-check it first: a symlink that appeared between the refusal and this
-  # write would otherwise land the report where nothing was compared.
+  # write would otherwise land the report where nothing was compared. The
+  # re-check and the `cp` are two steps, so this is check-then-use (unavoidable
+  # in bash): a writer that creates the path BETWEEN these two lines still wins
+  # that instant. What it closes is the window between the pre-launch refusal
+  # and this write, which is a whole run wide, not that instant.
   if report_path_taken; then
+    # Neither branch below persists a report, so this launch's marker must carry
+    # the verdict: line 1 is pi-impl.sh's `EXIT=0 OUTCOME=SUCCESS`, and a reader
+    # of line 1 alone would certify a review whose report was never written.
+    [[ -e $marker ]] && marker_is_ours && printf 'REVIEW-NO-REPORT\n' >> "$marker"
     echo "the review report appeared before the write: $review_path" >&2
     echo '  a review that writes no report must not leave an earlier report certified as this run' >&2
+    echo '  REVIEW-NO-REPORT is recorded beside pi-impl.sh line 1, so no reader sees this run as green' >&2
     exit 2
   fi
   if ! cp -- "$CONTROLLER_RUNS_DIR/$name.last.txt" "$review_path"; then
+    # The same rule for a write that fails outright (a full or read-only report
+    # directory, a concurrent chmod): exit 2 with the verdict in the marker.
+    [[ -e $marker ]] && marker_is_ours && printf 'REVIEW-NO-REPORT\n' >> "$marker"
     echo "cannot save the review report at $review_path" >&2
+    echo '  REVIEW-NO-REPORT is recorded beside pi-impl.sh line 1, so no reader sees this run as green' >&2
     exit 2
   fi
   exit 0

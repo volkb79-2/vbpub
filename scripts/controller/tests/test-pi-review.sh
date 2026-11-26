@@ -10,6 +10,11 @@ unset OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2 CONTROLLER_OD_STATE
 unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_POLL_SECONDS PI_REVIEW_KILL_WAIT_SECONDS
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_REVIEW_SCRIPT:-$SCRIPT_DIR/../pi-review.sh}
+# The three .done readers are judged here on the marker the launcher itself
+# left: a verdict the launcher only PRINTS is not a verdict a reader sees.
+JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}
+JOB_CHECK=${JOB_CHECK_SCRIPT:-$SCRIPT_DIR/../job-check.sh}
+CTL_STATUS=${CTL_STATUS_SCRIPT:-$SCRIPT_DIR/../ctl-status.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-review-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
@@ -100,6 +105,9 @@ fi
 case ${FAKE_PI_ACTION:-none} in
   none) ;;
   write) printf 'reviewer edit\n' >> "$FAKE_PI_EDIT" ;;
+  # L5's re-check leg: the path is free at the pre-launch refusal and a writer
+  # creates it DURING the run, so only the re-check before the write sees it.
+  plant-report) printf 'planted by another writer\n' > "$FAKE_PI_REPORT" ;;
   untracked) printf 'untracked file\n' > "$FAKE_PI_UNTRACKED" ;;
   untracked-content) printf 'changed after launch\n' > "$FAKE_PI_UNTRACKED" ;;
   untracked-in-dir) printf 'second file\n' > "$FAKE_PI_UNTRACKED_DIR/second.txt" ;;
@@ -133,9 +141,11 @@ launch() {
   shift 2
   local report=$REPORTS/$run.md
   : > "$PI_ARGV_LOG0"
-  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" \
+    CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
     FAKE_PI_STREAM="${FAKE_PI_STREAM_TEST:-$SCRIPT_DIR/fixtures/pi-success.jsonl}" \
       PI_EXTRA_ARGS="${PI_EXTRA_ARGS_TEST:-}" \
+    FAKE_PI_REPORT="$report" \
     FAKE_PI_ACTION="$action" FAKE_PI_EDIT="$WORKTREE/tracked.txt" \
     FAKE_PI_SLOW_SECONDS="${FAKE_PI_SLOW_SECONDS_TEST:-${FAKE_PI_SLOW_SECONDS:-2}}" \
     FAKE_PI_UNTRACKED="$WORKTREE/untracked.txt" FAKE_PI_WORKTREE="$WORKTREE" \
@@ -163,6 +173,57 @@ pi_invocations() {
 done_line() {
   [[ -f $RUNS/$1.done ]] || fail "run $1 wrote no completion marker"
   head -n 1 "$RUNS/$1.done"
+}
+# L4: the marker's REVIEW-BUDGET-STOP form and the form the log named are the
+# same fact read twice, so they must agree. One helper for both budget checks:
+# a marker that claims a group stop the log never made (or the reverse) is a
+# stop-shape defect, and a reader that trusted it would be wrong about whether
+# the reviewer's own pi was reached.
+marker_stop_form() {
+  local marker=$1 log=$2 form
+  form=$(grep -m1 -E '^REVIEW-BUDGET-STOP=(group|pid)$' <<< "$marker" | cut -d= -f2)
+  [[ -n $form ]] || fail 'a budget-stopped review marker does not record which stop form was used'
+  if [[ $form == group ]]; then
+    grep -qF 'to the launch process group' <<< "$log" \
+      || fail 'the marker claims a group stop the log never made'
+  else
+    grep -qF 'to the launch pid alone' <<< "$log" \
+      || fail 'the marker claims a pid stop the log never made'
+  fi
+}
+# The app-level readers, on a marker the launcher wrote: this function is the
+# one place a verdict is checked from all three, so no reader can be left
+# green by a launcher branch that only PRINTED its verdict.
+assert_readers_red() {
+  # $1 the run name, $2 the verdict the marker must carry
+  local run=$1 verdict=$2 rc=0 out row
+  out=$ROOT/$run-readers.out
+  # job-status: the marker, never a sidecar.
+  HOME="$HOME_ROOT" CONTROLLER_HOME="$CONTROLLER_ROOT" "$JOB_STATUS" "$run" \
+    > "$out.status" 2>&1 || fail "job-status failed on $run"
+  grep -qF "$run: FINISHED $verdict" "$out.status" \
+    || { cat "$out.status" >&2; fail "job-status did not show $verdict for $run"; }
+  # ctl-status: the row for THIS run, not merely a verdict somewhere in the
+  # snapshot -- another run in the same runs dir may carry the same word.
+  HOME="$HOME_ROOT" CONTROLLER_HOME=$CONTROLLER_ROOT CONTROLLER_REPO=$WORKTREE \
+    CONTROLLER_HOSTS_FILE=/nonexistent/hosts "$CTL_STATUS" > "$out.ctl" 2>&1 \
+    || fail "ctl-status failed on $run"
+  row=$(grep -F "  $run route=" "$out.ctl" || true)
+  [[ -n $row ]] || { cat "$out.ctl" >&2; fail "ctl-status did not list $run"; }
+  [[ $row == *"$verdict"* ]] \
+    || { cat "$out.ctl" >&2; fail "ctl-status hid the $verdict verdict for $run (row: $row)"; }
+  # job-check: red, and the verdict named. Its report argument is optional, so
+  # it is called without one on purpose -- that is the shape a controller uses
+  # when it does not pass --report.
+  HOME="$HOME_ROOT" CONTROLLER_HOME=$CONTROLLER_ROOT CONTROLLER_REPO=$WORKTREE \
+    CONTROLLER_BASE_REF=origin/main \
+    "$JOB_CHECK" "$run" "$WORKTREE" deepseek-pi-volker > "$out.check" 2>&1 || rc=$?
+  [[ $rc == 1 ]] || { cat "$out.check" >&2; fail "job-check exited $rc on $run, expected red (1)"; }
+  grep -qF "$verdict: the review did not complete cleanly" "$out.check" \
+    || { cat "$out.check" >&2; fail "job-check did not name $verdict as the reason for red"; }
+  # A reader that turned the run green is the defect this whole rule exists for.
+  ! grep -qF 'JOB-CHECK: green' "$out.check" \
+    || { cat "$out.check" >&2; fail "job-check reported $run as green"; }
 }
 clean_worktree() {
   git -C "$WORKTREE" checkout -q -- . 2>/dev/null || :
@@ -826,6 +887,9 @@ SH
   lacks "$ROOT/rev-pgid.launch.log" 'to the launch process group' \
     'the group form is not claimed when the pgid was not verified'
   contains "$RUNS/rev-pgid.done" 'REVIEW-BUDGET' 'the run is still marked REVIEW-BUDGET'
+  contains "$RUNS/rev-pgid.done" 'REVIEW-BUDGET-STOP=pid' \
+    'the marker records the pid-only stop, whose reviewer may still be running'
+  marker_stop_form "$(cat "$RUNS/rev-pgid.done")" "$(cat "$ROOT/rev-pgid.launch.log")"
   # No elapsed bound here: whether the launch's bash exits on TERM before its
   # foreground child is not the wrapper's behaviour to assert. The deterministic
   # facts are which signal form was used, that the run is marked, and that no
@@ -833,11 +897,13 @@ SH
   [[ ! -e $REPORTS/rev-pgid.md ]] || fail 'a stopped review wrote a report'
 }
 
-# L5: the check and the write use the SAME (resolved) path. A symlink at the
-# report path pointing INSIDE the reviewed worktree is resolved first, so the
-# containment refusal (which reasons about the resolved path) stops it; the old
-# code wrote to the caller's raw spelling after checking the resolved one.
-check_report_symlink_resolved_before_use() {
+# L5: the check and the write use the SAME (resolved) path. This is the
+# CONTAINMENT case: a symlink at the report path pointing INSIDE the reviewed
+# worktree is resolved first, so the containment refusal (which reasons about
+# the resolved path) stops it. The re-check's own leg -- a path that appears
+# AFTER the checks -- is a different branch and is pinned by
+# check_report_appeared_before_write below.
+check_report_symlink_inside_worktree_refused() {
   local before rc=0
   ln -s "$WORKTREE/planted-review.md" "$REPORTS/rev-symlink.md"
   before=$(pi_invocations)
@@ -873,6 +939,85 @@ check_no_text_is_no_report() {
   contains "$ROOT/rev-notext.launch.log" 'REVIEW-NO-REPORT' 'a review without text is REVIEW-NO-REPORT'
   contains "$RUNS/rev-notext.done" 'REVIEW-NO-REPORT' 'the marker carries the no-report verdict'
   [[ ! -e $REPORTS/rev-notext.md ]] || fail 'a review that said nothing wrote a report'
+}
+
+# L1': the re-check leg L5 introduced. The report path is free at the pre-launch
+# refusal and a writer creates it DURING the run, so the only thing that can
+# stop it is the re-check immediately before the `cp`. The path is outside the
+# worktree, so the containment refusal cannot be what fires.
+check_report_appeared_before_write() {
+  local rc=0
+  clean_worktree
+  launch rev-racing-writer plant-report --account volker || rc=$?
+  (( rc == 2 )) || fail "a report path taken mid-run exited $rc, expected 2"
+  contains "$ROOT/rev-racing-writer.launch.log" 'the review report appeared before the write' \
+    'the path that appeared after the checks is what refused the write'
+  [[ $(cat "$REPORTS/rev-racing-writer.md") == 'planted by another writer' ]] \
+    || fail 'the racing writer report was overwritten'
+  # The verdict must be in the MARKER: line 1 is pi-impl's EXIT=0 OUTCOME=SUCCESS,
+  # so a reader of line 1 alone certifies a review with no saved report.
+  contains "$RUNS/rev-racing-writer.done" 'REVIEW-NO-REPORT' \
+    'the marker carries the no-report verdict for the mid-run path'
+  contains "$ROOT/rev-racing-writer.launch.log" 'REVIEW-NO-REPORT is recorded beside' \
+    'the message says the marker carries the verdict'
+  assert_readers_red rev-racing-writer REVIEW-NO-REPORT
+}
+
+# M1': a report write that FAILS (a read-only or full report directory) is the
+# same class: exit 2 with REVIEW-NO-REPORT in the marker. Here `cp` is the step
+# that fails -- a PATH shim refuses it -- which is the other of the two
+# post-launch branch bodies and leaves a success-class PI_IMPL marker behind.
+check_report_write_failure_flagged() {
+  local rc=0 shim=$ROOT/cp-shim real_cp
+  clean_worktree
+  real_cp=$(command -v cp)
+  mkdir -p "$shim"
+  cat > "$shim/cp" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case \$a in
+    *rev-write-fail.md) printf 'cannot save\n' >&2; exit 1 ;;
+  esac
+done
+exec $real_cp "\$@"
+SH
+  chmod +x "$shim/cp"
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    "$SRC" "$WORKTREE" "$PROMPT" rev-write-fail --report "$REPORTS/rev-write-fail.md" \
+    --account volker > "$ROOT/rev-write-fail.launch.log" 2>&1 < /dev/null || rc=$?
+  (( rc == 2 )) || fail "a report that cannot be written exited $rc, expected 2"
+  [[ $(done_line rev-write-fail) == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'the fixture did not reproduce a success-class marker before the failed write'
+  contains "$RUNS/rev-write-fail.done" 'REVIEW-NO-REPORT' \
+    'a failed report write leaves the no-report verdict in the marker'
+  contains "$ROOT/rev-write-fail.launch.log" 'REVIEW-NO-REPORT is recorded beside' \
+    'the message says the marker carries the verdict'
+  [[ ! -e $REPORTS/rev-write-fail.md ]] || fail 'a failed report write left a report behind'
+  assert_readers_red rev-write-fail REVIEW-NO-REPORT
+}
+
+# L4': the marker records WHICH stop form was used. A `pid` stop reaches
+# pi-impl.sh and not the pi it execs, so a reader of the marker alone must be
+# able to tell "stopped" from "the wrapper's child stopped, the reviewer may
+# still be running". The pid form is pinned by check_budget_stop_verifies_group;
+# here the ordinary run must record a form that AGREES with the log it wrote
+# (which form that is depends on whether the launch really leads its group).
+check_budget_stop_records_form() {
+  marker_stop_form "$(cat "$RUNS/rev-budget-wall.done")" "$(cat "$ROOT/rev-budget-wall.launch.log")"
+  # A budget stop is REVIEW-BUDGET whatever the form: the stop line is a
+  # qualifier of that verdict, never a verdict of its own, and no reader may
+  # turn it into a success or into a missing report.
+  lacks "$RUNS/rev-budget-wall.done" 'REVIEW-NO-REPORT' \
+    'a budget stop is not reported as a missing report'
+  "$JOB_STATUS" rev-budget-wall > "$ROOT/rev-budget-wall.status" 2>&1 \
+    || { cat "$ROOT/rev-budget-wall.status" >&2; fail 'job-status failed on the budget-stopped review'; }
+  grep -qF 'rev-budget-wall: FINISHED REVIEW-BUDGET ' "$ROOT/rev-budget-wall.status" \
+    || { cat "$ROOT/rev-budget-wall.status" >&2; fail 'job-status named a class other than REVIEW-BUDGET for a budget stop'; }
+  ! grep -qF 'REVIEW-BUDGET-STOP=' "$ROOT/rev-budget-wall.status" \
+    || { cat "$ROOT/rev-budget-wall.status" >&2
+         fail 'job-status printed the stop-form line as a class'
+       }
 }
 
 
@@ -963,6 +1108,17 @@ check_docs() {
   contains "$readme" 'info/exclude' 'README lists the exclude comparison'
   contains "$readme" 'untracked files' 'README lists the untracked-content comparison'
   contains "$readme" 'does NOT cover' 'README states what the comparison does NOT cover'
+  # L4' (r2): the stop form is documented, together with the fact that a pid
+  # stop does not confirm the reviewer stopped, and that the line is not a class.
+  contains "$readme" 'REVIEW-BUDGET-STOP=pid' 'README names the stop form the marker records'
+  contains "$readme" 'does not confirm that the reviewer stopped' \
+    'README says a pid stop is not a confirmed stop of the reviewer'
+  contains "$readme" 'never a verdict of its own' 'README says the stop-form line is not a class'
+  # M1' (r2): both post-launch write failures are documented as REVIEW-NO-REPORT.
+  contains "$readme" 'the path taken by another writer after the checks' \
+    'README documents the report path taken after the checks'
+  contains "$changes" 'fix round 2' 'CHANGES.md records this fix round'
+  contains "$changes" 'REVIEW-BUDGET-STOP=group|pid' 'CHANGES.md names the stop-form line'
   # M4: the old sentence claimed EVERY pi/pi-impl exit status (0 included) passes
   # through unchanged, which the REVIEW-NO-REPORT and report-write paths
   # contradict. The list now names the launcher's own codes and says what 0 means.
@@ -1024,7 +1180,10 @@ check_non_success_classes_not_persisted
 check_earlier_material_not_rewritten
 check_budget_refusal_before_material
 check_budget_stop_verifies_group
-check_report_symlink_resolved_before_use
+check_report_symlink_inside_worktree_refused
+check_report_appeared_before_write
+check_report_write_failure_flagged
+check_budget_stop_records_form
 check_docs
 
 [[ -z $(git -C "$WORKTREE" status --porcelain) ]] \

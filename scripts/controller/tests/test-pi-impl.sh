@@ -700,12 +700,34 @@ body = json.loads((runs / "orphan.live").read_text(encoding="utf-8"))
 body["wrapper_pid"] = 2147483646
 (runs / "orphan.live").write_text(json.dumps(body), encoding="utf-8")
 (runs / "finished.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
+# L3' (r2): a verdict written INTO line 1 -- the launcher's no-marker fallback
+# shape -- must be named by job-status's own rule (the class word in front of
+# the row), not only by line 1 being printed verbatim. The second line is an
+# ordinary outcome line that carries no verdict, so the row must read
+# `FINISHED REVIEW-BUDGET EXIT=5 OUTCOME=REVIEW-BUDGET`.
+(runs / "line1-verdict.done").write_text(
+    "EXIT=5 OUTCOME=REVIEW-BUDGET\nRETRIES=0\n", encoding="utf-8")
+# The same shape with the verdict ONLY on line 2: the rule scans the whole
+# marker, so both are found.
+(runs / "line2-verdict.done").write_text(
+    "EXIT=0 OUTCOME=SUCCESS\nREVIEW-NO-REPORT\n", encoding="utf-8")
+# The REAL fallback shape pi-review.sh writes for a budget stop that left no
+# marker of its own: the verdict in line 1 and the stop form in line 2. The
+# stop form is a qualifier, not a fifth class, so the row names REVIEW-BUDGET
+# and nothing else -- and it must never turn the row into a success.
+(runs / "line1-stop-verdict.done").write_text(
+    "EXIT=5 OUTCOME=REVIEW-BUDGET\nREVIEW-BUDGET-STOP=pid\n", encoding="utf-8")
+# A marker with no verdict at all stays unmarked: the rule must not prefix
+# every finished row.
+(runs / "no-verdict.done").write_text(
+    "EXIT=0 OUTCOME=SUCCESS\nRETRIES=1\n", encoding="utf-8")
 PY
   CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
     JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
     "$JOB_STATUS" stale hung long-tool progress-unknown progress-carried-unmeasured \
       progress-flag-absent tokens-zero-report \
       no-commits own-commit ahead-unknown orphan finished absent \
+      line1-verdict line2-verdict no-verdict line1-stop-verdict \
       > "$ROOT/job-status-states.out" 2>&1 || {
       cat "$ROOT/job-status-states.out" >&2
       fail 'job-status failed on synthetic run states'
@@ -766,6 +788,25 @@ PY
   grep -qF 'since-commit=null' "$ROOT/job-status-states.out" \
     || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable commits_ahead did not suppress the commit age'; }
   grep -qF 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" || fail 'a finished run is not reported as finished'
+  # L3' (r2): one rule for the marker -- the verdict is any line that contains
+  # it. A marker whose line 1 carries it gets the class word in front of the row
+  # even though line 1 is already printed, and a verdict on line 2 is found the
+  # same way; a clean marker gets no prefix at all.
+  grep -qE '^line1-verdict: FINISHED REVIEW-BUDGET EXIT=5 OUTCOME=REVIEW-BUDGET$' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a verdict written as line 1 was not named by the whole-marker rule'; }
+  grep -qF 'line2-verdict: FINISHED REVIEW-NO-REPORT EXIT=0 OUTCOME=SUCCESS' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a verdict on line 2 was not found by the whole-marker rule'; }
+  # The stop form is a qualifier of the budget verdict: it may not be printed as
+  # a class, and it may not hide the class the row already carries.
+  grep -qE '^line1-stop-verdict: FINISHED REVIEW-BUDGET EXIT=5 OUTCOME=REVIEW-BUDGET$' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'the budget stop-form line changed the class or the row shape'; }
+  ! grep -qF 'REVIEW-BUDGET-STOP=' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'the stop-form line was printed as a class'; }
+  grep -qE '^no-verdict: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a marker with no verdict was prefixed with a class'; }
   grep -qF 'absent: NO-LIVE (no absent.live sidecar)' "$ROOT/job-status-states.out" || fail 'a run without a snapshot is not NO-LIVE'
   grep -qF 'orphan: WRAPPER-DEAD' "$ROOT/job-status-states.out" || fail 'a run whose wrapper pid is gone is not WRAPPER-DEAD'
   # Liveness comes from the OWNER RECORD (the same one job-check reads), and the

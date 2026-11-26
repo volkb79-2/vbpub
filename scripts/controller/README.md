@@ -413,7 +413,17 @@ a stop that cannot reach the pi the launcher's child execs is not the same
 guarantee as one that does. Over budget the launch is TERMed, KILLed if it
 outlasts the wait, the run is marked `REVIEW-BUDGET` (exit 5), and a launch that
 survives both is named with its pid instead of being waited on: the budget can
-never block the wrapper. A non-integer value is a refusal, never a default.
+never block the wrapper. **The marker says which stop it was**:
+`REVIEW-BUDGET-STOP=group` means a group signal was sent, so the pi the launch
+execs was signalled too; `REVIEW-BUDGET-STOP=pid` means the launch was not its
+own group leader and only the wrapper's child got the signal, so **a pid stop
+does not confirm that the reviewer stopped** — its own `pi` may still be running,
+consuming the review account and appending to `<run>.jsonl`. Read the form from
+the marker before starting a successor review of the same account. The line is
+a qualifier of the budget verdict, never a verdict of its own: it is not one of
+the four class words, so no reader treats `REVIEW-BUDGET-STOP=*` as a class and
+none can turn it into success.
+A non-integer value is a refusal, never a default.
 
 **The other account** (the second guarantee): the implementer's account comes
 from `<run>.route` when that pins one (`deepseek-pi-volker|github2`,
@@ -470,7 +480,16 @@ status. `4`, `5` and `6` are the launcher's, not pi-impl's — pi itself can exi
 not the code. `job-check.sh`, `job-status.sh` and `ctl-status.sh` read any
 `REVIEW-MODIFIED-TREE`, `REVIEW-BUDGET`, `REVIEW-NO-REPORT` or
 `REVIEW-NOT-SETTLED` line of the marker, so a flagged, stopped or unsucceeded
-review is never shown as green. Two concurrent reviews of one worktree
+review is never shown as green. One scan, all three readers: any line of the
+marker that CONTAINS one of those four words names the class, and
+`job-status.sh` scans the WHOLE marker the same way — including the launcher's
+no-marker fallback, which writes the verdict INTO line 1
+(`EXIT=5 OUTCOME=REVIEW-BUDGET`), so the class word leads the row there too.
+Lines that are none of those four words (pi-impl's outcome line, `RETRIES=`,
+`REVIEW-BUDGET-STOP=`) change nothing. A report the launcher could not save —
+the path taken by another writer after the checks, or a `cp` that fails — exits 2
+with `REVIEW-NO-REPORT` in the marker, because line 1 there is still pi-impl's
+`EXIT=0 OUTCOME=SUCCESS`. Two concurrent reviews of one worktree
 are not serialised; each sees the other's writes and both flag.
 
 ### Pi on Open Design
