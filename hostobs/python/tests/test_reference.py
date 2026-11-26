@@ -540,6 +540,76 @@ class EventPayloadFixtures(unittest.TestCase):
                 self.assertEqual(hostobs_wire_ref.encode_event_payload(spec["event"]), body)
                 self.assertEqual(hostobs_wire_ref.decode_event_payload(body), spec["event"])
 
+    def test_stored_event_frame_rejects_header_and_directory_defects_in_order(self):
+        valid = (FIXTURES / "event-minimal.bin").read_bytes()
+
+        def assert_kind(label, frame, expected):
+            with self.subTest(defect=label), self.assertRaises(
+                hostobs_wire_ref.WireError
+            ) as caught:
+                hostobs_wire_ref.event_body_from_frame(frame)
+            self.assertEqual(caught.exception.as_dict()["kind"], expected)
+
+        def changed(offset, value):
+            result = bytearray(valid)
+            result[offset : offset + len(value)] = value
+            return bytes(result)
+
+        assert_kind("short frame", valid[:23], "truncated")
+        assert_kind("wrong type", changed(4, b"\x01"), "unknown-frame-type")
+        assert_kind("wrong flags", changed(5, b"\x00"), "unknown-frame-flags")
+        assert_kind("reserved header", changed(6, b"\x01\x00"), "non-zero-reserved")
+        assert_kind(
+            "correlation id",
+            changed(8, struct.pack("<I", 1)),
+            "non-zero-reserved",
+        )
+        assert_kind(
+            "oversized frame",
+            changed(0, struct.pack("<I", hostobs_wire_ref.MAX_FRAME_BYTES + 1)),
+            "oversized-frame",
+        )
+        assert_kind(
+            "declared length mismatch",
+            changed(0, struct.pack("<I", len(valid) + 1)),
+            "truncated",
+        )
+
+        unaligned = bytearray(valid + b"\x00")
+        struct.pack_into("<I", unaligned, 0, len(unaligned))
+        assert_kind("unaligned frame length", bytes(unaligned), "section-length")
+
+        assert_kind(
+            "wrong section count",
+            changed(12, struct.pack("<H", 2)),
+            "section-length",
+        )
+        assert_kind(
+            "directory reserved",
+            changed(14, struct.pack("<H", 1)),
+            "section-reserved",
+        )
+        assert_kind(
+            "wrong required kind",
+            changed(16, struct.pack("<H", 8)),
+            "unsupported-required-section",
+        )
+        assert_kind(
+            "wrong version",
+            changed(18, b"\x02"),
+            "unsupported-section-version",
+        )
+        assert_kind(
+            "wrong section flags",
+            changed(19, b"\x00"),
+            "unknown-section-flags",
+        )
+        assert_kind(
+            "wrong body length",
+            changed(20, struct.pack("<I", 1)),
+            "section-length",
+        )
+
     def test_event_body_boundaries_and_truncation_are_typed(self):
         full = json.loads((FIXTURES / "event-full.json").read_text(encoding="utf-8"))["event"]
         full_frame = (FIXTURES / "event-full.bin").read_bytes()
@@ -609,11 +679,26 @@ class EventPayloadFixtures(unittest.TestCase):
             hostobs_wire_ref.decode_event_payload(bytes(bad_text))
         self.assertEqual(caught.exception.as_dict()["kind"], "event-text")
 
+        negative_time = bytearray(body)
+        negative_time[:8] = b"\xff" * 8
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(negative_time))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
+
         out_of_bound = dict(point)
         out_of_bound["span"] = 1
         with self.assertRaises(hostobs_wire_ref.WireError) as caught:
             hostobs_wire_ref.encode_event_payload(out_of_bound)
         self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
+
+        for field in ("code", "comm"):
+            present_empty = dict(point)
+            present_empty[field] = ""
+            with self.subTest(empty_optional=field), self.assertRaises(
+                hostobs_wire_ref.WireError
+            ) as caught:
+                hostobs_wire_ref.encode_event_payload(present_empty)
+            self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
 
         full_frame = (FIXTURES / "event-full.bin").read_bytes()
         full_body = hostobs_wire_ref.event_body_from_frame(full_frame)

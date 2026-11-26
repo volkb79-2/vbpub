@@ -558,13 +558,29 @@ def event_body_from_frame(frame: bytes) -> bytes:
         raise WireError("oversized-frame", len=length, max=MAX_FRAME_BYTES)
     if length != len(frame):
         raise WireError("truncated", context="event frame", need=length, have=len(frame))
+    if len(frame) % 8:
+        raise WireError(
+            "section-length",
+            section=EVENT_SECTION_KIND,
+            declared=len(frame),
+            expected=_align8(len(frame)),
+        )
     n_sec, directory_reserved, kind, version, section_flags, body_len = struct.unpack_from(
         "<HHHBBI", frame, 12
     )
     if directory_reserved != 0:
         raise WireError("section-reserved", value=directory_reserved)
-    if n_sec != 1 or kind != EVENT_SECTION_KIND or version != EVENT_SECTION_VERSION:
+    if n_sec != 1:
         raise WireError("section-length", section="event directory", declared=n_sec, expected=1)
+    if kind != EVENT_SECTION_KIND:
+        raise WireError("unsupported-required-section", kind_code=kind)
+    if version != EVENT_SECTION_VERSION:
+        raise WireError(
+            "unsupported-section-version",
+            kind_code=kind,
+            version=version,
+            supported=EVENT_SECTION_VERSION,
+        )
     if section_flags != EVENT_SECTION_REQUIRED_FLAGS:
         raise WireError("unknown-section-flags", kind_code=kind, flags=section_flags)
     if body_len != len(frame) - 24:

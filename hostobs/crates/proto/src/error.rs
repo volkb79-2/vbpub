@@ -29,8 +29,8 @@ pub enum ProtoError {
         /// The maximum.
         max: usize,
     },
-    /// The frame header's reserved field is not zero.
-    NonZeroReserved(u16),
+    /// A field that must be zero carries a non-zero value.
+    NonZeroReserved(u32),
     /// The frame type byte is outside the closed vocabulary of §B.1.
     UnknownFrameType(u8),
     /// A frame flag bit this codec does not define.
@@ -339,7 +339,7 @@ impl fmt::Display for ProtoError {
                 write!(f, "frame of {len} bytes exceeds the {max}-byte maximum")
             }
             ProtoError::NonZeroReserved(value) => {
-                write!(f, "frame header reserved field is {value}, not 0")
+                write!(f, "expected a zero value, found {value}")
             }
             ProtoError::UnknownFrameType(code) => write!(f, "unknown frame type {code}"),
             ProtoError::UnknownFrameFlags(flags) => {
@@ -715,6 +715,14 @@ mod tests {
                 "no unrendered placeholder: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn non_zero_reserved_message_does_not_assume_a_frame_header() {
+        assert_eq!(
+            ProtoError::NonZeroReserved(65_536).to_string(),
+            "expected a zero value, found 65536"
+        );
     }
 
     #[test]

@@ -170,7 +170,7 @@ ids become unreachable at exactly the moment its bytes do.
 | `kind` | 1 | `history`: sampled column blocks (hot, warm, cold, focus tiers) |
 | | 2 | `events`: typed events and spans |
 | `payload` | 1 | the payload is a `proto` BLOCK frame (frame type 5) |
-| | 2 | the payload is a `proto` EVT frame (frame type 3) with the single required kind-7 `event/1` section (§3.11) |
+| | 2 | a `proto` EVT frame (type 3); the store checks selected frame-header facts only. The section shape is a producer obligation checked by `proto::event::decode_event_frame` (§3.11) |
 
 `kind` and `payload` must agree, in both directions, and are checked on encode *and* on decode: a
 history segment can never declare an events payload, and a record's kind must be the one its

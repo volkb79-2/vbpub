@@ -285,6 +285,8 @@ EVT+SECTIONED `unknown-frame-flags`). In a BLOCK, kind 7 is an unknown kind (§3
   bits 1-7 zero); @43 u8 `n_ctx` 0..5; @44 u8 `n_attrs` 0..8; @45 u8 and @46 u16 reserved 0.
 - @48 four strings, each `u16 len` + UTF-8: `name` 1..64 (grammar), `key` 1..64, `code` 0..64
   (0 = `null`), `comm` 0..15 (0 = `null`).
+- API note: an empty `code` or `comm` is wire-null. Rust refuses `Some("")` so
+  `decode(encode(value))` preserves the `Option` value.
 - Then `n_ctx` × (u8 key 0..4, u16 len 1..128, text), with keys strictly ascending.
 - Then `n_attrs` × (u16 klen 1..64 name-grammar key, key, u16 vlen 0..256, value), with bytewise
   keys strictly ascending.
@@ -294,7 +296,8 @@ EVT+SECTIONED `unknown-frame-flags`). In a BLOCK, kind 7 is an unknown kind (§3
 The event body decoder judges kinds in this order: `truncated` (context "event body");
 `section-length` (fields end past the section length, or padding is 8 B or more);
 `non-zero-reserved` (reserved bytes or padding); `event-unknown-code` (`kind`, `outcome`, context
-key, or outcome/kind pairing); `event-field-bound` (count, length, span/kind, or half-null peer);
+key, or outcome/kind pairing); `event-field-bound` (negative `t_mono_ns`, count, length, span/kind,
+or half-null peer);
 `event-text` (UTF-8, control character, or name grammar); `event-order` (unsorted or duplicate
 context or attribute keys). These four `event-*` kinds are decoder outcomes local to §3.10 and
 are never wire error codes (§10).

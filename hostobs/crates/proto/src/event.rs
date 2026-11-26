@@ -5,7 +5,7 @@
 //! section. Kind 7 is therefore not added to the BLOCK section vocabulary.
 
 use crate::error::{ProtoError, MAX_FRAME_BYTES};
-use crate::frame::{FRAME_HEADER_LEN, FLAG_SECTIONED};
+use crate::frame::{FrameType, FRAME_HEADER_LEN, FLAG_SECTIONED};
 use crate::write::Writer;
 
 /// The event/1 section kind, local to stored EVT frames.
@@ -16,6 +16,7 @@ pub const EVENT_SECTION_VERSION: u8 = 1;
 pub const EVENT_SECTION_REQUIRED_FLAGS: u8 = 1;
 
 const EVENT_FIXED_LEN: usize = 48;
+const EVENT_FRAME_FIXED_LEN: usize = FRAME_HEADER_LEN + 4 + 8;
 const EVENT_MAX_CONTEXT: u8 = 5;
 const EVENT_MAX_ATTRIBUTES: u8 = 8;
 const EVENT_MAX_TEXT: usize = 64;
@@ -154,9 +155,9 @@ fn take_range(
 
 fn read_u8(body: &[u8], offset: &mut usize) -> Result<u8, ProtoError> {
     let range = take_range(body, offset, 1)?;
-    body.get(range.start).copied().ok_or_else(|| {
-        section_length(body.len(), range.end)
-    })
+    body.get(range.start)
+        .copied()
+        .ok_or_else(|| section_length(body.len(), range.end))
 }
 
 fn read_u16(body: &[u8], offset: &mut usize) -> Result<u16, ProtoError> {
@@ -235,22 +236,24 @@ fn parse_layout(body: &[u8]) -> Result<BodyLayout, ProtoError> {
 
 fn validate_reserved(body: &[u8], layout: &BodyLayout) -> Result<(), ProtoError> {
     if layout.fixed.flags & !1 != 0 {
-        return Err(ProtoError::NonZeroReserved(u16::from(layout.fixed.flags & !1)));
+        return Err(ProtoError::NonZeroReserved(u32::from(layout.fixed.flags & !1)));
     }
     if layout.fixed.reserved_byte != 0 {
-        return Err(ProtoError::NonZeroReserved(u16::from(
+        return Err(ProtoError::NonZeroReserved(u32::from(
             layout.fixed.reserved_byte,
         )));
     }
     if layout.fixed.reserved_word != 0 {
-        return Err(ProtoError::NonZeroReserved(layout.fixed.reserved_word));
+        return Err(ProtoError::NonZeroReserved(u32::from(
+            layout.fixed.reserved_word,
+        )));
     }
     let padding = body
         .get(layout.content_end..)
         .ok_or_else(|| section_length(body.len(), layout.content_end))?;
     for byte in padding {
         if *byte != 0 {
-            return Err(ProtoError::NonZeroReserved(u16::from(*byte)));
+            return Err(ProtoError::NonZeroReserved(u32::from(*byte)));
         }
     }
     Ok(())
@@ -487,14 +490,15 @@ pub fn encode_event_payload(event: &EventPayload) -> Result<Vec<u8>, ProtoError>
     }
 
     let fixed_strings = [
-        (event.name.as_str(), 1, EVENT_MAX_TEXT, "name", true),
-        (event.key.as_str(), 1, EVENT_MAX_TEXT, "key", false),
+        (event.name.as_str(), 1, EVENT_MAX_TEXT, "name", true, false),
+        (event.key.as_str(), 1, EVENT_MAX_TEXT, "key", false, false),
         (
             event.code.as_deref().unwrap_or(""),
             0,
             EVENT_MAX_TEXT,
             "code",
             false,
+            event.code.is_some(),
         ),
         (
             event.comm.as_deref().unwrap_or(""),
@@ -502,17 +506,12 @@ pub fn encode_event_payload(event: &EventPayload) -> Result<Vec<u8>, ProtoError>
             EVENT_MAX_COMM,
             "comm",
             false,
+            event.comm.is_some(),
         ),
     ];
-    for (text, min, max, field, grammar) in fixed_strings {
+    for (text, min, max, field, grammar, present_must_be_nonempty) in fixed_strings {
         let len = text.len();
-        if len < min || len > max || (len == 0 && (field == "code" || field == "comm") && {
-            if field == "code" {
-                event.code.is_some()
-            } else {
-                event.comm.is_some()
-            }
-        }) {
+        if len < min || len > max || (present_must_be_nonempty && text.is_empty()) {
             return Err(field_bound(field));
         }
         validate_string(text, field, grammar)?;
@@ -702,14 +701,111 @@ pub fn encode_event_frame(event: &EventPayload) -> Result<Vec<u8>, ProtoError> {
     Ok(writer.finish())
 }
 
+/// Decode one stored event frame and its event/1 section.
+///
+/// Checks the EVT header and single-section directory in the same order as the Python
+/// reference's `event_body_from_frame`, then validates and decodes the event body.
+///
+/// # Errors
+///
+/// Returns a typed refusal for a malformed frame, section directory, or event body.
+pub fn decode_event_frame(frame: &[u8]) -> Result<EventPayload, ProtoError> {
+    if frame.len() < EVENT_FRAME_FIXED_LEN {
+        return Err(ProtoError::Truncated {
+            context: "event frame",
+            need: EVENT_FRAME_FIXED_LEN,
+            have: frame.len(),
+        });
+    }
+
+    let length = u32::from_le_bytes(fixed_array(frame, 0)?);
+    let frame_type = frame[4];
+    if frame_type != FrameType::Evt.code() {
+        return Err(ProtoError::UnknownFrameType(frame_type));
+    }
+    let flags = frame[5];
+    if flags != FLAG_SECTIONED {
+        return Err(ProtoError::UnknownFrameFlags(flags));
+    }
+    let reserved = u16::from_le_bytes(fixed_array(frame, 6)?);
+    let corr = u32::from_le_bytes(fixed_array(frame, 8)?);
+    if reserved != 0 {
+        return Err(ProtoError::NonZeroReserved(u32::from(reserved)));
+    }
+    if corr != 0 {
+        return Err(ProtoError::NonZeroReserved(corr));
+    }
+
+    let declared_len = usize::try_from(length).map_err(|_| ProtoError::LengthOverflow)?;
+    if declared_len > MAX_FRAME_BYTES {
+        return Err(ProtoError::OversizedFrame {
+            len: declared_len,
+            max: MAX_FRAME_BYTES,
+        });
+    }
+    if declared_len != frame.len() {
+        return Err(ProtoError::Truncated {
+            context: "event frame",
+            need: declared_len,
+            have: frame.len(),
+        });
+    }
+
+    let aligned_len = frame
+        .len()
+        .checked_add(7)
+        .ok_or(ProtoError::LengthOverflow)?
+        & !7;
+    if frame.len() != aligned_len {
+        return Err(section_length(frame.len(), aligned_len));
+    }
+
+    let n_sec = u16::from_le_bytes(fixed_array(frame, FRAME_HEADER_LEN)?);
+    let directory_reserved = u16::from_le_bytes(fixed_array(frame, FRAME_HEADER_LEN + 2)?);
+    if directory_reserved != 0 {
+        return Err(ProtoError::SectionReserved(directory_reserved));
+    }
+    let kind = u16::from_le_bytes(fixed_array(frame, FRAME_HEADER_LEN + 4)?);
+    let version = frame[FRAME_HEADER_LEN + 6];
+    let section_flags = frame[FRAME_HEADER_LEN + 7];
+    let body_len = u32::from_le_bytes(fixed_array(frame, FRAME_HEADER_LEN + 8)?);
+
+    if n_sec != 1 {
+        return Err(section_length(usize::from(n_sec), 1));
+    }
+    if kind != EVENT_SECTION_KIND {
+        return Err(ProtoError::UnsupportedRequiredSection { kind });
+    }
+    if version != EVENT_SECTION_VERSION {
+        return Err(ProtoError::UnsupportedSectionVersion {
+            kind,
+            version,
+            supported: EVENT_SECTION_VERSION,
+        });
+    }
+    if section_flags != EVENT_SECTION_REQUIRED_FLAGS {
+        return Err(ProtoError::UnknownSectionFlags {
+            kind,
+            flags: u32::from(section_flags),
+        });
+    }
+
+    let declared_body_len = usize::try_from(body_len).map_err(|_| ProtoError::LengthOverflow)?;
+    let actual_body_len = frame.len() - EVENT_FRAME_FIXED_LEN;
+    if declared_body_len != actual_body_len {
+        return Err(section_length(declared_body_len, actual_body_len));
+    }
+    decode_event_payload(&frame[EVENT_FRAME_FIXED_LEN..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_event_payload, encode_event_frame, encode_event_payload, EventAttribute,
-        EventContext, EventPayload, EVENT_SECTION_KIND,
+        decode_event_frame, decode_event_payload, encode_event_frame, encode_event_payload,
+        EventAttribute, EventContext, EventPayload, EVENT_SECTION_KIND,
     };
-    use crate::error::ProtoError;
-    use crate::frame::{decode_block, FrameHeader, FrameType, SectionKind, FLAG_SECTIONED};
+    use crate::error::{ProtoError, MAX_FRAME_BYTES};
+    use crate::frame::{decode_block, FrameHeader, SectionKind, FLAG_SECTIONED};
 
     const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/wire");
 
@@ -717,19 +813,8 @@ mod tests {
         std::fs::read(format!("{FIXTURE_DIR}/{name}.bin")).expect("event fixture is committed")
     }
 
-    fn fixture_body(frame: &[u8]) -> &[u8] {
-        assert!(frame.len() >= 24);
-        assert_eq!(frame[4], FrameType::Evt.code());
-        assert_eq!(frame[5], FLAG_SECTIONED);
-        assert_eq!(&frame[6..8], &[0, 0]);
-        assert_eq!(&frame[8..12], &[0, 0, 0, 0]);
-        assert_eq!(&frame[12..16], &[1, 0, 0, 0]);
-        assert_eq!(&frame[16..18], &EVENT_SECTION_KIND.to_le_bytes());
-        assert_eq!(frame[18], 1);
-        assert_eq!(frame[19], 1);
-        let body_len = u32::from_le_bytes([frame[20], frame[21], frame[22], frame[23]]);
-        assert_eq!(usize::try_from(body_len).expect("body length fits usize"), frame.len() - 24);
-        &frame[24..]
+    fn fixture_event(name: &str) -> EventPayload {
+        decode_event_frame(&fixture(name)).expect("event frame fixture decodes")
     }
 
     fn minimal_event() -> EventPayload {
@@ -815,12 +900,8 @@ mod tests {
         }
     }
 
-    fn mutable_body(name: &str) -> Vec<u8> {
-        fixture_body(&fixture(name)).to_vec()
-    }
-
     fn assert_kind(result: Result<EventPayload, ProtoError>, expected: &str) {
-        let error = result.expect_err("the event body must be refused");
+        let error = result.expect_err("the event input must be refused");
         assert_eq!(error.kind(), expected);
     }
 
@@ -833,9 +914,9 @@ mod tests {
         ] {
             let frame = fixture(name);
             assert_eq!(encode_event_frame(&event).expect("encode frame"), frame);
-            let body = fixture_body(&frame);
-            assert_eq!(decode_event_payload(body).expect("decode body"), event);
-            assert_eq!(encode_event_payload(&event).expect("encode body"), body);
+            assert_eq!(fixture_event(name), event);
+            let body = encode_event_payload(&event).expect("encode body");
+            assert_eq!(decode_event_payload(&body).expect("decode body"), event);
         }
 
         for (name, expected) in [
@@ -844,17 +925,79 @@ mod tests {
             ("event-unsorted-attrs", "event-order"),
             ("event-control-text", "event-text"),
         ] {
-            assert_kind(
-                decode_event_payload(fixture_body(&fixture(name))),
-                expected,
-            );
+            assert_kind(decode_event_frame(&fixture(name)), expected);
         }
     }
 
     #[test]
+    fn stored_event_frame_rejects_header_and_directory_defects_in_order() {
+        let valid = fixture("event-minimal");
+        assert_eq!(decode_event_frame(&valid), Ok(minimal_event()));
+
+        assert_kind(decode_event_frame(&valid[..23]), "truncated");
+
+        let mut wrong_type = valid.clone();
+        wrong_type[4] = 1;
+        assert_kind(decode_event_frame(&wrong_type), "unknown-frame-type");
+
+        let mut wrong_flags = valid.clone();
+        wrong_flags[5] = 0;
+        assert_kind(decode_event_frame(&wrong_flags), "unknown-frame-flags");
+
+        let mut reserved = valid.clone();
+        reserved[6] = 1;
+        assert_kind(decode_event_frame(&reserved), "non-zero-reserved");
+
+        let mut nonzero_corr = valid.clone();
+        nonzero_corr[8..12].copy_from_slice(&65_536u32.to_le_bytes());
+        let corr_error = decode_event_frame(&nonzero_corr).expect_err("corr must be zero");
+        assert_eq!(corr_error.kind(), "non-zero-reserved");
+        assert_eq!(corr_error.to_string(), "expected a zero value, found 65536");
+
+        let mut oversized = valid.clone();
+        let oversized_len = u32::try_from(MAX_FRAME_BYTES + 1).expect("maximum fits u32");
+        oversized[..4].copy_from_slice(&oversized_len.to_le_bytes());
+        assert_kind(decode_event_frame(&oversized), "oversized-frame");
+
+        let mut wrong_length = valid.clone();
+        let wrong_len = u32::try_from(valid.len() + 1).expect("test frame length fits u32");
+        wrong_length[..4].copy_from_slice(&wrong_len.to_le_bytes());
+        assert_kind(decode_event_frame(&wrong_length), "truncated");
+
+        let mut unaligned = valid.clone();
+        unaligned.push(0);
+        let unaligned_len = u32::try_from(unaligned.len()).expect("test frame length fits u32");
+        unaligned[..4].copy_from_slice(&unaligned_len.to_le_bytes());
+        assert_kind(decode_event_frame(&unaligned), "section-length");
+
+        let mut wrong_count = valid.clone();
+        wrong_count[12..14].copy_from_slice(&2u16.to_le_bytes());
+        assert_kind(decode_event_frame(&wrong_count), "section-length");
+
+        let mut directory_reserved = valid.clone();
+        directory_reserved[14] = 1;
+        assert_kind(decode_event_frame(&directory_reserved), "section-reserved");
+
+        let mut wrong_kind = valid.clone();
+        wrong_kind[16..18].copy_from_slice(&8u16.to_le_bytes());
+        assert_kind(decode_event_frame(&wrong_kind), "unsupported-required-section");
+
+        let mut wrong_version = valid.clone();
+        wrong_version[18] = 2;
+        assert_kind(decode_event_frame(&wrong_version), "unsupported-section-version");
+
+        let mut wrong_section_flags = valid.clone();
+        wrong_section_flags[19] = 0;
+        assert_kind(decode_event_frame(&wrong_section_flags), "unknown-section-flags");
+
+        let mut wrong_body_len = valid;
+        wrong_body_len[20..24].copy_from_slice(&1u32.to_le_bytes());
+        assert_kind(decode_event_frame(&wrong_body_len), "section-length");
+    }
+
+    #[test]
     fn every_event_full_body_prefix_is_refused_without_panicking() {
-        let frame = fixture("event-full");
-        let body = fixture_body(&frame);
+        let body = encode_event_payload(&full_event()).expect("full event body");
         for end in 0..body.len() {
             let error = decode_event_payload(&body[..end])
                 .expect_err("a prefix shorter than event-full is incomplete");
@@ -923,10 +1066,10 @@ mod tests {
 
     #[test]
     fn field_bounds_text_and_context_order_have_inside_and_outside_cases() {
-        let full = fixture_body(&fixture("event-full"));
-        assert!(decode_event_payload(full).is_ok(), "maximum values are accepted");
+        let full = encode_event_payload(&full_event()).expect("full event body");
+        assert!(decode_event_payload(&full).is_ok(), "maximum values are accepted");
 
-        let layout = super::parse_layout(full).expect("the full fixture is well-formed");
+        let layout = super::parse_layout(&full).expect("the full body is well-formed");
         let mut too_many_contexts = full[..layout.content_end].to_vec();
         drop(too_many_contexts.splice(
             layout.attrs_start..layout.attrs_start,
@@ -952,7 +1095,7 @@ mod tests {
         zero_span[8..16].fill(0);
         assert_kind(decode_event_payload(&zero_span), "event-field-bound");
 
-        let mut half_null_peer = fixture_body(&fixture("event-point-ctx")).to_vec();
+        let mut half_null_peer = encode_event_payload(&point_context_event()).expect("point body");
         half_null_peer[16] = 1;
         assert_kind(decode_event_payload(&half_null_peer), "event-field-bound");
 
@@ -978,7 +1121,8 @@ mod tests {
         invalid_utf8[50] = 0xff;
         assert_kind(decode_event_payload(&invalid_utf8), "event-text");
 
-        let mut reversed_context = fixture_body(&fixture("event-point-ctx")).to_vec();
+        let mut reversed_context =
+            encode_event_payload(&point_context_event()).expect("point context body");
         let first_key = reversed_context[80];
         reversed_context[80] = reversed_context[88];
         reversed_context[88] = first_key;
@@ -997,6 +1141,24 @@ mod tests {
             "event-field-bound"
         );
 
+        let mut empty_code = minimal_event();
+        empty_code.code = Some(String::new());
+        assert_eq!(
+            encode_event_payload(&empty_code)
+                .expect_err("a present empty code is wire-null")
+                .kind(),
+            "event-field-bound"
+        );
+
+        let mut empty_comm = minimal_event();
+        empty_comm.comm = Some(String::new());
+        assert_eq!(
+            encode_event_payload(&empty_comm)
+                .expect_err("a present empty comm is wire-null")
+                .kind(),
+            "event-field-bound"
+        );
+
         let frame = encode_event_frame(&minimal_event()).expect("stored frame");
         assert_eq!(
             FrameHeader::parse(&frame),
@@ -1008,10 +1170,9 @@ mod tests {
 
     #[test]
     fn kind_seven_remains_unknown_inside_a_block() {
-        let event = fixture("event-minimal");
-        let body = fixture_body(&event);
+        let body = encode_event_payload(&minimal_event()).expect("event body");
         let total = 12 + 4 + 16 + 80 + body.len();
-        let mut block = WriterForTest::block_with_event(body, total);
+        let mut block = WriterForTest::block_with_event(&body, total);
         assert_eq!(
             decode_block(&block).expect_err("kind 7 is not a BLOCK section").kind(),
             "unsupported-required-section"

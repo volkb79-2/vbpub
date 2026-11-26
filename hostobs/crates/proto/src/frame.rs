@@ -542,7 +542,7 @@ impl FrameHeader {
         }
         let reserved = cursor.u16()?;
         if reserved != 0 {
-            return Err(ProtoError::NonZeroReserved(reserved));
+            return Err(ProtoError::NonZeroReserved(u32::from(reserved)));
         }
         let corr = cursor.u32()?;
         if enforce_declared_bounds {
