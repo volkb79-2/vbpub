@@ -96,7 +96,7 @@ class Guest:
         installer = make_planner(
             tmp_path, disk_gib=6, root_gib=1, root_start=ROOT_START, swap_policy="on", swap_disk_total_gb=1,
             swap_partition_count=4, preserve_root_size_gb=1,
-            partitioning={**partitioning, "iobench_raw_gb": False},
+            partitioning=partitioning,
         )
         installer.actions = RedirectFstab(str(self.fstab))  # REAL HostActions: production allowlist applies
         installer.root_disk = os.path.basename(self.loop)
@@ -212,7 +212,10 @@ def test_real_partition_data_area_on_loop_disk(tmp_path, monkeypatch):
         fstab = guest.fstab.read_text("utf-8")
         uuid = sh("blkid", "-s", "UUID", "-o", "value", cow)
         assert f"UUID={uuid} {MOUNT} btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in fstab
-        assert len(re.findall(r"^PARTUUID=\S+ none swap sw,pri=", fstab, re.M)) == 4, fstab
+        assert len(re.findall(
+            r"^PARTUUID=\S+ none swap sw,pri=.*nofail,x-systemd\.device-timeout=5s 0 0$",
+            fstab, re.M,
+        )) == 4, fstab
         rows = sh("lsblk", "-P", "-o", "PATH,FSTYPE,LABEL", guest.loop).splitlines()
         assert len([r for r in rows if 'FSTYPE="btrfs"' in r and f'LABEL="{lp.COW_LABEL}"' in r]) == 1  # carve detection
 

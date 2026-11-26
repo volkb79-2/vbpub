@@ -65,11 +65,11 @@ def test_partitioning_is_adoptable_from_user_documents():
     )
 
 
-def test_each_user_doc_explains_one_plan_and_the_raw_benchmark_partition():
+def test_each_user_doc_explains_one_plan_and_the_temporary_swap_span():
     for path in DOCS:
         text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8").lower())
         assert "swap_policy" in text and "partitioning" in text, path
-        assert "iobench-raw" in text, path
+        assert "vbpub-swap-span" in text, path
         assert "swap_policy" in text and "off" in text and "on" in text, path
 
 

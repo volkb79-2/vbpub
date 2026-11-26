@@ -50,7 +50,7 @@ def _planner(tmp_path, partitioning=None, *, swap_count=4, swap_total=16, **kw):
 
 
 def _table(installer):
-    """Plan, write the sfdisk plan and return (entries by number, swap extents, root size)."""
+    """Plan, write the final sfdisk plan and return (entries by number, swap extents, root size)."""
     swap, root = installer._plan_swap_partitions()
     entries = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
     return entries, swap, root
@@ -75,15 +75,14 @@ def test_root_160_data_star_numbers_follow_disk_position_and_leave_no_gap(tmp_pa
     installer = _planner(tmp_path)
     entries, swap, root = _table(installer)
     assert root * 512 == 160 * GIB
-    assert sorted(entries) == [3, 4, 5, 6, 7, 8, 9]  # root, data, raw iobench, then swaps by position
+    assert sorted(entries) == [3, 4, 5, 6, 7, 8]  # root, data, then swaps by position
     data = entries[4]
     assert data["name"] == "MDT_COW" and data["type"].upper() == lp.LINUX_FS_TYPE_GUID
-    assert entries[5]["name"] == lp.IOBENCH_PARTLABEL
-    assert [entries[n]["type"].lower() for n in (6, 7, 8, 9)] == [SWAP] * 4
+    assert [entries[n]["type"].lower() for n in (5, 6, 7, 8)] == [SWAP] * 4
     assert int(entries[3]["start"]) + int(entries[3]["size"]) == int(data["start"])  # no hole behind root
     _assert_numbers_follow_disk_position(entries)
     _assert_whole_disk_used(entries, 512 * S, int(entries[3]["start"]))
-    assert int(data["size"]) > 320 * S  # remainder after swap and the planned raw benchmark partition
+    assert int(data["size"]) > 330 * S  # remainder after the planned tail swaps
     installer._validate_plan_geometry(installer._parse_partition_entries(
         installer._current_partition_dump(2048, 500 * S)), entries, root)
 
@@ -100,10 +99,9 @@ def test_lvm_pv_partition_has_the_pv_type_label_and_the_remainder(tmp_path):
 def test_two_data_partitions_get_consecutive_numbers_in_config_order(tmp_path):
     installer = _planner(tmp_path, TWO_PARTS)
     entries, _swap, root = _table(installer)
-    assert sorted(entries) == [3, 4, 5, 6, 7, 8, 9, 10]
+    assert sorted(entries) == [3, 4, 5, 6, 7, 8, 9]
     assert (entries[4]["name"], int(entries[4]["size"])) == ("MDT_COW", 200 * S)
     assert entries[5]["name"] == "SCRATCH" and int(entries[5]["size"]) > 180 * S
-    assert entries[6]["name"] == lp.IOBENCH_PARTLABEL
     assert root * 512 == 100 * GIB
     _assert_numbers_follow_disk_position(entries)
     _assert_whole_disk_used(entries, 512 * S, int(entries[3]["start"]))
@@ -126,10 +124,10 @@ def test_cloud_image_root_one_with_preserved_14_and_15_numbers_data_then_swap(tm
     swap, root = installer._plan_swap_partitions()
     plan = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
     assert plan[14] == entries[14] and plan[15] == entries[15]
-    assert plan[2]["name"] == "MDT_COW" and plan[3]["name"] == lp.IOBENCH_PARTLABEL
-    assert sorted(n for n in plan if n not in (1, 14, 15)) == [2, 3, 4, 5, 6, 7]
+    assert plan[2]["name"] == "MDT_COW"
+    assert sorted(n for n in plan if n not in (1, 14, 15)) == [2, 3, 4, 5, 6]
     ordered = sorted((n for n in plan if int(plan[n]["start"]) >= 262144), key=lambda n: int(plan[n]["start"]))
-    assert ordered == [1, 2, 3, 4, 5, 6, 7]  # raw benchmark partition precedes the swaps
+    assert ordered == [1, 2, 3, 4, 5, 6]  # retained pre-root entries remain outside the tail swaps
 
 
 @pytest.mark.parametrize("seed", range(6))
@@ -156,7 +154,7 @@ def test_property_numbers_follow_position_and_sizes_account_for_the_disk(tmp_pat
         except InstallerError:
             continue
         assert len(swap) == swap_count and sorted(entries)[0] == 3
-        assert sorted(entries) == list(range(3, 3 + 1 + n_data + 1 + swap_count))
+        assert sorted(entries) == list(range(3, 3 + 1 + n_data + swap_count))
         _assert_numbers_follow_disk_position(entries)
         starts = [int(entries[n]["start"]) for n in sorted(entries)]
         assert starts == sorted(starts) and all(s % 2048 == 0 for s in starts[1:])
@@ -181,16 +179,14 @@ def test_root_keep_leaves_the_root_alone_and_data_takes_the_rest(tmp_path):
     assert installer._root_policy() == "untouched"
 
 
-def test_swap_off_ends_the_data_pool_before_the_planned_raw_partition(tmp_path):
+def test_swap_off_ends_the_data_pool_at_the_gpt_safe_end(tmp_path):
     installer = _planner(tmp_path, ROOT160_DATA_STAR, swap_count=1)
     installer.config = installer.config.__class__(**{**installer.config.__dict__, "swap_policy": "off"})
     swap, root = installer._plan_swap_partitions()
     assert swap == []
     entries = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
-    assert sorted(entries) == [3, 4, 5]
-    assert entries[5]["name"] == lp.IOBENCH_PARTLABEL
-    assert int(entries[4]["start"]) + int(entries[4]["size"]) == int(entries[5]["start"])
-    assert int(entries[5]["start"]) + int(entries[5]["size"]) == lp.gpt_safe_end(512 * S)
+    assert sorted(entries) == [3, 4]
+    assert int(entries[4]["start"]) + int(entries[4]["size"]) == lp.gpt_safe_end(512 * S)
 
 
 @pytest.mark.parametrize("disk_gib", [20, 21, 32, 128, 512, 2048, 8192])
@@ -289,12 +285,10 @@ def test_shrink_path_the_table_write_follows_the_shrunk_root(tmp_path):
     # (1) the table written AFTER the shrink (root at the target) is valid
     planned = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
     installer._validate_plan_geometry(current, planned, root)
-    raw_number = next(number for number, entry in planned.items() if entry.get("name") == lp.IOBENCH_PARTLABEL)
     data_number = next(number for number, entry in planned.items() if entry.get("name") == "MDT_COW")
     swap_numbers = [number for number, entry in planned.items() if entry.get("type", "").lower() == SWAP]
     assert int(planned[3]["size"]) == 160 * S
-    assert int(planned[data_number]["start"]) + int(planned[data_number]["size"]) == int(planned[raw_number]["start"])
-    assert int(planned[raw_number]["start"]) + int(planned[raw_number]["size"]) == int(planned[min(swap_numbers)]["start"])
+    assert int(planned[data_number]["start"]) + int(planned[data_number]["size"]) == int(planned[min(swap_numbers)]["start"])
     _assert_whole_disk_used(planned, 512 * S, int(planned[3]["start"]))
     # (2) writing it while the old, larger root is still in the table overlaps and is refused
     overlapping = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, 500 * S))
@@ -308,16 +302,14 @@ def test_shrink_path_the_table_write_follows_the_shrunk_root(tmp_path):
         installer._apply_known_swap_shape()
 
 
-def test_root_shrink_interim_table_has_no_hole_before_raw_partition_or_swap(tmp_path):
+def test_root_shrink_interim_table_has_no_hole_before_tail_swaps(tmp_path):
     installer = _planner(tmp_path)
     swaps, target_root = installer._plan_swap_partitions()
     installer._plan_root_shrink((swaps, target_root, True))
     plan_text = installer.actions.dry_run_writes["/etc/vbpub/root-shrink-plan.sfdisk"]
     interim = installer._parse_partition_entries(plan_text)
-    raw_number = next(number for number, entry in interim.items() if entry.get("name") == lp.IOBENCH_PARTLABEL)
     swap_numbers = [number for number, entry in interim.items() if entry.get("type", "").lower() == SWAP]
-    assert int(interim[4]["start"]) + int(interim[4]["size"]) == int(interim[raw_number]["start"])
-    assert int(interim[raw_number]["start"]) + int(interim[raw_number]["size"]) == int(interim[min(swap_numbers)]["start"])
+    assert int(interim[4]["start"]) + int(interim[4]["size"]) == int(interim[min(swap_numbers)]["start"])
     _assert_whole_disk_used(interim, 512 * S, int(interim[3]["start"]))
 
 
@@ -356,7 +348,7 @@ def test_foreign_linux_partition_after_root_is_not_recognized_without_partlabel(
         tmp_path,
         disk_gib=20,
         root_gib=8,
-        partitioning={"root": "*", "iobench_raw_gb": False},
+        partitioning={"root": "*"},
         entries=foreign,
         swap_policy="off",
         preserve_root_size_gb=2,
@@ -368,7 +360,7 @@ def test_foreign_linux_partition_after_root_is_not_recognized_without_partlabel(
 
 def test_gpt_128th_partition_is_accepted_and_129th_is_refused(tmp_path):
     """Kills M-128-partition by proving number 128 fits and number 129 does not."""
-    installer = _planner(tmp_path, {"root": "*", "iobench_raw_gb": False})
+    installer = _planner(tmp_path, {"root": "*"})
     installer.root_number = 1
     assert len(installer._tail_numbers(126, [2])) == 126
     assert installer._tail_numbers(126, [2])[-1] == 128
@@ -423,22 +415,17 @@ def test_raw_partition_is_planned_but_never_formatted_or_mounted(tmp_path):
     assert entries[4]["type"].upper() == lp.ZFS_TYPE_GUID and entries[4]["name"] == "ZPOOL"
 
 
-def test_default_iobench_partition_is_raw_fixed_sized_and_precedes_swap(tmp_path):
+def test_default_layout_has_no_permanent_iobench_partition(tmp_path):
     installer = _stage_two(tmp_path, ROOT160_DATA_STAR)
     entries, swaps, _root = _table(_planner(tmp_path / "table", ROOT160_DATA_STAR))
-    raw_number = next(number for number, entry in entries.items() if entry.get("name") == lp.IOBENCH_PARTLABEL)
-    raw = entries[raw_number]
-    assert int(raw["size"]) == 8 * S
-    assert raw["type"].lower() == lp.LINUX_FS_TYPE_GUID.lower()
-    assert raw_number == min(n for n, _ in zip(range(raw_number, raw_number + 1), [raw]))
-    assert raw_number < min(n for n in entries if n not in (3, raw_number) and entries[n]["type"].lower() == SWAP)
+    assert not any(entry.get("name") == lp.SWAP_SPAN_PARTLABEL for entry in entries.values())
+    assert len([entry for entry in entries.values() if entry["type"].lower() == SWAP]) == len(swaps)
     names = [action.argv[0].rsplit("/", 1)[-1] for action in installer.actions.planned]
     assert "mkfs.ext4" not in names and "mkfs.btrfs" in names
-    assert not any(action.argv[0].endswith("mount") and action.argv[-1] == f"/dev/vda{raw_number}" for action in installer.actions.planned)
-    assert swaps and raw["name"] == "iobench-raw"
+    assert swaps
 
 
-def test_install_benchmark_wipes_then_runs_on_the_planned_raw_partition_only(tmp_path):
+def test_install_benchmark_targets_the_temporary_tail_swap_span(tmp_path):
     installer = _planner(tmp_path)
     installer.config = Config(**{**installer.config.__dict__, "run_io_benchmark": True})
     StateStore(installer.config.state_dir).save_new(StateStore.new(installer.config))
@@ -446,12 +433,11 @@ def test_install_benchmark_wipes_then_runs_on_the_planned_raw_partition_only(tmp
     installer._run_io_benchmark()
 
     actions = installer.actions.planned
-    wipe_index = next(i for i, action in enumerate(actions) if action.argv[0].endswith("wipefs"))
     run_index = next(i for i, action in enumerate(actions) if action.argv[0].endswith("iobench-install-runner"))
-    assert wipe_index < run_index
-    assert actions[wipe_index].argv == ("/usr/sbin/wipefs", "-a", "/dev/vda5")
+    assert not any(action.argv[0].endswith("wipefs") for action in actions)
     assert actions[run_index].argv[4] == "/dev/vda5"
-    assert actions[run_index].argv[6] == str(8 * GIB)
+    swaps, _root = installer._plan_swap_partitions()
+    assert actions[run_index].argv[6] == str(sum(size for _start, size in swaps) * 512)
     assert not any(
         action.argv[0].endswith(("mkfs.ext4", "mkfs.btrfs", "mkfs.xfs", "mount", "umount"))
         for action in actions
@@ -670,11 +656,12 @@ def test_show_plan_lists_the_data_partitions(tmp_path):
     assert [p["device"] for p in plan["data_partitions"]] == ["/dev/vda4"]
     assert plan["plan_table"]
     assert plan["plan_table"][0]["entry"] == "root"
-    assert any(row["identifier"] == f"PARTLABEL={lp.IOBENCH_PARTLABEL}" and row["gib"] == 8.0 for row in plan["plan_table"])
-    assert plan["swap_partitions"][0]["device"] == "/dev/vda6"
+    assert not any(row["identifier"] == f"PARTLABEL={lp.SWAP_SPAN_PARTLABEL}" for row in plan["plan_table"])
+    assert "iobench_partition" not in plan
+    assert plan["swap_partitions"][0]["device"] == "/dev/vda5"
     from debian_install_v2.bootstrap import _render_plan
     rendered = _render_plan(plan)
-    assert "Resolved plan table (GiB):" in rendered and "iobench-raw" in rendered
+    assert "Resolved plan table (GiB):" in rendered and "iobench-raw" not in rendered
 
 
 def test_customscript_carries_the_partitioning_object():
@@ -701,13 +688,13 @@ def test_customscript_refuses_an_invalid_plan():
 @pytest.mark.parametrize(
     "partitioning",
     [
-        {"root": 10, "iobench_raw_gb": False, "data": {"kind": "partitions", "volumes": [
+        {"root": 10, "data": {"kind": "partitions", "volumes": [
             {**COW, "size": 20},
         ]}},
-        {"root": "40%", "iobench_raw_gb": False, "data": {"kind": "partitions", "volumes": [
+        {"root": "40%", "data": {"kind": "partitions", "volumes": [
             {**COW, "size": "50%"},
         ]}},
-        {"root": 10, "iobench_raw_gb": False, "data": {"kind": "partitions", "volumes": [
+        {"root": 10, "data": {"kind": "partitions", "volumes": [
             {**COW, "size": "50%"},
         ]}},
     ],

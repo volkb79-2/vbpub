@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Run one iobench calibration rung against the install plan's raw partition."""
+"""Run one iobench calibration rung against the install plan's temporary swap span."""
 
 from __future__ import annotations
 
@@ -104,6 +104,7 @@ def main() -> int:
             profile=args.profile,
             state_dir=str(state_dir),
             installer=True,
+            raw_write=True,
         ),
     ).execute()
     if outcome.exit_code or outcome.status != "complete" or not outcome.calibration:

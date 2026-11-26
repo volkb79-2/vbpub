@@ -151,7 +151,8 @@ def stub_install_root(tmp_path: Path, *, budgets: dict[str, int] | None = None) 
         "    tool_version: str\n"
         "    profile: str = 'standard'\n"
         "    state_dir: str | None = None\n"
-        "    installer: bool = False\n",
+        "    installer: bool = False\n"
+        "    raw_write: bool = False\n",
         encoding="utf-8",
     )
     model = {key: {"value": 100 + index, "status": "proven"}
@@ -206,7 +207,7 @@ def write_record(state_dir: Path, profile: str) -> None:
     )
 
 
-RAW_PARTITION = "/dev/vda5"
+SWAP_SPAN_TARGET = "/dev/vda4"
 RUNNER_PARTUUID = "12345678-1234-1234-1234-123456789012"
 # iobench's own short table, as the stub package publishes it.
 STUB_BUDGETS = {"veryquick": 210, "quick": 720, "standard": 3600}
@@ -217,8 +218,8 @@ def runner_argv(root: Path, *, profile: str, state_dir: Path, output: Path) -> l
     return [
         str(root / "tools" / "iobench-install-runner"),
         "--profile", profile,
-        "--target", RAW_PARTITION,
-        "--expect-size", str(8 * GIB),
+        "--target", SWAP_SPAN_TARGET,
+        "--expect-size", str(32 * GIB),
         "--expect-partuuid", RUNNER_PARTUUID,
         "--state-dir", str(state_dir),
         "--output", str(output),
@@ -238,13 +239,14 @@ def test_the_runner_main_hands_the_rung_to_iobench_and_records_it(tmp_path, prof
     # runner :104 — the rung iobench is handed is the requested one.
     seen = json.loads((root / "seen-config.json").read_text(encoding="utf-8"))
     assert seen["profile"] == profile
-    assert seen["target"] == RAW_PARTITION
+    assert seen["target"] == SWAP_SPAN_TARGET
     assert seen["state_dir"] == str(state_dir)
     assert seen["installer"] is True
+    assert seen["raw_write"] is True
     # runner :119 — the record names the rung that produced it.
     record = json.loads(output.read_text(encoding="utf-8"))
     assert record["profile"] == profile
-    assert record["target"] == RAW_PARTITION
+    assert record["target"] == SWAP_SPAN_TARGET
     assert record["calibration_id"] == "stub-run"
     # runner :126 — the file lands at --output, not at state_dir.parent/io-benchmark.json.
     assert output.parent == tmp_path / "state"

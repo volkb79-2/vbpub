@@ -271,7 +271,7 @@ def test_a_plan_needs_no_tail_swap_when_a_pre_root_swap_meets_the_target(tmp_pat
         tmp_path,
         pre_root_gib=4,
         swap_total_gib=4,
-        partitioning=cap(8) | {"iobench_raw_gb": False},
+        partitioning=cap(8),
     )
 
     partitions, target_root = installer._plan_swap_partitions()
@@ -301,7 +301,7 @@ def test_root_shrink_uses_pre_cleanup_usage_snapshot_instead_of_post_delete_usag
         swap_disk_total_gb=8,
         preserve_root_size_gb=2,
         root_used_gib=2,
-        partitioning={"root": "*", "iobench_raw_gb": False},
+        partitioning={"root": "*"},
     )
     installer.actions.dry_run = False
     installer._root_used_bytes = lambda: 2 * GIB  # after deleting a large swapfile
@@ -577,11 +577,10 @@ def test_plan_overlap_check_uses_physical_order_not_partition_number(tmp_path):
     }
     plan = {
         **current,
-        4: {"start": "10240", "size": "2048", "type": linux_type, "name": lp.IOBENCH_PARTLABEL},
+        4: {"start": "10240", "size": "2048", "type": swap_type},
         5: {"start": "12288", "size": "2048", "type": swap_type},
         6: {"start": "14336", "size": "2048", "type": swap_type},
         7: {"start": "16384", "size": "2048", "type": swap_type},
-        8: {"start": "18432", "size": "2048", "type": swap_type},
     }
 
     installer._validate_plan_geometry(current, plan, 4096)

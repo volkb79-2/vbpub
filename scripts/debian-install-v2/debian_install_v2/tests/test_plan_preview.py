@@ -9,7 +9,7 @@ import pytest
 
 from debian_install_v2 import bootstrap
 from debian_install_v2.config import Config
-from debian_install_v2.layout_policy import GPT_LAST_USABLE_OFFSET, IOBENCH_PARTLABEL
+from debian_install_v2.layout_policy import GPT_LAST_USABLE_OFFSET
 from debian_install_v2.plan_preview import PlanPreviewError, disk_size_bytes, format_table, resolve_plan
 
 
@@ -18,7 +18,6 @@ BTRFS_SUBVOLUME_CONFIG = Config(
     partitioning={
         "root": "*",
         "reserve_gb": 0,
-        "iobench_raw_gb": False,
         "data": {
             "kind": "subvolumes",
             "volumes": [{"name": "@cow", "mount": "/srv/cow", "nocow": False}],
@@ -39,7 +38,7 @@ def test_disk_size_parser_accepts_binary_gib_and_tib_units():
 
 
 @pytest.mark.parametrize("swap_policy", ["on", "off"])
-def test_resolved_512_gib_plan_shows_data_raw_and_swap_in_disk_order(swap_policy):
+def test_resolved_512_gib_plan_shows_only_permanent_data_and_swap_in_disk_order(swap_policy):
     config = Config(
         partitioning={"root": 160, "data": {"kind": "partitions", "volumes": [
             {"size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
@@ -50,9 +49,8 @@ def test_resolved_512_gib_plan_shows_data_raw_and_swap_in_disk_order(swap_policy
     )
     result = resolve_plan(config, disk_size="512GiB")
     rows = result["plan_table"]
-    assert [row["entry"] for row in rows[:3]] == ["root", "data", "iobench raw"]
-    raw = next(row for row in rows if row["identifier"] == f"PARTLABEL={IOBENCH_PARTLABEL}")
-    assert raw["number"] == 3 and raw["gib"] == 8.0
+    assert [row["entry"] for row in rows[:2]] == ["root", "data"]
+    assert not any(row["identifier"] == "PARTLABEL=vbpub-swap-span" for row in rows)
     swaps = [row for row in rows if row["entry"] == "swap"]
     assert len(swaps) == (4 if swap_policy == "on" else 0)
     last = max(row["start"] + row["sectors"] for row in rows)
@@ -105,12 +103,11 @@ def test_netcup_preview_uses_the_real_root_start_and_partition_number():
     rows = result["plan_table"]
     assert [(row["entry"], row["number"], row["start"], row["sectors"]) for row in rows] == [
         ("root", 3, 2_500_608, 335_544_320),
-        ("data", 4, 338_044_928, 685_363_200),
-        ("iobench raw", 5, 1_023_408_128, 16_777_216),
-        ("swap", 6, 1_040_185_344, 8_388_608),
-        ("swap", 7, 1_048_573_952, 8_388_608),
-        ("swap", 8, 1_056_962_560, 8_388_608),
-        ("swap", 9, 1_065_351_168, 8_388_608),
+        ("data", 4, 338_044_928, 702_140_416),
+        ("swap", 5, 1_040_185_344, 8_388_608),
+        ("swap", 6, 1_048_573_952, 8_388_608),
+        ("swap", 7, 1_056_962_560, 8_388_608),
+        ("swap", 8, 1_065_351_168, 8_388_608),
     ]
     assert [row["identifier"] for row in rows if row["entry"] == "swap"] == [
         "LABEL=vbpub-swap1", "LABEL=vbpub-swap2", "LABEL=vbpub-swap3", "LABEL=vbpub-swap4",
@@ -127,7 +124,7 @@ def test_20_gib_and_2_tib_are_resolved_with_explicit_swap_size(swap_policy):
     large = resolve_plan(config, disk_size="2TiB")
     assert small["disk_size_gib"] == 20
     assert large["disk_size_gib"] == 2048
-    assert next(row for row in small["plan_table"] if row["entry"] == "iobench raw")["gib"] == 8.0
+    assert not any(row["entry"] == "vbpub-swap-span" for row in small["plan_table"])
     assert all(row["gib"] > 0 for row in large["plan_table"])
 
 
@@ -147,7 +144,7 @@ def test_root_floor_refusal_prints_the_resolvable_partition_table():
     config = Config(
         partitioning={"root": 5, "data": {"kind": "partitions", "volumes": [
             {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
-        ]}, "iobench_raw_gb": False},
+        ]}},
         swap_policy="off",
         preserve_root_size_gb=10,
     )
@@ -158,10 +155,11 @@ def test_root_floor_refusal_prints_the_resolvable_partition_table():
     assert "root" in str(exc.value) and "MDT_COW" in str(exc.value)
 
 
-def test_disabling_raw_partition_removes_it_from_the_resolved_table():
+def test_legacy_false_key_does_not_create_a_permanent_benchmark_partition():
     config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
     result = resolve_plan(config, disk_size="512GiB")
     assert [row["entry"] for row in result["plan_table"]] == ["root"]
+    assert "iobench_raw_gb" not in result["partitioning"]
 
 
 def test_offline_preview_accepts_schema_two_subvolumes():
@@ -218,7 +216,7 @@ def test_offline_resolver_accepts_partition_128_and_refuses_129():
             for index in range(data_count)
         ]
         return Config(
-            partitioning={"root": "*", "iobench_raw_gb": False, "data": {
+            partitioning={"root": "*", "data": {
                 "kind": "partitions", "volumes": volumes,
             }},
             swap_policy="off",
@@ -231,7 +229,7 @@ def test_offline_resolver_accepts_partition_128_and_refuses_129():
 
 
 def test_offline_resolver_defaults_to_root_partition_one_at_sector_2048():
-    config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
+    config = Config(partitioning={"root": "*"}, swap_policy="off")
 
     result = resolve_plan(config, disk_size="20GiB")
 
@@ -243,14 +241,14 @@ def test_offline_resolver_defaults_to_root_partition_one_at_sector_2048():
 
 @pytest.mark.parametrize("root_number", [0, 129, True])
 def test_offline_resolver_rejects_root_numbers_outside_gpt_range(root_number):
-    config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
+    config = Config(partitioning={"root": "*"}, swap_policy="off")
 
     with pytest.raises(PlanPreviewError, match="root partition number must be an integer from 1 to 128"):
         resolve_plan(config, disk_size="20GiB", root_number=root_number)
 
 
 def test_json_plan_includes_the_selected_root_number(monkeypatch):
-    config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
+    config = Config(partitioning={"root": "*"}, swap_policy="off")
     installer = SimpleNamespace(config=config)
     monkeypatch.setattr(bootstrap, "_make_installer", lambda *args, **kwargs: installer)
 
@@ -274,7 +272,7 @@ def test_live_plan_failure_diagnostic_uses_detected_root_number(monkeypatch):
     from debian_install_v2.installer import InstallerError
 
     config = Config(
-        partitioning={"root": "*", "iobench_raw_gb": False},
+        partitioning={"root": "*"},
         swap_policy="off",
     )
 

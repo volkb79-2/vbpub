@@ -42,8 +42,7 @@ def _plan_rows(
     number = root_number + 1
     for (start, size), entry in zip(plan.extents, spec.entries()):
         label = entry.partlabel
-        row("iobench raw" if label == layout_policy.IOBENCH_PARTLABEL else "data",
-            number, start, size, f"PARTLABEL={label}")
+        row("data", number, start, size, f"PARTLABEL={label}")
         number += 1
     if plan.reserve_sectors:
         row("reserve (unallocated)", None, plan.reserve_start, plan.reserve_sectors)
@@ -168,7 +167,6 @@ def resolve_plan(
             f"  disk: start 0.00, size {disk_bytes / GIB:.2f}\n"
             f"  root-start: sector {root_start_sector} ({root_start_sector * 512 / GIB:.2f} GiB)\n"
             f"  usable-plan-end: sector {pool_end} ({pool_end * 512 / GIB:.2f} GiB)\n"
-            f"  requested raw iobench: {spec.iobench_raw_gb if 'spec' in locals() else 'unresolved'} GiB\n"
             f"  requested swap: {swap_total if 'swap_total' in locals() else 'unresolved'} GiB"
         ) from exc
 
@@ -193,11 +191,14 @@ def resolve_plan(
         "root_start_gib": round(root_start_sector * 512 / GIB, 2),
         "swap_policy": config.swap_policy,
         "swap_total_gib": swap_total,
-        "partitioning": config.partitioning,
+        "partitioning": {
+            key: value for key, value in config.partitioning.items()
+            if key != "iobench_raw_gb"
+        },
         "plan_table": rows,
         "assumptions": [
             "pre-root partition geometry is omitted; root starts at the supplied sector and uses the supplied number",
-            "the raw iobench partition is never formatted or mounted",
+            "when enabled on ext4, iobench temporarily uses the complete tail swap span before swap formatting",
             "swap rows name the filesystem LABEL written by mkswap; /etc/fstab binds the same partition by PARTUUID",
         ],
     }

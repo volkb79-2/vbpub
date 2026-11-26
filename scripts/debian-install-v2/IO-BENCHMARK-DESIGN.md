@@ -1,80 +1,94 @@
 # Install-time io.cost benchmark
 
-The installer benchmark measures a reserved raw partition with the shared
-`iobench` tool. The public config and disk-plan contract are documented in
-[README](README.md#disk-layout). This file records why the benchmark is a
-first-class partition and how stage two runs it safely.
+The installer benchmark measures the planned tail swap capacity before it is
+formatted as swap. There is no permanent `iobench-raw` partition or `@swap`
+swapfile. The installer uses the existing guarded partition-table transaction
+for both temporary table writes.
 
-## Partition contract
+## Plan and target
 
-- Every plan reserves a Linux GPT partition named `iobench-raw`, 8 GiB by
-  default. `partitioning.iobench_raw_gb` accepts 2–10240 GiB or `false` to
-  disable the partition. `run_io_benchmark=true` requires it to be enabled.
-- The raw extent follows configured data and the explicit unallocated reserve,
-  immediately before tail swap. Its number follows its position. The extent is
-  included whether or not the benchmark runs, so enabling the benchmark does
-  not add an interim table entry or move other partitions.
-- The installer never formats, mounts, or activates it as swap. An enabled
-  benchmark verifies the exact plan, checks mount and swap state, wipes
-  signatures with `wipefs -a`, and runs iobench directly against the device.
-  The partition remains reserved and raw afterward.
-- The runner is copied into the remote bootstrap with only the `iobench`
-  source modules it imports. Before calibration, iobench's guard checks target
-  device size and PARTUUID. The rung it runs is `config.io_benchmark_profile`
-  (`veryquick`, `quick` — the default — or `standard`), and each rung has one
-  outer timeout: 270, 780 or 3660 s, iobench's own budget for that rung
-  (`iobench/plan.py` `PROFILE_BUDGET_S`) plus 60 s.
-- A rung keeps its own state directory, `state_dir/iobench/<rung>`. iobench
-  records the rung in `run.profile`; the runner refuses a directory whose
-  record names another rung (`state_dir_profile_mismatch`) rather than
-  replacing another rung's measurement.
+- `partitioning.iobench_raw_gb` is removed. Absence and `false` are accepted
+  for older profiles; any other value is refused as `iobench_raw_removed` and
+  the error says to delete the key.
+- On ext4 schema 1 and 2, `run_io_benchmark=true` requires
+  `swap_policy="on"` and `swap_partition_count >= 1`. Otherwise planning
+  refuses as `io_benchmark_requires_tail_swap_span`.
+- The temporary partition starts at the first tail swap's start sector and
+  ends at the last tail swap's end sector. It uses the first tail swap's
+  partition number, PARTLABEL `vbpub-swap-span`, and the Linux filesystem type
+  GUID (`0fc63daf-8483-4772-8e79-3d69d8477de4`). It is deliberately not a swap
+  type, so the kernel cannot auto-activate it. Retained pre-root swaps stay
+  outside the span, and no other partition may intersect it.
+- Before every conversion, affected partitions must be unmounted, absent from
+  `/proc/swaps`, and blank or carry only a swap signature. Span identity is
+  checked before the runner: exactly one matching PARTLABEL, expected number,
+  type, start, size, and a nonblank PARTUUID. The runner receives the exact
+  target, byte size, and PARTUUID and keeps `init_device(own=True, expect_size,
+  expect_partuuid)`; its iobench `Config` opts into `raw_write=True`.
 
-The fixed extent avoids temporary partition writes, scratch-filesystem
-creation, and deletion. It also keeps the installed benchmark on a planned raw
-partition rather than the whole disk or a swap partition. Changing the size
-does not alter the other allocation rules: swap is sized first, and the
-remaining root/data/reserve pool is resolved against the same GPT-safe end.
+Every conversion uses the existing guarded transaction: checksum-backed
+pre-change table, geometry validation, refusal to move signed data partitions,
+sfdisk write, scoped partx changes, udev settle, and table readback. There is
+one table writer; this package does not change the shared `libraries/iobench`
+source.
 
-## Stage-two sequence
+## Stage-two sequence and resume
 
-Stage two first applies and verifies the final partition table containing root,
-data, `iobench-raw`, and managed swap. It then runs the optional benchmark
-before root growth, swap activation, and data-volume formatting:
+The fresh-install sequence is:
 
-1. Resolve the raw partition by the plan's partition number and verify its
-   PARTLABEL, Linux type, start, and sector count against the current table.
-2. Confirm its block device is not mounted and is not an active swap source.
-3. Install `fio` if needed, wipe signatures, and read the partition PARTUUID.
-4. Invoke `tools/iobench-install-runner` with the configured rung, target,
-   exact byte size, PARTUUID, the rung's own state directory and the output
-   path.
-5. The runner initializes iobench's destructive-device guard, runs that rung,
-   collects whatever positive io.cost coefficients it produced, and writes
-   `state_dir/io-benchmark.json` atomically with mode `0600`, naming the rung
-   in `profile`.
-6. Mark the step `success` and notify with the coefficients. A rung that left
-   a coefficient absent marks the step `warned`, names the missing keys, and
-   leaves io.cost unconfigured: the boot unit needs the complete model, so no
-   partial model is written and no value is carried over from an earlier file.
-   The raw partition is left in the same table and remains unformatted.
+1. Write the `vbpub-swap-span` table through the guarded transaction.
+2. Run the configured iobench rung on the span.
+3. Once the benchmark is final (success or advisory warning), run `wipefs -a`
+   and zero the first MiB of the span to clear signatures and the iobench
+   marker.
+4. Write the planned regular swap partitions through the same transaction.
+5. Continue with io.cost, root growth, and swap activation.
 
-The step is idempotent: a terminal `success`, `skipped`, or `warned` result is
-not repeated on resume. A normal benchmark/tool failure is advisory and marks
-the step `warned`; an unreapable child is a hard failure because the raw device
-could still be in use. Stage two never starts a second partition-table write
-for benchmarking.
+`ActionUnreapable` is a hard stop: the runner may still use the device, so the
+span is not wiped, repartitioned, or formatted. Other runner/package failures
+are advisory; the step becomes `warned`, then cleanup and regular swap
+restoration continue. If all swap slots are retained before root, there is no
+tail span; record `warned` with `no_tail_swap_span` and continue.
 
-## Output and limits
+Resume is derived only from the live table and `io_benchmark` status:
 
-The JSON result records tool version, the profile (rung) that produced it,
-target, partition byte size, calibration ID, and the `results` it measured:
-`rbps`, `rseqiops`, `rrandiops`, `wbps`, `wseqiops`, and `wrandiops`, minus any
-the rung left absent. The result is advisory: this installer step does not write
-`io.cost.model` or `io.cost.qos` from it.
+| Live tail state | Benchmark status | Action |
+| --- | --- | --- |
+| Planned regular swaps | not final | Convert to span, run, wipe, restore swaps |
+| Exact span | not final | Run, wipe, restore swaps |
+| Exact span | `success`, `warned`, or `skipped` | Wipe, restore swaps |
+| Planned regular swaps | `success`, `warned`, or `skipped` | Continue without a rewrite |
+| Any other mix or geometry | any | Named refusal; write nothing |
 
-`fio --direct=1` does not bypass every hypervisor write-back cache. A virtual
-disk can therefore report host-cache throughput rather than durable device
-performance. Interpret its coefficients as measurements of the stack seen by
-the guest, not a promise about backing media speed. The existing calibration
-plausibility refusal remains in `tools/iocost-calibrate.sh`; the install
-result itself is recorded without applying that policy.
+This covers a crash after the span write (resume runs the benchmark) and after
+the final swap write (resume sees the final benchmark plus regular swaps and
+does not rewrite). Before cleanup, the saved step detail must match the live
+PARTUUID, start, and size. Dry-run records both guarded table writes and does
+not change the disk.
+
+Every installer-written swap fstab row includes
+`nofail,x-systemd.device-timeout=5s`, so an interrupted later repartition
+does not make boot wait indefinitely for a missing swap device.
+
+## Rung and output
+
+The profile is `veryquick`, `quick` (default), or `standard`; outer timeouts
+remain 270, 780, and 3660 seconds, respectively. The timeout is iobench's
+profile budget plus 60 seconds. Each rung has its own state directory,
+`state_dir/iobench/<rung>`, and the runner refuses a directory whose stored
+record names another rung (`state_dir_profile_mismatch`).
+
+The runner collects the positive io.cost coefficients produced by iobench and
+writes `state_dir/io-benchmark.json` atomically with mode `0600`, recording the
+profile, target, span byte size, tool version, calibration ID, and results. A
+rung may omit coefficients; the step warns with their names and io.cost stays
+unconfigured. No values are invented or reused from an earlier file. `fio
+--direct=1` may still measure a hypervisor write-back cache; the results
+describe the guest-visible stack, not guaranteed backing-media speed.
+
+## Out of scope
+
+Re-benchmarking an installed host is not implemented; `tools/swap-bench-window.sh`
+is unchanged. Btrfs swap remains refused as `btrfs_swap_needs_p3`. Install-time
+btrfs benchmark planning keeps `btrfs_iobench_raw_unavailable`, and the btrfs
+stage records `iobench_raw_unavailable_on_btrfs`. These are later packages.

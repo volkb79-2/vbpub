@@ -124,13 +124,11 @@ class Config:
     swap_discard: bool = True
     # The explicit disk plan (README "Disk layout", docs/DESIGN-data-area-v2.md):
     #   {"root": "*"|"keep"|GiB|"N%", "reserve_gb": 0|GiB|"*",
-    #    "iobench_raw_gb": 8|GiB|false,
     #    "data": {"kind": "none"|"partitions"|"lvm"|"subvolumes", "vg", "pv_size", "vg_free_gib",
     #             "volumes": partition/lvm: {"name","size","fs","mount","label"},
     #                        subvolumes:   {"name","mount","nocow"}}}
-    # An omitted size is "*" (the remainder); exactly one "*" per pool. The
-    # default 8 GiB raw iobench partition is reserved after data/reserve and
-    # before end-of-disk swap; false disables it.
+    # An omitted size is "*" (the remainder); exactly one "*" per pool.
+    # iobench temporarily uses the planned end-of-disk swap span when enabled.
     partitioning: dict = field(default_factory=dict)
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
@@ -216,15 +214,13 @@ class Config:
     # Keep the temporary controller access line after successful stage2.
     # Failure paths always retain it for diagnosis.
     retain_controller_ssh_key: bool = False
-    # Runs iobench veryquick against the planned, unformatted iobench-raw
-    # partition, which is wiped immediately before use and remains a raw
-    # reserved partition afterward. The plan defaults it to 8 GiB;
-    # partitioning.iobench_raw_gb=false disables it when benchmarking is off.
-    # Persists the io.cost model in state_dir/io-benchmark.json.
+    # Runs iobench on the unformatted span of the planned tail swaps, then
+    # replaces the span with the regular swaps. Persists the io.cost model in
+    # state_dir/io-benchmark.json.
     run_io_benchmark: bool = False
     # Which iobench rung that run uses: veryquick (about 3 min), quick (about
     # 11 min) or standard (about 59 min). Default quick (operator decision
-    # 2026-11-10, TODO.md DIV2-BL-05): on the raw partition its read numbers
+    # 2026-11-10, TODO.md DIV2-BL-05): on the swap span its read numbers
     # match veryquick, and it measures the sequential rates veryquick only
     # estimates. The rung's outer timeout comes from
     # IO_BENCHMARK_OUTER_TIMEOUT_S; the runner keeps one state directory per
@@ -497,7 +493,12 @@ def validate_config(config: Config) -> None:
         or not 1 <= config.swap_disk_total_gb <= 10240
     ):
         raise ConfigError("swap_disk_total_gb must be an integer from 1 to 10240 or null for auto")
-    minimum_swap_partitions = 1 if config.schema_version == LEGACY_SCHEMA_VERSION else 0
+    # Keep schema 1's usual positive-count contract, but let a benchmarked
+    # zero-slot request reach root discovery so an ext4 plan can report the
+    # named tail-span refusal and a btrfs plan can retain its own refusal.
+    minimum_swap_partitions = (
+        1 if config.schema_version == LEGACY_SCHEMA_VERSION and not config.run_io_benchmark else 0
+    )
     if (
         not _SIZE_RE.fullmatch(str(config.swap_partition_count))
         or not minimum_swap_partitions <= config.swap_partition_count <= 64
@@ -509,6 +510,7 @@ def validate_config(config: Config) -> None:
         config.schema_version == BTRFS_SCHEMA_VERSION
         and config.swap_partition_count == 0
         and config.swap_policy != "off"
+        and not config.run_io_benchmark
     ):
         raise ConfigError("swap_partition_count may be 0 only when swap_policy=off")
     if not isinstance(config.swap_policy, str) or config.swap_policy not in {"on", "off"}:
@@ -537,15 +539,7 @@ def validate_config(config: Config) -> None:
         if highest_planned_number > layout_policy.GPT_MAX_PARTITIONS:
             raise layout_policy.LayoutPolicyError(
                 f"configured partition plan needs at least partition number {highest_planned_number}, above the GPT "
-                f"limit of {layout_policy.GPT_MAX_PARTITIONS}; reduce data volumes, iobench_raw_gb, or swap slots"
-            )
-        if (
-            config.schema_version == LEGACY_SCHEMA_VERSION
-            and config.run_io_benchmark
-            and spec.iobench_raw_gb is None
-        ):
-            raise layout_policy.LayoutPolicyError(
-                "run_io_benchmark requires partitioning.iobench_raw_gb; reserve the raw partition or disable the benchmark"
+                f"limit of {layout_policy.GPT_MAX_PARTITIONS}; reduce data volumes or swap slots"
             )
     except layout_policy.LayoutPolicyError as exc:
         raise ConfigError(str(exc)) from exc

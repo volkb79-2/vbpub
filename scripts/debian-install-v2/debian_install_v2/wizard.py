@@ -85,9 +85,9 @@ WIZARD_SECTIONS = (
         (
             WizardField(
                 "partitioning",
-                "Disk plan JSON {root: \"*\"|\"keep\"|GiB|\"N%\", reserve_gb, iobench_raw_gb: GiB|false, "
-                "data: {kind: partitions|lvm, volumes: [{size, fs, mount, label}]}}. Raw benchmark partition "
-                "defaults to 8 GiB; set false to disable it. Fixed and percentage sizes cannot be mixed.",
+                "Disk plan JSON {root: \"*\"|\"keep\"|GiB|\"N%\", reserve_gb, "
+                "data: {kind: partitions|lvm, volumes: [{size, fs, mount, label}]}}. "
+                "Fixed and percentage sizes cannot be mixed.",
                 "json",
             ),
             WizardField("swap_policy", "Swap policy", "choice", ("on", "off")),
@@ -199,7 +199,7 @@ WIZARD_SECTIONS = (
         "benchmark",
         "Optional I/O-cost benchmark",
         (
-            WizardField("run_io_benchmark", "Wipe and benchmark the planned raw iobench-raw partition?", "boolean"),
+            WizardField("run_io_benchmark", "Benchmark the temporary end-of-disk swap span before making swaps?", "boolean"),
             WizardField(
                 "io_benchmark_profile",
                 f"iobench rung for that run (default {IO_BENCHMARK_PROFILE_DEFAULT}: about 11 min; veryquick about 3 min, standard about 59 min)",
@@ -352,7 +352,7 @@ def _summary(config: Config) -> str:
     )
     lines.append(
         "  Resolved disk table: disk size is not supplied to the wizard; "
-        f"iobench-raw={'disabled' if spec.iobench_raw_gb is None else f'{spec.iobench_raw_gb} GiB'}; "
+        "iobench uses the planned tail swap span when enabled; "
         "run `debian-install-v2.py plan --config FILE --disk-size SIZE` for the resolved GiB table."
     )
     return "\n".join(lines)

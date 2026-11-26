@@ -372,7 +372,7 @@ def test_plan_disk_too_small(tmp_path):
 def test_write_plan_real_keeps_earlier_partitions(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.config = installer.config.__class__(
-        **{**installer.config.__dict__, "partitioning": {"root": "*", "iobench_raw_gb": False}}
+        **{**installer.config.__dict__, "partitioning": {"root": "*"}}
     )
     installer.actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
         "label: gpt\n"
@@ -400,7 +400,7 @@ def test_write_plan_real_keeps_earlier_partitions(tmp_path):
 def test_write_plan_root_without_size(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.config = installer.config.__class__(
-        **{**installer.config.__dict__, "partitioning": {"root": "*", "iobench_raw_gb": False}}
+        **{**installer.config.__dict__, "partitioning": {"root": "*"}}
     )
     installer.actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
         "label: gpt\n"
@@ -455,7 +455,7 @@ def test_activate_swap_partitions_real(tmp_path):
         installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", p)] = ""
     installer._activate_swap_partitions()
     fstab = installer.actions.files["/etc/fstab"].decode()
-    assert fstab.count(" none swap sw,pri=10,discard=once 0 0") == 4
+    assert fstab.count(" none swap sw,pri=10,discard=once,nofail,x-systemd.device-timeout=5s 0 0") == 4
     # Regression, 2026-09-08: confirmed live against real Debian 13 trixie
     # (`which partx` / `which blkid` / `which swapon` on v1001.vxxu.de) --
     # partx lives at /usr/bin/partx (not /usr/sbin), while blkid and swapon

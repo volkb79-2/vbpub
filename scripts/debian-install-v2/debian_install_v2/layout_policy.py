@@ -114,13 +114,12 @@ LINUX_FS_TYPE_GUID = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 LINUX_LVM_TYPE_GUID = "E6D6D379-F507-44C2-A23C-238F2A3DF928"
 ZFS_TYPE_GUID = "6A898CC3-1DD2-11B2-99A6-080020736631"
 COW_LABEL = "MDT_COW"
-IOBENCH_PARTLABEL = "iobench-raw"
-DEFAULT_IOBENCH_RAW_GB = 8
+SWAP_SPAN_PARTLABEL = "vbpub-swap-span"
 LVM_EXTENT_MIB = 4
 LABEL_RE = re.compile(r"[A-Za-z0-9_.-]{1,12}")  # xfs limits labels to 12 characters
 LV_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,30}")
 PERCENT_RE = re.compile(r"(0|[1-9][0-9]{0,2})(?:\.([0-9]{1,2}))?%")
-RESERVED_LABELS = frozenset({"esp", "efi", "boot", "root", "swap", LVM_PV_PARTLABEL, IOBENCH_PARTLABEL})
+RESERVED_LABELS = frozenset({"esp", "efi", "boot", "root", "swap", LVM_PV_PARTLABEL, SWAP_SPAN_PARTLABEL})
 _RESERVED_MOUNT_TREES = (
     "/boot", "/etc", "/usr", "/root", "/tmp", "/proc", "/sys", "/dev", "/run", "/bin", "/sbin", "/lib",
     "/lib64", "/lib32", "/libx32",
@@ -297,23 +296,13 @@ class DiskSpec:
     root: Size
     reserve: Size  # gib (0 = none) or star
     data: DataArea
-    iobench_raw_gb: int | None = DEFAULT_IOBENCH_RAW_GB
-
     @property
     def partition_count(self) -> int:
-        return self.data.partition_count + (1 if self.iobench_raw_gb is not None else 0)
+        return self.data.partition_count
 
     def entries(self) -> list[PoolEntry]:
-        """All planned GPT partitions between root and swap, in disk order."""
-        entries = self.data.entries()
-        if self.iobench_raw_gb is not None:
-            entries.append(
-                PoolEntry(
-                    "iobench raw", IOBENCH_PARTLABEL, LINUX_FS_TYPE_GUID,
-                    Size("gib", self.iobench_raw_gb), MIN_SECTORS["none"],
-                )
-            )
-        return entries
+        """All permanent data-area GPT partitions between root and swap."""
+        return self.data.entries()
 
     @property
     def root_policy(self) -> str:
@@ -381,10 +370,12 @@ def _check_subvolume_mount(mount: object, what: str) -> str:
 
 
 def _check_label(label: object, what: str) -> str:
-    if not isinstance(label, str) or not LABEL_RE.fullmatch(label):
+    if not isinstance(label, str):
         raise LayoutPolicyError(f"{what} label must be 1-12 characters of [A-Za-z0-9_.-]")
-    if label.lower() in RESERVED_LABELS or label.startswith("vbpub-swap"):
+    if label.lower() in RESERVED_LABELS or label.lower().startswith("vbpub-swap"):
         raise LayoutPolicyError(f"{what} label {label!r} collides with a system partition/swap label")
+    if not LABEL_RE.fullmatch(label):
+        raise LayoutPolicyError(f"{what} label must be 1-12 characters of [A-Za-z0-9_.-]")
     return label
 
 
@@ -527,16 +518,11 @@ def parse_partitioning(raw: object) -> DiskSpec:
     unknown = sorted(set(raw) - PARTITIONING_KEYS)
     if unknown:
         raise LayoutPolicyError(f"partitioning has unknown key(s): {', '.join(unknown)}")
-    root = parse_size(raw.get("root", "*"), "partitioning.root", allow_keep=True)
-    raw_iobench = raw.get("iobench_raw_gb", DEFAULT_IOBENCH_RAW_GB)
-    if raw_iobench is False:
-        iobench_raw_gb: int | None = None
-    elif isinstance(raw_iobench, bool) or not isinstance(raw_iobench, int) or not 2 <= raw_iobench <= MAX_GIB:
+    if "iobench_raw_gb" in raw and raw["iobench_raw_gb"] is not False:
         raise LayoutPolicyError(
-            f"partitioning.iobench_raw_gb must be an integer GiB value from 2 to {MAX_GIB} or false to disable"
+            "iobench_raw_removed: partitioning.iobench_raw_gb was removed; delete the key"
         )
-    else:
-        iobench_raw_gb = raw_iobench
+    root = parse_size(raw.get("root", "*"), "partitioning.root", allow_keep=True)
     reserve_raw = raw.get("reserve_gb", 0)
     if reserve_raw == "*":
         reserve = STAR
@@ -559,7 +545,7 @@ def parse_partitioning(raw: object) -> DiskSpec:
                 "(the reserve is the remainder)"
             )
         _validate_static_pool_shape(entries, allow_empty=reserve.is_star)
-        return DiskSpec(root, reserve, DataArea("none"), iobench_raw_gb)
+        return DiskSpec(root, reserve, DataArea("none"))
     if not isinstance(data_raw, dict):
         raise LayoutPolicyError("partitioning.data must be an object")
     kind = data_raw.get("kind")
@@ -581,7 +567,7 @@ def parse_partitioning(raw: object) -> DiskSpec:
         if len(names) != len(set(names)):
             raise LayoutPolicyError("partitioning.data: btrfs subvolume names must be unique")
         _check_mounts_distinct([v.mount for v in volumes if v.mount])  # type: ignore[misc]
-        return DiskSpec(root, reserve, DataArea("subvolumes", volumes=tuple(volumes)), iobench_raw_gb)
+        return DiskSpec(root, reserve, DataArea("subvolumes", volumes=tuple(volumes)))
     volumes = [_parse_volume(item, kind, i) for i, item in enumerate(volumes_raw)]
     names = [v.name for v in volumes if v.name]
     if len(names) != len(set(names)):
@@ -626,7 +612,7 @@ def parse_partitioning(raw: object) -> DiskSpec:
         area = DataArea("lvm", vg=vg, volumes=tuple(volumes), pv_size=pv, vg_free_gib=free)
         if sum(v.size.value for v in volumes if v.size.kind == "percent") > 10000:
             raise LayoutPolicyError("partitioning.data.volumes: the percentages add up to more than 100%")
-    return DiskSpec(root, reserve, area, iobench_raw_gb)
+    return DiskSpec(root, reserve, area)
 
 
 def validate_root_layout(
@@ -648,6 +634,11 @@ def validate_root_layout(
         # and always runs before parsing when this root type is known.
         return
     if root_fs == "ext4":
+        if run_io_benchmark and (swap_policy != "on" or swap_partition_count < 1):
+            raise LayoutPolicyError(
+                "io_benchmark_requires_tail_swap_span: an ext4 install-time benchmark requires "
+                "swap_policy=on and swap_partition_count >= 1"
+            )
         if schema_version == LEGACY_SCHEMA_VERSION:
             # Schema 1 is byte-for-byte the pre-btrfs ext4 contract. Its
             # public loader already enforces the positive swap count.
@@ -661,11 +652,6 @@ def validate_root_layout(
                 "ext4_swap_partition_count_required: an ext4 root keeps the existing positive "
                 "swap_partition_count contract"
             )
-        if run_io_benchmark and spec.iobench_raw_gb is None:
-            raise LayoutPolicyError(
-                "ext4_iobench_requires_raw_partition: run_io_benchmark on ext4 requires the raw "
-                "iobench partition; disable the benchmark or reserve iobench_raw_gb"
-            )
         return
     raise LayoutPolicyError(
         f"root_fs_unsupported: root filesystem {root_fs!r} is not supported"
@@ -678,6 +664,7 @@ def _validate_btrfs_raw_plan(
     schema_version: int,
     swap_policy: str,
     swap_partition_count: int,
+    run_io_benchmark: bool,
 ) -> None:
     """Refuse every unsupported btrfs shape by its named contract code.
 
@@ -707,10 +694,9 @@ def _validate_btrfs_raw_plan(
             raise LayoutPolicyError(
                 "btrfs_data_kind_unsupported: a btrfs root accepts only data kind none or subvolumes"
             )
-    if partitioning.get("iobench_raw_gb", DEFAULT_IOBENCH_RAW_GB) is not False:
+    if run_io_benchmark:
         raise LayoutPolicyError(
-            "btrfs_iobench_raw_unavailable: a btrfs root has no iobench-raw partition; "
-            "set partitioning.iobench_raw_gb=false"
+            "btrfs_iobench_raw_unavailable: install-time iobench has no supported temporary target on a btrfs root"
         )
     if swap_policy != "off" or swap_partition_count != 0:
         raise LayoutPolicyError(
@@ -728,7 +714,7 @@ def disk_spec(
     swap_partition_count: int = 4,
     run_io_benchmark: bool = False,
 ) -> DiskSpec:
-    """The single disk plan; omitted settings resolve to root `*` plus the raw benchmark partition.
+    """The single permanent disk plan; benchmark spans are temporary swap-table states.
 
     Static parsing is identical with or without a host. Passing `root_fs` as a
     discovered host fact applies the root-specific contract and its named
@@ -738,12 +724,17 @@ def disk_spec(
         raise LayoutPolicyError(
             f"root_fs_unsupported: root filesystem {root_fs!r} is not supported"
         )
+    if isinstance(partitioning, dict) and "iobench_raw_gb" in partitioning and partitioning["iobench_raw_gb"] is not False:
+        raise LayoutPolicyError(
+            "iobench_raw_removed: partitioning.iobench_raw_gb was removed; delete the key"
+        )
     if root_fs == "btrfs":
         _validate_btrfs_raw_plan(
             partitioning,
             schema_version=schema_version,
             swap_policy=swap_policy,
             swap_partition_count=swap_partition_count,
+            run_io_benchmark=run_io_benchmark,
         )
     if (
         schema_version == LEGACY_SCHEMA_VERSION
@@ -821,8 +812,8 @@ def plan_pool(
 ) -> PoolPlan:
     """Lay out root + data partitions contiguously from `root_start` to `pool_end` (first swap start, aligned).
 
-    Percent is a share of the pool after subtracting the raw iobench partition
-    and any fixed reserve (with root `keep`: the pool behind the kept root).
+    Percent is a share of the pool after subtracting any fixed reserve (with
+    root `keep`: the pool behind the kept root).
     Every boundary is 1 MiB aligned; the `*` entry (root, data partition, PV,
     or reserve) absorbs every remainder, so nothing is left over. Raises
     LayoutPolicyError with the numbers on any problem.
@@ -831,8 +822,7 @@ def plan_pool(
     reserve_fixed = spec.reserve.value * SECTORS_PER_GIB if spec.reserve.kind == "gib" else 0
     reserve_star = spec.reserve.is_star
     data = spec.data.entries()
-    raw_sectors = (spec.iobench_raw_gb or 0) * SECTORS_PER_GIB
-    allocation_end = pool_end - raw_sectors
+    allocation_end = pool_end
     # entries in disk order: root first (unless keep, which is a fixed, exact size)
     names = ["root"] + [e.name for e in data]
     sizes = [spec.root] + [e.size for e in data]
@@ -845,7 +835,7 @@ def plan_pool(
     total = end_total - (cursor0 if keep else root_start)
     if total <= 0:
         raise LayoutPolicyError(
-            f"no space is left for the plan: swap, raw iobench ({spec.iobench_raw_gb or 0} GiB), and reserve_gb "
+            f"no space is left for the plan: swap and reserve_gb "
             f"take the disk down to {_gib(max(end_total, 0))} "
             f"while root starts at {_gib(root_start)}"
         )
@@ -918,7 +908,7 @@ def plan_pool(
         if leftover < 0:
             raise LayoutPolicyError(
                 f"the plan over-allocates the pool by {_gib(-leftover)}: {describe} do not fit into "
-                f"{_gib(total)} (swap and the raw iobench partition already take their space)"
+                f"{_gib(total)} (swap and reserve already take their space)"
             )
         reserve_sectors = leftover + reserve_fixed
         leftover = 0
@@ -936,16 +926,9 @@ def plan_pool(
                 f"{minimum // MIB_SECTORS} MiB (preserve_root_size_gb)"
             )
     reserve_start = allocation_end - reserve_sectors
-    raw_extent = (pool_end - raw_sectors, raw_sectors) if raw_sectors else None
     if keep:
-        extents = [*layout]
-        if raw_extent:
-            extents.append(raw_extent)
-        return PoolPlan(root_current_size, tuple(extents), reserve_start, reserve_sectors)
-    extents = [*layout[1:]]
-    if raw_extent:
-        extents.append(raw_extent)
-    return PoolPlan(layout[0][1], tuple(extents), reserve_start, reserve_sectors)
+        return PoolPlan(root_current_size, tuple(layout), reserve_start, reserve_sectors)
+    return PoolPlan(layout[0][1], tuple(layout[1:]), reserve_start, reserve_sectors)
 
 
 # ---- the LV planner -------------------------------------------------------------------------
