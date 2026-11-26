@@ -214,12 +214,11 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `cpu.planning_cap` | number | worker slice `cpu.max`, capped at `cpu.online + 1` | refuse; never default to `cores+1` |
 | `load1`,`load5`,`load15` | number | `/proc/loadavg` | `null`+reason; the host is not placed (never "assume idle") |
 | `memory.total_bytes`, `memory.available_bytes` | bytes | `/proc/meminfo` (`fleetd/src/fleetd/facts.py:267-290`) | `null`+reason; placement refuses |
-| `memory.host_reserve_bytes` | bytes | `/etc/fleetd/facts.toml` | `null`+reason; placement refuses |
+| `memory.host_reserve_bytes` | bytes | `/etc/fleetd/facts.toml` | `null`+reason; later host admission may require it, but today's planner does not read it |
 | `memory.swap_total_bytes`, `memory.swap_free_bytes` | bytes | `/proc/meminfo` | report only; never counted as capacity |
-| `psi.{cpu,memory,io}.{some,full}_avg10_pct` | percent | `/proc/pressure/*` (`fleetd/src/fleetd/facts.py:306-324`) | `null`+reason; planner refuses unknown (`fleetd/src/fleetd/plan.py:485-490`), remote-gate refuses unreadable (`scripts/netcup/runner/remote-gate.py:248-255`) |
-| `psi.*.avg60`, `psi.*.avg300` | percent | host-facts/1 reads avg10 only (`fleetd/src/fleetd/facts.py:306-324`) | `not-collected`; /2 uses avg10 for admission |
+| `psi.{cpu,memory,io}.{some,full}_avg{10,60,300}_pct` | percent | `/proc/pressure/{cpu,memory,io}` | missing line, malformed value, or value outside 0–100 → `null`+reason; admission uses avg10 only, and today's planner requires only memory/io `some_avg10` |
 | `gate_slice.memory_current_bytes`, `.memory_warm_bytes`, `.memory_high_bytes`, `.memory_max_bytes`, `.cpu_max` | bytes, quota/period | cgroup v2; warm is current minus `memory.stat[inactive_file]` | missing inputs → `null`+reason; refuse placement |
-| `disks[]` | `{name,mount,total_bytes,free_bytes,fs,floor_bytes}` | `statvfs`; checkout and Docker roots plus per-host `/etc` floors | `null`+reason; refuse that host |
+| `disks[]` | `{name,mount,total_bytes,free_bytes,fs,floor_bytes}` | `statvfs`; checkout and Docker roots plus per-host `/etc` floors | `null`+reason; later host admission applies disk policy, but today's planner does not read disks |
 | `cgroup_v2.mounted`, `cgroup_v2.controllers` | bool, list | mountinfo | refuse (admission and the guard both need it) |
 | `kernel_interfaces.*`, `ksm.*` | bools, ints | kept from /1 | `null`+reason, never a synthetic 0 |
 | `control_plane.slice`, `.present`, `.cpu_weight`, `.memory_min_bytes`, `.service_memory_min` | as /1 (`fleetd/src/fleetd/contracts.py:464-506`) | `systemctl show`, `/etc/fleetd/facts.toml` | defaults (`fleetd/docs/SPEC.md:100-160`); 768 MiB profile only with no service fact |
@@ -227,14 +226,12 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `guard.guard_state` | `off|report|enforce|unknown` | guard runtime file (`fleetd/src/fleetd/facts.py:517-522`) | omitted with reason; never `off` by default |
 | `guard.config_digest` | sha256 hex | `/etc` bytes incl. drop-ins (`fleetd/src/fleetd/facts.py:440-514`) | `null`+reason |
 | `guard.frozen_units` | int | **hostobs** freeze/thaw events (§6) | `null`+reason; `frozen = frozen_units > 0` is then `null`, not `false` |
-| `freeze.since_utc`, `freeze.by`, `freeze_reason` | time, strings | hostobs events | `not-collected` until thrashguard P4 |
-| `freeze.queued` | int | none (agctl draft has no source, `agctl-estate-snapshot-draft.md:38-39`) | `not-collected` |
+| `freeze.since_utc`, `freeze.by`, `freeze_reason` | time, strings | hostobs events | `null`+reason `not-collected until thrashguard P4` |
+| `freeze.queued` | int | none (agctl draft has no source, `agctl-estate-snapshot-draft.md:38-39`) | `null`+reason `not-collected` |
 | `policy.host_role`, `.psi_refuse_some_avg10`, `.max_lane_containers` | as /1 (`fleetd/src/fleetd/contracts.py:510-524`) | `/etc/fleetd/facts.toml` | role null → refuse (`fleetd/src/fleetd/plan.py:480-483`) |
-| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors` | number, class, bytes | optional `/etc/fleetd/facts.toml` host policy | missing value → `null`+reason; host admission consumes these later, current planner does not require them |
-| `policy.max_upload_bytes` | bytes | required `/etc/fleetd/facts.toml` | null+reason; refuse `put` |
-| `policy.admission` | `{queue_path, wait_s, settle_s}` | host config | refuse; admission is not optional |
+| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors`, `.max_upload_bytes`, `.admission` | number, class, bytes, admission settings | optional `/etc/fleetd/facts.toml` host policy | missing value → `null`+reason; later host admission consumes these optional settings, current planner does not require them |
 | `queue.planned_cores`, `.charged_bytes`, `.waiting` | number, bytes, count | host agent's admission book | `null`+reason |
-| `jobs[]` | `{id,state,requested_by,resources,started_utc,progress_done,progress_total,progress_unit,last_progress_utc}` | `jobs/` dir | `null`+reason (today's `jobs_reason`, `fleetd/src/fleetd/facts.py:735-736`) |
+| `jobs[]` | `{id,state,requested_by,resources,started_utc,progress_done,progress_total,progress_unit,last_progress_utc}` | `jobs/` dir | `null`+reason `not-collected` |
 | `tools[]` | as /1 | probes | `null`+reason |
 
 **Changes this design asks of the draft's rows** (`.controller-state/platform/design/agctl-estate-snapshot-draft.md`), named for the agctl owner: the draft's

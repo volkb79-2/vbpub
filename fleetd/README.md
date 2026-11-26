@@ -203,10 +203,15 @@ the host profile's fixed constant only when no per-service fact exists at all;
 each host plan carries `reserve_services` provenance. See the
 [facts and planning contract](docs/SPEC.md#facts-collection).
 
-Serialized campaign inputs use `host-facts/1`, `work-request/1`,
+`fleet facts collect` also requires installed `fleetd` distribution metadata
+from the wheel. A source-only checkout without `.dist-info` is refused with
+`fleetd agent version metadata is unavailable`; it does not invent a version.
+
+Serialized campaign inputs use `host-facts/2`, `work-request/1`,
 `candidate-table/1`, and `fleet-host-set/1`. `assay-merge-manifest/1` is
 assay's owner-manifest contract (B544, and B565's `owner-manifest` policy);
-fleetd no longer validates it. The `fleet`
+fleetd no longer validates it. `fleet facts validate` accepts `host-facts/1`
+only for this one migration release; planning consumes `/2` only. The `fleet`
 command itself is registered with the shared `cli-extended` library, its one
 runtime dependency (see [the CLI and install section](docs/SPEC.md#host-install-and-the-wheel-layout));
 all other imports are the Python standard library. The registered `r0-r1` lane runs

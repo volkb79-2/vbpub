@@ -74,9 +74,10 @@ carries the per-unit provenance (`reported` / `default` / `absent-optional`)
 so the plan evidence shows exactly which term produced each service's
 contribution. The fixed profile constant survives only for the
 no-per-service-fact case (a facts root that queried no service, or a table that
-never arrived), and the collector now emits `service_memory_min_reason` there
-rather than six null rows, so "collection failed" is a stated fact rather than
-an inference from an empty-looking table.
+never arrived). For `/2`, the collector still emits six service rows, with a
+null reason on each unqueried `memory_min_bytes` and `load_state`; it does not
+emit `control_plane.service_memory_min_reason`. That optional-table field is
+retained only by the `/1` compatibility validator.
 
 Two sanity bounds are DERIVED from the same table rather than hand-tuned
 beside it: one service above 4 x its own documented floor, or a total above

@@ -82,7 +82,8 @@ New host-owned settings are optional so rollout does not invent policy:
 `admission`. Missing settings become null facts with a source-specific reason.
 `policy.host_reserve_bytes` is emitted as `memory.host_reserve_bytes` so this
 quantity has one name. These additions do not change the current planner's
-inputs or placement formulas.
+inputs or placement formulas: it does not require `memory.host_reserve_bytes`
+or `disks`; later host admission owns those checks.
 
 The collector exports only the benchmark's matching model and online-CPU
 count. It accepts measured Geekbench 6/7 records with their matching reference
@@ -105,8 +106,10 @@ planning ignores it. The bounded
 `service_memory_min` entry per service, and each entry may carry the unit's
 systemd `load_state` (`null` with a reason when it was not queried). `0`,
 `infinity`, unset, and failed queries are not reported positive values. A
-fixture root queries no unit, so the table is absent and
-`control_plane.service_memory_min_reason` says why.
+fixture root with no injected systemd readers still emits all six service rows;
+each unavailable `memory_min_bytes` and `load_state` is null with its own
+reason. `/2` does not emit `control_plane.service_memory_min_reason`; that
+optional-table shape is retained only by the `/1` compatibility validator.
 
 The planner resolves ONE term per listed service and sums those terms:
 
@@ -598,6 +601,10 @@ source checkout — is what a host needs. `fleetd`
 declares `cli-extended>=0.5.0` as a real wheel dependency (never vendored, never
 put on `sys.path`); 0.5.0 is the library revision the registered gate image
 installs, so the host and the gate run the same contract.
+Collection also requires installed `fleetd` distribution metadata from that
+wheel. A source-only checkout without `.dist-info` is refused with
+`fleetd agent version metadata is unavailable`; the collector does not invent
+an agent version.
 
 `cli-extended` is published on GitHub Releases only (the bare name is unclaimed
 on PyPI), and the fleetd wheel does not vendor it, so both wheels come from the

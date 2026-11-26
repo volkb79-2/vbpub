@@ -101,8 +101,12 @@ def test_public_doc_links_and_anchors_resolve():
 
 def test_docs_keep_the_first_week_boundary_and_closed_vocabularies_visible():
     combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
-    for value in ("candidate", "worker", "run", "host-facts/1", "work-request/1", "assay-merge-manifest/1"):
+    for value in ("candidate", "worker", "run", "host-facts/1", "host-facts/2", "work-request/1", "assay-merge-manifest/1"):
         assert value in combined
+    readme = (PROJECT / "README.md").read_text(encoding="utf-8")
+    assert "Serialized campaign inputs use `host-facts/2`" in readme
+    assert "`fleet facts validate` accepts `host-facts/1`" in readme
+    assert "only for this one migration release" in readme
     assert "no daemon" in combined.lower()
     assert "--only-candidates FILE" in combined
 

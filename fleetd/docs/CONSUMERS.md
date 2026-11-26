@@ -274,6 +274,10 @@ The input envelopes are closed and versioned. Candidate files use
 candidate-table/1; host files use fleet-host-set/1. The host envelope
 contains { "id", "facts", "other_running" } per host, with optional f_h.
 facts is a validated host-facts/2 record from fleet facts collect.
+The planner reads `/2` `cpu.online` and `memory.total_bytes`, and refuses
+`/1`; legacy `/1` `cpu.for_lanes` and `memory.for_lanes_bytes` are therefore
+accepted only by `fleet facts validate` during the migration release and no
+longer affect placement.
 other_running is always explicit (use [] when empty) and each row gives the
 job id, expected memory charge, worker count, and container count. Every
 running name present in facts.jobs must be represented. f_h defaults to 1.0
