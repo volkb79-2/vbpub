@@ -1,6 +1,7 @@
 //! The cgroupfs readers against the committed fixture tree the sampler proved its
 //! collectors on (`crates/kernel/tests/fixtures/cgroupfs`, copied from
-//! `topos/tests/fixtures/cgroupfs` in the sampler worktree).
+//! `topos/tests/fixtures/cgroupfs` in the sampler worktree). Standalone parser files live
+//! under `cgroupfs-files/`, outside the recursively walked cgroup tree.
 //!
 //! The tree is the sampler's own fixture, so these tests assert the *same facts* the
 //! sampler asserted on the same bytes, and they add the behaviours plan v4 requires to
@@ -22,8 +23,19 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cgroupfs")
 }
 
+fn state_fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cgroupfs-files/state")
+}
+
 fn read(name: &str) -> Vec<u8> {
     let path = fixtures().join(name);
+    RealFs::new()
+        .read(&path, Bounds::POLICY.max_file_bytes)
+        .unwrap_or_else(|error| panic!("{name}: {error}"))
+}
+
+fn read_state(name: &str) -> Vec<u8> {
+    let path = state_fixtures().join(name);
     RealFs::new()
         .read(&path, Bounds::POLICY.max_file_bytes)
         .unwrap_or_else(|error| panic!("{name}: {error}"))
@@ -147,14 +159,14 @@ fn memory_stat_and_events_keep_every_key_the_files_write() {
 
 #[test]
 fn freezer_state_parsers_read_zero_one_and_frozen_but_empty() {
-    let thawed = parse_single_u64("cgroup.freeze", &read("state/cgroup.freeze.zero"))
+    let thawed = parse_single_u64("cgroup.freeze", &read_state("cgroup.freeze.zero"))
         .expect("cgroup.freeze zero");
     assert_eq!(thawed.u64(), Some(0));
-    let frozen = parse_single_u64("cgroup.freeze", &read("state/cgroup.freeze.one"))
+    let frozen = parse_single_u64("cgroup.freeze", &read_state("cgroup.freeze.one"))
         .expect("cgroup.freeze one");
     assert_eq!(frozen.u64(), Some(1));
 
-    let events = parse_cgroup_events(&read("state/cgroup.events.frozen-empty"), Bounds::POLICY)
+    let events = parse_cgroup_events(&read_state("cgroup.events.frozen-empty"), Bounds::POLICY)
         .expect("cgroup.events frozen but empty");
     assert_eq!(events.u64("cgevents.frozen"), Some(1));
     assert_eq!(events.u64("cgevents.populated"), Some(0));
@@ -162,7 +174,7 @@ fn freezer_state_parsers_read_zero_one_and_frozen_but_empty() {
 
 #[test]
 fn an_unparseable_cgroup_event_only_marks_its_metric_unreadable() {
-    let events = parse_cgroup_events(&read("state/cgroup.events.unparseable"), Bounds::POLICY)
+    let events = parse_cgroup_events(&read_state("cgroup.events.unparseable"), Bounds::POLICY)
         .expect("valid keyed lines remain readable");
     assert_eq!(
         events.quality("cgevents.frozen"),
@@ -184,6 +196,34 @@ fn a_cgroup_event_above_one_is_unreadable_and_an_empty_file_is_refused() {
     assert_eq!(events.u64("cgevents.frozen"), Some(1));
 
     assert!(parse_cgroup_events(b"", Bounds::POLICY).is_err());
+}
+
+#[test]
+fn a_duplicate_cgroup_event_is_unreadable_without_poisoning_other_keys() {
+    let events = parse_cgroup_events(b"populated 0\nfrozen 0\nfrozen 1\n", Bounds::POLICY)
+        .expect("keyed lines remain readable");
+
+    assert_eq!(
+        events.quality("cgevents.frozen"),
+        Some(QualityCode::Unreadable)
+    );
+    assert_eq!(events.u64("cgevents.frozen"), None, "no chosen duplicate");
+    assert_eq!(events.quality("cgevents.populated"), Some(QualityCode::Ok));
+    assert_eq!(events.u64("cgevents.populated"), Some(0));
+}
+
+#[test]
+fn memory_event_duplicates_keep_the_existing_first_entry_behavior() {
+    let events = parse_memory_events(
+        "memev.",
+        "memory.events",
+        b"high 2\nhigh 3\n",
+        Bounds::POLICY,
+    )
+    .expect("keyed lines remain readable");
+
+    assert_eq!(events.len(), 2, "the generic parser keeps both entries");
+    assert_eq!(events.u64("memev.high"), Some(2), "lookup remains first-wins");
 }
 
 #[test]

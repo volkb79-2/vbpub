@@ -4,8 +4,9 @@
 //! `read_cg`/`limit_vals`/`is_bottom`) with the behaviours plan v4 requires to change.
 //! Every reader takes the parsed text and returns [`Readings`] — keyed, typed readings —
 //! or a [`KernelError`] that states why the file could not be used. Nothing here touches
-//! the filesystem: [`read_file`] is the only bridge, so the fixtures under
-//! `crates/kernel/tests/fixtures/cgroupfs/` drive the same code the probe will.
+//! the filesystem: [`read_file`] is the only bridge, so the cgroup tree under
+//! `crates/kernel/tests/fixtures/cgroupfs/` and standalone files under
+//! `crates/kernel/tests/fixtures/cgroupfs-files/` drive the same code the probe will.
 //!
 //! # Contracts (the plan's quality rule)
 //!
@@ -35,6 +36,7 @@
 //!   the text kept for a human.
 
 use core::fmt;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::fs::{Fs, FsError};
@@ -392,7 +394,9 @@ pub fn parse_memory_events(
 ///
 /// This uses the same keyed event parser as `memory.events`; an unparseable value is
 /// unreadable only for the metric named by that line. Every `cgroup.events` value is a
-/// boolean, so a number above 1 is unreadable too, never a measured state.
+/// boolean, so a number above 1 is unreadable too, never a measured state. A repeated key
+/// is unreadable because it does not identify one state. This stricter rule is local to
+/// this parser; `parse_memory_events` keeps its existing first-entry lookup behavior.
 ///
 /// `cgevents.frozen` is the effective state, which a frozen ancestor also sets.
 /// `cgroup.freeze` is the cgroup's own setting. The two can differ.
@@ -409,8 +413,14 @@ pub fn parse_cgroup_events(text: &[u8], bounds: Bounds) -> Result<Readings, Kern
         });
     }
     let mut readings = Readings::new();
+    let mut seen = BTreeSet::new();
     for entry in parsed.entries {
-        if entry.reading.u64().is_some_and(|raw| raw > 1) {
+        if !seen.insert(entry.metric.clone()) {
+            readings
+                .entries
+                .retain(|existing| existing.metric != entry.metric);
+            readings.missing(entry.metric, QualityCode::Unreadable);
+        } else if entry.reading.u64().is_some_and(|raw| raw > 1) {
             readings.missing(entry.metric, QualityCode::Unreadable);
         } else {
             readings.entries.push(entry);
