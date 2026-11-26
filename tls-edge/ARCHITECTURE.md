@@ -1010,7 +1010,7 @@ a second gate that is harder to satisfy accidentally.
 | sniStrict rejects SNI-less clients | Bare-IP probes, some uptime checkers, and `openssl s_client` without `-servername` are rejected | Expected and desirable; disable `sniStrict` in `conf.d/options.yml` only if such clients must be served |
 | HTTP listener in the shipped defaults | The edge answers on a second public port | Use `tls-edge configure` to disable it for an installed instance; `acme-http` then cannot be used |
 | Router name uniqueness is operator-enforced | Two stacks using the same router name will conflict | Naming convention adopted in examples: `<stack>-<service>` |
-| App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh` |
+| App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh --ops-check <network> <container> <port>` (add `--no-canary` while 4.0.0's canary is unfixed, §15) |
 | Single Traefik instance is a SPOF | If Traefik crashes, all public services are unreachable | `restart: unless-stopped` mitigates transient failures; HA Traefik requires Swarm or Kubernetes |
 | `ingress_public` east-west visibility | Containers on ingress can attempt connections to each other | Keep ingress membership minimal; strict isolation needs host firewall rules installed by the host |
 | Static config changes (log level, entrypoints, ACME) require re-render + restart | No live override via env vars once config file is mounted | Re-render via ciu (or `tools/render.sh` for a maintainer trial), then `docker compose restart traefik` |
