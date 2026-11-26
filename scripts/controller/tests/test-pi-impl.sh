@@ -2461,7 +2461,8 @@ check_rule_file_missing_refused() {
     rm -rf "$mutilated"; mkdir -p "$mutilated"
     ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
     rm -f "$mutilated/implementer-prompt-rules.md" "$mutilated/review-prompt-rules.md"
-    cp -a -- "$SHIM_DIR" "$mutilated/pi-shims" 2>/dev/null || :
+    rm -f "$mutilated/pi-shims"
+    cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
     expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
       PI_RUN_MODE=$mode "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" "rules-missing-$mode"
     contains "$ROOT/focused-command.out" "pi $mode prompt rule file is missing or unreadable" \
@@ -3239,7 +3240,8 @@ PY
       rm -rf "$mutilated"; mkdir -p "$mutilated"
       ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
       rm -f "$mutilated/pi-review-argv"
-      cp -a -- "$SHIM_DIR" "$mutilated/pi-shims" 2>/dev/null || :
+      rm -f "$mutilated/pi-shims"
+      cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
         PI_RUN_MODE=review "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" mode-no-argv
       contains "$ROOT/focused-command.out" 'the review argv file is missing or unreadable' \
@@ -3253,7 +3255,8 @@ PY
       rm -rf "$mutilated"; mkdir -p "$mutilated"
       ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
       rm -f "$mutilated/pi-review-argv"; : > "$mutilated/pi-review-argv"
-      cp -a -- "$SHIM_DIR" "$mutilated/pi-shims" 2>/dev/null || :
+      rm -f "$mutilated/pi-shims"
+      cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
         PI_RUN_MODE=review "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" mode-empty-argv
       contains "$ROOT/focused-command.out" 'the review argv file is empty' \
