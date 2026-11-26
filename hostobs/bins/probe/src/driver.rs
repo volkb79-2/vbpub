@@ -1203,10 +1203,7 @@ mod tests {
     fn control_character_comm_is_omitted_but_non_ascii_utf8_is_kept() {
         assert_eq!(parse_comm(b"\x1b]0;x\x07\n"), None);
         assert_eq!(parse_comm(b"a\nb"), None);
-        assert_eq!(
-            parse_comm("café\n".as_bytes()),
-            Some(String::from("café"))
-        );
+        assert_eq!(parse_comm("café\n".as_bytes()), Some(String::from("café")));
     }
 
     #[test]
@@ -1228,11 +1225,7 @@ mod tests {
             Ok((10, 23, true))
         });
         assert_eq!(key, Some(CgroupKey { dev: 10, inode: 23 }));
-        assert_eq!(
-            identity_calls,
-            65,
-            "root plus 64 membership components"
-        );
+        assert_eq!(identity_calls, 65, "root plus 64 membership components");
 
         let sixty_five = format!("0::/{}", vec!["x"; 65].join("/"));
         identity_calls = 0;
@@ -1242,8 +1235,7 @@ mod tests {
         });
         assert_eq!(key, None);
         assert_eq!(
-            identity_calls,
-            0,
+            identity_calls, 0,
             "over-depth paths are refused before stat"
         );
     }
@@ -1273,11 +1265,7 @@ mod tests {
             Ok((10, 23, true))
         });
         assert_eq!(key, None);
-        assert_eq!(
-            identity_calls,
-            0,
-            "oversized reads are refused before stat"
-        );
+        assert_eq!(identity_calls, 0, "oversized reads are refused before stat");
     }
 
     #[test]
