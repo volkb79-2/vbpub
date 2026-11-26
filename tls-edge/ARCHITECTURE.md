@@ -403,18 +403,22 @@ place; that template is authoritative and this block must agree with it:
 ```
 CONTAINERS: 1   # read container metadata
 NETWORKS:   1   # read network info
+EVENTS:     1   # read the event stream the Docker provider watches
 SERVICES:    1   # read swarm service metadata (no-op on standalone Docker)
 TASKS:       1   # read swarm task metadata (no-op on standalone Docker)
 POST:        0   # DENY all mutating calls
 ```
 
 No other endpoint is enabled, and **all write operations are denied globally by
-that `POST: 0`** before the request ever reaches the Docker daemon.  This block
-records the shipped configuration, not a claim that it is the whole set of
-endpoints Traefik can use: the Docker provider is configured with `watch: true`
-(`ciu-stack/traefik.yml.j2:116`) while `EVENTS` is not enabled above, so whether
-containers created after Traefik starts are routed is unverified -- tracked as
-TE-14.
+that `POST: 0`** before the request ever reaches the Docker daemon.  `EVENTS` is
+what makes the Docker provider's `watch: true` (`ciu-stack/traefik.yml.j2:116`)
+do anything: the socket proxy is the only holder of `/var/run/docker.sock`, so
+without it every container started after Traefik is not routed.
+`docker-socket-proxy:v0.5.0` already defaults `EVENTS` to `1`; the instance sets
+it explicitly so a change of that default cannot silently stop new containers
+from being routed.  Verified on r1002 on 2026-11-26 (tls-edge 4.0.0): a labelled
+container was routed about 1 s after start and unrouted about 1 s after `docker
+stop`, with Traefik restarts still 0 (TE-14, closed).
 
 ### Blast radius analysis
 
@@ -822,14 +826,22 @@ If two services share a hostname and a path prefix:
 
 ### Codified check suite
 
-`scripts/verify.sh` is the canonical verification tool.  It checks:
-- Template freshness (rendered files match the templates).
-- Docker socket proxy policy (POST is denied, required reads are allowed).
-- TLS certificate loaded and not the Traefik self-signed default cert.
-- Canary route end-to-end connectivity.
-- Ops isolation probe (ops port unreachable from a peer container).
+`scripts/verify.sh` is the canonical verification tool.  It checks, in order: the
+bundled `<root>/ciu check`; that `docker compose config -q` accepts the rendered
+stack; both containers' health; `ingress_public` and the internal network; the
+socket-proxy policy (GET allowed, POST refused); the HTTP redirect (when
+`expose_http = true`); the served certificate (not Traefik's self-signed
+default); the ACME volume or static cert file; the canary route through
+`websecure`; the access-log JSON format; and the `--ops-check` isolation probe.
 
-Run it after any configuration change before declaring the deployment healthy.
+Run it after any configuration change before declaring the deployment healthy --
+with `--no-canary` until 4.0.1.  4.0.0's canary routes `verify.<--domain>` on
+`websecure` without router-level `tls=true`, so the entrypoint's `certResolver`
+orders a REAL certificate for that name (public CT entry and a CA rate-limit
+count) and then probes 5 s later, before issuance finishes.  Its check 5 cannot
+pass (a single-quoted probe drops the proxy name) and the EXIT trap calls an
+undefined `cleanup_tmp`, so a run that reaches the canary exits 127.  The
+operator-visible summary is in `KNOWN_ISSUES_TODO_BACKLOG.md`; the fix is TE-15.
 
 ### Route registration audit
 
