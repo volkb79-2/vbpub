@@ -165,8 +165,7 @@ fn assert_refusal_detail(spec: &Json, error: &ProtoError, name: &str) {
         | ProtoError::EventFieldBound { field }
         | ProtoError::EventText { field } => {
             assert_eq!(
-                *field,
-                expected_field,
+                *field, expected_field,
                 "{name}: refusal field matches description"
             );
             assert!(
@@ -176,8 +175,7 @@ fn assert_refusal_detail(spec: &Json, error: &ProtoError, name: &str) {
         }
         ProtoError::EventOrder { field, index } => {
             assert_eq!(
-                *field,
-                expected_field,
+                *field, expected_field,
                 "{name}: refusal field matches description"
             );
             let described_index = spec

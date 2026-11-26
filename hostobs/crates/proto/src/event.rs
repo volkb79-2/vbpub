@@ -1145,8 +1145,7 @@ mod tests {
         end.span = 1;
         end.outcome = 1;
         end.inferred = true;
-        let end_body = encode_event_payload(&end)
-            .expect("an inferred end is valid");
+        let end_body = encode_event_payload(&end).expect("an inferred end is valid");
         assert_eq!(decode_event_payload(&end_body), Ok(end));
 
         for kind in [1, 3] {
@@ -1164,8 +1163,8 @@ mod tests {
             );
 
             event.inferred = false;
-            let mut body = encode_event_payload(&event)
-                .expect("the event without inferred is valid");
+            let mut body =
+                encode_event_payload(&event).expect("the event without inferred is valid");
             body[42] = 1;
             assert_eq!(
                 decode_event_payload(&body).expect_err("inferred is invalid on this kind"),
@@ -1177,8 +1176,7 @@ mod tests {
     #[test]
     fn text_controls_are_rejected_and_printable_edges_are_accepted() {
         for byte in [0x1f, 0x7f] {
-            let mut body = encode_event_payload(&minimal_event())
-                .expect("valid event body");
+            let mut body = encode_event_payload(&minimal_event()).expect("valid event body");
             let layout = super::parse_layout(&body).expect("valid event layout");
             body[layout.strings[1].start] = byte;
             assert_eq!(
@@ -1197,8 +1195,7 @@ mod tests {
         for byte in [0x20, 0x7e] {
             let mut event = minimal_event();
             event.key = char::from(byte).to_string();
-            let body = encode_event_payload(&event)
-                .expect("printable edge is accepted");
+            let body = encode_event_payload(&event).expect("printable edge is accepted");
             assert_eq!(decode_event_payload(&body), Ok(event));
         }
 
@@ -1225,8 +1222,7 @@ mod tests {
             Err(ProtoError::EventFieldBound { field: "key" })
         );
 
-        let mut body = encode_event_payload(&minimal_event())
-            .expect("valid event body");
+        let mut body = encode_event_payload(&minimal_event()).expect("valid event body");
         let layout = super::parse_layout(&body).expect("valid event layout");
         body[layout.strings[0].start] = 0x1f;
         body[layout.strings[1].start - 2..layout.strings[1].start]
@@ -1247,19 +1243,16 @@ mod tests {
                 value: String::new(),
             })
             .collect();
-        let mut unordered_body = encode_event_payload(&ordered)
-            .expect("ordered attrs encode");
-        let attr_layout = super::parse_layout(&unordered_body)
-            .expect("valid attrs layout");
+        let mut unordered_body = encode_event_payload(&ordered).expect("ordered attrs encode");
+        let attr_layout = super::parse_layout(&unordered_body).expect("valid attrs layout");
         let mut offset = attr_layout.attrs_start;
         let mut keys = Vec::new();
         for _ in &ordered.attrs {
             keys.push(
-                super::read_len_range(&unordered_body, &mut offset)
-                    .expect("attribute key range"),
+                super::read_len_range(&unordered_body, &mut offset).expect("attribute key range"),
             );
-            let _value = super::read_len_range(&unordered_body, &mut offset)
-                .expect("attribute value range");
+            let _value =
+                super::read_len_range(&unordered_body, &mut offset).expect("attribute value range");
         }
         let previous = unordered_body[keys[4].start..keys[4].end].to_vec();
         unordered_body[keys[5].start..keys[5].end].copy_from_slice(&previous);
