@@ -104,7 +104,7 @@ pub struct StaticUnit {
     /// The unit name a consumer recognises.
     pub name: String,
     /// The cgroup path, relative to the cgroup root (`dev-buildkitd.slice/...`)
-    /// or the scope name; resolved by [`crate::units`] like a registration.
+    /// or the scope name; resolved like a registration (subtask 3's `units` module).
     pub cgroup: String,
 }
 
