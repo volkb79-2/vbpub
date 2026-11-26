@@ -77,7 +77,9 @@ budget = "5m"
 # change starts from ALREADY carried that relative value together with
 # `env_passthrough = ["PATH", "PYTHONPATH"]`. The 186-record rejection
 # (2026-11-25, run rgw-r2-20261125T223500-r1002) therefore happened WITH the
-# relative value in place, and B577 records the cause as NOT identified.
+# relative value in place: the old lane ran with liveness on, Assay prepends a
+# per-run temp dir to PYTHONPATH then, and the passthrough fingerprinted it
+# (liveness.py:600-603, mutation.py:1601-1609; from code, not reproduced).
 # What still changes here: PYTHONPATH leaves `env_passthrough` entirely and
 # becomes DECLARED, so no passthrough value can carry a checkout path at all
 # and the identity is stable by construction rather than by a value that

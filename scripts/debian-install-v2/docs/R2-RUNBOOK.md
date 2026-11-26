@@ -20,7 +20,8 @@ ONE commit throughout: a store carries its plan. The judge is not only the tree:
 folds a fingerprint of every PRESENT `env_passthrough` value (`mutation.py:1603-1611`; this lane
 passes `PATH`) and `resource_sha256` folds `jobs` and the memory budget (`_judge_projection.py:255`).
 Every shard, merge and resume host needs the SAME `tester-unified` image (its `PATH` is part of the
-judge identity) and the SAME `--jobs`, or the merge sees a foreign judge:
+judge identity, so another value makes the merge see a foreign judge) and should use the same
+`--jobs` (that moves only `resource_sha256`):
 
 ```bash
 scripts/controller/hx.sh r1002 'docker image inspect tester-unified:local -f "{{.Id}}"'
@@ -54,6 +55,10 @@ Each shard is instance `r2.shard<K>of3` (verdict `.assay/verdict-r2.r2.shard<K>o
 
 ## 4. Merge on one host: the binding verdict
 
+Check the judge early: once shards 0/3 and 1/3 run, `assay_version=` must be equal in both lane
+logs. Before the merge, after unpacking, this must print exactly one line:
+`grep -rhoE '"judge_sha256": ?"[0-9a-f]{64}"' <unpack dir> | sort -u`
+
 `--merge-shards 3` never fabricates a store; Assay's strict `--merge-shard-store` refuses absent,
 duplicate, foreign-judge, changed-plan, incomplete or polluted stores. Unpack all three archives into
 one directory and seed the INNER path (members keep their `<rel>/` prefix; the stores are disjoint
@@ -61,20 +66,23 @@ one directory and seed the INNER path (members keep their `<rel>/` prefix; the s
 seed; 512 MiB default, far above these stores.
 
 ```bash
-SP=scripts/debian-install-v2; mkdir -p /tmp/v2-merge
-for a in <shard0> <shard1> <shard2>; do tar -xzf $a/assay-store.tgz -C /tmp/v2-merge; done
+SP=scripts/debian-install-v2; M=$(mktemp -d)   # fresh: stale files can make the merge refuse
+for a in <shard0> <shard1> <shard2>; do tar -xzf $a/assay-store.tgz -C $M; done
 scripts/controller/remote-gate.sh r1002 $SP r2 <sha> --base fdf60ffdc \
-  --seed-store /tmp/v2-merge/.run-gate/assay-shards/$SP=.run-gate/assay-shards/$SP \
+  --seed-store $M/.run-gate/assay-shards/$SP=.run-gate/assay-shards/$SP \
+  --collect-store .run-gate/assay-state/$SP \
   -- --merge-shards 3
 ```
 
 The MERGE run's `r2` verdict binds the commit; per-shard verdicts are inputs.
 
-## 5. Resume: the killed chunk, and the `budget_exceeded` rejudge
+## 5. Resume: an unfinished shard, and the `budget_exceeded` rejudge
 
 State dies with the checkout, so a later chunk is seeded from that shard's own archive, same
 `--shard K/3` and `--base` (unpack locally first; seed target = the INNER path). PLAIN form -- a
-KILLED chunk:
+shard that ENDED by itself and packed its store (a cancelled or killed run packs none, see below).
+The same form on a COMPLETE store is the campaign's resume proof; the merge run imports records and
+does not count them as `resumed_total`:
 
 ```bash
 RG="scripts/controller/remote-gate.sh"; SP=scripts/debian-install-v2
@@ -114,7 +122,7 @@ grep '"event":"resume"' \
 
 It must show `resumed_total > 0`; a judge mismatch is a cache miss, not an error. `resumed_total: 0`
 with `rejected_total: 186` was this lane's rejection on 2026-11-25, at a head whose `PYTHONPATH` was
-ALREADY checkout-relative (B577 records the cause as not identified); the earlier 14-record
+ALREADY checkout-relative (liveness then prepended a per-run temp dir to it); the earlier 14-record
 rejection was `2ea1912ca`'s absolute `{worktree}` `PYTHONPATH`, folded in via `env_passthrough`.
 
 A CANCELLED or killed remote run packs NO store and NO artifacts: `collect_stores` and

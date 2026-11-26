@@ -39,9 +39,9 @@ argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests
 # assay B577, run-gate RG-314).
 #
 # `.` is the project dir (what pytest adds anyway) and
-# `../../libraries/cowtree/src` is the repo path config's library: assay imports
-# cowtree to probe the btrfs cheap-clone workspace, so a lane missing it fails
-# with ModuleNotFoundError before the baseline. cli-extended is deliberately
+# `../../libraries/cowtree/src` is the repo path config's library, declared for
+# the TEST processes (this table is their environment, not the judge's).
+# cli-extended is deliberately
 # NOT here (AC-25): the tester-unified image installs the RELEASED cli-extended
 # wheel and the lane must test against that, not against the library checkout
 # (the same rule ciu/assay.toml:43-47 records).
@@ -54,7 +54,10 @@ env = { PYTHONPATH = ".:../../libraries/cowtree/src", PYTHONDONTWRITEBYTECODE = 
 # `env_passthrough = ["PATH", "PYTHONPATH"]` made checkout-relative by
 # c17b2f5f9, was the weaker guarantee and it did NOT restore resume -- the
 # 186-record rejection of 2026-11-25 happened at a head that already carried
-# that relative value, and B577 records the cause as not identified.
+# that relative value, because the old lane ran with liveness on (the default):
+# Assay prepends a per-run `assay-liveness-*` temp dir to PYTHONPATH
+# (liveness.py:600-603), and the passed-through effective value entered the
+# digest. Established from code and recorded fingerprints, not reproduced.
 env_passthrough = ["PATH"]
 # Sized in run-gate.toml [lanes.r2] (450m, 5m above this per R-59). Headroom for
 # slow or loaded hosts, not a measured need: complete 194-candidate runs took
@@ -123,6 +126,7 @@ budget_per_candidate = "10m"
 # kills a hung candidate -- but the two outcomes differ in what the operator
 # learns and what it costs: without liveness a hung candidate is recorded
 # exactly like a merely slow one and burns the full 600s ceiling, ten minutes
-# per attempt that a resumed run pays again. Turn it on when a campaign shows
+# per attempt, paid again only when the record is rejudged or the resource
+# digest moves. Turn it on when a campaign shows
 # one; see docs/R2-RUNBOOK.md.
 liveness = false

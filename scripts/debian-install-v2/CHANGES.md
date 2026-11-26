@@ -33,8 +33,10 @@ All notable changes to debian-install-v2 are recorded here.
   value existed from `c2d7d6729` to `2ea1912ca` and produced the 14-record
   rejection of 2026-11-24; `c17b2f5f9` made it relative the same evening and
   the base commit `f57ae80e2` already carried that relative value, so the later
-  186-record rejection of 2026-11-25 happened WITH it and assay B577 records
-  its cause as NOT identified.
+  186-record rejection of 2026-11-25 happened WITH it. Its cause (from code and
+  recorded fingerprints, not reproduced): the old lane ran with liveness on,
+  Assay prepends a per-run `assay-liveness-*` temp dir to `PYTHONPATH`, and the
+  passthrough fingerprinted that effective value, so every run was a new judge.
   cli-extended is deliberately NOT on that path: the tester-unified image installs
   the released wheel, so the lane tests against it (AC-25, as `ciu/assay.toml`
   does).
