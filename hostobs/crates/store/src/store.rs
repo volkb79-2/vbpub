@@ -777,7 +777,8 @@ impl Store {
         })
     }
 
-    /// Append one event to the events store (its own cap and ring, §A.4).
+    /// Append one event to the events store at its serve-side real timestamp (its own cap and
+    /// ring, §A.4).
     ///
     /// # Errors
     ///
@@ -787,11 +788,12 @@ impl Store {
         &mut self,
         event: &Event,
         payload: &[u8],
-        now_ns: i64,
+        real_ns: i64,
     ) -> Result<AppendOutcome, StoreError> {
-        let recorded = self.events.record(
+        let recorded = self.events.record_at(
             event,
             payload,
+            real_ns,
             self.config.epoch,
             self.config.dict_generation,
         );
@@ -800,7 +802,6 @@ impl Store {
         self.stats.records = self.stats.records.saturating_add(1);
         self.stats.note_eviction(&outcome.evicted);
         keep_notes(&mut self.eviction_notes, &outcome.evicted);
-        let _ = now_ns;
         Ok(outcome)
     }
 
@@ -1084,6 +1085,31 @@ mod tests {
             fstype: "ext4".to_string(),
             options: "rw".to_string(),
         }])
+    }
+
+    #[test]
+    fn open_refuses_a_disk_backed_tmpfs_path_before_creating_any_tier() {
+        let temp = TempDir::new("open-disk-tmpfs");
+        let expected_path = temp.path().join("tiers").display().to_string();
+        assert_eq!(
+            Store::open_with_mounts(config(&temp), Some(disk_everywhere())).map(|_| ()),
+            Err(StoreError::NotTmpfs {
+                tier: expected_path,
+                fstype: String::from("ext4"),
+            })
+        );
+        assert!(
+            !temp.exists("tiers"),
+            "tmpfs tier was created before refusal"
+        );
+        assert!(
+            !temp.exists("cold"),
+            "durable tier was created before refusal"
+        );
+        assert!(
+            !temp.exists("events"),
+            "events tier was created before refusal"
+        );
     }
 
     #[test]
@@ -1591,6 +1617,64 @@ mod tests {
         assert_eq!(inferred.len(), 1);
         assert_eq!(inferred[0].outcome, Some(Outcome::Abandoned));
         assert!(inferred[0].inferred);
+    }
+
+    #[test]
+    fn record_event_uses_its_real_time_argument_for_buckets_and_eviction() {
+        let temp = TempDir::new("event-real-time");
+        let mut store_config = config(&temp);
+        store_config.events.keep_s = 60;
+        let mut store =
+            Store::open_with_mounts(store_config, Some(tmpfs_everywhere())).expect("open");
+        let first = crate::events::Event::new_record(
+            EventKind::Point,
+            "point",
+            Some("first"),
+            7,
+            10,
+            1_000_000_000,
+            None,
+            0,
+            None,
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+        )
+        .expect("first event");
+        let first_frame =
+            hostobs_proto::event::encode_event_frame(&first.to_payload().expect("first payload"))
+                .expect("first frame");
+        let first_outcome = store
+            .record_event(&first, &first_frame, 61_000_000_000)
+            .expect("first record");
+        assert_eq!(first_outcome.segment, "events-60-0.seg.open");
+
+        let second = crate::events::Event::new_record(
+            EventKind::Point,
+            "point",
+            Some("second"),
+            7,
+            20,
+            121_000_000_000,
+            None,
+            0,
+            None,
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+        )
+        .expect("second event");
+        let second_frame =
+            hostobs_proto::event::encode_event_frame(&second.to_payload().expect("second payload"))
+                .expect("second frame");
+        let second_outcome = store
+            .record_event(&second, &second_frame, 181_000_000_000)
+            .expect("second record");
+        assert_eq!(second_outcome.segment, "events-180-1.seg.open");
+        assert_eq!(
+            second_outcome.evicted.segments,
+            vec![String::from("events-60-0.seg")]
+        );
+        assert_eq!(first.t_mono_ns, 10);
+        assert_eq!(second.t_mono_ns, 20);
     }
 
     #[test]

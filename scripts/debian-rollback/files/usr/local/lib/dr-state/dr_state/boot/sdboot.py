@@ -204,8 +204,8 @@ def _entry_refs(data: bytes) -> frozenset[str]:
 
 def _pair_id(
     version: str,
-    kernel_hash: str | None = None,
-    initrd_hash: str | None = None,
+    kernel_hash: str,
+    initrd_hash: str,
 ) -> str:
     if (
         _KERNEL_VERSION_RE.fullmatch(version) is None
@@ -1038,9 +1038,7 @@ class SdbootBoot:
         loader_old = self._loader_bytes()
         loader_new = self._rewrite_loader(ids.entry_id(default), loader_current)
         override = self._read_efivar(DEFAULT_EFIVAR, strict=False)
-        clear_default = (
-            clear_default_variable and override.present and override.readable
-        )
+        clear_default = clear_default_variable and override.present
 
         self._shrink(
             inventory,

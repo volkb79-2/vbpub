@@ -11,6 +11,7 @@ workspace = true
 hostobs-kernel = { path = "../../crates/kernel" }
 hostobs-model = { path = "../../crates/model" }
 hostobs-proto = { path = "../../crates/proto" }
+hostobs-store = { path = "../../crates/store" }
 hostobs-serve = { path = "../../crates/serve" }
 rustix.workspace = true
 toml.workspace = true

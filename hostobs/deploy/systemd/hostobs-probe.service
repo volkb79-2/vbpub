@@ -7,6 +7,11 @@ ExecStart=/usr/local/bin/hostobs-probe --config /etc/hostobs/hostobsd.toml
 Sockets=hostobs-observe.socket hostobs-operator.socket hostobs-observer.socket
 User=hostobs
 Group=hostobs
+RuntimeDirectory=hostobs/tiers
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+StateDirectory=hostobs/probe
+StateDirectoryMode=0700
 Restart=on-failure
 # Socket activation can retry a start-up refusal until the start limit.
 RestartPreventExitStatus=2
