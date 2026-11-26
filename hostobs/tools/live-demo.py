@@ -142,6 +142,72 @@ def tick_rows(lines: list[str]) -> tuple[list[tuple[int, str | None, str | None,
     return rows, None
 
 
+def close_line(lines: list[str]) -> tuple[int, str] | str:
+    """The client's `closed` line: `closed<TAB>blocks=<n><TAB>reason=<reason>`, nothing else."""
+    found = [line for line in lines if line.startswith("closed\t") or line == "closed"]
+    if len(found) != 1:
+        return f"expected one closed line, found {len(found)}"
+    parts = found[0].split("\t")
+    if len(parts) != 3 or parts[0] != "closed":
+        return f"closed line is not the client's contract form: {found[0]!r}"
+    blocks_text, _, blocks_value = parts[1].partition("=")
+    reason_text, _, reason = parts[2].partition("=")
+    if blocks_text != "blocks" or reason_text != "reason":
+        return f"closed line is not the client's contract form: {found[0]!r}"
+    try:
+        blocks = int(blocks_value)
+    except ValueError:
+        return f"closed line has no block count: {found[0]!r}"
+    return blocks, reason
+
+
+# The live reasons `end_reason_ok` accepts (crates/client/src/client.rs:190-196).
+LIVE_CLOSE_REASONS = {"unsubscribed", "client-eof"}
+
+
+def tick_sequence(
+    rows: list[tuple[int, str | None, str | None, str | None, str | None]],
+) -> list[tuple[int, int]]:
+    """(seq, row count) in first-appearance order, one entry per tick block."""
+    order: list[int] = []
+    counts: dict[int, int] = {}
+    for seq, _, _, _, _ in rows:
+        if seq not in counts:
+            order.append(seq)
+            counts[seq] = 0
+        counts[seq] += 1
+    return [(seq, counts[seq]) for seq in order]
+
+
+def row_rules(rows) -> str | None:
+    """The quality rules: a full row, a known code, and no number under a non-`ok` code."""
+    for _, _, metric, value, quality in rows:
+        if metric is not None and (value is None or quality is None):
+            return "row is missing its value or quality"
+    qualities = [quality for _, _, _, _, quality in rows if quality is not None]
+    unknown = next((quality for quality in qualities if quality not in QUALITY_CODES), None)
+    if unknown is not None:
+        return f"unknown quality code {unknown!r}"
+    for _, _, _, value, quality in rows:
+        if quality is not None and quality != "ok" and value != "<not-measured>":
+            return f"{quality} quality shows a value"
+    return None
+
+
+def operator_form(rows) -> str | None:
+    """Every operator tick line must be the client's full one-row form.
+
+    `watch` prints a full row (seq, entity, metric, value, quality) for a non-empty block and the
+    compact `tick<TAB>seq=N<TAB>rows=0<TAB>columns=0` form for an empty one. The compact form
+    carries no value and no quality, so it is not a measurement and must not satisfy the
+    operator stream: a level that resolved nothing would otherwise pass unremarked.
+    """
+    for _, entity, metric, value, quality in rows:
+        if entity is None or metric is None or value is None or quality is None:
+            return "operator tick line is not a client row"
+    return None
+
+
 def assess(transcript: str, expected_ticks: int) -> tuple[bool, str]:
     observe = section(transcript, WATCH_OBSERVE)
     operator = section(transcript, WATCH_OPERATOR)
@@ -164,20 +230,44 @@ def assess(transcript: str, expected_ticks: int) -> tuple[bool, str]:
     if seen != expected_ticks:
         return False, f"expected {expected_ticks} ticks, got {seen}"
 
+    sequence = tick_sequence(observe_rows)
+    for (earlier, _), (later, _) in zip(sequence, sequence[1:]):
+        if later != earlier + 1:
+            return False, f"tick sequence numbers are not consecutive: {earlier} then {later}"
+    first = sequence[0][1] if sequence else 0
+    for seq, count in sequence:
+        if count != first:
+            return False, f"tick seq={seq} has {count} rows where the first tick has {first}"
+
+    for lines, label, blocks_expected in (
+        (observe, "observe", expected_ticks),
+        (operator, "operator", 1),
+    ):
+        closed = close_line(lines)
+        if isinstance(closed, str):
+            return False, f"{label}: {closed}"
+        found_blocks, reason = closed
+        if found_blocks != blocks_expected:
+            return False, (
+                f"{label} closed line says blocks={found_blocks}, the client was asked for "
+                f"{blocks_expected}"
+            )
+        if reason not in LIVE_CLOSE_REASONS:
+            return False, (
+                f"{label} closed reason {reason!r} is not a reason the client accepts"
+            )
+
     operator_rows, error = tick_rows(operator)
     if error is not None:
         return False, error
     all_rows = observe_rows + operator_rows
-    for _, _, metric, value, quality in all_rows:
-        if metric is not None and (value is None or quality is None):
-            return False, "row is missing its value or quality"
-    qualities = [quality for _, _, _, _, quality in all_rows if quality is not None]
-    unknown = next((quality for quality in qualities if quality not in QUALITY_CODES), None)
-    if unknown is not None:
-        return False, f"unknown quality code {unknown!r}"
-    for _, _, _, value, quality in all_rows:
-        if quality is not None and quality != "ok" and value != "<not-measured>":
-            return False, f"{quality} quality shows a value"
+    violation = row_rules(all_rows)
+    if violation is not None:
+        return False, violation
+    # The operator stream is one tick of the same contract (N3), so its rows must be full rows.
+    violation = operator_form(operator_rows)
+    if violation is not None:
+        return False, violation
 
     cpu: dict[str, list[tuple[int, float]]] = {}
     for seq, entity, metric, value, quality in observe_rows:

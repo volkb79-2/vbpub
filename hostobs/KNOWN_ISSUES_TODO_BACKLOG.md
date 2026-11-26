@@ -49,12 +49,12 @@ holds the full bodies.
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
-| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | OPEN (closes at the HOB-63 live slice) |
+| HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | CLOSED (live slice shown on a VM 2026-11-24; see the entry) |
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
 | HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
 | HOB-61 | `json.rs` `skip_ws` / `string_end` `+=` to `*=` are pure infinite loops: suite-level TIMEOUT under `assay-r2` by nature (accepted known limit; expected 0 MISSED + 2 TIMEOUT) | Minor | OPEN (accepted; moot after HOB-68) |
 | HOB-62 | No production history, process or provenance source | Major | OPEN (2026-11-24 Opus design review) |
-| HOB-63 | M2 ordered consumer-first: P5-live slice before P5b-3 merges | Major | OPEN (2026-11-24 Opus design review) |
+| HOB-63 | M2 ordered consumer-first: P5-live slice before P5b-3 merges | Major | OPEN (live half closed by P-11; history half awaits P-17) |
 | HOB-64 | Workspace unification (crate half of plan P4) | Major | OPEN (2026-11-24 Opus design review) |
 | HOB-65 | No server-side pending requests | Major | OPEN (2026-11-24 Opus design review) |
 | HOB-66 | Probe process/thread model undocumented | Major | OPEN (2026-11-24 Opus design review) |
@@ -89,7 +89,10 @@ holds the full bodies.
 | HOB-95 | The `selftest` lane never builds or runs the example tests | Minor | OPEN (P-hostobs-11(a) r1/r2) |
 | HOB-96 | The `conformance` lane never exercises the live demo | Minor | OPEN (P-hostobs-11(a) r1/r2) |
 | HOB-97 | `watch`'s hello-derived interval default loses its reason and can refuse a legal hello | Minor | OPEN (P-hostobs-11(a) r2) |
-| HOB-98 | P-hostobs-11/P-12 residual doc, lane-comment and coverage-header nits | Minor | OPEN (P-hostobs-12 r1/r2, P-11(b) VM report) |
+| HOB-98 | P-hostobs-11/P-12 residual doc, lane-comment and coverage-header nits | Minor | PARTLY FIXED, rest OPEN ((e) closed by the P-11(b) follow-ups; (a)-(d) open) |
+| HOB-99 | The probe's self-overhead is unmeasured on native hardware with a release build | Major | OPEN (P-11(b) final review F1) |
+| HOB-100 | The next VM run must check the tightened verdict rules, the full model table, a reboot, a non-root operator member and the cgroup controller files | Minor | OPEN (P-11(b) final review F2/F5/F7) |
+| HOB-101 | `watch` prints the client's own loop count in its `closed` line, not the server's END `blocks`/`dropped` | Minor | OPEN (P-11(b) final review F6) |
 
 ---
 
@@ -706,6 +709,23 @@ with the reader and hub cases of WIRE.md §11.4 and one test per §5.2/§5.3 row
 now listed in §11.4 against a fake clock, with P5b-3 and P5b-4 still required for the remaining
 page and socketpair cases.
 
+**Closure (P-11(b), 2026-11-24).** CLOSED. The live slice ran on a Debian 13 guest with the
+shipped systemd units: both sockets active, `hello` at observe and operator, one `current`, 60
+consecutive subscription ticks with the same 102 rows on every tick, `closed blocks=60
+reason=unsubscribed`, one operator tick, and the probe stopping by `SIGTERM` with the verdict
+derived from the checks (`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:190-6315`;
+`runs/p11b-vm-demo.report.md`). The serving loop, the frame reader, the hub, the envelope checks and
+both clients therefore exist and are exercised end to end.
+
+*Scope of the closure.* The demo's selection was `watch`'s default, so **only `cpu.usage_usec`,
+`mem.current` and `pids.current` were exercised** (`crates/client/examples/watch.rs:22-23`). It did
+not exercise PSI, `io.stat`, `memory.stat`, the host `/proc` metrics, `probe.*`, a reboot (boot-time
+tmpfiles → sockets ordering), the operator-only differences, or a non-root operator-group member
+(P-11(b) final review F2). It is also a functional, not a performance, result: the probe was a
+debug build under QEMU emulation at 27.3 CPU-s per 59 s. Those two gaps are carried by
+**HOB-99** (a release build's self-overhead on native hardware) and **HOB-100** (the next VM run's
+full-table selection, one reboot and a non-root operator member), not by this entry.
+
 ## HOB-59 — A failing eviction drops the partial `Evicted`
 
 **Where:** `crates/store/src/tier.rs` (`Tier::append`, `Tier::evict`),
@@ -787,6 +807,19 @@ HOB-62's ceilings move to the P5c-history design.*
 
 **Exit criteria.** P-11 completes and demonstrates the live slice; P-17 delivers the producer-first
 history view and reconciles P5b-3. The live half closes at P-11 and the history half at P-17.
+
+**Closure (live half, P-11(b), 2026-11-24).** The live half of this entry is CLOSED: P-11 demonstrated
+the slice on a VM with the shipped units (`.controller-state/hostobs/evidence/p11b-vm-20261124/`,
+`runs/p11b-vm-demo.report.md`), and **HOB-54 closed with it**. The history half stays OPEN and
+unchanged: P-17 still owes the producer-first history view and the P5b-3 reconciliation.
+
+*Scope of the live half.* Only `cpu.usage_usec`, `mem.current` and `pids.current` were exercised
+(`crates/client/examples/watch.rs:22-23`, the demo's selection); PSI, `io.stat`, `memory.stat`, the
+host `/proc` metrics, `probe.*`, a reboot, the operator-only differences and a non-root
+operator-group member were not (P-11(b) final review F2). Performance was not measured either: the
+probe was a debug build under QEMU emulation, 27.3 CPU-s in 59 s. **HOB-99** carries the release
+build on native hardware and **HOB-100** the next run's full-table selection, reboot and non-root
+operator member; nothing in the live-half closure claims those.
 
 Source: .controller-state/design-review-2026-11-24/hostobs.md F1 (The plan builds three protocol packages against a fake before any real source or socket exists)
 
@@ -1312,16 +1345,141 @@ the gates judge, which is the kind of stale comment a future lane edit trusts.
 in a Python-scoped package, or P-18 if HOB-73 drops the generator first). (b): each line states its own
 lane's number — `:73` and `:117` six functional crates, `:167` and `:206` six judged crates, `:86`
 61 declared targets — or derives them from `assay.toml` rather than spelling them; the `56`
-predates P5b-2b/P-09/P-10 (`assay.toml:24-28`) while only the "four/five crates" wording is a P-12
-artifact. (c): the comment at `hub_fixtures.rs:11` is rewrapped under 100 columns with its path
-unchanged, proved by `fmt --check` plus a wrap check. (d): the `coverage-floors.toml` header separates
-the inherited floors from the own-tests floors. (e): LIVE-DEMO §(b) names the expected OK-with-flags
-entries from a fresh `systemd-analyze security` run on the shipped units and the overall `1.8 OK`, so
-a reviewer can tell expected flags from policy drift; the naming is backed by a recorded run, not by
-inference. `hostobs/CHANGES.md:199` also says "five judged crates"; it is a historical record of the
-P5b package, so it is left alone unless the same package chooses to fix it.
+predates P5b-2b/P-09/P-10 (`assay.toml:24-28`), the `four functional crates` went stale in
+P5a/P5b-1a (2026-11-18) when `crates/client/src` and `bins/probe/src` joined `assay-r1`, and only
+`five judged crates` is a P-12 artifact. (c): the comment at `hub_fixtures.rs:11` is rewrapped under
+100 columns with its path unchanged, proved by `fmt --check` plus a wrap check. (d): the
+`coverage-floors.toml` header separates the inherited floors from the own-tests floors. (e):
+`docs/LIVE-DEMO.md` §(b) names the expected ✗ entries from a fresh `systemd-analyze security` run
+on the shipped units and the overall `1.8 OK`, so a reviewer can tell expected flags from policy
+drift; the naming is backed by a recorded run, not by inference — the 17 `✗` entries and the
+`1.8 OK` summary are now listed and cited to the run's transcript
+(`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6334-6418`).
+`hostobs/CHANGES.md:199` also says "five judged crates"; it is a P5b-era record of the R2 lane, so
+it is left alone unless the same package chooses to fix it.
+
+**Status.** (e) is CLOSED by the P-hostobs-11(b) follow-ups: `docs/LIVE-DEMO.md` §(b) now lists the
+17 expected `✗` entries with why each is deliberate, the `64 ✓` count and the `1.8 OK` score, cited
+to the recorded run. (a), (b), (c) and (d) remain OPEN, unchanged.
 
 Source: `reviews/p12-r1-3e8ce04b4.md` notes "Stale counts in `run-gate.toml`" and "Stale Python
 docstrings"; `reviews/p12-r2-eb9151fd5.md` Nit 5 and new Nit 8; `reviews/p11a-r2-dda3fe69f.md`
 candidate 4 (the `systemd-analyze` evidence request, which r1 makes at `:152`);
 `runs/p11b-vm-demo.report.md` "Deviations", follow-up candidate 1.
+
+## HOB-99 — The probe's self-overhead is unmeasured on native hardware with a release build
+
+**Where:** `bins/probe/src/sampler.rs` (the per-tick walk and `probe.ticks_skipped`),
+`bins/probe/src/live.rs:59` (`status.tick.scan_ms`), `docs/PROBE-PROCESS.md` (the missing budget
+line), and the first native run of the shipped unit.
+
+The only probe CPU figure that exists is a *debug* build under QEMU emulation:
+`/system.slice/hostobs-probe.service` `cpu.usage_usec` rose 4,041,647 →
+31,366,830 over 59 s (`evidence/p11b-vm-20261124/transcript.txt:240` seq=2 and `:6258` seq=61),
+27.3 CPU-s in 59 s, a median 434 ms per 1 s tick, 95 % of `system.slice`'s 28.8 s in the same
+window. The build was `Finished \`dev\` profile [unoptimized + debuginfo]`
+(`evidence/p11b-vm-20261124/artifacts/build.stderr:32,34`), not the `--release` build the brief
+asked for, and the guest ran under TCG. Nothing anywhere measures the probe's overhead on real
+hardware with an optimised binary, and thrashguard and agctl will run `hostobs-probe` permanently.
+
+**Impact.** A consumer cannot plan for a probe whose steady-state cost is unknown: a 434 ms
+median per 1 s tick is 43 % of one core, and a release build on native hardware may be one to two
+orders of magnitude cheaper or may be limited by the walk itself. The VM result must be read as
+functional, not as a performance result.
+
+**Exit criteria.** A release `hostobs-probe` (`--release`, recorded as such) runs natively on
+r1002 or v1001 with at least 30 cgroups and `tick_ms = 1000` for 60 s:
+
+- the unit's `cpu.usage_usec` delta over that window is recorded, in the same form as
+  `transcript.txt:240`/`:6258` (two tick rows with their seqs), not as a summary only;
+- the tick's `scan_ms` from `status` (`bins/probe/src/live.rs:57-60`) is recorded for the same
+  window, so CPU time per tick and the walk's own duration can be compared;
+- `probe.ticks_skipped` (`bins/probe/src/sampler.rs:390-391`) is shown as `0`, which is what a
+  well-fed sampler reports (the VM run's own `probe.ticks_skipped` row is the counter, not this);
+- `docs/PROBE-PROCESS.md` §(b) or §(h) states the measured budget (µs of CPU per tick and per
+  cgroup at `tick_ms = 1000`), so a later regression has a number to fail against.
+
+Source: `reviews/p11b-final-opus.md` F1 and P1 (the probe's own cost, 27.3 CPU-s in 59 s, debug
+build under TCG); `evidence/p11b-vm-20261124/transcript.txt:240,6258`;
+`evidence/p11b-vm-20261124/artifacts/build.stderr:32`.
+
+## HOB-100 — The next VM run must check the tightened verdict rules, the full model table, a reboot, a non-root operator member and the controller files
+
+**Where:** the guest checker (`evidence/p11b-vm-20261124/scripts/guest-check-attempt5.sh`), the demo
+selection (`crates/client/examples/watch.rs:22-23`, `--selection` at `:125-129`), the operator test
+identity, and the absent explanation in `docs/LIVE-DEMO.md`.
+
+Five gaps of the P-11(b) run, none of them a defect of that run:
+
+1. **The guest checker is narrower than `tools/live-demo.py`.** `scripts/guest-check-attempt5.sh:276`
+   accepts any line containing `blocks=60` (so `blocks=600` passes), it never asserts the close
+   *reason*, it counts distinct seq values without a rows-per-tick check, it does not require
+   consecutive seqs, and the operator stream is checked only by exit status plus
+   `grep -Fq $'closed\tblocks=1'` (`:361`), with no quality rules on its rows. A duplicated tick,
+   a tick short by ten rows and a replayed seq all replay PASS (r1 N2, N2b, N3).
+2. **One selection only.** The demo used `watch`'s default, so PSI, `io.stat`, `memory.stat`, the
+   host `/proc` metrics and `probe.*` were never exercised (final review F2).
+3. **No reboot.** The boot-time ordering of `systemd-tmpfiles-setup.service` vs
+   `hostobs-observe.socket`/`hostobs-operator.socket` was asserted from `systemctl cat` and
+   `AT_BOOT_*`, not from a second boot.
+4. **Operator access was tested as root.** `:355-365` runs the operator watch as root; the
+   contract says group membership is the access boundary, and no non-root member of
+   `hostobs-operator` connected.
+5. **The `absent` cells rest on the code path, not on the kernel's own witness.** Neither
+   `cgroup.controllers` nor `cgroup.subtree_control` appears anywhere in
+   `transcript.txt` (0 hits), so the `udev` half of the explanation is inferred from the
+   hierarchical `pids.current=1` on its parent.
+
+**Impact.** Each gap is covered in that run by content that was parsed independently, so the run's
+verdict stands. What is missing is a *checker* that would catch the same regression next time, and
+a run that exercises the rest of the model table. A future reuse of the checker inherits a
+verdict that can pass a transcript it should reject.
+
+**Exit criteria.** The next VM run, with the same exact-name and teardown discipline:
+
+- its checker asserts the `\t`-anchored `closed\tblocks=N\treason=unsubscribed` form with N equal
+  to the requested tick counts (60 and 1), minimum one `✗`-free rule set per stream: the
+  conditions now in `tools/live-demo.py` `assess()` (`close_line`, consecutive seqs, rows-per-tick
+  equality, and the quality rules for observe *and* operator), cited as the same conditions
+  rather than re-invented;
+- `hostobs-watch --selection` is given the full model table, so every registered metric appears
+  in at least one tick's columns (a tick with a shorter column set fails);
+- one reboot happens with the units enabled, and the transcript shows both sockets active before
+  the first connection after that boot;
+- a non-root identity in `hostobs-operator` completes one tick and a non-root identity outside
+  the group is refused, both recorded as exit codes;
+- `cat /sys/fs/cgroup/cgroup.controllers` and `.../cgroup.subtree_control` are captured for `/`
+  and for each cgroup that carries an `absent` cell, so `docs/LIVE-DEMO.md`'s `absent` table is
+  shown by the kernel rather than inferred (final review F7).
+
+Source: `reviews/p11b-final-opus.md` F2, F5, F7; `reviews/p11b-r1-evidence.md` N2, N2b, N3 and
+"Follow-up candidates"; `evidence/p11b-vm-20261124/scripts/guest-check-attempt5.sh:276,361`.
+
+## HOB-101 — `watch` prints the client's own loop count in its `closed` line
+
+**Where:** `crates/client/examples/watch.rs:307-317` (`read_subscription`), and
+`tools/live-demo.py:145-163` (the `close_line` rule that asserts this form).
+
+`watch` prints `closed\tblocks={}\treason={reason}` with `subscription.received()`
+(`watch.rs:315`), which is the client's own count of BLOCK frames it read
+(`crates/client/src/streams.rs:177-179`). The server's END carries `blocks` and `dropped`
+(`crates/client/src/streams.rs:20-25`), and the client has already checked that its own count
+equals `end.blocks` (`crates/client/src/client.rs:880`), so printing the loop count makes the field
+tautological and leaves END `dropped` (the blocks the server dropped for a lagging client,
+`streams.rs:184-190`) invisible in every demo transcript. The VM run's
+`closed\tblocks=60\t...` therefore says nothing about what the server sent.
+
+**Impact.** A consumer or reviewer cannot see a subscription's drops from the example output, and a
+demo verdict that keys on `blocks=` is checking the client against itself. The fix is one print
+change plus the rule that reads it; no wire change.
+
+**Exit criteria.** `watch`'s `closed` line prints the END's `blocks` and `dropped` from
+`StreamEnd` (both `u32`), with the reason as today, and a unit test in the example's tests makes a
+scripted END whose `blocks`/`dropped` pair differs from the loop count and asserts the printed line
+carries the server's numbers. `tools/live-demo.py`'s `close_line` and its test fixture
+(`python/tests/test_live_demo.py`) accept and assert the new field in the same package, so the
+verdict and the example cannot disagree about the line's form.
+
+Source: `reviews/p11b-final-opus.md` F6 (print the server END `blocks`/`dropped`);
+`evidence/p11b-vm-20261124/transcript.txt:6312`; `crates/client/src/client.rs:880`,
+`crates/client/src/streams.rs:177-189`.

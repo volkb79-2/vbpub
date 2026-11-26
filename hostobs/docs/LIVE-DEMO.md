@@ -60,11 +60,22 @@ always printed.
 
 PASS requires all of the following:
 
-- exactly N observe ticks, with strictly increasing sequence numbers;
+- exactly N observe ticks, with strictly increasing and **consecutive** sequence numbers
+  (`2, 3, 4 …`, no gap);
+- **every observe tick has the same row count as the first one**, so a truncated or duplicated
+  tick block is a `FAIL` rather than a pass;
+- **each stream's `closed` line is exactly `closed<TAB>blocks=N<TAB>reason=<reason>`** with N
+  equal to the number of ticks the client was asked for (N observe ticks for the observe stream,
+  1 for the operator stream) and `<reason>` one of the two live reasons the client accepts,
+  `unsubscribed` or `client-eof` (`crates/client/src/client.rs` `end_reason_ok`); `blocks=600`
+  is not `blocks=60`, and a query reason such as `complete` is refused;
 - at least one `cpu.usage_usec` value that increased from that entity's first
   to last observe tick;
-- every printed quality code is one of WIRE's eight codes;
-- every non-`ok` quality renders `<not-measured>`, never a numeric value or zero;
+- **the observe and the operator streams are both held to the same quality rules**: every
+  printed quality code is one of WIRE's eight codes, every non-`ok` quality renders
+  `<not-measured>` (never a numeric value or zero), and the operator stream carries full
+  client rows (its compact empty-block form, `tick<TAB>seq=N<TAB>rows=0<TAB>columns=0`, is not
+  a measurement and fails);
 - the probe exits by `SIGTERM`, not status 0/1/2 and not a panic.
 
 The transcript states `PASS` or `FAIL <reason>`; the launcher exits 0 only on
@@ -139,3 +150,69 @@ The probe unit keeps `ProtectControlGroups=yes`, `PrivateNetwork=yes` and
 `ProcSubset=pid`, because the live slice reads host-wide `/proc` and other
 processes' cgroup facts. State directories, `CAP_SYS_PTRACE` and the future act
 socket are deliberately absent from this part-(a)/(b) contract.
+
+### Expected `absent` cells on this host
+
+The first 60-tick stream from a Debian 13 guest (`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt`)
+shows two cgroups with `absent` cells. Both are the kernel's cgroup v2 layout, not a
+defect and not the unit sandbox:
+
+| cgroup | `cpu.usage_usec` | `mem.current`, `pids.current` | why |
+|---|---|---|---|
+| `/` (the root) | `ok`, and it changes | `absent` on every tick | `memory.current` (`mm/memcontrol.c`) and `pids.current` (`kernel/cgroup/pids.c`) are registered `CFTYPE_NOT_ON_ROOT`, so the root has no such file; `cpu.stat` is a cgroup-core file on every cgroup, root included |
+| `/system.slice/systemd-udevd.service/udev` | `ok` | `absent` on every tick | systemd 257 runs udevd with `Delegate=`/`DelegateSubgroup=udev`, and nothing writes `memory`/`pids` into `systemd-udevd.service/cgroup.subtree_control`, so the leaf has core files only; its parent `systemd-udevd.service` still shows `pids.current=1`, because that file is hierarchical |
+
+All the other 32 entities of that transcript are `ok` on all three metrics (102 rows per
+tick, 4 `absent` cells of 6120 rows). Everything else stays `ok`: `ProtectControlGroups=yes` is
+a read-only bind mount of `/sys/fs/cgroup`, not a hidden view, and the probe sees the whole
+guest tree. A refused read would render `unreadable`, never `absent`
+(`crates/kernel/src/fs.rs:160-164`, `crates/kernel/src/cgroup.rs:851-857`), so the two cells above
+are the files being absent, not the sandbox denying them.
+
+**The model table has no host-wide memory metric.** There is no `/proc/meminfo` metric, and the
+host `/proc` readings this slice publishes appear only on the root row (WIRE §4.7). A consumer
+that needs host memory has no hostobs row for it today; do not read `/`'s `mem.current` as a
+fallback, because on a real cgroup v2 root that cell is `absent`.
+
+In part (a) the container's `/sys/fs/cgroup` is the container's cgroup-namespace root, a non-root
+cgroup of the real hierarchy, so there `mem.current` and `pids.current` are present and `ok`.
+
+### Reading `systemd-analyze security` on the shipped units
+
+`systemd-analyze security hostobs-probe.service` on the guest reported an overall exposure level
+of **`1.8 OK`**, over **81 scored entries: 17 with the ✗ prefix and 64 with ✓**
+(`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6418` is the summary line and
+`:6336-6416` the 81-row table; the checker captured it with the exact command at
+`hostobs-p11b.sh:175`). Reviewers should expect exactly these 17 flagged entries, in this order, and
+none of the 17 is policy drift:
+
+| # | at | expected ✗ entry | why it is expected |
+|---|---|---|---|
+| 1 | `:6337` | `SystemCallFilter=~@resources` | `SystemCallFilter=@system-service` is the contract's allow list (`deploy/systemd/hostobs-probe.service:22-23`, plan v4 §A.1); `@resources` stays reachable inside it |
+| 2 | `:6340` | `SystemCallFilter=~@privileged` | the same allow list |
+| 3 | `:6347` | `RemoveIPC=` | not set on the service user |
+| 4 | `:6348` | `RootDirectory=/RootImage=` | the probe runs in the host's root, as designed |
+| 5 | `:6352` | `AmbientCapabilities=` | `CAP_DAC_READ_SEARCH` is deliberately ambient (`deploy/systemd/hostobs-probe.service:24-25`) |
+| 6 | `:6353` | `ProtectClock=` | not set |
+| 7 | `:6354` | `ProtectKernelLogs=` | not set |
+| 8 | `:6355` | `CapabilityBoundingSet=~CAP_(DAC_*\|FOWNER\|IPC_OWNER)` | the set is bounded to that one capability (`deploy/systemd/hostobs-probe.service:26-27`), which is in this group |
+| 9 | `:6358` | `RestrictSUIDSGID=` | not set |
+| 10 | `:6359` | `ProtectHostname=` | not set |
+| 11 | `:6360` | `RestrictAddressFamilies=~AF_UNIX` | `RestrictAddressFamilies=AF_UNIX` is the contract (`deploy/systemd/hostobs-probe.service:20-21`); only unix sockets are allowed |
+| 12 | `:6361` | `RestrictRealtime=` | not set |
+| 13 | `:6376` | `ProtectProc=` | unset on purpose, so host-wide `/proc` stays readable |
+| 14 | `:6377` | `ProcSubset=` | unset on purpose, the same reason |
+| 15 | `:6378` | `PrivateUsers=` | not set; the probe reads `/sys/fs/cgroup`, owned by root |
+| 16 | `:6382` | `IPAddressDeny=` | no IP address filtering is needed: `PrivateNetwork=yes` (`deploy/systemd/hostobs-probe.service:18-19`) removes the network |
+| 17 | `:6416` | `UMask=` | not set |
+
+A different count, a missing entry, or a score other than `1.8 OK` means the unit file changed;
+the table is a drift alarm, not a to-do list. The sockets (`hostobs-observe.socket`,
+`hostobs-operator.socket`) carry no service body of their own and were not scored: the checker's
+`systemd-analyze` call names `hostobs-probe.service` only.
+
+The trap this table exists to prevent: a hardening checklist reports a deliberate contract choice
+as `✗`. `AmbientCapabilities=`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=` and
+`SystemCallFilter=` are flagged *because* the contract pins the narrowest useful value, while
+`ProtectProc=` and `ProcSubset=` are flagged because the live slice needs host-wide `/proc`. A
+reviewer who "fixes" these breaks the probe's job.

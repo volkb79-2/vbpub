@@ -381,6 +381,55 @@ the registry-set identity, so a workspace-only lock edit (a path dependency betw
 needs no image rebuild. An image with the older whole-lock identity rejects ANY lock byte
 change. Which tag a host carries is a fact of that host and is not recorded in this repository.
 
+## Status: the live slice
+
+The hostobs live slice is on `main`. It is **not** a versioned release: no tag, package or
+installer. Use it from a checkout (`PYTHONPATH=hostobs/python`; the units in `hostobs/deploy`
+are installed by hand).
+
+**Available:** the observe and operator sockets; the verbs `hello`, `status`, `current`,
+`subscribe` and `unsubscribe`; fixed-width BLOCK frames with a quality byte per value; the
+Rust client (`hostobs/crates/client`) and the stdlib-only Python `hostobs_client`.
+
+**Not available yet:** the observer socket; `annotate`, `events` and `spans` (they answer
+`unknown-verb`); the control level and sessions; the install CLI. Version 0.1.0 follows after
+M3, once the release packages are in.
+
+Limits:
+
+1. **Performance is not established.** The only probe CPU figure is a debug build under QEMU
+   emulation (27.3 CPU-s in 59 s, median 434 ms per 1 s tick). No release build was measured on
+   native hardware. The VM result is functional only.
+2. **What the demo exercised.** Only `cpu.usage_usec`, `mem.current` and `pids.current`. It did
+   not exercise PSI, `io.stat`, `memory.stat`, the host `/proc` metrics, `probe.*`, a reboot, the
+   operator-only differences, or a non-root operator-group member.
+3. **The root cgroup is not a share denominator.** The root's `cpu.usage_usec` is tick-accounted
+   and is not comparable with child cgroups; do not compute shares against `/`. On the root,
+   `mem.current` and `pids.current` are always `absent` (expected — see the table below).
+4. **`current` before the probe's first tick** answers `internal` (HOB-94): retry, or use
+   `subscribe`.
+
+### Expected `absent` cells on a real host
+
+`absent` means the file is not there (WIRE's quality vocabulary: only `0` is a measurement, and
+`absent` is "the file or key is not present"). A read the filesystem refuses is `unreadable`,
+never `absent`, so the cells below are the kernel's cgroup v2 layout, not a unit-sandbox artefact.
+
+| cgroup | metric | quality | why |
+|---|---|---|---|
+| `/` (the true cgroup v2 root) | `mem.current`, `pids.current` | `absent` | both files are registered `CFTYPE_NOT_ON_ROOT` in the kernel, so the root has no such file; `cpu.stat` (hence `cpu.usage_usec`) and `*.pressure` exist on every cgroup, root included |
+| `/system.slice/systemd-udevd.service/udev` | `mem.current`, `pids.current` | `absent` | systemd 257 runs udevd under `Delegate=` with `DelegateSubgroup=udev`, and nothing writes `memory`/`pids` into that parent's `cgroup.subtree_control`; the leaf therefore has only core files, while its parent `systemd-udevd.service` still shows `pids.current=1` (hierarchical) |
+| every other entity | all three | `ok` | the files exist and are read |
+
+The host `/proc` metrics this slice publishes only appear on the root row (WIRE §4.7). **The model
+table has no host-wide memory metric — there is no `/proc/meminfo` metric** — so a consumer that
+needs host memory cannot get it from a hostobs row today; that is a new-metric item for the
+consumer's own backlog, not something to derive from the root's `mem.current`.
+
+In part (a)'s container run (`evidence/live-container-20261124.txt`) the root row is `ok` for all
+three metrics, and that is consistent: `/sys/fs/cgroup` there is the container's
+cgroup-namespace root, a non-root cgroup of the real hierarchy, so `memory.current` exists.
+
 ## Boundaries
 
 These four rules say where hostobs ends and its neighbours begin; later packages and other tools
