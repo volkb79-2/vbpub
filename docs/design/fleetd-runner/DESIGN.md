@@ -267,6 +267,7 @@ all charges remain per-host `/etc` values. The controller permits only `small` a
 
 For each admitted job `j`, let `charge_j` be its selected host's class charge, `current_j = warm(job_cgroup_j)`,
 `slice_warm_current = warm(gate_slice)`, and `reserved = sum(max(0, charge_j - current_j))`. One fit value decides admission:
+(Every live lease (§3.4) is an admitted job `j` for RAM and planned cores; its cgroup is the bound container's, and `current_j = 0` before the bind.)
 
 ```
 fit_bytes = min(
@@ -315,7 +316,7 @@ uses the `lease` verb for accounting, while fleetd-placed execution there is exc
   Recompute the target when facts or eligibility change. The head starts before later arrivals as
   soon as it fits, so small jobs cannot consume its reserved capacity.
 - **Priority authorization.** Host `/etc` policy lists allowed priorities for each credential principal. Missing policy or absent/unknown priority refuses (2).
-  A valid disallowed value clamps only down to the least-urgent allowed class no more urgent than requested; if none exists, refuse (2). Fleetd clamps for its caller before forwarding; the host clamps again for fleetd's credential. `requested_by` never selects priority.
+  A valid disallowed value clamps only down, to the most urgent allowed class that is no more urgent than requested; if none exists, refuse (2). Fleetd clamps for its caller before forwarding; the host clamps again for fleetd's credential. `requested_by` never selects priority.
 - **Local run-gate lease (MF3).** On the controller host, `lease` uses this same queue lock, warm charge, planned-core and priority
   checks; `frozen_units > 0` refuses with 75 (N4). Run-Gate supplies a fresh `container_name` in `{container_name, footprint, planned_cores, priority}`; a class
   impossible on this host or a name collision refuses with 2. The host waits in the same priority/reservation queue under `queue.lock`; disconnect before grant withdraws the waiter.
