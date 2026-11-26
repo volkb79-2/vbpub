@@ -1,6 +1,6 @@
 # iobench known issues and TODO backlog
 
-Entries IOB-BL-01..38 are retained in [BACKLOG.md](BACKLOG.md). New entries continue here.
+Entries IOB-BL-01..38 are retained in [BACKLOG.md](BACKLOG.md). New entries continue here. IOB-BL-55 lives in [BACKLOG.md](BACKLOG.md).
 
 ## IOB-BL-40 — 2026-11-08 fill-rate figures are invalid (FIXED, IB-FILL)
 

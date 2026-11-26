@@ -33,9 +33,10 @@ argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests
 # directory (the project) to sys.path itself.
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH", "PYTHONPATH"]
-# 179 candidates x ~137 s / 2 jobs x 1.5 slack = ~306.5 min; rounded up so a
-# resumed full campaign has a workable bound without dropping the last candidates.
-budget = "310m"
+# Headroom for slow or loaded hosts, not a measured need: complete 194-candidate
+# runs took 174-224 min at 2 jobs (2026-11-24/25). A LANE_TIMEOUT verdict can come
+# from the derived per-candidate bound alone (DIV2-BL-22).
+budget = "430m"
 allow_argv_append = false
 
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
