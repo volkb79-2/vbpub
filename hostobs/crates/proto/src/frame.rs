@@ -90,7 +90,7 @@ pub const MAGIC: [u8; 4] = *b"HOB\x01";
 /// The protocol major this codec speaks.
 pub const PROTO_MAJOR: u16 = 1;
 /// The protocol minor this codec speaks; an additive change raises it.
-pub const PROTO_MINOR: u16 = 1;
+pub const PROTO_MINOR: u16 = 2;
 /// The frame header size in bytes.
 pub const FRAME_HEADER_LEN: usize = 12;
 /// The section directory entry size in bytes.
@@ -3708,9 +3708,9 @@ mod tests {
     }
 
     #[test]
-    fn the_hello_announces_minor_one_and_a_minor_zero_hello_is_still_accepted() {
-        assert_eq!(PROTO_MINOR, 1);
-        assert_eq!(hello(), vec![b'H', b'O', b'B', 1, 1, 0, 1, 0]);
+    fn the_hello_announces_minor_two_and_a_minor_zero_hello_is_still_accepted() {
+        assert_eq!(PROTO_MINOR, 2);
+        assert_eq!(hello(), vec![b'H', b'O', b'B', 1, 1, 0, 2, 0]);
         assert_eq!(
             detect_mode(b"HOB\x01\x01\x00\x00\x00"),
             Ok(Mode::Binary { major: 1, minor: 0 })

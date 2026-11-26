@@ -59,6 +59,113 @@ class WireFixtures(unittest.TestCase):
             with self.subTest(case=spec_path.stem):
                 hostobs_wire_ref.check_case(spec, data)
 
+    def test_b9_cgroup_id_selection_canonicalizes_by_numeric_dev_then_inode(self):
+        selected = {
+            "entities": [
+                {"all": True},
+                {"prefix": "p"},
+                {"path": "a"},
+                {"cgroup_id": {"dev": 2, "inode": 8}},
+                {"cgroup_id": {"dev": 1, "inode": 9}},
+                {"cgroup_id": {"dev": 1, "inode": 3}},
+                {"inc": 10},
+                {"inc": 2},
+            ],
+            "metrics": ["z", "cpu.usage_usec"],
+        }
+        entities, metrics = hostobs_wire_ref.canonical_selection(selected)
+        self.assertEqual(
+            entities,
+            (
+                ("inc", 2),
+                ("inc", 10),
+                ("cgroup_id", 1, 3),
+                ("cgroup_id", 1, 9),
+                ("cgroup_id", 2, 8),
+                ("path", "a"),
+                ("prefix", "p"),
+                ("all",),
+            ),
+        )
+        self.assertEqual(metrics, ("cpu.usage_usec", "z"))
+
+    def test_b9_cgroup_id_validation_paths_and_duplicate_path(self):
+        cases = [
+            (
+                {"entities": [{"cgroup_id": {"dev": 0, "inode": 2}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"dev": 1, "inode": 0}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.inode",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"dev": "1", "inode": 2}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"dev": 1, "inode": True}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.inode",
+            ),
+            (
+                {
+                    "entities": [{"cgroup_id": {"dev": 1, "inode": 2, "extra": 3}}],
+                    "metrics": ["m"],
+                },
+                "selection.entities.cgroup_id.extra",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"dev": 1}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.inode",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"inode": 2}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                {"entities": [{"cgroup_id": True}], "metrics": ["m"]},
+                "selection.entities.cgroup_id",
+            ),
+            (
+                {
+                    "entities": [
+                        {"cgroup_id": {"dev": 1, "inode": 2}},
+                        {"cgroup_id": {"dev": 1, "inode": 2}},
+                    ],
+                    "metrics": ["m"],
+                },
+                "selection.entities",
+            ),
+        ]
+        for selected, path in cases:
+            with self.subTest(path=path):
+                with self.assertRaises(hostobs_wire_ref.SelectionError) as caught:
+                    hostobs_wire_ref.canonical_selection(selected)
+                self.assertEqual(caught.exception.code, "bad-request")
+                self.assertEqual(caught.exception.path, path)
+
+    def test_b9_cgroup_id_minor_gate_is_step_11_after_schema(self):
+        selected = {
+            "entities": [{"cgroup_id": {"dev": 1, "inode": 2}}],
+            "metrics": ["m"],
+        }
+        with self.assertRaises(hostobs_wire_ref.SelectionError) as caught:
+            hostobs_wire_ref.canonical_selection(selected, negotiated_minor=1)
+        self.assertEqual(
+            (caught.exception.code, caught.exception.feature, caught.exception.step),
+            ("unsupported-feature", "cgroup_id", 11),
+        )
+        malformed = {
+            "entities": [{"cgroup_id": {"dev": 0, "inode": 2}}],
+            "metrics": ["m"],
+        }
+        with self.assertRaises(hostobs_wire_ref.SelectionError) as caught:
+            hostobs_wire_ref.canonical_selection(malformed, negotiated_minor=1)
+        self.assertEqual((caught.exception.code, caught.exception.path), (
+            "bad-request",
+            "selection.entities.cgroup_id.dev",
+        ))
+
     def test_every_hostile_dictionary_body_is_a_wire_error_with_the_rust_kind(self):
         # Each body is hostile in exactly one way. The reference names the refusal Rust
         # `Dictionary::decode` names, and no struct.error or UnicodeDecodeError escapes.
@@ -196,7 +303,7 @@ class WireFixtures(unittest.TestCase):
         self.assertEqual(self._refusal(hostobs_wire_ref.encode_frame(frame))["kind"], "row-reference-not-entity")
         self.assertEqual(self._refusal(hostobs_wire_ref.encode_frame(
             dict(self._spec("subject-in-live-block")["frame"])))["kind"], "subject-without-time")
-        self.assertEqual(hostobs_wire_ref.PROTO_MINOR, 1)
+        self.assertEqual(hostobs_wire_ref.PROTO_MINOR, 2)
         good = bytearray((FIXTURES / "history-subject.bin").read_bytes())
         n_sec = struct.unpack_from("<H", good, 12)[0]
         # The subject body follows the header body (80 bytes) and the dictionary body.

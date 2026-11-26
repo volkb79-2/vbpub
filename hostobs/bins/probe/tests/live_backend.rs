@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use hostobs_kernel::clock::{ManualClock, Timeline};
 use hostobs_kernel::fs::RealFs;
+use hostobs_kernel::identity::cgroup_identity;
 use hostobs_kernel::procfs::Roots;
 use hostobs_model::quality::Quality;
 use hostobs_probe::live::ProbeBackend;
@@ -20,7 +21,7 @@ use hostobs_serve::server::{Accept, Server, ServerLimits};
 const WALL: i64 = 1_700_000_000_000_000_000;
 const ID_BOOT: &str = "00112233-4455-6677-8899-aabbccddeeff";
 const ID_EPOCH: u64 = 42;
-const HELLO: &str = r#"{"client":"t","proto":{"major":1,"minor":1}}"#;
+const HELLO: &str = r#"{"client":"t","proto":{"major":1,"minor":2}}"#;
 
 fn identity() -> Identity {
     Identity {
@@ -92,7 +93,7 @@ fn request(corr: u32, verb: &str, args: &str) -> Vec<u8> {
 }
 
 fn prefix() -> [u8; 8] {
-    [b'H', b'O', b'B', 1, 1, 0, 1, 0]
+    [b'H', b'O', b'B', 1, 1, 0, 2, 0]
 }
 
 fn selection(entities: Vec<Sel>, metrics: &[&str]) -> String {
@@ -105,6 +106,9 @@ fn selection_value(entities: Vec<Sel>, metrics: &[&str]) -> String {
         .map(|entity| match entity {
             Sel::All => r#"{"all":true}"#.to_string(),
             Sel::Inc(inc) => format!(r#"{{"inc":{inc}}}"#),
+            Sel::CgroupId { dev, inode } => {
+                format!(r#"{{"cgroup_id":{{"dev":{dev},"inode":{inode}}}}}"#)
+            }
             Sel::Path(path) => format!(r#"{{"path":{}}}"#, json_string(&path)),
             Sel::Prefix(prefix) => {
                 format!(r#"{{"prefix":{}}}"#, json_string(&prefix))
@@ -242,6 +246,16 @@ fn inc(tick: &Tick, wanted: &str) -> u64 {
         .expect("fixture label")
 }
 
+fn cgroup_id(wanted: &str) -> Sel {
+    let relative = wanted.strip_prefix('/').unwrap_or(wanted);
+    let path = fixture_base().join("cgroupfs").join(relative);
+    let identity = cgroup_identity(&RealFs::new(), &path).expect("fixture cgroup identity");
+    Sel::CgroupId {
+        dev: identity.device(),
+        inode: identity.inode(),
+    }
+}
+
 #[test]
 fn hello_and_status_carry_identity_and_survive_the_first_tick() {
     let published = Arc::new(Published::new(1_000_000, WALL));
@@ -286,7 +300,13 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
         2,
         selection(
             vec![Sel::All],
-            &["cpu.usage_usec", "mem.current", "psi.cpu.some.total"],
+            &[
+                "cpu.usage_usec",
+                "mem.current",
+                "psi.cpu.some.total",
+                "limit.cpu.max.quota",
+                "limit.cpu.max.period",
+            ],
         ),
     );
     assert_eq!(all.header.seq, 1);
@@ -305,6 +325,15 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
         (5000, Quality::Ok.code()),
         "the configured root publishes its own PSI, not host-wide PSI"
     );
+    assert_eq!(
+        metric(&all, "limit.cpu.max.quota", 0),
+        (0, Quality::Unsupported.code()),
+        "cpu.max max has no measured quota"
+    );
+    assert_eq!(
+        metric(&all, "limit.cpu.max.period", 0),
+        (100_000, Quality::Ok.code())
+    );
 
     let system = "/system.slice";
     let child = format!("{system}/docker-{}.scope", "a".repeat(64));
@@ -318,9 +347,15 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
             vec![
                 Sel::Path(child.clone()),
                 Sel::Inc(child_inc),
+                cgroup_id(&child),
                 Sel::Prefix(system.into()),
             ],
-            &["cpu.usage_usec", "pids.current"],
+            &[
+                "cpu.usage_usec",
+                "pids.current",
+                "limit.cpu.max.quota",
+                "limit.cpu.max.period",
+            ],
         ),
     );
     assert_eq!(
@@ -330,6 +365,24 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
     );
     assert_eq!(label(&selected, 0), system);
     assert_eq!(label(&selected, 1), child);
+    assert_eq!(
+        metric(&selected, "limit.cpu.max.quota", 0),
+        (0, Quality::Unsupported.code()),
+        "an absent cpu.max has no measured quota"
+    );
+    assert_eq!(
+        metric(&selected, "limit.cpu.max.period", 0),
+        (0, Quality::Absent.code()),
+        "an absent cpu.max has no measured period"
+    );
+    assert_eq!(
+        metric(&selected, "limit.cpu.max.quota", 1),
+        (200_000, Quality::Ok.code())
+    );
+    assert_eq!(
+        metric(&selected, "limit.cpu.max.period", 1),
+        (100_000, Quality::Ok.code())
+    );
     assert_eq!(
         metric(&selected, "cpu.usage_usec", 1),
         (5_000_000, Quality::Ok.code())
@@ -357,7 +410,7 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
             _ => None,
         })
         .collect();
-    assert_eq!(names.len(), 43, "34 cgroup + 7 host + 2 daemon metrics");
+    assert_eq!(names.len(), 45, "36 cgroup + 7 host + 2 daemon metrics");
     let (complete, _) = current(
         &mut server,
         id,
@@ -367,6 +420,92 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
     );
     assert_eq!(complete.rows.len(), tick.data().rows.len());
     assert_eq!(complete.columns.len(), names.len());
+}
+
+#[test]
+fn cgroup_id_selects_one_row_by_all_keys_and_rejects_unpublished_keys() {
+    let (_, published, tick) = first_tick();
+    let target = format!("/system.slice/docker-{}.scope", "a".repeat(64));
+    let target_inc = inc(&tick, &target);
+    let (mut server, id) = server(Arc::clone(&published), 16);
+    hello_frame(&mut server, id, 1_003_000_000);
+    let _ = server.backend_mut().begin_turn(1_003_000_000);
+
+    let (selected, rep) = current(
+        &mut server,
+        id,
+        1_003_000_000,
+        2,
+        selection(
+            vec![
+                Sel::Inc(target_inc),
+                Sel::Path(target.clone()),
+                cgroup_id(&target),
+            ],
+            &["cpu.usage_usec"],
+        ),
+    );
+    assert!(rep.contains(r#""ok":true"#), "{rep}");
+    assert_eq!(selected.rows.len(), 1);
+    assert_eq!(label(&selected, 0), target);
+    assert_eq!(
+        metric(&selected, "cpu.usage_usec", 0),
+        (5_000_000, Quality::Ok.code())
+    );
+    let Sel::CgroupId { dev, inode } = cgroup_id(&target) else {
+        panic!("cgroup_id helper returned another selector");
+    };
+    let wrong_dev = if dev == u64::MAX { dev - 1 } else { dev + 1 };
+    let (wrong_device, rep) = current(
+        &mut server,
+        id,
+        1_003_000_000,
+        3,
+        selection(
+            vec![Sel::CgroupId {
+                dev: wrong_dev,
+                inode,
+            }],
+            &["cpu.usage_usec"],
+        ),
+    );
+    assert!(rep.contains(r#""ok":true"#), "{rep}");
+    assert!(wrong_device.rows.is_empty());
+
+    let outside_root = fixture_base().join("cgroupfs-files/state");
+    let outside_identity = cgroup_identity(&RealFs::new(), &outside_root)
+        .expect("fixture directory identity outside configured cgroup root");
+    let (unpublished, rep) = current(
+        &mut server,
+        id,
+        1_003_000_000,
+        4,
+        selection(
+            vec![Sel::CgroupId {
+                dev: outside_identity.device(),
+                inode: outside_identity.inode(),
+            }],
+            &["cpu.usage_usec"],
+        ),
+    );
+    assert!(rep.contains(r#""ok":true"#), "{rep}");
+    assert!(unpublished.rows.is_empty());
+
+    let (unknown, rep) = current(
+        &mut server,
+        id,
+        1_003_000_000,
+        5,
+        selection(
+            vec![Sel::CgroupId {
+                dev: u64::MAX,
+                inode: u64::MAX,
+            }],
+            &["cpu.usage_usec"],
+        ),
+    );
+    assert!(rep.contains(r#""ok":true"#), "{rep}");
+    assert!(unknown.rows.is_empty());
 }
 
 #[test]

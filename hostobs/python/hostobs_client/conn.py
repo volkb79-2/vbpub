@@ -38,7 +38,7 @@ from .wire import (
 )
 
 PROTO_MAJOR = 1
-PROTO_MINOR = 1
+PROTO_MINOR = 2
 MAGIC = b"HOB\x01"
 #: The client's frame completion age (WIRE.md 5.2, D-W16).
 COMPLETION_NS = 30 * 10**9
@@ -236,7 +236,7 @@ class Connection:
     """One binary-mode connection to a hostobs socket at one level (WIRE.md 1.4).
 
     ``Connection.open(path, level, client=..., timeout_s=..., clock=...)`` connects and completes
-    the hello handshake at minor 1; the result of ``hello`` is ``.hello`` and its fields are
+    the hello handshake at minor 2; the result of ``hello`` is ``.hello`` and its fields are
     ``.level``, ``.minor``, ``.boot_id``, ``.epoch``, ``.features``, ``.verbs``, ``.limits``.
     ``.session`` is ``"first"``, ``"same"`` or ``"changed"`` against the previous connection of
     the same lineage (:meth:`reconnect`, WIRE.md 6.4): ``"changed"`` means every cursor, open span

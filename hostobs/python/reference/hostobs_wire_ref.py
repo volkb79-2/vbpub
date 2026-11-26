@@ -25,7 +25,7 @@ from pathlib import Path
 
 MAGIC = b"HOB\x01"
 PROTO_MAJOR = 1
-PROTO_MINOR = 1
+PROTO_MINOR = 2
 FRAME_HEADER_LEN = 12
 SECTION_DIR_ENTRY_LEN = 8
 MAX_FRAME_BYTES = 16 * 1024 * 1024
@@ -140,6 +140,136 @@ class WireError(ValueError):
     def __str__(self) -> str:
         details = ", ".join(f"{name}={value}" for name, value in sorted(self.fields.items()))
         return f"{self.refusal}({details})" if details else self.refusal
+
+
+class SelectionError(ValueError):
+    """A reference refusal for a request selection, including its schema path or feature."""
+
+    def __init__(
+        self,
+        path: str | None,
+        *,
+        code: str = "bad-request",
+        feature: str | None = None,
+        step: int | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.path = path
+        self.code = code
+        self.feature = feature
+        self.step = step
+
+
+def _selection_bad(path: str) -> None:
+    raise SelectionError(path)
+
+
+def _unknown_member_path(path: str, member: object) -> str:
+    if (
+        isinstance(member, str)
+        and len(member) <= 64
+        and member.isascii()
+        and all(char.isalnum() or char in "_.-" for char in member)
+    ):
+        return f"{path}.{member}"
+    return path
+
+
+def _selection_object(value: object, path: str, keys: tuple[str, ...]) -> dict:
+    if not isinstance(value, dict):
+        _selection_bad(path)
+    for member in value:
+        if member not in keys:
+            _selection_bad(_unknown_member_path(path, member))
+    for member in keys:
+        if member not in value:
+            _selection_bad(f"{path}.{member}")
+    return value
+
+
+def _selection_u64(value: object, path: str) -> int:
+    if type(value) is not int or value < 0 or value > 0xFFFF_FFFF_FFFF_FFFF:
+        _selection_bad(path)
+    return value
+
+
+def _selection_text(value: object, path: str) -> str:
+    if not isinstance(value, str):
+        _selection_bad(path)
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        _selection_bad(path)
+    if not encoded or len(encoded) > 512 or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        _selection_bad(path)
+    return value
+
+
+def canonical_selection(
+    value: object,
+    negotiated_minor: int = PROTO_MINOR,
+) -> tuple[tuple[tuple[object, ...], ...], tuple[str, ...]]:
+    """Validate and canonicalize WIRE §4.2 selectors, including B9's ``cgroup_id`` form.
+
+    The feature gate runs after the complete selection schema, at request step 11. Entity
+    tuples use the wire's variant order: ``inc``, ``cgroup_id``, ``path``, ``prefix``, ``all``.
+    """
+    selection = _selection_object(value, "selection", ("entities", "metrics"))
+    entities = selection["entities"]
+    if not isinstance(entities, list) or not 1 <= len(entities) <= 16:
+        _selection_bad("selection.entities")
+    canonical_entities: list[tuple[object, ...]] = []
+    for entity_value in entities:
+        if not isinstance(entity_value, dict) or len(entity_value) != 1:
+            _selection_bad("selection.entities")
+        selector, contents = next(iter(entity_value.items()))
+        if selector == "inc":
+            canonical_entities.append(("inc", _selection_u64(contents, "selection.entities.inc")))
+        elif selector == "cgroup_id":
+            path = "selection.entities.cgroup_id"
+            key = _selection_object(contents, path, ("dev", "inode"))
+            dev = _selection_u64(key["dev"], f"{path}.dev")
+            if dev == 0:
+                _selection_bad(f"{path}.dev")
+            inode = _selection_u64(key["inode"], f"{path}.inode")
+            if inode == 0:
+                _selection_bad(f"{path}.inode")
+            canonical_entities.append(("cgroup_id", dev, inode))
+        elif selector in ("path", "prefix"):
+            canonical_entities.append(
+                (selector, _selection_text(contents, f"selection.entities.{selector}"))
+            )
+        elif selector == "all" and contents is True:
+            canonical_entities.append(("all",))
+        elif selector in ("path", "prefix") or selector == "all":
+            _selection_bad(f"selection.entities.{selector}")
+        else:
+            _selection_bad(_unknown_member_path("selection.entities", selector))
+
+    if len(set(canonical_entities)) != len(canonical_entities):
+        _selection_bad("selection.entities")
+    ranks = {"inc": 0, "cgroup_id": 1, "path": 2, "prefix": 3, "all": 4}
+    canonical_entities.sort(key=lambda entity: (ranks[entity[0]], *entity[1:]))
+
+    metrics = selection["metrics"]
+    if not isinstance(metrics, list) or not 1 <= len(metrics) <= 64:
+        _selection_bad("selection.metrics")
+    if any(
+        not isinstance(metric, str)
+        or not metric.isascii()
+        or not 1 <= len(metric) <= 64
+        or not metric[0].islower()
+        or not metric[0].isalpha()
+        or any(not (char.islower() or char.isdigit() or char in "_.-") for char in metric[1:])
+        for metric in metrics
+    ):
+        _selection_bad("selection.metrics")
+    if len(set(metrics)) != len(metrics):
+        _selection_bad("selection.metrics")
+
+    if negotiated_minor < 2 and any(entity[0] == "cgroup_id" for entity in canonical_entities):
+        raise SelectionError(None, code="unsupported-feature", feature="cgroup_id", step=11)
+    return tuple(canonical_entities), tuple(sorted(metrics, key=lambda metric: metric.encode("utf-8")))
 
 
 def _align8(value: int) -> int:

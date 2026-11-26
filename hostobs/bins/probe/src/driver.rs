@@ -438,7 +438,7 @@ mod tests {
     use hostobs_serve::tick::{query_block, BlockBounds};
 
     const CLIENT_WAIT: Duration = Duration::from_secs(30);
-    const HELLO_ARGS: &str = r#"{"client":"driver-test","proto":{"major":1,"minor":1}}"#;
+    const HELLO_ARGS: &str = r#"{"client":"driver-test","proto":{"major":1,"minor":2}}"#;
     const CURRENT_ARGS: &str = r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
 
     static NEXT_SOCKET: AtomicU32 = AtomicU32::new(0);
@@ -604,7 +604,7 @@ mod tests {
         fn read_prefix(&mut self) {
             let mut prefix = [0u8; 8];
             self.stream.read_exact(&mut prefix).expect("server prefix");
-            assert_eq!(prefix, server_prefix(1, 1));
+            assert_eq!(prefix, server_prefix(1, 2));
         }
 
         fn frame(&mut self) -> Option<Vec<u8>> {
@@ -636,7 +636,7 @@ mod tests {
 
         fn hello(&mut self) -> String {
             self.stream
-                .write_all(&server_prefix(1, 1))
+                .write_all(&server_prefix(1, 2))
                 .expect("client prefix");
             self.send_request(1, "hello", HELLO_ARGS);
             self.read_prefix();
@@ -734,7 +734,7 @@ mod tests {
             let mut client = rig.connect(level);
             let wrote = client
                 .stream
-                .write_all(&server_prefix(1, 1))
+                .write_all(&server_prefix(1, 2))
                 .and_then(|()| {
                     client
                         .stream
@@ -744,7 +744,7 @@ mod tests {
             if wrote {
                 let mut prefix = [0u8; 8];
                 if client.stream.read_exact(&mut prefix).is_ok() {
-                    assert_eq!(prefix, server_prefix(1, 1));
+                    assert_eq!(prefix, server_prefix(1, 2));
                     let frame = client.frame().expect("retried hello REP");
                     assert_frame(&frame, FrameType::Rep, 1);
                     return client;

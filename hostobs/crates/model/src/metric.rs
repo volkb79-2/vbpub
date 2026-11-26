@@ -687,6 +687,20 @@ pub fn sampler_baseline() -> Result<MetricRegistry, MetricError> {
         Source::CgroupFs,
     )?;
     registry.declare(
+        "limit.cpu.max.quota",
+        MetricKind::Gauge,
+        Unit::Microseconds,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
+    registry.declare(
+        "limit.cpu.max.period",
+        MetricKind::Gauge,
+        Unit::Microseconds,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
+    registry.declare(
         "cpu.usage_usec",
         MetricKind::Counter,
         Unit::Microseconds,
@@ -1463,6 +1477,53 @@ mod tests {
                 Source::Probe
             ))
         );
+    }
+
+    #[test]
+    fn cpu_max_quota_metrics_follow_the_freeze_state_declarations_and_use_the_gauge_mask() {
+        let registry = sampler_baseline().expect("baseline declares cleanly");
+        let names: Vec<&str> = registry.metrics()[..5]
+            .iter()
+            .map(|metric| metric.name())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "cgroup.freeze",
+                "cgevents.frozen",
+                "cgevents.populated",
+                "limit.cpu.max.quota",
+                "limit.cpu.max.period",
+            ]
+        );
+        for name in ["limit.cpu.max.quota", "limit.cpu.max.period"] {
+            let metric = registry.get(name).expect("cpu.max metric is registered");
+            assert_eq!(
+                (
+                    metric.kind(),
+                    metric.unit(),
+                    metric.scope(),
+                    metric.source()
+                ),
+                (
+                    MetricKind::Gauge,
+                    Unit::Microseconds,
+                    Scope::Cgroup,
+                    Source::CgroupFs
+                ),
+                "{name} facts"
+            );
+            assert_eq!(
+                metric.aggregations(),
+                vec![
+                    Aggregation::Last,
+                    Aggregation::Mean,
+                    Aggregation::Min,
+                    Aggregation::Max
+                ],
+                "the wire mask is derived from Gauge"
+            );
+        }
     }
 
     #[test]
