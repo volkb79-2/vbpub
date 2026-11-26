@@ -16035,7 +16035,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B579 — release-gate.sh needs a host, a hosts file and an output dir that nothing supplies
 
-**Status: FIXED 2026-11-25 in `38598081d` (settings) and `58ef72042` (heartbeat), round-1 corrections in `7ef807f80` (refusal sources, controller read, cancel races) and `8801bc5c3` (docs), round-2 follow-ups in `fe15f0efc` (heartbeat trap), `f6b8be0c0` (defaults reason, check order) and `c92c9556c` (tests, shellcheck, docs, CHANGES); round-3 follow-ups in `ae997bd6f` (the trap's job-table targets) and the round-3 fix commit (a silent defaults import's exit status, CONSUMERS exit-code split, CHANGES wording); severity was medium (every release stalled).**
+**Status: FIXED 2026-11-25 in `38598081d` (settings) and `58ef72042` (heartbeat), round-1 corrections in `7ef807f80` (refusal sources, controller read, cancel races) and `8801bc5c3` (docs), round-2 follow-ups in `fe15f0efc` (heartbeat trap), `f6b8be0c0` (defaults reason, check order) and `c92c9556c` (tests, shellcheck, docs, CHANGES), round-3 follow-ups in `ae997bd6f` (the trap's job-table targets), `d2efe71a0` (a silent defaults import's exit status) and `ea7f6e542` (CONSUMERS exit-code split, CHANGES); severity was medium (every release stalled).**
 
 **What happened.** The cmru release transaction ran the release gate (`cmru.toml:29-34`, `tools/release-gate.sh <lane>`), and it stopped twice before it started:
 1. `ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002` (`tools/release-gate.sh:24-25`). No default, and neither cmru.toml nor the release docs say who sets it.
