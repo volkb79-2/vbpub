@@ -2989,3 +2989,121 @@ def test_container_name_appearing_during_lease_wait_refuses_with_two(tmp_path):
     assert len(inspections) == 2
     assert book.status("ops-name-appeared", "ops") is None
     blocker.handle.complete()
+
+
+@pytest.mark.parametrize("holder_priority", ["gate", "campaign"])
+@pytest.mark.parametrize(("candidate_priority", "passes"), [("dev", False), ("merge-gate", True)])
+def test_aged_holder_that_now_fits_keeps_its_reservation_against_a_later_arrival(
+    tmp_path, holder_priority, candidate_priority, passes
+):
+    clock = _FakeClock()
+    capacity = _capacity(aging_s=60)
+    book = _book(tmp_path / "state", clock=clock)
+    blocker = _admit(book, capacity, job_id="ops-blocker", footprint="small", cores=1)
+    holder = _request(job_id="ops-a-holder", priority=holder_priority, footprint="large", cores=1)
+    nested: dict[str, object] = {}
+
+    def free_capacity_then_submit_before_the_holder_polls(seconds):
+        if nested:
+            clock.now += seconds
+            return
+        nested["ran"] = True
+        clock.now += 60
+        blocker.handle.complete()
+        try:
+            result = book.submit(
+                _request(job_id="ops-z-arrival", priority=candidate_priority, footprint="small"),
+                authenticated_group="ops", capacity_provider=lambda: capacity,
+                legacy_jobs_provider=lambda: (), wait_s=0,
+            )
+        except AdmissionError as exc:
+            nested["error"] = exc
+        else:
+            nested["result"] = result
+            result.handle.complete()
+
+    clock.on_wait = free_capacity_then_submit_before_the_holder_polls
+    result = book.submit(holder, authenticated_group="ops", capacity_provider=lambda: capacity,
+                         legacy_jobs_provider=lambda: (), wait_s=120)
+    assert ("result" in nested) is passes
+    if not passes:
+        assert nested["error"].exit_code == 75
+        assert "immediate admission refused" in nested["error"].reason
+    assert result.record["job_id"] == "ops-a-holder"
+    result.handle.complete()
+
+
+def _waiting_row(job_id, priority, submitted_at):
+    return {
+        "job_id": job_id, "priority": priority, "footprint": "tiny",
+        "planned_cores": 1.0, "submitted_at": submitted_at, "cancelled": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "admitted"),
+    [
+        # an aged holder passes an earlier-sorting fresh waiter, which waits
+        (("ops-fresh", "dev", 99.0), ("ops-aged", "campaign", 0.0), "ops-aged"),
+        # two aged waiters: the first in queue order holds the reservation
+        (("ops-older", "campaign", 0.0), ("ops-younger", "campaign", 1.0), "ops-older"),
+        (("ops-aged-dev", "dev", 1.0), ("ops-aged-campaign", "campaign", 0.0), "ops-aged-dev"),
+        # a fresh merge gate passes an aged holder, which waits for it
+        (("ops-merge", "merge-gate", 99.0), ("ops-aged", "campaign", 0.0), "ops-merge"),
+    ],
+)
+def test_exactly_one_of_two_fitting_waiters_is_admissible_so_neither_blocks_the_other_for_ever(
+    tmp_path, first, second, admitted
+):
+    book = _book(tmp_path / "state")
+    capacity = _capacity()
+    rows = [_waiting_row(*first), _waiting_row(*second)]
+    allowed = [
+        row["job_id"] for row in rows
+        if book._queue_allows(row, rows, capacity, {}, (), 100.0, 60.0)
+    ]
+    assert allowed == [admitted]
+
+
+def test_expired_wait_names_the_last_refusal(tmp_path):
+    clock = _FakeClock()
+    capacity = replace(
+        _capacity(),
+        policy=replace(_capacity().policy, legacy_planned_cores=Fact.unknown("legacy core policy missing")),
+    )
+    book = _book(tmp_path / "state", clock=clock)
+    with pytest.raises(AdmissionError, match="wait expired") as raised:
+        book.submit(
+            _request(job_id="ops-waits-for-policy"), authenticated_group="ops",
+            capacity_provider=lambda: capacity,
+            legacy_jobs_provider=lambda: ("legacy-without-EXIT",), wait_s=1,
+        )
+    assert raised.value.exit_code == 75
+    assert "policy.legacy_planned_cores unavailable: legacy core policy missing" in raised.value.reason
+    assert book.status("ops-waits-for-policy", "ops") is None
+
+
+def test_unreadable_terminal_of_an_unrelated_finished_job_does_not_block_admission(tmp_path):
+    capacity = _capacity()
+    book = _book(tmp_path / "state")
+    path = book._terminal_path("ops-long-finished")
+    path.write_text("{torn", encoding="utf-8")
+    admitted = _admit(book, capacity, job_id="ops-new-job")
+    assert admitted.handle is not None
+    assert path.read_text(encoding="utf-8") == "{torn"
+    admitted.handle.complete()
+
+
+def test_raising_capacity_provider_refuses_with_75_and_records_nothing(tmp_path):
+    book = _book(tmp_path / "state")
+
+    def capacity_provider():
+        raise RuntimeError("hostobs unreachable")
+
+    with pytest.raises(AdmissionError, match="host capacity unavailable: hostobs unreachable") as raised:
+        book.submit(
+            _request(job_id="ops-no-facts"), authenticated_group="ops",
+            capacity_provider=capacity_provider, legacy_jobs_provider=lambda: (), wait_s=0,
+        )
+    assert raised.value.exit_code == 75
+    assert book.status("ops-no-facts", "ops") is None
