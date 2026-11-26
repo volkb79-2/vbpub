@@ -21502,7 +21502,10 @@ class TestProgressWatch:
         clock.advance(1)
         stalled = watch.poll()
         assert stalled is not None
-        assert "idle_bound auto 360s" in stalled
+        # M1: the stop message names the SAME derivation the disclosure
+        # line and the run record name, plus the window this poll enforced.
+        assert run_gate.ASSAY_AUTO_BOUND_RULE in stalled
+        assert "this window was 360s" in stalled
 
     @pytest.mark.parametrize("hint", [True, 0, -1, "120", None])
     def test_auto_bound_ignores_a_non_positive_or_non_numeric_plan_hint(
@@ -21565,7 +21568,8 @@ class TestProgressWatch:
         clock.advance(1)
         stalled = watch.poll()
         assert stalled is not None
-        assert "idle_bound auto 300s" in stalled
+        assert run_gate.ASSAY_AUTO_BOUND_RULE in stalled
+        assert "this window was 300s" in stalled
         assert "last event seen: baseline command progress" in stalled
 
     def test_auto_bound_pauses_for_high_host_psi_during_baseline(
@@ -21624,7 +21628,8 @@ class TestProgressWatch:
         clock.advance(1)
         stalled = watch.poll()
         assert stalled is not None
-        assert "idle_bound auto 600s" in stalled
+        assert run_gate.ASSAY_AUTO_BOUND_RULE in stalled
+        assert "this window was 600s" in stalled
         assert "last event seen: the plan event" in stalled
 
     def test_verdict_written_ends_the_baseline_bound_for_r0_r1_streams(
@@ -21674,7 +21679,8 @@ class TestProgressWatch:
         clock.advance(300)
         stalled = watch.poll()
         assert stalled is not None
-        assert "idle_bound auto 300s" in stalled
+        assert run_gate.ASSAY_AUTO_BOUND_RULE in stalled
+        assert "this window was 300s" in stalled
 
     def test_header_only_stream_stays_disclosure_only_when_auto_bound(
             self, tmp_path):
@@ -21736,7 +21742,8 @@ class TestProgressWatch:
         clock.advance(300)
         stalled = watch.poll()
         assert stalled is not None
-        assert "idle_bound auto 300s" in stalled
+        assert run_gate.ASSAY_AUTO_BOUND_RULE in stalled
+        assert "this window was 300s" in stalled
         assert "last event seen: baseline command progress" in stalled
 
     def test_r1_judge_phase_silence_is_not_a_stall(self, tmp_path):
@@ -21772,7 +21779,9 @@ class TestProgressWatch:
         assert watch.poll() is None
         clock.advance(0.1)
         stalled = watch.poll()
-        assert stalled is not None and "idle_bound auto 600s" in stalled
+        assert stalled is not None
+        assert run_gate.ASSAY_AUTO_BOUND_RULE in stalled
+        assert "this window was 600s" in stalled
 
     def test_r2_judge_window_before_the_plan_is_not_a_stall(self, tmp_path):
         # S-1: in an R2 lane assay runs evaluate_r1 between coverage_parsed
@@ -22426,14 +22435,44 @@ class TestAutoStallBoundFacts:
 
     def test_a_declared_value_is_the_lane_own(self):
         assert run_gate.stall_bound_facts({"stall_timeout": "15m"}) == {
-            "seconds": 900.0, "source": "declared", "text": "15m"}
+            "seconds": 900.0, "source": "declared", "text": "15m",
+            "rule": None}
 
     def test_an_absent_value_is_the_documented_default(self):
         facts = run_gate.stall_bound_facts({})
         assert facts["source"] == "auto"
         assert facts["seconds"] == 300.0
         assert facts["text"] == "300s"
+        assert facts["rule"] is None
         assert run_gate.DEFAULT_STALL_BOUND_SECONDS == 300.0
+
+    def test_an_assay_lane_is_bounded_by_the_rule_its_watch_enforces(self):
+        """M1 of the fix round: an assay lane was DISCLOSED and RECORDED at
+        the flat 300 s default while `ProgressWatch._idle_bound` stopped it at
+        600 s (or 3x its published cadence). One lane must not publish two
+        different bounds about itself, so an assay lane's facts name the rule
+        and carry NO number — and the watch's own stop message names that same
+        rule from the same constant."""
+        facts = run_gate.stall_bound_facts({"kind": "assay",
+                                            "assay_lane": "sql-mutation"})
+        assert facts["source"] == "auto-derived"
+        assert facts["seconds"] is None          # nothing invents a number
+        assert facts["rule"] == run_gate.ASSAY_AUTO_BOUND_RULE
+        assert facts["text"] == run_gate.ASSAY_AUTO_BOUND_RULE
+        # A DECLARED number on an assay lane is exact and is still a number.
+        declared = run_gate.stall_bound_facts(
+            {"kind": "assay", "stall_timeout": "40m"})
+        assert declared["source"] == "declared"
+        assert declared["seconds"] == 2400.0 and declared["rule"] is None
+
+    def test_a_command_lane_keeps_the_flat_default(self):
+        """The command lane's number IS one number (`StreamWatch`/
+        `LogStreamWatch` take it directly), so it keeps reporting it."""
+        facts = run_gate.stall_bound_facts({"kind": "command",
+                                            "argv": ["true"]})
+        assert facts["source"] == "auto"
+        assert facts["seconds"] == 300.0 and facts["rule"] is None
+
 
     def test_the_signal_is_derived_from_kind_and_runner_not_from_a_key(self):
         assert run_gate.lane_stall_signal({"kind": "assay"}) == \
@@ -22451,8 +22490,17 @@ class TestAutoStallBoundFacts:
             {"kind": "command", "_environment_mode": "exec"}) == \
             run_gate.STALL_SIGNAL_OUTPUT_STREAM
         assert run_gate.lane_stall_signal(
+            {"kind": "command", "_environment_mode": "host"}) == \
+            run_gate.STALL_SIGNAL_OUTPUT_STREAM
+        assert run_gate.lane_stall_signal(
             {"kind": "command", "_environment_mode": "ephemeral"}) == \
             run_gate.STALL_SIGNAL_LOG_STREAM
+        # M2 of the fix round: "cannot tell" is its OWN answer. Before this
+        # the code answered the OUTPUT stream here while its docstring
+        # promised the container kind — both wrong, and a default standing in
+        # for a fact either way.
+        assert run_gate.lane_stall_signal({"kind": "command"}) == \
+            run_gate.STALL_SIGNAL_UNKNOWN
 
     def test_an_inherited_central_lane_is_stamped_with_its_declared_mode(
             self, tmp_path):
@@ -22542,16 +22590,39 @@ class TestAutoStallBoundFacts:
         run_gate.record_stall_bound(record, {"kind": "command",
                                             "stall_timeout": "15m"},
                                     command_signal="output-stream")
-        assert record["stall_bound"] == {"seconds": 900, "source": "declared",
-                                        "signal": "output-stream"}
+        assert record["stall_bound"] == {
+            "seconds": 900, "source": "declared", "signal": "output-stream",
+            "rule": None}
         run_gate.record_stall_bound(record, {"kind": "command"},
                                     command_signal="output-stream")
-        assert record["stall_bound"] == {"seconds": 300, "source": "auto",
-                                        "signal": "output-stream"}
+        assert record["stall_bound"] == {
+            "seconds": 300, "source": "auto", "signal": "output-stream",
+            "rule": None}
         # A kind with no watch records the ABSENCE, never a fabricated bound.
         record["stall_bound"] = {"seconds": 1}
         run_gate.record_stall_bound(record, {"kind": "sequence"})
         assert record["stall_bound"] is None
+
+    def test_an_assay_lane_records_the_rule_its_watch_enforces(self):
+        """M1: the RECORD must not claim a number nothing enforces. An assay
+        lane's watch derives its window at run time (`_idle_bound`), so the
+        record carries `seconds: null` and the same rule string the printed
+        disclosure and the stop message use."""
+        record: dict = {}
+        run_gate.record_stall_bound(
+            record, {"kind": "assay", "assay_lane": "sql-mutation"})
+        assert record["stall_bound"] == {
+            "seconds": None, "source": "auto-derived",
+            "signal": run_gate.STALL_SIGNAL_PROGRESS_FILE,
+            "rule": run_gate.ASSAY_AUTO_BOUND_RULE}
+
+    def test_an_unresolvable_signal_is_recorded_as_unknown_not_named(self):
+        """M2: a lane table with no stamp and no caller-known runner has no
+        resolvable signal. Recording a plausible one there would send an
+        operator to the wrong stream; `unknown` says exactly what is known."""
+        record: dict = {}
+        run_gate.record_stall_bound(record, {"kind": "command"})
+        assert record["stall_bound"]["signal"] == run_gate.STALL_SIGNAL_UNKNOWN
 
 
 class TestStallTimeoutLaneKey:
@@ -22592,6 +22663,46 @@ class TestStallTimeoutLaneKey:
         cfg, _, _, _ = run_gate.load_config(proj)
         lane = cfg["lanes"]["sql-mutation"]
         assert lane["stall_timeout"] == "15m" and lane["budget"] == "120m"
+
+    @pytest.mark.parametrize("declared", ["_stall_timeout", "_budget",
+                                          "_argv", "_x"])
+    def test_an_underscore_key_in_a_config_is_refused_by_name(
+            self, tmp_path, declared):
+        """M3 of the fix round: `_`-prefixed keys are Run-Gate's OWN derived
+        state (`DERIVED_LANE_KEYS`), attached after validation — they are not
+        config keys. The retired rule skipped EVERY `_` key, so a `_budget`
+        next to `budget` loaded clean, was inert, and the lane ran with the
+        default instead: RG-32's accepted-and-inert shape one prefix wider."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg().replace(
+            "clean_tree = false", f'{declared} = "15m"\n            '
+                                  'clean_tree = false'))
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert f"unknown key(s) {declared}" in str(exc.value)
+        assert "[lanes.sql-mutation]" in str(exc.value)
+
+    def test_every_derived_name_is_still_accepted_on_a_loaded_lane(self):
+        """The allow-list is exactly Run-Gate's own names, and nothing else:
+        the two directions are asserted together so a future derived key
+        added without a set entry fails here rather than at a consumer."""
+        lane = {"kind": "command", "environment": "runner",
+                "argv": ["true"]}
+        lane.update({key: None for key in run_gate.DERIVED_LANE_KEYS})
+        run_gate._validate_lane("probe", lane, "unit", derived_attached=True)
+        with pytest.raises(run_gate.GateError, match=r"unknown key\(s\) _x"):
+            run_gate._validate_lane(
+                "probe", {"kind": "command", "environment": "runner",
+                          "argv": ["true"], "_x": 1},
+                "unit", derived_attached=True)
+        # …and before attachment (a config file's own table) not even a
+        # derived name gets through.
+        with pytest.raises(run_gate.GateError,
+                           match=r"unknown key\(s\) _environment_mode"):
+            run_gate._validate_lane(
+                "probe", {"kind": "command", "environment": "runner",
+                          "argv": ["true"], "_environment_mode": "exec"},
+                "unit")
 
     @pytest.mark.parametrize("value", ['"15"', '"15x"', "15", "true"])
     def test_a_malformed_duration_refuses_naming_the_key(self, tmp_path, value):

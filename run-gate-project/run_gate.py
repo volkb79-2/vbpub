@@ -746,6 +746,26 @@ DEFAULT_STALL_BOUND_SECONDS = 300.0
 STALL_SIGNAL_PROGRESS_FILE = "progress-file"
 STALL_SIGNAL_LOG_STREAM = "log-stream"
 STALL_SIGNAL_OUTPUT_STREAM = "output-stream"
+# RG-320 fix round 1 (M2): "cannot tell" is its own answer. A lane table that
+# arrives without `_environment_mode` (a re-attach/follow of a lane whose
+# `[environments.*]` entry has since moved, which `_stamp_environment_modes`
+# deliberately leaves unstamped rather than guessing) must NOT be dressed in a
+# plausible signal: naming one there substitutes a default for a fact (RG-101)
+# and sends an operator debugging the wrong stream.
+STALL_SIGNAL_UNKNOWN = "unknown"
+# The two sources a bound can have. `auto` is the flat 300 s default a COMMAND
+# lane gets; `auto-derived` is the RULE an ASSAY lane is actually armed with
+# (RG-320 fix round 1, M1) — it is not one number, so it is not reported as one.
+STALL_BOUND_DECLARED = "declared"
+STALL_BOUND_AUTO = "auto"
+STALL_BOUND_AUTO_DERIVED = "auto-derived"
+# RG-320 fix round 1 (M1): the RULE a `kind = "assay"` lane's auto bound
+# follows, spelled once. `ProgressWatch._idle_bound` is the enforcer; the
+# disclosure line, the run record and the stop message all name this same
+# rule, because before this an assay lane was disclosed and recorded at 300 s
+# while the watch stopped it at 600 s (or 3x its cadence).
+ASSAY_AUTO_BOUND_RULE = ("max(300s, 3x the published cadence), or 600s "
+                         "between command_finished and the R2 plan")
 
 # RG-55 / SPEC R-43: cgprofile daemon client
 # (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
@@ -1136,17 +1156,41 @@ def _read_toml(path: Path) -> dict:
     return _read_toml_snapshot(path)[0]
 
 
-def _check_keys(table: dict, allowed: set, where: str) -> None:
-    # A key starting with "_" is Run-Gate's OWN derived state, attached to
-    # the table after load (`_environment_mode` is RG-320's example); it is
-    # never something a config file may declare, so it is not an "unknown
-    # key" either (the same reason `_imported`/`_assay_inventory`/
-    # `_r2_flex` already live there unharmed).
+def _check_keys(table: dict, allowed: set, where: str, *,
+                derived: frozenset = frozenset()) -> None:
+    """Refuse every key this table does not own, by name.
+
+    `derived` lists the names RUN-GATE ITSELF attaches to the table after it
+    is validated (`DERIVED_LANE_KEYS`). They are not config keys: they are
+    run-gate's own state, which is why they are accepted only on a table that
+    has already been through load (`_validate_lane(derived_attached=True)`) —
+    a config file that declares one is refused by name, exactly like any other
+    unknown key (RG-101: an internal fact a config may set is a default where
+    a fact belongs). Nothing else gets a pass: before fix round 1 (M3) EVERY
+    `_`-prefixed key was skipped, so a user's `_stall_timeout` next to
+    `stall_timeout` loaded clean, was inert, and the disclosure printed the
+    auto bound — RG-32's accepted-and-inert shape, re-opened one prefix
+    wider."""
     unknown = sorted(key for key in set(table) - allowed
-                     if not str(key).startswith("_"))
+                     if str(key) not in derived)
     if unknown:
         fail(f"{where}: unknown key(s) {', '.join(unknown)} "
              f"(allowed: {', '.join(sorted(allowed))})")
+
+
+# RG-320 fix round 1 (M3): the EXPLICIT set of `_`-prefixed names Run-Gate
+# attaches to a LANE table. Every one is written after `_validate_lane` has
+# passed at load (`_stamp_environment_modes` runs immediately after), so this
+# list only has to be complete — it is never what makes a key legal.
+# `_image_selection` is NOT here: it is attached to an ENVIRONMENT table, in
+# `resolve_environment`, and environment tables take no derived names.
+DERIVED_LANE_KEYS = frozenset({
+    "_environment_mode", "_imported", "_import_unresolved",
+    "_assay_inventory", "_assay_inventory_error", "_selective_assay",
+    "_r2_flex", "_r2_jobs_selection", "_request_args", "_assay_forward",
+    "_assay_forward_paths", "_judge_identity", "_workers_env",
+    "_workers_selection", "_artifact_lane",
+})
 
 
 RESOURCE_IO_SYNC_VALUES = frozenset({"durable", "strict", "relaxed"})
@@ -1530,8 +1574,14 @@ def _validate_workers_keys(name: str, table: dict, where: str,
              f"({table.get('workers_max', WORKERS_DEFAULT_MAX)})")
 
 
-def _validate_lane(name: str, table: dict, where: str) -> None:
-    _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
+def _validate_lane(name: str, table: dict, where: str, *,
+                   derived_attached: bool = False) -> None:
+    # `derived_attached` is set by the SECOND pass (`merge_lanes` re-validates
+    # the assay lanes of the effective set, which `_stamp_environment_modes`
+    # has already stamped): only then may Run-Gate's own derived names be
+    # present. A config file is always validated with the default (M3).
+    _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]",
+                derived=DERIVED_LANE_KEYS if derived_attached else frozenset())
     kind = table.get("kind")
     if kind not in ("command", "assay", "sequence"):
         fail(f"{where} [lanes.{name}]: 'kind' must be \"command\", \"assay\" or \"sequence\" (got {kind!r})")
@@ -2984,7 +3034,7 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
                 or not lane["environment"].strip():
             fail(f"lane '[lanes.{name}]' has no 'environment'; set it on the "
                  f"lane or in [assay] ({project_path})")
-        _validate_lane(name, lane, str(project_path))
+        _validate_lane(name, lane, str(project_path), derived_attached=True)
         if was_imported:
             lane["assay_command"] = copy.deepcopy(defaults["command"])
             lane["pins"] = copy.deepcopy(defaults["pins"])
@@ -8808,15 +8858,34 @@ def stall_bound_facts(lane: dict) -> dict:
 
     Derived once, from the config, so the disclosure line, the run record
     and the two watches cannot disagree about the number they are all
-    talking about (`R-35`'s own rule: read one fact in one place)."""
+    talking about (`R-35`'s own rule: read one fact in one place).
+
+    Fix round 1 (M1): the derivation is KIND-AWARE, because the watch is. An
+    ASSAY lane is not armed with the flat default — `ProgressWatch` stops it
+    at `_idle_bound`, i.e. `max(300, 3x its published cadence)` or
+    `POST_COMMAND_BOUND_SECONDS` between `command_finished` and the R2 plan,
+    and those inputs do not exist before the lane runs. So an assay lane's
+    facts name the RULE (`ASSAY_AUTO_BOUND_RULE`), keep `seconds` at None
+    rather than inventing a number, and say so in `text`; its watch and its
+    stop message publish the same rule from the same string, so an operator
+    can verify they agree instead of reading two different numbers.
+
+    `seconds` is None ONLY where nothing is missing: a DECLARED value and a
+    command lane's flat default are both exact, and both report a number."""
     declared = lane.get("stall_timeout")
     if declared:
         return {"seconds": float(budget_seconds(declared)),
-                "source": "declared",
-                "text": declared}
+                "source": STALL_BOUND_DECLARED,
+                "text": declared, "rule": None}
+    if lane.get("kind") == "assay":
+        return {"seconds": None,
+                "source": STALL_BOUND_AUTO_DERIVED,
+                "text": ASSAY_AUTO_BOUND_RULE,
+                "rule": ASSAY_AUTO_BOUND_RULE}
     return {"seconds": DEFAULT_STALL_BOUND_SECONDS,
-            "source": "auto",
-            "text": f"{int(DEFAULT_STALL_BOUND_SECONDS)}s"}
+            "source": STALL_BOUND_AUTO,
+            "text": f"{int(DEFAULT_STALL_BOUND_SECONDS)}s",
+            "rule": None}
 
 
 class StdinForwarder:
@@ -16970,9 +17039,17 @@ class ProgressWatch:
                    and not isinstance(total, bool) else ""))
 
     def _stall(self, age: float) -> str:
+        # RG-320 fix round 1 (M1): the label names the SAME derivation the
+        # disclosure line and the run record name (`ASSAY_AUTO_BOUND_RULE`),
+        # plus the number this poll actually enforced. Before this the file
+        # said `300s (source: auto)` at start and `idle_bound auto 600s` here,
+        # i.e. one lane published two different bounds about itself.
         bound = self._idle_bound()
-        label = (f"stall_timeout {int(bound)}s" if self.stall_seconds is not None
-                 else f"idle_bound auto {int(bound)}s")
+        if self.stall_seconds is not None:
+            label = f"stall_timeout {int(bound)}s"
+        else:
+            label = (f"auto-derived bound, {ASSAY_AUTO_BOUND_RULE}; "
+                     f"this window was {int(bound)}s")
         return (f"the container is still RUNNING but "
                 f"{self.path.name} has not advanced for {int(age)}s "
                 f"({label}); last event seen: "
@@ -17356,11 +17433,18 @@ def lane_stall_signal(lane: dict,
     for a container lane (either `ephemeral` or, since RG-43, the container
     `host` environment), while `run_exec_lane` and `run_bare_host_lane`
     pump the child's own stdout through `OutputTee`. `command_signal` is
-    therefore supplied by the caller that KNOWS which runner it is. When it
-    is omitted the CONFIG's own environment mode decides, and "cannot tell"
-    degrades to the container kind — that is what the re-attach and follow
-    paths know, where the resolved environment is no longer in hand. A
-    sequence has neither (G2): its members carry the watches.
+    therefore supplied by the caller that KNOWS which runner it is.
+
+    When no `command_signal` is supplied, the CONFIG's own environment mode
+    decides — `_environment_mode` is stamped from the declaration at load and
+    at merge. A lane table with NEITHER (a caller that never loaded a config,
+    or a replayed lane whose `[environments.*]` entry has since moved, which
+    `_stamp_environment_modes` deliberately leaves unstamped rather than
+    guessing) gets `STALL_SIGNAL_UNKNOWN` and NOT a plausible one: naming a
+    signal there would substitute a default for a fact (RG-101) and send an
+    operator debugging the wrong stream (fix round 1, M2 — the docstring used
+    to promise the container kind and the code answered it, both wrong).
+    A sequence has neither (G2): its members carry the watches.
 
     Which signal judged a lane is a fact the operator is entitled to
     (`R-05`) — they differ in what they can miss (a single silent compile
@@ -17372,19 +17456,22 @@ def lane_stall_signal(lane: dict,
         return "none"
     if command_signal is not None:
         return command_signal
-    # The declared mode, recorded at load. A mode this cannot read (an old
-    # config layer, or a lane table built by a caller that never loaded one)
-    # degrades to the container signal ONLY when the mode is literally
-    # absent; `host`/`bare-host` and `exec` are the output-stream cases.
-    return (STALL_SIGNAL_LOG_STREAM
-            if lane.get("_environment_mode") == "ephemeral"
-            else STALL_SIGNAL_OUTPUT_STREAM)
+    mode = lane.get("_environment_mode")
+    if mode == "ephemeral":
+        return STALL_SIGNAL_LOG_STREAM
+    if isinstance(mode, str) and mode.strip():
+        # `exec` and `host` (the bare-subprocess mode RG-43 renamed
+        # `bare-host` to) both hand the child's own stdout to `OutputTee`.
+        return STALL_SIGNAL_OUTPUT_STREAM
+    return STALL_SIGNAL_UNKNOWN
 
 
 _STALL_SIGNAL_TEXT = {
     STALL_SIGNAL_PROGRESS_FILE: ("its progress file", "progress file"),
     STALL_SIGNAL_LOG_STREAM: ("its own log output", "log stream"),
     STALL_SIGNAL_OUTPUT_STREAM: ("its own output stream", "output stream"),
+    STALL_SIGNAL_UNKNOWN: ("no signal this invocation can name",
+                          "signal not resolvable for this lane"),
 }
 
 
@@ -17423,29 +17510,49 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None, *,
                   "(each member carries its own watch)", flush=True)
         return
     facts = stall_bound_facts(lane)
-    if facts["source"] == "declared":
+    where, source = _STALL_SIGNAL_TEXT[signal]
+    enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
+                f"this one only watches" if owner_pid is not None else "")
+    if facts["source"] == STALL_BOUND_DECLARED:
         # R-40: what this bounds is SILENCE, not elapsed time. Saying so on
         # the line next to the hard budget is the whole point — the two
         # numbers mean opposite things and used to be confused for each
         # other (RG-32's lesson, one lane key over).
-        where, source = _STALL_SIGNAL_TEXT[signal]
-        enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
-                    f"this one only watches" if owner_pid is not None else "")
         print(f"run-gate: stall_timeout {lane['stall_timeout']} (source: "
               f"{source}) — the lane is stopped only if {where} goes "
               f"silent that long, never on total elapsed time{enforcer}",
               flush=True)
         return
-    # RG-320: nobody declared a bound, so the DEFAULT one is what can stop
+    # RG-320: nobody declared a bound, so the derived one is what can stop
     # this lane. Disclosing it is not noise: an operator who never typed a
     # number is about to have their lane stopped by one.
-    where, source = _STALL_SIGNAL_TEXT[signal]
-    enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
-                f"this one only watches" if owner_pid is not None else "")
-    print(f"run-gate: stall bound {facts['text']} (source: auto) — no "
-          f"stall_timeout is declared, so {where} ({source}) is watched and "
-          f"the lane is stopped only if it goes silent that long, never on "
-          f"total elapsed time{enforcer}", flush=True)
+    #
+    # Fix round 1 (M1): an ASSAY lane's derivation is a RULE, not a flat
+    # number, and its disclosure says exactly that — the same string its
+    # `ProgressWatch` stop message carries, so the two cannot describe
+    # different bounds for one lane.
+    if facts["source"] == STALL_BOUND_AUTO_DERIVED:
+        print(f"run-gate: stall bound {facts['text']} (source: auto-derived) "
+              f"— no stall_timeout is declared, so {where} ({source}) is "
+              f"watched and the lane is stopped only if it goes silent past "
+              f"that bound, never on total elapsed time{enforcer}",
+              flush=True)
+        return
+    if signal == STALL_SIGNAL_UNKNOWN:
+        # M2: never wear a plausible name here. The bound is still real and
+        # still disclosed; only the STREAM it is judged from is unknown to
+        # this invocation.
+        print(f"run-gate: stall bound {facts['text']} (source: "
+              f"{facts['source']}) — no stall_timeout is declared and "
+              f"({source}); the lane is stopped only if that silence "
+              f"signal passes the bound, never on total elapsed time"
+              f"{enforcer}", flush=True)
+        return
+    print(f"run-gate: stall bound {facts['text']} (source: "
+          f"{facts['source']}) — no stall_timeout is declared, so {where} "
+          f"({source}) is watched and the lane is stopped only if it goes "
+          f"silent that long, never on total elapsed time{enforcer}",
+          flush=True)
 
 
 def make_output_stream_watch(lane: dict, lane_name: str, tee: "OutputTee",
@@ -17463,12 +17570,13 @@ def make_output_stream_watch(lane: dict, lane_name: str, tee: "OutputTee",
         return None
     facts = stall_bound_facts(lane)
     pressure_reader = None
-    if facts["source"] == "auto":
+    if facts["source"] == STALL_BOUND_AUTO:
         def pressure_reader():
             snapshot = read_host_pressure_snapshot() or {}
             return snapshot.get("full_avg10")
     return StreamWatch(tee, int(facts["seconds"]), lane_name, clock,
-                       pressure_reader, auto_bound=facts["source"] == "auto")
+                       pressure_reader,
+                       auto_bound=facts["source"] == STALL_BOUND_AUTO)
 
 
 def record_stall_bound(run_record: dict | None, lane: dict, *,
@@ -17488,9 +17596,12 @@ def record_stall_bound(run_record: dict | None, lane: dict, *,
         run_record["stall_bound"] = None
         return
     facts = stall_bound_facts(lane)
-    run_record["stall_bound"] = {"seconds": int(facts["seconds"]),
-                                 "source": facts["source"],
-                                 "signal": signal}
+    run_record["stall_bound"] = {
+        "seconds": (None if facts["seconds"] is None
+                    else int(facts["seconds"])),
+        "source": facts["source"],
+        "signal": signal,
+        "rule": facts["rule"]}
 
 
 _POST_COMMAND_UNPROVEN_ANNOUNCED: set = set()
@@ -17839,13 +17950,13 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 stdout=subprocess.PIPE, text=True, bufsize=1,
                 errors="replace")
             pressure_reader = None
-            if stall_bound["source"] == "auto":
+            if stall_bound["source"] == STALL_BOUND_AUTO:
                 def pressure_reader():
                     snapshot = read_host_pressure_snapshot() or {}
                     return snapshot.get("full_avg10")
             log_watch = LogStreamWatch(
                 proc, int(stall_bound["seconds"]), lane_name,
-                auto_bound=stall_bound["source"] == "auto",
+                auto_bound=stall_bound["source"] == STALL_BOUND_AUTO,
                 pressure_reader=pressure_reader)
         else:
             proc = subprocess.Popen([docker, "logs", "-f", name])
