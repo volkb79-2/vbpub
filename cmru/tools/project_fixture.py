@@ -24,7 +24,13 @@ ROOT_CMRU_ARTIFACTS = (
 # libraries/test-policy/src from cmru tests`) before a single mutant is judged.
 SHARED_LIBRARIES = (
     Path("libraries/worktree"),
-    Path("libraries/test-policy"),
+    # Only the import tree: conftest reads `.../src` and nothing else from the
+    # library, and a whole-project pathspec would put the library's own released
+    # outputs (`artifacts/`, `evidence/`, `logs/`) inside the campaign's
+    # dirty-check pathspecs, refusing a checkout that is committed and clean
+    # (`mutation_campaign._is_generated_ignored_path` excuses caches only, by
+    # design). A tree pathspec still selects every tracked file below `src`.
+    Path("libraries/test-policy/src"),
 )
 # Tracked repository-root inputs the full suite reads in this fixture. The tests
 # that judge tester-unified, nyxloom and the whole estate skip here ("isolated

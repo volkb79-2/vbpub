@@ -518,13 +518,12 @@ def main(argv: list[str] | None = None) -> int:
         # selected and reported -- refuse rather than mutate the wrong diff.
         detail = (
             "source paths differ" if source_delta.strip()
-            else "the judged range would not be tag..HEAD"
+            else "the judged mutation range would not be tag..HEAD"
         )
         print(
             f"check-assay-baseline: Assay's effective base is {effective_base!r} "
             f"({resolution}), not selected published release tag {base_tag!r} "
-            f"at {tag_commit}; {detail}, so the R1 and mutation "
-            "ranges would differ",
+            f"at {tag_commit}; {detail}, so the mutation range would differ",
             file=sys.stderr,
         )
         return 1

@@ -19,6 +19,8 @@ from pathlib import PurePosixPath
 UNKNOWN = "<non-literal>"
 _IDENTITY_METHODS = {"resolve", "absolute", "expanduser"}
 _PREDICATE_METHODS = {"exists", "is_file", "is_dir", "is_symlink"}
+#: Attributes that enumerate directories ABOVE a path (an ancestor walk).
+_ANCESTOR_ATTRIBUTES = {"parent", "parents"}
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,22 @@ def module_has_skip_marker(source: str) -> bool:
         if isinstance(statement, ast.Assign) and _is_skipif(statement.value):
             if any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in statement.targets):
                 return True
+    return False
+
+
+def _ancestor_walk(node: ast.AST) -> bool:
+    """True when a loop iterable enumerates the directories above a path.
+
+    ``for root in (*project.parents, cwd, *cwd.parents)`` reads a file below
+    whichever ancestor happens to hold it, so the components after ``root`` are
+    literal but the root is not (``tests/conftest.py`` locates the estate test
+    policy that way). Treated as an unknown component rather than as a fixed
+    path, so the closure rule asks for the file instead of inventing one.
+    """
+    for element in getattr(node, "elts", [node]):
+        base = element.value if isinstance(element, ast.Starred) else element
+        if isinstance(base, ast.Attribute) and base.attr in _ANCESTOR_ATTRIBUTES:
+            return True
     return False
 
 
@@ -156,6 +174,14 @@ class _Resolver:
                 self._statement(statement, aliases, marker_names, function, guarded)
 
     def _statement(self, statement, aliases, marker_names, function, guarded):
+        if (
+            isinstance(statement, ast.For)
+            and isinstance(statement.target, ast.Name)
+            and _ancestor_walk(statement.iter)
+        ):
+            # The enumerated root is one of several ancestor directories, so
+            # every path built from it has an unknown component.
+            aliases[statement.target.id] = (UNKNOWN,)
         bound_path = None  # a path merely bound to a name is read where the name is used
         if isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement.value is not None:
             parts = self.resolve(statement.value, aliases)

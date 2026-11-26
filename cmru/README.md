@@ -1186,7 +1186,9 @@ Python bytecode is directed to private temporary caches so stale `.pyc` files
 cannot change which source the controller or a candidate executes.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
-If HEAD is a merge, the base is resolved as delegated (Assay B552), so the
+If HEAD is a merge, CMRU's R2 tools resolve the base as delegated (Assay
+B552), by passing `delegated=True` to `git.resolve_base` and
+`git.base_resolution_mode` at the call site, so the
 comparison is `merge-base(selected tag, HEAD)` — the tag itself, because the
 tag is proven to be in HEAD's ancestry. A merge HEAD is therefore judged
 against the selected tag like any other, covering the merged-in parent's

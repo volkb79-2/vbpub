@@ -1210,7 +1210,9 @@ When T3 invokes the lane through `remote-gate`, Run-Gate receives the base's
 full commit ID; the lane accepts it only if a bundled published tag points to
 that exact commit.
 Run it at any commit, including a merge HEAD: the lane delegates the base to
-Assay (`judge.base_source = "request"`), which resolves
+Assay by passing `delegated=True` to `git.resolve_base` and
+`git.base_resolution_mode` (a call-site keyword argument, not a lane
+setting), which resolves
 `merge-base(selected tag, HEAD)` — the tag itself, since the tag is proven to
 be in HEAD's ancestry — so a merge is judged against the selected release tag
 like any other HEAD. The lane refuses if the effective base is not the selected

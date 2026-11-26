@@ -683,7 +683,10 @@ def test_assay_baseline_checker_refuses_an_effective_base_that_is_not_the_select
     assert captured.out == ""
     assert "Assay's effective base" in captured.err
     assert "(merge-base)" in captured.err
-    assert "ranges would differ" in captured.err
+    # L2: the R2 lane's range is the only one that depends on the base; R1 is
+    # whole_target and reads none.
+    assert "mutation range would differ" in captured.err
+    assert "R1 and mutation" not in captured.err
 
 
 def test_assay_baseline_checker_rejects_head_release_tag_with_default_facts(

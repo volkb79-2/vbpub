@@ -3682,16 +3682,23 @@ tag at HEAD against its exact origin commit, including older tag names that
 point to the same commit.
 
 A CMRU release tag at HEAD is never a base; every release tag at HEAD is
-excluded before the ancestry checks. The base is the CALLER's comparison, so
-Assay resolves it as delegated (`judge.base_source = "request"`, Assay B552):
-`merge-base(base, HEAD)`. Because the checker has proven the selected tag is
-in HEAD's ancestry, that answer IS the tag commit, on a merge HEAD exactly as
-on a linear one, and the judged R1/mutation range is `tag..HEAD` -- every
-changed source, including what a merged-in parent brought in. An
-undeligated Assay resolution would answer a merge HEAD with its first parent
-instead and judge only the merge's own payload; the checker MUST NOT accept
-that answer. If the resolved effective base is not the selected tag commit the
-checker refuses, naming the resolved commit and the selected tag.
+excluded before the ancestry checks. The base is the CALLER's comparison, and
+CMRU's two R2 tools (`tools/check_assay_baseline.py` and
+`tools/mutation_campaign.py`) say so to Assay themselves: both pass
+`delegated=True` to `assay.git.resolve_base(...)` and to
+`assay.git.base_resolution_mode(...)` (Assay B552), so the answer is
+`merge-base(base, HEAD)` rather than a merge HEAD's first parent. This is a
+keyword argument at the call site, not lane configuration: CMRU's own Assay
+lanes are `whole_target` and declare no base at all (`judge.base_source` is
+refused under `whole_target` and is not used here). Because the checker has
+proven the selected tag is in HEAD's ancestry, `merge-base(tag, HEAD)` IS the
+tag commit, on a merge HEAD exactly as on a linear one, and the judged
+MUTATION range is `tag..HEAD` -- every changed source, including what a
+merged-in parent brought in. R1 is judged `whole_target` and reads no base.
+An undeligated Assay resolution would answer a merge HEAD with its first
+parent instead and judge only the merge's own payload; the checker MUST NOT
+accept that answer. If the resolved effective base is not the selected tag
+commit the checker refuses, naming the resolved commit and the selected tag.
 
 The registered host `gate` lane queries origin with CMRU's credential-scoped
 Git transport and passes only token-free tag and commit facts through

@@ -294,6 +294,12 @@ RUNTIME_GUARDED = {
 # (module, scanned path) -> (concrete paths it expands to, why). A read whose tail is a
 # variable cannot be resolved by the scan, so each is named with what it can reach.
 NONLITERAL_READS = {
+    ("conftest.py", "<non-literal>/libraries/test-policy/src"): (
+        ("libraries/test-policy/src",),
+        "`_policy_source()` walks the project's ancestors for the estate test-policy "
+        "source and puts it on `sys.path` before `import estate_test_policy` (KI-209); "
+        "the first component is whichever ancestor holds it, so only the tail is fixed",
+    ),
     ("test_docs_config_examples.py", "<non-literal>/cmru.toml"): (
         ("topos/cmru.toml", "nyxloom/cmru.toml"),
         "loops over exactly topos and nyxloom, both declared ESTATE_CONFIG_FIXTURES",
@@ -309,11 +315,22 @@ def _fixture_pathspecs() -> list[str]:
 
 
 def _scanned_modules() -> dict[str, tuple[str, str]]:
-    """Every test module of the suite: name -> (source, path below the repository root)."""
+    """Every module whose repository-root reads the copied suite executes.
+
+    ``test_*.py`` alone was KI-209's blind spot: the failing read lived in
+    ``tests/conftest.py`` (``_policy_source`` walks the project's ancestors for
+    ``libraries/test-policy/src``), which the scan never parsed, so a missing
+    fixture pathspec could only surface in a real R2 campaign. The conftest and
+    the ``tests/_*.py`` helpers the test modules import are scanned too; a
+    helper that reads the repository root must be declared like any other.
+    """
     modules: dict[str, tuple[str, str]] = {}
     for folder in ("tests", "tools"):
         for module in sorted((Path(__file__).resolve().parents[1] / folder).glob("test_*.py")):
             modules[module.name] = (module.read_text(encoding="utf-8"), f"cmru/{folder}/{module.name}")
+    tests_dir = Path(__file__).resolve().parent
+    for module in [tests_dir / "conftest.py", *sorted(tests_dir.glob("_*.py"))]:
+        modules[module.name] = (module.read_text(encoding="utf-8"), f"cmru/tests/{module.name}")
     return modules
 
 
@@ -421,6 +438,37 @@ def test_scan_follows_aliases_and_reports_reads_where_the_name_is_used():
 def test_scan_flags_non_literal_tails_instead_of_ignoring_them():
     reads = _scan('def test_it(name):\n    return (REPO_ROOT / name / "cmru.toml").read_text()\n')
     assert [(read.path, read.literal) for read in reads] == [("<non-literal>/cmru.toml", False)]
+
+
+def test_scan_reports_an_ancestor_walk_as_an_unknown_root():
+    """M3: `for root in (*project.parents, cwd, *cwd.parents)` is not a fixed path.
+
+    ``cmru/tests/conftest.py::_policy_source`` finds the estate test policy below
+    whichever ancestor holds it. Resolving the loop target as a fixed directory
+    either invents a path the fixture must carry at that exact place (false) or
+    hides the read entirely (the KI-209 blind spot), so the component stays
+    unknown and the closure rule asks for the file that is actually read.
+    """
+    reads = _scan(
+        'PROJECT = Path(__file__).resolve().parents[1]\n'
+        'CWD = Path.cwd()\n'
+        'def find():\n'
+        '    for root in (*PROJECT.parents, CWD, *CWD.parents):\n'
+        '        candidate = root / "libraries" / "test-policy" / "src"\n'
+        '        if (candidate / "estate_test_policy" / "plugin.py").is_file():\n'
+        '            return candidate\n'
+        '    raise RuntimeError("missing")\n',
+        "cmru/tests/conftest.py",
+    )
+    assert [(read.path, read.function, read.predicate) for read in reads] == [
+        # The walk's own base (`PROJECT`, i.e. cmru/) is still reported where named;
+        # the closure rule skips it because cmru/ is the carried project.
+        ("cmru", "find", False),
+        # The existence probe inside the loop is a predicate, not a read.
+        ("<non-literal>/libraries/test-policy/src/estate_test_policy/plugin.py", "find", True),
+        ("<non-literal>/libraries/test-policy/src", "find", False),
+    ]
+    assert not reads[2].literal
 
 
 def test_scan_treats_existence_checks_as_predicates_not_reads():

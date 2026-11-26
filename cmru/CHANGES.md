@@ -41,8 +41,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   copied suite's conftest locates the estate test-policy source it imports
   instead of failing the known-good control before any mutant is judged
   (KI-209).
-- fix(cmru): cmru's R2 lane accepts a merge HEAD. Assay's base resolution is
-  now delegated (`judge.base_source = "request"`), so the judged diff is
+- fix(cmru): cmru's R2 lane accepts a merge HEAD. Both R2 tools now pass
+  `delegated=True` to Assay's `git.resolve_base` and `git.base_resolution_mode`
+  because the lane supplies the comparison base itself (`judge.base_source` is
+  not involved: cmru's own Assay lanes are `whole_target` and declare no base),
+  so the judged diff is
   `selected-release-tag..HEAD` on every HEAD shape instead of the merge's
   first-parent payload; the checker still refuses any effective base that is
   not the selected tag (KI-211).

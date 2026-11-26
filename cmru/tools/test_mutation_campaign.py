@@ -582,6 +582,63 @@ def test_assay_source_status_refuses_hidden_index_entries(tmp_path, index_flag):
         mutation_campaign._assay_source_tree_status(assay)
 
 
+def test_campaign_status_ignores_a_shared_library_released_artifact_tree(tmp_path):
+    """M2/L3: only `libraries/test-policy/src` is carried, so a released tree is clean.
+
+    The library ships `artifacts/`, `evidence/` and `logs/` as ignored outputs
+    (`libraries/test-policy/.gitignore`), and the dirty check excuses caches only.
+    A whole-tree pathspec would therefore refuse a checkout that is committed and
+    clean -- the same "control dies before a mutant" class as KI-209.
+    """
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_ok.py").write_text("def test_ok(): pass\n", encoding="utf-8")
+    policy = repo / "libraries" / "test-policy"
+    (policy / "src" / "estate_test_policy").mkdir(parents=True)
+    (policy / "src" / "estate_test_policy" / "plugin.py").write_text(
+        "pytest_plugins = ()\n", encoding="utf-8",
+    )
+    (repo / "libraries" / "worktree" / "src" / "worktree").mkdir(parents=True)
+    (repo / "libraries" / "worktree" / "src" / "worktree" / "__init__.py").write_text(
+        "", encoding="utf-8",
+    )
+    (repo / ".gitignore").write_text("libraries/test-policy/artifacts/\n"
+                                       "libraries/test-policy/evidence/\n"
+                                       "libraries/test-policy/logs/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "cmru", "libraries", ".gitignore"], check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "commit", "-qm", "base"],
+        check=True,
+    )
+    # A released test-policy tree, exactly as the estate has it: a wheel beside
+    # its digest, evidence JSON and lane logs, all ignored and all untracked.
+    release = policy / "artifacts" / "test-policy-v0.1.0" / "dist"
+    release.mkdir(parents=True)
+    (release / "test_policy-0.1.0-py3-none-any.whl").write_text("wheel\n", encoding="utf-8")
+    (release / "test_policy-0.1.0-py3-none-any.whl.sha256").write_text("digest\n", encoding="utf-8")
+    (policy / "artifacts" / "test-policy-v0.1.0" / "latest.json").write_text("{}\n", encoding="utf-8")
+    evidence = policy / "evidence" / "cmru-release" / "test-policy-v0.1.0"
+    evidence.mkdir(parents=True)
+    (evidence / "evidence.json").write_text("{}\n", encoding="utf-8")
+    logs = policy / "logs" / "cmru-release" / "test-policy-v0.1.0"
+    logs.mkdir(parents=True)
+    (logs / "run-tests.log").write_text("ok\n", encoding="utf-8")
+
+    assert mutation_campaign._campaign_tree_status(repo, Path("cmru")) == ""
+
+    # The dirty check still sees the tracked library's own source change.
+    (policy / "src" / "estate_test_policy" / "plugin.py").write_text(
+        "pytest_plugins = ()\n# changed\n", encoding="utf-8",
+    )
+    status = mutation_campaign._campaign_tree_status(repo, Path("cmru"))
+    assert "libraries/test-policy/src/estate_test_policy/plugin.py" in status
+
+
 def test_campaign_status_refuses_ignored_test_files_but_allows_pytest_cache(tmp_path):
     repo = tmp_path / "repo"
     project = repo / "cmru"
