@@ -35,6 +35,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -2182,6 +2183,126 @@ def test_a_rerun_of_one_nodeid_opens_a_new_window(tmp_path: Path) -> None:
     # Restamped at 52 CPU-s, bounded 60 CPU-s later: NOT at 60 CPU-s total.
     assert evidence["per_test_cpu_s"] >= 60.0
     assert clock.t >= 112.0
+
+
+def test_per_test_window_starts_when_cpu_first_becomes_readable(
+    tmp_path: Path,
+) -> None:
+    """A start read while the process-tree CPU source is unavailable must not
+    leave that test permanently without its own bound. Date the window at the
+    first readable series value, then measure the full per-test CPU allowance
+    from there."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7114)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    reads = {"count": 0}
+
+    def reader(pid: int) -> float:
+        if reads["count"] == 0:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "t::late-cpu", "pid": pid},
+            )
+        reads["count"] += 1
+        if reads["count"] <= 2:
+            raise OSError("scripted CPU series not readable yet")
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::late-cpu": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound"
+    assert evidence["test_nodeid"] == "t::late-cpu"
+    assert evidence["per_test_cpu_s"] >= 60.0
+    # First readable CPU is at t=2; the full 60 CPU-s allowance starts there.
+    assert clock.t >= 62.0
+
+
+def _reader_with_session_finish_after_59_cpu_s(
+    clock: _FakeClock, events_path: Path
+) -> Callable[[int], float]:
+    written = {"start": False, "finish": False}
+
+    def reader(pid: int) -> float:
+        if not written["start"]:
+            _append_event(events_path, {"event": "session_start", "pid": pid})
+            _append_event(
+                events_path, {"event": "test_start", "nodeid": "t::late", "pid": pid}
+            )
+            written["start"] = True
+        if clock.t >= 59.0 and not written["finish"]:
+            _append_event(events_path, {"event": "session_finish", "pid": pid})
+            written["finish"] = True
+        return clock.t
+
+    return reader
+
+
+def test_session_finish_restarts_cpu_bound_and_closes_test_window_for_teardown(
+    tmp_path: Path,
+) -> None:
+    """Teardown work after `session_finish` receives one full CPU bound from
+    that event. The CPU and per-test windows were already almost exhausted;
+    both must be reset once when the finish first appears."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7115)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=_reader_with_session_finish_after_59_cpu_s(clock, events_path),
+        per_test_cpu_baseline_s={"t::late": 1.0},
+        cpu_without_progress_bound_s=60.0,
+        expect_next_event_within_s=600.0,
+    )
+
+    def finish_after_50_cpu_s_of_teardown(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t >= 110.0:
+            proc.finish(0)
+
+    runner._sleep = finish_after_50_cpu_s_of_teardown  # type: ignore[assignment]
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert result.returncode == 0
+    # The finish is consumed at t=60; the candidate exits after 50 more CPU-s.
+    assert clock.t >= 110.0
+
+
+def test_cpu_spin_after_session_finish_stops_after_a_full_new_bound(
+    tmp_path: Path,
+) -> None:
+    """The session-finish reset is one-shot: a post-finish spin still trips
+    the CPU-without-progress bound after one full allowance from the finish."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7116)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=_reader_with_session_finish_after_59_cpu_s(clock, events_path),
+        per_test_cpu_baseline_s={"t::late": 1.0},
+        cpu_without_progress_bound_s=60.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["test_nodeid"] is None
+    assert evidence["cpu_since_last_completed_event_s"] >= 60.0
+    # The finish is consumed at t=60 and the CPU bound fires 60 CPU-s later.
+    assert clock.t >= 120.0
 
 
 def test_a_test_start_without_a_finish_still_disables_the_per_test_bound(

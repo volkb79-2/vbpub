@@ -1178,27 +1178,44 @@ def baseline_per_test_seconds(path: Path | None) -> dict[str, float]:
     own events file -- the per-test baseline the per-test CPU bound is
     derived from.
 
-    Summed from the owner stream's records, never from a second parse: a
-    nodeid's own `setup`/`call`/`teardown` durations are added into one
-    figure, and the LAST value wins for a nodeid reported twice (a retried or
-    re-run test is one test with one measured duration, not two). A missing,
-    non-numeric, bool, negative or non-finite duration contributes nothing --
-    an under-measured baseline can only make the bound TIGHTER, so callers
-    that need a trustworthy number must check the nodeid is present at all
-    (an absent nodeid has no bound; see the per-test window arming rule).
+    Keep the LAST duration for each phase of a nodeid, then sum its setup,
+    call and teardown values. A repeated nodeid therefore replaces the prior
+    duration for the phase it reports, rather than adding another whole run
+    to the same baseline. A missing, non-numeric, bool, negative or
+    non-finite duration contributes nothing -- an under-measured baseline
+    can only make the bound TIGHTER, so callers that need a trustworthy
+    number must check the nodeid is present at all (an absent nodeid has no
+    bound; see the per-test window arming rule).
 
     `{}` for a `None`, absent, unreadable or event-less path.
     """
-    totals: dict[str, float] = {}
+    phases: dict[str, dict[str, float | None]] = {}
     for record in _owner_stream(path):
         nodeid = record.get("nodeid")
         if not isinstance(nodeid, str) or not nodeid:
             continue
-        duration = _phase_duration(record)
-        if duration is None:
+        kind = record.get("event")
+        if kind == TEST_EVENT:
+            phase = "call"
+        elif kind == PHASE_EVENT and record.get("when") in {
+            "setup",
+            "teardown",
+        }:
+            phase = str(record["when"])
+        else:
             continue
-        totals[nodeid] = totals.get(nodeid, 0.0) + float(duration)
-    return totals
+        # Assign even an invalid final duration as None so a repeated nodeid
+        # cannot silently fall back to an earlier run's value for that phase.
+        phases.setdefault(nodeid, {})[phase] = (
+            None
+            if (duration := _phase_duration(record)) is None
+            else float(duration)
+        )
+    return {
+        nodeid: sum(value for value in durations.values() if value is not None)
+        for nodeid, durations in phases.items()
+        if any(value is not None for value in durations.values())
+    }
 
 
 #: The per-candidate resource sidecar, written next to the events file by
@@ -2540,7 +2557,10 @@ class LivenessRunner:
                     sample["previous_resources"] = dict(prior_resources)
             last_event_count = event_count
             last_stdout_size, last_stderr_size = stdout_size, stderr_size
-            if saw_session_finish and session_finish_at is None:
+            session_finish_first_seen = (
+                saw_session_finish and session_finish_at is None
+            )
+            if session_finish_first_seen:
                 session_finish_at = liveness_clock
 
             # (P4/S1) The MONOTONIC series, updated BEFORE any bound reads it.
@@ -2567,7 +2587,14 @@ class LivenessRunner:
                 per_test_window = None
             else:
                 nodeid, _started_after, start_index = in_flight
-                if per_test_window is None or per_test_window.start_index != start_index:
+                if (
+                    per_test_window is None
+                    or per_test_window.start_index != start_index
+                    or (
+                        per_test_window.started_cpu is None
+                        and cpu_series is not None
+                    )
+                ):
                     baseline_s = self._per_test_cpu_baseline_s.get(nodeid)
                     if baseline_s is None or not per_test_bound_enabled(
                         per_test_xdist=self._per_test_xdist,
@@ -2584,6 +2611,17 @@ class LivenessRunner:
                         )
             # (P4/S1) A completed event re-dates the process-tree window.
             if event_reader.completed_events > completed_marker_count:
+                completed_marker_count = event_reader.completed_events
+                completed_marker_cpu = cpu_series
+                completed_marker_wall = now
+            if session_finish_first_seen:
+                # `session_finish` is not a completed test/phase event, but
+                # teardown after it gets one full CPU-without-progress bound
+                # measured from the finish itself. It also closes any stale
+                # per-test window: no item remains in flight once the session
+                # has reported its finish. This is one-shot, guarded by the
+                # first assignment to `session_finish_at` above.
+                per_test_window = None
                 completed_marker_count = event_reader.completed_events
                 completed_marker_cpu = cpu_series
                 completed_marker_wall = now

@@ -6017,26 +6017,7 @@ def _run_prepared_lane(
                 declared_budget_per_candidate == MUTATION_BUDGET_PER_CANDIDATE_NONE
             )
             explicit_budget_per_candidate_seconds: float | None = None
-            if budget_per_candidate_none:
-                # (B053/DA-D2's own convention: `diagnostics is None` means
-                # the caller asked for no diagnosis and is not an error --
-                # never a fallback to a stream nobody asked for.) Whether or
-                # not there is somewhere to print the WARN, "none" is never
-                # a duration -- checked as its OWN branch, never folded into
-                # the `elif` below, so a `diagnostics=None` caller cannot
-                # accidentally fall through into `parse_duration("none")`.
-                if diagnostics is not None:
-                    print(
-                        f"assay: WARN: lane {lane.name!r} declares "
-                        f"judge.mutation.budget_per_candidate = 'none' -- "
-                        f"every mutant command runs genuinely unbounded "
-                        f"(B090: this is exactly the shape that hung a "
-                        f"whole lane for 37 minutes on an unenforced "
-                        f"candidate); prefer the default 'auto' or an "
-                        f"explicit duration",
-                        file=diagnostics,
-                    )
-            elif not budget_per_candidate_auto:
+            if not budget_per_candidate_none and not budget_per_candidate_auto:
                 assert declared_budget_per_candidate is not None
                 explicit_budget_per_candidate_seconds = parse_duration(
                     declared_budget_per_candidate
@@ -6079,6 +6060,28 @@ def _run_prepared_lane(
                     else "baseline-produced-no-plugin-events"
                 )
             )
+            if budget_per_candidate_none and diagnostics is not None:
+                # (P4 fix 1, item A) Do not call this genuinely unbounded:
+                # native R2 still passes the lane's remaining time as the
+                # command timeout, and config refuses budget="unbounded"
+                # with budget_per_candidate="none". With no per-candidate
+                # timeout, though, one candidate may consume all of that
+                # remaining lane time. Name why the progress watch is absent
+                # so the warning describes the actual last bound.
+                if watch_armed:
+                    limit = "the progress watch is armed"
+                else:
+                    limit = (
+                        "the progress watch is not armed because "
+                        f"{progress_watch_reason}"
+                    )
+                print(
+                    f"assay: WARN: lane {lane.name!r} declares "
+                    f"judge.mutation.budget_per_candidate = 'none' -- "
+                    f"there is no per-candidate wall timeout; {limit}, "
+                    f"so a candidate may use the remaining lane budget",
+                    file=diagnostics,
+                )
             if watch_armed:
                 assert liveness_calibration is not None
                 assert liveness_candidates_dir is not None

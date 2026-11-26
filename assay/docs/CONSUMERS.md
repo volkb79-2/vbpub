@@ -4599,6 +4599,12 @@ read at all after the watch was armed in intent). The two new bounds and the
 bucket they produce are in [what each runtime actually watches](../README.md#mutation-runtime-matrix);
 `hung` remains native-Python-only.
 
+With `budget_per_candidate = "none"`, there is no per-candidate wall timeout.
+When the progress watch is not armed, one candidate can use the lane's
+remaining budget; the run prints one WARN with the reason the watch is
+unavailable. The command still receives the lane's remaining time as its
+timeout, and config refuses `budget = "unbounded"` together with `"none"`.
+
 **What to do about it.** If a `budget_per_candidate` you declared was really a
 ceiling on a slow-but-progressing suite, expect it to stop binding on a
 Python/pytest lane and to keep binding everywhere else; the WARN is the signal

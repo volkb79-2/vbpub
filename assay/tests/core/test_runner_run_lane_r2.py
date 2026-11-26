@@ -354,9 +354,10 @@ def test_judgment_r2_budget_per_candidate_none_warns_and_derives_nothing(
     git_repo: GitRepo,
 ):
     """(B091/D-23) The explicit `"none"` opt-out: every mutant command runs
-    genuinely unbounded, `judgment.r2.budget_per_candidate_derived_s` stays
-    absent (nothing was derived), and the run prints a WARN naming B090's own
-    incident rather than passing through silently.
+    without a per-candidate wall timeout, the derived budget field stays
+    absent (nothing was derived), and
+    the run prints one WARN naming why the progress watch is not armed. The
+    lane's remaining deadline is still passed as the command timeout.
     """
     import io
 
@@ -388,19 +389,23 @@ def test_judgment_r2_budget_per_candidate_none_warns_and_derives_nothing(
     assert verdict.judgment.r2.budget_per_candidate_derived_s is None
     warning = diagnostics.getvalue()
     assert "budget_per_candidate = 'none'" in warning
+    assert "no per-candidate wall timeout" in warning
+    assert "progress watch is not armed because" in warning
+    assert "liveness-not-injected:argv-does-not-invoke-pytest" in warning
+    assert warning.count("WARN: lane") == 1
 
 
-def test_judgment_r2_budget_per_candidate_none_without_diagnostics_still_runs_unbounded(
+def test_judgment_r2_budget_per_candidate_none_without_diagnostics_uses_lane_deadline(
     git_repo: GitRepo,
 ):
     """(B091/D-23 regression guard) `diagnostics=None` (the library-caller
     default, B053/DA-D2's own "no diagnosis" convention) must not fall
     through into treating `"none"` as an explicit duration -- an earlier cut
-    of this resolution folded the WARN print and the "is this none at all"
+    of this resolution folded the warning and the "is this none at all"
     question into ONE `if`, so a caller that passed no diagnostics stream at
     all hit `parse_duration("none")` and crashed. `run_lane`'s own default
-    is `diagnostics=None`, so this is the ordinary no-`--verdict-json`-
-    diagnostics library shape, not an edge case.
+    is `diagnostics=None`, so this is the ordinary no-diagnosis library path.
+    The candidate still receives the finite lane deadline as its timeout.
     """
     base_rev, head_rev = _seed_compare_swap_site(git_repo)
     declared = MutationConfig(

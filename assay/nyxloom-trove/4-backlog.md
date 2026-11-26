@@ -16108,3 +16108,13 @@ The main controller resumed with `ASSAY_RELEASE_GATE_HOST=v1001 REMOTE_GATE_HOST
 **Why it is not done in P4.** It is a verdict-schema change: a new value in a closed vocabulary, a new score rule, a new `assay analyze` reading, and a decision about whether `hung` stays (the natural shape is `timeout` for CPU-bound kills and `hung` retained only for idle stalls, which is itself a compatibility question). P4's brief forbids touching the vocabulary, so P4 keeps `hung` and files the rule here; its own DESIGN-GUIDE section states the rule as decided and says P4 does not implement it.
 
 **Close when.** v21's own cut adopts it with the three conditions above spelled out, the score arithmetic and the excluded-bucket table are updated together, and `docs/DESIGN-GUIDE.md`'s hung-vs-killed section is rewritten to match the shipped behaviour. Source: operator item (C), `p4-operator-input-20261125.md`, 2026-11-25; operator decision 2026-11-26 (`PLAN-spec-followups.md` §1 item 7).
+
+## B583 — a missing per-candidate budget leaves the native-R2 retry guard without a threshold
+
+**Status: OPEN (filed 2026-11-26 from P-assay-P4 fix round 1, item A); severity: low (retry scheduling can spend the lane tail on a retry); effort: undecided.**
+
+When `budget_per_candidate_seconds` is `None`, the first attempt receives the entire remaining lane deadline as its command timeout (`src/assay/mutation.py:3751-3768`). The tail-retry guard at `src/assay/mutation.py:4882-4884` only compares remaining time when that per-candidate value is present, so it cannot decline a retry because the lane is nearly out of time. The retry then runs with the newly remaining lane deadline and can consume it.
+
+**Wanted.** Decide a retry rule for the no-per-candidate-budget case that is derived from recorded attempt/lane facts. Keep the existing finite lane deadline; do not add a guessed duration or a new config refusal.
+
+**Close when.** A test demonstrates the no-budget retry decision near the lane deadline, the chosen rule is documented, and the retry either proceeds or is skipped for that measured reason.
