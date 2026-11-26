@@ -705,11 +705,13 @@ a decision, not a fallback.
 The combined refusal covers the remote host's settings only: the host selector,
 `ASSAY_RELEASE_GATE_HEARTBEAT_S`, the host table, the output directory and
 `HOME`. A local host (`ASSAY_RELEASE_GATE_HOST=local`) execs the ordinary local
-lane and never reads or validates any of them. The CMRU binding
-(`CMRU_RELEASE_GATE_COMMIT` unset or malformed, and a commit that does not match
-the worktree `HEAD`) and a missing `remote-gate.py` stay separate refusals with
-their own exit codes, because they can only be judged after the settings are
-known and they are not one of them.
+lane and never reads or validates any of them. Two checks stay separate refusals
+with their own exit codes, and they are judged at different points: a missing
+`remote-gate.py` is checked BEFORE the settings (exit 3 -- the wrapper cannot
+locate the module whose defaults it would import), while the CMRU binding
+(`CMRU_RELEASE_GATE_COMMIT` unset or malformed, and a commit that does not
+match the worktree `HEAD`) is judged AFTER them, so a run outside CMRU hears
+what is wrong with its settings first.
 
 While a remote lane runs, the wrapper prints one progress line per interval to
 stderr,

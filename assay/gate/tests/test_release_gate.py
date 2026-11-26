@@ -926,6 +926,63 @@ def test_remote_release_gate_reports_an_unset_or_empty_home_with_the_other_setti
     assert not _remote_calls(env)
 
 
+def test_release_gate_reports_a_defaults_temp_file_failure_as_its_own_reason(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    # Finding 2: a temporary file that cannot be created is not a default that
+    # resolved to nothing. With no HOME the controller configuration is not read at
+    # all, so the only `mktemp` this run can reach is the one the module-defaults
+    # reader uses; before the fix that failure was reported as the host table
+    # "resolved to an empty path", naming DEFAULT_HOSTS for a file nothing read.
+    env.pop("HOME")
+    env["TMPDIR"] = str(tmp_path / "no-such-tmpdir")
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [
+            "cannot read remote-gate.py's default host table: cannot create a "
+            "temporary file for the remote-gate.py defaults import",
+            "HOME is unset; remote-gate needs it for the host table and ~/.ssh",
+        ]
+    )
+    assert not _remote_calls(env)
+
+
+def test_release_gate_judges_the_missing_remote_gate_file_before_the_settings(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path, host="")
+    # Finding 3: CONSUMERS.md says which check runs first. The missing-script check
+    # (tools/release-gate.sh:54-56) is before the settings resolution, so a fresh
+    # clone that also has no host hears only the exit-3 file refusal and a SECOND
+    # run is needed for the settings -- the two-attempt cost B579 removed for the
+    # settings themselves. Running the real script (an absolute path) in a directory
+    # whose `../scripts/netcup/runner` does not exist reproduces that clone without
+    # copying the script.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    assert not (outside / ".." / "scripts" / "netcup" / "runner" / "remote-gate.py").exists()
+    proc = subprocess.run(
+        ["/bin/bash", str(SCRIPT), "tester-unified"],
+        cwd=outside,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert proc.returncode == 3, proc.stderr
+    assert proc.stderr == (
+        "assay release-gate: remote-gate.py is missing at "
+        "../scripts/netcup/runner/remote-gate.py\n"
+    )
+    assert COMBINED_REFUSAL_HEADER not in proc.stderr
+    assert not _remote_calls(env)
+
+
 def test_release_gate_reports_every_unusable_setting_in_one_refusal(
     tmp_path: Path,
 ) -> None:

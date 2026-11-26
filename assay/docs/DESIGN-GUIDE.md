@@ -1016,13 +1016,21 @@ default for the different reason that it is a load decision. All findings are
 reported in one refusal because the earlier behaviour (one refusal per attempt)
 made every missing setting cost a full release attempt, and each line names the
 source that supplied the value (a problem without its source is a refusal that
-sends the operator to the wrong file). `remote-gate.py`'s defaults are loaded
+sends the operator to the wrong file). A temporary file that cannot be created
+while the defaults are read is reported as its own reason too
+(`cannot create a temporary file for the remote-gate.py defaults import`),
+because the module was never imported and naming an empty default would send
+the operator to `DEFAULT_HOSTS` for a failure that has nothing to do with it.
+`remote-gate.py`'s defaults are loaded
 once, in the main shell, instead of once per value in a `$(...)` that can never
 keep its loaded flag. The combined refusal covers the remote host's settings
 only -- host selector, interval, host table, output directory and `HOME`; a
-`local` host execs the local lane and never reads them, and the CMRU commit
-binding and a missing `remote-gate.py` remain separate refusals with their own
-exit codes.
+`local` host execs the local lane and never reads them. The CMRU commit binding
+and a missing `remote-gate.py` stay separate refusals with their own exit codes,
+but the two are judged at different points: the missing file is checked before
+the settings (the wrapper cannot even locate the module it would import
+defaults from), while the CMRU commit binding is judged after them, so a run
+outside CMRU hears about its settings first.
 
 #### Native R2 cgroup observation (B148/A-494)
 

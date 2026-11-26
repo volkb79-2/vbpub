@@ -195,7 +195,16 @@ load_remote_gate_defaults() {
   [[ "$remote_gate_defaults_loaded" == true ]] && return 0
   remote_gate_defaults_loaded=true
   local stderr_file
-  stderr_file=$(mktemp "${TMPDIR:-/tmp}/assay-release-gate-defaults.XXXXXX") || return 0
+  if ! stderr_file=$(mktemp "${TMPDIR:-/tmp}/assay-release-gate-defaults.XXXXXX" 2>/dev/null); then
+    # A temporary file that cannot be created is not an empty default: the module was
+    # never imported, so the refusal has to say THAT instead of certifying a path
+    # nothing supplied (absence reported as emptiness). The controller reader above
+    # dies on the same condition because it cannot continue without the file; this
+    # loader only supplies a default, so the problem joins the combined refusal and
+    # the operator still hears about every other unusable setting.
+    remote_gate_defaults_error='cannot create a temporary file for the remote-gate.py defaults import'
+    return 0
+  fi
   if remote_gate_defaults="$(env "${remote_gate_base_env[@]}" python3 - "$remote_gate" 2>"$stderr_file" <<'PYEOF'
 import importlib.util
 import sys
