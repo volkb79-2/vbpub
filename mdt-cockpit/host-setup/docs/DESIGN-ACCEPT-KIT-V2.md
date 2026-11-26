@@ -59,12 +59,14 @@ coldest anon on the machine. A 1 Hz read of the newest 16 MiB proves the job run
 
 **2.3 Which cgroup file, who writes it, with what bound.** The kit writes kernel files **directly** and never `systemctl set-property` (README: no
 hand-set memory properties; check.sh FAILs on runtime overrides and on a systemd/kernel mismatch). It therefore **pauses the reconcile instead of
-stopping it**: it holds `flock -n /run/mdt-accept.lock` for the whole run, `mdt-dev-governance-reconcile.sh` **skips** its dedicated-dev memory block
-with a NOTE while the lock is held, and `install.sh` **refuses (exit 3, nothing done)** while `flock -n` fails, exactly like
-`daemon-reload-check.sh:12-13`. A converge-only skip is not enough: install.sh's drop-ins plus `systemctl daemon-reload` also write the K0-based
+stopping it**: `accept-run.sh`, `accept-restore.sh` and `daemon-reload-check.sh` take the lock exclusively; the run holds it for its whole length.
+`install.sh` and `mdt-dev-governance-reconcile.sh` take it shared. Their shared holds do not identify one another as a live acceptance run, while
+either is refused or skipped when an exclusive kit operation holds the lock. `install.sh` holds its shared lock from the commit point through all
+drop-in writes and `systemctl daemon-reload`, so an exclusive run cannot start in that interval; the reconcile's timer tick or explicit service start
+may run during install's shared hold. A converge-only skip is not enough: install.sh's drop-ins plus `systemctl daemon-reload` also write the K0-based
 `MemoryMax` straight into dev.slice, up to 6 × 128M below `memory.current`, with no safe-lowering rule, and the 5 s readback would see it only after
-the reclaim and the dev OOM. The reconcile **holds** the lock (not merely tests it) while it runs its own memory block, so the two can never
-interleave. The kernel releases the lock on **any** death of the kit, SIGKILL included, so the next timer tick converges the host back to systemd's
+the reclaim and the dev OOM. The reconcile **holds** its shared lock (not merely tests it) while it runs its own memory block, so an exclusive kit
+operation cannot begin during that block. The kernel releases an exclusive kit lock on **any** death of the kit, SIGKILL included, so the next timer tick converges the host back to systemd's
 values under its own safe-lowering rule (`mdt-dev-governance-reconcile.sh:329-344`) — no stopped timer to restart, no stuck lowered reserve, no wait
 for a reconcile service that is mid-run. It refuses (exit 3) when `/run/mdt/reconcile/memory-deferred` exists. **Mid-run drift.** A foreign
 `install.sh`, a daemon-reload or the converge re-applies dev.slice/dev-gates properties, and a `memory.max` written below `memory.current` loops
@@ -105,15 +107,15 @@ it guarantees reclaimable cache and is never a measurement; a step that would br
 floor, so it cannot bind (L-a) — and the same arithmetic proves ≥ 1.1 GiB is always unprotected, which is why §2.2 keeps that part hot. **Bound 3 plus
 the ladder floor are the real guard.** Bound 2 stays, checked before §2.3's writes 3-5; (3) global `oom_kill` delta > 0, or system.slice **or**
 user.slice `memory.pressure` `full avg10 ≥ 5` held 10 s (psi-guard's own trigger numbers, `mdt-psi-guard.py:55,66-70`: `HOLD_SECONDS` 10,
-`host_memory_full` 0.05) → abort. An abort is a step FAIL plus a ladder stop.
+`host_memory_full` 0.05) → abort. A failed safety guard is a step FAIL; inability to append its WAL or apply/read back a cgroup write is INCONCLUSIVE.
 
-**2.5 Stop rule.** The first step that fails any §3 hard criterion, a step whose **hard-criterion data is missing** (the kit cannot see harm it cannot
-measure — L-i), or where the next `K(s) < F_installed + 128M`, or `--steps` exhausted. A step whose only miss is **load was real** does not stop the
-ladder: it is INCONCLUSIVE, never `k_last_pass`, and the next step is taken. Recorded: `squeeze_last_pass_step`/`k_last_pass`,
+**2.5 Stop rule.** The ladder stops at the first step that FAILs any §3 hard criterion, or is INCONCLUSIVE for any reason except **load was real**
+(including missing data, a failed WAL append, or a cgroup write/readback failure), or where the next `K(s) < F_installed + 128M`, or `--steps`
+is exhausted. A step whose only miss is **load was real** does not stop the ladder: it is INCONCLUSIVE, never `k_last_pass`, and the next step is taken. Recorded: `squeeze_last_pass_step`/`k_last_pass`,
 `squeeze_first_fail_step`/`k_first_fail`. A **failing step 0 is FAIL (exit 1)**: K0, the live configuration, is itself not survivable. The FAIL header
 then prints **no K at all**: no K of this run passed, so any number would name a K the run never exercised — step-0 `K0 + 128M` was exactly that
 invented value. It prints `pin DEV_HOST_MEMORY_KEEP above the tested K0=<K0>M (step 0 failed at the live configuration); this run measures no value`
-(v1's no-number form, `accept-eval.py:244`), and main then runs §7 R. A step-0 INCONCLUSIVE (missing data, load not real) is INCONCLUSIVE (§3.5).
+(v1's no-number form, `accept-eval.py:244`), and main then runs §7 R. A step-0 INCONCLUSIVE (missing data or load not real) is INCONCLUSIVE (§3.5).
 
 **2.6 Cleanup on every exit path, including SIGHUP, SIGKILL and an OOM kill.** Every side effect is appended to `$EVID/squeeze-state.env` **before**
 it is applied (write-ahead): the five original cgroup values **and the value the kit wrote for each** (max ×2, min ×3), `boot_id`, `k_tested`,
@@ -151,8 +153,8 @@ kill included, which the traps never see — so a kit death cannot leave the hos
 makes it suitable for ExecStopPost: exit 3 ("nothing to do", the normal outcome after a clean run whose trap already restored) becomes exit 0 so the
 unit does not end failed, and it waits up to `--lock-timeout` seconds with `flock -w` instead of `-n`, because a slow-dying child can still hold the
 inherited descriptor for a moment. No `pkill`, no pattern `kill`. **The WAL's lines** (one per write, appended before the effect):
-`MAX=<relpath>|<original>|<value the kit wrote>|<utc>` and `MIN=<relpath>|…` (the LAST line of a relpath is the one in force, because a later write's
-original is the value that write must be compared against), plus `container=<exact docker name>` per created name, `boot_id=<id>`, `kdamond=<idx>`,
+`MAX=<relpath>|<original>|<value the kit wrote>|<utc>` and `MIN=<relpath>|…`; for each relpath, restore uses the original from its first line and
+accepts any value written by the kit (a later line's original is the previous value the kit wrote), plus `container=<exact docker name>` per created name, `boot_id=<id>`, `kdamond=<idx>`,
 `dev_orig=<bytes>`, `k_tested=<label>`, `pid=<kit pid>`, `started_utc=`. A restore that runs as the kit's **own** finish takes `--in-run`, because that
 caller already holds the lock (waiting on it would deadlock); a lock that cannot even be opened is **indeterminate**, never "no run is live" (install.sh
 and the reconcile distinguish "held" — `flock -E 99` — from "cannot open", and both refuse or fall back on the correct side of that difference), and an
@@ -196,16 +198,18 @@ criterion, applied per probe: the kit cannot see the harm it could not measure, 
 samples exceed it, or any sample hits the timeout, or the median exceeds it**; a single outlier is INFO. The rule applies to the probes whose pass
 rule **is** latency; the two exceptions are named in the judge (`LATENCY_EXEMPT`): `psi_guard`, whose pass rule is "active + ticks advance" and whose
 recorded seconds are its own probe duration (never the run's elapsed time, which grows by a dwell per step and would FAIL a healthy daemon around
-step 3-4), and `cgprofiled` in its `degraded` form (CLI absent → `systemctl is-active`), which §3.3 makes INFO (the p95 of 10 samples is the max, so one slow
-`docker info` under a starting lane would otherwise fail a step for a contention fact, not a memory verdict).
+step 3-4), and `cgprofiled` in both forms (CLI present or degraded), whose pass rule is status/version or INFO respectively, never latency (the p95 of 10 samples is the max, so one slow
+`docker info` under a starting lane would otherwise fail a step for a contention fact, not a memory verdict). `systemctl_read` calls use
+`timeout -k 1 2`; the degraded cgprofiled fallback uses `timeout -k 1 5`. Timeout rc is recorded as `timeout`; a missing or malformed `NRestarts`
+makes the containerd criterion INCONCLUSIVE.
 
 | unit | probe | timeout | pass rule |
 |---|---|---|---|
 | sshd | `systemctl is-active ssh.service` + raw TCP to `127.0.0.1:22` whose first bytes are `SSH-2.0-` | 2 s / 2 s | active **and** banner seen |
 | journald | `logger -t mdt-accept-<nonce> <nonce>`, then poll `journalctl -t mdt-accept-<nonce> --since @<t0> -o cat -n 1` every 100 ms until it prints the nonce, up to 5 s (an immediate read races `logger`) | 5 s | exit 0, nonce visible, seconds = time to visibility, within the latency rule |
-| dockerd | `docker info -f '{{.ServerVersion}}'` | 10 s | exit 0, non-empty, within the latency rule |
-| containerd | `docker exec mdt-accept-squeeze true` **and** `systemctl show -p NRestarts containerd.service` unchanged since step 0 | 10 s | exit 0 **and** no new restart (the shim still lives; `docker inspect` never reaches containerd) |
-| cgprofiled | `cgprofilectl --json status`: exit 0 and a daemon version present | 5 s | exit 0 and version; CLI absent → `systemctl is-active` + socket file, recorded `degraded` as **INFO**, and the step verdict ignores it (§4.4's absence is a NOTE, not a refusal) |
+| dockerd | `docker info -f '{{.ServerVersion}}'` | 10 s | exit 0 and version-shaped output, within the latency rule |
+| containerd | `docker exec mdt-accept-squeeze true` **and** `systemctl show -p NRestarts containerd.service` unchanged since step 0 | 10 s / 2 s | exit 0 **and** a present unchanged restart count (the shim still lives; `docker inspect` never reaches containerd) |
+| cgprofiled | `cgprofilectl --json status`: exit 0 and a daemon version present | 10 s default (CLI) / 5 s (degraded) | exit 0 and version; CLI absent → `systemctl is-active` + socket file, recorded `degraded` as **INFO**, and the step verdict ignores it (§4.4's absence is a NOTE, not a refusal) |
 | psi-guard | `systemctl is-active` + `utime+stime` of its PID advances ≥ 1 tick over a 30 s window | 10 s | both: "active" alone does not prove the 1 s loop runs; USER_HZ=100 makes a 5 s / 0.01 s window flaky |
 | fleetd agent, hostobs probe (`MDT_ACCEPT_EXTRA_UNITS`) | `systemctl is-active` + MainPID alive (event-driven daemons burn ≈ 0 CPU, so a CPU-advance probe would FAIL forever) | 10 s | active and MainPID alive, **INFO** until each has a health verb; `not-installed` when `LoadState` ≠ `loaded`: a host fact, never evidence for a floor |
 
@@ -217,8 +221,9 @@ result. One derived INFO per step: `refault ≥ 0.25 × the unit's hot set` prin
 **3.5 Step and run verdicts.** Per step each criterion is PASS/FAIL/INCONCLUSIVE, missing data names itself and is never a pass (v1's rule). **Load
 was real** is a per-step hard criterion, so a step cannot PASS without a squeeze: `dev.slice/memory.current ≥ dev.slice/memory.max − 128M` on ≥ 80 %
 of the judged ticks, **and** `MemFree ≤ 2 × W` on ≥ 50 % of them; otherwise the step is INCONCLUSIVE, never PASS, and it can never be `k_last_pass`.
-It is the only INCONCLUSIVE cause that continues the ladder (§2.5). The run is PASS when ≥ 1 step passed and F, M, K are derivable; FAIL when a hard
-criterion failed at step 0; INCONCLUSIVE otherwise. Exit codes stay 0/1/4/2.
+It is the only INCONCLUSIVE cause that continues the ladder (§2.5). The run is PASS when ≥ 1 step passed, F, M, K are derivable, and no blocking
+INCONCLUSIVE occurred; FAIL when a hard criterion failed at step 0; INCONCLUSIVE for other missing or unmeasured data (including WAL or cgroup write
+failures), even if an earlier step passed. Exit codes stay 0/1/4/2.
 
 ## 4. (c) DAMON hot set
 
@@ -352,7 +357,7 @@ sparse-checkout set mdt-cockpit scripts/debian-install-v2/tools`; `install.sh` e
    `sessions_live == 0`, `MDT_PSI_GUARD=report` so enforce mode cannot re-weight the tiers mid-run, and
    `MDT_ACCEPT_SSH_TARGET` set to this host over loopback with **one verified BatchMode round trip from root** (its `boot_id` must
    match the local one, §3.2); drain and **hold** the drain (design note §8 step 0).
-3. Squeeze run: `systemd-run --unit mdt-accept-1 --collect --slice=mdt-accept.slice -p KillMode=mixed -p TimeoutStopSec=600 -p
+3. Squeeze run: `systemd-run --setenv=MDT_ACCEPT_SSH_TARGET=root@127.0.0.1 --unit mdt-accept-1 --collect --slice=mdt-accept.slice -p KillMode=mixed -p TimeoutStopSec=600 -p
    MemoryMin=64M -p ExecStopPost='<checkout>/mdt-cockpit/host-setup/tools/accept/accept-restore.sh --from-unit --lock-timeout 30
    --evidence /root/accept-<ts>-1' <checkout>/mdt-cockpit/host-setup/tools/accept/accept-run.sh --evidence /root/accept-<ts>-1
    --steps 6 --step 128M --dwell 300`; operator part: one gate lane, the cockpit attached and idle, one ssh login.

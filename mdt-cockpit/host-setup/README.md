@@ -1242,15 +1242,17 @@ The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped pro
    any end of the main process (a SIGKILL or an OOM kill included; the unit runs in `/`, hence the absolute paths):
 
    ```
-   systemd-run --unit mdt-accept-1 --collect --slice=mdt-accept.slice -p KillMode=mixed -p TimeoutStopSec=600 \
+   systemd-run --setenv=MDT_ACCEPT_SSH_TARGET=root@127.0.0.1 --unit mdt-accept-1 --collect --slice=mdt-accept.slice -p KillMode=mixed -p TimeoutStopSec=600 \
      -p MemoryMin=64M -p ExecStopPost='<ck>/mdt-cockpit/host-setup/tools/accept/accept-restore.sh --from-unit \
      --lock-timeout 30 --evidence /root/accept-<ts>-1' \
      <ck>/mdt-cockpit/host-setup/tools/accept/accept-run.sh --evidence /root/accept-<ts>-1 --steps 6 --step 128M --dwell 300
    ```
 
-   Operator part during the run: one gate lane, the cockpit attached and idle, one ssh login. Progress is in `journalctl -u mdt-accept-1`; the steps are `STEP <s> K=<K>M <verdict>`.
-   **Duration ≈ 55 min** (warm-up 600 s + 7 dwells of 300 s (steps 0-6) + the DAMON-off control pass + 300 s margin); the eval and apply add ≈ 10 min, so **≈ 3 h on r1002** end
-   to end and no reboot. Exit codes: 0 a step passed, 1 step 0 failed, 4 INCONCLUSIVE (missing data, a load that was not real, or a lowering still deferred), 3 refused.
+   Operator part during the run: one gate lane, the cockpit attached and idle, one ssh login. `systemd-run` does not inherit the caller's environment;
+   its `--setenv` above passes the required loopback target. Progress is in `journalctl -u mdt-accept-1`; measured PASS/FAIL steps print `K=<K>M`, and
+   INCONCLUSIVE steps print no K. **Duration ≈ 55 min** (warm-up 600 s + 7 dwells of 300 s (steps 0-6) + the DAMON-off control pass + 300 s margin);
+   the eval and apply add ≈ 10 min, so **≈ 3 h on r1002** end to end and no reboot. Exit codes: 0 a measured step passed and no blocking inconclusive
+   occurred, 1 step 0 failed, 4 INCONCLUSIVE (missing or unmeasured data, a load that was not real, or a lowering still deferred), 3 refused.
 3. **Eval**: `tools/accept/accept-eval.py /root/accept-<ts>-1` prints `STEP`/`SQUEEZE`/`FLOOR`/`M`/`K proposed` and the `== host-setup.env` block; exit 0 PASS, 1 FAIL,
    4 INCONCLUSIVE, 2 usage, a crash or a **v1 evidence directory** (v2 criteria on v1 data would turn a missing squeeze into a pass). Put the printed
    `DEV_HOST_MEMORY_MIN`/`DEV_HOST_MEMORY_MARGIN`/`DEV_HOST_MEMORY_MEASURED` into `/etc/mdt/host-setup.env` (**no KEEP pin**: K is derived again) and `sudo ./install.sh`, then
