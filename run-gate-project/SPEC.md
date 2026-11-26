@@ -352,8 +352,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   — `docker exec` can neither place nor cap work), and (container AND exec
   lanes) the fully assembled docker argv; forwarded values are never on it
   (`-e KEY`, the value rides in the docker client's environment, RG-117a);
-  an ephemeral lane also prints its effective KSM setting and source. Mechanics
-  are visible, never buried.
+  an ephemeral lane also prints its effective KSM setting and source, and its
+  OOM score adjustment. Mechanics are visible, never buried.
+- `R-60` **Gate-lane OOM priority (RG-321).** Every ephemeral gate lane
+  container starts with Docker `--oom-score-adj 500`, before the image. The
+  named module constant is the sole source of the value; there is no config
+  key, CLI flag, or environment override. The live and dry-run Docker argv and
+  a `run-gate:` lane fact disclose it. This kernel score biases OOM victim
+  selection toward gate containers so the interactive controller is more
+  likely to survive host memory exhaustion; `memory.low` does not select the
+  victim. It applies only to the detached gate lane start: the `docker run
+  --rm` environment probes, `docker exec` lanes, and bare-host lanes are not
+  covered.
 
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
