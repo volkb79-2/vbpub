@@ -43,7 +43,9 @@ H1RULE="$(printf '─%.0s' {1..40}) ◉ xhigh · /effort  vbpub-main-controller 
 #   MENUBOX  the permission menu ABOVE an intact, empty prompt box (only the dialog check stops it)
 #   H1I      the live main pane's labelled top rule, idle: this one MUST read ready and be typed into (the H1 regression)
 #   H1B      ... the same, with `esc to interrupt` on the box's mode line: it must NOT be typed into
-#   SPIN     an L2 spinner `✶ Compacting` a few non-blank lines ABOVE the top rule, outside the bottom window
+#   SPIN     an L2 spinner `✶ Compacting …` above the top rule, outside the bottom window
+#   SPIN_EDGE the same spinner on the sixth non-blank line above the top rule (the scan boundary)
+#   SPIN_PROSE `● Compacting now.` above the box: transcript prose, not a spinner
 #   PROSE    the same place, prose that merely CONTAINS `Compacting`: it must not make the pane busy
 stray_frame() {
   local dest=$1 rule; rule=$(printf '─%.0s' {1..40})   # the plain prompt-box rule, as the caller's own RULE
@@ -57,11 +59,19 @@ stray_frame() {
     MENUBOX) { printf '%b\n' "$MENU" ''; printf '%b\n' "$rule" '❯\xc2\xa0' "$rule" '  ctx 41%'; } >"$dest" ;;
     H1I) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · 1 monitor · ← 8 agents · ↓ to manage' >"$dest" ;;
     H1B) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · esc to interrupt · ← 8 agents' >"$dest" ;;
-    SPIN|PROSE) # six non-blank lines above the top rule: the bottom FOOT_LINES window ends three lines lower, so only the
-      # L2 scan above the rule can see the spinner (a 6-line window saw it by accident before the rule existed)
-      printf '%b\n' 'output' '  ✔ Update installed · restart to apply' \
-        "$([[ $2 == SPIN ]] && printf '  ✶ Compacting conversation… (3s)…' || printf '  The agent is Compacting a summary right now.')" \
-        '  notice: 3 background tasks' '  notice: 8 agents' '  notice: ← worktree clean' >"$dest"
+    SPIN|SPIN_EDGE|SPIN_PROSE|PROSE) # the bottom FOOT_LINES window ends below the top rule; only the L2 scan sees these lines
+      if [[ $2 == SPIN ]]; then
+        printf '%b\n' 'output' '  ✔ Update installed · restart to apply' \
+          '  ✶ Compacting conversation… (3s)…' \
+          '  notice: 3 background tasks' '  notice: 8 agents' '  notice: ← worktree clean' >"$dest"
+      elif [[ $2 == SPIN_EDGE ]]; then
+        printf '%b\n' '  ✶ Compacting conversation… (3s)…' '  notice: 1' '  notice: 2' \
+          '  notice: 3' '  notice: 4' '  notice: 5' >"$dest"
+      elif [[ $2 == SPIN_PROSE ]]; then
+        printf '%b\n' 'output' '  ● Compacting now.' >"$dest"
+      else
+        printf '%b\n' 'output' '  The agent is Compacting a summary right now.' >"$dest"
+      fi
       printf '%b\n' "$rule" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · ← 8 agents' >>"$dest" ;;
   esac
 }

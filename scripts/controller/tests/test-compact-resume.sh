@@ -72,7 +72,7 @@ frame() {
     L6B) panel_frame "$f" 6 1 1 ;;
     L12B) panel_frame "$f" 12 1 1 ;;
     LMB) panel_frame "$f" 6 1 1 '⏵⏵ accept edits on' ;;   # busy in another permission mode: no mode-line marker, no trim
-    EMPTY|QMENU|BANG|NORULE|DRAFT|DRAFT_FIX|DRAFT_VERIFY|MENUBOX|H1I|H1B|SPIN|PROSE) stray_frame "$f" "$4" ;;   # the shared refusal / H1 / L2 frames
+    EMPTY|QMENU|BANG|NORULE|DRAFT|DRAFT_FIX|DRAFT_VERIFY|MENUBOX|H1I|H1B|SPIN|SPIN_EDGE|SPIN_PROSE|PROSE) stray_frame "$f" "$4" ;;   # the shared refusal / H1 / L2 frames
   esac
 }
 # scenario <name> <start frames> <compact frames>: fresh stub dir, guidance, prompt and log
@@ -262,17 +262,23 @@ scenario h1-busy "H1B" "I"
 COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 3 ]] || fail "H1 busy: exit $RC (want 3, the labelled box is busy)"
 not_contains <(calls) "send-keys" "H1 busy: keys were sent into a running turn under the labelled box"
-# 5m. L2: a `✶ Compacting` spinner six non-blank lines ABOVE the box's top rule (outside compact-resume.sh's 6-line
-#     FOOT_LINES window, which reaches three non-blank lines higher) makes the pane busy; the same lines with prose that
-#     only CONTAINS the word do not, so the rule is not a bare substring. At 4708ed03e the spinner frame reads READY.
-scenario l2-spinner "SPIN" "I"
-COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 3 ]] || fail "L2 spinner: exit $RC (want 3, a compaction is running above the box)"
-not_contains <(calls) "send-keys" "L2 spinner: keys were sent while a compaction was running above the box"
-scenario l2-prose "PROSE" "I"
-COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 0 ]] || fail "L2 prose: plain prose containing the word must not read busy (exit $RC)"
-[[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "L2 prose: expected 3 idle checks + the footer"
+# 5m. L2: a recognized `✶ Compacting …` spinner above the box makes the pane busy, including on the sixth non-blank
+#     line above its top rule (the SPINNER_SCAN_LINES boundary). Spinner refusals are logged only once per wait.
+for kind in SPIN SPIN_EDGE; do
+  scenario "l2-$kind" "$kind" "I"
+  COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+  [[ $RC -eq 3 ]] || fail "L2 $kind: exit $RC (want 3, a compaction is running above the box)"
+  not_contains <(calls) "send-keys" "L2 $kind: keys were sent while a compaction was running above the box"
+  [[ $(grep -c 'WARN pane not ready: compaction spinner above the prompt box' "$D/log") -eq 1 ]] || fail "L2 $kind: spinner reason was not logged exactly once"
+done
+# A glyph-like transcript line without an ellipsis is ready; prose must not strand the helper.
+for kind in SPIN_PROSE PROSE; do
+  scenario "l2-$kind" "$kind" "I"
+  COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+  [[ $RC -eq 0 ]] || fail "L2 $kind: transcript prose must not read busy (exit $RC)"
+  contains "$D/log" "WARN compaction never showed busy" "L2 $kind: prose was mistaken for a spinner"
+  [[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "L2 $kind: expected 3 idle checks + the footer"
+done
 
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "I"

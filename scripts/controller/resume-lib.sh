@@ -13,7 +13,7 @@ CLEARED_MARKER='ctx ?'              # present after /clear, before the first tur
 COMPACTING_MARKER='Compacting'      # the spinner line of a running compaction (compact-resume.sh adds it to BUSY_MARKERS)
 INPUT_MARKER='❯'                    # starts the input row of the prompt box (the LAST such line is the live one)
 FOOT_LINES=4                        # how many non-blank bottom lines count as the footer
-SPINNER_SCAN_LINES=6                # ... and how many non-blank lines ABOVE the box's top rule are searched for the compaction spinner
+SPINNER_SCAN_LINES=6                # ... and how many non-blank lines ABOVE the box's top rule are searched; tests pin line 6
 BOX_RULE_BYTES='(?:\xe2\x94\x80){20,}'                                         # a prompt-box rule: at least 20 x U+2500, nothing else (perl, bytes)
 BOX_LABEL_RULE_BYTES='(?:\xe2\x94\x80){20,}[A-Za-z0-9._-]+(?:\xe2\x94\x80)+'   # the same rule with one tmux session label (spaces stripped); ctl-keepalive.sh's box_ok only
 BOX_TOP_RULE_BYTES='(?:\xe2\x94\x80){20,}(?:.*(?:\xe2\x94\x80))?'              # the resume helpers' TOP rule: starts with 20+ x U+2500 and ends with U+2500 - ANY label between, e.g. the live main pane's `──── ◉ xhigh · /effort  vbpub-main-controller ─`
@@ -24,9 +24,7 @@ DIALOG_CURSOR_RE='^[[:space:]]*❯[[:space:]]*[0-9]+\.[[:space:]]'   # cursor on
                                                                   # check must stay byte-identical)
 DIALOG_FOOTER='Esc to cancel'                                     # footer of those menus
 DIALOG_LINES=15                                                   # how many bottom non-blank lines are searched for them
-SPINNER_RE='^\s*[\p{P}\p{S}]\s+Compacting'   # L2: ONE spinner glyph (punctuation or symbol, so never a letter,
-                                             # a digit or a blank), whitespace, then `Compacting` at the line's start;
-                                             # matched on utf8-decoded text, so no locale decides a multibyte glyph
+SPINNER_RE='^[ \t]*[·✢✳✶✻✽*][ \t]+Compacting\b.*(?:…|\.\.\.)'  # actual spinner set, followed by a required ellipsis
 not_ready_said=0                   # one "not ready" reason per wait_idle, not one per poll (see pane_state/say_once)
 
 # Test seams: <RESUME_PREFIX>_POLL (seconds between polls), _IDLE_TRIES, _TYPE_PAUSE, _FINAL_WAIT.
@@ -57,14 +55,12 @@ is_top_rule() { # $1 = the line directly above the input row: the prompt box's T
   # rule BELOW the input row (box_at).
   local r; r=$(printf '%s' "$1" | perl -pe 's/^\s+//; s/\s+$//')
   perl -e 'exit($ARGV[0] =~ /^'"$BOX_TOP_RULE_BYTES"'$/ ? 0 : 1)' -- "$r"; }   # `--`: this line may begin with `-`
-spinner_above() { # stdin = the non-blank lines just above the box's top rule: 0 when one of them starts with a single
-  # non-alphanumeric spinner glyph, whitespace, then `Compacting` (L2). The line is utf8-decoded before it is matched, so
-  # one glyph is one character whichever locale the gate runs under. Plain prose containing the word does not match: its
-  # first non-space character is alphanumeric, or `Compacting` is not at the start of the line after exactly one glyph.
-  perl -e 'my $hit = 0;
+spinner_above() { # stdin = the non-blank lines just above the box's top rule: 0 only for a recognized spinner and ellipsis
+  # (L2). Match decoded Unicode text against explicit glyphs and ASCII spacing, independent of the process locale.
+  perl -e 'use utf8; my $hit = 0;
     while (<STDIN>) {
-      my ($raw, $txt) = ($_, $_); utf8::decode($txt);   # a mislabelled capture still matches on its raw bytes
-      $hit = 1, last if $raw =~ /'"$SPINNER_RE"'/ || $txt =~ /'"$SPINNER_RE"'/;
+      my $txt = $_; utf8::decode($txt);
+      $hit = 1, last if $txt =~ /'"$SPINNER_RE"'/;
     }
     exit($hit ? 0 : 1)'
 }
@@ -98,7 +94,7 @@ box_at() { # $1 = a pane_view capture; prints the TOP RULE's 0-based index in th
   printf '%s' "$((idx - 1))"
 }
 busy_beside_box() { # $1 = a pane_view capture: 0 a BUSY_MARKERS line is at or below the box's last top rule (the box),
-  # or a `✶ Compacting` spinner starts one of the SPINNER_SCAN_LINES non-blank lines just ABOVE that rule (L2; the
+  # 3 a recognized compaction spinner starts one of the SPINNER_SCAN_LINES non-blank lines just ABOVE that rule (L2; the
   # spinner sits above the box while a compaction runs and the bottom window does not reach it); 1 the box holds neither;
   # 2 NO prompt box was recognised. 2 is NEVER a ready answer: a caller that would type into this pane must treat it as
   # busy, and without a recognisable box nothing about the pane is known (L1: the old no-box 20-line fallback could only
@@ -114,7 +110,7 @@ busy_beside_box() { # $1 = a pane_view capture: 0 a BUSY_MARKERS line is at or b
   for m in "${BUSY_MARKERS[@]}"; do grep -qF -- "$m" <<<"$win" && return 0; done
   start=$((top - SPINNER_SCAN_LINES)); (( start < 0 )) && start=0
   win=$(printf '%s\n' "${ln[@]:start:top-start}")   # strictly ABOVE the top rule (the bottom window ends below it)
-  spinner_above <<<"$win" && return 0
+  spinner_above <<<"$win" && return 3
   return 1
 }
 foot() { pane_view "$(tmux capture-pane -e -p -t "$pane")" | foot_of; }
@@ -128,6 +124,10 @@ pane_state() { # ONE capture; 0 ready, 1 busy, 2 the input row has text. Anythin
   view=$(pane_view "$(tmux capture-pane -e -p -t "$pane")")
   busy_beside_box "$view"; st=$?
   (( st == 0 )) && return 1
+  if (( st == 3 )); then
+    say_once "WARN pane not ready: compaction spinner above the prompt box; footer: $(foot_of <<<"$view" | tr '\n' '|')"
+    return 1
+  fi
   if (( st == 2 )); then
     say_once "WARN pane not ready: no prompt box recognised (no top rule above the input row with a plain rule below it); footer: $(foot_of <<<"$view" | tr '\n' '|')"
     return 1
