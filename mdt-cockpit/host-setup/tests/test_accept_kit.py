@@ -714,7 +714,7 @@ class ShellKitTests(F.ShellKitBase):
                               "--dwell", "0"], env=dict(self.env, MDT_ACCEPT_INTERVAL="600", MDT_ACCEPT_MAX_TICKS="40"),
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(p.wait)
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + F.KIT_RUN_TIMEOUT
         while p.poll() is None and time.monotonic() < deadline and not (self.ev / "samples.csv").exists():
             time.sleep(0.05)
         r = subprocess.run([str(KIT / "accept-run.sh"), "--evidence", str(self.tmp / "ev2"), "--warmup", "0"], env=self.env,
@@ -722,7 +722,7 @@ class ShellKitTests(F.ShellKitBase):
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertIn("lock", r.stderr)
         p.terminate()
-        self.assertEqual(p.wait(timeout=60), 143)
+        self.assertEqual(p.wait(timeout=F.KIT_RUN_TIMEOUT), 143)
 
     def test_int_term_and_hup_remove_the_dummy_by_its_exact_name(self) -> None:
         for sig, rc in ((signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129)):
@@ -731,7 +731,7 @@ class ShellKitTests(F.ShellKitBase):
                 shutil.rmtree(self.ev, ignore_errors=True)
                 p = self.start_long()
                 p.send_signal(sig)
-                self.assertEqual(p.wait(timeout=60), rc)
+                self.assertEqual(p.wait(timeout=F.KIT_RUN_TIMEOUT), rc)
                 self.assertIn("rm -f mdt-accept-squeeze", self.calls())
                 self.assertIn("end_utc=", (self.ev / "manifest.env").read_text())
                 self.assertFalse((self.ev / "squeeze-state.env").exists(), "the trap restored and cleared the WAL")
@@ -740,7 +740,7 @@ class ShellKitTests(F.ShellKitBase):
         p = subprocess.Popen([str(KIT / "accept-run.sh"), "--evidence", str(self.ev), "--warmup", "0", "--steps", "0", "--dwell", "0"],
                              env=dict(self.env, MDT_ACCEPT_INTERVAL="1", MDT_ACCEPT_MAX_TICKS="40", **self.judge_env("PASS")),
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + F.KIT_RUN_TIMEOUT
         while p.poll() is None and time.monotonic() < deadline and not ((self.ev / "samples.csv").exists()
                                                                         and len((self.ev / "samples.csv").read_text().splitlines()) >= 2):
             time.sleep(0.05)
@@ -751,12 +751,12 @@ class ShellKitTests(F.ShellKitBase):
     def test_a_sigkill_leaves_a_wal_the_restore_repairs(self) -> None:
         p = self.start_long()
         p.kill()                       # SIGKILL: no trap runs, the write-ahead file is the only carrier
-        self.assertEqual(p.wait(timeout=60), -signal.SIGKILL)
+        self.assertEqual(p.wait(timeout=F.KIT_RUN_TIMEOUT), -signal.SIGKILL)
         wal = (self.ev / "squeeze-state.env").read_text()
         self.assertIn("boot_id=", wal)
         self.assertIn("container=mdt-accept-squeeze", wal)
         r = subprocess.run([str(KIT / "accept-restore.sh"), "--evidence", str(self.ev), "--from-unit", "--lock-timeout", "30"],
-                           env=dict(self.env, MDT_ACCEPT_DAMON_ADMIN=str(self.tmp / "damon")), capture_output=True, text=True, timeout=120)
+                           env=dict(self.env, MDT_ACCEPT_DAMON_ADMIN=str(self.tmp / "damon")), capture_output=True, text=True, timeout=F.KIT_RUN_TIMEOUT)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("rm -f mdt-accept-squeeze", r.stdout)
         self.assertFalse((self.ev / "squeeze-state.env").exists())
@@ -770,7 +770,7 @@ class ShellKitTests(F.ShellKitBase):
                        f"MAX=dev.slice/memory.max|{self.DEV_MAX_START}|{self.DEV_MAX_START + 128 * M}|\n")
         (self.cg / "dev.slice" / "memory.max").write_text(f"{self.DEV_MAX_START}\n")   # the write never happened
         r = subprocess.run([str(KIT / "accept-restore.sh"), "--evidence", str(self.ev)], env=dict(self.env),
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=F.KIT_RUN_TIMEOUT)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("rm -f mdt-accept-squeeze", r.stdout)
         self.assertEqual((self.cg / "dev.slice" / "memory.max").read_text().strip(), str(self.DEV_MAX_START))
@@ -779,7 +779,7 @@ class ShellKitTests(F.ShellKitBase):
     def test_a_hup_during_sampling_restores_the_five_files(self) -> None:
         p = self.start_long_deep()
         p.send_signal(signal.SIGHUP)
-        self.assertEqual(p.wait(timeout=60), 129)
+        self.assertEqual(p.wait(timeout=F.KIT_RUN_TIMEOUT), 129)
         self.assertEqual((self.cg / "dev.slice" / "memory.max").read_text().strip(), str(self.DEV_MAX_START))
         self.assertEqual((self.cg / "dev.slice" / "memory.min").read_text().strip(), str(512 * M))
         self.assertFalse((self.ev / "squeeze-state.env").exists())
@@ -788,7 +788,7 @@ class ShellKitTests(F.ShellKitBase):
         p = subprocess.Popen([str(KIT / "accept-run.sh"), "--evidence", str(self.ev), "--warmup", "0", "--steps", "1", "--dwell", "0"],
                              env=dict(self.env, MDT_ACCEPT_INTERVAL="1", MDT_ACCEPT_MAX_TICKS="40", **self.judge_env("PASS")),
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + F.KIT_RUN_TIMEOUT
         while p.poll() is None and time.monotonic() < deadline:
             samples = self.ev / "samples.csv"
             if samples.exists():
@@ -803,7 +803,10 @@ class ShellKitTests(F.ShellKitBase):
 
     def test_a_deferred_lowering_never_reports_a_pass_and_keeps_the_wal(self) -> None:
         # 2.6/5: a max lowering without 64M of headroom is deferred, RESTORE-PENDING goes to manifest.env and the run
-        # is an INCONCLUSIVE (exit 4): an install would otherwise apply the lowered value.
+        # is an INCONCLUSIVE (exit 4): an install would otherwise apply the lowered value. The SHARED fake host sets
+        # MDT_ACCEPT_RESTORE_TIMEOUT=0, so the deferral below is decided by the 64M rule alone: without that the
+        # restore's "room for the max restorations" poll slept 1 s per try for 60 s here (measured: this one test cost
+        # the smoke lane a whole minute at 319aaeb86).
         (self.cg / "dev.slice" / "memory.current").write_text(f"{self.DEV_MAX_START - 8 * M}\n")   # inside the 64M rule
         r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", **self.judge_env("PASS"))
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
@@ -815,11 +818,16 @@ class ShellKitTests(F.ShellKitBase):
         # M2: a squeezed dockerd stalls `docker rm -f` exactly as it stalls the dockerd probe. Without a timeout the
         # guard abort's finish() hung there, the systemd TimeoutStopSec killed the unit, and the ExecStopPost restore
         # hung on the same rm -- leaving the mins raised and the kdamond on. The rm gets a small injected bound here
-        # (1 s, never 30) and the min restore still runs and is still the start value.
+        # (1 s, never the 10 s the fake host sets) and the min restore still runs and is still the start value.
+        # There are three bounded `rm` sites on this path (the stale-container rm before `docker run`, finish() and
+        # accept-restore.sh), so the fake 3 s stall costs this test ~3 s in total, never 3 s per site.
         r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", **self.judge_env("PASS"),
                          MDT_ACCEPT_RM_TIMEOUT="1", FAKE_RM_SLEEP="3")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("did not complete (rc 124, 1s bound)", r.stdout)
+        # two distinct sites, both bounded by the same injected 1 s: the pre-run stale-container rm (which used to be
+        # a bare unbounded `docker rm -f` and could hang the whole run before the dummy existed) and finish()'s.
+        self.assertIn("the stale-container docker rm -f mdt-accept-squeeze did not complete (rc 124, 1s bound)", r.stdout)
+        self.assertIn("did not complete (rc 124, 1s bound); the restore below runs anyway", r.stdout)
         self.assertEqual((self.cg / "dev.slice" / "memory.min").read_text().strip(), str(512 * MIB),
                          "the min restore ran although the rm was killed at its bound")
 
@@ -868,11 +876,13 @@ class ShellKitTests(F.ShellKitBase):
     def test_the_real_psi_guard_probe_records_its_own_seconds(self) -> None:
         # H2, WITHOUT the seam: MDT_ACCEPT_PROBE_CMD_PSI_GUARD is unset, so accept-run.sh's own branch runs
         # (`systemctl is-active` + MainPID + /proc/<pid>/stat). The column must be the probe's OWN duration; it used to
-        # record `SECONDS - T0`, the run's elapsed time. The fake host stalls a fixed 3 s on the USR1 (never host
-        # load), so by step 1's probes the run's elapsed time is >= 3 s while the probe itself takes ~0.2 s: the old
-        # code recorded >= 3 s here, the new code cannot -- and that elapsed-vs-own gap is what the judge's latency
-        # rule read as "psi_guard latency over its step-0 baseline".
-        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", FAKE_PSI_SHOW_SLEEP="0.2", FAKE_KILL_SLEEP="3",
+        # record `SECONDS - T0`, the run's elapsed time. The fake host stalls a fixed 2.2 s on the USR1 (never host
+        # load), so by step 1's probes the run's elapsed time is >= 2 s while the probe itself takes ~0.2 s: the old
+        # code recorded >= 2 s here (SECONDS is whole seconds), the new code cannot -- and that elapsed-vs-own gap is
+        # what the judge's latency rule read as "psi_guard latency over its step-0 baseline". 2.2 s, not 3: the
+        # discrimination only needs the run's elapsed to exceed the 1.0 s limit, and every whole second here is one
+        # the smoke lane pays.
+        r = self.run_kit("--steps", "1", "--dwell", "0", ticks="8", FAKE_PSI_SHOW_SLEEP="0.2", FAKE_KILL_SLEEP="2.2",
                          MDT_ACCEPT_PROBE_CMD_PSI_GUARD=None, **self.judge_env("PASS"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         rows = [ln.split(",") for ln in (self.ev / "probes.csv").read_text().splitlines() if ",psi_guard," in ln]
@@ -1008,7 +1018,7 @@ class RestoreTests(unittest.TestCase):
 
     def restore(self, *args: str, **extra: str) -> subprocess.CompletedProcess:
         return subprocess.run([str(KIT / "accept-restore.sh"), "--evidence", str(self.ev), *args],
-                              env=dict(self.env, **extra), capture_output=True, text=True, timeout=120)
+                              env=dict(self.env, **extra), capture_output=True, text=True, timeout=F.KIT_RUN_TIMEOUT)
 
     def hold_lock(self) -> None:
         self.hold = open(self.lock, "w")

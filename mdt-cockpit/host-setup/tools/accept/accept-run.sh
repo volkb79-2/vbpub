@@ -329,7 +329,14 @@ printf 'container=%s\nboot_id=%s\npid=%s\nstarted_utc=%s\nk_tested=%s\ndev_orig=
 }
 find_scope() { local d="$CG/dev.slice/$PARENT/docker-$1.scope"; [ -d "$d" ] && printf '%s\n' "$d"; }
 scope_stat() { awk -v k="$2" '$1==k{print $2+0}' "$1/memory.stat" 2>/dev/null || echo 0; }
-docker rm -f "$DUMMY" >/dev/null 2>&1 || true # a stale container of a killed run, by its exact name
+# a stale container of a killed run, by its exact name. M2's lesson holds on this path too: a squeezed dockerd stalls
+# `rm` exactly as it stalls the probes, and an unbounded rm here would hang the run BEFORE the dummy exists, with no
+# named refusal and no bound to read. Bound it, log the failure, and let the `docker run --name` below decide (a name
+# that really survived makes it refuse with exit 3 instead of the run standing still).
+rc_rm=0
+timeout -k 5 "$RM_TIMEOUT" docker rm -f "$DUMMY" >/dev/null 2>&1 || rc_rm=$?
+[ "$rc_rm" = 0 ] || note "the stale-container docker rm -f $DUMMY did not complete (rc $rc_rm, ${RM_TIMEOUT}s bound); the dummy start below decides"
+unset rc_rm
 # shellcheck disable=SC2086 # DUMMY_PY is one -c argument; the reads below are the argv
 id=$(docker run -d --rm --name "$DUMMY" --label mdt.accept=1 --network none --cpus 1 \
       --cgroup-parent "$PARENT" --memory "$DEEPEST" --memory-swap "$((DEEPEST + 16 * GIB))" --oom-score-adj 1000 \

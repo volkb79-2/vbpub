@@ -48,6 +48,14 @@ K0 = 1560 * MIB
 PROBE_GOOD = ("sshd", "journald", "dockerd", "containerd", "cgprofiled", "psi_guard")
 
 
+# The no-hang bound on EVERY kit run (`subprocess.run` and `Popen` alike). A legitimate tick-driven `--steps 0..2`
+# run spawns a few hundred fake processes and takes 1-3 s even on a loaded host; 30 s keeps a 10x margin and turns a
+# hang into one named failure instead of a lane that overruns its budget. It was 120 s, i.e. a single hanging kit run
+# could eat a third of the `smoke` lane's 6-m budget. Re-measure before raising it: the lane pays this bound only
+# when a kit run really hangs.
+KIT_RUN_TIMEOUT = 30
+
+
 def probes_text(steps: list[int], *, seconds: float = 0.1, ssh: float = 0.4, ssh_of: dict[int, list[float]] | None = None,
                 rc_of: dict[str, str] | None = None, nrestarts_of: dict[int, int] | None = None,
                 seconds_of: dict[str, list[float]] | None = None,
@@ -214,6 +222,7 @@ class ShellKitBase(unittest.TestCase):
     """
     DEV_MAX_START = 8 * 1024 * MIB - 1560 * MIB   # MemTotal - MDT_EXCLUDED_RAM 0 - K0 1560M: 2.1's label arithmetic
     TIER_MIN = 64 * MIB
+    TIMEOUT = KIT_RUN_TIMEOUT
 
     def setUp(self) -> None:
         self._t = tempfile.TemporaryDirectory()
@@ -272,6 +281,18 @@ class ShellKitBase(unittest.TestCase):
                         FAKE_DEEPEST=str(self.DEV_MAX_START + 6 * 128 * MIB), FAKE_STEP_BYTES=str(128 * MIB),
                         MDT_ACCEPT_CGROUP=str(self.cg), MDT_ACCEPT_PROC=str(self.proc), MDT_ACCEPT_HOST_ENV=str(self.henv),
                         MDT_ACCEPT_BOOT_ID=str(self.boot), MDT_ACCEPT_INTERVAL="0", MDT_ACCEPT_PAGESIZE="4096",
+                        # every wait in the kit is bounded, and the bounds are injected SMALL here: a test that
+                        # waits on a real clock either spends that time on the lane or hangs it. Three values:
+                        # -- POLL_STEP 0: the grow loop (`GROW_TRIES` x `sleep POLL`) and the restore's 64M poll cost
+                        #    nothing between reads (the fakes grow on the FIRST read, so no assertion loses the
+                        #    "it waited" fact: the test asserts the outcome, and the loop's bound is what stops a hang).
+                        # -- RESTORE_TIMEOUT 0: the restore's 64M poll gives up after its FIRST read, i.e. the deferral
+                        #    is decided by the 64M rule itself (`test_a_deferred_lowering...` and the RestoreTests below
+                        #    write a `memory.current` inside the rule, so the timeout never decides their expectation).
+                        # -- RM_TIMEOUT 10: the product default (30 s) stays the bound a real host gets, and the stalls
+                        #    a test injects are <= 3 s, so no legitimate fake `rm` is killed by its own bound.
+                        # The old host had NO POLL/RESTORE override: a run that reached the poll path slept 1 s x 60.
+                        MDT_ACCEPT_POLL_STEP="0", MDT_ACCEPT_RESTORE_TIMEOUT="0", MDT_ACCEPT_RM_TIMEOUT="10",
                         MDT_ACCEPT_LOCK=str(self.tmp / "lock"), MDT_ACCEPT_MIN_DISK="1", MDT_ACCEPT_MIN_EVID_DISK="1",
                         MDT_ACCEPT_SSH_TARGET="root@127.0.0.1",
                         MDT_ACCEPT_HOTSET_JSON=str(self.fixture), MDT_ACCEPT_HOTSET_EVERY="1",
@@ -302,7 +323,7 @@ class ShellKitBase(unittest.TestCase):
             else:
                 env[k] = v
         return subprocess.run([str(KIT / "accept-run.sh"), "--evidence", str(self.ev), "--warmup", "0", *args],
-                              env=env, capture_output=True, text=True, timeout=120)
+                              env=env, capture_output=True, text=True, timeout=self.TIMEOUT)
 
     def judge_env(self, verdict: str = "PASS", cause: str = "") -> dict[str, str]:
         """A fake `accept-eval.py --live-step`: the ladder tests drive PASS/FAIL/INCONCLUSIVE without the real judge."""
