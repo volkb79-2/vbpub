@@ -26,6 +26,7 @@ pub mod config;
 pub mod hysteresis;
 pub mod json;
 pub mod psi;
+pub mod units;
 
 #[cfg(test)]
 pub mod testutil;

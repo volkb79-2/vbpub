@@ -74,6 +74,7 @@ targets = [
   "src/json.rs",
   "src/lib.rs",
   "src/psi.rs",
+  "src/units.rs",
 ]
 # `fail_under` is a PLACEHOLDER until the first measured run (subtask 6 of the P1
 # wave): the floor is then set one full point below the measured value and
