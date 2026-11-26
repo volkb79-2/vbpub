@@ -42,17 +42,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   instead of failing the known-good control before any mutant is judged
   (KI-209).
 - fix(cmru): cmru's R2 lane accepts a merge HEAD. Both R2 tools pass
-  `delegated=True` to Assay's `git.resolve_base`; the baseline checker also
-  passes it to `git.base_resolution_mode` to report the mode, while the
-  mutation campaign does not call that helper. The lane supplies its own
-  comparison base (`judge.base_source` is not involved: cmru's own Assay lanes
-  are `whole_target` and declare no base),
+  `delegated=True` to Assay's `git.resolve_base`; the baseline checker includes
+  the result of `git.base_resolution_mode` in its refusal detail when the
+  effective base differs, but does not report it on a passing path. The
+  mutation campaign does not call that helper or report the mode.
+  The lane supplies its own comparison base (`judge.base_source` is not
+  involved: cmru's own Assay lanes are `whole_target` and declare no base),
   so the judged diff is
   `selected-release-tag..HEAD` on every HEAD shape instead of the merge's
   first-parent payload; the checker still refuses any effective base that is
   not the selected tag (KI-211).
 - tests(cmru): the upload-coordinate refusal stubs the release transport, so
   it no longer needs api.github.com to reach its assertion (KI-210).
+- docs: correct the 2026-11-26 CMRU/CIU review claims. KI-215 is closed by
+  design with prose left to review and `assay.toml` lane facts structurally
+  pinned; KI-213 records the silent command-lane log, the temporary evidence
+  location and separate Run-Gate owner; CIU-231(b) distinguishes cwd root
+  discovery from CIU-228's `--dir`/`--root-folder` join.
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

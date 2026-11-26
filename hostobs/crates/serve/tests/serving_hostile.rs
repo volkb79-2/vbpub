@@ -1117,7 +1117,12 @@ fn server_hostile_2000_steps_with_block_verbs() {
             Level::Operator
         };
         let uid = 1 + u32::try_from(slot % 2).expect("uid");
-        let peer = Peer { uid, pid: 7 };
+        let peer = Peer {
+            uid,
+            pid: Some(7),
+            comm: None,
+            cgroup: None,
+        };
         let Accept::Accepted(id) = server.accept(level, Some(peer), now) else {
             panic!("prelude accept");
         };
@@ -1225,7 +1230,12 @@ fn server_hostile_2000_steps_with_block_verbs() {
                 Level::Operator
             };
             let uid = 1 + u32::try_from(slot % 2).expect("uid");
-            let peer = Peer { uid, pid: 7 };
+            let peer = Peer {
+                uid,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            };
             if let Accept::Accepted(id) = server.accept(level, Some(peer), now) {
                 slots[slot] = Some(id);
                 subscriptions[slot].clear();

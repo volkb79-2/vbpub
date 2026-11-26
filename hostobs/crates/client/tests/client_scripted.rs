@@ -1113,7 +1113,7 @@ fn drive(bytes: &[u8]) {
     }
 }
 
-/// Every kind a client call can name: the 46 wire kinds of `ProtoError`, the envelope kinds
+/// Every kind a client call can name: the 50 wire kinds of `ProtoError`, the envelope kinds
 /// and the client's own protocol, usage and transport names (the §10 codes are `ERROR_CODES`).
 const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-frame-type \
     unknown-frame-flags unknown-mode unsupported-version section-reserved \
@@ -1127,7 +1127,8 @@ const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-f
     dictionary-entry-control generation-exhausted stale-dictionary-generation rows-and-time \
     no-rows-or-time row-reference-not-entity column-reference-not-metric column-kind-mismatch \
     not-a-block section-order aggregation-not-permitted subject-without-time deadline \
-    generation-regressed json-text duplicate-key unknown-key missing-key wrong-type \
+    generation-regressed event-unknown-code event-field-bound event-text event-order \
+    json-text duplicate-key unknown-key missing-key wrong-type \
     unexpected-frame unknown-corr bad-reply end-counts hello-mismatch corr-exhausted io \
     timeout connection-lost bad-verb bad-args request-too-large bad-selection bad-client \
     bad-timeout no-reconnect";

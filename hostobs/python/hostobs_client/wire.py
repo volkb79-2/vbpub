@@ -3,7 +3,7 @@
 Standard library only. ``decode_block(buf, held)`` validates one complete BLOCK frame and
 returns a :class:`Block` whose sections are views over ``buf``; no Python bytecode runs per
 value during decoding or validation (C-speed O(n) work remains). Every refusal is a
-:class:`WireError` whose ``kind`` is one of the 46 decoder kinds of WIRE.md section 3.10 and
+:class:`WireError` whose ``kind`` is one of the 50 decoder kinds of WIRE.md section 3.10 and
 whose ``detail`` carries the same keys as the fixtures' ``expect_error``.
 
 Byte order: the cast views of section 7.4 need a little-endian host. On a big-endian host
@@ -39,7 +39,7 @@ QUALITY_NAMES = (
     "unknown-topology",
 )
 
-#: The 46 decoder error kinds (``ProtoError::kind`` of ``crates/proto/src/error.rs``).
+#: The 50 decoder error kinds (``ProtoError::kind`` of ``crates/proto/src/error.rs``).
 ERROR_KINDS = frozenset(
     (
         "truncated", "oversized-frame", "non-zero-reserved", "unknown-frame-type", "unknown-frame-flags",
@@ -53,7 +53,8 @@ ERROR_KINDS = frozenset(
         "dictionary-entry-control", "generation-exhausted", "stale-dictionary-generation", "rows-and-time",
         "no-rows-or-time", "row-reference-not-entity", "column-reference-not-metric", "column-kind-mismatch",
         "not-a-block", "section-order", "aggregation-not-permitted", "subject-without-time", "deadline",
-        "generation-regressed",
+        "generation-regressed", "event-unknown-code", "event-field-bound", "event-text",
+        "event-order",
     )
 )
 
