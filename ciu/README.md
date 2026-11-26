@@ -368,7 +368,10 @@ mutation with active liveness, a derived per-candidate bound and fail-fast
 candidate execution (R2), and an import-break canary (R3), all bound to the
 same verdict. Liveness ends an idle stall only; the per-candidate bound
 (`budget_per_candidate = "auto"`, derived from the run's own baseline) ends a
-candidate that keeps working. `--maxfail=1` stops a
+candidate that keeps working. If no more than the derived bound remains in the
+lane, its deadline can end the lane as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` and
+leave that attempt unclassified; see [SPEC S18.2](docs/SPEC.md#s18--implementation-gate-assay-backed).
+`--maxfail=1` stops a
 failing mutant at its first failing test; green runs still execute the full
 suite.
 The

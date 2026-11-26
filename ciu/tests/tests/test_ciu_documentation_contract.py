@@ -122,11 +122,19 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-def _duration_minutes(value: str) -> int:
-    """`90m`/`8h`/`5400s` -> minutes, for the enclosing-budget arithmetic."""
+def _duration_seconds(value: str) -> int:
+    """Convert an integer duration to seconds without truncating its unit."""
     suffix = value[-1]
     amount = int(value[:-1])
-    return {"m": amount, "h": amount * 60, "s": amount // 60}[suffix]
+    return {"s": amount, "m": amount * 60, "h": amount * 3600}[suffix]
+
+
+def _duration_minutes(value: str) -> int:
+    """Convert only whole-minute durations; reject seconds that would be lost."""
+    seconds = _duration_seconds(value)
+    if seconds % 60:
+        raise ValueError("duration has a sub-minute remainder")
+    return seconds // 60
 
 
 def test_every_toml_example_parses_with_the_shipped_loader():
@@ -383,11 +391,9 @@ def test_ciu_r2_lane_declares_a_derived_per_candidate_bound_and_docs_say_what_en
     The documentation half is the part that could go stale silently, and review
     r1 M1 shows why: four documents described liveness as the whole stall
     detector and asked a reader to believe growing CPU counts as progress
-    (assay's `hung` needs FLAT cpu). So this test asserts the exact statements
-    the documents must carry, including what still ends a candidate that keeps
-    WORKING -- the per-candidate bound, reported `budget_exceeded` -- and that
-    the bound is a wall clock and the interim until assay's CPU-seconds no-
-    progress bound (design P4) exists.
+    (assay's `hung` needs FLAT cpu). SPEC and CHANGES carry the full mechanism;
+    README, DESIGN-GUIDE, and CONSUMERS each pin the statements that document
+    carries and link the lane-window exception to SPEC S18.2.
     """
     lane_text = (REPO_ROOT / "assay.toml").read_text(encoding="utf-8")
     lane = tomllib.loads(lane_text)["lanes"]["ciu"]
@@ -399,26 +405,88 @@ def test_ciu_r2_lane_declares_a_derived_per_candidate_bound_and_docs_say_what_en
     # reader of the lane does not have to trust this test's summary of it.
     flat_lane = _flat(lane_text)
     assert "max(3 x baseline, baseline + 60 s)" in flat_lane
-    assert "assay/src/assay/mutation.py:2636-2641" in flat_lane
-    assert "auto_budget_per_candidate_seconds` (mutation.py:2136-2153)" in flat_lane
+    assert "`baseline_wall_seconds`" in flat_lane
+    assert "`auto_budget_per_candidate_seconds`" in flat_lane
     assert "idle stall only" in flat_lane
     assert "WALL CLOCK" in flat_lane
     assert "P4" in flat_lane
-    # ... and the three user-facing documents must state what ends a candidate.
+    assert "no more than the derived bound remains" in flat_lane
+    assert "unclassified for resume" in flat_lane
+    assert "BUDGET_EXCEEDED`/`LANE_TIMEOUT" in flat_lane
     spec = _flat((REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8"))
     assert 'budget_per_candidate = "auto"' in spec
     assert "max(3 x baseline, baseline + 60 s)" in spec
     assert "ends an IDLE stall only" in spec
     assert "complete, pressure-free resource trace" in spec
-    assert "reported `budget_exceeded`" in spec
+    assert "reports `budget_exceeded`" in spec
     assert "wall clock" in spec
     assert "design P4" in spec
+    assert "no more than the derived bound remains" in spec
+    assert "unclassified for resume" in spec
+    assert "BUDGET_EXCEEDED`/`LANE_TIMEOUT" in spec
     changes = _flat((REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8"))
     assert "max(3 x baseline, baseline + 60 s)" in changes
     assert "IDLE stall only" in changes
     assert "reported `budget_exceeded`" in changes
     assert "wall clock" in changes
     assert "design P4" in changes
+    assert "no more than the derived bound remains" in changes
+    assert "unclassified" in changes
+    assert "SPEC S18.2" in changes
+
+    # Each user-facing document has its own assertion for the statements it
+    # actually carries; the lane-window exception links to the normative detail.
+    user_facing_contracts = (
+        (
+            REPO_ROOT / "README.md",
+            (
+                "Liveness ends an idle stall only",
+                "ends a candidate that keeps working",
+                "no more than the derived bound remains in the lane",
+                "BUDGET_EXCEEDED`/`LANE_TIMEOUT",
+                "unclassified",
+                "SPEC S18.2",
+            ),
+        ),
+        (
+            REPO_ROOT / "docs" / "DESIGN-GUIDE.md",
+            (
+                "Liveness ends an idle stall only",
+                "complete pressure-free resource trace",
+                "candidate bound in `assay.toml`",
+                "ends a candidate that keeps working",
+                "no more than the derived bound remains in the lane",
+                "BUDGET_EXCEEDED`/`LANE_TIMEOUT",
+                "unclassified",
+                "SPEC S18.2",
+            ),
+        ),
+        (
+            REPO_ROOT / "docs" / "CONSUMERS.md",
+            (
+                "liveness monitor ends an IDLE stall only",
+                "ends a candidate that keeps working",
+                "reported `budget_exceeded`",
+                "no more than the derived bound remains in the lane",
+                "BUDGET_EXCEEDED`/`LANE_TIMEOUT",
+                "unclassified",
+                "SPEC S18.2",
+            ),
+        ),
+    )
+    for doc, statements in user_facing_contracts:
+        flat_doc = _flat(doc.read_text(encoding="utf-8"))
+        missing = [statement for statement in statements if statement not in flat_doc]
+        assert not missing, (
+            f"{doc.relative_to(REPO_ROOT)} missing CIU-235 statements: {missing}"
+        )
+
+    backlog = _flat(
+        (REPO_ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+    )
+    assert "THIS invocation derived" in backlog
+    assert "last-candidate lane window (M2)" in backlog
+    assert "resumed campaigns' per-run bound (L2)" in backlog
 
 
 def test_the_lane_loads_through_assays_own_loader_when_it_is_importable():
@@ -439,20 +507,23 @@ def test_the_lane_loads_through_assays_own_loader_when_it_is_importable():
 
 
 def test_ciu_gate_canary_bound_covers_a_loaded_host_and_fits_its_enclosing_budgets():
-    """CIU-235 review r1: 20m expired before the R3 probe even started.
+    """CIU-235 review r1: 20m expired during the R3 attempt's control run.
 
     Run `rgw-ciu-gate-20261125T222402-v1001` ended BUDGET_EXCEEDED/LANE_TIMEOUT
     with the attempt recorded `not_attempted`/`budget_exhausted`, because the
     coverage baseline ALONE took 1108 s on that loaded host (~416 s on an
-    unloaded one). One canary attempt is control + transformed whole-suite runs,
-    so the per-attempt bound must cover two loaded baselines; it must also stay
-    inside the enclosing budgets (assay's lane budget, run-gate's outer one).
+    unloaded one); its timer expired 20 minutes later during the control run,
+    after the attempt had started. One canary attempt is control + transformed
+    whole-suite runs, so the per-attempt bound must cover two measured baselines;
+    it must also fit assay's lane budget and run-gate's outer budget.
     """
     assay_lanes = tomllib.loads(
         (REPO_ROOT / "assay.toml").read_text(encoding="utf-8")
     )["lanes"]
     canary = assay_lanes["ciu-gate"]["judge"]["canary"]
-    assert canary["budget_per_attempt"] == "45m"
+    measured_baseline_seconds = 1108
+    canary_budget_seconds = _duration_seconds(canary["budget_per_attempt"])
+    assert canary_budget_seconds >= 2 * measured_baseline_seconds
     # The measured reason must stay beside the key it explains.
     lane_text = _flat((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))
     assert "rgw-ciu-gate-20261125T222402-v1001" in lane_text
@@ -461,17 +532,27 @@ def test_ciu_gate_canary_bound_covers_a_loaded_host_and_fits_its_enclosing_budge
     outer = tomllib.loads(
         (REPO_ROOT / "run-gate.toml").read_text(encoding="utf-8")
     )["lanes"]
-    # run-gate's `lanes --check` proves these numerically (and strictly); this
-    # pins the arithmetic so a future edit cannot quietly invert them.
-    assert _duration_minutes(outer["ciu-gate"]["budget"]) >= _duration_minutes(
-        assay_lanes["ciu-gate"]["budget"]
-    ) + 5
-    assert _duration_minutes(canary["budget_per_attempt"]) <= _duration_minutes(
+    # run-gate's `lanes --check` margin is the source of truth for the outer
+    # budget; seconds preserve the baseline and any future remainder.
+    run_gate = runpy.run_path(
+        str(REPO_ROOT.parent / "run-gate-project" / "run_gate.py")
+    )
+    margin_seconds = run_gate["LANES_CHECK_BUDGET_MARGIN_SECONDS"]
+    assert _duration_seconds(outer["ciu-gate"]["budget"]) >= (
+        _duration_seconds(assay_lanes["ciu-gate"]["budget"]) + margin_seconds
+    )
+    assert canary_budget_seconds <= _duration_seconds(
         assay_lanes["ciu-gate"]["budget"]
     )
-    # The R2 lane's canary runs the same suite, so it carries the same bound.
-    assert assay_lanes["ciu"]["judge"]["canary"]["budget_per_attempt"] == "45m"
-    spec =_flat((REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8"))
+    # The R2 lane's canary runs the same suite, so check it against the same
+    # two-baseline minimum.
+    ciu_canary_budget_seconds = _duration_seconds(
+        assay_lanes["ciu"]["judge"]["canary"]["budget_per_attempt"]
+    )
+    assert ciu_canary_budget_seconds >= 2 * measured_baseline_seconds
+    with pytest.raises(ValueError, match="sub-minute remainder"):
+        _duration_minutes("1108s")
+    spec = _flat((REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8"))
     assert "import-break canary" in spec
 
 
@@ -486,8 +567,10 @@ def test_ciu_r2_worker_budget_matches_the_three_worker_pilot():
 
 
 def test_run_gate_ciu_lane_declares_cgroup_observer_for_r2():
-    """CIU-190: the async R2 lane `ciu` needs the cgroup observer (assay liveness);
-    the release gate `ciu-gate` runs no mutation and must not declare one."""
+    """CIU-190: R2 candidate resource counters need an observer separate from liveness.
+
+    The release gate `ciu-gate` runs no mutation and must not declare one.
+    """
     lanes = tomllib.loads((REPO_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
     assert lanes["ciu"]["resource_observer"] == "cgprofile"
     assert lanes["ciu"]["resources"]["pids"] == 8192

@@ -6223,7 +6223,7 @@ Acceptance: `ciu worktree create` + `ciu up --dir <stack>` works in a worktree o
 
 ## CIU-190 - the `ciu` R2 mutation lane always ended NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE (no `resource_observer`)
 
-**Status: FIXED 2026-11-05 on branch ciu-r2-observer-20261105 (unreleased; config-only, no src change). Evidence extended 2026-11-11 by the host campaign.** Found by the R2 board agent on a test host running ciu 7.22.0. `[lanes.ciu]` in run-gate.toml lacked `resource_observer = "cgprofile"` while assay.toml sets `liveness = true`; adding the observer also requires `resources.pids`. Fix: both keys added (pattern of pwmcp/run-gate-project R2 lanes); the `ciu` (async R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) distinction is explicit in run-gate.toml, assay.toml and README; pinned by `test_run_gate_ciu_lane_declares_cgroup_observer_for_r2` in `tests/tests/test_ciu_documentation_contract.py`.
+**Status: FIXED 2026-11-05 on branch ciu-r2-observer-20261105 (unreleased; config-only, no src change). Evidence extended 2026-11-11 by the host campaign.** Found by the R2 board agent on a test host running ciu 7.22.0. `[lanes.ciu]` in run-gate.toml lacked `resource_observer = "cgprofile"` while assay.toml also sets `liveness = true`; the observer supplies separate candidate resource-limit evidence, not liveness, and its lane declaration also requires `resources.pids`. Fix: both keys added (pattern of pwmcp/run-gate-project R2 lanes); the `ciu` (async R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) distinction is explicit in run-gate.toml, assay.toml and README; pinned by `test_run_gate_ciu_lane_declares_cgroup_observer_for_r2` in `tests/tests/test_ciu_documentation_contract.py`.
 
 **Acceptance criteria.** An R2 campaign on lane `ciu` reaches mutation judgment instead of NO_MEASUREMENT; `ciu-gate` is unchanged and declares no observer.
 
@@ -7428,11 +7428,10 @@ is submitted (`assay/src/assay/mutation.py:2636-2641` calls
 (`:2136-2153`), the formula `max(3 x baseline, baseline + 60 s)`), so it scales
 with the host the lane runs on. At the measured 416 s that is ~1249 s (~21
 min): above the whole suite there, and above it by construction on a loaded
-host. The resolved value is recorded —
-`judgment.r2.budget_per_candidate_derived_s` on the verdict
-(`assay/src/assay/verdict.py:3646`) and in the `plan` progress record
-(`mutation.py:2677-2691`) — so a reader learns what actually bounded the
-candidates, never from a second computation (B088).
+host. The verdict's `judgment.r2.budget_per_candidate_derived_s` carries the
+value THIS invocation derived; a candidate resumed or carried over keeps the
+bound from the run that judged it, and the store records that run's resource
+digest (`mutation_store.py:4264-4274`, `:3743-3753`) (B088).
 
 Why the bound cannot be `"none"` (the shape this branch carried first):
 liveness ends an **idle** stall only. `hung` needs an idle window with a flat CPU
@@ -7454,7 +7453,11 @@ stall becomes `hung` (`liveness.py:2086-2095` → `runner.py:1840-1843`
 `ReasonCode.CANDIDATE_HUNG` → `termination.py:53`, `:80-83` →
 `mutation.py:5696-5706`), its own bucket, outside `mutation_pct`. A candidate
 that keeps working is ended by the per-candidate bound and reported
-`budget_exceeded`. **That bound is a wall clock, and it is the interim**:
+`budget_exceeded` while more than that bound remains in the lane. If no more
+than the bound remains, the lane deadline can instead leave the attempt
+unclassified and end the lane `BUDGET_EXCEEDED`/`LANE_TIMEOUT`; see
+[SPEC S18.2](docs/SPEC.md#s18--implementation-gate-assay-backed).
+**That bound is a wall clock, and it is the interim**:
 assay's CPU-seconds-without-progress bound is design P4
 (`docs/design/no-time-budgets/DESIGN.md` S7.1), which replaces it when it ships.
 
@@ -7495,4 +7498,6 @@ gone.
 **Close when.** A fresh R2 campaign on a released head with a slow-suite
 candidate records no `budget_exceeded` candidate that a test would have
 survived, and **no candidate was ended as `hung` or `STALLED` while it was
-working**. Not a per-test deadline — that remains CIU-212.
+working**; the last-candidate lane window (M2) and resumed campaigns' per-run
+bound (L2) are documented with the store evidence. Not a per-test deadline —
+that remains CIU-212.

@@ -129,7 +129,8 @@ def test_every_dry_run_line_reaches_the_stream_in_the_flush_that_publishes_it(
     comes next (or for process exit), so that flush then carries the line
     TOGETHER with whatever was written after it: a preview that is not readable
     until the next line is printed. That is the delivery change under test, and
-    it is what makes the two mutants fail.
+    it is what makes the two mutants fail. This test's narrower oracle requires
+    each of the four preview lines to end its own distinct flush chunk.
     """
     _own_process(monkeypatch)
 
@@ -144,14 +145,11 @@ def test_every_dry_run_line_reaches_the_stream_in_the_flush_that_publishes_it(
     # A dry run of two hostdirs prints FOUR lines the operator must be able to
     # read while the run is still going: the scan banner, two `Would create:`
     # lines and the summary. The contract asserted is the DELIVERY one, per line:
-    # **the flush that publishes a line carries nothing written after it**. So a
-    # line is proven published-as-emitted exactly when some `flush()` carried a
-    # chunk that ENDS with that line -- the reader got it, and got nothing that
-    # was written after it in the same chunk. This is deliberately not "one
-    # line per flush" (review r1 L3: a `flush()` carrying two complete lines
-    # still delivers both at the moment they were printed, and this form accepts
-    # that); what it does refuse is the mutant's shape, where the line is
-    # published only as a prefix of a chunk that carries LATER text.
+    # **the flush that publishes a line carries nothing written after it**. Each
+    # line must be the final complete line in its own distinct flush chunk; a
+    # combined two-line flush is outside this oracle's narrower contract. It
+    # refuses the mutant's shape, where a line is only a prefix of a chunk that
+    # carries LATER text.
     published = recorder.published
     expected_lines = (
         ("[INFO] Scanning for volume directories", 1),

@@ -1159,7 +1159,10 @@ its first failed test; the successful baseline remains a full-suite run. Livenes
 ends an idle stall only (and only with a complete pressure-free resource
 trace); the candidate bound in `assay.toml` (`budget_per_candidate = "auto"`,
 DERIVED from this run's own baseline) is what ends a candidate that keeps
-working. This
+working. If no more than the derived bound remains in the lane, its deadline
+can end the lane as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` and leave that attempt
+unclassified; see [SPEC S18.2](SPEC.md#s18--implementation-gate-assay-backed).
+This
 prevents one mutation's failure cascade from reaching unrelated later tests.
 R1+ runs
 in an isolated snapshot of the

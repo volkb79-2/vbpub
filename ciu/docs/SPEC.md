@@ -7532,10 +7532,15 @@ evidence-judgment command.
   window with a flat CPU (growing CPU is what prevents `hung`, and
   stdout/stderr growth also counts as progress). A candidate that keeps
   WORKING -- spinning on CPU, printing without end, or blocked under a busy
-  child -- is never ended by liveness; it is ended by the per-candidate bound
-  and reported `budget_exceeded` (a genuine idle stall keeps its own `hung`/
-  `CANDIDATE_HUNG` bucket, never `mutation_pct`). That bound is a wall clock
-  and is the interim: assay's CPU-seconds-without-progress bound (design P4,
+  child -- is never ended by liveness. While more than the derived bound
+  remains in the lane, the per-candidate bound ends it and reports
+  `budget_exceeded`; when no more than the derived bound remains in the lane,
+  the lane deadline is the effective bound. Its expiry leaves the candidate
+  unclassified for resume and ends the lane as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` (Assay
+  `mutation.py`'s `command_deadline` and lane-timeout handling). A genuine idle
+  stall keeps its own `hung`/`CANDIDATE_HUNG` bucket, never `mutation_pct`.
+  That bound is a wall clock and is the interim: assay's
+  CPU-seconds-without-progress bound (design P4,
   `docs/design/no-time-budgets/DESIGN.md` S7.1) replaces it when it ships.
   The cgroup observer (`resource_observer`/`resources.pids` in
   `run-gate.toml`) is required for the CANDIDATE RESOURCE-LIMIT evidence every
