@@ -44148,16 +44148,17 @@ class TestExecLaneOutputStreamWatch:
             tmp_path, monkeypatch, ["true"], record,
             popen_factory=lambda *args, **kwargs: process) == 0
         # Dropped after the failure — never consulted again (a second poll
-        # would raise a second time and flood the log). Several fake waits
-        # time out first, so the process cannot exit before a second poll.
+        # would raise a second time and flood the log). Three fake waits time
+        # out first, then the loop sees exit; the final wait is the runner's
+        # unconditional reap in its cleanup block.
         assert watch.calls == 1
-        assert process.wait_calls == 4
+        assert process.wait_calls == 5
         assert _has_flushed_print(
             streams, "stderr", "output-stream watch failed unexpectedly")
         assert _has_flushed_print(
             streams, "stdout", "stall bound 300s (source: auto)")
-        assert "its own output stream (output stream)" in "\n".join(
-            str(item) for item in streams["stdout"])
+        assert _has_flushed_print(
+            streams, "stdout", "its own output stream (output stream)")
         assert record["stall_bound"]["signal"] == \
             run_gate.STALL_SIGNAL_OUTPUT_STREAM
 
