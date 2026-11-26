@@ -665,6 +665,11 @@ def suppress_job_events(*, forward_starts: bool = False):
         _NESTED_JOB_EVENT_WRITER = previous_nested
 
 
+def current_job_event_writer() -> JobEventWriter | None:
+    """Return the sink whose file must stay outside every child mount."""
+    return _ACTIVE_JOB_EVENT_WRITER or _NESTED_JOB_EVENT_WRITER
+
+
 def strip_job_event_options(argv: list[str]) -> list[str]:
     """Remove the caller's event flags before an internal worker dispatch."""
     output: list[str] = []
@@ -10080,12 +10085,13 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         if name is None:
             name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                          worktree, env_source)
-        if _ACTIVE_JOB_EVENT_WRITER is not None:
+        event_writer = current_job_event_writer()
+        if event_writer is not None:
             if not inspect_mounts:
                 fail("cannot verify the host mounts for --event-file before "
                      "an exec-environment probe")
             validate_job_event_destination(
-                str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree,
+                str(event_writer.path), worktree=worktree,
                 repo=repo,
                 mount_sources=inspect_container_mount_sources(docker, name))
         forwarded = resource_forwarded_env(
@@ -10109,9 +10115,10 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     for key, value in forwarded.items():
         argv += ["-e", f"{key}={value}"]
     argv += [env["image"], "bash", "-c", script]
-    if _ACTIVE_JOB_EVENT_WRITER is not None:
+    event_writer = current_job_event_writer()
+    if event_writer is not None:
         validate_job_event_destination(
-            str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
+            str(event_writer.path), worktree=worktree, repo=repo,
             mount_sources=mount_flag_sources(argv))
     return argv
 
@@ -18427,12 +18434,13 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
              f"but {worktree} is now at {head} — run-gate will not attach "
              f"that run to this commit, and will not start a second "
              f"container for the same lane. {remedy}")
-    if _ACTIVE_JOB_EVENT_WRITER is not None:
+    event_writer = current_job_event_writer()
+    if event_writer is not None:
         container_id = state.get("id") if isinstance(state, dict) else None
         mount_sources = inspect_container_mount_sources(
             docker, container_id or name)
         validate_job_event_destination(
-            str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
+            str(event_writer.path), worktree=worktree, repo=repo,
             mount_sources=mount_sources)
         if container_id and recorded_id == container_id:
             image_id, image_error = inspect_container_image_id(
@@ -18764,7 +18772,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         else f"this lane's mount set (including ${EXTRA_MOUNT_ENV_VAR})")
     judge_flags = judge_mount_flags(lane, worktree)
     mounts += judge_flags
-    event_writer = _ACTIVE_JOB_EVENT_WRITER
+    event_writer = current_job_event_writer()
     if event_writer is not None:
         validate_job_event_destination(
             str(event_writer.path), worktree=worktree, repo=repo,
@@ -19242,7 +19250,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         fail_infra(f"docker ps failed for exec-mode preflight: {detail[0]}")
     names = set(running.stdout.strip().splitlines())
     if name not in names:
-        if _ACTIVE_JOB_EVENT_WRITER is not None:
+        if current_job_event_writer() is not None:
             emit_lane_started(
                 None, None, False, reason="exec-environment-not-running",
                 lane=lane_name)
@@ -19250,7 +19258,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             "environment-down",
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
-    if _ACTIVE_JOB_EVENT_WRITER is not None and not dry_run:
+    event_writer = current_job_event_writer()
+    if event_writer is not None and not dry_run:
         inspected = container_state(docker, name)
         container_id = inspected.get("id") if inspected else None
         if not container_id:
@@ -19258,7 +19267,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         mount_sources = inspect_container_mount_sources(
             docker, container_id or name)
         validate_job_event_destination(
-            str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
+            str(event_writer.path), worktree=worktree, repo=repo,
             mount_sources=mount_sources)
         if container_id:
             image_id, image_error = inspect_container_image_id(

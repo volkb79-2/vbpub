@@ -43173,8 +43173,10 @@ class TestJobEventOptionsAndWriter:
             run_gate.validate_job_event_destination(
                 str(mount / "events.jsonl"), mount_sources=[str(mount)])
 
+    @pytest.mark.parametrize("writer_slot", ["active", "nested"])
     def test_probe_mounts_are_checked_before_probe_start(self, tmp_path,
-                                                          monkeypatch):
+                                                          monkeypatch,
+                                                          writer_slot):
         repo = tmp_path / "repo"
         repo.mkdir()
         mount = tmp_path / "mounted"
@@ -43182,8 +43184,12 @@ class TestJobEventOptionsAndWriter:
         event_file = mount / "events.jsonl"
         writer = run_gate.open_job_event_writer(
             str(event_file), "job-probe", "suite")
-        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
-        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = (
+            writer if writer_slot == "active" else None)
+        run_gate._NESTED_JOB_EVENT_WRITER = (
+            writer if writer_slot == "nested" else None)
         monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
                             lambda *_args, **_kwargs: None)
         monkeypatch.setattr(run_gate, "extra_mount_flags",
@@ -43200,7 +43206,8 @@ class TestJobEventOptionsAndWriter:
                     "docker", {"mode": "ephemeral", "image": "test"},
                     "ci", repo, repo, "test", "slice", "true")
         finally:
-            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
             writer.close()
 
     def test_event_flags_refuse_dry_run_and_non_lane_verbs(self, tmp_path,
@@ -43550,6 +43557,13 @@ class TestJobEventContainerEvents:
         assert [(event["event"], event["lane"]) for event in events] == [
             ("lane-started", "outer"), ("lane-started", "member"),
             ("lane-verdict", "outer")]
+        [outer_start, member_start, _verdict] = events
+        assert outer_start["container_id"] is None
+        assert outer_start["image_id"] is None
+        assert outer_start["reason"] == "composite-sequence-has-no-container"
+        assert member_start["container_id"] is None
+        assert member_start["image_id"] is None
+        assert member_start["reason"] == "bare-host-lane-has-no-container"
         assert not any(event["lane"] == "member"
                        and event["event"] == "lane-verdict"
                        for event in events)

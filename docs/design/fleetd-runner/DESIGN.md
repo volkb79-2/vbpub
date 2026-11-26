@@ -159,20 +159,50 @@ lane verdict. The former preflight exit 4 maps to 2 so 4 has one meaning. OOM is
 this job's containers, never a whole-slice counter. Record preflight `4`→`2` and prerequisite
 `76`→`73` in `fleetd/CHANGES.md`.
 
-**The event run-gate emits (its container id).** run-gate already writes the container it
-started into `.run-gate/inflight/<lane>.json` (`run-gate-project/run_gate.py:7350-7399`) and its
-id is readable with one inspect (`run-gate-project/run_gate.py:7601-7665`; a name taken by another
-container is detected at `run-gate-project/run_gate.py:17980-17990`). P-fd-05 adds one machine-readable event on a separate
-inherited file descriptor, before lane output begins; it is written outside the checkout and
-cannot be forged by test output:
+**The host-owned event file run-gate emits.** run-gate already writes the container it started
+into `.run-gate/inflight/<lane>.json` (`run-gate-project/run_gate.py:7350-7399`) and its id is
+readable with one inspect (`run-gate-project/run_gate.py:7601-7665`; a name taken by another
+container is detected at `run-gate-project/run_gate.py:17980-17990`). P-fd-05 passes the host
+process two explicit, paired flags: `--event-file <absolute-path>` and `--job-id <id>`. There is
+no default or environment fallback. The job id matches
+`^[A-Za-z0-9][A-Za-z0-9._-]*$`, at most 128 characters. Its parent directory must already exist
+and be outside the judged checkout, repository, and every host path mounted into the lane or its
+environment probes;
+the final component is not a symlink and, if it exists, is a regular file. Run-Gate opens it
+append-only, without following the final symlink, at mode `0600`. The file is never mounted into a
+lane container. An inherited descriptor is not used: it cannot cross `docker exec`.
 
-```
-run-gate: event lane-started lane=<lane> container=<id> image=<image id> api=fleet-host-agent/1 job=<job_id>
+Each line is one compact JSON object written with one write and flushed to disk. Every object has
+`api: "fleet-host-agent/1"`, `event`, `job_id`, and `lane`. `lane-started` adds Docker's full
+`container_id`, full `image_id`, and `adopted`; it is written before lane output is relayed, once
+per container used to execute the judged lane. Read-only preflight probes are not lane starts,
+but their mounts are included in the event-path exclusion check. A lane or environment that has
+no container writes null IDs and a `reason`. A reused name whose container id does not match the
+inflight record is not reported as that run's container. Nested composite members, retries, and
+worker dispatches receive no event flags or file; their start facts are forwarded to the
+parent-owned event sink, which writes their `lane-started` lines.
+
+```jsonl
+{"api":"fleet-host-agent/1","event":"lane-started","job_id":"fleetd-42","lane":"suite","container_id":"<full Docker id>","image_id":"sha256:<image digest>","adopted":false}
+{"api":"fleet-host-agent/1","event":"lane-verdict","job_id":"fleetd-42","lane":"suite","verdict":"FAIL","exit_code":1,"lane_exit_code":7}
 ```
 
-The agent accepts the event only after `docker inspect` confirms the run-gate labels and this
-job's checkout path component. The event identifies the container for thrashguard registration;
-it is not a verdict. Rejected: parsing shared lane output or matching `docker ps` by name.
+The single normal `finish` path writes `lane-verdict` after printing the anchored
+`run-gate: lane '<lane>' verdict ...` line. It carries `verdict`, `exit_code` (the Run-Gate
+process status), and `lane_exit_code` (the raw lane status printed in the summary, or null). With
+`--json`, the result object stays on stdout and the anchored summary is printed to stderr before
+the event. A run that never reaches `finish` has no verdict event. A write failure after lane
+start emits one warning without changing the verdict or process status. Without both flags,
+lane behavior and output are byte-identical.
+
+The agent accepts a verdict only when the event, the last lane-log line beginning with the exact
+anchored prefix, and the process status agree: event `exit_code` equals the process status, event
+verdict equals the anchored verdict, event `lane_exit_code` equals the summary's raw `exit_code`
+(or both are null), and the process status matches Run-Gate's closed verdict table. Missing
+verdict events are never PASS. The agent accepts a container id only after `docker inspect`
+confirms the run-gate labels and this job's checkout path. The start event identifies the
+container for thrashguard registration. Rejected: parsing shared lane output or matching
+`docker ps` by name.
 
 ## 3. Placement and admission
 
@@ -394,11 +424,12 @@ run never silently discards its last writes.
 
 ### 4.4 Bind the verdict to the commit
 
-The agent verifies four facts: request `sha`; a host-written checkout line after `rev-parse HEAD`
-equals that sha (`scripts/netcup/runner/remote-gate.py:682-685`); the anchored verdict line for the exact lane; and the
-separate start event's container id, confirmed by `docker inspect` labels and checkout path. It
-writes `result.json` from those facts only. A missing or mismatched fact is transport/refusal,
-never PASS. Rejected: binding to the client's `--commit` echo (`scripts/controller/remote-gate.sh:283-285`).
+The agent verifies request `sha`; a host-written checkout line after `rev-parse HEAD` equals that
+sha (`scripts/netcup/runner/remote-gate.py:682-685`); the `lane-verdict` event, exact-lane anchored
+summary, and Run-Gate process status agree; and the `lane-started` container id is confirmed by
+`docker inspect` labels and the checkout path. It writes `result.json` from those facts only. A
+missing or mismatched fact is transport/refusal, never PASS. Rejected: binding to the client's
+`--commit` echo (`scripts/controller/remote-gate.sh:283-285`).
 
 ### 4.5 Host loss, agent restart and reboot
 
@@ -505,9 +536,9 @@ ciu-direct uses the same host queue.
 
 ## 7. Migration, packages, parity
 
-**Migration order.** Ship run-gate's separate-fd event, anchored verdict, OOM score and freeze-aware stall watch (RG-321 first), then hostobs event APIs and persistent cockpit `MemoryLow`. Ship the host agent with StateDirectory, tmpfiles socket directory, client group and devcontainer mount; enable after the socket lifecycle probe. Then package H switches local `run-gate` to lease admission; next switch `remote-gate.py`, `dev`, fleetd campaigns and the dr runner. Keep legacy paths for rollback; remove slots/workroot/snapshot after every client migrates. ciu-direct uses runner queue when installed, else own admission (D12).
+**Migration order.** Ship run-gate's host-owned event file, verdict agreement, OOM score and freeze-aware stall watch (RG-321 first), then hostobs event APIs and persistent cockpit `MemoryLow`. Ship the host agent with StateDirectory, tmpfiles socket directory, client group and devcontainer mount; enable after the socket lifecycle probe. Then package H switches local `run-gate` to lease admission; next switch `remote-gate.py`, `dev`, fleetd campaigns and the dr runner. Keep legacy paths for rollback; remove slots/workroot/snapshot after every client migrates. ciu-direct uses runner queue when installed, else own admission (D12).
 
-**Parity rows.** Each must fail independently: (a) unique exit codes (preflight 4→2, prerequisite 76→73, budget 4, OOM 76, store 77/78, queue 75); (b) anchored lane verdict/result rejects test-output substrings; (c) cancel stops before collecting every flushed record; (d) expired wait never starts later; (e) aged reservation starts on first feasible admission; (f) unreadable PSI/meminfo refuse (`scripts/netcup/tests/test_remote_gate_repos.py:597-600`; `scripts/netcup/tests/test_remote_gate_memory.py:91`); (g) footprint/slice/disk limits; (h) event id matches labels and checkout; (i) per-job OOM and adjustment 500; (j) identity/path/argv/artifact validation; (k) bundle replay and sha binding (`scripts/netcup/tests/test_remote_gate.py:227,322`); (l) restart/dead-executor/reboot preserve charge through cleanup; (m) socket identity/no shell/restart/missing-socket behavior; (n) lease under `queue.lock`, N4 refusal, no start without bind ack, pending-client death, unique-name collision, reconnect/restart retention through Docker-confirmed disappearance.
+**Parity rows.** Each must fail independently: (a) unique exit codes (preflight 4→2, prerequisite 76→73, budget 4, OOM 76, store 77/78, queue 75); (b) forge a perfect anchored PASS line in lane output and prove the event/process still report the real FAIL; separately exit before `finish` with a forged line and prove no `lane-verdict` event exists; (c) cancel stops before collecting every flushed record; (d) expired wait never starts later; (e) aged reservation starts on first feasible admission; (f) unreadable PSI/meminfo refuse (`scripts/netcup/tests/test_remote_gate_repos.py:597-600`; `scripts/netcup/tests/test_remote_gate_memory.py:91`); (g) footprint/slice/disk limits; (h) the emitted container and image ids equal Docker's report for the labeled container, and a same-named foreign container is never emitted; consumer acceptance also checks labels and checkout; (i) per-job OOM and adjustment 500; (j) identity/path/argv/artifact validation; (k) bundle replay and sha binding (`scripts/netcup/tests/test_remote_gate.py:227,322`); (l) restart/dead-executor/reboot preserve charge through cleanup; (m) socket identity/no shell/restart/missing-socket behavior; (n) lease under `queue.lock`, N4 refusal, no start without bind ack, pending-client death, unique-name collision, reconnect/restart retention through Docker-confirmed disappearance.
 Contract gates also cover same-digest idempotence and major-version refusal.
 
 **Rollback.** Each client owns one `legacy|agent` flag. The agent keeps legacy jobs charged during overlap. Downgrade within a major is safe because executors run in separate scopes; major mismatches refuse and minor additions are capability-advertised. Flag and legacy-path removal is separate.
@@ -516,7 +547,7 @@ Contract gates also cover same-digest idempotence and major-version refusal.
 
 | package | size | gate |
 |---|---|---|
-| A. run-gate event fd, anchored verdict, OOM adjustment, frozen-time stall watch (RG-321 first) | M | run-gate lane contract gate |
+| A. run-gate host-owned event file and verdict agreement, OOM adjustment, frozen-time stall watch (RG-321 first) | M | run-gate lane contract gate |
 | B. hostobs event APIs + host-setup persistent `MemoryLow` | M | hostobs contract gate; host setup render gate |
 | C. `host-facts/2`, host service/state, socket group/mount, scopes/book, forced command, `have`/`put` | M-L | fleetd gate + socket lifecycle probe; enrollment depends on CIU-218 |
 | D. result ranges and remote-gate client switch; retain legacy slots/snapshot | M | remote-gate parity rows + live lane |
@@ -537,8 +568,9 @@ No P-fd-05 questions remain open: Q1, Q2, Q6, N1 and N3–N5 are in §§0 and 3;
 
 ## Known follow-ups
 
-- FU1 (A): event channel across `docker exec`.
-- FU2 (A/C): verdict and exit consistency after a forged line.
+- **FU1/FU2 closed by package A2.** The host-owned file crosses the `docker exec` boundary;
+  verdict acceptance now requires agreement between Run-Gate's event, anchored summary, and
+  process status, including the no-`finish` case.
 - FU3 (A): keep thrashguard registration with one owner.
 - FU4 (C): resolve exit-code 73 collision.
 - FU5 (C+F): carry fleetd campaign candidate lists.
