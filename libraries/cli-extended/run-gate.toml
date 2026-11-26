@@ -84,4 +84,12 @@ argv = [
 ]
 clean_tree = false
 budget = "760m"
+stall_timeout = "760m"
+# RG-320/H1: SILENT BY CONSTRUCTION across a nested R2 assay member. This
+# wrapper relays its members' stdout, but an assay mutation candidate writes
+# nothing but a FILE record (assay/src/assay/mutation.py ProgressStream; run-gate
+# prints `progress <lane>` only when that file MOVES), so one candidate running
+# longer than 300 s leaves this lane's stdout empty for that whole window
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 can never fail a
+# wrapper main would let finish. No silence bound has been measured yet.
 # No [lanes.gate.resources]: this bare-host lane only orchestrates the nested lanes, which carry their own memory/pids caps.

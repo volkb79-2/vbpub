@@ -51,6 +51,12 @@ argv = [
 ]
 clean_tree = false
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION — `assay.cli run` writes candidate progress
+# to .assay/r2-progress.jsonl, a file only an assay-kind lane reads, so this
+# lane's stdout carries nothing until the summary and one candidate can run
+# past 300 s unrecorded (R-40i / RG-326). Declared EQUAL to the lane budget;
+# no silence bound measured yet.
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 
 # Proves the gate REJECTS known-bad code — each canary breaks exactly one
@@ -80,6 +86,10 @@ argv = [
 ]
 clean_tree = false
 budget = "1h"
+stall_timeout = "1h"
+# RG-320/H1: SILENT BY CONSTRUCTION — nested-wrapper over the Assay `r2` lane
+# above (file progress, no stdout), so its silent window inherits that lane's
+# unbounded candidate window (R-40i / RG-326). Declared EQUAL to the budget.
 
 [lanes.r2.resources]
 memory = "2g"

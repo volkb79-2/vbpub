@@ -336,6 +336,14 @@ clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The conjunction includes the Assay R0/R1/R3 lane (budget: [lanes.assay])
 # plus the 7h tag-based R2 mutation.
 budget = "14h"
+stall_timeout = "14h"
+# RG-320/H1: SILENT BY CONSTRUCTION across a nested R2 assay member. This
+# wrapper relays its members' stdout, but an assay mutation candidate writes
+# nothing but a FILE record (assay/src/assay/mutation.py ProgressStream; run-gate
+# prints `progress <lane>` only when that file MOVES), so one candidate running
+# longer than 300 s leaves this lane's stdout empty for that whole window
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 can never fail a
+# wrapper main would let finish. No silence bound has been measured yet.
 
 # The release gate under the standing release rule (KI-79/KI-159; operator
 # decision 2026-11-18): R0/R1 (full line and branch coverage), R3 (canary) and

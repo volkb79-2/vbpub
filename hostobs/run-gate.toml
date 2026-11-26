@@ -161,6 +161,12 @@ exit "$rc"''',
 exit_map = { "0" = "PASS", "2" = "ERROR" }
 clean_tree = true
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION — this lane shells out to `assay.cli run
+# assay-r1`, which writes its own progress/heartbeat to the file
+# .assay/progress-assay-r1.jsonl; the lane's stdout then only carries the
+# verdict summary `cat`ed at the end. Declared EQUAL to the lane budget;
+# no silence bound has been measured yet (RG-326).
 artifacts = ["lcov.info", "cov-summary.json", ".assay/verdict-assay-r1.json"]
 
 # Assay Rust R2 (mutation, by ingesting cargo-mutants' report) over the CHANGED lines of the
@@ -245,6 +251,12 @@ clean_tree = true
 # (4h, the per-attempt bound, an estimate; the first real run sets the figure), so assay can
 # still write its structured BUDGET_EXCEEDED/LANE_TIMEOUT verdict before this hard limit.
 budget = "5h"
+stall_timeout = "5h"
+# RG-320/H1: SILENT BY CONSTRUCTION — `assay.cli run assay-r2` writes candidate
+# progress to .assay/progress-assay-r2.jsonl, a FILE this command lane never
+# reads, so its stdout is empty until the summary; one candidate can exceed
+# 300 s with no progress record (R-40i / RG-326). Declared EQUAL to the budget;
+# no silence bound has been measured yet.
 artifacts = [".assay/verdict-assay-r2.json"]
 
 # A hard container memory cap. Both first attempts (2026-11-18) ran this lane in a container with NO

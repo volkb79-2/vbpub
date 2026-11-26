@@ -51,6 +51,12 @@ argv = [
 ]
 clean_tree = false
 budget = "30m"
+stall_timeout = "30m"
+# RG-320/H1: SILENT BY CONSTRUCTION — this lane runs `assay.cli run` directly,
+# so candidate progress goes to .assay/r2-progress.jsonl (a FILE only an
+# assay-kind lane reads) and stdout stays empty until the final summary; one
+# candidate can exceed 300 s with no progress record (R-40i / RG-326).
+# Declared EQUAL to the lane budget; no silence bound measured yet.
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 [lanes.r2.resources]
 memory = "2g"
@@ -86,3 +92,8 @@ argv = [
 ]
 clean_tree = false
 budget = "1h"
+stall_timeout = "1h"
+# RG-320/H1: SILENT BY CONSTRUCTION — a wrapper over nested run-gate lanes,
+# including the Assay `r2` above whose progress is a file it never reads
+# (R-40i / RG-326). Declared EQUAL to the lane budget; no silence bound
+# measured yet.

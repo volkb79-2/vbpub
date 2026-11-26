@@ -85,3 +85,11 @@ argv = [
 clean_tree = false
 # r0-r1 20m + wheel 10m + r2 245m = 275m (RG-307 raised r2 from 240m); 280m stays above the sum.
 budget = "280m"
+stall_timeout = "280m"
+# RG-320/H1: SILENT BY CONSTRUCTION across a nested R2 assay member. This
+# wrapper relays its members' stdout, but an assay mutation candidate writes
+# nothing but a FILE record (assay/src/assay/mutation.py ProgressStream; run-gate
+# prints `progress <lane>` only when that file MOVES), so one candidate running
+# longer than 300 s leaves this lane's stdout empty for that whole window
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 can never fail a
+# wrapper main would let finish. No silence bound has been measured yet.

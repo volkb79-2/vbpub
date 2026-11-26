@@ -28,6 +28,14 @@ argv = [
 ]
 clean_tree = false
 budget = "720m"
+stall_timeout = "720m"
+# RG-320/H1: SILENT BY CONSTRUCTION. This lane runs `assay.cli run` directly,
+# and Assay writes its candidate progress to a FILE (.assay/progress-r2.jsonl,
+# `ProgressStream` in assay/src/assay/mutation.py) that only an ASSAY-kind lane
+# reads: this command lane sees stdout, which carries nothing until the final
+# summary, and one mutation candidate can run well past 300 s with no progress
+# record (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 cannot
+# fail a lane main would let finish. No silence bound has been measured yet.
 artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 [lanes.r2.resources]
@@ -71,3 +79,10 @@ argv = [
 ]
 clean_tree = false
 budget = "750m"
+stall_timeout = "750m"
+# RG-320/H1: SILENT BY CONSTRUCTION. A wrapper over three nested run-gate
+# invocations; the nested `r2` member is the Assay lane above, whose progress
+# goes to a file this outer lane never reads, so the outer strip of stdout
+# silence inherits that lane's unbounded candidate window (R-40i / RG-326).
+# Declared EQUAL to this lane's budget, so P1 cannot fail it early. No silence
+# bound has been measured yet.

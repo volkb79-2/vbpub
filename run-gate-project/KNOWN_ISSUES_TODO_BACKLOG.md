@@ -10088,3 +10088,72 @@ removed here and `budget = "unbounded"` is still refused (that is P2). Severity:
   belongs to P4.
 
 Source: vbpub-core, P1 of `docs/design/no-time-budgets/DESIGN.md`.
+
+## RG-326 — lanes that are silent by construction need a real progress signal
+
+**State:** open · **Severity:** medium · **Owner:** - · **Links:** RG-320, docs/design/no-time-budgets/DESIGN.md
+
+**Problem.** RG-320 armed a silence bound on every watchable lane kind, but a
+watch can only judge a signal that moves. Several lanes in this estate are silent
+BY CONSTRUCTION for the whole duration of one step: their script captures the
+interesting subprocess's output itself (`subprocess.run(..., capture_output=True)`
+around `docker load` / `docker build`, `docker run -d` + `docker wait` +
+`docker logs`, a shell `out="$(...)"` around a canary's pytest call), or the
+progress they emit goes to a FILE that only an `assay`-kind lane reads while the
+lane itself is `kind = "command"`. For those lanes the only sound bound is their
+own `budget`, which is why each of them now declares `stall_timeout` EQUAL to its
+`budget` (`mdt-cockpit` `oci-push`/`image-runtime`/`image-runtime-built`/
+`vm-system`, `ciu` `enroll`/`ciu-run-os-integration`,
+`shared-ramdisk-depot-manager` `unit`/`coverage`, `cgprofile` `r0-r1`/`gate`,
+`augeaswrap`-family r2 lanes, `wings-patchstack` `wings`/`coverage`, the
+`gate`/`gate-full` wrappers, and others — each `run-gate.toml` comment names the
+exact silent step and says that no silence bound has been measured). An equal-to-
+budget bound cannot fail a lane `main` would let finish, but it also does not
+detect a wedge: it converts "no progress signal" into "no protection". A false
+STALL cannot happen; a real hang is not caught either.
+
+**Wanted.** A real progress signal per lane, so the bound can be tightened below
+the budget honestly:
+- `assay` run from a `kind = "command"` lane: either run it as `kind = "assay"`
+  (so run-gate reads the progress file it already writes), or give the lane a
+  heartbeat on stdout — Assay's `ProgressStream` already records
+  `expect_next_event_within_s` per candidate, which is the fact a bound needs.
+- the `docker load`/`docker build` steps: stream instead of capture
+  (`capture_output=False`), or print a per-step marker from the driver before
+  each import, so the lane's own stdout moves.
+- the detached `docker wait` gates: `docker logs -f` in the background, or a
+  per-suite marker printed as each target finishes.
+- the `out="$(...)"` canary pattern: `tee` through a file and print the
+  selector's name before each canary.
+  Then each lane's `stall_timeout` can be measured and lowered; until then its
+  comment stays true and its bound stays equal to its budget.
+
+Source: H1 of the RG-320 fix round 1 (review `ntb-p1-review-r1.md`, controller
+ruling H1); every claim above was checked in the code that produces the output,
+not inferred from lane names.
+
+## RG-327 — a STALLED `exec` lane leaves the in-container command running
+
+**State:** open · **Severity:** medium · **Owner:** - · **Links:** RG-320, RG-41, run-gate-project/run_gate.py (exec stall path)
+
+**Problem.** A stall on an `exec` lane terminates the `docker exec` CLIENT
+process group. `docker exec` disconnecting does not reliably stop the
+in-container child (`run_gate.py` says so at its own exec-spawn comment, and the
+same fact is why the container path calls `docker kill`), so a stalled exec lane
+reports `STALLED`/`ERROR` while the suite it started keeps consuming the shared
+persistent runner's CPU. Before RG-320 this path was reachable only for an assay
+lane's progress watch; RG-320 arms every `exec` command lane, so the exposure
+widened from a few lanes to all of them. The STALLED message now says the
+in-container command may still be running (one sentence, added in the RG-320 fix
+round), so the operator is not misled, but nothing stops the survivor.
+
+**Wanted.** On the exec stall path, ask the runner to stop the in-container child
+before/after terminating the client — e.g. a per-invocation `timeout` wrapper
+around the in-container command (the `budget` wrapper the lane already uses when
+it declares one), or a `docker exec <container> pkill -f <marker>` using a marker
+run-gate itself put on the command line, disclosed by name in the STALLED
+message. Do NOT kill by container: the exec target is SHARED between lanes.
+Failures of the stop attempt must be reported, never swallowed — a survivor that
+nobody noticed is the defect this item exists for.
+
+Source: L1 of the RG-320 fix round 1.

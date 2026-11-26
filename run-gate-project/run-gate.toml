@@ -175,3 +175,12 @@ clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The three sub-lane budgets add up to 70m (selftest 20m + assay-r1 35m + assay-r3 15m);
 # 75m keeps the wrapper above that sum (RG-307 raised assay-r1 from 30m to 35m).
 budget = "75m"
+stall_timeout = "75m"
+# RG-320/H1: SILENT BY CONSTRUCTION. Two of this wrapper's three members are
+# silent while they work: the nested `assay-r1` is an ASSAY lane whose progress
+# is a file only that nested run-gate reads, and `assay-r3` runs
+# tools/canary-run.sh, which captures each canary's pytest output into a shell
+# variable (`out="$(...)"`, canary-run.sh:88-89) so nothing reaches this lane's
+# stdout until the canary ends. Declared EQUAL to this lane's budget, so P1
+# cannot fail this wrapper where main would let it finish. No silence bound has
+# been measured yet; RG-326 tracks a real progress signal.

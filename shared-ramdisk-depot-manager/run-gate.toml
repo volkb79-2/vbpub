@@ -23,6 +23,13 @@ environment = "bare-host"
 argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "unit"]
 clean_tree = false
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION. tools/gate.sh:197-211 runs the suite
+# DETACHED (`docker run -d` -> `docker wait` -> `docker logs`): the verdict
+# comes from `docker wait`, so the lane's stdout carries nothing at all until
+# the suite is over. Declared EQUAL to this lane's budget, so a slow suite
+# cannot be reported STALLED. No silence bound has been measured yet; RG-326
+# tracks a real progress signal for it.
 
 # Changed-line coverage against $SRDM_COVERAGE_BASE (default main) — needs a
 # committed tree; gate.sh exits 3 (NO MEASUREMENT) rather than report a
@@ -32,6 +39,11 @@ kind = "command"
 environment = "bare-host"
 argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "coverage"]
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION — the same detached `docker run -d` ->
+# `docker wait` -> `docker logs` shape as `unit` above (tools/gate.sh:197-211),
+# with the go coverage run inside it writing nothing to this lane's stdout.
+# Declared EQUAL to this lane's budget. No silence bound measured yet; RG-326.
 
 [lanes.e2e]
 kind = "command"

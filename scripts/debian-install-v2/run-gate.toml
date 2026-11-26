@@ -81,6 +81,12 @@ clean_tree = false
 # 430m assay bound + 20m orchestration headroom = 450m here. Headroom, not a
 # measured need (see assay.toml).
 budget = "450m"
+stall_timeout = "450m"
+# RG-320/H1: SILENT BY CONSTRUCTION — `assay.cli run` writes candidate progress
+# to .assay/r2-progress.jsonl, a FILE only an assay-kind lane reads, so this
+# lane's stdout is empty until the final summary and a single mutation
+# candidate can run past 300 s with no progress record (R-40i / RG-326).
+# Declared EQUAL to the lane budget; no silence bound measured yet.
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 
 # Proves the gate REJECTS known-bad code — each canary breaks exactly one
@@ -147,6 +153,15 @@ argv = [
 ]
 clean_tree = false
 budget = "1h"
+stall_timeout = "1h"
+# RG-320/H1: SILENT BY CONSTRUCTION. This wrapper relays its nested lanes'
+# stdout, and the nested `r3` member runs tools/canary-run.sh, which captures
+# each canary's pytest output into a shell variable (`out="$(...)"`,
+# canary-run.sh:88-89) and prints nothing while that selector runs. It declares
+# no bound of its own here only because the per-canary window is one test; the
+# WHOLE-lane bound would fail it mid-canary otherwise. Declared EQUAL to the
+# lane budget, so P1 cannot fail this wrapper where main would finish it. No
+# silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 [lanes.r2.resources]
 memory = "2g"

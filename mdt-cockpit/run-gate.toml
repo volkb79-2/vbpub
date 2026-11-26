@@ -89,6 +89,15 @@ argv = ["python3", "scripts/run_oci_push_lane.py", "--target", "trixie-py314-php
 clean_tree = true
 required_env = ["CGROUP_PARENT_DEV_GATES", "BUILDKIT_HOST"]
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION. The `docker load` in
+# scripts/run_oci_push_lane.py:import_image runs under capture_output=True, so
+# docker's own progress and the exported bytes never reach this lane's stdout:
+# the lane writes nothing at all between "start" and "load finished", and a
+# multi-gigabyte OCI layout can exceed 300 s on a loaded host entirely
+# normally. Declared EQUAL to this lane's own budget above, so the silence
+# bound can never end a lane main would have let finish. No silence bound has
+# been measured yet; RG-326 tracks giving this lane a real progress signal.
 
 [lanes.assay-full]
 kind = "assay"
@@ -116,6 +125,13 @@ argv = ["bash", "host-setup/tests/run-vm-acceptance.sh"]
 clean_tree = true
 required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER", "BUILDX_CONFIG", "DOCKER_HOST"]
 budget = "155m"
+stall_timeout = "155m"
+# RG-320/H1: SILENT BY CONSTRUCTION. The harness prints one banner per phase and
+# nothing at all WHILE the guest boots and systemd comes up: run_with_timeout
+# 15m prepare-base, 2m start, 10m wait (run-vm-acceptance.sh:46-48) are 10-15
+# minute silent windows, five times the 300 s auto bound. Declared EQUAL to
+# this lane's own budget above, so a slow boot cannot be reported STALLED.
+# No silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 # Runtime acceptance of the BUILT images (MDT-010, MDTC-01 D10). The driver only
 # orchestrates (the vm-system precedent): the subject runs in its own containers
@@ -140,6 +156,14 @@ argv = ["python3", "scripts/run_image_runtime_lane.py", "--native", "trixie-py31
 clean_tree = true
 required_env = ["CGROUP_PARENT_DEV_GATES"]
 budget = "75m"
+stall_timeout = "75m"
+# RG-320/H1: SILENT BY CONSTRUCTION. scripts/run_image_runtime_lane.py's main()
+# calls import_image() twice (lines 59-61) before the runtime argv runs, and
+# import_image (oci/…, same helper oci-push uses) runs `docker load` under
+# capture_output=True: no output from this lane until both imports finish.
+# Declared EQUAL to this lane's own budget above, so a slow import of the two
+# built layouts cannot be reported STALLED. No silence bound has been measured
+# yet; RG-326 tracks a real progress signal for it.
 
 [lanes.image-runtime]
 kind = "command"
@@ -148,3 +172,11 @@ argv = ["python3", "-m", "unittest", "discover", "-s", "tests/runtime", "-p", "t
 clean_tree = true
 required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC"]
 budget = "60m"
+stall_timeout = "60m"
+# RG-320/H1: SILENT BY CONSTRUCTION. Every docker call in the harness these
+# tests use (tests/runtime/harness.py:_docker, line ~137) is subprocess.run(...,
+# capture_output=True) with GENEROUS_TIMEOUT = 600 s (harness.py:83), so ONE
+# scenario can keep this lane's stdout empty for up to 600 s — beyond the 300 s
+# auto bound. Declared EQUAL to this lane's own budget above, so a slow but
+# healthy scenario cannot be reported STALLED. No silence bound has been
+# measured yet; RG-326 tracks a real progress signal for the harness.
