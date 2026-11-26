@@ -212,6 +212,14 @@ pub fn parse(text: &str) -> Result<Pressure, String> {
     Ok(Pressure { some, full })
 }
 
+/// Parse an `avg10`-shaped decimal (`3`, `3.0`, `3.42`) into hundredths.
+///
+/// Shared with the config reader so `trigger_avg10 = 3.00` and the kernel's own
+/// `avg10=3.00` are compared in the same units, by the same code.
+pub fn parse_avg10_public(text: &str) -> Result<u32, String> {
+    parse_avg10(text)
+}
+
 fn parse_avg10(text: &str) -> Result<u32, String> {
     let (whole, fraction) = match text.split_once('.') {
         Some((whole, fraction)) => (whole, fraction),

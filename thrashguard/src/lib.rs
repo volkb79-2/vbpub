@@ -17,6 +17,8 @@
 #![warn(missing_docs)]
 
 pub mod clock;
+pub mod config;
+pub mod hysteresis;
 pub mod json;
 pub mod psi;
 
