@@ -43880,3 +43880,161 @@ class TestOutputTeeJoinTimeoutArgument:
         monkeypatch.setattr(run_gate, "OUTPUT_DRAIN_TIMEOUT_SECONDS", 4.0)
         assert tee.join() is False
         assert tee.thread.timeouts == [3.0, 4.0]
+
+
+class TestLogStreamWatchPressurePause:
+    """RG-320 (P1): `LogStreamWatch`'s AUTO bound pauses while the host is
+    under memory/IO pressure, credited at most `PRESSURE_PAUSE_MAX_SECONDS`
+    in total — the same rule `ProgressWatch` and `StreamWatch` already
+    follow, so a delayed `docker logs -f` line is not charged to the lane.
+
+    The pause is only ever credited for intervals the watch OBSERVED: it
+    learns about pressure when it polls, and nothing earlier, so the one
+    clock a test advances is the one the pause is measured against."""
+
+    @pytest.fixture
+    def make_watch(self):
+        created = []
+
+        def _factory(stall=300, *, auto_bound=True, psi=None, reader=None):
+            clock = FakeClock()
+            proc = FakeContainerProc()
+            pressure_reader = reader if reader is not None else (
+                (lambda: psi[0]) if psi is not None else None)
+            watch = run_gate.LogStreamWatch(
+                proc, stall, "suite", clock, pressure_reader,
+                auto_bound=auto_bound)
+            created.append((watch, proc.stdout, clock, psi))
+            return watch, proc.stdout, clock, psi
+
+        yield _factory
+        for watch, stream, _clock, _psi in created:
+            stream.close()
+            watch.join(timeout=2.0)
+
+    def test_an_open_pause_credits_the_silence_it_covers(self, make_watch):
+        psi = [6.0]
+        watch, stream, clock, _psi = make_watch(psi=psi)
+        stream.push("work started")
+        assert _wait_until(lambda: watch._last_line == "work started")
+        assert watch.poll() is None            # pressure seen: pause OPENS here
+        assert watch._pause_started == clock.t
+        clock.advance(1200)                    # open pause, far past the bound
+        assert watch.poll() is None            # still open; nothing charged yet
+        psi[0] = 0.0
+        assert watch.poll() is None            # pause CLOSES: 1200s credited…
+        assert watch._paused_total == 1200.0   # …and recorded as closed
+        assert watch._pause_started is None
+        clock.advance(299)
+        assert watch.poll() is None            # one second short of the bound
+        clock.advance(2)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "has printed nothing for 301s" in stalled
+        assert "auto stall bound 300s" in stalled
+
+    def test_the_credit_is_capped_so_a_wedged_lane_still_stalls(self,
+                                                                 make_watch):
+        """A permanently loaded host must not shield a genuinely wedged lane
+        forever: only `PRESSURE_PAUSE_MAX_SECONDS` of pressure is ever
+        credited. The pause has to be OBSERVED before the advance for the
+        cap to be measurable at all (the M4 lesson one watch over)."""
+        cap = run_gate.PRESSURE_PAUSE_MAX_SECONDS
+        psi = [7.0]
+        watch, stream, clock, _psi = make_watch(psi=psi)
+        stream.push("first and last line")
+        assert _wait_until(lambda: watch._last_line == "first and last line")
+        assert watch.poll() is None        # pressure seen: pause opens HERE
+        clock.advance(cap / 2)
+        assert watch.poll() is None        # open; elapsed == the credit so far
+        clock.advance(cap / 2)
+        assert watch.poll() is None        # elapsed == cap; age still 0
+        clock.advance(cap)                 # three caps of pressure observed…
+        stalled = watch.poll()
+        assert stalled is not None         # …but only `cap` of it credited
+        assert f"has printed nothing for {int(cap)}s" in stalled
+
+    def test_a_declared_bound_is_never_paused(self, make_watch):
+        """The operator's own `stall_timeout` is not a guess, so host
+        contention never moves it: the pause is an AUTO-bound-only credit."""
+        psi = [9.0]
+        watch, stream, clock, _psi = make_watch(psi=psi, auto_bound=False)
+        stream.push("line")
+        assert _wait_until(lambda: watch._last_line == "line")
+        assert watch._pause_started is None    # never armed
+        clock.advance(901)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "stall_timeout 300s" in stalled
+
+    def test_a_broken_pressure_reader_is_unknown_not_high(self, make_watch):
+        def boom():
+            raise RuntimeError("planted PSI read failure")
+
+        watch, stream, _clock, _psi = make_watch(reader=boom)
+        assert watch._pressure_high() is False
+        # …and "cannot tell" neither opens nor closes a pause.
+        stream.push("line")
+        assert _wait_until(lambda: watch._last_line == "line")
+        assert watch.poll() is None
+        assert watch._pause_started is None
+        assert watch._paused_total == 0.0
+
+
+class TestPrintLaneBoundsCompositionAndUnknownSignal:
+    """RG-320 (P1): the two disclosures that are NOT a lane's own bound.
+
+    A sequence lane is a composition — its members carry the watches — so the
+    line either says `stall_timeout` is inert there (when one was declared and
+    a reader would otherwise expect it to bite) or says nothing at all. And a
+    lane whose signal this invocation cannot resolve gets a line that names
+    the BOUND but never wears a plausible stream name (M2)."""
+
+    def test_a_sequence_lane_declaring_a_bound_says_where_it_does_not_apply(
+            self, capsys):
+        run_gate.print_lane_bounds({"kind": "sequence", "stall_timeout": "15m",
+                                    "members": ["a", "b"]})
+        out = capsys.readouterr().out
+        assert "stall_timeout is inert on a sequence lane" in out
+        assert "each member carries its own watch" in out
+        # It never claims a bound of its own: the inert sentence is the whole
+        # disclosure for this lane.
+        assert "stall bound" not in out
+
+    def test_a_sequence_lane_declaring_nothing_prints_no_stall_line(
+            self, capsys):
+        run_gate.print_lane_bounds({"kind": "sequence", "members": ["a"]})
+        out = capsys.readouterr().out
+        assert "stall_timeout" not in out
+        assert "stall bound" not in out
+
+    def test_a_hard_budget_is_still_disclosed_on_a_sequence_lane(self,
+                                                                 capsys):
+        """The early return is about the STALL bound alone; the budget line
+        above it is a different fact and must survive."""
+        run_gate.print_lane_bounds({"kind": "sequence", "budget": "90m",
+                                    "stall_timeout": "15m"})
+        out = capsys.readouterr().out
+        assert "budget 90m (hard limit" in out
+        assert "stall_timeout is inert on a sequence lane" in out
+
+    def test_an_unresolvable_signal_names_the_bound_not_a_stream(self, capsys):
+        """M2: no `command_signal` and no stamped `_environment_mode` means
+        this invocation genuinely cannot tell which stream judges the lane.
+        The line still discloses the derived bound, and says the signal is
+        unresolvable rather than naming a plausible one."""
+        run_gate.print_lane_bounds({"kind": "command", "argv": ["true"]})
+        out = capsys.readouterr().out
+        assert "signal not resolvable for this lane" in out
+        assert "no stall_timeout is declared" in out
+        assert "stall bound 300s" in out
+        # Not the two named-stream sentences, either.
+        assert "is watched and the lane is stopped only if it goes silent" \
+            not in out
+
+    def test_the_unknown_signal_line_still_names_the_owning_client(
+            self, capsys):
+        run_gate.print_lane_bounds({"kind": "command"}, owner_pid=4242)
+        out = capsys.readouterr().out
+        assert "signal not resolvable for this lane" in out
+        assert "enforced by the owning client, pid 4242" in out
