@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import math
 import fcntl
+import hashlib
 import json
 import os
 import re
 import tempfile
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Generic, Iterable, Mapping, TypeVar, cast
 
@@ -25,6 +27,7 @@ MAX_JOB_ID_LENGTH = 128
 JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 GROUP_RE = JOB_ID_RE
 PSI_MEMORY_FULL_REFUSE_AVG10_PCT = 3.0
+QUEUE_RECHECK_S = 0.25
 
 
 class ExitCode:
@@ -476,6 +479,103 @@ def _read_json_record(path: Path, *, expected_id: str) -> dict[str, object]:
     return value
 
 
+def _read_waiter_record(path: Path, *, expected_id: str) -> dict[str, object]:
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("waiter is not a regular file")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AdmissionError(
+            ExitCode.QUEUED_WITHDRAWN,
+            f"waiting record {path.name!r} is unreadable; it remains reserved: {exc}",
+        ) from exc
+    if not isinstance(value, dict) or value.get("job_id") != expected_id:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"waiting record {path.name!r} is malformed; it remains reserved")
+    group = value.get("group")
+    digest = value.get("digest")
+    priority = value.get("priority")
+    requested_priority = value.get("requested_priority")
+    footprint = value.get("footprint")
+    if not isinstance(group, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"waiting record {path.name!r} has invalid identity; it remains reserved")
+    if priority not in PRIORITIES or requested_priority not in PRIORITIES or footprint not in FOOTPRINTS:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"waiting record {path.name!r} has invalid policy; it remains reserved")
+    if value.get("state") != "waiting" or not isinstance(value.get("cancelled"), bool):
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"waiting record {path.name!r} has invalid state; it remains reserved")
+    record_kind = value.get("record_kind", "job")
+    if record_kind not in {"job", "lease"}:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"waiting record {path.name!r} has invalid record type; it remains reserved")
+    try:
+        cores = _nonnegative_number(value.get("planned_cores"), "waiting.planned_cores")
+        submitted_at = _nonnegative_number(value.get("submitted_at"), "waiting.submitted_at")
+        if cores == 0:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "waiting.planned_cores must be positive")
+    except AdmissionError as exc:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"waiting record {path.name!r} is invalid; it remains reserved: {exc.reason}") from exc
+    value["planned_cores"] = cores
+    value["submitted_at"] = submitted_at
+    value["record_kind"] = record_kind
+    return value
+
+
+def _read_lease_record(path: Path, *, expected_id: str) -> dict[str, object]:
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("lease is not a regular file")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AdmissionError(
+            ExitCode.QUEUED_WITHDRAWN,
+            f"lease record {path.name!r} is unreadable; its charge is retained: {exc}",
+        ) from exc
+    if not isinstance(value, dict) or value.get("lease_id") != expected_id:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"lease record {path.name!r} is malformed; its charge is retained")
+    group = value.get("group")
+    digest = value.get("digest")
+    name = value.get("container_name")
+    priority = value.get("priority")
+    footprint = value.get("footprint")
+    state = value.get("state")
+    if not isinstance(group, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"lease record {path.name!r} has invalid identity; its charge is retained")
+    if not isinstance(name, str) or not name or priority not in PRIORITIES or footprint not in FOOTPRINTS:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"lease record {path.name!r} has invalid policy; its charge is retained")
+    if state not in {"pending", "bound", "tombstone"} or not isinstance(value.get("released"), bool):
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"lease record {path.name!r} has invalid state; its charge is retained")
+    container_id = value.get("container_id")
+    if container_id is not None and (not isinstance(container_id, str) or not container_id):
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"lease record {path.name!r} has invalid container id; its charge is retained")
+    if state == "bound" and container_id is None:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"lease record {path.name!r} is bound without an id; its charge is retained")
+    try:
+        charged = _positive_int(value.get("charged_bytes"), "lease.charged_bytes")
+        current = _nonnegative_int(value.get("current_warm_bytes"), "lease.current_warm_bytes")
+        cores = _nonnegative_number(value.get("planned_cores"), "lease.planned_cores")
+        created_at = _nonnegative_number(value.get("created_at"), "lease.created_at")
+        if cores == 0:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "lease.planned_cores must be positive")
+    except AdmissionError as exc:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                             f"lease record {path.name!r} is invalid; its charge is retained: {exc.reason}") from exc
+    value["charged_bytes"] = charged
+    value["current_warm_bytes"] = current
+    value["planned_cores"] = cores
+    value["created_at"] = created_at
+    return value
+
+
 def _open_lock(path: Path, *, blocking: bool) -> int | None:
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
@@ -535,7 +635,7 @@ def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
 @dataclass(frozen=True)
 class AdmissionResult:
     record: Mapping[str, object]
-    handle: AdmissionHandle | None
+    handle: AdmissionHandle | LeaseHandle | None
     existing: bool
 
 
@@ -566,10 +666,195 @@ class AdmissionHandle:
         self.close()
 
 
+class LeaseHandle:
+    """A pending/bound lease flock; close never releases its durable accounting record."""
+
+    def __init__(self, book: AdmissionBook, record: Mapping[str, object], lock_fd: int) -> None:
+        self._book = book
+        self.record = dict(record)
+        self._lock_fd: int | None = lock_fd
+
+    @property
+    def live(self) -> bool:
+        return self._lock_fd is not None
+
+    def bind(self, container_id: str) -> Mapping[str, object]:
+        return self._book.bind_lease(str(self.record["lease_id"]), str(self.record["group"]), container_id, self)
+
+    def close(self) -> None:
+        if self._lock_fd is not None:
+            fd, self._lock_fd = self._lock_fd, None
+            _unlock_close(fd)
+
+    def __enter__(self) -> LeaseHandle:
+        return self
+
+    def __exit__(self, _kind: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+
+@dataclass(frozen=True)
+class AdmissionResources:
+    planned_cores: float
+    footprint: str
+    declared_peak_bytes: int | None = None
+    cpu_set: tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True)
+class AdmissionRequest:
+    """The /1 submit record fields used by the admission core."""
+
+    job_id: str
+    repo: str
+    sha: str
+    base: str | None
+    project: str
+    lane: str
+    shard: Mapping[str, int] | None
+    resources: AdmissionResources
+    priority: str
+    requested_by_client: str
+    requested_by_version: str
+    requested_by_run: str
+    stores: Mapping[str, object]
+    extra_argv: tuple[str, ...]
+    env: Mapping[str, str]
+    dev: Mapping[str, object] | None
+    kind: str
+
+    def digest(self) -> str:
+        """Return the §2.2 idempotence digest, excluding job_id and client version."""
+
+        if self.resources.cpu_set is not None:
+            raise AdmissionError(ExitCode.REFUSAL, "non-null resources.cpu_set is reserved in /1")
+        if self.shard is not None:
+            raise AdmissionError(ExitCode.REFUSAL, "non-null shard is reserved in /1")
+        document: dict[str, object] = {
+            "repo": self.repo,
+            "sha": self.sha,
+            "base": self.base,
+            "project": self.project,
+            "lane": self.lane,
+            "shard": None,
+            "kind": self.kind,
+            "priority": self.priority,
+            "resources": {
+                "planned_cores": self.resources.planned_cores,
+                "footprint": self.resources.footprint,
+                "declared_peak_bytes": self.resources.declared_peak_bytes,
+                "cpu_set": None,
+            },
+            "stores": self.stores,
+            "extra_argv": self.extra_argv,
+            "env": self.env,
+            "dev": self.dev,
+            "requested_by": {"client": self.requested_by_client, "run": self.requested_by_run},
+        }
+        try:
+            canonical = json.dumps(_plain_json(document), sort_keys=True, separators=(",", ":"),
+                                   ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise AdmissionError(ExitCode.REFUSAL, f"request is not canonical JSON: {exc}") from exc
+        return hashlib.sha256(canonical).hexdigest()
+
+
+@dataclass(frozen=True)
+class LeaseRequest:
+    lease_id: str
+    container_name: str
+    resources: AdmissionResources
+    priority: str
+
+    @property
+    def job_id(self) -> str:
+        return self.lease_id
+
+    def digest(self) -> str:
+        if self.resources.cpu_set is not None:
+            raise AdmissionError(ExitCode.REFUSAL, "non-null resources.cpu_set is reserved in /1")
+        document = {
+            "schema": "fleet-admission-lease-request/1",
+            "container_name": self.container_name,
+            "footprint": self.resources.footprint,
+            "planned_cores": self.resources.planned_cores,
+            "priority": self.priority,
+        }
+        try:
+            canonical = json.dumps(_plain_json(document), sort_keys=True, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise AdmissionError(ExitCode.REFUSAL, f"lease request is not canonical JSON: {exc}") from exc
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class InspectorAnswer(Enum):
+    PRESENT = "present"
+    NO_SUCH_OBJECT = "no-such-object"
+    ERROR = "error"
+
+
+def _plain_json(value: object) -> object:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite number")
+        return value
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("object keys must be strings")
+        return {key: _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain_json(item) for item in value]
+    raise TypeError(f"unsupported JSON value: {type(value).__name__}")
+
+
+def _request_group(request: AdmissionRequest, authenticated_group: str) -> str:
+    _validate_name(authenticated_group, "authenticated_group")
+    _validate_group_prefix(request.job_id, authenticated_group)
+    return authenticated_group
+
+
+def _validate_group_prefix(job_id: str, authenticated_group: str) -> None:
+    _validate_name(job_id, "job_id")
+    _validate_name(authenticated_group, "authenticated_group")
+    prefix = f"{authenticated_group}-"
+    if not job_id.startswith(prefix) or len(job_id) == len(prefix):
+        raise AdmissionError(ExitCode.REFUSAL, "job_id prefix does not match the authenticated group")
+
+
+def _clamp_priority(capacity: HostCapacity, authenticated_group: str, requested: str) -> str:
+    if requested not in PRIORITIES:
+        raise AdmissionError(ExitCode.REFUSAL, f"unknown priority: {requested!r}")
+    permissions = capacity.policy.priority_classes_by_principal.require(
+        "policy.priority_classes_by_principal"
+    )
+    if not isinstance(permissions, Mapping):
+        raise AdmissionError(ExitCode.REFUSAL, "priority principal policy is invalid")
+    allowed = permissions.get(authenticated_group)
+    if not isinstance(allowed, (tuple, list)) or not allowed:
+        raise AdmissionError(ExitCode.REFUSAL, "priority policy is missing for authenticated group")
+    if any(item not in PRIORITIES for item in allowed) or len(set(allowed)) != len(allowed):
+        raise AdmissionError(ExitCode.REFUSAL, "priority policy contains an invalid class")
+    if requested in allowed:
+        return requested
+    request_index = PRIORITIES.index(requested)
+    not_more_urgent = [item for item in allowed if PRIORITIES.index(item) >= request_index]
+    if not not_more_urgent:
+        raise AdmissionError(ExitCode.REFUSAL, "priority policy has no allowed class at or below the request")
+    return min(not_more_urgent, key=PRIORITIES.index)
+
+
 class AdmissionBook:
     """Durable host admission records, serialized by one queue lock."""
 
-    def __init__(self, state_dir: Path | str, *, clock: Callable[[], float]) -> None:
+    def __init__(
+        self,
+        state_dir: Path | str,
+        *,
+        clock: Callable[[], float],
+        waiter: Callable[[float], None],
+    ) -> None:
         self.state_dir = Path(state_dir)
         self.admission_dir = self.state_dir / "admission"
         self.admitted_dir = self.admission_dir / "admitted"
@@ -578,6 +863,7 @@ class AdmissionBook:
         self.locks_dir = self.admission_dir / "locks"
         self.queue_lock_path = self.admission_dir / "queue.lock"
         self.clock = clock
+        self.waiter = waiter
         try:
             for directory in (self.admitted_dir, self.waiting_dir, self.leases_dir, self.locks_dir):
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -592,18 +878,233 @@ class AdmissionBook:
 
     def _load_records(self) -> dict[str, dict[str, object]]:
         try:
-            paths = sorted(path for path in self.admitted_dir.iterdir() if path.name.endswith(".json"))
+            job_paths = sorted(path for path in self.admitted_dir.iterdir() if path.name.endswith(".json"))
+            lease_paths = sorted(path for path in self.leases_dir.iterdir() if path.name.endswith(".json"))
         except OSError as exc:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read admission records: {exc}") from exc
-        return {path.stem: _read_json_record(path, expected_id=path.stem) for path in paths}
+        records = {f"job:{path.stem}": _read_json_record(path, expected_id=path.stem) for path in job_paths}
+        for path in lease_paths:
+            record = _read_lease_record(path, expected_id=path.stem)
+            if not record["released"]:
+                records[f"lease:{path.stem}"] = record
+        return records
 
     def _record_path(self, job_id: str) -> Path:
         _validate_name(job_id, "job_id")
         return self.admitted_dir / f"{job_id}.json"
 
+    def _lease_path(self, lease_id: str) -> Path:
+        _validate_name(lease_id, "lease_id")
+        return self.leases_dir / f"{lease_id}.json"
+
     def _job_lock_path(self, job_id: str) -> Path:
         _validate_name(job_id, "job_id")
         return self.locks_dir / f"{job_id}.lock"
+
+    def _waiting_path(self, job_id: str) -> Path:
+        _validate_name(job_id, "job_id")
+        return self.waiting_dir / f"{job_id}.json"
+
+    def _waiting_lock_path(self, job_id: str) -> Path:
+        _validate_name(job_id, "job_id")
+        return self.waiting_dir / f"{job_id}.lock"
+
+    def _existing_admission_locked(
+        self, job_id: str, authenticated_group: str, digest: str
+    ) -> AdmissionResult | None:
+        path = self._record_path(job_id)
+        if not path.exists() and not path.is_symlink():
+            return None
+        record = _read_json_record(path, expected_id=job_id)
+        if record["group"] != authenticated_group:
+            raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+        if record["digest"] != digest:
+            raise AdmissionError(ExitCode.REFUSAL, "job id was already used with a different request digest")
+        return AdmissionResult(record, None, True)
+
+    def _existing_lease_locked(
+        self, lease_id: str, authenticated_group: str, digest: str
+    ) -> AdmissionResult | None:
+        path = self._lease_path(lease_id)
+        if not path.exists() and not path.is_symlink():
+            return None
+        record = _read_lease_record(path, expected_id=lease_id)
+        if record["group"] != authenticated_group:
+            raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
+        if record["digest"] != digest:
+            raise AdmissionError(ExitCode.REFUSAL, "lease id was already used with a different request digest")
+        return AdmissionResult(record, None, True)
+
+    def _existing_request_locked(
+        self,
+        job_id: str,
+        authenticated_group: str,
+        digest: str,
+        *,
+        is_lease: bool,
+    ) -> AdmissionResult | None:
+        if is_lease:
+            if self._record_path(job_id).exists() or self._record_path(job_id).is_symlink():
+                raise AdmissionError(ExitCode.REFUSAL, "lease id collides with an admitted job id")
+            return self._existing_lease_locked(job_id, authenticated_group, digest)
+        if self._lease_path(job_id).exists() or self._lease_path(job_id).is_symlink():
+            raise AdmissionError(ExitCode.REFUSAL, "job id collides with a lease id")
+        return self._existing_admission_locked(job_id, authenticated_group, digest)
+
+    def _lease_records_locked(self) -> dict[str, dict[str, object]]:
+        try:
+            paths = sorted(path for path in self.leases_dir.iterdir() if path.name.endswith(".json"))
+        except OSError as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read lease records: {exc}") from exc
+        return {path.stem: _read_lease_record(path, expected_id=path.stem) for path in paths}
+
+    @staticmethod
+    def _inspection(inspector: Callable[[str], InspectorAnswer], target: str) -> InspectorAnswer | object:
+        try:
+            return inspector(target)
+        except Exception:
+            return InspectorAnswer.ERROR
+
+    def _lease_name_available_locked(
+        self,
+        lease_id: str,
+        container_name: str,
+        inspector: Callable[[str], InspectorAnswer],
+    ) -> None:
+        for existing_id, record in self._lease_records_locked().items():
+            if existing_id != lease_id and record["container_name"] == container_name:
+                raise AdmissionError(ExitCode.REFUSAL, f"container name {container_name!r} is already tombstoned or leased")
+        answer = self._inspection(inspector, container_name)
+        if answer is InspectorAnswer.PRESENT:
+            raise AdmissionError(ExitCode.REFUSAL, f"container name {container_name!r} already exists")
+        if answer is not InspectorAnswer.NO_SUCH_OBJECT:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"container name {container_name!r} could not be confirmed absent")
+
+    def _reserve_lease_locked(
+        self,
+        *,
+        request: LeaseRequest,
+        authenticated_group: str,
+        digest: str,
+        priority: str,
+        capacity: HostCapacity,
+        legacy_ids: tuple[str, ...],
+        inspector: Callable[[str], InspectorAnswer],
+    ) -> AdmissionResult:
+        existing = self._existing_lease_locked(request.lease_id, authenticated_group, digest)
+        if existing is not None:
+            return existing
+        self._lease_name_available_locked(request.lease_id, request.container_name, inspector)
+        records = self._load_records()
+        candidate = {
+            "footprint": request.resources.footprint,
+            "planned_cores": request.resources.planned_cores,
+        }
+        eligibility, _remaining_bytes, _remaining_cores, _charges = self._require_candidate_fit(
+            candidate, capacity, records, legacy_ids
+        )
+        created_at = _nonnegative_number(self.clock(), "clock")
+        lock_fd = _open_lock(self._job_lock_path(request.lease_id), blocking=False)
+        if lock_fd is None:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "lease flock is held without a readable lease record")
+        record: dict[str, object] = {
+            "schema": "fleet-admission-lease/1",
+            "lease_id": request.lease_id,
+            "group": authenticated_group,
+            "digest": digest,
+            "container_name": request.container_name,
+            "container_id": None,
+            "priority": priority,
+            "footprint": request.resources.footprint,
+            "planned_cores": float(request.resources.planned_cores),
+            "charged_bytes": eligibility.charge_bytes,
+            "current_warm_bytes": 0,
+            "state": "pending",
+            "released": False,
+            "created_at": created_at,
+        }
+        try:
+            _atomic_json(self._lease_path(request.lease_id), record)
+        except BaseException:
+            _unlock_close(lock_fd)
+            raise
+        return AdmissionResult(record, LeaseHandle(self, record, lock_fd), False)
+
+    def _admit_locked(
+        self,
+        *,
+        job_id: str,
+        authenticated_group: str,
+        digest: str,
+        priority: str,
+        footprint: str,
+        planned_cores: float,
+        capacity: HostCapacity,
+        legacy_ids: tuple[str, ...],
+    ) -> AdmissionResult:
+        if self._lease_path(job_id).exists() or self._lease_path(job_id).is_symlink():
+            raise AdmissionError(ExitCode.REFUSAL, "job id collides with a lease id")
+        existing = self._existing_admission_locked(job_id, authenticated_group, digest)
+        if existing is not None:
+            return existing
+        records = self._load_records()
+        eligibility = static_eligibility(capacity, footprint, planned_cores)
+        _require_live_facts(capacity)
+        active = tuple(
+            Charge(
+                int(record["charged_bytes"]),
+                int(record["current_warm_bytes"]),
+                float(record["planned_cores"]),
+            )
+            for record in records.values()
+        )
+        legacy_charge: tuple[Charge, ...] = ()
+        if legacy_ids:
+            legacy_bytes = _positive_int(
+                capacity.policy.legacy_charge_bytes.require("policy.legacy_charge_bytes"),
+                "policy.legacy_charge_bytes",
+            )
+            legacy_charge = tuple(Charge(legacy_bytes, 0, 0) for _item in legacy_ids)
+        all_charges = active + legacy_charge
+        remaining_bytes = fit_bytes(capacity, all_charges)
+        if remaining_bytes < eligibility.charge_bytes:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"RAM fit {remaining_bytes} is below charge {eligibility.charge_bytes}")
+        if legacy_ids:
+            raise AdmissionError(
+                ExitCode.QUEUED_WITHDRAWN,
+                "legacy jobs have unknown planned-core use; new admission waits for their EXIT markers",
+            )
+        remaining_cores = planned_core_headroom(capacity, all_charges)
+        if remaining_cores < float(planned_cores):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"planned-core headroom {remaining_cores} is below request {planned_cores}")
+
+        created_at = _nonnegative_number(self.clock(), "clock")
+        lock_fd = _open_lock(self._job_lock_path(job_id), blocking=False)
+        if lock_fd is None:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 "job flock is held without a readable admission record")
+        record: dict[str, object] = {
+            "schema": "fleet-admission/1",
+            "job_id": job_id,
+            "group": authenticated_group,
+            "digest": digest,
+            "priority": priority,
+            "footprint": footprint,
+            "planned_cores": float(planned_cores),
+            "charged_bytes": eligibility.charge_bytes,
+            "current_warm_bytes": 0,
+            "state": "admitted",
+            "created_at": created_at,
+        }
+        try:
+            _atomic_json(self._record_path(job_id), record)
+        except BaseException:
+            _unlock_close(lock_fd)
+            raise
+        return AdmissionResult(record, AdmissionHandle(self, record, lock_fd), False)
 
     def admit_now(
         self,
@@ -619,8 +1120,7 @@ class AdmissionBook:
     ) -> AdmissionResult:
         """Make one immediate decision; timed waiting is layered on this in the queue step."""
 
-        _validate_name(job_id, "job_id")
-        _validate_name(authenticated_group, "authenticated_group")
+        _validate_group_prefix(job_id, authenticated_group)
         _validate_digest(digest)
         if priority not in PRIORITIES:
             raise AdmissionError(ExitCode.REFUSAL, f"unknown priority: {priority!r}")
@@ -632,73 +1132,629 @@ class AdmissionBook:
 
         queue_fd = self._queue_lock()
         try:
-            record_path = self._record_path(job_id)
-            if record_path.exists() or record_path.is_symlink():
-                existing_record = _read_json_record(record_path, expected_id=job_id)
-                if existing_record["group"] != authenticated_group:
-                    raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
-                if existing_record["digest"] != digest:
-                    raise AdmissionError(ExitCode.REFUSAL, "job id was already used with a different request digest")
-                return AdmissionResult(existing_record, None, True)
-
-            records = self._load_records()
+            existing = self._existing_admission_locked(job_id, authenticated_group, digest)
+            if existing is not None:
+                return existing
+            existing_waiter = self._existing_waiter_locked(job_id, authenticated_group, digest)
+            if existing_waiter is not None:
+                return existing_waiter
             capacity = capacity_provider()
-            eligibility = static_eligibility(capacity, footprint, planned_cores)
-            _require_live_facts(capacity)
-            active = tuple(
-                Charge(
-                    int(record["charged_bytes"]),
-                    int(record["current_warm_bytes"]),
-                    float(record["planned_cores"]),
-                )
-                for record in records.values()
-            )
-            legacy_charge: tuple[Charge, ...] = ()
-            if legacy_ids:
-                legacy_bytes = _positive_int(
-                    capacity.policy.legacy_charge_bytes.require("policy.legacy_charge_bytes"),
-                    "policy.legacy_charge_bytes",
-                )
-                legacy_charge = tuple(Charge(legacy_bytes, 0, 0) for _item in legacy_ids)
-            all_charges = active + legacy_charge
-            remaining_bytes = fit_bytes(capacity, all_charges)
-            if remaining_bytes < eligibility.charge_bytes:
-                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
-                                     f"RAM fit {remaining_bytes} is below charge {eligibility.charge_bytes}")
-            if legacy_ids:
-                raise AdmissionError(
-                    ExitCode.QUEUED_WITHDRAWN,
-                    "legacy jobs have unknown planned-core use; new admission waits for their EXIT markers",
-                )
-            remaining_cores = planned_core_headroom(capacity, all_charges)
-            if remaining_cores < float(planned_cores):
-                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
-                                     f"planned-core headroom {remaining_cores} is below request {planned_cores}")
-
-            lock_fd = _open_lock(self._job_lock_path(job_id), blocking=False)
-            if lock_fd is None:
-                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
-                                     "job flock is held without a readable admission record")
-            created_at = _nonnegative_number(self.clock(), "clock")
-            record: dict[str, object] = {
-                "schema": "fleet-admission/1",
+            priority = _clamp_priority(capacity, authenticated_group, priority)
+            candidate = {
+                "schema": "fleet-admission-waiting/1",
                 "job_id": job_id,
                 "group": authenticated_group,
                 "digest": digest,
+                "requested_priority": priority,
                 "priority": priority,
                 "footprint": footprint,
                 "planned_cores": float(planned_cores),
-                "charged_bytes": eligibility.charge_bytes,
-                "current_warm_bytes": 0,
-                "state": "admitted",
-                "created_at": created_at,
+                "submitted_at": _nonnegative_number(self.clock(), "clock"),
+                "state": "waiting",
+                "cancelled": False,
             }
+            records = self._load_records()
+            waiters = self._load_waiters_locked()
+            aging_s = self._aging_seconds(capacity)
+            now = _nonnegative_number(self.clock(), "clock")
+            self._require_candidate_fit(candidate, capacity, records, legacy_ids)
+            if not self._queue_allows(candidate, waiters, capacity, records, legacy_ids, now, aging_s):
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                     "immediate admission refused by capacity or an earlier queue reservation")
+            return self._admit_locked(
+                job_id=job_id,
+                authenticated_group=authenticated_group,
+                digest=digest,
+                priority=priority,
+                footprint=footprint,
+                planned_cores=planned_cores,
+                capacity=capacity,
+                legacy_ids=legacy_ids,
+            )
+        finally:
+            _unlock_close(queue_fd)
+
+    def _load_waiters_locked(self) -> list[dict[str, object]]:
+        try:
+            paths = sorted(path for path in self.waiting_dir.iterdir() if path.name.endswith(".json"))
+        except OSError as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read waiting records: {exc}") from exc
+        active: list[dict[str, object]] = []
+        for path in paths:
+            waiter = _read_waiter_record(path, expected_id=path.stem)
+            lock_fd = _open_lock(self._waiting_lock_path(path.stem), blocking=False)
+            if lock_fd is None:
+                active.append(waiter)
+                continue
             try:
-                _atomic_json(record_path, record)
-            except BaseException:
+                path.unlink()
+                _fsync_dir(self.waiting_dir)
+            except OSError as exc:
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                     f"cannot withdraw dead waiter {path.stem!r}: {exc}") from exc
+            finally:
                 _unlock_close(lock_fd)
-                raise
-            return AdmissionResult(record, AdmissionHandle(self, record, lock_fd), False)
+        return active
+
+    def _existing_waiter_locked(
+        self, job_id: str, authenticated_group: str, digest: str, record_kind: str = "job"
+    ) -> AdmissionResult | None:
+        path = self._waiting_path(job_id)
+        if not path.exists() and not path.is_symlink():
+            return None
+        record = _read_waiter_record(path, expected_id=job_id)
+        if record["group"] != authenticated_group:
+            raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+        if record["digest"] != digest:
+            raise AdmissionError(ExitCode.REFUSAL, "job id was already used with a different request digest")
+        if record.get("record_kind", "job") != record_kind:
+            raise AdmissionError(ExitCode.REFUSAL, "job id is already queued for a different record type")
+        lock_fd = _open_lock(self._waiting_lock_path(job_id), blocking=False)
+        if lock_fd is None:
+            return AdmissionResult(record, None, True)
+        try:
+            path.unlink()
+            _fsync_dir(self.waiting_dir)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"cannot withdraw dead waiter {job_id!r}: {exc}") from exc
+        finally:
+            _unlock_close(lock_fd)
+        return None
+
+    def _register_waiter_locked(self, record: Mapping[str, object]) -> int:
+        job_id = str(record["job_id"])
+        path = self._waiting_path(job_id)
+        if path.exists() or path.is_symlink():
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "waiting record appeared before registration")
+        lock_fd = _open_lock(self._waiting_lock_path(job_id), blocking=False)
+        if lock_fd is None:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "waiter flock is held without a waiting record")
+        try:
+            _atomic_json(path, record)
+        except BaseException:
+            _unlock_close(lock_fd)
+            raise
+        return lock_fd
+
+    def _remove_waiter_locked(self, job_id: str, digest: str, authenticated_group: str) -> None:
+        path = self._waiting_path(job_id)
+        if not path.exists() and not path.is_symlink():
+            return
+        record = _read_waiter_record(path, expected_id=job_id)
+        if record["group"] != authenticated_group or record["digest"] != digest:
+            raise AdmissionError(ExitCode.REFUSAL, "waiting record changed before withdrawal")
+        try:
+            path.unlink()
+            _fsync_dir(self.waiting_dir)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"cannot withdraw waiter {job_id!r}: {exc}") from exc
+
+    @staticmethod
+    def _queue_key(record: Mapping[str, object]) -> tuple[int, float, str]:
+        return (PRIORITIES.index(str(record["priority"])), float(record["submitted_at"]), str(record["job_id"]))
+
+    @staticmethod
+    def _book_charges(records: Mapping[str, Mapping[str, object]]) -> tuple[Charge, ...]:
+        return tuple(
+            Charge(int(record["charged_bytes"]), int(record["current_warm_bytes"]), float(record["planned_cores"]))
+            for record in records.values()
+        )
+
+    def _candidate_metrics(
+        self,
+        candidate: Mapping[str, object],
+        capacity: HostCapacity,
+        records: Mapping[str, Mapping[str, object]],
+        legacy_ids: tuple[str, ...],
+    ) -> tuple[StaticEligibility, int, float, tuple[Charge, ...]]:
+        eligibility = static_eligibility(capacity, str(candidate["footprint"]), float(candidate["planned_cores"]))
+        _require_live_facts(capacity)
+        charges = self._book_charges(records)
+        if legacy_ids:
+            legacy_bytes = _positive_int(
+                capacity.policy.legacy_charge_bytes.require("policy.legacy_charge_bytes"),
+                "policy.legacy_charge_bytes",
+            )
+            charges += tuple(Charge(legacy_bytes, 0, 0) for _item in legacy_ids)
+        remaining_bytes = fit_bytes(capacity, charges)
+        remaining_cores = planned_core_headroom(capacity, charges)
+        return eligibility, remaining_bytes, remaining_cores, charges
+
+    def _require_candidate_fit(
+        self,
+        candidate: Mapping[str, object],
+        capacity: HostCapacity,
+        records: Mapping[str, Mapping[str, object]],
+        legacy_ids: tuple[str, ...],
+    ) -> tuple[StaticEligibility, int, float, tuple[Charge, ...]]:
+        metrics = self._candidate_metrics(candidate, capacity, records, legacy_ids)
+        eligibility, remaining_bytes, remaining_cores, _charges = metrics
+        if remaining_bytes < eligibility.charge_bytes:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"RAM fit {remaining_bytes} is below charge {eligibility.charge_bytes}")
+        if legacy_ids:
+            raise AdmissionError(
+                ExitCode.QUEUED_WITHDRAWN,
+                "legacy jobs have unknown planned-core use; new admission waits for their EXIT markers",
+            )
+        requested_cores = float(candidate["planned_cores"])
+        if remaining_cores < requested_cores:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                 f"planned-core headroom {remaining_cores} is below request {requested_cores}")
+        return metrics
+
+    def _candidate_fits(
+        self,
+        candidate: Mapping[str, object],
+        capacity: HostCapacity,
+        records: Mapping[str, Mapping[str, object]],
+        legacy_ids: tuple[str, ...],
+    ) -> tuple[bool, tuple[StaticEligibility, int, float, tuple[Charge, ...]] | None]:
+        try:
+            metrics = self._candidate_metrics(candidate, capacity, records, legacy_ids)
+        except AdmissionError as exc:
+            if exc.exit_code == ExitCode.QUEUED_WITHDRAWN:
+                return False, None
+            raise
+        eligibility, remaining_bytes, remaining_cores, _charges = metrics
+        if legacy_ids:
+            return False, metrics
+        fits = remaining_bytes >= eligibility.charge_bytes and remaining_cores >= float(candidate["planned_cores"])
+        return fits, metrics
+
+    def _queue_allows(
+        self,
+        candidate: Mapping[str, object],
+        waiters: list[dict[str, object]],
+        capacity: HostCapacity,
+        records: Mapping[str, Mapping[str, object]],
+        legacy_ids: tuple[str, ...],
+        now: float,
+        aging_s: float,
+    ) -> bool:
+        active_waiters = [
+            dict(candidate) if row["job_id"] == candidate["job_id"] else row
+            for row in waiters if not row["cancelled"]
+        ]
+        if all(row["job_id"] != candidate["job_id"] for row in active_waiters):
+            active_waiters.append(dict(candidate))
+        ordered = sorted(active_waiters, key=self._queue_key)
+        head = ordered[0]
+        candidate_fits, candidate_metrics = self._candidate_fits(candidate, capacity, records, legacy_ids)
+        if not candidate_fits or candidate_metrics is None:
+            return False
+        if head["job_id"] == candidate["job_id"]:
+            return True
+
+        head_fits, _head_metrics = self._candidate_fits(head, capacity, records, legacy_ids)
+        if head_fits:
+            return False
+        age = max(0.0, now - float(head["submitted_at"]))
+        if age < aging_s:
+            return True
+
+        candidate_eligibility, _available_bytes, _available_cores, charges = candidate_metrics
+        candidate_charge = Charge(candidate_eligibility.charge_bytes, 0, float(candidate["planned_cores"]))
+        remaining_after_candidate = fit_bytes(capacity, charges + (candidate_charge,))
+        cores_after_candidate = planned_core_headroom(capacity, charges + (candidate_charge,))
+        head_charge = _known_charge(capacity, str(head["footprint"]))
+        head_cores = _nonnegative_number(head["planned_cores"], "waiting.planned_cores")
+        return remaining_after_candidate >= head_charge and cores_after_candidate >= head_cores
+
+    @staticmethod
+    def _aging_seconds(capacity: HostCapacity) -> float:
+        value = _nonnegative_number(capacity.policy.aging_s.require("policy.aging_s"), "policy.aging_s")
+        if value == 0:
+            raise AdmissionError(ExitCode.REFUSAL, "policy.aging_s must be positive")
+        return value
+
+    @staticmethod
+    def _wait_limit(capacity: HostCapacity, supplied: float | None) -> float:
+        if supplied is not None:
+            return _nonnegative_number(supplied, "wait_s")
+        policy = capacity.policy.admission.require("policy.admission")
+        if not isinstance(policy, Mapping) or "wait_s" not in policy:
+            raise AdmissionError(ExitCode.REFUSAL, "policy.admission.wait_s is required")
+        return _nonnegative_number(policy["wait_s"], "policy.admission.wait_s")
+
+    def _expire_waiter(
+        self, job_id: str, authenticated_group: str, digest: str, *, is_lease: bool = False
+    ) -> AdmissionResult:
+        queue_fd = self._queue_lock()
+        try:
+            existing = self._existing_request_locked(
+                job_id, authenticated_group, digest, is_lease=is_lease
+            )
+            if existing is not None:
+                self._remove_waiter_locked(job_id, digest, authenticated_group)
+                return existing
+            self._remove_waiter_locked(job_id, digest, authenticated_group)
+            if self._record_path(job_id).exists() or self._lease_path(job_id).exists():
+                existing = self._existing_request_locked(
+                    job_id, authenticated_group, digest, is_lease=is_lease
+                )
+                if existing is not None:
+                    return existing
+                raise AdmissionError(ExitCode.REFUSAL, "job started with a different request digest")
+        finally:
+            _unlock_close(queue_fd)
+        raise AdmissionError(
+            ExitCode.QUEUED_WITHDRAWN,
+            "wait expired; waiter withdrawn and the book confirms the job never started",
+        )
+
+    def submit(
+        self,
+        request: AdmissionRequest | LeaseRequest,
+        *,
+        authenticated_group: str,
+        capacity_provider: Callable[[], HostCapacity],
+        wait_s: float | None = None,
+        legacy_jobs: Iterable[str] = (),
+        inspector: Callable[[str], InspectorAnswer] | None = None,
+    ) -> AdmissionResult:
+        """Queue one /1 request, holding its waiter flock until admission or withdrawal."""
+
+        group = _request_group(request, authenticated_group)
+        is_lease = isinstance(request, LeaseRequest)
+        if is_lease:
+            _validate_name(request.container_name, "container_name")
+            if inspector is None:
+                raise AdmissionError(ExitCode.REFUSAL, "lease admission requires an injected object inspector")
+        digest = request.digest()
+        legacy_ids = tuple(legacy_jobs)
+        if any(not isinstance(item, str) or not item for item in legacy_ids):
+            raise AdmissionError(ExitCode.REFUSAL, "legacy job ids must be non-empty strings")
+        if len(set(legacy_ids)) != len(legacy_ids):
+            raise AdmissionError(ExitCode.REFUSAL, "legacy job list contains duplicates")
+        requested_cores = _nonnegative_number(request.resources.planned_cores, "resources.planned_cores")
+        if requested_cores == 0:
+            raise AdmissionError(ExitCode.REFUSAL, "resources.planned_cores must be positive")
+        if request.priority not in PRIORITIES:
+            raise AdmissionError(ExitCode.REFUSAL, f"unknown priority: {request.priority!r}")
+
+        queue_fd = self._queue_lock()
+        waiter_fd: int | None = None
+        try:
+            record_kind = "lease" if is_lease else "job"
+            existing = self._existing_request_locked(request.job_id, group, digest, is_lease=is_lease)
+            if existing is not None:
+                return existing
+            existing_waiter = self._existing_waiter_locked(request.job_id, group, digest, record_kind)
+            if existing_waiter is not None:
+                return existing_waiter
+            capacity = capacity_provider()
+            if is_lease:
+                self._lease_name_available_locked(request.lease_id, request.container_name, inspector)
+            eligibility = static_eligibility(capacity, request.resources.footprint, requested_cores)
+            aging_s = self._aging_seconds(capacity)
+            priority = _clamp_priority(capacity, group, request.priority)
+            wait_limit = self._wait_limit(capacity, wait_s)
+            submitted_at = _nonnegative_number(self.clock(), "clock")
+            candidate: dict[str, object] = {
+                "schema": "fleet-admission-waiting/1",
+                "job_id": request.job_id,
+                "group": group,
+                "digest": digest,
+                "requested_priority": request.priority,
+                "priority": priority,
+                "footprint": request.resources.footprint,
+                "planned_cores": requested_cores,
+                "submitted_at": submitted_at,
+                "state": "waiting",
+                "cancelled": False,
+                "record_kind": record_kind,
+            }
+            if wait_limit == 0:
+                records = self._load_records()
+                waiters = self._load_waiters_locked()
+                now = _nonnegative_number(self.clock(), "clock")
+                self._require_candidate_fit(candidate, capacity, records, legacy_ids)
+                if not self._queue_allows(candidate, waiters, capacity, records, legacy_ids, now, aging_s):
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                         "immediate admission refused by capacity or an earlier queue reservation")
+                if is_lease:
+                    return self._reserve_lease_locked(
+                        request=request,
+                        authenticated_group=group,
+                        digest=digest,
+                        priority=priority,
+                        capacity=capacity,
+                        legacy_ids=legacy_ids,
+                        inspector=inspector,
+                    )
+                return self._admit_locked(
+                    job_id=request.job_id,
+                    authenticated_group=group,
+                    digest=digest,
+                    priority=priority,
+                    footprint=request.resources.footprint,
+                    planned_cores=requested_cores,
+                    capacity=capacity,
+                    legacy_ids=legacy_ids,
+                )
+            # The WAITING record and its flock are both established inside queue.lock.
+            waiter_fd = self._register_waiter_locked(candidate)
+        finally:
+            _unlock_close(queue_fd)
+
+        deadline = submitted_at + wait_limit
+        try:
+            while True:
+                if _nonnegative_number(self.clock(), "clock") >= deadline:
+                    return self._expire_waiter(request.job_id, group, digest, is_lease=is_lease)
+                queue_fd = self._queue_lock()
+                try:
+                    existing = self._existing_request_locked(
+                        request.job_id, group, digest, is_lease=is_lease
+                    )
+                    if existing is not None:
+                        self._remove_waiter_locked(request.job_id, digest, group)
+                        _unlock_close(waiter_fd)
+                        waiter_fd = None
+                        return existing
+                    waiter_path = self._waiting_path(request.job_id)
+                    waiter_record = _read_waiter_record(waiter_path, expected_id=request.job_id)
+                    if waiter_record["cancelled"]:
+                        self._remove_waiter_locked(request.job_id, digest, group)
+                        _unlock_close(waiter_fd)
+                        waiter_fd = None
+                        raise AdmissionError(ExitCode.CANCELLED, "queued request was cancelled and withdrawn")
+                    capacity = capacity_provider()
+                    current_priority = _clamp_priority(capacity, group, request.priority)
+                    if is_lease:
+                        self._lease_name_available_locked(request.lease_id, request.container_name, inspector)
+                    aging_s = self._aging_seconds(capacity)
+                    waiter_record["priority"] = current_priority
+                    records = self._load_records()
+                    waiters = self._load_waiters_locked()
+                    now = _nonnegative_number(self.clock(), "clock")
+                    if self._queue_allows(waiter_record, waiters, capacity, records, legacy_ids, now, aging_s):
+                        if is_lease:
+                            result = self._reserve_lease_locked(
+                                request=request,
+                                authenticated_group=group,
+                                digest=digest,
+                                priority=current_priority,
+                                capacity=capacity,
+                                legacy_ids=legacy_ids,
+                                inspector=inspector,
+                            )
+                        else:
+                            result = self._admit_locked(
+                                job_id=request.job_id,
+                                authenticated_group=group,
+                                digest=digest,
+                                priority=current_priority,
+                                footprint=request.resources.footprint,
+                                planned_cores=requested_cores,
+                                capacity=capacity,
+                                legacy_ids=legacy_ids,
+                            )
+                        self._remove_waiter_locked(request.job_id, digest, group)
+                        _unlock_close(waiter_fd)
+                        waiter_fd = None
+                        return result
+                except AdmissionError as exc:
+                    if exc.exit_code != ExitCode.QUEUED_WITHDRAWN:
+                        self._remove_waiter_locked(request.job_id, digest, group)
+                        if waiter_fd is not None:
+                            _unlock_close(waiter_fd)
+                            waiter_fd = None
+                        raise
+                finally:
+                    _unlock_close(queue_fd)
+
+                now = _nonnegative_number(self.clock(), "clock")
+                if now >= deadline:
+                    return self._expire_waiter(request.job_id, group, digest, is_lease=is_lease)
+                self.waiter(min(QUEUE_RECHECK_S, deadline - now))
+        finally:
+            if waiter_fd is not None:
+                _unlock_close(waiter_fd)
+
+    def reserve_lease(
+        self,
+        request: LeaseRequest,
+        *,
+        authenticated_group: str,
+        capacity_provider: Callable[[], HostCapacity],
+        inspector: Callable[[str], InspectorAnswer],
+        wait_s: float | None = None,
+        legacy_jobs: Iterable[str] = (),
+    ) -> AdmissionResult:
+        """Reserve a local-run-gate lease through the same priority and wait queue."""
+
+        return self.submit(
+            request,
+            authenticated_group=authenticated_group,
+            capacity_provider=capacity_provider,
+            wait_s=wait_s,
+            legacy_jobs=legacy_jobs,
+            inspector=inspector,
+        )
+
+    def bind_lease(
+        self,
+        lease_id: str,
+        authenticated_group: str,
+        container_id: str,
+        handle: LeaseHandle | None = None,
+    ) -> Mapping[str, object]:
+        _validate_name(lease_id, "lease_id")
+        _validate_name(authenticated_group, "authenticated_group")
+        if not isinstance(container_id, str) or not container_id:
+            raise AdmissionError(ExitCode.REFUSAL, "container id must be non-empty")
+        if handle is not None and (handle._book is not self or not handle.live):
+            raise AdmissionError(ExitCode.REFUSAL, "bind requires this book's live lease handle")
+        queue_fd = self._queue_lock()
+        try:
+            path = self._lease_path(lease_id)
+            if not path.exists() and not path.is_symlink():
+                raise AdmissionError(ExitCode.REFUSAL, "unknown lease id")
+            record = _read_lease_record(path, expected_id=lease_id)
+            if record["group"] != authenticated_group:
+                raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
+            if record["released"] or record["state"] == "tombstone":
+                raise AdmissionError(ExitCode.REFUSAL, "a revoked lease cannot be bound")
+            prior = record["container_id"]
+            if prior is not None and prior != container_id:
+                raise AdmissionError(ExitCode.REFUSAL, "lease is already bound to a different immutable container id")
+            if prior is None:
+                record["container_id"] = container_id
+                record["state"] = "bound"
+                _atomic_json(path, record)
+            if handle is not None:
+                handle.record = dict(record)
+            return record
+        finally:
+            _unlock_close(queue_fd)
+
+    def resume_lease(
+        self,
+        lease_id: str,
+        authenticated_group: str,
+        container_id: str | None = None,
+    ) -> AdmissionResult:
+        """Reload a lease and reacquire its flock before a reconnect can continue."""
+
+        _validate_name(lease_id, "lease_id")
+        _validate_name(authenticated_group, "authenticated_group")
+        queue_fd = self._queue_lock()
+        try:
+            path = self._lease_path(lease_id)
+            if not path.exists() and not path.is_symlink():
+                raise AdmissionError(ExitCode.REFUSAL, "unknown lease id")
+            record = _read_lease_record(path, expected_id=lease_id)
+            if record["group"] != authenticated_group:
+                raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
+            if record["released"] or record["state"] == "tombstone":
+                return AdmissionResult(record, None, True)
+            if container_id is not None:
+                if not isinstance(container_id, str) or not container_id:
+                    raise AdmissionError(ExitCode.REFUSAL, "container id must be non-empty")
+                prior = record["container_id"]
+                if prior is not None and prior != container_id:
+                    raise AdmissionError(ExitCode.REFUSAL, "reconnect container id does not match the immutable binding")
+                if prior is None:
+                    record["container_id"] = container_id
+                    record["state"] = "bound"
+                    _atomic_json(path, record)
+            lock_fd = _open_lock(self._job_lock_path(lease_id), blocking=False)
+            if lock_fd is None:
+                return AdmissionResult(record, None, True)
+            return AdmissionResult(record, LeaseHandle(self, record, lock_fd), False)
+        finally:
+            _unlock_close(queue_fd)
+
+    def observe_lease(self, lease_id: str, authenticated_group: str, current_warm_bytes: int) -> Mapping[str, object]:
+        _validate_name(lease_id, "lease_id")
+        _validate_name(authenticated_group, "authenticated_group")
+        warm = _nonnegative_int(current_warm_bytes, "current_warm_bytes")
+        queue_fd = self._queue_lock()
+        try:
+            path = self._lease_path(lease_id)
+            record = _read_lease_record(path, expected_id=lease_id)
+            if record["group"] != authenticated_group:
+                raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
+            if record["state"] != "bound":
+                raise AdmissionError(ExitCode.REFUSAL, "an unbound lease has no cgroup warm-set observation")
+            if not record["released"]:
+                record["current_warm_bytes"] = warm
+                _atomic_json(path, record)
+            return record
+        finally:
+            _unlock_close(queue_fd)
+
+    def reconcile_lease(
+        self,
+        lease_id: str,
+        authenticated_group: str,
+        inspector: Callable[[str], InspectorAnswer],
+    ) -> Mapping[str, object] | None:
+        """Tombstone a lease and release its charge only on explicit no-such-object."""
+
+        queue_fd = self._queue_lock()
+        try:
+            path = self._lease_path(lease_id)
+            if not path.exists() and not path.is_symlink():
+                return None
+            record = _read_lease_record(path, expected_id=lease_id)
+            if record["group"] != authenticated_group:
+                raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
+            record["state"] = "tombstone"
+            target = record["container_id"] or record["container_name"]
+            answer = self._inspection(inspector, str(target))
+            record["last_inspection"] = answer.value if isinstance(answer, InspectorAnswer) else "unknown"
+            record["released"] = answer is InspectorAnswer.NO_SUCH_OBJECT
+            _atomic_json(path, record)
+            return record
+        finally:
+            _unlock_close(queue_fd)
+
+    def cancel(self, job_id: str, authenticated_group: str) -> Mapping[str, object] | None:
+        """Withdraw a queued request for its owning group; admitted charges remain held."""
+
+        _validate_name(job_id, "job_id")
+        _validate_name(authenticated_group, "authenticated_group")
+        queue_fd = self._queue_lock()
+        try:
+            admitted_path = self._record_path(job_id)
+            if admitted_path.exists() or admitted_path.is_symlink():
+                admitted = _read_json_record(admitted_path, expected_id=job_id)
+                if admitted["group"] != authenticated_group:
+                    raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+                return admitted
+            lease_path = self._lease_path(job_id)
+            if lease_path.exists() or lease_path.is_symlink():
+                lease = _read_lease_record(lease_path, expected_id=job_id)
+                if lease["group"] != authenticated_group:
+                    raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
+                return lease
+            path = self._waiting_path(job_id)
+            if not path.exists() and not path.is_symlink():
+                return None
+            waiter = _read_waiter_record(path, expected_id=job_id)
+            if waiter["group"] != authenticated_group:
+                raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+            if waiter["cancelled"]:
+                return waiter
+            waiter_fd = _open_lock(self._waiting_lock_path(job_id), blocking=False)
+            if waiter_fd is not None:
+                try:
+                    path.unlink()
+                    _fsync_dir(self.waiting_dir)
+                except OSError as exc:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                         f"cannot withdraw dead waiter {job_id!r}: {exc}") from exc
+                finally:
+                    _unlock_close(waiter_fd)
+                return None
+            waiter["cancelled"] = True
+            _atomic_json(path, waiter)
+            return waiter
         finally:
             _unlock_close(queue_fd)
 
@@ -708,12 +1764,35 @@ class AdmissionBook:
         queue_fd = self._queue_lock()
         try:
             path = self._record_path(job_id)
-            if not path.exists() and not path.is_symlink():
+            if path.exists() or path.is_symlink():
+                record = _read_json_record(path, expected_id=job_id)
+                if record["group"] != authenticated_group:
+                    raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+                return record
+            lease_path = self._lease_path(job_id)
+            if lease_path.exists() or lease_path.is_symlink():
+                record = _read_lease_record(lease_path, expected_id=job_id)
+                if record["group"] != authenticated_group:
+                    raise AdmissionError(ExitCode.REFUSAL, "lease id belongs to a different authenticated group")
+                return record
+            waiting_path = self._waiting_path(job_id)
+            if not waiting_path.exists() and not waiting_path.is_symlink():
                 return None
-            record = _read_json_record(path, expected_id=job_id)
-            if record["group"] != authenticated_group:
+            waiter = _read_waiter_record(waiting_path, expected_id=job_id)
+            if waiter["group"] != authenticated_group:
                 raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
-            return record
+            waiter_fd = _open_lock(self._waiting_lock_path(job_id), blocking=False)
+            if waiter_fd is None:
+                return waiter
+            try:
+                waiting_path.unlink()
+                _fsync_dir(self.waiting_dir)
+            except OSError as exc:
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
+                                     f"cannot withdraw dead waiter {job_id!r}: {exc}") from exc
+            finally:
+                _unlock_close(waiter_fd)
+            return None
         finally:
             _unlock_close(queue_fd)
 
@@ -724,14 +1803,32 @@ class AdmissionBook:
         queue_fd = self._queue_lock()
         try:
             path = self._record_path(job_id)
-            if not path.exists() and not path.is_symlink():
+            lease_path = self._lease_path(job_id)
+            if path.exists() or path.is_symlink():
+                _read_json_record(path, expected_id=job_id)
+            elif lease_path.exists() or lease_path.is_symlink():
+                _read_lease_record(lease_path, expected_id=job_id)
+            else:
                 return False
-            _read_json_record(path, expected_id=job_id)
             lock_fd = _open_lock(self._job_lock_path(job_id), blocking=False)
             if lock_fd is None:
                 return True
             _unlock_close(lock_fd)
             return False
+        finally:
+            _unlock_close(queue_fd)
+
+    def observe_job(self, job_id: str, authenticated_group: str, current_warm_bytes: int) -> Mapping[str, object]:
+        warm = _nonnegative_int(current_warm_bytes, "current_warm_bytes")
+        queue_fd = self._queue_lock()
+        try:
+            path = self._record_path(job_id)
+            record = _read_json_record(path, expected_id=job_id)
+            if record["group"] != authenticated_group:
+                raise AdmissionError(ExitCode.REFUSAL, "job id belongs to a different authenticated group")
+            record["current_warm_bytes"] = warm
+            _atomic_json(path, record)
+            return record
         finally:
             _unlock_close(queue_fd)
 
