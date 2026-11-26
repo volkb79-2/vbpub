@@ -774,6 +774,31 @@ def test_orchestration_image_defaults_are_read_from_the_release_source_snapshot(
     assert observed["path"] == Path("cmru.orchestration.toml")
 
 
+def test_orchestration_image_defaults_refuse_publisher_credentials_without_echo(
+    tmp_path, monkeypatch, capsys,
+):
+    orchestration_env = {"GITHUB_TOKEN": "made-up-orchestration-token-value"}
+    token = orchestration_env["GITHUB_TOKEN"]
+    content = (
+        "[orchestration.defaults.env]\n"
+        f'GITHUB_TOKEN = "{token}"\n'
+    )
+    monkeypatch.setattr(
+        cli, "_read_git_path_at_commit",
+        lambda *_args, **_kwargs: content,
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._orchestration_env_for_release_snapshot(
+            tmp_path, "a" * 40, tmp_path / "cmru.orchestration.toml",
+        )
+
+    assert caught.value.code == 2
+    captured = capsys.readouterr()
+    assert "orchestration.defaults.env.GITHUB_TOKEN is reserved" in captured.err
+    assert token not in captured.out + captured.err
+
+
 def test_orchestration_image_defaults_refuse_config_outside_release_source(tmp_path):
     with pytest.raises(RuntimeError, match="outside the release source"):
         cli._orchestration_env_for_release_snapshot(
@@ -1851,6 +1876,90 @@ def test_dind_preflight_surfaces_an_unreadable_config_like_the_cmru_path(
             tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["ciu"],
             _release_precondition_args(), git_auth=None, report=True,
         )
+
+
+def _release_precondition_args_without(attribute):
+    """Release arguments that do not carry *attribute* at all (not just set to False)."""
+    args = _release_precondition_args()
+    delattr(args, attribute)
+    return args
+
+
+def test_dind_preflight_treats_args_without_dry_run_as_a_real_release(
+    tmp_path, monkeypatch, capsys,
+):
+    """Only an explicit dry run may skip the sidecar check on a host without Docker."""
+    configs, _ = _mock_dind_scope(monkeypatch, tmp_path, {"ciu": _CIU_TOML})
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: None)
+
+    with pytest.raises(SystemExit) as caught:
+        cli._release_dind_image_preconditions(
+            tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["ciu"],
+            _release_precondition_args_without("dry_run"), git_auth=None, report=True,
+        )
+
+    assert caught.value.code == 4
+    error = capsys.readouterr().err
+    assert "DinD sidecar image (ciu)" in error
+    assert "Docker CLI is unavailable" in error
+
+
+def test_dind_preflight_reads_origin_main_for_args_without_from_worktree(
+    tmp_path, monkeypatch,
+):
+    """The caller's feature branch is the release source only when it was asked for."""
+    configs, fetched = _mock_dind_scope(monkeypatch, tmp_path, {"ciu": _CIU_TOML})
+    monkeypatch.setattr(
+        cli, "_preflight_feature_worktree_source",
+        lambda *_a, **_k: pytest.fail("the feature source was not requested"),
+    )
+    revisions_read = []
+    monkeypatch.setattr(
+        cli, "_project_snapshot_config_text",
+        lambda _root, revision, _config, _configs, name: revisions_read.append(revision)
+        or (Path(name) / "cmru.toml", _CIU_TOML),
+    )
+    _fake_docker_missing(monkeypatch, "not-any-image", [])
+
+    cli._release_dind_image_preconditions(
+        tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["ciu"],
+        _release_precondition_args_without("from_worktree"), git_auth=None, report=False,
+    )
+
+    assert fetched == [tmp_path]
+    assert revisions_read == ["b" * 40]
+
+
+@pytest.mark.parametrize(
+    "reserved",
+    [
+        "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
+        "CMRU_RELEASE_CONTROLLER_VERSION",
+    ],
+)
+def test_dind_preflight_refuses_reserved_names_in_a_release_source_project_env(
+    tmp_path, monkeypatch, capsys, reserved,
+):
+    """A release-source [env] may not declare credentials or CMRU-managed context."""
+    declared = "fixture-value-that-must-not-be-echoed"
+    configs, _ = _mock_dind_scope(
+        monkeypatch, tmp_path, {"ciu": _CIU_TOML + f'{reserved} = "{declared}"\n'},
+    )
+    monkeypatch.setattr(
+        release_preconditions.subprocess, "run",
+        lambda *_a, **_k: pytest.fail("no docker call after a refused [env] table"),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._release_dind_image_preconditions(
+            tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["ciu"],
+            _release_precondition_args(), git_auth=None, report=True,
+        )
+
+    assert caught.value.code == 2
+    captured = capsys.readouterr()
+    assert f"env.{reserved} is reserved" in captured.err
+    assert declared not in captured.out + captured.err
 
 
 def test_release_launcher_runs_the_dind_preflight_for_a_scope_without_cmru(

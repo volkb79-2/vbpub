@@ -11,6 +11,7 @@ from fleetd.cli import main
 from fleetd import cli
 from fleetd.contracts import ContractError
 from fleetd.transport import FakeTransport
+from host_facts_v2 import write_host_facts_v2, write_host_set_v2
 from test_campaign import _plan
 
 
@@ -21,6 +22,12 @@ def test_facts_validate_cli_reports_valid_record(capsys):
     status = main(["facts", "validate", str(FIXTURES / "host-facts.valid.json")])
     assert status == 0
     assert capsys.readouterr().out == "valid host-facts/1\n"
+
+
+def test_facts_validate_cli_reports_host_facts_v2(tmp_path, capsys):
+    facts = write_host_facts_v2(FIXTURES / "host-facts.valid.json", tmp_path / "host-facts-v2.json")
+    assert main(["facts", "validate", str(facts)]) == 0
+    assert capsys.readouterr().out == "valid host-facts/2\n"
 
 
 @pytest.mark.parametrize(
@@ -52,8 +59,9 @@ def test_oversized_integers_are_input_errors_not_tracebacks(tmp_path, capsys):
         "unit_seconds_ref=95\nefficient_upper_bound=2\n",
         encoding="utf-8",
     )
+    hosts = write_host_set_v2(FIXTURES / "fleet-host-set.valid.json", tmp_path / "hosts-v2.json")
     status = main([
-        "plan", "r2", "--candidates", str(candidates), "--hosts", str(FIXTURES / "fleet-host-set.valid.json"),
+        "plan", "r2", "--candidates", str(candidates), "--hosts", str(hosts),
         "--demand", str(demand),
     ])
     assert status == 2
@@ -113,12 +121,13 @@ def test_plan_cli_pins_clean_execution_context_and_rejects_unknown_transport(mon
         "unit_seconds_ref=95\nefficient_upper_bound=2\n",
         encoding="utf-8",
     )
+    hosts = write_host_set_v2(FIXTURES / "fleet-host-set.valid.json", tmp_path / "hosts-v2.json")
     monkeypatch.setattr(cli, "_execution_context", lambda: {
         "schema": "fleet-plan-execution/1", "commit": "a" * 40, "project": "."
     })
     args = [
         "plan", "r2", "--candidates", str(candidates), "--hosts",
-        str(FIXTURES / "fleet-host-set.valid.json"), "--demand", str(demand),
+        str(hosts), "--demand", str(demand),
     ]
     assert main(args) == 0
     plan = json.loads(capsys.readouterr().out)

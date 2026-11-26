@@ -9,18 +9,16 @@
 //!   levels.
 //! - `LISTEN_FDNAMES` must name exactly that many non-empty, distinct descriptors.
 //! - Each descriptor must be an open, listening `AF_UNIX` `SOCK_STREAM` socket.
+//! - Accepted streams expose a raw `SO_PEERCRED` read; credential decoding stays with the probe.
 //!
 //! [`take`] is process-wide and intentionally one-shot. It checks and sets the guard before
 //! parsing, so a failed first call cannot be retried after some environment fact changes.
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::fd::RawFd;
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use rustix::io::FdFlags;
-use rustix::net::{AddressFamily, SocketType};
 
 const LISTEN_PID: &str = "LISTEN_PID";
 const LISTEN_FDS: &str = "LISTEN_FDS";
@@ -232,68 +230,125 @@ fn parse_decimal(text: &str, variable: &'static str) -> Result<u32, ActivationEr
 }
 
 #[allow(unsafe_code)]
-fn adopt_raw(fd: RawFd, name: &str) -> Result<UnixListener, ActivationError> {
-    let target = std::fs::read_link(format!("/proc/self/fd/{fd}")).map_err(|_| {
-        ActivationError::NotASocket {
-            fd,
-            name: name.to_string(),
-        }
-    })?;
-    if !target
-        .as_os_str()
-        .as_encoded_bytes()
-        .starts_with(b"socket:")
-    {
-        return Err(ActivationError::NotASocket {
-            fd,
-            name: name.to_string(),
-        });
+mod raw {
+    use std::io;
+    use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+    use std::os::raw::{c_int, c_void};
+    use std::os::unix::net::UnixListener;
+
+    use rustix::io::FdFlags;
+    use rustix::net::{AddressFamily, SocketType};
+
+    use super::{ActivationError, RawFd};
+
+    const SOL_SOCKET: c_int = 1;
+    const SO_PEERCRED: c_int = 17;
+    const UCRED_BYTES: usize = 12;
+    const _: [(); 12] = [(); UCRED_BYTES];
+
+    extern "C" {
+        fn getsockopt(
+            fd: c_int,
+            level: c_int,
+            option: c_int,
+            value: *mut c_void,
+            length: *mut u32,
+        ) -> c_int;
     }
 
-    // SAFETY: production reaches this only through `take`, called first in `main` before
-    // any thread exists, after `parse` checked LISTEN_PID, the fd range and the once guard.
-    // Tests reach it only with a descriptor they own and release with `into_raw_fd`. A
-    // non-socket returns above, so `from_raw_fd` never sees a descriptor the caller still
-    // owns; after this line, `owned` is its unique owner.
-    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-    if rustix::net::sockopt::socket_domain(&owned) != Ok(AddressFamily::UNIX) {
-        return Err(ActivationError::WrongSocket {
-            fd,
-            name: name.to_string(),
-            want: "an AF_UNIX socket",
-        });
-    }
-    if rustix::net::sockopt::socket_type(&owned) != Ok(SocketType::STREAM) {
-        return Err(ActivationError::WrongSocket {
-            fd,
-            name: name.to_string(),
-            want: "a SOCK_STREAM socket",
-        });
-    }
-    if rustix::net::sockopt::socket_acceptconn(&owned) != Ok(true) {
-        return Err(ActivationError::WrongSocket {
-            fd,
-            name: name.to_string(),
-            want: "a listening socket",
-        });
-    }
-    rustix::io::fcntl_setfd(&owned, FdFlags::CLOEXEC).map_err(|_| {
-        ActivationError::FdOperation {
-            fd,
-            name: name.to_string(),
-            operation: "marked close-on-exec",
-        }
-    })?;
-    let listener = UnixListener::from(owned);
-    listener
-        .set_nonblocking(true)
-        .map_err(|_| ActivationError::FdOperation {
-            fd,
-            name: name.to_string(),
-            operation: "made non-blocking",
+    pub(super) fn adopt_raw(fd: RawFd, name: &str) -> Result<UnixListener, ActivationError> {
+        let target = std::fs::read_link(format!("/proc/self/fd/{fd}")).map_err(|_| {
+            ActivationError::NotASocket {
+                fd,
+                name: name.to_string(),
+            }
         })?;
-    Ok(listener)
+        if !target
+            .as_os_str()
+            .as_encoded_bytes()
+            .starts_with(b"socket:")
+        {
+            return Err(ActivationError::NotASocket {
+                fd,
+                name: name.to_string(),
+            });
+        }
+
+        // SAFETY: production reaches this only through `take`, called first in `main` before
+        // any thread exists, after `parse` checked LISTEN_PID, the fd range and the once guard.
+        // Tests reach it only with a descriptor they own and release with `into_raw_fd`. A
+        // non-socket returns above, so `from_raw_fd` never sees a descriptor the caller still
+        // owns; after this line, `owned` is its unique owner.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        if rustix::net::sockopt::socket_domain(&owned) != Ok(AddressFamily::UNIX) {
+            return Err(ActivationError::WrongSocket {
+                fd,
+                name: name.to_string(),
+                want: "an AF_UNIX socket",
+            });
+        }
+        if rustix::net::sockopt::socket_type(&owned) != Ok(SocketType::STREAM) {
+            return Err(ActivationError::WrongSocket {
+                fd,
+                name: name.to_string(),
+                want: "a SOCK_STREAM socket",
+            });
+        }
+        if rustix::net::sockopt::socket_acceptconn(&owned) != Ok(true) {
+            return Err(ActivationError::WrongSocket {
+                fd,
+                name: name.to_string(),
+                want: "a listening socket",
+            });
+        }
+        rustix::io::fcntl_setfd(&owned, FdFlags::CLOEXEC).map_err(|_| {
+            ActivationError::FdOperation {
+                fd,
+                name: name.to_string(),
+                operation: "marked close-on-exec",
+            }
+        })?;
+        let listener = UnixListener::from(owned);
+        listener
+            .set_nonblocking(true)
+            .map_err(|_| ActivationError::FdOperation {
+                fd,
+                name: name.to_string(),
+                operation: "made non-blocking",
+            })?;
+        Ok(listener)
+    }
+
+    /// Read the raw Linux `ucred` bytes and the length returned by `SO_PEERCRED`.
+    ///
+    /// The caller must verify that the length is exactly 12 before decoding the bytes. Keeping
+    /// the pid as raw bytes lets the caller handle pid 0 without rustix's `NonZeroI32` conversion.
+    pub fn peer_credentials_raw<Fd: AsFd>(fd: Fd) -> io::Result<([u8; UCRED_BYTES], u32)> {
+        let mut credentials = [0_u8; UCRED_BYTES];
+        let mut length = 12_u32;
+        // SAFETY: `fd` is a live borrowed socket descriptor. The `extern "C"` declaration above
+        // matches Linux's `getsockopt` ABI (`c_int` arguments/result, a `c_void` value pointer and
+        // `u32` `socklen_t`). `credentials` has exactly 12 writable bytes, and `length` points to a
+        // live socklen_t initialized to that capacity. Linux's `SO_PEERCRED` writes no more than
+        // the supplied capacity and reports the returned length.
+        let result = unsafe {
+            getsockopt(
+                fd.as_fd().as_raw_fd(),
+                SOL_SOCKET,
+                SO_PEERCRED,
+                credentials.as_mut_ptr().cast::<c_void>(),
+                &mut length,
+            )
+        };
+        if result == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((credentials, length))
+    }
 }
+
+use raw::adopt_raw;
+pub use raw::peer_credentials_raw;
 
 #[cfg(test)]
 mod tests {

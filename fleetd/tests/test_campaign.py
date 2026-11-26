@@ -41,7 +41,7 @@ from fleetd.transport import (
     shell_command,
 )
 from fleetd.runner_layout import progress_home_path
-from test_plan import DEMAND, _candidate, _candidate_table, _golden_8g_host_set
+from test_plan import DEMAND, _candidate, _candidate_table, _golden_8g_host_set, _set_value
 
 
 EXECUTION = {"schema": "fleet-plan-execution/1", "commit": "a" * 40, "project": "."}
@@ -1073,13 +1073,14 @@ def test_lost_host_requeues_only_unfinished_candidates_and_uses_largest_cap(tmp_
         host["id"] = f"host-{chr(ord('a') + index)}"
     host_a = next(host for host in hosts["hosts"] if host["id"] == "host-a")
     host_b = next(host for host in hosts["hosts"] if host["id"] == "host-b")
-    host_a["facts"]["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
+    _set_value(host_a["facts"], "control_plane", "profile_reserve_bytes", 768 * 1024**2)
+    assert host_a["facts"]["control_plane"]["profile_reserve_bytes"] == {"v": 768 * 1024**2}
     # Real reported floors (each within its documented ceiling) that sum to
     # 480 MiB, so host-b's reserve is 320 MiB below host-a's constant.
     service_mib = [20, 400, 40, 10, 5, 5]
     assert sum(service_mib) == 480
     host_b["facts"]["control_plane"]["service_memory_min"] = {
-        unit: {"memory_min_bytes": value * 1024**2, "load_state": "loaded"}
+        unit: {"memory_min_bytes": {"v": value * 1024**2}, "load_state": {"v": "loaded"}}
         for unit, value in zip(CONTROL_PLANE_SERVICE_UNITS, service_mib, strict=True)
     }
     plan = _plan(40, host_set=hosts)
@@ -2788,7 +2789,7 @@ def _plan_with_refused_shared_prod_host() -> dict:
         host["id"] = f"host-{chr(ord('a') + index)}"
     refused = copy.deepcopy(hosts["hosts"][0])
     refused["id"] = "host-shared-prod"
-    refused["facts"]["policy"]["host_role"] = "shared-prod"
+    _set_value(refused["facts"], "policy", "host_role", "shared-prod")
     hosts["hosts"].append(refused)
     candidates = [_candidate(f"refused-host-{index:03d}", 100 * 1024**2) for index in range(12)]
     plan = plan_campaign("r2", _candidate_table(candidates), hosts, DEMAND)

@@ -3685,8 +3685,11 @@ A CMRU release tag at HEAD is never a base; every release tag at HEAD is
 excluded before the ancestry checks. The base is the CALLER's comparison, and
 CMRU's two R2 tools (`tools/check_assay_baseline.py` and
 `tools/mutation_campaign.py`) say so to Assay themselves: both pass
-`delegated=True` to `assay.git.resolve_base(...)` and to
-`assay.git.base_resolution_mode(...)` (Assay B552), so the answer is
+`delegated=True` to `assay.git.resolve_base(...)` (Assay B552). The baseline
+checker includes the result of `assay.git.base_resolution_mode(...)` in its
+refusal detail when the effective base differs; it does not report the mode on
+a passing path. The mutation campaign does not call that helper or report the
+mode. The answer is
 `merge-base(base, HEAD)` rather than a merge HEAD's first parent. This is a
 keyword argument at the call site, not lane configuration: CMRU's own Assay
 lanes are `whole_target` and declare no base at all (`judge.base_source` is

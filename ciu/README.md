@@ -364,8 +364,14 @@ zipapp or fixed version is copied. The lane
 (`assay.toml`) executes the full suite under pytest-cov (whole-source 100%
 line+branch) inside Assay's isolated snapshot. The lane declares the complete
 R0-R3 ladder: changed-line coverage from `base..HEAD` (R1), native Python
-mutation with active liveness and fail-fast candidate execution (R2), and an
-import-break canary (R3), all bound to the same verdict. `--maxfail=1` stops a
+mutation with active liveness, a derived per-candidate bound and fail-fast
+candidate execution (R2), and an import-break canary (R3), all bound to the
+same verdict. Liveness ends an idle stall only; the per-candidate bound
+(`budget_per_candidate = "auto"`, derived from the run's own baseline) ends a
+candidate that keeps working. If no more than the derived bound remains in the
+lane, its deadline can end the lane as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` and
+leave that attempt unclassified; see [SPEC S18.2](docs/SPEC.md#s18--implementation-gate-assay-backed).
+`--maxfail=1` stops a
 failing mutant at its first failing test; green runs still execute the full
 suite.
 The
@@ -505,8 +511,9 @@ For a direct lane run, use `run-gate <lane>` from the installed wheel
 environment; there is no checkout-relative script dependency. Lane `ciu-gate`
 is the release gate (R0/R1/R3); lane `ciu` is the asynchronous R2 mutation
 campaign (latest release only) and declares `resource_observer = "cgprofile"`
-and `resources.pids` in `run-gate.toml` because native R2 liveness needs the
-cgroup observer. Run-Gate's
+and `resources.pids` in `run-gate.toml`, because every native R2 candidate is
+judged against observed candidate resource-limit counters; `liveness = true`
+is a separate declaration and reads its own procfs sources. Run-Gate's
 host mode runs in the environment invoking the CLI, including a cockpit when
 that is the consumer's choice. A stable, declared test environment gives
 repeatable dependencies and resource boundaries; MDT's cockpit policy

@@ -1,0 +1,30 @@
+{
+  "case": "event-point-ctx",
+  "doc": "event/1 body fixture generated from the independent Python codec",
+  "event": {
+    "t_mono_ns": 1,
+    "span": 0,
+    "peer_dev": 0,
+    "peer_inode": 0,
+    "uid": 1000,
+    "peer_pid": 42,
+    "kind": 3,
+    "outcome": 0,
+    "inferred": false,
+    "ctx": [
+      {
+        "key": 0,
+        "value": "run-1"
+      },
+      {
+        "key": 4,
+        "value": "session-1"
+      }
+    ],
+    "attrs": [],
+    "name": "run.point",
+    "key": "run.point",
+    "code": null,
+    "comm": "worker"
+  }
+}

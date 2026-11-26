@@ -239,7 +239,7 @@ pub fn hello_json(level: &str, overrides: &[(&str, u32)], boot: &str, epoch: u64
     }
     let limits = limits.join(",");
     let parts = [
-        "\"proto\":{\"major\":1,\"minor\":1}".to_owned(),
+        "\"proto\":{\"major\":1,\"minor\":2}".to_owned(),
         format!("\"level\":\"{level}\""),
         "\"server\":\"hostobsd\"".to_owned(),
         format!("\"boot_id\":\"{boot}\""),
@@ -256,7 +256,7 @@ pub const BOOT: &str = "00112233-4455-6677-8899-aabbccddeeff";
 
 /// The server's side of a successful handshake plus `tail`.
 pub fn session_bytes(level: Level, tail: &[u8]) -> Vec<u8> {
-    let mut out = prefix(1, 1);
+    let mut out = prefix(1, 2);
     out.extend(rep_ok(1, &hello_json(level.name(), &[], BOOT, 7)));
     out.extend_from_slice(tail);
     out

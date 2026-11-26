@@ -2192,7 +2192,7 @@
           "synopsis": null
         }
       ],
-      "description": "collect host-facts/1 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root",
+      "description": "collect host-facts/2 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root",
       "group": "EXPLORATION",
       "id": "route:entrypoint:fleet/facts/collect",
       "kind": "invocation",
@@ -2252,7 +2252,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "collect host-facts/1 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root",
+      "summary": "collect host-facts/2 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -2265,7 +2265,7 @@
           "choices": null,
           "const": null,
           "default": null,
-          "description": "host-facts/1 JSON file to validate",
+          "description": "host-facts/1 or host-facts/2 JSON file to validate",
           "help_group": "positional arguments",
           "hidden": false,
           "id": "argument:route:entrypoint:fleet/facts/validate/file",
@@ -2317,7 +2317,7 @@
           "synopsis": null
         }
       ],
-      "description": "validate a serialized host-facts/1 JSON file without contacting the host",
+      "description": "validate a serialized host-facts/1 or host-facts/2 JSON file without contacting the host",
       "group": "EXPLORATION",
       "id": "route:entrypoint:fleet/facts/validate",
       "kind": "invocation",
@@ -2377,7 +2377,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "validate a serialized host-facts/1 JSON file without contacting the host",
+      "summary": "validate a serialized host-facts/1 or host-facts/2 JSON file without contacting the host",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
