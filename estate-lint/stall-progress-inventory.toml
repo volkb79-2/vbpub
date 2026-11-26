@@ -1,0 +1,7 @@
+schema_version = 1
+
+# Every unbounded command lane needs a [[lanes]] record with progress evidence
+# proving a flushed stdout event at least every 300 seconds while healthy.
+# A [[wrappers]] record is reserved for a nested lane set that cannot be derived
+# from argv; name those members as "run-gate.toml#lane".
+lanes = []
