@@ -462,6 +462,7 @@ handle_remote_signal() {
     return 0
   fi
 
+  exec 2>&"$gate_stderr"
   trap ':' INT TERM
   stop_heartbeat
   if [[ -n "$remote_gate_pid" ]]; then
@@ -484,6 +485,7 @@ handle_remote_signal() {
   exit "$exit_status"
 }
 
+exec {gate_stderr}>&2
 trap 'handle_remote_signal INT 130' INT
 trap 'handle_remote_signal TERM 143' TERM
 

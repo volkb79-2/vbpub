@@ -570,7 +570,7 @@ def _heartbeat_sleep(ancestor: int, interval: int) -> tuple[int, int] | None:
 # publishes the seam under a side name and renames it into place, so a reader that
 # sees the file at all sees a whole one, and it holds until the test's release file
 # appears (the `finally` block always writes it) rather than for a counted number of
-# ticks.
+# ticks, and the `$PPID` check releases it if its pytest parent exits first.
 HEARTBEAT_TRAP_HOOK = (
     "trap() {\n"
     '  case "$*" in\n'
@@ -583,7 +583,7 @@ HEARTBEAT_TRAP_HOOK = (
     '  { printf \'%s\\t%s\\n\' "$BASHPID" "${!:-}"; jobs -p; } >"$ASSAY_HEARTBEAT_TRAP_SEAM.tmp"\n'
     '  mv -f -- "$ASSAY_HEARTBEAT_TRAP_SEAM.tmp" "$ASSAY_HEARTBEAT_TRAP_SEAM"\n'
     '  builtin trap "$@"\n'
-    '  while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" ]] && kill -0 "$PPID" 2>/dev/null; do\n'
+    '  while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" ]] && builtin kill -0 "$PPID" 2>/dev/null; do\n'
     "    /bin/sleep 0.01\n"
     "  done\n"
     "}\n"
@@ -763,17 +763,25 @@ def test_release_gate_does_not_signal_the_reaped_client_while_stopping_heartbeat
         '  mv -f -- "$side" "$path"\n'
         "}\n"
         "kill() {\n"
-        "  local child_pid\n"
-        '  if [[ "${1:-}" == "-s" && "${2:-}" == "TERM" && -f "$ASSAY_REMOTE_CHILD_PID" ]]; then\n'
+        "  local child_pid arg prior= includes_child=false is_liveness=false\n"
+        '  if [[ -f "$ASSAY_REMOTE_CHILD_PID" ]]; then\n'
         '    IFS= read -r child_pid <"$ASSAY_REMOTE_CHILD_PID"\n'
-        '    if [[ "${3:-}" == "$child_pid" ]]; then\n'
-        '      publish_event "$ASSAY_REAPED_CLIENT_SIGNAL" "$*"\n'
+        '    for arg in "$@"; do\n'
+        '      [[ "$arg" == "$child_pid" ]] && includes_child=true\n'
+        '      [[ "$arg" == "-0" ]] && is_liveness=true\n'
+        "    done\n"
+        '    if [[ "$includes_child" == true && "$is_liveness" == false ]]; then\n'
+        '      if [[ -f "$ASSAY_REAPED_CLIENT_SIGNAL" ]]; then\n'
+        '        prior="$(<"$ASSAY_REAPED_CLIENT_SIGNAL")"\n'
+        "        prior+=$'\\n'\n"
+        "      fi\n"
+        '      publish_event "$ASSAY_REAPED_CLIENT_SIGNAL" "${prior}$*"\n'
         "      return 0\n"
         "    fi\n"
         "  fi\n"
         '  if [[ "$#" == 1 && ! -e "$ASSAY_STOP_HEARTBEAT_HELD" ]]; then\n'
         '    publish_event "$ASSAY_STOP_HEARTBEAT_HELD" "$1"\n'
-        '    while [[ ! -e "$ASSAY_STOP_HEARTBEAT_RELEASE" ]] && /bin/kill -0 "$PPID" 2>/dev/null; do\n'
+        '    while [[ ! -e "$ASSAY_STOP_HEARTBEAT_RELEASE" ]] && builtin kill -0 "$PPID" 2>/dev/null; do\n'
         '      /bin/sleep 0.01\n'
         "    done\n"
         "  fi\n"
@@ -798,6 +806,9 @@ def test_release_gate_does_not_signal_the_reaped_client_while_stopping_heartbeat
             "the wrapper to hold inside stop_heartbeat after the remote wait",
         )
         child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        assert _pid_state(child_pid) is None, (
+            "the remote client must already be reaped while stop_heartbeat is held"
+        )
         wrapper.proc.send_signal(signal.SIGTERM)
         _publish_text(release, "go")
         wrapper.wait_for(
