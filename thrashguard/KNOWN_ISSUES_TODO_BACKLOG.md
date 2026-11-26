@@ -137,3 +137,32 @@ the documented tool, and a hand-written index would be a file that pretends to b
 generated. **Wanted.** Either the verb is built (the platform side of this), or
 the format document records that `INDEX.md` is optional until it is, and
 `check` tolerates its absence. Until then this project ships no `INDEX.md`.
+
+## TG-11 — The project is not registered in `cmru.orchestration.toml`, and cannot be yet
+
+**State:** blocked · **Severity:** medium · **Owner:** core · **Links:** blocked-by operator, cmru.orchestration.toml, docs/BOOTSTRAP-FROM-ZERO.md, docs/design/thrashguard/DESIGN.md §5
+
+**Problem.** Design §5 packages thrashguard as a `cmru`-managed repo project, and
+`estate-lint` judges every project the orchestration declares. Registration needs
+an `[orchestration.project.thrashguard]` entry, which needs a `config` path
+(`cmru/src/cmru/config.py:1739`), which needs a `thrashguard/cmru.toml` — and that
+file needs a real release contract: `[project] artifacts`, a `build_step`, and
+explicitly declared `run-tests` and `push` steps
+(`config.py:1508-1530`). A Rust binary is not a wheel, and the only artifact kind
+that fits is `tarball` (`config.py:690`); but cmru ships **no tarball build handler
+at all** (only `tarball-publish`/`tarball-validate`, `handlers.py:1254`, `:1277`)
+and no Rust build path outside the gate image. So a `cmru.toml` written today
+would have a build step that cannot build anything, which is exactly the
+"declared but never run" shape the estate forbids. Registering it in the graph
+without a config is refused by the loader, and nothing in the estate currently
+requires the entry: a project that is absent from the graph is simply not judged.
+
+**Wanted.** An operator decision on one of: (a) a small `tools/package-release.sh`
+that builds the binary in `tester-unified-rust` and emits
+`dist/thrashguard-v<ver>.tar.xz`, wired as the `build` step with `tarball-publish`
+as `push`, then the orchestration entry plus a regenerated `project-order` block;
+(b) register the project as an `oci-image` artifact instead, building the daemon
+image with the existing `oci-image-build` handler; (c) leave it unregistered until
+the first release wave and record that in the design. Until one is chosen do not
+touch `cmru.orchestration.toml`: a half-valid config breaks `cmru dependencies`
+for the whole estate, and every test that loads the root orchestration parses it.
