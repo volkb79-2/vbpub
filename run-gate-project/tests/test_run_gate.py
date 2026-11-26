@@ -33436,8 +33436,15 @@ class TestDispatchOptionRefusals:
         (["footprint", "--lane", "unit"], "requires footprint --write"),
         (["footprint", "unit", "--write", "--lane", "other"],
          "either the positional footprint query lane"),
-        (["suite", "--rejudge-outcome", "FAIL"],
-         "requires at least one --rejudge ID"),
+        # RG-297: `--rejudge-outcome` without `--rejudge` used to be refused
+        # HERE, before any config lookup. That rule is Assay's now (a bucket
+        # is documented as a union with the `--rejudge` ids). The replacement
+        # coverage of the OWN-FLAG form (`run-gate r2 --rejudge-outcome
+        # killed`, no `--`) is
+        # test_run_gate_assay_forward.py::
+        # test_the_own_rejudge_outcome_flag_reaches_the_judge_argv, which asserts
+        # the flag reaches the judge's argv exactly once; the forwarded form
+        # is test_rejudge_outcome_without_rejudge_reaches_the_judge_argv there.
         (["doctor", "--json"], "honored by the `history`/`footprint`/`status"),
         (["suite", "--write"], "honored by the `footprint` verb only"),
         (["doctor", "--lock-wait", "1m"], "applies to a lane run only"),
@@ -35300,7 +35307,10 @@ class TestLaneDeadlineEnforcement:
         for argv, message in [
             (["gate", "--", "--file", "one.py"], "cannot accept selective"),
             (["gate", "--rejudge", "case"], "apply to one assay member"),
-            (["assay", "--", "--file", "one.py"], "assay lane"),
+            # RG-297: an assay lane now ACCEPTS arguments after `--`; the
+            # flags Run-Gate injects itself stay refused by name.
+            (["assay", "--", "--file", "one.py"],
+             "--file is injected by Run-Gate"),
             (["command", "--reuse-from", "prior.json"], "assay-only flags"),
             (["assay", "--rejudge", ""], "non-empty candidate ID"),
             (["assay", "--rejudge", "case", "--rejudge-outcome", ""],

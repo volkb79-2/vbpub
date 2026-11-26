@@ -17,8 +17,20 @@ ROOT_CMRU_ARTIFACTS = (
 # cli-extended is deliberately absent: it is a real wheel dependency installed in
 # the gate environment, so a fixture must never carry (and tests never import) a
 # vendored copy of its source.
+# test-policy is the other half of the same story: cmru's `tests/conftest.py` does
+# not import it as a wheel but locates `libraries/test-policy/src` from the copied
+# suite and puts it on `sys.path` before `import estate_test_policy`, so a fixture
+# without that tree fails collection (`RuntimeError: cannot locate
+# libraries/test-policy/src from cmru tests`) before a single mutant is judged.
 SHARED_LIBRARIES = (
     Path("libraries/worktree"),
+    # Only the import tree: conftest reads `.../src` and nothing else from the
+    # library, and a whole-project pathspec would put the library's own released
+    # outputs (`artifacts/`, `evidence/`, `logs/`) inside the campaign's
+    # dirty-check pathspecs, refusing a checkout that is committed and clean
+    # (`mutation_campaign._is_generated_ignored_path` excuses caches only, by
+    # design). A tree pathspec still selects every tracked file below `src`.
+    Path("libraries/test-policy/src"),
 )
 # Tracked repository-root inputs the full suite reads in this fixture. The tests
 # that judge tester-unified, nyxloom and the whole estate skip here ("isolated
