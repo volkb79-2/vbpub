@@ -14,7 +14,7 @@ not measured or not read). Citations `@14f81bb97` are P4's unmerged branch
 
 | # | Decision | Reason |
 |---|---|---|
-| D1 | No verdict, bucket or rung reads the resource source. Every CPU bound and liveness rule reads only assay's own process-tree CPU reader, identical in `none` and `hostobs` mode; hostobs data feeds the summary, and later freeze attribution (§3), only. | A verdict that changed with the presence of a daemon would break judge identity and resume. `none` is the working default (hostobs reply). |
+| D1 | No verdict, bucket or rung reads the resource source. Every CPU bound and liveness rule reads only assay's own process-tree CPU reader, identical in `none` and `hostobs` mode; hostobs data feeds the summary, and later freeze attribution (§3), only. Restated by A2 (`VERDICT-V21-DELTA.md` §8.7): freeze data may only shorten wall idle clocks and re-run a freeze-overlapping `hung`, both non-judgement. | A verdict that changed with the presence of a daemon would break judge identity and resume. `none` is the working default (hostobs reply). |
 | D2 | Source interface `hostobs` \| `none`, default `none`; `hostobs` imports `hostobs_client` lazily from `PYTHONPATH=hostobs/python`; any failure = disclosed `unknown`, never a refusal, never zero. | Operator 01:1xZ; hostobs reply; keep-simple rule. |
 | D3 | `effective_cpu_s = cpu_s`. No freeze subtraction from CPU. Freeze data is for the WALL-based clocks (idle and session-finish windows, `avg_cores`'s denominator) and for attribution of a hung candidate. | A frozen cgroup's tasks do not run, so they accrue no CPU time (thrashguard §4b, M4). |
 | D4 | Freeze intervals only from hostobs M3 `events`; absent, lost or unmatched = `null` + reason, never 0; `null` propagates to every value derived from it. | Binding note N1; thrashguard §4. |
@@ -254,12 +254,13 @@ A4 records the observed `candidate_cpu / baseline_cpu` spread of surviving candi
   candidate re-runs. Survived and test-killed results do not depend on time and carry as today.
   Records without `bound_policy` (before v21) re-run their timeout kills.
 - Wall time: the lane and campaign deadlines may stop a run; what they leave is the A2
-  non-judgement result (e.g. `INCONCLUSIVE` + `WALL_STOP`, A2 fixes the name), never a candidate
-  or rung decision.
+  non-judgement result (A2 fixed it: `BUDGET_EXCEEDED` + `LANE_TIMEOUT`, exit 4, `VERDICT-V21-DELTA.md`
+  §8.1 b), never a candidate or rung decision. The compared `bound_policy` fields are fixed in §8.4
+  there; `baseline_ref_cpu_s` (B_ref) is stored, not compared.
 
 ## 7. Summary and shape fields
 
-Run level, `judgment.r2.cpu_time` (A2 fixes the path), object, scheduling HINT only:
+Run level, `judgment.r2.cpu_time` (path fixed by A2, optional, native only), object, scheduling HINT only:
 
 | Field | Type | Meaning | Today | `unknown` form |
 |---|---|---|---|---|
@@ -280,7 +281,8 @@ Run level, `judgment.r2.cpu_time` (A2 fixes the path), object, scheduling HINT o
 else `io-wait` if `io_wait_share ≥ 0.2`; else `contention` if `cpu_pressure_share ≥ 0.2`; else
 `serial` if `avg_cores < 1.5`; else `unknown`. Thresholds are hint-level, never a gate.
 
-Per candidate (store record and verdict): `cpu_s` (float|null), `cpu_quality` (`exact` via
+Per candidate (store record and progress `candidate` event; A2 keeps them out of the verdict,
+`VERDICT-V21-DELTA.md` §8.3 S3): `cpu_s` (float|null), `cpu_quality` (`exact` via
 `wait4`, `sampled`, `unknown`), `frozen_s` (float|null). No per-candidate `ref_cpu_s`: one run is
 one host, so it is `cpu_s × ref_factor`; storing it would only add a value that can disagree.
 
@@ -290,7 +292,8 @@ one host, so it is `cpu_s × ref_factor`; storing it would only add a value that
   so they go in the v21 cut: the `cpu_time` block of §7; per-candidate `cpu_s`, `cpu_quality`,
   `frozen_s`; `bound_policy` (§6.4) in run and store records; evidence policy
   `cpu-since-completed-event-v2` accepted by the store validator; `per-test-cpu-bound` evidence
-  gains `per_test_baseline_cpu_s`. None of these needs P-13 [U: P-13 design not read].
+  gains `per_test_baseline_cpu_s`. None of these needs P-13. Final field list and paths:
+  `VERDICT-V21-DELTA.md` §8.3 (F5-F7, S1-S3).
 - **A9**: `resource_source.py`, `none` and `hostobs` sources (§1, §2), lane key, lazy import,
   freeze-interval matching (§3) behind `"events" in verbs`; SPEC TIM-015/020 rewrite (Opus).
 - **A4**: §4.2 reader changes (`cutime/cstime`, `wait4`, in-process per-test CPU), §6 derivation
