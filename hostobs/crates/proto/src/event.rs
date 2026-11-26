@@ -5,7 +5,7 @@
 //! section. Kind 7 is therefore not added to the BLOCK section vocabulary.
 
 use crate::error::{ProtoError, MAX_FRAME_BYTES};
-use crate::frame::{FrameType, FRAME_HEADER_LEN, FLAG_SECTIONED};
+use crate::frame::{FrameType, FLAG_SECTIONED, FRAME_HEADER_LEN};
 use crate::write::Writer;
 
 /// The event/1 section kind, local to stored EVT frames.
