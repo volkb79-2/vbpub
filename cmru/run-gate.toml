@@ -282,6 +282,20 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+if ! /opt/tester-venv/bin/python - "$@" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / "tools"))
+from mutation_campaign import validate_r2_lane_args
+try:
+    validate_r2_lane_args(sys.argv[1:])
+except ValueError as exc:
+    print(f"r2: {exc}", file=sys.stderr)
+    sys.exit(2)
+PY
+then
+    exit 2
+fi
 BASE="{base}"
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay

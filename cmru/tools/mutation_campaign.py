@@ -505,6 +505,18 @@ def _parse_shard_spec(raw: str) -> tuple[int, int]:
     return index, count
 
 
+def validate_r2_lane_args(argv: Sequence[str]) -> tuple[int, int] | None:
+    """Accept no lane args or exactly the shard selector, before lane setup."""
+    if not argv:
+        return None
+    if len(argv) != 2 or argv[0] != "--shard":
+        raise ValueError("only --shard K/N is accepted by the r2 lane")
+    try:
+        return _parse_shard_spec(argv[1])
+    except ValueError as exc:
+        raise ValueError(f"invalid r2 lane shard selector: {exc}") from exc
+
+
 def _candidate_manifest(jobs: Sequence[Any]) -> list[dict[str, Any]]:
     """Return the full, ordered identity manifest used by every shard."""
     return [
@@ -759,12 +771,28 @@ def _validate_baseline_evidence(document: dict[str, Any], *, shard_label: str) -
     tree = document.get("baseline_process_tree_evidence")
     if (
         not isinstance(tree, dict)
+        or set(tree) != {
+            "protocol", "leader_status", "group_signalled_before_reap",
+            "outliving_descendants", "descendants_signalled", "signal",
+            "descendants", "clean",
+        }
         or tree.get("protocol") != "assay-process-tree/2"
         or tree.get("leader_status") != "exited"
+        or tree.get("group_signalled_before_reap") is not False
         or tree.get("outliving_descendants") != 0
+        or tree.get("descendants_signalled") != 0
+        or tree.get("signal") is not None
+        or tree.get("descendants") != []
         or tree.get("clean") is not True
     ):
         raise ValueError(f"shard {shard_label}: baseline process tree is not clean")
+    if document.get("baseline_termination") != "exit":
+        raise ValueError(f"shard {shard_label}: baseline termination must be exit")
+    advisories = document.get("baseline_resource_limit_advisories")
+    if not isinstance(advisories, list) or any(
+        not isinstance(item, str) or not item for item in advisories
+    ):
+        raise ValueError(f"shard {shard_label}: invalid baseline resource advisories")
     _validate_silence_evidence(
         document.get("baseline_silence_evidence"),
         source=f"shard {shard_label}: baseline",
@@ -791,10 +819,59 @@ def _validate_baseline_evidence(document: dict[str, Any], *, shard_label: str) -
         raise ValueError(f"shard {shard_label}: candidate silence bounds disagree with control evidence")
 
 
+def _validate_merge_common_fields(document: dict[str, Any], *, shard_label: str) -> None:
+    for field in (
+        "head", "base", "project_prefix", "assay_source_commit",
+        "assay_distribution_version",
+    ):
+        if not isinstance(document.get(field), str) or not document[field]:
+            raise ValueError(f"shard {shard_label}: missing non-empty common field {field}")
+    if type(document.get("candidate_count")) is not int or document["candidate_count"] < 1:
+        raise ValueError(f"shard {shard_label}: candidate_count must be positive")
+    if not isinstance(document.get("test_argv"), list) or not document["test_argv"] or any(
+        not isinstance(argument, str) or not argument for argument in document["test_argv"]
+    ):
+        raise ValueError(f"shard {shard_label}: test_argv must be a non-empty string list")
+    if not isinstance(document.get("test_manifest"), dict) or not document["test_manifest"]:
+        raise ValueError(f"shard {shard_label}: test_manifest must be non-empty")
+    if not isinstance(document.get("operators"), list) or not document["operators"] or any(
+        not isinstance(operator, str) or not operator for operator in document["operators"]
+    ):
+        raise ValueError(f"shard {shard_label}: operators must be a non-empty string list")
+    if type(document.get("max_mutants")) is not int or document["max_mutants"] < 1:
+        raise ValueError(f"shard {shard_label}: max_mutants must be positive")
+    if document.get("silence_policy") != _IDLE_BOUND_POLICY:
+        raise ValueError(f"shard {shard_label}: silence_policy does not match schema 8")
+
+
+def _prepare_merge_output(evidence_paths: Sequence[Path], output_path: Path) -> None:
+    """Remove a stale merge result only after proving it aliases no input."""
+    resolved_paths = [path.resolve(strict=False) for path in evidence_paths]
+    if len(set(resolved_paths)) != len(resolved_paths):
+        raise ValueError("--merge-shards received the same --shard-evidence path more than once")
+    if output_path.resolve(strict=False) in resolved_paths:
+        raise ValueError("--merge-output must not replace a --shard-evidence file")
+    if not (output_path.exists() or output_path.is_symlink()):
+        return
+    for path in evidence_paths:
+        if path.exists():
+            try:
+                is_same_file = os.path.samefile(output_path, path)
+            except OSError as exc:
+                raise ValueError(
+                    "cannot verify whether --merge-output aliases --shard-evidence"
+                ) from exc
+            if is_same_file:
+                raise ValueError("--merge-output must not be the same file as --shard-evidence")
+    if output_path.is_file() or output_path.is_symlink():
+        output_path.unlink()
+
+
 def merge_shard_evidence(
     *, shard_count: int, evidence_paths: Sequence[Path], output_path: Path,
 ) -> dict[str, Any]:
     """Validate exactly one complete evidence document for every shard."""
+    _prepare_merge_output(evidence_paths, output_path)
     if type(shard_count) is not int or shard_count < 1:
         raise ValueError(f"--merge-shards COUNT must be positive, got {shard_count}")
     if len(evidence_paths) != shard_count:
@@ -802,12 +879,6 @@ def merge_shard_evidence(
             f"--merge-shards {shard_count} requires exactly {shard_count} "
             f"--shard-evidence paths, got {len(evidence_paths)}"
         )
-    resolved_paths = [path.resolve(strict=False) for path in evidence_paths]
-    if len(set(resolved_paths)) != len(resolved_paths):
-        raise ValueError("--merge-shards received the same --shard-evidence path more than once")
-    if output_path.resolve(strict=False) in resolved_paths:
-        raise ValueError("--merge-output must not replace a --shard-evidence file")
-
     documents: dict[int, tuple[Path, dict[str, Any]]] = {}
     common_fields = (
         "head", "base", "candidate_count", "candidate_manifest", "project_prefix",
@@ -860,6 +931,8 @@ def merge_shard_evidence(
         ):
             raise ValueError(f"shard {label} in {path}: missing completed shard outcome")
 
+        _validate_merge_common_fields(document, shard_label=label)
+        _validate_baseline_evidence(document, shard_label=label)
         current_manifest = _validate_manifest(document.get("candidate_manifest"), source=path)
         if (
             type(document.get("candidate_count")) is not int
@@ -1844,6 +1917,8 @@ def _run_campaign(
     argv: Sequence[str] | None = None, *, template_root: Path,
 ) -> int:
     args = _parser().parse_args(argv)
+    if args.merge_output is not None:
+        _prepare_merge_output(args.shard_evidence, args.merge_output)
     if args.merge_shards is not None:
         if args.shard is not None:
             raise ValueError("--merge-shards cannot be combined with --shard")

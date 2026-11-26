@@ -1324,7 +1324,7 @@ def _with_process_tree_contract(document, *, jobs=None):
 
 def _shard_evidence_document(
     shard_index, shard_count, *, head="head", base="base", manifest_change=None,
-    missing_candidate=None, survivor_candidate=None,
+    missing_candidate=None, survivor_candidate=None, timeout_candidate=None,
 ):
     jobs = [_job(line=20 + index) for index in range(5)]
     manifest = mutation_campaign._candidate_manifest(jobs)
@@ -1337,16 +1337,19 @@ def _shard_evidence_document(
     for candidate_index in candidate_indices:
         if candidate_index == missing_candidate:
             continue
+        idle_stopped = candidate_index == timeout_candidate
         returncode = 0 if candidate_index == survivor_candidate else 1
         result = mutation_campaign._candidate_result(
             jobs[candidate_index],
-            returncode=returncode,
+            returncode=None if idle_stopped else returncode,
             elapsed_seconds=1,
-            idle_stopped=False,
+            idle_stopped=idle_stopped,
             resource_limit_evidence=ResourceLimitEvidence.from_dict(
                 _zero_resource_evidence()
             ),
-            process_tree_evidence=_process_tree_evidence(),
+            process_tree_evidence=_process_tree_evidence(
+                leader_status="timeout-killed" if idle_stopped else "exited",
+            ),
             silence_evidence=_silence_evidence(),
         )
         results[candidate_index] = asdict(result)
@@ -1419,13 +1422,37 @@ def test_shard_spec_uses_assay_zero_based_syntax_and_ordered_round_robin():
         mutation_campaign._parse_shard_spec("1 of 3")
 
 
-def test_r2_lane_forwards_arguments_to_the_mutation_campaign():
+def test_r2_lane_guard_runs_before_expensive_steps_and_forwards_only_a_shard():
     config = tomllib.loads((REPO_ROOT / "cmru" / "run-gate.toml").read_text(encoding="utf-8"))
     lane = config["lanes"]["r2"]
     command = "\n".join(lane["argv"])
 
     assert lane["accepts_args"] is True
+    assert "validate_r2_lane_args(sys.argv[1:])" in command
+    assert command.index("validate_r2_lane_args") < command.index("check_assay_source.py")
+    assert command.index("validate_r2_lane_args") < command.index("pip install")
+    assert command.index("validate_r2_lane_args") < command.index("local_baseline_facts.py")
     assert '--resume "$@" --' in command
+
+
+def test_r2_lane_argument_guard_accepts_only_empty_or_one_shard_selector():
+    assert mutation_campaign.validate_r2_lane_args([]) is None
+    assert mutation_campaign.validate_r2_lane_args(["--shard", "1/3"]) == (1, 3)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--base", "HEAD~1"],
+        ["--help"],
+        ["--evidence", "somewhere.json"],
+        ["--shard", "0/3", "--"],
+        ["--shard", "3/3"],
+    ],
+)
+def test_r2_lane_argument_guard_refuses_overrides_and_malformed_shards(argv):
+    with pytest.raises(ValueError):
+        mutation_campaign.validate_r2_lane_args(argv)
 
 
 def test_merge_requires_exactly_one_complete_evidence_file_per_shard(tmp_path):
@@ -1463,6 +1490,7 @@ def test_merge_requires_exactly_one_complete_evidence_file_per_shard(tmp_path):
         mutation_campaign._run_campaign(
             [*cli_argv, "--base", "ignored"], template_root=tmp_path,
         )
+    assert not cli_output.exists()
 
     with pytest.raises(ValueError, match="requires exactly 3 .* got 2"):
         mutation_campaign.merge_shard_evidence(
@@ -1523,6 +1551,115 @@ def test_merge_marks_whole_change_failed_when_a_complete_shard_has_a_survivor(tm
     assert merged["scope"] == "whole"
     assert merged["status"] == "failed"
     assert merged["results"][1]["outcome"] == "survived"
+
+
+def test_merge_keeps_candidate_timeout_in_its_own_failed_bucket(tmp_path):
+    paths = [
+        _write_shard_document(
+            tmp_path / f"shard-{index}.json",
+            _shard_evidence_document(
+                index, 3, timeout_candidate=0 if index == 0 else None,
+            ),
+        )
+        for index in range(3)
+    ]
+
+    merged = mutation_campaign.merge_shard_evidence(
+        shard_count=3,
+        evidence_paths=paths,
+        output_path=tmp_path / "merged.json",
+    )
+
+    assert merged["status"] == "failed"
+    assert merged["results"][0]["outcome"] == "timeout"
+    assert merged["results"][0]["termination"] == "no-output"
+    assert merged["results"][0]["exit_code"] == 124
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"baseline_exit_code": 2}, "baseline_exit_code must be 0"),
+        ({"baseline_resource_limit": True}, "baseline resource limit was hit"),
+        ({"baseline_tree_clean": False}, "baseline process tree is not clean"),
+        ({"head": ""}, "missing non-empty common field head"),
+        ({"assay_source_commit": ""}, "missing non-empty common field assay_source_commit"),
+        ({"candidate_count": 0}, "candidate_count must be positive"),
+        ({"test_argv": []}, "test_argv must be a non-empty string list"),
+        ({"test_manifest": {}}, "test_manifest must be non-empty"),
+        ({"operators": []}, "operators must be a non-empty string list"),
+        ({"max_mutants": 0}, "max_mutants must be positive"),
+        ({"silence_policy": {}}, "silence_policy does not match schema 8"),
+    ],
+)
+def test_merge_requires_clean_baseline_and_nonempty_common_fields(
+    tmp_path, change, message,
+):
+    paths = []
+    for index in range(3):
+        document = _shard_evidence_document(index, 3)
+        if index == 1:
+            if "baseline_exit_code" in change:
+                document["baseline_exit_code"] = change["baseline_exit_code"]
+            if change.get("baseline_resource_limit"):
+                document["baseline_resource_limit_evidence"] = _limited_resource_evidence()
+            if "baseline_tree_clean" in change:
+                document["baseline_process_tree_evidence"]["clean"] = change["baseline_tree_clean"]
+            for field in (
+                "head", "base", "project_prefix", "assay_source_commit",
+                "assay_distribution_version", "candidate_count", "test_argv",
+                "test_manifest", "operators", "max_mutants", "silence_policy",
+            ):
+                if field in change:
+                    document[field] = change[field]
+        paths.append(_write_shard_document(tmp_path / f"shard-{index}.json", document))
+
+    with pytest.raises(ValueError, match=message):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3,
+            evidence_paths=paths,
+            output_path=tmp_path / "merged.json",
+        )
+
+
+def test_refused_merge_removes_stale_pass_file_after_alias_checks(tmp_path):
+    paths = [
+        _write_shard_document(
+            tmp_path / f"shard-{index}.json",
+            _shard_evidence_document(index, 3),
+        )
+        for index in range(3)
+    ]
+    paths[1].write_text('{"schema_version": 7}\n', encoding="utf-8")
+    output = tmp_path / "merged.json"
+    output.write_text('{"scope":"whole","status":"passed"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported schema_version; expected 8, got 7"):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3,
+            evidence_paths=paths,
+            output_path=output,
+        )
+
+    assert not output.exists()
+
+
+def test_merge_same_file_alias_check_preserves_the_input_evidence_path(tmp_path):
+    evidence = _write_shard_document(
+        tmp_path / "shard.json", _shard_evidence_document(0, 1),
+    )
+    hard_link = tmp_path / "merge-hard-link.json"
+    hard_link.hardlink_to(evidence)
+
+    with pytest.raises(ValueError, match="same file as --shard-evidence"):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=1,
+            evidence_paths=[evidence],
+            output_path=hard_link,
+        )
+
+    assert evidence.is_file()
+    assert hard_link.is_file()
 
 
 def _make_resume_case(
@@ -2182,6 +2319,14 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
     assert resumed[1] is None
     assert resumed[2] is None  # timeout outcomes are retried, never reused.
 
+    document = json.loads(evidence.read_text(encoding="utf-8"))
+    document["results"][0]["silence_evidence"]["idle_window_seconds"] += 1
+    document["results"][0]["silence_evidence"]["pressure_credit_cap_seconds"] -= 1
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="mismatched silence bounds for candidate 0"):
+        resume_results()
+    evidence.write_text(json.dumps(_with_process_tree_contract(previous)), encoding="utf-8")
+
     with pytest.raises(ValueError, match="does not match this campaign"):
         mutation_campaign._resume_results(
             evidence_path=evidence,
@@ -2195,7 +2340,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
             assay_git=assay_git,
             test_argv=["pytest", "tests"],
             jobs=jobs,
-            max_mutants=10,
+            max_mutants=11,
             silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
