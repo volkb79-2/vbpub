@@ -25,11 +25,12 @@ disagree with this document, this document (and the code it cites) wins.
 
 - **PUR-010** assay judges ONE lane of ONE commit and states the result as a
   verdict whose exit code alone is never wrong: a consumer that reads only the
-  exit code MUST NOT be misled. `src/assay/errors.py:6`
+  exit code MUST NOT be misled, except for the explicit dirty-tree override
+  recorded under CON-075. `src/assay/errors.py:6`
 - **PUR-020** assay measures; it does not choose. It runs exactly the command
-  a lane declares, never discovers or retries tests on its own (outside the
-  named R2 mechanics), and never turns an absent measurement into a pass.
-  `src/assay/verdict.py:21`, `src/assay/verdict.py:972`
+  a lane declares, never discovers tests, never retries them except under
+  RIG-365, and never turns an absent measurement into a pass.
+  `src/assay/cli.py:360`, `src/assay/verdict.py:972`
 - **PUR-030** Rigor is the strength of evidence: R0 the command succeeded,
   R1 the changed (or targeted) code was executed, R2 the tests kill
   mutations of it, R3 a known defect is caught. Each declared level is a
@@ -71,19 +72,36 @@ What would help more, or be cleaner (non-normative):
 
 ### 2.1 R0 — the command
 
-- **RIG-110** R0 runs the lane's effective argv once. It PASSes iff the exit
-  status is 0, or, when the lane declares `result_report`, iff the verified
-  report counts zero failures (a non-zero exit then still PASSes). Otherwise
-  `FAIL/COMMAND_FAILED`. `src/assay/runner.py:1977`, `src/assay/runner.py:2023`
+- **RIG-110** R0 runs the lane's effective argv once. Without `result_report`
+  it PASSes iff the exit status is 0. With `result_report` the verified report
+  decides both ways: zero failures PASSes over a non-zero exit, any failure
+  FAILs over exit 0. A completed command that does not pass is
+  `FAIL/COMMAND_FAILED`; a lane timeout is `BUDGET_EXCEEDED/LANE_TIMEOUT`;
+  failure to execute, or descendants outliving the leader, is
+  `ERROR/EXEC_FAILED`. `src/assay/runner.py:1977`, `src/assay/runner.py:2023`,
+  `src/assay/runner.py:1842`, `src/assay/runner.py:1921`
   Cleaner future design: a report-decided PASS over a non-zero exit is
   visible only as present output tails; record the override as an explicit
   field.
 - **RIG-120** An R0-only lane runs in the live checkout; any lane declaring a
   higher level runs in a committed-object snapshot.
   `src/assay/runner.py:8489`
-- **RIG-130** After the command, a dirty snapshot is `NO_MEASUREMENT/DIRTY_TREE`;
-  a clean tree whose HEAD moved is `NO_MEASUREMENT/HEAD_CHANGED`; dirt takes
-  precedence. `src/assay/runner.py:4267`
+- **RIG-130** Before the command, a snapshot lane refuses
+  `NO_MEASUREMENT/DIRTY_TREE` when the loaded `assay.toml` is uncommitted, or
+  when an uncommitted path matches no `isolation.dirty_ignore` pattern and
+  `--allow-dirty` is absent. An R0-only lane refuses any uncommitted path in
+  the live tree; `--allow-dirty` does not apply to it. After the command (live
+  tree for R0, the snapshot otherwise, each mutant's snapshot for native R2) a
+  dirty tree is `NO_MEASUREMENT/DIRTY_TREE` and a clean tree whose HEAD moved
+  is `NO_MEASUREMENT/HEAD_CHANGED`; dirt takes precedence. Dirt or HEAD drift
+  left by a mutant refuses the lane and is never bucketed `crashed`.
+  `src/assay/runner.py:3661`, `src/assay/runner.py:3681`,
+  `src/assay/runner.py:4267`, `src/assay/runner.py:8557`,
+  `src/assay/runner.py:8840`, `src/assay/mutation.py:2092`,
+  `src/assay/mutation.py:4795`
+- **RIG-135** With `--allow-dirty`, admitted paths are recorded in
+  `worktree_integrity.overridden_dirty_paths` and `dirty_ignore` matches in
+  `ignored_dirty_paths`. `src/assay/cli.py:434`, `src/assay/runner.py:3693`
 
 ### 2.2 R1 — coverage
 
@@ -110,7 +128,8 @@ What would help more, or be cleaner (non-normative):
   over an artifact without branch data → `BRANCH_UNAVAILABLE`; a whole_target
   target absent or with zero executable lines → `TARGET_NOT_MEASURED`;
   base equals HEAD → `BASE_IS_HEAD`. `src/assay/coverage.py:335`,
-  `src/assay/runner.py:2918`, `src/assay/evaluate.py:1297`,
+  `src/assay/runner.py:2918`, `src/assay/runner.py:2929`,
+  `src/assay/evaluate.py:1297`,
   `src/assay/measurability.py:102`
 - **RIG-250** Coverage formats are closed: `coverage-py-json`, `lcov`,
   `cobertura`, `go-cover`, `coverage-istanbul-json`; the artifact is sniffed
@@ -154,11 +173,26 @@ What would help more, or be cleaner (non-normative):
   hung → `hung`, everything else (not run, killed externally, self-signalled,
   leaked process tree, resource-limit event, unobserved, inconclusive) →
   `crashed`. With a declared equivalence artifact, a byte-equal artifact is
-  `equivalent` and a missing one `crashed`. `src/assay/termination.py:49`,
-  `src/assay/termination.py:64`, `src/assay/mutation_store.py:4580`
+  `equivalent` and a missing one `crashed`. A passed run is `survived`
+  regardless of resource observation; a failed run is `killed` only with clear
+  observation or a trusted failed-call witness, else `unobserved` (`crashed`).
+  A resource-limit event outranks both. A record's `forced_bucket` (only
+  `crashed`) overrides a judgeable termination. On a lane declaring
+  `judge.mutation.kill_signal_artifact`, a `killed` run without a kill signal
+  is `crashed`. `src/assay/termination.py:49`, `src/assay/termination.py:64`,
+  `src/assay/termination.py:88`, `src/assay/termination.py:97`,
+  `src/assay/termination.py:109`, `src/assay/mutation_store.py:4580`,
+  `src/assay/mutation_store.py:1784`, `src/assay/mutation_store.py:4629`
+- **RIG-365** After the sweep, unless a campaign-deadline mask fired, each
+  candidate executed in this invocation with bucket `crashed`,
+  `budget_exceeded` or `hung` is re-run once, serially, in plan order, while
+  the remaining lane deadline is at least `budget_per_candidate` (no such stop
+  when it is `none`). The retry's bucket is final and persisted; resumed
+  records are never retried. `src/assay/mutation.py:4807`,
+  `src/assay/mutation.py:4817`
 - **RIG-370** A native R2 run whose lane process cannot observe its cgroup v2
   ancestry is refused before the baseline: `NO_MEASUREMENT/
-  CGROUP_OBSERVATION_UNAVAILABLE`. `src/assay/errors.py:162`
+  CGROUP_OBSERVATION_UNAVAILABLE`. `src/assay/mutation.py:1715`
 
 ### 2.4 R3 — canary
 
@@ -177,7 +211,8 @@ What would help more, or be cleaner (non-normative):
 
 - **VER-010** Outcomes are closed, each with a frozen exit code: `PASS` 0,
   `FAIL` 1, `ERROR` 2, `NO_MEASUREMENT` 3, `BUDGET_EXCEEDED` 4,
-  `INCONCLUSIVE` 5. Every non-zero outcome blocks.
+  `INCONCLUSIVE` 5. Every non-zero outcome is not-a-pass; whether it blocks
+  is the consumer's application of `enforcement` (VER-100).
   `src/assay/errors.py:41`, `src/assay/errors.py:58`
 - **VER-020** Reason codes are closed and partitioned by outcome; `PASS`
   carries none (the key is omitted, never null), every other outcome carries
@@ -231,7 +266,7 @@ What would help more, or be cleaner (non-normative):
   name is kept with the marker `<passthrough>` plus a SHA-256 fingerprint.
   `src/assay/verdict.py:837`
 - **VER-120** The verdict is written only when `--verdict-json` is given,
-  atomically, exactly once; a run that cannot write it is
+  exactly once: atomically to PATH, or to stdout for `-`; a run that cannot write it is
   `ERROR/OUTPUT_WRITE_FAILED`. `src/assay/cli.py:678`, `src/assay/cli.py:3636`,
   `src/assay/errors.py:115`
 - **VER-130** `assay verify` re-derives what JSON Schema cannot: outcome
@@ -252,8 +287,9 @@ What would help more, or be cleaner (non-normative):
   version; the effective argv; declared env names and values; names of every
   other effective env entry, plus the value fingerprint of present
   passthrough names; declared cwd and project prefix; `link_paths`; the
-  cold-witness flag; the R2 transform, collection, hook and runtime
-  fingerprints; the equivalence ledger digest; and candidate fail-fast when
+  cold-witness flag; the R2 transform and collection digests; the R2 hook and
+  runtime fingerprints; the coverage hook and coverage runtime fingerprints;
+  the equivalence ledger digest; and candidate fail-fast when
   on. `src/assay/mutation.py:322`, `src/assay/mutation.py:1500`
 - **JID-030** The tree digest projects `assay.toml` and the sibling
   `run-gate.toml` before hashing: resource and scheduling keys are removed
@@ -270,8 +306,8 @@ What would help more, or be cleaner (non-normative):
   `src/assay/_judge_projection.py:44`
 - **JID-050** `resource_sha256` digests the removed resource values plus the
   run's worker count. A resumed record whose bucket is `crashed`, `hung` or
-  `budget_exceeded` re-executes when it differs; `killed`/`survived` are
-  reused. `src/assay/mutation_store.py:598`, `src/assay/mutation_store.py:4267`
+  `budget_exceeded` re-executes when it differs; every other bucket
+  (`killed`, `survived`, `equivalent`) is reused. `src/assay/mutation_store.py:598`, `src/assay/mutation_store.py:4267`
 - **JID-060** `judge.mutation.budget_per_candidate` IS inside the identity
   (it is not a projected key), so changing it re-executes every candidate.
   `src/assay/_judge_projection.py:20`
@@ -280,8 +316,12 @@ What would help more, or be cleaner (non-normative):
 
 ## 5. Resume, store, carry-over and shards (STO)
 
-All of this chapter applies to native R2 lanes only; the flags are refused
-on any other lane. `src/assay/cli.py:2394`
+This chapter applies to native R2 lanes. `--carry-over`, `--carry-over-reason`,
+`--carry-forward`, `--merge-state`, `--merge-shard-store`,
+`--only-candidates`, `--exclude-candidates` and `--merge-manifest` are refused
+with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
+`src/assay/cli.py:2473`. (Unverified: what `--resume`, `--shard`,
+`--state-dir` and `--rejudge*` do on a non-R2 lane.)
 
 - **STO-010** The store is `<project>/.assay/mutation-state/` unless
   `--state-dir` is given; a state dir inside the judged tree that git can see
@@ -323,8 +363,8 @@ on any other lane. `src/assay/cli.py:2394`
   should count them.
 - **STO-070** `--carry-forward DIR` matches earlier-judge records by exact
   id, then function locus, then line window; survivors are carried
-  pessimistically, kills re-run in full. It excludes `--carry-over` and
-  `--carry-over-reason`. `src/assay/mutation_store.py:3317`,
+  pessimistically, kills re-run in full. It requires `--resume` and excludes
+  `--carry-over` and `--carry-over-reason`. `src/assay/cli.py:2420`, `src/assay/mutation_store.py:3317`,
   `src/assay/cli.py:2401`
 - **STO-080** `--shard K/N` (`1 <= N <= 10000`, `0 <= K < N`) selects the
   candidates whose `blake2b-32(id) mod N == K`, deterministic and
@@ -361,9 +401,11 @@ on any other lane. `src/assay/cli.py:2394`
   `src/assay/runner.py:307`
 - **LIV-020** `unbounded` is admitted only for a native R2 lane whose
   candidates are bounded; `budget_per_candidate = "none"` with `unbounded`
-  is refused at load; R0/R1 (with or without R3) cannot be unbounded. The
-  native R2 baseline then runs with no timeout; its watcher is the caller.
-  `src/assay/config.py:2621`
+  is refused at load; R0/R1 (with or without R3) and ingested R2 lanes cannot
+  be unbounded; an unbounded lane declaring R3 MUST declare
+  `judge.canary.budget_per_attempt`. The native R2 baseline then runs with no
+  timeout; its watcher is the caller. `src/assay/config.py:2621`,
+  `src/assay/config.py:2696`, `src/assay/config.py:2746`
 - **LIV-030** `judge.mutation.budget_per_candidate`: a duration, `auto`
   (also the meaning of an omitted key) = `max(3 x baseline_wall,
   baseline_wall + 60 s)` computed after the baseline ran, or `none` (no
@@ -376,21 +418,36 @@ on any other lane. `src/assay/cli.py:2394`
   or `false`. When on, a pytest plugin is appended to `argv_appended` and
   candidates run under the liveness monitor. `src/assay/liveness.py:1`,
   `src/assay/liveness.py:243`, `src/assay/liveness.py:518`
+- **LIV-045** `judge.mutation.liveness_cpu_window` and
+  `judge.mutation.liveness_idle_floor` are durations in [5 s, 1 h]; declaring
+  either is refused at load when `liveness = false` or when liveness can never
+  activate (not Python, or argv does not invoke pytest).
+  `src/assay/config.py:484`, `src/assay/config.py:3787`,
+  `src/assay/config.py:3800`, `src/assay/config.py:3810`
 - **LIV-050** A candidate is `hung` (`CANDIDATE_HUNG`) iff, over a window with
   complete, pressure-free resource evidence: no new plugin event and no
   stdout/stderr growth for the calibrated bound AND tree CPU grew less than
-  1 s in the trailing 30 s; or `session_finish` was seen and the process
-  lives 30 s later with the same quiet conditions. Observed pressure pauses
-  the idle clock. `src/assay/liveness.py:672`, `src/assay/liveness.py:1547`,
-  `src/assay/liveness.py:2073`, `src/assay/liveness.py:1979`
-- **LIV-060** Calibrated idle bounds: `max(3 x worst baseline event gap,
-  15 s)` after the first event and `max(3 x leading gap, 15 s)` before it;
-  without baseline events, `max(60 s, baseline_s / 4)` for both.
-  `src/assay/liveness.py:1250`, `src/assay/liveness.py:1303`,
+  `W/30` in the trailing `W` (`W` = `liveness_cpu_window`, default 30 s); or
+  `session_finish` was seen and the process lives 30 s later with the same
+  quiet conditions. All three intervals run on a pressure-adjusted clock
+  (TIM-140). `src/assay/liveness.py:672`, `src/assay/liveness.py:1547`,
+  `src/assay/liveness.py:1649`, `src/assay/liveness.py:2073`,
+  `src/assay/liveness.py:1979`
+- **LIV-060** Calibrated idle bounds: `max(3 x worst baseline event gap, F)`
+  after the first event and `max(3 x leading gap, F)` before it (`F` =
+  `liveness_idle_floor`, default 15 s); without baseline events,
+  `max(60 s, baseline_s / 4)` for both (`F` does not apply).
+  `src/assay/liveness.py:1250`, `src/assay/liveness.py:1297`,
+  `src/assay/liveness.py:1303`,
   `src/assay/liveness.py:1311`, `src/assay/liveness.py:816`
 - **LIV-070** A CPU-spinning candidate is not `hung`: it ends only at its
-  per-candidate wall budget, as `budget_exceeded`.
+  per-candidate wall budget, as `budget_exceeded`, or, with
+  `budget_per_candidate = "none"`, at the lane deadline (LIV-010).
   `src/assay/liveness.py:2097`, `src/assay/runner.py:1842`
+- **LIV-075** After 1024 retained trace samples (1 s polls) without progress
+  the trace is marked incomplete and no `hung` can be declared until progress
+  or a fresh baseline; the candidate then ends at its budget. (LIV-140 plans
+  to remove this.) `src/assay/liveness.py:677`, `src/assay/liveness.py:2020`
 - **LIV-080** A stored `hung` record is reusable only with liveness evidence
   of policy `pressure-adjusted-idle-v1` and decision `idle-hang` or
   `session-finish-hang`. `src/assay/mutation_store.py:1403`
@@ -403,7 +460,8 @@ on any other lane. `src/assay/cli.py:2394`
   for every rigor tier; `--progress-heartbeat` ticks `command_running`
   (default 60 s, floor 5 s). assay emits progress; stall detection of a
   whole lane belongs to the caller. `src/assay/cli.py:688`,
-  `src/assay/runner.py:1178`, `src/assay/config.py:401`
+  `src/assay/cli.py:707`, `src/assay/runner.py:1178`,
+  `src/assay/runner.py:1179`
 
 ### 6.2 PLANNED (package P4, in progress)
 
@@ -444,9 +502,15 @@ assay review `no-time-budgets-assay.md` findings 1-7.
 ### 7.1 Target (operator decision 2026-11-26)
 
 - **TIM-010** PLANNED. A verdict MUST NOT depend on wall time.
-- **TIM-020** PLANNED. assay obtains cgprofile profiling information and
-  thrashguard freeze events (via hostobs) and recalculates effective CPU
-  time from them.
+- **TIM-015** Native R2 already consumes cgprofile: each candidate carries a
+  `resource-profile/1`, the verdict's `judgment.r2.profile` names observer
+  `cgprofile`, and hidden-ancestor counters come from cgprofile's observer
+  socket. Nothing in `src/assay` reads hostobs or thrashguard.
+  `src/assay/cli.py:5103`, `src/assay/verdict.py:564`,
+  `src/assay/resource_limits.py:1070`, `src/assay/liveness.py:1869`
+- **TIM-020** PLANNED. assay additionally obtains thrashguard freeze events
+  via hostobs and recalculates effective CPU time from cgprofile data and
+  freeze intervals.
 - **TIM-030** PLANNED. The assay summary records time normalized to a
   Geekbench single-thread score of 1500 points (score table:
   `cgprofile/docs/SCORES-TABLE.md` at repo root; its fallback table ships
@@ -466,19 +530,38 @@ schema impact.
   deadline; candidates left at expiry are recorded never started
   (`budget_exceeded`). `src/assay/runner.py:282`, `src/assay/mutation.py:4891`
 - **TIM-130** Auto per-candidate budget derives from the baseline's wall
-  duration and is enforced as wall elapsed time.
+  duration (the difference of its recorded realtime `started`/`ended`
+  timestamps) and is enforced as monotonic wall elapsed time.
   `src/assay/mutation.py:2121`, `src/assay/mutation.py:2636`,
   `src/assay/liveness.py:2097`
-- **TIM-140** Liveness idle bounds, the 30 s CPU window and the 30 s
-  session-finish grace are wall intervals (pressure pauses only the idle
-  clock). `src/assay/liveness.py:672`, `src/assay/liveness.py:1303`,
-  `src/assay/liveness.py:1311`
+- **TIM-140** Liveness idle bounds, the CPU window and the session-finish
+  grace are wall intervals on a pressure-adjusted clock that stops during
+  non-clear resource intervals (which also reset the CPU window); the
+  per-candidate budget is raw monotonic wall time.
+  `src/assay/liveness.py:1979`, `src/assay/liveness.py:1985`,
+  `src/assay/liveness.py:2051`, `src/assay/liveness.py:2076`,
+  `src/assay/liveness.py:2097`
 - **TIM-150** Canary `budget_per_attempt` is a wall bound per attempt; an
   exhausted lane deadline marks later targets `budget_exhausted`.
   `src/assay/canary.py:737`, `src/assay/verdict.py:887`
 - **TIM-160** Git and snapshot calls run against the remaining lane deadline;
   the commit-label read after expiry has a 2 s wall grace.
   `src/assay/runner.py:4267`, `src/assay/cli.py:180`
+- **TIM-170** The serial tail retry (RIG-365) opens only without a
+  campaign-deadline mask and stops when the remaining wall deadline drops
+  below `budget_per_candidate`. `src/assay/mutation.py:4807`,
+  `src/assay/mutation.py:4817`
+- **TIM-180** The cgroup observer request times out after 5 s and its
+  preflight join after 6 s; a slow observer makes observation unavailable
+  (RIG-370 before the baseline, `unobserved`/`crashed` per candidate).
+  `src/assay/resource_limits.py:61`, `src/assay/resource_limits.py:1126`,
+  `src/assay/resource_limits.py:1423`
+- **TIM-190** A candidate process tree that does not empty within its
+  cleanup deadline is `ERROR/EXEC_FAILED`. `src/assay/process_tree.py:632`,
+  `src/assay/runner.py:1895`
+- **TIM-200** The liveness trace cap (LIV-075) is a sample count at 1 s polls,
+  so about 1024 s of eligible time without progress disables `hung`.
+  `src/assay/liveness.py:676`, `src/assay/liveness.py:2020`
 
 ## 8. CLI and exit codes (CLI)
 
@@ -506,7 +589,9 @@ schema impact.
   the code space.
 - **CLI-050** `verify PATH|-` exits 0 for a valid v20 verdict (stderr notes
   overridden dirty paths) and 1 for an unreadable or invalid one; every
-  schema version other than 20 is invalid. `src/assay/verify.py:4199`,
+  schema version other than 20 is invalid. Exit 0 means a valid verdict of
+  ANY outcome; a consumer MUST read `outcome`/`exit_code` from the document.
+  `src/assay/verify.py:4199`,
   `src/assay/verify.py:4082`
   Deprecation candidate: exit 1 reads as `FAIL` to a verdict-aware caller.
 - **CLI-060** `plan LANE` discovers candidates and estimates runtime without
@@ -518,8 +603,10 @@ schema impact.
   upward from the cwd unless `--file`), runs nothing, exits 0, or 2 with no
   JSON on stdout when the file fails to load. `src/assay/cli.py:307`,
   `src/assay/cli.py:5135`, `src/assay/config.py:1524`
-- **CLI-080** `capabilities [--json]` prints CON-030's document, reads no
-  project file, exits 0. `src/assay/cli.py:340`, `src/assay/cli.py:221`
+- **CLI-080** `capabilities [--json]` prints CON-030's document and reads no
+  project file; exits 0, or 2 (`ERROR/EXEC_FAILED`) when the `assay_analysis`
+  package cannot be imported. `src/assay/cli.py:340`, `src/assay/cli.py:221`,
+  `src/assay/cli.py:186`
 - **CLI-090** `campaign init --campaign NAME --lane L... (--hours H |
   --expires-at ISO8601Z)` creates a deadline bound to the current commit and
   full lane plans; `run --campaign-deadline PATH` binds a run and its
@@ -532,6 +619,19 @@ schema impact.
 - **CLI-110** `--request-base REF` is required by a lane with
   `judge.base_source = "request"` and refused on every other lane.
   `src/assay/cli.py:263`, `src/assay/config.py:358`
+- **CLI-120** Native R2 execution flags: `--jobs N` (worker count, default 1,
+  at most `judge.mutation.jobs_max`; the worker count enters
+  `resource_sha256`, JID-050); `--memory-budget-bytes` or
+  `ASSAY_R2_MEMORY_BUDGET_BYTES` (admission: a candidate starts only while the
+  predicted peak RSS of running candidates plus its own fits, one always
+  runs; a malformed value is `BAD_LANE_CONFIG`); `--operators` (operator
+  subset); `--cold-witness` and `--r2-manifest PATH` (Python cold kill
+  witnesses; the manifest requires `--cold-witness`); `--pilot-jobs` (pilot
+  only, must be 1). `campaign init` also takes `--state-dir`,
+  `--wheel-sha256` and `--out`. `src/assay/cli.py:386`,
+  `src/assay/cli.py:393`, `src/assay/cli.py:5117`, `src/assay/cli.py:443`,
+  `src/assay/cli.py:416`, `src/assay/cli.py:424`, `src/assay/cli.py:380`,
+  `src/assay/cli.py:788`, `src/assay/_judge_projection.py:28`
 
 ## 9. Consumer contract (CON)
 
@@ -551,7 +651,8 @@ schema impact.
 - **CON-030** `assay capabilities` prints one closed object, schema
   `assay-capabilities/2`, keys `schema`, `assay_version`,
   `verdict_schema_version`, `commands` (sorted long options of `run`, `plan`,
-  `verify`, `lanes`, `analyze campaign`, from the live parsers),
+  `verify`, `lanes`, `analyze campaign`, from the live parsers, `--help`
+  included),
   `mutation_store_policies` (store flag → policy), `combine_policies` (the
   STO-050 order). A new, dropped or re-meant key requires a new `schema`
   value; consumers MUST refuse an unknown `schema`. `src/assay/cli.py:182`,
@@ -575,5 +676,11 @@ schema impact.
   verified complete native v20 verdict; v12-v15 start cold, v16-v19 are
   refused; it excludes `--shard`. `src/assay/cli.py:446`
 - **CON-070** Progress and verdict files MUST be outside the judged tree (or
-  ignored); a file inside makes the next run `NO_MEASUREMENT/DIRTY_TREE`.
-  `src/assay/cli.py:688`, `src/assay/cli.py:723`
+  ignored); a file inside the tree that git sees and that no
+  `isolation.dirty_ignore` pattern matches makes the next run
+  `NO_MEASUREMENT/DIRTY_TREE` (RIG-130). `src/assay/cli.py:688`,
+  `src/assay/cli.py:723`
+- **CON-075** A release consumer MUST refuse, by default, a verdict whose
+  `worktree_integrity.overridden_dirty_paths` is non-empty, whatever its exit
+  code; `assay verify` accepts it (exit 0) and says so on stderr.
+  `src/assay/verify.py:4216`
