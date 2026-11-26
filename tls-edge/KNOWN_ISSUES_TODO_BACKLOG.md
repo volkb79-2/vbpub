@@ -86,6 +86,14 @@ Auto-detection reads `domains` only within 5 lines below the `static` table head
 that keeps the defaults file's comments, the key sits further down, so checks 6, 7 and 9 (and check 8
 in static mode) SKIP. Workaround: pass `--domain`. Found by review on 2026-11-26, not seen on a host.
 
+### TE-18 — `verify.sh` check 1 fails when run from outside the instance's `stack/` directory
+
+Check 1 calls the bundled `ciu check` without changing to the instance root, so from another
+directory it FAILs with `[no-ciu-root]` and the script exits 1; the other checks are unaffected.
+Workaround: run it from `stack/`, as INSTALL.md section 3 does. Seen on a host on 2026-11-26 with
+4.0.1. Fix, for the next release made for another reason: run check 1 from the instance root
+(`(cd "$ROOT" && ./ciu check)`).
+
 ### TE-13 — rootless Docker ownership of `vol-traefik-acme`
 
 Under rootless Docker the S6.5 helper's `chown 0:0` of `ciu-stack/vol-traefik-acme`
