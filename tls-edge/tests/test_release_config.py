@@ -236,6 +236,9 @@ def test_install_doc_carries_no_release_history():
     assert _release_tokens("HTTP/1.1 and ciu >= 7.28.0 are supported.") == []
     assert _release_tokens("ciu >= 4.1 is supported.") == []
 
+    assert "docker compose -p <project> down" in install, (
+        "the fresh-install text names the removal command, never a `-v` variant"
+    )
     for stale in (
         "older than 4.0",
         "no in-place path",

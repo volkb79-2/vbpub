@@ -75,10 +75,11 @@ holds ports 80 and 443) and move its instance root aside, or install into the ot
 `ciu down` only stops the containers: it leaves them and their networks behind, so a stopped old edge still holds
 its names and networks. Remove them with `docker compose -p <project> down` (never `-v`; that would delete the
 instance's volumes, and an external one with it). `<project>` is the `com.docker.compose.project` label of the
-stopped container; section 8 shows the one-line `docker inspect` that reads it. This was done before the 4.0.0
-fresh install and removes the containers and networks, keeping every volume.
-A 3.x edge that still runs its Calls preset also holds 8443 on that host until it is stopped: that preset does not
-exist in 4.x, and Mattermost publishes Calls media on 8443 directly (see 8).
+stopped container; section 8 shows the one-line `docker inspect` that reads it. Without `-v` it removes the
+containers and their networks and keeps every volume. Installing over containers that are merely stopped was
+not tested, so remove them first. An older edge that still runs its Calls preset also holds 8443 on that host
+until it is stopped: the current major's edge has no Calls preset, and Mattermost publishes Calls media on 8443
+directly (see 8).
 
 On a root-run system install, bootstrap creates `shared/acme` as `root:root` with mode `0700`. When the override
 does not yet set `[tls_edge.acme] store`, `configure` selects `store = "hostdir"`, unless
@@ -151,7 +152,7 @@ edge orders a REAL certificate for `verify.<--domain>` from the configured ACME 
 Certificate Transparency entry, and an order against the CA's rate limit. The canary then
 probes 5 s later, before issuance can finish, and `sniStrict` refuses the handshake, so
 check 9 FAILs on its first run while the order stays in the ACME volume. `--no-canary`
-skips check 9 and orders nothing. Known defects in 4.0.0's remaining checks are listed in
+skips check 9 and orders nothing. The other defects of the installed release's checks are in
 [`KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md#known-limitations).
 
 ## 4. Configure listeners and certificates
@@ -404,8 +405,8 @@ The two edges cannot run together because both need TCP 443, so the cut-over is 
 6. **Start direct media.** From `voice-screen-share/mattermost-server`, run its `ciu up` so Mattermost binds
    8443 directly. Follow that project's [`CONSUMER.md`](../../voice-screen-share/mattermost-server/CONSUMER.md#calls-cut-over)
    "Calls cut-over" section. Run this only after the old edge is stopped and the new edge is up.
-7. **Verify.** `scripts/verify.sh --domain <host> --no-canary` (`--no-canary` until 4.0.1, see section 3),
-   `curl -I https://<each consumer host>`, one certificate check per
+7. **Verify.** `scripts/verify.sh --domain <host> --no-canary` (required of the installed release for now;
+   section 3 has the reason), `curl -I https://<each consumer host>`, one certificate check per
    consumer host (not the default certificate, not expired), an HTTP/3 request from a client with HTTP/3 support,
    and a Mattermost media test from outside on its directly published 8443 tcp and udp ports.
 8. **Rollback (any failure in 7).** Mattermost's Calls media is published by the `mattermost` service itself, so
@@ -448,11 +449,11 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   precondition — the helper's `docker run`, a seed `copytree` — can still leave a runner-owned directory.
 - A `stack/ciu-stack/vol-traefik-acme` owned by root is the legacy case of an instance created by ciu < 7.28.0
   (a refused run there could leave it), or a failure after `mkdir`; delete it with root before removing a
-  user-scope instance. A volume-store instance still creates that directory although nothing mounts it, so
-  a non-root run needs the root helper for nothing (`KNOWN_ISSUES_TODO_BACKLOG.md`, TE-16).
+  user-scope instance. A volume-store instance still creates that directory although nothing mounts it
+  (`KNOWN_ISSUES_TODO_BACKLOG.md`, TE-16).
 - Rootless Docker is not verified for the ownership of that directory: ciu's S6.3 check may refuse an
-  existing `vol-traefik-acme` whose `0:0` owner maps to the user's uid (`KNOWN_ISSUES_TODO_BACKLOG.md`,
-  TE-13).
+  existing `vol-traefik-acme` whose declared `0:0` owner maps to the user's uid
+  (`KNOWN_ISSUES_TODO_BACKLOG.md`, TE-13).
 - The release publishes one bundle per interpreter through `cmru handler bundle-build` and
   `cmru handler tarball-publish --variant`.
 
