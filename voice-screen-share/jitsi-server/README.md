@@ -46,9 +46,9 @@ ciu down --yes
 
 `ciu down --dir voice-screen-share/jitsi-server` does NOT work: from the checkout root it exits 2
 `[no-ciu-root]` (seen with this stack's `--dir` on ciu 7.28.0, and with another stack's `--dir`
-on ciu 7.26.0), and `ciu down --dir . --yes` inside the stack directory exits 2 `[S18] --stack
-'.' is not in the current deploy selection` (seen on ciu 7.26.0 only). Both forms were run with
-the `--yes` flag, 2026-11-26 on a real host. The `eval "$(ciu env print)"` plus `ciu down --yes`
+on ciu 7.26.0), and `ciu down --dir . --yes` inside the stack directory, with the `ciu env print`
+environment loaded, exits 2 `[S18] --stack '.' is not in the current deploy selection` (seen on
+ciu 7.26.0 only). Both forms were run with the `--yes` flag, 2026-11-26 on a real host. The `eval "$(ciu env print)"` plus `ciu down --yes`
 form stopped the four containers (exit 0) on the same host. The Fluxer README's "Running"
 section gives the same stop command.
 

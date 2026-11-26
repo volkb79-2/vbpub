@@ -76,10 +76,11 @@ holds ports 80 and 443) and move its instance root aside, or install into the ot
 its names and networks. Remove them with `docker compose -p <project> down`, and never add `-v`. `<project>` is the
 `com.docker.compose.project` label of the stopped container; section 8 shows the one-line `docker inspect` that
 reads it. Without `-v` it removes the containers and their networks and keeps every volume. With `-v` it also
-deletes the instance's own named ACME volume, so the next start re-issues every certificate (mind the CA's
-rate limits). An adopted external volume survives `down -v`, because Compose never removes a volume it does not
-own, and a hostdir source lives outside `stack/` and is not removed either; but `ciu clean` can still remove the
-adopted volume. Section 6 states the storage rules. Installing over containers that are merely stopped was
+deletes the project's volumes: on an instance that uses its own named ACME volume that is the certificate store,
+so the next start re-issues every certificate (mind the CA's rate limits). Do not count on an adopted volume
+surviving it (one that carries the removed project's Compose labels may be deleted too; not tested). A hostdir
+source lives outside `stack/` and is not removed. `ciu clean` can still remove an adopted volume. Section 6
+states the storage rules. Installing over containers that are merely stopped was
 not tested, so remove them first. An older edge that still runs its Calls preset also holds 8443 on that host
 until it is stopped: the current major's edge has no Calls preset, and Mattermost publishes Calls media on 8443
 directly (see 8).
