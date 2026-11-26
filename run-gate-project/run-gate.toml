@@ -61,6 +61,9 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && if [[ -n \"${RUN_GATE_RELEASE_WHEEL_RECEIPT:-}\" ]]; then /opt/tester-venv/bin/python tools/release_candidate.py verify-running --receipt \"$RUN_GATE_RELEASE_WHEEL_RECEIPT\"; fi && RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && trap 'status=$?; if [ -n \"$RUN_GATE_TMP\" ]; then rm -rf \"$RUN_GATE_TMP\"; fi; exit \"$status\"' EXIT && RUN_GATE_ABS=\"$(realpath \"$RUN_GATE_TMP\")\" && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_ABS\" /opt/tester-venv/bin/python -m pytest tests -q -rs --basetemp \"$RUN_GATE_ABS\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base latest-release-tag --coverage-json coverage.json --source run_gate.py --source run_gate_admission.py --source run_gate_profile.py"]
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during pytest and coverage_gate.py;
+# no <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
 [lanes.selftest.resources]
@@ -114,19 +117,24 @@ memory_swap = "16g"
 # 5-CPU ceiling. Assay may run up to jobs_max candidates concurrently (assay 11/12 B157);
 # the count is chosen by jobs = "auto" below.
 #
-# RW-23b (round-1 review S1): NO `stall_timeout` here. `stall_timeout`
-# (RG-36/R-40c) bounds SILENCE via `ProgressWatch`/`LogStreamWatch`, both of
-# which only exist for CONTAINER lanes (`await_container`'s log-stream poll,
-# gated on `kind == "command" and lane.get("stall_timeout")`, and the
-# progress-file watch built for container lanes) — `run_bare_host_lane`
-# (this lane's own runner, `environment = "bare-host"`) is a plain
-# `subprocess.run` with no watch of any kind, so a `stall_timeout` here was
-# SILENTLY INERT: a stuck-but-still-running mutation sweep was never
-# stopped early, contrary to what the config used to claim. This lane's
-# total-time bound is the hard `budget` below; `stall_timeout` separately
-# bounds silence while a container is running. After RG-43's host/bare-host
-# role swap, `stall_timeout` is live only on a lane with
-# `environment = "host"` (a real container), never on `bare-host`.
+# RW-23b (round-1 review S1) used to say NO `stall_timeout` here, because
+# `run_bare_host_lane` had no watch of any kind and the key was SILENTLY INERT.
+# That paragraph was wrong about the lane as well as the runner: this lane is
+# `environment = "tester-unified"` (`mode = "ephemeral"`), so it runs in a
+# container, and it is `kind = "assay"` — `make_output_stream_watch` returns None
+# for a non-command kind, and its silence is judged from its PROGRESS FILE
+# (`ProgressWatch`), not from `StreamWatch` over a bare-host child's stdout.
+# What RG-320 (rev 77) actually changed here is disclosure and record, not the
+# bound: this lane has been armed with `max(300s, 3x its published cadence)`, or
+# 600 s between `command_finished` and the R2 `plan`, since RG-7. It still
+# declares NO `stall_timeout`, deliberately — the derivation above is what an
+# unmeasured assay lane gets, and the disclosure names that same RULE
+# (`run-gate: stall bound max(300s, 3x the published cadence), or 600s between
+# command_finished and the R2 plan (source: auto-derived) — ...`), so the printed
+# line, the record and the stop message name the same rule. Raise it here with
+# the measured reason if this sweep is ever legitimately silent longer.
+#
+# This lane's total-time bound is the hard `budget` below.
 [lanes.assay-r2]
 kind = "assay"
 assay_lane = "r2"                   # -> assay.toml [lanes.r2]
@@ -152,6 +160,14 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/run-gate-project && exec tools/canary-run.sh"]
 budget = "15m"
+# RG-320/H1: SILENT BY CONSTRUCTION. This lane is the canary runner, whose
+# per-canary step CAPTURES the pytest it cares about and prints only the
+# verdict AFTER it returns (run-gate-project/tools/canary-run.sh:88-89 (`out="$(... pytest ... 2>&1)"`)),
+# so not one byte of the selector's own progress reaches this lane's stdout
+# while it runs: a single slow selector is a silent window of unknown length
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 cannot fail a
+# lane main would let finish. No silence bound has been measured yet.
+stall_timeout = "15m"
 
 [lanes.assay-r3.resources]
 memory = "1g"
@@ -176,3 +192,12 @@ clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The three sub-lane budgets add up to 70m (selftest 20m + assay-r1 35m + assay-r3 15m);
 # 75m keeps the wrapper above that sum (RG-307 raised assay-r1 from 30m to 35m).
 budget = "75m"
+stall_timeout = "75m"
+# RG-320/H1: SILENT BY CONSTRUCTION. Two of this wrapper's three members are
+# silent while they work: the nested `assay-r1` is an ASSAY lane whose progress
+# is a file only that nested run-gate reads, and `assay-r3` runs
+# tools/canary-run.sh, which captures each canary's pytest output into a shell
+# variable (`out="$(...)"`, canary-run.sh:88-89) so nothing reaches this lane's
+# stdout until the canary ends. Declared EQUAL to this lane's budget, so P1
+# cannot fail this wrapper where main would let it finish. No silence bound has
+# been measured yet; RG-326 tracks a real progress signal.
