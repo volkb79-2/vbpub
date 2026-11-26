@@ -109,28 +109,32 @@ the numbers that confirm decision D4 are in [`docs/SP-4-WIRE-SIZES.md`](docs/SP-
 The normative `hostobs/1` protocol (connection, frames, verbs, budgets, the Python access path) is
 [`docs/WIRE.md`](docs/WIRE.md).
 
-The test-quality claim for these crates is a hand mutation campaign (Rust R2 is not adopted
-yet), recorded in [`docs/HAND-MUTANTS-M1.md`](docs/HAND-MUTANTS-M1.md) (twenty-one mutations,
-all killed), [`docs/HAND-MUTANTS-M1B.md`](docs/HAND-MUTANTS-M1B.md) (thirty-one mutations, all
-killed) and [`docs/HAND-MUTANTS-M1C.md`](docs/HAND-MUTANTS-M1C.md) (fifteen mutations over the
-store's bounds and crash-safety guards, all killed). Each is a stored patch in a replayable
-script, and every restore is SHA-256-verified. The P0 bug fold-in adds
+The test-quality record includes hand mutation campaigns, recorded in
+[`docs/HAND-MUTANTS-M1.md`](docs/HAND-MUTANTS-M1.md) (twenty-one mutations, all killed),
+[`docs/HAND-MUTANTS-M1B.md`](docs/HAND-MUTANTS-M1B.md) (thirty-one mutations, all killed) and
+[`docs/HAND-MUTANTS-M1C.md`](docs/HAND-MUTANTS-M1C.md) (fifteen mutations over the store's
+bounds and crash-safety guards, all killed). Each is a stored patch in a replayable script, and
+every restore is SHA-256-verified. A separate registered `assay-r2` lane is hand-run over
+changed lines in six crates; its registration is not a passing result (HOB-45/K15). R3 remains
+unregistered. The P0 bug fold-in adds
 [`docs/HAND-MUTANTS-M1D.md`](docs/HAND-MUTANTS-M1D.md) (fifty-four stored patches over the
 frame-header bound, quarantined files inside the cap, the sealed-footer and name/header rules
 and the time-section length); its campaign ran on 2026-11-18: 50 of 54 patches killed on the
 first run, and 54 of 54 after the 4 survivors were closed by tests (see its status paragraph).
 
 Open items found while building these packages are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-60`; `HOB-8`,
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-106`; `HOB-8`,
 `HOB-42` and `HOB-43` are FIXED by the P0 bug fold-in, `HOB-55` … `HOB-58` by the P0b store
 follow-ups, `HOB-46` … `HOB-48` and `HOB-50` … `HOB-53` by the P2a1 wire codec; `HOB-54` is the
-open stream-layer work for P2, P3 and P5b, specified in [`docs/WIRE.md`](docs/WIRE.md), and
-`HOB-49` is a citation fix in the Python reference): the sharpest still-open ones are
+closed live slice shown on a VM 2026-11-24 (see its closure and the HOB-63 split); `HOB-49` was
+the Python-reference citation issue, now archived as closed): the remaining live-slice coverage is HOB-99/HOB-100,
+and HOB-63's history half awaits P-17. The sharpest other open items are
 `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check reads the mount
 table rather than `statfs`), `HOB-39` (a store range answer is still the stored payload, not
 decoded `model` rows; the dependency exists, but decoding remains the caller's step), `HOB-45`
-(Rust R2/R3 are unregistered) and `HOB-30` (no session spools, which are out of this package's
-scope). Workspace unification removes the duplication behind `HOB-3`/`HOB-10`/`HOB-17`/`HOB-26`/`HOB-27`:
+(the registered hand-run R2 campaign has not yet supplied K15 evidence, and R3 is unregistered)
+and `HOB-30` (no session spools, which are out of this package's scope). Workspace unification
+removes the duplication behind `HOB-3`/`HOB-10`/`HOB-17`/`HOB-26`/`HOB-27`:
 there is one model quality/value vocabulary, `proto` derives its metric codes from `model`, and
 SP-2 calls `model::derive_rate`.
 
@@ -197,8 +201,8 @@ R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors
 **`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
 same `lcov.info` and judges the 61 declared `src` files of the seven functional packages
 (the six crates and `bins/probe`) against
-a 95.0% line floor (the floor was derived from 96.04% measured over the first 33 files and
-floored one point down; the later lanes measure 96.7% to 96.9% — derivation in
+a 95.0% line floor (derived by rounding one point down from the historical 96.04% measured
+at head `3b46df06` over the initial 33-file set; the current declaration has 61 files — see
 [`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered
 lines as findings, and reports branch coverage as **unavailable** (stable Rust emits no
 branch arcs; assay B523), never as zero-of-zero. R3 (canary) is not registered for Rust yet.
@@ -208,15 +212,16 @@ commands, what the verdict says, the floor derivation and the Python conformance
 are pinned this way. The lane is a **command lane**, not `kind = "assay"`: it runs the judge
 straight from the mounted worktree's own source (`PYTHONPATH={worktree}/assay/src`), so it
 needs no install and therefore no `pip` in the Rust gate image (`HOB-44`, closed by exactly
-that re-declaration). `selftest` stays as the enforced baseline alongside it. The lane was
-proven through Run-Gate in this branch: `PASS` 15100/15723 = 96.0377 % in the lane's own log,
-and `FAIL/UNCOVERED_LINES` 14777/15723 = 93.9833 % when one kernel test file is deleted and
-that deletion is committed in a temporary worktree.
+that re-declaration). `selftest` stays as the enforced baseline alongside it. Historical proof
+at head `3b46df06`, when the lane declared 33 targets, recorded `PASS` 15100/15723 = 96.0377 %
+in the lane's own log and `FAIL/UNCOVERED_LINES` 14777/15723 = 93.9833 % when one kernel test
+file was deleted and that deletion was committed in a temporary worktree. The current
+declaration has 61 targets, so those historical totals are not a current-head result.
 
 **`assay-r2` is hand-run, never a default gate (assay B245 U8b).** It judges mutation (R2) of
 the lines a change touches in the six judged crates by ingesting cargo-mutants' report
 (`cargo-mutants-outcomes`; flags and reasons in the comment block of [`assay.toml`](assay.toml)).
-It is not in the lane list above and no sequence chains it. Run it by hand, one run at a time, on a
+It is not a default lane and no sequence chains it. Run it by hand, one run at a time, on a
 host that can spend hours (about 20-35 s per mutant is an estimate, not a measurement):
 
 ```sh

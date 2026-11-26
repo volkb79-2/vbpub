@@ -48,7 +48,7 @@ holds the full bodies.
 | HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (folded into the HOB-62 history read-view design) |
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
-| HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
+| HOB-45 | Rust R2 is registered as a hand-run changed-lines lane but has no hostobs-sized campaign yet; R3 remains unregistered | Major | OPEN (R2 K15; R3 R-4) |
 | HOB-54 | The probe's serving loop does not exist yet; `FrameReader`, `ModeDetect`, `ConnTimers`, `StreamDicts`, `SendHub`, the envelope checks, the Rust client (`crates/client`) and the Python client (reader, decoder, `StreamDicts`, `rate()`, `conn.py`, `profiling.py`, `mark.py`) exist | Major | CLOSED (live slice shown on a VM 2026-11-24; see the entry) |
 | HOB-59 | `Tier::append` and `Store::evict` drop the partial `Evicted` (counts and notes) when an eviction fails after a partial pass | Minor | OPEN |
 | HOB-60 | `Store::notes` visibility is decided by name, not by directory, and the store's eviction-notes ring is redundant with the tiers' `scan.notes` through the public API | Minor | OPEN |
@@ -94,6 +94,10 @@ holds the full bodies.
 | HOB-100 | The next VM run must check the tightened verdict rules, the full model table, a reboot, a non-root operator member and the cgroup controller files | Minor | OPEN (P-11(b) final review F2/F5/F7) |
 | HOB-101 | `watch` prints the client's own loop count in its `closed` line, not the server's END `blocks`/`dropped` | Minor | OPEN (P-11(b) final review F6) |
 | HOB-102 | Freeze state is not a sampled metric | Major | FIXED in tree (M3 B8); live frozen-scope evidence open |
+| HOB-103 | Effective CPU time needs server-side M5 window verbs and event attribution | Major | OPEN (M5 window/1) |
+| HOB-104 | CPU model and benchmark records are outside the current hostobs metric model | Major | OPEN (M6 host/1) |
+| HOB-105 | Containerized assay has no launcher handoff for the host cgroup key | Major | OPEN (core launcher) |
+| HOB-106 | Event issuer cgroup attribution is not verified against a sampled cgroup | Major | OPEN (consumer policy and verified peer binding) |
 
 ---
 
@@ -640,27 +644,27 @@ cross-language case needs a body (an id table plus a payload) whose length is no
 and decoded by `golden_segment.rs`, plus the Python decoder reading the Rust writer's padded
 output.
 
-## HOB-45 — Rust R2 and R3 are unregistered for hostobs
+## HOB-45 — Rust R2 has no hostobs-sized run and R3 is unregistered
 
-**Where:** `hostobs/run-gate.toml` and `hostobs/assay.toml` (no `assay-r2`/`assay-r3`
-lane); assay `nyxloom-trove/4-backlog.md` B245 (R-3b, cargo-mutants ingestion) and B246
-(R-4, Rust canaries).
+**Where:** `hostobs/run-gate.toml` (`[lanes.assay-r2]`) and `hostobs/assay.toml`
+(`[lanes.assay-r2]`, changed-line `source_roots`); assay `nyxloom-trove/4-backlog.md` B245
+(R-3b, cargo-mutants ingestion) and B246 (R-4, Rust canaries).
 
-With `assay-r1` registered the workspace has an assay-judged R1 line verdict. The
-remaining two tiers do not exist for Rust in assay at all: R2 needs
-the `cargo-mutants-outcomes` report parser and the `ASSAY_CHANGED_DIFF` handoff (B245), and
-R3 needs the rustc `UNCOVERED_LINES` injector plus a receipt-writing test-break canary
-(B246). hostobs therefore has no mutation or canary lane, and the test-quality claim is the
-three hand-mutation campaigns in `docs/HAND-MUTANTS-M1*.md` (eighty-two stored, replayable
-mutants). This is recorded once, as a known issue, not as a per-release waiver.
+The hand-run `assay-r2` lane is registered in `run-gate.toml`; `assay.toml` defines its
+`cargo-mutants-outcomes` judge over changed lines in six roots (`crates/model`, `proto`, `serve`,
+`kernel`, `store` and `client`). It is not a default lane. The first real hostobs-sized campaign
+is still tracked as K15; registration alone is not a passing verdict. R3 remains unregistered:
+it needs the rustc `UNCOVERED_LINES` injector plus a receipt-writing test-break canary (B246).
+The recorded hand-mutation campaigns remain separate historical evidence while these gaps are
+open.
 
-**Exit criteria.** An `assay-r2` lane (diff-scoped cargo-mutants, T3, `--base <previous
-release tag>`) and an `assay-r3` lane (test-break canary with a receipt) exist here, pass
-their registered gates in `tester-unified-rust`, and the hand-mutation scripts are retired or
-reduced to the survivors those lanes cannot express.
+**Exit criteria.** A real `assay-r2` campaign judges a non-empty changed-lines set in
+`tester-unified-rust` and records its verdict bound to the commit; an `assay-r3` lane (test-break
+canary with a receipt) is registered and passes its gate. The hand-mutation records may remain as
+historical evidence.
 
-**Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; assay A-501 (Rust R2 not
-adopted is a known issue), `assay/docs/RUST-METHODOLOGY.md`.
+**Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; assay A-501 (historical note that
+Rust R2 was not adopted), `assay/docs/RUST-METHODOLOGY.md`.
 
 ## HOB-54 — The Rust client and the probe's serving loop do not exist yet
 
@@ -723,8 +727,9 @@ reader, the hub, the envelope checks and both clients therefore exist and are ex
 *Scope of the closure.* The demo's selection was `watch`'s default, so **only `cpu.usage_usec`,
 `mem.current` and `pids.current` were exercised** (`crates/client/examples/watch.rs:22-23`). It did
 not exercise PSI, `io.stat`, `memory.stat`, the host `/proc` metrics, `probe.*`, a reboot (boot-time
-tmpfiles → sockets ordering), the operator-only differences, or a non-root operator-group member
-(P-11(b) final review F2). It is also a functional, not a performance, result: the probe was a
+tmpfiles → sockets ordering), the observer socket (which did not exist in that recorded run), or
+a non-root operator-group member (P-11(b) final review F2). `procs` was not served, so there were
+no operator-only read details to exercise. It is also a functional, not a performance, result: the probe was a
 debug build under QEMU emulation at 27.3 CPU-s per 59 s. Those two gaps are carried by
 **HOB-99** (a release build's self-overhead on native hardware) and **HOB-100** (the next VM run's
 full-table selection, one reboot and a non-root operator member), not by this entry.
@@ -822,8 +827,9 @@ and unchanged: P-17 still owes the producer-first history view and the P5b-3 rec
 
 *Scope of the live half.* Only `cpu.usage_usec`, `mem.current` and `pids.current` were exercised
 (`crates/client/examples/watch.rs:22-23`, the demo's selection); PSI, `io.stat`, `memory.stat`, the
-host `/proc` metrics, `probe.*`, a reboot, the operator-only differences and a non-root
-operator-group member were not (P-11(b) final review F2). Performance was not measured either: the
+host `/proc` metrics, `probe.*`, a reboot, the observer socket (which did not exist in that
+recorded run) and a non-root operator-group member were not (P-11(b) final review F2). `procs` was
+not served, so there were no operator-only read details to exercise. Performance was not measured either: the
 probe was a debug build under QEMU emulation, 27.3 CPU-s in 59 s. **HOB-99** carries the release
 build on native hardware and **HOB-100** the next run's full-table selection, reboot and non-root
 operator member; nothing in the live-half closure claims those.
@@ -1448,16 +1454,20 @@ verdict that can pass a transcript it should reject.
 **Exit criteria.** The next VM run, with the same exact-name and teardown discipline:
 
 - its checker asserts the exact `\t`-anchored `closed\tblocks=N\treason=unsubscribed` form
-  with an integer block count at least the requested ticks (60 observe, 1 operator); at least one
-  non-empty tick row of each stream must satisfy the quality rules, and every observe tick is a
-  full block. The operator has exactly one distinct tick sequence with a full row, every tick
-  block has unique `(entity, metric)` pairs, and the observe ticks keep equal row counts on a quiet
-  target. These are the conditions now in `tools/live-demo.py` `assess()` (`close_line`, block
-  sequences, row counts, and quality rules), cited as the same conditions rather than re-invented;
+  with an integer block count at least the requested ticks (60 observe, 1 operator). Every tick
+  line in both streams must be a full client row with non-empty entity, metric, value and quality;
+  every quality is one of the eight WIRE codes, and every non-`ok` quality has the value
+  `<not-measured>`. `assess()` applies those rules to every row of both streams: `row_rules()`
+  requires a value and quality for each metric row, rejects unknown quality codes, and rejects a
+  value other than `<not-measured>` for a non-`ok` quality; `full_row_form()` rejects a missing
+  or empty entity, metric, value or quality on any tick line. It also checks consecutive observe
+  sequences, exactly one operator sequence, unique `(entity, metric)` pairs in every tick block,
+  equal observe row counts on a quiet target, the allowed live close reasons, and at least one
+  entity whose good `cpu.usage_usec` value increases from its first to last observe sequence;
 - `hostobs-watch --selection` is given the full model table, so every registered metric appears
   in at least one tick's columns (a tick with a shorter column set fails);
-- one reboot happens with the units enabled, and the transcript shows both sockets active before
-  the first connection after that boot;
+- one reboot happens with the units enabled, and the transcript shows all three sockets active
+  before the first connection after that boot; the observer socket completes one `hello`;
 - a non-root identity in `hostobs-operator` completes one tick and a non-root identity outside
   the group is refused, both recorded as exit codes;
 - `cat /sys/fs/cgroup/cgroup.controllers` and `.../cgroup.subtree_control` are captured for `/`
@@ -1515,3 +1525,87 @@ measured `0`. Fixture tests cover the parsers and one sampler tick.
 
 **Exit criteria.** One recorded VM run in which a frozen scope shows `cgroup.freeze` 1 and
 `cgevents.frozen` 1, and 0 for both after the thaw, with the kernel files captured beside the ticks.
+
+## HOB-103 — Server-side effective CPU time needs the M5 window verbs, not an M3 package
+
+**Where:** `crates/serve/src/verbs.rs`, `crates/model/src/metric.rs`, WIRE §4.13, and
+`thrashguard/DESIGN.md` §4b.
+
+The current model publishes raw `cpu.usage_usec` and the freeze-state metrics, but it has no
+per-window effective CPU result. The verb table marks `resource-limits`, `window-open` and
+`window-close` as reserved and unserved; `events` and `spans` are also unserved. A consumer that
+needs effective CPU time cannot obtain a server-side window joined to freeze/thaw events from
+this head.
+
+**Impact.** Computing `effective_cpu_s = cpu_s` and `effective_wall_s = wall_s - frozen_seconds`
+requires the window's cgroup incarnation and freeze/thaw events matched on `boot_id`,
+`cgroup_id` and `seq`. Without those events, `frozen_seconds` is unknown, never zero; treating it
+as zero would overstate effective wall time.
+
+**Exit criteria.** The M5 `window/1` path returns `effective_cpu_s` and `effective_wall_s` with
+`frozen_seconds: u64|null` and quality per value. Matching events subtract the frozen interval;
+no matching events return `null` and `unknown`, not `0`. The relation is stated in WIRE and
+`docs/DESIGN-GUIDE.md`; tests cover a frozen interval spanning a window and an interval with no
+events. cgprofiled retires only after this verb is served on both hosts.
+
+Source: operator decision 2026-11-26; PLAN-M3-carve.md HOB-103; `thrashguard/DESIGN.md` §4b.
+
+## HOB-104 — CPU model is not a metric, and Geekbench records never enter hostobs
+
+**Where:** `crates/model/src/metric.rs` (`Unit` and the registry),
+`crates/model/src/value.rs` (`Value`), `crates/serve/src/verbs.rs` (`host`), and WIRE §4.13.
+
+The current metric value types are numeric (`u64`, `i64` and `f64`), and the registry has no CPU
+model or Geekbench metric. The `host` verb is reserved and unserved. Raw CPU time already exists
+as `cpu.usage_usec`; a CPU model string belongs in a future `host/1` reply, not a metric column.
+The score and baseline in a CPU record must come from the host's install-time record rather than
+being invented by hostobs.
+
+**Exit criteria.** `host/1` returns `cpu.model` as a string of at most 128 characters and
+`logical` as `u32`, with quality codes, in the package that declares the WIRE key. No Geekbench
+major, score or baseline appears in a hostobs metric, verb, config key or fixture. Consumer docs
+state that a host record supplies the score and baseline, and a host without one contributes raw
+CPU seconds plus its model only.
+
+Source: operator decision 2026-11-26; PLAN-M3-carve.md HOB-104; `docs/WIRE.md` §4.13.
+
+## HOB-105 — A containerized assay has no designed path to the host socket
+
+**Where:** `hostobs/run-gate.toml`, `hostobs/assay.toml`, the core run-gate launcher, and
+`docs/CONSUMERS.md`'s `cgroup_id` consumer instructions.
+
+A containerized assay needs access to the host observer socket and its group, plus the host
+cgroup path and `(dev, inode)` key for the candidate. The registered hostobs lane config does not
+declare a host-socket mount or pass that host key into the container; the live-demo launcher
+accepts a cgroup root but does not hand a host cgroup key to a container. A container-local
+`stat` has no documented relationship to the host key.
+
+**Exit criteria.** A gate lane declares its access method and its verdict names the resource
+source and state. The launcher passes the host cgroup path and key into the run. The cgroup
+namespace relationship is verified by a VM test before docs make any claim about a
+container-local `stat`. The socket remains a plain Unix socket behind the declared mount and
+group, and hostobs resolves selectors against published rows.
+
+Source: assay q308; PLAN-M3-carve.md HOB-105; WIRE §5.1; thrashguard D15.
+
+## HOB-106 — Full issuer-cgroup attribution waits for a consumer that needs provenance
+
+**Where:** `bins/probe/src/driver.rs` (`peer`), `crates/serve/src/conn.rs` (`Peer`),
+`crates/store/src/events.rs` (`Event::issuer`), and WIRE §4.12.
+
+At accept, the current driver captures uid and pid through `SO_PEERCRED`; `Peer` has no comm or
+cgroup incarnation, and its pid is documented as unused. The event store accepts an issuer
+string from its caller and does not verify that it names the peer's sampled cgroup. The event
+verbs are unserved, so the current code has no served path that establishes verified
+issuer-cgroup provenance.
+
+**Impact.** A client-written subject or an unverified peer label must not be treated as proof that
+an event belongs to a sampled cgroup. Consumer authorization and telemetry attribution remain
+separate until hostobs can verify their relationship.
+
+**Exit criteria.** Before a consumer authorizes an action by issuer cgroup, it states the policy
+and hostobs establishes a verified relationship between the issuer and claimed `cgroup_id`. A
+disagreement is a closed refusal, and WIRE replaces its unverified-label rule with the verified
+rule. This is a future consumer package, not an M3 package.
+
+Source: operator ruling 2026-11-26; PLAN-M3-carve.md HOB-106; WIRE §4.12 and plan v4 §C.4.

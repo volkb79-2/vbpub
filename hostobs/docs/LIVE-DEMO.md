@@ -76,8 +76,8 @@ PASS requires all of the following:
   be higher (`crates/client/src/client.rs:550-558`). The reason must be one of the two live reasons
   the client accepts, `unsubscribed` or `client-eof` (`crates/client/src/client.rs` `end_reason_ok`);
   a query reason such as `complete` is refused;
-- at least one `cpu.usage_usec` value that increased from that entity's first
-  to last observe tick;
+- at least one `cpu.usage_usec` value increases from that entity's first to last
+  observe tick;
 - **the observe and the operator streams are both held to the same quality rules**: every
   printed quality code is one of WIRE's eight codes, every non-`ok` quality renders
   `<not-measured>` (never a numeric value or zero), and the operator stream carries full
@@ -126,8 +126,9 @@ setup, not a committed sysusers file:
 
 Add only the intended human or service identities to the appropriate groups:
 
-- `hostobs-observe` grants reads without command-line details;
-- `hostobs-operator` grants reads with command-line details;
+- `hostobs-observe` grants reads; command-line details are not served at any level yet;
+- `hostobs-operator` is reserved for reads with command-line details (`procs`, not served yet);
+  today it returns the same data as `hostobs-observe`;
 - `hostobs-observer` is reserved for annotation writes attributed to the
   caller's uid. Annotation is not served yet; today this socket answers only
   `hello`.
@@ -198,10 +199,11 @@ The probe unit keeps `ProtectControlGroups=yes`, `PrivateNetwork=yes` and
 processes' cgroup facts. State directories, `CAP_SYS_PTRACE` and the future act
 socket are deliberately absent from this part-(a)/(b) contract.
 
-### Expected `absent` cells on this host
+### `absent` cells in the recorded Debian 13 guest
 
 The first 60-tick stream from a Debian 13 guest (`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt`)
-shows two cgroups with `absent` cells. Both are the kernel's cgroup v2 layout, not a
+shows two cgroups with `absent` cells. The observer socket did not exist in that recorded run.
+Both cells are the kernel's cgroup v2 layout, not a
 defect and not the unit sandbox:
 
 | cgroup | `cpu.usage_usec` | `mem.current`, `pids.current` | why |
@@ -213,7 +215,7 @@ All the other 32 entities of that transcript are `ok` on all three metrics (102 
 tick, 4 `absent` cells per tick, 240 of 6120 total cells). Everything else stays `ok`:
 `ProtectControlGroups=yes` is
 a read-only bind mount of `/sys/fs/cgroup`, not a hidden view, and the probe sees the whole
-guest tree. A refused read would render `unreadable`, never `absent`
+guest tree. A permission-denied read would render `unreadable`, never `absent`
 (`crates/kernel/src/fs.rs:160-164`, `crates/kernel/src/cgroup.rs:851-857`), so the two cells above
 are the files being absent, not the sandbox denying them.
 
@@ -256,7 +258,8 @@ none of the 17 is policy drift:
 
 A different count, a missing entry, or a score other than `1.8 OK` means the unit file changed;
 the table is a drift alarm, not a to-do list. The sockets (`hostobs-observe.socket`,
-`hostobs-operator.socket`) carry no service body of their own and were not scored: the checker's
+`hostobs-operator.socket` and `hostobs-observer.socket`) carry no service body of their own and
+were not scored: the checker's
 `systemd-analyze` call names `hostobs-probe.service` only.
 
 The trap this table exists to prevent: a hardening checklist reports a deliberate contract choice
