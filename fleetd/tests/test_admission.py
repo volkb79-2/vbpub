@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import fcntl
+import os
 import subprocess
 import sys
 import json
@@ -51,6 +53,7 @@ def _capacity(
     charges=None,
     aging_s=60.0,
     legacy_charge=6 * GIB,
+    legacy_planned_cores=1.0,
 ):
     if charges is None:
         charges = {
@@ -89,6 +92,7 @@ def _capacity(
             _fact({"wait_s": 0.0, "settle_s": 0.0}),
             _fact(aging_s),
             _fact(legacy_charge),
+            _fact(legacy_planned_cores),
         ),
         guard=GuardFacts(_fact(False), Fact.unknown("guard absent"), Fact.unknown("guard absent"), Fact.unknown("guard absent")),
     )
@@ -236,15 +240,12 @@ def _lease_request(*, lease_id="ops-lease-1", container_name="rg-lane-1", footpr
 def _admit(book, capacity, *, job_id="ops-run-1", digest="a" * 64, group="ops", priority="gate",
            footprint="small", cores=1, legacy_jobs=(), provider=None):
     capacity_provider = provider if provider is not None else lambda: capacity
-    return book.admit_now(
-        job_id=job_id,
+    return book.submit(
+        _request(job_id=job_id, run=digest, priority=priority, footprint=footprint, cores=cores),
         authenticated_group=group,
-        digest=digest,
-        priority=priority,
-        footprint=footprint,
-        planned_cores=cores,
         capacity_provider=capacity_provider,
-        legacy_jobs=legacy_jobs,
+        legacy_jobs_provider=lambda: tuple(legacy_jobs),
+        wait_s=0,
     )
 
 
@@ -256,7 +257,7 @@ def test_admission_record_is_durable_idempotent_group_bound_and_flocked(tmp_path
     assert result.handle is not None and result.handle.live is True
     assert result.record["charged_bytes"] == 3 * GIB // 2
     assert result.record["created_at"] == 123.5
-    assert book.status("ops-run-1", "ops")["digest"] == "a" * 64
+    assert book.status("ops-run-1", "ops")["digest"] == _request(run="a" * 64).digest()
     assert book.is_live("ops-run-1") is True
 
     child = subprocess.run(
@@ -288,6 +289,53 @@ def test_admission_record_is_durable_idempotent_group_bound_and_flocked(tmp_path
     assert result.handle.live is False
     assert book.status("ops-run-1", "ops") is None
     assert book.is_live("ops-run-1") is False
+
+
+def test_dead_executor_charge_can_be_reacquired_for_recovery(tmp_path):
+    capacity = _capacity()
+    book = _book(tmp_path / "state")
+    original = _admit(book, capacity)
+    original.handle.close()
+    assert book.is_live("ops-run-1") is False
+
+    resumed = book.resume_job("ops-run-1", "ops")
+    assert resumed.handle is not None
+    assert resumed.existing is False
+    assert book.is_live("ops-run-1") is True
+    assert book.resume_job("ops-run-1", "ops").handle is None
+    with pytest.raises(AdmissionError, match="different authenticated group") as raised:
+        book.resume_job("ops-run-1", "other")
+    assert raised.value.exit_code == 2
+    resumed.handle.complete()
+    assert book.status("ops-run-1", "ops") is None
+
+
+def test_job_handle_handoff_keeps_flock_until_child_closes_inherited_fd(tmp_path):
+    capacity = _capacity()
+    book = _book(tmp_path / "state")
+    admitted = _admit(book, capacity)
+    fd = admitted.handle.fileno()
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import os, sys; fd=int(sys.argv[1]); print('READY', flush=True); "
+         "sys.stdin.readline(); os.close(fd)", str(fd)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        pass_fds=(fd,),
+    )
+    assert process.stdout.readline().strip() == "READY"
+    admitted.handle.handoff()
+    assert admitted.handle.live is False
+    assert book.is_live("ops-run-1") is True
+    process.stdin.write("release\n")
+    process.stdin.flush()
+    process.stdin.close()
+    assert process.wait() == 0
+    assert book.is_live("ops-run-1") is False
+    resumed = book.resume_job("ops-run-1", "ops")
+    assert resumed.handle is not None
+    resumed.handle.complete()
 
 
 @pytest.mark.parametrize(
@@ -394,18 +442,27 @@ def test_existing_charges_bound_ram_and_planned_cores(tmp_path):
     first.handle.complete()
 
 
-def test_legacy_jobs_use_the_required_memory_charge_and_never_guess_cores(tmp_path):
-    capacity = _capacity(legacy_charge=2 * GIB)
+def test_legacy_jobs_are_each_charged_policy_memory_and_cores(tmp_path):
+    capacity = _capacity(legacy_charge=2 * GIB, legacy_planned_cores=5)
     book = _book(tmp_path / "state")
-    with pytest.raises(AdmissionError, match="unknown planned-core use") as raised:
+    with pytest.raises(AdmissionError, match="planned-core headroom 0.0 is below request 1") as raised:
         _admit(book, capacity, legacy_jobs=("legacy-without-EXIT",))
+    assert raised.value.exit_code == 75
+
+    unknown_cores = replace(
+        capacity,
+        policy=replace(capacity.policy, legacy_planned_cores=Fact.unknown("legacy core policy missing")),
+    )
+    with pytest.raises(AdmissionError, match="policy.legacy_planned_cores unavailable: legacy core policy missing") as raised:
+        _admit(_book(tmp_path / "unknown-cores"), unknown_cores,
+               legacy_jobs=("legacy-without-EXIT",))
     assert raised.value.exit_code == 75
 
     unknown_charge = replace(
         capacity,
         policy=replace(capacity.policy, legacy_charge_bytes=Fact.unknown("legacy policy missing")),
     )
-    with pytest.raises(AdmissionError, match="legacy_charge_bytes unavailable") as raised:
+    with pytest.raises(AdmissionError, match="policy.legacy_charge_bytes unavailable") as raised:
         _admit(_book(tmp_path / "unknown"), unknown_charge, legacy_jobs=("legacy-without-EXIT",))
     assert raised.value.exit_code == 75
 
@@ -413,6 +470,41 @@ def test_legacy_jobs_use_the_required_memory_charge_and_never_guess_cores(tmp_pa
     with pytest.raises(AdmissionError, match="RAM fit") as raised:
         _admit(_book(tmp_path / "charged"), too_large, footprint="large", legacy_jobs=("legacy",))
     assert raised.value.exit_code == 75
+
+
+def test_legacy_jobs_provider_runs_under_queue_lock_for_each_wait_decision(tmp_path):
+    clock = _FakeClock()
+    capacity = _capacity()
+    book = _book(tmp_path / "state", clock=clock)
+    blocker = _admit(book, capacity, job_id="ops-blocker", footprint="small")
+    lock_observations = []
+
+    def legacy_jobs_provider():
+        fd = os.open(book.queue_lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock_observations.append("held")
+            else:
+                lock_observations.append("free")
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+        return ()
+
+    def release_blocker(seconds):
+        blocker.handle.complete()
+        clock.now += seconds
+
+    book.waiter = release_blocker
+    result = book.submit(
+        _request(job_id="ops-waited", footprint="large"), authenticated_group="ops",
+        capacity_provider=lambda: capacity, legacy_jobs_provider=legacy_jobs_provider, wait_s=2,
+    )
+    assert len(lock_observations) >= 2
+    assert set(lock_observations) == {"held"}
+    result.handle.complete()
 
 
 def test_unreadable_admitted_record_keeps_its_charge_and_refuses_new_work(tmp_path):
@@ -446,7 +538,8 @@ def test_request_digest_excludes_job_id_and_client_version_but_binds_contract_fi
 def test_reserved_cpu_set_and_shard_are_refused_in_v1(tmp_path, job_request, message):
     book = _book(tmp_path / "state")
     with pytest.raises(AdmissionError, match=message) as raised:
-        book.submit(job_request, authenticated_group="ops", capacity_provider=lambda: _capacity(), wait_s=0)
+        book.submit(job_request, authenticated_group="ops", capacity_provider=lambda: _capacity(),
+                    legacy_jobs_provider=lambda: (), wait_s=0)
     assert raised.value.exit_code == 2
     assert book.status(job_request.job_id, "ops") is None
 
@@ -457,13 +550,13 @@ def test_group_prefix_length_cap_and_job_grammar_are_enforced(tmp_path):
     book = _book(tmp_path / "state")
     with pytest.raises(AdmissionError, match="prefix does not match"):
         book.submit(_request(job_id="other-run"), authenticated_group="ops",
-                    capacity_provider=lambda: _capacity(), wait_s=0)
+                    capacity_provider=lambda: _capacity(), legacy_jobs_provider=lambda: (), wait_s=0)
     with pytest.raises(AdmissionError, match="valid admission identifier"):
         book.submit(_request(job_id="ops-../escape"), authenticated_group="ops",
-                    capacity_provider=lambda: _capacity(), wait_s=0)
+                    capacity_provider=lambda: _capacity(), legacy_jobs_provider=lambda: (), wait_s=0)
     with pytest.raises(AdmissionError, match="valid admission identifier"):
         book.submit(_request(job_id="ops-" + "a" * MAX_JOB_ID_LENGTH), authenticated_group="ops",
-                    capacity_provider=lambda: _capacity(), wait_s=0)
+                    capacity_provider=lambda: _capacity(), legacy_jobs_provider=lambda: (), wait_s=0)
 
 
 @pytest.mark.parametrize(
@@ -486,10 +579,12 @@ def test_priority_clamps_only_to_the_most_urgent_allowed_class_not_more_urgent_t
     book = _book(tmp_path / "state")
     if expected is None:
         with pytest.raises(AdmissionError, match="no allowed class at or below") as raised:
-            book.submit(request, authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=0)
+            book.submit(request, authenticated_group="ops", capacity_provider=lambda: capacity,
+                        legacy_jobs_provider=lambda: (), wait_s=0)
         assert raised.value.exit_code == 2
     else:
-        result = book.submit(request, authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=0)
+        result = book.submit(request, authenticated_group="ops", capacity_provider=lambda: capacity,
+                             legacy_jobs_provider=lambda: (), wait_s=0)
         assert result.record["priority"] == expected
         result.handle.complete()
 
@@ -526,6 +621,7 @@ def test_reclamped_waiter_priority_is_persisted_for_other_book_readers(tmp_path)
         _request(job_id="ops-waiter", priority="dev"),
         authenticated_group="ops",
         capacity_provider=lambda: capacities[0],
+        legacy_jobs_provider=lambda: (),
         wait_s=2,
     )
     assert observations == ["policy changed", "gate"]
@@ -541,7 +637,7 @@ def test_unknown_or_missing_priority_policy_refuses_without_inventing_class(tmp_
     ))
     with pytest.raises(AdmissionError, match="priority_classes_by_principal unavailable") as raised:
         _book(tmp_path / "unknown").submit(_request(), authenticated_group="ops",
-                                           capacity_provider=lambda: unknown, wait_s=0)
+                                           capacity_provider=lambda: unknown, legacy_jobs_provider=lambda: (), wait_s=0)
     assert raised.value.exit_code == 75
 
     missing = replace(base, policy=replace(
@@ -550,7 +646,7 @@ def test_unknown_or_missing_priority_policy_refuses_without_inventing_class(tmp_
     ))
     with pytest.raises(AdmissionError, match="missing for authenticated group") as raised:
         _book(tmp_path / "missing").submit(_request(), authenticated_group="ops",
-                                           capacity_provider=lambda: missing, wait_s=0)
+                                           capacity_provider=lambda: missing, legacy_jobs_provider=lambda: (), wait_s=0)
     assert raised.value.exit_code == 2
 
 
@@ -558,15 +654,16 @@ def test_same_request_is_idempotent_through_the_queue_api(tmp_path):
     capacity = _capacity()
     book = _book(tmp_path / "state")
     request = _request()
-    first = book.submit(request, authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=0)
+    first = book.submit(request, authenticated_group="ops", capacity_provider=lambda: capacity,
+                        legacy_jobs_provider=lambda: (), wait_s=0)
     same = book.submit(_request(version="2.0.0"), authenticated_group="ops",
-                       capacity_provider=lambda: capacity, wait_s=0)
+                       capacity_provider=lambda: capacity, legacy_jobs_provider=lambda: (), wait_s=0)
     assert same.existing is True
     assert same.handle is None
     assert same.record["digest"] == first.record["digest"]
     with pytest.raises(AdmissionError, match="different request digest") as raised:
         book.submit(_request(run="changed"), authenticated_group="ops",
-                    capacity_provider=lambda: capacity, wait_s=0)
+                    capacity_provider=lambda: capacity, legacy_jobs_provider=lambda: (), wait_s=0)
     assert raised.value.exit_code == 2
     first.handle.complete()
 
@@ -577,7 +674,7 @@ def test_wait_expiry_withdraws_waiter_and_confirms_never_started(tmp_path):
     book = _book(tmp_path / "state", clock=clock, waiter=clock.wait)
     with pytest.raises(AdmissionError, match="waiter withdrawn and the book confirms the job never started") as raised:
         book.submit(_request(job_id="ops-expire"), authenticated_group="ops",
-                    capacity_provider=lambda: blocked_capacity, wait_s=0.5)
+                    capacity_provider=lambda: blocked_capacity, legacy_jobs_provider=lambda: (), wait_s=0.5)
     assert raised.value.exit_code == 75
     assert book.status("ops-expire", "ops") is None
     assert list(book.waiting_dir.glob("*.json")) == []
@@ -596,18 +693,56 @@ def test_aged_head_reserves_ram_and_cores_until_it_fits(tmp_path):
         try:
             nested["result"] = book.submit(
                 _request(job_id="ops-z-small", priority="gate", footprint="tiny"),
-                authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=0,
+                authenticated_group="ops", capacity_provider=lambda: capacity,
+                legacy_jobs_provider=lambda: (), wait_s=0,
             )
         except AdmissionError as exc:
             nested["error"] = exc
         blocker.handle.complete()
 
     clock.on_wait = advance_then_try_backfill
-    result = book.submit(head, authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=120)
+    result = book.submit(head, authenticated_group="ops", capacity_provider=lambda: capacity,
+                         legacy_jobs_provider=lambda: (), wait_s=120)
     assert isinstance(nested.get("error"), AdmissionError)
     assert nested["error"].exit_code == 75
     assert result.record["job_id"] == "ops-a-head"
     result.handle.complete()
+
+
+def test_static_refusal_of_old_waiter_does_not_block_later_fitting_candidate(tmp_path):
+    clock = _FakeClock()
+    initial = _capacity()
+    changed = _capacity(max_footprint="tiny", charges={"tiny": GIB // 2, "small": 3 * GIB // 2,
+                                                       "medium": 4 * GIB, "large": 6 * GIB})
+    capacities = [initial]
+    book = _book(tmp_path / "state", clock=clock)
+    blocker = _admit(book, initial, job_id="ops-blocker", footprint="large")
+    outcomes = {}
+
+    def change_facts_and_submit(seconds):
+        capacities[0] = changed
+        blocker.handle.complete()
+        try:
+            outcomes["result"] = book.submit(
+                _request(job_id="ops-z-fitting", priority="gate", footprint="tiny"),
+                authenticated_group="ops", capacity_provider=lambda: capacities[0],
+                legacy_jobs_provider=lambda: (), wait_s=0,
+            )
+        except AdmissionError as exc:
+            outcomes["error"] = exc
+        clock.now += seconds
+
+    clock.on_wait = change_facts_and_submit
+    with pytest.raises(AdmissionError, match="exceeds host maximum") as raised:
+        book.submit(
+            _request(job_id="ops-a-now-impossible", priority="merge-gate", footprint="large"),
+            authenticated_group="ops", capacity_provider=lambda: capacities[0],
+            legacy_jobs_provider=lambda: (), wait_s=5,
+        )
+    assert raised.value.exit_code == 2
+    assert outcomes.get("error") is None
+    assert outcomes["result"].record["job_id"] == "ops-z-fitting"
+    outcomes["result"].handle.complete()
 
 
 def test_merge_gate_priority_passes_an_aged_lower_priority_head(tmp_path):
@@ -622,16 +757,55 @@ def test_merge_gate_priority_passes_an_aged_lower_priority_head(tmp_path):
         clock.now += 60
         result = book.submit(
             _request(job_id="ops-z-merge", priority="merge-gate", footprint="tiny"),
-            authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=0,
+            authenticated_group="ops", capacity_provider=lambda: capacity,
+            legacy_jobs_provider=lambda: (), wait_s=0,
         )
         nested["result"] = result
         result.handle.complete()
         blocker.handle.complete()
 
     clock.on_wait = advance_then_submit_merge
-    result = book.submit(head, authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=120)
+    result = book.submit(head, authenticated_group="ops", capacity_provider=lambda: capacity,
+                         legacy_jobs_provider=lambda: (), wait_s=120)
     assert nested["result"].record["priority"] == "merge-gate"
     assert result.record["job_id"] == "ops-a-head"
+    result.handle.complete()
+
+
+@pytest.mark.parametrize(
+    ("holder_priority", "candidate_priority"),
+    [("gate", "dev"), ("campaign", "dev")],
+)
+def test_aged_nonfitting_reservation_blocks_every_candidate_except_higher_priority_merge_gate(
+    tmp_path, holder_priority, candidate_priority
+):
+    clock = _FakeClock()
+    capacity = _capacity(aging_s=60)
+    book = _book(tmp_path / "state", clock=clock)
+    blocker = _admit(book, capacity, job_id="ops-blocker", footprint="small", cores=1)
+    holder = _request(job_id="ops-a-holder", priority=holder_priority, footprint="large", cores=1)
+    nested = {}
+
+    def age_holder_then_submit(seconds):
+        clock.now += 60
+        try:
+            nested["result"] = book.submit(
+                _request(job_id="ops-z-candidate", priority=candidate_priority, footprint="tiny"),
+                authenticated_group="ops", capacity_provider=lambda: capacity,
+                legacy_jobs_provider=lambda: (), wait_s=0,
+            )
+        except AdmissionError as exc:
+            nested["error"] = exc
+        blocker.handle.complete()
+
+    clock.on_wait = age_holder_then_submit
+    result = book.submit(holder, authenticated_group="ops", capacity_provider=lambda: capacity,
+                         legacy_jobs_provider=lambda: (), wait_s=120)
+    assert isinstance(nested.get("error"), AdmissionError)
+    assert nested["error"].exit_code == 75
+    assert "reservation" in nested["error"].reason
+    assert "result" not in nested
+    assert result.record["job_id"] == "ops-a-holder"
     result.handle.complete()
 
 
@@ -646,14 +820,16 @@ def test_unaged_head_allows_a_small_backfill_that_fits(tmp_path):
     def try_backfill(seconds):
         result = book.submit(
             _request(job_id="ops-z-small", priority="gate", footprint="tiny"),
-            authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=0,
+            authenticated_group="ops", capacity_provider=lambda: capacity,
+            legacy_jobs_provider=lambda: (), wait_s=0,
         )
         nested["result"] = result
         result.handle.complete()
         blocker.handle.complete()
 
     clock.on_wait = try_backfill
-    result = book.submit(head, authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=120)
+    result = book.submit(head, authenticated_group="ops", capacity_provider=lambda: capacity,
+                         legacy_jobs_provider=lambda: (), wait_s=120)
     assert nested["result"].record["job_id"] == "ops-z-small"
     assert result.record["job_id"] == "ops-a-head"
     result.handle.complete()
@@ -677,7 +853,8 @@ def test_cancel_and_status_match_stored_waiter_group(tmp_path):
 
     clock.on_wait = inspect_then_cancel
     with pytest.raises(AdmissionError, match="cancelled and withdrawn") as raised:
-        book.submit(request, authenticated_group="ops", capacity_provider=lambda: blocked_capacity, wait_s=10)
+        book.submit(request, authenticated_group="ops", capacity_provider=lambda: blocked_capacity,
+                    legacy_jobs_provider=lambda: (), wait_s=10)
     assert raised.value.exit_code == 143
     assert outcomes["status"]["state"] == "waiting"
     assert outcomes["cancel"]["cancelled"] is True
@@ -720,7 +897,7 @@ def test_dead_waiter_disappears_after_its_flock_owner_exits(tmp_path):
     try:
         with pytest.raises(AdmissionError, match="earlier queue reservation") as raised:
             book.submit(_request(job_id="ops-new"), authenticated_group="ops",
-                        capacity_provider=lambda: capacity, wait_s=0)
+                        capacity_provider=lambda: capacity, legacy_jobs_provider=lambda: (), wait_s=0)
         assert raised.value.exit_code == 75
     finally:
         process.stdin.write("release\n")
@@ -728,7 +905,7 @@ def test_dead_waiter_disappears_after_its_flock_owner_exits(tmp_path):
         process.stdin.close()
         assert process.wait() == 0
     admitted = book.submit(_request(job_id="ops-new"), authenticated_group="ops",
-                           capacity_provider=lambda: capacity, wait_s=0)
+                           capacity_provider=lambda: capacity, legacy_jobs_provider=lambda: (), wait_s=0)
     assert admitted.handle is not None
     assert book.status(old_waiter_id, "ops") is None
     admitted.handle.complete()
@@ -746,6 +923,7 @@ def test_pending_lease_is_durable_charged_and_bound_to_one_immutable_container_i
     request = _lease_request()
     reserved = book.reserve_lease(
         request, authenticated_group="ops", capacity_provider=lambda: capacity,
+        legacy_jobs_provider=lambda: (),
         inspector=inspector, wait_s=0,
     )
     assert reserved.record["state"] == "pending"
@@ -757,7 +935,7 @@ def test_pending_lease_is_durable_charged_and_bound_to_one_immutable_container_i
 
     with pytest.raises(AdmissionError, match="RAM fit") as raised:
         book.submit(_request(job_id="ops-too-large", footprint="small"), authenticated_group="ops",
-                    capacity_provider=lambda: capacity, wait_s=0)
+                    capacity_provider=lambda: capacity, legacy_jobs_provider=lambda: (), wait_s=0)
     assert raised.value.exit_code == 75
 
     bound = reserved.handle.bind("c" * 64)
@@ -787,28 +965,33 @@ def test_pending_lease_is_durable_charged_and_bound_to_one_immutable_container_i
 
 
 @pytest.mark.parametrize(
-    "answer, released",
+    "answer, state, released",
     [
-        (InspectorAnswer.PRESENT, False),
-        (InspectorAnswer.ERROR, False),
-        ("unrecognized", False),
-        (InspectorAnswer.NO_SUCH_OBJECT, True),
+        (InspectorAnswer.PRESENT, "bound", False),
+        (InspectorAnswer.ERROR, "bound", False),
+        ("unrecognized", "bound", False),
+        (InspectorAnswer.NO_SUCH_OBJECT, "tombstone", True),
     ],
 )
-def test_lease_revoke_releases_only_on_explicit_no_such_object(tmp_path, answer, released):
+def test_lease_reconcile_changes_only_on_explicit_no_such_object(tmp_path, answer, state, released):
     capacity = _capacity(max_planned=2 * GIB)
     book = _book(tmp_path / "state")
     request = _lease_request()
     reserved = book.reserve_lease(
         request, authenticated_group="ops", capacity_provider=lambda: capacity,
+        legacy_jobs_provider=lambda: (),
         inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT, wait_s=0,
     )
     reserved.handle.bind("e" * 64)
     reserved.handle.close()
+    before = book.status("ops-lease-1", "ops")
     result = book.reconcile_lease("ops-lease-1", "ops", lambda target: answer)
-    assert result["state"] == "tombstone"
+    assert result["state"] == state
     assert result["released"] is released
-    assert result["last_inspection"] == (answer.value if isinstance(answer, InspectorAnswer) else "unknown")
+    if released:
+        assert result["last_inspection"] == answer.value
+    else:
+        assert result == before
 
     if released:
         new = _admit(book, capacity, job_id="ops-after-release", footprint="small")
@@ -824,6 +1007,7 @@ def test_lease_name_tombstone_blocks_reuse_even_after_release_and_inspector_erro
     book = _book(tmp_path / "state")
     reserved = book.reserve_lease(
         _lease_request(), authenticated_group="ops", capacity_provider=lambda: capacity,
+        legacy_jobs_provider=lambda: (),
         inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT, wait_s=0,
     )
     reserved.handle.close()
@@ -834,7 +1018,8 @@ def test_lease_name_tombstone_blocks_reuse_even_after_release_and_inspector_erro
     with pytest.raises(AdmissionError, match="already tombstoned or leased") as raised:
         book.reserve_lease(
             _lease_request(lease_id="ops-lease-2"), authenticated_group="ops",
-            capacity_provider=lambda: capacity, inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
+            capacity_provider=lambda: capacity, legacy_jobs_provider=lambda: (),
+            inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
             wait_s=0,
         )
     assert raised.value.exit_code == 2
@@ -842,10 +1027,53 @@ def test_lease_name_tombstone_blocks_reuse_even_after_release_and_inspector_erro
     reappeared = book.reconcile_lease(
         "ops-lease-1", "ops", lambda _target: InspectorAnswer.ERROR
     )
-    assert reappeared["released"] is False
+    assert reappeared == released
+    after_release = _admit(book, capacity, job_id="ops-after-reconcile", footprint="large")
+    after_release.handle.complete()
+
+
+def test_pending_live_lease_and_raising_inspector_leave_record_unchanged(tmp_path):
+    capacity = _capacity()
+    book = _book(tmp_path / "pending")
+    pending = book.reserve_lease(
+        _lease_request(), authenticated_group="ops", capacity_provider=lambda: capacity,
+        legacy_jobs_provider=lambda: (), inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
+        wait_s=0,
+    )
+    before = dict(pending.record)
+    live_result = book.reconcile_lease("ops-lease-1", "ops", lambda _name: InspectorAnswer.NO_SUCH_OBJECT)
+    assert live_result == before
+    assert book.is_live("ops-lease-1") is True
     with pytest.raises(AdmissionError, match="RAM fit") as raised:
         _admit(book, capacity, job_id="ops-still-charged", footprint="large")
     assert raised.value.exit_code == 75
+    pending.handle.close()
+
+    def raising_inspector(_name):
+        raise OSError("injected inspector failure")
+
+    unchanged = book.reconcile_lease("ops-lease-1", "ops", raising_inspector)
+    assert unchanged == before
+
+
+def test_explicit_revoke_tombstones_but_keeps_charge_until_reconcile_confirms_absence(tmp_path):
+    capacity = _capacity()
+    book = _book(tmp_path / "state")
+    reserved = book.reserve_lease(
+        _lease_request(), authenticated_group="ops", capacity_provider=lambda: capacity,
+        legacy_jobs_provider=lambda: (), inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
+        wait_s=0,
+    )
+    reserved.handle.bind("f" * 64)
+    reserved.handle.close()
+    revoked = book.revoke_lease("ops-lease-1", "ops")
+    assert revoked["state"] == "tombstone"
+    assert revoked["released"] is False
+    with pytest.raises(AdmissionError, match="RAM fit") as raised:
+        _admit(book, capacity, job_id="ops-before-confirmation", footprint="large")
+    assert raised.value.exit_code == 75
+    released = book.reconcile_lease("ops-lease-1", "ops", lambda _name: InspectorAnswer.NO_SUCH_OBJECT)
+    assert released["released"] is True
 
 
 def test_lease_name_collision_and_unknown_inspector_answer_fail_closed(tmp_path):
@@ -854,6 +1082,7 @@ def test_lease_name_collision_and_unknown_inspector_answer_fail_closed(tmp_path)
     with pytest.raises(AdmissionError, match="already exists") as raised:
         present.reserve_lease(
             _lease_request(), authenticated_group="ops", capacity_provider=lambda: capacity,
+            legacy_jobs_provider=lambda: (),
             inspector=lambda _name: InspectorAnswer.PRESENT, wait_s=0,
         )
     assert raised.value.exit_code == 2
@@ -862,6 +1091,7 @@ def test_lease_name_collision_and_unknown_inspector_answer_fail_closed(tmp_path)
     with pytest.raises(AdmissionError, match="could not be confirmed absent") as raised:
         unknown.reserve_lease(
             _lease_request(), authenticated_group="ops", capacity_provider=lambda: capacity,
+            legacy_jobs_provider=lambda: (),
             inspector=lambda _name: InspectorAnswer.ERROR, wait_s=0,
         )
     assert raised.value.exit_code == 75
@@ -880,7 +1110,7 @@ def test_lease_priority_and_waiters_share_the_host_book(tmp_path):
         lease = book.reserve_lease(
             _lease_request(lease_id="ops-z-lease", container_name="rg-merge", priority="merge-gate",
                            footprint="tiny"),
-            authenticated_group="ops", capacity_provider=lambda: capacity,
+            authenticated_group="ops", capacity_provider=lambda: capacity, legacy_jobs_provider=lambda: (),
             inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT, wait_s=0,
         )
         nested["lease"] = lease
@@ -889,7 +1119,8 @@ def test_lease_priority_and_waiters_share_the_host_book(tmp_path):
         blocker.handle.complete()
 
     clock.on_wait = let_merge_lease_pass
-    result = book.submit(head, authenticated_group="ops", capacity_provider=lambda: capacity, wait_s=120)
+    result = book.submit(head, authenticated_group="ops", capacity_provider=lambda: capacity,
+                         legacy_jobs_provider=lambda: (), wait_s=120)
     assert nested["lease"].record["priority"] == "merge-gate"
     assert result.record["job_id"] == "ops-a-head"
     result.handle.complete()
