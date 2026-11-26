@@ -122,6 +122,11 @@ systemctl daemon-reload
 systemctl enable --now hostobs-observe.socket hostobs-operator.socket
 ```
 
+Create `hostobs-observer` by the same system-group procedure above, with a GID
+distinct from `hostobs`, `hostobs-observe`, `hostobs-operator`, 0 and the host's
+Docker GID. Add only intended observer clients to it, and add
+`hostobs-observer.socket` to the `systemctl enable --now` command above.
+
 For a 60-second observe check, run the same example installed as
 `/usr/local/bin/hostobs-watch` from an identity in the `hostobs-observe` group.
 `watch` performs one `current`, then the requested subscription ticks:

@@ -13,6 +13,7 @@ SYSTEMD = DEPLOY / "systemd"
 CONFIG = DEPLOY / "hostobsd.toml"
 SERVICE = SYSTEMD / "hostobs-probe.service"
 TMPFILES = DEPLOY / "tmpfiles.d" / "hostobs.conf"
+LEVELS = ("observe", "operator", "observer")
 
 HARDENING = {
     "NoNewPrivileges": "yes",
@@ -122,15 +123,23 @@ class DeployUnits(unittest.TestCase):
                 f"{SERVICE}: [Service] must not set {key}: {reason}",
             )
 
-    def test_every_configured_level_has_one_exact_socket(self):
-        levels = self.config["probe"]["levels"]
+    def test_service_lists_all_three_socket_units(self):
         declared = service_socket_units(self.service)
         self.assertEqual(
             sorted(declared),
-            sorted(f"hostobs-{level}.socket" for level in levels),
+            sorted(f"hostobs-{level}.socket" for level in LEVELS),
             f"{SERVICE}: [Service] Sockets=",
         )
-        for level in levels:
+
+    def test_every_deployed_level_has_one_exact_socket(self):
+        expected_units = {f"hostobs-{level}.socket" for level in LEVELS}
+        actual_units = {path.name for path in SYSTEMD.glob("hostobs-*.socket")}
+        self.assertEqual(
+            actual_units,
+            expected_units,
+            f"{SYSTEMD}: socket unit set",
+        )
+        for level in LEVELS:
             path = SYSTEMD / f"hostobs-{level}.socket"
             self.assertTrue(
                 path.is_file(), f"{path}: missing socket unit for configured level {level}"
@@ -156,11 +165,10 @@ class DeployUnits(unittest.TestCase):
                 )
 
     def test_tmpfiles_creates_the_socket_directories(self):
-        levels = self.config["probe"]["levels"]
         expected = [("/run/hostobs", "0755", "root", "root", "-")]
         expected.extend(
             (f"/run/hostobs/{level}", "0750", "root", f"hostobs-{level}", "-")
-            for level in levels
+            for level in LEVELS
         )
         parsed = tmpfiles_directories(TMPFILES)
         for entry in expected:
@@ -192,8 +200,17 @@ class DeployUnits(unittest.TestCase):
         self.assertEqual(set(self.config["limits"]), {"max_rows"}, f"{CONFIG}: [limits] keys")
         self.assertEqual(
             self.config["probe"]["levels"],
-            ["observe", "operator"],
+            list(LEVELS),
             f"{CONFIG}: [probe] levels",
+        )
+        socket_levels = {
+            path.name.removeprefix("hostobs-").removesuffix(".socket")
+            for path in SYSTEMD.glob("hostobs-*.socket")
+        }
+        self.assertEqual(
+            set(self.config["probe"]["levels"]),
+            socket_levels,
+            f"{CONFIG}: [probe] levels must match the socket unit set",
         )
         self.assertEqual(
             self.config["probe"]["tick_ms"], 1000, f"{CONFIG}: [probe] tick_ms"
