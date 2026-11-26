@@ -93,6 +93,7 @@ holds the full bodies.
 | HOB-99 | The probe's self-overhead is unmeasured on native hardware with a release build | Major | OPEN (P-11(b) final review F1) |
 | HOB-100 | The next VM run must check the tightened verdict rules, the full model table, a reboot, a non-root operator member and the cgroup controller files | Minor | OPEN (P-11(b) final review F2/F5/F7) |
 | HOB-101 | `watch` prints the client's own loop count in its `closed` line, not the server's END `blocks`/`dropped` | Minor | OPEN (P-11(b) final review F6) |
+| HOB-102 | Freeze state is not a sampled metric | Major | FIXED in tree (M3 B8); live frozen-scope evidence open |
 
 ---
 
@@ -1497,3 +1498,19 @@ verdict and the example cannot disagree about the line's form.
 Source: `reviews/p11b-final-opus.md` F6 (print the server END `blocks`/`dropped`);
 `evidence/p11b-vm-20261124/transcript.txt:6312`; `crates/client/src/client.rs:880`,
 `crates/client/src/streams.rs:177-189`.
+
+## HOB-102 — Freeze state is not a sampled metric
+
+**Where:** `crates/kernel/src/cgroup.rs`, `crates/model/src/metric.rs`, `bins/probe/src/sampler.rs`.
+
+**Problem.** The probe sampled no freeze state, so a reader could not check a freeze or thaw event
+(thrashguard reports them best-effort) against the cgroup's own `cgroup.freeze` and `cgroup.events`.
+
+**Status.** Fixed by M3 package B8: the sampler publishes `cgroup.freeze`, `cgevents.frozen` and
+`cgevents.populated` as last-only state metrics; an absent or unreadable file never renders as a
+measured `0`. Fixture tests cover the parsers and one sampler tick.
+
+**Open.** No run has shown these columns for a frozen scope on a real host.
+
+**Exit criteria.** One recorded VM run in which a frozen scope shows `cgroup.freeze` 1 and
+`cgevents.frozen` 1, and 0 for both after the thaw, with the kernel files captured beside the ticks.
