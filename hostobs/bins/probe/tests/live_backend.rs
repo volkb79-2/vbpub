@@ -357,7 +357,7 @@ fn current_all_path_prefix_and_inc_decode_fixture_values() {
             _ => None,
         })
         .collect();
-    assert_eq!(names.len(), 40, "31 cgroup + 7 host + 2 daemon metrics");
+    assert_eq!(names.len(), 43, "34 cgroup + 7 host + 2 daemon metrics");
     let (complete, _) = current(
         &mut server,
         id,
