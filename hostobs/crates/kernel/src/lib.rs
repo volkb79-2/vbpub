@@ -20,11 +20,13 @@
 //! - **No path-keyed identity.** A cgroup is `(mount id, inode)` and a process is
 //!   `(boot id, pid, starttime ticks)`; a path is a label. Nothing in this crate derives
 //!   an identity from a path, and a test pins the recycled-inode case.
-//! - **Read-only, bounded, and one audited `unsafe` item.** The [`Fs`](crate::fs::Fs) trait
-//!   has no write operation, every read takes a byte bound and every listing an entry
-//!   bound. `activation::adopt_raw` is the crate's only `unsafe` item: it claims a
-//!   systemd-owned fd after the checks in [`activation`]. The crate carries the
-//!   `unsafe_code` deny lint, and the sole allowance is on that function. Absolute
+//! - **Read-only, bounded, and two audited `unsafe` expressions.** The [`Fs`](crate::fs::Fs)
+//!   trait has no write operation, every read takes a byte bound and every listing an entry
+//!   bound. Both expressions live in the private `raw` module of [`activation`]: `adopt_raw`
+//!   claims a systemd-owned fd after the module's checks, and
+//!   [`peer_credentials_raw`](crate::activation::peer_credentials_raw) reads the raw
+//!   `SO_PEERCRED` bytes so a pid of 0 never reaches a non-zero type (`HOB-90`). The crate
+//!   carries the `unsafe_code` deny lint, and the sole allowance is on that module. Absolute
 //!   `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` readings use rustix's safe `time` API.
 //! - **An injectable clock** ([`Clock`](crate::clock::Clock), [`ManualClock`](crate::clock::ManualClock)) so no test depends on host
 //!   speed, load or the wall clock.

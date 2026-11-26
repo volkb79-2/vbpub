@@ -17,15 +17,18 @@ from __future__ import annotations
 import json
 import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 HOSTOBS = Path(__file__).resolve().parents[2]
 FIXTURES = HOSTOBS / "fixtures" / "wire"
+EVENT_FIXTURES = HOSTOBS / "fixtures" / "event"
 RATES = HOSTOBS / "fixtures" / "rates"
 SEGMENTS = HOSTOBS / "fixtures" / "segment"
 sys.path.insert(0, str(HOSTOBS / "python" / "reference"))
 
+import make_event_fixtures  # noqa: E402
 import hostobs_rate_ref  # noqa: E402
 import hostobs_segment_ref  # noqa: E402
 import hostobs_wire_ref  # noqa: E402
@@ -140,6 +143,38 @@ class WireFixtures(unittest.TestCase):
                     hostobs_wire_ref.canonical_selection(selected)
                 self.assertEqual(caught.exception.code, "bad-request")
                 self.assertEqual(caught.exception.path, path)
+
+    def test_b9_selection_refusal_order_matches_the_rust_schema(self):
+        cases = [
+            (
+                {"entities": [{"cgroup_id": {"dev": 0}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"dev": "x"}}], "metrics": ["m"]},
+                "selection.entities.cgroup_id.dev",
+            ),
+            (
+                {
+                    "entities": [
+                        {"cgroup_id": {"dev": 1, "inode": 2}},
+                        {"cgroup_id": {"dev": 1, "inode": 2}},
+                    ],
+                    "metrics": ["Bad"],
+                },
+                "selection.metrics",
+            ),
+            (
+                {"entities": [{"cgroup_id": {"dev": 0, "inode": 1}}]},
+                "selection.entities.cgroup_id.dev",
+            ),
+        ]
+        for selected, key in cases:
+            with self.subTest(key=key):
+                with self.assertRaises(hostobs_wire_ref.SelectionError) as caught:
+                    hostobs_wire_ref.canonical_selection(selected)
+                self.assertEqual(caught.exception.code, "bad-request")
+                self.assertEqual(caught.exception.path, key)
 
     def test_b9_cgroup_id_minor_gate_is_step_11_after_schema(self):
         selected = {
@@ -620,6 +655,270 @@ class WireFixtures(unittest.TestCase):
         )
         self.assertEqual(vocabulary["codes"][0], {"code": 0, "name": "ok", "measurement": True})
         self.assertTrue(all(not entry["measurement"] for entry in vocabulary["codes"][1:]))
+
+
+class EventPayloadFixtures(unittest.TestCase):
+    def test_event_fixtures_round_trip_and_pin_each_refusal(self):
+        paths = sorted(EVENT_FIXTURES.glob("*.json"))
+        self.assertEqual(len(paths), 7)
+        expected_entries = sorted(
+            name
+            for path in paths
+            for name in (path.name, path.with_suffix(".bin").name)
+        )
+        self.assertEqual(
+            sorted(path.name for path in EVENT_FIXTURES.iterdir()),
+            expected_entries,
+            "every stored event case has one JSON file and one byte file",
+        )
+        expected = {
+            "event-unknown-code": "event-unknown-code",
+            "event-overflow": "event-field-bound",
+            "event-unsorted-attrs": "event-order",
+            "event-control-text": "event-text",
+        }
+        for spec_path in paths:
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            frame = spec_path.with_suffix(".bin").read_bytes()
+            body = hostobs_wire_ref.event_body_from_frame(frame)
+            with self.subTest(case=spec_path.stem):
+                if spec_path.stem in expected:
+                    self.assertEqual(spec["expect_error"]["kind"], expected[spec_path.stem])
+                    with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+                        hostobs_wire_ref.decode_event_payload(body)
+                    self.assertEqual(caught.exception.as_dict()["kind"], expected[spec_path.stem])
+                    continue
+                self.assertEqual(hostobs_wire_ref.encode_event_frame(spec["event"]), frame)
+                self.assertEqual(hostobs_wire_ref.encode_event_payload(spec["event"]), body)
+                self.assertEqual(hostobs_wire_ref.decode_event_payload(body), spec["event"])
+
+    def test_event_fixture_generator_reproduces_the_complete_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            generated = Path(temporary) / "event"
+            make_event_fixtures.generate(generated)
+            committed_names = sorted(path.name for path in EVENT_FIXTURES.iterdir())
+            generated_names = sorted(path.name for path in generated.iterdir())
+            self.assertEqual(generated_names, committed_names)
+            for name in committed_names:
+                with self.subTest(file=name):
+                    self.assertEqual(
+                        (generated / name).read_bytes(),
+                        (EVENT_FIXTURES / name).read_bytes(),
+                        "the event fixture generator reproduces every byte",
+                    )
+
+    def test_stored_event_frame_rejects_header_and_directory_defects_in_order(self):
+        valid = (EVENT_FIXTURES / "event-minimal.bin").read_bytes()
+
+        def assert_kind(label, frame, expected):
+            with self.subTest(defect=label), self.assertRaises(
+                hostobs_wire_ref.WireError
+            ) as caught:
+                hostobs_wire_ref.event_body_from_frame(frame)
+            self.assertEqual(caught.exception.as_dict()["kind"], expected)
+
+        def changed(offset, value):
+            result = bytearray(valid)
+            result[offset : offset + len(value)] = value
+            return bytes(result)
+
+        assert_kind("short frame", valid[:23], "truncated")
+        assert_kind("wrong type", changed(4, b"\x01"), "unknown-frame-type")
+        assert_kind("wrong flags", changed(5, b"\x00"), "unknown-frame-flags")
+        assert_kind("reserved header", changed(6, b"\x01\x00"), "non-zero-reserved")
+        assert_kind(
+            "correlation id",
+            changed(8, struct.pack("<I", 1)),
+            "non-zero-reserved",
+        )
+        assert_kind(
+            "oversized frame",
+            changed(0, struct.pack("<I", hostobs_wire_ref.MAX_FRAME_BYTES + 1)),
+            "oversized-frame",
+        )
+        assert_kind(
+            "declared length mismatch",
+            changed(0, struct.pack("<I", len(valid) + 1)),
+            "truncated",
+        )
+
+        unaligned = bytearray(valid + b"\x00")
+        struct.pack_into("<I", unaligned, 0, len(unaligned))
+        assert_kind("unaligned frame length", bytes(unaligned), "section-length")
+
+        assert_kind(
+            "wrong section count",
+            changed(12, struct.pack("<H", 2)),
+            "section-length",
+        )
+        assert_kind(
+            "directory reserved",
+            changed(14, struct.pack("<H", 1)),
+            "section-reserved",
+        )
+        assert_kind(
+            "wrong required kind",
+            changed(16, struct.pack("<H", 8)),
+            "unsupported-required-section",
+        )
+        assert_kind(
+            "wrong version",
+            changed(18, b"\x02"),
+            "unsupported-section-version",
+        )
+        assert_kind(
+            "wrong section flags",
+            changed(19, b"\x00"),
+            "unknown-section-flags",
+        )
+        assert_kind(
+            "wrong body length",
+            changed(20, struct.pack("<I", 1)),
+            "section-length",
+        )
+
+    def test_event_body_boundaries_and_truncation_are_typed(self):
+        full = json.loads(
+            (EVENT_FIXTURES / "event-full.json").read_text(encoding="utf-8")
+        )["event"]
+        full_frame = (EVENT_FIXTURES / "event-full.bin").read_bytes()
+        body = hostobs_wire_ref.event_body_from_frame(full_frame)
+        self.assertEqual(hostobs_wire_ref.decode_event_payload(body), full)
+
+        for end in range(len(body)):
+            with self.subTest(prefix=end), self.assertRaises(hostobs_wire_ref.WireError) as caught:
+                hostobs_wire_ref.decode_event_payload(body[:end])
+            expected = "truncated" if end < 48 else "section-length"
+            self.assertEqual(caught.exception.as_dict()["kind"], expected)
+
+        minimal = json.loads(
+            (EVENT_FIXTURES / "event-minimal.json").read_text(encoding="utf-8")
+        )["event"]
+        minimal_body = hostobs_wire_ref.encode_event_payload(minimal)
+        self.assertEqual(hostobs_wire_ref.decode_event_payload(minimal_body), minimal)
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(minimal_body + bytes(8))
+        self.assertEqual(caught.exception.as_dict()["kind"], "section-length")
+
+        for offset in (45, len(minimal_body) - 1):
+            corrupt = bytearray(minimal_body)
+            corrupt[offset] = 1
+            with self.subTest(reserved_offset=offset), self.assertRaises(
+                hostobs_wire_ref.WireError
+            ) as caught:
+                hostobs_wire_ref.decode_event_payload(bytes(corrupt))
+            self.assertEqual(caught.exception.as_dict()["kind"], "non-zero-reserved")
+
+    def test_event_code_bounds_text_and_order_match_the_rust_kinds(self):
+        point = json.loads(
+            (EVENT_FIXTURES / "event-point-ctx.json").read_text(encoding="utf-8")
+        )["event"]
+        body = bytearray(hostobs_wire_ref.encode_event_payload(point))
+        for offset, value in ((40, 4), (41, 8)):
+            corrupt = bytearray(body)
+            corrupt[offset] = value
+            with self.subTest(code_offset=offset), self.assertRaises(
+                hostobs_wire_ref.WireError
+            ) as caught:
+                hostobs_wire_ref.decode_event_payload(bytes(corrupt))
+            self.assertEqual(caught.exception.as_dict()["kind"], "event-unknown-code")
+
+        unknown_pair = bytearray(body)
+        unknown_pair[40] = 1
+        unknown_pair[41] = 1
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(unknown_pair))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-unknown-code")
+
+        unknown_ctx = bytearray(body)
+        unknown_ctx[80] = 5
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(unknown_ctx))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-unknown-code")
+
+        bad_order = bytearray(body)
+        bad_order[80], bad_order[88] = bad_order[88], bad_order[80]
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(bad_order))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-order")
+
+        bad_text = bytearray(body)
+        bad_text[50] = 0xFF
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(bad_text))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-text")
+
+        negative_time = bytearray(body)
+        negative_time[:8] = b"\xff" * 8
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(negative_time))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
+
+        out_of_bound = dict(point)
+        out_of_bound["span"] = 1
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.encode_event_payload(out_of_bound)
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
+
+        for field in ("code", "comm"):
+            present_empty = dict(point)
+            present_empty[field] = ""
+            with self.subTest(empty_optional=field), self.assertRaises(
+                hostobs_wire_ref.WireError
+            ) as caught:
+                hostobs_wire_ref.encode_event_payload(present_empty)
+            self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
+
+        full_frame = (EVENT_FIXTURES / "event-full.bin").read_bytes()
+        full_body = hostobs_wire_ref.event_body_from_frame(full_frame)
+        _, _, _, attrs_start, content_end = hostobs_wire_ref._event_layout(full_body)
+        key_length = struct.unpack_from("<H", full_body, attrs_start)[0]
+        value_length_offset = attrs_start + 2 + key_length
+        value_start = value_length_offset + 2
+        value_end = value_start + struct.unpack_from("<H", full_body, value_length_offset)[0]
+        oversized_value = bytearray(full_body[:content_end])
+        oversized_value[value_end:value_end] = b"v" * 257
+        struct.pack_into("<H", oversized_value, value_length_offset, 257)
+        oversized_value.extend(bytes(-len(oversized_value) % 8))
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_event_payload(bytes(oversized_value))
+        self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
+
+    def test_section_seven_stays_unknown_to_blocks_and_evt_sectioned_stays_non_socket(self):
+        event_frame = (EVENT_FIXTURES / "event-minimal.bin").read_bytes()
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_frame(event_frame)
+        self.assertEqual(caught.exception.as_dict()["kind"], "unknown-frame-flags")
+        self.assertEqual(hostobs_wire_ref.SECTION_KINDS_BY_CODE.get(7), None)
+
+        body = hostobs_wire_ref.event_body_from_frame(event_frame)
+
+        def block_with_event(section_flags: int) -> bytes:
+            header = bytes(80)
+            directory = struct.pack("<HBBI", 1, 1, 1, len(header)) + struct.pack(
+                "<HBBI", 7, 1, section_flags, len(body)
+            )
+            payload = header + body
+            total = 12 + 4 + len(directory) + len(payload)
+            return (
+                struct.pack(
+                    "<IBBHI",
+                    total,
+                    hostobs_wire_ref.FRAME_TYPES["block"],
+                    hostobs_wire_ref.FRAME_SECTIONED,
+                    0,
+                    0,
+                )
+                + struct.pack("<HH", 2, 0)
+                + directory
+                + payload
+            )
+
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_frame(block_with_event(1))
+        self.assertEqual(caught.exception.as_dict()["kind"], "unsupported-required-section")
+        decoded = hostobs_wire_ref.decode_frame(block_with_event(0))
+        self.assertEqual(decoded["skipped"], [7])
 
 
 class RateFixtures(unittest.TestCase):

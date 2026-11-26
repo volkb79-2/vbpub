@@ -542,7 +542,7 @@ impl FrameHeader {
         }
         let reserved = cursor.u16()?;
         if reserved != 0 {
-            return Err(ProtoError::NonZeroReserved(reserved));
+            return Err(ProtoError::NonZeroReserved(u32::from(reserved)));
         }
         let corr = cursor.u32()?;
         if enforce_declared_bounds {
@@ -3380,6 +3380,11 @@ mod tests {
             assert_eq!(kind.is_single(), kind != SectionKind::Column);
             assert!(!kind.name().is_empty());
         }
+        assert_eq!(
+            SectionKind::from_code(7),
+            None,
+            "event/1 is not a BLOCK section"
+        );
         assert_eq!(SectionKind::from_code(9), None);
         let section = Section::new(SectionKind::Rows, vec![0; 8]);
         assert_eq!(section.kind_code(), 2);

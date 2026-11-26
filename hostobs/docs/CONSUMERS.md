@@ -21,14 +21,13 @@ The command is installed at `.venv/bin/hostobs-mark` and is available as
 `hostobs_client.mark:main`.
 
 **Current server and deployment status:** No hostobs probe currently serves
-`annotate`, and `deploy/` does not install an observer socket yet. The example
-socket path is absent in the current deployment, so `hostobs-mark` prints a
-notice and exits 0; adding `--require` makes it exit 1. When deployment installs
-the observer socket, callers will need membership in the `hostobs-observer`
-group. The serving and deployment pieces are not delivered yet.
+`annotate`. `deploy/` installs the observer socket
+(`hostobs-observer.socket`), and connecting to it needs membership in the
+`hostobs-observer` group. Until `annotate` is served, `hostobs-mark` prints a
+notice and exits 0; adding `--require` makes it exit 1.
 
-Once the socket is installed and the probe serves `annotate`, set its path and
-pass an annotation name accepted by WIRE §4.12:
+Once the probe serves `annotate`, set the socket path and pass an annotation name
+accepted by WIRE §4.12:
 
 ```sh
 HOSTOBS_OBSERVER_SOCKET=/run/hostobs/observer/hostobs.sock \
@@ -40,12 +39,16 @@ Usage errors exit 2 (WIRE §8.5 and `hostobs/python/hostobs_client/mark.py`).
 # Using the hostobs Rust lanes
 
 `model`, `proto`, `serve`, `kernel`, `store`, `client` and `bins/probe` are functional;
-`eval`, `act` and `bins/act` are still the M0 scaffold. The registered lanes are `lint`, `selftest`, `assay-r1`
+`eval`, `act` and `bins/act` are still the M0 scaffold. The registered default lanes are `lint`, `selftest`, `assay-r1`
 and `conformance` (the Python tests). The estate wraps every lane run in the controller's gate wrappers, which take the
 shared gate slots and the lane's lock (see `scripts/controller/README.md`, "Running the
 registered gate" and "Run one lane on a remote gate worker"); a bare `run-gate <lane>` skips
 that admission and `run-gate` refuses container lanes on the main checkout, so do not use it
 as the way to run these.
+
+The separately registered `assay-r2` command lane is hand-run only. `assay.toml` scopes its
+changed-line mutation judge to six crate `src` roots; registration does not establish a passing
+run (HOB-45/K15).
 
 **Locally**, from the project directory `hostobs/` of a *linked worktree* (never the main
 checkout):
@@ -57,6 +60,7 @@ scripts_dir=<repo>/scripts/controller
 "$scripts_dir/gate-run.sh" lint
 "$scripts_dir/gate-run.sh" selftest
 "$scripts_dir/gate-run.sh" assay-r1
+"$scripts_dir/gate-run.sh" conformance
 ```
 
 **Remotely**, on a remote gate worker (needs `CONTROLLER_REMOTE_GATE_HOSTS=v1001`, or the
@@ -77,7 +81,8 @@ docker run failed (exit 125)` and `Unable to find image 'tester-unified-rust:rs-
 (the image named by the `tester-unified-rust` environment in `run-gate.root.toml`); that is
 an environment fault, not a verdict on the code.
 
-All three use `tester-unified-rust` with Docker networking disabled. The image contains the
+The registered Rust lanes (`lint`, `selftest`, `assay-r1` and hand-run `assay-r2`) use
+`tester-unified-rust` with Docker networking disabled. The image contains the
 stable Rust toolchain, the cargo tools, Python for the cache/floor helpers, and the crate
 archive closure for this exact `Cargo.lock`. Do not run Cargo from the cockpit or use a
 network fallback. The lane image (`tester-unified-rust:rs-20261124b`) has a Cargo wrapper that refuses before
@@ -102,7 +107,10 @@ is who renders the coverage verdict. The artifacts are `lcov.info` and `cov-summ
 this directory (git-ignored), and the verdict is
 `hostobs/.assay/verdict-assay-r1.json`.
 
-The verdict's R1 claim carries measured totals, not a restated floor:
+The verdict's R1 claim carries measured totals, not a restated floor. The current declaration
+in `assay.toml` judges 61 `src` files across the six functional crates and `bins/probe`. The
+example below is a historical verdict from head `3b46df06`, when the declaration had 33 files;
+it shows the shape, not the current file count or a current-head result:
 
 ```json
 {"covered": 15100, "executable": 15723, "considered": 33,
@@ -110,7 +118,7 @@ The verdict's R1 claim carries measured totals, not a restated floor:
  "missing_lines": {"hostobs/crates/kernel/src/cgroup.rs": [270, 319, ...], ...}}
 ```
 
-Read it as: 33 declared `src` files of `model`, `proto`, `kernel` and `store` were judged,
+Read it as: at that historical head, 33 declared `src` files of `model`, `proto`, `kernel` and `store` were judged,
 15100 of their 15723 executable lines ran (96.04 %), the floor in the lane file is 95.0 %,
 and every uncovered executable line is listed by file as a finding (`missing_lines`).
 `branch_capability: "unavailable"` and `branches_total: 0` are the honest answer for stable
@@ -135,13 +143,13 @@ not part of Assay's R1 claim.
 
 ### Proof it is a real judge, not a renamed floor
 
-Proven through Run-Gate in this workspace's own lane (no throwaway copies), the same 33
-targets returned:
+At head `3b46df06`, Run-Gate proved the judge in this workspace's own lane (no throwaway
+copies): the same 33 targets returned:
 
 | run | nextest | assay R1 |
 |---|---|---|
-| `run-gate assay-r1` in this workspace's registered lane | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
-| the same lane, one kernel test file deleted, committed in a temporary worktree | 322 tests pass (all green) | `FAIL/UNCOVERED_LINES`, 14777/15723 = 93.9833 % |
+| `run-gate assay-r1` at head `3b46df06` | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
+| that historical lane, one kernel test file deleted and committed in a temporary worktree | 322 tests pass (all green) | `FAIL/UNCOVERED_LINES`, 14777/15723 = 93.9833 % |
 
 So the verdict is the measured number and the failure is the coverage claim itself; the
 test command stays green in the negative case, which is exactly the difference between a
@@ -152,8 +160,8 @@ same deletion was also measured in throwaway copies with the lane's crate-floor 
 neutralized (`true` in place of `tools/crate-floors.py`), so nothing but the Assay R1
 claim could have failed it; re-running that step over a negative copy confirms it refuses
 the deletion independently (`ERROR: crate crates/kernel line coverage is 81.24%
-(2364/2910); floor is 92.00%`). The registered lane needs no such neutralization to fire:
-R0 FAILs first (`COMMAND_FAILED`) and R1 FAILs on `UNCOVERED_LINES`, both in one log.
+(2364/2910); floor is 92.00%`). In that historical registered lane no neutralization was
+needed: R0 FAILed first (`COMMAND_FAILED`) and R1 FAILed on `UNCOVERED_LINES`, both in one log.
 
 ### `HOB-44` (closed): the lane's own declaration shape
 
@@ -172,8 +180,11 @@ B549 records the same finding from the judge's side.
 ### What is not covered
 
 - **Branches** — unavailable on stable Rust (see above). A branch number here would be invented.
-- **Mutation (R2)** — Rust R2 needs cargo-mutants report ingestion (assay B245 / design R-3b); no
-  `assay-r2` lane exists for Rust. The hand-mutation campaigns in
+- **Mutation (R2)** — a hand-run `assay-r2` lane is registered. `assay.toml` judges changed
+  lines in `crates/model/src`, `proto/src`, `serve/src`, `kernel/src`, `store/src` and
+  `client/src` by ingesting cargo-mutants' outcomes; `run-gate.toml` declares the command lane
+  and does not put it in a default sequence. The first hostobs-sized campaign is tracked by K15,
+  so lane registration is not a pass. The hand-mutation campaigns in
   [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md), [`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md) and
   [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md) remain the test-quality evidence;
   [`HAND-MUTANTS-M1D.md`](HAND-MUTANTS-M1D.md) holds the stored patches of the P0 bug fold-in,
@@ -184,10 +195,11 @@ B549 records the same finding from the judge's side.
   [`HAND-MUTANTS-M1D.md`](HAND-MUTANTS-M1D.md), "Known limit".
 - **Canaries (R3)** — needs a receipt-writing test-break canary (assay B246 / R-4); not registered.
 - **Inline `#[cfg(test)] mod tests` blocks inside a judged file** are measured (LCOV has no
-  per-region exclusion, assay K5). They are NOT a small effect here: counting from each file's
-  `#[cfg(test)]` line to its end, roughly a third of the four crates' source lines (about 10.5k
-  of 28.7k) are inline test code, whose executable lines sit in the 15723 denominator and are
-  covered whenever the tests run. The 96.04 % therefore overstates product-code coverage, and
+  per-region exclusion, assay K5). They are NOT a small effect: at historical head `3b46df06`,
+  counting from each file's `#[cfg(test)]` line to its end, roughly a third of the four crates'
+  source lines (about 10.5k of 28.7k) were inline test code, whose executable lines sat in the
+  15723 denominator and were covered whenever the tests ran. The 96.04 % therefore overstated
+  product-code coverage for that historical 33-file set, and
   a drop of the 629-line headroom lands almost entirely on product code, so 95.0 % is looser
   on product code than it reads (the sampled uncovered line `store/src/tier.rs:1553` is a test
   `assert!` message argument). The per-crate floors in the lane's argv carry the same bias.
@@ -196,7 +208,7 @@ B549 records the same finding from the judge's side.
   declarations and `//!` documentation only, so cargo-llvm-cov emits no LCOV record for them and
   they are not declared targets; Assay refuses a declared target it cannot measure rather than
   excusing it. `crates/kernel/src/lib.rs` does carry `Bounds` (7 executable lines, all covered),
-  so it is one of the 33 targets.
+  so it is one of the current 61 targets.
 
 ## The independent Python cross-check run
 
@@ -446,6 +458,79 @@ including after a reboot or on another host. Keep the reply's `inc` together wit
 absent `cpu.max`; period reports `P` for a readable `Q P` or `max P` line and is `absent` when the
 file is missing.
 
+Send `cgroup_id` only when the negotiated minor is 2 or higher. A pre-minor-2 server refuses the
+member as `bad-request` with `detail.key` `selection.entities.cgroup_id`; a minor-2 server whose
+negotiated minor is below 2 refuses it as `unsupported-feature` with `detail.feature`
+`cgroup_id`. A container has to receive the host key from its launcher; no launcher passes one
+yet (HOB-105). This document makes no claim about a container-local `stat`.
+
+## Status: the live slice
+
+The hostobs live slice is on `main`. It is **not** a versioned release: no tag, package or
+installer. Use it from a checkout (`PYTHONPATH=hostobs/python`; the units in `hostobs/deploy`
+are installed by hand).
+
+**Available:** the observe and operator sockets; the verbs `hello`, `status`, `current`,
+`subscribe` and `unsubscribe`; fixed-width BLOCK frames with a quality byte per value; the
+Rust client (`hostobs/crates/client`) and the stdlib-only Python `hostobs_client`; the
+`cgroup_id` selector and the `limit.cpu.max.*` metrics (wire minor 2). `deploy/` also installs the
+observer socket, which answers only `hello` so far.
+
+`hostobs-operator` is reserved for reads with command-line details (`procs`, not served yet);
+today it returns the same data as `hostobs-observe`.
+
+**Not available yet:** `events` and `spans` (they answer `unknown-verb` at observe and operator);
+`annotate` (`unknown-verb` on the observer socket, `forbidden` at observe and operator); the
+control level and sessions; the install CLI. Version 0.1.0 follows after M3, once the release
+packages are in.
+
+Limits:
+
+1. **Performance is not established.** The only probe CPU figure is a debug build under QEMU
+   emulation (27.3 CPU-s in 59 s, median 434 ms per 1 s tick). No release build was measured on
+   native hardware. The VM result is functional only.
+2. **What the demo exercised.** Only `cpu.usage_usec`, `mem.current` and `pids.current`. It did
+   not exercise PSI, `io.stat`, `memory.stat`, the host `/proc` metrics, `probe.*`, the observer
+   socket, the `cgroup_id` selector, the `limit.cpu.max.*` metrics, a reboot, or a non-root
+   operator-group member. The observer socket did not exist in the recorded run.
+3. **The root cgroup is not a share denominator.** The root's `cpu.usage_usec` is tick-accounted
+   and is not comparable with child cgroups; do not compute shares against `/`. On the root,
+   `mem.current` and `pids.current` are always `absent` (expected — see the table below).
+4. **`current` before the probe's first tick** answers `internal` (HOB-94): retry, or use
+   `subscribe`.
+
+For the live-demo verdict, each `closed` line must keep the exact
+`closed<TAB>blocks=<n><TAB>reason=<reason>` form, and `<n>` must be an integer at least as large
+as the requested tick count (N observe ticks, one operator tick). The count can be higher because
+`unsubscribe` counts blocks that arrive while it waits for its reply
+(`hostobs/crates/client/src/client.rs:550-558`).
+
+### Expected `absent` cells in the recorded Debian 13 guest
+
+`absent` means the file is not there (WIRE's quality vocabulary: only `0` is a measurement, and
+`absent` is "the file or key is not present"). Permission-denied and I/O read failures are
+`unreadable`, never `absent`. For cgroup-v2 controller files, a controller must be enabled in the parent
+cgroup's `cgroup.subtree_control` for its files to be exposed in a child; other delegated trees
+can therefore have additional `absent` cells. The kernel reader maps a missing controller file
+to `absent` and permission/I/O failures to `unreadable`; bounded-overflow cases can be
+`not-sampled` (`crates/kernel/src/cgroup.rs`, `Absence` and `read_file_error`, and
+`crates/kernel/src/fs.rs`, `FsError::quality`). The table below records one guest, not every host.
+
+| cgroup | metric | quality | why |
+|---|---|---|---|
+| `/` (the true cgroup v2 root) | `mem.current`, `pids.current` | `absent` | both files are registered `CFTYPE_NOT_ON_ROOT` in the kernel, so the root has no such file; `cpu.stat` (hence `cpu.usage_usec`) and `*.pressure` exist on every cgroup, root included |
+| `/system.slice/systemd-udevd.service/udev` | `mem.current`, `pids.current` | `absent` | systemd 257 runs udevd under `Delegate=` with `DelegateSubgroup=udev`, and nothing writes `memory`/`pids` into that parent's `cgroup.subtree_control`; the leaf therefore has only core files, while its parent `systemd-udevd.service` still shows `pids.current=1` (hierarchical) |
+| every other entity in this transcript | all three | `ok` | the files exist and are read |
+
+The host `/proc` metrics this slice publishes only appear on the root row (WIRE §4.7). **The model
+table has no host-wide memory metric — there is no `/proc/meminfo` metric** — so a consumer that
+needs host memory cannot get it from a hostobs row today; that is a new-metric item for the
+consumer's own backlog, not something to derive from the root's `mem.current`.
+
+In part (a)'s container run (`.controller-state/hostobs/evidence/live-container-20261124.txt`) the root row is `ok` for all
+three metrics, and that is consistent: `/sys/fs/cgroup` there is the container's
+cgroup-namespace root, a non-root cgroup of the real hierarchy, so `memory.current` exists.
+
 ## Boundaries
 
 These four rules say where hostobs ends and its neighbours begin; later packages and other tools
@@ -457,11 +542,12 @@ follow them.
    observer features are built in hostobs.
 2. **A span is one JSON line on the observer socket.** The line is a JSON-mode request
    (WIRE §8.1, §8.2) with verb `annotate` and the args of WIRE §4.12 (typed span fields in plan v4
-   §C.4). WIRE §4.12 fixes its args and result; the probe serves it from M3 (WIRE §4.3). A control
-   client sends the same line to act on the control socket. The judges, assay and run-gate, stay
-   dependency-free and write that line themselves. `hostobs_client` (WIRE §7) and `hostobs-mark`
-   (WIRE §8.5) serve importers such as cmru, iobench and `cgprofile mark`: programs and scripts
-   that would rather call a helper than speak the wire.
+   §C.4). WIRE §4.12 fixes its args and result; WIRE §4.3 specifies probe service for M3, but
+    the current probe does not serve `annotate` yet. A future control client sends the same line
+    to act on the control socket. The intended integration keeps the judges, assay and run-gate
+    dependency-free; they write that line themselves. `hostobs_client` (WIRE §7) and
+    `hostobs-mark` (WIRE §8.5) serve importers such as cmru, iobench and `cgprofile mark`:
+    programs and scripts that would rather call a helper than speak the wire.
 3. **act never writes `io.cost`, `io.weight` or sysctl.** `hostobs-act` serves only the verbs
    of plan v4 §A.2, and iogovmon owns `io.cost.*`, `io.weight` and the sysctls (plan v4 §A.1,
    "Never does" column for `hostobs-act`).

@@ -19,11 +19,14 @@ The workspace denies unsafe Rust by default. Only `kernel` and `act` declare the
 unsafe-code allowance. Cargo rejects combining a workspace-lint inheritance stanza with a
 package-level override, so those two manifests declare their allowance directly while the
 other eight inherit the workspace lint. Kernel uses its allowance in exactly one audited
-item, `activation::adopt_raw`, which claims a systemd-owned `LISTEN_FDS` descriptor after
-checking that it is an open listening `AF_UNIX` stream socket. The crate carries
+module, the private `activation::raw`, which holds two `unsafe` expressions: `adopt_raw`
+claims a systemd-owned `LISTEN_FDS` descriptor after checking that it is an open listening
+`AF_UNIX` stream socket, and `peer_credentials_raw` reads the raw `SO_PEERCRED` bytes so a
+pid of 0 is rejected before any non-zero pid type exists (`HOB-90`). The crate carries
 `#![deny(unsafe_code)]` and `tools/check-lints.py` permits exactly that one
-`allow(unsafe_code)` occurrence outside `crates/act`. Held-fd adoption is the only raw-fd
-transfer; every ordinary host read remains `File::open`, `read_dir` and `symlink_metadata`.
+`allow(unsafe_code)` occurrence and those two expressions outside `crates/act`. Held-fd
+adoption is the only raw-fd transfer; every ordinary host read remains `File::open`,
+`read_dir` and `symlink_metadata`.
 
 ## Wire: cgroup identity selectors
 
@@ -199,7 +202,8 @@ missing optional file is `absent` or `unsupported` according to a code the calle
 failure.
 
 `cgroup.freeze` is the cgroup's own freeze setting; `cgevents.frozen` is its effective
-state, including a frozen ancestor, and `cgevents.populated` says whether it has live tasks.
+state, including a frozen ancestor, and `cgevents.populated` says whether the cgroup or any
+descendant has a live process.
 Missing `cgroup.freeze` or `cgroup.events` files are `unsupported`; a missing key in a
 successfully read `cgroup.events` file is `absent`, because the quality vocabulary treats a
 missing key as absent and reserves unsupported for a fact the kernel does not provide.
