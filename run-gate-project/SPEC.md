@@ -469,13 +469,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   refused for assay lanes, undeclared command lanes, and command composites;
   selective arguments do not mutate the stored lane declaration or its
   history identity.
-- `R-08c` **Selective assay requests (RG-66).** Lane invocations may pass
-  `--reuse-from PATH`, repeatable `--rejudge ID`, and `--rejudge-outcome
+- `R-08c` **Selective assay requests (RG-66, RG-297).** Lane invocations may
+  pass `--reuse-from PATH`, repeatable `--rejudge ID`, and `--rejudge-outcome
   BUCKET` only to one assay lane. `--reuse-from` resolves within the judged
   worktree, the request is recorded in history, and the lane's constructed
   Assay argv carries the selected flags. Assay's declared pin version must
   meet `--state-dir`'s `5.2.0` floor (`R-38`). A command or sequence refuses
-  these assay-only request flags.
+  these assay-only request flags. A bucket without ids and a carry-over store
+  without its reason are Assay's own refusals since RG-297, not Run-Gate's.
 - `R-08d` **Sequences (RG-67b/RG-74).** A sequence declares `lanes = [...]`
   in execution order and may set `stop_on = "FAIL" | "never"` (default
   `FAIL`). It accepts no runner or argv keys; each member owns its environment
@@ -809,12 +810,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `base_source = "request"`. Members run serially; each has its own history
   result, and the sequence records the ordered composite result. With RG-80
   enabled, one ticket covers the whole composite.
-- `R-46` **Selective lane requests (RG-66/RG-71).** A command lane may declare
-  `accepts_args = true`; CLI arguments after `--` are appended after its
-  declared argv. Arguments are refused for assay lanes, undeclared command
-  lanes, and command composites. `--reuse-from PATH`, repeatable `--rejudge
-  ID`, and `--rejudge-outcome BUCKET` are assay-only, refused on other kinds,
-  and forwarded only to the one selected assay lane. A reuse verdict path must
+- `R-46` **Selective lane requests (RG-66/RG-71, RG-297).** A command lane may
+  declare `accepts_args = true`; CLI arguments after `--` are appended after
+  its declared argv. Arguments are refused for undeclared command lanes and
+  command composites. An assay lane accepts arguments after `--` too and
+  forwards them OPAQUELY to Assay (R-53b), so Assay's own store flags need no
+  Run-Gate change. `--reuse-from PATH`, repeatable `--rejudge ID`, and
+  `--rejudge-outcome BUCKET` are assay-only, refused on other kinds, and
+  forwarded only to the one selected assay lane. A reuse verdict path must
   resolve inside the judged worktree; the request is stored in run history.
 - `R-47` **Footprint calibration controls (RG-68/RG-69).** By default the
   committed manifest uses PASS history. `--include-failed` explicitly adds
@@ -3104,6 +3107,64 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     STRICT `--merge-shard-store`, which refuses absent, duplicate,
     foreign-judge, changed-plan, incomplete or polluted stores.
   - Every flexible run is recorded `selective` with an `r2_flex` block.
+
+- `R-53b` **Assay flags after `--` for an assay lane (RG-297, T12).** Each
+  tool validates only its own rules: Assay owns the semantics of its
+  mutation-store flags, so Run-Gate forwards an assay lane's `--` arguments
+  OPAQUELY, in order and verbatim (`--flag VALUE` and `--flag=VALUE` alike),
+  appended after its own constructed argv. Run-Gate checks only:
+  - its **own** flags may never be forwarded: `--state-dir`, `--progress`,
+    `--progress-heartbeat`, `--verdict-json`, `--file` and `--request-base`
+    are injected by Run-Gate, `--jobs`, `--shard` and `--merge-shards` are
+    Run-Gate's own (give them before `--`). Nor may a forwarded flag
+    DUPLICATE a name this same invocation's own options already put on the
+    judge's argv (`--rejudge-outcome`, `--carry-over`, `--merge-state`,
+    `--merge-shard-store` from `--merge-shards`, and so on) -- refused with
+    its own line, `<flag> is already set by a Run-Gate option in this
+    invocation; drop it after '--'` (the flag is already before it, so the
+    remedy is to delete the copy) -- because a second copy would be last-wins
+    at the judge (replace-valued) or silently additive (append-valued), so
+    the run would be one Run-Gate never recorded. A bare token is legal only
+    as the value of the preceding flag;
+  - **mount visibility**: the value of `--merge-state`, `--merge-shard-store`,
+    `--merge-manifest`, `--carry-over`, `--carry-forward`, `--reuse-from`,
+    `--only-candidates`, `--exclude-candidates` or `--candidates-file` is
+    made absolute -- a RELATIVE value against the project directory the lane
+    runs in, which is the directory the judge resolves it against, never the
+    invoking cwd -- and must resolve under the checkout or the judged
+    worktree (Run-Gate adds no mount for it). A `--merge-manifest FILE` is
+    checked on its PARENT DIRECTORY, because the stores it names resolve
+    relative to the file. Run-Gate never opens, parses or checks the
+    manifest: an absent or inconsistent manifest is Assay's refusal, passed
+    through unreworded;
+  - a **capability probe**, only when arguments were forwarded: the lane
+    runs `<judge> capabilities --json` and Run-Gate reads exactly `schema`
+    (must be `assay-capabilities/2`; an unknown schema, unparseable output or
+    a non-zero exit is a refusal) and `commands.run` (every forwarded long
+    flag must appear there, compared by EXACT name -- the token's text before
+    its first `=`, so `--merge-manifest` and `--merge-manifest-x` are
+    different flags -- else `this judge does not support <flag> (assay
+    capabilities)`). The forward floor is `assay >= 12.3.0` (`R-53b`,
+    RG-318), read from the inventory version before a container starts, and
+    its refusal names the remedy (`update the checkout, or re-pin the judge
+    to >= 12.3.0`); a judge whose inventory cannot be read AT ALL is refused
+    there too, before a container starts, with its own line (`arguments after
+    '--' for lane 'x' need an inventory proving the judge accepts them
+    (assay >= 12.3.0, RG-318): <why>`), because the version floor itself is
+    only answerable from a readable inventory. The probe stays the CHECK
+    above that floor. A judge that refuses `capabilities` itself keeps its
+    own line, unreworded: no degraded mode, no fallback to the `run --help`
+    probe, which stays for Run-Gate's OWN flags. The probe runs after the
+    lane's setup steps and before `run`, in the same environment and with the
+    same judge command.
+  - A forwarded-token run is recorded `selective` with an `assay_forward`
+    token list, so it never certifies the whole lane's duration.
+  - `--rejudge-contaminated` forces its own selection and refuses `--`
+    arguments. Run-Gate's own flags (`--shard K/N`, `--merge-shards N`,
+    `--carry-over DIR`, `--merge-state DIR`, `--only-candidates FILE`,
+    `--exclude-candidates FILE`, `--reuse-from`, `--rejudge`,
+    `--rejudge-outcome`) keep working unchanged; `--carry-over`'s pairing with
+    its reason and the existence of a candidate file are Assay's checks.
 
 - `R-54` **xdist workers for command lanes (RG-146, RG-147).** A command
   lane may declare `workers = N|"auto"`, `workers_max` (default 8) and
