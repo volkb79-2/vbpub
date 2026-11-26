@@ -3075,6 +3075,32 @@ contains "$RULES_SOURCE" 'deepseek-pi-volker' 'controller rules list pinned pi r
 contains "$README_SOURCE" '**Signal guard.**' 'README documents the pi signal guard'
 # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
 contains "$README_SOURCE" 'bash builtin `kill`' 'README documents the signal guard known limit'
+# The guard has all THREE documents, and each one is checked where the reader
+# would look for it: WHAT (README), WHY (the design guide's own subsection) and
+# HOW (the consumer guide's two launch refusals).
+contains "$README_SOURCE" 'docs/DESIGN-GUIDE.md#why-the-pi-signal-guard-is-mechanical-not-advisory' \
+  'README links the signal guard rationale'
+contains "$DESIGN_SOURCE" 'Why the pi signal guard is mechanical, not advisory' \
+  'design guide explains why the guard is a refusal and not a written ban'
+contains "$DESIGN_SOURCE" 'Refuse rather than guess, on' \
+  'design guide states the refuse-rather-than-guess decision'
+contains "$DESIGN_SOURCE" 'not a security' \
+  'design guide states that the guard is not a security boundary'
+contains "$CONSUMER_SOURCE" 'signal guard' 'consumer guide tells an adopter a launch can refuse'
+contains "$CONSUMER_SOURCE" 'pi signal guard is incomplete' \
+  'consumer guide quotes the incomplete-guard refusal an adopter meets'
+contains "$CONSUMER_SOURCE" 'pi signal guard cannot be enforced' \
+  'consumer guide quotes the shadowing/relative refusal an adopter meets'
+contains "$CONSUMER_SOURCE" 'must be an absolute path or start with ~/' \
+  'consumer guide quotes the relative PI_CODING_AGENT_DIR refusal'
+# Both cross-document anchors resolve: the heading text and the slug it is
+# linked by are asserted together, so a renamed heading cannot leave a reader
+# with a dead link (the slug of that heading is lower case, comma dropped,
+# spaces to hyphens).
+contains "$DESIGN_SOURCE" '### Why the pi signal guard is mechanical, not advisory' \
+  'design guide has the heading the README links to'
+contains "$CONSUMER_SOURCE" 'DESIGN-GUIDE.md#why-the-pi-signal-guard-is-mechanical-not-advisory' \
+  'consumer guide links the guard rationale by the same anchor'
 contains "$CHANGES_SOURCE" 'Signal guard for every pi run' 'changelog records the signal guard'
 contains "$ENV_SOURCE" 'PI_THINKING="max"' 'local environment example documents the maximum thinking default'
 if grep -Eq 'OPENDESIGN_API_KEY_[A-Z0-9_]+=' "$ENV_SOURCE"; then

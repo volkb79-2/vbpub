@@ -10,7 +10,9 @@ no separate version number, so entries are grouped by the work that landed.
 - **Signal guard for every pi run (P-plat-31).** `pi-impl.sh` now prepends
   `scripts/controller/pi-shims/` to the agent's `PATH` for the first run, a resume
   and every automatic continuation (the agent only; the wrapper's own commands
-  keep the caller's `PATH`). The three POSIX shims refuse a pattern kill: `pkill`
+  keep the caller's `PATH`; `${PATH:+:$PATH}`, so an unset or empty `PATH` never
+  hands the child an empty field, which would mean the current directory). The
+  three POSIX shims refuse a pattern kill: `pkill`
   and `killall` always (one `pi-shim: refused <name>` stderr line, exit 126), and
   `pgrep` whenever an argument would signal (`--signal`, `--signal=<sig>`,
   `--kill`, a `-<SIGNAME>`/`-<number>` spelling), while a plain `pgrep` still
@@ -20,14 +22,20 @@ no separate version number, so entries are grouped by the work that landed.
   no record behind) and when pi's own managed-bin directory
   (`$PI_CODING_AGENT_DIR/bin`, default `$HOME/.pi/agent/bin`) holds one of the
   three names: pi prepends that directory to the agent's `PATH`, so it would
-  shadow the shim. No environment variable turns the guard off.
+  shadow the shim. The value is resolved as pi resolves it
+  (`dist/utils/paths.js` `normalizePath`: `~` and `~/x` against `$HOME`), and a
+  value that is still not absolute is refused by name instead of guessed at. No
+  environment variable turns the guard off.
   Covered by `tests/test-pi-impl.sh` (`signal-guard-*`; the fake pi asserts
   `command -v` resolves inside the shim directory and only then calls the shims
-  on a pattern it made random) and by `tests/test-entrypoints.sh`, which now
-  also requires the three shim files to be 100755 in the index. Known limits,
-  recorded in the script header and the README: the bash builtin `kill` (a
-  negative or foreign pid), an absolute path such as `/usr/bin/pkill`, and any
-  script that resets `PATH` itself.
+  on a pattern it made random -- every short signal spelling has its own case,
+  plus two pass-throughs -- and the fail-closed check proves the `~/`
+  expansion, the relative-value refusal and the managed-bin shadow) and by
+  `tests/test-entrypoints.sh`, which now also requires the three shim files to
+  be 100755 in the index. Known limits, recorded in the script header and the
+  README: the bash builtin `kill` (a negative or foreign pid), an absolute path
+  such as `/usr/bin/pkill`, a shell loop over `/proc`, `xargs kill`/
+  `python3 -c 'os.kill(...)'`, and any script that resets `PATH` itself.
 
 ### Added
 - `resume-read.sh <role>` (P-plat-22a): one read-only call prints the slices a restarted

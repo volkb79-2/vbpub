@@ -459,8 +459,12 @@ exits 0. Its `errorMessage` reset is recorded by the account helper; an
 unparseable reset uses the existing bounded unknown-reset default. No quota
 probe is made before a start.
 
-**Signal guard.** The wrapper puts `pi-shims/` FIRST on the agent's `PATH`
-(the first run, a resume and every automatic continuation alike): `pkill`,
+**Signal guard.** The wrapper hands the agent `pi-shims/` FIRST on its `PATH`
+(the first run, a resume and every automatic continuation alike). pi then
+prepends its OWN managed-bin directory to that `PATH` for the agent's bash
+tool, so the shims are the first directory that may provide these names only
+because the launch is refused (exit 2) while that directory holds a `pkill`,
+`killall` or `pgrep`. `pkill`,
 `killall` and a `pgrep` carrying a signal argument refuse there with one
 `pi-shim: refused <name>` line and exit 126, while a plain `pgrep` passes
 through. A pattern kill in the shared devcontainer hits other controller
@@ -468,14 +472,21 @@ sessions, and a brief's written ban did not hold. The launch is refused (exit
 2) when any shim is missing or not executable, or when pi's own managed-bin
 directory (`$PI_CODING_AGENT_DIR/bin`, default `$HOME/.pi/agent/bin`) holds a
 `pkill`, `killall` or `pgrep`, because pi puts that directory ahead of the
-agent's `PATH`. No variable switches the guard off. It does not cover the
-bash builtin `kill` (a negative or foreign pid), an absolute `/usr/bin/pkill`,
-or a script that resets `PATH`.
+agent's `PATH`; that value is resolved as pi resolves it (`~` and `~/x`
+against `$HOME`) and a value that is still relative is refused, not guessed.
+No variable switches the guard off. Known limits, which the shims cannot cover:
+the bash builtin `kill` (a negative group pid or a foreign pid), an absolute
+path such as `/usr/bin/pkill`, a shell loop over `/proc`, `xargs kill` or
+`python3 -c 'os.kill(...)'`, and a script that resets `PATH` itself. The guard
+is a mechanical refusal for the ordinary spellings, not a security boundary.
 
 See the [design guide](docs/DESIGN-GUIDE.md#pi-open-design-route) for the
 reason Pi runs are classified from the event stream and how its session id
-joins the shared account map. The [consumer guide](docs/CONSUMERS.md#run-pi-on-open-design)
-has a copyable launch and resume example.
+joins the shared account map, and
+[why the signal guard is mechanical](docs/DESIGN-GUIDE.md#why-the-pi-signal-guard-is-mechanical-not-advisory)
+for the decisions behind it. The
+[consumer guide](docs/CONSUMERS.md#run-pi-on-open-design) has a copyable launch,
+the two launch refusals and how to fix each.
 
 Check a completed Pi run with its route name, and watch an active one from
 its liveness sidecar while it runs:
