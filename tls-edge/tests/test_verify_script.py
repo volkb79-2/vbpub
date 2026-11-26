@@ -22,7 +22,6 @@ from conftest import ROOT
 
 
 VERIFY_SCRIPT = ROOT / "scripts" / "verify.sh"
-REPO_ROOT = ROOT.parent
 DOMAIN = "example.test"
 TRAEFIK = "traefik-test"
 PROXY = "proxy-test"
@@ -32,6 +31,7 @@ CANARY = "tlsedge-verify-canary"
 _DOCKER_STUB = r'''#!/usr/bin/env python3
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +63,16 @@ if args[0] == "compose":
 
 if args[0] == "inspect":
     fmt = args[2] if len(args) > 2 and args[1] == "-f" else ""
+    if ".Mounts" in fmt:
+        mode = setting("VERIFY_ACME_MOUNT_MODE", "volume")
+        destination = "/etc/traefik/acme" if '"/etc/traefik/acme"' in fmt else "/var/lib/traefik"
+        if mode == "none" or (mode == "etc-volume" and destination != "/etc/traefik/acme"):
+            finish(0)
+        if mode == "etc-volume":
+            finish(0, "acme-volume-test\n")
+        if mode == "bind":
+            finish(0, setting("VERIFY_ACME_BIND_SOURCE") + "\n")
+        finish(0, "acme-volume-test\n")
     if ".State.Status" in fmt:
         value = "stopped" if setting("VERIFY_CONTAINERS_RUNNING", "yes") == "no" else "running"
         finish(0, value + "\n")
@@ -70,6 +80,12 @@ if args[0] == "inspect":
         bad = setting("VERIFY_HEALTH_FAIL") == args[-1]
         finish(0, "unhealthy\n" if bad else "healthy\n")
     finish(0)
+
+if args[0] == "volume" and len(args) >= 3 and args[1] == "inspect":
+    name = args[-1]
+    if name == "acme-volume-test":
+        finish(0, '[{"Name":"acme-volume-test"}]\n')
+    finish(1, stderr=f'Error: No such volume: {name}\n')
 
 if args[0] == "network" and len(args) >= 3 and args[1] == "inspect":
     target = args[-1]
@@ -94,15 +110,20 @@ if args[0] == "logs":
 if args[0] == "rm":
     finish(0)
 
+if args[0] == "exec":
+    if setting("VERIFY_STATIC_CERT_READ", "pass") == "pass":
+        finish(0)
+    finish(1, stderr="certificate file unreadable\n")
+
 if args[0] != "run":
     finish(2, stderr="docker stub: unsupported invocation\n")
 
 run_env = {}
-volumes = []
+mounts = []
 i = 1
 image = None
 command = []
-value_options = {"--network", "--name", "-l", "-e", "-v", "--entrypoint", "--volumes-from"}
+value_options = {"--network", "--name", "-l", "-e", "-v", "--entrypoint", "--volumes-from", "--mount"}
 while i < len(args):
     item = args[i]
     if item in {"--rm", "-d"}:
@@ -113,8 +134,8 @@ while i < len(args):
         if item == "-e":
             key, separator, val = value.partition("=")
             run_env[key] = val if separator else ""
-        elif item == "-v":
-            volumes.append(value)
+        elif item in {"-v", "--mount"}:
+            mounts.append(value)
         i += 2
         continue
     image = item
@@ -134,6 +155,8 @@ if image == "curlimages/curl:8.10.1":
     if url.startswith("http://"):
         finish(0, setting("VERIFY_REDIRECT_STATUS", "301"))
     if url.startswith("https://"):
+        if setting("VERIFY_CANARY_ERROR"):
+            finish(7, stderr="curl: (7) " + setting("VERIFY_CANARY_ERROR") + "\n")
         count_file = Path(setting("VERIFY_CANARY_COUNT_FILE"))
         count = int(count_file.read_text(encoding="utf-8")) + 1 if count_file.exists() else 1
         count_file.write_text(str(count), encoding="utf-8")
@@ -144,6 +167,9 @@ if image == "curlimages/curl:8.10.1":
 if image == "alpine/openssl":
     finish(0, setting("VERIFY_TLS_OUTPUT", "subject=CN=example.test\nissuer=CN=Test CA\n"))
 
+if image == "alpine:3.20" and command and command[0] == "cat":
+    finish(0 if setting("VERIFY_STATIC_CERT_READ", "pass") == "pass" else 1)
+
 if image == "alpine:3.20" and command[:2] == ["sh", "-c"]:
     if "PROXY_HOST" in run_env and setting("VERIFY_PROXY_PROBE_RUN_FAIL") == "yes":
         finish(1, stderr="proxy probe did not run\n")
@@ -151,9 +177,17 @@ if image == "alpine:3.20" and command[:2] == ["sh", "-c"]:
         finish(1, stderr="ops probe did not run\n")
 
     probe = command[2]
-    for volume in volumes:
-        if volume.endswith(":/a:ro"):
-            probe = probe.replace("/a/acme.json", setting("VERIFY_ACME_PATH"))
+    for mount in mounts:
+        if mount.startswith("type=volume,"):
+            source = setting("VERIFY_ACME_PATH")
+            probe = probe.replace("/a/acme.json", source)
+            probe = re.sub(r"(?<![A-Za-z0-9_])/a(?=/|\b)", str(Path(source).parent), probe)
+        elif mount.startswith("type=bind,"):
+            source = mount.split("source=", 1)[1].split(",", 1)[0]
+            if not Path(source).exists():
+                finish(125, stderr=f"docker: bind source path does not exist: {source}\n")
+            probe = probe.replace("/a/acme.json", str(Path(source) / "acme.json"))
+            probe = re.sub(r"(?<![A-Za-z0-9_])/a(?=/|\b)", source, probe)
     child_env = {
         key: value for key, value in os.environ.items()
         if key not in {"EDGE_TRAEFIK", "EDGE_DOCKERPROXY", "EDGE_ACME_VOLUME", "DOMAIN"}
@@ -194,16 +228,26 @@ case "$url" in
             403) echo "server returned error: HTTP/1.1 403 Forbidden" >&2; exit 1 ;;
             400) echo "server returned error: HTTP/1.1 400 Bad Request" >&2; exit 1 ;;
             200) echo '{}' ; exit 0 ;;
+            none) echo "wget: can't connect to remote host" >&2; exit 1 ;;
             *) echo "wget: connection refused" >&2; exit 1 ;;
         esac
         ;;
     */metrics)
-        if [ "$VERIFY_OPS_MODE" = "reachable" ]; then
-            echo "metrics"
-            exit 0
-        fi
-        echo "wget: connection refused" >&2
-        exit 1
+        case "$VERIFY_OPS_MODE" in
+            reachable|200)
+                echo "  HTTP/1.1 200 OK" >&2
+                echo "metrics"
+                exit 0
+                ;;
+            401) echo "wget: server returned error: HTTP/1.1 401 Unauthorized" >&2; exit 1 ;;
+            404) echo "wget: server returned error: HTTP/1.1 404 Not Found" >&2; exit 1 ;;
+            302) echo "  HTTP/1.1 302 Found" >&2; exit 1 ;;
+            refused) echo "wget: can't connect to remote host (127.0.0.1): Connection refused" >&2; exit 1 ;;
+            bad-address) echo "wget: bad address 'ops-app'" >&2; exit 1 ;;
+            timeout) echo "wget: download timed out" >&2; exit 1 ;;
+            unknown) echo "wget: certificate check failed" >&2; exit 1 ;;
+            *) echo "wget: can't connect to remote host (127.0.0.1): Connection refused" >&2; exit 1 ;;
+        esac
         ;;
 esac
 echo "wget: no scripted response for $url" >&2
@@ -224,14 +268,16 @@ def _make_instance(
     stack = instance / "ciu-stack"
     bin_dir = run_root / "bin"
     acme_dir = run_root / "acme-volume"
+    overrides = env_overrides or {}
     for directory in (scripts, stack, bin_dir, acme_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     shutil.copy2(VERIFY_SCRIPT, scripts / "verify.sh")
     (stack / "ciu.compose.yml").write_text("services: {}\n", encoding="utf-8")
-    (stack / "ciu.defaults.toml.j2").write_text(
-        'mode = "acme-tls"\nexpose_http = true\n', encoding="utf-8"
+    config_text = overrides.get(
+        "VERIFY_CONFIG_TEXT", 'mode = "acme-tls"\nexpose_http = true\n'
     )
+    (stack / "ciu.defaults.toml.j2").write_text(config_text, encoding="utf-8")
     _write_executable(
         instance / "ciu",
         "#!/bin/sh\n"
@@ -239,7 +285,6 @@ def _make_instance(
         'echo "ciu check failed" >&2\nexit 1\n',
     )
 
-    overrides = env_overrides or {}
     acme_file = acme_dir / "acme.json"
     if overrides.get("VERIFY_ACME_PATH_MISSING") != "yes":
         acme_file.write_text(
@@ -253,12 +298,20 @@ def _make_instance(
 
     real_grep = shutil.which("grep")
     assert real_grep is not None
-    _write_executable(bin_dir / "docker", _DOCKER_STUB)
+    _write_executable(
+        bin_dir / "docker",
+        _DOCKER_STUB.replace("#!/usr/bin/env python3", "#!" + sys.executable),
+    )
     _write_executable(bin_dir / "wget", _WGET_STUB)
     _write_executable(
         bin_dir / "grep",
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$VERIFY_GREP_LOG"\n'
+        'if [ "$VERIFY_GREP_ACME_FAIL" = "yes" ]; then\n'
+        '  for arg in "$@"; do\n'
+        '    if [ "$arg" = "acme.*(error|unable|failed)" ]; then echo "grep: scan failed" >&2; exit 2; fi\n'
+        '  done\n'
+        'fi\n'
         f"exec {shlex.quote(real_grep)} \"$@\"\n",
     )
     _write_executable(
@@ -281,6 +334,7 @@ def _make_instance(
             "VERIFY_SLEEP_LOG": str(run_root / "sleep.log"),
             "VERIFY_CANARY_COUNT_FILE": str(run_root / "canary-count"),
             "VERIFY_ACME_PATH": str(acme_file),
+            "VERIFY_ACME_BIND_SOURCE": str(acme_dir),
             "VERIFY_CIU_EXIT": "0",
             "VERIFY_PROXY_GET": "ok",
             "VERIFY_POST_STATUS": "403",
@@ -289,6 +343,8 @@ def _make_instance(
         }
     )
     env.update(overrides)
+    if overrides.get("VERIFY_PYTHON3_FAIL") == "yes":
+        _write_executable(bin_dir / "python3", "#!/bin/sh\nexit 1\n")
     return instance, env
 
 
@@ -297,12 +353,9 @@ def _run_verify(
     *,
     env_overrides: dict[str, str] | None = None,
     args: tuple[str, ...] = ("--domain", DOMAIN),
-    script_text: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str, dict[str, str]]:
     instance, env = _make_instance(run_root, env_overrides)
     script = instance / "scripts" / "verify.sh"
-    if script_text is not None:
-        script.write_text(script_text, encoding="utf-8")
     completed = subprocess.run(
         ["bash", str(script), *args],
         cwd=instance,
@@ -466,6 +519,140 @@ def test_acme_log_read_failure_fails_check_8(tmp_path: Path):
     assert "could not read traefik logs" in _assert_check(output, 8, "FAIL")
 
 
+def test_acme_log_errors_fail_check_8(tmp_path: Path):
+    completed, output, _ = _run_verify(
+        tmp_path, env_overrides={"VERIFY_ACME_LOG_CONTENT": "time=now msg=ACME client error\n"}
+    )
+    assert completed.returncode == 1, output
+    assert "ACME errors found" in _assert_check(output, 8, "FAIL")
+
+
+def test_acme_log_scan_failure_fails_check_8(tmp_path: Path):
+    completed, output, _ = _run_verify(
+        tmp_path, env_overrides={"VERIFY_GREP_ACME_FAIL": "yes"}
+    )
+    assert completed.returncode == 1, output
+    assert "could not scan traefik logs" in _assert_check(output, 8, "FAIL")
+
+
+@pytest.mark.parametrize(
+    ("mount_mode", "expected_mount"),
+    [
+        ("volume", "type=volume,source=acme-volume-test,target=/a,readonly"),
+        ("etc-volume", "type=volume,source=acme-volume-test,target=/a,readonly"),
+        ("bind", None),
+    ],
+)
+def test_acme_storage_discovery_supports_volume_and_bind_mounts(
+    tmp_path: Path, mount_mode: str, expected_mount: str | None
+):
+    completed, output, env = _run_verify(
+        tmp_path,
+        env_overrides={"EDGE_ACME_VOLUME": "", "VERIFY_ACME_MOUNT_MODE": mount_mode},
+    )
+    assert completed.returncode == 0, output
+    _assert_check(output, 8, "PASS")
+    calls = _docker_calls(env)
+    mounted_call = next(
+        call for call in calls if call[:1] == ["run"] and "--mount" in call
+    )
+    mount = mounted_call[mounted_call.index("--mount") + 1]
+    if expected_mount is None:
+        assert mount == f"type=bind,source={env['VERIFY_ACME_BIND_SOURCE']},target=/a,readonly"
+        assert not any(call[:2] == ["volume", "inspect"] for call in calls)
+    else:
+        assert mount == expected_mount
+        assert ["volume", "inspect", "acme-volume-test"] in calls
+    assert not any(call[:2] == ["volume", "create"] for call in calls)
+
+
+def test_acme_storage_missing_mount_fails_check_8_without_mounting(tmp_path: Path):
+    completed, output, env = _run_verify(
+        tmp_path,
+        env_overrides={"EDGE_ACME_VOLUME": "", "VERIFY_ACME_MOUNT_MODE": "none"},
+    )
+    assert completed.returncode == 1, output
+    assert "storage mount not found" in _assert_check(output, 8, "FAIL")
+    assert not any("--mount" in call for call in _docker_calls(env))
+
+
+def test_acme_nonexistent_volume_override_is_not_mounted(tmp_path: Path):
+    completed, output, env = _run_verify(
+        tmp_path, env_overrides={"EDGE_ACME_VOLUME": "missing-volume-test"}
+    )
+    assert completed.returncode == 1, output
+    assert "does not exist (it was not created)" in _assert_check(output, 8, "FAIL")
+    calls = _docker_calls(env)
+    assert ["volume", "inspect", "missing-volume-test"] in calls
+    assert not any(
+        "--mount" in call and "missing-volume-test" in call for call in calls
+    )
+
+
+def test_acme_bind_path_override_is_used_without_volume_inspect(tmp_path: Path):
+    bind_source = tmp_path / "acme-volume"
+    completed, output, env = _run_verify(
+        tmp_path, env_overrides={"EDGE_ACME_VOLUME": str(bind_source)}
+    )
+    assert completed.returncode == 0, output
+    _assert_check(output, 8, "PASS")
+    calls = _docker_calls(env)
+    mounted = next(call for call in calls if "--mount" in call)
+    assert mounted[mounted.index("--mount") + 1] == (
+        f"type=bind,source={bind_source},target=/a,readonly"
+    )
+    assert not any(call[:2] == ["volume", "inspect"] for call in calls)
+
+
+def test_missing_acme_bind_path_is_not_created(tmp_path: Path):
+    bind_source = tmp_path / "missing-acme-storage"
+    completed, output, _ = _run_verify(
+        tmp_path, env_overrides={"EDGE_ACME_VOLUME": str(bind_source)}
+    )
+    assert completed.returncode == 1, output
+    assert "could not be mounted by Docker" in _assert_check(output, 8, "FAIL")
+    assert not bind_source.exists()
+
+
+@pytest.mark.parametrize("mode", ["static", "dev"])
+def test_static_and_dev_certificate_check_pass_and_fail(tmp_path: Path, mode: str):
+    config = f'mode = "{mode}"\nexpose_http = true\n[tls_edge.static]\ndomains = ["{DOMAIN}"]\n'
+    passed, pass_output, pass_env = _run_verify(
+        tmp_path / "pass", env_overrides={"VERIFY_CONFIG_TEXT": config}
+    )
+    assert passed.returncode == 0, pass_output
+    _assert_check(pass_output, 8, "PASS")
+    assert not any(
+        call[:1] == ["inspect"] and ".Mounts" in " ".join(call)
+        for call in _docker_calls(pass_env)
+    )
+
+    failed, fail_output, _ = _run_verify(
+        tmp_path / "fail",
+        env_overrides={
+            "VERIFY_CONFIG_TEXT": config,
+            "VERIFY_STATIC_CERT_READ": "fail",
+        },
+    )
+    assert failed.returncode == 1, fail_output
+    _assert_check(fail_output, 8, "FAIL")
+
+
+def test_empty_static_domains_does_not_become_an_auto_detected_domain(tmp_path: Path):
+    completed, output, _ = _run_verify(
+        tmp_path,
+        env_overrides={
+            "VERIFY_CONFIG_TEXT": 'mode = "static"\nexpose_http = true\n[tls_edge.static]\ndomains = []\n'
+        },
+        args=(),
+    )
+    assert completed.returncode == 0, output
+    assert "domain     : (none — domain-dependent checks will SKIP)" in _clean(output)
+    assert "domain     : domains = []" not in _clean(output)
+    for number in (6, 7, 9):
+        _assert_check(output, number, "SKIP")
+
+
 @pytest.mark.parametrize(
     ("env_overrides", "probe_count", "sleep_count"),
     [
@@ -504,6 +691,17 @@ def test_canary_start_failure_is_check_9_failure_and_later_checks_run(tmp_path: 
     assert any(call == ["rm", "-f", CANARY] for call in calls)
 
 
+def test_canary_failure_shows_last_curl_error_and_domain_precondition(tmp_path: Path):
+    completed, output, env = _run_verify(
+        tmp_path, env_overrides={"VERIFY_CANARY_ERROR": "Failed to connect"}
+    )
+    assert completed.returncode == 1, output
+    section = _assert_check(output, 9, "FAIL")
+    assert "--domain must name a host" in section
+    assert "curl: (7) Failed to connect" in section
+    assert any(call == ["rm", "-f", CANARY] for call in _docker_calls(env))
+
+
 def test_ops_probe_requires_marker_when_docker_run_does_not_run(tmp_path: Path):
     completed, output, env = _run_verify(
         tmp_path,
@@ -511,7 +709,9 @@ def test_ops_probe_requires_marker_when_docker_run_does_not_run(tmp_path: Path):
         args=("--domain", DOMAIN, "--ops-check", "ingress_public", "ops-app", "8080"),
     )
     assert completed.returncode == 1, output
-    assert "did not report reachable or unreachable" in _assert_check(output, 11, "FAIL")
+    section = _assert_check(output, 11, "FAIL")
+    assert "probe inconclusive" in section
+    assert "ops probe did not run" in section
     calls = _docker_calls(env)
     probe = next(call for call in calls if call[:1] == ["run"] and "OPS_URL=" in " ".join(call))
     assert probe[probe.index("-e") + 1] == "OPS_URL=http://ops-app:8080/metrics"
@@ -528,6 +728,45 @@ def test_ops_probe_reports_unreachable_as_pass(tmp_path: Path):
     assert "http://ops-app:8080/metrics" in wget_log
 
 
+@pytest.mark.parametrize(
+    ("mode", "status", "diagnostic"),
+    [
+        ("200", "FAIL", "reachable"),
+        ("401", "FAIL", "reachable"),
+        ("404", "FAIL", "reachable"),
+        ("302", "FAIL", "reachable"),
+        ("refused", "PASS", "unreachable"),
+        ("bad-address", "PASS", "unreachable"),
+        ("timeout", "PASS", "unreachable"),
+        ("unknown", "FAIL", "probe inconclusive"),
+    ],
+)
+def test_ops_isolation_classifies_busybox_wget_observations(
+    tmp_path: Path, mode: str, status: str, diagnostic: str
+):
+    completed, output, _ = _run_verify(
+        tmp_path,
+        env_overrides={"VERIFY_OPS_MODE": mode},
+        args=("--domain", DOMAIN, "--ops-check", "ingress_public", "ops-app", "8080"),
+    )
+    assert completed.returncode == (0 if status == "PASS" else 1), output
+    section = _assert_check(output, 11, status)
+    assert diagnostic in section
+    if mode == "unknown":
+        assert "wget: certificate check failed" in section
+
+
+def test_post_without_http_answer_fails_while_proxy_get_works(tmp_path: Path):
+    completed, output, env = _run_verify(
+        tmp_path, env_overrides={"VERIFY_POST_STATUS": "none"}
+    )
+    assert completed.returncode == 1, output
+    assert "POST /containers/create was NOT rejected" in _assert_check(output, 5, "FAIL")
+    wget_log = Path(env["VERIFY_WGET_LOG"]).read_text(encoding="utf-8")
+    assert f"http://{PROXY}:2375/version" in wget_log
+    assert f"http://{PROXY}:2375/containers/create" in wget_log
+
+
 def test_access_log_warns_when_there_is_no_json_evidence(tmp_path: Path):
     completed, output, _ = _run_verify(tmp_path, env_overrides={"VERIFY_ACCESS_LOG": "empty"})
     assert completed.returncode == 0, output
@@ -542,38 +781,9 @@ def test_access_log_read_failure_is_an_explicit_warning(tmp_path: Path):
     assert "could not read Traefik logs" in _assert_check(output, 10, "WARN")
 
 
-def test_4_0_0_script_reproduces_the_regressions_in_the_same_harness(tmp_path: Path):
-    legacy_result = subprocess.run(
-        ["git", "show", "tls-edge-v4.0.0:tls-edge/scripts/verify.sh"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        check=False,
-        text=True,
+def test_access_log_parser_failure_is_an_explicit_warning(tmp_path: Path):
+    completed, output, _ = _run_verify(
+        tmp_path, env_overrides={"VERIFY_PYTHON3_FAIL": "yes"}
     )
-    if legacy_result.returncode != 0:
-        pytest.skip("the isolated Assay clone does not include the tls-edge-v4.0.0 ref")
-    legacy = legacy_result.stdout
-    completed, output, env = _run_verify(
-        tmp_path,
-        env_overrides={"VERIFY_POST_STATUS": "400"},
-        script_text=legacy,
-    )
-    assert completed.returncode == 127, output
-    assert "cleanup_tmp: command not found" in output
-    assert "[PASS] socket proxy: GET /version allowed, POST /containers/create rejected" in _section(output, 5)
-    wget_log = Path(env["VERIFY_WGET_LOG"]).read_text(encoding="utf-8")
-    assert "http://:2375/version" in wget_log
-
-    calls = _docker_calls(env)
-    canary_start = next(
-        call for call in calls if call[:1] == ["run"] and "traefik/whoami:v1.11" in call
-    )
-    labels = _labels(canary_start)
-    tick = chr(96)
-    assert f"traefik.http.routers.verify-canary.rule=Host({tick}verify.example.test{tick})" in labels
-    assert not any(label.endswith(".tls=true") for label in labels)
-    assert not any("certresolver" in label.lower() for label in labels)
-    old_probes = _canary_probe_calls(calls)
-    assert len(old_probes) == 1
-    assert "https://verify.example.test/" in old_probes[0]
-    assert not any(item.startswith("Host: ") for item in old_probes[0])
+    assert completed.returncode == 0, output
+    assert "could not inspect JSON entries" in _assert_check(output, 10, "WARN")

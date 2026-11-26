@@ -55,10 +55,9 @@ ROOT="$(readlink -f "$SCRIPT_DIR/..")"
 STACK_DIR="$ROOT/ciu-stack"
 COMPOSE_FILE="$STACK_DIR/ciu.compose.yml"
 
-# Container and volume names.  Plain-compose deployments use edge-traefik /
-# edge-dockerproxy / edge-proxy_acme-data; a ciu instance (get.py install)
-# names them <project>-<instance-id>-<service>.  Override with the three
-# EDGE_* variables, or let the ciu names be discovered from the compose labels.
+# Container names. Plain-compose deployments use edge-traefik / edge-dockerproxy;
+# a ciu instance (get.py install) names them <project>-<instance-id>-<service>.
+# Override with EDGE_* variables, or discover container names from compose labels.
 _discover() {  # $1 = compose service name
     docker ps --filter "label=com.docker.compose.service=$1" \
         --filter "name=edge-$1" --format '{{.Names}}' 2>/dev/null | sed -n '1p'
@@ -69,10 +68,16 @@ EDGE_TRAEFIK="${EDGE_TRAEFIK:-$(_discover traefik | sed -n '1p')}"
 EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-$(_discover dockerproxy | sed -n '1p')}"
 EDGE_TRAEFIK="${EDGE_TRAEFIK:-edge-traefik}"
 EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-edge-dockerproxy}"
-EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/traefik"}}{{.Name}}{{end}}{{end}}' "$EDGE_TRAEFIK" 2>/dev/null || true)}"
-# Accept the former /etc/traefik target for an already-running instance during upgrade.
-EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/traefik/acme"}}{{.Name}}{{end}}{{end}}' "$EDGE_TRAEFIK" 2>/dev/null || true)}"
-EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-edge-proxy_acme-data}"
+_acme_storage_mount_at_var_lib() {
+    docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/traefik"}}{{if eq .Type "volume"}}{{.Name}}{{else if eq .Type "bind"}}{{.Source}}{{end}}{{end}}{{end}}' \
+        "$EDGE_TRAEFIK" 2>/dev/null || true
+}
+_acme_storage_mount_at_etc() {
+    # Accept the former target for an already-running instance during upgrade.
+    docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/traefik/acme"}}{{if eq .Type "volume"}}{{.Name}}{{else if eq .Type "bind"}}{{.Source}}{{end}}{{end}}{{end}}' \
+        "$EDGE_TRAEFIK" 2>/dev/null || true
+}
+EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-}"
 OVERRIDE_FILE="$STACK_DIR/ciu.toml.j2"
 DEFAULTS_FILE="$STACK_DIR/ciu.defaults.toml.j2"
 
@@ -94,21 +99,26 @@ EXPOSE_HTTP="${EXPOSE_HTTP:-false}"
 # Read domain if not given on CLI
 if [[ -z "$DOMAIN" ]]; then
     # Try static.domains first entry
-    _DOMAIN="$(grep -A5 '^\[.*static\]' "$CFG_FILE" 2>/dev/null \
-        | grep -m1 '^domains\s*=' \
-        | sed 's/.*\["\([^"]*\)".*/\1/' || true)"
-    # Fall back to acme.dns.wildcard_main
-    if [[ -z "$_DOMAIN" || "$_DOMAIN" == "[]" ]]; then
+    _STATIC_DOMAIN_LINE="$(grep -A5 '^\[.*static\]' "$CFG_FILE" 2>/dev/null \
+        | grep -m1 '^domains\s*=' || true)"
+    _DOMAIN="$(printf '%s\n' "$_STATIC_DOMAIN_LINE" \
+        | sed -n 's/^[[:space:]]*domains[[:space:]]*=[[:space:]]*\["\([^"]*\)".*/\1/p')"
+    # Fall back to acme.dns.wildcard_main only when it has a quoted value.
+    if [[ -z "$_DOMAIN" ]]; then
         _DOMAIN="$(grep -m1 '^wildcard_main\s*=' "$CFG_FILE" 2>/dev/null \
-            | sed 's/.*=\s*"\(.*\)".*/\1/' || true)"
+            | sed -n 's/^[[:space:]]*wildcard_main[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1/p' || true)"
     fi
-    if [[ -n "$_DOMAIN" && "$_DOMAIN" != "" ]]; then
+    if [[ -n "$_DOMAIN" ]]; then
         DOMAIN="$_DOMAIN"
     fi
 fi
 
 ACME_MODES="acme-tls acme-http acme-dns"
 is_acme_mode() { echo "$ACME_MODES" | grep -qw "$TLS_MODE"; }
+if is_acme_mode && [[ -z "$EDGE_ACME_VOLUME" ]]; then
+    EDGE_ACME_VOLUME="$(_acme_storage_mount_at_var_lib)"
+    EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(_acme_storage_mount_at_etc)}"
+fi
 
 echo
 echo "$(_bold "── tls-edge verify")"
@@ -287,50 +297,69 @@ echo
 echo "$(_bold "8. Mode-specific certificate check ($TLS_MODE)")"
 
 if is_acme_mode; then
-    # acme-data volume must have a non-empty acme.json with mode 0600
-    _ACME_CHECK="$(docker run --rm \
-        -v ${EDGE_ACME_VOLUME}:/a:ro \
-        alpine:3.20 sh -c 'test -s /a/acme.json && echo "ok" || echo "missing"' 2>/dev/null || true)"
-    if [[ "$_ACME_CHECK" == "ok" ]]; then
-        pass "acme.json exists and is non-empty"
+    _ACME_STORAGE_READY=true
+    _ACME_MOUNT_ARGS=()
+    if [[ -z "$EDGE_ACME_VOLUME" ]]; then
+        fail "ACME storage mount not found at /var/lib/traefik or /etc/traefik/acme; set EDGE_ACME_VOLUME to an existing volume name or absolute bind path"
+        _ACME_STORAGE_READY=false
+    elif [[ "$EDGE_ACME_VOLUME" == /* ]]; then
+        # --mount refuses a missing bind source; unlike -v it never creates it.
+        _ACME_MOUNT_ARGS=(--mount "type=bind,source=$EDGE_ACME_VOLUME,target=/a,readonly")
+    elif docker volume inspect "$EDGE_ACME_VOLUME" >/dev/null 2>&1; then
+        _ACME_MOUNT_ARGS=(--mount "type=volume,source=$EDGE_ACME_VOLUME,target=/a,readonly")
     else
-        fail "acme.json missing or empty in acme-data volume (certificate not yet issued?)"
+        fail "ACME storage volume '$EDGE_ACME_VOLUME' does not exist (it was not created)"
+        _ACME_STORAGE_READY=false
     fi
 
-    _ACME_PERMS="$(docker run --rm \
-        -v ${EDGE_ACME_VOLUME}:/a:ro \
-        alpine:3.20 sh -c 'stat -c "%a" /a/acme.json 2>/dev/null || echo "?"' 2>/dev/null || true)"
-    if [[ "$_ACME_PERMS" == "600" ]]; then
-        pass "acme.json permissions are 0600"
-    else
-        fail "acme.json permissions: expected 0600, got ${_ACME_PERMS:-(unknown)}"
-    fi
-
-    if [[ -n "$DOMAIN" ]]; then
-        _DOMAIN_RESULT="$(docker run --rm \
-            -v "${EDGE_ACME_VOLUME}:/a:ro" \
-            -e "VERIFY_DOMAIN=$DOMAIN" \
-            alpine:3.20 sh -c '
-                if DOMAIN_COUNT="$(grep -Fci -- "$VERIFY_DOMAIN" /a/acme.json 2>/dev/null)"; then
-                    echo "COUNT=$DOMAIN_COUNT"
-                else
-                    GREP_STATUS=$?
-                    if [ "$GREP_STATUS" -eq 1 ]; then
-                        echo "COUNT=0"
-                    else
-                        echo "READ_ERROR"
-                    fi
-                fi
-            ' 2>/dev/null || true)"
-        if [[ "$_DOMAIN_RESULT" =~ ^COUNT=([0-9]+)$ ]]; then
-            _DOMAIN_COUNT="${BASH_REMATCH[1]}"
-            if [[ "$_DOMAIN_COUNT" == "0" ]]; then
-                warn "acme.json does not mention $DOMAIN (issuance pending or domain mismatch)"
+    if [[ "$_ACME_STORAGE_READY" == true ]]; then
+        if _ACME_MOUNT_PROBE="$(docker run --rm "${_ACME_MOUNT_ARGS[@]}" \
+            alpine:3.20 sh -c 'test -d /a' 2>&1)"; then
+            _ACME_CHECK="$(docker run --rm "${_ACME_MOUNT_ARGS[@]}" \
+                alpine:3.20 sh -c 'test -s /a/acme.json && echo "ok" || echo "missing"' 2>/dev/null || true)"
+            if [[ "$_ACME_CHECK" == "ok" ]]; then
+                pass "acme.json exists and is non-empty"
             else
-                pass "acme.json references domain $DOMAIN ($_DOMAIN_COUNT occurrence(s))"
+                fail "acme.json missing or empty in ACME storage (certificate not yet issued?)"
+            fi
+
+            _ACME_PERMS="$(docker run --rm "${_ACME_MOUNT_ARGS[@]}" \
+                alpine:3.20 sh -c 'stat -c "%a" /a/acme.json 2>/dev/null || echo "?"' 2>/dev/null || true)"
+            if [[ "$_ACME_PERMS" == "600" ]]; then
+                pass "acme.json permissions are 0600"
+            else
+                fail "acme.json permissions: expected 0600, got ${_ACME_PERMS:-(unknown)}"
+            fi
+
+            if [[ -n "$DOMAIN" ]]; then
+                _DOMAIN_RESULT="$(docker run --rm "${_ACME_MOUNT_ARGS[@]}" \
+                    -e "VERIFY_DOMAIN=$DOMAIN" \
+                    alpine:3.20 sh -c '
+                        if DOMAIN_COUNT="$(grep -Fci -- "$VERIFY_DOMAIN" /a/acme.json 2>/dev/null)"; then
+                            echo "COUNT=$DOMAIN_COUNT"
+                        else
+                            GREP_STATUS=$?
+                            if [ "$GREP_STATUS" -eq 1 ]; then
+                                echo "COUNT=0"
+                            else
+                                echo "READ_ERROR"
+                            fi
+                        fi
+                    ' 2>/dev/null || true)"
+                if [[ "$_DOMAIN_RESULT" =~ ^COUNT=([0-9]+)$ ]]; then
+                    _DOMAIN_COUNT="${BASH_REMATCH[1]}"
+                    if [[ "$_DOMAIN_COUNT" == "0" ]]; then
+                        warn "acme.json does not mention $DOMAIN (issuance pending or domain mismatch)"
+                    else
+                        pass "acme.json references domain $DOMAIN ($_DOMAIN_COUNT occurrence(s))"
+                    fi
+                else
+                    fail "acme.json domain probe could not read the file (got: ${_DOMAIN_RESULT:-(no response)})"
+                fi
             fi
         else
-            fail "acme.json domain probe could not read the file (got: ${_DOMAIN_RESULT:-(no response)})"
+            _ACME_STORAGE_READY=false
+            fail "ACME storage at '$EDGE_ACME_VOLUME' could not be mounted by Docker: ${_ACME_MOUNT_PROBE:-(no Docker diagnostic)}"
         fi
     fi
 
@@ -339,7 +368,7 @@ if is_acme_mode; then
         if _ACME_ERRORS="$(printf '%s\n' "$_ACME_LOGS" \
             | grep -iE 'acme.*(error|unable|failed)')"; then
             fail "ACME errors found in traefik logs:"
-            echo "$_ACME_ERRORS" | head -5 | sed 's/^/     /'
+            printf '%s\n' "$_ACME_ERRORS" | sed -n '1,5s/^/     /p'
         else
             _ACME_GREP_STATUS=$?
             if [[ "$_ACME_GREP_STATUS" -eq 1 ]]; then
@@ -408,8 +437,8 @@ else
                 -ksS --max-time 5 \
                 --connect-to "$DOMAIN:443:${EDGE_TRAEFIK}:443" \
                 -H "Host: tls-edge-verify-canary.invalid" \
-                "https://$DOMAIN/" 2>/dev/null || true)"
-            if echo "$_CANARY_RESP" | grep -q "Hostname:"; then
+                "https://$DOMAIN/" 2>&1 || true)"
+            if printf '%s\n' "$_CANARY_RESP" | grep -q "Hostname:"; then
                 _CANARY_OK=true
                 break
             fi
@@ -421,8 +450,11 @@ else
         if [[ "$_CANARY_OK" == true ]]; then
             pass "canary: Traefik routed to whoami via tls-edge-verify-canary.invalid (SNI $DOMAIN)"
         else
-            fail "canary: response did not contain 'Hostname:' after 30 probes (routing broken?)"
-            echo "$_CANARY_RESP" | head -5 | sed 's/^/     /'
+            fail "canary: response did not contain 'Hostname:' after 30 probes; --domain must name a host for which the edge already serves a certificate"
+            if [[ -n "$_CANARY_RESP" ]]; then
+                _CANARY_LAST_LINE="$(printf '%s\n' "$_CANARY_RESP" | sed -n '$p')"
+                printf '     last curl error/output: %s\n' "$_CANARY_LAST_LINE"
+            fi
         fi
     else
         fail "canary: container could not be started"
@@ -475,21 +507,40 @@ else
         -e "OPS_URL=http://$OPS_CONTAINER:$OPS_PORT/metrics" \
         alpine:3.20 sh -c '
             if ! command -v wget >/dev/null 2>&1; then
-                echo "OPS=probe-error"
+                echo "OPS=inconclusive"
+                echo "OPS_ERROR=wget is unavailable"
                 exit 0
             fi
-            if wget -qO- -T 3 "$OPS_URL" >/dev/null 2>&1; then
+            WGET_OUTPUT="$(wget -S -qO- -T 3 "$OPS_URL" 2>&1)"
+            WGET_STATUS=$?
+            if [ "$WGET_STATUS" -eq 0 ] \
+                || printf "%s\n" "$WGET_OUTPUT" \
+                    | grep -Eqi "HTTP/[0-9.]+[[:space:]]+[0-9][0-9][0-9]|server returned error: HTTP/"; then
                 echo "OPS=reachable"
-            else
+            elif printf "%s\n" "$WGET_OUTPUT" \
+                | grep -Eqi "can.t connect|bad address|download timed out"; then
                 echo "OPS=unreachable"
+            else
+                echo "OPS=inconclusive"
+                if [ -n "$WGET_OUTPUT" ]; then
+                    printf "%s\n" "$WGET_OUTPUT" | sed -n "\$p" | sed "s/^/OPS_ERROR=/"
+                else
+                    echo "OPS_ERROR=(no wget diagnostic)"
+                fi
             fi
-        ' 2>/dev/null || true)"
-    if [[ "$_OPS_RESULT" == "OPS=reachable" ]]; then
+        ' 2>&1 || true)"
+    _OPS_CLASS="$(printf '%s\n' "$_OPS_RESULT" | sed -n 's/^OPS=//p' | sed -n '1p')"
+    _OPS_ERROR="$(printf '%s\n' "$_OPS_RESULT" | sed -n 's/^OPS_ERROR=//p' | sed -n '1p')"
+    if [[ "$_OPS_CLASS" == "reachable" ]]; then
         fail "ops isolation: http://$OPS_CONTAINER:$OPS_PORT/metrics reachable from $OPS_NET (endpoint NOT isolated)"
-    elif [[ "$_OPS_RESULT" == "OPS=unreachable" ]]; then
+    elif [[ "$_OPS_CLASS" == "unreachable" ]]; then
         pass "ops isolation: http://$OPS_CONTAINER:$OPS_PORT/metrics unreachable from $OPS_NET (isolation working)"
     else
-        fail "ops isolation: probe did not report reachable or unreachable"
+        if [[ -z "$_OPS_CLASS" ]]; then
+            _OPS_ERROR="$(printf '%s\n' "$_OPS_RESULT" | sed -n '$p')"
+            [[ -n "$_OPS_ERROR" ]] || _OPS_ERROR="no probe result marker"
+        fi
+        fail "ops isolation: probe inconclusive${_OPS_ERROR:+: $_OPS_ERROR}"
     fi
 fi
 
