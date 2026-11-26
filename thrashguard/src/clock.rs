@@ -1,22 +1,25 @@
 //! The two clocks a guard needs, and why they are distinct.
 //!
-//! Design §4 (D10): every recorded duration is `CLOCK_MONOTONIC` — the kernel
-//! keeps it running while a cgroup is frozen — and wall time only *stamps* a
-//! line so a human can find it. A wall clock steps, so a wall difference is
-//! never authoritative.
+//! Design §4 (D10): every recorded duration is boot-relative monotonic time —
+//! the kernel keeps it running while a cgroup is frozen — and wall time only
+//! *stamps* a line so a human can find it. A wall clock steps, so a wall
+//! difference is never authoritative.
 //!
 //! The guard never reads a clock itself: it asks a [`Clock`]. Production uses
 //! [`SystemClock`]; every test uses [`ManualClock`] and advances it by hand, so
 //! no assertion depends on host speed or load (design §5, D9).
 //!
-//! Without `unsafe` and without `libc`, the monotonic reading comes from
-//! `std::time::Instant` (whose origin is process-local, which is exactly the
-//! right base for an in-process schedule) and the wall reading from
-//! `SystemTime`.
+//! `SystemClock` seeds `Instant` from `/proc/uptime`, so its reading is
+//! boot-relative and remains comparable across a daemon restart. The wall
+//! reading still comes from `SystemTime` and is never authoritative.
 
 use core::fmt;
 use std::sync::Mutex;
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// The kernel's boot-relative uptime source.
+pub const UPTIME_PATH: &str = "/proc/uptime";
 
 /// A clock the guard reads. Monotonic nanoseconds are the only source of a
 /// duration; wall nanoseconds exist to stamp a line.
@@ -30,27 +33,62 @@ pub trait Clock: fmt::Debug + Send + Sync {
 /// The real clocks.
 #[derive(Debug)]
 pub struct SystemClock {
+    boot_ns: u64,
     start: Instant,
 }
 
 impl SystemClock {
-    /// A clock whose monotonic zero is now.
-    pub fn new() -> Self {
-        Self {
+    /// A clock whose readings are boot-relative, not process-relative.
+    pub fn new() -> std::io::Result<Self> {
+        Self::from_uptime_path(Path::new(UPTIME_PATH))
+    }
+
+    /// Read a boot-relative base from `path`; injectable so tests need no host clock file.
+    pub fn from_uptime_path(path: &Path) -> std::io::Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        let boot_ns = parse_uptime_ns(&text)?;
+        Ok(Self {
+            boot_ns,
             start: Instant::now(),
-        }
+        })
     }
 }
 
-impl Default for SystemClock {
-    fn default() -> Self {
-        Self::new()
+fn parse_uptime_ns(text: &str) -> std::io::Result<u64> {
+    let value = text.split_whitespace().next().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "uptime has no first field")
+    })?;
+    let (seconds, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > 9 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "uptime fraction is not a decimal nanosecond value",
+        ));
     }
+    let seconds = seconds.parse::<u64>().map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+    })?;
+    let mut nanos = if fraction.is_empty() {
+        0
+    } else {
+        fraction.parse::<u64>().map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+        })?
+    };
+    for _ in fraction.len()..9 {
+        nanos *= 10;
+    }
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|whole| whole.checked_add(nanos))
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "uptime overflow"))
 }
 
 impl Clock for SystemClock {
     fn mono_ns(&self) -> u64 {
-        self.start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+        self.boot_ns.saturating_add(
+            self.start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        )
     }
 
     fn wall_ns(&self) -> u64 {
@@ -136,10 +174,17 @@ mod tests {
 
     #[test]
     fn the_system_clock_only_moves_forward() {
-        let clock = SystemClock::new();
+        let clock = SystemClock::new().expect("kernel uptime");
         let first = clock.mono_ns();
         let second = clock.mono_ns();
         assert!(second >= first);
         assert!(clock.wall_ns() > 1_600_000_000_000_000_000);
+    }
+
+    #[test]
+    fn uptime_is_parsed_as_boot_relative_nanoseconds() {
+        assert_eq!(parse_uptime_ns("12345.067 888.00\n").expect("uptime"), 12_345_067_000_000);
+        assert_eq!(parse_uptime_ns("7 1\n").expect("uptime"), 7_000_000_000);
+        assert!(parse_uptime_ns(" ").is_err());
     }
 }

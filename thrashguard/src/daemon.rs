@@ -62,6 +62,9 @@ pub const MAX_SESSIONS: usize = 64;
 /// How long one client may take to send its request line.
 pub const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long one client may take to receive its reply before its thread is dropped.
+pub const SESSION_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The guard's state: the configuration, the candidate set, the machine and the
 /// journal. One instance is shared by the tick thread and every session.
 #[derive(Debug)]
@@ -626,6 +629,7 @@ pub fn serve(core: Core, endpoints: &Endpoint, tick_s: u64) -> io::Result<()> {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error),
             };
+            accepted.set_write_timeout(Some(SESSION_WRITE_TIMEOUT))?;
             if sessions.load(Ordering::SeqCst) >= MAX_SESSIONS {
                 let mut refused = socket::Session::new(std::io::empty(), accepted, role);
                 let _ = refused.write_reply(&crate::wire::refused_reader(
@@ -660,15 +664,27 @@ fn handle_session(
 ) -> io::Result<()> {
     let peer = stream.try_clone()?;
     stream.set_read_timeout(Some(SESSION_READ_TIMEOUT))?;
+    stream.set_write_timeout(Some(SESSION_WRITE_TIMEOUT))?;
     let mut session = socket::Session::new(stream, peer, role);
     match session.read_request()? {
         None => Ok(()),
-        Some(line) => {
-            let mut guard = core.lock().unwrap_or_else(|poison| poison.into_inner());
-            let reply = socket::answer(&mut *guard, role, &line);
-            session.write_reply(&reply)
-        }
+        Some(line) => answer_then_write(core, role, &line, |reply| session.write_reply(reply)),
     }
+}
+
+/// Hold the core only while building the reply; a slow peer cannot hold the
+/// tick mutex while `write_reply` waits for socket capacity.
+fn answer_then_write(
+    core: &Arc<Mutex<Core>>,
+    role: Role,
+    line: &str,
+    write: impl FnOnce(&Value) -> io::Result<()>,
+) -> io::Result<()> {
+    let reply = {
+        let mut guard = core.lock().unwrap_or_else(|poison| poison.into_inner());
+        socket::answer(&mut *guard, role, line)
+    };
+    write(&reply)
 }
 
 #[cfg(test)]
@@ -1160,6 +1176,40 @@ mod tests {
         let mut reader = socket::Session::new(std::io::empty(), Vec::<u8>::new(), Role::Reader);
         assert_eq!(reader.read_request().expect("a closed peer"), None);
         let _ = &mut reader;
+    }
+
+    #[test]
+    fn a_blocked_reply_writer_does_not_keep_the_core_mutex() {
+        let tree = TempTree::new("daemon-write-lock");
+        let core = Arc::new(Mutex::new(guard(
+            &tree,
+            Config::defaults(),
+            Arc::new(ManualClock::new(1)),
+            &tree.at("absent.pressure"),
+        )));
+        let line = format!("{{\"v\":\"{STATE_VERSION}\",\"verb\":\"version\"}}");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker_core = Arc::clone(&core);
+        let worker = std::thread::spawn(move || {
+            answer_then_write(&worker_core, Role::Reader, &line, move |_| {
+                started_tx
+                    .send(())
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+                release_rx
+                    .recv()
+                    .map_err(|error| io::Error::other(error.to_string()))
+            })
+        });
+
+        started_rx.recv().expect("reply writer started");
+        let lock_available_while_writer_waits = core.try_lock().is_ok();
+        release_tx.send(()).expect("release reply writer");
+        worker.join().expect("writer thread").expect("write result");
+        assert!(
+            lock_available_while_writer_waits,
+            "the tick and other sessions must not wait on a peer's write"
+        );
     }
 
     #[test]

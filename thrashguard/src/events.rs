@@ -23,7 +23,7 @@
 //! pretending the missing rows never existed. The file itself is the durable
 //! record for a human, and it is never rewritten by a reader.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::json::Value;
@@ -182,10 +182,11 @@ impl Journal {
     pub fn new(dir: impl Into<PathBuf>, boot_id: &str) -> io::Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
+        let seq = existing_sequence(&dir, boot_id)?;
         Ok(Self {
             dir,
             boot_id: boot_id.to_string(),
-            seq: 0,
+            seq,
             rows: Vec::new(),
             truncated_from: None,
         })
@@ -278,6 +279,45 @@ impl Journal {
     }
 }
 
+/// Recover the highest sequence for this boot from the current and rotated file.
+/// The files are each bounded by the journal's rotation threshold plus one row.
+fn existing_sequence(dir: &Path, boot_id: &str) -> io::Result<u64> {
+    let mut highest = 0;
+    for name in [JOURNAL_FILE, ROTATED_FILE] {
+        let path = dir.join(name);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let maximum = ROTATE_BYTES + crate::json::MAX_DOCUMENT_BYTES as u64;
+        if metadata.len() > maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("journal {} exceeds its {maximum}-byte recovery bound", path.display()),
+            ));
+        }
+        let mut contents = String::new();
+        std::fs::File::open(&path)?
+            .take(maximum + 1)
+            .read_to_string(&mut contents)?;
+        for line in contents.lines().filter(|line| !line.trim().is_empty()) {
+            let Ok(row) = Value::parse(line) else {
+                continue;
+            };
+            if row.get("boot_id").and_then(Value::as_str) != Some(boot_id) {
+                continue;
+            }
+            if let Some(seq) = row.get("seq").and_then(Value::as_i64) {
+                if let Ok(seq) = u64::try_from(seq) {
+                    highest = highest.max(seq);
+                }
+            }
+        }
+    }
+    Ok(highest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +395,46 @@ mod tests {
         let current = std::fs::read_to_string(journal.file()).expect("current file");
         assert_eq!(current.lines().count(), 1);
         assert!(current.contains("\"reason\":\"unreadable_psi\""));
+    }
+
+    #[test]
+    fn a_restart_in_the_same_boot_continues_the_existing_sequence() {
+        let tree = TempTree::new("events-restart");
+        {
+            let mut journal = journal(&tree);
+            for at in 1..=2 {
+                journal
+                    .append(&Event::decision("would-freeze", "pressure", "report", at))
+                    .expect("append before restart");
+            }
+        }
+
+        let mut restarted = journal(&tree);
+        let row = restarted
+            .append(&Event::decision("would-thaw", "pressure", "report", 3))
+            .expect("append after restart");
+        assert_eq!(row.get("seq").and_then(Value::as_i64), Some(3));
+    }
+
+    #[test]
+    fn sequence_recovery_reads_the_rotated_file_when_current_has_no_row_for_this_boot() {
+        let tree = TempTree::new("events-restart-rotated");
+        let dir = tree.at("run");
+        std::fs::create_dir_all(&dir).expect("state dir");
+        let prior = Event::decision("would-freeze", "pressure", "report", 1)
+            .to_value(BOOT, 7)
+            .to_json();
+        std::fs::write(dir.join(ROTATED_FILE), format!("{prior}\n")).expect("rotated row");
+        let other_boot = Event::decision("would-thaw", "pressure", "report", 2)
+            .to_value("other-boot", 1)
+            .to_json();
+        std::fs::write(dir.join(JOURNAL_FILE), format!("{other_boot}\n")).expect("other boot row");
+
+        let mut journal = Journal::new(&dir, BOOT).expect("journal");
+        let row = journal
+            .append(&Event::decision("would-thaw", "pressure", "report", 3))
+            .expect("append");
+        assert_eq!(row.get("seq").and_then(Value::as_i64), Some(8));
     }
 
     #[test]

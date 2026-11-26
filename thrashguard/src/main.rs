@@ -218,7 +218,10 @@ fn serve(config: &Config, args: &Args) -> Result<(), Fatal> {
         println!("thrashguard: mode=off, nothing to serve");
         return Ok(());
     }
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let clock: Arc<dyn Clock> = Arc::new(
+        SystemClock::new()
+            .map_err(|error| Fatal::usage(format!("cannot read boot-relative uptime: {error}")))?,
+    );
     let boot = daemon::boot_id();
     let core = Core::new(
         config.clone(),
@@ -230,12 +233,13 @@ fn serve(config: &Config, args: &Args) -> Result<(), Fatal> {
     .map_err(Fatal::usage)?;
     let announced = activation::plan(
         std::env::var(activation::LISTEN_FDS).ok().as_deref(),
+        std::env::var(activation::LISTEN_PID).ok().as_deref(),
         std::env::var(activation::LISTEN_FDNAMES).ok().as_deref(),
     )
     .map_err(|error| Fatal::usage(format!("socket activation: {error}")))?;
     let endpoints = match announced {
         Some(plan) => {
-            let adopted = activation::adopt(&plan)
+            let adopted = activation::adopt(plan)
                 .map_err(|error| Fatal::usage(format!("socket activation: {error}")))?;
             let registrant = adopted
                 .registrant

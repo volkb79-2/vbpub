@@ -23,7 +23,7 @@
 //! to clean up — and the daemon's listener is bound only by `main`, to a path
 //! from the configuration.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 
 use crate::json::Value;
 use crate::wire::{self, Request, WireError};
@@ -97,7 +97,11 @@ impl<R: std::io::Read, W: Write> Session<R, W> {
     /// Read one request line. `Ok(None)` means the peer closed cleanly.
     pub fn read_request(&mut self) -> std::io::Result<Option<String>> {
         let mut line = String::new();
-        let read = self.reader.read_line(&mut line)?;
+        let mut bounded = self
+            .reader
+            .by_ref()
+            .take((crate::wire::MAX_LINE_BYTES + 1) as u64);
+        let read = bounded.read_line(&mut line)?;
         if read == 0 {
             return Ok(None);
         }
@@ -275,6 +279,26 @@ mod tests {
             session.read_request().expect("a closed peer"),
             None,
             "a closed peer is a clean end"
+        );
+    }
+
+    #[test]
+    fn an_oversized_request_is_stopped_at_the_wire_bound() {
+        let (mut writer, reader) = UnixStream::pair().expect("socketpair");
+        let mut session = Session::new(reader, Vec::<u8>::new(), Role::Reader);
+        let oversized = format!("{}\n", "x".repeat(crate::wire::MAX_LINE_BYTES + 8));
+        writer
+            .write_all(oversized.as_bytes())
+            .expect("write oversized request");
+
+        let line = session
+            .read_request()
+            .expect("bounded read")
+            .expect("request line");
+        assert!(
+            line.len() <= crate::wire::MAX_LINE_BYTES + 1,
+            "read more than the protocol bound: {} bytes",
+            line.len()
         );
     }
 
