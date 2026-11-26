@@ -132,8 +132,10 @@ def tick_rows(lines: list[str]) -> tuple[list[tuple[int, str | None, str | None,
         if not line.startswith("tick\t"):
             continue
         raw_seq = field(line, "seq")
+        if raw_seq is None:
+            return rows, f"invalid tick sequence {raw_seq!r}"
         try:
-            seq = int(raw_seq) if raw_seq is not None else -1
+            seq = int(raw_seq)
         except ValueError:
             return rows, f"invalid tick sequence {raw_seq!r}"
         rows.append(
@@ -154,6 +156,8 @@ def close_line(lines: list[str]) -> tuple[int, str] | str:
     reason_text, _, reason = parts[2].partition("=")
     if blocks_text != "blocks" or reason_text != "reason":
         return f"closed line is not the client's contract form: {found[0]!r}"
+    if re.fullmatch(r"[0-9]+", blocks_value) is None:
+        return f"closed line has no block count: {found[0]!r}"
     try:
         blocks = int(blocks_value)
     except ValueError:
@@ -180,7 +184,7 @@ def tick_sequence(
 
 
 def row_rules(rows) -> str | None:
-    """The quality rules: a full row, a known code, and no number under a non-`ok` code."""
+    """The quality rules: present values, known codes, and no number under a non-`ok` code."""
     for _, _, metric, value, quality in rows:
         if metric is not None and (value is None or quality is None):
             return "row is missing its value or quality"
@@ -194,17 +198,17 @@ def row_rules(rows) -> str | None:
     return None
 
 
-def operator_form(rows) -> str | None:
-    """Every operator tick line must be the client's full one-row form.
+def full_row_form(rows, label: str) -> str | None:
+    """Every tick line must be a complete client row.
 
     `watch` prints a full row (seq, entity, metric, value, quality) for a non-empty block and the
     compact `tick<TAB>seq=N<TAB>rows=0<TAB>columns=0` form for an empty one. The compact form
     carries no value and no quality, so it is not a measurement and must not satisfy the
-    operator stream: a level that resolved nothing would otherwise pass unremarked.
+    stream: a level that resolved nothing would otherwise pass unremarked.
     """
     for _, entity, metric, value, quality in rows:
-        if entity is None or metric is None or value is None or quality is None:
-            return "operator tick line is not a client row"
+        if not entity or not metric or not value or not quality:
+            return f"{label} tick line is not a client row"
     return None
 
 
@@ -219,25 +223,53 @@ def assess(transcript: str, expected_ticks: int) -> tuple[bool, str]:
     observe_rows, error = tick_rows(observe)
     if error is not None:
         return False, error
-    seen = 0
-    previous = None
-    for seq, _, _, _, _ in observe_rows:
-        if seq != previous:
-            if previous is not None and seq <= previous:
-                return False, f"tick sequence is not increasing: {previous} then {seq}"
-            seen += 1
-            previous = seq
-    if seen != expected_ticks:
-        return False, f"expected {expected_ticks} ticks, got {seen}"
+    operator_rows, error = tick_rows(operator)
+    if error is not None:
+        return False, error
 
-    sequence = tick_sequence(observe_rows)
-    for (earlier, _), (later, _) in zip(sequence, sequence[1:]):
-        if later != earlier + 1:
-            return False, f"tick sequence numbers are not consecutive: {earlier} then {later}"
-    first = sequence[0][1] if sequence else 0
-    for seq, count in sequence:
-        if count != first:
-            return False, f"tick seq={seq} has {count} rows where the first tick has {first}"
+    for rows, label, expected_blocks in (
+        (observe_rows, "observe", expected_ticks),
+        (operator_rows, "operator", 1),
+    ):
+        sequence = tick_sequence(rows)
+        previous = None
+        for seq, _, _, _, _ in rows:
+            if seq != previous:
+                if previous is not None and seq <= previous:
+                    return False, f"{label} tick sequence is not increasing: {previous} then {seq}"
+                previous = seq
+        if len(sequence) != expected_blocks:
+            if label == "observe":
+                return False, f"expected {expected_blocks} ticks, got {len(sequence)}"
+            return False, f"expected {expected_blocks} operator tick block, got {len(sequence)}"
+
+        for (earlier, _), (later, _) in zip(sequence, sequence[1:]):
+            if later != earlier + 1:
+                return False, (
+                    f"{label} tick sequence numbers are not consecutive: {earlier} then {later}"
+                )
+
+        seen_pairs = set()
+        for seq, entity, metric, _, _ in rows:
+            if entity is None or metric is None:
+                continue
+            pair = (seq, entity, metric)
+            if pair in seen_pairs:
+                return False, (
+                    f"{label} tick seq={seq} repeats entity/metric pair "
+                    f"({entity!r}, {metric!r})"
+                )
+            seen_pairs.add(pair)
+
+        if label == "observe":
+            first = sequence[0][1] if sequence else 0
+            for seq, count in sequence:
+                if count != first:
+                    return False, (
+                        f"tick seq={seq} has {count} rows where the first tick has {first}; "
+                        "a cgroup created or removed during the run changes the row count, "
+                        "so repeat the run on a quiet target"
+                    )
 
     for lines, label, blocks_expected in (
         (observe, "observe", expected_ticks),
@@ -247,25 +279,25 @@ def assess(transcript: str, expected_ticks: int) -> tuple[bool, str]:
         if isinstance(closed, str):
             return False, f"{label}: {closed}"
         found_blocks, reason = closed
-        if found_blocks != blocks_expected:
+        if found_blocks < blocks_expected:
             return False, (
-                f"{label} closed line says blocks={found_blocks}, the client was asked for "
-                f"{blocks_expected}"
+                f"{label} closed line says blocks={found_blocks}, fewer than the client was "
+                f"asked for {blocks_expected}"
             )
         if reason not in LIVE_CLOSE_REASONS:
             return False, (
                 f"{label} closed reason {reason!r} is not a reason the client accepts"
             )
 
-    operator_rows, error = tick_rows(operator)
-    if error is not None:
-        return False, error
     all_rows = observe_rows + operator_rows
     violation = row_rules(all_rows)
     if violation is not None:
         return False, violation
-    # The operator stream is one tick of the same contract (N3), so its rows must be full rows.
-    violation = operator_form(operator_rows)
+    violation = full_row_form(observe_rows, "observe")
+    if violation is not None:
+        return False, violation
+    # The operator stream is one tick of the same contract (N3), with at least one full row.
+    violation = full_row_form(operator_rows, "operator")
     if violation is not None:
         return False, violation
 

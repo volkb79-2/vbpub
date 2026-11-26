@@ -409,6 +409,12 @@ Limits:
 4. **`current` before the probe's first tick** answers `internal` (HOB-94): retry, or use
    `subscribe`.
 
+For the live-demo verdict, each `closed` line must keep the exact
+`closed<TAB>blocks=<n><TAB>reason=<reason>` form, and `<n>` must be an integer at least as large
+as the requested tick count (N observe ticks, one operator tick). The count can be higher because
+`unsubscribe` counts blocks that arrive while it waits for its reply
+(`hostobs/crates/client/src/client.rs:550-558`).
+
 ### Expected `absent` cells on a real host
 
 `absent` means the file is not there (WIRE's quality vocabulary: only `0` is a measurement, and

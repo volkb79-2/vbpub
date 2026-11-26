@@ -712,10 +712,12 @@ page and socketpair cases.
 **Closure (P-11(b), 2026-11-24).** CLOSED. The live slice ran on a Debian 13 guest with the
 shipped systemd units: both sockets active, `hello` at observe and operator, one `current`, 60
 consecutive subscription ticks with the same 102 rows on every tick, `closed blocks=60
-reason=unsubscribed`, one operator tick, and the probe stopping by `SIGTERM` with the verdict
-derived from the checks (`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:190-6315`;
-`runs/p11b-vm-demo.report.md`). The serving loop, the frame reader, the hub, the envelope checks and
-both clients therefore exist and are exercised end to end.
+reason=unsubscribed`, and one operator tick (`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:190-6315`).
+The VM record shows the probe still active after the stream and it was never stopped by a signal
+there (`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6424,6554`). The SIGTERM
+exit was exercised only by the container run
+(`.controller-state/hostobs/evidence/live-container-20261124.txt:70`). The serving loop, the frame
+reader, the hub, the envelope checks and both clients therefore exist and are exercised end to end.
 
 *Scope of the closure.* The demo's selection was `watch`'s default, so **only `cpu.usage_usec`,
 `mem.current` and `pids.current` were exercised** (`crates/client/examples/watch.rs:22-23`). It did
@@ -810,8 +812,12 @@ history view and reconciles P5b-3. The live half closes at P-11 and the history 
 
 **Closure (live half, P-11(b), 2026-11-24).** The live half of this entry is CLOSED: P-11 demonstrated
 the slice on a VM with the shipped units (`.controller-state/hostobs/evidence/p11b-vm-20261124/`,
-`runs/p11b-vm-demo.report.md`), and **HOB-54 closed with it**. The history half stays OPEN and
-unchanged: P-17 still owes the producer-first history view and the P5b-3 reconciliation.
+`runs/p11b-vm-demo.report.md`), and **HOB-54 closed with it**. The VM record shows the probe still
+active after the stream and it was never stopped by a signal there
+(`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6424,6554`). The SIGTERM exit
+was exercised only by the container run
+(`.controller-state/hostobs/evidence/live-container-20261124.txt:70`). The history half stays OPEN
+and unchanged: P-17 still owes the producer-first history view and the P5b-3 reconciliation.
 
 *Scope of the live half.* Only `cpu.usage_usec`, `mem.current` and `pids.current` were exercised
 (`crates/client/examples/watch.rs:22-23`, the demo's selection); PSI, `io.stat`, `memory.stat`, the
@@ -1354,7 +1360,7 @@ P5a/P5b-1a (2026-11-18) when `crates/client/src` and `bins/probe/src` joined `as
 on the shipped units and the overall `1.8 OK`, so a reviewer can tell expected flags from policy
 drift; the naming is backed by a recorded run, not by inference — the 17 `✗` entries and the
 `1.8 OK` summary are now listed and cited to the run's transcript
-(`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6334-6418`).
+(`.controller-state/hostobs/evidence/p11b-vm-20261124/transcript.txt:6336-6416,6418`).
 `hostobs/CHANGES.md:199` also says "five judged crates"; it is a P5b-era record of the R2 lane, so
 it is left alone unless the same package chooses to fix it.
 
@@ -1396,8 +1402,8 @@ r1002 or v1001 with at least 30 cgroups and `tick_ms = 1000` for 60 s:
   window, so CPU time per tick and the walk's own duration can be compared;
 - `probe.ticks_skipped` (`bins/probe/src/sampler.rs:390-391`) is shown as `0`, which is what a
   well-fed sampler reports (the VM run's own `probe.ticks_skipped` row is the counter, not this);
-- `docs/PROBE-PROCESS.md` §(b) or §(h) states the measured budget (µs of CPU per tick and per
-  cgroup at `tick_ms = 1000`), so a later regression has a number to fail against.
+- a new cost section in `docs/PROBE-PROCESS.md` states the measured budget (µs of CPU per tick
+  and per cgroup at `tick_ms = 1000`), so a later regression has a number to fail against.
 
 Source: `reviews/p11b-final-opus.md` F1 and P1 (the probe's own cost, 27.3 CPU-s in 59 s, debug
 build under TCG); `evidence/p11b-vm-20261124/transcript.txt:240,6258`;
@@ -1412,8 +1418,10 @@ identity, and the absent explanation in `docs/LIVE-DEMO.md`.
 Five gaps of the P-11(b) run, none of them a defect of that run:
 
 1. **The guest checker is narrower than `tools/live-demo.py`.** `scripts/guest-check-attempt5.sh:276`
-   accepts any line containing `blocks=60` (so `blocks=600` passes), it never asserts the close
-   *reason*, it counts distinct seq values without a rows-per-tick check, it does not require
+   accepts any line containing `blocks=60`, so it does not enforce the exact line shape;
+   `blocks=600` itself is allowed by the lower-bound rule now, but a malformed line containing
+   that substring still passes. It never asserts the close *reason*, counts distinct seq values
+   without a rows-per-tick check, and does not require
    consecutive seqs, and the operator stream is checked only by exit status plus
    `grep -Fq $'closed\tblocks=1'` (`:361`), with no quality rules on its rows. A duplicated tick,
    a tick short by ten rows and a replayed seq all replay PASS (r1 N2, N2b, N3).
@@ -1437,11 +1445,13 @@ verdict that can pass a transcript it should reject.
 
 **Exit criteria.** The next VM run, with the same exact-name and teardown discipline:
 
-- its checker asserts the `\t`-anchored `closed\tblocks=N\treason=unsubscribed` form with N equal
-  to the requested tick counts (60 and 1), minimum one `✗`-free rule set per stream: the
-  conditions now in `tools/live-demo.py` `assess()` (`close_line`, consecutive seqs, rows-per-tick
-  equality, and the quality rules for observe *and* operator), cited as the same conditions
-  rather than re-invented;
+- its checker asserts the exact `\t`-anchored `closed\tblocks=N\treason=unsubscribed` form
+  with an integer block count at least the requested ticks (60 observe, 1 operator); at least one
+  non-empty tick row of each stream must satisfy the quality rules, and every observe tick is a
+  full block. The operator has exactly one distinct tick sequence with a full row, every tick
+  block has unique `(entity, metric)` pairs, and the observe ticks keep equal row counts on a quiet
+  target. These are the conditions now in `tools/live-demo.py` `assess()` (`close_line`, block
+  sequences, row counts, and quality rules), cited as the same conditions rather than re-invented;
 - `hostobs-watch --selection` is given the full model table, so every registered metric appears
   in at least one tick's columns (a tick with a shorter column set fails);
 - one reboot happens with the units enabled, and the transcript shows both sockets active before
@@ -1458,7 +1468,7 @@ Source: `reviews/p11b-final-opus.md` F2, F5, F7; `reviews/p11b-r1-evidence.md` N
 ## HOB-101 — `watch` prints the client's own loop count in its `closed` line
 
 **Where:** `crates/client/examples/watch.rs:307-317` (`read_subscription`), and
-`tools/live-demo.py:145-163` (the `close_line` rule that asserts this form).
+`tools/live-demo.py:147-167` (the `close_line` rule that asserts this form).
 
 `watch` prints `closed\tblocks={}\treason={reason}` with `subscription.received()`
 (`watch.rs:315`), which is the client's own count of BLOCK frames it read
@@ -1466,8 +1476,12 @@ Source: `reviews/p11b-final-opus.md` F2, F5, F7; `reviews/p11b-r1-evidence.md` N
 (`crates/client/src/streams.rs:20-25`), and the client has already checked that its own count
 equals `end.blocks` (`crates/client/src/client.rs:880`), so printing the loop count makes the field
 tautological and leaves END `dropped` (the blocks the server dropped for a lagging client,
-`streams.rs:184-190`) invisible in every demo transcript. The VM run's
-`closed\tblocks=60\t...` therefore says nothing about what the server sent.
+`streams.rs:184-190`) invisible in every demo transcript. During `unsubscribe`, blocks that arrive
+while the client waits for its reply are counted too (`crates/client/src/client.rs:550-558`), so
+the printed count may exceed the requested ticks; the live-demo verdict requires an integer count
+at least as large as requested, not equality to the request. The VM run's
+`closed\tblocks=60\t...` therefore records the client's count, which it checked against END
+`blocks`, but does not expose END `dropped`.
 
 **Impact.** A consumer or reviewer cannot see a subscription's drops from the example output, and a
 demo verdict that keys on `blocks=` is checking the client against itself. The fix is one print

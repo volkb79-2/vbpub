@@ -62,13 +62,20 @@ PASS requires all of the following:
 
 - exactly N observe ticks, with strictly increasing and **consecutive** sequence numbers
   (`2, 3, 4 …`, no gap);
+- **the operator stream has exactly one tick block (one distinct sequence) with at least one
+  full row**;
+- **each `(entity, metric)` pair appears once per tick block in either stream**, and every tick
+  line is a full client row;
 - **every observe tick has the same row count as the first one**, so a truncated or duplicated
-  tick block is a `FAIL` rather than a pass;
-- **each stream's `closed` line is exactly `closed<TAB>blocks=N<TAB>reason=<reason>`** with N
-  equal to the number of ticks the client was asked for (N observe ticks for the observe stream,
-  1 for the operator stream) and `<reason>` one of the two live reasons the client accepts,
-  `unsubscribed` or `client-eof` (`crates/client/src/client.rs` `end_reason_ok`); `blocks=600`
-  is not `blocks=60`, and a query reason such as `complete` is refused;
+  tick block is a `FAIL` rather than a pass. This rule assumes a quiet target: a cgroup created or
+  removed during the run changes the row count and fails the verdict; repeat the run on a quiet
+  target;
+- **each stream's `closed` line is exactly `closed<TAB>blocks=<n><TAB>reason=<reason>`**, with
+  `<n>` a base-10 integer at least as large as the requested ticks (N observe ticks for observe,
+  1 for operator). `unsubscribe` can count blocks that arrive before its reply, so this count may
+  be higher (`crates/client/src/client.rs:550-558`). The reason must be one of the two live reasons
+  the client accepts, `unsubscribed` or `client-eof` (`crates/client/src/client.rs` `end_reason_ok`);
+  a query reason such as `complete` is refused;
 - at least one `cpu.usage_usec` value that increased from that entity's first
   to last observe tick;
 - **the observe and the operator streams are both held to the same quality rules**: every
@@ -163,7 +170,8 @@ defect and not the unit sandbox:
 | `/system.slice/systemd-udevd.service/udev` | `ok` | `absent` on every tick | systemd 257 runs udevd with `Delegate=`/`DelegateSubgroup=udev`, and nothing writes `memory`/`pids` into `systemd-udevd.service/cgroup.subtree_control`, so the leaf has core files only; its parent `systemd-udevd.service` still shows `pids.current=1`, because that file is hierarchical |
 
 All the other 32 entities of that transcript are `ok` on all three metrics (102 rows per
-tick, 4 `absent` cells of 6120 rows). Everything else stays `ok`: `ProtectControlGroups=yes` is
+tick, 4 `absent` cells per tick, 240 of 6120 total cells). Everything else stays `ok`:
+`ProtectControlGroups=yes` is
 a read-only bind mount of `/sys/fs/cgroup`, not a hidden view, and the probe sees the whole
 guest tree. A refused read would render `unreadable`, never `absent`
 (`crates/kernel/src/fs.rs:160-164`, `crates/kernel/src/cgroup.rs:851-857`), so the two cells above
