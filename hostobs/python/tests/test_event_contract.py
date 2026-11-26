@@ -12,7 +12,7 @@ from pathlib import Path
 HOSTOBS = Path(__file__).resolve().parents[2]
 EVENT_FIXTURES = HOSTOBS / "fixtures" / "event"
 WIRE_FIXTURES = HOSTOBS / "fixtures" / "wire"
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(HOSTOBS / "python" / "reference"))
 
 import hostobs_wire_ref as wire  # noqa: E402
 
