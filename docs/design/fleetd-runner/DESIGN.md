@@ -8,11 +8,16 @@
 | D1 | One job API (`fleet-host-agent/1`) for every client; the two modes differ only in who picks the host | three transports kept, each with its own admission |
 | D2 | Placement reads `host-facts/2`, collected by the host agent, never `docker stats` | comparing per-container docker stats |
 | D3 | Capacity = planned core use `<= cores + 1`, capped further by the host's own `planning_cap` | cores - 1, or "load > 2x cores" |
-| D4 | RAM is the scarce dimension: a job carries a footprint class and is admitted only if its peak fits | RAM-weighted slot budget (remote-gate's MiB weight) |
+| D4 | RAM is planned by warm working set; swap is never counted, and live memory PSI remains a hard stop | peak-RSS plus swap budget |
 | D5 | One admission mechanism, on the host (B3), shared by every caller; waiting is exit 75 | per-caller flocks on the controller (today) |
 | D6 | Progress, not wall time, decides a stall | any new wall-clock budget on a run |
-| D7 | Collection runs on EVERY exit path, before teardown | collect only after the lane exits (today) |
+| D7 | Stop the lane before collecting; keep its checkout and charge if it cannot be stopped | collect from a live store, then terminate it |
 | D8 | Fleetd credentials cover fleetd-owned hosts only; job records carry no secret | one credential store for both modes |
+| D9 | Controller-host jobs plan at most 3 GiB total, with no job above `small` | use the host's free memory as the cap |
+| D10 | fleetd owns one fair cross-host queue; aged large jobs reserve capacity, and merge-unblocking gates lead | independent host queues for fleetd-placed jobs |
+| D11 | A known thrashguard freeze blocks new admission; running jobs are left alone | admit during a freeze |
+| D12 | ciu uses an installed host runner's queue; without one it keeps its own admission | give ciu a second queue on an enrolled host |
+| D13 | The dev run's `max_s` wall limit is removed; progress judges a run | terminate dev jobs after a fixed duration |
 
 ## 1. Scope, non-goals, current state
 
@@ -62,12 +67,18 @@ execute its own decision except the same `run-job` path.
 
 | mode | who picks the host | host access | admission |
 |---|---|---|---|
-| **ciu-direct** (v8 ciu/run-gate) | the caller | the caller's own keys | the host agent's queue if installed, else the caller's own |
-| **fleetd-placed** | fleetd, from `host-facts/2` | fleetd's credentials, fleetd-owned hosts only | the host agent's queue |
+| **ciu-direct** (v8 ciu/run-gate) | the caller | the caller's own keys | the host agent's queue if installed, else ciu's own |
+| **fleetd-placed** | fleetd, from `host-facts/2` | fleetd's credentials, fleetd-owned hosts only | fleetd's cross-host queue, then the host agent |
 
 Same in both: the record, the status answer, the exit codes, the progress stream. Programmatic
 job construction in fleetd today goes through `JobSpec`/`RunnerJobs`
 (`fleetd/src/fleetd/runner.py:30-60`); that module becomes the client of the agent.
+
+**Controller host as a worker [N2].** The controller host is in fleetd's candidate set and its
+local `run-gate` calls submit to the same local agent and admission book as remote placements.
+The candidate transport is a local agent call over a Unix socket, with no SSH hop. The exact
+transport and local credential mapping remain open in §5 and §8; until they are settled, the
+controller-host worker is not enabled.
 
 ## 2. The job API
 
@@ -84,32 +95,34 @@ answer rather than no answer.
 ### 2.2 Verbs and the record
 
 B4 names `probe|start|stop|fetch|facts`. The lifecycle is `submit|status|progress|cancel|fetch`
-plus `probe|facts`; `start`/`stop` stay as aliases for one release, recorded in
-`fleetd/CHANGES.md`. A client that says "stop" while the host says "cancel" is the drift this
-package exists to end.
+plus `probe|facts`. There are no `start` or `stop` aliases: the agent has not shipped them, so
+aliases would protect no deployed client (`fleetd/src/fleetd/cli.py`, current `facts` command).
 
 **submit** takes one record:
 
 | field | type | meaning |
 |---|---|---|
-| `job_id` | string `[A-Za-z0-9][A-Za-z0-9._-]{0,239}` | client-generated, **idempotency key** |
+| `job_id` | string | group-prefixed idempotency key; the host rejects ids outside its grammar |
 | `repo` | string | repo name (`REPO_NAME_RE`, `remote-gate.py:81`) |
 | `sha`, `base` | full hex, hex or null | the commit to judge; the base (already resolved by the client) |
 | `project`, `lane` | string | as `--project-dir`/lane today |
 | `shard` | `{index,total}` or null | reserved for P-fd-06; `/1` refuses a non-null value |
-| `resources.footprint` | `tiny|small|medium|large` | §3.3; a client cannot be trusted with bytes |
-| `resources.cores` | number, default 1 | the job's own planned core use |
-| `resources.declared_peak_bytes` | int or null | the lane's declared `resources.memory` |
-| `requested_by` | `{client, version, run}` | client ∈ `remote-gate|dev|fleetd|dr|ciu` |
+| `resources.planned_cores` | positive number | derived from the lane declaration or measured job shape; no default |
+| `resources.cpu_set` | CPU ids or null | exact host CPU set to use; null lets placement choose an allowed set |
+| `resources.footprint` | `tiny|small|medium|large` | derived by the client from its measured peak table; §3.3 |
+| `resources.declared_peak_bytes` | int or null | lane declaration; a hint, not a cgroup limit |
+| `requested_by` | `{client, version, run}` | audit labels only; the host derives group and priority from the credential |
 | `stores.collect`, `stores.seed` | paths; `{path,sha256,bytes}` | today's `--collect-store`/`--seed-store` (`remote-gate.py:1031-1032`) |
-| `extra_argv`, `env` | list, map | today's `-- extra` and the declared profile env (RG-319) |
-| `payload` | object | reserved block, opaque to the agent |
+| `extra_argv`, `env` | list, map | argv and named profile values, each checked by the host against allow-lists |
+| `dev` | object or null | required only for `kind: dev`: patch and untracked archive with hashes, verb argv, tty flag and worktree key |
+| `kind` | `lane|dev` | selects the executor mode |
 
-**Idempotence.** Same `job_id` and **identical content digest** is a no-op returning the
-existing state; the same id with a different digest is a refusal (2) naming both digests. This
-is today's "run dir exists" refusal (`remote-gate.py:1048-1050`) and `run-job`'s "job already
-exists" (`scripts/netcup/runner/run-job:14`) stated once. Rejected: overwrite on re-use — a
-client retry would silently restart a running job from its beginning.
+**Idempotence.** The client prefixes the id with its authenticated group. The digest covers
+`repo`, `sha`, `base`, `project`, `lane`, `shard`, `kind`, all resource fields, store descriptors,
+`extra_argv`, `env`, and `dev`; it excludes `job_id` and `requested_by.version`. The agent binds
+the authenticated group separately. Same id and digest returns existing state; same id with a
+different digest is refusal (2). This preserves today's run-dir and `run-job` duplicate refusals
+(`remote-gate.py:1048-1050`; `run-job:14`).
 
 **Several clients, several ciu roots.** The record names `repo` and `requested_by`, and the host
 keeps `jobs/<job_id>/request.json`. Two clients may hold one repo in one checkout root (that is
@@ -123,53 +136,59 @@ verdict, reason, progress:{done,total,unit,last_utc}, container:{id,name,image},
 anchored line parsed exactly as `remote-gate.sh:291-294` does (prefix at line start, never a
 substring).
 
-**progress** is `~jobs/<job_id>/progress.jsonl`, read by byte offset (`have_bytes` sent by the
-client), `{utc, kind, done, total, unit, stage}` with `kind` ∈
-`start|stage|candidate|stall|end`. fleetd's campaign layer already works this way, with each
-job's own byte-range markers (`fleetd/docs/SPEC.md` "Campaign execution").
+**progress** is read from run-gate's `.assay/progress-<lane>.jsonl` in the job checkout and
+streamed by byte offset; the agent also records start, stage and end for `dev` jobs, which have
+no candidate counts. Answers include `{done,total,unit,last_progress_utc}`. The status snapshot
+uses `progress_unit` and `last_progress_utc` in `jobs[]` to match the agctl draft.
 
-**cancel** takes `{job_id, reason}`, runs the collector (§4.3) and *then* stops the lane; it is
-not a bare signal. An unknown or finished id is a refusal (2).
+**cancel** takes `{job_id, reason}`. A queued job is atomically removed and needs no collector;
+a running job follows §4.3. An unknown or finished id is a refusal (2).
 
-**fetch** takes `{job_id, artifact, offset, length}` for `job.log`, `lane.log`,
-`lane-detail.log`, `artifacts.tgz`, `store-<rel>.tgz`, `result.json`, and answers a byte range
+**fetch** takes `{job_id, artifact, offset, length}` for the closed set `job.log`, `lane.log`,
+`lane-detail.log`, `artifacts.tgz`, `assay-store.tgz`, `assay-store.tgz.sha256`, `result.json`, and answers a byte range
 plus `{size, sha256, next_offset}`.
 
-**Exit codes — parity with `remote-gate.sh:17-20`.** the lane's own code (0 = PASS); `2`
-usage/refusal; `3` identity or transport failure; `75` nothing ran (queued past the client's
-wait, PSI, no memory fit) — not a lane failure; `76` INCONCLUSIVE-OOM (gate-slice `oom_kill`
-delta, never for `BUDGET_EXCEEDED`); `143` cancelled. The parity test in §7 pins the table, not
-this prose.
+**Exit codes.** `0` PASS; `1` lane FAIL; `2` request, path, preflight or prerequisite refusal;
+`3` identity or transport failure; `4` run-gate `BUDGET_EXCEEDED`; `70` unexpected runner
+failure; `71` checkout failure; `72` missing base; `73` prerequisite missing (moved from today's
+76); `75` queued job withdrawn before it started; `76` INCONCLUSIVE-OOM; `77` store collection
+failed; `78` store seed failed; `143` cancelled. Store collection failure does not change the
+lane verdict. The former preflight exit 4 maps to 2 so 4 has one meaning. OOM is attributed to
+this job's containers, never a whole-slice counter.
 
 **The event run-gate emits (its container id).** run-gate already writes the container it
 started into `.run-gate/inflight/<lane>.json` (`run-gate-project/run_gate.py:7350-7399`) and its
 id is readable with one inspect (`container_state`, `:7601-7665`; a name taken by another
-container is detected, `:17980-17990`). P-fd-05 adds one **machine-readable stdout line**, first
-line of the lane, written where the record is written:
+container is detected, `:17980-17990`). P-fd-05 adds one machine-readable event on a separate
+inherited file descriptor, before lane output begins; it is written outside the checkout and
+cannot be forged by test output:
 
 ```
 run-gate: event lane-started lane=<lane> container=<id> image=<image id> api=fleet-host-agent/1 job=<job_id>
 ```
 
-The agent reads its own child's stdout, so it learns the container id without re-deriving
-anything; thrashguard's registration (§6) consumes it. The line is additive and never a
-verdict, so a client that ignores it behaves as today. Rejected: matching `docker ps` by name.
+The agent accepts the event only after `docker inspect` confirms the run-gate labels and this
+job's checkout path component. The event identifies the container for thrashguard registration;
+it is not a verdict. Rejected: parsing shared lane output or matching `docker ps` by name.
 
 ## 3. Placement and admission
 
 ### 3.1 The operator's rule, exactly
 
 Per worker host `H`:
-- **planned core use**: `sum(requested cores of admitted jobs) <= cores(H) + 1`;
-- and bounded further by `planning_cap(H)` = the cores the host's own slice allows being
-  planned *as used*, which can only be **smaller**. On the controller host `dev-gates.slice` is
-  `cpu.max 600000 100000` (6 cores) and the operator plans up to **6**
-  (`operator-decisions.md` 2026-11-26 05:39Z) — so `planning_cap = min(cores+1, 6)` there, and
-  `planning_cap` is a **host fact**, never a client number;
+- **planned core use**: total planned use is at most `cores(H) + 1`;
+- and bounded by `planning_cap(H)`, read from the host's worker slice `cpu.max` and capped at
+  `cores(H)+1`. On the controller host this is 6 planned cores, the `dev-gates.slice` CPU limit
+  (`operator-decisions.md`, 2026-11-26 05:39Z). The cap is a host fact, never a client number;
+- if `resources.cpu_set` is present, every selected CPU must be online and allowed by that host's
+  worker slice; the executor applies that set to the lane container. Otherwise the scheduler
+  chooses from the host's allowed CPUs;
 - several low-core jobs may exceed the core count in number: 5 jobs of 1 planned core on a 4-core
   host is legitimate *if their RAM fits*;
-- **RAM is the scarce dimension**: a job's expected peak must fit `MemAvailable` plus accepted
-  swap, and no RAM is allocated for nothing (a job declaring 0 gets its class charge);
+- **RAM is the scarce dimension**: plan each job's warm working set, not its hot set or peak RSS.
+  The target is physical RAM minus the per-host `/etc` reserve for host services. Swap is never
+  counted. Cold pages may be paged by design. A job over its estimate is not killed by a new cap;
+  the live `memory full avg10 < 3` check remains the hard stop;
 - **live admission check**, re-read at submit (never from a cache): `load1 <= cores + 1` and
   memory `full` avg10 `< 3`; `>= 3` is the hard stop whatever the plan says.
 
@@ -189,14 +208,15 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `schema`, `agent_version` | literal, SemVer | agent | not enrolled → client refuses (major mismatch) |
 | `boot_id` | string | `/proc/sys/kernel/random/boot_id` | — |
 | `cpu.online` | int | `/sys/devices/system/cpu/online` (`facts.py:257`) | refuse (capacity unknown) |
-| `cpu.for_lanes` | number | `/etc/fleetd/facts.toml` (`facts.py:133-152`) | refuse |
-| `cpu.planning_cap` | number | host config; **new in /2** (slice `cpu.max`, or the operator's plan) | refuse; never default to `cores+1` |
-| `cpu.oversubscribe_max` | number | host config (kept from /1) | refuse |
+| `cpu.planning_cap` | number | worker slice `cpu.max`, capped at `cpu.online + 1` | refuse; never default to `cores+1` |
 | `load1`,`load5`,`load15` | number | `/proc/loadavg` | `null`+reason; the host is not placed (never "assume idle") |
-| `memory.{total,available,for_lanes,swap_total,swap_free,swap_for_parking}_bytes`, `memory.overcommit` | bytes, factor | `/proc/meminfo` (`facts.py:267-290`) | each `null`+reason; `for_lanes_bytes` null refuses planning (`plan.py:497`) |
+| `memory.total_bytes`, `memory.available_bytes` | bytes | `/proc/meminfo` (`facts.py:267-290`) | `null`+reason; placement refuses |
+| `memory.host_reserve_bytes` | bytes | `/etc/fleetd/facts.toml` | `null`+reason; placement refuses |
+| `memory.swap_total_bytes`, `memory.swap_free_bytes` | bytes | `/proc/meminfo` | report only; never counted as capacity |
 | `psi.{cpu,memory,io}.{some,full}_avg10_pct` | percent | `/proc/pressure/*` (`facts.py:306-324`) | `null`+reason; **unreadable is a refusal, never an admit** (`remote-gate.py:783-795`, outcome 2) |
-| `psi.*.avg60` | percent | **not collected**: `/proc/pressure` has none | `not-collected`; nothing may require it |
-| `disks[]` | `{mount, total_bytes, free_bytes, fs}` | `statvfs` on the configured list | `not-collected`; a missing disk list refuses no job, it is reported |
+| `psi.*.avg60`, `psi.*.avg300` | percent | kernel exposes them; host-facts/1 does not collect them | `not-collected`; /2 uses avg10 for admission |
+| `gate_slice.memory_current_bytes`, `.memory_high_bytes`, `.memory_max_bytes`, `.cpu_max` | bytes, quota/period | cgroup v2 files for the configured worker slice | `null`+reason; refuse placement |
+| `disks[]` | `{name,mount,total_bytes,free_bytes,fs,floor_bytes}` | `statvfs`; checkout and Docker roots plus per-host `/etc` floors | `null`+reason; refuse that host |
 | `cgroup_v2.mounted`, `cgroup_v2.controllers` | bool, list | mountinfo | refuse (admission and the guard both need it) |
 | `kernel_interfaces.*`, `ksm.*` | bools, ints | kept from /1 | `null`+reason, never a synthetic 0 |
 | `control_plane.slice`, `.present`, `.cpu_weight`, `.memory_min_bytes`, `.service_memory_min` | as /1 (`contracts.py:464-506`) | `systemctl show`, `/etc/fleetd/facts.toml` | per-service defaults as /1 (`SPEC.md`:100-160); the 768 MiB profile constant only when no service fact exists |
@@ -204,11 +224,12 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `guard.guard_state` | `off|report|enforce|unknown` | guard's runtime state file (`facts.py:517-522`) | omitted with reason; never `off` by default |
 | `guard.config_digest` | sha256 hex | `/etc` bytes incl. drop-ins (`facts.py:440-514`) | `null`+reason |
 | `guard.frozen_units` | int | **hostobs** freeze/thaw events (§6) | `null`+reason; `frozen = frozen_units > 0` is then `null`, not `false` |
-| `guard.frozen_since_utc`, `frozen_by`, `freeze_reason`, `frozen_queued` | time, strings, int | hostobs events / guard journal | `not-collected` until thrashguard P4 |
+| `guard.frozen_since_utc`, `frozen_by`, `freeze_reason`, `freeze.queued` | time, strings, int | hostobs events / guard journal | `not-collected` until thrashguard P4 |
 | `policy.host_role`, `.psi_refuse_some_avg10`, `.max_lane_containers` | as /1 (`contracts.py:510-524`) | `/etc/fleetd/facts.toml` | role null → refuse (as `plan.py:480-483`) |
-| `policy.admission` | `{ticket_path, wait_s, settle_s}` | host config | refuse; admission is not optional |
-| `queue.slots_held`, `.slots_total`, `.weights` | ints, list | **the agent's own queue** | `null`+reason; the agent queues the client anyway |
-| `jobs[]` | `{id,state,requested_by,resources,started_utc,progress_done,progress_total}` | `jobs/` dir | `null`+reason (today's `jobs_reason`, `facts.py:735-736`) |
+| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.host_reserve_bytes`, `.disk_floors` | number, class, bytes | `/etc/fleetd/facts.toml`; controller host sets `small` and about 3 GiB | null+reason; refuse placement |
+| `policy.admission` | `{queue_path, wait_s, settle_s}` | host config | refuse; admission is not optional |
+| `queue.planned_cores`, `.charged_bytes`, `.waiting` | number, bytes, count | host agent's admission book | `null`+reason |
+| `jobs[]` | `{id,state,requested_by,resources,started_utc,progress_done,progress_total,progress_unit,last_progress_utc}` | `jobs/` dir | `null`+reason (today's `jobs_reason`, `facts.py:735-736`) |
 | `tools[]` | as /1 | probes | `null`+reason |
 
 **Changes this design asks of the draft's rows**, named for the agctl owner: the draft's
@@ -218,9 +239,11 @@ a busy percentage is a second opinion nothing acts on; the draft's `jobs[].id` r
 producer's own id, opaque") is kept and **is** the §2.2 `job_id`, so the draft's "no join table
 today" stays true: the one id *is* the join.
 
-### 3.3 Footprint class and fit
+### 3.3 Footprint class and fit [Q2]
 
-A class is a host-independent RAM charge, because a client cannot know a lane's peak:
+A class estimates the warm working set; it is not a peak-RSS limit. The client derives the class
+from its local measured peak table (the host cannot read the controller's table,
+`remote-gate.sh:143-180`):
 
 | class | charge | typical |
 |---|---:|---|
@@ -229,42 +252,57 @@ A class is a host-independent RAM charge, because a client cannot know a lane's 
 | `medium` | 4 GiB | a gate-full lane |
 | `large` | 12 GiB | an R2 shard with a mutation judge |
 
-The charge is a **planning** number, never a cgroup cap: the container's `--memory` stays what
-the lane declares (`dev:151` applies its own). A lane that declares `resources.memory` gets
-`max(class charge, declared)`, and the class is derived from the measured peak table
-`remote-gate.sh:162-171` already reads (`+15%` headroom kept) — so a class becomes *measured*
-where a measurement exists, and is an estimate only before the first one, the same
-`basis: measured|declared` provenance fleetd's sizing uses (`sizing.py:28-35`).
+These are starting estimates under Q2. Recalibrate them from measured warm-set rows. They never
+set a container memory cap. Host policy may refuse any class above `policy.max_footprint`; the
+controller host permits only `small` and at most about 3 GiB total planned RAM. A job never runs
+alone by exceeding either cap.
 
-Fit at submit: `available + swap_free + swap_for_parking - sum(admitted charges) >=
-charge(job) + control-plane reserve`. Overcommit stays allowed: the **sum** test uses the
-overcommitted budget (`plan.py:563-585`), the **individual** test never exceeds physical RAM
-(`plan.py:583` `cap_alone_bytes`), and a job larger than the host runs **alone** instead of
-waiting forever — the rule `remote-gate.py:792-794` already implements by capping `need` to
-`MemTotal - 2 * floor`; keep it.
+For each admitted job `j`, let `charge_j` be its warm-set estimate and `current_j` its current
+memory use in the worker slice. Admission requires both:
+
+```
+MemAvailable - host_reserve - sum(max(0, charge_j - current_j)) >= charge_new
+gate_slice.memory_high - sum(charge_j) >= charge_new
+```
+
+The first line corrects for the part of each existing reservation not yet visible in
+`MemAvailable`; actual use is already reflected there, so subtracting full charges double-counts
+it. Swap is never added. The second line keeps the reservation book below the host-owned slice
+`memory.high`; `memory.max` is an additional absolute refusal ceiling. There is no fleetd
+overcommit factor in host admission. When actual use exceeds the estimate, `memory full avg10 >=
+3` stops new admission, but does not kill a running job.
 
 ### 3.4 One admission mechanism on the host (B3), exit-75 parity
 
-One queue, one book, host-owned:
+The agent keeps one host book for all local and direct callers. Fleetd keeps one fair global queue
+and asks candidate hosts for immediate admission; a rejected host request leaves no host waiter.
+The controller host joins the same book through its local agent [N2].
 
 ```
 ~/fleetd-admission/
-  state.json     # admitted jobs: charges, cores, per-job heartbeat (atomic rename)
+  state.json     # admitted jobs: warm-set charges, planned cores, selected CPUs
   queue.lock     # flock: one admission decision at a time
-  wait/<job_id>  # a queued job's marker, FIFO by (priority, submit_utc, job_id)
+  waiting/<job_id> # ciu-direct waiters; fleetd keeps its waiters in the global queue
 ```
 
-- **Decision** (inside `queue.lock`, one at a time): read `host-facts/2` **live** (load1, memory
-  `full` avg10, MemAvailable, swap) plus `state.json`; admit while §3.1's three inequalities
-  hold; write the job into `state.json` **before** it starts, so a crash cannot lose a charge.
-- **Waiting vs refusal.** The job waits on the host; the *client's* `--wait` decides when it
-  stops asking, then exits **75** ("queued, nothing started") and may resubmit the same
-  `job_id` idempotently. That bound bounds a *wait*, not a *run* (`no-time-budgets` §0: a timeout
-  on one operation stays).
-- **Fairness.** Order `(priority, submit_utc, job_id)`; priority `dev` > `remote-gate`/`fleetd`
-  > campaigns, and a job waiting longer than `aging_s` (host config, default 600) is promoted
-  one class. Nothing starves: §3.1 counts *cores*, so a 1-core job fits where a 4-core job does
-  not — the opposite of a fixed slot grid.
+- **Host decision** (inside `queue.lock`): reread `host-facts/2`, the gate-slice ceiling, disk
+  floors and the active book. `ciu-direct` may wait on this host. `fleetd-placed` sends `wait: 0`:
+  admit now or return 75 with the facts that refused it, then fleetd tries another host.
+- **Fleetd placement.** A candidate must pass load, memory PSI, warm-set RAM, gate-slice, CPU-set
+  and disk-floor checks. Among eligible hosts choose greatest planned-core headroom, then lowest
+  memory-full avg10, then greatest disk headroom; ties use stable `host_id` order. The request's
+  `resources.cpu_set` restricts the hosts/CPUs eligible to run it.
+- **Queue order and reservation** (N3): credential policy assigns the class; a merge-unblocking
+  gate leads, followed by `dev`, `remote-gate`/`fleetd`, then campaigns. Within a class use submit
+  time and group-prefixed id. If the head job has waited beyond configured `aging_s` and cannot
+  fit, reserve its required RAM and planned cores across candidate hosts. Backfill only jobs that
+  fit without consuming that reservation. Once the head becomes feasible, it starts before any
+  later arrival; a stream of small jobs cannot keep taking its reserved capacity.
+- **Reservation parity.** With continuous small arrivals, a large head job starts in the first
+  admission cycle after it becomes feasible; later jobs cannot consume its reserved RAM or cores.
+- **Wait expiry.** A client timeout atomically withdraws a queued job under `queue.lock`. Exit 75
+  is returned only after the host confirms it never started; if it started, the client follows
+  that job instead. A network error is 3, never 75.
 - **Heartbeat and reclaim.** A running job touches its entry every 30 s. A charge silent longer
   than `lost_after_s` (default 900) is reclaimed **only after** a liveness probe says the job is
   gone (container state `:7601`, the `EXIT` marker, the process table). Reclaiming a live job's
@@ -276,11 +314,10 @@ One queue, one book, host-owned:
   limit": remote-gate lanes and dev runs can no longer meet each other only in the PSI.
   Rejected: keep local flocks *and* add host admission — two disagreeing mechanisms is FD-042 by
   construction.
-- **Two schedulers on one host (FD-042).** A fleetd campaign loop and a `remote-gate.sh` call (or
-  two fleetd daemons) do not get separate views: both submit through the agent, whose
-  `queue.lock` and `state.json` is the single book, and `queue.slots_held` reports it. A second
-  scheduler that bypasses the agent (a hand-run `docker run`) is outside the contract by
-  construction, which is exactly why both clients must move inside it.
+- **Two schedulers on one host (FD-042).** Every installed runner client, including local
+  controller-host `run-gate`, submits to the same agent book. A host without an installed runner
+  remains ciu-direct's own-admission case (D12). A hand-run container outside the runner is not
+  admitted by this contract.
 - **OOM preference.** A test container must die before the cockpit does (operator 05:39Z). The
   cockpit already runs with a negative adjustment (`start-cockpit-runner.sh:30`,
   `COCKPIT_OOM_SCORE_ADJ` default `-500`; host-setup publishes `-900`,
