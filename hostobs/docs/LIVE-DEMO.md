@@ -13,13 +13,14 @@ is plan v4
 
 ## Why one PID namespace
 
-The probe obtains the peer identity with `SO_PEERCRED`. Across PID namespaces
-the kernel reports peer pid 0 when that pid is invisible, and rustix 1.1.6 turns
-0 into an invalid `Pid`, which is undefined behaviour. The probe and both
-`watch` children therefore share the launcher's PID namespace. This is also why
-`tools/live-demo.py` checks the Rust gate/dev image marker
+The probe reads raw `SO_PEERCRED` bytes. An invisible peer pid reported as 0
+becomes `pid: None`, and the peer remains accepted without constructing a rustix
+`Pid`. The probe and both `watch` children share the launcher's PID namespace so
+their advisory process labels stay visible through the probe's `/proc` view;
+this is a visibility choice for the demo, not a safety requirement.
+Separately, `tools/live-demo.py` checks the Rust gate/dev image marker
 `/usr/local/share/hostobs-Cargo.lock.registry-sha256` and refuses before
-starting or signalling any process when it is absent.
+starting or signalling any process when the marker is absent.
 
 ## Part (a): run in the capped dev container
 
