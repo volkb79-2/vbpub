@@ -22,13 +22,14 @@ functional:
   registry and the one send hub. It depends on `proto` and performs no I/O or clock reads.
 - **`kernel`** — the read-only collectors: cgroupfs (`cpu.stat`, `cpu.max`/`weight`,
   `memory.current`/`.stat`/`.events`/`.max` and friends, `io.stat`, `pids.current`/`.max`,
-  `cgroup.freeze` (the cgroup's own setting), `cgroup.events` (`populated`, and the effective
-  `frozen` state, which a frozen ancestor also sets), the three PSI files) and `/proc` (`stat`, `meminfo`, `vmstat`, `loadavg`, one process's
-  `stat`/`statm`/`status`/`cmdline`, the boot id and the host `/proc/pressure/*` files),
-  plus the identity inputs (`(device, inode)`, boot id, `starttime` ticks) and an
-  injectable clock. Every file access goes through one root-anchored, read-only `Fs` trait
-  carrying a byte bound, a line bound and an entry bound; every parse failure is a typed
-  error carrying a quality code, never a zero.
+  `cgroup.freeze` (the cgroup's own setting), `cgroup.events` (`populated` says whether the
+  cgroup or any descendant has a live process, and `frozen` is the effective state that a
+  frozen ancestor also sets), the three PSI files) and `/proc` (`stat`, `meminfo`, `vmstat`,
+  `loadavg`, one process's `stat`/`statm`/`status`/`cmdline`, the boot id and the host
+  `/proc/pressure/*` files), plus the identity inputs (`(device, inode)`, boot id,
+  `starttime` ticks) and an injectable clock. Every file access goes through one
+  root-anchored, read-only `Fs` trait carrying a byte bound, a line bound and an
+  entry bound; every parse failure is a typed error carrying a quality code, never a zero.
 - **`store`** — the on-disk history and events store: a segment file is a sequence of
   `proto` payloads inside a checksummed record envelope (64-byte header, records with their
   own lengths and body CRCs, a 64-byte footer), with tier directories bounded by `keep_s`
