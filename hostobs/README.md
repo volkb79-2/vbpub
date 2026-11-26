@@ -133,6 +133,18 @@ scope). Workspace unification removes the duplication behind `HOB-3`/`HOB-10`/`H
 there is one model quality/value vocabulary, `proto` derives its metric codes from `model`, and
 SP-2 calls `model::derive_rate`.
 
+## Python client
+
+The `hostobs-client` distribution contains the standard-library `hostobs_client`
+package and the `hostobs-mark` command. No release exists yet, and this branch
+does not build a release wheel. See [packaging](docs/PACKAGING.md) and [consumer
+instructions](docs/CONSUMERS.md).
+
+No hostobs probe currently serves `annotate`. `deploy/` installs the observer
+socket, and connecting to it needs membership in the `hostobs-observer` group.
+Until `annotate` is served, `hostobs-mark` prints a notice and exits 0;
+`--require` exits 1.
+
 ## Developing and debugging
 
 `scripts/controller/dev -p hostobs <verb>` (the generic remote dev tool; [`tools/dev`](tools/dev) is a

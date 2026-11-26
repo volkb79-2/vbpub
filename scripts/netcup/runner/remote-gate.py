@@ -758,7 +758,7 @@ detail=$(grep -o 'log /tmp/run-gate/lanes/[^ ;]*\.log' "$D/lane.log" | tail -1 |
 if [[ -n $detail ]]; then docker exec -u vscode "$COCKPIT" cat -- "$detail" > "$D/lane-detail.log" 2>/dev/null || true; fi
 
 ( cd "$CKDIR/$PROJ" 2>/dev/null && find . \( -path './.assay/*' -o -path './.run-gate/*' \) -type f \
-    \( -name 'verdict*.json' -o -name 'progress*.jsonl' -o -name 'coverage*.json' -o -name '*.log' -o -name '*.xml' \) -size -50M -print0 \
+    \( -name 'verdict*.json' -o -name '*progress*.jsonl' -o -name 'coverage*.json' -o -name '*.log' -o -name '*.xml' \) -size -50M -print0 \
   | tar --null -T - -czf "$D/artifacts.tgz" ) 2>/dev/null || true
 # store collection (--collect-store): HERE, while the throwaway checkout still exists (finish() removes it on exit). It never changes
 # the lane's rc: every outcome is one STORE-* log line and, when packed, assay-store.tgz + assay-store.tgz.sha256 in $D.

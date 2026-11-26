@@ -509,7 +509,8 @@ cockpit. The argv regression is in `tests/test_runner_scripts.py`.
   tester-unified plus a tag `:local`, then `pip install` the wheel in the cockpit (`setup-cockpit-tools.sh`); do not change tools on a host
   while an R2 campaign there may resume (<host>'s default cockpit run-gate is 24.3.0, see the host board).
 - **Results**, copied to `<out-dir>/<id>/` (default `<remote-gate-output>`): `job.log`, `lane.log`,
-  `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
+  `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `*progress*.jsonl`
+  (a lane's own `r2-progress.jsonl` included: `find -name` matches the BASENAME), `coverage*.json`, `.run-gate/**/*.log`),
   `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` for PASS and FAIL; any
   other verdict appends `; reason <text>` (and possibly ` [hint: ...]`). Parse it with `verdict (\w+); exit_code (\d+)`, never anchored at the end of the
   line (read it as a separate step); the command exits with the lane's exit code.
