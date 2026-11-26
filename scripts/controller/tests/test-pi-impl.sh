@@ -94,20 +94,39 @@ if [[ -n ${FAKE_PI_GUARD_LOG:-} ]]; then
     exit 90
   }
   guard_pattern=no-match-${RANDOM:-$(awk 'BEGIN{srand(); print int(rand()*999999)}')}-${PI_GUARD_SEQUENCE_INDEX:-0}
+  # One caller per guard fact, so an assertion names the spelling that failed.
+  # $1 labels the case; the rest is the whole command line, `pgrep` included.
+  guard_call() {
+    local label=$1
+    shift
+    "$@" > "$FAKE_PI_GUARD_LOG.$label.out" 2>&1
+    local rc=$?
+    printf 'RC %s=%s OUT=%s\n' "$label" "$rc" \
+      "$(tr '\n' ' ' < "$FAKE_PI_GUARD_LOG.$label.out")" >> "$FAKE_PI_GUARD_LOG"
+  }
   for spelling in pkill killall; do
     "$spelling" -f "$guard_pattern" > "$FAKE_PI_GUARD_LOG.$spelling.out" 2>&1
     guard_rc=$?
     printf 'RC %s=%s OUT=%s\n' "$spelling" "$guard_rc" \
       "$(tr '\n' ' ' < "$FAKE_PI_GUARD_LOG.$spelling.out")" >> "$FAKE_PI_GUARD_LOG"
   done
-  pgrep --signal TERM -f "$guard_pattern" > "$FAKE_PI_GUARD_LOG.pgrep-signal.out" 2>&1
-  guard_rc=$?
-  printf 'RC pgrep-signal=%s OUT=%s\n' "$guard_rc" \
-    "$(tr '\n' ' ' < "$FAKE_PI_GUARD_LOG.pgrep-signal.out")" >> "$FAKE_PI_GUARD_LOG"
-  pgrep -f "$guard_pattern" > "$FAKE_PI_GUARD_LOG.pgrep-plain.out" 2>&1
-  guard_rc=$?
-  printf 'RC pgrep-plain=%s OUT=%s\n' "$guard_rc" \
-    "$(tr '\n' ' ' < "$FAKE_PI_GUARD_LOG.pgrep-plain.out")" >> "$FAKE_PI_GUARD_LOG"
+  # Every SHORT signal spelling the shim exists for has its own case here:
+  # `-<number>` and `-<SIGNAME>` are single letters after pgrep's own parse, so
+  # a later edit that lets a signal letter into the no-value set would forward
+  # `pgrep -9 -f x` / `pgrep -TERM -f x` to the real pgrep and signal every
+  # match. The suite would stay green without these cases.
+  guard_call pgrep-signal pgrep --signal TERM -f "$guard_pattern"
+  guard_call pgrep-short-number pgrep -9 -f "$guard_pattern"
+  guard_call pgrep-short-name pgrep -TERM -f "$guard_pattern"
+  guard_call pgrep-kill pgrep --kill -f "$guard_pattern"
+  guard_call pgrep-signal-eq pgrep --signal=TERM -f "$guard_pattern"
+  guard_call pgrep-cluster-value pgrep -d, -9 -f "$guard_pattern"
+  # A PASS-THROUGH with a value that itself starts with `-`: `-d` takes its
+  # value out of the rest of the cluster or the next argument, exactly as
+  # getopt does, so `-d -` is the delimiter `-`, not an option, and the plain
+  # pattern still reaches the real pgrep (rc 1 for a no-match pattern).
+  guard_call pgrep-value-dash pgrep -d - -f "$guard_pattern"
+  guard_call pgrep-plain pgrep -f "$guard_pattern"
 fi
 # Probe: where this invocation's stdout points and whether the run's .done
 # marker exists yet (a marker before the continuations finish is a false verdict).
@@ -1488,12 +1507,14 @@ guard_launch() {
 }
 
 # Assert the guard log of one invocation: the three spellings resolved to the
-# shims, pkill and killall (and pgrep with a signal) refused with rc 126 and
-# their named message, and a plain pgrep of a no-match pattern passed through
-# (rc 1).
+# shims, pkill and killall (and every pgrep signal spelling the shim exists for)
+# refused with rc 126 and their named message, and the two pass-through cases
+# (a plain pattern, and a value that itself starts with `-`) reached the real
+# pgrep, which answers 1 for a no-match pattern.
 guard_log_asserts() {
   local guard=$1 prefix=$2
-  local spelling
+  local spelling label needles=('pgrep-signal' 'pgrep-short-number' 'pgrep-short-name' \
+    'pgrep-kill' 'pgrep-signal-eq' 'pgrep-cluster-value')
   for spelling in pkill killall pgrep; do
     grep -qF "PATH-ENTRY $spelling=$SHIM_DIR/" "$guard" \
       || { cat "$guard" >&2; fail "$prefix: $spelling did not resolve inside the shim directory"; }
@@ -1506,10 +1527,20 @@ guard_log_asserts() {
     || { cat "$guard" >&2; fail "$prefix: the killall shim did not refuse with rc 126"; }
   grep -qF 'pi-shim: refused killall' "$guard" \
     || { cat "$guard" >&2; fail "$prefix: the killall refusal does not name itself"; }
-  grep -qF 'RC pgrep-signal=126 ' "$guard" \
-    || { cat "$guard" >&2; fail "$prefix: pgrep --signal was not refused with rc 126"; }
-  grep -qF 'pi-shim: refused pgrep' "$guard" \
-    || { cat "$guard" >&2; fail "$prefix: the pgrep signal refusal does not name itself"; }
+  # Every signal spelling, not only the long `--signal` form. The short forms
+  # are the 24-line cluster branch of the shim: a pgrep that forwards `-9` or
+  # `-TERM` to the real one signals every match, so each has its own assertion.
+  for label in "${needles[@]}"; do
+    grep -qF "RC $label=126 " "$guard" \
+      || { cat "$guard" >&2; fail "$prefix: $label was not refused with rc 126"; }
+    grep -qF "RC $label=126 OUT=pi-shim: refused pgrep" "$guard" \
+      || { cat "$guard" >&2; fail "$prefix: $label was not refused by the pgrep shim itself"; }
+  done
+  # A value that itself starts with `-` is a VALUE, never an option: `-d -`
+  # passes through (the real pgrep answers 1 for a no-match pattern). A shim
+  # that read the lone `-` as an option would answer 126 or 127 here.
+  grep -qF 'RC pgrep-value-dash=1 ' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: a value starting with '-' was not passed through (expected rc 1)"; }
   # Plain pgrep is not a signal: it passes through to the real pgrep, which
   # answers 1 for a pattern that matches nothing. A 126 here would mean the
   # shim over-refuses; a 127 would mean it could not find the real pgrep.
@@ -1566,7 +1597,10 @@ check_signal_guard_continuation() {
   local count
   for needle in "PATH-ENTRY pkill=$SHIM_DIR/" 'RC pkill=126 ' \
                 "PATH-ENTRY killall=$SHIM_DIR/" 'RC killall=126 ' \
-                'RC pgrep-signal=126 ' 'RC pgrep-plain=1 '; do
+                'RC pgrep-signal=126 ' 'RC pgrep-short-number=126 ' \
+                'RC pgrep-short-name=126 ' 'RC pgrep-kill=126 ' \
+                'RC pgrep-signal-eq=126 ' 'RC pgrep-cluster-value=126 ' \
+                'RC pgrep-value-dash=1 ' 'RC pgrep-plain=1 '; do
     count=$(grep -cF -- "$needle" "$guard")
     [[ $count == 2 ]] || { cat "$guard" >&2; fail "the continuation guard log has $count of '$needle', expected 2 (the run and its continuation)"; }
   done
