@@ -3731,10 +3731,28 @@ mutation lane records `.assay/mutation-cmru.json` and appends
 file is an append-only progress stream. Its first-failure limit stops a bad mutant from running
 the rest of the suite. Mutation outcomes MAY be reused on resume only when the test suite and
 copied fixture closure exactly match the recorded run; any test or fixture change requires a
-new campaign. The mutation evidence uses schema 6 and records
-`candidate_isolation = "process-tree/1"` with per-run process-tree evidence;
-a reusable kill requires a normally exited leader, no outliving descendants,
-and clean cgroup resource evidence. Schema 6 records configured resource-limit
+new campaign. The standalone `r2` lane has no total wall budget; its 15-minute
+`stall_timeout` is served by five-minute control/candidate heartbeats. Its
+1800-second known-good control ceiling and candidate timeout floor/scaling are
+per-child hang bounds. The separate aggregate `mutation` lane retains its
+7-hour lane budget.
+
+Mutation evidence uses schema 7 and records `candidate_manifest`,
+`candidate_indices`, `scope`, and `shard` alongside
+`candidate_isolation = "process-tree/1"` and per-run process-tree evidence.
+With zero-based `--shard K/N`, candidates are assigned round-robin over the
+ordered candidate list and the full manifest is repeated in every shard file;
+unassigned result slots are `null`, and evidence is marked
+`scope: shard`, `status: partial`; `shard_complete` and `shard_outcome` are set
+only after every assigned candidate finishes. A shard result MUST NOT be read
+as a whole-campaign verdict. `--merge-shards N` accepts exactly one complete
+file for every index, requires identical HEAD, base, manifest and campaign
+identity, and writes `scope: whole` evidence only after every candidate is
+covered. Resume is bound to the same shard identity and assignment. The `r2`
+command lane forwards selectors through `run-gate r2 -- --shard K/N`.
+
+A reusable kill requires a normally exited leader, no outliving descendants,
+and clean cgroup resource evidence. Schema 7 records configured resource-limit
 changes as advisories separately from cgroup limit events. It records
 `assay_distribution_version` as package metadata and `assay_source_commit` as
 the exact source identity. CMRU checks Assay's declared package roots with
@@ -3757,6 +3775,12 @@ read at test-module import time, including in modules whose test bodies are
 skipped after import. A failed baseline control reports its Assay verdict tail
 and lane log before refusing the campaign. The `gate` lane combines Assay's
 whole-target coverage judgment with the tag-based R2 campaign.
+
+The remote-gate artifact bundle's `.assay` filename allowlist includes the
+progress JSONL but not `mutation-cmru.json`. Remote T3 shard runs that need
+resume or merge evidence MUST use `remote-gate --collect-store cmru/.assay`;
+the collected store is seeded back with `--seed-store` when resuming on another
+host. See the R2 runbook in `docs/CONTRIBUTING.md`.
 
 **S16.3 — Admission boundary.** The canonical entrypoint is the installed
 `run-gate` CLI; the tester-unified lane requires the estate-provided

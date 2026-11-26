@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | KI-215 | OPEN (filed 2026-11-26, the R2 docs pin rejects a legitimate explanation of Assay's `judge.base_source = "request"` mechanism) | — |
 | KI-214 | OPEN (filed 2026-11-26, the R2 campaign test docstring names a nonexistent library `.gitignore`) | — |
-| KI-213 | OPEN (filed 2026-11-26, the R2 lane's 7-hour wall budget cannot fit 101 candidates at the measured full-suite cost) | — |
+| KI-213 | FIXED 2026-11-26 (R2 has no total wall budget, prints bounded progress, resumes, and supports three-shard evidence merge) | `7b6090bcb`, `b3334b56b` |
 | KI-212 | OPEN (filed 2026-11-25, P-core-12 follow-up: `cmru/tools/project_fixture.py:44-45` and its `SUITE_COLLECTION_INPUTS` entries `nyxloom/pyproject.toml` (:58) and `nyxloom/src` (:59) still name `test_tester_unified_image`'s `_nyxloom_wheel_inputs()` as a cmru test read, but that module moved to `tester-unified/tests/test_tester_unified_image.py:2817` and cmru no longer collects it. The `cmru/tests/conftest.py` HEAVY_LAST comment was checked and is NOT stale, so that half of the original report was dropped) | — |
 | KI-211 | FIXED IN THIS BRANCH (filed 2026-11-25, cmru lane r2 `rgw-r2-20261125T202359-r1002`: the baseline checker refused a merge HEAD because Assay's effective base was the first parent, not the selected release tag; with no sound reason for the refusal, cmru's two R2 tools now pass `delegated=True` to Assay's base resolution because the lane supplies the comparison base itself, so a merge HEAD is judged against the selected tag) | branch |
 | KI-210 | FIXED IN THIS BRANCH (filed 2026-11-25, cmru lane r2: the publish-refusal contract test reached api.github.com because only `get_release_by_tag` was stubbed, not the transport; the gate host has no network) | branch |
@@ -4412,11 +4412,13 @@ The lanes under items 2 and 3 must stay byte-identical, because the whole-source
 
 ## KI-213 - the R2 lane's 7-hour wall budget can end a campaign before progress completes
 
-**Status:** OPEN (filed 2026-11-26); severity: medium.
+**Status:** FIXED 2026-11-26 in this branch; severity: medium. Implementation commits: `7b6090bcb` (no lane wall budget; progress heartbeat and stall bound), `b3334b56b` (shards and evidence merge).
 
-- **Observed.** `cmru/run-gate.toml:300` sets the `r2` mutation lane's wall budget to `7h`. A full-suite candidate took about 13 minutes on an 8-core host on 2026-11-26; 101 candidates cannot fit inside that limit. Increasing the wall budget alone would keep making the run depend on host speed. Related, but separate from KI-134's completed-subset verdict and KI-152's replay of unfinished outcomes, this item concerns the total wall bound being shorter than the full candidate set.
-- **Wanted.** Do not let an elapsed-time budget truncate a campaign. Bound stalled work with a progress-based stall window. Record per-test timing in the known-good control so a slow host can be distinguished from a stuck test.
-- **Close when:** the R2 run is bounded by lack of progress rather than a fixed total wall time, and known-good evidence reports per-test timing.
+- **Observed.** The stopped run `rgw-r2-20261126T082842-r1002` hit the `r2` lane's `7h` hard budget after 30 of 101 candidates (28 killed, two survived). A full-suite candidate cost 13–23 minutes, so the remaining candidates could not fit. Increasing the wall budget would still make completion depend on host speed.
+- **Resolution.** `[lanes.r2]` has no `budget`; it uses `stall_timeout = "15m"`. `mutation_campaign._run` emits a flushed start line and then a still-running heartbeat every 300 seconds while the known-good control or one candidate is executing (`cmru/tools/mutation_campaign.py:172,196-231`); campaign setup, candidate preparation and completed results also print progress. The largest intentional no-output interval during a child test is therefore five minutes, with two more heartbeat opportunities before the stall limit. The control's 1800-second timeout and candidate timeout floor/scaling are unchanged. `[lanes.mutation]` retains its existing 7-hour budget.
+- **Sharding and resume.** `--shard K/N` partitions the ordered Assay candidate list round-robin and records the full manifest, assigned indexes, HEAD, base, and explicit `scope: shard` / `status: partial` evidence. Resume requires the same shard identity and reuses only that shard's completed kills. `--merge-shards N` accepts exactly one complete file for each shard, validates shared HEAD, base, manifest and campaign identity, and writes whole-campaign evidence only after every candidate is covered.
+- **Evidence transport finding.** The observed artifact gap is in `scripts/netcup/runner/remote-gate.py:760-761`: its generic artifact filename allowlist matches `progress*.jsonl` but not `mutation-cmru.json`. No controller or Run-Gate code was changed; remote runs use `--collect-store cmru/.assay`, and a resumed run uses `--seed-store` to restore that store.
+- **Close when:** complete. The registered lane has no total wall budget and stops on 15 minutes without output; focused tests cover heartbeats, shard-specific resume, and complete/mismatched shard merges. No mutation campaign was started for this change.
 
 ## KI-214 - the R2 campaign test docstring cites a library ignore file that does not exist
 

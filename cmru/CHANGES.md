@@ -53,6 +53,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   not the selected tag (KI-211).
 - tests(cmru): the upload-coordinate refusal stubs the release transport, so
   it no longer needs api.github.com to reach its assertion (KI-210).
+- feat(cmru): make the standalone R2 campaign unbudgeted but stall-bounded,
+  resumable by shard, and mergeable only from three complete matching evidence
+  files; remote runs collect `.assay` with `--collect-store` (KI-213).
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
