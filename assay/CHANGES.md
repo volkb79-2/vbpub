@@ -5,6 +5,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
+- The `self-qualification-provisional` lane budget is 150 minutes (was 60). A
+  loaded gate host needed 1991 s for the baseline alone and the lane ended
+  `BUDGET_EXCEEDED` before the canary finished
+  (`rgw-self-qualification-provisional-20261126T225114-v1001`).
 - A native Python/pytest R2 lane now detects a candidate that stops making
   progress, instead of ending it on elapsed wall time. Three bounds, all
   reported as `hung` (never `killed`) and both new decisions accepted by the

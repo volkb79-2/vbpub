@@ -496,7 +496,9 @@ argv = [
 ]
 env = {}
 env_passthrough = ["PATH"]
-budget = "60m"
+# Covers the baseline and the R3 canary's full-suite runs on a loaded gate host
+# (one measured baseline: 1991 s); inside the container's 3 h command cap.
+budget = "150m"
 allow_argv_append = false
 
 [lanes.self-qualification-provisional.infrastructure]
