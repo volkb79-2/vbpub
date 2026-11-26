@@ -386,23 +386,29 @@ start_heartbeat() {
   (
     set +e
     sleep_pid=""
-    # A bash subshell inherits the parent's `$!`, and at this point that is the
-    # remote-gate child the wrapper forked moments before it started this heartbeat
-    # (remote_gate_pid). `${!:-}` in the trap below is meant to name a sleep THIS loop
-    # forked, so the inherited pid is consumed first: a placeholder child is forked
-    # below this subshell's own jobs and reaped, which leaves `$!` naming a pid the
-    # loop never owned and that is already gone. Without this line a TERM landing
-    # before the loop's first `sleep ... &` would have sent TERM to remote-gate.py and
-    # left the sleep it was protecting to run on.
-    { : & wait "$!"; } 2>/dev/null
-    # `$!` is now the pid of the most recent sleep this loop forked. The first iteration
-    # forks its `sleep` BEFORE `sleep_pid=$!` records it, so a TERM landing in that
-    # window would have killed the empty string, left the real sleep running for up to
-    # `interval` seconds and held the caller's pipe open. `${!:-}` names that fork, which
-    # is the very job the trap exists to kill; after a `wait` has reaped a sleep it names
-    # that reaped pid until the next fork, and `kill` on it is a no-op unless the kernel
-    # has reused it (`sleep_pid` is cleared right after every `wait`).
-    trap 'kill "${!:-}" 2>/dev/null; kill "${sleep_pid:-}" 2>/dev/null; exit 0' INT TERM
+    # The trap below takes its targets from THIS subshell's own job table and never
+    # from `$!`. A bash subshell INHERITS `$!` from its parent, and at this point that
+    # is the `remote-gate.py` child the wrapper forked and recorded moments before it
+    # started this heartbeat (`remote_gate_pid`): a TERM before the loop's first
+    # `sleep ... &` must not reach the run the trap exists to protect. Just as
+    # important, after a `wait` has reaped the sleep `$!` names that reaped pid -- a
+    # freed number the kernel may already have handed to an unrelated process -- so a
+    # TERM landing in the next iteration's `kill -0`/`print_wait_line` window must not
+    # reach a stranger's job either. `jobs -p` lists only the jobs this subshell
+    # forked and has not reaped: empty before the first fork, the `sleep` while it
+    # runs (even before `sleep_pid=$!` records it), and empty again once `wait` has
+    # reaped it. So the trap can name a job this loop still owns, or nothing at all.
+    # shellcheck disable=SC2329  # invoked from the INT/TERM trap below, never called
+    stop_heartbeat_sleeps() {
+      local target
+      local -a targets=()
+      mapfile -t targets < <(jobs -p)
+      for target in "${targets[@]}"; do
+        kill "$target" 2>/dev/null
+      done
+      exit 0
+    }
+    trap 'stop_heartbeat_sleeps' INT TERM
     # `$$` is the wrapper's own pid inside a subshell, so a wrapper that dies by SIGKILL
     # stops this loop within one iteration: the `kill -0` check ends it, so at most one
     # more line is printed into the caller's still-open pipe and then the subshell exits.

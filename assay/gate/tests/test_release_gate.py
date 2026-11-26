@@ -460,10 +460,20 @@ def _pid_running(pid: int) -> bool:
 
 def _wait_until(predicate, what: str, *, timeout_s: float = 60.0) -> None:
     """An event-driven wait with a ceiling; never a fixed pause deciding a verdict."""
+    _wait_for_value(lambda: True if predicate() else None, what, timeout_s=timeout_s)
+
+
+def _wait_for_value(producer, what: str, *, timeout_s: float = 60.0):
+    """The first truthy value `producer` returns before the ceiling.
+
+    Same event-driven contract as `_wait_until`, for an event whose value the test
+    needs (a pid it must watch) rather than only its occurrence.
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if predicate():
-            return
+        value = producer()
+        if value:
+            return value
         time.sleep(0.01)
     raise AssertionError(f"timed out after {timeout_s} s waiting for {what}")
 
@@ -471,9 +481,10 @@ def _wait_until(predicate, what: str, *, timeout_s: float = 60.0) -> None:
 def _hold_ticks_reached(path: Path, wanted: int) -> bool:
     """Has the fake's held-cancel counter reached `wanted`?
 
-    The counter is the test's event, so a value it cannot parse yet (the file is
-    absent, or a reader raced a write before the fake switched to side-name-plus-
-    rename) means "not yet", never a failure: the caller's own ceiling decides.
+    The counter is the test's event. The fake publishes it by writing a side name
+    and renaming it over the counter, so a file a reader can open holds whole
+    digits; the predicate still treats an absent or unreadable file as "not yet",
+    because the caller's own ceiling -- never a fixed pause -- decides a failure.
     """
     try:
         return int(path.read_text(encoding="utf-8")) >= wanted
@@ -481,27 +492,83 @@ def _hold_ticks_reached(path: Path, wanted: int) -> bool:
         return False
 
 
-# Finding 1 (B579 round 2): the heartbeat's trap names `${!:-}`, and a bash subshell
-# INHERITS `$!` from its parent -- at that moment the wrapper's `remote-gate.py` child,
-# which the wrapper forked and recorded (`remote_gate_pid`) just before it started the
-# heartbeat. This hook holds the heartbeat inside its own `trap` builtin: the trap is
-# installed, the loop's first `sleep ... &` has not run, and the pid its `${!:-}` would
-# kill is written down. The test puts a TERM into that exact window, so nothing here
-# depends on a duration: the seam file and the release file are the two events.
+def _parent_pid(pid: int) -> int | None:
+    """The kernel's recorded parent of `pid`, or None when it is gone or a zombie."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    fields = stat.rsplit(")", 1)[1].split()
+    return int(fields[1])
+
+
+def _descends_from(pid: int, ancestor: int) -> bool:
+    """True when `pid`'s parent chain reaches `ancestor`."""
+    seen: set[int] = set()
+    current = _parent_pid(pid)
+    while current is not None and current > 0 and current not in seen:
+        if current == ancestor:
+            return True
+        seen.add(current)
+        current = _parent_pid(current)
+    return False
+
+
+def _heartbeat_sleep(ancestor: int, interval: int) -> tuple[int, int] | None:
+    """The heartbeat's live `sleep <interval>` child: (sleep pid, heartbeat pid).
+
+    The wrapper forks the heartbeat subshell, which forks exactly one foreground
+    `sleep` per iteration. Both carry the wrapper's own command line, because a
+    subshell does not exec, so this finds the pair by walking /proc: a process
+    whose argv is exactly `sleep <interval>` and whose parent chain reaches the
+    wrapper is either the sleep the trap must kill or the next iteration's.
+    """
+    wanted = b"".join(f"{part}\0".encode() for part in ("sleep", str(interval)))
+    found: list[tuple[int, int]] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        pid = int(entry.name)
+        if cmdline != wanted or not _pid_running(pid):
+            continue
+        parent = _parent_pid(pid)
+        if parent is None or parent == ancestor:
+            continue
+        if _descends_from(pid, ancestor):
+            found.append((pid, parent))
+    return found[0] if len(found) == 1 else None
+
+
+# Finding 3 (B579 round 2 review): the heartbeat's trap must name only a job the
+# loop still owns. This hook holds the heartbeat inside its own `trap` builtin, at
+# the instant the real trap is installed: the loop's first `sleep ... &` has not run
+# yet, so the subshell's job table must be empty, and `$!` still carries the pid the
+# subshell INHERITED from its parent -- the wrapper's `remote-gate.py` child
+# (`remote_gate_pid`). The first seam line is `$BASHPID` and that inherited `$!`; the
+# lines after it are the job table the trap would take its targets from. The hook
+# publishes the seam under a side name and renames it into place, so a reader that
+# sees the file at all sees a whole one, and it holds until the test's release file
+# appears (the `finally` block always writes it) rather than for a counted number of
+# ticks.
 HEARTBEAT_TRAP_HOOK = (
     "trap() {\n"
     '  case "$*" in\n'
-    "    *sleep_pid*)\n"
-    '      printf \'%s\\t%s\\n\' "$BASHPID" "${!:-}" > "$ASSAY_HEARTBEAT_TRAP_SEAM"\n'
-    '      builtin trap "$@"\n'
-    "      local ticks=0\n"
-    '      while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" && $ticks -lt 6000 ]]; do\n'
-    "        /bin/sleep 0.01\n"
-    "        ticks=$((ticks + 1))\n"
-    "      done\n"
-    "      ;;\n"
+    "    *stop_heartbeat_sleeps*) heartbeat_trap_seam \"$@\" ;;\n"
+    '    *INT*TERM*) heartbeat_trap_seam "$@" ;;\n'
     '    *) builtin trap "$@" ;;\n'
     "  esac\n"
+    "}\n"
+    "heartbeat_trap_seam() {\n"
+    '  { printf \'%s\\t%s\\n\' "$BASHPID" "${!:-}"; jobs -p; } >"$ASSAY_HEARTBEAT_TRAP_SEAM.tmp"\n'
+    '  mv -f -- "$ASSAY_HEARTBEAT_TRAP_SEAM.tmp" "$ASSAY_HEARTBEAT_TRAP_SEAM"\n'
+    '  builtin trap "$@"\n'
+    '  while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" ]]; do\n'
+    "    /bin/sleep 0.01\n"
+    "  done\n"
     "}\n"
 )
 
@@ -664,9 +731,27 @@ def test_release_gate_heartbeat_still_cancels_the_remote_run_on_term(
     assert _heartbeat_lines(stderr[stderr.index("attempting to cancel remote run"):]) == []
 
 
-def test_release_gate_heartbeat_trap_never_signals_the_remote_gate_child(
+def _trap_seam_lines(seam: Path) -> tuple[int, int, list[int]]:
+    """The hook's published seam: (heartbeat pid, inherited `$!`, job table).
+
+    The hook writes a side name and renames it into place, so a file a reader can
+    open holds every line; a reader that never gets a whole file is still waited
+    for by the caller's ceiling, never decided by a fixed pause.
+    """
+    lines = seam.read_text(encoding="utf-8").splitlines()
+    heartbeat_text, inherited_text = lines[0].split("\t")
+    return int(heartbeat_text), int(inherited_text), [int(line) for line in lines[1:]]
+
+
+def test_release_gate_heartbeat_trap_never_names_a_job_it_does_not_own(
     tmp_path: Path,
 ) -> None:
+    # Finding 3: the trap took `${!:-}` as a kill target. A subshell INHERITS `$!`
+    # from its parent -- at trap-install time the wrapper's `remote-gate.py` child,
+    # which it forked and recorded (`remote_gate_pid`) -- so a TERM before the first
+    # `sleep ... &` used to signal the run the trap exists to protect; and after a
+    # reaped `wait`, `$!` names a freed and possibly reused pid instead. The trap now
+    # takes its targets from the subshell's own job table, which the hook records.
     env = _environment(tmp_path)
     released = tmp_path / "release-the-fake-run"
     seam = tmp_path / "heartbeat-trap-seam.txt"
@@ -689,19 +774,21 @@ def test_release_gate_heartbeat_trap_never_signals_the_remote_gate_child(
     try:
         _wait_until(
             lambda: seam.exists() and child_pid_path.exists(),
-            "the heartbeat's trap and the fake remote-gate's recorded pid",
+            "the heartbeat's trap seam and the fake remote-gate's recorded pid",
         )
-        heartbeat_text, named_text = seam.read_text(encoding="utf-8").split("\t")
-        heartbeat_pid = int(heartbeat_text)
+        heartbeat_pid, inherited_pid, job_table = _trap_seam_lines(seam)
         child_pid = int(child_pid_path.read_text(encoding="utf-8"))
-        # The whole finding: in the window this seam holds open, `${!:-}` must name a
-        # pid the heartbeat forked itself, never the remote-gate child the wrapper had
-        # recorded immediately before. Restoring the pre-fix code (`$!` left inherited)
-        # makes this the child's pid and the run below dies with it.
-        assert int(named_text) != child_pid, (
-            "the heartbeat trap would signal the remote-gate child, not its own sleep"
+        # The pre-first-fork window the old code got wrong: the inherited `$!` really
+        # is the remote-gate child here, and the job table the trap reads is empty.
+        assert inherited_pid == child_pid, (
+            "the seam must hold the window in which the inherited $! is the child"
+        )
+        assert job_table == [], (
+            "before the loop's first fork the trap's job table must be empty"
         )
         assert _pid_running(child_pid), "the fake remote-gate must still be running"
+        # The trap is installed by the time the seam is published, so this TERM
+        # exercises it, not the deferred or uninstalled path.
         os.kill(heartbeat_pid, signal.SIGTERM)
         seam_release.write_text("go", encoding="utf-8")
         # A zombie has exited (only its parent has not reaped it yet), so this is the
@@ -719,6 +806,47 @@ def test_release_gate_heartbeat_trap_never_signals_the_remote_gate_child(
 
     # The run that the heartbeat was watching still ends with its own verdict.
     assert status == 0, wrapper.stderr()
+
+
+def test_release_gate_heartbeat_trap_kills_the_sleep_it_owns(
+    tmp_path: Path,
+) -> None:
+    # Decision 3's second direction: the job-table fix must not turn the trap into a
+    # no-op. The wrapper is TERMed while its heartbeat waits on a real `sleep 300`, and
+    # the test then requires the very process whose pid it captured beforehand to be
+    # gone. It captures the pid while the sleep is still a descendant of this wrapper,
+    # so a trap that killed nothing is caught no matter what the kernel does with the
+    # orphan afterwards (a reparented survivor would be found by ancestry, not by this
+    # exact pid, which is the false-pass this capture avoids).
+    env = _environment(tmp_path)
+    released = tmp_path / "release-the-fake-run"
+    _configure_fake(env, hold_until=str(released))
+    child_pid_path = Path(env["REMOTE_GATE_OUT"]) / "remote-child.pid"
+    wrapper = Wrapper(tmp_path, env)
+    try:
+        sleep_pid, heartbeat_pid = _wait_for_value(
+            # Both events, never a pause: the fake records its pid only after it has
+            # written the run's meta.json, so this also proves the wrapper's cancel
+            # path can find the run it was watching.
+            lambda: child_pid_path.exists()
+            and _heartbeat_sleep(wrapper.proc.pid, 300),
+            "the heartbeat's live sleep below the wrapper and the fake run's pid",
+        )
+        assert _pid_running(sleep_pid) and _pid_running(heartbeat_pid)
+        # The trap is installed before the loop's first fork, so this TERM exercises it.
+        wrapper.proc.send_signal(signal.SIGTERM)
+        _wait_until(
+            lambda: not _pid_running(sleep_pid),
+            "the heartbeat's trap to kill the sleep it owns",
+        )
+        status = wrapper.reap()
+    finally:
+        released.write_text("go", encoding="utf-8")
+        wrapper.kill_leftovers()
+
+    # The trap did its job without changing the cancellation's exit status.
+    assert status == 143, wrapper.stderr()
+    assert "attempting to cancel remote run" in wrapper.stderr()
 
 
 def _run(tmp_path: Path, lane: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:

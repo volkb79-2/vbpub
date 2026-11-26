@@ -973,20 +973,27 @@ procio waits 2 s for the drain and then logs an abandoned holder): between the
 heartbeat's `sleep ... &` fork and the `sleep_pid=$!` that records it, and
 between the wrapper's fork of the heartbeat subshell and the `heartbeat_pid=$!`
 that records it. The first one is closed from inside the subshell, and what
-closed it had to be corrected: `${!:-}` in the trap names the sleep the loop
-forked, but a subshell INHERITS `$!` from its parent, and the pid the wrapper
-had just recorded was the `remote-gate.py` child (`remote_gate_pid`). A TERM in
-that window would therefore have signalled the run the trap exists to protect,
-and the wrapper's own forward would have been a no-op. The subshell now consumes
-the inherited `$!` before it installs the trap, by forking and reaping a
-placeholder child (`{ : & wait "$!"; }`), so `${!:-}` can only name a pid this
-loop forked; after a reaped `wait` it names that freed pid until the next fork,
-which is a no-op unless the kernel has reused it. The second race is closed by
-the wrapper: it records `heartbeat_pid` while the two signals are deferred
+closed it had to be corrected twice. The trap first named `${!:-}`, but a
+subshell INHERITS `$!` from its parent, and the pid the wrapper had just recorded
+was the `remote-gate.py` child (`remote_gate_pid`), so a TERM in the very first
+window would have signalled the run the trap exists to protect. Consuming the
+inherited pid with a placeholder child closed that window, and still left `${!:-}`
+naming the sleep a finished iteration had already reaped: a freed number the
+kernel may by then have handed to an unrelated process. The trap now takes its
+targets from the subshell's own job table (`jobs -p`), never from `$!`. That table
+is empty before the loop's first fork, names the sleep while it is a live job
+(including the window before `sleep_pid=$!` records it), and is empty again once
+`wait` has reaped it, so the trap can signal a job this loop still owns or nothing
+at all -- and, when the loop is waiting on its sleep, exactly that sleep, which a
+test proves by watching it go. The second race is closed by the wrapper: it records
+`heartbeat_pid` while the two signals are deferred
 through a `heartbeat_starting` flag the handler already uses for the launch
 window, so no signal is dropped either. A test that cancels while the remote
 `cancel` call is held open pins that no beat survives the cancel: with the
-heartbeat stopped, the wrapper prints nothing at all during that hold.
+heartbeat stopped, the wrapper prints nothing at all during that hold. A second
+test pins the pre-first-fork window by holding the heartbeat inside its own
+trap builtin, and a third pins the opposite direction: the trap still kills the
+live sleep the loop is waiting on, so the pipe is not held for an interval.
 
 A wrapper killed by `SIGKILL` cannot stop that heartbeat, so the loop's own
 `kill -0 "$parent_pid"` guard is the fallback: it ends the loop within one
