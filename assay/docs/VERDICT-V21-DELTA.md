@@ -1,6 +1,6 @@
 # Verdict v21: the single schema cut (delta list)
 
-P-assay-09 (B567 part 1), 2026-11-24. Binding: D-A3, D-A8, D-A12 (`.controller-state/PROGRAM-2026-11-24/PLAN-assay.md` §2). This list is **closed**: P-assay-17 implements exactly this, and no other package touches the verdict schema, `ReasonCode` or the closed vocabularies. Code references are to main `ec549bbc6`, or to the WP2 branch `assay-20261118_212147-wp2-locus-record` at `4f722514a` (marked "WP2"). Labels: M measured, C computed, E estimate.
+P-assay-09 (B567 part 1), 2026-11-24. Binding: D-A3, D-A8, D-A12 (`.controller-state/PROGRAM-2026-11-24/PLAN-assay.md` §2). **Amended once, by A2 (§8, 2026-11-26); where §8 and §1-§7 disagree, §8 wins.** This list is **closed**: P-assay-17 implements exactly this, and no other package touches the verdict schema, `ReasonCode` or the closed vocabularies. Code references are to main `ec549bbc6`, or to the WP2 branch `assay-20261118_212147-wp2-locus-record` at `4f722514a` (marked "WP2"). Labels: M measured, C computed, E estimate.
 
 ## 1. Every v21 change
 
@@ -151,3 +151,119 @@ A native producer re-judges started timeouts alone, once, at the end, and only o
 - B556's message formatter (P-assay-01, no vocabulary) and option (c).
 - B560, B565 `capabilities --json` (it reports the schema version and adds no verdict field), B568.
 - B055 (Go column-granular claims).
+- B550 (lcov producer vocabulary): `judgment.r1.coverage_producer` is a bare string in the schema and its closure lives in `vocabulary.COVERAGE_PRODUCERS_BY_FORMAT` (schema text of `judgment_r1.coverage_producer`; backlog B245 "B550 is independent (a vocabulary entry, no schema change)"). It can land in any minor.
+
+## 8. Amendment A2 (2026-11-26)
+
+The one amendment (plan `.controller-state/assay/PLAN-spec-followups.md` §1 rule 1, package A2). It covers plan items 6, 7, 8 (fields), 9, 10, 12, 14-16, the P4 evidence decisions and the A1 controller-read notes. Binding inputs that are not reopened: rule 2 (wall time may stop a run, never decide a candidate or a rung), item 7 (a load-independent timeout is `killed` with `timeout_kind`), P4 ships its wall-derived CPU bound (`-v1`) and A4 switches to `cpu-since-completed-event-v2` with v21, the resource source defaults to `none` and no bound reads it, the cgprofile `profile` block stays unchanged, R4 stays reserved, no `--rejudge-carried`, no legacy or compatibility paths. Citations are to main `23514fa06` unless marked **[P4]** (branch `assay-20261125_230232-p4-stall` @ `325bdf3ca`, all listed in §8.9). **[U]** = not verified.
+
+### 8.1 The three explicit statements
+
+- **(a) `LANE_INVENTORY_SCHEMA_VERSION`: no bump** (stays 1, `cli.py:5095`). 13.0.0 removes two keys from `assay lanes --json`: the top-level `capabilities` flag list (`cli.py:5109-5113`, plan item 10) and the per-lane `enforcement` (`cli.py:5246`, item 14, §8.6). Nothing reads either key. run-gate reads only `inventory_schema` and lane entries (`run_gate.py:9840`), and it reads capabilities from `assay capabilities --json` (RG-297, merged). A repo-wide grep finds no reader of the flag names outside `cli.py`, and no non-assay reader of `enforcement`. Every key that stays keeps its meaning. A bump would make every run-gate inventory read refuse (`run_gate.py:9841-9844`) until run-gate's next release, and it would protect no reader. The P-17 SPEC update turns CON-040's rule into: "a changed meaning, or a dropped key that a consumer reads, bumps `inventory_schema`".
+- **(b) The wall-stop non-judgement result is outcome `BUDGET_EXCEEDED` with reason `LANE_TIMEOUT`, exit 4.** There is no `WALL_STOP` code and no `INCONCLUSIVE` mapping. In v21, `LANE_TIMEOUT` means exactly one thing: wall time stopped the run or a candidate before a judgement. That covers the lane budget (TIM-110), the campaign deadline (TIM-120), the git/snapshot deadline (TIM-160), a binding per-candidate budget, and an ingested tool's own timeout. Operator cancel and not-selected get their own reasons (§8.2). Why not `INCONCLUSIVE`:
+  - run-gate maps INCONCLUSIVE to FAIL (`run_gate.py:367`). Only `BUDGET_EXCEEDED` is recorded as "may resume its assay state" (`run_gate.py:5934-5936`), and a wall-stopped run must stay resumable.
+  - INCONCLUSIVE means "nothing proven", which is final.
+
+  Why not a new code:
+  - The store validates the reason in every stored `terminal_result` and raises on an unknown one ("present malformed data is corruption", `mutation_store.py:1708-1711`, `:1733-1739`). A rename would need a legacy branch there.
+  - The in-repo readers already key on `LANE_TIMEOUT` (`assay_analysis/campaign.py:2051`, `gate/python/qualify_sql.py:958`, `tools/b110_*`, `tools/qualify_rust_r2_real.py:131`).
+
+  **What readers key on:**
+  - run-gate keys on the outcome only: `BUDGET_EXCEEDED` maps to `BUDGET_EXCEEDED` (`run_gate.py:365`) and is recorded as resumable (`:5934`). Its only reason-code key is `CGROUP_OBSERVATION_UNAVAILABLE` (`:369`, `:407`). So no run-gate code change is needed. The texts at `:17060` and `:17082` stay true.
+  - cmru: `cmru/src` reads no assay outcome or reason (grep). Nothing to change.
+  - Resume and rejudge rules are in §8.4.
+- **(c) No v21 field needs P-13.** P-13 *produces* four values: `kind: replayed`, `execution.mode: witness-isolated`, `judgment.r2.node_baselines` entries and non-zero `replay_fallbacks`. It produces no field. The v21 schema and verify carry all four, and P-17 tests the verify rules (§4 rules 2, 3, 5) on hand-built fixtures. Until P-13 ships, a producer emits none of them: no carried-kill replay exists, a carried kill runs the full judge and projects as `fresh`, `node_baselines` is `[]` and every `replay_fallbacks` count is 0. D-A3 needs only `imported`, which exists today. **P-17 drops its dependency on P-13, and P-13 ships in a 13.x minor.** P-14, P-15 and P-18 keep theirs.
+
+### 8.2 Reasons and buckets (items 6, 7)
+
+| Reason (outcome, exit) | Meaning in v21 | Change |
+|---|---|---|
+| `LANE_TIMEOUT` (BUDGET_EXCEEDED, 4) | wall stop, (b) above | narrowed: cancel and selection move out |
+| **`RUN_CANCELLED`** (BUDGET_EXCEEDED, 4) | SIGTERM/SIGINT/SIGHUP during `run` (LIV-090; `cli.py:801`, `runner.py:274`). The caller sent it, and assay cannot tell an operator from a wrapper budget. | **new** |
+| `SELECTION_PARTIAL` (BUDGET_EXCEEDED, 4) | every not-started entry is not-selected (B532, §1) | as listed |
+| `CANDIDATE_HUNG` (BUDGET_EXCEEDED, 4) | candidate no-progress that is not a detection: the idle and session-finish rules (wall-based, residual answer 2), and the CPU bounds while their policy is `-v1` | narrowed under `-v2` |
+
+- **No never-started bucket.** VER-080's buckets stay closed. A never-started candidate is a `budget_exceeded` entry with `leader_status: not-started` (`ProcessTreeEvidence.not_started()`, `mutation.py:1764`, `:4876`) plus `stop_cause` (F1). A new bucket would widen VER-080, `--rejudge-outcome`, `assay_analysis` and run-gate's progress reader (`run_gate.py:6018`), and it would add no fact that `stop_cause` does not already carry.
+- **Timeout kills (item 7).** Under policy `cpu-since-completed-event-v2`, a candidate stopped by the CPU-without-progress bound or the per-test CPU bound goes to `killed`, with `timeout_kind` and `timeout_evidence` (F3). It counts toward `killed/(killed+survived)`, and no new reason is added. Under `-v1` (P4 as shipped, [P4] `liveness.py:838`), the same stops stay `hung`. A `-v1` bound is CPU seconds sized from baseline *wall* seconds ([P4] `liveness.py:884-900`), so it is not load-independent, and rule 2 forbids it from producing a detection. This is also what lets P-17 ship before A4 (§8.8). Mapping: store decision `cpu-without-progress` gives `timeout_kind: cpu-without-progress`, `per-test-cpu-bound` gives `per-test-bound`, and either gives `endless-loop` only when `timeout_evidence.stack` is non-null (residual answer 3). The rule that turns a stack into `endless-loop` belongs to the stack-evidence item ([P4] backlog).
+- **B559 precedence (§5.1) with these names.** Step 3 (any not-started `budget_exceeded`) gives `RUN_CANCELLED` if one entry's `stop_cause` is `cancelled`, else `LANE_TIMEOUT` if one is `wall-stop`, else `SELECTION_PARTIAL`. Step 6 (started `budget_exceeded`) gives `RUN_CANCELLED` if one is `cancelled`, else `LANE_TIMEOUT`. A cancelled R0 is `BUDGET_EXCEEDED/RUN_CANCELLED`.
+
+### 8.3 Every field delta
+
+Common rules:
+- No new verdict field enters `judge_sha256`, `resource_sha256` or the tree projection; they are outputs. JID-020 already moves `judge_sha256` with every assay version.
+- "Native only" means the field is forbidden under `producer: ingested`, like `provenance` (§1).
+- A carried, imported or resumed outcome projects the fields that its executing judge stored (§2.2 rule), with no re-derivation.
+
+| id | Path | Type, values, null | Writer / reader | Verify |
+|---|---|---|---|---|
+| F1 | `mutant_outcome.stop_cause`: required on every native `budget_exceeded` entry and forbidden elsewhere. Mirrored in the store record | enum `wall-stop`, `candidate-wall-budget`, `not-selected`, `cancelled`; never null | P-17 (`_append_unselected` `mutation.py:1749`, the deadline remainder `:4876`, the budget path `:3754` [P4], the signal path). Readers: verify, `assay_analysis` (replaces its `never_started` inference, `campaign.py:2046-2052`) | `not-selected` requires `leader_status: not-started`. `candidate-wall-budget` requires `timeout-killed` and `progress_bound.budget_per_candidate_role = binding` (or no `liveness`). `unselected_total` equals the `not-selected` count; this replaces the ≤ rule of §4 rule 4. The claim reason follows §8.2 |
+| F2 | `mutant_outcome.hang_decision`: required on every native `hung` entry | enum `idle-hang`, `session-finish-hang`, `cpu-without-progress`, `per-test-cpu-bound` (the store's decisions, `mutation_store.py:1403` and [P4] `liveness.py:851-860`) | P-17 copies it from the stored evidence. Reader: verify | the two CPU values are legal only when `progress_bound.policy` is `-v1` |
+| F3 | `mutant_outcome.timeout_kind` + `timeout_evidence`: both present or both absent; only on native `killed` | `timeout_kind` enum `endless-loop`, `cpu-without-progress`, `per-test-bound`. `timeout_evidence` = `{required_cpu_s: number>0, measured_cpu_s: number, test_nodeid: str\|null, stack: null\|{source: str, frames: [str] (1..64)}}` | P-17 schema and verify; filled from A4 on (needs `-v2`). Readers: verify, R2 score, `assay_analysis` | requires `progress_bound.policy = -v2` and a non-null `bound_policy`; `measured ≥ required`; `per-test-bound` requires `test_nodeid`; `endless-loop` requires a non-null `stack`; `first_failing_test` is null; `kill_signal` absent; `leader_status: timeout-killed` |
+| F4 | `judgment.r2.timeout_kills`: required under native | `{endless-loop, cpu-without-progress, per-test-bound}`, integers ≥ 0 | P-17 (all 0 until A4). Readers: verify, CHANGES/report | re-derived from F3 |
+| F5 | `judgment.r2.liveness.progress_bound`: required inside `liveness` | `{armed: bool, reason: str, budget_per_candidate_role: advisory\|binding, policy: "cpu-since-completed-event-v1"\|"-v2"\|null, cpu_without_progress_s: number\|null, per_test_baseline_tests: int\|null, bound_policy: object\|null}`. Null fields when `armed` is false | P-17 projects what P4 already puts on the `plan` record ([P4] `mutation.py` `progress_bound`), plus `policy`; `bound_policy` from A4. Readers: verify, consumers judging `budget_exceeded` | `armed` false requires `role = binding` and every number null; `policy` non-null iff `armed` |
+| F6 | `bound_policy` (inside F5; mirrored in the store record of every timeout kill) | `{policy, k, floor_s, per_test_k, per_test_floor_s, m_x, basis: same-host\|ref-gb7, host_key: str\|null, baseline_cpu_s, baseline_ref_cpu_s: number\|null, ref_factor: number\|null}` (A1 §6.4, plus the stored B_ref, A1 note 2) | A4. Reader: resume (§8.4), verify | `basis = ref-gb7` requires non-null `ref_factor` and `baseline_ref_cpu_s = baseline_cpu_s × ref_factor` (abs 1e-6); `same-host` allows `ref_factor` null |
+| F7 | `judgment.r2.cpu_time`: optional, native only (A1 §7 path fixed here) | A1 §7 run-level fields as listed there; values nullable with their `*_reason`; `source ∈ {none, hostobs}` | A4 (source fields: A9). Readers: run-gate scheduling (later), humans. Hint only: no verify re-derivation from candidates | if present, all keys present; ref fields null iff `benchmark` null; `ref_factor = single_core/baseline_score`; `avg_cores_basis = raw-wall` iff `frozen_s` null; `limited_by` recomputed from A1 §7 thresholds |
+| F8 | `judgment.r0`: required when R0 is declared | `{decided_by: exit-status\|result-report, returncode: int\|null}`; null when the command did not complete (timeout, exec failure, cancel) | P-17 (item 12, RIG-110). Readers: verify, humans | `exit-status`: PASS iff `returncode = 0`; `COMMAND_FAILED` requires a non-zero returncode. `result-report` is legal only when the lane declares `result_report` |
+| F9 | Removed: verdict top-level `enforcement` (`verdict.py:6909`, schema `$defs.enforcement`), the lane key `enforcement` (`config.py:1782`; it becomes an unknown key), inventory `enforcement` and `capabilities` | — | P-17 | VER-060's group loses `enforcement`; verify refuses the key |
+
+Store-only (not verdict, listed because the resume rules depend on them):
+- S1: `stop_cause` (F1) and `bound_policy` (F6) are written on the record. Absent fields mean a pre-13 record; it belongs to another judge and is never same-judge reused (§8.5).
+- S2: the store validator accepts policy `cpu-since-completed-event-v2` with P4's field set ([P4] `mutation_store.py` `_valid_cpu_hang_evidence`), with `per_test_baseline_cpu_s` replacing `per_test_baseline_s` under `-v2`.
+- S3: per-candidate `cpu_s`, `cpu_quality` and `frozen_s` (A1 §7) go to the store record and the progress `candidate` event only, **not the verdict**. Reason: the schema rule that per-candidate resource numbers are telemetry and never enter the verdict (`$defs.judgment_r2.profile` description). Their scheduling readers read progress (`run_gate.py:6012-6019`). The numbers that justify a kill are in F3.
+
+### 8.4 Resume, carry and rejudge
+
+- **Wall stop and cancel.** A record whose `stop_cause` is `wall-stop`, `cancelled` or `not-selected` never got its own bound. It is not reused: resume re-executes it whatever its `resource_sha256`. Whether such records are persisted today is [U]; P-17 checks this and pins it with a test. A `candidate-wall-budget` record keeps JID-050: it re-executes when `resource_sha256` differs (`mutation_store.py:599`, `:4267`). run-gate resumes any `BUDGET_EXCEEDED` lane as today, whatever its reason.
+- **Timeout kill (D8, A1 note 2).** A stored timeout kill is reused (`resumed`), merged, or imported by `--carry-over` only when these fields of its `bound_policy` equal the current run's: `policy`, `k`, `floor_s`, `per_test_k`, `per_test_floor_s`, `m_x`, `basis`. In addition, `same-host` needs an equal, non-null `host_key`, and `ref-gb7` needs both records at major 7. Otherwise it re-executes. Stored but never compared: `baseline_cpu_s`, `baseline_ref_cpu_s`, `ref_factor`, `required_cpu_s`. They are re-measured every run, and under one `judge_sha256` (same tree and suite) they differ only by noise, which `k` absorbs (by design). Carry-forward never carries a kill (§2.1), so it is unaffected. A record without `bound_policy` re-executes.
+- **Rejudge.** `--rejudge-outcome killed` re-runs timeout kills with the other kills, and `--rejudge-outcome budget_exceeded` re-runs every stop cause. There is no new flag and no `--rejudge-carried`.
+
+### 8.5 Item 9: `budget_per_candidate`
+
+P-17 adds `judge.mutation.budget_per_candidate` to JID-030's removed keys (`_judge_projection.py:20`, `:65`), so it leaves the tree digest and enters `resource_sha256` (JID-050). The re-judge rule where the value still binds (`role = binding`) then follows from JID-050 with no new code: a changed value moves `resource_sha256`, so `budget_exceeded`, `hung` and `crashed` records re-execute, while `killed`, `survived` and `equivalent` records are reused (each finished inside its old budget, so each stays evidence). Where it is advisory, it decides nothing. This changes the identity, so it waits for B562 (plan rule 3), and the 13.0.0 CHANGES says so. Its removal is A8.
+
+### 8.6 Items 10, 12, 14, 15, 16
+
+- 10: the flag list is removed in 13.0.0 (RG-297 merged, no reader), with no bump (a).
+- 12: F8.
+- 14: **drop** `enforcement`. Its only readers are assay's own writer, verifier and inventory (`config.py:1442`, `:1782`, `runner.py:3314`, `verdict.py:5667`, `:6909`, `verify.py:3360`, `cli.py:5074`, `:5246`). run-gate, cmru, `assay_analysis`, tools and fleetd read none (grep). It is declared 43 times in 26 `assay.toml` files, all as `"gate"`. P-17 deletes those lines in the same series (the tree digest moves anyway, §8.5).
+- 15: R4 stays reserved, unchanged.
+- 16: no field. The count is already in the verdict: `coverage.executable`, `considered` and `branches_total` (schema `$defs.coverage`) show a zero denominator next to `pct: 100`. Keep and document.
+
+### 8.7 A1 controller-read notes
+
+1. D1 is restated as: "no judgement (killed, survived, a CPU bound, a rung status other than through the `hung` count) reads the resource source". Freeze data may only (i) take frozen time out of the wall-based idle and session-finish clocks and (ii) turn a `hung` candidate that overlapped a freeze into a re-run. Both act only on non-judgement results.
+2. §8.4 names the compared fields, and F6 stores B_ref.
+3. P4 ships as is (binding), and `-v2` comes with v21 via A4.
+4. (c) closes it.
+
+### 8.8 Shipping without A4 or A9
+
+If A4 or A9 is late, P-17 ships with these values:
+- F7 is absent (it is optional).
+- F5 is emitted with `policy: -v1` and `bound_policy: null`.
+- F3 never occurs (verify requires `-v2`), and F4 is all zeros.
+- F2 may carry the CPU decisions.
+
+A4's minor then fills F6 and F7 and switches to `-v2`. That makes CPU stops `killed`, a change in meaning inside v21 that the minor's CHANGES states. No schema edit is needed, because every value it emits is already legal in the v21 schema. A9 only fills `cpu_time.source*`.
+
+**13.0.0 CHANGES (P-17), consumer notes:**
+- `RUN_CANCELLED` is a new reason.
+- `LANE_TIMEOUT` no longer covers cancel or selection.
+- `enforcement` and the inventory flag list are removed: delete `enforcement` from lane files.
+- From `-v2` on, CPU stops count as kills, which raises R2 kill counts.
+
+### 8.9 Recheck at P4 merge
+
+Every [P4] citation above is to `325bdf3ca`. At P4's merge, recheck:
+- the policy, source and decision names and their values (`liveness.py:838-860`);
+- `derived_bound_from_baseline` and `per_test_cpu_bound_from_baseline` (`:862-900`);
+- the `progress_bound` keys on the `plan` record and the arming conditions (`mutation.py` run_mutation, `_execute_mutation_jobs` `:3754`, `:4879`);
+- `_valid_cpu_hang_evidence`'s field set (S2);
+- P4's statement that `hung` is never `killed` and that it makes no verdict schema change;
+- the backlog id of the stack-evidence item (F3 `stack`);
+- A1's `@14f81bb97` line numbers.
+
+### 8.10 Open questions (default in force unless the operator overrides)
+
+- **Q-A2-1 (operator).** Should item 14 drop `enforcement`? Default: **drop** (no reader). If kept, only F9's `enforcement` part goes, and the 26 files stay untouched.
+- **Q-A2-2 (core).** Default: run-gate needs no change for (b). Later and optional: show `RUN_CANCELLED` apart from wall stops in its record text.
