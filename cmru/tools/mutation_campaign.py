@@ -1517,13 +1517,13 @@ def _run_campaign(
             output_path=args.merge_output,
         )
         if merged["status"] == "failed":
-            survivors = [
+            non_killed = [
                 result for result in merged["results"]
                 if result["outcome"] != "killed"
             ]
             print(
                 "mutation: merged complete shards; whole-campaign status=failed; "
-                f"survivors={len(survivors)}; evidence={args.merge_output}",
+                f"non-killed={len(non_killed)}; evidence={args.merge_output}",
                 flush=True,
             )
             return 1
