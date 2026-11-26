@@ -100,6 +100,8 @@ are never folded into numeric zero.
 ## Part (b): Debian VM/systemd outline
 
 Follow these steps in order, for a fresh install and for an upgrade.
+On an upgrade, complete steps 1–3 in one sitting, through the stop and restart
+in step 3.
 
 The three socket units and the `levels` list in `hostobsd.toml` are one set.
 Install all of them. If a configured level has no socket, or a passed socket has
@@ -112,7 +114,28 @@ start limit marks the units failed (documented systemd behaviour, not measured
 here). After such a failure, correct the cause, run `systemctl reset-failed` on
 the failed units and repeat step 3.
 
-**1. Install the files.** `/usr/local/bin/hostobs-probe`,
+**1. Create the service user and the three access groups.** This is part of
+setup, not a committed sysusers file:
+
+- service user `hostobs`, primary group `hostobs` (no login shell, no home
+  needed by this slice);
+- access groups `hostobs-observe`, `hostobs-operator` and `hostobs-observer`;
+- all four group IDs are distinct and neither 0 nor the host's Docker GID.
+  Prefer an allocator such as `systemd-sysusers` that assigns system IDs; if
+  `groupadd`/`useradd` are used, verify the resulting numbers with `getent`.
+
+Add only the intended human or service identities to the appropriate groups:
+
+- `hostobs-observe` grants reads without command-line details;
+- `hostobs-operator` grants reads with command-line details;
+- `hostobs-observer` is reserved for annotation writes attributed to the
+  caller's uid. Annotation is not served yet; today this socket answers only
+  `hello`.
+
+The probe runs as `hostobs` and never binds the sockets itself: systemd passes
+the three root-owned listening fds by their `FileDescriptorName`.
+
+**2. Install the files.** `/usr/local/bin/hostobs-probe`,
 `/etc/hostobs/hostobsd.toml`, all four units from
 [`deploy/systemd/`](../deploy/systemd/) (three socket units and the service
 unit) in `/etc/systemd/system/`, and
@@ -133,21 +156,6 @@ The directory ownership comes from the tmpfiles file, not systemd's
 uses `root:root` and ignores the `SocketGroup=` for that directory. All three
 socket units order after `systemd-tmpfiles-setup.service` so boot-time creation
 happens first.
-
-**2. Create the service user and the three access groups.** This is part of
-setup, not a committed sysusers file:
-
-- service user `hostobs`, primary group `hostobs` (no login shell, no home
-  needed by this slice);
-- access groups `hostobs-observe`, `hostobs-operator` and `hostobs-observer`;
-- all four group IDs are distinct and neither 0 nor the host's Docker GID.
-  Prefer an allocator such as `systemd-sysusers` that assigns system IDs; if
-  `groupadd`/`useradd` are used, verify the resulting numbers with `getent`.
-
-Add only the intended human or service identities to the three access groups;
-group membership is the access-control boundary. The probe runs as `hostobs` and
-never binds the sockets itself: systemd passes the three root-owned listening
-fds by their `FileDescriptorName`.
 
 **3. Create the directories, then restart the sockets and the probe.** All three
 groups must exist first: `systemd-tmpfiles` fails on a line whose group is

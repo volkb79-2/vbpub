@@ -8,7 +8,8 @@ Sockets=hostobs-observe.socket hostobs-operator.socket hostobs-observer.socket
 User=hostobs
 Group=hostobs
 Restart=on-failure
-# A configuration or socket-activation refusal is permanent until an operator acts.
+# `Restart=` does not retry a start-up refusal; socket activation can start it
+# again until the start limit.
 RestartPreventExitStatus=2
 
 # Plan v4 §A.1: NoNewPrivileges=yes.
