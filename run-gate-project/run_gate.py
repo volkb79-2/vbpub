@@ -231,6 +231,7 @@ JOB_ID_MAX_LENGTH = 128
 JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 _ACTIVE_JOB_EVENT_WRITER = None
+_NESTED_JOB_EVENT_WRITER = None
 
 SCRATCH_RUN_ID_RE = re.compile(r"[1-9][0-9]*-[0-9]{16,}-[0-9a-f]{16}")
 SCRATCH_LEGACY_PREFIXES = ("run-gate-gitcfg-", "run-gate-test-")
@@ -649,15 +650,19 @@ class JobEventWriter:
 
 
 @contextlib.contextmanager
-def suppress_job_events():
-    """Keep nested lane invocations independent of the caller's event file."""
-    global _ACTIVE_JOB_EVENT_WRITER
+def suppress_job_events(*, forward_starts: bool = False):
+    """Hide flags and file from a child while its parent receives start facts."""
+    global _ACTIVE_JOB_EVENT_WRITER, _NESTED_JOB_EVENT_WRITER
     previous = _ACTIVE_JOB_EVENT_WRITER
+    previous_nested = _NESTED_JOB_EVENT_WRITER
     _ACTIVE_JOB_EVENT_WRITER = None
+    _NESTED_JOB_EVENT_WRITER = (
+        previous or previous_nested if forward_starts else None)
     try:
         yield
     finally:
         _ACTIVE_JOB_EVENT_WRITER = previous
+        _NESTED_JOB_EVENT_WRITER = previous_nested
 
 
 def strip_job_event_options(argv: list[str]) -> list[str]:
@@ -774,7 +779,7 @@ def emit_lane_started(container_id: str | None, image_id: str | None,
                       adopted: bool, *, reason: str | None = None,
                       lane: str | None = None) -> None:
     """Write the lane's container identity before its output is relayed."""
-    writer = _ACTIVE_JOB_EVENT_WRITER
+    writer = _ACTIVE_JOB_EVENT_WRITER or _NESTED_JOB_EVENT_WRITER
     if writer is None:
         return
     fields = {"container_id": container_id, "image_id": image_id,
@@ -10075,6 +10080,14 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         if name is None:
             name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                          worktree, env_source)
+        if _ACTIVE_JOB_EVENT_WRITER is not None:
+            if not inspect_mounts:
+                fail("cannot verify the host mounts for --event-file before "
+                     "an exec-environment probe")
+            validate_job_event_destination(
+                str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree,
+                repo=repo,
+                mount_sources=inspect_container_mount_sources(docker, name))
         forwarded = resource_forwarded_env(
             resource_settings or {}, "exec",
             exec_mounts=((lambda: container_mount_destinations(docker, name))
@@ -10096,6 +10109,10 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     for key, value in forwarded.items():
         argv += ["-e", f"{key}={value}"]
     argv += [env["image"], "bash", "-c", script]
+    if _ACTIVE_JOB_EVENT_WRITER is not None:
+        validate_job_event_destination(
+            str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
+            mount_sources=mount_flag_sources(argv))
     return argv
 
 
@@ -13852,7 +13869,7 @@ def run_workers_step(args: argparse.Namespace, base_argv: list[str],
                      count: int, dispatch: Callable[..., "LaneResult"],
                      *, scaling: bool) -> dict:
     """One measured step: dispatch at N, record it, read back its outcomes."""
-    with suppress_job_events():
+    with suppress_job_events(forward_starts=True):
         result = dispatch(strip_job_event_options(base_argv),
                           _workers_options={
                               "workers": count, "junit": True,
@@ -18411,11 +18428,12 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
              f"that run to this commit, and will not start a second "
              f"container for the same lane. {remedy}")
     if _ACTIVE_JOB_EVENT_WRITER is not None:
-        mount_sources = inspect_container_mount_sources(docker, name)
+        container_id = state.get("id") if isinstance(state, dict) else None
+        mount_sources = inspect_container_mount_sources(
+            docker, container_id or name)
         validate_job_event_destination(
             str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
             mount_sources=mount_sources)
-        container_id = state.get("id") if isinstance(state, dict) else None
         if container_id and recorded_id == container_id:
             image_id, image_error = inspect_container_image_id(
                 docker, container_id)
@@ -19233,25 +19251,31 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
     if _ACTIVE_JOB_EVENT_WRITER is not None and not dry_run:
-        mount_sources = inspect_container_mount_sources(docker, name)
-        validate_job_event_destination(
-            str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
-            mount_sources=mount_sources)
         inspected = container_state(docker, name)
         container_id = inspected.get("id") if inspected else None
         if not container_id:
             container_id = inspect_container_id_best_effort(docker, name)
+        mount_sources = inspect_container_mount_sources(
+            docker, container_id or name)
+        validate_job_event_destination(
+            str(_ACTIVE_JOB_EVENT_WRITER.path), worktree=worktree, repo=repo,
+            mount_sources=mount_sources)
         if container_id:
-            image_id, image_error = inspect_container_image_id(docker, name)
+            image_id, image_error = inspect_container_image_id(
+                docker, container_id)
             reason = (f"image-id-unavailable: {image_error}"
                       if image_id is None else None)
             emit_lane_started(container_id, image_id, True,
                               reason=reason, lane=lane_name)
+            exec_target = container_id
         else:
             emit_lane_started(
                 None, None, True,
                 reason="exec-runner-inspect-returned-no-container-id",
                 lane=lane_name)
+            exec_target = name
+    else:
+        exec_target = name
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
                               state_root=env.get("state_root"),
@@ -19272,7 +19296,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     resource_env = {**resource_forwarded_env(
                         resource_settings or {}, "exec",
                         exec_mounts=lambda: container_mount_destinations(
-                            docker, name),
+                            docker, exec_target),
                         not_forwarded=skipped_resource_env),
                     **lane_workers_env(lane)}
     argv += env_flags_by_name(resource_env, docker_env_values)
@@ -19285,11 +19309,11 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # `docker exec` disconnecting does not reliably stop the in-container
         # child, so the bound must be enforced inside the persistent runner.
         # GNU coreutils timeout is present in supported runner images.
-        argv += [name, "timeout", "--preserve-status", "--signal=TERM",
+        argv += [exec_target, "timeout", "--preserve-status", "--signal=TERM",
                  f"--kill-after={LANE_KILL_GRACE_SECONDS}s",
                  f"{budget_seconds(lane['budget'])}s", "bash", "-c", inner]
     else:
-        argv += [name, "bash", "-c", inner]
+        argv += [exec_target, "bash", "-c", inner]
     exec_command_index = len(argv) - (8 if lane.get("budget") else 3)
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
           f"container {name} ({name_src}) | "
@@ -20561,6 +20585,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    first — by name, disclosed — and runs anew. Refused",
         "                    by name on host and exec lanes, which start no",
         "                    container of run-gate's own",
+        "  --event-file ABSOLUTE_PATH --job-id ID  write host-owned lane events",
+        "                    as one JSON object per line; flags are paired, the",
+        "                    file stays outside the checkout and lane mounts,",
+        "                    and --dry-run is refused with these flags",
         "  --json            `history`/`footprint`/`status`: emit one JSON",
         "                    document (history has latest + bounded history +",
         "                    duration stats; footprint has the manifest shape;",
@@ -21420,7 +21448,7 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                     member_argv.append("--fresh")
             if request_base and any(leaf in delegates for leaf in member_leaves):
                 member_argv += ["--base", request_base]
-            with suppress_job_events():
+            with suppress_job_events(forward_starts=True):
                 result = _dispatch(member_argv,
                                    _admission_ticket=ticket,
                                    _admission_managed=True)
@@ -22125,7 +22153,8 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail("--reuse-from, --rejudge and --rejudge-outcome apply to "
                      "one assay member, not a sequence")
             emit_lane_started(None, None, False,
-                              reason="composite-sequence-has-no-container")
+                              reason="composite-sequence-has-no-container",
+                              lane=args.lane)
             return _dispatch_sequence(
                 args.lane, lane, args, lanes, cfg, cfg_path, central,
                 central_path, cfg_sha256, central_cfg_sha256, project_dir,
@@ -22493,7 +22522,8 @@ def _dispatch(argv: list[str] | None = None, *,
                          # non-empty synthetic env and falls through to
                          # run_container_lane() below like any named env.
                 emit_lane_started(None, None, False,
-                                  reason="bare-host-lane-has-no-container")
+                                  reason="bare-host-lane-has-no-container",
+                                  lane=args.lane)
                 disclose_r2_jobs(args.lane, r2_jobs_selection)
                 budget_started_epoch, budget_started_monotonic = admit_now()
                 budget_deadline = (budget_started_monotonic
@@ -22651,7 +22681,7 @@ def _dispatch(argv: list[str] | None = None, *,
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:
             def recheck_without_parent_events():
-                with suppress_job_events():
+                with suppress_job_events(forward_starts=True):
                     return _dispatch(
                         strip_job_event_options(request_argv),
                         _admission_ticket=_admission_ticket,

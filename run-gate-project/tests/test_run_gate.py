@@ -43164,11 +43164,60 @@ class TestJobEventOptionsAndWriter:
         with pytest.raises(run_gate.GateError, match="protected checkout"):
             run_gate.validate_job_event_destination(
                 str(worktree / "events.jsonl"), worktree=worktree, repo=repo)
+        with pytest.raises(run_gate.GateError, match="protected checkout"):
+            run_gate.validate_job_event_destination(
+                str(repo / "repo-events.jsonl"), worktree=worktree, repo=repo)
         mount = tmp_path / "host-mount"
         mount.mkdir()
         with pytest.raises(run_gate.GateError, match="mounted by this lane"):
             run_gate.validate_job_event_destination(
                 str(mount / "events.jsonl"), mount_sources=[str(mount)])
+
+    def test_probe_mounts_are_checked_before_probe_start(self, tmp_path,
+                                                          monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        mount = tmp_path / "mounted"
+        mount.mkdir()
+        event_file = mount / "events.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-probe", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "extra_mount_flags",
+                            lambda: ["--volume", f"{mount}:/extra:ro"])
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "resource_forwarded_env",
+                            lambda *_args, **_kwargs: {})
+        try:
+            with pytest.raises(run_gate.GateError, match="mounted by this lane"):
+                run_gate.build_env_probe_argv(
+                    "docker", {"mode": "ephemeral", "image": "test"},
+                    "ci", repo, repo, "test", "slice", "true")
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+
+    def test_event_flags_refuse_dry_run_and_non_lane_verbs(self, tmp_path,
+                                                            monkeypatch, capsys):
+        event_file = tmp_path / "events.jsonl"
+        monkeypatch.setenv("RUN_GATE_EVENT_FILE", str(event_file))
+        monkeypatch.setenv("RUN_GATE_JOB_ID", "from-env")
+        assert run_gate.main([
+            "suite", "--dry-run", "--event-file", str(event_file),
+            "--job-id", "job-dry-run"]) == 2
+        assert not event_file.exists()
+        assert "cannot be used with --dry-run" in capsys.readouterr().err
+        assert run_gate.main([
+            "--list", "--event-file", str(event_file),
+            "--job-id", "job-list"]) == 2
+        assert not event_file.exists()
+        assert "apply to a lane run only" in capsys.readouterr().err
 
     def test_writer_appends_one_json_line_and_enforces_mode_0600(self,
                                                                  tmp_path):
@@ -43411,16 +43460,18 @@ class TestJobEventContainerEvents:
         previous = run_gate._ACTIVE_JOB_EVENT_WRITER
         run_gate._ACTIVE_JOB_EVENT_WRITER = writer
         real_write = os.write
+        event_writes = 0
 
         def fail_event_write(fd, payload):
+            nonlocal event_writes
             if fd == writer.fd:
-                raise OSError("simulated event storage failure")
+                event_writes += 1
+                if event_writes == 2:
+                    raise OSError("simulated event storage failure")
             return real_write(fd, payload)
 
         monkeypatch.setattr(run_gate.os, "write", fail_event_write)
         try:
-            writer.emit("lane-started", container_id=None, image_id=None,
-                        adopted=False, reason="bare-host")
             writer.emit("lane-started", container_id=None, image_id=None,
                         adopted=False, reason="bare-host")
             result_code = run_gate.finish(run_gate.LaneResult(
@@ -43432,7 +43483,8 @@ class TestJobEventContainerEvents:
         captured = capsys.readouterr()
         assert captured.err.count("run-gate: WARNING:") == 1
         assert "verdict FAIL; exit_code 7" in captured.out
-        assert event_file.read_text() == ""
+        [event] = [json.loads(line) for line in event_file.read_text().splitlines()]
+        assert event["event"] == "lane-started"
 
     def test_abrupt_exit_after_forged_line_has_no_lane_verdict_event(
             self, tmp_path):
@@ -43496,7 +43548,11 @@ class TestJobEventContainerEvents:
                    for argv in seen_argv[1:])
         events = [json.loads(line) for line in event_file.read_text().splitlines()]
         assert [(event["event"], event["lane"]) for event in events] == [
-            ("lane-started", "outer"), ("lane-verdict", "outer")]
+            ("lane-started", "outer"), ("lane-started", "member"),
+            ("lane-verdict", "outer")]
+        assert not any(event["lane"] == "member"
+                       and event["event"] == "lane-verdict"
+                       for event in events)
 
     def test_worker_dispatch_does_not_inherit_event_flags_or_file(
             self, tmp_path):
@@ -43511,6 +43567,8 @@ class TestJobEventContainerEvents:
             observed["argv"] = list(argv)
             observed["writer"] = run_gate._ACTIVE_JOB_EVENT_WRITER
             observed["options"] = kwargs["_workers_options"]
+            run_gate.emit_lane_started(
+                "c" * 64, "sha256:" + "d" * 64, False, lane="suite")
             return run_gate.LaneResult("PASS", 0, _lane_name="suite")
 
         try:
@@ -43525,4 +43583,6 @@ class TestJobEventContainerEvents:
         assert observed["writer"] is None
         assert observed["argv"] == ["suite", "--", "--event-file",
                                      "lane-argument"]
-        assert event_file.read_text() == ""
+        [event] = [json.loads(line) for line in event_file.read_text().splitlines()]
+        assert event["event"] == "lane-started"
+        assert event["container_id"] == "c" * 64
