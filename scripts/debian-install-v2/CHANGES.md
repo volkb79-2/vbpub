@@ -13,14 +13,28 @@ All notable changes to debian-install-v2 are recorded here.
   `resource_observer = "cgprofile"`, `jobs = 2`, `clean_tree = false`, `budget =
   "450m"` and `resources = {pids = 8192, memory = "2g", io_sync = "durable"}`
   (no `resources.shared`: Run-Gate refuses sharding on a lane that declares
-  one). The judge binds from the judged worktree's own `assay/` source (RG-285),
-  never a pinned zipapp.
+  one). `io_sync = "durable"` REPLACES tester-unified's inherited `relaxed` and
+  refuses every `--io-sync` override, `strict` included (`run_gate.py:1187-1194`
+  and `:2188-2193`; `SPEC.md:961-966`), so every shard, merge and resume of this
+  lane runs under ONE mode and the installer's own `os.fsync` writes stay real
+  (`debian_install_v2/state.py:26`, `actions.py:388`, `config.py:733`,
+  `failure_notify.py:232`). Assay's own store writes are unaffected: they use
+  the raw `SYS_fsync` of `assay/src/assay/_durable.py:96-107`, which the relaxed
+  preload cannot intercept. The judge binds from the judged worktree's own
+  `assay/` source (RG-285), never a pinned zipapp.
 - `assay.toml`'s `[lanes.r2]` keeps its scope, rigor, argv, isolation and judge
   policy, and its env is now DECLARED and checkout-RELATIVE
   (`PYTHONPATH = ".:../../libraries/cowtree/src"`, `env_passthrough = ["PATH"]`).
-  `PYTHONPATH` was in `env_passthrough` with an absolute `{worktree}` before, so
-  `judge_sha256` folded the checkout path in and a seeded resume in a new
-  checkout rejected all 186 records (assay B577, `resumed_total: 0`).
+  `PYTHONPATH` is no longer a PASSTHROUGH at all, so no passthrough value can
+  carry a checkout path into `judge_sha256` and a seeded resume in a new
+  checkout keeps its records. That is a stronger statement than the earlier
+  one in this file (a checkout-relative passthrough value is stable too, but
+  only because of the value it happens to hold): the absolute `{worktree}`
+  value existed from `c2d7d6729` to `2ea1912ca` and produced the 14-record
+  rejection of 2026-11-24; `c17b2f5f9` made it relative the same evening and
+  the base commit `f57ae80e2` already carried that relative value, so the later
+  186-record rejection of 2026-11-25 happened WITH it and assay B577 records
+  its cause as NOT identified.
   cli-extended is deliberately NOT on that path: the tester-unified image installs
   the released wheel, so the lane tests against it (AC-25, as `ciu/assay.toml`
   does).
@@ -32,7 +46,9 @@ All notable changes to debian-install-v2 are recorded here.
   finish. 10m is twice that 293 s bound, under which all 194 candidates
   completed: a CEILING for a slow or contended mutant, not a target. It is part
   of the judge identity, so changing it rebinds every stored record.
-  `liveness = false`, as `libraries/iobench`'s `iobench-diff` lane declares.
+  `liveness = false`, as `libraries/iobench`'s `iobench-diff` lane declares: the
+  explicit 10m ceiling still ends a hung candidate, but without liveness it is
+  recorded exactly like a slow one and costs the full 600 s per attempt.
 - The shard artifacts are `.assay/verdict-r2.r2.shard<K>of3.json` and
   `.assay/progress-r2.r2.shard<K>of3.jsonl`; the declared `artifacts` list keeps
   the UNSHARDED spelling (`.assay/verdict-r2.json`, `.assay/progress-r2.jsonl`)
@@ -55,7 +71,10 @@ All notable changes to debian-install-v2 are recorded here.
   174 to 224 min at 2 jobs. The `LANE_TIMEOUT` runs of 2026-11-25 never reached
   the lane bound (`814c5129` ended after 166 min under a 310m bound): their
   candidates exceeded the derived per-candidate bound, which follows the
-  baseline measured at start (DIV2-BL-22).
+  baseline measured at start (DIV2-BL-22). Both figures were measured on the
+  preceding command lane, which declared no `io_sync` and therefore ran under
+  tester-unified's RELAXED mode -- they are history for the sizing, not
+  measurements of the native lane's `durable` mode.
 
 ### Added (WP-10 P2, `io_benchmark_profile`)
 - New config key `io_benchmark_profile` next to `run_io_benchmark`, accepted

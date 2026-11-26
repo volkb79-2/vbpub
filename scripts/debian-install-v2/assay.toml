@@ -32,9 +32,11 @@ argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests
 # DECLARED, checkout-RELATIVE paths, never an absolute `{worktree}`: Assay
 # folds the lane's own `env` table (names AND values) plus a SHA-256 fingerprint
 # of every PRESENT `env_passthrough` value into judge_sha256
-# (assay/src/assay/mutation.py:1514-1560). An absolute path in either would
-# make a seeded resume in a new checkout a judge mismatch and reuse nothing
-# (assay B577, run-gate RG-314).
+# (assay/src/assay/mutation.py:1594-1611). An absolute path in either makes a
+# seeded resume in a new checkout a judge mismatch and reuses nothing -- the
+# 14-record rejection of 2026-11-24, whose lane carried
+# `PYTHONPATH={worktree}/assay/src` (run-gate.toml branch c2d7d6729..2ea1912ca;
+# assay B577, run-gate RG-314).
 #
 # `.` is the project dir (what pytest adds anyway) and
 # `../../libraries/cowtree/src` is the repo path config's library: assay imports
@@ -45,13 +47,21 @@ argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests
 # (the same rule ciu/assay.toml:43-47 records).
 env = { PYTHONPATH = ".:../../libraries/cowtree/src", PYTHONDONTWRITEBYTECODE = "1" }
 # PATH only: every passthrough value that is PRESENT is folded into
-# judge_sha256 as a fingerprint, and PYTHONPATH moves from checkout to checkout.
-# That single line is the whole resume-across-checkouts fix.
+# judge_sha256 as a value fingerprint, so a passthrough whose value embeds a
+# checkout path makes every new checkout a new judge. PYTHONPATH is DECLARED
+# above instead and absent from this list, which is structural: no passthrough
+# value can carry a checkout path at all. The list it replaces,
+# `env_passthrough = ["PATH", "PYTHONPATH"]` made checkout-relative by
+# c17b2f5f9, was the weaker guarantee and it did NOT restore resume -- the
+# 186-record rejection of 2026-11-25 happened at a head that already carried
+# that relative value, and B577 records the cause as not identified.
 env_passthrough = ["PATH"]
 # Sized in run-gate.toml [lanes.r2] (450m, 5m above this per R-59). Headroom for
 # slow or loaded hosts, not a measured need: complete 194-candidate runs took
-# 174-224 min at 2 jobs (2026-11-24/25). A LANE_TIMEOUT verdict can no longer
-# come from the derived per-candidate bound (DIV2-BL-22): see
+# 174-224 min at 2 jobs (2026-11-24/25, on the preceding command lane under
+# tester-unified's RELAXED io_sync -- the sizing is history, not a measurement
+# of this lane's `durable` mode). A LANE_TIMEOUT verdict can no longer come from
+# the derived per-candidate bound (DIV2-BL-22): see
 # judge.mutation.budget_per_candidate below.
 budget = "430m"
 allow_argv_append = false
@@ -105,8 +115,14 @@ operators = [
 # (assay's CPU-time bound has not landed yet; when it does, this value may be
 # revisited, not silently re-derived.)
 budget_per_candidate = "10m"
-# Off, as libraries/iobench's `iobench-diff` lane declares: liveness watches each
-# candidate for a hung PROCESS TREE and the whole-target lane already covers
-# that class. Turned on only when a first campaign shows a candidate hanging;
-# see docs/R2-RUNBOOK.md.
+# Off, as libraries/iobench's `iobench-diff` lane declares. Liveness watches each
+# candidate's PROCESS TREE and ends a candidate that has gone idle (`hung`, a
+# bucket of its own: assay/src/assay/mutation_store.py:595-600 groups it with
+# `crashed`/`budget_exceeded` as resource-sensitive). With `liveness = false`
+# this is NOT unbounded -- the explicit 10m `budget_per_candidate` above still
+# kills a hung candidate -- but the two outcomes differ in what the operator
+# learns and what it costs: without liveness a hung candidate is recorded
+# exactly like a merely slow one and burns the full 600s ceiling, ten minutes
+# per attempt that a resumed run pays again. Turn it on when a campaign shows
+# one; see docs/R2-RUNBOOK.md.
 liveness = false

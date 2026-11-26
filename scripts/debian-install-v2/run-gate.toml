@@ -67,9 +67,21 @@ budget = "5m"
 # from the judged worktree's own assay/ source (RG-285: editable install of
 # that checkout, import identity verified) and never from a pinned zipapp, so
 # an in-repo consumer needs no `pip install -e assay` here
-# (assay/docs/INTERNAL-CONSUMERS.md; the older hand-written argv this replaced
-# carried an absolute {worktree} PYTHONPATH, which is what broke resume across
-# checkouts).
+# (assay/docs/INTERNAL-CONSUMERS.md).
+#
+# THE PYTHONPATH HISTORY, because two different defects are easy to conflate:
+# an absolute `{worktree}` PYTHONPATH existed from c2d7d6729 (2026-09-03) to
+# 2ea1912ca (2026-11-24) and is what rejected 14 seeded records on 2026-11-24
+# (B577; the digest folded a fresh throwaway-checkout path). c17b2f5f9 that
+# same evening made the value checkout-RELATIVE, and the base commit this
+# change starts from ALREADY carried that relative value together with
+# `env_passthrough = ["PATH", "PYTHONPATH"]`. The 186-record rejection
+# (2026-11-25, run rgw-r2-20261125T223500-r1002) therefore happened WITH the
+# relative value in place, and B577 records the cause as NOT identified.
+# What still changes here: PYTHONPATH leaves `env_passthrough` entirely and
+# becomes DECLARED, so no passthrough value can carry a checkout path at all
+# and the identity is stable by construction rather than by a value that
+# happens to be identical between checkouts.
 #
 # What run-gate itself supplies to the inner command (build_assay_inner):
 # `--resume --progress .assay/progress-r2.jsonl --state-dir
@@ -175,6 +187,26 @@ budget = "1h"
 # under, so this conversion changes the lane's shape, not its cap.
 # `candidate_ram` is absent on purpose: it is the estimate `jobs = "auto"`
 # reads (R-53), and an explicit count does not consult it.
+#
+# `io_sync = "durable"`, and the reason, because the inherited value is the
+# opposite (run-gate.root.toml sets `relaxed` for tester-unified after the W0
+# host A/B): `durable` REPLACES the environment's relaxed preload and refuses
+# EVERY `--io-sync` override, `strict` included (run_gate.py:1187-1194,
+# :2188-2193; SPEC.md:961-966). It is declared here so that every shard, merge
+# and resume of this lane runs under ONE I/O mode -- an override would produce
+# a series that `[history]` keeps separate (`(lane, commit, io_sync)` is the
+# replacement identity, SPEC.md:974) -- and so the installer's own
+# durability-ordered writes stay real fsyncs: `debian_install_v2/state.py:26`,
+# `actions.py:388`, `config.py:733`, `failure_notify.py:232` all call
+# `os.fsync`, which a relaxed lane's eatmydata preload intercepts. It does NOT
+# slow the Assay store: assay's own verdict/state writes use the raw
+# `syscall(SYS_fsync)` in `assay/src/assay/_durable.py:96-107`, which the
+# preload cannot intercept (CONSUMERS.md:537), so the mutation bookkeeping
+# stays durable either way.
+# The 174-224 min (2026-11-24/25) and 293 s (loaded baseline) figures quoted
+# here and in assay.toml were measured on the PRECEDING lane, which declared
+# no `io_sync` and therefore ran under the environment's RELAXED mode. They are
+# history for the budget sizing, not measurements of this lane.
 [lanes.r2.resources]
 pids = 8192
 memory = "2g"
