@@ -227,7 +227,14 @@ mod tests {
     fn capacity_evicts_exactly_the_oldest_live_insertion() {
         let mut cache = EventDedup::new();
         for seq in 0..EVENT_DEDUP_CAPACITY {
-            cache.insert(1, "point", "boot", u64::try_from(seq).expect("fits"), reply(1, None), 5);
+            cache.insert(
+                1,
+                "point",
+                "boot",
+                u64::try_from(seq).expect("fits"),
+                reply(1, None),
+                5,
+            );
         }
         assert_eq!(cache.len(), EVENT_DEDUP_CAPACITY);
         assert_eq!(cache.get(1, "point", "boot", 0, 5), Some(reply(1, None)));

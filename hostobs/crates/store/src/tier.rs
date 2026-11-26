@@ -1772,8 +1772,8 @@ mod tests {
     #[test]
     fn a_reopened_event_segment_starts_a_new_header_for_a_new_epoch_in_the_same_bucket() {
         let temp = TempDir::new("epoch-reopen");
-        let config = TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false)
-            .expect("config");
+        let config =
+            TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false).expect("config");
         let event_frame = || {
             hostobs_proto::event::encode_event_frame(&hostobs_proto::event::EventPayload {
                 t_mono_ns: 10,
@@ -1804,11 +1804,7 @@ mod tests {
             first
                 .append(&Job::new(event_frame(), 10_000_000_000, Vec::new()), 7, 3)
                 .expect("first epoch append");
-            first
-                .open_handle()
-                .expect("open handle")
-                .name()
-                .to_string()
+            first.open_handle().expect("open handle").name().to_string()
         };
         assert_eq!(first_name, "events-0-0.seg.open");
 
@@ -1838,8 +1834,8 @@ mod tests {
             .segments
             .iter()
             .map(|segment| {
-                let scanned = crate::segment::scan(&dir, &segment.name, 1 << 22, 1024)
-                    .expect("scan segment");
+                let scanned =
+                    crate::segment::scan(&dir, &segment.name, 1 << 22, 1024).expect("scan segment");
                 (scanned.header.epoch, scanned.header.dict_generation)
             })
             .collect();

@@ -1098,9 +1098,18 @@ mod tests {
                 fstype: String::from("ext4"),
             })
         );
-        assert!(!temp.exists("tiers"), "tmpfs tier was created before refusal");
-        assert!(!temp.exists("cold"), "durable tier was created before refusal");
-        assert!(!temp.exists("events"), "events tier was created before refusal");
+        assert!(
+            !temp.exists("tiers"),
+            "tmpfs tier was created before refusal"
+        );
+        assert!(
+            !temp.exists("cold"),
+            "durable tier was created before refusal"
+        );
+        assert!(
+            !temp.exists("events"),
+            "events tier was created before refusal"
+        );
     }
 
     #[test]
@@ -1631,10 +1640,9 @@ mod tests {
             std::collections::BTreeMap::new(),
         )
         .expect("first event");
-        let first_frame = hostobs_proto::event::encode_event_frame(
-            &first.to_payload().expect("first payload"),
-        )
-        .expect("first frame");
+        let first_frame =
+            hostobs_proto::event::encode_event_frame(&first.to_payload().expect("first payload"))
+                .expect("first frame");
         let first_outcome = store
             .record_event(&first, &first_frame, 1_000_000_000)
             .expect("first record");
@@ -1654,10 +1662,9 @@ mod tests {
             std::collections::BTreeMap::new(),
         )
         .expect("second event");
-        let second_frame = hostobs_proto::event::encode_event_frame(
-            &second.to_payload().expect("second payload"),
-        )
-        .expect("second frame");
+        let second_frame =
+            hostobs_proto::event::encode_event_frame(&second.to_payload().expect("second payload"))
+                .expect("second frame");
         let second_outcome = store
             .record_event(&second, &second_frame, 121_000_000_000)
             .expect("second record");

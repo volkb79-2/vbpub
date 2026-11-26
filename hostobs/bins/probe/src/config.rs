@@ -732,7 +732,10 @@ events_ring_bytes = 4194304
             let text = EXAMPLE.replace(&line, "");
             missing_key_refusal(&text, key);
         }
-        let without_store = EXAMPLE.split("\n[store]\n").next().expect("store separator");
+        let without_store = EXAMPLE
+            .split("\n[store]\n")
+            .next()
+            .expect("store separator");
         let missing_table = one_line(parse(without_store).expect_err("store table is required"));
         assert!(missing_table.contains("store"), "{missing_table}");
         let text = format!("{EXAMPLE}unexpected = 1\n");
@@ -751,17 +754,11 @@ events_ring_bytes = 4194304
                 "store.tmpfs_dir",
             ),
             (
-                EXAMPLE.replace(
-                    "/run/hostobs/tiers",
-                    "/var/lib/hostobs/probe/tiers",
-                ),
+                EXAMPLE.replace("/run/hostobs/tiers", "/var/lib/hostobs/probe/tiers"),
                 "store.tmpfs_dir",
             ),
             (
-                EXAMPLE.replace(
-                    "/run/hostobs/tiers",
-                    "/var/lib/hostobs/probe",
-                ),
+                EXAMPLE.replace("/run/hostobs/tiers", "/var/lib/hostobs/probe"),
                 "store.tmpfs_dir",
             ),
             (
@@ -813,7 +810,10 @@ events_ring_bytes = 4194304
         let store = config.store_config(88).expect("store config");
         assert_eq!(store.epoch, 88);
         assert_eq!(store.dict_generation, 0);
-        assert_eq!(store.dirs.tmpfs, Some(Path::new("/run/hostobs/tiers").into()));
+        assert_eq!(
+            store.dirs.tmpfs,
+            Some(Path::new("/run/hostobs/tiers").into())
+        );
         assert_eq!(
             store.dirs.cold.as_path(),
             Path::new("/var/lib/hostobs/probe/cold")

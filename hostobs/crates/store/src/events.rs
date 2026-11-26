@@ -457,14 +457,7 @@ impl Event {
     ) -> Result<Event, StoreError> {
         let issuer = format!("uid:{uid}");
         let key_text = key.unwrap_or(name);
-        let mut event = Event::new(
-            kind,
-            name,
-            Some(key_text),
-            &issuer,
-            t_mono_ns,
-            outcome,
-        )?;
+        let mut event = Event::new(kind, name, Some(key_text), &issuer, t_mono_ns, outcome)?;
         if key_text.is_empty() {
             return Err(StoreError::EventVocabularyName {
                 field: "key",
@@ -617,15 +610,13 @@ impl Event {
             Outcome::Timeout => 6,
             Outcome::Abandoned => 7,
         });
-        let (peer_pid, peer_dev, peer_inode, comm) = self.peer.as_ref().map_or(
-            (0, 0, 0, None),
-            |peer| {
+        let (peer_pid, peer_dev, peer_inode, comm) =
+            self.peer.as_ref().map_or((0, 0, 0, None), |peer| {
                 let (dev, inode) = peer
                     .cgroup
                     .map_or((0, 0), |cgroup| (cgroup.dev, cgroup.inode));
                 (peer.pid.unwrap_or(0), dev, inode, peer.comm.clone())
-            },
-        );
+            });
         let ctx = self
             .ctx
             .iter()
@@ -1237,9 +1228,9 @@ impl EventsStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_bounded, check_name, CtxKey, Event, EventCgroupKey, EventKind, EventPeer,
-        EventRing, EventsStore, Outcome, SpanTable, EVENT_OVERHEAD, MAX_ATTRS, MAX_CODE,
-        MAX_KEY, MAX_NAME, MAX_OPEN_SPANS, MAX_OPEN_SPANS_PER_ISSUER, MAX_RING_BYTES,
+        check_bounded, check_name, CtxKey, Event, EventCgroupKey, EventKind, EventPeer, EventRing,
+        EventsStore, Outcome, SpanTable, EVENT_OVERHEAD, MAX_ATTRS, MAX_CODE, MAX_KEY, MAX_NAME,
+        MAX_OPEN_SPANS, MAX_OPEN_SPANS_PER_ISSUER, MAX_RING_BYTES,
     };
     use crate::error::StoreError;
     use crate::format::{TierKind, EVT_FRAME_TYPE, FRAME_FLAG_SECTIONED};
@@ -1855,13 +1846,20 @@ mod tests {
         .to_payload()
         .expect("payload");
         assert_eq!(
-            payload.ctx.iter().map(|entry| entry.key).collect::<Vec<_>>(),
+            payload
+                .ctx
+                .iter()
+                .map(|entry| entry.key)
+                .collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4]
         );
-        assert_eq!((payload.peer_pid, payload.peer_dev, payload.peer_inode), (0, 0, 0));
+        assert_eq!(
+            (payload.peer_pid, payload.peer_dev, payload.peer_inode),
+            (0, 0, 0)
+        );
 
-        let legacy_begin = Event::new(EventKind::Begin, "run", None, "legacy", 10, None)
-            .expect("legacy begin");
+        let legacy_begin =
+            Event::new(EventKind::Begin, "run", None, "legacy", 10, None).expect("legacy begin");
         let legacy_payload = legacy_begin.to_payload().expect("legacy payload");
         assert!(hostobs_proto::event::encode_event_frame(&legacy_payload).is_err());
     }
@@ -2238,8 +2236,7 @@ mod tests {
     fn event_frame_is_accepted_and_record_at_uses_real_time_for_its_segment() {
         let temp = TempDir::new("events-real-time");
         let config =
-            TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false)
-                .expect("config");
+            TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false).expect("config");
         let mut store = EventsStore::open(
             config,
             EVENT_OVERHEAD * 16,
@@ -2261,10 +2258,9 @@ mod tests {
             BTreeMap::new(),
         )
         .expect("event");
-        let frame = hostobs_proto::event::encode_event_frame(
-            &event.to_payload().expect("event payload"),
-        )
-        .expect("event/1 frame");
+        let frame =
+            hostobs_proto::event::encode_event_frame(&event.to_payload().expect("event payload"))
+                .expect("event/1 frame");
         let outcome = store
             .record_at(&event, &frame, 65_000_000_000, 3, 1)
             .expect("record event");
@@ -2277,7 +2273,10 @@ mod tests {
         assert_eq!(scanned.header.start_real_ns, 60_000_000_000);
         assert_eq!(scanned.records[0].real_ns, 65_000_000_000);
         assert_eq!(scanned.records[0].payload, frame);
-        assert_eq!(event.t_mono_ns, 10, "monotonic event time stays independent");
+        assert_eq!(
+            event.t_mono_ns, 10,
+            "monotonic event time stays independent"
+        );
     }
 
     #[test]

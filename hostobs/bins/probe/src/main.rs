@@ -211,9 +211,9 @@ impl fmt::Display for StartupError {
             StartupError::WakeClone(error) => write!(f, "cannot clone wake eventfd: {error}"),
             StartupError::Sampler(error) => error.fmt(f),
             StartupError::Store(error) => write!(f, "store: {error}"),
-            StartupError::StoreTmpfsDir => f.write_str(
-                "store.tmpfs_dir must be on tmpfs; store.dir is durable storage",
-            ),
+            StartupError::StoreTmpfsDir => {
+                f.write_str("store.tmpfs_dir must be on tmpfs; store.dir is durable storage")
+            }
         }
     }
 }
