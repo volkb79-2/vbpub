@@ -897,6 +897,12 @@ mod tests {
     #[test]
     fn unknown_codes_and_outcome_pairing_are_refused() {
         let valid = encode_event_payload(&point_context_event()).expect("valid point");
+        let mut valid_begin = point_context_event();
+        valid_begin.kind = 1;
+        valid_begin.span = 1;
+        let begin_body = encode_event_payload(&valid_begin).expect("kind 1 is a valid begin");
+        assert_eq!(decode_event_payload(&begin_body), Ok(valid_begin));
+
         let mut unknown_kind = valid.clone();
         unknown_kind[40] = 4;
         assert_kind(decode_event_payload(&unknown_kind), "event-unknown-code");
@@ -920,6 +926,24 @@ mod tests {
         let full = fixture_body(&fixture("event-full"));
         assert!(decode_event_payload(full).is_ok(), "maximum values are accepted");
 
+        let layout = super::parse_layout(full).expect("the full fixture is well-formed");
+        let mut too_many_contexts = full[..layout.content_end].to_vec();
+        drop(too_many_contexts.splice(
+            layout.attrs_start..layout.attrs_start,
+            [0, 1, 0, b'x'],
+        ));
+        too_many_contexts[43] = 6;
+        let aligned = too_many_contexts
+            .len()
+            .checked_add(7)
+            .expect("aligned context length")
+            & !7;
+        too_many_contexts.resize(aligned, 0);
+        assert_kind(
+            decode_event_payload(&too_many_contexts),
+            "event-field-bound",
+        );
+
         let mut negative_time = full.to_vec();
         negative_time[..8].fill(0xff);
         assert_kind(decode_event_payload(&negative_time), "event-field-bound");
@@ -933,16 +957,17 @@ mod tests {
         assert_kind(decode_event_payload(&half_null_peer), "event-field-bound");
 
         let long_value = full.to_vec();
-        let layout = super::parse_layout(&long_value).expect("the full fixture is well-formed");
-        let mut offset = layout.attrs_start;
+        let value_layout =
+            super::parse_layout(&long_value).expect("the full fixture is well-formed");
+        let mut offset = value_layout.attrs_start;
         let _first_key = super::read_len_range(&long_value, &mut offset)
             .expect("first attribute key");
         let value_len_offset = offset;
         let value_end = super::read_len_range(&long_value, &mut offset)
             .expect("first attribute value")
             .end;
-        let mut oversized_value = long_value[..layout.content_end].to_vec();
-        oversized_value.splice(value_end..value_end, vec![b'v'; 257]);
+        let mut oversized_value = long_value[..value_layout.content_end].to_vec();
+        drop(oversized_value.splice(value_end..value_end, vec![b'v'; 257]));
         oversized_value[value_len_offset..value_len_offset + 2]
             .copy_from_slice(&257u16.to_le_bytes());
         let new_len = oversized_value.len().checked_add(7).expect("aligned length") & !7;
