@@ -391,9 +391,32 @@ pub fn parse_memory_events(
 /// Parse `cgroup.events` into its `cgevents.*` readings.
 ///
 /// This uses the same keyed event parser as `memory.events`; an unparseable value is
-/// unreadable only for the metric named by that line.
+/// unreadable only for the metric named by that line. Every `cgroup.events` value is a
+/// boolean, so a number above 1 is unreadable too, never a measured state.
+///
+/// `cgevents.frozen` is the effective state, which a frozen ancestor also sets.
+/// `cgroup.freeze` is the cgroup's own setting. The two can differ.
+///
+/// # Errors
+///
+/// `KernelError::Parse` for a line that is not `key value`, or for a file with no entry.
 pub fn parse_cgroup_events(text: &[u8], bounds: Bounds) -> Result<Readings, KernelError> {
-    parse_memory_events("cgevents.", "cgroup.events", text, bounds)
+    let parsed = parse_memory_events("cgevents.", "cgroup.events", text, bounds)?;
+    if parsed.is_empty() {
+        return Err(KernelError::Parse {
+            file: "cgroup.events",
+            line: None,
+        });
+    }
+    let mut readings = Readings::new();
+    for entry in parsed.entries {
+        if entry.reading.u64().is_some_and(|raw| raw > 1) {
+            readings.missing(entry.metric, QualityCode::Unreadable);
+        } else {
+            readings.entries.push(entry);
+        }
+    }
+    Ok(readings)
 }
 
 // ---------------------------------------------------------------- io.stat

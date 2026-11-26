@@ -173,6 +173,20 @@ fn an_unparseable_cgroup_event_only_marks_its_metric_unreadable() {
 }
 
 #[test]
+fn a_cgroup_event_above_one_is_unreadable_and_an_empty_file_is_refused() {
+    let events = parse_cgroup_events(b"populated 2\nfrozen 1\n", Bounds::POLICY)
+        .expect("keyed lines remain readable");
+    assert_eq!(
+        events.quality("cgevents.populated"),
+        Some(QualityCode::Unreadable)
+    );
+    assert_eq!(events.u64("cgevents.populated"), None);
+    assert_eq!(events.u64("cgevents.frozen"), Some(1));
+
+    assert!(parse_cgroup_events(b"", Bounds::POLICY).is_err());
+}
+
+#[test]
 fn a_missing_freezer_file_is_unsupported_and_not_a_measured_zero() {
     let mut fs = MemFs::new();
     fs.directory("/cg", 1);
