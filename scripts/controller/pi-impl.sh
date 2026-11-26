@@ -47,8 +47,65 @@
 # `--print`, `--mode`, `--model`, `--thinking`, `--session`, `--session-id`,
 # `--session-dir`, `-c`/`--continue`, `-r`/`--resume`, `--fork` and a bare `--`
 # are refused before anything is claimed or launched. The seam exists for a
-# caller that must restrict pi's tools (pi-review.sh does); an empty or unset
-# value adds nothing, so the implementer contract is unchanged.
+# caller that must restrict pi's tools; an empty or unset value adds nothing, so
+# the implementer contract is unchanged. In REVIEW mode the seam is narrower
+# still (see PI_RUN_MODE below).
+#
+# PI_RUN_MODE selects the contract this launch runs under:
+#
+#   implementer (the default) the implementer tool set pi supplies itself, and
+#                            every prompt this launch sends gets the fixed
+#                            implementer rule paragraph in
+#                            implementer-prompt-rules.md beside this script.
+#   review                   pi's argv ALWAYS carries the read-only set defined
+#                            ONCE in pi-review-argv beside this script (no tool
+#                            that can run a program and none that can write), a
+#                            caller's PI_EXTRA_ARGS is refused by name when it
+#                            would add or widen tools, extensions, skills, prompt
+#                            templates or project trust, and every prompt gets
+#                            the fixed review rule paragraph in
+#                            review-prompt-rules.md instead.
+#
+# Why a mode and not a caller convention: a review launched or RESUMED through
+# this wrapper directly (not through pi-review.sh) used to get the full
+# implementer tools unless the caller remembered to export the seam. A pi
+# reviewer once ran kill/trap scripts in the shared devcontainer for two hours,
+# and "the caller remembers" is exactly the kind of rule that does not hold. The
+# mode is therefore the wrapper's own switch, and the tool list has one
+# definition (pi-review-argv) shared with pi-review.sh, which sets the mode
+# instead of carrying a second copy of the literal list.
+#
+# The mode is STICKY per run name. Every launch records it beside the other run
+# records as <runs-dir>/<name>.mode ('review' or 'implementer'), and a resume
+# takes the recorded mode whenever it does not narrow it:
+#  * recorded 'review' + a caller that NAMED implementer mode is REFUSED (exit
+#    2) before the name is claimed: a review's session never gets a shell. A
+#    caller that named no mode takes the record; a value only the host's
+#    controller.local.env supplied is a default for launches that name none, so
+#    it cannot flip a review either (it is announced, never obeyed, on a resume).
+#  * recorded 'implementer' + a caller asking for review mode is allowed (the
+#    stricter mode) and the record is rewritten to 'review'.
+#  * a record that exists but is neither word is REFUSED: no correct writer
+#    produces it, and guessing would be a fallback that cannot fail loudly.
+#  * a record with review EVIDENCE beside it (<runs-dir>/<name>.review/
+#    before-state.txt, written by pi-review.sh) is read as review even when the
+#    record is missing: the session is then known to be a review, and the safe
+#    direction is failing closed.
+#  * a missing record with no review evidence keeps the mode the caller named
+#    (or the default), so a pre-existing IMPLEMENTER session (which predates
+#    this record) resumes unchanged.
+# The caller's value wins over controller.local.env in the LESS SAFE direction:
+# PI_RUN_MODE is saved before that file is sourced and re-applied after, so a
+# stale `PI_RUN_MODE=implementer` in a local environment file cannot flip a
+# review back to the implementer tool set.
+#
+# Review mode is an ENFORCEMENT of the tool selection, not a sandbox. What it
+# does not prevent: a tool the read-only set does not name cannot be called, but
+# the `read` tool still reads anything the wrapper's user can (credentials
+# included), and an implementer's bash builtin `kill`, a TERM-trap script and a
+# direct syscall are NOT technically prevented. Only the implementer rule
+# paragraph below instructs against them; the mechanical guard is the pi-shims
+# PATH entry.
 #
 # A run NAME is owned by one live wrapper: the wrapper takes an exclusive
 # flock on <runs-dir>/<name>.lock before it writes anything (lib.sh
@@ -95,6 +152,14 @@ caller_pi_model=${PI_MODEL-}
 caller_pi_thinking=${PI_THINKING-}
 caller_pi_session_dir=${PI_SESSION_DIR-}
 caller_pi_extra_args=${PI_EXTRA_ARGS-}
+# `${VAR-}` cannot tell an UNSET value from an explicitly EMPTY one, and the
+# difference decides what a launch does with a host's controller.local.env (see
+# the restore below). `-v` answers set-ness even for an empty value.
+caller_pi_extra_args_set=0
+[[ -v PI_EXTRA_ARGS ]] && caller_pi_extra_args_set=1
+caller_pi_run_mode=${PI_RUN_MODE-}
+caller_pi_run_mode_set=0
+[[ -v PI_RUN_MODE ]] && caller_pi_run_mode_set=1
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 controller_init
@@ -103,9 +168,16 @@ controller_init
 [[ -z $caller_pi_thinking ]] || PI_THINKING=$caller_pi_thinking
 [[ -z $caller_pi_session_dir ]] || PI_SESSION_DIR=$caller_pi_session_dir
 # The caller's extra arguments win over a local environment file, like the four
-# above: a review launcher exports its restricted tool set, and a stale
-# PI_EXTRA_ARGS in controller.local.env must not widen it.
-[[ -z $caller_pi_extra_args ]] || PI_EXTRA_ARGS=$caller_pi_extra_args
+# above: a stale PI_EXTRA_ARGS in controller.local.env must not widen (or narrow)
+# a launch the caller configured, and a caller who EXPORTED it as empty has said
+# "no extra arguments" -- not "unset", which would let that file's value in.
+if (( caller_pi_extra_args_set == 1 )); then PI_EXTRA_ARGS=$caller_pi_extra_args; fi
+# The same rule, and it is the one that matters for safety: a caller that asks
+# for review mode is not flipped back to the implementer tool set by a
+# `PI_RUN_MODE=implementer` line in controller.local.env (lib.sh sources that
+# file with `set -a`). A caller that sets nothing keeps whatever the file says;
+# an explicit empty value stays empty and is refused below.
+if (( caller_pi_run_mode_set == 1 )); then PI_RUN_MODE=$caller_pi_run_mode; fi
 
 usage() {
   echo "usage: $0 <worktree> <absolute-prompt-file> <run-name> [resume <session-id>] [--report <absolute-path>]" >&2
@@ -153,6 +225,127 @@ elif [[ $mode != new || $# -gt 4 ]]; then
   usage
 fi
 
+# --- the run mode: review or implementer (see the header) ---------------------
+# Two facts are kept apart here:
+#  * WHICH mode was NAMED (requested_mode, with request_origin recording who
+#    named it), and
+#  * which mode a launch RUNS under once the run-name record has been read.
+# `-v` answers "was it set" even for an explicitly EMPTY value, so a set-but-empty
+# request is refused by name instead of being defaulted: a launch that named
+# nothing takes the default, one that named something wrong is told so.
+requested_mode=''
+request_origin=''
+if [[ -v PI_RUN_MODE ]]; then
+  requested_mode=$PI_RUN_MODE
+  case $requested_mode in
+    implementer | review) ;;
+    *)
+      echo "PI_RUN_MODE must be 'implementer' or 'review' (got '$requested_mode')" >&2
+      exit 2
+      ;;
+  esac
+  # Who named it decides what it may do: a CALLER's value is a request (it may
+  # narrow a recorded implementer run to review), while a value only the host's
+  # controller.local.env supplied is a DEFAULT for launches that name none.
+  if (( caller_pi_run_mode_set == 1 )); then request_origin=caller; else request_origin=local-env; fi
+fi
+mode_record=$CONTROLLER_RUNS_DIR/$name.mode
+# A NEW launch is decided by the caller alone: a name that already has a mode
+# record is refused as a collision unless CONTROLLER_RUN_FORCE retires the
+# records, so the stickiness below belongs to a RESUME only. Reading the record
+# of a name this invocation is about to retire would refuse the deliberate
+# reuse the force flag exists for.
+run_mode=${requested_mode:-implementer}
+mode_source=${request_origin:-default}
+if [[ $mode == resume ]]; then
+  record_mode=''
+  mode_record_state=absent
+  if [[ -e $mode_record ]]; then
+    # `-e` and `-r` are two different facts: a record that exists and cannot be
+    # read is not an absent record, and neither licenses a guess.
+    if [[ -r $mode_record ]]; then
+      record_mode=$(<"$mode_record")
+      case $record_mode in
+        implementer | review) mode_record_state=valid ;;
+        *) mode_record_state=invalid ;;
+      esac
+    else
+      mode_record_state=invalid
+    fi
+  fi
+  case $mode_record_state in
+    valid)
+      # A resume takes the RECORD. Refused only when the CALLER asked for
+      # implementer mode on a review: a review's session never gets a shell or a
+      # writer. A resume that names no mode at all takes the record (that is what
+      # the record is for), and a host file's value is not a request against it
+      # -- saying so, because a silent override is exactly what a host setting
+      # must not be able to do.
+      if [[ $record_mode == review && $request_origin == caller && $requested_mode == implementer ]]; then
+        echo "run name $name was started as a REVIEW and cannot be resumed in implementer mode" >&2
+        echo "  $mode_record records 'review': a review's session never gets a shell or a writer, so the mode is sticky" >&2
+        echo '  resume it with PI_RUN_MODE=review, or name no mode at all and the record decides;' >&2
+        echo '  retire the name (CONTROLLER_RUN_FORCE=1) only to reuse it for a different run' >&2
+        exit 2
+      fi
+      if [[ $request_origin == local-env && $record_mode != "$requested_mode" ]]; then
+        # A host file's value is a DEFAULT for launches that name none, never a
+        # request against a record: announced, not obeyed. (The caller's own
+        # direction is handled by the refusal above and the narrowing below.)
+        printf 'pi-impl: controller.local.env asks for %s mode, but %s is a recorded %s run; the record decides\n' \
+          "$requested_mode" "$name" "$record_mode" >&2
+      fi
+      run_mode=$record_mode
+      mode_source=record
+      if [[ $record_mode == implementer && $request_origin == caller && $requested_mode == review ]]; then
+        # Only this direction is reachable here: review-recording with a caller
+        # asking for implementer was refused above. The stricter mode wins, so
+        # the session keeps a shell-less, writer-less argv for the rest of its
+        # life and the record says so.
+        run_mode=review
+        mode_source=record-narrowed
+        printf 'pi-impl: %s was started as implementer and is now launched as review; the stricter mode wins and the record becomes review\n' "$name" >&2
+      fi
+      ;;
+    invalid)
+      echo "cannot establish the run mode of $name: $mode_record is not 'review' or 'implementer'" >&2
+      echo '  a record this wrapper never writes is not a fact to guess from; retire the name (CONTROLLER_RUN_FORCE=1) or write the mode it really ran under' >&2
+      exit 2
+      ;;
+    absent)
+      # No record: review EVIDENCE beside the name decides. pi-review.sh renders
+      # <run>.review/before-state.txt before it launches, so a resume of a name
+      # that carries that material is a resume of a review even when the mode
+      # record was lost; with no such evidence the mode the launch named (or the
+      # default) stands, which is what keeps a pre-existing implementer session
+      # unchanged.
+      if [[ -e $CONTROLLER_RUNS_DIR/$name.review/before-state.txt ]]; then
+        run_mode=review
+        mode_source=review-material
+        printf 'pi-impl: %s has review material but no mode record; it is resumed as a review (fail closed)\n' "$name" >&2
+      fi
+      ;;
+  esac
+fi
+case $run_mode in
+  review) review_argv_file=$SCRIPT_DIR/pi-review-argv ;;
+  *) review_argv_file='' ;;
+esac
+if [[ $run_mode == review ]]; then
+  # The one definition of the read-only set. A review that cannot name its tool
+  # set must not start: refusing here is the same rule as the signal guard's, and
+  # it happens before the name is claimed, so a refusal leaves no run record.
+  if [[ ! -r $review_argv_file ]]; then
+    echo "the review argv file is missing or unreadable: $review_argv_file" >&2
+    echo '  the read-only tool set is defined once there; a review cannot launch without it' >&2
+    exit 2
+  fi
+  review_argv=()
+  mapfile -t review_argv < "$review_argv_file" || exit 2
+  (( ${#review_argv[@]} > 0 )) || { echo "the review argv file is empty: $review_argv_file" >&2; exit 2; }
+fi
+printf 'pi-impl: run mode %s (%s) for %s\n' "$run_mode" "$mode_source" "$name" >&2
+
 # The clean/committed classification below is a fact read from git, not a
 # guess: a worktree that is not a git worktree cannot answer it, so refuse.
 if ! git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -168,6 +361,17 @@ retry_limit=${PI_EMPTY_RETRY_LIMIT:-2}
 continue_prompt_file=${PI_CONTINUE_PROMPT_FILE:-"$SCRIPT_DIR/continue-empty-completion.md"}
 if [[ ! -r $continue_prompt_file ]]; then
   echo "continue prompt file is not readable: $continue_prompt_file" >&2
+  exit 2
+fi
+# The fixed rule paragraph of this mode. It is a tracked file beside this script
+# and it is APPENDED to the prompt of every launch; a launch without it is
+# refused rather than started without the rule (the same fail-closed shape as
+# the signal guard and the continuation prompt above).
+rules_file=$SCRIPT_DIR/implementer-prompt-rules.md
+[[ $run_mode != review ]] || rules_file=$SCRIPT_DIR/review-prompt-rules.md
+if [[ ! -r $rules_file ]]; then
+  echo "pi $run_mode prompt rule file is missing or unreadable: $rules_file" >&2
+  echo '  every launch appends its fixed rule paragraph; a prompt without it is not the contract this wrapper promises' >&2
   exit 2
 fi
 live_interval=${PI_LIVE_INTERVAL_SECONDS:-30}
@@ -194,11 +398,55 @@ parse_extra_pi_args() {
         return 1
         ;;
     esac
+    if [[ $run_mode == review ]]; then
+      # Review mode owns what the reviewer may DO, so the seam may not touch it.
+      # Every spelling is pi 1.6.0's own (its `--help` and dist/cli/args.js, read
+      # before this list was written):
+      #   --tools/-t        dist/cli/args.js:114  replaces the allowlist, and a
+      #                     +name entry ADDS a tool (dist/core/settings-manager.js:57-70)
+      #   --exclude-tools/-xt                :127  edits that selection
+      #   --no-tools/-nt, --no-builtin-tools/-nbt :108/:111 change it (the latter
+      #                     keeps extension/custom tools enabled)
+      #   --extension/-e    :156  loads code, and explicit -e paths still work
+      #                     WITH --no-extensions (its own --help, :320)
+      #   --no-extensions/-ne, --no-mcp      :160/:163  the flags the review sets
+      #   --skill, --no-skills/-ns, --prompt-template, --no-prompt-templates/-np
+      #                     :166,:188,:170,:191  instructions the reviewer reads
+      #   --approve/-a, --no-approve/-na     :229/:232  project trust, which lets
+      #                     project-local extensions load and execute
+      #                     (dist/main.js:631-659, dist/core/project-trust.js:18-24)
+      # Flags outside this list cannot add a tool or code here: `--no-extensions`
+      # and `--no-mcp` load none, and an unparsed `--flag value` only reaches
+      # extensions through extensionFlagValues (dist/cli/args.js:236-256,
+      # dist/main.js:665), of which there are none.
+      case $line in
+        --tools | --tools=* | -t | --exclude-tools | --exclude-tools=* | -xt | \
+          --no-tools | -nt | --no-builtin-tools | -nbt | \
+          --extension | --extension=* | -e | --no-extensions | -ne | --no-mcp | \
+          --skill | --skill=* | --no-skills | -ns | \
+          --prompt-template | --prompt-template=* | --no-prompt-templates | -np | \
+          --approve | -a | --no-approve | -na)
+          echo "PI_EXTRA_ARGS may not set '$line' in review mode: PI_RUN_MODE=review owns pi's tool selection, extensions, MCP, skills, prompt templates and project trust" >&2
+          return 1
+          ;;
+      esac
+    fi
     extra_pi_args+=("$line")
   done <<< "$PI_EXTRA_ARGS"
   return 0
 }
 parse_extra_pi_args || exit 2
+if [[ $run_mode == review ]] && (( ${#extra_pi_args[@]} > 0 )); then
+  # Review mode has no legitimate use for the seam: the review argv already
+  # names exactly what the reviewer gets, so ANY extra argument is refused here
+  # rather than classified. That is what makes this a refusal instead of a
+  # vocabulary to keep up with: a spelling this wrapper's list above missed, a
+  # `+name` tool modifier, an extension flag added by a future pi release and an
+  # otherwise harmless flag all take the same exit, and the reason is named.
+  printf 'PI_EXTRA_ARGS may not add anything in review mode (got %s element(s)); the review argv is owned by PI_RUN_MODE=review\n' \
+    "${#extra_pi_args[@]}" >&2
+  exit 2
+fi
 # L2: the seam can come from a caller's export OR from a host's
 # controller.local.env (lib.sh sources that with `set -a`, so an unset caller
 # value is silently replaced by the file's). A widened or narrowed implementer
@@ -271,7 +519,7 @@ retire_existing=0
 
 if [[ $mode == new ]]; then
   existing=()
-  for extension in 'done' 'jsonl' 'err' 'events' 'live' 'last.txt' 'wt' 'route' 'thread' 'autoresume.log'; do
+  for extension in 'done' 'jsonl' 'err' 'events' 'live' 'last.txt' 'wt' 'route' 'thread' 'mode' 'autoresume.log'; do
     [[ -e $out/$name.$extension ]] && existing+=("$out/$name.$extension")
   done
   if (( ${#existing[@]} > 0 )); then
@@ -394,10 +642,24 @@ prompt_text=''
 IFS= read -r -d '' prompt_text < "$prompt" || :
 continue_prompt=''
 IFS= read -r -d '' continue_prompt < "$continue_prompt_file" || :
+# The mode's fixed rule paragraph, appended after the brief with one blank line
+# between them. The brief itself is never rewritten (it is the caller's file);
+# the prompt pi receives is the brief PLUS this paragraph, on the first launch of
+# every invocation (a resume is a launch too). The EMPTY-COMPLETION continuation
+# is the one other prompt this wrapper sends, so it carries the same paragraph.
+rules_text=''
+IFS= read -r -d '' rules_text < "$rules_file" || :
+printf -v prompt_text '%s\n%s' "$prompt_text" "$rules_text"
+printf -v continue_prompt '%s\n%s' "$continue_prompt" "$rules_text"
 base_pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" --session-dir "$session_dir")
+# A review's read-only set comes from its one definition (pi-review-argv) and is
+# part of the wrapper's OWN argv, so every path below -- the first run, a resume
+# and every automatic continuation -- carries it through invoke_pi unchanged.
+if [[ $run_mode == review ]]; then
+  base_pi_args+=("${review_argv[@]}")
+fi
 # PI_EXTRA_ARGS is appended after the wrapper's own arguments: a caller can add
-# a tool selection, never replace the launch contract (reserved flags are
-# refused above).
+# arguments, never replace the launch contract (reserved flags are refused above).
 (( ${#extra_pi_args[@]} == 0 )) || base_pi_args+=("${extra_pi_args[@]}")
 resume_target=''
 [[ $mode != resume ]] || resume_target=$session_id
@@ -423,6 +685,10 @@ fi
 controller_run_record_owner
 printf '%s\n' "$worktree" > "$out/$name.wt"
 printf '%s\n' "$route_record" > "$out/$name.route"
+# The mode is a name-owned record like the route, written only by a launch that
+# got past every refusal, so a refused launch cannot change the mode a resume
+# will be forced into.
+printf '%s\n' "$run_mode" > "$out/$name.mode"
 if [[ $mode == resume ]]; then
   rm -f -- "$out/$name.done"
   printf '%s\n' "$session_id" > "$out/$name.thread"
