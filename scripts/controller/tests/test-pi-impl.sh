@@ -7,8 +7,28 @@ set -uo pipefail
 # same defect into the operator's shell, where it read as a product bug.
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
+# The pi seams pi-review.sh exports for its own child, and the review budget: an
+# ambient PI_EXTRA_ARGS (which is exactly what a review launcher leaves in a
+# controller shell) would refuse or widen every launch this check makes.
+unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_POLL_SECONDS PI_REVIEW_KILL_WAIT_SECONDS
+# pi's agent directory decides a launch refusal (pi prepends its bin dir to the
+# agent's PATH), so the caller's ambient value must not decide these checks:
+# every check that cares names it explicitly.
+unset PI_CODING_AGENT_DIR
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
+# The shim directory of the wrapper under test: a mutant copy carries its own,
+# so it is resolved beside $SRC rather than from the suite's own directory.
+SHIM_DIR=$(cd -- "$(dirname -- "$SRC")" && pwd -P)/pi-shims
+if [[ ! -d $SHIM_DIR && -d $SCRIPT_DIR/../pi-shims ]]; then
+  # A mutant wrapper lives in a disposable tree that carries only the siblings it
+  # needs (mutate-sources.py copies continue-empty-completion.md the same way).
+  # Give that tree the real shims so a mutant is judged on its own change and not
+  # on a missing guard directory. This cannot mask a broken guard: fail-closed is
+  # proven separately (check_signal_guard_fail_closed) on a copy that deliberately
+  # lacks a shim, and test-entrypoints.sh requires the shims to be committed 100755.
+  cp -a -- "$SCRIPT_DIR/../pi-shims" "$SHIM_DIR" 2>/dev/null || :
+fi
 JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}
 PILIVE=${PI_LIVE_SCRIPT:-$SCRIPT_DIR/../pi-live.py}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-test.XXXXXX")
@@ -63,6 +83,72 @@ printf '%s\n' "$*" >> "$PI_ARGV_LOG"
 printf '%s' "${!#}" > "$PI_PROMPT_LOG"
 printf 'VOLKER_PRESENT=%s GITHUB2_PRESENT=%s\n' \
   "${OPENDESIGN_API_KEY_VOLKER:+yes}" "${OPENDESIGN_API_KEY_GITHUB2:+yes}" >> "$PI_ENV_LOG"
+# Signal guard: when FAKE_PI_GUARD_LOG names a file, this is a guarded launch
+# check. ASSERT that the three signal spellings resolve INSIDE the shim
+# directory before anything else, then call them, each on a pattern this check
+# made random and that matches nothing. The real pkill/killall are never called.
+if [[ -n ${FAKE_PI_GUARD_LOG:-} ]]; then
+  guard_failed=0
+  for spelling in pkill killall pgrep; do
+    resolved=$(command -v "$spelling" 2>/dev/null) || resolved=
+    case $resolved in
+      "${FAKE_PI_SHIM_DIR:?}"/*) [[ -x $resolved ]] || guard_failed=1 ;;
+      *) guard_failed=1 ;;
+    esac
+    printf 'PATH-ENTRY %s=%s\n' "$spelling" "${resolved:-none}" >> "$FAKE_PI_GUARD_LOG"
+  done
+  (( guard_failed == 0 )) || {
+    printf 'GUARD-MISSING %s\n' "${FAKE_PI_SHIM_DIR:?}" >> "$FAKE_PI_GUARD_LOG"
+    exit 90
+  }
+  guard_pattern=no-match-${RANDOM:-$(awk 'BEGIN{srand(); print int(rand()*999999)}')}-${PI_GUARD_SEQUENCE_INDEX:-0}
+  # The agent's PATH is a fact this check records, not one it assumes: a shim
+  # directory prepended with a trailing `:` leaves an EMPTY field, and an empty
+  # PATH field means the CURRENT DIRECTORY (the worktree) to every command the
+  # agent runs.
+  guard_path_rest=${PATH-}
+  guard_path_empty=0
+  while :; do
+    guard_path_field=${guard_path_rest%%:*}
+    [[ -n $guard_path_field ]] || guard_path_empty=1
+    [[ $guard_path_rest == *:* ]] || break
+    guard_path_rest=${guard_path_rest#*:}
+  done
+  printf 'PATH-EMPTY-FIELD %s\n' "$guard_path_empty" >> "$FAKE_PI_GUARD_LOG"
+  # One caller per guard fact, so an assertion names the spelling that failed.
+  # $1 labels the case; the rest is the whole command line, `pgrep` included.
+  guard_call() {
+    local label=$1
+    shift
+    "$@" > "$FAKE_PI_GUARD_LOG.$label.out" 2>&1
+    local rc=$?
+    printf 'RC %s=%s OUT=%s\n' "$label" "$rc" \
+      "$(tr '\n' ' ' < "$FAKE_PI_GUARD_LOG.$label.out")" >> "$FAKE_PI_GUARD_LOG"
+  }
+  for spelling in pkill killall; do
+    "$spelling" -f "$guard_pattern" > "$FAKE_PI_GUARD_LOG.$spelling.out" 2>&1
+    guard_rc=$?
+    printf 'RC %s=%s OUT=%s\n' "$spelling" "$guard_rc" \
+      "$(tr '\n' ' ' < "$FAKE_PI_GUARD_LOG.$spelling.out")" >> "$FAKE_PI_GUARD_LOG"
+  done
+  # Every SHORT signal spelling the shim exists for has its own case here:
+  # `-<number>` and `-<SIGNAME>` are single letters after pgrep's own parse, so
+  # a later edit that lets a signal letter into the no-value set would forward
+  # `pgrep -9 -f x` / `pgrep -TERM -f x` to the real pgrep and signal every
+  # match. The suite would stay green without these cases.
+  guard_call pgrep-signal pgrep --signal TERM -f "$guard_pattern"
+  guard_call pgrep-short-number pgrep -9 -f "$guard_pattern"
+  guard_call pgrep-short-name pgrep -TERM -f "$guard_pattern"
+  guard_call pgrep-kill pgrep --kill -f "$guard_pattern"
+  guard_call pgrep-signal-eq pgrep --signal=TERM -f "$guard_pattern"
+  guard_call pgrep-cluster-value pgrep -d, -9 -f "$guard_pattern"
+  # A PASS-THROUGH with a value that itself starts with `-`: `-d` takes its
+  # value out of the rest of the cluster or the next argument, exactly as
+  # getopt does, so `-d -` is the delimiter `-`, not an option, and the plain
+  # pattern still reaches the real pgrep (rc 1 for a no-match pattern).
+  guard_call pgrep-value-dash pgrep -d - -f "$guard_pattern"
+  guard_call pgrep-plain pgrep -f "$guard_pattern"
+fi
 # Probe: where this invocation's stdout points and whether the run's .done
 # marker exists yet (a marker before the continuations finish is a false verdict).
 if [[ -n ${FAKE_PI_PROBE_LOG:-} ]]; then
@@ -567,6 +653,54 @@ check_job_status() {
   }
   grep -qF 'outcome-success: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status.out" \
     || { cat "$ROOT/job-status.out" >&2; fail 'job-status did not report the finished run'; }
+  # pi-review.sh APPENDS REVIEW-MODIFIED-TREE after pi-impl.sh's own marker, and
+  # line 1 can read `EXIT=0 OUTCOME=SUCCESS` for a reviewer commit. job-status
+  # must report every marker line's verdict, not line 1 alone.
+  printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-MODIFIED-TREE\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-flagged.out" 2>&1 || {
+    cat "$ROOT/job-status-flagged.out" >&2
+    fail 'job-status failed on a flagged review'
+  }
+  grep -qF 'flagged-review: FINISHED' "$ROOT/job-status-flagged.out" \
+    || { cat "$ROOT/job-status-flagged.out" >&2; fail 'job-status did not report the flagged review'; }
+  grep -qF 'REVIEW-MODIFIED-TREE' "$ROOT/job-status-flagged.out" \
+    || { cat "$ROOT/job-status-flagged.out" >&2; fail 'job-status hid the REVIEW-MODIFIED-TREE flag'; }
+  # The review launcher has three more verdicts, and all can stand beside EXIT=0.
+  printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-NO-REPORT\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-notext.out" 2>&1 || {
+    cat "$ROOT/job-status-notext.out" >&2
+    fail 'job-status failed on a text-less review'
+  }
+  grep -qF 'REVIEW-NO-REPORT' "$ROOT/job-status-notext.out" \
+    || { cat "$ROOT/job-status-notext.out" >&2; fail 'job-status hid the REVIEW-NO-REPORT verdict'; }
+  # The real double shape: pi-impl settled with `EXIT=0`, then the budget stop
+  # appended its own verdict line.
+  printf 'EXIT=0 OUTCOME=SUCCESS\nREVIEW-BUDGET\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-budget.out" 2>&1 || {
+    cat "$ROOT/job-status-budget.out" >&2
+    fail 'job-status failed on a budget-stopped review'
+  }
+  grep -qF 'flagged-review: FINISHED REVIEW-BUDGET EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-budget.out" \
+    || { cat "$ROOT/job-status-budget.out" >&2; fail 'job-status did not report the budget-stopped review'; }
+  # The not-settled verdict (pi-review.sh exit 6: a zero pi exit in a class that
+  # is not SUCCESS/UNCOMMITTED) is read by the same rule. It must be reported,
+  # including when it is written INTO line 1 by the launcher's no-marker fallback
+  # (a whole-line equality test on lines 2+ would miss that shape).
+  printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\nREVIEW-NOT-SETTLED\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-notsettled.out" 2>&1 || {
+    cat "$ROOT/job-status-notsettled.out" >&2
+    fail 'job-status failed on a not-settled review'
+  }
+  grep -qF 'REVIEW-NOT-SETTLED' "$ROOT/job-status-notsettled.out" \
+    || { cat "$ROOT/job-status-notsettled.out" >&2; fail 'job-status hid the REVIEW-NOT-SETTLED verdict'; }
+  printf 'EXIT=5 OUTCOME=REVIEW-BUDGET\n' > "$CONTROLLER_ROOT/runs/flagged-review.done"
+  "$JOB_STATUS" flagged-review > "$ROOT/job-status-line1-verdict.out" 2>&1 || {
+    cat "$ROOT/job-status-line1-verdict.out" >&2
+    fail 'job-status failed on a marker whose line 1 carries the verdict'
+  }
+  grep -qF 'REVIEW-BUDGET' "$ROOT/job-status-line1-verdict.out" \
+    || { cat "$ROOT/job-status-line1-verdict.out" >&2; fail 'job-status ignored a verdict written as line 1'; }
+  rm -f -- "$CONTROLLER_ROOT/runs/flagged-review.done"
   python3 - "$json" <<'PY'
 import json, sys
 now = 1_800_000_000
@@ -648,12 +782,34 @@ body = json.loads((runs / "orphan.live").read_text(encoding="utf-8"))
 body["wrapper_pid"] = 2147483646
 (runs / "orphan.live").write_text(json.dumps(body), encoding="utf-8")
 (runs / "finished.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
+# L3' (r2): a verdict written INTO line 1 -- the launcher's no-marker fallback
+# shape -- must be named by job-status's own rule (the class word in front of
+# the row), not only by line 1 being printed verbatim. The second line is an
+# ordinary outcome line that carries no verdict, so the row must read
+# `FINISHED REVIEW-BUDGET EXIT=5 OUTCOME=REVIEW-BUDGET`.
+(runs / "line1-verdict.done").write_text(
+    "EXIT=5 OUTCOME=REVIEW-BUDGET\nRETRIES=0\n", encoding="utf-8")
+# The same shape with the verdict ONLY on line 2: the rule scans the whole
+# marker, so both are found.
+(runs / "line2-verdict.done").write_text(
+    "EXIT=0 OUTCOME=SUCCESS\nREVIEW-NO-REPORT\n", encoding="utf-8")
+# The REAL fallback shape pi-review.sh writes for a budget stop that left no
+# marker of its own: the verdict in line 1 and the stop form in line 2. The
+# stop form is a qualifier, not a fifth class, so the row names REVIEW-BUDGET
+# and nothing else -- and it must never turn the row into a success.
+(runs / "line1-stop-verdict.done").write_text(
+    "EXIT=5 OUTCOME=REVIEW-BUDGET\nREVIEW-BUDGET-STOP=pid\n", encoding="utf-8")
+# A marker with no verdict at all stays unmarked: the rule must not prefix
+# every finished row.
+(runs / "no-verdict.done").write_text(
+    "EXIT=0 OUTCOME=SUCCESS\nRETRIES=1\n", encoding="utf-8")
 PY
   CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
     JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
     "$JOB_STATUS" stale hung long-tool progress-unknown progress-carried-unmeasured \
       progress-flag-absent tokens-zero-report \
       no-commits own-commit ahead-unknown orphan finished absent \
+      line1-verdict line2-verdict no-verdict line1-stop-verdict \
       > "$ROOT/job-status-states.out" 2>&1 || {
       cat "$ROOT/job-status-states.out" >&2
       fail 'job-status failed on synthetic run states'
@@ -714,6 +870,25 @@ PY
   grep -qF 'since-commit=null' "$ROOT/job-status-states.out" \
     || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable commits_ahead did not suppress the commit age'; }
   grep -qF 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" || fail 'a finished run is not reported as finished'
+  # L3' (r2): one rule for the marker -- the verdict is any line that contains
+  # it. A marker whose line 1 carries it gets the class word in front of the row
+  # even though line 1 is already printed, and a verdict on line 2 is found the
+  # same way; a clean marker gets no prefix at all.
+  grep -qE '^line1-verdict: FINISHED REVIEW-BUDGET EXIT=5 OUTCOME=REVIEW-BUDGET$' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a verdict written as line 1 was not named by the whole-marker rule'; }
+  grep -qF 'line2-verdict: FINISHED REVIEW-NO-REPORT EXIT=0 OUTCOME=SUCCESS' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a verdict on line 2 was not found by the whole-marker rule'; }
+  # The stop form is a qualifier of the budget verdict: it may not be printed as
+  # a class, and it may not hide the class the row already carries.
+  grep -qE '^line1-stop-verdict: FINISHED REVIEW-BUDGET EXIT=5 OUTCOME=REVIEW-BUDGET$' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'the budget stop-form line changed the class or the row shape'; }
+  ! grep -qF 'REVIEW-BUDGET-STOP=' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'the stop-form line was printed as a class'; }
+  grep -qE '^no-verdict: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a marker with no verdict was prefixed with a class'; }
   grep -qF 'absent: NO-LIVE (no absent.live sidecar)' "$ROOT/job-status-states.out" || fail 'a run without a snapshot is not NO-LIVE'
   grep -qF 'orphan: WRAPPER-DEAD' "$ROOT/job-status-states.out" || fail 'a run whose wrapper pid is gone is not WRAPPER-DEAD'
   # Liveness comes from the OWNER RECORD (the same one job-check reads), and the
@@ -1418,15 +1593,329 @@ assert body["wrapper_pid"] == 2147483646, body
 PY
 }
 
+# --- signal guard (P-plat-31) ---------------------------------------------
+#
+# pi-impl.sh puts `pi-shims/` FIRST on the agent's PATH, for the first run, a
+# resume and every automatic continuation. The check below drives the REAL
+# fake pi: it asserts that `pkill`, `killall` and `pgrep` resolve inside the
+# shim directory, and only then calls each one on a pattern it made random and
+# that matches nothing. The real pkill/killall are never called anywhere in
+# this suite: every call below goes through the shim, which refuses.
+
+guard_launch() {
+  # $1 run name, $2 fixture, $3 guard log; rest = extra wrapper arguments.
+  local run=$1 fixture=$2 guard=$3
+  shift 3
+  # PI_CODING_AGENT_DIR is set EMPTY here on purpose: the caller's ambient value
+  # must not decide this check (pi's own default applies to an empty value, and
+  # so does the wrapper's), exactly as the check's own bin dir is used below.
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/$run-state.json" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" \
+    FAKE_PI_SESSION_ID="$run-session" FAKE_PI_RC=0 PI_LIVE=0 \
+    FAKE_PI_GUARD_LOG="$guard" FAKE_PI_SHIM_DIR="$SHIM_DIR" \
+    PI_CODING_AGENT_DIR='' \
+    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+    > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+}
+
+# Assert the guard log of one invocation: the three spellings resolved to the
+# shims, pkill and killall (and every pgrep signal spelling the shim exists for)
+# refused with rc 126 and their named message, and the two pass-through cases
+# (a plain pattern, and a value that itself starts with `-`) reached the real
+# pgrep, which answers 1 for a no-match pattern.
+guard_log_asserts() {
+  local guard=$1 prefix=$2
+  local spelling label needles=('pgrep-signal' 'pgrep-short-number' 'pgrep-short-name' \
+    'pgrep-kill' 'pgrep-signal-eq' 'pgrep-cluster-value')
+  for spelling in pkill killall pgrep; do
+    grep -qF "PATH-ENTRY $spelling=$SHIM_DIR/" "$guard" \
+      || { cat "$guard" >&2; fail "$prefix: $spelling did not resolve inside the shim directory"; }
+  done
+  grep -qF 'RC pkill=126 ' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: the pkill shim did not refuse with rc 126"; }
+  grep -qF 'pi-shim: refused pkill' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: the pkill refusal does not name itself"; }
+  grep -qF 'RC killall=126 ' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: the killall shim did not refuse with rc 126"; }
+  grep -qF 'pi-shim: refused killall' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: the killall refusal does not name itself"; }
+  # Every signal spelling, not only the long `--signal` form. The short forms
+  # are the 24-line cluster branch of the shim: a pgrep that forwards `-9` or
+  # `-TERM` to the real one signals every match, so each has its own assertion.
+  for label in "${needles[@]}"; do
+    grep -qF "RC $label=126 " "$guard" \
+      || { cat "$guard" >&2; fail "$prefix: $label was not refused with rc 126"; }
+    grep -qF "RC $label=126 OUT=pi-shim: refused pgrep" "$guard" \
+      || { cat "$guard" >&2; fail "$prefix: $label was not refused by the pgrep shim itself"; }
+  done
+  # A value that itself starts with `-` is a VALUE, never an option: `-d -`
+  # passes through (the real pgrep answers 1 for a no-match pattern). A shim
+  # that read the lone `-` as an option would answer 126 or 127 here.
+  grep -qF 'RC pgrep-value-dash=1 ' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: a value starting with '-' was not passed through (expected rc 1)"; }
+  # Plain pgrep is not a signal: it passes through to the real pgrep, which
+  # answers 1 for a pattern that matches nothing. A 126 here would mean the
+  # shim over-refuses; a 127 would mean it could not find the real pgrep.
+  grep -qF 'RC pgrep-plain=1 ' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: a plain pgrep was not passed through to the real pgrep (expected rc 1)"; }
+  # No empty field in the agent's PATH: the shim directory is prepended with `:`
+  # only when the inherited PATH is non-empty, because an empty field is the
+  # CURRENT DIRECTORY (the worktree) to the shim's lookup and to every command
+  # the agent runs.
+  grep -qF 'PATH-EMPTY-FIELD 0' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: the agent's PATH has an empty field (an empty field means the current directory)"; }
+  if grep -qF 'GUARD-MISSING' "$guard"; then
+    cat "$guard" >&2
+    fail "$prefix: the agent did not see the shims on its PATH"
+  fi
+}
+
+# A RESUME is a launch too: it must get the same guarded PATH (mode=resume is
+# the one argv shape that skips the new-run preflight).
+check_signal_guard_resume() {
+  local guard=$ROOT/guard-resume.log
+  rm -f "$guard"
+  clean_worktree
+  guard_launch guard-resume pi-success "$guard" resume guard-resume-session \
+    || fail 'a guarded resume failed'
+  guard_log_asserts "$guard" 'resume'
+  contains "$PI_ARGV_LOG" '--session guard-resume-session' 'the guarded launch resumed the named session'
+}
+
+check_signal_guard_first_run() {
+  local guard=$ROOT/guard-first.log
+  rm -f "$guard"
+  clean_worktree
+  guard_launch guard-first pi-success "$guard" \
+    || fail 'a guarded first run failed'
+  guard_log_asserts "$guard" 'first run'
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/guard-first.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a guarded first run is not SUCCESS'
+}
+
+# The automatic continuation is guarded too: the same environment the agent
+# gets on a retry is the environment it got on the first run.
+check_signal_guard_continuation() {
+  local guard=$ROOT/guard-continuation.log
+  rm -f "$guard"
+  clean_worktree
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/guard-continuation-state.json" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_SEQUENCE='pi-empty-completion pi-success' \
+    FAKE_PI_COUNTER="$ROOT/guard-continuation.counter" \
+    FAKE_PI_SESSION_ID=guard-continuation-session FAKE_PI_RC=0 PI_LIVE=0 \
+    FAKE_PI_GUARD_LOG="$guard" FAKE_PI_SHIM_DIR="$SHIM_DIR" \
+    PI_GUARD_SEQUENCE_INDEX=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" guard-continuation \
+    > "$ROOT/guard-continuation.launch.log" 2>&1 < /dev/null \
+    || fail 'a guarded run with one continuation failed'
+  # Both invocations (the run and its continuation) wrote their guard facts to
+  # the same log, so each assertion below must hold TWICE.
+  local count
+  for needle in "PATH-ENTRY pkill=$SHIM_DIR/" 'RC pkill=126 ' \
+                "PATH-ENTRY killall=$SHIM_DIR/" 'RC killall=126 ' \
+                'RC pgrep-signal=126 ' 'RC pgrep-short-number=126 ' \
+                'RC pgrep-short-name=126 ' 'RC pgrep-kill=126 ' \
+                'RC pgrep-signal-eq=126 ' 'RC pgrep-cluster-value=126 ' \
+                'RC pgrep-value-dash=1 ' 'RC pgrep-plain=1 '; do
+    count=$(grep -cF -- "$needle" "$guard")
+    [[ $count == 2 ]] || { cat "$guard" >&2; fail "the continuation guard log has $count of '$needle', expected 2 (the run and its continuation)"; }
+  done
+  if grep -qF 'GUARD-MISSING' "$guard"; then
+    cat "$guard" >&2
+    fail 'a continuation did not see the shims on its PATH'
+  fi
+  [[ $(grep -cF 'PATH-EMPTY-FIELD 0' "$guard") == 2 ]] \
+    || { cat "$guard" >&2; fail 'a continuation PATH (or its first run) has an empty field'; }
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/guard-continuation.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a guarded run that recovers on its continuation is not SUCCESS'
+}
+
+# Fail closed, part 1: pi's own managed-bin directory shadows the guard.
+# pi prepends `$PI_CODING_AGENT_DIR/bin` (default `$HOME/.pi/agent/bin`) to the
+# PATH of every command its bash tool runs, so a pkill/killall/pgrep there would
+# be found BEFORE the shim. The launch is refused (exit 2) while such a file
+# exists; nothing is started and no run name is claimed.
+check_signal_guard_agent_bin_shadow() {
+  # pi prepends its own `$PI_CODING_AGENT_DIR/bin` to the agent's PATH, so a
+  # pkill/killall/pgrep there would be found BEFORE the shims. A launch is refused
+  # (exit 2) while such a file exists; nothing is started and the name is free.
+  local agent_dir=$ROOT/shadow-agent-dir shim before after rc=0
+  rm -rf "$agent_dir"; mkdir -p "$agent_dir/bin"
+  before=$(pi_invocations)
+  for shim in pkill killall pgrep; do
+    # An EMPTY stand-in is enough: the guard refuses on its existence, not on
+    # what it would do, so this check never runs it either.
+    : > "$agent_dir/bin/$shim"
+    rc=0
+    PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      CONTROLLER_OD_STATE="$ROOT/shadow-$shim-state.json" PI_CODING_AGENT_DIR="$agent_dir" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID="shadow-$shim-session" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "shadow-$shim" \
+      > "$ROOT/shadow-$shim.launch.log" 2>&1 < /dev/null || rc=$?
+    [[ $rc == 2 ]] || fail "a shadowing $shim in pi's own bin dir exited $rc, expected 2"
+    contains "$ROOT/shadow-$shim.launch.log" 'shadows the shim' \
+      "a shadowing $shim names the shadowing file"
+    rm -f "$agent_dir/bin/$shim"
+  done
+  after=$(pi_invocations)
+  [[ $after == "$before" ]] || fail 'pi started although its own bin dir would shadow a shim'
+  [[ -e $CONTROLLER_ROOT/runs/shadow-pkill.lock ]] && fail 'a shadowed launch claimed the run name'
+}
+
+# Fail closed, part 1b: pi RESOLVES `$PI_CODING_AGENT_DIR` (dist/config.js:511-513
+# through utils/paths.js normalizePath:100-124: a leading `~/` expands against the
+# home directory, everything else is taken as written). Bash does not tilde-expand
+# a variable's value, so a literal `~/...` test would stat nothing, launch pi, and
+# then let pi put the REAL `$HOME/...` directory ahead of the shims -- a silently
+# defeated guard. The `~/` spelling is therefore expanded against HOME, and a value
+# that is still relative is refused with its named message instead of being joined
+# to pi's own working directory (which this wrapper cannot check).
+check_signal_guard_agent_dir_forms() {
+  # The same HOME_ROOT the wrapper runs with, so `~/x` and `$HOME_ROOT/x` are the
+  # same directory. An EMPTY stand-in is enough: the guard refuses on existence.
+  local shim before after rc=0 tilde_dir=$HOME_ROOT/agents/pi-relative
+  # shellcheck disable=SC2088 # the FIXTURE is literally '~/...': pi's OWN spelling, unexpanded by bash
+  local tilde_value='~/agents/pi-relative'
+  rm -rf "$tilde_dir"; mkdir -p "$tilde_dir/bin"
+  for shim in pkill killall pgrep; do
+    : > "$tilde_dir/bin/$shim"
+    before=$(pi_invocations)
+    rc=0
+    PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      CONTROLLER_OD_STATE="$ROOT/tilde-$shim-state.json" \
+      PI_CODING_AGENT_DIR="$tilde_value" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID="tilde-$shim-session" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "tilde-$shim" \
+      > "$ROOT/tilde-$shim.launch.log" 2>&1 < /dev/null || rc=$?
+    after=$(pi_invocations)
+    # The message names the RESOLVED file: a refusal that quoted the literal
+    # `~/agents/...` would name a path that does not decide this launch.
+    [[ $rc == 2 ]] || fail "a shadowing $shim under a ~/ agent dir exited $rc, expected 2"
+    contains "$ROOT/tilde-$shim.launch.log" "$tilde_dir/bin/$shim shadows the shim" \
+      "a ~/ agent dir is expanded to HOME and names the shadowing file"
+    [[ $after == "$before" ]] || fail "pi started although ~/agent-dir/bin/$shim shadows the shim"
+    [[ -e $CONTROLLER_ROOT/runs/tilde-$shim.lock ]] && fail "a ~/agent-dir launch claimed the run name ($shim)"
+    rm -f "$tilde_dir/bin/$shim"
+  done
+  # A CLEAN `~` directory proves the ordinary spelling is ACCEPTED, not refused:
+  # the launch succeeds and the agent still sees the shims. (An untilde-expanded
+  # `~/...` would also "succeed" here if it never existed, so this case is paired
+  # with the three shadowing ones above, which require the named refusal.)
+  rm -rf "$tilde_dir"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/guard-tilde-clean-state.json" \
+    PI_CODING_AGENT_DIR="$tilde_value" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=guard-tilde-clean-session FAKE_PI_RC=0 PI_LIVE=0 \
+    FAKE_PI_GUARD_LOG="$ROOT/guard-tilde-clean.guard.log" FAKE_PI_SHIM_DIR="$SHIM_DIR" \
+    "$SRC" "$WORKTREE" "$PROMPT" guard-tilde-clean \
+    > "$ROOT/guard-tilde-clean.launch.log" 2>&1 < /dev/null \
+    || fail 'a launch with a clean ~/agent dir failed'
+  guard_log_asserts "$ROOT/guard-tilde-clean.guard.log" 'tilde-agent-dir launch'
+  # A value that is not absolute (and not `~/`) is refused with its own named
+  # message, and nothing is started: pi would join it to ITS OWN cwd.
+  for form in 'agents/pi-relative' '.pi/agent'; do
+    before=$(pi_invocations)
+    expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      CONTROLLER_OD_STATE="$ROOT/relative-state.json" PI_CODING_AGENT_DIR="$form" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID=relative-session FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" relative-agent-dir
+    after=$(pi_invocations)
+    contains "$ROOT/focused-command.out" 'PI_CODING_AGENT_DIR must be an absolute path or start with ~/' \
+      "a relative PI_CODING_AGENT_DIR ($form) is refused by name"
+    [[ $after == "$before" ]] || fail "pi started with a relative PI_CODING_AGENT_DIR ($form)"
+    [[ -e $CONTROLLER_ROOT/runs/relative-agent-dir.lock ]] && fail "a relative PI_CODING_AGENT_DIR claimed the run name ($form)"
+  done
+}
+
+guard_refuses_when_shim_absent() {
+  # Fail closed, part 2: a shim that is MISSING (or not executable) refuses the
+  # launch with exit 2 and a named message, and pi is never started. The wrapper
+  # on trial runs from a COPY whose pi-shims/ directory is the real set with that
+  # one entry removed, so the real directory is never touched.
+  local kind=$1 shim=$2 mutilated=$ROOT/mutilated-$1
+  rm -rf "$mutilated"; mkdir -p "$mutilated"
+  ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
+  # `rm -f` and not `rm -rf`: the glob above made pi-shims a SYMLINK to the real
+  # directory, and -f removes the link without ever following it.
+  rm -f "$mutilated/pi-shims"
+  cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
+  case $kind in
+    missing) rm -f "$mutilated/pi-shims/$shim" ;;
+    not-executable) chmod -x "$mutilated/pi-shims/$shim" ;;
+  esac
+  local before after rc=0
+  before=$(pi_invocations)
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/guard-$kind-state.json" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=guard-$kind-session FAKE_PI_RC=0 \
+    "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" "guard-$kind" \
+    > "$ROOT/guard-$kind.launch.log" 2>&1 < /dev/null || rc=$?
+  after=$(pi_invocations)
+  [[ $rc == 2 ]] || fail "a $kind shim refused with exit $rc, expected 2"
+  contains "$ROOT/guard-$kind.launch.log" 'pi signal guard is incomplete' \
+    "a $kind shim names the guard as incomplete"
+  [[ $after == "$before" ]] || fail "pi started although the $shim shim was $kind"
+  if [[ -e $CONTROLLER_ROOT/runs/guard-$kind.lock ]]; then
+    fail "a refused $kind launch claimed the run name"
+  fi
+}
+
+check_signal_guard_fail_closed() {
+  local shim
+  for shim in pkill killall pgrep; do
+    guard_refuses_when_shim_absent missing "$shim"
+    guard_refuses_when_shim_absent not-executable "$shim"
+  done
+  check_signal_guard_agent_bin_shadow
+  check_signal_guard_agent_dir_forms
+}
+
+# The wrappers that launch the agent carry the guard: pi-impl.sh is the one
+# launcher, and it must not offer a switch to turn the guard off.
+check_signal_guard_not_switchable() {
+  if grep -qE 'PI_(NO_)?SHIM[S_]?(GUARD)?_(OFF|SKIP|DISABLE)' "$SRC"; then
+    fail 'pi-impl.sh offers an environment switch that turns the signal guard off'
+  fi
+  if grep -Fq -- 'pi_shims_dir=' "$SCRIPT_DIR/../pi-review.sh"; then
+    fail 'pi-review.sh duplicates the shim PATH instead of inheriting it from pi-impl.sh'
+  fi
+}
+
+# The shims are POSIX sh, not just bash: run-suite.sh shellchecks the *.sh entry
+# points and cannot reach a file without that suffix, so their syntax is checked
+# here, where the gate always runs.
+check_signal_guard_shim_syntax() {
+  local shim
+  for shim in pkill killall pgrep; do
+    if ! sh -n "$SHIM_DIR/$shim"; then
+      fail "$SHIM_DIR/$shim is not valid POSIX sh"
+    fi
+    # A shim that is not executable would never be reached by the agent, and the
+    # wrapper's preflight (proven by check_signal_guard_fail_closed) would refuse
+    # EVERY launch instead.
+    [[ -x $SHIM_DIR/$shim ]] || fail "$SHIM_DIR/$shim is not executable"
+  done
+}
+
 check_continue_prompt_file() {
   local prompt_file=$SCRIPT_DIR/../continue-empty-completion.md
   [[ -r $prompt_file ]] || fail 'the canonical continuation prompt file is missing'
   [[ $(wc -l < "$prompt_file") == 1 ]] || fail 'the continuation prompt must be one line'
   contains "$prompt_file" 'Your last turn ended without a tool call or a message.' 'the canonical prompt text'
   # It lives in exactly one file: no other controller source repeats it.
-  ! grep -R -qF -- 'ended without a tool call or a message' \
-    "$SCRIPT_DIR/../pi-impl.sh" "$SCRIPT_DIR/../lib.sh" "$SCRIPT_DIR/../codex-impl.sh" \
-    || fail 'the continuation prompt text is duplicated outside its one file'
+  if grep -R -qF -- 'ended without a tool call or a message' \
+    "$SCRIPT_DIR/../pi-impl.sh" "$SCRIPT_DIR/../lib.sh" "$SCRIPT_DIR/../codex-impl.sh"; then
+    fail 'the continuation prompt text is duplicated outside its one file'
+  fi
   # The wrapper refuses to run when that one file is unreadable, instead of
   # silently continuing with an empty prompt or skipping the continuation.
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
@@ -1754,14 +2243,26 @@ check_run_name_ownership() {
 # its own state: the controller needs the agent's pid (and the pid of what that
 # agent is running), because nothing else can name what to stop.
 check_job_status_dead_wrapper() {
-  local runs=$ROOT/dead-wrapper-runs spawn_pid
+  local runs=$ROOT/dead-wrapper-runs spawn_pid tool_pid=''
   rm -rf "$runs"; mkdir -p "$runs" "$ROOT/status-home"
   # A long-lived "agent" whose cwd IS the run's worktree (that is how the reader
-  # recognises it, structurally) and which starts a "tool" child.
-  ( cd -- "$WORKTREE" && exec -a pi python3 -c 'import subprocess, time
-subprocess.Popen(["sleep", "120"])
-time.sleep(120)' ) &
+  # recognises it, structurally) and which starts a "tool" child. The wrapper
+  # script knows the EXACT pids of both at every exit path, so no check here
+  # kills by pattern (never `pkill -f sleep 120`).
+  ( cd -- "$WORKTREE" && exec -a pi python3 -c 'import subprocess, sys, time
+child = subprocess.Popen(["sleep", "120"])
+print(child.pid, flush=True)
+time.sleep(120)' > "$ROOT/dead-wrapper-tool.pid" ) &
   spawn_pid=$!
+  # Read the tool's exact pid back from the record the agent wrote.
+  local waited=0
+  while [[ ! -s $ROOT/dead-wrapper-tool.pid ]] && (( waited < 200 )); do
+    sleep 0.05
+    waited=$(( waited + 1 ))
+  done
+  [[ -s $ROOT/dead-wrapper-tool.pid ]] || { kill -9 "$spawn_pid" 2>/dev/null; fail 'the dead-wrapper agent never recorded its tool pid'; }
+  tool_pid=$(cat "$ROOT/dead-wrapper-tool.pid")
+  [[ $tool_pid =~ ^[0-9]+$ ]] || { kill -9 "$spawn_pid" 2>/dev/null; fail 'the dead-wrapper tool pid is not a number'; }
   printf '%s\n' "$WORKTREE" > "$runs/dead-wrapper.wt"
   # The run stream the dead sidecar stopped refreshing: its mtime is the newest
   # event fact, and it is NEWER than the sidecar's last tick.
@@ -1834,7 +2335,7 @@ PY
     || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/recycled-wrapper.out" >&2; fail 'a recycled wrapper pid is not named as recycled'; }
   kill -9 "$spawn_pid" 2>/dev/null || true
   wait "$spawn_pid" 2>/dev/null || true
-  pkill -f 'sleep 120' 2>/dev/null || true
+  kill -9 "$tool_pid" 2>/dev/null || true
 }
 
 check_job_status_validation() {
@@ -1924,6 +2425,12 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
     prompt-file)
       check_continue_prompt_file
       ;;
+    signal-guard-first-run) check_signal_guard_first_run ;;
+    signal-guard-resume) check_signal_guard_resume ;;
+    signal-guard-continuation) check_signal_guard_continuation ;;
+    signal-guard-fail-closed) check_signal_guard_fail_closed ;;
+    signal-guard-not-switchable) check_signal_guard_not_switchable ;;
+    signal-guard-shim-syntax) check_signal_guard_shim_syntax ;;
     repo-not-a-worktree)
       mkdir -p "$ROOT/focus-plain-dir"
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
@@ -2620,6 +3127,12 @@ check_job_status_defaults
 check_job_status_readonly
 check_live_usage_trend
 check_live_atomic_partial
+check_signal_guard_first_run
+check_signal_guard_resume
+check_signal_guard_continuation
+check_signal_guard_fail_closed
+check_signal_guard_not_switchable
+check_signal_guard_shim_syntax
 check_continue_prompt_file
 check_retry_count_config
 check_input_validation
@@ -2642,6 +3155,7 @@ DESIGN_SOURCE=${DESIGN_SOURCE:-$SCRIPT_DIR/../docs/DESIGN-GUIDE.md}
 CONSUMER_SOURCE=${CONSUMER_SOURCE:-$SCRIPT_DIR/../docs/CONSUMERS.md}
 RULES_SOURCE=${RULES_SOURCE:-$SCRIPT_DIR/../rules.md}
 ENV_SOURCE=${ENV_SOURCE:-$SCRIPT_DIR/../controller.local.env.example}
+CHANGES_SOURCE=${CHANGES_SOURCE:-$SCRIPT_DIR/../CHANGES.md}
 contains "$README_SOURCE" "\`deepseek-pi\` | \`pi-impl.sh\` | Favored Open Design route" 'README names pi as the favored route'
 contains "$README_SOURCE" 'docs/DESIGN-GUIDE.md#pi-open-design-route' 'README links the pi route design rationale'
 contains "$README_SOURCE" 'docs/CONSUMERS.md#run-pi-on-open-design' 'README links the pi adoption guide'
@@ -2649,6 +3163,38 @@ contains "$DESIGN_SOURCE" 'Pi 1.5.0 can report a provider 402' 'design guide exp
 contains "$CONSUMER_SOURCE" "\`deepseek-pi\` is the favored Pi route" 'consumer guide names the favored pi route'
 contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide has a copyable pi launch'
 contains "$RULES_SOURCE" 'deepseek-pi-volker' 'controller rules list pinned pi routes'
+# The signal guard is a capability an adopter must be able to find: its limit is
+# documented where the pi route is, and the changelog records the change.
+contains "$README_SOURCE" '**Signal guard.**' 'README documents the pi signal guard'
+# shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+contains "$README_SOURCE" 'bash builtin `kill`' 'README documents the signal guard known limit'
+# The guard has all THREE documents, and each one is checked where the reader
+# would look for it: WHAT (README), WHY (the design guide's own subsection) and
+# HOW (the consumer guide's two launch refusals).
+contains "$README_SOURCE" 'docs/DESIGN-GUIDE.md#why-the-pi-signal-guard-is-mechanical-not-advisory' \
+  'README links the signal guard rationale'
+contains "$DESIGN_SOURCE" 'Why the pi signal guard is mechanical, not advisory' \
+  'design guide explains why the guard is a refusal and not a written ban'
+contains "$DESIGN_SOURCE" 'Refuse rather than guess, on' \
+  'design guide states the refuse-rather-than-guess decision'
+contains "$DESIGN_SOURCE" 'not a security' \
+  'design guide states that the guard is not a security boundary'
+contains "$CONSUMER_SOURCE" 'signal guard' 'consumer guide tells an adopter a launch can refuse'
+contains "$CONSUMER_SOURCE" 'pi signal guard is incomplete' \
+  'consumer guide quotes the incomplete-guard refusal an adopter meets'
+contains "$CONSUMER_SOURCE" 'pi signal guard cannot be enforced' \
+  'consumer guide quotes the shadowing/relative refusal an adopter meets'
+contains "$CONSUMER_SOURCE" 'must be an absolute path or start with ~/' \
+  'consumer guide quotes the relative PI_CODING_AGENT_DIR refusal'
+# Both cross-document anchors resolve: the heading text and the slug it is
+# linked by are asserted together, so a renamed heading cannot leave a reader
+# with a dead link (the slug of that heading is lower case, comma dropped,
+# spaces to hyphens).
+contains "$DESIGN_SOURCE" '### Why the pi signal guard is mechanical, not advisory' \
+  'design guide has the heading the README links to'
+contains "$CONSUMER_SOURCE" 'DESIGN-GUIDE.md#why-the-pi-signal-guard-is-mechanical-not-advisory' \
+  'consumer guide links the guard rationale by the same anchor'
+contains "$CHANGES_SOURCE" 'Signal guard for every pi run' 'changelog records the signal guard'
 contains "$ENV_SOURCE" 'PI_THINKING="max"' 'local environment example documents the maximum thinking default'
 if grep -Eq 'OPENDESIGN_API_KEY_[A-Z0-9_]+=' "$ENV_SOURCE"; then
   fail 'controller local environment example contains an API-key assignment'

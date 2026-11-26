@@ -1,3 +1,42 @@
+# Python client: `hostobs-mark`
+
+The standard-library `hostobs-client` distribution provides `hostobs-mark`, a
+command that sends one `annotate` line to the observer socket. Packaging details
+are in [`PACKAGING.md`](PACKAGING.md).
+
+**No release exists yet**, so there is no released wheel to install. When an
+approved wheel is provided, set `HOSTOBS_CLIENT_WHEEL` to that wheel's full path
+and install that file directly. On Debian 13, use a virtual environment because
+the system Python is externally managed. The package has no runtime dependencies,
+and `--no-index` avoids resolving the distribution name from a package index:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --no-index --no-deps "$HOSTOBS_CLIENT_WHEEL"
+```
+
+The command is installed at `.venv/bin/hostobs-mark` and is available as
+`hostobs-mark` while the environment is active. Its target is
+`hostobs_client.mark:main`.
+
+**Current server and deployment status:** No hostobs probe currently serves
+`annotate`, and `deploy/` does not install an observer socket yet. The example
+socket path is absent in the current deployment, so `hostobs-mark` prints a
+notice and exits 0; adding `--require` makes it exit 1. When deployment installs
+the observer socket, callers will need membership in the `hostobs-observer`
+group. The serving and deployment pieces are not delivered yet.
+
+Once the socket is installed and the probe serves `annotate`, set its path and
+pass an annotation name accepted by WIRE §4.12:
+
+```sh
+HOSTOBS_OBSERVER_SOCKET=/run/hostobs/observer/hostobs.sock \
+  hostobs-mark point hostobs.consumer-check --require
+```
+
+Usage errors exit 2 (WIRE §8.5 and `hostobs/python/hostobs_client/mark.py`).
+
 # Using the hostobs Rust lanes
 
 `model`, `proto`, `serve`, `kernel`, `store`, `client` and `bins/probe` are functional;

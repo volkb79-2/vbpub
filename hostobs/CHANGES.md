@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Added (M3 A2):** package the standard-library `hostobs_client` distribution with the `hostobs-mark` entry point; conformance builds and checks its zipapp, while a CMRU wheel-build contract is planned for A1 and `hostobs/cmru.toml` is not present yet.
+- **Fixed (M3 A2 review):** packaging checks now reject namespace-only source directories, match package-data patterns by path segment, pin the complete setuptools table and legacy config absence, exercise `hostobs-mark` exit codes against an unavailable socket, and require fault probes to observe their expected rejection.
 - **Added (M3 B2):** the observer level is installable through its systemd socket, tmpfiles directory and shipped probe configuration; deploy regression checks pin all three levels, and the Debian setup notes cover its access group.
 - **Added (HOB-102):** the kernel collector reads `cgroup.freeze` and `cgroup.events`, and the sampler publishes `cgroup.freeze`, `cgevents.frozen` and `cgevents.populated` as last-only cgroup state metrics.
 - **Added (B9):** `current` and `subscribe` accept the minor-2 `cgroup_id` selector, resolved from the published tick's `(st_dev, inode)` index; the sampler publishes `limit.cpu.max.quota` and `limit.cpu.max.period` as cgroup gauges.
