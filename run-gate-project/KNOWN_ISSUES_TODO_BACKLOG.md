@@ -9619,7 +9619,9 @@ manifest. A forwarded flag that repeats a name this same invocation's own
 options put on the argv (`--rejudge-outcome`, `--carry-over`, `--merge-state`,
 `--merge-shard-store` from `--merge-shards`, ...) is refused too, because a
 duplicate is last-wins (replace-valued) or silently additive (append-valued)
-at the judge.
+at the judge; its own line says the remedy, `<flag> is already set by a
+Run-Gate option in this invocation; drop it after '--'` (review r2 L3 -- "give
+it before '--'" was dead advice, since it already is).
 `--rejudge-contaminated` refuses `--` arguments (it forces its own selection).
 
 **Capability probe and floor.** Forwarded store flags need `assay >= 12.3.0`
