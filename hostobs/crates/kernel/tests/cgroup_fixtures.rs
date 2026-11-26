@@ -223,7 +223,11 @@ fn memory_event_duplicates_keep_the_existing_first_entry_behavior() {
     .expect("keyed lines remain readable");
 
     assert_eq!(events.len(), 2, "the generic parser keeps both entries");
-    assert_eq!(events.u64("memev.high"), Some(2), "lookup remains first-wins");
+    assert_eq!(
+        events.u64("memev.high"),
+        Some(2),
+        "lookup remains first-wins"
+    );
 }
 
 #[test]
