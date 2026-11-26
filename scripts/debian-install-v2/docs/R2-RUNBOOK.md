@@ -34,8 +34,7 @@ Cowtree btrfs cheap-clone workspace refuses `--jobs 2` by name (`--jobs 1` there
 **Read the verdict in `lane.log`.** `remote-gate.sh` anchors on the REQUESTED lane (`:291`), a shard
 prints `run-gate: lane 'r2.shard<K>of3' verdict ...` (`run_gate.py:474`), so the anchored read finds
 nothing and exit code plus slice `oom_kill` delta decide: a shard that legitimately ended
-`BUDGET_EXCEEDED` (exit 4) while ANY kill happened is `INCONCLUSIVE-OOM`, exit 76 (`:305`), and §5's
-"exit 4: resume" never runs.
+`BUDGET_EXCEEDED` (exit 4) while ANY kill happened is reported `INCONCLUSIVE-OOM`, exit 76 (`:305`).
 
 ## 3. Run the three shards (the controller does this)
 
@@ -94,6 +93,7 @@ strict merge counts it a PRESENT record. Add the rejudge flags instead:
 ```bash
 $RG r1002 $SP r2 <sha> --base fdf60ffdc \
   --seed-store /tmp/v2-s0/.run-gate/assay-shards/$SP=.run-gate/assay-shards/$SP \
+  --collect-store .run-gate/assay-shards/$SP \
   -- --shard 0/3 --rejudge <id> --rejudge-outcome budget_exceeded
 ```
 
