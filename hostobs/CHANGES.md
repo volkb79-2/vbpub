@@ -6,6 +6,7 @@
   padding, four typed decoder kinds, cross-language event fixtures, and an events segment
   fixture carrying event-minimal. The Rust and Python readers now agree on stored-frame
   refusals, and Rust exposes `decode_event_frame` for stored events.
+- **Added (HOB-102):** the kernel collector reads `cgroup.freeze` and `cgroup.events`, and the sampler publishes `cgroup.freeze`, `cgevents.frozen` and `cgevents.populated` as last-only cgroup state metrics.
 - **Changed (P-hostobs-12, `HOB-67`):** the sans-IO serving core and send hub now live in `crates/serve`; `proto` keeps the codec and stream layers, while `probe` keeps process wiring, config, the driver, sampler and live backend.
 - **Added (P-hostobs-11a):** a live `watch` client example, the contained two-level `tools/live-demo.py` harness with a fail-closed verdict, and the Debian systemd/config contract for the hostobs probe, with unit and transcript-verdict tests plus `docs/LIVE-DEMO.md`.
 - **Fixed (P-hostobs-11a r1):** tmpfiles.d now owns the level socket directories, the verdict rejects any non-`ok` numeric value, and deployment tests pin the exact activation, namespace and user/group contract.
