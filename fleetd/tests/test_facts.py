@@ -947,3 +947,210 @@ def test_missing_guard_main_and_unconfigured_state_are_reasoned(tmp_path):
     assert _value(guard["guard_state"]) is None
     assert guard["guard_state"]["reason"] == "guard runtime state source is not configured"
     assert guard["frozen_units"]["reason"] == "thrashguard-absent"
+
+
+def test_policy_map_helpers_validate_tables_and_preserve_configured_values():
+    from fleetd import facts as facts_module
+
+    assert facts_module._positive_bytes_map({"tiny": 64}, "charges", allowed={"tiny"}) == {"tiny": 64}
+    with pytest.raises(ContractError, match="charges: expected table"):
+        facts_module._positive_bytes_map([], "charges")
+    with pytest.raises(ContractError, match="expected non-empty keys"):
+        facts_module._positive_bytes_map({"": 64}, "charges")
+    with pytest.raises(ContractError, match="unknown key 'large'"):
+        facts_module._positive_bytes_map({"large": 64}, "charges", allowed={"tiny"})
+    with pytest.raises(ContractError, match="expected positive integer bytes"):
+        facts_module._positive_bytes_map({"tiny": True}, "charges")
+
+    assert facts_module._priority_map({"worker": ["dev", "gate"]}, "priorities") == {
+        "worker": ["dev", "gate"],
+    }
+    with pytest.raises(ContractError, match="priorities: expected table"):
+        facts_module._priority_map([], "priorities")
+    with pytest.raises(ContractError, match="expected non-empty principal names"):
+        facts_module._priority_map({" ": []}, "priorities")
+    with pytest.raises(ContractError, match="expected an array of allowed priority classes"):
+        facts_module._priority_map({"worker": "dev"}, "priorities")
+    with pytest.raises(ContractError, match="expected an array of allowed priority classes"):
+        facts_module._priority_map({"worker": ["unknown"]}, "priorities")
+    with pytest.raises(ContractError, match="duplicate priority class"):
+        facts_module._priority_map({"worker": ["dev", "dev"]}, "priorities")
+
+    admission = facts_module._admission_config(
+        {"queue_path": "/run/fleetd/queue", "wait_s": 30, "settle_s": 5}, "admission",
+    )
+    assert admission == {"queue_path": "/run/fleetd/queue", "wait_s": 30.0, "settle_s": 5.0}
+    with pytest.raises(ContractError, match="admission: expected table"):
+        facts_module._admission_config(None, "admission")
+    with pytest.raises(ContractError, match="admission.wait_s: must be greater than zero"):
+        facts_module._admission_config(
+            {"queue_path": "/run/fleetd/queue", "wait_s": 0, "settle_s": 5}, "admission",
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1.2.3", "1.2.3"),
+        ("1.2.3.dev4", "1.2.3-dev.4"),
+        ("1.2.3.post5", "1.2.3-post.5"),
+        ("1.2.3.a6", "1.2.3-alpha.6"),
+        ("1.2.3.b7", "1.2.3-beta.7"),
+        ("1.2.3.rc8+host.1", "1.2.3-rc.8+host.1"),
+    ],
+)
+def test_agent_version_metadata_is_converted_to_semver(monkeypatch, raw, expected):
+    from fleetd import facts as facts_module
+
+    monkeypatch.setattr(facts_module.importlib.metadata, "version", lambda _name: raw)
+    assert facts_module._agent_version() == expected
+
+
+def test_agent_version_refuses_missing_or_unrepresentable_distribution_metadata(monkeypatch):
+    from fleetd import facts as facts_module
+
+    def missing(_name):
+        raise facts_module.importlib.metadata.PackageNotFoundError("fleetd")
+
+    monkeypatch.setattr(facts_module.importlib.metadata, "version", missing)
+    with pytest.raises(ContractError, match="agent version metadata is unavailable"):
+        facts_module._agent_version()
+    monkeypatch.setattr(facts_module.importlib.metadata, "version", lambda _name: "1.2")
+    with pytest.raises(ContractError, match="cannot be represented as SemVer"):
+        facts_module._agent_version()
+
+
+def test_psi_window_parser_reports_missing_malformed_and_out_of_range_values():
+    from fleetd import facts as facts_module
+
+    assert facts_module._psi_window_value(None, "some", 10, "fixture") == (
+        None, "fixture has no some line",
+    )
+    assert facts_module._psi_window_value("some avg10", "some", 10, "fixture") == (
+        None, "fixture some avg10 is absent",
+    )
+    assert facts_module._psi_window_value("some avg10=bad", "some", 10, "fixture") == (
+        None, "fixture some avg10 is malformed",
+    )
+    assert facts_module._psi_window_value("some avg10=101", "some", 10, "fixture") == (
+        None, "fixture some avg10 is outside 0 through 100",
+    )
+    assert facts_module._psi_window_value("some", "some", 10, "fixture") == (
+        None, "fixture some avg10 is absent",
+    )
+    assert facts_module._psi_window_value("some avg60=0 avg10=0.5", "some", 10, "fixture") == (
+        0.5, None,
+    )
+
+
+def test_cgroup_source_parsers_keep_missing_and_malformed_values_unknown(tmp_path):
+    from fleetd import facts as facts_module
+
+    limit = tmp_path / "memory.max"
+    assert facts_module._read_cgroup_limit(limit, "memory.max")[1]
+    limit.write_text("max\n", encoding="utf-8")
+    assert facts_module._read_cgroup_limit(limit, "memory.max") == ("max", None)
+    limit.write_text("bad\n", encoding="utf-8")
+    assert facts_module._read_cgroup_limit(limit, "memory.max")[1] == (
+        "memory.max is not a non-negative integer or max"
+    )
+
+    cpu_max = tmp_path / "cpu.max"
+    assert facts_module._read_cpu_max(cpu_max, "cpu.max")[1]
+    cpu_max.write_text("max 100000\n", encoding="utf-8")
+    assert facts_module._read_cpu_max(cpu_max, "cpu.max") == (
+        {"quota_us": "max", "period_us": 100000}, None,
+    )
+    cpu_max.write_text("100000\n", encoding="utf-8")
+    assert facts_module._read_cpu_max(cpu_max, "cpu.max")[1] == "cpu.max must contain quota and period"
+    cpu_max.write_text("0 100000\n", encoding="utf-8")
+    assert facts_module._read_cpu_max(cpu_max, "cpu.max")[1] == "cpu.max quota is malformed"
+    cpu_max.write_text("100000 0\n", encoding="utf-8")
+    assert facts_module._read_cpu_max(cpu_max, "cpu.max")[1] == "cpu.max period is malformed"
+
+    memory_stat = tmp_path / "memory.stat"
+    assert facts_module._read_memory_stat(memory_stat, "inactive_file")[1]
+    memory_stat.write_text("inactive_file nope\n", encoding="utf-8")
+    assert facts_module._read_memory_stat(memory_stat, "inactive_file")[1] == (
+        "gate-slice memory.stat inactive_file is malformed"
+    )
+    memory_stat.write_text("inactive_file 4\ninactive_file 5\n", encoding="utf-8")
+    assert facts_module._read_memory_stat(memory_stat, "inactive_file")[1] == (
+        "gate-slice memory.stat inactive_file is absent or duplicated"
+    )
+    memory_stat.write_text("inactive_file 4\n", encoding="utf-8")
+    assert facts_module._read_memory_stat(memory_stat, "inactive_file") == (4, None)
+
+
+def test_gate_slice_planning_cap_reports_unavailable_cpu_inputs_and_handles_unlimited_quota(tmp_path):
+    from fleetd import facts as facts_module
+
+    root = _root(tmp_path)
+    config = load_facts_config(root)
+    slice_path = root / "sys/fs/cgroup" / _slice_path(config.gate_slice)
+    (slice_path / "cpu.max").write_text("max 100000\n", encoding="utf-8")
+    gate, cap = facts_module._gate_slice_facts(root, config, 4)
+    assert _value(gate["cpu_max"]) == {"quota_us": "max", "period_us": 100000}
+    assert _value(cap) == 5.0
+    gate, cap = facts_module._gate_slice_facts(root, config, None)
+    assert _value(gate["cpu_max"]) == {"quota_us": "max", "period_us": 100000}
+    assert _value(cap) is None
+    assert cap["reason"] == "online CPU count is unavailable"
+
+
+def test_mountinfo_decoding_and_disk_collection_failures_keep_reasons(tmp_path):
+    from fleetd import facts as facts_module
+
+    root = _root(tmp_path)
+    mountinfo = root / "proc/self/mountinfo"
+    mountinfo.write_text("not a mount row\n", encoding="utf-8")
+    mounts, reason = facts_module._mountinfo_fields(root)
+    assert mounts == []
+    assert reason == "/proc/self/mountinfo has no parseable mount rows"
+    disk = facts_module._collect_disks(root, load_facts_config(root))
+    assert _value(disk) is None
+    assert disk["reason"] == "/proc/self/mountinfo has no parseable mount rows"
+    mountinfo.write_text(
+        "1 0 8:1 / /mnt\\040data rw - ext4 /dev/test rw\n"
+        "broken row\n",
+        encoding="utf-8",
+    )
+    mounts, reason = facts_module._mountinfo_fields(root)
+    assert reason is None
+    assert mounts == [("/mnt data", "ext4")]
+    assert facts_module._filesystem_for_path("/mnt data/child", mounts) == "ext4"
+    assert facts_module._filesystem_for_path("/outside", mounts) is None
+    assert facts_module._filesystem_for_path("/outside", [("/", "rootfs")]) == "rootfs"
+
+    disk = facts_module._collect_disks(root, load_facts_config(root))
+    assert _value(disk) is None
+    assert disk["reason"] == "filesystem type for /var/lib/fleetd is absent from /proc/self/mountinfo"
+
+
+def test_disk_collection_uses_block_size_fallback_and_preserves_unknown_floor_reason(tmp_path):
+    root = _root(tmp_path)
+    config_path = _config_path(root)
+    config_text = config_path.read_text(encoding="utf-8")
+    config_text = config_text.replace(
+        "[policy.disk_floors]\ncheckout = 1073741824\ndocker = 2147483648\n\n", "",
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+    facts = collect_host_facts(
+        root,
+        disk_statvfs_reader=lambda _path: SimpleNamespace(f_frsize=0, f_bsize=512, f_blocks=10, f_bavail=4),
+    )
+    assert _value(facts["disks"])[0]["total_bytes"] == {"v": 5120}
+    assert _value(facts["disks"])[0]["free_bytes"] == {"v": 2048}
+    assert _value(facts["disks"])[0]["floor_bytes"]["v"] is None
+    assert facts["disks"]["v"][0]["floor_bytes"]["reason"] == "not-configured: policy.disk_floors.checkout"
+
+
+def test_guard_state_outside_contract_vocabulary_is_unknown_with_its_reason(tmp_path):
+    root = _root(tmp_path)
+    state = root / "run/cgprofile/guard-state"
+    state.write_text("armed\n", encoding="utf-8")
+    guard = collect_host_facts(root)["guard"]
+    assert _value(guard["guard_state"]) is None
+    assert guard["guard_state"]["reason"] == (
+        "guard runtime state 'armed' is outside off, report, enforce, or unknown"
+    )

@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -9,6 +10,11 @@ from fleetd.contracts import (
     ContractError,
     HostFacts,
     WorkRequest,
+    _number_map,
+    _object,
+    _validate_host_facts_1,
+    _validate_host_facts_2,
+    _v2_policy_object,
     _validate_group,
     dump_json,
     load_json,
@@ -191,6 +197,106 @@ def test_host_facts_v2_rejects_invalid_metadata_shapes_and_policy_values():
         data = _host_facts_2()
         mutate(data)
         _fails(lambda data=data: validate_host_facts(data), message)
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (lambda data: data.update(collected_utc="2026-02-30T12:34:56Z"), "expected a valid RFC 3339 UTC timestamp"),
+        (lambda data: data.update(load1={"v": -1}), "load1.v: must be at least 0"),
+        (lambda data: data["speed"]["v"].update(basis=_v("geekbench7-table")), "speed.basis.v: must name the record's Geekbench major and basis"),
+        (lambda data: data["gate_slice"].update(cpu_max=_v({"quota_us": "bad", "period_us": 100000})), "cpu_max.v.quota_us: expected integer"),
+        (lambda data: data["gate_slice"].update(cpu_max=_v({"quota_us": "max", "period_us": 0})), "cpu_max.v.period_us: must be at least 1"),
+        (lambda data: data["disks"].update(v="not-an-array"), "disks.v: expected array"),
+        (lambda data: data["disks"]["v"].append(copy.deepcopy(data["disks"]["v"][0])), "disks.v: duplicate disk name 'checkout'"),
+        (lambda data: data["policy"].update(footprint_charges_bytes=_v([])), "footprint_charges_bytes.v: expected object"),
+        (lambda data: data["policy"].update(priority_classes_by_principal=_v([])), "priority_classes_by_principal.v: expected object"),
+        (lambda data: data["control_plane"]["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[0]].update(memory_min_bytes=_v(None)), "null requires reason"),
+        (lambda data: data["control_plane"]["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[0]].update(extra=_v(1)), "unknown field.*extra"),
+        (lambda data: data["guard"].update(guard_state=_v("armed")), "guard_state.v: expected off, report, enforce, or unknown"),
+        (lambda data: data["policy"].update(host_role=_v("unknown-role")), "host_role.v: expected 'dedicated-dev' or 'shared-prod'"),
+        (lambda data: data["policy"].update(footprint_charges_bytes=_v({"other": 1})), "footprint_charges_bytes.v: expected footprint class keys"),
+        (lambda data: data["policy"].update(priority_classes_by_principal=_v({"worker": ["unknown"]})), "contains an unknown priority class"),
+        (lambda data: data["policy"].update(disk_floors=_v({"checkout": -1})), "disk_floors.v.checkout: must be at least 0"),
+        (lambda data: data["policy"].update(admission=_v({"queue_path": "/queue", "wait_s": -1, "settle_s": 5})), "admission.v.wait_s: must be at least 0"),
+        (lambda data: data.update(jobs=_v("not-an-array")), "jobs.v: expected array"),
+        (lambda data: data.update(tools=_v({"run_gate": [], "images": []})), "tools.v.images: expected object"),
+        (lambda data: data.update(tools=_v({"run_gate": [], "images": {"": "digest"}})), "images name: expected non-empty string"),
+    ],
+)
+def test_host_facts_v2_rejects_malformed_nested_values(edit, message):
+    data = _host_facts_2()
+    edit(data)
+    _fails(lambda: validate_host_facts(data), message)
+
+
+def test_host_facts_v2_accepts_unavailable_disk_identity_and_unbounded_slice_limits():
+    data = _host_facts_2()
+    data["disks"]["v"][0]["name"] = _unknown("mount identity is unavailable")
+    data["gate_slice"]["memory_high_bytes"] = _v("max")
+    data["gate_slice"]["memory_max_bytes"] = _v("max")
+    data["gate_slice"]["cpu_max"] = _v({"quota_us": "max", "period_us": 100000})
+    data["speed"]["v"]["geekbench_major"] = _unknown("record major is unavailable")
+    validated = validate_host_facts(data).to_dict()
+    assert validated["disks"]["v"][0]["name"] == _unknown("mount identity is unavailable")
+    assert validated["gate_slice"]["cpu_max"] == _v({"quota_us": "max", "period_us": 100000})
+    assert validated["speed"]["v"]["geekbench_major"] == _unknown("record major is unavailable")
+
+    data = _host_facts_2()
+    data["speed"] = _unknown("Geekbench record is unavailable")
+    assert validate_host_facts(data).to_dict()["speed"] == _unknown("Geekbench record is unavailable")
+
+
+def _host_fact_job(job_id="job-1"):
+    return {
+        "id": _v(job_id), "state": _v("running"), "requested_by": _v({"principal": "worker"}),
+        "resources": _v({"workers": 1}), "started_utc": _v("2026-11-26T12:00:00Z"),
+        "progress_done": _v(0), "progress_total": _v(1), "progress_unit": _v("candidate"),
+        "last_progress_utc": _unknown("no progress update yet"),
+    }
+
+
+def test_host_facts_v2_validates_job_mapping_objects_and_tool_images():
+    data = _host_facts_2()
+    data["jobs"] = _v([_host_fact_job()])
+    data["tools"] = _v({"run_gate": ["25.6.0"], "images": {"tester-unified:local": "sha256:fixture"}})
+    validated = validate_host_facts(data).to_dict()
+    assert validated["jobs"]["v"][0]["id"] == _v("job-1")
+    assert validated["tools"]["v"]["images"] == {"tester-unified:local": "sha256:fixture"}
+
+    data["jobs"] = _v([_host_fact_job(), _host_fact_job()])
+    _fails(lambda: validate_host_facts(data), "jobs.v: duplicate job id 'job-1'")
+
+    data["jobs"] = _v([_host_fact_job()])
+    data["jobs"]["v"][0]["requested_by"] = _v("worker")
+    _fails(lambda: validate_host_facts(data), r"jobs\.v\[0\]\.requested_by.v: expected object")
+
+    data["jobs"] = _v([])
+    data["tools"] = _v({"run_gate": [], "images": {"tester-unified:local": " "}})
+    _fails(lambda: validate_host_facts(data), "tools.v.images.tester-unified:local: expected non-empty string")
+
+
+def test_v1_validator_and_v2_policy_dispatch_reject_impossible_dispatch_values():
+    legacy = _fixture("host-facts.valid.json")
+    legacy["schema"] = "host-facts/2"
+    _fails(lambda: _validate_host_facts_1(legacy), "host-facts/1.schema: expected 'host-facts/1'")
+    current = _host_facts_2()
+    current["schema"] = "host-facts/1"
+    _fails(lambda: _validate_host_facts_2(current), "host-facts/2.schema: expected 'host-facts/2'")
+    with pytest.raises(ContractError, match="unsupported host-facts/2 policy field 'unknown'"):
+        _v2_policy_object("unknown")
+
+
+def test_private_contract_object_and_number_map_helpers_refuse_non_objects():
+    _fails(lambda: _object(None, "object", {"key"}), "object: expected object")
+    _fails(lambda: _number_map([], "number map"), "number map: expected object")
+
+
+def test_v1_control_plane_accepts_an_unreported_memory_minimum_without_a_reason():
+    legacy = _fixture("host-facts.valid.json")
+    legacy["control_plane"].pop("memory_min_bytes")
+    validated = validate_host_facts(legacy).to_dict()
+    assert "memory_min_bytes" not in validated["control_plane"]
 
 
 @pytest.mark.parametrize(

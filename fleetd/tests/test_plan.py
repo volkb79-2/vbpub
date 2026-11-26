@@ -30,6 +30,7 @@ from fleetd.plan import (
     _assign_candidates,
     _capacity,
     _control_plane_reserve,
+    _fact_value,
     _host_eta,
     _host_time,
     _number,
@@ -39,6 +40,7 @@ from fleetd.plan import (
     _resolve_memory,
     _resolve_time,
     _reverse_id,
+    _speed,
     _time_reference,
     _waves,
     extract_demand,
@@ -826,6 +828,100 @@ def test_host_refusals_have_explicit_reasons_and_null_eta_reasons():
         assert reason in refused["reason"]
         assert refused["eta_seconds"] is None
         assert refused["eta_reason"] == refused["reason"]
+
+
+def test_fact_value_and_partial_speed_keep_unknown_reasons_explicit():
+    with pytest.raises(ContractError, match="speed: expected host-facts/2 value wrapper"):
+        _fact_value(None, "speed")
+    with pytest.raises(ContractError, match="speed: expected host-facts/2 value wrapper"):
+        _fact_value({"reason": "missing wrapper"}, "speed")
+    assert _fact_value({"v": None, "reason": "not collected"}, "speed") == (None, "not collected")
+
+    host = parse_host_set(_hosts())[0]
+    host.facts["speed"] = {
+        "v": {
+            "geekbench_major": {"v": 6}, "geekbench_version": {"v": "6.4.0"},
+            "baseline_score": {"v": None, "reason": "no score"}, "single_core": {"v": 2100},
+            "multi_core": {"v": 7800}, "basis": {"v": "geekbench6-measured"},
+        },
+    }
+    assert _speed(host) is None
+
+
+def test_parse_host_set_refuses_unknown_running_job_state_and_id():
+    host_set = _hosts()
+    facts = _facts(host_set, "host-small")
+    job = {
+        "id": {"v": "running-job"}, "state": {"v": None, "reason": "state unavailable"},
+        "requested_by": {"v": None, "reason": "unknown"}, "resources": {"v": None, "reason": "unknown"},
+        "started_utc": {"v": None, "reason": "unknown"}, "progress_done": {"v": 0},
+        "progress_total": {"v": 1}, "progress_unit": {"v": "candidate"},
+        "last_progress_utc": {"v": None, "reason": "unknown"},
+    }
+    facts["jobs"] = {"v": [job]}
+    with pytest.raises(ContractError, match=r"jobs\[\]\.state: state unavailable"):
+        parse_host_set(host_set)
+
+    job["state"] = {"v": "running"}
+    job["id"] = {"v": None, "reason": "identifier unavailable"}
+    with pytest.raises(ContractError, match=r"jobs\[\]\.id: identifier unavailable"):
+        parse_host_set(host_set)
+
+
+@pytest.mark.parametrize(
+    ("group", "name", "value", "reason"),
+    [
+        ("policy", "host_role", None, "policy.host_role: role source unavailable"),
+        ("policy", "psi_refuse_some_avg10", None, "policy.psi_refuse_some_avg10: threshold unavailable"),
+        ("cgroup_v2", "mounted", None, "cgroup_v2.mounted: mount source unavailable"),
+        ("cgroup_v2", "controllers", None, "cgroup_v2.controllers: controller source unavailable"),
+        ("memory", "total_bytes", None, "memory.total_bytes: memory source unavailable"),
+        ("cpu", "online", None, "cpu.online: cpu source unavailable"),
+        ("cpu", "oversubscribe_max", None, "cpu.oversubscribe_max: cpu policy unavailable"),
+        ("policy", "max_lane_containers", None, "policy.max_lane_containers: container policy unavailable"),
+        ("memory", "overcommit", None, "memory.overcommit: overcommit policy unavailable"),
+    ],
+)
+def test_refusal_names_each_required_unknown_fact(group, name, value, reason):
+    host = parse_host_set(_hosts())[0]
+    _set_value(host.facts, group, name, value, reason.split(": ", 1)[1])
+    assert _refusal(host, 0, 0, 0) == reason
+
+
+def test_refusal_names_psi_thresholds_and_exhausted_capacity_reasons():
+    host = parse_host_set(_hosts())[0]
+    host.facts["psi"]["memory"]["some_avg10_pct"] = {"v": 26}
+    assert _refusal(host, 0, 0, 0) == "memory PSI some avg10 26% exceeds host refusal threshold 25%"
+
+    host = parse_host_set(_hosts())[0]
+    host.facts["psi"]["io"]["some_avg10_pct"] = {"v": 26}
+    assert _refusal(host, 0, 0, 0) == "io PSI some avg10 26% exceeds host refusal threshold 25%"
+
+    host = parse_host_set(_hosts())[0]
+    host.facts["psi"]["io"]["some_avg10_pct"] = {"v": None, "reason": "io PSI unavailable"}
+    assert _refusal(host, 0, 0, 0) == "psi.io.some_avg10_pct: io PSI unavailable"
+
+    host = parse_host_set(_hosts())[0]
+    host.facts["cpu"]["oversubscribe_max"] = {"v": 1}
+    assert _refusal(host, 0, 4, 0) == "no worker slots remain after other running jobs"
+
+    host = parse_host_set(_hosts())[0]
+    assert _refusal(host, 0, 0, 8) == "no lane container slots remain after other running jobs"
+
+    host = parse_host_set(_hosts())[0]
+    assert _refusal(host, 10**20, 0, 0) == "other running work consumes the host's overcommitted RAM budget"
+
+
+def test_refusal_reports_profile_reserve_reason_when_per_service_collection_failed():
+    host = parse_host_set(_hosts())[0]
+    control = host.facts["control_plane"]
+    control["profile_reserve_bytes"] = {"v": None, "reason": "profile reserve not configured"}
+    for row in control["service_memory_min"].values():
+        row["memory_min_bytes"] = {"v": None, "reason": "query failed"}
+        row["load_state"] = {"v": None, "reason": "query failed"}
+    assert _refusal(host, 0, 0, 0) == (
+        "control_plane.profile_reserve_bytes: profile reserve not configured"
+    )
 
 
 @pytest.mark.parametrize(
