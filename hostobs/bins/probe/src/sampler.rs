@@ -57,11 +57,7 @@ type MetricMapping = (&'static str, &'static str, &'static str);
 const METRIC_MAPPINGS: &[MetricMapping] = &[
     ("cgroup.freeze", "cgroup.freeze", "cgroup.freeze"),
     ("cgroup.events", "cgevents.frozen", "cgevents.frozen"),
-    (
-        "cgroup.events",
-        "cgevents.populated",
-        "cgevents.populated",
-    ),
+    ("cgroup.events", "cgevents.populated", "cgevents.populated"),
     ("cpu.stat", "cpu.usage_usec", "cpu.usage_usec"),
     ("cpu.stat", "cpu.user_usec", "cpu.user_usec"),
     ("cpu.stat", "cpu.system_usec", "cpu.system_usec"),

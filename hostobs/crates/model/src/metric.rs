@@ -1411,7 +1411,12 @@ mod tests {
         for name in ["cgroup.freeze", "cgevents.frozen", "cgevents.populated"] {
             let metric = registry.get(name).expect("freezer state is registered");
             assert_eq!(
-                (metric.kind(), metric.unit(), metric.scope(), metric.source()),
+                (
+                    metric.kind(),
+                    metric.unit(),
+                    metric.scope(),
+                    metric.source()
+                ),
                 (
                     MetricKind::State,
                     Unit::None,
@@ -1425,7 +1430,10 @@ mod tests {
                 vec![Aggregation::Last],
                 "{name} is last-only"
             );
-            assert!(!metric.allows(Aggregation::Mean), "{name} cannot be averaged");
+            assert!(
+                !metric.allows(Aggregation::Mean),
+                "{name} cannot be averaged"
+            );
         }
         assert_eq!(
             registry.get("probe.resets").map(|m| m.source()),
