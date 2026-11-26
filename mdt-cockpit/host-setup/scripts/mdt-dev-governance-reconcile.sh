@@ -357,8 +357,12 @@ if [ "${HOST_ROLE:-}" = dedicated-dev ]; then
   # never interleave. A held lock means a live run: the block is SKIPPED with a NOTE, never stopped -- the run
   # restores its own originals, and the next timer tick converges again (the kernel releases the lock on ANY
   # death of the run, SIGKILL included, so there is no stuck pause to undo).
-  _cv_accept_lock="${MDT_ACCEPT_LOCK:-/run/mdt-accept.lock}"; _cv_accept_paused=0
-  if exec 9>>"$_cv_accept_lock" 2>/dev/null; then
+  _cv_accept_lock="${MDT_ACCEPT_LOCK:-/run/mdt-accept.lock}"; _cv_accept_paused=0; _cv_accept_fd=0
+  # M4: the redirection is scoped to THIS command. A bare `exec 9>>"$lock" 2>/dev/null` applies every redirection to
+  # the shell itself, so the script's own stderr stayed on /dev/null for the rest of the sweep (zswap, IO, python,
+  # systemctl error text lost from the journal on every dedicated-dev host, every tick).
+  if { exec 9>>"$_cv_accept_lock"; } 2>/dev/null; then
+    _cv_accept_fd=1
     flock -n 9 || _cv_accept_paused=1
   else   # an accept run cannot hold the lock either, so "a run is live" would be an invention: converge
     log "NOTE: cannot open $_cv_accept_lock, so it is indeterminate whether an acceptance run is live; the memory block runs"
@@ -375,9 +379,10 @@ if [ "${HOST_ROLE:-}" = dedicated-dev ]; then
         _mdt_converge_prop "$_cv_unit" "$CG$_cv_cg" "${_cv_pair%%:*}" "${_cv_pair#*:}"
       done
     done
-    exec 9>&-   # the rest of this sweep is not an accept run's business
   fi
-  exec 9>&- 2>/dev/null || true
+  # released after the block either way (the converge above ran under it, the skipped tick never needed it), and
+  # the rest of this sweep is not an acceptance run's business. No redirection here, so the sweep's stderr is untouched.
+  if [ "$_cv_accept_fd" = 1 ]; then exec 9>&-; fi
 fi
 
 # --- slice zswap writeback policies -------------------------------------------

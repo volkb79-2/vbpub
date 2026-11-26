@@ -30,6 +30,11 @@ LATENCY_SLACK = 0.5             # 3.2/3.3: max(2 x the step-0 p95, the step-0 p9
 MEM_AVAILABLE_FLOOR = 128 * MIB  # 2.4's guard, judged per step as well
 SLICES = ("system", "user", "cgprofile")   # the col prefix; the design's table names the cgroups
 LIVENESS = ("sshd", "journald", "dockerd", "containerd", "cgprofiled", "psi_guard")
+# 3.3: two probes' pass rule is NOT latency, so the latency rule must never be applied to them (H2). `psi_guard`
+# passes on "active + its ticks advance" (a tick counter, never a stopwatch; its recorded seconds are its own probe
+# duration and carry no verdict), and `cgprofiled` in its `degraded` form (CLI absent -> `systemctl is-active`) is
+# INFO by design. Judging either against a step-0 baseline turned a healthy daemon into a fabricated step-3/4 FAIL.
+LATENCY_EXEMPT = ("psi_guard", "cgprofiled")
 FLOORED = ("ssh.service", "docker.service", "containerd.service", "systemd-journald.service",
            "mdt-psi-guard.service", "cgprofiled.service")
 NOT_REFALTED = ("dev-interactive.slice",)   # measured only to size its MemoryMin (4.2), never refault-judged
@@ -227,7 +232,7 @@ def judge_step(rows: list[dict], probes: list[dict], step: int) -> tuple[str, st
                 bad_l.append(f"containerd restarted ({restarts0} -> {now})")
                 continue
         vals = seconds_of(probes, step, name)
-        if step > 0 and vals:
+        if step > 0 and vals and name not in LATENCY_EXEMPT:
             bad_one, _ = over_limit(vals, bases.get(name), False)
             if bad_one:
                 bad_l.append(f"{name} latency over its step-0 baseline")

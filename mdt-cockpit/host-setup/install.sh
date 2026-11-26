@@ -1038,6 +1038,18 @@ esac
 # === COMMIT POINT: nothing above this line mutates the host (MDT-HS-02) ===
 # Every refusal above has been evaluated. Only now are /etc/mdt, the buildx config
 # directory, the installed config and the guard confirmation record touched.
+# P-plat-19m (DESIGN-ACCEPT-KIT-V2 2.3) — L3: the preflight above only TESTED the accept lock, so a run starting in the
+# window between that test and the converge below still raced this installer's daemon-reload and its own reconcile.
+# The descriptor is taken again here and HELD to the end of the script (the kernel releases it on any death of this
+# process), with a bounded wait: a run that won the window makes the wait fail and the install stops here rather than
+# fighting it. This block sits after the COMMIT POINT because the preflight region may only read (MDT-HS-02).
+_cv_accept_hold_rc=0
+{ exec 9>>"$_cv_accept_lock"; } 2>/dev/null || _cv_accept_hold_rc=$?
+if [ "$_cv_accept_hold_rc" = 0 ] && ! flock -w "${MDT_ACCEPT_LOCK_WAIT:-30}" 9; then _cv_accept_hold_rc=1; fi
+if [ "$_cv_accept_hold_rc" != 0 ]; then
+  echo "ERROR: an acceptance squeeze run started between the preflight lock test and the commit point (accept lock $_cv_accept_lock, rc $_cv_accept_hold_rc): the install stops here (exit 3). The files above the commit point are already written and re-running install.sh is idempotent; let the run end and restore the host (tools/accept/accept-restore.sh --evidence <dir>) first." >&2
+  exit 3
+fi
 mkdir -p "$CONFIG_DIR" /var/lib/mdt
 install -d -o root -g root -m 0755 "$BUILDX_CONFIG_DIR"
 if [ "$WIZARD" = 1 ] || [ "$HAD_CONFIG" = 0 ]; then
@@ -1642,6 +1654,7 @@ if [ "$WITH_BASELINE" = 1 ] && [ "$BASELINE_HANDLED" = 0 ]; then
 fi
 
 systemctl start mdt-dev-governance-reconcile.service           # apply runtime caps now
+exec 9>&-   # P-plat-19m L3: the converge (reconcile service above) has ended; a new acceptance run may start
 # Both reactive watchers load their configuration and baseline once per
 # process. Restart after the optional baseline measurement so a re-run of this
 # installer cannot leave an already-running watcher applying stale values.
