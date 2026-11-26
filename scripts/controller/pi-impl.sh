@@ -66,7 +66,11 @@
 # passed at dist/core/tools/bash.js:78 and :160/:287). That inherited env is why
 # the wrapper's PATH assignment reaches the agent, and the prepended bin dir is
 # why a launch is refused while `$PI_CODING_AGENT_DIR/bin` (default
-# `$HOME/.pi/agent/bin`) holds any of the three names.
+# `$HOME/.pi/agent/bin`) holds any of the three names. That value is read the
+# way pi reads it (dist/utils/paths.js `normalizePath` expands a leading `~/`
+# against the home directory; dist/config.js:511-513), and a value that is not
+# absolute after that expansion is refused, because pi would join it to ITS OWN
+# working directory, which this wrapper cannot check beforehand.
 #
 # Known limits, which the shims cannot cover: the bash builtin `kill` (a
 # negative group pid or any pid the agent did not start), an ABSOLUTE path such
@@ -174,7 +178,35 @@ done
 # pkill/killall/pgrep sitting there would be found BEFORE the shims, so the guard
 # cannot promise anything while one exists: refuse instead of starting an agent
 # with a guard that a download could shadow.
-pi_agent_dir=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+#
+# The value is resolved the way pi resolves it (dist/config.js:511-513 calls
+# utils/paths.js normalizePath:100-124, which expands a leading `~/` against the
+# home directory and returns everything else as written). Bash does NOT
+# tilde-expand a variable's value, so a literal test of
+# `$PI_CODING_AGENT_DIR/bin/pkill` would miss `~/agents/pi/bin/pkill`: the
+# launch would proceed and pi would then put the REAL expanded directory ahead
+# of the shims. A value still not absolute after that expansion is joined by pi
+# to PI's OWN working directory (the worktree), which this wrapper cannot stat
+# as one path, so it is refused with a named message rather than guessed at.
+pi_agent_dir=${PI_CODING_AGENT_DIR:-}
+if [[ -n $pi_agent_dir ]]; then
+  # SC2088 is silenced for the WHOLE statement: the `~/` here is pi's documented
+  # spelling, matched literally (bash must not expand it into $HOME before the
+  # comparison), not a tilde the author expected to expand.
+  # shellcheck disable=SC2088
+  case $pi_agent_dir in
+    '~') pi_agent_dir=$HOME ;;
+    '~/'*) pi_agent_dir=$HOME/${pi_agent_dir#'~/'} ;;
+    /*) : ;;
+    *)
+      echo "pi signal guard cannot be enforced: PI_CODING_AGENT_DIR must be an absolute path or start with ~/ (got '$pi_agent_dir')" >&2
+      echo 'pi expands a leading ~/ and joins anything else to its own working directory, so its bin directory cannot be checked before the launch; name an absolute path' >&2
+      exit 2
+      ;;
+  esac
+else
+  pi_agent_dir=$HOME/.pi/agent
+fi
 for shim in pkill killall pgrep; do
   if [[ -e $pi_agent_dir/bin/$shim ]]; then
     echo "pi signal guard cannot be enforced: $pi_agent_dir/bin/$shim shadows the shim" >&2
@@ -355,13 +387,17 @@ invoke_pi() {
   # The shim directory goes FIRST on the agent's PATH and only there: this
   # wrapper's own commands keep the caller's PATH. pi's bash tool hands its
   # inherited environment to the shell it spawns, so the agent sees the shims.
+  # `${PATH:+:$PATH}` and not `${PATH-}`: an UNSET or EMPTY PATH would otherwise
+  # hand the child a trailing empty field, and an empty PATH field means the
+  # CURRENT DIRECTORY (the worktree) both to the shim's own lookup and to every
+  # command the agent runs.
   if [[ $first_run == 1 ]]; then
     (cd -- "$worktree" && controller_close_ownership_fds \
-      && PATH="$pi_shims_dir:${PATH-}" exec nice pi "${argv[@]}" -- "$prompt_text" \
+      && PATH=$pi_shims_dir${PATH:+:$PATH} exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null > "$stream" 2> "$out/$name.err")
   else
     (cd -- "$worktree" && controller_close_ownership_fds \
-      && PATH="$pi_shims_dir:${PATH-}" exec nice pi "${argv[@]}" -- "$prompt_text" \
+      && PATH=$pi_shims_dir${PATH:+:$PATH} exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null >> "$stream" 2>> "$out/$name.err")
   fi
 }

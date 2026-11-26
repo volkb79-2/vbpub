@@ -7,6 +7,10 @@ set -uo pipefail
 # same defect into the operator's shell, where it read as a product bug.
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
+# pi's agent directory decides a launch refusal (pi prepends its bin dir to the
+# agent's PATH), so the caller's ambient value must not decide these checks:
+# every check that cares names it explicitly.
+unset PI_CODING_AGENT_DIR
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
 # The shim directory of the wrapper under test: a mutant copy carries its own,
@@ -94,6 +98,19 @@ if [[ -n ${FAKE_PI_GUARD_LOG:-} ]]; then
     exit 90
   }
   guard_pattern=no-match-${RANDOM:-$(awk 'BEGIN{srand(); print int(rand()*999999)}')}-${PI_GUARD_SEQUENCE_INDEX:-0}
+  # The agent's PATH is a fact this check records, not one it assumes: a shim
+  # directory prepended with a trailing `:` leaves an EMPTY field, and an empty
+  # PATH field means the CURRENT DIRECTORY (the worktree) to every command the
+  # agent runs.
+  guard_path_rest=${PATH-}
+  guard_path_empty=0
+  while :; do
+    guard_path_field=${guard_path_rest%%:*}
+    [[ -n $guard_path_field ]] || guard_path_empty=1
+    [[ $guard_path_rest == *:* ]] || break
+    guard_path_rest=${guard_path_rest#*:}
+  done
+  printf 'PATH-EMPTY-FIELD %s\n' "$guard_path_empty" >> "$FAKE_PI_GUARD_LOG"
   # One caller per guard fact, so an assertion names the spelling that failed.
   # $1 labels the case; the rest is the whole command line, `pgrep` included.
   guard_call() {
@@ -1493,15 +1510,19 @@ PY
 # this suite: every call below goes through the shim, which refuses.
 
 guard_launch() {
-  # $1 run name, $2 fixture, $3 guard log; rest = extra wrapper arguments
+  # $1 run name, $2 fixture, $3 guard log; rest = extra wrapper arguments.
   local run=$1 fixture=$2 guard=$3
   shift 3
+  # PI_CODING_AGENT_DIR is set EMPTY here on purpose: the caller's ambient value
+  # must not decide this check (pi's own default applies to an empty value, and
+  # so does the wrapper's), exactly as the check's own bin dir is used below.
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     CONTROLLER_OD_STATE="$ROOT/$run-state.json" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" \
     FAKE_PI_SESSION_ID="$run-session" FAKE_PI_RC=0 PI_LIVE=0 \
     FAKE_PI_GUARD_LOG="$guard" FAKE_PI_SHIM_DIR="$SHIM_DIR" \
+    PI_CODING_AGENT_DIR='' \
     "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
     > "$ROOT/$run.launch.log" 2>&1 < /dev/null
 }
@@ -1546,6 +1567,12 @@ guard_log_asserts() {
   # shim over-refuses; a 127 would mean it could not find the real pgrep.
   grep -qF 'RC pgrep-plain=1 ' "$guard" \
     || { cat "$guard" >&2; fail "$prefix: a plain pgrep was not passed through to the real pgrep (expected rc 1)"; }
+  # No empty field in the agent's PATH: the shim directory is prepended with `:`
+  # only when the inherited PATH is non-empty, because an empty field is the
+  # CURRENT DIRECTORY (the worktree) to the shim's lookup and to every command
+  # the agent runs.
+  grep -qF 'PATH-EMPTY-FIELD 0' "$guard" \
+    || { cat "$guard" >&2; fail "$prefix: the agent's PATH has an empty field (an empty field means the current directory)"; }
   if grep -qF 'GUARD-MISSING' "$guard"; then
     cat "$guard" >&2
     fail "$prefix: the agent did not see the shims on its PATH"
@@ -1608,6 +1635,8 @@ check_signal_guard_continuation() {
     cat "$guard" >&2
     fail 'a continuation did not see the shims on its PATH'
   fi
+  [[ $(grep -cF 'PATH-EMPTY-FIELD 0' "$guard") == 2 ]] \
+    || { cat "$guard" >&2; fail 'a continuation PATH (or its first run) has an empty field'; }
   [[ $(head -n 1 "$CONTROLLER_ROOT/runs/guard-continuation.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
     || fail 'a guarded run that recovers on its continuation is not SUCCESS'
 }
@@ -1643,6 +1672,74 @@ check_signal_guard_agent_bin_shadow() {
   after=$(pi_invocations)
   [[ $after == "$before" ]] || fail 'pi started although its own bin dir would shadow a shim'
   [[ -e $CONTROLLER_ROOT/runs/shadow-pkill.lock ]] && fail 'a shadowed launch claimed the run name'
+}
+
+# Fail closed, part 1b: pi RESOLVES `$PI_CODING_AGENT_DIR` (dist/config.js:511-513
+# through utils/paths.js normalizePath:100-124: a leading `~/` expands against the
+# home directory, everything else is taken as written). Bash does not tilde-expand
+# a variable's value, so a literal `~/...` test would stat nothing, launch pi, and
+# then let pi put the REAL `$HOME/...` directory ahead of the shims -- a silently
+# defeated guard. The `~/` spelling is therefore expanded against HOME, and a value
+# that is still relative is refused with its named message instead of being joined
+# to pi's own working directory (which this wrapper cannot check).
+check_signal_guard_agent_dir_forms() {
+  # The same HOME_ROOT the wrapper runs with, so `~/x` and `$HOME_ROOT/x` are the
+  # same directory. An EMPTY stand-in is enough: the guard refuses on existence.
+  local shim before after rc=0 tilde_dir=$HOME_ROOT/agents/pi-relative
+  # shellcheck disable=SC2088 # the FIXTURE is literally '~/...': pi's OWN spelling, unexpanded by bash
+  local tilde_value='~/agents/pi-relative'
+  rm -rf "$tilde_dir"; mkdir -p "$tilde_dir/bin"
+  for shim in pkill killall pgrep; do
+    : > "$tilde_dir/bin/$shim"
+    before=$(pi_invocations)
+    rc=0
+    PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      CONTROLLER_OD_STATE="$ROOT/tilde-$shim-state.json" \
+      PI_CODING_AGENT_DIR="$tilde_value" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID="tilde-$shim-session" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "tilde-$shim" \
+      > "$ROOT/tilde-$shim.launch.log" 2>&1 < /dev/null || rc=$?
+    after=$(pi_invocations)
+    # The message names the RESOLVED file: a refusal that quoted the literal
+    # `~/agents/...` would name a path that does not decide this launch.
+    [[ $rc == 2 ]] || fail "a shadowing $shim under a ~/ agent dir exited $rc, expected 2"
+    contains "$ROOT/tilde-$shim.launch.log" "$tilde_dir/bin/$shim shadows the shim" \
+      "a ~/ agent dir is expanded to HOME and names the shadowing file"
+    [[ $after == "$before" ]] || fail "pi started although ~/agent-dir/bin/$shim shadows the shim"
+    [[ -e $CONTROLLER_ROOT/runs/tilde-$shim.lock ]] && fail "a ~/agent-dir launch claimed the run name ($shim)"
+    rm -f "$tilde_dir/bin/$shim"
+  done
+  # A CLEAN `~` directory proves the ordinary spelling is ACCEPTED, not refused:
+  # the launch succeeds and the agent still sees the shims. (An untilde-expanded
+  # `~/...` would also "succeed" here if it never existed, so this case is paired
+  # with the three shadowing ones above, which require the named refusal.)
+  rm -rf "$tilde_dir"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/guard-tilde-clean-state.json" \
+    PI_CODING_AGENT_DIR="$tilde_value" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=guard-tilde-clean-session FAKE_PI_RC=0 PI_LIVE=0 \
+    FAKE_PI_GUARD_LOG="$ROOT/guard-tilde-clean.guard.log" FAKE_PI_SHIM_DIR="$SHIM_DIR" \
+    "$SRC" "$WORKTREE" "$PROMPT" guard-tilde-clean \
+    > "$ROOT/guard-tilde-clean.launch.log" 2>&1 < /dev/null \
+    || fail 'a launch with a clean ~/agent dir failed'
+  guard_log_asserts "$ROOT/guard-tilde-clean.guard.log" 'tilde-agent-dir launch'
+  # A value that is not absolute (and not `~/`) is refused with its own named
+  # message, and nothing is started: pi would join it to ITS OWN cwd.
+  for form in 'agents/pi-relative' '.pi/agent'; do
+    before=$(pi_invocations)
+    expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      CONTROLLER_OD_STATE="$ROOT/relative-state.json" PI_CODING_AGENT_DIR="$form" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID=relative-session FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" relative-agent-dir
+    after=$(pi_invocations)
+    contains "$ROOT/focused-command.out" 'PI_CODING_AGENT_DIR must be an absolute path or start with ~/' \
+      "a relative PI_CODING_AGENT_DIR ($form) is refused by name"
+    [[ $after == "$before" ]] || fail "pi started with a relative PI_CODING_AGENT_DIR ($form)"
+    [[ -e $CONTROLLER_ROOT/runs/relative-agent-dir.lock ]] && fail "a relative PI_CODING_AGENT_DIR claimed the run name ($form)"
+  done
 }
 
 guard_refuses_when_shim_absent() {
@@ -1686,6 +1783,7 @@ check_signal_guard_fail_closed() {
     guard_refuses_when_shim_absent not-executable "$shim"
   done
   check_signal_guard_agent_bin_shadow
+  check_signal_guard_agent_dir_forms
 }
 
 # The wrappers that launch the agent carry the guard: pi-impl.sh is the one
