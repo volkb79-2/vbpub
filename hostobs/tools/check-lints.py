@@ -178,7 +178,7 @@ def check(root: Path) -> list[str]:
     expected_uses = [("crates/kernel/src/activation.rs", 2)]
     if unsafe_uses != expected_uses:
         raise LintError(
-            "an unsafe expression must occur exactly once outside crates/act, in "
+            "exactly the two audited unsafe expressions may occur outside crates/act, in "
             f"crates/kernel/src/activation.rs; found {unsafe_uses}"
         )
     kernel_lib = root / "crates/kernel/src/lib.rs"

@@ -19,11 +19,14 @@ The workspace denies unsafe Rust by default. Only `kernel` and `act` declare the
 unsafe-code allowance. Cargo rejects combining a workspace-lint inheritance stanza with a
 package-level override, so those two manifests declare their allowance directly while the
 other eight inherit the workspace lint. Kernel uses its allowance in exactly one audited
-item, `activation::adopt_raw`, which claims a systemd-owned `LISTEN_FDS` descriptor after
-checking that it is an open listening `AF_UNIX` stream socket. The crate carries
+module, the private `activation::raw`, which holds two `unsafe` expressions: `adopt_raw`
+claims a systemd-owned `LISTEN_FDS` descriptor after checking that it is an open listening
+`AF_UNIX` stream socket, and `peer_credentials_raw` reads the raw `SO_PEERCRED` bytes so a
+pid of 0 is rejected before any non-zero pid type exists (`HOB-90`). The crate carries
 `#![deny(unsafe_code)]` and `tools/check-lints.py` permits exactly that one
-`allow(unsafe_code)` occurrence outside `crates/act`. Held-fd adoption is the only raw-fd
-transfer; every ordinary host read remains `File::open`, `read_dir` and `symlink_metadata`.
+`allow(unsafe_code)` occurrence and those two expressions outside `crates/act`. Held-fd
+adoption is the only raw-fd transfer; every ordinary host read remains `File::open`,
+`read_dir` and `symlink_metadata`.
 
 ## Wire: why fixed-width typed columns (D4)
 
