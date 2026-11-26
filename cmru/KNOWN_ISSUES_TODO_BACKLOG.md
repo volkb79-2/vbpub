@@ -14,7 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-215 | FIXED IN THIS BRANCH (the docs check rejects an affirmative CMRU lane declaration while allowing general Assay explanations) | branch |
+| KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
 | KI-214 | FIXED IN THIS BRANCH (the campaign test docstring names the repository root `.gitignore` as the source of the output-ignore patterns) | branch |
 | KI-213 | OPEN (filed 2026-11-26, the R2 campaign needs a progress-based liveness bound that does not cut off advancing work at 7h) | — |
 | KI-212 | OPEN (filed 2026-11-25, P-core-12 follow-up: `cmru/tools/project_fixture.py`'s comment and `SUITE_COLLECTION_INPUTS` entries `nyxloom/pyproject.toml` and `nyxloom/src` still name `test_tester_unified_image`'s `_nyxloom_wheel_inputs()` as cmru test reads, but that test moved to `tester-unified/tests/test_tester_unified_image.py` and cmru no longer collects it. The `cmru/tests/conftest.py` `HEAVY_LAST_FILES` comment was checked and is NOT stale, so that half of the original report was dropped) | — |
@@ -4426,10 +4426,10 @@ The lanes under items 2 and 3 must stay byte-identical, because the whole-source
 - **Fix.** The docstring now names the repository root `.gitignore` and its `**/artifacts/`, `**/evidence/` and `**/logs/` patterns.
 - **Close when:** (done) the test docstring attributes the ignore patterns to the root `.gitignore`.
 
-## KI-215 - the R2 docs pin rejected a legitimate explanation of Assay's base setting
+## KI-215 - a text matcher cannot determine whether a docs claim about Assay lanes is true
 
-**Status:** FIXED IN THIS BRANCH (filed 2026-11-26, cmrur2-review-r2 L6); severity: low.
+**Status:** CLOSED BY DESIGN (filed 2026-11-26, cmrur2-review-r2 L6); severity: low.
 
-- **Observed.** `test_assay_and_release_gate_split_rigor_without_empty_release_mutation` previously rejected any occurrence of `judge.base_source = "request"` in the five CMRU documents, even when it accurately explained Assay's mechanism. The structural `assay.toml` check already verifies that no CMRU lane declares this setting.
-- **Fix.** The test now rejects affirmative claims that a CMRU lane declares the setting, while allowing a general Assay explanation. Its structural check of the CMRU lane declarations remains.
-- **Close when:** (done) a general explanation is allowed and a false claim that a CMRU lane declares the setting is rejected.
+- **Observed.** A text pattern cannot determine whether a sentence about `judge.base_source = "request"` asserts a false CMRU lane configuration, gives a general Assay explanation, or states the true negative. Such prose claims are checked by review.
+- **Pinned structurally.** `cmru/tests/test_docs_config_examples.py::test_assay_and_release_gate_split_rigor_without_empty_release_mutation` reads `cmru/assay.toml` and pins the three declared CMRU lanes: none has `judge.base_source`, and each declares `mode = "whole_target"`. Its injected parsed-config check confirms that adding `judge.base_source` violates that structural contract.
+- **Close when:** (closed by design) prose claims remain subject to review, and the structural check pins the declared lane modes and absence of `judge.base_source`.
