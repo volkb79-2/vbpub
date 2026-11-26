@@ -3107,3 +3107,36 @@ def test_raising_capacity_provider_refuses_with_75_and_records_nothing(tmp_path)
         )
     assert raised.value.exit_code == 75
     assert book.status("ops-no-facts", "ops") is None
+
+
+def test_capacity_provider_admission_error_keeps_its_own_code_and_reason(tmp_path):
+    book = _book(tmp_path / "state")
+
+    def capacity_provider():
+        raise AdmissionError(ExitCode.REFUSAL, "host policy refused")
+
+    with pytest.raises(AdmissionError) as raised:
+        book.submit(
+            _request(job_id="ops-refused-facts"), authenticated_group="ops",
+            capacity_provider=capacity_provider, legacy_jobs_provider=lambda: (), wait_s=0,
+        )
+    assert raised.value.exit_code == 2
+    assert raised.value.reason == "host policy refused"
+
+
+def test_wait_that_expires_before_any_decision_names_no_refusal(tmp_path):
+    readings: list[None] = []
+
+    def clock():
+        readings.append(None)
+        return 0.0 if len(readings) == 1 else 10.0
+
+    book = _book(tmp_path / "state", clock=clock)
+    with pytest.raises(AdmissionError) as raised:
+        book.submit(
+            _request(job_id="ops-late-start"), authenticated_group="ops",
+            capacity_provider=_capacity, legacy_jobs_provider=lambda: (), wait_s=1,
+        )
+    assert raised.value.exit_code == 75
+    assert raised.value.reason == "wait expired; waiter withdrawn and the book confirms the job never started"
+    assert book.status("ops-late-start", "ops") is None
