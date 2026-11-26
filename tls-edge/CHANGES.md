@@ -5,6 +5,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [4.0.1] - 2026-11-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=a3e9c28f31a55be2dc786c66fb5a7bc3ed2f9fb4 -->
+
+### Fixed
+- fix(tls-edge): verify.sh reports only what it observed and orders no certificate (bcffebb6e)
+- fix(tls-edge): verify.sh reports only what it observed and orders no certificate (3d701d7b3)
+
+### Documentation
+- docs(tls-edge): bind the TE-14 archive row and fix three wording nits (a9ea6dabe)
+- docs(tls-edge): verify.sh is fixed (7d0f8acf6)
+- docs(tls-edge): correct four statements found by review (53a3d70a7)
+- docs(tls-edge): verify.sh is fixed (b70cf6154)
+- docs(tls-edge): name the flags in the ops-check mitigation row too (70500002b)
+- docs(tls-edge): drop release-history prose and pin the tunnelled verify command (9cabaa150)
+- docs(tls-edge): 4.0.1 pending notes and the operator verify command (5a3d4dfdb)
+- docs(tls-edge): known issues and user-scope install notes after 4.0.0 (641852ebe)
+- docs(tls-edge): record the 4.0.0 acceptance findings; enable EVENTS explicitly (306e90f57)
+
+### Testing
+- test(tls-edge): make the missing-volume assertion able to fail; doc follow-ups (0aef18d2f)
+- test(tls-edge): tolerate the isolated release-gate clone missing the baseline tag (34762be5a)
+- test(tls-edge): pin the 4.0.0 release-note fragments to the 4.0.0 section (c867d92c6)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - The `dockerproxy` service now sets `EVENTS: 1` explicitly. The Docker provider's `watch: true` needs
   the event stream, which the proxy image already enabled by default; the instance no longer relies on
@@ -33,8 +63,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   was not installed on a host (no python 3.14 there). Both are in
   `KNOWN_ISSUES_TODO_BACKLOG.md`.
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [4.0.0] - 2026-11-26
 <!-- cmru: generated -->
