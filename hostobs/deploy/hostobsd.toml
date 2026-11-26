@@ -6,3 +6,9 @@ cgroup_root = "/sys/fs/cgroup"
 
 [limits]
 max_rows = 1024
+
+[store]
+dir = "/var/lib/hostobs/probe"
+tmpfs_dir = "/run/hostobs/tiers"
+events_cap_bytes = 67108864
+events_ring_bytes = 4194304

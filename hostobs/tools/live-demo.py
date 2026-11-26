@@ -406,6 +406,19 @@ def stop_probe(child: subprocess.Popen[str]) -> int | None:
     return child.returncode
 
 
+def config_text(cgroup_root: Path, store_dir: Path, tmpfs_dir: Path) -> str:
+    """The strict runtime configuration, including separate durable and tmpfs paths."""
+    return (
+        '[probe]\nlevels = ["observe", "operator"]\ntick_ms = 1000\n'
+        f"cgroup_root = {json.dumps(str(cgroup_root))}\n\n[limits]\nmax_rows = 1024\n"
+        "\n[store]\n"
+        f"dir = {json.dumps(str(store_dir))}\n"
+        f"tmpfs_dir = {json.dumps(str(tmpfs_dir))}\n"
+        "events_cap_bytes = 67108864\n"
+        "events_ring_bytes = 4194304\n"
+    )
+
+
 def append_watch(lines: list[str], marker: str, output: tuple[str, str, int]) -> None:
     stdout, stderr, status = output
     lines.append(marker)
@@ -427,16 +440,26 @@ def main(argv: list[str]) -> int:
     with tempfile.TemporaryDirectory(prefix="hostobs-live-") as temporary:
         directory = Path(temporary)
         config = directory / "hostobsd.toml"
-        config.write_text(
-            '[probe]\nlevels = ["observe", "operator"]\ntick_ms = 1000\n'
-            f"cgroup_root = {json.dumps(str(parsed.cgroup_root))}\n\n[limits]\nmax_rows = 1024\n",
-            encoding="utf-8",
-        )
-        observe, observe_path = listener(directory, "observe")
-        operator, operator_path = listener(directory, "operator")
         probe_stderr = directory / "probe.stderr"
         child = None
+        observe = None
+        operator = None
+        tmpfs_tiers = None
         try:
+            tmpfs_tiers = tempfile.TemporaryDirectory(
+                prefix="hostobs-live-tiers-",
+                dir="/dev/shm",
+            )
+            config.write_text(
+                config_text(
+                    parsed.cgroup_root,
+                    directory / "store",
+                    Path(tmpfs_tiers.name),
+                ),
+                encoding="utf-8",
+            )
+            observe, observe_path = listener(directory, "observe")
+            operator, operator_path = listener(directory, "operator")
             child = spawn_probe(parsed.probe, config, observe, operator, probe_stderr)
             transcript.extend(
                 [
@@ -469,8 +492,10 @@ def main(argv: list[str]) -> int:
             print(f"live-demo: cannot start child: {error}", file=sys.stderr)
             return 1
         finally:
-            observe.close()
-            operator.close()
+            if observe is not None:
+                observe.close()
+            if operator is not None:
+                operator.close()
             if child is not None:
                 status = stop_probe(child)
                 try:
@@ -480,6 +505,8 @@ def main(argv: list[str]) -> int:
                 transcript.extend(["=== probe stderr ===", stderr])
                 label = "SIGTERM" if status == -signal.SIGTERM else "exit"
                 transcript.extend(["=== probe exit ===", f"probe exit: {status} ({label})"])
+            if tmpfs_tiers is not None:
+                tmpfs_tiers.cleanup()
 
     passed, reason = assess("\n".join(transcript) + "\n", parsed.ticks)
     transcript.extend(["=== verdict ===", "PASS" if passed else f"FAIL {reason}"])

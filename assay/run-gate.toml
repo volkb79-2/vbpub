@@ -46,6 +46,11 @@ clean_tree = false
 # launch/wait/log/removal bounds, and the SQL runner's bounded wait. Keep a
 # further 20m for clone/startup/cleanup; test_self_lane.py derives these bounds.
 budget = "5h"
+# RG-320/H1: SILENT BY CONSTRUCTION. tester-unified-gate.sh runs `assay run`
+# in a container and relays `docker logs --follow`; the judged command output
+# is captured, so this phase can be silent for the whole run. No silence bound
+# is measured; RG-326 tracks a real progress signal.
+stall_timeout = "5h"
 
 # Pre-merge verification for tooling, lane-table and waiver-document changes.
 # It includes the three groups that escaped the 12.1.0 pre-merge set (the B105
@@ -58,8 +63,8 @@ budget = "5h"
 # (assay 12.2.0 release attempt cd77603bb, B533). The test-layout rule
 # (tests/core/test_import_contracts.py) is included too: the Rust R-1 branch
 # added a parser test whose name the rule places in tests/core, and only the
-# host R1 lane noticed (merged-branch qualification, 2026-11-15). They run in
-# seconds.
+# host R1 lane noticed (merged-branch qualification, 2026-11-15). A healthy gate
+# run of the whole selection took about 560 s on 2026-11-26.
 [lanes.tooling-tests]
 kind = "command"
 environment = "tester-unified"
@@ -106,6 +111,11 @@ export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
 accepts_args = true
 clean_tree = false
 budget = "30m"
+# RG-320/H1: `pytest -q` ends an output line only about every 72 tests and the
+# watch reads whole lines, so a healthy run on a loaded host can stay silent for
+# more than 300 s. The slowest line is not measured, so the bound equals the
+# budget; RG-326 tracks a real progress signal.
+stall_timeout = "30m"
 
 [lanes.tooling-tests.resources]
 memory = "1g"
@@ -135,7 +145,11 @@ python3 tools/qualify_rust_r1_real.py "$@"''',
 accepts_args = true
 clean_tree = false
 budget = "20m"
+stall_timeout = "20m"
 artifacts = [".assay/rust-r1-real"]
+# RG-320/H1: SILENT BY CONSTRUCTION. qualify_rust_r1_real.py captures every
+# Cargo command's output and emits no progress line before the command ends.
+# No silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 [lanes.rust-r1-qualification.resources]
 memory = "1g"
@@ -168,7 +182,11 @@ python3 tools/qualify_rust_r2_real.py "$@"''',
 accepts_args = true
 clean_tree = false
 budget = "45m"
+stall_timeout = "45m"
 artifacts = [".assay/rust-r2-real"]
+# RG-320/H1: SILENT BY CONSTRUCTION. qualify_rust_r2_real.py captures each
+# cargo-mutants case and prints its result only after that case returns. No
+# silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 [lanes.rust-r2-qualification.resources]
 memory = "2g"
@@ -213,6 +231,11 @@ clean_tree = true
 # the run fails and any verdict is untrusted. The timeout starts inside
 # tester-unified, so it excludes run-gate/container startup.
 budget = "8h"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "8h"
 artifacts = [
   ".assay/verdict-self-qualification.json",
   ".assay/progress-self-qualification.jsonl",
@@ -231,6 +254,11 @@ resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "75m"
 # This standalone preflight creates its own b105-pre-* campaign deadline.
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "75m"
 artifacts = [
   ".assay/verdict-self-qualification-preflight.json",
   ".assay/progress-self-qualification-preflight.jsonl",
@@ -254,6 +282,11 @@ exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "210m"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "210m"
 artifacts = [
   ".assay/verdict-self-qualification-provisional.json",
   ".assay/progress-self-qualification-provisional.jsonl",
@@ -302,6 +335,11 @@ exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "140m"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "140m"
 artifacts = [
   ".assay",
   ".assay/b110-pilot-plan.json",
@@ -341,6 +379,11 @@ exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "140m"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "140m"
 artifacts = [
   ".assay",
   ".assay/analysis-r2-pilot-plan.json",
@@ -367,6 +410,11 @@ exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "8h"
+# RG-320/H1: SILENT BY CONSTRUCTION. self-qualification-gate.sh's
+# `assay run` phase relays container logs after its phase-start echo, while
+# Assay captures judged command output. No silence bound is measured; RG-326
+# tracks a real progress signal.
+stall_timeout = "8h"
 artifacts = [
   ".assay/b110-screen-plan.json",
   ".assay/verdict-b110-screen.json",
@@ -398,7 +446,11 @@ export PYTHONPATH="{worktree}/assay/src:{worktree}/libraries/cowtree/src"
 exit_map = { "3" = "ERROR" }
 clean_tree = false
 budget = "120m"
+stall_timeout = "120m"
 artifacts = [".assay/replay-pilot"]
+# RG-320/H1: SILENT BY CONSTRUCTION. replay_pilot.py captures each pytest
+# run and prints a replay row only after its mutant/pristine pair completes.
+# No silence bound has been measured yet; RG-326 tracks a real progress signal.
 
 [lanes.replay-pilot.resources]
 memory = "2g"

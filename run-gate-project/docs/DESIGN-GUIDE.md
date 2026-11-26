@@ -1060,6 +1060,52 @@ of an incomplete run. It is never a mutant kill/survive classification or a
 product PASS/FAIL. Resume the same judged tree and keep Assay's candidate
 records; elapsed wall time and host scheduling are not correctness oracles.
 
+## Every watchable lane is bounded, and which signal is never guessed (RG-320)
+
+P1 of `docs/design/no-time-budgets/DESIGN.md` had to answer one question before
+any cap could fall: *which* silence can stop a lane, and how long is too long.
+The design's answer is the operator's: a cap may fall only where a watch exists,
+so the watch came first and no cap fell (that is P2).
+
+Three choices, each of which had a plausible alternative:
+
+- **The default is 300 s for a COMMAND lane, and it names itself.** A lane that
+  declares no `stall_timeout` is armed with `DEFAULT_STALL_BOUND_SECONDS` rather
+  than left unbounded, because "declared nothing" used to mean "nothing stops
+  it". The rejected alternative — require a declaration — makes a first-ever
+  lane unwatchable at exactly the moment nobody knows its cadence. 300 s is the
+  operator's answer to the design's Q4; it is never lower than `3x` a published
+  cadence, which is why an ASSAY lane keeps `max(300, 3x cadence)` (or 600 s
+  between `command_finished` and the R2 `plan`) — the bound RG-7 already armed
+  it with, so for those lanes P1 changed the disclosure, not the number. The
+  disclosure line and the run record say `declared`, `auto`, or
+  `auto-derived` — the last for an assay lane, whose bound is a RULE and is
+  published as that rule (`ASSAY_AUTO_BOUND_RULE`) instead of as one number
+  invented before the lane ran, so an operator can tell a number they chose from
+  one this tool chose.
+- **One signal per kind, read from the declaration, never inferred per path.**
+  A container command lane's silence is `docker logs -f`'s arrival age; an exec
+  or bare-host command lane has no container log, so P1 gave it the arrival age
+  of its own child's stdout (`OutputTee`). The rejected alternative was reading
+  the lane's `log_path` file from a thread: the child may buffer, and
+  `OutputTee` already holds the true in-process arrival event. The mode that
+  chooses between them is stamped when the lane set is merged (`merge_lanes`),
+  because the follow/re-attach paths no longer hold a resolved environment and
+  would otherwise hardcode the container signal — the exact class of silent
+  wrong answer this project files as a false certification.
+- **Pressure pauses only an AUTO bound.** An auto bound is this tool's guess, so
+  host memory `full avg10` PSI above 5 pauses its silence clock; CPU contention
+  and IO PSI alone never do. A declared number is the operator's own and is
+  never paused (the same rule `ProgressWatch` already followed).
+
+What the default could not fix is stated rather than hidden: a child that blocks
+on its own stdout buffering is silent for its whole run under this definition of
+progress. That lane declares its own `stall_timeout` with the measured reason;
+widening the default for it would make the default useless for every other lane.
+A sequence lane has no signal of its own by construction — its members carry the
+watches — so the key is refused there by name rather than accepted and inert,
+which is the shape this project calls RG-32's lesson.
+
 ## Assay resume state needs an environment-owned mount
 
 Assay keeps verdict and progress beside the judged project for this run, but

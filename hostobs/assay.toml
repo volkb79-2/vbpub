@@ -189,6 +189,7 @@ targets = [
   "crates/serve/src/verbs.rs",
   "crates/store/src/crc.rs",
   "crates/store/src/dictionary.rs",
+  "crates/store/src/dedupe.rs",
   "crates/store/src/error.rs",
   "crates/store/src/events.rs",
   "crates/store/src/format.rs",

@@ -22,6 +22,9 @@ clean_tree = false
 # tree, the Dockerfile and the generator, but runs no container. The controller
 # measures it on the first gate and adjusts this bound.
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during pytest -q; no <=300s output
+# cadence is guaranteed by each test; no bound is measured; see RG-326.
+stall_timeout = "20m"
 
 [lanes.suite.resources]
 memory = "1g"

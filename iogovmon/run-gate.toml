@@ -16,6 +16,9 @@ argv = [
 ]
 clean_tree = false
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during pytest; a test may run without
+# a flushed event for 300s; no bound is measured; see RG-326.
+stall_timeout = "10m"
 artifacts = ["coverage.json"]
 
 [lanes.r0-r1.resources]
@@ -32,3 +35,6 @@ argv = [
 ]
 clean_tree = false
 budget = "15m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the nested r0-r1 lane runs;
+# the wrapper has no measured <=300s output cadence; see RG-326.
+stall_timeout = "15m"

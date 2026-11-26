@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import unittest
+from unittest import mock
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -123,6 +124,10 @@ class RecordingFilesystem(FakeSpaceFilesystem):
         self.space_reads += 1
         self.events.append(("statvfs", path.name))
         return super().statvfs(path)
+
+    def mkdir(self, path: Path) -> None:
+        self._record("mkdir", path)
+        super().mkdir(path)
 
     def unlink(self, path: Path) -> None:
         self._record("unlink", path)
@@ -574,6 +579,22 @@ class SdbootTest(_support.TemporaryRootTest):
         self.assertLess(max(entry_writes), loader_index)
         self.assertLess(max(pair_replaces), loader_index)
 
+    def test_repeated_identical_publish_has_no_mutating_filesystem_event(self) -> None:
+        filesystem = RecordingFilesystem()
+        self.boot = self.make_boot(filesystem=filesystem)
+        self.publish((self.install, self.apt), self.install)
+        filesystem.events.clear()
+
+        with mock.patch("dr_state.boot.sdboot.write_esp_format") as write_format:
+            self.publish((self.install, self.apt), self.install)
+
+        mutating = {"mkdir", "unlink", "rmtree", "copy", "replace", "write"}
+        self.assertEqual(
+            [],
+            [event for event in filesystem.events if event[0] in mutating],
+        )
+        write_format.assert_not_called()
+
     def test_loader_rewrite_preserves_settings_and_collapses_duplicates(self) -> None:
         self.paths.loader_conf.write_text(
             "# local settings\n"
@@ -656,15 +677,17 @@ class SdbootTest(_support.TemporaryRootTest):
         )
         self.assertIn(["bootctl", "set-default", ""], self.runner.calls)
 
-    def test_unreadable_loader_entry_default_is_never_cleared(self) -> None:
+    def test_set_default_clears_present_unreadable_loader_entry_default(self) -> None:
         (self.paths.efivars_dir / DEFAULT_EFIVAR).write_bytes(b"\x07\x00\x00")
         self.publish((self.install, self.apt), self.install)
+        self.assertNotIn(["bootctl", "set-default", ""], self.runner.calls)
+
         self.boot.publish(
             tuple(self.target(value) for value in (self.install, self.apt)),
             self.install,
             clear_default_variable=True,
         )
-        self.assertNotIn(["bootctl", "set-default", ""], self.runner.calls)
+        self.assertIn(["bootctl", "set-default", ""], self.runner.calls)
 
     def test_set_oneshot_uses_an_existing_owned_entry_and_the_bootctl_boundary(self) -> None:
         self.publish((self.install, self.apt), self.install)
@@ -763,8 +786,6 @@ class SdbootTest(_support.TemporaryRootTest):
         kernel = "a" * 64
         initrd = "b" * 64
         cases = (
-            ("missing initrd hash", ("6.12.0", kernel)),
-            ("missing kernel hash", ("6.12.0", None, initrd)),
             (
                 "bad kernel hash",
                 ("6.12.0", "a" * 63 + "g", initrd),
@@ -785,6 +806,14 @@ class SdbootTest(_support.TemporaryRootTest):
             with self.subTest(label=label):
                 with self.assertRaises(BootError):
                     _pair_id(*arguments)
+
+    def test_pair_id_requires_both_hash_arguments(self) -> None:
+        kernel = "a" * 64
+        initrd = "b" * 64
+        with self.assertRaises(TypeError):
+            _pair_id("6.12.0", kernel)
+        with self.assertRaises(TypeError):
+            _pair_id("6.12.0", initrd_hash=initrd)
 
     def test_entry_text_refuses_an_unsafe_uuid_and_kernel_id_mismatch(self) -> None:
         kernel = "a" * 64
