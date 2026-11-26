@@ -133,6 +133,7 @@ def _walk_v2_wrappers(value, path=()):
     if isinstance(value, dict):
         if "v" in value and set(value) <= {"v", "reason"}:
             yield path, value
+            yield from _walk_v2_wrappers(value["v"], (*path, "v"))
             return
         for key, item in value.items():
             yield from _walk_v2_wrappers(item, (*path, key))
@@ -165,7 +166,7 @@ def test_host_facts_v2_validates_wrapped_values_and_metadata():
 def test_host_facts_v2_applies_null_reason_rules_to_every_wrapped_field():
     data = _host_facts_2()
     wrappers = list(_walk_v2_wrappers(data))
-    assert len(wrappers) > 60
+    assert len(wrappers) >= 100
     for path, _wrapper in wrappers:
         candidate = json.loads(json.dumps(data))
         target = _at_path(candidate, path)

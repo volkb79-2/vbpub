@@ -289,7 +289,9 @@ def _read_text(path: Path, description: str) -> tuple[str, str | None]:
 
 def _fact(value: Any, reason: str | None = None) -> dict[str, Any]:
     if value is None:
-        return {"v": None, "reason": reason or "not-collected"}
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("an unknown fact requires a non-empty reason")
+        return {"v": None, "reason": reason}
     return {"v": value}
 
 

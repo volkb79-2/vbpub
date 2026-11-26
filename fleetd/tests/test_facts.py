@@ -988,6 +988,19 @@ def test_policy_map_helpers_validate_tables_and_preserve_configured_values():
         )
 
 
+def test_unknown_fact_requires_a_nonempty_reason():
+    from fleetd import facts as facts_module
+
+    with pytest.raises(ValueError, match="unknown fact requires a non-empty reason"):
+        facts_module._fact(None)
+    with pytest.raises(ValueError, match="unknown fact requires a non-empty reason"):
+        facts_module._fact(None, "  ")
+    assert facts_module._fact(None, "source is absent") == {
+        "v": None, "reason": "source is absent",
+    }
+    assert facts_module._fact(0) == {"v": 0}
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
