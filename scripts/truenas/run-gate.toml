@@ -283,6 +283,9 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src:{worktree}/libraries/cowtree/src \"$TESTER_VENV/bin/python\" live_ui.py"]
 budget = "45m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during live UI submissions and backing
+# ZFS checks on the observed host; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "45m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "TRUENAS_OBSERVED_PATCH_MANIFEST", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
 description = "Exploratory Path A PWMCP UI storage acceptance on v1001's exact fingerprinted unrecorded code state; may provision only the empty 2 GiB managed root behind an explicit guard; does not certify the current patch adapter"
 
