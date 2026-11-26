@@ -311,6 +311,17 @@ counters also produce ERROR and retain the raw status when available, because
 run-gate cannot certify the run. A dry run starts no lane and does not sample
 these counters.
 
+## Gate-lane OOM priority
+
+Host memory exhaustion must not take down the interactive controller before
+the disposable test container. Each detached ephemeral gate lane uses Docker
+`--oom-score-adj 500`; the kernel's OOM score adjustment biases victim choice,
+while `memory.low` is not a victim-selection mechanism. Run-Gate discloses the
+constant in the printed lane facts and Docker argv, including dry runs. The
+scope is deliberately the actual gate lane start: environment probes use
+`docker run --rm`, exec lanes use `docker exec`, and bare-host lanes launch no
+container, so none of those receives this option.
+
 ## Bounded headroom admission is observational, not atomic
 
 Before a daemon-backed lane starts, R-45 reads the profiler's host document

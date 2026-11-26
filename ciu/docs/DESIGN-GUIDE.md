@@ -1155,7 +1155,14 @@ floor and adds a verifiable verdict. R2 and R3 then exercise the same selected
 source with native mutation and an import-break canary, so coverage, mutation,
 and known-bad rejection cannot drift into separate unjudged commands. R2 also
 enables Assay's liveness monitor, and `--maxfail=1` stops a failing mutant at
-its first failed test; the successful baseline remains a full-suite run. This
+its first failed test; the successful baseline remains a full-suite run. Liveness
+ends an idle stall only (and only with a complete pressure-free resource
+trace); the candidate bound in `assay.toml` (`budget_per_candidate = "auto"`,
+DERIVED from this run's own baseline) is what ends a candidate that keeps
+working. If no more than the derived bound remains in the lane, its deadline
+can end the lane as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` and leave that attempt
+unclassified; see [SPEC S18.2](SPEC.md#s18--implementation-gate-assay-backed).
+This
 prevents one mutation's failure cascade from reaching unrelated later tests.
 R1+ runs
 in an isolated snapshot of the
