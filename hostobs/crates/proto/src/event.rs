@@ -8,6 +8,10 @@ use crate::error::{ProtoError, MAX_FRAME_BYTES};
 use crate::frame::{FrameType, FLAG_SECTIONED, FRAME_HEADER_LEN};
 use crate::write::Writer;
 
+#[cfg(test)]
+#[path = "../../../test-support/json.rs"]
+mod fixture_json;
+
 /// The event/1 section kind, local to stored EVT frames.
 pub const EVENT_SECTION_KIND: u16 = 7;
 /// The event/1 section layout version.
@@ -792,12 +796,125 @@ pub fn decode_event_frame(frame: &[u8]) -> Result<EventPayload, ProtoError> {
 mod tests {
     use super::{
         decode_event_frame, decode_event_payload, encode_event_frame, encode_event_payload,
-        EventAttribute, EventContext, EventPayload, EVENT_SECTION_KIND,
+        fixture_json, EventAttribute, EventContext, EventPayload, EVENT_SECTION_KIND,
     };
     use crate::error::{ProtoError, MAX_FRAME_BYTES};
     use crate::frame::{decode_block, FrameHeader, SectionKind, FLAG_SECTIONED};
+    use fixture_json::Json;
 
-    const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/wire");
+    const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/event");
+
+    fn fixture_names() -> Vec<String> {
+        let mut entries: Vec<String> = std::fs::read_dir(FIXTURE_DIR)
+            .unwrap_or_else(|error| panic!("read {FIXTURE_DIR}: {error}"))
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|error| panic!("read entry in {FIXTURE_DIR}: {error}"))
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        entries.sort();
+        assert_eq!(
+            entries.len(),
+            14,
+            "seven event fixtures have .bin and .json files"
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|name| name.ends_with(".bin") || name.ends_with(".json")),
+            "the event directory contains only fixture pairs"
+        );
+        let mut names: Vec<String> = entries
+            .iter()
+            .filter_map(|name| name.strip_suffix(".json").map(str::to_string))
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 7, "the event corpus has exactly seven cases");
+        for name in &names {
+            assert!(
+                entries.binary_search(&format!("{name}.bin")).is_ok(),
+                "{name} has a JSON description and bytes"
+            );
+            let spec = fixture_spec(name);
+            assert_eq!(spec.field("case").as_str(), Some(name.as_str()));
+        }
+        names
+    }
+
+    fn fixture_spec(name: &str) -> Json {
+        let path = format!("{FIXTURE_DIR}/{name}.json");
+        let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+        fixture_json::parse(&bytes)
+            .unwrap_or_else(|error| panic!("parse {path}: {error:?}"))
+    }
+
+    fn event_from_spec(spec: &Json) -> EventPayload {
+        let number = |key| spec.field(key).as_u64().unwrap_or_else(|| panic!("{key}"));
+        let text = |key| {
+            spec.field(key)
+                .as_str()
+                .unwrap_or_else(|| panic!("{key}"))
+                .to_string()
+        };
+        let optional_text = |key| match spec.field(key) {
+            Json::Null => None,
+            Json::String(value) => Some(value.clone()),
+            _ => panic!("{key} must be a string or null"),
+        };
+        let ctx = spec
+            .field("ctx")
+            .as_array()
+            .expect("ctx array")
+            .iter()
+            .map(|entry| EventContext {
+                key: u8::try_from(entry.field("key").as_u64().expect("context key"))
+                    .expect("context key fits u8"),
+                value: entry
+                    .field("value")
+                    .as_str()
+                    .expect("context value")
+                    .to_string(),
+            })
+            .collect();
+        let attrs = spec
+            .field("attrs")
+            .as_array()
+            .expect("attrs array")
+            .iter()
+            .map(|entry| EventAttribute {
+                key: entry.field("key").as_str().expect("attribute key").to_string(),
+                value: entry
+                    .field("value")
+                    .as_str()
+                    .expect("attribute value")
+                    .to_string(),
+            })
+            .collect();
+        let inferred = match spec.field("inferred") {
+            Json::Bool(value) => *value,
+            _ => panic!("inferred must be a boolean"),
+        };
+        EventPayload {
+            t_mono_ns: i64::try_from(number("t_mono_ns")).expect("t_mono_ns fits i64"),
+            span: number("span"),
+            peer_dev: number("peer_dev"),
+            peer_inode: number("peer_inode"),
+            uid: u32::try_from(number("uid")).expect("uid fits u32"),
+            peer_pid: u32::try_from(number("peer_pid")).expect("peer_pid fits u32"),
+            kind: u8::try_from(number("kind")).expect("kind fits u8"),
+            outcome: u8::try_from(number("outcome")).expect("outcome fits u8"),
+            inferred,
+            ctx,
+            attrs,
+            name: text("name"),
+            key: text("key"),
+            code: optional_text("code"),
+            comm: optional_text("comm"),
+        }
+    }
 
     fn fixture(name: &str) -> Vec<u8> {
         std::fs::read(format!("{FIXTURE_DIR}/{name}.bin")).expect("event fixture is committed")
@@ -897,11 +1014,16 @@ mod tests {
 
     #[test]
     fn event_fixtures_round_trip_and_match_the_python_frames() {
+        let names = fixture_names();
+        let mut covered = Vec::new();
         for (name, event) in [
             ("event-minimal", minimal_event()),
             ("event-full", full_event()),
             ("event-point-ctx", point_context_event()),
         ] {
+            covered.push(name.to_string());
+            let spec = fixture_spec(name);
+            assert_eq!(event_from_spec(spec.field("event")), event);
             let frame = fixture(name);
             assert_eq!(encode_event_frame(&event).expect("encode frame"), frame);
             assert_eq!(fixture_event(name), event);
@@ -915,8 +1037,16 @@ mod tests {
             ("event-unsorted-attrs", "event-order"),
             ("event-control-text", "event-text"),
         ] {
+            covered.push(name.to_string());
+            let spec = fixture_spec(name);
+            assert_eq!(
+                spec.field("expect_error").field("kind").as_str(),
+                Some(expected)
+            );
             assert_kind(decode_event_frame(&fixture(name)), expected);
         }
+        covered.sort();
+        assert_eq!(covered, names, "every event fixture is exercised");
     }
 
     #[test]

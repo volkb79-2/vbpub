@@ -10,7 +10,8 @@ what makes the Rust test that consumes them a cross-language check, and what mak
 
 Every case is a whole segment file, ``<case>.seg``, with its decoded description in
 ``<case>.json``. History payloads are real ``proto`` BLOCK frames; the events payload is a real
-``event/1`` EVT frame from ``fixtures/wire/``.
+``event/1`` EVT frame from ``fixtures/event/``; history BLOCK frames come from
+``fixtures/wire/``.
 
 Never edit ``.seg`` by hand: change the description here and regenerate.
 """
@@ -24,6 +25,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "fixtures" / "segment"
 WIRE = REPO / "fixtures" / "wire"
+EVENTS = REPO / "fixtures" / "event"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hostobs_segment_ref as segment  # noqa: E402
@@ -32,6 +34,11 @@ import hostobs_segment_ref as segment  # noqa: E402
 def wire(name: str) -> bytes:
     """One committed wire frame, used verbatim as a record payload."""
     return (WIRE / f"{name}.bin").read_bytes()
+
+
+def event(name: str) -> bytes:
+    """One committed stored event frame, used verbatim as a record payload."""
+    return (EVENTS / f"{name}.bin").read_bytes()
 
 
 def header(
@@ -124,7 +131,7 @@ def cases() -> dict[str, dict]:
                 {
                     "real_ns": 1_700_000_000_000_000_000,
                     "incarnations": [],
-                    "payload_hex": wire("event-minimal").hex(),
+                    "payload_hex": event("event-minimal").hex(),
                 },
             ],
         },

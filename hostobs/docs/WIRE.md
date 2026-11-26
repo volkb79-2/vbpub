@@ -301,8 +301,9 @@ or half-null peer);
 `event-text` (UTF-8, control character, or name grammar); `event-order` (unsorted or duplicate
 context or attribute keys). These four `event-*` kinds are decoder outcomes local to §3.10 and
 are never wire error codes (§10).
-The event fixture set is `event-minimal`, `event-full`, `event-point-ctx`,
-`event-unknown-code`, `event-overflow`, `event-unsorted-attrs`, and `event-control-text`.
+The stored event fixture set lives in `fixtures/event/`: `event-minimal`, `event-full`,
+`event-point-ctx`, `event-unknown-code`, `event-overflow`, `event-unsorted-attrs`, and
+`event-control-text`.
 
 ## 4. Requests and replies
 

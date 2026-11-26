@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Generate the shared hostobs/1 wire fixtures (plan v4 §B.5).
+"""Generate the shared hostobs/1 BLOCK fixtures (plan v4 §B.5).
 
 The fixtures are committed artefacts and this script is the reproducible way to
 regenerate them: ``python3 python/reference/make_fixtures.py``. It uses only the
 reference codec in this directory, so the bytes in ``fixtures/wire/`` are the
 independent Python implementation's output, not the Rust encoder's — which is
-what makes the Rust tests that consume them a cross-language check.
+what makes the Rust tests that consume them a cross-language check. Stored
+event fixtures are written separately by ``make_event_fixtures.py``.
 
 Case kinds:
 
@@ -1431,16 +1432,11 @@ def main() -> int:
     (out / "quality.json").write_text(
         json.dumps(vocabulary, indent=2) + "\n", encoding="utf-8"
     )
-    event_written = write_event_fixtures(out)
     for name, size, refusal in written:
         detail = "refusal" if refusal else "valid"
         print(f"{name}.bin: {size} bytes ({detail})")
-    for name, size, refusal in event_written:
-        detail = "refusal" if refusal else "valid"
-        print(f"{name}.bin: {size} bytes ({detail})")
     print(
-        f"wrote {len(written)} block fixtures and {len(event_written)} event fixtures "
-        f"plus quality.json into {out}"
+        f"wrote {len(written)} block fixtures plus quality.json into {out}"
     )
     return 0
 

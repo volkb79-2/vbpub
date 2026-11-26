@@ -17,15 +17,18 @@ from __future__ import annotations
 import json
 import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 HOSTOBS = Path(__file__).resolve().parents[2]
 FIXTURES = HOSTOBS / "fixtures" / "wire"
+EVENT_FIXTURES = HOSTOBS / "fixtures" / "event"
 RATES = HOSTOBS / "fixtures" / "rates"
 SEGMENTS = HOSTOBS / "fixtures" / "segment"
 sys.path.insert(0, str(HOSTOBS / "python" / "reference"))
 
+import make_event_fixtures  # noqa: E402
 import hostobs_rate_ref  # noqa: E402
 import hostobs_segment_ref  # noqa: E402
 import hostobs_wire_ref  # noqa: E402
@@ -517,8 +520,18 @@ class WireFixtures(unittest.TestCase):
 
 class EventPayloadFixtures(unittest.TestCase):
     def test_event_fixtures_round_trip_and_pin_each_refusal(self):
-        paths = sorted(FIXTURES.glob("event-*.json"))
+        paths = sorted(EVENT_FIXTURES.glob("*.json"))
         self.assertEqual(len(paths), 7)
+        expected_entries = sorted(
+            name
+            for path in paths
+            for name in (path.name, path.with_suffix(".bin").name)
+        )
+        self.assertEqual(
+            sorted(path.name for path in EVENT_FIXTURES.iterdir()),
+            expected_entries,
+            "every stored event case has one JSON file and one byte file",
+        )
         expected = {
             "event-unknown-code": "event-unknown-code",
             "event-overflow": "event-field-bound",
@@ -540,8 +553,23 @@ class EventPayloadFixtures(unittest.TestCase):
                 self.assertEqual(hostobs_wire_ref.encode_event_payload(spec["event"]), body)
                 self.assertEqual(hostobs_wire_ref.decode_event_payload(body), spec["event"])
 
+    def test_event_fixture_generator_reproduces_the_complete_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            generated = Path(temporary) / "event"
+            make_event_fixtures.generate(generated)
+            committed_names = sorted(path.name for path in EVENT_FIXTURES.iterdir())
+            generated_names = sorted(path.name for path in generated.iterdir())
+            self.assertEqual(generated_names, committed_names)
+            for name in committed_names:
+                with self.subTest(file=name):
+                    self.assertEqual(
+                        (generated / name).read_bytes(),
+                        (EVENT_FIXTURES / name).read_bytes(),
+                        "the event fixture generator reproduces every byte",
+                    )
+
     def test_stored_event_frame_rejects_header_and_directory_defects_in_order(self):
-        valid = (FIXTURES / "event-minimal.bin").read_bytes()
+        valid = (EVENT_FIXTURES / "event-minimal.bin").read_bytes()
 
         def assert_kind(label, frame, expected):
             with self.subTest(defect=label), self.assertRaises(
@@ -611,8 +639,10 @@ class EventPayloadFixtures(unittest.TestCase):
         )
 
     def test_event_body_boundaries_and_truncation_are_typed(self):
-        full = json.loads((FIXTURES / "event-full.json").read_text(encoding="utf-8"))["event"]
-        full_frame = (FIXTURES / "event-full.bin").read_bytes()
+        full = json.loads(
+            (EVENT_FIXTURES / "event-full.json").read_text(encoding="utf-8")
+        )["event"]
+        full_frame = (EVENT_FIXTURES / "event-full.bin").read_bytes()
         body = hostobs_wire_ref.event_body_from_frame(full_frame)
         self.assertEqual(hostobs_wire_ref.decode_event_payload(body), full)
 
@@ -623,7 +653,7 @@ class EventPayloadFixtures(unittest.TestCase):
             self.assertEqual(caught.exception.as_dict()["kind"], expected)
 
         minimal = json.loads(
-            (FIXTURES / "event-minimal.json").read_text(encoding="utf-8")
+            (EVENT_FIXTURES / "event-minimal.json").read_text(encoding="utf-8")
         )["event"]
         minimal_body = hostobs_wire_ref.encode_event_payload(minimal)
         self.assertEqual(hostobs_wire_ref.decode_event_payload(minimal_body), minimal)
@@ -642,7 +672,7 @@ class EventPayloadFixtures(unittest.TestCase):
 
     def test_event_code_bounds_text_and_order_match_the_rust_kinds(self):
         point = json.loads(
-            (FIXTURES / "event-point-ctx.json").read_text(encoding="utf-8")
+            (EVENT_FIXTURES / "event-point-ctx.json").read_text(encoding="utf-8")
         )["event"]
         body = bytearray(hostobs_wire_ref.encode_event_payload(point))
         for offset, value in ((40, 4), (41, 8)):
@@ -700,7 +730,7 @@ class EventPayloadFixtures(unittest.TestCase):
                 hostobs_wire_ref.encode_event_payload(present_empty)
             self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
 
-        full_frame = (FIXTURES / "event-full.bin").read_bytes()
+        full_frame = (EVENT_FIXTURES / "event-full.bin").read_bytes()
         full_body = hostobs_wire_ref.event_body_from_frame(full_frame)
         _, _, _, attrs_start, content_end = hostobs_wire_ref._event_layout(full_body)
         key_length = struct.unpack_from("<H", full_body, attrs_start)[0]
@@ -716,7 +746,7 @@ class EventPayloadFixtures(unittest.TestCase):
         self.assertEqual(caught.exception.as_dict()["kind"], "event-field-bound")
 
     def test_section_seven_stays_unknown_to_blocks_and_evt_sectioned_stays_non_socket(self):
-        event_frame = (FIXTURES / "event-minimal.bin").read_bytes()
+        event_frame = (EVENT_FIXTURES / "event-minimal.bin").read_bytes()
         with self.assertRaises(hostobs_wire_ref.WireError) as caught:
             hostobs_wire_ref.decode_frame(event_frame)
         self.assertEqual(caught.exception.as_dict()["kind"], "unknown-frame-flags")
