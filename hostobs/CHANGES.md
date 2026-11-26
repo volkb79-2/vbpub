@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Added (M3 A2):** package the standard-library `hostobs_client` distribution with the `hostobs-mark` entry point; conformance builds and checks its zipapp, while A1's CMRU wheel handler builds the release wheel.
 - **Changed (P-hostobs-12, `HOB-67`):** the sans-IO serving core and send hub now live in `crates/serve`; `proto` keeps the codec and stream layers, while `probe` keeps process wiring, config, the driver, sampler and live backend.
 - **Added (P-hostobs-11a):** a live `watch` client example, the contained two-level `tools/live-demo.py` harness with a fail-closed verdict, and the Debian systemd/config contract for the hostobs probe, with unit and transcript-verdict tests plus `docs/LIVE-DEMO.md`.
 - **Fixed (P-hostobs-11a r1):** tmpfiles.d now owns the level socket directories, the verdict rejects any non-`ok` numeric value, and deployment tests pin the exact activation, namespace and user/group contract.

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hostobs-client"
+description = "Standard-library Python client for the hostobs protocol"
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = []
+
+[project.scripts]
+hostobs-mark = "hostobs_client.mark:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hostobs_client"]
+
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^hostobs-v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+(?:[a-zA-Z0-9.+-]*)?)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "hostobs-v*"]

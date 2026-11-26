@@ -38,10 +38,12 @@ budget = "20m"
 artifacts = ["lcov.info", "cov-summary.json"]
 
 # The Python conformance lane (plan v4 §B.5, HOB-4): the independent reference decoders, the
-# fixture regeneration checks, the `hostobs_client` tests and the real activated-probe socket
-# test, standard library only, no network. It first builds the probe offline and exports its
-# executable path, so the real-socket test fails rather than skips when the lane wiring is
-# missing. It runs on `tester-unified-rust` because that is the image every hostobs lane uses;
+# fixture regeneration checks, the `hostobs_client` tests, its zipapp packaging test and the
+# real activated-probe socket test, standard library only, no network. Packaging builds a
+# zipapp in `python/tests/test_packaging.py`; the wheel is built only by A1's CMRU handler. It
+# It first builds the probe offline and exports its executable path; missing lane wiring makes
+# the real-socket test fail rather than skip. It runs on `tester-unified-rust` because that is
+# the image every hostobs lane uses;
 # its `python3` is Debian's apt package (CPython 3.13.5 on Debian 13, no pip), not the CPython
 # 3.14.10 the WIRE.md §7.8 absolute memory bound was measured on, so that one bound is skipped
 # here (its skip reason names the pinned version) and the growth and line-count gates run.
@@ -50,7 +52,7 @@ artifacts = ["lcov.info", "cov-summary.json"]
 kind = "command"
 environment = "tester-unified-rust"
 network = "none"
-description = "Build the probe offline, then run the Python reference decoders, fixture checks, hostobs_client tests and real-socket probe test (standard library only)."
+description = "Build the probe offline, then run Python reference decoders, fixture checks, hostobs_client and packaging tests, and the real-socket probe test (standard library only)."
 argv = [
   "bash", "-c",
   '''set -eu
