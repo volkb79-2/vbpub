@@ -5,6 +5,103 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [4.0.0] - 2026-11-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=f041f5eed0ff9479c9e36a6f8c5673ab9d9f533a -->
+
+### Added
+- feat(tls-edge): build release bundles with cmru (ae9f8a5f2)
+- feat(tls-edge)!: one deployment path for 4.0.0 (9d93c04ed)
+- feat(tls-edge)!: remove the Calls preset (114466f4f)
+- feat(tls-edge): render the consumer contract (bec52eb7a)
+- feat(tls-edge)!: drive configure from one field table (b7d77240b)
+
+### Fixed
+- fix(tls-edge): drop the 3.x to 4.0 adoption step (e6d330047)
+- fix(tls-edge): refresh installer render for KI-208 note (59a9868e4)
+- fix(tls-edge): clarify bundle root and verifier notes (12356be90)
+- fix(tls-edge): document the 3.x bundle adoption step (5a2296558)
+- fix(tls-edge): pin the generated bundle dependency closure (de560247a)
+- fix(tls-edge): fail closed on unreachable render paths (88943d832)
+- fix(tls-edge): name removed Calls answer keys in refusals (f7af64b49)
+- fix(tls-edge): apply P-edge-07 review nits (aad357589)
+- fix(tls-edge): validate generated trial compose in verify.sh (cea360457)
+- fix(tls-edge): report Docker discovery failures in certbot hook (e4629bf3d)
+- fix(tls-edge): keep checkout configure from creating consumer.env (5881b6910)
+- fix(tls-edge): report duplicate consumer env keys accurately (e3ebd3eb4)
+- fix(tls-edge): validate ingress network names (ca642ce07)
+- fix(tls-edge): refuse removed Calls answer keys directly (9ede06f97)
+- fix(tls-edge): name the rejected Calls key precisely (0c97d9546)
+- fix(tls-edge): recognize compose-owned consumer env lines (b94839ee6)
+- fix(tls-edge): refuse env expansion in ACME hostdir paths (b4fe99d08)
+- fix(tls-edge): apply P-edge-04 review round 1 (482f936d1)
+- fix(tls-edge): make field kinds exhaustive (32956e664)
+
+### Changed
+- refactor(tls-edge): drop the duplicate test manifest and release script (TE-12) (002abcafd)
+- chore(tls-edge): remove one-off bundle equivalence lane (8ecc8806f)
+- chore(tls-edge): bundle review nits (d13a5d4f6)
+- chore(tls-edge): apply review hygiene carry-overs (d205f5541)
+
+### Documentation
+- docs(tls-edge): bind the P-edge-09 archive rows and fix the r2 follow-ups (f1463ae16)
+- docs(tls-edge): do not claim the allowlist is what Traefik needs; file TE-14 (59f3bfe24)
+- docs(tls-edge): fix the claims the review found untrue (595caabaf)
+- docs: correct stale ciu and tls-edge wording across the estate docs (P-edge-09) (2b6760432)
+- docs(tls-edge): close TE-06, TE-11 and TE-12 in the backlog (P-edge-09) (2fb9b0d40)
+- docs(tls-edge): state facts once, keep rationale in ARCHITECTURE (TE-11) (17af00b3a)
+- docs(tls-edge): make the release headline install-and-verify only (TE-06) (6cd7bf1a8)
+- docs(tls-edge): say how a 3.x host reaches a fresh 4.0 install (e9d9c6ad6)
+- docs(tls-edge): drop the remaining 3.x upgrade notes the ruling made moot (d6fcd4438)
+- docs(tls-edge): state that a 3.x host installs 4.0 fresh (58769312e)
+- docs(tls-edge): scope the KI-208 shim to fresh installs and 4.x updates (ccc0aee73)
+- docs(tls-edge): announce that 4.0 is a fresh install for 3.x (2900dfd7c)
+- docs(tls-edge): require clean-tree bundle builds (4baf013d1)
+- docs(tls-edge): record the KI-208 bundle manifest workaround (03c55ef01)
+- docs(tls-edge): bind TE-03, TE-04 and TE-09 archive lines to the integration merge (071e30b39)
+- docs(tls-edge): use the supported Traefik container name (d61ee829b)
+- docs(tls-edge): restore Mattermost after a deployment rollback (e2c0e40c0)
+- docs(tls-edge): document certbot hook upgrade and symlink install (403f78168)
+- docs(tls-edge): bind archived backlog items to merges (b0d9439c3)
+- docs(tls-edge): clarify direct Calls media publication (a69080d6a)
+- docs(tls-edge): identify the ciu backlog for known defects (3f5f7b48f)
+- docs(tls-edge): clarify direct-media example requirements (fce45c909)
+- docs(tls-edge): normalize limitation archive entries (a5c576dc9)
+- docs(tls-edge): record hook validation boundary (7910e0272)
+- docs(tls-edge): restore the Calls cut-over order (2a89b4703)
+- docs(tls-edge): link transports to the consumer contract (28052f771)
+- docs(tls-edge): make update re-sync self-contained (588f957e2)
+- docs(tls-edge): close TE-03 and TE-04 for 4.0.0 (27dfbf21b)
+- docs(tls-edge): document the supported instance and generated trial (2f6dafc05)
+- docs(tls-edge): document direct media publication and schema 2 (afc2817db)
+- docs(tls-edge): close 3.2.0 INSTALL carry-overs (01c27087f)
+
+### Testing
+- test(tls-edge): read the curated release notes before and after cmru's fold (9c520e8dd)
+- test(tls-edge): restore the release-config pins the TE-12 cleanup dropped (70620ad4c)
+- test(tls-edge): assert wheel build and resolution argv (811471871)
+- test(tls-edge): pin every generated dependency floor (2b44d33fd)
+- test(tls-edge): add P-edge-0607 integration oracles (96342d408)
+- test(tls-edge): pin Calls first-key refusal order (fd946187d)
+- test(tls-edge): pin certbot hook discovery filters (9614ca166)
+- test(tls-edge): require a real standalone render stamp (6c9524b8b)
+- test(tls-edge): cover operator lines in duplicate detection (51a107003)
+- test(tls-edge): use literal consumer env expectations (d346b6174)
+- test(tls-edge): pin numeric public-port ordering (308f5069c)
+- test(tls-edge): cover drift parsing with operator lines (f41e032ec)
+- test(tls-edge): measure every CLI package module (09481af03)
+- test(tls-edge): cover structured port-plan refusals (63c90683a)
+- test(tls-edge): prove ciu invokes the validation hook (4999a5fb4)
+- test(tls-edge): fix P-edge-04 review carry-overs (47bec13f5)
+- test(tls-edge): cover load_site boundary after helper removal (e5cfe7ded)
+- test(tls-edge): cover field-table boundaries and cleanup branches (65af6c8b6)
+
+<!-- cmru: pending release notes begin -->
 ### Breaking
 - Updating a 3.x instance to 4.0 in place is not supported: there is no migration, and the installer does not
   refuse the attempt. Install 4.0 fresh (see Upgrade).
@@ -69,10 +166,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - The certbot deploy hook is a stable symlink to
   `/srv/tls-edge-instance/stack/scripts/certbot-deploy-hook.sh`, and `update` refreshes the file it points at, so
   later instance updates take effect without another copied hook.
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [3.2.0] - 2026-11-24
 <!-- cmru: generated -->
