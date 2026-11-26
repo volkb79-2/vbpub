@@ -116,11 +116,6 @@ environment = "tester-unified"
 jobs = 2
 clean_tree = false
 budget = "450m"
-stall_timeout = "450m"
-# RG-320/RG-326: the native assay lane reads its progress file and reports
-# candidate progress; keep the explicit silence fallback equal to the outer
-# budget, with no earlier time bound; no cadence is independently measured.
-# See RG-326.
 # Keyed by the ASSAY lane name, which is what run-gate itself writes
 # (assay_verdict_rel/assay_progress_rel); a shard instance appends
 # `.shard<K>of<N>` to these names.

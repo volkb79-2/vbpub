@@ -22613,7 +22613,6 @@ class TestAutoStallBoundFacts:
     def test_the_signal_is_derived_from_kind_and_runner_not_from_a_key(self):
         assert run_gate.lane_stall_signal({"kind": "assay"}) == \
             run_gate.STALL_SIGNAL_PROGRESS_FILE
-        assert run_gate.lane_stall_signal({"kind": "sequence"}) == "none"
         assert run_gate.lane_stall_signal({"kind": "command"},
                                           run_gate.STALL_SIGNAL_LOG_STREAM) == \
             run_gate.STALL_SIGNAL_LOG_STREAM
@@ -27277,6 +27276,7 @@ class TestAwaitContainerProfilingWiring:
         assert "_environment_mode" not in lane
 
         class _Process:
+            stdout = ()
             pid = 4240
 
             def __init__(self):
@@ -27742,6 +27742,7 @@ class TestAwaitContainerProfilingWiring:
                 return None
 
         class _Process:
+            stdout = ()
             def __init__(self):
                 self.wait_calls = 0
 
@@ -27806,6 +27807,7 @@ class TestAwaitContainerProfilingWiring:
                 return _Watch()
 
         class _Process:
+            stdout = ()
             def __init__(self):
                 self.wait_calls = 0
 
@@ -27872,6 +27874,7 @@ class TestAwaitContainerProfilingWiring:
                 return _Watch()
 
         class _Process:
+            stdout = ()
             def wait(self, timeout=None):
                 return 0
 
@@ -27933,6 +27936,7 @@ class TestAwaitContainerProfilingWiring:
                 return _Watch()
 
         class _Process:
+            stdout = ()
             def __init__(self):
                 self.wait_calls = 0
 
@@ -35817,7 +35821,7 @@ class TestLaneDeadlineEnforcement:
             self, tmp_path, monkeypatch):
         class Process:
             pid = 12
-            stdout = None
+            stdout = ()
 
             def __init__(self):
                 self.waits = 0
@@ -37353,7 +37357,7 @@ class TestFinalChangedLineCoverageOracles:
     def _await_setup(monkeypatch, tmp_path, waits, *, wait_status="0",
                      save_record_log=False):
         class Process:
-            stdout = None
+            stdout = ()
 
             def __init__(self, outcomes):
                 self.outcomes = list(outcomes)
@@ -40532,6 +40536,8 @@ class TestKsmR2Survivors:
         monitor = self._monitor(measurement)
 
         class Logs:
+            stdout = ()
+
             def wait(self, timeout=None):
                 return 0
 

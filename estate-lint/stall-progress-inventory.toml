@@ -6,16 +6,8 @@ schema_version = 1
 # from argv; name those members as "run-gate.toml#lane".
 [[lanes]]
 config = "assay/run-gate.toml"
-lane = "tooling-tests"
-[lanes.progress]
-producer = "assay/run-gate.toml"
-emitter = "the fixed pytest -q selection's per-test progress output"
-guarantee = "the lane comment says the listed test groups run in seconds; pytest emits progress as each test completes, within 300s while healthy"
-
-[[lanes]]
-config = "assay/run-gate.toml"
 lane = "hang-test-contention"
 [lanes.progress]
-producer = "assay/gate/tests/test_self_qualification_container.py"
-emitter = "test_hung_docker_client_is_bounded_and_cleanup_is_conservative via run_launcher"
-guarantee = "the lane prints before each iteration and run_launcher's subprocess.run timeout is 20s, so healthy iterations emit output well within 300s"
+producer = "assay/run-gate.toml"
+emitter = "the printf the lane's loop runs before each iteration"
+guarantee = "each iteration runs one test (test_hung_docker_client_is_bounded_and_cleanup_is_conservative) whose run_launcher subprocess.run timeout is 20s, so healthy iterations print well within 300s"

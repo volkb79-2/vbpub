@@ -210,7 +210,7 @@ SPEC §9.
 | RG-317 | two tests judge other projects from run-gate's suite (`test_lanes_check.py` real-repository sweep, `test_tester_unified_base_variants.py`) | Minor | OPEN 2026-11-25 (filed by RG-297) |
 | RG-318 | the assay version pin for forwarded store flags (`assay >= 12.3.0` floor, `capabilities` probe at run time) | Minor | CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0` released) |
 | RG-319 | no per-run `--env` in `remote-gate`: a job's only environment is the per-repo PROFILE `env` table | Minor | OPEN 2026-11-25 (filed by the RG-297 fix round) |
-| RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source (an assay lane publishes the RG-7 RULE it already had, `auto-derived`); sequence stays unwatched by decision (members carry the watches); 41 silent-by-construction lanes declare a bound equal to their budget (RG-326, finding RG-328); `budget = "unbounded"` remains P2 |
+| RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source (an assay lane publishes the RG-7 RULE it already had, `auto-derived`); sequence stays unwatched by decision (members carry the watches); command lanes without measured output declare a bound, as a rule equal to their budget, and every command lane without one needs progress evidence in `estate-lint/stall-progress-inventory.toml`, enforced by estate-lint (RG-326, finding RG-328); `budget = "unbounded"` remains P2 |
 | RG-321 | ephemeral gate lane containers do not lose host OOM selection to the interactive controller | Enhancement | FIXED IN THIS BRANCH (rev 76) |
 | RG-322 | RG-297 review L-a/L-b/L-c follow-ups: refusal text, remedy and precedence | Low | FIXED IN THIS BRANCH (rev 76) |
 | RG-323 | gate containers lack Assay's benchmark record and host identity inputs for effective CPU-time bounds | Enhancement | OPEN 2026-11-26 |
@@ -9932,6 +9932,11 @@ Source: vbpub-core, P-core-RG307 Opus review r1 (`~/core-runs/rg307b-review-r1.m
 
 Source: vbpub-core, rg307b gate-full failure 2026-11-24 (`~/controller/remote-gates/rgw-gate-full-20261124T144400-v1001/`), main's ruling "file RG-313 now" (load-independent testing rule).
 
+Second sighting 2026-11-26 (`rgw-gate-full-20261126T211128-v1001`, head 690bb5e49, assay-r1; passed in the selftest lane
+and in the retry). Review note, not reproduced: the client waits for the follower, so the sleep window alone does not explain a
+leaked shell; SIGTERM arriving inside `Popen`, before `proc` is bound, would. RG-320 adds a pipe to that call (every command
+lane), which may widen such a window; no evidence either way.
+
 ## RG-314 — a `{worktree}` env value that is also passed through to Assay breaks every seeded resume
 
 **Status:** OPEN 2026-11-24 (reported by vbpub-rollback from the R2 run `rgw-r2-20261124T162538-r1002`: `rejected_total=14`, Assay B577). Severity: Minor, a lane-authoring trap with a lint gap (no product defect).
@@ -10071,14 +10076,14 @@ removed here and `budget = "unbounded"` is still refused (that is P2). Severity:
   an assay lane's liveness stays its progress file, and two differently shaped
   bounds on one lane would double-report). (3) Container command lanes arm
   `LogStreamWatch` for EVERY such lane, not only the ones declaring the key.
-  (4) Both watches pause under host memory/IO PSI — but ONLY on an auto bound: a
+  (4) Both watches pause under host memory PSI (`full avg10` above 5) — but ONLY on an auto bound: a
   declared number is the operator's own and is never paused. (5) Doctors/load
   WARN retire with the fact they asserted (`host_mode_stall_timeout_inert_reason`
   survives only as an unused compatibility helper).
-- **Sequence lanes stay unwatched BY DECISION (design G2).** `lane_stall_signal`
-  returns `"none"`, the disclosure says "each member carries its own watch",
-  `record_stall_bound` writes `null`, and `_validate_lane` still REFUSES
-  `stall_timeout` by name there — no accepted-and-inert key is possible.
+- **Sequence lanes stay unwatched BY DECISION (design G2).** A sequence returns
+  from the dispatch before any runner, so nothing is disclosed or recorded for the
+  sequence itself; each member is watched by its own runner, and `_validate_lane`
+  still REFUSES `stall_timeout` by name there — no accepted-and-inert key is possible.
   Rejected alternative: a "did the member history move" heartbeat, which is
   written only on member completion and therefore cannot show progress.
 - **Docs in this change:** README, SPEC (`R-40f` extended, new `R-40i`, `R-08`,
@@ -10108,7 +10113,8 @@ around `docker load` / `docker build`, `docker run -d` + `docker wait` +
 progress they emit goes to a FILE that only an `assay`-kind lane reads while the
 lane itself is `kind = "command"`. For those lanes the only sound bound is their
 own `budget`, which is why each of them now declares `stall_timeout` EQUAL to its
-`budget` (41 lanes are annotated in total, including `assay`
+`budget` (`estate-lint/stall-progress-inventory.toml` names the command lanes that stay
+unbounded, one on 2026-11-26 out of 131 outside test fixtures; annotated lanes include `assay`
 `rust-r1-qualification`/`rust-r2-qualification`/`replay-pilot` and `cmru`
 `installed-wheel`/`installed-wheel-live`; `mdt-cockpit`
 `oci-push`/`image-runtime`/`image-runtime-built`/
@@ -10297,3 +10303,19 @@ only removes two keys). If a later Assay release bumps it, Run-Gate must move
 to accepting only the new schema in a release that follows Assay's. Do not add
 dual-version support. Sources: `assay/src/assay/cli.py` and
 `assay/docs/VERDICT-V21-DELTA.md` §8.1 (a).
+
+## RG-330 — the command-lane liveness check has known escapes and untested rules
+
+**State:** open · **Severity:** low · **Owner:** - · **Links:** RG-320, RG-326
+
+**Problem.** `estate-lint/tests/test_command_liveness_inventory.py` reads only files named `run-gate.toml` (a central
+`[lanes.*]` table in `run-gate.root.toml` would escape; none exists today); its `RUN_GATE` spellings omit `run_gate.py`
+and path forms; calls made inside scripts are not followed; sequence members and derived assay bounds are not compared
+with a wrapper's bound; the progress evidence check is textual, so a false guarantee passes it. No synthetic test covers
+`_progress_errors`, a removed or renamed lane, the undeclared wrapper's 300 s default, or a stale wrapper entry.
+
+**Wanted.** Close the escapes that are cheap to close, add a synthetic test per untested rule, and review each new
+inventory entry against a gate log (longest observed gap between output lines).
+
+Source: vbpub-core, RG-320 P1 delta review, 2026-11-26.
+

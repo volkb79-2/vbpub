@@ -17374,7 +17374,7 @@ class LogStreamWatch:
             return None               # no stall_timeout: nothing to check
         now = self.clock()
         if self.auto_bound:
-            # RG-320: an AUTO bound is a guess, and a host under memory/IO
+            # RG-320: an AUTO bound is a guess, and a host under memory
             # pressure delivers `docker logs` lines late for a reason that is
             # the HOST's, not the lane's. Credit that silence only while the
             # pressure holds, capped in total exactly like ProgressWatch.
@@ -17481,7 +17481,8 @@ def lane_stall_signal(lane: dict,
     signal there would substitute a default for a fact (RG-101) and send an
     operator debugging the wrong stream (fix round 1, M2 — the docstring used
     to promise the container kind and the code answered it, both wrong).
-    A sequence has neither (G2): its members carry the watches.
+    A sequence never asks: its dispatch returns before any runner, and its
+    members carry the watches (G2).
 
     Which signal judged a lane is a fact the operator is entitled to
     (`R-05`) — they differ in what they can miss (a single silent compile
@@ -17489,8 +17490,6 @@ def lane_stall_signal(lane: dict,
     silent for its whole run)."""
     if lane.get("kind") == "assay":
         return STALL_SIGNAL_PROGRESS_FILE
-    if lane.get("kind") == "sequence":
-        return "none"
     if command_signal is not None:
         return command_signal
     mode = lane.get("_environment_mode")

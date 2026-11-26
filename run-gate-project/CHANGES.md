@@ -37,6 +37,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   budget-length `stall_timeout` values because their nested/captured `assay run`
   or `installed-wheel-live` steps can be silent; no silence bound is measured
   yet (RG-320/H1, tracked by RG-326).
+- estate: every `kind = "command"` lane that had no demonstrated output now declares a `stall_timeout` (as a rule its own
+  `budget`) across the estate's `run-gate.toml` files; a new estate-lint check
+  (`estate-lint/tests/test_command_liveness_inventory.py`) fails a command lane that has neither a bound nor progress
+  evidence in `estate-lint/stall-progress-inventory.toml`, a stale evidence entry, a wrapper whose bound is shorter
+  than a member's, and a wrapper whose members cannot be derived or named (RG-320/RG-326; limits: RG-330).
 - run-gate: `OutputTee.join()` now waits at most `OUTPUT_DRAIN_TIMEOUT_SECONDS`
   (5 s) and DISCLOSES an incomplete drain, instead of blocking until EOF on a
   lane's output pipe — a grandchild that outlived the terminated process group

@@ -228,6 +228,10 @@ def audit_liveness(config_texts: dict[str, str], inventory_text: str,
         cmru_members = _cmru_members(cmru_source, argv)
         if cmru_members is not None:
             wrapper_members[ref] = (cmru_members, False)
+        elif any("run_release_gate.py" in item for item in argv):
+            # The member loop could not be read (source moved or refactored):
+            # the wrapper is unresolved, never a wrapper with no members.
+            wrapper_members[ref] = ([], True)
         else:
             members, unresolved = _nested_members(config_path, lane, configs)
             if members or unresolved:
@@ -424,6 +428,24 @@ for lane in (
     assert any("wrapper effective bound 60s is shorter" in error
                and "member cmru/run-gate.toml#ref-probe" in error
                for error in errors)
+
+
+def test_cmru_release_wrapper_with_an_unreadable_member_loop_is_unresolved():
+    config = '''
+schema_version = 1
+[lanes.gate]
+kind = "command"
+argv = ["python3", "-I", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
+budget = "10m"
+stall_timeout = "10m"
+'''
+    for source in ("", "run_all_lanes()\n"):
+        errors = audit_liveness(
+            {"cmru/run-gate.toml": config},
+            'schema_version = 1\nlanes = []\n', set(), cmru_source=source,
+        )
+        assert any("cmru/run-gate.toml#gate: nested lane members cannot be derived"
+                   in error for error in errors)
 
 
 def test_dynamic_nested_lane_uses_inventory_member_names():
