@@ -32,6 +32,9 @@ python3 -I tools/check-lints.py .''',
 ]
 clean_tree = true
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION; cargo prints nothing while one crate
+# compiles and no output cadence is measured, so the bound equals the budget.
+stall_timeout = "20m"
 
 [lanes.r0-r1]
 kind = "command"
@@ -86,6 +89,10 @@ exit "$rc"''',
 exit_map = { "0" = "PASS", "2" = "ERROR" }
 clean_tree = true
 budget = "30m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION; the cargo steps and the nested
+# `assay run` guarantee no output cadence and none is measured, so the bound
+# equals the budget.
+stall_timeout = "30m"
 artifacts = [".assay/verdict-r0-r1.json"]
 
 # No R2 lane yet: no mutation campaign has been designed or run for this crate

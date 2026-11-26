@@ -70,4 +70,9 @@ the next release's entry; the design is the normative document.
   design; P1 itself emits no hostobs events.
 - **Review details:** registration depth and config loading have named tests;
   consumer docs describe hundredths, `several`, foreground socket permissions,
-  and stale socket cleanup. The gdb helper uses the selected profile cache.
+  and stale socket cleanup. The `thrashguard` gdb helper still uses the hostobs
+  cache directory (TG-13).
+- **Journal bounds:** `id` and `container` are refused above 128 bytes
+  (`too-large`), peer-influenced journal row fields are capped with a visible
+  marker, restart recovery reads a bounded tail of each generation, and a torn
+  last line is closed before the next row is appended.

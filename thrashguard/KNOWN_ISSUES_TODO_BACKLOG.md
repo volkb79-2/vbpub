@@ -217,3 +217,60 @@ one admitted peer may hold a slot.
 uses the injected clock or an equivalent controllable read source. Until that
 testable contract exists, document the per-read timeout and the session-slot
 limit accurately; do not claim a whole-line deadline.
+
+## TG-15 — Registration count and the `kind`/`owner`/`run` strings are unbounded
+
+**State:** open · **Severity:** medium · **Owner:** core · **Links:** thrashguard/src/wire.rs, thrashguard/src/units.rs, thrashguard/src/daemon.rs, TG-1
+
+**Problem.** `kind`, `owner` and `run` have no length limit and the store caps no
+registration count. A peer on the registrant socket can grow the root daemon's
+memory without bound, and a `candidates` reply over the client's 64 KiB parse
+limit (one 60 KiB `run`, or about 200 ordinary registrations) makes
+`candidates --socket` fail for every reader.
+
+**Wanted.** Cap the three strings like `id`, cap the store (a new closed refusal
+reason, listed in CONSUMERS), page `candidates` by bytes like `events`, and one
+test per bound. Required before a host relies on the daemon.
+
+## TG-16 — A transient start-up fact keeps the service down
+
+**State:** open · **Severity:** medium · **Owner:** core · **Links:** thrashguard/src/main.rs, thrashguard/deploy/systemd/thrashguard.service, TG-9
+
+**Problem.** In `serve`, a static unit whose cgroup does not exist yet, or a
+journal that cannot be opened, exits 2, and `RestartPreventExitStatus=2` stops
+systemd from retrying. The unit has no ordering on the static unit's slice, so a
+boot where that slice appears later can leave the guard down (the boot race is
+inferred from reading, not observed). The local verbs report the same failure
+as exit 3.
+
+**Wanted.** Exit 3 for these failures in `serve` so `Restart=on-failure` retries,
+keeping 2 for configuration and activation errors; add the case to the fresh-host
+acceptance. Required before a host relies on the daemon.
+
+## TG-17 — The no-act scan misses several kinds of act path
+
+**State:** open · **Severity:** low · **Owner:** core · **Links:** thrashguard/tests/no_act_path.rs, TG-1
+
+**Problem.** The lexical scan does not see a new `extern` function inside the
+allowed `unsafe` block, `create_dir`, a `connect` to `docker.sock` or the systemd
+bus, `cgroup.kill`, `cgroup.procs`, `cgroup.subtree_control`, `memory.high`,
+`memory.swap.max`, names built at run time, or `copy`/`set_permissions`/
+`symlink`/`hard_link`. The final review found none of these present.
+
+**Wanted.** An allow-list of extern names, limits on where `create_dir` and
+`connect` may appear, and the missing names.
+
+## TG-18 — P1 final review: small defects in replies, files and install docs
+
+**State:** open · **Severity:** low · **Owner:** core · **Links:** thrashguard/docs/CONSUMERS.md, thrashguard/src/daemon.rs, thrashguard/src/events.rs
+
+**Problem.** (a) The `events` reply carries no current sequence, so paging from
+the last returned row stalls after a restart. (b) The journal is world-readable
+while the reader socket is group-gated. (c) A panic in the tick thread leaves
+`status` answering from a stale reading. (d) Journal append failures reach only
+stderr, not `status`. (e) The walk refusal detail is unbounded on the wire.
+(f) A boot id over 128 bytes restarts the sequence at 1. (g) The install walk
+gives no build command and runs `thrashguard status` before installing it.
+(h) The 64-session cap is shared by both sockets (see TG-14).
+
+**Wanted.** Fix each with a test, or document it as a limit.
