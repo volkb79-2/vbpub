@@ -33,7 +33,16 @@ from .process_tree import (
 __all__ = ["can_host", "run_window"]
 
 
-_PROTOCOL = "assay-window-host/2"
+#: (P4) Bumped from `/2` to `/3`: the liveness runner spec gained FOUR
+#: REQUIRED keys (`cpu_without_progress_bound_s`, `per_test_cpu_baseline_s`,
+#: `per_test_xdist`, `advisory_budget_s`) and the worker rebuilds the runner
+#: with `spec[...]`, never `spec.get(...)` -- a host built from an older wheel
+#: would otherwise run a judge with NO progress bounds while this side
+#: believed it was armed. A version mismatch is refused at the request
+#: boundary instead of silently executing a weaker policy. Every other
+#: runner kind's spec is unchanged, so the bump is about the message framing,
+#: not about a new request shape.
+_PROTOCOL = "assay-window-host/3"
 _RESULT_FD = 3
 _STATUS_FD_ENV = "ASSAY_WINDOW_HOST_CANDIDATE_FD"
 _WITNESS_FD_ENV = "ASSAY_WINDOW_HOST_WITNESS_FD"

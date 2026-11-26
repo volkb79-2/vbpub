@@ -2307,3 +2307,80 @@ def test_plan_estimates_with_the_60s_fallback_for_every_non_duration_spelling(
     # 1 candidate x 60s fallback, / 1 native-R2 worker for the wall estimate.
     assert payload["estimated_serial_seconds"] == 60.0
     assert payload["estimated_wall_seconds"] == 60.0
+
+
+# --- (P4/S3) the `plan` record discloses which budget regime applied ------
+
+
+def _plan_event_for(tmp_path, *, armed: bool) -> dict:
+    """One sweep's `plan` progress record, with the caller's arming decision
+    (the runner's own, passed through) and its two derived figures."""
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+
+    def decide(argv, *, env, cwd, timeout):
+        return completed_process(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            liveness_watch_armed=armed,
+            liveness_watch_reason=(
+                "armed" if armed else "baseline-produced-no-plugin-events"
+            ),
+            liveness_cpu_without_progress_bound_s=70.0 if armed else None,
+            liveness_per_test_baseline_s={"t": 1.0} if armed else None,
+            budget_per_candidate_seconds=30.0,
+        )
+    assert result is not None and not isinstance(result, str)
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    return next(event for event in events if event["event"] == "plan")
+
+
+def test_plan_discloses_an_armed_advisory_budget(tmp_path):
+    """ARMED: the stream states the role in so many words, names the reason,
+    and carries the two bounds the candidate was actually watched by -- a
+    reader of ONLY this stream learns how the run was judged, before the
+    first candidate line arrives.
+    """
+    plan = _plan_event_for(tmp_path, armed=True)
+    bound = plan["progress_bound"]
+    assert bound["armed"] is True
+    assert bound["reason"] == "armed"
+    assert bound["budget_per_candidate_role"] == "advisory"
+    assert bound["cpu_without_progress_s"] == 70.0
+    assert bound["per_test_baseline_tests"] == 1
+    # The budget is still DISCLOSED (it exists, it is merely advisory): the
+    # number is not hidden just because it no longer stops anything.
+    assert plan["budget_per_candidate_s"] == 30.0
+
+
+def test_plan_discloses_a_binding_budget_with_its_reason(tmp_path):
+    """NOT ARMED: the same record says the budget binds, names WHY the watch
+    could not be armed, and never fabricates the two figures it did not use."""
+    plan = _plan_event_for(tmp_path, armed=False)
+    bound = plan["progress_bound"]
+    assert bound["armed"] is False
+    assert bound["reason"] == "baseline-produced-no-plugin-events"
+    assert bound["budget_per_candidate_role"] == "binding"
+    assert bound["cpu_without_progress_s"] is None
+    assert bound["per_test_baseline_tests"] is None
+    assert plan["budget_per_candidate_s"] == 30.0

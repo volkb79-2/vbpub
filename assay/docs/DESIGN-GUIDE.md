@@ -2065,6 +2065,48 @@ none of those outcomes. `crashed` is not silently folded into an absent
 payload, and `hung` remains its own diagnostic bucket rather than being
 renamed `budget_exceeded`.
 
+### Why a hang is `hung` and never `killed` (P4)
+
+A candidate ended by ANY progress bound -- the idle rule, the
+CPU-without-progress bound, the per-test CPU bound -- is bucketed `hung`. It
+is never `killed`, however it was stopped. This is a decision, not an artifact
+of the code path, and it is worth stating plainly because the rest of the
+mutation-tooling world reports the opposite.
+
+The reasoning is what each bucket *claims*. `killed` asserts that the suite
+EXERCISED the mutant and failed on it: a specific test observed the changed
+behaviour and objected. A hang proves something weaker and different -- the
+mutant did not finish -- and that claim holds whether or not any test would
+have caught it. Folding a hang into `killed` would let a mutant that loops
+forever collect kill credit without one assertion ever running against it, so
+`killed/(killed+survived)` would rise for exactly the mutants a suite is
+weakest at judging. `hung` is therefore excluded from that denominator, beside
+`crashed`, `budget_exceeded` and `equivalent`.
+
+The comparison to the field is deliberate rather than accidental:
+
+* **PIT (Java)** treats a per-mutant time limit as *detected*: `TIMED_OUT`
+  is reported alongside `KILLED` and counted as caught.
+* **Stryker (JS/TS)** does the same with its `timeoutMS`; a timeout is
+  counted with `Killed`.
+* **cargo-mutants (Rust)** keeps them apart: `Timeout` is its own outcome,
+  separate from `Caught`.
+
+Assay follows cargo-mutants' structure, and the reason is the one above: with
+five buckets and a stated denominator, a consumer can decide for itself how to
+weigh a hang. Folding it into `killed` would take that decision away silently.
+
+**The counter-argument is real and is filed as B582.** A CPU-based bound that
+the unmutated BASELINE satisfies is arguably a statement about the mutant
+(a suite that finishes inside the bound, a mutant that does not), which is
+exactly PIT's and Stryker's position. P4 does not act on it because it would
+be a verdict-schema change -- a new closed-vocabulary value, a new score rule,
+a new analysis reading, and a decision about whether `hung` survives beside it.
+B582 records the precise shape proposed for the next schema cut: a `timeout`
+bucket counted as detected ONLY for a CPU-based bound that the unmutated
+baseline also satisfies, with an idle hang and a wall-budget expiry staying
+non-detected. Until that cut, a hang is `hung`.
+
 ### Infrastructure fact injection (B013)
 
 Infrastructure declarations are resolved at the plan boundary, in the invoking

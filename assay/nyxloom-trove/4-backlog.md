@@ -16067,3 +16067,44 @@ The main controller resumed with `ASSAY_RELEASE_GATE_HOST=v1001 REMOTE_GATE_HOST
 **Not assay's part.** Collecting `r2-progress.jsonl` from remote lanes is the run-gate half; the main controller routed it to vbpub-core.
 
 **Close when.** A seeded run's verdict carries the resume counts, a test pins them for one resumed and one rejected record, and the schema docs list them. Source: main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
+
+## B581 — On-demand stack evidence for a suspected endless loop
+
+**Status: OPEN (filed 2026-11-26 from P-assay-P4, item (B) of the operator input `p4-operator-input-20261125.md`); severity: low (diagnosis quality, not a verdict defect); effort: undecided — the first question is whether any of it belongs in assay at all.**
+
+**Question.** P4 replaced the per-candidate wall budget with CPU-based progress bounds (`cpu-without-progress`, `per-test-cpu-bound`, both bucket `hung`). That tells you a candidate hung; it does not tell you WHERE. A suspected endless loop usually has one hot stack, and every language has a cheap way to read it — but assay's blind spot is that it has no on-demand dump, so the operator has to reproduce the hang outside the sweep to see anything.
+
+**Candidate sources, per language** (none implemented; each is a design decision first):
+
+| Runtime | Mechanism | What it needs |
+|---|---|---|
+| Python/pytest | `py-spy dump --pid <pid>` on the candidate tree | py-spy installed in the judge image; no candidate cooperation, no ptrace on modern kernels for the self-attach path |
+| Go | `go test -timeout <d>`, whose own panic dumps every goroutine | the candidate command itself carries the flag; nothing for assay to add beyond keeping it out of the timeout arithmetic |
+| native (Rust/C, R2 ingested) | `gdb -p <pid> -batch -ex 'thread apply all bt'` or `eu-stack` | ptrace permission in the judge container plus debug symbols in the binary — both are consumer facts, not assay facts |
+| Node/JS (R2 ingested via Stryker) | the inspector protocol (`--inspect` + a CDP `Debugger.pause`) | the candidate must have been started with the inspector port; Stryker owns the launch, so assay cannot set it |
+
+**The signal worth automating, and the cheap version first.** The useful output is not one stack, it is the SAME mutated line appearing on the hot stack in N consecutive samples while no test completes. `LivenessRunner` already keeps a monotonic CPU series and a completed-event count; what it lacks is any periodic stack sample. A ten-line py-spy-based sampler for the Python path only would produce exactly that signal; everything else stays a documented manual procedure.
+
+**Why it is filed rather than built.** P4's contract is "a hang is caught and bucketed correctly", which is done. Stack evidence is diagnosis, and the per-language mechanisms differ enough that a universal one would be the wrong shape. Do not add a general "dump on hang" hook before the Python-only version has been argued on its own.
+
+**Close when.** Either a decided scope (Python-only sampler, with a test that pins the "same line in N consecutive samples with no completed test" rule on a fake stack source and a real looping candidate) or a written decision that this stays a documented manual procedure per language, recorded in `docs/CONSUMERS.md`. Source: operator item (B), `p4-operator-input-20261125.md`, 2026-11-25.
+
+## B582 — PROPOSAL for v21: a `timeout` bucket counted as detected
+
+**Status: PROPOSAL (filed 2026-11-26 from P-assay-P4, item (C) of the operator input `p4-operator-input-20261125.md`); severity: medium (it changes how a score reads); NOT decided — it needs the verdict-schema cut (v21) and a review.**
+
+**Question.** Assay classifies a hang as `hung` and deliberately NOT as `killed`, so a hung mutant scores exactly like a candidate that never ran: it is excluded from `killed/(killed+survived)`. That is defensible for an IDLE hang — nothing about the mutant was proved — but it is not how the two most-used mutation tools report, and P4 makes the difference sharper: a CPU-based bound that a healthy baseline satisfies is now a statement about the MUTANT, not about the host.
+
+**What the other tools do.**
+
+| Tool | A per-mutant timeout is… | Reported as |
+|---|---|---|
+| PIT (Java) | a per-mutant time limit, default derived from the baseline | **detected** ("TIMED_OUT"): PIT lists it beside KILLED and counts it as caught |
+| Stryker (JS/TS) | a per-mutant `timeoutMS` | **detected** (Timeout): counted with `Killed`, and the default timeout is derived from the baseline suite |
+| cargo-mutants (Rust) | a separate `timeout` outcome file | **SEPARATE**: `Caught` and `Timeout` are two different outcomes and the score keeps them apart |
+
+**The proposal, precisely.** A new `timeout` bucket, counted as detected ONLY for a CPU-based bound that the UNMUTATED baseline satisfies. The three conditions are: (1) the candidate was ended by `cpu-without-progress` or `per-test-cpu-bound`, not by the idle rule; (2) the baseline's own run completed inside the SAME bound (so the bound is a property of the mutant's loop, not of a slow host); (3) the bound is Assay's derived formula, not a declared wall clock. An idle hang, a wall-budget expiry (today's `budget_exceeded`) and a per-candidate budget on an unarmed watch all stay NON-detected, unchanged.
+
+**Why it cannot be done now.** It is a verdict-schema change: a new value in a closed vocabulary, a new score rule, a new `assay analyze` reading, and a decision about whether `hung` stays (the natural shape is `timeout` for CPU-bound kills and `hung` retained only for idle stalls, which is itself a compatibility question). P4's brief forbids touching the vocabulary, so this is filed, not applied.
+
+**Close when.** v21's own cut adopts or rejects it with the three conditions above spelled out, the score arithmetic and the excluded-bucket table are updated together, and `docs/DESIGN-GUIDE.md`'s hung-vs-killed section is rewritten to match. Source: operator item (C), `p4-operator-input-20261125.md`, 2026-11-25.

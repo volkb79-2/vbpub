@@ -1596,13 +1596,13 @@ def test_run_window_receipt_fd_and_worker_failure_records(monkeypatch, tmp_path)
         (None, 1),
         (b"not json", 0),
         (b'{"protocol":"wrong"}', 0),
-        (b'{"protocol":"assay-window-host/2","kind":"odd"}', 0),
-        (b'{"protocol":"assay-window-host/2","kind":"result","result":[]}', 0),
+        (b'{"protocol":"assay-window-host/3","kind":"odd"}', 0),
+        (b'{"protocol":"assay-window-host/3","kind":"result","result":[]}', 0),
         (
-            b'{"protocol":"assay-window-host/2","kind":"result","result":{}}',
+            b'{"protocol":"assay-window-host/3","kind":"result","result":{}}',
             0,
         ),
-        (b'{"protocol":"assay-window-host/2","kind":"result","result":{}}', 3),
+        (b'{"protocol":"assay-window-host/3","kind":"result","result":{}}', 3),
     ]
     for payload, code in cases:
         monkeypatch.setattr(_window_host, "_launch_host_process", mock_response(payload, code=code))
@@ -1619,7 +1619,7 @@ def test_run_window_receipt_fd_and_worker_failure_records(monkeypatch, tmp_path)
     monkeypatch.setattr(
         _window_host,
         "_launch_host_process",
-        mock_response(b'{"protocol":"assay-window-host/2","kind":"error","error_type":"WindowHostError","message":"raised"}'),
+        mock_response(b'{"protocol":"assay-window-host/3","kind":"error","error_type":"WindowHostError","message":"raised"}'),
     )
     with pytest.raises(_window_host.WindowHostError, match="raised"):
         _window_host.run_window(
