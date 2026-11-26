@@ -1,5 +1,12 @@
 # hostobs
 
+## Python client
+
+The `hostobs-client` distribution ships the standard-library `hostobs_client`
+package and the `hostobs-mark` command for writing an observer annotation. No
+release exists yet. See [packaging](docs/PACKAGING.md) and
+[consumer instructions](docs/CONSUMERS.md).
+
 The Rust host-observability daemon planned in
 [`docs/design/hostobs/PLAN-v4-2026-11-08.md`](../docs/design/hostobs/PLAN-v4-2026-11-08.md)
 as a probe plus an actuator. The workspace has the planned `proto`, `serve`, `model`, `kernel`,

@@ -1,3 +1,30 @@
+# Python client: `hostobs-mark`
+
+The standard-library `hostobs-client` distribution provides `hostobs-mark`, a
+command that sends one `annotate` line to the observer socket. Packaging details
+are in [`PACKAGING.md`](PACKAGING.md).
+
+**No release exists yet**, so there is no released wheel to install. When an
+approved wheel is provided, set `HOSTOBS_CLIENT_WHEEL` to that wheel's full path
+and install that file directly. The package has no runtime dependencies, and
+`--no-index` avoids resolving the distribution name from a package index:
+
+```sh
+python3 -m pip install --no-index --no-deps "$HOSTOBS_CLIENT_WHEEL"
+```
+
+The command target is `hostobs_client.mark:main`. Set the socket path from the
+hostobs deployment and pass an annotation name accepted by WIRE §4.12:
+
+```sh
+HOSTOBS_OBSERVER_SOCKET=/run/hostobs/observer/hostobs.sock \
+  hostobs-mark point hostobs.consumer-check --require
+```
+
+By default, an unavailable socket prints a notice and exits 0; `--require`
+exits 1 when the mark cannot be written. Usage errors exit 2 (WIRE §8.5 and
+`hostobs/python/hostobs_client/mark.py`).
+
 # Using the hostobs Rust lanes
 
 `model`, `proto`, `serve`, `kernel`, `store`, `client` and `bins/probe` are functional;

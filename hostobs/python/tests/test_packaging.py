@@ -4,12 +4,14 @@
 The conformance lane runs this module through its normal unittest discovery.
 For mutation evidence, ``--fault-probe missing-module`` and
 ``--fault-probe unresolved-entry-point`` deliberately build broken artifacts
-and exit nonzero when the ordinary package checks reject them.
+and exit successfully only when the ordinary package checks reject them.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -24,6 +26,15 @@ from pathlib import Path
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = PYTHON_ROOT / "hostobs_client"
 PYPROJECT = PYTHON_ROOT / "pyproject.toml"
+EXPECTED_BUILD_BACKEND = "setuptools.build_meta"
+EXPECTED_BUILD_REQUIREMENTS = [
+    "setuptools==84.0.0",
+    "wheel==0.47.0",
+    "setuptools_scm==10.0.5",
+]
+EXPECTED_ENTRYPOINT = "hostobs_client.mark:main"
+EXPECTED_PACKAGE_INCLUDE = ["hostobs_client", "hostobs_client.*"]
+EXPECTED_PACKAGE_WHERE = ["."]
 
 IMPORT_ENTRYPOINT = r"""
 import importlib, json, sys
@@ -52,22 +63,119 @@ def project_metadata() -> dict:
 
 
 def expected_package_files() -> set[str]:
-    return {f"hostobs_client/{path.name}" for path in PACKAGE_ROOT.glob("*.py")}
+    """Inventory the source tree independently from the pyproject-driven builder."""
+    return {
+        f"hostobs_client/{path.relative_to(PACKAGE_ROOT).as_posix()}"
+        for path in PACKAGE_ROOT.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+
+
+def source_package_directories() -> dict[str, Path]:
+    packages = {}
+    for initializer in sorted(PACKAGE_ROOT.rglob("__init__.py")):
+        if "__pycache__" in initializer.parts:
+            continue
+        package_dir = initializer.parent
+        package_name = ".".join(package_dir.relative_to(PYTHON_ROOT).parts)
+        packages[package_name] = package_dir
+    return packages
+
+
+def discovered_packages(contract: dict) -> dict[str, Path]:
+    """Apply the package roots and include patterns declared for setuptools."""
+    find = contract["tool"]["setuptools"]["packages"]["find"]
+    packages = {}
+    for where in find["where"]:
+        source_root = (PYTHON_ROOT / where).resolve()
+        if not source_root.is_dir():
+            continue
+        for initializer in sorted(source_root.rglob("__init__.py")):
+            if "__pycache__" in initializer.parts:
+                continue
+            package_dir = initializer.parent
+            package_name = ".".join(package_dir.relative_to(source_root).parts)
+            if package_name and any(
+                fnmatch.fnmatchcase(package_name, pattern)
+                for pattern in find["include"]
+            ):
+                packages[package_name] = package_dir
+    return packages
+
+
+def package_data_matches(contract: dict, package_name: str, relative_path: str) -> bool:
+    package_data = contract["tool"]["setuptools"].get("package-data", {})
+    patterns = list(package_data.get(package_name, [])) + list(package_data.get("*", []))
+    return any(fnmatch.fnmatchcase(relative_path, pattern) for pattern in patterns)
+
+
+def undeclared_package_data(contract: dict) -> list[str]:
+    source_packages = source_package_directories()
+    violations = []
+    for source in sorted(PACKAGE_ROOT.rglob("*")):
+        if not source.is_file() or "__pycache__" in source.parts or source.suffix == ".py":
+            continue
+        owners = [
+            (len(package_dir.parts), package_name, package_dir)
+            for package_name, package_dir in source_packages.items()
+            if source.is_relative_to(package_dir)
+        ]
+        if not owners:
+            violations.append(source.relative_to(PYTHON_ROOT).as_posix())
+            continue
+        _, package_name, package_dir = max(owners)
+        relative_path = source.relative_to(package_dir).as_posix()
+        if not package_data_matches(contract, package_name, relative_path):
+            violations.append(source.relative_to(PYTHON_ROOT).as_posix())
+    return violations
+
+
+def package_owner(source: Path, packages: dict[str, Path]) -> tuple[str, Path] | None:
+    owners = [
+        (len(package_dir.parts), package_name, package_dir)
+        for package_name, package_dir in packages.items()
+        if source.is_relative_to(package_dir)
+    ]
+    if not owners:
+        return None
+    _, package_name, package_dir = max(owners)
+    return package_name, package_dir
 
 
 def build_zipapp(artifact: Path, *, entrypoint: str, omit: frozenset[str] = frozenset()) -> None:
+    contract = project_metadata()
+    packages = discovered_packages(contract)
     with tempfile.TemporaryDirectory() as directory:
         stage = Path(directory)
-        staged_package = stage / "hostobs_client"
-        staged_package.mkdir()
-        for source in sorted(PACKAGE_ROOT.glob("*.py")):
-            if source.name not in omit:
-                shutil.copyfile(source, staged_package / source.name)
+        for package_name, package_dir in sorted(packages.items()):
+            for source in sorted(package_dir.rglob("*")):
+                if not source.is_file() or "__pycache__" in source.parts:
+                    continue
+                owner = package_owner(source, packages)
+                if owner is None or owner[0] != package_name:
+                    continue
+                relative_path = source.relative_to(package_dir)
+                if source.suffix != ".py" and not package_data_matches(
+                    contract, package_name, relative_path.as_posix()
+                ):
+                    continue
+                if source.name in omit:
+                    continue
+                staged_file = stage.joinpath(*package_name.split("."), relative_path)
+                staged_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, staged_file)
+
+        module_name, separator, attribute = entrypoint.partition(":")
+        if not separator or not module_name or not attribute:
+            raise PackagingFailure(f"invalid console entry point: {entrypoint}")
+        (stage / "__main__.py").write_text(
+            f"import sys\nfrom {module_name} import {attribute}\nsys.exit({attribute}())\n",
+            encoding="utf-8",
+        )
         zipapp.create_archive(
             stage,
             artifact,
             interpreter="/usr/bin/env python3",
-            main=entrypoint,
         )
 
 
@@ -84,7 +192,7 @@ def verify_package_files(artifact: Path) -> None:
     if missing or unexpected:
         details = []
         if missing:
-            details.append("missing package module(s): " + ", ".join(missing))
+            details.append("missing package file(s): " + ", ".join(missing))
         if unexpected:
             details.append("unexpected package file(s): " + ", ".join(unexpected))
         raise PackagingFailure("; ".join(details))
@@ -96,6 +204,7 @@ def verify_entrypoint(artifact: Path, entrypoint: str) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
     )
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
@@ -114,27 +223,87 @@ def verify_zipapp_command(artifact: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
     )
     if result.returncode or "usage: hostobs-mark" not in result.stdout:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise PackagingFailure(f"zipapp console command did not run: {detail}")
 
 
-def run_fault_probe(mode: str) -> None:
+def verify_command_exit(
+    artifact: Path,
+    arguments: list[str],
+    *,
+    expected_exit: int,
+    environment: dict[str, str],
+    output_fragment: str,
+) -> None:
+    result = subprocess.run(
+        [sys.executable, "-I", str(artifact), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+        timeout=60,
+    )
+    if result.returncode != expected_exit:
+        raise PackagingFailure(
+            f"hostobs-mark {arguments!r} exited {result.returncode}, expected {expected_exit}: "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+    if output_fragment not in result.stderr:
+        raise PackagingFailure(
+            f"hostobs-mark {arguments!r} did not report {output_fragment!r}: {result.stderr.strip()}"
+        )
+
+
+def verify_console_exit_contract(artifact: Path, missing_socket: Path) -> None:
+    if missing_socket.exists():
+        raise PackagingFailure(f"test socket path unexpectedly exists: {missing_socket}")
+    environment = os.environ.copy()
+    environment["HOSTOBS_OBSERVER_SOCKET"] = str(missing_socket)
+    verify_command_exit(
+        artifact,
+        ["point", "hostobs.packaging-test"],
+        expected_exit=0,
+        environment=environment,
+        output_fragment="hostobs-mark: mark not written:",
+    )
+    verify_command_exit(
+        artifact,
+        ["point", "hostobs.packaging-test", "--require"],
+        expected_exit=1,
+        environment=environment,
+        output_fragment="hostobs-mark: mark not written:",
+    )
+    verify_command_exit(
+        artifact,
+        ["point"],
+        expected_exit=2,
+        environment=environment,
+        output_fragment="usage: hostobs-mark",
+    )
+
+
+def run_fault_probe(mode: str) -> int:
     contract = project_metadata()
     entrypoint = contract["project"]["scripts"]["hostobs-mark"]
     with tempfile.TemporaryDirectory() as directory:
         artifact = Path(directory) / "hostobs-client.pyz"
         if mode == "missing-module":
             build_zipapp(artifact, entrypoint=entrypoint, omit=frozenset({"wire.py"}))
-            verify_package_files(artifact)
+            check = lambda: verify_package_files(artifact)
         elif mode == "unresolved-entry-point":
             broken = "hostobs_client.mark:missing_main"
             build_zipapp(artifact, entrypoint=broken)
-            verify_entrypoint(artifact, broken)
+            check = lambda: verify_entrypoint(artifact, broken)
         else:
             raise SystemExit(f"unknown fault probe: {mode}")
-    raise SystemExit(f"packaging checks failed to reject fault: {mode}")
+        try:
+            check()
+        except PackagingFailure:
+            return 0
+    return 1
 
 
 class Packaging(unittest.TestCase):
@@ -143,7 +312,7 @@ class Packaging(unittest.TestCase):
         project = contract["project"]
         self.assertEqual(project["name"], "hostobs-client")
         self.assertEqual(project.get("dependencies", []), [])
-        self.assertEqual(project["scripts"]["hostobs-mark"], "hostobs_client.mark:main")
+        self.assertEqual(project["scripts"]["hostobs-mark"], EXPECTED_ENTRYPOINT)
         self.assertNotIn("version", project)
         self.assertEqual(project["dynamic"], ["version"])
         scm = contract["tool"]["setuptools_scm"]
@@ -157,6 +326,33 @@ class Packaging(unittest.TestCase):
             verify_package_files(artifact)
             verify_entrypoint(artifact, entrypoint)
             verify_zipapp_command(artifact)
+            verify_console_exit_contract(artifact, Path(directory) / "hostobs.sock")
+
+    def test_build_configuration_and_package_data(self) -> None:
+        contract = project_metadata()
+        self.assertEqual(contract["build-system"]["build-backend"], EXPECTED_BUILD_BACKEND)
+        self.assertEqual(contract["build-system"]["requires"], EXPECTED_BUILD_REQUIREMENTS)
+        self.assertEqual(contract["project"]["requires-python"], ">=3.11")
+
+        setuptools = contract["tool"]["setuptools"]
+        self.assertIs(setuptools["include-package-data"], False)
+        find = setuptools["packages"]["find"]
+        self.assertEqual(find["where"], EXPECTED_PACKAGE_WHERE)
+        self.assertEqual(find["include"], EXPECTED_PACKAGE_INCLUDE)
+        self.assertIs(find["namespaces"], False)
+
+        source_packages = source_package_directories()
+        for package_name in source_packages:
+            self.assertTrue(
+                any(fnmatch.fnmatchcase(package_name, pattern) for pattern in find["include"]),
+                f"package directory {package_name!r} is excluded by packages.find.include",
+            )
+        self.assertEqual(set(discovered_packages(contract)), set(source_packages))
+        self.assertEqual(
+            undeclared_package_data(contract),
+            [],
+            "every non-.py file under hostobs_client must match tool.setuptools.package-data",
+        )
 
     def test_missing_module_is_rejected(self) -> None:
         contract = project_metadata()
@@ -164,7 +360,7 @@ class Packaging(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory) / "hostobs-client.pyz"
             build_zipapp(artifact, entrypoint=entrypoint, omit=frozenset({"wire.py"}))
-            with self.assertRaisesRegex(PackagingFailure, "missing package module.*wire.py"):
+            with self.assertRaisesRegex(PackagingFailure, "missing package file.*wire.py"):
                 verify_package_files(artifact)
 
     def test_unresolved_console_entry_point_is_rejected(self) -> None:
@@ -175,8 +371,14 @@ class Packaging(unittest.TestCase):
             with self.assertRaisesRegex(PackagingFailure, "does not resolve"):
                 verify_entrypoint(artifact, broken)
 
+    def test_fault_probes_report_rejection_unambiguously(self) -> None:
+        self.assertEqual(run_fault_probe("missing-module"), 0)
+        self.assertEqual(run_fault_probe("unresolved-entry-point"), 0)
+
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--fault-probe":
-        run_fault_probe(sys.argv[2])
+        if run_fault_probe(sys.argv[2]):
+            raise SystemExit(f"packaging checks failed to reject fault: {sys.argv[2]}")
+        raise SystemExit(0)
     unittest.main()
