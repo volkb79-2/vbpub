@@ -214,7 +214,7 @@ merged: any element at all, and every spelling pi accepts for tools
 `--no-approve`/`-na`) is refused by name. A caller who exported the old
 `PI_EXTRA_ARGS` review seam gets that refusal and should drop the export.
 
-Every launch also needs both rule files (`implementer-prompt-rules.md`,
+Every launch also needs its mode's rule file (`implementer-prompt-rules.md` or
 `review-prompt-rules.md`) beside the wrapper; a missing one refuses the launch.
 
 **The limit, stated plainly:** the rule paragraph is an INSTRUCTION. In
