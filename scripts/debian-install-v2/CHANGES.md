@@ -5,8 +5,12 @@ All notable changes to debian-install-v2 are recorded here.
 ## [Unreleased]
 
 ### Changed (R2 lane budget)
-- The `r2` budgets are 430m (assay) and 450m (run-gate): the 2026-11-25 run on
-  `814c5129` judged 188 of 194 candidates in 310m and ended `LANE_TIMEOUT`.
+- The `r2` budgets are 430m (assay) and 450m (run-gate). This is headroom for
+  slow or loaded hosts, not a measured need: complete 194-candidate runs took
+  174 to 224 min at 2 jobs. The `LANE_TIMEOUT` runs of 2026-11-25 never reached
+  the lane bound (`814c5129` ended after 166 min under a 310m bound): their
+  candidates exceeded the derived per-candidate bound, which follows the
+  baseline measured at start (DIV2-BL-22).
 
 ### Added (WP-10 P2, `io_benchmark_profile`)
 - New config key `io_benchmark_profile` next to `run_io_benchmark`, accepted
@@ -48,8 +52,11 @@ All notable changes to debian-install-v2 are recorded here.
   2 h 53 m, killing 147 and leaving 47 survivors (this package's subject).
   Chunked resume had rejected every prior record because `PYTHONPATH` embedded
   the throwaway `{worktree}` and was in Assay's `env_passthrough`, so
-  `judge_sha256` changed on every run (Assay B577; Run-Gate RG-314). The R2 lane
-  now passes checkout-relative library roots, runs with `--jobs 2`
+  `judge_sha256` changed on every run (Assay B577; Run-Gate RG-314). The change
+  below did not fix this: on 2026-11-25 a run seeded with the records of an
+  earlier run at the same commit reused none of them (`resumed_total: 0`,
+  `rejected_total: 186`; the `PYTHONPATH` passthrough digest differed), so
+  B577 is still open. The R2 lane now passes checkout-relative library roots, runs with `--jobs 2`
   (`jobs_max = 2`), and sizes the measured 179 x 137 / 2 x 1.5 = about
   306.5-minute campaign at 310 minutes in Assay and 330 minutes in Run-Gate.
 - Round two of the survivor work pins 43 of those 47: one test per mutant

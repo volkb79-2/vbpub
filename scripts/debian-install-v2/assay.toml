@@ -33,8 +33,9 @@ argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests
 # directory (the project) to sys.path itself.
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH", "PYTHONPATH"]
-# Measured 2026-11-25 on 814c5129: 188 of 194 candidates in the 310 min bound
-# (~99 s each at 2 jobs), so a cold 194 needs ~320 min; 430m adds ~1/3 margin.
+# Headroom for slow or loaded hosts, not a measured need: complete 194-candidate
+# runs took 174-224 min at 2 jobs (2026-11-24/25). A LANE_TIMEOUT verdict can come
+# from the derived per-candidate bound alone (DIV2-BL-22).
 budget = "430m"
 allow_argv_append = false
 
