@@ -43130,33 +43130,87 @@ class TestHistoryStoreReadableByTheReleasedReader:
 
 
 class TestJobEventOptionsAndWriter:
-    def test_job_event_flags_are_paired_and_job_id_grammar_is_bounded(self):
+    @pytest.mark.parametrize(("event_file", "job_id", "message"), [
+        pytest.param("/tmp/events.jsonl", None,
+                    "--event-file and --job-id must be supplied together",
+                    id="missing-job-id"),
+        pytest.param(None, "job-1",
+                    "--event-file and --job-id must be supplied together",
+                    id="missing-event-file"),
+        pytest.param("/tmp/events.jsonl", "",
+                    "--job-id must match [A-Za-z0-9][A-Za-z0-9._-]*",
+                    id="empty-id"),
+        pytest.param("/tmp/events.jsonl", "-bad",
+                    "--job-id must match [A-Za-z0-9][A-Za-z0-9._-]*",
+                    id="leading-punctuation"),
+        pytest.param("/tmp/events.jsonl", "bad/id",
+                    "--job-id must match [A-Za-z0-9][A-Za-z0-9._-]*",
+                    id="slash"),
+        pytest.param("/tmp/events.jsonl", "x" * 129,
+                    "at most 128 characters", id="too-long"),
+    ])
+    def test_job_event_flag_refusals_name_the_contract(self, event_file,
+                                                        job_id, message):
         assert run_gate.JOB_ID_MAX_LENGTH == 128
         run_gate.validate_job_event_options(None, None)
-        for event_file, job_id in (
-                ("/tmp/events.jsonl", None), (None, "job-1"),
-                ("/tmp/events.jsonl", ""),
-                ("/tmp/events.jsonl", "-bad"),
-                ("/tmp/events.jsonl", "bad/id"),
-                ("/tmp/events.jsonl", "x" * 129)):
-            with pytest.raises(run_gate.GateError):
-                run_gate.validate_job_event_options(event_file, job_id)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.validate_job_event_options(event_file, job_id)
+        assert message in str(exc.value)
+
+    def test_job_event_flag_rejects_non_string_identifier(self):
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.validate_job_event_options("/tmp/events.jsonl", 7)
+        assert "--job-id must match" in str(exc.value)
+        assert "at most 128 characters" in str(exc.value)
 
     def test_event_destination_refuses_relative_missing_symlink_and_nonregular(
             self, tmp_path):
-        with pytest.raises(run_gate.GateError, match="absolute path"):
+        with pytest.raises(run_gate.GateError) as exc:
             run_gate.validate_job_event_destination("relative.jsonl")
-        with pytest.raises(run_gate.GateError, match="parent"):
+        assert "must be an absolute path" in str(exc.value)
+        with pytest.raises(run_gate.GateError) as exc:
             run_gate.validate_job_event_destination(
                 str(tmp_path / "missing" / "events.jsonl"))
+        assert "parent" in str(exc.value) and "must already exist" in str(exc.value)
         target = tmp_path / "target.jsonl"
         target.write_text("")
         symlink = tmp_path / "events-link.jsonl"
         symlink.symlink_to(target)
-        with pytest.raises(run_gate.GateError, match="symlink"):
+        with pytest.raises(run_gate.GateError) as exc:
             run_gate.validate_job_event_destination(str(symlink))
-        with pytest.raises(run_gate.GateError, match="regular file"):
+        assert "must not be a symlink" in str(exc.value)
+        with pytest.raises(run_gate.GateError) as exc:
             run_gate.validate_job_event_destination(str(tmp_path))
+        assert "must be a regular file" in str(exc.value)
+
+    def test_event_destination_refuses_bad_parent_and_non_string_paths(
+            self, tmp_path):
+        parent_file = tmp_path / "parent-file"
+        parent_file.write_text("file, not directory")
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.validate_job_event_destination(
+                str(parent_file / "events.jsonl"))
+        assert "parent" in str(exc.value) and "is not a directory" in str(exc.value)
+        for event_file in (None, Path("/tmp/events.jsonl"), "/tmp/events\x00.jsonl"):
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.validate_job_event_destination(event_file)
+            assert "must be an absolute path" in str(exc.value)
+
+    def test_event_destination_reports_final_component_stat_errors(
+            self, tmp_path, monkeypatch):
+        event_file = tmp_path / "inaccessible.jsonl"
+        real_lstat = Path.lstat
+
+        def denied(path):
+            if path == event_file:
+                raise PermissionError("fixture denies lstat")
+            return real_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", denied)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.validate_job_event_destination(str(event_file))
+        assert "cannot inspect --event-file" in str(exc.value)
+        assert "fixture denies lstat" in str(exc.value)
 
     def test_event_destination_refuses_checkout_and_mounted_paths(self,
                                                                   tmp_path):
@@ -43174,6 +43228,256 @@ class TestJobEventOptionsAndWriter:
         with pytest.raises(run_gate.GateError, match="mounted by this lane"):
             run_gate.validate_job_event_destination(
                 str(mount / "events.jsonl"), mount_sources=[str(mount)])
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        resolved = run_gate.validate_job_event_destination(
+            str(outside / "events.jsonl"), worktree=worktree, repo=repo,
+            mount_sources=[None, 7, "relative", str(mount), Path(mount)])
+        assert resolved == outside / "events.jsonl"
+        alias = tmp_path / "mount-alias"
+        alias.symlink_to(mount, target_is_directory=True)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.validate_job_event_destination(
+                str(alias / "through-alias.jsonl"),
+                mount_sources=[str(mount)])
+        assert "mounted by this lane" in str(exc.value)
+
+    def test_event_destination_falls_back_to_lexical_checkout_root(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        child = repo / "logs"
+        child.mkdir()
+        inside = child / "events.jsonl"
+        real_resolve = Path.resolve
+
+        def unavailable_root(path, *args, **kwargs):
+            if path == repo:
+                raise OSError("fixture cannot resolve checkout root")
+            return real_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", unavailable_root)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.validate_job_event_destination(str(inside), repo=repo)
+        assert "resolves inside protected checkout path" in str(exc.value)
+        assert str(repo) in str(exc.value)
+
+    def test_event_writer_open_refusal_names_the_os_error(self, tmp_path,
+                                                           monkeypatch):
+        event_file = tmp_path / "events.jsonl"
+        real_open = os.open
+
+        def denied(path, flags, mode=0o777):
+            if Path(path) == event_file:
+                raise PermissionError("fixture denies open")
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(run_gate.os, "open", denied)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.open_job_event_writer(str(event_file), "job-open", "suite")
+        assert "cannot open --event-file" in str(exc.value)
+        assert "fixture denies open" in str(exc.value)
+
+    def test_event_writer_refuses_nonregular_open_descriptor(self, tmp_path,
+                                                              monkeypatch):
+        event_file = tmp_path / "events.jsonl"
+        real_open = os.open
+        real_fstat = os.fstat
+        event_fds = set()
+
+        def track_open(path, flags, mode=0o777):
+            fd = real_open(path, flags, mode)
+            if Path(path) == event_file:
+                event_fds.add(fd)
+            return fd
+
+        def fifo_fstat(fd):
+            if fd in event_fds:
+                return SimpleNamespace(st_mode=stat.S_IFIFO)
+            return real_fstat(fd)
+
+        monkeypatch.setattr(run_gate.os, "open", track_open)
+        monkeypatch.setattr(run_gate.os, "fstat", fifo_fstat)
+        try:
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.open_job_event_writer(
+                    str(event_file), "job-fstat", "suite")
+        finally:
+            monkeypatch.setattr(run_gate.os, "open", real_open)
+            monkeypatch.setattr(run_gate.os, "fstat", real_fstat)
+        assert "must be a regular file" in str(exc.value)
+        assert event_file.exists()
+
+    def test_event_writer_reports_fstat_refusal_and_closes_descriptor(
+            self, tmp_path, monkeypatch):
+        event_file = tmp_path / "fstat-error.jsonl"
+        real_open = os.open
+        real_fstat = os.fstat
+        real_close = os.close
+        event_fds = set()
+        closed = []
+
+        def track_open(path, flags, mode=0o777):
+            fd = real_open(path, flags, mode)
+            if Path(path) == event_file:
+                event_fds.add(fd)
+            return fd
+
+        def denied_fstat(fd):
+            if fd in event_fds:
+                raise OSError("fixture denies fstat")
+            return real_fstat(fd)
+
+        def track_close(fd):
+            if fd in event_fds:
+                closed.append(fd)
+                event_fds.discard(fd)
+            return real_close(fd)
+
+        monkeypatch.setattr(run_gate.os, "open", track_open)
+        monkeypatch.setattr(run_gate.os, "fstat", denied_fstat)
+        monkeypatch.setattr(run_gate.os, "close", track_close)
+        try:
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.open_job_event_writer(
+                    str(event_file), "job-fstat-error", "suite")
+        finally:
+            monkeypatch.setattr(run_gate.os, "open", real_open)
+            monkeypatch.setattr(run_gate.os, "fstat", real_fstat)
+            monkeypatch.setattr(run_gate.os, "close", real_close)
+        assert "cannot secure --event-file" in str(exc.value)
+        assert "fixture denies fstat" in str(exc.value)
+        assert len(closed) == 1
+
+    def test_event_writer_secures_mode_and_closes_on_fchmod_error(
+            self, tmp_path, monkeypatch):
+        event_file = tmp_path / "events.jsonl"
+        real_close = os.close
+        closed = []
+
+        def denied(fd, mode):
+            raise PermissionError("fixture denies fchmod")
+
+        def close(fd):
+            closed.append(fd)
+            real_close(fd)
+
+        monkeypatch.setattr(run_gate.os, "fchmod", denied)
+        monkeypatch.setattr(run_gate.os, "close", close)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.open_job_event_writer(str(event_file), "job-chmod", "suite")
+        assert "cannot secure --event-file" in str(exc.value)
+        assert "fixture denies fchmod" in str(exc.value)
+        assert len(closed) == 1
+
+    def test_mount_flag_sources_reads_all_bind_flag_shapes(self):
+        assert run_gate.mount_flag_sources([
+            "-v", "/bind-a:/container:ro",
+            "--volume", "/bind-b:/container:rw",
+            "--mount", "type=bind,source=/bind-c,target=/container,readonly",
+            "--mount=type=bind,src=/bind-d,dst=/container",
+            "-v", "relative:/container",
+            "--volume", "/bind-e",
+            "--mount", "type=bind,target=/container",
+            "--mount=type=bind,source=relative,target=/container",
+            "-v", ":/container",
+            "--volume",
+        ]) == ["/bind-a", "/bind-b", "/bind-c", "/bind-d", "/bind-e"]
+
+    def test_persistent_mount_inspection_reports_sources_and_refusal(
+            self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(
+                argv, 0, "/host/repo\n/host/state\n", ""))
+        assert run_gate.inspect_container_mount_sources(
+            "docker", "full-container-id") == ["/host/repo", "/host/state"]
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(
+                argv, 1, "", "fixture inspect refusal"))
+        with pytest.raises(run_gate.GateInfraError) as exc:
+            run_gate.inspect_container_mount_sources("docker", "runner")
+        assert "cannot inspect host mount sources" in str(exc.value)
+        assert "fixture inspect refusal" in str(exc.value)
+
+    @pytest.mark.parametrize(("outcome", "expected"), [
+        ("id", "container-full-id"), ("empty", None), ("error", None),
+        ("oserror", None), ("timeout", None),
+    ])
+    def test_container_id_best_effort_handles_inspect_outcomes(
+            self, monkeypatch, outcome, expected):
+        def inspect(argv, **_kwargs):
+            if outcome == "oserror":
+                raise OSError("fixture docker missing")
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(argv, 10)
+            if outcome == "error":
+                return subprocess.CompletedProcess(argv, 1, "", "not found")
+            return subprocess.CompletedProcess(
+                argv, 0, "container-full-id\n" if outcome == "id" else "\n", "")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", inspect)
+        assert run_gate.inspect_container_id_best_effort(
+            "docker", "runner") == expected
+
+    def test_emit_lane_started_null_default_and_no_sink_are_explicit(
+            self, tmp_path):
+        event_file = tmp_path / "start-shapes.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-shapes", "suite")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        try:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+            run_gate._NESTED_JOB_EVENT_WRITER = None
+            run_gate.emit_lane_started(None, None, False)
+            run_gate.emit_lane_started(
+                None, None, True, reason="runner-not-identifiable")
+            run_gate.emit_lane_started(
+                "container-full-id", "sha256:image", True, lane="member")
+            run_gate._ACTIVE_JOB_EVENT_WRITER = None
+            run_gate.emit_lane_started("must-not-appear", "image", False)
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+            writer.close()
+        events = [json.loads(line) for line in event_file.read_text().splitlines()]
+        assert [event["reason"] for event in events[:2]] == [
+            "container-id-unavailable", "runner-not-identifiable"]
+        assert events[2]["container_id"] == "container-full-id"
+        assert events[2]["image_id"] == "sha256:image"
+        assert events[2]["adopted"] is True
+        assert events[2]["lane"] == "member"
+        assert len(events) == 3
+
+    def test_event_writer_close_failure_warns_once_and_closes_only_once(
+            self, tmp_path, monkeypatch, capsys):
+        writer = run_gate.open_job_event_writer(
+            str(tmp_path / "close-failure.jsonl"), "job-close", "suite")
+        real_close = os.close
+
+        def close_then_report(fd):
+            real_close(fd)
+            raise OSError("fixture close diagnostic")
+
+        monkeypatch.setattr(run_gate.os, "close", close_then_report)
+        writer.close()
+        writer.close()
+        captured = capsys.readouterr()
+        assert writer.fd == -1
+        assert captured.err.count("run-gate: WARNING:") == 1
+        assert "fixture close diagnostic" in captured.err
+
+    def test_strip_job_event_options_preserves_lane_arguments_after_separator(
+            self):
+        assert run_gate.strip_job_event_options([
+            "suite", "--event-file=/host/events", "--job-id=job-1",
+            "--", "--event-file", "passed-to-lane",
+        ]) == ["suite", "--", "--event-file", "passed-to-lane"]
+        assert run_gate.strip_job_event_options([
+            "--event-file", "/host/events", "--job-id", "job-2", "suite",
+        ]) == ["suite"]
 
     @pytest.mark.parametrize("writer_slot", ["active", "nested"])
     def test_probe_mounts_are_checked_before_probe_start(self, tmp_path,
@@ -43212,6 +43516,105 @@ class TestJobEventOptionsAndWriter:
             run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
             writer.close()
 
+    @pytest.mark.parametrize(("inspect_mounts", "event_in_mount", "message"), [
+        pytest.param(False, False, "cannot verify the host mounts",
+                     id="cannot-inspect"),
+        pytest.param(True, True, "mounted by this lane", id="event-mounted"),
+        pytest.param(True, False, None, id="safe-exec-probe"),
+    ])
+    def test_exec_environment_probe_checks_event_path_before_start(
+            self, tmp_path, monkeypatch, inspect_mounts, event_in_mount,
+            message):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        mount = tmp_path / "persistent-mount"
+        mount.mkdir()
+        event_file = ((mount if event_in_mount else tmp_path)
+                      / "exec-probe-events.jsonl")
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-exec-probe", "suite")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "resource_forwarded_env",
+                            lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(run_gate, "inspect_container_mount_sources",
+                            lambda *_args: [str(mount) if event_in_mount else "/host/other"])
+        try:
+            def call():
+                return run_gate.build_env_probe_argv(
+                    "docker", {"mode": "exec"}, "ci", repo, repo,
+                    "fixture", "", "true", resolved_container_name="runner",
+                    inspect_mounts=inspect_mounts)
+            if message is None:
+                argv = call()
+                assert argv[:2] == ["docker", "exec"]
+                assert "runner" in argv
+            else:
+                with pytest.raises(run_gate.GateError) as exc:
+                    call()
+                assert message in str(exc.value)
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+            writer.close()
+
+    def test_exec_environment_probe_without_event_writer_keeps_argv(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "resource_forwarded_env",
+                            lambda *_args, **_kwargs: {})
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = None
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        try:
+            argv = run_gate.build_env_probe_argv(
+                "docker", {"mode": "exec"}, "ci", repo, repo,
+                "fixture", "", "true", resolved_container_name="runner",
+                inspect_mounts=False)
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+        assert argv == ["docker", "exec", "--workdir", str(repo),
+                        "runner", "bash", "-c", "true"]
+
+    def test_ephemeral_environment_probe_checks_safe_event_path(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        event_file = tmp_path / "events.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-ephemeral-probe", "suite")
+        monkeypatch.setattr(run_gate, "_ACTIVE_JOB_EVENT_WRITER", writer)
+        monkeypatch.setattr(run_gate, "_NESTED_JOB_EVENT_WRITER", None)
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_args, **_kwargs: ["-v", f"{repo}:{repo}"])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "resource_forwarded_env",
+                            lambda *_args, **_kwargs: {})
+        try:
+            argv = run_gate.build_env_probe_argv(
+                "docker", {"mode": "ephemeral", "image": "runner:local"},
+                "runner", repo, repo, "fixture", "slice", "true")
+        finally:
+            writer.close()
+
+        assert argv[:3] == ["docker", "run", "--rm"]
+        assert argv[argv.index("-v") + 1] == f"{repo}:{repo}"
+        assert str(event_file) not in argv
+        assert argv[-4:] == ["runner:local", "bash", "-c", "true"]
+
     def test_event_flags_refuse_dry_run_and_non_lane_verbs(self, tmp_path,
                                                             monkeypatch, capsys):
         event_file = tmp_path / "events.jsonl"
@@ -43227,6 +43630,62 @@ class TestJobEventOptionsAndWriter:
             "--job-id", "job-list"]) == 2
         assert not event_file.exists()
         assert "apply to a lane run only" in capsys.readouterr().err
+
+    def test_event_flags_keep_pid1_preflight_refusal_message(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "events.jsonl"
+        monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
+
+        assert run_gate.main([
+            "suite", "--event-file", str(event_file),
+            "--job-id", "job-pid1"]) == 2
+        captured = capsys.readouterr()
+        assert "run-gate is PID 1 with no init" in captured.err
+        assert "`--init` (Docker) or `init: true` (Compose)" in captured.err
+        assert captured.out == ""
+        assert not event_file.exists()
+
+    def test_dispatch_pid1_refusal_precedes_event_writer_open(
+            self, tmp_path, monkeypatch):
+        event_file = tmp_path / "events.jsonl"
+        monkeypatch.setattr(run_gate, "_ACTIVE_JOB_EVENT_WRITER", None)
+        monkeypatch.setattr(run_gate, "_NESTED_JOB_EVENT_WRITER", None)
+        monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
+
+        result = run_gate._dispatch([
+            "suite", "--event-file", str(event_file),
+            "--job-id", "job-pid1"])
+        assert result.verdict == "ERROR"
+        assert result.reason == "pid1-without-init"
+        assert result.gate_exit_code == 2
+        assert not event_file.exists()
+
+    @pytest.mark.parametrize("writer_slot", ["active", "nested"])
+    def test_nested_event_flag_refusal_does_not_write_parent_verdict(
+            self, tmp_path, monkeypatch, capsys, writer_slot):
+        parent_file = tmp_path / "parent-events.jsonl"
+        child_file = tmp_path / "child-events.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(parent_file), "parent-job", "suite")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = (
+            writer if writer_slot == "active" else None)
+        run_gate._NESTED_JOB_EVENT_WRITER = (
+            writer if writer_slot == "nested" else None)
+        try:
+            code = run_gate.main([
+                "suite", "--event-file", str(child_file),
+                "--job-id", "child-job"])
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+            writer.close()
+        assert code == 2
+        assert "nested run-gate invocations cannot use the active job event file" \
+            in capsys.readouterr().err
+        assert not child_file.exists()
+        assert parent_file.read_text() == ""
 
     def test_event_environment_variables_are_ignored_without_flags(
             self, tmp_path, monkeypatch, capsys):
@@ -43276,11 +43735,19 @@ class TestJobEventOptionsAndWriter:
 
 class TestJobEventContainerEvents:
     @staticmethod
-    def _fake_event_docker(tmp_path, monkeypatch, container_id, image_id):
+    def _fake_event_docker(tmp_path, monkeypatch, container_id, image_id,
+                           *, lane_run_returncode=0, lane_stdout_id=True,
+                           inspect_id=True, running_names=""):
         shim_dir = tmp_path / "event-docker"
         shim_dir.mkdir()
         calls = tmp_path / "event-docker-calls.log"
         shim = shim_dir / "docker"
+        lane_id_line = (f"printf '%s\\n' \"{container_id}\""
+                        if lane_stdout_id else ":")
+        inspected_id_line = (f"printf '%s\\n' \"{container_id}\""
+                             if inspect_id else ":")
+        image_id_line = (f"printf '%s\\n' \"{image_id}\""
+                         if image_id else ":")
         shim.write_text(textwrap.dedent(f"""\
             #!/bin/sh
             printf '%s\\037' "$@" >> "{calls}"
@@ -43289,17 +43756,19 @@ class TestJobEventContainerEvents:
               run)
                 case "$*" in
                   *"run-gate.lane=suite"*)
-                    printf '%s\\n' "{container_id}"
+                    {lane_id_line}
+                    exit {lane_run_returncode}
                     ;;
                   *)
                     printf '%s\\n' "{'c' * 64}"
                     ;;
                 esac
                 ;;
+              ps) printf '%s\\n' "{running_names}" ;;
               inspect)
                 case "$*" in
-                  *"{{{{.Image}}}}"*) printf '%s\\n' "{image_id}" ;;
-                  *"{{{{.Id}}}}"*) printf '%s\\n' "{container_id}" ;;
+                  *"{{{{.Image}}}}"*) {image_id_line} ;;
+                  *"{{{{.Id}}}}"*) {inspected_id_line} ;;
                   *"{{{{.State.Status}}}}"*)
                     printf '%s\\n' 'running|0|2026-01-01T00:00:01Z|2026-01-01T00:00:00Z|{container_id}'
                     ;;
@@ -43309,12 +43778,69 @@ class TestJobEventContainerEvents:
               wait) printf '0\\n' ;;
               logs) printf 'fake-container-output\\n' ;;
               rm) : ;;
+              exec)
+                for last; do :; done
+                exec bash -c "$last"
+                ;;
             esac
             exit 0
         """))
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         monkeypatch.setenv("PATH", f"{shim_dir}:{os.environ['PATH']}")
         return calls
+
+    @staticmethod
+    def _run_ephemeral_event_lane(tmp_path, monkeypatch, event_file, *,
+                                  container_id, image_id,
+                                  lane_run_returncode=0,
+                                  lane_stdout_id=True, inspect_id=True,
+                                  event_flags=True):
+        calls = TestJobEventContainerEvents._fake_event_docker(
+            tmp_path, monkeypatch, container_id, image_id,
+            lane_run_returncode=lane_run_returncode,
+            lane_stdout_id=lane_stdout_id, inspect_id=inspect_id)
+        repo = make_repo(tmp_path)
+        config = f"""\
+            schema_version = 1
+
+            [environments.ci]
+            mode = "ephemeral"
+            image = "test-image:local"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "ci"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """
+        make_project(repo, config)
+        worktree = make_worktree(repo, tmp_path)
+        monkeypatch.chdir(worktree / "proj")
+        monkeypatch.setenv("RUN_GATE_PROFILE", "off")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda _path, **_kwargs: Path("/phys"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_: None)
+        monkeypatch.setattr(run_gate, "preflight_lane_uid_ownership",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            run_gate, "run_lane_with_cgroup_event_guard",
+            lambda _lane, runner, enabled=True: runner())
+        argv = ["suite"]
+        if event_flags:
+            argv += ["--event-file", str(event_file), "--job-id", "job-start"]
+        return run_gate.main(argv), calls
+
+    def test_ephemeral_without_event_flags_keeps_output_and_no_event_file(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "must-not-exist.jsonl"
+        code, calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="a" * 64,
+            image_id="sha256:" + "b" * 64, event_flags=False)
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "run-gate: lane 'suite' verdict PASS; exit_code 0" in captured.out
+        assert not event_file.exists()
+        assert "run-gate.lane=suite" in calls.read_text()
 
     def test_ephemeral_event_uses_docker_reported_identity_and_labels(
             self, tmp_path, monkeypatch, capsys):
@@ -43349,6 +43875,21 @@ class TestJobEventContainerEvents:
             run_gate, "run_lane_with_cgroup_event_guard",
             lambda _lane, runner, enabled=True: runner())
         event_file = tmp_path / "events.jsonl"
+        real_run = subprocess.run
+        started_before_logs = []
+
+        def observe_event_before_logs(argv, *args, **kwargs):
+            if isinstance(argv, (list, tuple)) and len(argv) > 1 \
+                    and argv[1] == "logs":
+                events_at_logs = [json.loads(line) for line in
+                                  event_file.read_text().splitlines()]
+                started_before_logs.extend(
+                    event["container_id"] for event in events_at_logs
+                    if event["event"] == "lane-started")
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            observe_event_before_logs)
         assert run_gate.main(["suite", "--event-file", str(event_file),
                               "--job-id", "job-start"]) == 0
         capsys.readouterr()
@@ -43358,9 +43899,326 @@ class TestJobEventContainerEvents:
         assert started["container_id"] == container_id
         assert started["image_id"] == image_id
         assert started["adopted"] is False
+        assert started_before_logs == [container_id]
         docker_argv = calls.read_text()
         assert "run-gate.lane=suite" in docker_argv
         assert "run-gate.project=proj" in docker_argv
+
+    @pytest.mark.parametrize(("lane_stdout_id", "expected_id", "reason"), [
+        (True, "f" * 64, None),
+        (False, None, "docker-run-failed-before-container-id"),
+    ])
+    def test_partial_container_start_failure_emits_known_or_null_identity(
+            self, tmp_path, monkeypatch, capsys, lane_stdout_id,
+            expected_id, reason):
+        event_file = tmp_path / "partial-start-events.jsonl"
+        image_id = "sha256:" + "e" * 64
+        code, calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="f" * 64,
+            image_id=image_id, lane_run_returncode=9,
+            lane_stdout_id=lane_stdout_id, inspect_id=False)
+        assert code == 2
+        captured = capsys.readouterr()
+        assert "docker run failed (exit 9)" in captured.err
+        events = [json.loads(line) for line in event_file.read_text().splitlines()]
+        [started, verdict] = events
+        assert started["event"] == "lane-started"
+        assert started["container_id"] == expected_id
+        assert started["adopted"] is False
+        assert verdict["event"] == "lane-verdict"
+        assert verdict["verdict"] == "ERROR"
+        assert verdict["exit_code"] == 2
+        assert verdict["lane_exit_code"] is None
+        if reason is None:
+            assert started["image_id"] == image_id
+            assert "reason" not in started
+            assert "run-gate.lane=suite" in calls.read_text()
+        else:
+            assert started["image_id"] is None
+            assert started["reason"] == reason
+
+    def test_partial_start_without_event_flags_keeps_normal_refusal(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "no-event-partial-start.jsonl"
+        code, _calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="f" * 64,
+            image_id="sha256:" + "e" * 64, lane_run_returncode=9,
+            event_flags=False)
+        assert code == 2
+        captured = capsys.readouterr()
+        assert "docker run failed (exit 9)" in captured.err
+        assert "run-gate: lane 'suite' verdict ERROR" in captured.out
+        assert not event_file.exists()
+
+    def test_successful_container_start_without_id_emits_null_ids(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "unknown-start-events.jsonl"
+        code, _calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="f" * 64,
+            image_id="sha256:" + "e" * 64, lane_stdout_id=False,
+            inspect_id=False)
+        assert code == 0
+        capsys.readouterr()
+        [started] = [json.loads(line)
+                     for line in event_file.read_text().splitlines()
+                     if '"event":"lane-started"' in line]
+        assert started["container_id"] is None
+        assert started["image_id"] is None
+        assert started["adopted"] is False
+        assert started["reason"] == "docker-run-succeeded-without-container-id"
+
+    def test_successful_container_start_falls_back_to_inspected_id(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "inspect-fallback-events.jsonl"
+        container_id = "f" * 64
+        image_id = "sha256:" + "e" * 64
+        code, calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id=container_id,
+            image_id=image_id, lane_stdout_id=False, inspect_id=True)
+        assert code == 0
+        capsys.readouterr()
+        [started] = [json.loads(line)
+                     for line in event_file.read_text().splitlines()
+                     if '"event":"lane-started"' in line]
+        assert started["container_id"] == container_id
+        assert started["image_id"] == image_id
+        assert started["adopted"] is False
+        assert "reason" not in started
+        assert "inspect" in calls.read_text()
+
+    @pytest.mark.parametrize(("running_names", "reason"), [
+        ("", "down"), ("runner-shadow", "foreign-name"),
+    ])
+    def test_exec_lane_down_or_foreign_name_emits_no_container_identity(
+            self, tmp_path, monkeypatch, running_names, reason):
+        event_file = tmp_path / f"exec-{reason}.jsonl"
+        container_id = "a" * 64
+        image_id = "sha256:" + "b" * 64
+        self._fake_event_docker(
+            tmp_path, monkeypatch, container_id, image_id,
+            running_names=running_names)
+        writer = run_gate.open_job_event_writer(
+            str(event_file), f"job-{reason}", "suite")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        try:
+            with pytest.raises(run_gate.GateNotRunError) as exc:
+                run_gate.run_exec_lane(
+                    {"kind": "command", "argv": ["true"]}, "suite",
+                    tmp_path, tmp_path, tmp_path,
+                    {"mode": "exec", "forward_env": []}, "fixture",
+                    "runner", "configured runner", "start runner", None,
+                    "no slice", dry_run=False,
+                    profile_plan={"enabled": False,
+                                  "disabled_reason": "test",
+                                  "source": "fixture"})
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+            writer.close()
+        assert "persistent runner 'runner'" in str(exc.value)
+        assert "configured runner" in str(exc.value)
+        assert "start runner" in str(exc.value)
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["event"] == "lane-started"
+        assert event["container_id"] is None
+        assert event["image_id"] is None
+        assert event["adopted"] is False
+        assert event["reason"] == "exec-environment-not-running"
+
+    def test_exec_lane_down_without_event_writer_keeps_normal_refusal(
+            self, tmp_path, monkeypatch):
+        self._fake_event_docker(
+            tmp_path, monkeypatch, "a" * 64, "sha256:" + "b" * 64,
+            running_names="")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = None
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        try:
+            with pytest.raises(run_gate.GateNotRunError) as exc:
+                run_gate.run_exec_lane(
+                    {"kind": "command", "argv": ["true"]}, "suite",
+                    tmp_path, tmp_path, tmp_path,
+                    {"mode": "exec", "forward_env": []}, "fixture",
+                    "runner", "configured runner", "start runner", None,
+                    "no slice", dry_run=False,
+                    profile_plan={"enabled": False,
+                                  "disabled_reason": "test",
+                                  "source": "fixture"})
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+        assert exc.value.reason == "environment-down"
+        assert "persistent runner 'runner'" in str(exc.value)
+
+    @pytest.mark.parametrize("identity_available", [True, False],
+                             ids=["inspected-id", "unidentifiable"])
+    def test_exec_lane_event_uses_inspected_identity_or_null_reason(
+            self, tmp_path, monkeypatch, capsys, identity_available):
+        repo = make_repo(tmp_path)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        event_file = tmp_path / f"exec-identity-{identity_available}.jsonl"
+        container_id = "c" * 64
+        image_id = "sha256:" + "d" * 64
+        calls = self._fake_event_docker(
+            tmp_path, monkeypatch, container_id, image_id,
+            running_names="runner")
+        inspected = {"id": container_id} if identity_available else None
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *_: inspected)
+        monkeypatch.setattr(run_gate, "inspect_container_id_best_effort",
+                            lambda *_: container_id if identity_available else None)
+        monkeypatch.setattr(run_gate, "inspect_container_mount_sources",
+                            lambda *_: [])
+        monkeypatch.setattr(run_gate, "inspect_container_image_id",
+                            lambda *_: (image_id, None))
+        writer = run_gate.open_job_event_writer(
+            str(event_file), f"job-exec-{identity_available}", "suite")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        try:
+            result = run_gate.run_exec_lane(
+                {"kind": "command", "argv": ["true"]}, "suite",
+                repo, repo, repo,
+                {"mode": "exec", "forward_env": []}, "fixture",
+                "runner", "configured runner", "start runner", None,
+                "no slice", dry_run=False, run_record={},
+                profile_plan={"enabled": False, "disabled_reason": "test",
+                              "source": "fixture"})
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+            writer.close()
+        assert result == 0
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()
+                   if '"event":"lane-started"' in line]
+        assert event["event"] == "lane-started"
+        assert event["adopted"] is True
+        if identity_available:
+            assert event["container_id"] == container_id
+            assert event["image_id"] == image_id
+            assert "reason" not in event
+            assert container_id in calls.read_text()
+        else:
+            assert event["container_id"] is None
+            assert event["image_id"] is None
+            assert event["reason"] == "exec-runner-inspect-returned-no-container-id"
+
+    def test_exec_lane_uses_docker_inspect_id_when_state_lacks_one(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        event_file = tmp_path / "exec-inspect-fallback.jsonl"
+        container_id = "c" * 64
+        image_id = "sha256:" + "d" * 64
+        self._fake_event_docker(
+            tmp_path, monkeypatch, container_id, image_id,
+            running_names="runner")
+        monkeypatch.setattr(run_gate, "container_state", lambda *_: None)
+        monkeypatch.setattr(run_gate, "inspect_container_mount_sources",
+                            lambda *_: [])
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-exec-fallback", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            monkeypatch.setattr(
+                run_gate, "inspect_container_image_id",
+                lambda *_: (image_id, None))
+            result = run_gate.run_exec_lane(
+                {"kind": "command", "argv": ["true"]}, "suite",
+                repo, repo, repo,
+                {"mode": "exec", "forward_env": []}, "fixture",
+                "runner", "configured runner", "start runner", None,
+                "no slice", dry_run=False,
+                profile_plan={"enabled": False, "disabled_reason": "test",
+                              "source": "fixture"})
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert result == 0
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["container_id"] == container_id
+        assert event["image_id"] == image_id
+        assert event["adopted"] is True
+
+    def test_exec_lane_refuses_event_file_in_persistent_mount(
+            self, tmp_path, monkeypatch):
+        event_mount = tmp_path / "persistent-mount"
+        event_mount.mkdir()
+        repo_root = tmp_path / "repo-root"
+        repo_root.mkdir()
+        repo = make_repo(repo_root)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        event_file = event_mount / "events.jsonl"
+        container_id = "c" * 64
+        image_id = "sha256:" + "d" * 64
+        self._fake_event_docker(
+            tmp_path, monkeypatch, container_id, image_id,
+            running_names="runner")
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *_: {"id": container_id})
+        monkeypatch.setattr(run_gate, "inspect_container_mount_sources",
+                            lambda *_: [str(event_mount)])
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-exec-mounted", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.run_exec_lane(
+                    {"kind": "command", "argv": ["true"]}, "suite",
+                    repo, repo, repo,
+                    {"mode": "exec", "forward_env": []}, "fixture",
+                    "runner", "configured runner", "start runner", None,
+                    "no slice", dry_run=False,
+                    profile_plan={"enabled": False,
+                                  "disabled_reason": "test",
+                                  "source": "fixture"})
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert "mounted by this lane" in str(exc.value)
+        assert event_file.read_text() == ""
+
+    def test_exec_lane_without_event_writer_uses_configured_name(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        calls = self._fake_event_docker(
+            tmp_path, monkeypatch, "c" * 64, "sha256:" + "d" * 64,
+            running_names="runner")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = None
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        monkeypatch.setattr(
+            run_gate, "container_state",
+            lambda *_: pytest.fail("no event file means no identity inspect"))
+        try:
+            result = run_gate.run_exec_lane(
+                {"kind": "command", "argv": ["true"]}, "suite",
+                repo, repo, repo,
+                {"mode": "exec", "forward_env": []}, "fixture",
+                "runner", "configured runner", "start runner", None,
+                "no slice", dry_run=False,
+                profile_plan={"enabled": False, "disabled_reason": "test",
+                              "source": "fixture"})
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+        assert result == 0
+        argv_log = calls.read_text()
+        assert "exec" in argv_log
+        assert "runner" in argv_log
 
     def test_adopted_inflight_event_uses_inspected_identity(
             self, tmp_path, monkeypatch, capsys):
@@ -43409,6 +44267,41 @@ class TestJobEventContainerEvents:
         assert event["image_id"] == image_id
         assert event["adopted"] is True
 
+    def test_adopted_inflight_without_event_writer_keeps_normal_result(
+            self, tmp_path, monkeypatch):
+        pending = {
+            "runner": "container", "container": "lane-container",
+            "container_id": "d" * 64, "commit": "head-sha",
+            "started_at": "2026-01-01T00:00:00Z",
+            "started_epoch": 1767225600.0,
+        }
+        state = {"id": "d" * 64, "status": "running", "exit_code": 0,
+                 "finished_at": "", "started_at": "2026-01-01T00:00:00Z"}
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = None
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: pending)
+        monkeypatch.setattr(run_gate, "validate_inflight_assay_contract",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "live_owner_pid", lambda *_: None)
+        monkeypatch.setattr(run_gate, "container_state", lambda *_: state)
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_: "head-sha")
+        monkeypatch.setattr(run_gate, "adopt_inflight_ksm",
+                            lambda _record, _pending, monitor: monitor)
+        monkeypatch.setattr(run_gate, "await_container",
+                            lambda *_args, **_kwargs: 0)
+        try:
+            assert run_gate.current_job_event_writer() is None
+            result = run_gate.resolve_inflight(
+                "docker", {"kind": "command"}, "suite", tmp_path,
+                tmp_path, tmp_path, False, False, {})
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+        assert result == 0
+
     def test_same_named_foreign_container_is_never_emitted(
             self, tmp_path, monkeypatch):
         event_file = tmp_path / "foreign.jsonl"
@@ -43444,6 +44337,53 @@ class TestJobEventContainerEvents:
             writer.close()
         assert event_file.read_text() == ""
 
+    def test_inflight_adoption_without_inspected_id_emits_null_reason(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path.parent / f"{tmp_path.name}-unknown-id.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-unknown-id", "suite")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        pending = {
+            "runner": "container", "container": "lane-container",
+            "container_id": "d" * 64, "commit": "head-sha",
+            "started_at": "2026-01-01T00:00:00Z",
+        }
+        state = {"id": "", "status": "running", "exit_code": 0,
+                 "finished_at": "", "started_at": "2026-01-01T00:00:00Z"}
+        monkeypatch.setattr(run_gate, "load_inflight_record",
+                            lambda *_args, **_kwargs: pending)
+        monkeypatch.setattr(run_gate, "validate_inflight_assay_contract",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "live_owner_pid", lambda *_: None)
+        monkeypatch.setattr(run_gate, "container_state", lambda *_: state)
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_: "head-sha")
+        monkeypatch.setattr(run_gate, "inspect_container_mount_sources",
+                            lambda *_: [])
+        monkeypatch.setattr(run_gate, "await_container",
+                            lambda *_args, **_kwargs: 0)
+        monkeypatch.setattr(run_gate, "adopt_inflight_ksm",
+                            lambda _record, _pending, monitor: monitor)
+        try:
+            result = run_gate.resolve_inflight(
+                "docker", {"kind": "command"}, "suite", tmp_path,
+                tmp_path, tmp_path, False, False, {})
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+            writer.close()
+        capsys.readouterr()
+        assert result == 0
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["event"] == "lane-started"
+        assert event["container_id"] is None
+        assert event["image_id"] is None
+        assert event["adopted"] is True
+        assert event["reason"] == "inflight-container-identity-unverified"
+
     @pytest.mark.parametrize("json_mode", [False, True])
     def test_forged_lane_verdict_does_not_replace_finish_result(
             self, tmp_path, monkeypatch, capsys, json_mode):
@@ -43476,6 +44416,67 @@ class TestJobEventContainerEvents:
         assert event["exit_code"] == 1
         assert event["lane_exit_code"] == 7
 
+    def test_finish_records_result_and_json_command_tail_before_event(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "finish-record.jsonl"
+        log_path = tmp_path / "lane.log"
+        log_path.write_text("first line\nlast lane line\n")
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-finish-record", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        record = {"log_path": str(log_path)}
+        flushed = {}
+
+        def flush(record_arg, *, exit_code):
+            flushed["record"] = record_arg
+            flushed["exit_code"] = exit_code
+
+        monkeypatch.setattr(run_gate, "flush_run_record", flush)
+        try:
+            code = run_gate.finish(run_gate.LaneResult(
+                "FAIL", 7, reason="command-exit-map", _record=record,
+                _lane_name="suite", _json=True))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert code == 1
+        assert flushed == {"record": record, "exit_code": 7}
+        assert record["verdict"] == "FAIL"
+        assert record["reason"] == "command-exit-map"
+        assert record["log_path"] == str(log_path)
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["verdict"] == "FAIL"
+        assert "last_output \"last lane line\"" in captured.err
+        assert str(log_path) in captured.err
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["event"] == "lane-verdict"
+        assert event["exit_code"] == code
+        assert event["lane_exit_code"] == 7
+
+    def test_finish_uses_writer_lane_when_result_has_no_lane_or_exit_code(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "finish-fallback.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-finish-fallback", "parent")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            code = run_gate.finish(run_gate.LaneResult("PASS", None))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert code == 0
+        captured = capsys.readouterr()
+        assert captured.out == "run-gate: lane 'parent' verdict PASS\n"
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["lane"] == "parent"
+        assert event["verdict"] == "PASS"
+        assert event["exit_code"] == 0
+        assert event["lane_exit_code"] is None
+
     def test_finish_without_event_flags_keeps_anchored_output(self, capsys):
         result_code = run_gate.finish(run_gate.LaneResult(
             "PASS", 0, _lane_name="suite"))
@@ -43485,39 +44486,212 @@ class TestJobEventContainerEvents:
             "run-gate: lane 'suite' verdict PASS; exit_code 0\n")
         assert captured.err == ""
 
-    def test_failed_event_write_warns_once_and_keeps_verdict(
+    def test_finish_json_without_event_flags_keeps_json_only(self, capsys):
+        result_code = run_gate.finish(run_gate.LaneResult(
+            "PASS", 0, _lane_name="suite", _json=True))
+        assert result_code == 0
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["verdict"] == "PASS"
+        assert captured.err == ""
+
+    def test_finish_json_event_fallback_handles_missing_details(
             self, tmp_path, monkeypatch, capsys):
-        event_file = tmp_path / "write-failure.jsonl"
+        event_file = tmp_path / "json-fallback.jsonl"
         writer = run_gate.open_job_event_writer(
-            str(event_file), "job-write-failure", "suite")
+            str(event_file), "job-json-fallback", "parent")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            result_code = run_gate.finish(run_gate.LaneResult(
+                "PASS", None, _json=True))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert result_code == 0
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["verdict"] == "PASS"
+        assert captured.err == "run-gate: lane 'parent' verdict PASS\n"
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["lane"] == "parent"
+        assert event["exit_code"] == 0
+        assert event["lane_exit_code"] is None
+
+    def test_finish_json_event_with_non_command_failure_has_no_tail(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "json-preflight-refusal.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-json-refusal", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            result_code = run_gate.finish(run_gate.LaneResult(
+                "ERROR", reason="preflight-refusal", _json=True,
+                _lane_name="suite"))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert result_code == 2
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["reason"] == "preflight-refusal"
+        assert captured.err == (
+            "run-gate: lane 'suite' verdict ERROR; reason preflight-refusal\n")
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["verdict"] == "ERROR"
+        assert event["exit_code"] == 2
+
+    def test_finish_json_event_skips_command_tail_when_log_has_no_last_line(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "json-empty-tail.jsonl"
+        log_path = tmp_path / "empty-lane.log"
+        log_path.write_text("")
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-json-empty-tail", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            result_code = run_gate.finish(run_gate.LaneResult(
+                "FAIL", 7, reason="command-exit-map", log_path=str(log_path),
+                _lane_name="suite", _json=True))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert result_code == 1
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["verdict"] == "FAIL"
+        assert "reason command-exit-map" in captured.err
+        assert str(log_path) in captured.err
+        assert "last_output" not in captured.err
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["exit_code"] == 1
+        assert event["lane_exit_code"] == 7
+
+    @pytest.mark.parametrize(("log_content", "has_tail"), [
+        ("command output\n", True), ("", False),
+    ], ids=["last-line", "empty-log"])
+    def test_finish_plain_command_exit_map_reports_log_tail_when_present(
+            self, tmp_path, monkeypatch, capsys, log_content, has_tail):
+        event_file = tmp_path / f"plain-command-map-{has_tail}.jsonl"
+        log_path = tmp_path / "lane.log"
+        log_path.write_text(log_content)
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-plain-command-map", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            result_code = run_gate.finish(run_gate.LaneResult(
+                "FAIL", 7, reason="command-exit-map", log_path=str(log_path),
+                _lane_name="suite"))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert result_code == 1
+        captured = capsys.readouterr()
+        assert "verdict FAIL; exit_code 7; reason command-exit-map" in captured.out
+        if has_tail:
+            assert 'last_output "command output"' in captured.out
+        else:
+            assert "last_output" not in captured.out
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["verdict"] == "FAIL"
+        assert event["exit_code"] == result_code
+
+    def test_finish_event_fallback_includes_available_details(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "plain-fallback-details.jsonl"
+        log_path = tmp_path / "lane.log"
+        log_path.write_text("lane output\n")
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-fallback-details", "parent")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            result_code = run_gate.finish(run_gate.LaneResult(
+                "ERROR", 2, reason="preflight-refusal", log_path=str(log_path)))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert result_code == 2
+        captured = capsys.readouterr()
+        assert captured.out == (
+            f"run-gate: lane 'parent' verdict ERROR; exit_code 2; "
+            f"reason preflight-refusal; log {log_path}\n")
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["lane"] == "parent"
+        assert event["verdict"] == "ERROR"
+        assert event["exit_code"] == 2
+        assert event["lane_exit_code"] == 2
+
+    @pytest.mark.parametrize("failure_stage", ["write", "short-write", "fsync"])
+    def test_event_write_and_fsync_failures_warn_once_and_keep_verdict(
+            self, tmp_path, monkeypatch, capsys, failure_stage):
+        event_file = tmp_path / f"{failure_stage}-failure.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), f"job-{failure_stage}", "suite")
         previous = run_gate._ACTIVE_JOB_EVENT_WRITER
         run_gate._ACTIVE_JOB_EVENT_WRITER = writer
         real_write = os.write
+        real_fsync = os.fsync
         event_writes = 0
+        fsync_calls = 0
 
         def fail_event_write(fd, payload):
             nonlocal event_writes
             if fd == writer.fd:
                 event_writes += 1
-                if event_writes == 2:
-                    raise OSError("simulated event storage failure")
+                if event_writes == 2 and failure_stage != "fsync":
+                    if failure_stage == "short-write":
+                        return len(payload) - 1
+                    raise OSError("fixture simulated event storage failure")
             return real_write(fd, payload)
 
+        def fail_event_fsync(fd):
+            nonlocal fsync_calls
+            if fd == writer.fd:
+                fsync_calls += 1
+                if fsync_calls == 2:
+                    raise OSError("fixture simulated event fsync failure")
+            return real_fsync(fd)
+
         monkeypatch.setattr(run_gate.os, "write", fail_event_write)
+        monkeypatch.setattr(run_gate.os, "fsync", fail_event_fsync)
         try:
             writer.emit("lane-started", container_id=None, image_id=None,
                         adopted=False, reason="bare-host")
             result_code = run_gate.finish(run_gate.LaneResult(
                 "FAIL", 7, _lane_name="suite"))
+            writer.emit("lane-started", container_id="must-not-appear",
+                        image_id="must-not-appear", adopted=False)
+            writer._warning(OSError("fixture second warning"))
         finally:
             run_gate._ACTIVE_JOB_EVENT_WRITER = previous
             writer.close()
         assert result_code == 1
         captured = capsys.readouterr()
         assert captured.err.count("run-gate: WARNING:") == 1
+        expected_error = ("fixture simulated event fsync failure"
+                          if failure_stage == "fsync"
+                          else "fixture simulated event storage failure"
+                          if failure_stage == "write"
+                          else "short event write")
+        assert expected_error in captured.err
         assert "verdict FAIL; exit_code 7" in captured.out
-        [event] = [json.loads(line) for line in event_file.read_text().splitlines()]
-        assert event["event"] == "lane-started"
+        events = [json.loads(line) for line in event_file.read_text().splitlines()]
+        assert events[0]["event"] == "lane-started"
+        assert all(event.get("container_id") != "must-not-appear"
+                   for event in events)
+        if failure_stage == "fsync":
+            assert [event["event"] for event in events] == [
+                "lane-started", "lane-verdict"]
+            assert events[1]["verdict"] == "FAIL"
+            assert events[1]["exit_code"] == result_code
+            assert events[1]["lane_exit_code"] == 7
+        else:
+            assert [event["event"] for event in events] == ["lane-started"]
 
     def test_abrupt_exit_after_forged_line_has_no_lane_verdict_event(
             self, tmp_path):
@@ -43626,3 +44800,56 @@ class TestJobEventContainerEvents:
         [event] = [json.loads(line) for line in event_file.read_text().splitlines()]
         assert event["event"] == "lane-started"
         assert event["container_id"] == "c" * 64
+
+    def test_serial_recheck_strips_event_flags_and_only_forwards_start(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        config = f"""\
+            schema_version = 1
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = {json.dumps(["bash", "-c", "true", "{workers}"])}
+            workers = 1
+            clean_tree = false
+        """
+        project = make_project(repo, config)
+        event_file = tmp_path.parent / f"{tmp_path.name}-serial-events.jsonl"
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("RUN_GATE_PROFILE", "off")
+        seen_argv = []
+        real_dispatch = run_gate._dispatch
+        real_bare_host = run_gate.run_bare_host_lane
+
+        def dispatch_spy(argv=None, **kwargs):
+            seen_argv.append(list(argv or []))
+            return real_dispatch(argv, **kwargs)
+
+        def force_one_serial_recheck(result, lane, record, options, rerun):
+            if options.get("no_recheck"):
+                return result
+            serial = rerun()
+            assert serial.verdict == "PASS"
+            return result
+
+        monkeypatch.setattr(run_gate, "_dispatch", dispatch_spy)
+        monkeypatch.setattr(run_gate, "xdist_isolation_recheck",
+                            force_one_serial_recheck)
+        monkeypatch.setattr(
+            run_gate, "run_bare_host_lane",
+            lambda *args, **kwargs: real_bare_host(*args, **kwargs))
+        assert run_gate.main([
+            "suite", "--event-file", str(event_file), "--job-id", "job-recheck",
+        ]) == 0
+        captured = capsys.readouterr()
+        assert "run-gate: lane 'suite' verdict PASS; exit_code 0" in captured.out
+        assert seen_argv[0][1:3] == ["--event-file", str(event_file)]
+        assert seen_argv[0][3:5] == ["--job-id", "job-recheck"]
+        assert seen_argv[1] == ["suite"]
+        events = [json.loads(line) for line in event_file.read_text().splitlines()]
+        assert [event["event"] for event in events] == [
+            "lane-started", "lane-started", "lane-verdict"]
+        assert [event["reason"] for event in events[:2]] == [
+            "bare-host-lane-has-no-container",
+            "bare-host-lane-has-no-container"]

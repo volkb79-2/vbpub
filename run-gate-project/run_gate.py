@@ -21689,7 +21689,7 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail("--event-file and --job-id apply to a lane run only")
             if args.dry_run:
                 fail("--event-file and --job-id cannot be used with --dry-run")
-            if _ACTIVE_JOB_EVENT_WRITER is not None:
+            if current_job_event_writer() is not None:
                 fail("nested run-gate invocations cannot use the active job "
                      "event file")
         if is_pid1_without_init() and not args.version:
@@ -22861,8 +22861,7 @@ def main(argv: list[str] | None = None) -> int:
         or token.startswith("--event-file=")
         or token.startswith("--job-id=")
         for token in option_argv)
-    if (is_pid1_without_init() and "--version" not in option_argv
-            and not event_flags_present):
+    if is_pid1_without_init() and "--version" not in option_argv:
         print(f"{PROG}: run-gate is PID 1 with no init: start the container "
               "with `--init` (Docker) or `init: true` (Compose)",
               file=sys.stderr, flush=True)
@@ -22871,6 +22870,8 @@ def main(argv: list[str] | None = None) -> int:
             _json="--json" in option_argv))
     previous_scratch = _active_scratch_run()
     previous_event_writer = _ACTIVE_JOB_EVENT_WRITER
+    nested_event_attempt = (
+        event_flags_present and current_job_event_writer() is not None)
     scratch_state = _begin_scratch_run()
     previous_sigterm = None
     try:
@@ -22924,6 +22925,11 @@ def main(argv: list[str] | None = None) -> int:
                 "ERROR",
                 reason=f"unexpected-exception: {type(exc).__name__}: {exc}",
                 _json="--json" in option_argv)
+        if nested_event_attempt:
+            # `_dispatch` returns the ordinary closed refusal result, but this
+            # nested invocation must not finish through its parent's sink.
+            with suppress_job_events():
+                return finish(result)
         return finish(result)
     finally:
         try:
@@ -22933,8 +22939,8 @@ def main(argv: list[str] | None = None) -> int:
             active_event_writer = _ACTIVE_JOB_EVENT_WRITER
             if active_event_writer is not previous_event_writer:
                 _ACTIVE_JOB_EVENT_WRITER = previous_event_writer
-                if active_event_writer is not None:
-                    active_event_writer.close()
+                # The only transition from this invocation is None -> writer.
+                active_event_writer.close()
             if previous_scratch is None:
                 _end_scratch_run()
             else:
