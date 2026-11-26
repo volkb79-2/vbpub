@@ -8114,7 +8114,7 @@ class TestDryRun:
         monkeypatch.setattr(run_gate, "print_judge_provider",
                             lambda *_args: None)
         monkeypatch.setattr(run_gate, "print_lane_bounds",
-                            lambda *_args: None)
+                            lambda *_args, **_kwargs: None)
 
         assert run_gate.run_container_lane(
             lane, "unit", repo, repo, repo, env, "fixture", "slice",
