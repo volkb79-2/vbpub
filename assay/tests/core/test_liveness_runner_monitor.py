@@ -1707,9 +1707,12 @@ def test_cpu_without_progress_ignores_never_clearing_pressure(
     evidence = excinfo.value.resource_evidence
     assert evidence["decision"] == "cpu-without-progress"
     assert evidence["cpu_since_last_completed_event_s"] >= 35.0
-    # Every retained sample says the interval was ineligible, and the kill
-    # happened anyway -- the point of a CPU-based bound.
-    samples = evidence["samples"] if "samples" in evidence else []
+    # CPU evidence is its own policy, never validated against the idle trace:
+    # it names the numbers that killed the candidate, and the kill happened
+    # despite persistent pressure -- the point of a CPU-based bound.
+    assert evidence["policy"] == liveness.CPU_PROGRESS_POLICY
+    assert evidence["candidate_cpu_source"] == liveness.CPU_PROGRESS_SOURCE
+    assert evidence["required_cpu_s"] == 70.0
     assert mutation_store._valid_hung_resource_evidence(evidence)
 
 
