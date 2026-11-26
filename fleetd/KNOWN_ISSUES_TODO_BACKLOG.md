@@ -52,6 +52,10 @@
 | FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
 | FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
 | FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | DONE in P-fd-05 C1 | 2026-11-24 |
+| FD-050 | Add admission queue and legacy charges to the host policy schema before deployment | P1 | OPEN | 2026-11-26 |
+| FD-051 | Retain and prune completed admission terminal records in host agent package C | P2 | OPEN | 2026-11-26 |
+| FD-052 | An inspector ERROR at a fitting lease head blocks its priority class until expiry | P2 | OPEN (known limit) | 2026-11-26 |
+| FD-053 | Prevent overlapping authenticated group prefixes in package C policy | P2 | OPEN | 2026-11-26 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -977,3 +981,50 @@ job on thrashguard's registrant socket when present; fleetd does not validate
 or enforce guard rules.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md M1; FD-012
+
+## FD-050 Add host admission policy keys before deployment writes them
+
+**State:** OPEN for design package C. **Priority:** P1. **Filed:** 2026-11-26.
+
+Design package C must add `policy.aging_s`, `policy.legacy_charge_bytes`, and
+`policy.legacy_planned_cores` to the `facts.toml.policy` closed key set in
+`fleetd/src/fleetd/facts.py` before any deployment writes those keys. Writing
+them first breaks fact collection. `aging_s` is required for every queue
+decision; the two legacy charge values are required when a listed job lacks an
+`EXIT` marker. Unknown `policy.legacy_planned_cores` returns 75 with that key
+in the refusal reason.
+
+Source: P-fd-05 C2 controller ruling M4 and the package C host-facts/2 policy
+row.
+
+## FD-051 Retain completed admission terminal records
+
+**State:** OPEN for host agent package C. **Priority:** P2. **Filed:** 2026-11-26.
+
+`fleetd.admission` writes terminal group/digest state before removing the active
+charge-bearing record and does not prune terminal records. The host agent
+package C owns the retention policy and safe pruning boundary.
+
+Source: P-fd-05 C2 controller ruling M2.
+
+## FD-052 Lease inspector ERROR can block its priority class
+
+**State:** OPEN (known limit). **Priority:** P2. **Filed:** 2026-11-26.
+
+A fitting lease head whose inspector keeps answering `ERROR` remains charged
+and can block later same-priority waiters until the admission wait expires.
+The book fails closed; package C may add an explicit recovery or retry policy.
+
+Source: P-fd-05 review r1 Low 2 and controller ruling.
+
+## FD-053 Prevent overlapping authenticated group prefixes
+
+**State:** OPEN for host agent package C. **Priority:** P2. **Filed:** 2026-11-26.
+
+The current id check is textual: group `ops` can claim `ops-ci-run-1`, which
+also has a valid-looking prefix for group `ops-ci`. Package C's authenticated
+group policy must prevent overlapping prefixes or assign an unambiguous
+group-specific id namespace. This package records the limit without changing
+the `/1` grammar.
+
+Source: P-fd-05 C2 controller ruling for FU12 group-prefix ambiguity.
