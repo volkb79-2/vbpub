@@ -6,7 +6,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 ### Breaking
-- 3.x instances cannot update to 4.0 via the installer; install 4.0 fresh (no in-place migration).
+- Updating a 3.x instance to 4.0 in place is not supported: there is no migration, and the installer does not
+  refuse the attempt. Install 4.0 fresh (see Upgrade).
 - The Mattermost Calls preset is removed. `tls-edge` no longer defines a `calls` key, media CLI questions,
   `mattermost-calls-*` entrypoints, or TCP/UDP media ports.
 - Site overrides use schema 2. Schema 1 records with `[tls_edge.calls] enabled = false` (or no `enabled`) and
@@ -50,6 +51,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `consumer.env` carries every owned contract key and the override is written in the installed release's schema.
 
 ### Upgrade
+- Existing 3.x get.py instances. Do not run the 4.0 `get.py install` on the 3.x instance root: on a root that
+  already holds an instance it runs an in-place update. A 3.x `bin/tls-edge-installer update` without
+  `--version` resolves to the newest release, so it picks 4.0 and fails wheel verification before the instance
+  is switched; pass `--version tls-edge-v3.2.0` to stay on 3.x. To move to 4.0: stop the old edge (it holds
+  80 and 443, and 8443 if the Calls preset is enabled), move the old instance root aside (or install into the
+  other scope), and install 4.0 as `docs/INSTALL.md` section 3 describes. Copy the old
+  `stack/ciu-stack/ciu.toml.j2` into the new instance before `configure` (Calls `enabled = true` is refused),
+  run `configure --answers <empty file> --yes`, then `ciu up`. A new instance does not take over the old
+  root's `shared/acme`; keep the old root until the new edge has its certificates.
 - Anyone who used the removed standalone installer or plain Compose on the committed `edge-proxy/` tree must
   install a get.py instance and run its bundled CIU stack. Follow `docs/INSTALL.md`; do not migrate by copying
   the old rendered tree. From a repository checkout, pass `--root <checkout>/tls-edge`, and from an installed
