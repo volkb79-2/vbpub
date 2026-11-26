@@ -814,6 +814,33 @@ class ShellKitTests(F.ShellKitBase):
         self.assertIn("restore=pending", man)
         self.assertIn("RESTORE-PENDING dev.slice/memory.max", man)
 
+    def test_a_foreign_stale_wal_refuses_without_reusing_or_truncating_its_evidence(self) -> None:
+        # L1: a non-zero stale restore must stop before the new header or WAL can reuse the old evidence directory.
+        self.ev.mkdir()
+        state = self.ev / "squeeze-state.env"
+        original = self.DEV_MAX_START
+        written = original + 128 * M
+        state_text = (f"MAX=dev.slice/memory.max|{original}|{written}|t0\n"
+                      f"boot_id={self.boot.read_text().strip()}\n")
+        state.write_text(state_text)
+        (self.cg / "dev.slice" / "memory.max").write_text(f"{original + 512 * M}\n")  # a foreign value
+        manifest = self.ev / "manifest.env"
+        manifest.write_text("old-run=preserved\n")
+        steps = self.ev / "steps.env"
+        steps.write_text("old ladder evidence\n")
+
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2", **self.judge_env("PASS"))
+
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn(f"stale write-ahead state file {state}", r.stderr)
+        self.assertEqual(state.read_text(), state_text, "the old WAL is kept byte-for-byte; no new-run lines are appended")
+        self.assertEqual(manifest.read_text(), "old-run=preserved\nrestore=foreign:dev.slice/memory.max\n",
+                         "the restore's foreign annotation is retained and no new-run header truncates the manifest")
+        self.assertEqual(steps.read_text(), "old ladder evidence\n", "refusal does not truncate the previous ladder")
+        self.assertFalse((self.ev / "samples.csv").exists(), "the refused run creates no new sample file")
+        self.assertEqual((self.cg / "dev.slice" / "memory.max").read_text().strip(), str(original + 512 * M),
+                         "the value owned by another writer stays untouched")
+
     def test_a_stalled_docker_rm_is_bounded_and_the_restore_still_runs(self) -> None:
         # M2: a squeezed dockerd stalls `docker rm -f` exactly as it stalls the dockerd probe. Without a timeout the
         # guard abort's finish() hung there, the systemd TimeoutStopSec killed the unit, and the ExecStopPost restore

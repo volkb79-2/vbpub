@@ -75,12 +75,18 @@ flock -n 9 || { echo "accept-run: another run holds $LOCK; refusing" >&2; exit 3
 mkdir -p "$EVID/steps" "$EVID/probes-state" || exit 2
 STATE=${MDT_ACCEPT_SQUEEZE_STATE:-$EVID/squeeze-state.env}
 MAN=$EVID/manifest.env; PROBES=$EVID/probes.csv; SAMPLES=$EVID/samples.csv; STEPSEN=$EVID/steps.env
-: >"$STEPSEN"   # the previous run's step lines would otherwise be read as this run's ladder
 if [ -s "$STATE" ]; then # a SIGKILLed run left its write-ahead log: restore it first, then use the fresh evidence (2.6)
   say "a state file of an earlier run is present; restoring it first"
-  if "$HERE/accept-restore.sh" --evidence "$EVID" --in-run; then note "the earlier state file is restored"
-  else note "the earlier lowering is deferred; this run's own WAL covers the rest"; fi
+  if "$HERE/accept-restore.sh" --evidence "$EVID" --in-run; then
+    note "the earlier state file is restored"
+  else
+    stale_rc=$?
+    echo "accept-run: stale write-ahead state file $STATE was not fully restored (accept-restore exit $stale_rc); refusing this run (exit 3), leaving the stale state and run evidence in place" >&2
+    exit 3
+  fi
 fi
+# Do not truncate the previous ladder until its WAL has restored cleanly.
+: >"$STEPSEN"   # the previous run's step lines would otherwise be read as this run's ladder
 # ---------- preflight: every fact a label or a write depends on, else exit 3 (2.1, 2.2, 3.2, 4.1, 4.4) ----------
 command -v python3 >/dev/null 2>&1 || { echo "accept-run: python3 is missing (the judge and the hot-set driver need it); refusing" >&2; exit 3; }
 for p in "$HERE/accept-restore.sh" "$HERE/accept-eval.py" "$HOTSET"; do
