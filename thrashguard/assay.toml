@@ -1,0 +1,85 @@
+# thrashguard's judged lanes (Assay R0/R1, Rust).
+#
+# P1 `observe` ships one lane: `r0-r1`. The R0 half is the crate's own build,
+# nextest run and doctests (executed by the Run-Gate COMMAND lane that reaches
+# this judge); the R1 half is line coverage of the judged `src/` files at the
+# declared floor. `run-gate.toml [lanes.r0-r1]` is the reaching lane: it runs
+# the judge from the worktree's own `assay/src`, because `tester-unified-rust`
+# deliberately ships no pip/venv (see tester-unified-rust/docs/CONSUMERS.md).
+#
+# ## Floor and its derivation
+#
+# The floor is set from the MEASURED coverage of this crate at the commit that
+# introduced this lane, rounded DOWN by one full point, and it is a regression
+# guard, not a target. `thrashguard/tools/check-floors.py` re-derives the
+# declared number from a fresh `llvm-cov` summary and fails when the declared
+# floor is above the measured value (a floor nobody can reach is not a
+# measurement, and a floor far below it protects nothing).
+#
+# ## What R1 does not cover (documented limits, not gaps to fill silently)
+#
+# - **Branches.** Stable Rust's cargo-llvm-cov writes no `BRDA:` records, so
+#   Assay records `branch_capability: unavailable` and `branches_total: 0`.
+#   `require_branch` stays `false`: `true` would refuse every run with
+#   `NO_MEASUREMENT/BRANCH_UNAVAILABLE`, which is a refusal, not a measurement.
+#   Branch coverage is never faked to satisfy a lane.
+#
+# - **Inline `#[cfg(test)]` blocks in a judged file ARE measured** (LCOV has no
+#   per-region exclusion; assay known issue K5). Every module here keeps its
+#   tests inline by design, so the measured percentage is honest about *this
+#   file's lines being exercised* and is not a product-code-only number.
+#
+# - **No R2.** No mutation campaign exists for this crate yet (backlog TG-5),
+#   and none is declared: a declared-but-never-run lane is not evidence.
+schema_version = 2
+
+[lanes.r0-r1]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+# Project-relative (Assay runs this argv in its own snapshot with cwd at
+# `thrashguard/`); `{worktree}` is a Run-Gate COMMAND-lane token and must not
+# appear here.
+argv = [
+  "bash", "-c",
+  '''set -eu
+tools/cargo-offline.sh llvm-cov nextest --locked --offline --profile ci --no-tests=fail --lcov --output-path lcov.info
+tools/cargo-offline.sh test --doc --locked --offline
+tools/cargo-offline.sh llvm-cov report --json --summary-only --output-path cov-summary.json
+python3 -I tools/check-floors.py cov-summary.json coverage-floors.toml''',
+]
+env = {}
+# `PATH` finds the tools; the two cargo homes are what the rustup proxy needs.
+env_passthrough = ["PATH", "CARGO_HOME", "RUSTUP_HOME"]
+budget = "20m"
+allow_argv_append = false
+
+[lanes.r0-r1.judge]
+language = "rust"
+source_roots = ["src"]
+# whole_target: every executable line of every declared target is judged, not
+# only the lines a commit changed. That is what makes this a floor rather than
+# a diff gate; `judge.targets` is required and honoured in this mode, and
+# `judge.base`/`base_source` are forbidden (there is no diff).
+mode = "whole_target"
+targets = [
+  # The judged set grows with every module that lands; a target listed before
+  # its file exists is a refusal (`NO_MEASUREMENT/TARGET_NOT_MEASURED`), which
+  # is the correct behaviour and the reason the list is kept in step by hand.
+  "src/clock.rs",
+  "src/json.rs",
+  "src/lib.rs",
+  "src/psi.rs",
+]
+# `fail_under` is a PLACEHOLDER until the first measured run (subtask 6 of the P1
+# wave): the floor is then set one full point below the measured value and
+# recorded with its derivation in this header. Backlog TG-6 tracks that, so a
+# placeholder cannot quietly become the floor someone trusts.
+fail_under = 90.0
+# LCOV carries no exclusion field, so `allow_excluded` has nothing to permit.
+allow_excluded = false
+require_branch = false
+
+[lanes.r0-r1.judge.coverage]
+format = "lcov"
+artifact = "lcov.info"

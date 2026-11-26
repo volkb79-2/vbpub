@@ -1,0 +1,25 @@
+[package]
+name = "thrashguard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "PSI-driven freeze/thaw of dev-tier work (TG-1)"
+license = "MIT"
+
+# Not a workspace member of anything: this project is its own single-crate
+# workspace (design §5). No third-party dependency is declared on purpose: the
+# `tools/cargo-offline.sh` wrapper refuses a lock that names one, because the
+# gate image's crate cache identity is the hostobs lock (see its header).
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lib]
+name = "thrashguard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "thrashguard"
+path = "src/main.rs"
