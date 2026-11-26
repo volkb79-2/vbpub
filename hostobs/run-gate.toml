@@ -167,7 +167,7 @@ budget = "20m"
 artifacts = ["lcov.info", "cov-summary.json", ".assay/verdict-assay-r1.json"]
 
 # Assay Rust R2 (mutation, by ingesting cargo-mutants' report) over the CHANGED lines of the
-# five judged crates (assay B245 U8b). The judged lane lives in `assay.toml [lanes.assay-r2]`
+# six judged crates (assay B245 U8b). The judged lane lives in `assay.toml [lanes.assay-r2]`
 # (flags, source roots, output directory, the budget estimate and their reasons); this lane,
 # like `assay-r1` above, only says how to REACH the judge in this image (source Assay from the
 # worktree, no install).

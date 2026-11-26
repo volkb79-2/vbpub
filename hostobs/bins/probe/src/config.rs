@@ -17,6 +17,10 @@ use std::path::{Component, Path, PathBuf};
 
 use hostobs_serve::limits::Level;
 use hostobs_serve::server::ServerLimits;
+use hostobs_store::error::StoreError;
+use hostobs_store::events::MAX_RING_BYTES;
+use hostobs_store::store::{StoreConfig, StoreDirs};
+use hostobs_store::tier::MAX_CAP_BYTES;
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -27,6 +31,11 @@ const KEY_LEVELS: &str = "probe.levels";
 const KEY_TICK_MS: &str = "probe.tick_ms";
 const KEY_CGROUP_ROOT: &str = "probe.cgroup_root";
 const KEY_MAX_ROWS: &str = "limits.max_rows";
+const KEY_STORE_DIR: &str = "store.dir";
+const KEY_STORE_TMPFS_DIR: &str = "store.tmpfs_dir";
+const KEY_EVENTS_CAP_BYTES: &str = "store.events_cap_bytes";
+const KEY_EVENTS_RING_BYTES: &str = "store.events_ring_bytes";
+const EVENT_MAX_PAYLOAD: u32 = 16 * 1024;
 
 /// A parsed probe configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +48,21 @@ pub(crate) struct Config {
     pub(crate) cgroup_root: PathBuf,
     /// The largest row count a selection may resolve to.
     pub(crate) max_rows: u32,
+    /// The explicit durable and tmpfs store paths and event bounds.
+    pub(crate) store: StoreSettings,
+}
+
+/// Required store settings from `[store]`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StoreSettings {
+    /// The durable root for cold and events tiers.
+    pub(crate) dir: PathBuf,
+    /// The independent tmpfs directory for hot and warm tiers.
+    pub(crate) tmpfs_dir: PathBuf,
+    /// The events tier's byte cap.
+    pub(crate) events_cap_bytes: u64,
+    /// The in-memory events ring's byte cap.
+    pub(crate) events_ring_bytes: u64,
 }
 
 impl Config {
@@ -48,6 +72,20 @@ impl Config {
         limits.probe.tick_ms = self.tick_ms;
         limits.probe.max_rows = self.max_rows;
         limits
+    }
+
+    /// Build the named plan-v4 store for this process epoch and explicit configured paths.
+    pub(crate) fn store_config(&self, epoch: u64) -> Result<StoreConfig, StoreError> {
+        let mut store = StoreConfig::plan_v4(&self.store.dir, epoch, 0)?;
+        store.dirs = StoreDirs {
+            tmpfs: Some(self.store.tmpfs_dir.clone()),
+            cold: self.store.dir.join("cold"),
+            events: self.store.dir.join("events"),
+        };
+        store.events.cap_bytes = self.store.events_cap_bytes;
+        store.events = store.events.with_max_payload(EVENT_MAX_PAYLOAD)?;
+        store.events_ring_bytes = self.store.events_ring_bytes;
+        Ok(store)
     }
 }
 
@@ -223,6 +261,7 @@ fn decode(bytes: &[u8]) -> Result<Config, ConfigError> {
 struct Document {
     probe: Probe,
     limits: Limits,
+    store: StoreTable,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +276,15 @@ struct Probe {
 #[serde(deny_unknown_fields)]
 struct Limits {
     max_rows: Spanned<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoreTable {
+    dir: Spanned<String>,
+    tmpfs_dir: Spanned<String>,
+    events_cap_bytes: Spanned<u64>,
+    events_ring_bytes: Spanned<u64>,
 }
 
 fn parse(text: &str) -> Result<Config, ConfigError> {
@@ -283,13 +331,113 @@ fn parse(text: &str) -> Result<Config, ConfigError> {
             "must be in 1..=4096",
         ));
     }
+    let store = parse_store(text, document.store)?;
 
     Ok(Config {
         levels,
         tick_ms,
         cgroup_root: PathBuf::from(cgroup_root),
         max_rows,
+        store,
     })
+}
+
+fn parse_store(source: &str, table: StoreTable) -> Result<StoreSettings, ConfigError> {
+    let dir = store_path(source, &table.dir, KEY_STORE_DIR)?;
+    let tmpfs_dir = store_path(source, &table.tmpfs_dir, KEY_STORE_TMPFS_DIR)?;
+    if dir == tmpfs_dir || dir.starts_with(&tmpfs_dir) || tmpfs_dir.starts_with(&dir) {
+        return Err(ConfigError::semantic(
+            source,
+            &table.tmpfs_dir.span(),
+            KEY_STORE_TMPFS_DIR,
+            "must differ from store.dir and neither path may contain the other",
+        ));
+    }
+
+    let events_cap_bytes = *table.events_cap_bytes.get_ref();
+    if !(1..=MAX_CAP_BYTES).contains(&events_cap_bytes) {
+        return Err(ConfigError::semantic(
+            source,
+            &table.events_cap_bytes.span(),
+            KEY_EVENTS_CAP_BYTES,
+            format!("must be in 1..={MAX_CAP_BYTES}"),
+        ));
+    }
+    let events_ring_bytes = *table.events_ring_bytes.get_ref();
+    if !(4_096..=MAX_RING_BYTES).contains(&events_ring_bytes) {
+        return Err(ConfigError::semantic(
+            source,
+            &table.events_ring_bytes.span(),
+            KEY_EVENTS_RING_BYTES,
+            format!("must be in 4096..={MAX_RING_BYTES}"),
+        ));
+    }
+
+    let mut events = StoreConfig::plan_v4(&dir, 0, 0)
+        .map_err(|_| {
+            ConfigError::semantic(
+                source,
+                &table.events_cap_bytes.span(),
+                KEY_EVENTS_CAP_BYTES,
+                "cannot construct the events tier with this cap",
+            )
+        })?
+        .events;
+    events.cap_bytes = events_cap_bytes;
+    let events = events.with_max_payload(EVENT_MAX_PAYLOAD).map_err(|_| {
+        ConfigError::semantic(
+            source,
+            &table.events_cap_bytes.span(),
+            KEY_EVENTS_CAP_BYTES,
+            "cannot construct the events tier with this cap",
+        )
+    })?;
+    let segment_bound = events.segment_file_bound();
+    if events_cap_bytes < segment_bound {
+        return Err(ConfigError::semantic(
+            source,
+            &table.events_cap_bytes.span(),
+            KEY_EVENTS_CAP_BYTES,
+            format!("must be at least {segment_bound} bytes for the events segment bound"),
+        ));
+    }
+
+    Ok(StoreSettings {
+        dir,
+        tmpfs_dir,
+        events_cap_bytes,
+        events_ring_bytes,
+    })
+}
+
+fn store_path(
+    source: &str,
+    value: &Spanned<String>,
+    key: &'static str,
+) -> Result<PathBuf, ConfigError> {
+    let text = value.get_ref();
+    let path = Path::new(text);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return Err(ConfigError::semantic(
+            source,
+            &value.span(),
+            key,
+            "must be absolute and contain no .. component",
+        ));
+    }
+    if text.chars().any(char::is_control) {
+        return Err(ConfigError::semantic(
+            source,
+            &value.span(),
+            key,
+            "must contain no NUL or control character",
+        ));
+    }
+    Ok(path.to_path_buf())
 }
 
 fn configured_levels(
@@ -464,7 +612,7 @@ mod tests {
 
     use super::{
         decode, map_levels, parse, parse_args, read, Action, Config, Level, LevelMapError, Path,
-        ServerLimits, MAX_CONFIG_BYTES,
+        ServerLimits, StoreSettings, MAX_CAP_BYTES, MAX_CONFIG_BYTES, MAX_RING_BYTES,
     };
 
     const EXAMPLE: &str = r#"[probe]
@@ -474,6 +622,20 @@ cgroup_root = "/sys/fs/cgroup"     # absolute, no ..
 
 [limits]
 max_rows = 1024
+
+[store]
+dir = "/var/lib/hostobs/probe"
+tmpfs_dir = "/run/hostobs/tiers"
+events_cap_bytes = 67108864
+events_ring_bytes = 4194304
+"#;
+
+    const TEST_STORE: &str = r#"
+[store]
+dir = "/var/lib/hostobs/probe"
+tmpfs_dir = "/run/hostobs/tiers"
+events_cap_bytes = 67108864
+events_ring_bytes = 4194304
 "#;
 
     static NEXT_NAME: AtomicU32 = AtomicU32::new(0);
@@ -492,15 +654,25 @@ max_rows = 1024
     }
 
     fn parse_refusal(text: &str, line: &str, key: &str) {
-        let error = parse(text).expect_err("configuration must be refused");
+        let complete = with_store(text);
+        let error = parse(&complete).expect_err("configuration must be refused");
         let text = one_line(error);
         assert!(text.contains(line), "missing line {line:?}: {text}");
         assert!(text.contains(key), "missing key {key:?}: {text}");
     }
 
     fn missing_key_refusal(text: &str, key: &str) {
-        let error = one_line(parse(text).expect_err("configuration must be refused"));
+        let complete = with_store(text);
+        let error = one_line(parse(&complete).expect_err("configuration must be refused"));
         assert!(error.contains(key), "missing key {key:?}: {error}");
+    }
+
+    fn with_store(text: &str) -> String {
+        if text.contains("[store]") {
+            text.to_string()
+        } else {
+            format!("{text}{TEST_STORE}")
+        }
     }
 
     #[test]
@@ -514,7 +686,7 @@ max_rows = 1024
     }
 
     #[test]
-    fn the_documented_example_parses_and_sets_only_the_two_probe_wide_keys() {
+    fn the_documented_example_parses_and_sets_probe_wide_limits_and_explicit_store_paths() {
         let config = parse(EXAMPLE).expect("example configuration");
         assert_eq!(
             config,
@@ -523,6 +695,12 @@ max_rows = 1024
                 tick_ms: 1_000,
                 cgroup_root: "/sys/fs/cgroup".into(),
                 max_rows: 1_024,
+                store: StoreSettings {
+                    dir: "/var/lib/hostobs/probe".into(),
+                    tmpfs_dir: "/run/hostobs/tiers".into(),
+                    events_cap_bytes: 67_108_864,
+                    events_ring_bytes: 4_194_304,
+                },
             }
         );
         let limits = config.server_limits();
@@ -544,6 +722,119 @@ max_rows = 1024
     }
 
     #[test]
+    fn all_four_store_keys_are_required_and_unknown_store_keys_are_refused() {
+        for (key, value) in [
+            ("dir", "\"/var/lib/hostobs/probe\""),
+            ("tmpfs_dir", "\"/run/hostobs/tiers\""),
+            ("events_cap_bytes", "67108864"),
+            ("events_ring_bytes", "4194304"),
+        ] {
+            let line = format!("{key} = {value}\n");
+            let text = EXAMPLE.replace(&line, "");
+            missing_key_refusal(&text, key);
+        }
+        let without_store = EXAMPLE
+            .split("\n[store]\n")
+            .next()
+            .expect("store separator");
+        let missing_table = one_line(parse(without_store).expect_err("store table is required"));
+        assert!(missing_table.contains("store"), "{missing_table}");
+        let text = format!("{EXAMPLE}unexpected = 1\n");
+        parse_refusal(&text, "line 14", "unexpected");
+    }
+
+    #[test]
+    fn store_paths_are_absolute_control_free_distinct_and_not_nested() {
+        for (text, key) in [
+            (
+                EXAMPLE.replace("/var/lib/hostobs/probe", "relative/store"),
+                "store.dir",
+            ),
+            (
+                EXAMPLE.replace("/run/hostobs/tiers", "/run/hostobs/../tiers"),
+                "store.tmpfs_dir",
+            ),
+            (
+                EXAMPLE.replace("/run/hostobs/tiers", "/var/lib/hostobs/probe/tiers"),
+                "store.tmpfs_dir",
+            ),
+            (
+                EXAMPLE.replace("/run/hostobs/tiers", "/var/lib/hostobs/probe"),
+                "store.tmpfs_dir",
+            ),
+            (
+                EXAMPLE.replace("/run/hostobs/tiers", "/run/hostobs/\\u0001tiers"),
+                "store.tmpfs_dir",
+            ),
+        ] {
+            let error = one_line(parse(&text).expect_err("invalid store path"));
+            assert!(error.contains(key), "missing {key:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn store_numeric_bounds_and_the_constructed_events_segment_bound_are_enforced() {
+        for cap in [String::from("0"), (MAX_CAP_BYTES + 1).to_string()] {
+            let text = EXAMPLE.replace(
+                "events_cap_bytes = 67108864",
+                &format!("events_cap_bytes = {cap}"),
+            );
+            let error = one_line(parse(&text).expect_err("invalid events cap"));
+            assert!(error.contains("store.events_cap_bytes"), "{error}");
+        }
+        for ring in [String::from("4095"), (MAX_RING_BYTES + 1).to_string()] {
+            let text = EXAMPLE.replace(
+                "events_ring_bytes = 4194304",
+                &format!("events_ring_bytes = {ring}"),
+            );
+            let error = one_line(parse(&text).expect_err("invalid events ring"));
+            assert!(error.contains("store.events_ring_bytes"), "{error}");
+        }
+        let config = parse(EXAMPLE).expect("example configuration");
+        let bound = config
+            .store_config(88)
+            .expect("planned store")
+            .events
+            .segment_file_bound();
+        let below_bound = bound.saturating_sub(1).to_string();
+        let text = EXAMPLE.replace(
+            "events_cap_bytes = 67108864",
+            &format!("events_cap_bytes = {below_bound}"),
+        );
+        let error = one_line(parse(&text).expect_err("cap below segment bound"));
+        assert!(error.contains("store.events_cap_bytes"), "{error}");
+    }
+
+    #[test]
+    fn store_config_uses_named_plan_values_and_the_explicit_tier_paths() {
+        let config = parse(EXAMPLE).expect("example configuration");
+        let store = config.store_config(88).expect("store config");
+        assert_eq!(store.epoch, 88);
+        assert_eq!(store.dict_generation, 0);
+        assert_eq!(
+            store.dirs.tmpfs,
+            Some(Path::new("/run/hostobs/tiers").into())
+        );
+        assert_eq!(
+            store.dirs.cold.as_path(),
+            Path::new("/var/lib/hostobs/probe/cold")
+        );
+        assert_eq!(
+            store.dirs.events.as_path(),
+            Path::new("/var/lib/hostobs/probe/events")
+        );
+        assert_eq!(store.events.cap_bytes, 67_108_864);
+        assert_eq!(store.events.max_payload, 16 * 1024);
+        assert_eq!(store.events_ring_bytes, 4_194_304);
+        assert_eq!(store.writer_queue_bytes, 8 << 20);
+        assert_eq!(store.dict_active_max, 65_536);
+        assert_eq!(store.max_file_bytes, 96 << 20);
+        assert_eq!(store.tiers[0].name, "hot");
+        assert_eq!(store.tiers[1].name, "warm");
+        assert_eq!(store.tiers[2].name, "cold");
+    }
+
+    #[test]
     fn comments_are_outside_strings_and_hashes_inside_strings_survive() {
         let text = r#"[probe]
 levels = ["observe#1"] # comment to end
@@ -553,7 +844,7 @@ cgroup_root = "/tmp/#not-a-comment"
 max_rows = 1
 "#;
         assert!(
-            parse(text).is_err(),
+            parse(&with_store(text)).is_err(),
             "observe#1 is still not a served level"
         );
 
@@ -564,7 +855,7 @@ cgroup_root = "/tmp/#not-a-comment"
 [limits]
 max_rows = 1
 "#;
-        let config = parse(text).expect("hash inside a string is data");
+        let config = parse(&with_store(text)).expect("hash inside a string is data");
         assert_eq!(config.cgroup_root, Path::new("/tmp/#not-a-comment"));
     }
 
@@ -672,14 +963,24 @@ max_rows = 1
                 "[probe]\nlevels=[\"observe\"]\ntick_ms={tick}\ncgroup_root=\"/\"\n\
                  [limits]\nmax_rows=1\n"
             );
-            assert_eq!(parse(&text).expect("valid TOML integer").tick_ms, expected);
+            assert_eq!(
+                parse(&with_store(&text))
+                    .expect("valid TOML integer")
+                    .tick_ms,
+                expected
+            );
         }
         for (rows, expected) in [("+1", 1), ("1_024", 1_024)] {
             let text = format!(
                 "[probe]\nlevels=[\"observe\"]\ntick_ms=100\ncgroup_root=\"/\"\n\
                  [limits]\nmax_rows={rows}\n"
             );
-            assert_eq!(parse(&text).expect("valid TOML integer").max_rows, expected);
+            assert_eq!(
+                parse(&with_store(&text))
+                    .expect("valid TOML integer")
+                    .max_rows,
+                expected
+            );
         }
     }
 
@@ -688,7 +989,7 @@ max_rows = 1
         let text = "[probe]\nlevels=[\"observe\", \"operator\",]\ntick_ms=100\n\
                     cgroup_root=\"/\"\n[limits]\nmax_rows=1\n";
         assert_eq!(
-            parse(text).expect("valid TOML array").levels,
+            parse(&with_store(text)).expect("valid TOML array").levels,
             [Level::Observe, Level::Operator]
         );
     }
