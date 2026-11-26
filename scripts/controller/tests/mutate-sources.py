@@ -830,6 +830,15 @@ mutant("scripts/controller/pi-impl.sh", "pi-force-retire-before-credentials.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-mode-value-guard.sh",
        "      echo \"PI_RUN_MODE must be 'implementer' or 'review' (got '$requested_mode')\" >&2\n      exit 2\n",
        "      : # unknown mode accepted\n")
+mutant("scripts/controller/pi-impl.sh", "pi-mode-jsonl-session-id-allowed.sh",
+       " && $1 != *.jsonl ]]", " ]]")
+mutant("scripts/controller/pi-impl.sh", "pi-mode-unknown-session-allowed.sh",
+       "(( session_id_found == 1 )) || {", "true || {")
+mutant("scripts/controller/pi-impl.sh", "pi-mode-stream-session-mismatch-allowed.sh",
+       'if [[ $mode == resume && -n $stream_session && $stream_session != "$session_id" ]]; then',
+       "if false; then")
+mutant("scripts/controller/pi-impl.sh", "pi-mode-claimed-name-reread-dropped.sh",
+       'recheck_claimed_resume_mode || exit 2', ': # claim-time mode is not re-read')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-argv-append-dropped.sh",
        '  base_pi_args+=("${review_argv[@]}")',
        '  : # review argv left out of the launch')
@@ -871,13 +880,27 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-narrow-dropped.sh",
        '      if false; then')
 # A record that says neither word is not a fact to guess from.
 mutant("scripts/controller/pi-impl.sh", "pi-mode-invalid-record-guessed.sh",
-       '      mode_record_state=invalid\n',
-       '      mode_record_state=absent\n')
+       'mode_record_state=invalid; fi',
+       'mode_record_state=absent; fi')
 # Review EVIDENCE beside a name with no mode record: the session is known to be
 # a review, so the missing record must not license the implementer tool set.
 mutant("scripts/controller/pi-impl.sh", "pi-mode-evidence-dropped.sh",
-       '      if [[ -e $CONTROLLER_RUNS_DIR/$name.review/before-state.txt ]]; then',
+       '    review_material_present=1',
+       '    review_material_present=0')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-thread-evidence-dropped.sh",
+       '    if (( thread_has_review_material == 1 )); then',
        '      if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-stream-review-ignored.sh",
+       '    if read_mode_record_if_present "$stream_mode_path"; then\n'
+       '      if [[ $mode_record_value == review ]]; then',
+       '    if read_mode_record_if_present "$stream_mode_path"; then\n'
+       '      if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-review-material-unreadable-allowed.sh",
+       '  if [[ -L $directory || ( -e $directory && ( ! -d $directory || ! -r $directory || ! -x $directory ) ) ]]; then',
+       '  if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-retired-session-not-preserved.sh",
+       '  if ! persist_retired_run_session_mode "$name"; then',
+       '  if false; then')
 # A session sticks across caller-selected run names. These mutants each remove
 # one source or consequence of that rule; their focused arms also verify that an
 # implementer session is not broadened into a review by an unrelated match.
@@ -892,14 +915,22 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-session-record-ignored.sh",
        '  if [[ $session_mode_state == valid && $session_mode_record_value == review ]]; then',
        '  if false; then')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-session-thread-invalid-record-guessed.sh",
-       '      (( record_rc == 1 )) || exit 2',
-       '      : # invalid matching-name mode record ignored')
+       '    else\n'
+       '      record_rc=$?\n'
+       '      (( record_rc == 1 )) || exit 2\n'
+       '    fi\n'
+       '    if (( thread_has_review_material == 1 )); then',
+       '    else\n'
+       '      record_rc=$?\n'
+       '      : # invalid matching-name mode record ignored\n'
+       '    fi\n'
+       '    if (( thread_has_review_material == 1 )); then')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-session-write-dropped.sh",
        '  if ! printf \'%s\\n\' "$write_mode" > "$path"; then',
        '  if false; then')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-session-monotonic-dropped.sh",
-       '  if [[ $stored_mode == review || $run_mode == review ]]; then write_mode=review; fi',
-       '  if [[ $run_mode == review ]]; then write_mode=review; fi')
+       '  if [[ $stored_mode == review || $requested_mode == review ]]; then write_mode=review; fi',
+       '  if [[ $requested_mode == review ]]; then write_mode=review; fi')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-session-implementer-as-review.sh",
        '  if [[ $session_mode_state == valid && $session_mode_record_value == review ]]; then',
        '  if [[ $session_mode_state == valid ]]; then')
@@ -922,8 +953,16 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-extra-args-list-dropped.sh",
 # The rule paragraph is part of the contract: a launch that cannot read it is
 # refused, and the paragraph is what pi actually receives.
 mutant("scripts/controller/pi-impl.sh", "pi-mode-rules-file-refusal-dropped.sh",
-       'if [[ ! -r $rules_file ]]; then',
-       'if false; then')
+       'if [[ ! -r $rules_file ]]; then\n'
+       '  echo "pi review prompt rule file is missing or unreadable: $rules_file" >&2\n'
+       "  echo '  every launch appends its fixed rule paragraph; a prompt without it is not the contract this wrapper promises' >&2\n"
+       '  exit 2\n'
+       'fi',
+       'if false; then\n'
+       '  echo "pi review prompt rule file is missing or unreadable: $rules_file" >&2\n'
+       "  echo '  every launch appends its fixed rule paragraph; a prompt without it is not the contract this wrapper promises' >&2\n"
+       '  exit 2\n'
+       'fi')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-prompt-dropped.sh",
        "printf -v prompt_text '%s\\n%s' \"$prompt_text\" \"$rules_text\"",
        ': # the rule paragraph is not appended')

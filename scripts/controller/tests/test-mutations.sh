@@ -231,6 +231,10 @@ for pi_case in \
   pi-resume-block-inverted:accepted-resume-records \
   pi-record-owner-new-only:accepted-resume-records \
   pi-mode-value-guard:mode-value pi-mode-argv-append-dropped:review-argv \
+  pi-mode-jsonl-session-id-allowed:session-id \
+  pi-mode-unknown-session-allowed:mode-resume-exact \
+  pi-mode-stream-session-mismatch-allowed:mode-resume-mismatch \
+  pi-mode-claimed-name-reread-dropped:mode-claimed-name-reread \
   pi-mode-argv-missing-guard:mode-no-argv-file \
   pi-mode-argv-empty-guard:mode-empty-argv \
   pi-mode-record-not-written:mode-record pi-mode-record-written-before-refusal:mode-not-written-on-refusal \
@@ -242,6 +246,10 @@ for pi_case in \
   pi-mode-rules-file-refusal-dropped:mode-rules-file \
   pi-mode-prompt-dropped:mode-prompt pi-mode-local-env-flip:mode-local-env \
   pi-mode-session-thread-ignored:mode-session-thread \
+  pi-mode-thread-evidence-dropped:mode-session-thread \
+  pi-mode-stream-review-ignored:mode-stream-review \
+  pi-mode-review-material-unreadable-allowed:mode-review-material-unreadable \
+  pi-mode-retired-session-not-preserved:mode-stream-review \
   pi-mode-session-write-dropped:mode-session-thread \
   pi-mode-session-implementer-refusal-dropped:mode-session-thread \
   pi-mode-session-thread-invalid-record-guessed:mode-session-thread \

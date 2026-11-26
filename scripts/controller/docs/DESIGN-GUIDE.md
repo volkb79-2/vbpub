@@ -158,14 +158,22 @@ The mode is therefore `pi-impl.sh`'s own switch:
   fails silently. Rejected: allowing an "equal or narrower" seam, which cannot
   be decided without re-implementing pi's own tool merge.
 - **The mode follows both the run name and the pi session.** Every accepted
-  launch writes `<run>.mode`; once the wrapper learns the pi session id, it also
-  writes `<runs-dir>/session-modes/<session-id>`. A resume reads its name and
-  session records, then scans `<runs-dir>/*.thread` for exact matches and reads
-  those names' mode records. This covers a review resumed under a fresh name and
-  sessions created before session records existed. If any source says `review`,
+  launch writes `<run>.mode`; a resume records its known ID in
+  `<runs-dir>/session-modes/<session-id>` before invoking pi, while a first
+  launch records it after pi returns with the ID. A resume requires the exact id
+  in a session-mode record, `.thread`, or a session event in the first 64 KiB
+  of a run's `.jsonl`. The bounded head scan covers a still-running or killed
+  first review before `.thread` or session-mode state exists. It then reads the
+  matching names' mode records and review material. Forced reuse persists the
+  old session mode before retiring the name's `.thread` and `.jsonl`. This
+  covers a review resumed under a fresh name and sessions created before
+  session records existed. If any source says `review`,
   the launch is a review; a caller that ASKS for implementer mode is refused
-  (exit 2, before its new name is claimed), and a resume with no named mode takes
-  review. Session writes use a lock and move only toward review, so a later
+  (exit 2, before the new name is claimed when its review record is already
+  visible); the name is re-read after claim to catch a record written during
+  preflight. Resume ids match full recorded ids exactly: prefixes and ids ending
+  `.jsonl` are refused. A resume with no named mode takes review. Session writes
+  use a lock and move only toward review, so a later
   implementer launch cannot overwrite it. An implementer name or session may be
   resumed STRICTER; its records then become `review`.
 - **Missing or unreadable: the safe direction only where the fact exists.** An

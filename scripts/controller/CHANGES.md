@@ -19,10 +19,15 @@ no separate version number, so entries are grouped by the work that landed.
   tools, extensions, MCP, skills, prompt templates and project trust is named in
   the message first — so a review cannot be widened back to a shell, and an
   unclassified spelling takes the same exit rather than slipping through. The
-  mode is recorded by run name (`<runs-dir>/<run>.mode`) and, once pi's stream
-  provides the session id, by session (`<runs-dir>/session-modes/<session-id>`).
-  Resumes read both records and scan `<runs-dir>/*.thread` for exact session-id
-  matches, then read the matching names' mode records. Review is sticky across
+  mode is recorded by run name (`<runs-dir>/<run>.mode`) and by session
+  (`<runs-dir>/session-modes/<session-id>`): a resume records its known id before
+  invoking pi, and a first launch records it after pi returns with the id.
+  Resumes require an exact id in a session-mode record, `.thread`, or a session
+  event in the bounded 64 KiB head of a run stream. They read the matching
+  names' mode records and review material, so an active or killed first review
+  is found before `.thread` or session-mode state exists. Forced name reuse
+  persists the old session mode before retiring its `.thread` and `.jsonl`.
+  Review is sticky across
   fresh run names; a CALLER asking for implementer mode on a recorded review is
   refused before the name is claimed. Session records are locked and monotonic:
   review can never be replaced with implementer. An implementer name or session

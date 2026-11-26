@@ -146,8 +146,12 @@ Use this order for each implementation task.
    tool set from `pi-review-argv` in the wrapper's OWN argv (first run, resume
    and every automatic continuation), every prompt carries
    `review-prompt-rules.md` (execute nothing), and `PI_EXTRA_ARGS` that would
-   widen it is refused. The mode is recorded as `<runs-dir>/<run>.mode` and, as
-   soon as pi supplies the session id, `<runs-dir>/session-modes/<session-id>`.
+   widen it is refused. The mode is recorded as `<runs-dir>/<run>.mode` and
+   `<runs-dir>/session-modes/<session-id>`; a resume records its known ID before
+   invoking pi, and a first launch records it after pi returns with the ID.
+   A resume also checks the session event in the bounded head of each run stream,
+   so a running or stopped first review is found before its `.thread` and
+   session-mode records are written.
    It is **sticky per run name and session**: a review resumed under a fresh name
    is still a review, and asking for implementer mode on it is refused. A
    missing rule file refuses the launch (exit 2).
@@ -429,15 +433,23 @@ not prevented (see the `implementer-prompt-rules.md` paragraph every implementer
 prompt carries), and the mechanical part is the `pi-shims` PATH guard.
 
 **Review mode is sticky per run name and pi session.** Every launch records it as
-`<runs-dir>/<run>.mode` (`review` or `implementer`); as soon as the wrapper learns
-the session id from pi's stream, it also records the mode in
-`<runs-dir>/session-modes/<session-id>`. On resume, the wrapper reads both records
-and scans `<runs-dir>/*.thread` for exact matches, then reads each matching run
-name's mode record. Review from any of these sources forces review, even when
-the caller uses a fresh name. A caller that ASKS for implementer mode on that
-session is refused (exit 2, before the new name is claimed); no mode takes the
-recorded review. The session record is locked and monotonic: it can become
-`review`, but no later implementer launch can replace it.
+`<runs-dir>/<run>.mode` (`review` or `implementer`). A resume records its known
+session ID in `<runs-dir>/session-modes/<session-id>` before invoking pi; a first
+launch records it after pi returns with the ID. On resume, the wrapper requires an exact
+session id in a session-mode record, a `.thread` file, or a session event in a
+run stream. It scans only the first 64 KiB of each `.jsonl` stream, so large
+streams stay bounded and a running or stopped first review is found without a
+`.thread` or session-mode record. It reads each matching run name's mode or
+review material. Review from any of these sources forces review, even when the
+caller uses a fresh name. A caller that ASKS for implementer mode on that
+session is refused (exit 2, before the new name is claimed when the review
+record is already visible); the name is re-read after claim to catch a review
+record written during preflight. No mode takes the recorded review. A resume id
+must match a recorded id exactly; prefixes and ids ending `.jsonl` are refused.
+Forced name reuse first persists the old session's mode, using
+the same locked monotonic record, before it retires the `.thread` and `.jsonl`
+files. The session record can become `review`, but no later implementer launch
+can replace it.
 
 A record that exists but is unreadable or neither word is refused rather than
 guessed. A name that carries review material (`<run>.review/before-state.txt`)

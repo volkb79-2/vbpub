@@ -77,12 +77,15 @@
 #
 # The mode is STICKY per run name and per pi session. Every accepted launch
 # records it beside the other run records as <runs-dir>/<name>.mode
-# ('review' or 'implementer'); as soon as pi's stream provides the session id,
-# the wrapper also records it in <runs-dir>/session-modes/<session-id>. On a
-# resume, the name record and session record are read, and <runs-dir>/*.thread
-# is scanned for exact matches whose name records may already exist from an
-# earlier version. Review in ANY of those sources forces review; a resume asking
-# for implementer mode is refused before the run name is claimed. Session mode
+# ('review' or 'implementer'); a resume records the session mode before pi is
+# invoked, while a first launch records it after pi returns with the session id.
+# On a resume, the name and session
+# records are read, <runs-dir>/*.thread is scanned for exact matches, and the
+# bounded heads of <runs-dir>/*.jsonl are scanned for session events. Review in
+# ANY of those sources forces review; a resume asking
+# for implementer mode is refused before the run name is claimed when the
+# review source is already present; the claimed name is re-read before argv is
+# built to catch a mode written during preflight. Session mode
 # writes are locked and monotonic, so review can never be replaced with
 # implementer. A resume takes the recorded mode whenever it does not narrow it:
 #  * recorded 'review' + a caller that NAMED implementer mode is REFUSED (exit
@@ -99,8 +102,11 @@
 #    record is missing: the session is then known to be a review, and the safe
 #    direction is failing closed.
 #  * missing records with no review evidence and no matching session/thread
-#    record saying review keep the mode the caller named (or the default), so a
-#    pre-existing IMPLEMENTER session resumes unchanged.
+#    or stream record saying review keep the mode the caller named (or the
+#    default), so a pre-existing IMPLEMENTER session resumes unchanged.
+#  * a resume id must be named EXACTLY by a thread record, session-mode record,
+#    or run-stream session event. Pi's prefix lookup is not allowed here, and
+#    ids ending `.jsonl` are refused because pi treats them as stream paths.
 # The caller's value wins over controller.local.env in the LESS SAFE direction:
 # PI_RUN_MODE is saved before that file is sourced and re-applied after, so a
 # stale `PI_RUN_MODE=implementer` in a local environment file cannot flip a
@@ -227,7 +233,7 @@ name=$3
 mode=${4:-new}
 session_id=${5:-}
 valid_session_id() {
-  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != *..* && $1 != . ]]
+  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != *..* && $1 != . && $1 != *.jsonl ]]
 }
 if [[ $mode == resume ]]; then
   valid_session_id "$session_id" || usage
@@ -289,8 +295,72 @@ read_mode_record_if_present() {
   esac
 }
 
+inspect_review_material() {
+  local directory=$1 before_state
+  before_state=$directory/before-state.txt
+  review_material_present=0
+  if [[ -L $directory || ( -e $directory && ( ! -d $directory || ! -r $directory || ! -x $directory ) ) ]]; then
+    printf 'cannot establish review mode: review material directory is unreadable or not searchable: %s\n' \
+      "$directory" >&2
+    return 2
+  fi
+  [[ -e $directory ]] || return 0
+  if [[ -e $before_state || -L $before_state ]]; then
+    if [[ -L $before_state || ! -f $before_state || ! -r $before_state ]]; then
+      printf 'cannot establish review mode: review before-state is unreadable or not a regular file: %s\n' \
+        "$before_state" >&2
+      return 2
+    fi
+    review_material_present=1
+  fi
+}
+
+# Session events are at the head of pi's JSONL stream. Read at most 64 KiB per
+# file: run streams can be gigabytes, and later events are not needed to bind a
+# run name to the session pi opened. Any unreadable candidate makes the scan
+# incomplete and therefore refuses a resume rather than being treated as no
+# record.
+scan_run_stream_sessions() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+run_dir = Path(sys.argv[1])
+run_name_pattern = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+session_id_pattern = re.compile(r"^[A-Za-z0-9._-]+$")
+for path in sorted(run_dir.glob("*.jsonl")):
+    if path.is_symlink() or not path.is_file():
+        print(f"cannot scan pi session stream: {path} is not a regular file", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        with path.open("rb") as source:
+            head = source.read(65536)
+    except OSError as error:
+        print(f"cannot scan pi session stream: {path}: {error}", file=sys.stderr)
+        raise SystemExit(2)
+    for line in head.splitlines():
+        try:
+            event = json.loads(line)
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "session":
+            continue
+        value = event.get("id") or event.get("sessionId")
+        if not isinstance(value, str) or not session_id_pattern.fullmatch(value):
+            break
+        name = path.name[:-len(".jsonl")]
+        if not run_name_pattern.fullmatch(name) or ".." in name:
+            print(f"cannot use pi session stream with an invalid run name: {path}", file=sys.stderr)
+            raise SystemExit(2)
+        print(f"{name}\t{value}")
+        break
+PY
+}
+
 acquire_session_mode_lock() {
-  local id=$1 lock_path
+  local id=$1 lock_path nonblocking=${2:-0}
   valid_session_id "$id" || {
     printf 'cannot use unsafe pi session id for a mode record: %s\n' "$id" >&2
     return 2
@@ -314,7 +384,13 @@ acquire_session_mode_lock() {
     session_mode_lock_fd=''
     return 2
   }
-  if ! flock -x "$session_mode_lock_fd"; then
+  if [[ $nonblocking == 1 ]]; then
+    flock -x -n "$session_mode_lock_fd" || {
+      printf 'cannot lock pi session mode without waiting: %s\n' "$lock_path" >&2
+      release_session_mode_lock
+      return 2
+    }
+  elif ! flock -x "$session_mode_lock_fd"; then
     printf 'cannot lock pi session mode: %s\n' "$lock_path" >&2
     release_session_mode_lock
     return 2
@@ -330,7 +406,12 @@ release_session_mode_lock() {
 }
 
 write_session_mode() {
-  local id=$1 own_lock=0 path stored_mode='' write_mode=$run_mode rc=0
+  local id=$1 requested_mode=${2:-$run_mode} own_lock=0 path stored_mode='' write_mode rc=0
+  write_mode=$requested_mode
+  [[ $requested_mode == review || $requested_mode == implementer ]] || {
+    printf 'cannot write invalid pi session mode: %s\n' "$requested_mode" >&2
+    return 2
+  }
   valid_session_id "$id" || {
     printf 'cannot use unsafe pi session id for a mode record: %s\n' "$id" >&2
     return 2
@@ -351,13 +432,76 @@ write_session_mode() {
   fi
   # A session record only moves toward the stricter mode. In particular, a
   # stale implementer invocation can never replace a review record.
-  if [[ $stored_mode == review || $run_mode == review ]]; then write_mode=review; fi
+  if [[ $stored_mode == review || $requested_mode == review ]]; then write_mode=review; fi
   if ! printf '%s\n' "$write_mode" > "$path"; then
     printf 'cannot write pi session mode record: %s\n' "$path" >&2
     (( own_lock == 0 )) || release_session_mode_lock
     return 2
   fi
   (( own_lock == 0 )) || release_session_mode_lock
+}
+
+# Forced name reuse retires the old thread and stream. Preserve their mode
+# under the session id first, using the same monotonic writer as live resumes.
+# The lock is nonblocking here: a concurrent resume may hold the session lock
+# while waiting for this run-name lock, so waiting in the opposite order could
+# deadlock. Refusing the forced reuse leaves the old records intact.
+persist_retired_run_session_mode() {
+  local run_name=$1 thread_path thread_id='' stream_id='' old_id='' old_mode=''
+  local stream_name stream_session_id streams rc old_review_material
+  thread_path=$out/$run_name.thread
+  inspect_review_material "$out/$run_name.review" || return 2
+  old_review_material=$review_material_present
+  if [[ -e $thread_path || -L $thread_path ]]; then
+    if [[ -L $thread_path || ! -f $thread_path || ! -r $thread_path ]]; then
+      printf 'cannot preserve retired pi session mode: thread record is unreadable: %s\n' "$thread_path" >&2
+      return 2
+    fi
+    thread_id=$(<"$thread_path") || return 2
+    valid_session_id "$thread_id" || {
+      printf 'cannot preserve retired pi session mode: thread record has an invalid session id: %s\n' "$thread_path" >&2
+      return 2
+    }
+  fi
+  streams=$(scan_run_stream_sessions "$out") || return 2
+  while IFS=$'\t' read -r stream_name stream_session_id; do
+    [[ $stream_name == "$run_name" ]] || continue
+    stream_id=$stream_session_id
+    break
+  done <<< "$streams"
+  if [[ -n $thread_id && -n $stream_id && $thread_id != "$stream_id" ]]; then
+    printf 'cannot preserve retired pi session mode: %s.thread and %s.jsonl name different sessions\n' \
+      "$run_name" "$run_name" >&2
+    return 2
+  fi
+  old_id=${thread_id:-$stream_id}
+  [[ -n $old_id ]] || return 0
+
+  if read_mode_record_if_present "$out/$run_name.mode"; then
+    old_mode=$mode_record_value
+  else
+    rc=$?
+    (( rc == 1 )) || return 2
+    if (( old_review_material == 1 )); then
+      old_mode=review
+    elif read_mode_record_if_present "$session_modes_dir/$old_id"; then
+      old_mode=$mode_record_value
+    else
+      rc=$?
+      (( rc == 1 )) || return 2
+    fi
+  fi
+  [[ -n $old_mode ]] || {
+    printf 'cannot preserve retired pi session mode: %s has a session id but no recorded mode or review evidence\n' \
+      "$run_name" >&2
+    return 2
+  }
+  acquire_session_mode_lock "$old_id" 1 || return 2
+  if ! write_session_mode "$old_id" "$old_mode"; then
+    release_session_mode_lock
+    return 2
+  fi
+  release_session_mode_lock
 }
 
 # A NEW launch is decided by the caller alone: a name that already has a mode
@@ -372,6 +516,8 @@ if [[ $mode == resume ]]; then
   # remains held through the accepted launch's session record write below; a
   # second run name cannot pass a stale implementer read after review was stored.
   acquire_session_mode_lock "$session_id" || exit 2
+  stream_sessions=$(scan_run_stream_sessions "$CONTROLLER_RUNS_DIR") || exit 2
+  session_id_found=0
   record_mode=''
   mode_record_state=absent
   if read_mode_record_if_present "$mode_record"; then
@@ -386,6 +532,7 @@ if [[ $mode == resume ]]; then
   if read_mode_record_if_present "$session_mode_path"; then
     session_mode_record_value=$mode_record_value
     session_mode_state=valid
+    session_id_found=1
   else
     record_rc=$?
     if (( record_rc == 2 )); then session_mode_state=invalid; fi
@@ -394,6 +541,12 @@ if [[ $mode == resume ]]; then
     echo "cannot establish the run mode of pi session $session_id: $session_mode_path is not 'review' or 'implementer'" >&2
     exit 2
   }
+  inspect_review_material "$CONTROLLER_RUNS_DIR/$name.review" || exit 2
+  current_review_material_present=$review_material_present
+  if (( current_review_material_present == 1 )); then
+    session_review_found=1
+    session_review_source=review-material
+  fi
 
   # Older runs already have <name>.thread and <name>.mode, but no session-mode
   # record. Match the thread content exactly, then read that name's mode. An
@@ -409,6 +562,7 @@ if [[ $mode == resume ]]; then
       exit 2
     }
     [[ $thread_session == "$session_id" ]] || continue
+    session_id_found=1
     thread_name=${thread_path##*/}
     thread_name=${thread_name%.thread}
     [[ $thread_name != "$name" ]] || continue
@@ -417,6 +571,8 @@ if [[ $mode == resume ]]; then
       exit 2
     }
     thread_mode_path=$CONTROLLER_RUNS_DIR/$thread_name.mode
+    inspect_review_material "$CONTROLLER_RUNS_DIR/$thread_name.review" || exit 2
+    thread_has_review_material=$review_material_present
     if read_mode_record_if_present "$thread_mode_path"; then
       if [[ $mode_record_value == review ]]; then
         session_review_found=1
@@ -426,7 +582,39 @@ if [[ $mode == resume ]]; then
       record_rc=$?
       (( record_rc == 1 )) || exit 2
     fi
+    if (( thread_has_review_material == 1 )); then
+      session_review_found=1
+      session_review_source=thread-review-material
+    fi
   done
+  while IFS=$'\t' read -r stream_name stream_session_id; do
+    [[ -n $stream_name && $stream_session_id == "$session_id" ]] || continue
+    session_id_found=1
+  done <<< "$stream_sessions"
+  while IFS=$'\t' read -r stream_name stream_session_id; do
+    [[ -n $stream_name && $stream_session_id == "$session_id" ]] || continue
+    [[ $stream_name != "$name" ]] || continue
+    inspect_review_material "$CONTROLLER_RUNS_DIR/$stream_name.review" || exit 2
+    stream_has_review_material=$review_material_present
+    stream_mode_path=$CONTROLLER_RUNS_DIR/$stream_name.mode
+    if read_mode_record_if_present "$stream_mode_path"; then
+      if [[ $mode_record_value == review ]]; then
+        session_review_found=1
+        session_review_source='stream-record'
+      fi
+    else
+      record_rc=$?
+      (( record_rc == 1 )) || exit 2
+    fi
+    if (( stream_has_review_material == 1 )); then
+      session_review_found=1
+      session_review_source='stream-review-material'
+    fi
+  done <<< "$stream_sessions"
+  (( session_id_found == 1 )) || {
+    printf 'cannot resume unknown pi session id %s: no record names this exact id\n' "$session_id" >&2
+    exit 2
+  }
   if [[ $session_mode_state == valid && $session_mode_record_value == review ]]; then
     session_review_found=1
     session_review_source=session-record
@@ -477,7 +665,7 @@ if [[ $mode == resume ]]; then
       # record was lost; with no such evidence the mode the launch named (or the
       # default) stands, which is what keeps a pre-existing implementer session
       # unchanged.
-      if [[ -e $CONTROLLER_RUNS_DIR/$name.review/before-state.txt ]]; then
+      if (( current_review_material_present == 1 )); then
         run_mode=review
         mode_source=review-material
         if (( session_review_found == 0 )); then
@@ -511,6 +699,7 @@ case $run_mode in
   review) review_argv_file=$SCRIPT_DIR/pi-review-argv ;;
   *) review_argv_file='' ;;
 esac
+review_argv=()
 if [[ $run_mode == review ]]; then
   # The one definition of the read-only set. A review that cannot name its tool
   # set must not start: refusing here is the same rule as the signal guard's, and
@@ -636,6 +825,68 @@ if (( ${#extra_pi_args[@]} > 0 )); then
   printf 'pi-impl: PI_EXTRA_ARGS adds %s pi argument(s); this launch is not the plain implementer argv\n' \
     "${#extra_pi_args[@]}" >&2
 fi
+
+# A same-name invocation can finish and release its claim while this wrapper is
+# preflighting. Once this wrapper owns the name, re-read its mode and review
+# material before constructing prompts or argv; a late review record can only
+# narrow this launch, never leave it with implementer tools.
+recheck_claimed_resume_mode() {
+  [[ $mode == resume ]] || return 0
+  local claimed_name_mode=''
+  if read_mode_record_if_present "$mode_record"; then
+    claimed_name_mode=$mode_record_value
+  else
+    local record_rc=$?
+    (( record_rc == 1 )) || return 2
+  fi
+  if [[ $claimed_name_mode == review ]]; then
+    if [[ $request_origin == caller && $requested_mode == implementer ]]; then
+      printf 'run name %s was started as a REVIEW and cannot be resumed in implementer mode\n' "$name" >&2
+      return 2
+    fi
+    run_mode=review
+    mode_source=claimed-name-record
+    session_review_found=1
+    session_review_source='name-record'
+  fi
+  inspect_review_material "$CONTROLLER_RUNS_DIR/$name.review" || return 2
+  current_review_material_present=$review_material_present
+  if (( current_review_material_present == 1 )); then
+    if [[ $request_origin == caller && $requested_mode == implementer ]]; then
+      printf 'run name %s has review material and cannot be resumed in implementer mode\n' "$name" >&2
+      return 2
+    fi
+    run_mode=review
+    mode_source=review-material
+    session_review_found=1
+    session_review_source=review-material
+  fi
+  if [[ $run_mode == review ]]; then
+    if (( ${#extra_pi_args[@]} > 0 )); then
+      printf 'PI_EXTRA_ARGS may not add anything in review mode (got %s element(s)); the review argv is owned by PI_RUN_MODE=review\n' \
+        "${#extra_pi_args[@]}" >&2
+      return 2
+    fi
+    review_argv_file=$SCRIPT_DIR/pi-review-argv
+    if [[ ! -r $review_argv_file ]]; then
+      echo "the review argv file is missing or unreadable: $review_argv_file" >&2
+      return 2
+    fi
+    review_argv=()
+    mapfile -t review_argv < "$review_argv_file" || return 2
+    (( ${#review_argv[@]} > 0 )) || {
+      echo "the review argv file is empty: $review_argv_file" >&2
+      return 2
+    }
+    rules_file=$SCRIPT_DIR/review-prompt-rules.md
+    if [[ ! -r $rules_file ]]; then
+      echo "pi review prompt rule file is missing or unreadable: $rules_file" >&2
+      return 2
+    fi
+    printf 'pi-impl: run mode review (%s) for %s\n' "$mode_source" "$name" >&2
+  fi
+}
+
 # The signal guard (see the header): every shim must exist and be executable.
 # This is a fact read from the filesystem, so a missing or non-executable shim
 # refuses the launch instead of starting an agent with an unguarded PATH. It is
@@ -695,6 +946,7 @@ out=$CONTROLLER_RUNS_DIR
 # Ownership first: nothing below may write a name-owned record until this
 # invocation holds the name. A refusal here names the live owner and exits 2.
 controller_run_claim "$name" || exit 2
+recheck_claimed_resume_mode || exit 2
 retire_existing=0
 
 if [[ $mode == new ]]; then
@@ -854,6 +1106,10 @@ resume_target=''
 if (( retire_existing == 1 )); then
   # Forced reuse of a name that has evidence: the previous identity moves aside
   # instead of being overwritten, and the caller is told what was retired and why.
+  if ! persist_retired_run_session_mode "$name"; then
+    echo "controller: could not preserve the pi session mode for $name; refusing to retire its records" >&2
+    exit 2
+  fi
   if retired=$(controller_run_retire_records "$name"); then
     printf 'pi-impl: CONTROLLER_RUN_FORCE=1 retired %s records into %s\n' "$name" "$retired" >&2
     printf '  retired: %s\n' "${existing[@]}" >&2
@@ -1069,11 +1325,22 @@ fi
 inspection=$(inspect_run)
 IFS=$'\t' read -r stream_session stop_reason usage_limited settled aborted \
   has_text has_tool_call <<< "$inspection"
-thread_id=${stream_session:-$session_id}
-if [[ -n $thread_id ]]; then
+stream_session_mismatch=0
+if [[ $mode == resume && -n $stream_session && $stream_session != "$session_id" ]]; then
+  printf 'pi-impl: resumed session %s produced stream session %s; refusing the mismatched run\n' \
+    "$session_id" "$stream_session" >&2
+  stream_session_mismatch=1
+  rc=2
+  thread_id=$session_id
+else
+  thread_id=${stream_session:-$session_id}
+fi
+if [[ -n $thread_id && $stream_session_mismatch == 0 ]]; then
   printf '%s\n' "$thread_id" > "$out/$name.thread"
-  # A new run learns its session id from pi's stream. Record the mode at that
-  # point so a later resume under any run name can recover it.
+  # A completed invocation learns its session id from pi's stream and then
+  # records the mode. While the invocation is still running, resume resolution
+  # can recover the id and mode from the bounded stream head plus this name's
+  # mode record.
   if ! write_session_mode "$thread_id"; then
     printf 'pi-impl: session mode for %s could not be recorded; the run-name mode remains available\n' \
       "$thread_id" >&2
@@ -1088,6 +1355,7 @@ if [[ -n $thread_id ]]; then
   fi
 fi
 outcome=$(classify_run "$rc")
+if (( stream_session_mismatch == 1 )); then outcome=ERROR; fi
 
 # Continue the SAME session only for the EMPTY-COMPLETION class, which is a
 # provider/model anomaly. Every other class is a real state the controller must
@@ -1126,13 +1394,15 @@ if (( attempt > 0 )) && [[ $outcome == EMPTY-COMPLETION ]]; then
   outcome=EMPTY-COMPLETION-RETRIES-EXHAUSTED
 fi
 
-if CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" block-run "$od_account" \
-  "$out/$name.err" "$out/$name.jsonl"; then
-  :
-else
-  bookkeeping_rc=$?
-  printf 'block-run bookkeeping failed for run %s (exit %s); preserving pi exit %s\n' \
-    "$name" "$bookkeeping_rc" "$rc" >&2
+if (( stream_session_mismatch == 0 )); then
+  if CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" block-run "$od_account" \
+    "$out/$name.err" "$out/$name.jsonl"; then
+    :
+  else
+    bookkeeping_rc=$?
+    printf 'block-run bookkeeping failed for run %s (exit %s); preserving pi exit %s\n' \
+      "$name" "$bookkeeping_rc" "$rc" >&2
+  fi
 fi
 
 printf '{"ev":"outcome","exit":%s,"outcome":"%s","retries":%s}\n' \
