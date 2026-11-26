@@ -126,6 +126,10 @@ def _runner(
     expect_next_event_within_s: float = 15.0,
     pre_first_event_within_s: float | None = None,
     sleep=None,
+    cpu_without_progress_bound_s: float | None = None,
+    per_test_cpu_baseline_s=None,
+    per_test_xdist: bool = False,
+    advisory_budget_s: float | None = None,
 ) -> tuple[liveness.LivenessRunner, Path]:
     events_dir = tmp_path / "candidates"
     runner = liveness.LivenessRunner(
@@ -146,6 +150,10 @@ def _runner(
         ),
         popen=_FakePopen(proc),
         process_group_killer=_ignore_process_group,
+        cpu_without_progress_bound_s=cpu_without_progress_bound_s,
+        per_test_cpu_baseline_s=per_test_cpu_baseline_s,
+        per_test_xdist=per_test_xdist,
+        advisory_budget_s=advisory_budget_s,
     )
     cwd = tmp_path / "cand"
     cwd.mkdir()
@@ -386,11 +394,22 @@ def test_deadlock_is_detectable_after_pressure_ends(tmp_path: Path) -> None:
     )
 
 
-def test_truncated_resource_trace_cannot_certify_a_hang(
+def test_past_the_sample_cap_the_trace_is_compacted_not_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(liveness, "_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES", 3)
-    monkeypatch.setattr(liveness, "_HUNG_CPU_WINDOW_S", 100.0)
+    """(P4/S1) The retired behaviour: past
+    `_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES` the trace was marked truncated and
+    `trace_complete` became False, which disabled EVERY hang verdict for a
+    candidate that ran long (about 17 minutes of 1 s polls) -- including one
+    that went idle afterwards.
+
+    Now the trace is COMPACTED: rows are merged in place, the artifact stays
+    bounded, `trace_complete` stays True, and the hang verdict still fires --
+    asserted here at a far longer virtual run than the cap allows and with
+    `_valid_hung_resource_evidence` (the resume-time reader) still accepting
+    the stored evidence.
+    """
+    monkeypatch.setattr(liveness, "_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES", 8)
     clock = _FakeClock()
     proc = _ScriptedProc(pid=4252)
     runner, cwd = _runner(
@@ -398,16 +417,20 @@ def test_truncated_resource_trace_cannot_certify_a_hang(
         proc=proc,
         clock=clock,
         cpu_reader=lambda pid: 3.0,
+        expect_next_event_within_s=15.0,
     )
 
-    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
-        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=8.0)
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
 
-    assert type(excinfo.value) is subprocess.TimeoutExpired
-    evidence = excinfo.value.liveness_resource_evidence
-    assert evidence["trace_truncated"] is True
-    assert evidence["trace_complete"] is False
-    assert len(evidence["samples"]) == 3
+    evidence = excinfo.value.resource_evidence
+    # An idle hang at 30s with a 1s poll is 31 samples: far past the 8-row cap.
+    assert clock.t >= 30.0
+    assert evidence["trace_truncated"] is False
+    assert evidence["trace_complete"] is True
+    assert evidence["trace_compacted"] is True
+    assert len(evidence["samples"]) <= 8
+    assert mutation_store._valid_hung_resource_evidence(evidence)
 
 
 def test_counter_reset_starts_a_fresh_idle_evidence_window(tmp_path: Path) -> None:
@@ -1566,3 +1589,215 @@ def test_o7_a_failing_sidecar_write_never_changes_the_outcome(
     outcome, _clock, runner, cwd = _row(tmp_path, row)
     assert outcome == _EXPECTED_OUTCOME[row]
     assert liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd)) is None
+
+
+# --------------------------------------------------------------------------
+# P4/S1: CPU-without-progress -- the bound that replaces the per-candidate
+# wall budget as the stop for a candidate that BURNS CPU but completes
+# nothing. Progress here is a completed plugin event and NOTHING else.
+# --------------------------------------------------------------------------
+
+
+def _append_event(events_path: Path, record: dict) -> None:
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    with events_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record) + "\n")
+
+
+def test_a_spinning_silent_candidate_is_hung_on_cpu_not_on_budget(
+    tmp_path: Path,
+) -> None:
+    """P4/S1's first required test: a candidate that spins at full CPU and
+    writes NOTHING. Before P4 every verdict reachable here was
+    `budget_exceeded` (RW-33 was explicit that a CPU-spinning mutant is "not
+    hung"); after P4 it is `hung`, decided by the process-tree CPU it burned
+    since its (never arriving) first completed event.
+
+    Driven entirely by fakes (a virtual clock and a scripted CPU series), so
+    the 60 s bound costs no real seconds and no host load.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7001)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: clock.t * 0.9,  # ~90% of one core, forever.
+        cpu_without_progress_bound_s=70.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["policy"] == liveness.CPU_PROGRESS_POLICY
+    assert evidence["candidate_cpu_source"] == liveness.CPU_PROGRESS_SOURCE
+    assert evidence["completed_events"] == 0
+    assert evidence["cpu_since_last_completed_event_s"] >= evidence["required_cpu_s"]
+    assert evidence["required_cpu_s"] == 70.0
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+    # NOT the idle rule: the idle bound here is 15 s, and the CPU bound (70 s
+    # of CPU at 0.9 CPU-s per wall second) is the one that decided.
+    assert clock.t >= 70.0 / 0.9
+
+
+def test_output_growth_does_not_reset_the_cpu_without_progress_bound(
+    tmp_path: Path,
+) -> None:
+    """P4/S1's second required test, and the review's finding H1: a mutant
+    that loops while LOGGING must not defer this bound. Output growth still
+    defers the IDLE rule (that rule is unchanged) -- which is exactly why the
+    candidate is not ended by idleness and why the CPU bound has to catch it.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7002)
+    stdout_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand").with_suffix(".stdout")
+    written = {"n": 0}
+
+    def reader(pid: int) -> float:
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        with stdout_path.open("a", encoding="utf-8") as stream:
+            stream.write("spam\n")
+        written["n"] += 1
+        return clock.t * 0.9
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=70.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["completed_events"] == 0
+    assert written["n"] > 30  # it really did keep printing.
+
+
+def test_cpu_without_progress_ignores_never_clearing_pressure(
+    tmp_path: Path,
+) -> None:
+    """P4/S1's third required test (review finding H2): a paused clock never
+    fires under persistent pressure. This bound has NO pressure term at all,
+    so a candidate whose every resource sample reports pressure -- which keeps
+    the idle clock at zero forever -- is still ended when it burns the CPU.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7003)
+
+    def pressured(pid: int) -> dict:
+        sample = _clear_resource_snapshot()
+        sample["host_psi"]["memory"]["full"] = int((clock.t + 1) * 1_000_000)
+        return sample
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: clock.t * 2.0,
+        resource_reader=pressured,
+        cpu_without_progress_bound_s=70.0,
+        # A 600s idle bound: the idle rule cannot fire even if it wanted to.
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["cpu_since_last_completed_event_s"] >= 35.0
+    # Every retained sample says the interval was ineligible, and the kill
+    # happened anyway -- the point of a CPU-based bound.
+    samples = evidence["samples"] if "samples" in evidence else []
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+
+
+def test_a_slow_test_below_the_cpu_bound_survives(tmp_path: Path) -> None:
+    """P4/S1's fourth required test: a genuinely slow but progressing test is
+    never mistaken for a hang -- and, because the CPU it burns is what the
+    bound measures, burning CPU on a test that COMPLETES resets the window."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7004)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+
+    def reader(pid: int) -> float:
+        # One slowly progressing test: heavy CPU, but a completed `test`
+        # event every 40 virtual seconds -- well inside the 70 s bound.
+        if clock.t > 0 and clock.t % 40.0 == 0.0:
+            _append_event(
+                events_path,
+                {
+                    "event": "test",
+                    "nodeid": f"t{int(clock.t)}",
+                    "pid": pid,
+                    "duration_s": 39.0,
+                    "outcome": "passed",
+                },
+            )
+        return clock.t * 0.95
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=70.0,
+    )
+    result = None
+
+    def stop_at_200(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t >= 200.0:
+            proc.finish(0)
+
+    runner._sleep = stop_at_200  # type: ignore[assignment]
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert result.returncode == 0
+    assert clock.t >= 200.0
+
+
+def test_child_exit_never_lowers_the_cpu_series(tmp_path: Path) -> None:
+    """P4/S1's fifth required test (design §7.1's own UNVERIFIED item).
+
+    `tree_cpu_seconds` sums the LIVE tree, so a busy descendant exiting
+    lowers the reading. If that were taken at face value a spinning candidate
+    would be handed a "it burned no CPU" verdict exactly when it burned the
+    most. The runner therefore banks the peak when the series dips: the same
+    virtual CPU history that dips below its own peak still reaches the bound.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7005)
+    # Rises to 40 CPU-s by t=20 (a child was doing the work), then the child
+    # exits and the tree's sum drops to 2 s and grows slowly from there.
+    def reader(pid: int) -> float:
+        if clock.t <= 20.0:
+            return clock.t * 2.0
+        return 2.0 + (clock.t - 20.0) * 0.5
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=70.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    # 40 banked at t=20 plus the slow growth after it, never 2.0 + something
+    # that would have to start over from the dip.
+    assert evidence["candidate_cpu_s"] >= 70.0
+    assert evidence["cpu_since_last_completed_event_s"] >= 70.0
+
+
+def test_the_runner_never_invents_a_cpu_bound_of_its_own() -> None:
+    """A hand-built runner (another module, a test) gets NO CPU bound: the
+    value is derived from a measured baseline and must be passed in, never
+    defaulted to something plausible."""
+    runner = liveness.LivenessRunner(
+        events_dir=Path("/tmp/assay-no-such-dir"), expect_next_event_within_s=1.0
+    )
+    assert runner.cpu_without_progress_bound_s is None

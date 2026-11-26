@@ -2150,7 +2150,11 @@ def auto_budget_per_candidate_seconds(baseline_wall: float) -> float:
     not a replacement for the liveness/cadence layers D-17 puts ABOVE it
     (A2/A3/A4 in this same package).
     """
-    return max(3.0 * baseline_wall, baseline_wall + 60.0)
+    # (P4/S1) ONE formula, shared with the CPU-without-progress bound
+    # (`assay.liveness.derived_bound_from_baseline`): the wall budget and the
+    # CPU bound are the same policy applied to two different clocks, so there
+    # is no second `60.0`/`3.0` pair to drift out of step with it.
+    return liveness.derived_bound_from_baseline(baseline_wall)
 
 
 def _native_r2_parallel_checked(function):
@@ -2278,6 +2282,11 @@ def run_mutation(
     liveness_pre_first_event_within_s: float | None = None,
     liveness_cpu_window_s: float | None = None,
     liveness_idle_floor_s: float | None = None,
+    #: (P4/S1,S2,S3) The CPU progress bounds and watch regime as disclosed on
+    #: the `plan` progress record -- `None`/`{}` for a run whose watch is not
+    #: armed, which is exactly what the record then says.
+    liveness_cpu_without_progress_bound_s: float | None = None,
+    liveness_per_test_baseline_s: Mapping[str, float] | None = None,
     #: (B091/D-23, P7 A4) The lane's own PERSISTENT
     #: `.assay/liveness/candidates/` directory -- `None` for every
     #: non-liveness lane. When given, each candidate's own `tests_completed`
@@ -2286,6 +2295,20 @@ def run_mutation(
     #: execution `cwd`, via `assay.liveness.count_test_events` -- never a
     #: second, independent count.
     liveness_events_dir: Path | None = None,
+    #: (P4/S3) Whether the no-progress watch is ARMED for this run -- the
+    #: caller's own per-run decision (`runner._run_prepared_lane`: liveness
+    #: injected, the baseline produced plugin events, the candidate's CPU is
+    #: readable). Armed, `budget_per_candidate` is ADVISORY: it never ends a
+    #: candidate (see `assay.liveness.LivenessRunner.advisory_budget_s`) and
+    #: the CPU bounds are the stop. NOT armed, it binds exactly as before --
+    #: this is the only switch, so "which regime judged this run" has one
+    #: source.
+    liveness_watch_armed: bool = False,
+    #: (P4/S3) The machine-readable spelling of WHY the watch is or is not
+    #: armed, disclosed on the `plan` progress record beside the fact. `None`
+    #: when the caller passed no wait at all (a non-liveness lane records
+    #: `liveness-not-injected:...` itself).
+    liveness_watch_reason: str | None = None,
     progress_artifact: Path | str | None = None,
     #: (B064) An already-open, lane-wide :class:`ProgressStream`. The lane
     #: runner opens the stream once, high up, so the R0/R1 phase records and
@@ -2709,6 +2732,37 @@ def run_mutation(
                     "pre_first_event_within_s": liveness_pre_first_event_within_s,
                     "cpu_window_s": liveness_cpu_window_s,
                     "idle_floor_s": liveness_idle_floor_s,
+                    # (P4/S3) WHICH BUDGET REGIME applied to this run, decided
+                    # per run and stated on the stream a consumer actually
+                    # tails: `armed` = the CPU/per-test progress bounds are
+                    # the stop and `judge.mutation.budget_per_candidate` is
+                    # advisory (one WARN when first exceeded); `binding` =
+                    # the budget still ends a candidate, exactly as before.
+                    "progress_bound": {
+                        "armed": liveness_watch_armed,
+                        "reason": (
+                            liveness_watch_reason
+                            if liveness_watch_reason is not None
+                            else (
+                                "armed"
+                                if liveness_watch_armed
+                                else "liveness-not-injected"
+                            )
+                        ),
+                        "cpu_without_progress_s": (
+                            liveness_cpu_without_progress_bound_s
+                            if liveness_watch_armed
+                            else None
+                        ),
+                        "per_test_baseline_tests": (
+                            len(liveness_per_test_baseline_s)
+                            if liveness_watch_armed
+                            else None
+                        ),
+                        "budget_per_candidate_role": (
+                            "advisory" if liveness_watch_armed else "binding"
+                        ),
+                    },
                     "cold_witness": cold_witness,
                     "r2_baseline_s": r2_baseline_s,
                 }
@@ -3194,6 +3248,7 @@ def run_mutation(
             resource_sha256=(
                 projection.resource_sha256 if projection is not None else None
             ),
+            liveness_watch_armed=liveness_watch_armed,
             liveness_events_dir=liveness_events_dir,
             liveness_plugin_path=(
                 Path(liveness_plugin) if liveness_plugin is not None else None
@@ -3489,6 +3544,11 @@ def _execute_mutation_jobs(
     #: -- `None` for every non-liveness lane, in which case `_run_one`
     #: never touches `assay.liveness` at all.
     liveness_events_dir: Path | None = None,
+    #: (P4/S3) The arming decision, threaded to the ONE place that builds each
+    #: candidate's `command_deadline`. Armed: the per-candidate budget no
+    #: longer caps that deadline (the runner holds it as advisory) and only the
+    #: lane deadline remains. Not armed: the unchanged pre-P4 arithmetic.
+    liveness_watch_armed: bool = False,
     liveness_plugin_path: Path | None = None,
     reuse_witnesses: Mapping[str, tuple[str, str]] | None = None,
     campaign_deadline_sha256: str | None = None,
@@ -3694,8 +3754,14 @@ def _execute_mutation_jobs(
                     or budget_per_candidate_seconds >= lane_remaining
                 )
                 command_deadline = lane_remaining
+                # (P4/S3) ARMED: the per-candidate budget is advisory and the
+                # runner holds it as such, so it must not shorten the command
+                # deadline here -- a candidate that keeps making progress runs
+                # until the LANE budget or a progress bound ends it. NOT
+                # armed: the pre-P4 arithmetic, unchanged.
                 if (
-                    budget_per_candidate_seconds is not None
+                    not liveness_watch_armed
+                    and budget_per_candidate_seconds is not None
                     and budget_per_candidate_seconds < command_deadline
                 ):
                     command_deadline = budget_per_candidate_seconds
@@ -4813,9 +4879,12 @@ def _execute_mutation_jobs(
 
             remaining = deadline.remaining()
             if (
-                budget_per_candidate_seconds is not None
+                not liveness_watch_armed
+                and budget_per_candidate_seconds is not None
                 and remaining < budget_per_candidate_seconds
             ):
+                # (P4/S3) ARMED: a tail retry is not gated on the (advisory)
+                # per-candidate budget; the lane deadline is the only gate.
                 break
             retry_run = _run_one(position, worker_index=0)
             results[position] = retry_run

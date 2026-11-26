@@ -301,6 +301,15 @@ def _worker_runner(spec: Mapping[str, object], plan: Any) -> Any:
             expect_next_event_within_s=spec["expect_next_event_within_s"],
             pre_first_event_within_s=spec["pre_first_event_within_s"],
             cpu_window_s=spec["cpu_window_s"],
+            # P4/S1,S2: the progress bounds are part of the execution policy,
+            # so a host that dropped them would run a different judge.
+            cpu_without_progress_bound_s=spec["cpu_without_progress_bound_s"],
+            per_test_cpu_baseline_s={
+                str(nodeid): float(seconds)
+                for nodeid, seconds in (spec["per_test_cpu_baseline_s"] or {}).items()
+            },
+            per_test_xdist=bool(spec["per_test_xdist"]),
+            advisory_budget_s=spec["advisory_budget_s"],
         )
     if kind == "factory":
         from importlib import import_module

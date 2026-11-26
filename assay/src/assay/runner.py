@@ -6049,7 +6049,37 @@ def _run_prepared_lane(
             # was not injected into `plan` (non-pytest argv, non-python
             # language, or an ingested lane), `process_runner` is used
             # verbatim -- byte-for-byte the pre-B091 candidate path.
-            if liveness_injected:
+            # (P4/S3) THE arming decision, made here, once, from the three
+            # facts that decide it -- and disclosed on the `plan` progress
+            # event and in the verdict's `judgment.r2` so a reader learns
+            # which regime judged this run from the artifact itself:
+            #
+            #   * liveness was injected (the plugin is in the plan), AND
+            #   * the BASELINE's own events file carries plugin records (the
+            #     plugin really ran, so a candidate's progress is observable),
+            #     AND
+            #   * the candidate's process-tree CPU is readable (checked at the
+            #     first successful `/proc` read; `LivenessRunner` falls back to
+            #     a binding budget if it never is).
+            #
+            # Every other run -- non-pytest argv, non-Python language, an
+            # ingested lane, a plugin that never wrote anything -- keeps its
+            # per-candidate budget EXACTLY as declared. Nothing is refused by
+            # name here: design §3.1's rule is that a cap is removed only where
+            # a watch exists, and this is the per-run form of it.
+            watch_armed = liveness_injected and liveness.plugin_events_observed(
+                liveness_baseline_events_path
+            )
+            progress_watch_reason = (
+                "armed"
+                if watch_armed
+                else (
+                    "liveness-not-injected:" + liveness_reason
+                    if not liveness_injected
+                    else "baseline-produced-no-plugin-events"
+                )
+            )
+            if watch_armed:
                 assert liveness_calibration is not None
                 assert liveness_candidates_dir is not None
                 candidate_process_runner: ProcessRunner = liveness.LivenessRunner(
@@ -6061,6 +6091,37 @@ def _run_prepared_lane(
                         liveness_calibration.pre_first_event_within_s
                     ),
                     cpu_window_s=lane.judge.mutation.liveness_cpu_window_s,
+                    # (P4/S1,S2) The two CPU progress bounds, from the SAME
+                    # calibration that already governs the idle rule: one
+                    # measurement, one set of bounds, never a second
+                    # derivation of "how long does this suite take".
+                    cpu_without_progress_bound_s=(
+                        liveness_calibration.cpu_without_progress_bound_s
+                    ),
+                    per_test_cpu_baseline_s=(
+                        liveness_calibration.per_test_baseline_s
+                    ),
+                    # (P4/S2) `jobs > 1` runs the suite distributed, where
+                    # "exactly one test in flight" is false by construction.
+                    per_test_xdist=lane.judge.mutation.jobs > 1,
+                    # (P4/S3) The per-candidate budget as an ADVISORY wall
+                    # bound: never a stop for this run (one WARN when first
+                    # exceeded), with the CPU bounds as the real stop.
+                    advisory_budget_s=(
+                        explicit_budget_per_candidate_seconds
+                        if explicit_budget_per_candidate_seconds is not None
+                        else (
+                            # The SAME derivation `run_mutation` makes for the
+                            # binding case (`budget_per_candidate_auto`), so the
+                            # advisory number and the derived number can never
+                            # disagree.
+                            mutation.auto_budget_per_candidate_seconds(
+                                mutation.baseline_wall_seconds(result)
+                            )
+                            if budget_per_candidate_auto
+                            else None
+                        )
+                    ),
                 )
             else:
                 candidate_process_runner = lane_process_runner
@@ -6391,6 +6452,22 @@ def _run_prepared_lane(
                     ),
                     liveness_cpu_window_s=liveness_cpu_window_s,
                     liveness_idle_floor_s=liveness_idle_floor_s,
+                    liveness_watch_armed=watch_armed,
+                    liveness_watch_reason=progress_watch_reason,
+                    # (P4/S3) The two figures the `plan` record discloses, from
+                    # the same calibration the runner was built with -- so the
+                    # stream and the runner can never describe different
+                    # bounds.
+                    liveness_cpu_without_progress_bound_s=(
+                        liveness_calibration.cpu_without_progress_bound_s
+                        if watch_armed and liveness_calibration is not None
+                        else None
+                    ),
+                    liveness_per_test_baseline_s=(
+                        liveness_calibration.per_test_baseline_s
+                        if watch_armed and liveness_calibration is not None
+                        else {}
+                    ),
                     liveness_events_dir=liveness_candidates_dir,
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,

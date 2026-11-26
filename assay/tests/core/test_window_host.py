@@ -998,6 +998,13 @@ def test_worker_runner_rebuilds_both_builtin_runner_types(tmp_path):
             "expect_next_event_within_s": 1.0,
             "pre_first_event_within_s": None,
             "cpu_window_s": 0.1,
+            # (P4/S1,S2,S3) The progress bounds are execution policy, so a
+            # rebuilt runner must carry them (all `None`/empty = a run whose
+            # CPU watch is off, which is what a bare hand-built spec means).
+            "cpu_without_progress_bound_s": None,
+            "per_test_cpu_baseline_s": None,
+            "per_test_xdist": False,
+            "advisory_budget_s": None,
         },
         plan,
     )
