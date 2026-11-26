@@ -12,7 +12,16 @@ import tomllib
 from pathlib import PurePosixPath
 
 from cmru.bundle import parse_config as parse_bundle_config
+from cmru.changelog import fold_unreleased_notes
 from cmru.config import load_forge_config
+from cmru.release_notes import (
+    HISTORY_MARKER,
+    PENDING_NOTES_BEGIN,
+    PENDING_NOTES_END,
+    html_comment_positions_outside_fenced_code,
+    markdown_h2_headings,
+    unreleased_span,
+)
 from conftest import ROOT
 
 CONFIG = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
@@ -79,14 +88,93 @@ def _release_tokens(prose: str) -> list[str]:
     return _VERSION_TOKEN.findall(scrubbed)
 
 
-def _markdown_section(path, heading: str) -> str:
-    text = path.read_text(encoding="utf-8")
+# A dated release heading, `## [4.0.0] - 2026-11-26`; the section cmru folds notes into.
+_DATED_SECTION = re.compile(r"## \[([^\]]+)\] - (\d{4}-\d{2}-\d{2})")
+
+
+def _heading_section(text: str, heading: str, *, where: str) -> str:
+    """Prose of one `###` section of ``text``, whitespace-normalised."""
     start = re.search(rf"^{re.escape(heading)}\s*$", text, flags=re.MULTILINE)
-    assert start is not None, f"{path}: missing heading {heading!r}"
+    assert start is not None, f"{where}: missing heading {heading!r}"
     remainder = text[start.end():]
     end = re.search(r"^#{2,3} .+\s*$", remainder, flags=re.MULTILINE)
     section = remainder[:end.start()] if end is not None else remainder
     return " ".join(section.split())
+
+
+def _pending_note_blocks(text: str, *, where: str) -> list[tuple[int, str, str | None]]:
+    """``(begin offset, notes, enclosing `##` heading)`` of every CMRU pending block."""
+    begins = list(html_comment_positions_outside_fenced_code(text, PENDING_NOTES_BEGIN))
+    ends = list(html_comment_positions_outside_fenced_code(text, PENDING_NOTES_END))
+    headings = [(item.start, item.text) for item in markdown_h2_headings(text)]
+    blocks = []
+    for begin in begins:
+        following = [end for end in ends if end > begin]
+        assert following, f"{where}: unclosed {PENDING_NOTES_BEGIN} at offset {begin}"
+        end = following[0]
+        newline = text.find("\n", begin)
+        assert 0 <= newline < end, f"{where}: malformed pending-note block at offset {begin}"
+        owning = [label for start, label in headings if start <= begin]
+        blocks.append(
+            (begin, text[newline + 1:end].strip("\r\n"), owning[-1] if owning else None)
+        )
+    return blocks
+
+
+def _curated_notes(text: str, *, where: str) -> str:
+    """The operator-authored notes, before and after cmru folds them into a dated section.
+
+    Before a release they live in ``[Unreleased]``; cmru's disposable candidate moves
+    the same bytes (``cmru.changelog.fold_unreleased_notes``) into the dated section and
+    leaves ``[Unreleased]`` holding only its comments. A reader taking the FIRST
+    ``### Changed`` in the document therefore read the fold's generated block instead of
+    the curated one, which failed tls-edge 4.0.0's release gate.
+    """
+    span = unreleased_span(text)
+    blocks = _pending_note_blocks(text, where=where)
+    with_notes = [block for block in blocks if block[1].strip()]
+    unreleased = [
+        block for block in with_notes
+        if span is not None and span[0] <= block[0] < span[1]
+    ]
+    assert len(unreleased) <= 1, (
+        f"{where}: {len(unreleased)} pending-note blocks hold notes inside [Unreleased]: "
+        f"{len(blocks)} CMRU blocks exist in total"
+    )
+    if unreleased:
+        return unreleased[0][1]
+    dated = []
+    for block in with_notes:
+        match = _DATED_SECTION.match(block[2]) if block[2] is not None else None
+        if match is not None:
+            dated.append((block[0], match.group(1), block[1]))
+    assert dated, (
+        f"{where}: no pending release notes carry content: {len(blocks)} CMRU block(s) "
+        "exist, none with notes in [Unreleased] or in a dated `## [X.Y.Z] - YYYY-MM-DD` "
+        "section (a version without notes must say so in its changelog, not silently "
+        "leave the curated assertions reading an empty string)"
+    )
+    # Newest first: cmru inserts each new release section directly after the history
+    # marker (``_insert_section_after_marker``), so document order is release order.
+    # A date could disagree (a backfilled section, or a fixture's fixed date), and a
+    # no-tag section carries none at all.
+    newest = min(dated, key=lambda block: block[0])
+    return newest[2]
+
+
+def _curated_changed(text: str, *, where: str) -> str:
+    """The ``### Changed`` prose of the curated notes, never of the fold's generated block."""
+    return _heading_section(_curated_notes(text, where=where), "### Changed", where=where)
+
+
+# The curated `### Changed` facts the pending 4.0.0 notes publish (TE-06, review N4).
+_CURATED_CHANGED_FRAGMENTS = (
+    "archives are byte-identical for identical inputs",
+    "`ciu` and `cli-extended` track their latest release",
+    "`TLS_EDGE_CIU_VERSION` / `TLS_EDGE_CLI_EXTENDED_VERSION` pin them",
+    "`scripts/verify.sh` check 1 now runs the bundled `<root>/ciu check`",
+    "SKIPs when the ciu stub is absent",
+)
 
 
 def test_operator_docs_name_the_bundle_root_and_reproducibility_inputs():
@@ -94,12 +182,11 @@ def test_operator_docs_name_the_bundle_root_and_reproducibility_inputs():
     assert "single staging directory as its top-level directory, `bundle/`" in readme
     assert "`tar -xJf … --strip-components=1` still extracts cleanly" in readme
 
-    changed = _markdown_section(ROOT / "CHANGES.md", "### Changed")
-    assert "archives are byte-identical for identical inputs" in changed
-    assert "`ciu` and `cli-extended` track their latest release" in changed
-    assert "`TLS_EDGE_CIU_VERSION` / `TLS_EDGE_CLI_EXTENDED_VERSION` pin them" in changed
-    assert "`scripts/verify.sh` check 1 now runs the bundled `<root>/ciu check`" in changed
-    assert "SKIPs when the ciu stub is absent" in changed
+    changed = _curated_changed(
+        (ROOT / "CHANGES.md").read_text(encoding="utf-8"), where="CHANGES.md"
+    )
+    for fragment in _CURATED_CHANGED_FRAGMENTS:
+        assert fragment in changed, fragment
 
     install = " ".join((ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8").split())
     assert (
@@ -150,6 +237,85 @@ def test_install_doc_carries_no_release_history():
         "A 3.2 rollback keeps",
     ):
         assert stale not in install, stale
+
+
+def _synthetic_unreleased_notes(text: str) -> str:
+    """A copy of ``text`` whose [Unreleased] block carries a named synthetic note.
+
+    After a release the real ``[Unreleased]`` block is empty, and the boundary check
+    below must still exercise a fold; the real file is never modified.
+    """
+    notes = "### Changed\n- A synthetic operator note the fold must carry into the section.\n"
+    begin = text.find(PENDING_NOTES_BEGIN)
+    if begin < 0:
+        heading = text.find("## [Unreleased]")
+        assert heading >= 0, "CHANGES.md has no `## [Unreleased]` heading to copy notes into"
+        end = text.find("\n", heading) + 1
+        return (
+            text[:end] + f"\n{PENDING_NOTES_BEGIN}\n{notes}{PENDING_NOTES_END}\n" + text[end:]
+        )
+    end = text.find(PENDING_NOTES_END, begin)
+    assert end >= 0, "CHANGES.md has no closing pending-notes marker for [Unreleased]"
+    newline = text.find("\n", begin)
+    assert 0 <= newline < end, "CHANGES.md has a malformed [Unreleased] pending-note block"
+    return text[:newline + 1] + notes + "\n" + text[end:]
+
+
+def _with_synthetic_release(text: str, version: str) -> str:
+    """Insert the generated section cmru writes where the history marker points."""
+    marker = text.find(HISTORY_MARKER)
+    assert marker >= 0, f"CHANGES.md has no {HISTORY_MARKER}"
+    after = marker + len(HISTORY_MARKER)
+    section = (
+        f"\n\n## [{version}] - 2026-01-01\n"
+        "<!-- cmru: generated -->\n"
+        "<!-- cmru: source-end=0000000000000000000000000000000000000000 -->\n\n"
+        "### Changed\n"
+        f"- A generated bullet for [{version}] (cmru's release range), not an operator note.\n"
+    )
+    return text[:after] + section + text[after:]
+
+
+def _has_notes_in_unreleased(text: str, *, where: str) -> bool:
+    span = unreleased_span(text)
+    return any(
+        block[1].strip() and span is not None and span[0] <= block[0] < span[1]
+        for block in _pending_note_blocks(text, where=where)
+    )
+
+
+def test_the_curated_notes_survive_cmru_folding_them_into_the_dated_candidate(tmp_path):
+    """The reader sees the same curated text before and after cmru's pre-gate fold.
+
+    tls-edge 4.0.0's release gate failed here: the candidate's ``[Unreleased]`` section
+    holds only comments once the notes are folded, so the first ``### Changed`` in the
+    document is cmru's GENERATED one and the curated block sits after it.
+    """
+    source = (ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    if not _has_notes_in_unreleased(source, where="CHANGES.md"):
+        source = _synthetic_unreleased_notes(source)
+    curated = _curated_changed(source, where="CHANGES.md (copy)")
+
+    candidate = _with_synthetic_release(source, "9.9.9")
+    folded = fold_unreleased_notes(candidate, "9.9.9")
+    assert folded is not None, "the copy must carry [Unreleased] notes for cmru to fold"
+    target = tmp_path / "CHANGES.md"
+    target.write_text(folded, encoding="utf-8")
+
+    assert _curated_changed(target.read_text(encoding="utf-8"), where=str(target)) == curated
+    assert _curated_changed(target.read_text(encoding="utf-8"), where=str(target)) == curated
+    # The fixture reproduces the release-gate failure, so this check cannot pass by
+    # accident: after the fold the document's FIRST `### Changed` is the generated one,
+    # which a first-heading reader (the pre-fix helper) returned as the curated text.
+    first = _heading_section(folded, "### Changed", where="folded CHANGES.md")
+    assert "generated bullet" in first, first
+    assert first != curated, (first, curated)
+    # The other CHANGES reader (the released-heading derivation above) sees the folded
+    # release heading too; INSTALL must still not name it.
+    released = _RELEASED_HEADING.findall(folded)
+    assert "9.9.9" in released and "3.2.0" in released, released
+    for version in released:
+        assert re.search(rf"\b{re.escape(version)}\b", _install_prose()) is None, version
 
 
 def test_release_notes_are_version_agnostic(monkeypatch):
