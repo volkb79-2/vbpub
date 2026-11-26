@@ -157,8 +157,8 @@ class FixtureTests(unittest.TestCase):
                 if key != "kind":
                     self.assertEqual(error.detail.get(key), value, f"{spec['case']}: {key}")
 
-    def test_the_error_kinds_are_the_46_of_the_rust_decoder(self):
-        self.assertEqual(len(wire.ERROR_KINDS), 46)
+    def test_the_error_kinds_are_the_50_of_the_rust_decoder(self):
+        self.assertEqual(len(wire.ERROR_KINDS), 50)
         if RUST_ERROR.exists():
             text = RUST_ERROR.read_text(encoding="utf-8")
             body = text[text.index("pub const fn kind") :]

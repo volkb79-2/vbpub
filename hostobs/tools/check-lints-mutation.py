@@ -25,7 +25,7 @@ Cases (each asserts a specific outcome, so the check cannot pass by being noisy)
 * whitespace around `allow ( unsafe_code )` — refused;
 * a crate-level `warn(unsafe_code)` — refused;
 * a bare `unsafe {}` in a kernel integration test — refused;
-* a second `unsafe {}` in `activation.rs` — refused;
+* an unlisted third `unsafe {}` in `activation.rs` — refused;
 * a second `allow(unsafe_code)` in `activation.rs` itself — refused;
 * kernel `lib.rs` restored to `#![forbid(unsafe_code)]` instead of the one audited
   `deny` allowance — refused.
@@ -241,7 +241,7 @@ def main() -> int:
         expect_refusal(
             case,
             "bare unsafe in kernel integration test",
-            "unsafe expression must occur exactly once outside crates/act",
+            "exactly the two audited unsafe expressions may occur",
         )
 
         case = fresh()
@@ -249,12 +249,12 @@ def main() -> int:
             case,
             "crates/kernel/src/activation.rs",
             "let owned = unsafe { OwnedFd::from_raw_fd(fd) };",
-            "let owned = unsafe { OwnedFd::from_raw_fd(fd) };\n    let _second = unsafe { 0 };",
+            "let owned = unsafe { OwnedFd::from_raw_fd(fd) };\n    let _third = unsafe { 0 };",
         )
         expect_refusal(
             case,
-            "second unsafe expression in activation",
-            "unsafe expression must occur exactly once outside crates/act",
+            "unlisted third unsafe expression in activation",
+            "exactly the two audited unsafe expressions may occur",
         )
 
         case = fresh()
