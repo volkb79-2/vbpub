@@ -178,6 +178,16 @@ esac
 exit 0
 '''
 FAKE_SYSTEMCTL = r'''printf 'systemctl %s\n' "$*" >> "$FAKE_LOG"
+if [ -n "${FAKE_SYSTEMCTL_BLOCK_MATCH:-}" ] && [ "$*" = "$FAKE_SYSTEMCTL_BLOCK_MATCH" ]; then
+  if [ -n "${FAKE_SYSTEMCTL_BLOCK_ONCE:-}" ]; then
+    if [ ! -e "$FAKE_SYSTEMCTL_BLOCK_ONCE" ]; then
+      : > "$FAKE_SYSTEMCTL_BLOCK_ONCE"
+      sleep "${FAKE_SYSTEMCTL_BLOCK_SLEEP:-5}"
+    fi
+  elif [ -n "${FAKE_SYSTEMCTL_BLOCK:-}" ]; then
+    sleep "${FAKE_SYSTEMCTL_BLOCK_SLEEP:-5}"
+  fi
+fi
 case "$1" in
   show)
     if [ "$3" = MainPID ] && [ "$5" = mdt-psi-guard.service ]; then

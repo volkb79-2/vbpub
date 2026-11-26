@@ -218,6 +218,8 @@ def judge_step(rows: list[dict], probes: list[dict], step: int) -> tuple[str, st
         if not prows:
             absent.append(name)   # 3.5/L-i: a probe that did not run is missing data, never a pass and never a FAIL
             continue
+        if name == "cgprofiled" and all("state=degraded" in (p.get("detail") or "").split() for p in prows):
+            continue  # CLI absent: its systemctl/socket observation is INFO only, including a recorded timeout
         seen.append(name)
         rcs = [p.get("rc") for p in prows]
         if "unmeasurable" in rcs:
@@ -228,7 +230,10 @@ def judge_step(rows: list[dict], probes: list[dict], step: int) -> tuple[str, st
             continue
         if name == "containerd":
             now = detail_int(probes, step, "containerd", "nrestarts")
-            if now is not None and restarts0 is not None and now > restarts0:
+            if now is None or restarts0 is None:
+                unmeasured.append(name)  # empty/invalid NRestarts is missing, never an invented zero or a pass
+                continue
+            if now > restarts0:
                 bad_l.append(f"containerd restarted ({restarts0} -> {now})")
                 continue
         vals = seconds_of(probes, step, name)

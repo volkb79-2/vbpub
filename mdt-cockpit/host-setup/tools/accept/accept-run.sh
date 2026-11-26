@@ -9,7 +9,7 @@
 # Test hooks (env): MDT_ACCEPT_{CGROUP,PROC,HOST_ENV,BOOT_ID,INTERVAL,DWELL_TICKS,SETTLE_TICKS,MAX_TICKS,UNITS,
 # PAGESIZE,LOCK,MIN_DISK,SQUEEZE_STATE,HOTSET,HOTSET_JSON,HOTSET_EVERY,DAMON,DAMON_STAT,JUDGE,SSH_TARGET,EXTRA_UNITS,
 # PROBE_IMAGE,PROBE_CMD_<NAME>,PROBE_TIMEOUT,PROBE_TIMEOUT_<NAME>,POLL_STEP,GROW_TRIES,PSI_HOLD,RESTORE_TIMEOUT,
-# RM_TIMEOUT,GUARD_EVERY,MIN_EVID_DISK,SSHD_BANNER_CMD}.
+# RM_TIMEOUT,SYSTEMCTL_TIMEOUT,GUARD_EVERY,MIN_EVID_DISK,SSHD_BANNER_CMD}.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CG=${MDT_ACCEPT_CGROUP:-/sys/fs/cgroup}
@@ -31,6 +31,7 @@ SSH_TARGET=${MDT_ACCEPT_SSH_TARGET:-}
 EXTRA_UNITS=${MDT_ACCEPT_EXTRA_UNITS:-}
 POLL=${MDT_ACCEPT_POLL_STEP:-1}
 RM_TIMEOUT=${MDT_ACCEPT_RM_TIMEOUT:-30}
+SYSTEMCTL_TIMEOUT=${MDT_ACCEPT_SYSTEMCTL_TIMEOUT:-2}
 GROW_TRIES=${MDT_ACCEPT_GROW_TRIES:-60}
 PSI_HOLD=${MDT_ACCEPT_PSI_HOLD:-10}
 GUARD_EVERY=${MDT_ACCEPT_GUARD_EVERY:-5}   # L5: seconds between the guard runs inside one tick (test hook: 0 = every probe)
@@ -41,6 +42,12 @@ usage() { echo "usage: $0 --evidence DIR [--steps N] [--step SIZE] [--dwell S] [
 say() { echo "accept-run: $*"; }
 note() { echo "accept-run: NOTE $*"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+systemctl_read() { # bounded read; SYSTEMCTL_RC is `timeout`, a numeric rc, or zero; SYSTEMCTL_OUT is never invented
+  local rc=0
+  SYSTEMCTL_OUT=$(timeout -k 1 "$SYSTEMCTL_TIMEOUT" systemctl "$@" 2>/dev/null) || rc=$?
+  case "$rc" in 124|137) SYSTEMCTL_RC=timeout ;; *) SYSTEMCTL_RC=$rc ;; esac
+  return 0
+}
 parse_size() { # 128M / 4096 / 2G -> bytes; a bare number is bytes
   local v=$1 n mult
   case $v in *K|*k) mult=1024 ;; *M|*m) mult=$MIB ;; *G|*g) mult=$GIB ;; *) mult=1 ;; esac
@@ -65,6 +72,7 @@ done
 [ -n "$EVID" ] || usage
 case "$STEPS$DWELL$WARMUP$INTERVAL" in ''|*[!0-9]*) usage ;; esac
 case "$STEP$PSI_HOLD$GROW_TRIES" in ''|*[!0-9]*) usage ;; esac
+case "$SYSTEMCTL_TIMEOUT" in ''|0*|*[!0-9]*) usage ;; esac
 case "$CONTROL" in auto|on|off) ;; *) usage ;; esac
 role=$(sed -n 's/^HOST_ROLE=//p' "$HOSTENV" 2>/dev/null | tail -n 1 | tr -d "\"' ")
 if [ "$role" != dedicated-dev ]; then echo "accept-run: HOST_ROLE=${role:-<unset>} in $HOSTENV, not dedicated-dev; refusing" >&2; exit 3; fi
@@ -111,7 +119,8 @@ TIER_MIN_START=$(rdnum "$CG/dev.slice/$PARENT/memory.min")
 # ABOVE it is a leftover raise (the kit only ever raises), never a value to record as the start.
 for pair in dev.slice:$DEV_MIN_START "$PARENT:$TIER_MIN_START"; do
   s=${pair%%:*}; have=${pair#*:}
-  sd=$(systemctl show -p MemoryMin --value "$s" 2>/dev/null); sd=$(parse_size "${sd:-}" 2>/dev/null) || sd=""
+  systemctl_read show -p MemoryMin --value "$s"
+  sd=$(parse_size "${SYSTEMCTL_OUT:-}" 2>/dev/null) || sd=""
   [ -n "$sd" ] || { echo "accept-run: cannot read $s's MemoryMin via systemctl; a leftover min would become this run's original; refusing" >&2; exit 3; }
   if [ "$have" -gt "$sd" ]; then
     echo "accept-run: $s/memory.min $have is above systemd's MemoryMin $sd: a leftover raise of an interrupted run (the kit only raises). Restore it first (tools/accept/accept-restore.sh --evidence <its EV>), then re-run; refusing, nothing done" >&2
@@ -156,7 +165,8 @@ fi
 # must NOT be added again (that double-counts ~420M on r1002 and stops the ladder two steps in, 2.1).
 F_SYSTEM=""; F_CGP=""; F_USER=""
 for s in system.slice cgprofile.slice user.slice; do
-  v=$(systemctl show -p MemoryMin --value "$s" 2>/dev/null); v=$(parse_size "${v:-}" 2>/dev/null) || v=""
+  systemctl_read show -p MemoryMin --value "$s"
+  v=$(parse_size "${SYSTEMCTL_OUT:-}" 2>/dev/null) || v=""
   case $s in system.slice) F_SYSTEM=$v ;; cgprofile.slice) F_CGP=$v ;; user.slice) F_USER=$v ;; esac
 done
 if [ -z "$F_SYSTEM" ] || [ -z "$F_CGP" ] || [ -z "$F_USER" ]; then
@@ -167,12 +177,14 @@ F_INSTALLED=$((F_SYSTEM + F_CGP + F_USER))
 BOOT_ID=$(tr -d '[:space:]' < "$BOOTID_FILE" 2>/dev/null) || BOOT_ID=""
 [ -n "$BOOT_ID" ] || { echo "accept-run: cannot read $BOOTID_FILE; refusing (the restore's reboot rule needs it)" >&2; exit 3; }
 # the LITERAL kernel path, never $BOOTID_FILE: a test override must not be able to change the remote command
-ssh_boot=$(timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '[:space:]') || ssh_boot=""
+ssh_boot=$(timeout -k 5 20 ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '[:space:]') || ssh_boot=""
 if [ "$ssh_boot" != "$BOOT_ID" ]; then
   echo "accept-run: MDT_ACCEPT_SSH_TARGET=$SSH_TARGET reports boot_id '${ssh_boot:-<none>}' but this host is '$BOOT_ID': a remote target would time another machine's sshd (3.2); refusing" >&2
   exit 3
 fi
-rootdir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null); avail=$(df -Pk "${rootdir:-/}" 2>/dev/null | awk 'NR==2{print $4}')
+rootdir=$(timeout -k 5 10 docker info -f '{{.DockerRootDir}}' 2>/dev/null) || rootdir=""
+[ -n "$rootdir" ] || { echo "accept-run: could not read Docker's data root within 10s; refusing rather than checking an invented filesystem" >&2; exit 3; }
+avail=$(df -Pk "$rootdir" 2>/dev/null | awk 'NR==2{print $4}')
 [ "${avail:-0}" -ge "${MDT_ACCEPT_MIN_DISK:-4194304}" ] || { echo "accept-run: less than 4G free in the Docker data root; refusing" >&2; exit 3; }
 # M3: the write-ahead log lives on the EVIDENCE filesystem, which may NOT be the Docker data root (/root vs /var/lib).
 # A full evidence disk would let every cgroup write go ahead unrecorded, and the restore would then find a value it
@@ -248,7 +260,8 @@ finish() {
     echo "restore=ok" >>"$MAN"
   fi
   if command -v journalctl >/dev/null 2>&1; then
-    journalctl -k --since "$START_UTC UTC" --no-pager 2>/dev/null | grep -iE 'out of memory|oom-kill' >"$EVID/kernel-oom.txt"
+    timeout -k 5 10 journalctl -k --since "$START_UTC UTC" --no-pager 2>/dev/null \
+      | grep -iE 'out of memory|oom-kill' >"$EVID/kernel-oom.txt" || true
     echo "kernel_oom_lines=$(wc -l <"$EVID/kernel-oom.txt" 2>/dev/null)" >>"$MAN"
   fi
   # 4.1: damon_measure is ok only when no unit's floor was refused; accept-hotset records one
@@ -344,7 +357,7 @@ timeout -k 5 "$RM_TIMEOUT" docker rm -f "$DUMMY" >/dev/null 2>&1 || rc_rm=$?
 [ "$rc_rm" = 0 ] || note "the stale-container docker rm -f $DUMMY did not complete (rc $rc_rm, ${RM_TIMEOUT}s bound); the dummy start below decides"
 unset rc_rm
 # shellcheck disable=SC2086 # DUMMY_PY is one -c argument; the reads below are the argv
-id=$(docker run -d --rm --name "$DUMMY" --label mdt.accept=1 --network none --cpus 1 \
+id=$(timeout -k 5 120 docker run -d --rm --name "$DUMMY" --label mdt.accept=1 --network none --cpus 1 \
       --cgroup-parent "$PARENT" --memory "$DEEPEST" --memory-swap "$((DEEPEST + 16 * GIB))" --oom-score-adj 1000 \
       -e MDT_DUMMY_CGROUP="$CG/dev.slice/$PARENT" "$IMAGE" python3 -c "$DUMMY_PY" "$dummy_deadline" "$A0" "$STEP" "$STEPS" "$PAGESIZE") \
   || { say "the dummy did not start (the image $IMAGE needs python3)"; exit 3; }
@@ -372,7 +385,13 @@ ucols() {
     END{printf "%s,%d,%d,%d", c, a+f, x, y}' "$p/memory.stat"
 }
 tier_path() { case $1 in dev) echo dev.slice ;; gates) echo "dev.slice/$PARENT" ;; bg) echo "dev.slice/dev-background.slice" ;; esac; }
-containerd_restarts() { local v; v=$(systemctl show -p NRestarts --value containerd.service 2>/dev/null); case $v in ''|*[!0-9]*) echo "" ;; *) echo "$v" ;; esac; }
+containerd_restarts() {
+  systemctl_read show -p NRestarts --value containerd.service
+  case ${SYSTEMCTL_RC}:${SYSTEMCTL_OUT:-} in
+    0:*[!0-9]*|0:) : ;;   # empty or malformed is missing, never a zero restart count
+    0:*) printf '%s' "$SYSTEMCTL_OUT" ;;
+  esac
+}
 sum_root_min() {
   local d v s=0
   for d in "$CG"/*/; do v=$(rdnum "${d}memory.min"); [ -n "$v" ] && s=$((s + v)); done
@@ -511,7 +530,7 @@ probe_record() { # <step> <name> <kind> <rc> <seconds> <detail>
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ),$1,$2,$3,$4,$5,$detail" >>"$PROBES"
 }
 probe_run() { # <step> <name>
-  local s=$1 n=$2 cmd lim
+  local s=$1 n=$2 cmd lim exec_rc nrestarts nrestarts_rc
   cmd=$(probe_var "$n" PROBE_CMD)
   if [ -n "$cmd" ]; then # the seam: per-probe argv/timeout; an overrunning probe is killed and recorded, never a hang
     lim=$(probe_timeout "$n"); timed "$lim" sh -c "$cmd"
@@ -552,7 +571,14 @@ probe_run() { # <step> <name>
       probe_record "$s" dockerd liveness "$T_RC" "$T_SECONDS" "version=$T_OUT" ;;
     containerd)
       timed "$(probe_timeout containerd)" docker exec "$DUMMY" true
-      probe_record "$s" containerd liveness "$T_RC" "$T_SECONDS" "exec=$([ "$T_RC" = 0 ] && echo true || echo fail) nrestarts=$(containerd_restarts)" ;;
+      exec_rc=$T_RC
+      systemctl_read show -p NRestarts --value containerd.service
+      nrestarts=""; nrestarts_rc=$SYSTEMCTL_RC
+      if [ "$SYSTEMCTL_RC" = 0 ]; then
+        case ${SYSTEMCTL_OUT:-} in ''|*[!0-9]*) nrestarts_rc=missing ;; *) nrestarts=$SYSTEMCTL_OUT ;; esac
+      fi
+      probe_record "$s" containerd liveness "$exec_rc" "$T_SECONDS" \
+        "exec=$([ "$exec_rc" = 0 ] && echo true || echo fail) nrestarts=$nrestarts nrestarts_rc=$nrestarts_rc" ;;
     cgprofiled)
       if command -v cgprofilectl >/dev/null 2>&1; then
         timed "$(probe_timeout cgprofiled)" cgprofilectl --json status
@@ -563,13 +589,13 @@ probe_run() { # <step> <name>
         fi
       else # the CLI's absence is a NOTE, never a refusal (4.4); recorded degraded, the verdict ignores it
         timed 5 systemctl is-active cgprofiled.service
-        probe_record "$s" cgprofiled liveness 0 "$T_SECONDS" "state=degraded active=$T_OUT socket=$([ -S /run/cgprofile/control.sock ] && echo yes || echo no)"
+        probe_record "$s" cgprofiled liveness "$T_RC" "$T_SECONDS" "state=degraded active=$T_OUT systemctl_rc=$T_RC socket=$([ -S /run/cgprofile/control.sock ] && echo yes || echo no)"
       fi ;;
     psi_guard) # 3.3: active AND its utime+stime advanced since the previous sample (user ticks, never a stopwatch)
-      local pid cur prev ticks=-1 act prc=0 t0 t1 us
+      local pid cur prev ticks=-1 act prc=0 t0 t1 us arc pidrc
       t0=$(date +%s%N)
-      act=$(systemctl is-active mdt-psi-guard.service 2>/dev/null)
-      pid=$(systemctl show -p MainPID --value mdt-psi-guard.service 2>/dev/null)
+      systemctl_read is-active mdt-psi-guard.service; act=$SYSTEMCTL_OUT; arc=$SYSTEMCTL_RC
+      systemctl_read show -p MainPID --value mdt-psi-guard.service; pid=$SYSTEMCTL_OUT; pidrc=$SYSTEMCTL_RC
       case ${pid:-} in ''|0|*[!0-9]*) cur="" ;; *) cur=$(awk '{print $14+$15}' "$PROC/$pid/stat" 2>/dev/null) ;; esac
       prev=$(cat "$EVID/probes-state/psi_guard.ticks" 2>/dev/null) || prev=""
       case ${cur:-} in
@@ -577,9 +603,10 @@ probe_run() { # <step> <name>
         *) echo "$cur" >"$EVID/probes-state/psi_guard.ticks"
            [ -n "${prev:-}" ] && ticks=$((cur - prev)) ;;  # the first sample has no previous one: unknown, not a pass
       esac
-      [ "$act" = active ] || prc=1
-      [ "${ticks:--1}" -lt 1 ] && [ "${ticks:--1}" != -1 ] && prc=1   # a loop that burns no CPU does not run
-      [ "${ticks:--1}" = -1 ] && prc=unmeasurable                     # no pid: missing data, never a pass (L-i)
+      if [ "$arc" = timeout ] || [ "$pidrc" = timeout ]; then prc=timeout; fi
+      [ "$act" = active ] || { [ "$prc" = timeout ] || prc=1; }
+      if [ "${ticks:--1}" -lt 1 ] && [ "${ticks:--1}" != -1 ] && [ "$prc" != timeout ]; then prc=1; fi
+      if [ "${ticks:--1}" = -1 ] && [ "$prc" != timeout ]; then prc=unmeasurable; fi  # missing data, never a pass (L-i)
       # H2: the probe's OWN duration. `SECONDS - T0` was the RUN's elapsed time, which grows by one dwell per step,
       # so the judge's step-0 latency baseline would FAIL a healthy daemon at step 3-4. The judge now exempts
       # psi_guard from the latency rule (its pass rule is "active + ticks advance", 3.3); the column still has to
@@ -587,13 +614,17 @@ probe_run() { # <step> <name>
       t1=$(date +%s%N); us=$(( (t1 - t0) / 1000 )); [ "$us" -lt 0 ] && us=0
       probe_record "$s" psi_guard liveness "$prc" "$(seconds_of_us "$us")" "active=$act ticks=$ticks" ;;
     extra)
-      local u st main ls
+      local u st main ls st_rc main_rc ls_rc row_rc
       for u in $EXTRA_UNITS; do
-        st=$(systemctl is-active "$u" 2>/dev/null); main=$(systemctl show -p MainPID --value "$u" 2>/dev/null)
-        ls=$(systemctl show -p LoadState --value "$u" 2>/dev/null)
-        case ${main:-} in ''|0|*[!0-9]*) main=gone ;; *) main=alive ;; esac
-        [ "$ls" = loaded ] || ls=not-installed
-        probe_record "$s" "extra:$u" liveness 0 "$((SECONDS - T0))" "active=$st main=$main loadstate=$ls"
+        systemctl_read is-active "$u"; st=$SYSTEMCTL_OUT; st_rc=$SYSTEMCTL_RC
+        systemctl_read show -p MainPID --value "$u"; main=$SYSTEMCTL_OUT; main_rc=$SYSTEMCTL_RC
+        systemctl_read show -p LoadState --value "$u"; ls=$SYSTEMCTL_OUT; ls_rc=$SYSTEMCTL_RC
+        case $main_rc in timeout) main=timeout ;; *) case ${main:-} in ''|0|*[!0-9]*) main=gone ;; *) main=alive ;; esac ;; esac
+        case $ls_rc in timeout) ls=timeout ;; 0) [ "$ls" = loaded ] || ls=not-installed ;; *) ls=missing ;; esac
+        row_rc=0
+        if [ "$st_rc" = timeout ] || [ "$main_rc" = timeout ] || [ "$ls_rc" = timeout ]; then row_rc=timeout; fi
+        probe_record "$s" "extra:$u" liveness "$row_rc" "$((SECONDS - T0))" \
+          "active=$st active_rc=$st_rc main=$main mainpid_rc=$main_rc loadstate=$ls loadstate_rc=$ls_rc"
       done ;;
     *) probe_record "$s" "$n" liveness 0 0 "unknown-probe" ;;
   esac
@@ -659,7 +690,7 @@ step_write() { # <step>: the per-step sequence of 2.3; the dummy never grows bef
     { abort FAIL "write:dev.slice/$PARENT/memory.max"; return 1; }
   TIER_WRITTEN=$target
   anon=$(scope_stat "$SCOPE" anon); anon=${anon:-0}   # the baseline BEFORE the signal: after it, the grown value
-  docker kill -s USR1 "$DUMMY" >/dev/null 2>&1 || { abort INCONCLUSIVE no_dummy; return 1; }
+  timeout -k 5 10 docker kill -s USR1 "$DUMMY" >/dev/null 2>&1 || { abort INCONCLUSIVE no_dummy; return 1; }
   while :; do # the dummy grew by >= STEP - 16M for <= 60 s, else the step is INCONCLUSIVE grow
     tries=$((tries + 1))
     got=$(scope_stat "$SCOPE" anon); got=${got:-0}
@@ -740,7 +771,9 @@ else
 fi
 # 3.3's psi-guard probe compares two samples: seed the first from the daemon's own counter, so the first JUDGED
 # sample already has a previous one (an unseeded first sample would read as "no CPU used").
-pg_pid=$(systemctl show -p MainPID --value mdt-psi-guard.service 2>/dev/null)
+systemctl_read show -p MainPID --value mdt-psi-guard.service
+pg_pid=$SYSTEMCTL_OUT
+[ "$SYSTEMCTL_RC" != timeout ] || note "psi_guard initial MainPID read timed out (systemctl rc=timeout); its first probe may be unmeasurable"
 case ${pg_pid:-} in ''|0|*[!0-9]*) ;; *) awk '{print $14+$15}' "$PROC/$pg_pid/stat" 2>/dev/null >"$EVID/probes-state/psi_guard.ticks" ;; esac
 SETTLE_TICKS=${MDT_ACCEPT_SETTLE_TICKS:-$(( DWELL_TICKS * SETTLE / DWELL ))}
 # 4.2: one sample per aggregation interval (8 s), never per tick: a 5 s tick would read one apply twice and skip the

@@ -137,6 +137,22 @@ class EvalTests(unittest.TestCase):
         self.assertIn("verdict=FAIL", body)
         self.assertIn("containerd restarted", body)
 
+    def test_missing_containerd_restart_count_is_inconclusive_for_baseline_or_current(self) -> None:
+        for missing_step in (0, 1):
+            with self.subTest(missing_step=missing_step):
+                d = F.write_run(self.tmp / f"restart-missing-{missing_step}")
+                lines = (d / "probes.csv").read_text().splitlines()
+                for i, line in enumerate(lines):
+                    fields = line.split(",")
+                    if fields[1] == str(missing_step) and fields[2] == "containerd":
+                        fields[6] = "nrestarts= nrestarts_rc=timeout"
+                        lines[i] = ",".join(fields)
+                (d / "probes.csv").write_text("\n".join(lines) + "\n")
+                body = live(d, 1)
+                self.assertIn("verdict=INCONCLUSIVE", body)
+                self.assertIn("missing data: containerd", body)
+                self.assertNotIn("probes PASS", body)
+
     def test_psi_guard_and_cgprofiled_growing_seconds_still_pass(self) -> None:
         # H2: psi_guard's recorded seconds are the probe's OWN duration (formerly the RUN's elapsed time, which grew
         # by a dwell per step), and its pass rule is "active + ticks advance" (3.3), never latency; the degraded
@@ -919,6 +935,43 @@ class ShellKitTests(F.ShellKitBase):
         self.assertLessEqual(max(step1), 1.0, f"psi_guard must record its own duration, not the run's: {step1}")
         self.assertGreaterEqual(max(step1), 0.15, "the slow read is visible: the column measures something")
         self.assertIn("ticks=", rows[0][6], "the real branch's tick advance is recorded")
+
+    def test_a_blocked_psi_guard_systemctl_call_is_bounded_and_records_timeout(self) -> None:
+        # L2: a fake systemctl blocks only this call. The reader's timeout records its 124 status as `timeout`;
+        # the assertion is the recorded result, never a wall-clock duration.
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2",
+                         MDT_ACCEPT_PROBE_CMD_PSI_GUARD=None, MDT_ACCEPT_SYSTEMCTL_TIMEOUT="1",
+                         FAKE_SYSTEMCTL_BLOCK_MATCH="is-active mdt-psi-guard.service",
+                         FAKE_SYSTEMCTL_BLOCK_ONCE=str(self.tmp / "systemctl-blocked"),
+                         FAKE_SYSTEMCTL_BLOCK_SLEEP="5", **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = [ln.split(",") for ln in (self.ev / "probes.csv").read_text().splitlines()
+                if ln.split(",")[2:3] == ["psi_guard"]]
+        self.assertTrue(rows, r.stdout + r.stderr)
+        self.assertEqual(rows[0][4], "timeout", rows[0])
+        self.assertIn("systemctl is-active mdt-psi-guard.service", self.calls())
+
+    def test_a_missing_containerd_restart_count_stays_blank_and_blocks_probe_pass(self) -> None:
+        # L2: both the sample and the liveness observation time out. A blank count and `nrestarts_rc=timeout` remain
+        # missing data; they cannot be normalized to zero or let the liveness criterion PASS.
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2",
+                         MDT_ACCEPT_PROBE_CMD_CONTAINERD=None, MDT_ACCEPT_SYSTEMCTL_TIMEOUT="1",
+                         FAKE_SYSTEMCTL_BLOCK_MATCH="show -p NRestarts --value containerd.service",
+                         FAKE_SYSTEMCTL_BLOCK="1", FAKE_SYSTEMCTL_BLOCK_SLEEP="5",
+                         **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with (self.ev / "samples.csv").open() as fh:
+            samples = list(csv.DictReader(fh))
+        self.assertTrue(samples)
+        self.assertTrue(all(row["containerd_restarts"] == "" for row in samples), samples)
+        rows = [ln.split(",") for ln in (self.ev / "probes.csv").read_text().splitlines()
+                if ln.split(",")[1:3] == ["0", "containerd"]]
+        self.assertTrue(rows, r.stdout + r.stderr)
+        self.assertEqual(rows[0][4], "0", rows[0])  # docker exec succeeded; NRestarts remains independently missing
+        self.assertIn("nrestarts= nrestarts_rc=timeout", rows[0][6])
+        body = live(self.ev, 0)
+        self.assertIn("probes INCONCLUSIVE", body)
+        self.assertIn("missing data: containerd", body)
 
     def test_the_ssh_probe_keeps_is_active_and_the_banner_as_two_rcs(self) -> None:
         # L1: `systemctl is-active` and the banner read are two commands with two rcs; the banner call used to
