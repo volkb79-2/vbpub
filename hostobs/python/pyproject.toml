@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hostobs-client"
 description = "Standard-library Python client for the hostobs protocol"
-# The stdlib-only packaging contract uses tomllib, which is available from Python 3.11.
+# Python 3.11 is the lowest supported and test-capable version for this stdlib-only client.
 requires-python = ">=3.11"
 dynamic = ["version"]
 dependencies = []

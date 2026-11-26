@@ -40,7 +40,8 @@ artifacts = ["lcov.info", "cov-summary.json"]
 # The Python conformance lane (plan v4 §B.5, HOB-4): the independent reference decoders, the
 # fixture regeneration checks, the `hostobs_client` tests, its zipapp packaging test and the
 # real activated-probe socket test, standard library only, no network. Packaging builds a
-# zipapp in `python/tests/test_packaging.py`; the wheel is built only by A1's CMRU handler. The
+# zipapp in `python/tests/test_packaging.py`; `hostobs/cmru.toml` is not present yet, and a
+# CMRU wheel-build contract is planned for package A1. The
 # lane builds the probe offline and exports its executable path; missing lane wiring makes the
 # real-socket test fail rather than skip. It runs on `tester-unified-rust` because that is
 # the image every hostobs lane uses;

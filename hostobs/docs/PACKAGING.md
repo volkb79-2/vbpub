@@ -16,14 +16,13 @@ exit behavior. The test also pins the build backend, build requirements,
 image `tester-unified-rust` has no pip or ensurepip (HOB-44), so the lane does
 not build or install a wheel.
 
-The distributable wheel is built by `cmru handler wheel-build` from
-`hostobs/python/` as part of the A1 release build. That handler uses its
-wheel-builder image and the build requirements in `python/pyproject.toml`. The
-conformance zipapp is lane evidence; it is not the release wheel. Only the A1
-wheel build can prove the contents and metadata of the actual wheel artifact.
+The conformance zipapp is lane evidence; it is not a release wheel. No release
+process builds this wheel yet: `hostobs/cmru.toml` is not present yet. A CMRU
+wheel-build contract is planned for package A1. Only a future A1 wheel build can
+prove the contents and metadata of the actual wheel artifact.
 
-The version has one source: `setuptools-scm` reads the matching `hostobs-v*`
-Git tag. A1's CMRU release contract uses the same SCM strategy and tag prefix;
-on the tagged release commit CMRU supplies that derived version to the wheel
-build. There is no literal or fallback version in this project, and A2 assigns
-no release version or tag. No release exists yet.
+`pyproject.toml` declares the version as dynamic and configures
+`setuptools-scm` to recognize matching `hostobs-v*` Git tags. No current release
+process invokes this configuration to build a wheel, and there is no literal or
+fallback version. The future A1 contract still needs to define the wheel build
+and version handoff. No release exists yet.

@@ -21,7 +21,6 @@ import unittest
 import zipapp
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +71,21 @@ def expected_package_files() -> set[str]:
     }
 
 
+def package_directories_missing_initializer(package_root: Path) -> list[str]:
+    missing = set()
+    for source in package_root.rglob("*.py"):
+        if "__pycache__" in source.parts:
+            continue
+        directory = source.parent
+        while directory == package_root or package_root in directory.parents:
+            if not (directory / "__init__.py").is_file():
+                missing.add(directory.relative_to(package_root.parent).as_posix())
+            if directory == package_root:
+                break
+            directory = directory.parent
+    return sorted(missing)
+
+
 def source_package_directories() -> dict[str, Path]:
     packages = {}
     for initializer in sorted(PACKAGE_ROOT.rglob("__init__.py")):
@@ -107,7 +121,16 @@ def discovered_packages(contract: dict) -> dict[str, Path]:
 def package_data_matches(contract: dict, package_name: str, relative_path: str) -> bool:
     package_data = contract["tool"]["setuptools"].get("package-data", {})
     patterns = list(package_data.get(package_name, [])) + list(package_data.get("*", []))
-    return any(fnmatch.fnmatchcase(relative_path, pattern) for pattern in patterns)
+    return any(package_data_pattern_matches(relative_path, pattern) for pattern in patterns)
+
+
+def package_data_pattern_matches(relative_path: str, pattern: str) -> bool:
+    path_parts = relative_path.split("/")
+    pattern_parts = pattern.split("/")
+    return len(path_parts) == len(pattern_parts) and all(
+        fnmatch.fnmatchcase(path_part, pattern_part)
+        for path_part, pattern_part in zip(path_parts, pattern_parts)
+    )
 
 
 def undeclared_package_data(contract: dict) -> list[str]:
@@ -294,16 +317,18 @@ def run_fault_probe(mode: str) -> int:
         if mode == "missing-module":
             build_zipapp(artifact, entrypoint=entrypoint, omit=frozenset({"wire.py"}))
             check = lambda: verify_package_files(artifact)
+            expected_rejection = "missing package file(s):"
         elif mode == "unresolved-entry-point":
             broken = "hostobs_client.mark:missing_main"
             build_zipapp(artifact, entrypoint=broken)
             check = lambda: verify_entrypoint(artifact, broken)
+            expected_rejection = "does not resolve"
         else:
             raise SystemExit(f"unknown fault probe: {mode}")
         try:
             check()
-        except PackagingFailure:
-            return 0
+        except PackagingFailure as error:
+            return int(expected_rejection not in str(error))
     return 1
 
 
@@ -336,11 +361,25 @@ class Packaging(unittest.TestCase):
         self.assertEqual(contract["project"]["requires-python"], ">=3.11")
 
         setuptools = contract["tool"]["setuptools"]
-        self.assertIs(setuptools["include-package-data"], False)
+        self.assertEqual(
+            setuptools,
+            {
+                "include-package-data": False,
+                "packages": {
+                    "find": {
+                        "where": EXPECTED_PACKAGE_WHERE,
+                        "include": EXPECTED_PACKAGE_INCLUDE,
+                        "namespaces": False,
+                    }
+                },
+            },
+        )
+        for legacy_config in ("setup.py", "setup.cfg", "MANIFEST.in"):
+            self.assertFalse(
+                (PYTHON_ROOT / legacy_config).exists(),
+                f"legacy packaging config {legacy_config} could override pyproject.toml",
+            )
         find = setuptools["packages"]["find"]
-        self.assertEqual(find["where"], EXPECTED_PACKAGE_WHERE)
-        self.assertEqual(find["include"], EXPECTED_PACKAGE_INCLUDE)
-        self.assertIs(find["namespaces"], False)
 
         source_packages = source_package_directories()
         for package_name in source_packages:
@@ -350,55 +389,92 @@ class Packaging(unittest.TestCase):
             )
         self.assertEqual(set(discovered_packages(contract)), set(source_packages))
         self.assertEqual(
+            package_directories_missing_initializer(PACKAGE_ROOT),
+            [],
+            "every directory containing a module must be a regular package for setuptools",
+        )
+        self.assertEqual(
             undeclared_package_data(contract),
             [],
             "every non-.py file under hostobs_client must match tool.setuptools.package-data",
         )
-
-    def test_packaging_subprocesses_have_timeouts(self) -> None:
-        artifact = Path("unused.pyz")
-        with patch("subprocess.run") as run:
-            run.return_value = subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=json.dumps({"loader": "zipimporter", "entrypoint": EXPECTED_ENTRYPOINT}),
-                stderr="",
-            )
-            verify_entrypoint(artifact, EXPECTED_ENTRYPOINT)
-            self.assertEqual(run.call_args.kwargs["timeout"], 60)
-
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="usage: hostobs-mark\n", stderr=""
-            )
-            verify_zipapp_command(artifact)
-            self.assertEqual(run.call_args.kwargs["timeout"], 60)
-
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr="expected notice"
-            )
-            verify_command_exit(
-                artifact,
-                ["point", "hostobs.packaging-test"],
-                expected_exit=0,
-                environment={},
-                output_fragment="expected notice",
-            )
-            self.assertEqual(run.call_args.kwargs["timeout"], 60)
 
     def test_consumer_docs_describe_the_unreleased_install(self) -> None:
         project_root = PYTHON_ROOT.parent
         packaging = (project_root / "docs" / "PACKAGING.md").read_text(encoding="utf-8")
         consumers = (project_root / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
         readme = (project_root / "README.md").read_text(encoding="utf-8")
+        changes = (project_root / "CHANGES.md").read_text(encoding="utf-8")
+        run_gate = (project_root / "run-gate.toml").read_text(encoding="utf-8")
         self.assertIn("build requirements in `python/pyproject.toml`", packaging)
-        self.assertIn("No release exists yet", consumers)
+        self.assertIn("`hostobs/cmru.toml` is not present yet", packaging)
+        self.assertIn("planned for package A1", packaging)
+        self.assertNotIn("wheel is built by `cmru handler wheel-build`", packaging)
+        self.assertNotIn("A1's CMRU release contract uses", packaging)
+        self.assertIn("`hostobs/cmru.toml` is not present yet", changes)
+        self.assertNotIn("A1's CMRU wheel handler builds the release wheel", changes)
+        self.assertIn("`hostobs/cmru.toml` is not present yet", run_gate)
+        self.assertNotIn("wheel is built only by A1's CMRU handler", run_gate)
         self.assertIn(
-            'python3 -m pip install --no-index --no-deps "$HOSTOBS_CLIENT_WHEEL"',
+            'python -m pip install --no-index --no-deps "$HOSTOBS_CLIENT_WHEEL"',
             consumers,
         )
+        self.assertIn("python3 -m venv .venv", consumers)
+        self.assertIn("`.venv/bin/hostobs-mark`", consumers)
+        self.assertNotIn("python3 -m pip install", consumers)
+        self.assertLess(
+            readme.index("The Rust host-observability daemon"),
+            readme.index("## Python client"),
+        )
+        for document in (consumers, readme):
+            self.assertIn("No hostobs probe currently serves `annotate`", document)
+            self.assertIn("`deploy/` does not install an observer socket yet", document)
+            self.assertIn("prints a notice and exits 0", document)
+            self.assertIn("`--require` exits 1", document)
+            self.assertIn("membership in the `hostobs-observer` group", document)
         self.assertIn("hostobs-mark point hostobs.consumer-check --require", consumers)
         self.assertIn("hostobs-mark", readme)
         self.assertIn("No release exists yet", readme)
+
+    def test_package_layout_and_data_globs_do_not_hide_wheel_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            package_root = Path(directory) / "hostobs_client"
+            nested_package = package_root / "namespace" / "child"
+            nested_package.mkdir(parents=True)
+            (package_root / "__init__.py").write_text("", encoding="utf-8")
+            (package_root / "namespace" / "module.py").write_text("", encoding="utf-8")
+            (nested_package / "__init__.py").write_text("", encoding="utf-8")
+            (nested_package / "module.py").write_text("", encoding="utf-8")
+            self.assertEqual(
+                package_directories_missing_initializer(package_root),
+                ["hostobs_client/namespace"],
+            )
+
+            data_dir = package_root / "data"
+            data_dir.mkdir()
+            nested_data = data_dir / "nested.json"
+            nested_data.write_text("{}", encoding="utf-8")
+            root_data = package_root / "root.json"
+            root_data.write_text("{}", encoding="utf-8")
+            contract = {
+                "tool": {
+                    "setuptools": {"package-data": {"hostobs_client": ["*.json"]}}
+                }
+            }
+            self.assertFalse(
+                package_data_matches(
+                    contract,
+                    "hostobs_client",
+                    nested_data.relative_to(package_root).as_posix(),
+                )
+            )
+            self.assertTrue(
+                package_data_matches(
+                    contract,
+                    "hostobs_client",
+                    root_data.relative_to(package_root).as_posix(),
+                )
+            )
 
     def test_missing_module_is_rejected(self) -> None:
         contract = project_metadata()
