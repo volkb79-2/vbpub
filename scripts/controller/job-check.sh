@@ -95,6 +95,24 @@ if [[ -e $done_file ]]; then
   done_status=$(head -n 1 "$done_file")
   printf 'done: %s\n' "$done_status"
   if [[ ! $done_status =~ ^EXIT=0([[:space:]]|$) ]]; then echo "CHILD EXIT IS NOT ZERO: $done_status"; red=1; fi
+  # pi-review.sh appends REVIEW-MODIFIED-TREE AFTER pi-impl.sh's own marker, and
+  # that marker can read `EXIT=0 OUTCOME=SUCCESS` (a reviewer commit leaves a
+  # clean tree and a present report). The flag is the run's verdict, so it is
+  # read from the whole marker: line 1 alone is a false certificate.
+  # The review launcher appends its own verdict line beside pi-impl.sh's marker:
+  # REVIEW-MODIFIED-TREE (the tree moved), REVIEW-BUDGET (stopped over budget),
+  # REVIEW-NO-REPORT (settled without any review text), REVIEW-NOT-SETTLED
+  # (settled in a class that is not SUCCESS/UNCOMMITTED). Each of those can stand
+  # beside `EXIT=0`, so every one of them makes the run red. The rule matches
+  # ctl-status.sh and job-status.sh: a verdict is any line that contains it.
+  review_verdict=''
+  for verdict in REVIEW-MODIFIED-TREE REVIEW-BUDGET REVIEW-NO-REPORT REVIEW-NOT-SETTLED; do
+    grep -qF -- "$verdict" "$done_file" && review_verdict=$verdict
+  done
+  if [[ -n $review_verdict ]]; then
+    echo "$review_verdict: the review did not complete cleanly (see $done_file)"
+    red=1
+  fi
 else
   # No completion marker. The word RUNNING asserts that a process exists, so it
   # is read from the run name's own owner record (the same `<name>.lock` every

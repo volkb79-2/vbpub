@@ -1209,8 +1209,15 @@ the same base; its progress and evidence are in
 When T3 invokes the lane through `remote-gate`, Run-Gate receives the base's
 full commit ID; the lane accepts it only if a bundled published tag points to
 that exact commit.
-Run it at a non-merge commit such as the release-tag commit. On a merge HEAD
-whose first parent has CMRU source changes after the base, the lane refuses.
+Run it at any commit, including a merge HEAD: both R2 tools pass
+`delegated=True` to Assay's `git.resolve_base`. The baseline checker also
+passes it to `git.base_resolution_mode` to report the mode; the mutation
+campaign does not call that helper. This is a call-site keyword, not a lane
+setting. The delegated resolution gives
+`merge-base(selected tag, HEAD)` — the tag itself, since the tag is proven to
+be in HEAD's ancestry — so a merge is judged against the selected release tag
+like any other HEAD. The lane refuses if the effective base is not the selected
+base tag.
 Local tags alone do not prove publication, so do not run this outside the T3
 controller-managed checkout while [KI-151](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published)
 remains open. The existing aggregate `gate` retains its own R2 lane until the

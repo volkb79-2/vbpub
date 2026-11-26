@@ -9,6 +9,17 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Changed
+- run-gate: ephemeral gate lane containers use `--oom-score-adj 500` so host
+  OOM selection favors disposable gate work over the interactive controller
+  (RG-321, rev 76).
+- run-gate: unreadable Assay inventory refusals for forwarded flags give the
+  RG-318 reason and remedy before selective-R2 refusals (RG-322, rev 76).
+
+### Documentation
+- docs(run-gate): correct the RG-318 refusal quote and file RG-323–RG-325
+  follow-ups for effective CPU-time support.
+
 <!-- cmru: release history -->
 
 ## [25.9.0] - 2026-11-24

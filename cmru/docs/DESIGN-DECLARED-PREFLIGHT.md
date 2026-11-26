@@ -66,8 +66,10 @@ Related: KI-182 (DinD row), KI-191 (tester-gate), KI-194/P-core-12, KI-141 part 
     `RuntimeError` subclass. Docker availability is the exit status of `docker version`.
 15. **`_current_run_gate_identity` keeps its name and signature.** Installed engines older than
     this release still exec the script and call it, and the gate still uses it.
-16. **The `docs/BOOTSTRAP-FROM-ZERO.md` literal check moves to a `libraries/test-policy` estate
-    lane, not to a cmru docs test.** That root document covers the whole estate (L0-L4), so cmru
+16. **The `docs/BOOTSTRAP-FROM-ZERO.md` literal check moves to the `estate-lint` project
+    (`estate-lint/suite`), not to a cmru docs test.** (P-core-12 amendment: the layout is
+    `estate-lint/`, see KI-194; the `libraries/test-policy` estate lane named in the original
+    decision was rejected.) That root document covers the whole estate (L0-L4), so cmru
     owns none of it (KI-194). The check is pure text, and the move ends the "engine-too-old"
     false FAIL.
 17. **`gate_snapshot` gets its closeout lanes from the installed run-gate CLI: the `assay_lane`
@@ -257,7 +259,7 @@ Before merge, the main controller runs one real `cmru release cmru --dry-run` an
 
 ## Migration order (no release runs without the checks)
 
-- **M0 (P-core-12).** The test-policy estate lane holds the bootstrap literal check and is green.
+- **M0 (P-core-12).** The `estate-lint` project (`estate-lint/suite`) holds the bootstrap literal check and is green.
   The engine still runs its own copy.
 - **M1 (this branch, one merge; origin/main sees only the merge commit).** Commits: (1)
   `--preflight --json` and its tests; (2) the generic runner, grammar and keyed rows, old path
@@ -293,7 +295,7 @@ edits, a template revision bump, scaffold examples.
      stream (T2); see fix-forward item F1.
 2. **The main controller:**
    - sequences P-core-13 after P-core-06 and after M0;
-   - adds the test-policy estate lane to the gate set of any merge that touches root `docs/`,
+   - adds `estate-lint/suite` to the gate set of any merge that touches root `docs/`,
      because "gate every project dir a merge touches" does not reach root docs;
    - runs the two real dry-runs.
 3. **The operator** confirms `python3 -I -B` over the plan's `python` (D9).
@@ -326,8 +328,8 @@ changes a decision.
 - F5 (D10). Remove every `_RESERVED_CMRU_INTERNAL_ENV` name (for example
   `CMRU_INTERNAL_RELEASE_PREFLIGHT_FD`, `config.py:1062`) except `CMRU_INTERNAL_PYTHON`, and
   add `CMRU_PREFLIGHT_MODE`/`CMRU_PREFLIGHT_COMMIT` to that reserved set.
-- F6 (D16). The bootstrap check moves from release time to merge time (the test-policy estate
-  lane).
+- F6 (D16). The bootstrap check moves from release time to merge time (the `estate-lint`
+  project, `estate-lint/suite`).
   - Name the owner of `test_bootstrap_from_zero_sequence.py` after P-core-12.
   - cmru's gate must not import `estate_test_policy` unless `tester-unified` ships it.
 - F7 (Tests). In `tests/test_r2_survivors_s1.py`, everything from `_fake_git` (:315) to the end

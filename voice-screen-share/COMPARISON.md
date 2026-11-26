@@ -188,11 +188,11 @@ Coverage uses ✓/partial/✗ against R1-R6.
 
 | Scenario | Operational cost (RAM, services) | Migration effort from today's Mattermost |
 |---|---|---|
-| A | ~2.2 GB extra, 7 containers, 3 new UDP/TCP entrypoint sets | none: purely additive, each piece removable |
+| A | ~2.2 GB extra, 7 containers, 3 new direct-published UDP/TCP port sets | none: purely additive, each piece removable |
 | A-lite | ~0.4 GB extra, 3 containers | none |
 | B | ~1 GB, 2 containers, swap of the app image | medium: v12 vs live 11.10.1 means a fresh DB or a tested upgrade; users re-onboard |
 | B+ | B + Mumble/RustDesk | medium (as B) |
-| C | ~2-3 GB, 5-6 containers, 2 media entrypoints | high: users, history and bots re-created; no importer assumed |
+| C | ~2-3 GB, 5-6 containers, 2 direct-published media port pairs | high: users, history and bots re-created; no importer assumed |
 | C+ | C + ~0.4 GB | high |
 | D | 4 GB minimum, bundle with own proxy | high, and trial must be isolated (port clashes) |
 | E | ~2 GB, 4 containers | none, but weakest chat |
@@ -226,8 +226,9 @@ Reserve numbers once, for all projects.
 | coturn (only if needed) | 3478 UDP/TCP, 5349 TLS, relay range | | public | direct | try LiveKit built-in TURN first |
 
 Rules:
-- Decided: raw TCP/UDP media is published directly by the application on one host port pair per service.
-  tls-edge owns only its HTTP/HTTPS surface and never forwards L4 media.
+- Decided (D6, tls-edge 4.0): raw TCP/UDP media is published directly by the application on one host port pair
+  per service.  tls-edge owns only its HTTP/HTTPS surface and never forwards L4 media; there are no media
+  entrypoints to choose or add, so this is not a per-project decision.
 - Every media port must be open in both firewall layers and advertised as the public address.
 - Never use host networking to cure a container start problem.
 - Run Fluxer or Stoat alone, never beside Matrix/Jitsi.
@@ -280,7 +281,7 @@ different network (mobile hotspot) to exercise NAT/UDP.
 | 2. RustDesk | client configured with `<host>` and public key connects; unkeyed/default client refused when `ENCRYPTED_ONLY=1`; viewer requests control, **sharer must accept per session**; mouse/keyboard work both ways; sharer can revoke mid-session and control stops; connection from the hotspot account works P2P or via relay; relay-only mode works when UDP is blocked |
 | 3. Jitsi | three accounts in one room; anonymous user cannot create a room (`ENABLE_AUTH`); screen share seen by both others; **Electron remote control**: requester asks, native consent dialog appears on the sharer, accepted control works, deny and revoke work; check on Windows<->Linux; JVB advertises the public address (media flows with the hotspot account); RNNoise toggle audible in the same A/B test as Mumble; CPU and memory of JVB under 3 participants stays within the cap |
 | 4. Decision | score Jitsi Electron RC vs RustDesk on: consent clarity, latency, Linux/Wayland, setup effort for a new user (minutes), firewall footprint |
-| 5. Matrix / Fluxer | cross-client call compatibility: one user on Cinny, one on Element Web, one on a third client, all join the same call; persistent presence: do others see who is in the room; Fluxer: join a voice channel, hear present users, share screen, stay in voice while changing text channels; confirm media works through the chosen edge/direct-publish arrangement; neural noise present or absent |
+| 5. Matrix / Fluxer | cross-client call compatibility: one user on Cinny, one on Element Web, one on a third client, all join the same call; persistent presence: do others see who is in the room; Fluxer: join a voice channel, hear present users, share screen, stay in voice while changing text channels; confirm each app's own media port is published directly and reachable from the outside (tls-edge never forwards L4 media); neural noise present or absent |
 
 Exit criteria for scenario A: R1-R6 each demonstrably met by at least one trial, all media ports open and documented in the section 8
 table, each ciu project passes its own gate, and an independent adversarial review precedes any merge.

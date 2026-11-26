@@ -951,6 +951,65 @@ the runner's `meta.json` SHA matches `CMRU_RELEASE_GATE_COMMIT` and
 `result.json` says `PASS`. A failed lane keeps its own exit code; a mismatched
 commit is an infrastructure refusal.
 
+A delegated lane takes 6-50 minutes and prints nothing on its own while the
+wrapper holds the attached connection, so the wrapper writes progress rather
+than leaving the wait silent: CMRU 7.5.0 ends a step that printed nothing for
+`runner.no_progress_timeout_seconds` (1800 s by default), which killed one
+release's silent 30-minute wait although the lane's budget is 5 h. Moving that
+number would hide the fact that a healthy long lane is indistinguishable from
+a hung one, so the wrapper prints one line per interval and leaves the
+default alone. The interval is a setting (`ASSAY_RELEASE_GATE_HEARTBEAT_S`,
+30-1500 s, default 300 s) with a refusal outside the range rather than a
+silent clamp, and that refusal is one line of the same combined message as
+the host settings: an invalid interval and an unset host must not cost two
+attempts either. The heartbeat must not become a second waiter: it is a separate
+subshell with its own interruptible sleep, the main `wait` keeps reaping the
+child so the exit status still reaches the caller unchanged, and the cancel
+path stops it before it cancels the remote run.
+
+That cancellation window has two microsecond-wide races, and each leaves a
+heartbeat `sleep` holding the caller's pipe for up to one interval (cmru's
+procio waits 2 s for the drain and then logs an abandoned holder): between the
+heartbeat's `sleep ... &` fork and the `sleep_pid=$!` that records it, and
+between the wrapper's fork of the heartbeat subshell and the `heartbeat_pid=$!`
+that records it. The trap names `${!:-}` beside `$sleep_pid` so the first one
+kills the fork itself, and the wrapper records the pid while the two signals
+are deferred through a `heartbeat_starting` flag the handler already uses for
+the launch window, so no signal is dropped either. A test that cancels while
+the remote `cancel` call is held open pins that no beat survives the cancel:
+with the heartbeat stopped, the wrapper prints nothing at all during that hold.
+
+The two non-load settings, the host table and the output directory, had no
+source at all: the wrapper inherited `remote-gate.py`'s cockpit-specific
+defaults (`~/.config/remote-gate/hosts.json`, one programme directory), which
+need not exist, while the estate's real values live in the controller's
+configuration. Resolving them here from that configuration is the choice over
+copying them into `cmru.toml`: the controller file is the one place that
+already owns them (`scripts/controller/remote-gate.sh` reads the same two
+values), so a copy would drift. The controller configuration is read with
+`CONTROLLER_INIT_READONLY=1` and `set -uo pipefail` (no `-e`, matching
+remote-gate.sh:24), because a release gate must not create or rewrite
+controller configuration and a controller file whose bare probe fails must
+not be reported as unreadable. It is read ONLY while one of `REMOTE_GATE_HOSTS`
+and `REMOTE_GATE_OUT` is unset: an explicit pair outranks that file anyway, and
+making a broken `controller.local.env` block a stated value would withdraw the
+one escape hatch the refusal text offers. An unreadable configuration is
+reported as its own problem, quoting the reader's last error line instead of
+discarding it, rather than falling through to a default. Explicit `REMOTE_GATE_*`
+values win and are refused when unusable: a stated value is a fact, and a
+fallback that silently replaces it would hide the mistake. The host keeps no
+default for the different reason that it is a load decision. All findings are
+reported in one refusal because the earlier behaviour (one refusal per attempt)
+made every missing setting cost a full release attempt, and each line names the
+source that supplied the value (a problem without its source is a refusal that
+sends the operator to the wrong file). `remote-gate.py`'s defaults are loaded
+once, in the main shell, instead of once per value in a `$(...)` that can never
+keep its loaded flag. The combined refusal covers the remote host's settings
+only -- host selector, interval, host table, output directory and `HOME`; a
+`local` host execs the local lane and never reads them, and the CMRU commit
+binding and a missing `remote-gate.py` remain separate refusals with their own
+exit codes.
+
 #### Native R2 cgroup observation (B148/A-494)
 
 B145's full cgroup reader is the capability probe; a shallow check for a
