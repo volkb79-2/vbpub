@@ -50,6 +50,79 @@ available account or exits 3 when neither can run. The controller starts
 closes pi's stdin to prevent the non-interactive process from waiting for
 input.
 
+### Why the pi signal guard is mechanical, not advisory
+
+A pi agent on this estate killed other controller sessions' monitors with
+`pkill -f 'sleep 30'` **although its brief banned pattern kills**. The ban was
+text, and text did not hold, so the guard is a refusal in the command path: a
+rule the agent can only obey by reading it is not a rule at all. Only a check
+that can go red without anyone remembering it protects anything.
+
+The guard is a `PATH` entry, not a wrapper flag, because that is the surface a
+mechanical refusal needs. `pi-impl.sh` prepends `scripts/controller/pi-shims/`
+to the **agent's** `PATH` for the first run, for a resume and for every
+automatic continuation alike — all three go through one `invoke_pi`, and the
+wrapper's own commands keep the caller's `PATH`. `pkill` and `killall` always
+refuse (`pi-shim: refused <name>`, exit 126, the shell convention for a command
+that exists and is refused); `pgrep` refuses only when an argument would make
+it signal (`--signal`, `--signal=<sig>`, `--kill`, a `-<SIGNAME>` or
+`-<number>` spelling), because listing processes is not a kill and a shim that
+over-refused would be switched off.
+
+Three decisions, each with the alternative it rejects:
+
+- **Refuse rather than guess, on `pgrep`'s own parse.** pgrep's value-taking
+  options are read with their value, so a pattern or a value that begins with
+  `-` is never misread as an option (that is why there is a pass-through case
+  with `-d -`), and an argument that is not one of pgrep's own options is
+  refused. The cost is a wrong refusal on a long-option abbreviation; the cost
+  of the alternative — passing an unclassified argument to the real pgrep — is
+  signalling a stranger's process.
+- **Fail closed at launch, before the name is claimed.** The shims must exist
+  and be executable, and pi's own managed-bin directory must hold none of the
+  three names, or the launch exits 2 with a named message. That check runs
+  before `controller_run_claim`, so a refusal leaves no run record that would
+  refuse the retry. The alternative — start the agent and hope the shims are
+  there — makes a missing file look like a guarded run.
+- **The managed-bin directory is resolved the way pi resolves it.** pi
+  prepends `getBinDir()` — `join(getAgentDir(), "bin")` — to the `PATH` of
+  every command its bash tool runs (`dist/utils/shell.js:147-157`, passed at
+  `dist/core/tools/bash.js:78` and `:160/:287`), so a `pkill` downloaded there
+  would be found **before** the shim. `getAgentDir()` is
+  `$PI_CODING_AGENT_DIR` (`dist/config.js:510-515`) run through
+  `normalizePath` (`dist/utils/paths.js:100-124`), which expands a leading
+  `~/` against the home directory; bash does not tilde-expand a variable's
+  value, so a literal test of the variable would stat nothing, launch, and let
+  pi put the real expanded directory ahead of the shims — silently defeated
+  with nothing red. The value is therefore expanded against `$HOME`, and a
+  value that is still not absolute is refused: pi joins it to **its own**
+  working directory (the worktree), which this wrapper cannot stat as one path,
+  so no reading of it can decide the launch.
+
+The inherited `PATH` is not pasted on blind: `PATH=$pi_shims_dir${PATH:+:$PATH}`
+and not `${PATH-}`, because an unset or empty `PATH` would otherwise hand the
+child a trailing empty field, and an empty `PATH` field means the **current
+directory** — the agent's own worktree — both to the shim's lookup and to every
+command its bash tool runs.
+
+The guard is a mechanical refusal for the ordinary spellings, **not a security
+boundary**: the bash builtin `kill` (a negative group pid or a pid the agent
+did not start), an absolute path such as `/usr/bin/pkill`, a shell loop over
+`/proc`, an `xargs kill`, `python3 -c 'os.kill(...)'`, and any script that
+resets `PATH` itself are outside it. A download into the managed bin directory
+is refused at launch, not audited later, which is why that one case is in the
+preflight rather than in the shims.
+
+How each of those can go red is in `tests/test-pi-impl.sh`: the fake pi
+asserts with `command -v` that each spelling resolves **inside** the shim
+directory (else `GUARD-MISSING`, exit 90) before it calls one, and it calls them
+only on a pattern it made random and that matches nothing, so no real
+`pkill`/`killall` is ever reached. `check_signal_guard_agent_dir_forms` proves
+the `~/` expansion and the relative-value refusal, `check_signal_guard_fail_closed`
+the missing/non-executable shim and the managed-bin shadow (all with no pi
+invocation and no claimed run name), and the continuation case requires every
+guard fact **twice**, because the continuation is a launch too.
+
 ### Why a run name is owned by one live wrapper
 
 Everything a run owns is keyed by its NAME: `<run>.done`, `.jsonl`, `.err`,

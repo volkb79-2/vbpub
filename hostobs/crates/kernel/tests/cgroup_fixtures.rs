@@ -115,6 +115,50 @@ fn a_max_limit_is_a_state_and_never_a_number() {
 }
 
 #[test]
+fn cpu_max_fixture_quota_period_absence_and_parse_failure_are_distinct() {
+    let topology = FixedTopology::with_default(DeviceTopology::Bottom);
+    let unlimited = read_cgroup(&RealFs::new(), &fixtures(), Bounds::POLICY, &topology);
+    let max = unlimited.readings_of("cpu.max").expect("cpu.max fixture");
+    assert_eq!(
+        max.quality("limit.cpu.max.quota"),
+        Some(QualityCode::Unsupported)
+    );
+    assert_eq!(
+        max.u64("limit.cpu.max.quota"),
+        None,
+        "max is not a measurement"
+    );
+    assert_eq!(max.u64("limit.cpu.max.period"), Some(100_000));
+
+    let numeric_path = Path::new("system.slice")
+        .join(format!("docker-{}.scope", "a".repeat(64)))
+        .join("cpu.max");
+    let numeric_bytes = read(numeric_path.to_str().expect("fixture path"));
+    let numeric = parse_cpu_max(&numeric_bytes).expect("numeric cpu.max fixture");
+    assert_eq!(numeric.quota_usec, Some(200_000));
+    assert_eq!(numeric.period_usec, 100_000);
+
+    let mut fs = MemFs::new();
+    fs.directory("/cg", 1);
+    let missing = read_cgroup(&fs, Path::new("/cg"), Bounds::POLICY, &topology);
+    assert_eq!(
+        missing.failure_of("cpu.max"),
+        Some(&KernelError::Absent(QualityCode::Absent))
+    );
+    assert!(missing.readings_of("cpu.max").is_none());
+
+    let malformed = parse_cpu_max(b"200000 not-a-period\n").expect_err("bad period");
+    assert_eq!(malformed.quality(), QualityCode::Unreadable);
+    assert!(matches!(
+        malformed,
+        KernelError::Parse {
+            file: "cpu.max",
+            line: None
+        }
+    ));
+}
+
+#[test]
 fn memory_stat_and_events_keep_every_key_the_files_write() {
     let stat = parse_memory_stat(&read("memory.stat"), Bounds::POLICY).expect("memory.stat");
     assert!(!stat.is_empty());

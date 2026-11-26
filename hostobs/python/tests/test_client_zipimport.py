@@ -61,7 +61,7 @@ class ZipImport(unittest.TestCase):
                 for path in sorted(PACKAGE.glob("*.py")):
                     zf.write(path, f"hostobs_client/{path.name}")
             script = (
-                b"HOB\x01\x01\x00\x01\x00"
+                b"HOB\x01\x01\x00\x02\x00"
                 + raw_frame(2, 1, json_bytes({"ok": True, "result": hello_result(epoch=7)}))
                 + raw_frame(2, 2, json_bytes({"ok": True, "result": {"up": True}}))
             )

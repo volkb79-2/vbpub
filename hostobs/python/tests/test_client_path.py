@@ -82,7 +82,7 @@ class PathServer:
 def binary_hello(epoch_by_index):
     def script(index: int, conn: socket.socket) -> None:
         read_exactly(conn, 8)
-        conn.sendall(b"HOB\x01" + struct.pack("<HH", 1, 1))
+        conn.sendall(b"HOB\x01" + struct.pack("<HH", 1, 2))
         header = read_exactly(conn, 12)
         read_exactly(conn, struct.unpack_from("<I", header)[0] - 12)
         conn.sendall(raw_frame(2, 1, json_bytes({"ok": True, "result": hello_result(epoch=epoch_by_index(index))})))
@@ -146,7 +146,7 @@ class OpenAndReconnect(TempDirCase):
     def test_a_socket_connection_cannot_reconnect(self) -> None:
         a, b = socket.socketpair()
         self.addCleanup(b.close)
-        b.sendall(b"HOB\x01" + struct.pack("<HH", 1, 1) + raw_frame(2, 1, json_bytes({"ok": True, "result": hello_result()})))
+        b.sendall(b"HOB\x01" + struct.pack("<HH", 1, 2) + raw_frame(2, 1, json_bytes({"ok": True, "result": hello_result()})))
         conn = Connection(a, "observe", client="t", timeout_s=5)
         with self.assertRaises(ValueError):
             conn.reconnect()
