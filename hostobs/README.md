@@ -22,7 +22,8 @@ functional:
   registry and the one send hub. It depends on `proto` and performs no I/O or clock reads.
 - **`kernel`** — the read-only collectors: cgroupfs (`cpu.stat`, `cpu.max`/`weight`,
   `memory.current`/`.stat`/`.events`/`.max` and friends, `io.stat`, `pids.current`/`.max`,
-  the three PSI files) and `/proc` (`stat`, `meminfo`, `vmstat`, `loadavg`, one process's
+  `cgroup.freeze` (the cgroup's own setting), `cgroup.events` (`populated`, and the effective
+  `frozen` state, which a frozen ancestor also sets), the three PSI files) and `/proc` (`stat`, `meminfo`, `vmstat`, `loadavg`, one process's
   `stat`/`statm`/`status`/`cmdline`, the boot id and the host `/proc/pressure/*` files),
   plus the identity inputs (`(device, inode)`, boot id, `starttime` ticks) and an
   injectable clock. Every file access goes through one root-anchored, read-only `Fs` trait

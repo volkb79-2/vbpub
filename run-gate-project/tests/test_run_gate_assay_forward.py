@@ -493,7 +493,26 @@ def test_main_refuses_forwarded_tokens_without_an_inventory(
     assert "arguments after '--' for lane 'r2'" in err, err
     assert "need an inventory proving the judge accepts them" in err, err
     assert "assay >= 12.3.0, RG-318" in err, err
+    assert "Update the checkout, or re-pin the judge to >= 12.3.0" in err, err
     assert "`assay lanes --json` did not run" in err, err
+    assert "selective assay flags" not in err, err
+    assert _judge_runs(calls) == []
+
+
+def test_forwarded_refusal_precedes_selective_refusal_when_inventory_is_unreadable(
+        tmp_path, monkeypatch, capfd):
+    """RG-322 L-c: an unreadable inventory reports the RG-318 cause when
+    selective controls and Assay-forwarded tokens arrive together."""
+    repo, _proj, calls = _main_project(tmp_path, monkeypatch,
+                                      inventory_exit=1)
+    store = repo / ".run-gate" / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    assert run_gate.main([
+        "r2", "--rejudge-outcome", "killed", "--", "--merge-state",
+        str(store)]) == 2
+    err = capfd.readouterr().err
+    assert "arguments after '--' for lane 'r2'" in err, err
+    assert "need an inventory proving the judge accepts them" in err, err
     assert "selective assay flags" not in err, err
     assert _judge_runs(calls) == []
 

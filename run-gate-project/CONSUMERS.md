@@ -460,6 +460,17 @@ memory = "2g"
 pids = 8192
 ```
 
+### OOM priority for ephemeral gate lanes (RG-321)
+
+Run-Gate starts each ephemeral gate lane container with Docker
+`--oom-score-adj 500` and prints that value in the lane facts and Docker argv.
+The positive kernel score makes the gate process more likely to be selected
+before the interactive controller if the host runs out of memory; `memory.low`
+does not steer OOM victim selection. There is no lane key or operator override
+for this policy. It covers the detached gate lane container only: short
+`docker run --rm` probes, `docker exec` lanes, and bare-host lanes do not get
+the adjustment.
+
 ## Combined resource settings
 
 Use the same `resources` table for Run-Gate caps and consumer-specific facts.
@@ -1006,9 +1017,10 @@ to the `run --help` probe, which is still what covers Run-Gate's OWN flexible
 flags (Assay 12.2.0's inventory floor). A judge older than 12.3.0 never
 reaches that point, and neither does a judge whose `assay lanes --json`
 cannot be read at all: Run-Gate refuses both by name before a container
-starts (`-- <assay run flags> for lane 'x' need an inventory proving the
-judge accepts them (assay >= 12.3.0, RG-318)`, or the judge-floor line for a
-readable but too-old version).
+starts (`arguments after '--' for lane 'x' need an inventory proving the
+judge accepts them (assay >= 12.3.0, RG-318): <why>. Update the checkout, or
+re-pin the judge to >= 12.3.0`, or the judge-floor line for a readable but
+too-old version).
 The probe runs AFTER the lane's own source/setup steps and BEFORE `run`, in
 the same environment and with the same judge command as the run itself; it is
 not "next to" the `run --help` grep, and with only forwarded tokens the
