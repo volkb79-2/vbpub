@@ -39,6 +39,7 @@ OPERATORS = (
     "python:bool-const-flip",
     "python:falsy-swap",
 )
+EVIDENCE_SCHEMA_VERSION = 7
 _CANDIDATE_CLEANUP_SECONDS = 10.0
 _CANDIDATE_OUTPUT_TAIL_BYTES = 1 << 20
 _MUTATION_PROGRESS_INTERVAL_SECONDS = 300.0
@@ -86,13 +87,17 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Assay source tree (default: <repo-root>/assay)",
     )
-    parser.add_argument("--repo-root", type=Path, required=True)
-    parser.add_argument("--project-root", type=Path, required=True)
-    parser.add_argument("--base", required=True)
-    parser.add_argument("--max-mutants", type=int, required=True)
-    parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--progress", type=Path, required=True)
-    parser.add_argument("--timeout-seconds", type=float, required=True)
+    parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--project-root", type=Path)
+    parser.add_argument("--base")
+    parser.add_argument("--max-mutants", type=int)
+    parser.add_argument("--evidence", type=Path)
+    parser.add_argument("--progress", type=Path)
+    parser.add_argument("--timeout-seconds", type=float)
+    parser.add_argument("--shard", metavar="INDEX/COUNT")
+    parser.add_argument("--merge-shards", type=int, metavar="COUNT")
+    parser.add_argument("--shard-evidence", type=Path, action="append", default=[])
+    parser.add_argument("--merge-output", type=Path)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--require-candidates", action="store_true")
     parser.add_argument("test_argv", nargs=argparse.REMAINDER)
@@ -283,6 +288,376 @@ def _job_identity(job: Any) -> tuple[str, int, str, str]:
 
 def _result_identity(result: dict[str, Any]) -> tuple[str, int, str, str]:
     return result["path"], result["line"], result["operator"], result["description"]
+
+
+def _parse_shard_spec(raw: str) -> tuple[int, int]:
+    parts = raw.split("/")
+    if len(parts) != 2 or any(not part.isascii() or not part.isdecimal() for part in parts):
+        raise ValueError(
+            f"--shard {raw!r} must be INDEX/COUNT with zero-based integers"
+        )
+    index, count = (int(part) for part in parts)
+    if count < 1 or not 0 <= index < count:
+        raise ValueError(
+            f"--shard {raw!r} requires 1 <= COUNT and 0 <= INDEX < COUNT"
+        )
+    return index, count
+
+
+def _candidate_manifest(jobs: Sequence[Any]) -> list[dict[str, Any]]:
+    """Return the full, ordered identity manifest used by every shard."""
+    return [
+        {
+            "index": index,
+            "path": job.path,
+            "line": job.site.lineno,
+            "operator": job.site.operator,
+            "description": job.site.description,
+        }
+        for index, job in enumerate(jobs)
+    ]
+
+
+def _shard_candidate_indices(
+    candidate_total: int, shard: tuple[int, int] | None,
+) -> list[int]:
+    """Assign identity-ordered candidates round-robin to zero-based shards."""
+    if shard is None:
+        return list(range(candidate_total))
+    index, count = shard
+    return [candidate for candidate in range(candidate_total) if candidate % count == index]
+
+
+def _validate_manifest(manifest: Any, *, source: Path) -> list[dict[str, Any]]:
+    if not isinstance(manifest, list) or not manifest:
+        raise ValueError(f"shard evidence {source}: candidate_manifest must be a non-empty list")
+    for index, entry in enumerate(manifest):
+        if (
+            not isinstance(entry, dict)
+            or type(entry.get("index")) is not int
+            or entry["index"] != index
+        ):
+            raise ValueError(
+                f"shard evidence {source}: candidate_manifest index {index} is missing or out of order"
+            )
+        if (
+            not isinstance(entry.get("path"), str) or not entry["path"]
+            or isinstance(entry.get("line"), bool)
+            or not isinstance(entry.get("line"), int) or entry["line"] < 1
+            or not isinstance(entry.get("operator"), str) or not entry["operator"]
+            or not isinstance(entry.get("description"), str) or not entry["description"]
+        ):
+            raise ValueError(
+                f"shard evidence {source}: candidate_manifest entry {index} is malformed"
+            )
+    return manifest
+
+
+def _resource_limit_was_hit(evidence: Any, *, shard_label: str) -> bool:
+    if not isinstance(evidence, dict) or set(evidence) != {
+        "cgroup_version", "pids_events", "memory_events",
+    } or evidence.get("cgroup_version") != 2:
+        raise ValueError(f"shard {shard_label}: malformed resource-limit evidence")
+    pids = evidence.get("pids_events")
+    memory = evidence.get("memory_events")
+    if not isinstance(pids, dict) or set(pids) != {"max"}:
+        raise ValueError(f"shard {shard_label}: malformed pids resource-limit evidence")
+    if not isinstance(memory, dict) or set(memory) != {
+        "max", "oom", "oom_kill", "oom_group_kill",
+    }:
+        raise ValueError(f"shard {shard_label}: malformed memory resource-limit evidence")
+    counters = {
+        "pids.max": pids["max"],
+        **{f"memory.{name}": memory[name] for name in (
+            "max", "oom", "oom_kill", "oom_group_kill",
+        )},
+    }
+    for counter in counters.values():
+        if (
+            not isinstance(counter, dict) or set(counter) != {"before", "after", "delta"}
+            or any(type(value) is not int or value < 0 for value in counter.values())
+            or counter["after"] - counter["before"] != counter["delta"]
+        ):
+            raise ValueError(f"shard {shard_label}: malformed resource-limit counter")
+    # memory.events:max is telemetry; only pids.max and the OOM counters
+    # invalidate a kill or survivor claim.
+    return any(counters[name]["delta"] for name in (
+        "pids.max", "memory.oom", "memory.oom_kill", "memory.oom_group_kill",
+    ))
+
+
+def _validate_shard_result(
+    result: Any, manifest_entry: dict[str, Any], *, shard_label: str,
+) -> dict[str, Any]:
+    candidate_index = manifest_entry["index"]
+    if not isinstance(result, dict):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has no completed result"
+        )
+    try:
+        identity = _result_identity(result)
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has a malformed result identity"
+        ) from exc
+    if (
+        not isinstance(result.get("path"), str)
+        or type(result.get("line")) is not int
+        or not isinstance(result.get("operator"), str)
+        or not isinstance(result.get("description"), str)
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has a malformed result identity"
+        )
+    expected_identity = (
+        manifest_entry["path"], manifest_entry["line"],
+        manifest_entry["operator"], manifest_entry["description"],
+    )
+    if identity != expected_identity:
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} result does not match its manifest entry"
+        )
+    if (
+        not isinstance(result.get("outcome"), str)
+        or result["outcome"] not in {"killed", "survived", "crashed"}
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has an invalid outcome"
+        )
+    if (
+        not isinstance(result.get("termination"), str)
+        or type(result.get("exit_code")) is not int
+        or not isinstance(result.get("resource_limit_advisories"), list)
+        or any(not isinstance(item, str) or not item for item in result["resource_limit_advisories"])
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has incomplete evidence"
+        )
+    resource_limit_hit = _resource_limit_was_hit(
+        result.get("resource_limit_evidence"), shard_label=shard_label,
+    )
+    process_tree = result.get("process_tree_evidence")
+    valid_leader_statuses = {"exited", "signaled", "timeout-killed", "not-started"}
+    if (
+        not isinstance(process_tree, dict)
+        or set(process_tree) != {
+            "protocol", "leader_status", "group_signalled_before_reap",
+            "outliving_descendants", "descendants_signalled", "signal",
+            "descendants", "clean",
+        }
+        or process_tree.get("protocol") != "assay-process-tree/2"
+        or not isinstance(process_tree.get("leader_status"), str)
+        or process_tree["leader_status"] not in valid_leader_statuses
+        or type(process_tree.get("group_signalled_before_reap")) is not bool
+        or type(process_tree.get("outliving_descendants")) is not int
+        or process_tree["outliving_descendants"] < 0
+        or type(process_tree.get("descendants_signalled")) is not int
+        or process_tree["descendants_signalled"] < 0
+        or process_tree["descendants_signalled"] > process_tree["outliving_descendants"]
+        or process_tree.get("clean") is not True
+        or not isinstance(process_tree.get("descendants"), list)
+        or len(process_tree["descendants"]) != process_tree["outliving_descendants"]
+        or any(
+            not isinstance(descendant, dict)
+            or set(descendant) not in ({"pid", "ppid", "comm"}, {"pid", "ppid", "comm", "cmdline"})
+            or type(descendant.get("pid")) is not int
+            or descendant["pid"] < 1
+            for descendant in process_tree["descendants"]
+        )
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has incomplete process-tree evidence"
+        )
+    if result["outcome"] in {"killed", "survived"}:
+        if (
+            resource_limit_hit
+            or process_tree.get("leader_status") != "exited"
+            or process_tree.get("outliving_descendants") != 0
+            or type(result.get("descendants_killed")) is not int
+            or result["descendants_killed"] != 0
+        ):
+            raise ValueError(
+                f"shard {shard_label}: candidate {candidate_index} has an unsupported "
+                "kill or survivor claim"
+            )
+        expected_exit = 1 if result["outcome"] == "killed" else 0
+        if result["termination"] != "exit" or result["exit_code"] != expected_exit:
+            raise ValueError(
+                f"shard {shard_label}: candidate {candidate_index} has an unsupported "
+                f"{result['outcome']} claim"
+            )
+    return result
+
+
+def merge_shard_evidence(
+    *, shard_count: int, evidence_paths: Sequence[Path], output_path: Path,
+) -> dict[str, Any]:
+    """Validate exactly one complete evidence document for every shard."""
+    if type(shard_count) is not int or shard_count < 1:
+        raise ValueError(f"--merge-shards COUNT must be positive, got {shard_count}")
+    if len(evidence_paths) != shard_count:
+        raise ValueError(
+            f"--merge-shards {shard_count} requires exactly {shard_count} "
+            f"--shard-evidence paths, got {len(evidence_paths)}"
+        )
+    resolved_paths = [path.resolve(strict=False) for path in evidence_paths]
+    if len(set(resolved_paths)) != len(resolved_paths):
+        raise ValueError("--merge-shards received the same --shard-evidence path more than once")
+    if output_path.resolve(strict=False) in resolved_paths:
+        raise ValueError("--merge-output must not replace a --shard-evidence file")
+
+    documents: dict[int, tuple[Path, dict[str, Any]]] = {}
+    common_fields = (
+        "head", "base", "candidate_count", "candidate_manifest", "project_prefix",
+        "assay_source_commit", "assay_distribution_version", "test_argv", "test_manifest",
+        "operators", "max_mutants", "timeout_seconds",
+    )
+    reference: dict[str, Any] | None = None
+    manifest: list[dict[str, Any]] | None = None
+    for path in evidence_paths:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"shard evidence {path}: expected a regular file")
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"shard evidence {path}: cannot read valid JSON") from exc
+        if not isinstance(document, dict):
+            raise ValueError(f"shard evidence {path}: expected a JSON object")
+        if (
+            document.get("schema_version") != EVIDENCE_SCHEMA_VERSION
+            or document.get("candidate_isolation") != "process-tree/1"
+        ):
+            raise ValueError(f"shard evidence {path}: unsupported evidence schema")
+        shard = document.get("shard")
+        if not isinstance(shard, dict):
+            raise ValueError(f"shard evidence {path}: missing shard identity")
+        index, count = shard.get("index"), shard.get("count")
+        if (
+            isinstance(index, bool) or not isinstance(index, int)
+            or isinstance(count, bool) or not isinstance(count, int)
+        ):
+            raise ValueError(f"shard evidence {path}: shard index/count must be integers")
+        label = f"{index}/{count}"
+        if count != shard_count or not 0 <= index < shard_count:
+            raise ValueError(
+                f"shard {label} in {path}: expected an index in 0..{shard_count - 1} "
+                f"with count {shard_count}"
+            )
+        if index in documents:
+            raise ValueError(f"duplicate shard {label}: {path} and {documents[index][0]}")
+        if document.get("scope") != "shard" or document.get("status") != "partial":
+            raise ValueError(f"shard {label} in {path}: evidence is not marked partial")
+        if document.get("shard_complete") is not True:
+            raise ValueError(f"shard {label} in {path}: evidence is incomplete")
+        if (
+            not isinstance(document.get("shard_outcome"), str)
+            or document["shard_outcome"] not in {"passed", "failed"}
+        ):
+            raise ValueError(f"shard {label} in {path}: missing completed shard outcome")
+
+        current_manifest = _validate_manifest(document.get("candidate_manifest"), source=path)
+        if (
+            type(document.get("candidate_count")) is not int
+            or document["candidate_count"] != len(current_manifest)
+        ):
+            raise ValueError(f"shard {label} in {path}: candidate_count does not match manifest")
+        if not isinstance(document.get("head"), str) or not document["head"]:
+            raise ValueError(f"shard {label} in {path}: missing head")
+        if not isinstance(document.get("base"), str) or not document["base"]:
+            raise ValueError(f"shard {label} in {path}: missing base")
+
+        expected_indices = _shard_candidate_indices(len(current_manifest), (index, shard_count))
+        candidate_indices = document.get("candidate_indices")
+        if (
+            not isinstance(candidate_indices, list)
+            or any(type(candidate_index) is not int for candidate_index in candidate_indices)
+            or candidate_indices != expected_indices
+        ):
+            raise ValueError(f"shard {label} in {path}: candidate assignment does not match manifest")
+        results = document.get("results")
+        if not isinstance(results, list) or len(results) != len(current_manifest):
+            raise ValueError(f"shard {label} in {path}: result list does not match manifest")
+        assigned = set(expected_indices)
+        for candidate_index, result in enumerate(results):
+            if candidate_index not in assigned:
+                if result is not None:
+                    raise ValueError(
+                        f"shard {label} in {path}: has a result for unassigned candidate {candidate_index}"
+                    )
+                continue
+            _validate_shard_result(
+                result, current_manifest[candidate_index], shard_label=label,
+            )
+        shard_outcome = (
+            "passed"
+            if all(results[candidate_index]["outcome"] == "killed" for candidate_index in expected_indices)
+            else "failed"
+        )
+        if document["shard_outcome"] != shard_outcome:
+            raise ValueError(f"shard {label} in {path}: shard_outcome disagrees with its results")
+
+        if reference is None:
+            reference = document
+            manifest = current_manifest
+        else:
+            for field in common_fields:
+                if document.get(field) != reference.get(field):
+                    raise ValueError(f"shard {label} in {path}: {field} differs from the other shards")
+        documents[index] = (path, document)
+
+    missing = sorted(set(range(shard_count)) - set(documents))
+    if missing:
+        names = ", ".join(f"{index}/{shard_count}" for index in missing)
+        raise ValueError(f"--merge-shards {shard_count} is missing shard(s): {names}")
+    assert reference is not None and manifest is not None
+
+    combined_results: list[dict[str, Any] | None] = [None] * len(manifest)
+    for index in range(shard_count):
+        _path, document = documents[index]
+        for candidate_index in document["candidate_indices"]:
+            combined_results[candidate_index] = document["results"][candidate_index]
+    if any(result is None for result in combined_results):
+        missing_candidates = [
+            index for index, result in enumerate(combined_results) if result is None
+        ]
+        raise ValueError(
+            "--merge-shards left candidate(s) uncovered: "
+            + ", ".join(str(index) for index in missing_candidates)
+        )
+    survivors = [result for result in combined_results if result["outcome"] != "killed"]
+    shard_records = [
+        {
+            "index": index,
+            "count": shard_count,
+            "evidence": str(documents[index][0]),
+            "shard_outcome": documents[index][1]["shard_outcome"],
+            "control_seconds": documents[index][1].get("control_seconds"),
+            "candidate_timeout_seconds": documents[index][1].get("candidate_timeout_seconds"),
+        }
+        for index in range(shard_count)
+    ]
+    first_shard = documents[0][1]
+    merged = {
+        **{field: reference.get(field) for field in common_fields},
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "candidate_isolation": "process-tree/1",
+        "tool": "cmru mutation campaign shard merge",
+        "assay_source": first_shard.get("assay_source"),
+        "scope": "whole",
+        "shard": None,
+        "candidate_indices": list(range(len(manifest))),
+        "status": "failed" if survivors else "passed",
+        "results": combined_results,
+        "control_seconds": first_shard.get("control_seconds"),
+        "candidate_timeout_seconds": first_shard.get("candidate_timeout_seconds"),
+        "baseline_exit_code": first_shard.get("baseline_exit_code"),
+        "baseline_resource_limit_evidence": first_shard.get("baseline_resource_limit_evidence"),
+        "baseline_resource_limit_advisories": first_shard.get("baseline_resource_limit_advisories"),
+        "baseline_process_tree_evidence": first_shard.get("baseline_process_tree_evidence"),
+        "shard_merge": {"count": shard_count, "shards": shard_records},
+    }
+    _write_evidence(output_path, merged)
+    return merged
 
 
 def _candidate_result(
@@ -901,7 +1276,12 @@ def _resume_results(
     jobs: Sequence[Any],
     max_mutants: int,
     timeout_seconds: float,
+    shard: tuple[int, int] | None = None,
+    candidate_manifest: Sequence[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any] | None]:
+    candidate_manifest = list(candidate_manifest or _candidate_manifest(jobs))
+    candidate_indices = _shard_candidate_indices(len(jobs), shard)
+    shard_document = None if shard is None else {"index": shard[0], "count": shard[1]}
     if assay_source_root is None:
         raise ValueError("mutation resume requires an Assay source root")
     if evidence_path.is_symlink():
@@ -918,7 +1298,7 @@ def _resume_results(
         raise ValueError(f"could not read mutation resume evidence: {evidence_path}") from exc
     previous_head = previous.get("head") if isinstance(previous, dict) else None
     if not isinstance(previous, dict) \
-            or previous.get("schema_version") != 6 \
+            or previous.get("schema_version") != EVIDENCE_SCHEMA_VERSION \
             or previous.get("candidate_isolation") != "process-tree/1":
         raise ValueError(
             "mutation resume evidence predates the current resource and process-tree evidence schema; "
@@ -1003,6 +1383,10 @@ def _resume_results(
     if (
         previous.get("base") != base
         or previous.get("candidate_count") != len(jobs)
+        or previous.get("candidate_manifest") != candidate_manifest
+        or previous.get("scope") != ("whole" if shard is None else "shard")
+        or previous.get("shard") != shard_document
+        or previous.get("candidate_indices") != candidate_indices
         or previous.get("max_mutants") != max_mutants
         or previous.get("project_prefix") != (project_prefix.as_posix() or ".")
         or previous.get("operators") != list(OPERATORS)
@@ -1019,6 +1403,11 @@ def _resume_results(
     for index, prior in enumerate(prior_results):
         if prior is None:
             continue
+        if index not in candidate_indices:
+            raise ValueError(
+                f"mutation resume evidence for shard {shard_document} contains "
+                f"unassigned candidate {index}"
+            )
         if not isinstance(prior, dict) or _result_identity(prior) != _job_identity(jobs[index]):
             raise ValueError(f"mutation resume evidence does not match candidate {index}")
         advisories = prior.get("resource_limit_advisories")
@@ -1094,6 +1483,71 @@ def _run_campaign(
     argv: Sequence[str] | None = None, *, template_root: Path,
 ) -> int:
     args = _parser().parse_args(argv)
+    if args.merge_shards is not None:
+        if args.shard is not None:
+            raise ValueError("--merge-shards cannot be combined with --shard")
+        if args.merge_output is None:
+            raise ValueError("--merge-shards requires --merge-output PATH")
+        if args.evidence is not None:
+            raise ValueError("use --merge-output for a shard merge, not --evidence")
+        if args.resume or args.test_argv:
+            raise ValueError("--merge-shards cannot be combined with --resume or test argv")
+        campaign_options = [
+            flag for flag, value in (
+                ("--assay-source", args.assay_source),
+                ("--repo-root", args.repo_root),
+                ("--project-root", args.project_root),
+                ("--base", args.base),
+                ("--max-mutants", args.max_mutants),
+                ("--evidence", args.evidence),
+                ("--progress", args.progress),
+                ("--timeout-seconds", args.timeout_seconds),
+            ) if value is not None
+        ]
+        if args.require_candidates:
+            campaign_options.append("--require-candidates")
+        if campaign_options:
+            raise ValueError(
+                "--merge-shards cannot be combined with campaign option(s): "
+                + ", ".join(campaign_options)
+            )
+        merged = merge_shard_evidence(
+            shard_count=args.merge_shards,
+            evidence_paths=args.shard_evidence,
+            output_path=args.merge_output,
+        )
+        if merged["status"] == "failed":
+            survivors = [
+                result for result in merged["results"]
+                if result["outcome"] != "killed"
+            ]
+            print(
+                "mutation: merged complete shards; whole-campaign status=failed; "
+                f"survivors={len(survivors)}; evidence={args.merge_output}",
+                flush=True,
+            )
+            return 1
+        print(
+            "mutation: merged complete shards; whole-campaign status=passed; "
+            f"evidence={args.merge_output}",
+            flush=True,
+        )
+        return 0
+    if args.shard_evidence or args.merge_output is not None:
+        raise ValueError("--shard-evidence and --merge-output require --merge-shards")
+    missing = [
+        flag for flag, value in (
+            ("--repo-root", args.repo_root),
+            ("--project-root", args.project_root),
+            ("--base", args.base),
+            ("--max-mutants", args.max_mutants),
+            ("--evidence", args.evidence),
+            ("--progress", args.progress),
+            ("--timeout-seconds", args.timeout_seconds),
+        ) if value is None
+    ]
+    if missing:
+        raise ValueError("mutation run requires " + ", ".join(missing))
     test_argv = list(args.test_argv)
     if test_argv[:1] == ["--"]:
         test_argv = test_argv[1:]
@@ -1134,6 +1588,14 @@ def _run_campaign(
     from assay import diff, git, mutation
     from assay.adapters.python import PythonAdapter
 
+    shard = None
+    if args.shard is not None:
+        shard = _parse_shard_spec(args.shard)
+        try:
+            mutation.select_mutation_shard((), index=shard[0], count=shard[1])
+        except ValueError as exc:
+            raise ValueError(f"--shard {args.shard!r}: {exc}") from exc
+
     if not _assay_import_is_bound_to_source(assay_source, assay.__file__):
         raise ValueError(
             "mutation campaign imported Assay outside its configured package source roots"
@@ -1167,7 +1629,15 @@ def _run_campaign(
         )
     if args.require_candidates and not jobs:
         raise RuntimeError("the declared source diff produced no mutation candidates")
-    print(f"mutation: candidate inventory ready ({len(jobs)} candidates)", flush=True)
+    candidate_manifest = _candidate_manifest(jobs)
+    candidate_indices = _shard_candidate_indices(len(jobs), shard)
+    shard_document = None if shard is None else {"index": shard[0], "count": shard[1]}
+    shard_text = "whole campaign" if shard is None else f"shard {shard[0]}/{shard[1]}"
+    print(
+        f"mutation: candidate inventory ready ({len(jobs)} candidates); "
+        f"{shard_text} has {len(candidate_indices)} assigned",
+        flush=True,
+    )
 
     results = _resume_results(
         evidence_path=args.evidence,
@@ -1183,6 +1653,8 @@ def _run_campaign(
         jobs=jobs,
         max_mutants=args.max_mutants,
         timeout_seconds=args.timeout_seconds,
+        shard=shard,
+        candidate_manifest=candidate_manifest,
     )
 
     test_manifest = _test_manifest(repo_root, project_prefix)
@@ -1283,7 +1755,7 @@ def _run_campaign(
         raise RuntimeError("frozen test fixture changed while the known-good control ran")
 
     document: dict[str, Any] = {
-        "schema_version": 6,
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
         "candidate_isolation": "process-tree/1",
         "tool": "cmru mutation campaign using worktree Assay mutation sites",
         "assay_distribution_version": assay.__version__,
@@ -1300,19 +1772,28 @@ def _run_campaign(
         "test_argv": test_argv,
         "test_manifest": test_manifest,
         "candidate_count": len(jobs),
+        "candidate_manifest": candidate_manifest,
+        "candidate_indices": candidate_indices,
+        "scope": "whole" if shard is None else "shard",
+        "shard": shard_document,
         "baseline_exit_code": baseline.returncode,
         "baseline_resource_limit_evidence": baseline_resource_evidence.to_dict(),
         "baseline_resource_limit_advisories": list(baseline_resource_advisories),
         "baseline_process_tree_evidence": baseline.process_tree_evidence,
-        "status": "running",
+        "status": "running" if shard is None else "partial",
         "results": results,
     }
+    if shard is not None:
+        document["shard_complete"] = False
+        document["shard_outcome"] = None
     _write_evidence(args.evidence, document)
     _append_progress(args.progress, {
         "event": "start",
         "base": base,
         "head": head,
         "candidate_total": len(jobs),
+        "candidate_indices": candidate_indices,
+        "shard": shard_document,
         "resumed_total": sum(item is not None for item in results),
         "timeout_seconds": args.timeout_seconds,
     })
@@ -1342,6 +1823,8 @@ def _run_campaign(
             raise RuntimeError(message)
 
     for index, job in enumerate(jobs):
+        if index not in candidate_indices:
+            continue
         fail_if_assay_source_changed(f"before candidate {index}")
         if not _fixture_matches_manifest(
             template_root=template_root,
@@ -1546,15 +2029,29 @@ def _run_campaign(
         })
         raise RuntimeError(document["infrastructure_error"])
     survivors = [result for result in results if result is not None and result["outcome"] != "killed"]
-    document["status"] = "failed" if survivors else "passed"
+    if shard is None:
+        document["status"] = "failed" if survivors else "passed"
+    else:
+        document["status"] = "partial"
+        document["shard_complete"] = True
+        document["shard_outcome"] = "failed" if survivors else "passed"
     _write_evidence(args.evidence, document)
     _append_progress(args.progress, {
         "event": "complete",
         "status": document["status"],
+        "shard": shard_document,
+        "shard_outcome": document.get("shard_outcome"),
         "candidate_total": len(jobs),
         "survivor_total": len(survivors),
         "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
     })
+    if shard is not None:
+        print(
+            f"mutation: PARTIAL shard {shard[0]}/{shard[1]} complete; "
+            f"shard_outcome={document['shard_outcome']}; "
+            "merge all shard evidence for a whole-campaign verdict",
+            flush=True,
+        )
     if survivors:
         raise RuntimeError(
             "mutation campaign did not kill every candidate: "

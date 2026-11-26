@@ -1185,7 +1185,7 @@ def test_campaign_candidate_unpacks_and_records_assay_resource_advisories(
 
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     candidate_record = evidence["results"][0]
-    assert evidence["schema_version"] == 6
+    assert evidence["schema_version"] == mutation_campaign.EVIDENCE_SCHEMA_VERSION
     assert candidate_record["resource_limit_advisories"] == [
         "cgroup[0].pids.max changed: 100 -> 120",
     ]
@@ -1207,9 +1207,26 @@ def test_campaign_candidate_unpacks_and_records_assay_resource_advisories(
     assert evidence["status"] == ("infrastructure-error" if candidate_limit_hit else "passed")
 
 
-def _with_process_tree_contract(document):
-    document["schema_version"] = 6
+def _with_process_tree_contract(document, *, jobs=None):
+    document["schema_version"] = mutation_campaign.EVIDENCE_SCHEMA_VERSION
     document["candidate_isolation"] = "process-tree/1"
+    identities = jobs if jobs is not None else document.get("results", [])
+    document["candidate_manifest"] = [
+        {
+            "index": index,
+            "path": item.path if hasattr(item, "path") else item["path"],
+            "line": item.site.lineno if hasattr(item, "site") else item["line"],
+            "operator": item.site.operator if hasattr(item, "site") else item["operator"],
+            "description": (
+                item.site.description if hasattr(item, "site") else item["description"]
+            ),
+        }
+        for index, item in enumerate(identities)
+    ]
+    document["candidate_count"] = len(document["candidate_manifest"])
+    document["candidate_indices"] = list(range(len(document["candidate_manifest"])))
+    document["scope"] = "whole"
+    document["shard"] = None
     document["baseline_resource_limit_advisories"] = []
     document["baseline_process_tree_evidence"] = _process_tree_evidence()
     for result in document.get("results", []):
@@ -1228,7 +1245,191 @@ def _with_process_tree_contract(document):
     return document
 
 
-def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
+def _shard_evidence_document(
+    shard_index, shard_count, *, head="head", base="base", manifest_change=None,
+    missing_candidate=None, survivor_candidate=None,
+):
+    jobs = [_job(line=20 + index) for index in range(5)]
+    manifest = mutation_campaign._candidate_manifest(jobs)
+    if manifest_change is not None:
+        manifest[manifest_change]["description"] += " changed"
+    candidate_indices = mutation_campaign._shard_candidate_indices(
+        len(jobs), (shard_index, shard_count),
+    )
+    results = [None] * len(jobs)
+    for candidate_index in candidate_indices:
+        if candidate_index == missing_candidate:
+            continue
+        returncode = 0 if candidate_index == survivor_candidate else 1
+        result = mutation_campaign._candidate_result(
+            jobs[candidate_index],
+            returncode=returncode,
+            elapsed_seconds=1,
+            timed_out=False,
+            resource_limit_evidence=ResourceLimitEvidence.from_dict(
+                _zero_resource_evidence()
+            ),
+            process_tree_evidence=_process_tree_evidence(),
+        )
+        results[candidate_index] = asdict(result)
+    shard_outcome = (
+        "passed"
+        if all(
+            results[index] is not None and results[index]["outcome"] == "killed"
+            for index in candidate_indices
+        )
+        else "failed"
+    )
+    return {
+        "schema_version": mutation_campaign.EVIDENCE_SCHEMA_VERSION,
+        "candidate_isolation": "process-tree/1",
+        "tool": "test fixture",
+        "assay_source": "assay",
+        "assay_source_commit": "assay-head",
+        "assay_distribution_version": "test-version",
+        "base": base,
+        "head": head,
+        "project_prefix": "cmru",
+        "max_mutants": 100,
+        "timeout_seconds": 1800,
+        "operators": list(mutation_campaign.OPERATORS),
+        "test_argv": ["pytest", "tests"],
+        "test_manifest": {"files": {}, "fixture_files": {}, "pyproject_sha256": "test"},
+        "candidate_count": len(jobs),
+        "candidate_manifest": manifest,
+        "candidate_indices": candidate_indices,
+        "scope": "shard",
+        "shard": {"index": shard_index, "count": shard_count},
+        "shard_complete": True,
+        "shard_outcome": shard_outcome,
+        "status": "partial",
+        "results": results,
+    }
+
+
+def _write_shard_document(path, document):
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def test_shard_spec_uses_assay_zero_based_syntax_and_ordered_round_robin():
+    assert mutation_campaign._parse_shard_spec("0/3") == (0, 3)
+    assert mutation_campaign._shard_candidate_indices(10, (0, 3)) == [0, 3, 6, 9]
+    assert mutation_campaign._shard_candidate_indices(10, (1, 3)) == [1, 4, 7]
+    assert mutation_campaign._shard_candidate_indices(10, (2, 3)) == [2, 5, 8]
+    with pytest.raises(ValueError, match="INDEX/COUNT"):
+        mutation_campaign._parse_shard_spec("1 of 3")
+
+
+def test_r2_lane_forwards_arguments_to_the_mutation_campaign():
+    config = tomllib.loads((REPO_ROOT / "cmru" / "run-gate.toml").read_text(encoding="utf-8"))
+    lane = config["lanes"]["r2"]
+    command = "\n".join(lane["argv"])
+
+    assert lane["accepts_args"] is True
+    assert '--resume "$@" --' in command
+
+
+def test_merge_requires_exactly_one_complete_evidence_file_per_shard(tmp_path):
+    evidence_paths = [
+        _write_shard_document(
+            tmp_path / f"shard-{index}.json",
+            _shard_evidence_document(index, 3),
+        )
+        for index in range(3)
+    ]
+    output = tmp_path / "merged.json"
+
+    merged = mutation_campaign.merge_shard_evidence(
+        shard_count=3,
+        evidence_paths=evidence_paths,
+        output_path=output,
+    )
+
+    assert output.is_file()
+    assert merged["scope"] == "whole"
+    assert merged["status"] == "passed"
+    assert merged["shard"] is None
+    assert merged["candidate_indices"] == list(range(5))
+    assert all(result["outcome"] == "killed" for result in merged["results"])
+    assert [item["index"] for item in merged["shard_merge"]["shards"]] == [0, 1, 2]
+
+    cli_output = tmp_path / "cli-merged.json"
+    cli_argv = ["--merge-shards", "3"]
+    for path in evidence_paths:
+        cli_argv.extend(["--shard-evidence", str(path)])
+    cli_argv.extend(["--merge-output", str(cli_output)])
+    assert mutation_campaign._run_campaign(cli_argv, template_root=tmp_path) == 0
+    assert json.loads(cli_output.read_text(encoding="utf-8"))["scope"] == "whole"
+    with pytest.raises(ValueError, match="campaign option.*--base"):
+        mutation_campaign._run_campaign(
+            [*cli_argv, "--base", "ignored"], template_root=tmp_path,
+        )
+
+    with pytest.raises(ValueError, match="requires exactly 3 .* got 2"):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3,
+            evidence_paths=evidence_paths[:2],
+            output_path=tmp_path / "short-merge.json",
+        )
+
+
+@pytest.mark.parametrize(
+    ("bad_shard", "change", "message"),
+    [
+        (1, {"shard_index": 0}, "duplicate shard 0/3"),
+        (1, {"head": "other-head"}, "shard 1/3 .* head differs"),
+        (1, {"base": "other-base"}, "shard 1/3 .* base differs"),
+        (1, {"manifest_change": 0}, "shard 1/3 .* candidate_manifest differs"),
+        (2, {"missing_candidate": 2}, "shard 2/3: candidate 2 has no completed result"),
+    ],
+)
+def test_merge_refuses_duplicate_mismatched_or_incomplete_named_shards(
+    tmp_path, bad_shard, change, message,
+):
+    paths = []
+    for index in range(3):
+        shard_index = change.get("shard_index", index) if index == bad_shard else index
+        kwargs = (
+            {key: value for key, value in change.items() if key != "shard_index"}
+            if index == bad_shard else {}
+        )
+        document = _shard_evidence_document(shard_index, 3, **kwargs)
+        paths.append(_write_shard_document(tmp_path / f"shard-{index}.json", document))
+
+    with pytest.raises(ValueError, match=message):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3,
+            evidence_paths=paths,
+            output_path=tmp_path / "merged.json",
+        )
+
+
+def test_merge_marks_whole_change_failed_when_a_complete_shard_has_a_survivor(tmp_path):
+    paths = [
+        _write_shard_document(
+            tmp_path / f"shard-{index}.json",
+            _shard_evidence_document(
+                index, 3, survivor_candidate=1 if index == 1 else None,
+            ),
+        )
+        for index in range(3)
+    ]
+
+    merged = mutation_campaign.merge_shard_evidence(
+        shard_count=3,
+        evidence_paths=paths,
+        output_path=tmp_path / "merged.json",
+    )
+
+    assert merged["scope"] == "whole"
+    assert merged["status"] == "failed"
+    assert merged["results"][1]["outcome"] == "survived"
+
+
+def _make_resume_case(
+    tmp_path, *, baseline_advisories, candidate_advisories, jobs=None, shard=None,
+):
     repo = tmp_path / "repo"
     project = repo / "cmru"
     assay = _make_assay_source(repo)
@@ -1249,7 +1450,7 @@ def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
         ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
         stdout=subprocess.PIPE,
     ).stdout.strip()
-    job = _job()
+    jobs = list(jobs or [_job()])
     previous = {
         "schema_version": 3,
         "candidate_isolation": "subreaper/1",
@@ -1257,30 +1458,50 @@ def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
         "head": head,
         "project_prefix": "cmru",
         "assay_source_commit": head,
-        "max_mutants": 1,
+        "max_mutants": max(1, len(jobs)),
         "operators": list(mutation_campaign.OPERATORS),
         "test_argv": ["pytest", "tests"],
         "timeout_seconds": 120,
-        "candidate_count": 1,
+        "candidate_count": len(jobs),
         "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
-        "results": [{
-            "path": job.path,
-            "line": job.site.lineno,
-            "operator": job.site.operator,
-            "description": job.site.description,
-            "exit_code": 1,
-            "outcome": "killed",
-            "resource_limit_evidence": _zero_resource_evidence(),
-        }],
+        "results": [
+            asdict(mutation_campaign._candidate_result(
+                job,
+                returncode=1,
+                elapsed_seconds=1,
+                timed_out=False,
+                resource_limit_evidence=ResourceLimitEvidence.from_dict(
+                    _zero_resource_evidence()
+                ),
+                process_tree_evidence=_process_tree_evidence(),
+            ))
+            for job in jobs
+        ],
     }
-    document = _with_process_tree_contract(previous)
+    document = _with_process_tree_contract(previous, jobs=jobs)
+    if shard is not None:
+        candidate_indices = mutation_campaign._shard_candidate_indices(len(jobs), shard)
+        document["scope"] = "shard"
+        document["shard"] = {"index": shard[0], "count": shard[1]}
+        document["candidate_indices"] = candidate_indices
+        document["results"] = [
+            result if index in candidate_indices else None
+            for index, result in enumerate(document["results"])
+        ]
+        document["status"] = "partial"
+        document["shard_complete"] = False
+        document["shard_outcome"] = None
     document["baseline_resource_limit_advisories"] = baseline_advisories
-    document["results"][0]["resource_limit_advisories"] = candidate_advisories
+    first_completed = next(
+        (result for result in document["results"] if result is not None), None,
+    )
+    if first_completed is not None:
+        first_completed["resource_limit_advisories"] = candidate_advisories
     evidence = project / ".assay" / "mutation-cmru.json"
     evidence.parent.mkdir()
     evidence.write_text(json.dumps(document), encoding="utf-8")
 
-    def resume_results():
+    def resume_results(shard_override=shard):
         return mutation_campaign._resume_results(
             evidence_path=evidence,
             repo_root=repo,
@@ -1292,9 +1513,10 @@ def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
             assay_source_root=assay,
             assay_git=assay_git,
             test_argv=["pytest", "tests"],
-            jobs=[job],
-            max_mutants=1,
+            jobs=jobs,
+            max_mutants=max(1, len(jobs)),
             timeout_seconds=120,
+            shard=shard_override,
         )
 
     return evidence, resume_results
@@ -1313,6 +1535,30 @@ def test_resume_accepts_valid_baseline_and_candidate_resource_advisories(tmp_pat
     assert json.loads(evidence.read_text(encoding="utf-8"))[
         "baseline_resource_limit_advisories"
     ] == ["baseline advisory"]
+
+
+def test_shard_resume_reuses_only_its_recorded_candidates(tmp_path):
+    evidence, resume_results = _make_resume_case(
+        tmp_path,
+        baseline_advisories=[],
+        candidate_advisories=[],
+        jobs=[_job(line=7), _job(line=8), _job(line=9)],
+        shard=(1, 2),
+    )
+
+    resumed = resume_results()
+
+    assert resumed[0] is None
+    assert resumed[1]["outcome"] == "killed"
+    assert resumed[2] is None
+    with pytest.raises(ValueError, match="does not match this campaign"):
+        resume_results((0, 2))
+
+    document = json.loads(evidence.read_text(encoding="utf-8"))
+    document["results"][0] = dict(document["results"][1])
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="unassigned candidate 0"):
+        resume_results()
 
 
 @pytest.mark.parametrize(
@@ -1571,7 +1817,7 @@ def test_timeout_is_inconclusive_and_cannot_count_as_a_kill():
     assert result.exit_code == 124
 
 
-@pytest.mark.parametrize("schema_version", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("schema_version", [1, 2, 3, 4, 5, 6])
 def test_legacy_resume_evidence_without_subreaper_identity_is_refused(
         tmp_path, schema_version):
     evidence = tmp_path / "mutation.json"

@@ -275,6 +275,7 @@ kind = "command"
 environment = "cmru-mutation"
 resource_observer = "cgprofile"
 clean_tree = true
+accepts_args = true
 argv = [
   "bash",
   "-c",
@@ -293,7 +294,14 @@ if [ -z "$BASE" ]; then
     exit 0
 fi
 mkdir -p .assay
-exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 --evidence .assay/mutation-cmru.json --progress .assay/progress-mutation-cmru.jsonl --require-candidates --resume -- env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
+exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
+    --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
+    --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 \
+    --evidence .assay/mutation-cmru.json \
+    --progress .assay/progress-mutation-cmru.jsonl \
+    --require-candidates --resume "$@" -- \
+    env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 \
+    /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
 ''',
   "--",
 ]
