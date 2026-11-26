@@ -8,8 +8,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Changed
 - The `dockerproxy` service now sets `EVENTS: 1` explicitly. The Docker provider's `watch: true` needs
   the event stream, which the proxy image already enabled by default; the instance no longer relies on
-  that default (TE-14, verified on a host on 2026-11-26: a container started after Traefik was routed
-  about 1 s later, without a Traefik restart).
+  that default (TE-14, verified on a host on 2026-11-26: a container started after Traefik was
+  routed by the second 0.5 s poll (about 1 s), without a Traefik restart).
 
 ### Known issues
 - `scripts/verify.sh` is unchanged in 4.0.0 and must be run with `--no-canary` until the fix ships: its

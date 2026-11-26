@@ -110,9 +110,9 @@ credential in the gitignored `edge-proxy/.env` file and relying on Compose
 Under rootless Docker the S6.5 helper's `chown 0:0` of `ciu-stack/vol-traefik-acme`
 maps to the user's uid, so the directory a rootless run creates is not the
 `0:0 0700` directory a rootful run expects. CIU's S6.3 check
-(`ciu/src/ciu/engine.py:899-914`) compares the existing dir against the
-declared owner and may then refuse it on the next run (the ciu S6.3 refusal of
-the existing directory).
+(`ciu/src/ciu/engine.py`) compares the existing dir against the declared owner
+and may then refuse it on the next run with `[S6.3] Existing hostdir has
+incompatible ownership/permissions`.
 
 Known issue, not a verified defect: no rootless host was available, and 4.0.0
 was not checked for this before release. The main controller waived the check
