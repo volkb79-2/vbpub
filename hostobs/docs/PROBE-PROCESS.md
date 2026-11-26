@@ -227,6 +227,7 @@ max_rows = 1024                    # D8; probe-wide; 1..=4096
 ```
 
 - `levels` is a non-empty subset of `observe`, `operator` and `observer`, with no duplicates.
+  The shipped `deploy/hostobsd.toml` serves all three.
 - `cgroup_root` is absolute, has no `..` component and contains no NUL or control character.
 - The only probe-wide spelling is the one shown above. A per-level form such as
   `[limits.observe] max_rows = 2` is an unknown-field refusal, not a silent override (P-06
