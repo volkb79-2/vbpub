@@ -258,18 +258,18 @@ only `live/` causes silent TLS failure inside the container.
 | 5. socket proxy | A GET is allowed and a POST is refused at `dockerproxy:2375` |
 | 6. redirect | With `expose_http = true`: the HTTP entrypoint answers 301/308 |
 | 7. TLS | A certificate is served for the domain and it is not Traefik's default self-signed |
-| 8. ACME/static | The ACME volume holds a non-empty `acme.json` at mode 0600, or the static cert file is readable |
-| 9. canary | A labelled `whoami` container is routed through `websecure` using a fixed `.invalid` Host, `tls=true`, and no `certresolver` |
+| 8. ACME/static | ACME: an existing named volume or bind mount holds non-empty `acme.json` at mode 0600; ACME log scan errors FAIL and a missing `--domain` mention WARNs. Static/dev: the cert file is readable |
+| 9. canary | A labelled `whoami` container is routed through `websecure` using a fixed `.invalid` Host, `tls=true`, and no `certresolver`; it orders no certificate |
 | 10. access log | Traefik's recent log lines are JSON carrying `RouterName` |
 | 11. ops isolation | With `--ops-check`: an ops endpoint is unreachable from the given network |
 
 Pass `--domain` as a host name the edge already serves a certificate for. The
 canary probes with that name as TLS SNI and `tls-edge-verify-canary.invalid` as
-the HTTP Host; its router has `tls=true` and no `certresolver`, so it orders no
-certificate. `--no-canary` remains an optional way to skip check 9.
+the HTTP Host; its router has `tls=true` and no `certresolver`. `--no-canary`
+remains an optional way to skip check 9.
 
 ```bash
-bash scripts/verify.sh --domain example.test
+bash scripts/verify.sh --domain app.example.test
 ```
 
 ---

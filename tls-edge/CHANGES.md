@@ -12,10 +12,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   about 1 s later, without a Traefik restart).
 
 ### Fixed
-- `scripts/verify.sh` check 5 now requires explicit HTTP 403 evidence, and checks 8 and 11 fail when
-  their probes cannot provide the required observation. Check 9 uses a fixed `.invalid` Host with
-  `tls=true` and no `certresolver`, so it orders no certificate. The same canary behavior in releases
-  3.0.0 to 4.0.0 ordered one real certificate per canary run.
+- `scripts/verify.sh` check 5 could never pass because the proxy name was not passed to its probe; it
+  now requires an explicit HTTP 403 response. Check 8 warns on zero domain matches and fails when
+  storage or its log scan cannot be read. Check 11 passes only on recognized transport errors; HTTP
+  answers and inconclusive probes fail. Check 8 discovers ACME storage from Traefik's volume name or
+  bind-mount source without creating storage, and warns when `acme.json` does not mention `--domain`.
+- Check 9 now routes the canary through a fixed `.invalid` Host with `tls=true` and no `certresolver`,
+  so it orders no certificate. Runs that reached the 4.0.0 canary exited 127 because `cleanup_tmp` did
+  not exist. From 3.0.0 to 4.0.0, an ACME-mode canary run could order a real certificate for
+  `verify.<domain>` once per new name, since Traefik stores it; no certificate was ordered when a
+  configured wildcard already covered that name.
 
 ### Known issues
 - `TE-13`: the ownership of `vol-traefik-acme` under rootless Docker is unverified (not checked before

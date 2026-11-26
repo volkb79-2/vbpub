@@ -831,8 +831,11 @@ bundled `<root>/ciu check`; that `docker compose config -q` accepts the rendered
 stack; both containers' health; `ingress_public` and the internal network; the
 socket-proxy policy (GET allowed, POST refused); the HTTP redirect (when
 `expose_http = true`); the served certificate (not Traefik's self-signed
-default); the ACME volume or static cert file; the canary route through
-`websecure`; the access-log JSON format; and the `--ops-check` isolation probe.
+default); ACME storage or the static cert file; the canary route through
+`websecure`; the access-log JSON format; and the optional `--ops-check`
+isolation probe. In ACME modes, storage discovery accepts an existing named
+volume or bind mount and never creates one. ACME log scan errors fail check 8;
+a missing `--domain` mention in `acme.json` warns.
 
 Run it after any configuration change before declaring the deployment healthy.
 Pass `--domain` as a host name the edge already serves a certificate for. The
