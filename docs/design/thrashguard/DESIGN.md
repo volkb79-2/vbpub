@@ -217,10 +217,14 @@ running while the cgroup is frozen (`compute-design-REVIEW.md:100`); `reason`
 Any wall-clock field is derived, never authoritative.
 
 **Where it is recorded.** hostobs' event store, two names in its closed vocabulary, `thrashguard.freeze` and
-`thrashguard.thaw`, over the **control** socket's JSON `annotate` request (`hostobs/docs/WIRE.md:492-497`,
-`hostobs/docs/CONSUMERS.md:393-397`). The argument budget is the constraint: `ctx` accepts only `run`, `lane`,
-`candidate`, `txn`, `session`, each <= 128 B (`WIRE.md:493`, which defers to 4.10 at `:476`), so the run id rides
-in `ctx.run` and five factual fields go in `attrs` (8 pairs, key <= 64 B, value <= 256 B,
+`thrashguard.thaw`, submitted as a hostobs `annotate` request and read back as hostobs `events`. **Which hostobs
+socket serves `annotate`, and which serves `events`, is hostobs' own decision and is not fixed here.** The authority
+is the level/verb table in `hostobs/docs/WIRE.md` (today `:476-484`, `:492-497`); that table is still being decided
+on the hostobs side (their M3), and on current main only the observe and operator sockets exist, with `annotate`,
+`events` and `spans` answering unknown-verb. So this section states the contract and never a socket name: read the
+WIRE table, not this paragraph, for where a verb is served. The argument budget is the constraint: `ctx` accepts
+only `run`, `lane`, `candidate`, `txn`, `session`, each <= 128 B (`WIRE.md:493`, which defers to 4.10 at `:476`), so
+the run id rides in `ctx.run` and five factual fields go in `attrs` (8 pairs, key <= 64 B, value <= 256 B,
 `hostobs/crates/store/src/events.rs:42`, `:48`, `:50`): `cgroup` (the scope name), `cgroup_id`, `boot_id`, `seq`,
 `seconds`. `reason` and `unit`/`owner` go in the event's `name`/`key`/`code` fields; `reclaim_bytes` stays in
 thrashguard's own journal, because a ninth attr does not fit. The issuer is the emitting uid plus its cgroup
@@ -256,10 +260,12 @@ which also states "CPU accrues only when the candidate runs, so pressure needs n
 and survives, so **thrashguard is optional**: run-gate and assay work unchanged without it, and with no events
 `frozen_seconds` is `unknown`, never `0`.
 
-**Summaries are normalised, not raw.** Time in an assay summary is on the Geekbench single-thread **1500-point**
-basis: `x_ref = x * single_core / baseline_score` with the host's `single_core` from `speed`
-(`cgprofile/docs/PROTOCOL.md:625-627`; table fallback `cgprofile/docs/SCORES-TABLE.md:1-27`, baseline 2500 for
-GB6 and GB7). A host without `speed` has no basis and the summary says so (`speed: null`); majors are never mixed.
+**Summaries are normalised, not raw.** The unit, the formula and the handling of a host with no basis are
+assay's own contract: `assay/docs/SPEC.md` chapter **TIM**, requirement **TIM-030** (planned) — time is normalised
+to the recorded Geekbench major's own reference machine, which is 1.0 for that major (Geekbench 7 single-core
+reference 2500), never to a fixed point count, and majors are never mixed; a host with no readable score has no
+basis and the summary says so rather than inventing a zero. The per-host score input stays
+`cgprofile/docs/PROTOCOL.md:625-627` (`speed`); this document does not restate the rules.
 
 ### 4c. run-gate: unchanged verdict, one shared bound, optional pause
 
@@ -396,10 +402,12 @@ refuses and never invents a zero. Absent agctl: thrashguard's CLI and fleetd's s
 ### 6c. hostobs: the event intake (B2)
 
 Thrashguard emits `thrashguard.freeze` / `thrashguard.thaw` into hostobs; §4a lists what exists there today and what
-is missing. Emission goes over the **control** socket's JSON `annotate` line (`hostobs/docs/WIRE.md:492-497`,
-`hostobs/docs/CONSUMERS.md:393-397`), group `hostobs-control` (§4), with the attribute budget spent as described
-there. Missing today (owner: hostobs) is exactly §4a's three rows; until they land consumers report `unknown`. The
-`cgroup` attr is exact (`docker-<id>.scope` fits <= 256 B) and readers match on it plus `boot_id`, as §4b does.
+is missing. Emission is a hostobs `annotate` request and consumption a hostobs `events` read, with the attribute
+budget spent as described in §4. **The serving socket is hostobs' to name, not this document's:** consult
+`hostobs/docs/WIRE.md`'s level/verb table (today `:476-484`, `:492-497`) for which socket serves `annotate` and
+where `events` is read; that table is still being decided on the hostobs side (their M3), and on current main only
+the observe and operator sockets exist, with `annotate`, `events` and `spans` answering unknown-verb. Missing today
+(owner: hostobs) is exactly §4a's three rows; until they land consumers report `unknown`. The `cgroup` attr is exact (`docker-<id>.scope` fits <= 256 B) and readers match on it plus `boot_id`, as §4b does.
 
 ### 6d. Standalone is a hard requirement
 
@@ -457,7 +465,7 @@ the record, not a list of open questions.
 | Q4 | does an expired registration thaw? | explicit `deregister` **thaws** (`deregistered`); silent `ttl_s` expiry **does not** (§3, D14) | operator 23:4xZ, with M3's split |
 | Q5 | groups | `thrashguard-registrant`: run-gate's host group + fleetd's service user; `thrashguard-reader`: agctl, fleetd, hostobs (§3) | operator 23:4xZ |
 | Q6 | docs obligation | README + DESIGN-GUIDE + CONSUMERS.md with loader-parsed examples, in P1's file list (§5) | review, accepted |
-| — | consumer path | thrashguard **sends** freeze/thaw events; **hostobs** picks them up; assay gets cgprofile plus those events and recomputes effective CPU time; summaries normalise to Geekbench single-thread 1500 (§4) | operator 00:0xZ |
+| — | consumer path | thrashguard **sends** freeze/thaw events; **hostobs** picks them up; assay gets cgprofile plus those events and recomputes effective CPU time; summaries normalise to the recorded Geekbench major's own reference (1.0 for that major), per `assay/docs/SPEC.md` TIM-030 (§4) | operator 00:0xZ, basis retired 2026-11-26 |
 | — | boundaries | verdicts are CPU-time based and thrashguard is optional; fleetd is the one cross-host channel and the placer; agctl never touches a host socket (§4e, §6) | operator 00:0xZ / 00:2xZ |
 
 **Still open** (product calls, not blockers):
