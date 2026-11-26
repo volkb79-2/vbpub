@@ -194,7 +194,7 @@ remote_gate_defaults_loaded=false
 load_remote_gate_defaults() {
   [[ "$remote_gate_defaults_loaded" == true ]] && return 0
   remote_gate_defaults_loaded=true
-  local stderr_file
+  local stderr_file defaults_status
   if ! stderr_file=$(mktemp "${TMPDIR:-/tmp}/assay-release-gate-defaults.XXXXXX" 2>/dev/null); then
     # A temporary file that cannot be created is not an empty default: the module was
     # never imported, so the refusal has to say THAT instead of certifying a path
@@ -223,10 +223,18 @@ PYEOF
     :
   else
     # An import that failed is not an empty default: saying so keeps the refusal from
-    # certifying a path the module never supplied.
+    # certifying a path the module never supplied. An import that died without printing
+    # anything at all (a host SIGKILL or cgroup OOM-kill, or a bare SystemExit) leaves no
+    # line to quote, and an empty reason would send BOTH consumers down their
+    # success-side branch and report "DEFAULT_HOSTS resolved to an empty path" -- the
+    # false-source message this change removed, reached through its sibling door. Its
+    # exit status is the one fact such a death leaves behind, so the replacement reason
+    # is set here once, before either consumer tests the value, and they agree on it.
+    defaults_status=$?
     remote_gate_defaults=""
     remote_gate_defaults_error="$(<"$stderr_file")"
     remote_gate_defaults_error=${remote_gate_defaults_error##*$'\n'}
+    remote_gate_defaults_error="${remote_gate_defaults_error:-remote-gate.py defaults import exited $defaults_status}"
   fi
   rm -f -- "$stderr_file"
 }

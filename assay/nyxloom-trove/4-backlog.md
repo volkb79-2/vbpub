@@ -16035,7 +16035,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B579 — release-gate.sh needs a host, a hosts file and an output dir that nothing supplies
 
-**Status: FIXED 2026-11-25 in `38598081d` (settings) and `58ef72042` (heartbeat), round-1 corrections in `7ef807f80` (refusal sources, controller read, cancel races) and `8801bc5c3` (docs), round-2 follow-ups in `fe15f0efc` (heartbeat trap) and `f6b8be0c0` (defaults reason, check order); severity was medium (every release stalled).**
+**Status: FIXED 2026-11-25 in `38598081d` (settings) and `58ef72042` (heartbeat), round-1 corrections in `7ef807f80` (refusal sources, controller read, cancel races) and `8801bc5c3` (docs), round-2 follow-ups in `fe15f0efc` (heartbeat trap), `f6b8be0c0` (defaults reason, check order) and `c92c9556c` (tests, shellcheck, docs, CHANGES); round-3 follow-ups in `ae997bd6f` (the trap's job-table targets) and the round-3 fix commit (a silent defaults import's exit status, CONSUMERS exit-code split, CHANGES wording); severity was medium (every release stalled).**
 
 **What happened.** The cmru release transaction ran the release gate (`cmru.toml:29-34`, `tools/release-gate.sh <lane>`), and it stopped twice before it started:
 1. `ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002` (`tools/release-gate.sh:24-25`). No default, and neither cmru.toml nor the release docs say who sets it.
@@ -16072,12 +16072,12 @@ The main controller resumed with `ASSAY_RELEASE_GATE_HOST=v1001 REMOTE_GATE_HOST
 
 ## B581 — release-gate.sh's controller read loses a field on a newline, and one default spelling falls through
 
-**Status: OPEN (filed 2026-11-26 by the P14 round-2 review, finding nit 1); severity: low (edge cases, deliberate in one half).**
+**Status: OPEN (filed 2026-11-25 by the P14 round-2 review, finding nit 1); severity: low (edge cases, deliberate in one half).**
 
-**Symptom.** `tools/release-gate.sh:112-119` returns the four controller values as ONE `printf "%s\n%s\n%s\n%s\n"` and reads them back with `mapfile`, so a configured value that contains a newline shifts every field after it: `CONTROLLER_REMOTE_OUT` would be read as part of `CONTROLLER_REMOTE_HOSTS_FILE` and the remaining fields would be the wrong lines (or empty). The controller file is operator-owned and a path with a newline is legal on Linux.
+**Symptom.** `tools/release-gate.sh:112-118` returns the four controller values as ONE `printf "%s\n%s\n%s\n%s\n"` and reads them back with `mapfile`, so a configured value that contains a newline shifts every field AFTER it: a newline in `CONTROLLER_HOSTS_FILE`, `CONTROLLER_REMOTE_HOSTS_FILE` or `CONTROLLER_REMOTE_OUT` pushes the later fields one line down (`CONTROLLER_REMOTE_OUT` then reads whatever line its own source moved to, or nothing), while the last field's own newline merely truncates itself. The controller file is operator-owned and a path with a newline is legal on Linux.
 
-Second half (deliberate, hence documented rather than taken here): `tools/release-gate.sh:240-247` treats a `CONTROLLER_HOSTS_FILE` whose spelling is exactly `$CONTROLLER_HOME/hosts.local.json` and does not exist as "this controller configures no host table", so the module default still applies instead of refusing a stated path. That is `controller_init`'s own default spelling (`scripts/controller/lib.sh:44`), so a controller that never set the variable takes the fallback while one that set the same string explicitly cannot be told apart.
+Second half (deliberate, hence documented rather than taken here): `tools/release-gate.sh:245-250` treats a `CONTROLLER_HOSTS_FILE` whose spelling is exactly `$CONTROLLER_HOME/hosts.local.json` and does not exist as "this controller configures no host table", so the module default still applies instead of refusing a stated path. That is `controller_init`'s own default spelling (`scripts/controller/lib.sh:41`), so a controller that never set the variable takes the fallback while one that set the same string explicitly cannot be told apart.
 
 **Wanted.** Return the four values through something a newline cannot corrupt (one line per value with the newline rejected, a temp file, or a delimiter that is refused if present), and either keep the default-spelling rule with a test that pins the explicit-set case as accepted behaviour, or make an explicit `CONTROLLER_HOSTS_FILE` a stated fact like `REMOTE_GATE_HOSTS` is.
 
-**Close when.** A controller file with a newline inside `CONTROLLER_REMOTE_OUT` still resolves the other three values correctly, and a test pins the chosen disposition of the default-spelling fall-through. Source: P14 round-2 review (`assay/tools/release-gate.sh` finding nit 1), 2026-11-25.
+**Close when.** A controller file with a newline inside `CONTROLLER_REMOTE_HOSTS_FILE` still resolves `CONTROLLER_REMOTE_OUT` correctly (the field a mapfile reader shifts), and a test pins the chosen disposition of the default-spelling fall-through. Source: P14 round-2 review (`assay/tools/release-gate.sh` finding nit 1), 2026-11-25.

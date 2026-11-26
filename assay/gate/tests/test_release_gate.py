@@ -222,6 +222,13 @@ def _environment(tmp_path: Path, *, host: str = "v1001") -> dict[str, str]:
         "            # the loader must report the failure, never a blank path.\n"
         "            print('remote-gate.py cannot be imported', file=sys.stderr)\n"
         "            raise SystemExit(3)\n"
+        "        if wanted.get('import_failure_silent'):\n"
+        "            # The round-3 finding: an import that dies printing NOTHING (a\n"
+        "            # SIGKILL or OOM-kill, or a bare SystemExit) leaves no last stderr\n"
+        "            # line to quote. An empty reason would make both consumers report\n"
+        "            # 'DEFAULT_HOSTS resolved to an empty path' -- a path nothing\n"
+        "            # supplied. The status is the one fact left; the loader names it.\n"
+        "            raise SystemExit(3)\n"
         "        print(hosts)\n"
         "        print(wanted['out'])\n"
         "        raise SystemExit(0)\n"
@@ -1316,6 +1323,35 @@ def test_release_gate_reports_a_module_default_that_could_not_be_imported(
             "remote-gate.py cannot be imported",
         ]
     )
+    assert _remote_calls(env) == []
+
+
+def test_release_gate_names_the_exit_status_of_a_silent_defaults_import(
+    tmp_path: Path,
+) -> None:
+    # Finding 1 of the round-2 review: the failure branch quoted the import's LAST
+    # stderr line, so an import that died with no output at all (SIGKILL on the host,
+    # cgroup OOM-kill, a bare SystemExit) left that variable empty. Both consumers then
+    # took their success-side branch over the empty string and told the operator
+    # "DEFAULT_HOSTS resolved to an empty path", the false-source message the previous
+    # round removed, through its sibling door. The reason now names the status.
+    env = _environment(tmp_path)
+    env["CONTROLLER_HOME"] = str(tmp_path / "no-controller")
+    env.pop("REMOTE_GATE_HOSTS", None)
+    env.pop("REMOTE_GATE_OUT")
+    _configure_fake(env, module_defaults={"import_failure_silent": True})
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [
+            "cannot read remote-gate.py's default host table: "
+            "remote-gate.py defaults import exited 3",
+            "cannot read remote-gate.py's default output directory: "
+            "remote-gate.py defaults import exited 3",
+        ]
+    )
+    assert "resolved to an empty path" not in proc.stderr
     assert _remote_calls(env) == []
 
 
