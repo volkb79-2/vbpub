@@ -28,6 +28,12 @@ HOTSET=${MDT_ACCEPT_HOTSET:-$HERE/accept-hotset.py}
 DAMON_ADMIN=${MDT_ACCEPT_DAMON:-/sys/kernel/mm/damon/admin}
 JUDGE=${MDT_ACCEPT_JUDGE:-}
 SSH_TARGET=${MDT_ACCEPT_SSH_TARGET:-}
+SSH_KEY=${MDT_ACCEPT_SSH_KEY:-}
+SSH_ARGS=()
+if [ -n "$SSH_KEY" ]; then
+  [ -r "$SSH_KEY" ] || { echo "accept-run: MDT_ACCEPT_SSH_KEY=$SSH_KEY is not readable; refusing before host changes" >&2; exit 3; }
+  SSH_ARGS=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
+fi
 EXTRA_UNITS=${MDT_ACCEPT_EXTRA_UNITS:-}
 POLL=${MDT_ACCEPT_POLL_STEP:-1}
 RM_TIMEOUT=${MDT_ACCEPT_RM_TIMEOUT:-30}
@@ -76,12 +82,35 @@ case "$SYSTEMCTL_TIMEOUT" in ''|0*|*[!0-9]*) usage ;; esac
 case "$CONTROL" in auto|on|off) ;; *) usage ;; esac
 role=$(sed -n 's/^HOST_ROLE=//p' "$HOSTENV" 2>/dev/null | tail -n 1 | tr -d "\"' ")
 if [ "$role" != dedicated-dev ]; then echo "accept-run: HOST_ROLE=${role:-<unset>} in $HOSTENV, not dedicated-dev; refusing" >&2; exit 3; fi
+# Check environment refusals before creating the lock/evidence files, restoring
+# a stale WAL, or changing cgroup or DAMON state. This pass is read-only.
+command -v python3 >/dev/null 2>&1 || { echo "accept-run: python3 is missing; refusing before host changes" >&2; exit 3; }
+STATE=${MDT_ACCEPT_SQUEEZE_STATE:-$EVID/squeeze-state.env}
+DAMON_STAT_OVERRIDE=${MDT_ACCEPT_DAMON_STAT:-}
+LIB="$HERE/../../../../scripts/damon-analysis/lib"
+for p in "$HERE/accept-restore.sh" "$HERE/accept-eval.py" "$HOTSET"; do
+  [ -f "$p" ] || { echo "accept-run: $p is missing; refusing before host changes" >&2; exit 3; }
+done
+if [ ! -d "$LIB" ] && [ -z "${MDT_ACCEPT_HOTSET_JSON:-}" ]; then
+  echo "accept-run: $LIB is missing (an accept checkout needs mdt-cockpit/ AND scripts/damon-analysis/); refusing before host changes" >&2
+  exit 3
+fi
+HOTSET_ARGS=(--evidence "$EVID" --admin "$DAMON_ADMIN" --state "$STATE" --units "$UNITS" --cgroup "$CG" --proc "$PROC")
+[ -d "$LIB" ] && HOTSET_ARGS+=(--lib "$LIB")
+[ -n "${MDT_ACCEPT_HOTSET_JSON:-}" ] && HOTSET_ARGS+=(--fixture "$MDT_ACCEPT_HOTSET_JSON")
+[ -n "$DAMON_STAT_OVERRIDE" ] && HOTSET_ARGS+=(--damon-stat "$DAMON_STAT_OVERRIDE")
+hotset() { python3 "$HOTSET" "$@" "${HOTSET_ARGS[@]}"; }
+[ -n "$SSH_TARGET" ] || { echo "accept-run: MDT_ACCEPT_SSH_TARGET is required (this host over loopback, e.g. root@127.0.0.1); refusing before host changes" >&2; exit 3; }
+BOOT_ID=$(tr -d '[:space:]' < "$BOOTID_FILE" 2>/dev/null) || BOOT_ID=""
+[ -n "$BOOT_ID" ] || { echo "accept-run: cannot read $BOOTID_FILE; refusing before host changes (the restore's reboot rule needs it)" >&2; exit 3; }
+ssh_boot=$(timeout -k 5 20 ssh "${SSH_ARGS[@]}" -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '[:space:]') || ssh_boot=""
+[ "$ssh_boot" = "$BOOT_ID" ] || { echo "accept-run: MDT_ACCEPT_SSH_TARGET=$SSH_TARGET did not return this host's boot_id; refusing before host changes" >&2; exit 3; }
+hotset preflight >/dev/null || { say "the read-only cgprofile, DAMON_STAT, DAMON sysfs and capability preflight refused; no host state has been changed"; exit 3; }
 # One run at a time. This lock is what pauses the reconcile's memory block (2.3) and makes install.sh refuse; the
 # kernel releases it on ANY death of this process, SIGKILL included, so a dead run never leaves the host unpaused.
 exec 9>>"$LOCK" || { echo "accept-run: cannot open the lock $LOCK; refusing, nothing done" >&2; exit 3; }
 flock -n 9 || { echo "accept-run: another run holds $LOCK; refusing" >&2; exit 3; }
 mkdir -p "$EVID/steps" "$EVID/probes-state" || exit 2
-STATE=${MDT_ACCEPT_SQUEEZE_STATE:-$EVID/squeeze-state.env}
 MAN=$EVID/manifest.env; PROBES=$EVID/probes.csv; SAMPLES=$EVID/samples.csv; STEPSEN=$EVID/steps.env
 if [ -s "$STATE" ]; then # a SIGKILLed run left its write-ahead log: restore it first, then use the fresh evidence (2.6)
   say "a state file of an earlier run is present; restoring it first"
@@ -173,15 +202,6 @@ if [ -z "$F_SYSTEM" ] || [ -z "$F_CGP" ] || [ -z "$F_USER" ]; then
   echo "accept-run: cannot read the MemoryMin of system.slice, cgprofile.slice and user.slice via systemctl; the ladder floor is unknown; refusing" >&2; exit 3
 fi
 F_INSTALLED=$((F_SYSTEM + F_CGP + F_USER))
-[ -n "$SSH_TARGET" ] || { echo "accept-run: MDT_ACCEPT_SSH_TARGET is required (this host over loopback, e.g. root@127.0.0.1); refusing" >&2; exit 3; }
-BOOT_ID=$(tr -d '[:space:]' < "$BOOTID_FILE" 2>/dev/null) || BOOT_ID=""
-[ -n "$BOOT_ID" ] || { echo "accept-run: cannot read $BOOTID_FILE; refusing (the restore's reboot rule needs it)" >&2; exit 3; }
-# the LITERAL kernel path, never $BOOTID_FILE: a test override must not be able to change the remote command
-ssh_boot=$(timeout -k 5 20 ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '[:space:]') || ssh_boot=""
-if [ "$ssh_boot" != "$BOOT_ID" ]; then
-  echo "accept-run: MDT_ACCEPT_SSH_TARGET=$SSH_TARGET reports boot_id '${ssh_boot:-<none>}' but this host is '$BOOT_ID': a remote target would time another machine's sshd (3.2); refusing" >&2
-  exit 3
-fi
 rootdir=$(timeout -k 5 10 docker info -f '{{.DockerRootDir}}' 2>/dev/null) || rootdir=""
 [ -n "$rootdir" ] || { echo "accept-run: could not read Docker's data root within 10s; refusing rather than checking an invented filesystem" >&2; exit 3; }
 avail=$(df -Pk "$rootdir" 2>/dev/null | awk 'NR==2{print $4}')
