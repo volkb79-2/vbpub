@@ -18,18 +18,13 @@ const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/e
 
 fn fixture_names() -> Vec<String> {
     let mut entries: Vec<String> = std::fs::read_dir(FIXTURE_DIR)
-        .unwrap_or_else(|error| {
-            panic!("read {FIXTURE_DIR}: {error}")
-        })
+        .unwrap_or_else(|error| panic!("read {FIXTURE_DIR}: {error}"))
         .map(|entry| {
-            let entry = entry.unwrap_or_else(|error| {
-                panic!("read entry in {FIXTURE_DIR}: {error}")
-            });
+            let entry =
+                entry.unwrap_or_else(|error| panic!("read entry in {FIXTURE_DIR}: {error}"));
             let file_type = entry
                 .file_type()
-                .unwrap_or_else(|error| {
-                    panic!("read file type in {FIXTURE_DIR}: {error}")
-                });
+                .unwrap_or_else(|error| panic!("read file type in {FIXTURE_DIR}: {error}"));
             assert!(
                 file_type.is_file(),
                 "the event fixture directory contains only files"
@@ -46,23 +41,15 @@ fn fixture_names() -> Vec<String> {
     assert!(
         entries
             .iter()
-            .all(|name| {
-                name.ends_with(".bin") || name.ends_with(".json")
-            }),
+            .all(|name| { name.ends_with(".bin") || name.ends_with(".json") }),
         "the event fixture directory contains no other extension"
     );
     let mut names: Vec<String> = entries
         .iter()
-        .filter_map(|name| {
-            name.strip_suffix(".json").map(str::to_owned)
-        })
+        .filter_map(|name| name.strip_suffix(".json").map(str::to_owned))
         .collect();
     names.sort();
-    assert_eq!(
-        names.len(),
-        7,
-        "the event corpus has exactly seven cases"
-    );
+    assert_eq!(names.len(), 7, "the event corpus has exactly seven cases");
     for name in &names {
         assert!(
             entries.binary_search(&format!("{name}.bin")).is_ok(),
@@ -74,35 +61,25 @@ fn fixture_names() -> Vec<String> {
 
 fn fixture_spec(name: &str) -> Json {
     let path = format!("{FIXTURE_DIR}/{name}.json");
-    let bytes = std::fs::read(&path).unwrap_or_else(|error| {
-        panic!("read {path}: {error}")
-    });
-    json::parse(&bytes).unwrap_or_else(|error| {
-        panic!("parse {path}: {error:?}")
-    })
+    let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    json::parse(&bytes).unwrap_or_else(|error| panic!("parse {path}: {error:?}"))
 }
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{FIXTURE_DIR}/{name}.bin");
-    std::fs::read(&path).unwrap_or_else(|error| {
-        panic!("read {path}: {error}")
-    })
+    std::fs::read(&path).unwrap_or_else(|error| panic!("read {path}: {error}"))
 }
 
 fn event_from_spec(spec: &Json) -> EventPayload {
     let number = |key| {
         spec.field(key)
             .as_u64()
-            .unwrap_or_else(|| {
-                panic!("{key} must be an unsigned integer")
-            })
+            .unwrap_or_else(|| panic!("{key} must be an unsigned integer"))
     };
     let text = |key| {
         spec.field(key)
             .as_str()
-            .unwrap_or_else(|| {
-                panic!("{key} must be a string")
-            })
+            .unwrap_or_else(|| panic!("{key} must be a string"))
             .to_string()
     };
     let optional_text = |key| match spec.field(key) {
@@ -116,10 +93,8 @@ fn event_from_spec(spec: &Json) -> EventPayload {
         .expect("ctx array")
         .iter()
         .map(|entry| EventContext {
-            key: u8::try_from(
-                entry.field("key").as_u64().expect("context key"),
-            )
-            .expect("context key fits u8"),
+            key: u8::try_from(entry.field("key").as_u64().expect("context key"))
+                .expect("context key fits u8"),
             value: entry
                 .field("value")
                 .as_str()
@@ -197,20 +172,16 @@ fn every_event_fixture_matches_its_description_or_refusal() {
                     spec.get("expect_error").is_none(),
                     "{name} is a valid case without an expect_error"
                 );
-                let decoded = decode_event_frame(&bytes).unwrap_or_else(|error| {
-                    panic!("{name}: decode event frame: {error}")
-                });
+                let decoded = decode_event_frame(&bytes)
+                    .unwrap_or_else(|error| panic!("{name}: decode event frame: {error}"));
                 assert_eq!(
-                    decoded,
-                    event,
+                    decoded, event,
                     "{name}: decoded value matches its description"
                 );
-                let encoded = encode_event_frame(&event).unwrap_or_else(|error| {
-                    panic!("{name}: encode event frame: {error}")
-                });
+                let encoded = encode_event_frame(&event)
+                    .unwrap_or_else(|error| panic!("{name}: encode event frame: {error}"));
                 assert_eq!(
-                    encoded,
-                    bytes,
+                    encoded, bytes,
                     "{name}: encoded frame matches committed bytes"
                 );
             }
@@ -219,17 +190,10 @@ fn every_event_fixture_matches_its_description_or_refusal() {
                     .field("expect_error")
                     .field("kind")
                     .as_str()
-                    .unwrap_or_else(|| {
-                        panic!("{name}: expect_error.kind must be a string")
-                    });
-                assert_eq!(
-                    described,
-                    expected,
-                    "{name}: description error kind"
-                );
-                let error = decode_event_frame(&bytes).expect_err(
-                    "refusal fixture must be rejected by the public decoder",
-                );
+                    .unwrap_or_else(|| panic!("{name}: expect_error.kind must be a string"));
+                assert_eq!(described, expected, "{name}: description error kind");
+                let error = decode_event_frame(&bytes)
+                    .expect_err("refusal fixture must be rejected by the public decoder");
                 assert_eq!(
                     error.kind(),
                     described,
