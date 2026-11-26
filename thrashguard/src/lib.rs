@@ -11,19 +11,26 @@
 //!
 //! Module map. Design §5 names the whole set: `psi`, `config`, `socket`,
 //! `units`, `victims`, `actuator`, `clock`, `events`, `cli`, plus the wire and
-//! report helpers this crate adds. **Landed so far**: [`clock`], [`config`],
-//! [`psi`], [`hysteresis`], [`json`], [`units`], [`wire`], [`socket`],
-//! [`events`]. The remaining modules (`report`, `cli`, `daemon`, `activation`)
-//! are the next subtasks and are deliberately not declared here before they
-//! exist: a doc link to a missing module is a rustdoc warning, and the lint lane
-//! denies warnings.
+//! report helpers this crate adds. **P1 `observe` lands**: [`clock`], [`config`],
+//! [`psi`], [`hysteresis`], [`json`], [`units`], [`wire`], [`socket`], [`events`],
+//! [`report`], [`daemon`], [`activation`] and [`cli`]. `victims` (the refault and
+//! `smallest-enough` rules) and `actuator` (the act path) are **P2/P3 and do not
+//! exist here on purpose**: a doc link to a module that is deliberately absent
+//! would be a warning, and a module that half-exists would be worse.
+//!
+//! `unsafe_code` is **denied**, not forbidden: [`activation`] needs exactly one
+//! `unsafe` block to adopt the systemd socket descriptors (`std` has no safe way
+//! to wrap a raw fd), and `tools/check-lints.py` asserts that there is exactly
+//! one, in that one file.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod activation;
 pub mod cli;
 pub mod clock;
 pub mod config;
+pub mod daemon;
 pub mod events;
 pub mod hysteresis;
 pub mod json;

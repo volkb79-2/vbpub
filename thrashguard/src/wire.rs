@@ -476,7 +476,21 @@ pub fn register_ok(id: &str, scope: &str, cgroup_id: u64, ttl_s: u64) -> Value {
     )
 }
 
-/// `{"v": <registration>, "ok": true, "id": ...}` for `update`, `heartbeat` and `deregister`.
+/// `{"v": <registration>, "ok": true, "id": ..., "score": ..., "priority": ...}` for `update`,
+/// which answers with the facts the registration now carries (design §3).
+pub fn update_ok(id: &str, score: i64, priority: Priority) -> Value {
+    reply(
+        REGISTRATION_VERSION,
+        true,
+        vec![
+            ("id".to_string(), text(id)),
+            ("score".to_string(), integer(score)),
+            ("priority".to_string(), text(priority.as_str())),
+        ],
+    )
+}
+
+/// `{"v": <registration>, "ok": true, "id": ...}` for `heartbeat` and `deregister`.
 pub fn ok_id(id: &str) -> Value {
     reply(
         REGISTRATION_VERSION,

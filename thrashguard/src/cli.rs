@@ -19,6 +19,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::socket;
+
 /// The production cgroup root — the one literal in the crate (see the module docs).
 pub const DEFAULT_CGROUP_ROOT: &str = "/sys/fs/cgroup";
 /// The production PSI path.
@@ -149,6 +151,20 @@ impl std::error::Error for CliError {}
 pub const USAGE: &str = "usage: thrashguard serve|status|candidates|events|version \
 [--config P] [--cgroup-root P] [--pressure-path P] [--socket P] [--since-seq N] \
 [--registrant-socket P] [--reader-socket P]";
+
+/// The registrant socket `serve` uses: the flag, else the crate's default path.
+pub fn registrant_path(args: &Args) -> PathBuf {
+    args.registrant_socket
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(socket::REGISTRANT_PATH))
+}
+
+/// The reader socket `serve` uses: the flag, else the crate's default path.
+pub fn reader_path(args: &Args) -> PathBuf {
+    args.reader_socket
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(socket::READER_PATH))
+}
 
 /// Parse an argument vector (`argv[0]` is skipped by the caller).
 pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, CliError> {
