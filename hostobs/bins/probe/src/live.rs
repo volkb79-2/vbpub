@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use hostobs_model::identity::CgroupKey;
 use hostobs_proto::dict::Entry;
 use hostobs_proto::frame::{Column, Row};
 
@@ -75,6 +76,22 @@ impl Backend for ProbeBackend {
             .iter()
             .any(|selector| matches!(selector, Sel::Prefix(_) | Sel::All));
         let mut resolved = BTreeSet::new();
+        for selector in selection.entities() {
+            let row_index = match selector {
+                Sel::Inc(inc) => self.tick.row_for_inc(*inc),
+                Sel::CgroupId { dev, inode } => CgroupKey::new(*dev, *inode)
+                    .ok()
+                    .and_then(|key| self.tick.row_for_key(key)),
+                Sel::Path(path) => self.tick.row_for_label(path),
+                Sel::Prefix(_) | Sel::All => None,
+            };
+            if let Some(row_index) = row_index {
+                resolved.insert(row_index);
+                if resolved.len() > limit {
+                    return Err(BackendError::TooManyRows);
+                }
+            }
+        }
         if scan_required {
             for (row_index, row) in data.rows.iter().enumerate() {
                 let Some(Entry::Entity { inc, label }) = data.entries.get(row.ent as usize) else {
@@ -83,25 +100,11 @@ impl Backend for ProbeBackend {
                 if selection
                     .entities()
                     .iter()
-                    .any(|selector| matches_selector(selector, *inc, label))
+                    .any(|selector| matches_scan_selector(selector, label))
                     && resolved.insert(row_index)
                     && resolved.len() > limit
                 {
                     return Err(BackendError::TooManyRows);
-                }
-            }
-        } else {
-            for selector in selection.entities() {
-                let row_index = match selector {
-                    Sel::Inc(inc) => self.tick.row_for_inc(*inc),
-                    Sel::Path(path) => self.tick.row_for_label(path),
-                    Sel::Prefix(_) | Sel::All => None,
-                };
-                if let Some(row_index) = row_index {
-                    resolved.insert(row_index);
-                    if resolved.len() > limit {
-                        return Err(BackendError::TooManyRows);
-                    }
                 }
             }
         }
@@ -172,10 +175,9 @@ impl Backend for ProbeBackend {
     }
 }
 
-fn matches_selector(selector: &Sel, inc: u64, label: &str) -> bool {
+fn matches_scan_selector(selector: &Sel, label: &str) -> bool {
     match selector {
-        Sel::Inc(candidate) => inc == *candidate,
-        Sel::Path(path) => label.as_bytes() == path.as_bytes(),
+        Sel::Inc(_) | Sel::CgroupId { .. } | Sel::Path(_) => false,
         Sel::Prefix(prefix) => label.as_bytes().starts_with(prefix.as_bytes()),
         Sel::All => true,
     }

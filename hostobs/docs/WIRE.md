@@ -284,14 +284,22 @@ has none (`HOB-54`, §6.1).
 `agg-name` = `raw|last|delta|mean|min|max` (the §3.6 codes 0-5). String bounds are on the decoded
 UTF-8 length.
 **Selection**: `{"entities": [sel, ...] (1..16), "metrics": [metric-name, ...] (1..64)}`, `sel` is
-exactly one of `{"inc": u64}`, `{"path": str ≤ 512}`, `{"prefix": str ≤ 512}`, `{"all": true}`; an empty
-path or prefix is refused, and paths contain no character below 0x20 or 0x7F (as dictionary text,
-§3.7). `all` must have the JSON literal `true`. A repeated `sel` or metric name, compared after JSON
-decoding, is `bad-request`; the selector object, its one member and each element's JSON type use the
-schema paths named by design S1. **Canonical form** (the identity of "distinct selection", §5.1):
-`sel`s sorted by (variant `inc` < `path` < `prefix` < `all`, then value), metric names sorted bytewise;
-two selections are the same iff their canonical forms are equal (no resolution: `{"inc":5}` and the
-`path` of incarnation 5 are distinct). A selection resolving to more than `limits.max_rows` entities is
+exactly one of `{"inc": u64}`, `{"cgroup_id": {"dev": u64, "inode": u64}}`,
+`{"path": str ≤ 512}`, `{"prefix": str ≤ 512}`, `{"all": true}`. For `cgroup_id`, `dev` is the
+directory's `stat(2)` `st_dev`, not a mount id; both fields are non-zero. A selector that names a
+subject cgroup is data, never caller identity. Zero fields are `bad-request` at
+`selection.entities.cgroup_id.dev` or `.inode`; an unknown member is `bad-request` at
+`selection.entities.cgroup_id.<k>`. An empty path or prefix is refused, and paths contain no character
+below 0x20 or 0x7F (as dictionary text, §3.7). `all` must have the JSON literal `true`. A repeated
+`sel` or metric name, compared after JSON decoding, is `bad-request` at `selection.entities` or
+`selection.metrics`; the selector object, its one member and each element's JSON type use the schema
+paths named by design S1. At negotiated minor below 2, `cgroup_id` is `unsupported-feature`
+`{"feature":"cgroup_id"}` after schema validation (step 11); there is no hello feature probe.
+**Canonical form** (the identity of "distinct selection", §5.1): `sel`s sorted by (variant `inc` <
+`cgroup_id` < `path` < `prefix` < `all`; within `cgroup_id`, numeric `dev` then `inode`; otherwise by
+value), metric names sorted bytewise; two selections are the same iff their canonical forms are equal
+(no resolution: `{"inc":5}` and the `path` of incarnation 5 are distinct). A selection resolving to
+more than `limits.max_rows` entities is
 `budget` `{"pool":"rows"}`. Every object below is **strict**: a missing required key, an unknown key or
 a wrong type is `bad-request`. JSON text rules (both modes): UTF-8, no duplicate key at any depth,
 nesting depth ≤ 8 (the envelope object is depth 1; the bound holds for requests and for the client's
@@ -434,7 +442,10 @@ counted in END `dropped`; a pinned tick is written before the END and counted in
 **Live-block contents.** A live block has one row per published cgroup incarnation, labelled by the
 cgroup's path relative to the configured root (`/` for the root and `/a.slice/b.scope` below it);
 `path` and `prefix` match that label bytewise (exact or byte prefix), `inc` matches the incarnation,
-and `all` matches every row. It contains only metrics registered in the model table, with that table's
+`cgroup_id` matches the row whose published incarnation has that `(dev, inode)` key, and `all` matches
+every row. An unpublished key (outside the root, retired or with the wrong `dev`) matches nothing and
+returns zero rows successfully. The selector is resolved from the turn's published tick; clients do not
+send a path for it. It contains only metrics registered in the model table, with that table's
 facts; host readings from `/proc` and daemon `probe.*` metrics appear only on the root row and are
 `absent` on every other row, while cgroup columns are dense and carry a quality code on every row
 (a missing or failed reading has a non-measured placeholder, never a measured zero).
@@ -442,6 +453,12 @@ facts; host readings from `/proc` and daemon `probe.*` metrics appear only on th
 (a refused listing counts once).
 Derived metrics are not produced. A selection resolving to no rows is successful with zero rows; only the seq-0
 "no tick yet" state is `unavailable`, and an unregistered requested metric yields no column.
+`limit.cpu.max.quota` and `limit.cpu.max.period` are Gauge metrics in microseconds, cgroup scope,
+`cgroupfs` source, with the Gauge-derived aggregation mask. For a readable `Q P` line, quota `Q` and
+period `P` are measured. For a readable `max P` line, quota is `unsupported` and period `P` is measured.
+If `cpu.max` is absent, quota is `unsupported` and period is `absent`. An unreadable or unparseable
+line marks both readings `unreadable`; no case publishes a measured zero. The effective CPU cap also
+depends on ancestor cgroups.
 
 4.8 **snapshot_at** — args `{"selection": Selection, "real_ns": i64, "tier": "auto|hot|warm|cold",
 "provenance": bool}`. REP result `{"resolved": {"tier": str, "bucket_real_ns": i64, "step_ms": u32,
@@ -1000,8 +1017,9 @@ peer that negotiated `< m`.
 unknown version is refused, `frame.rs` `decode_block`). Unknown optional sections are skipped by
 `len`; unknown required ones are refused, surfaced to the client caller as `unsupported-section`.
 9.3 A major change changes the frame grammar; only the 8-byte prefix survives it.
-9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it); `PROTO_MINOR` is 1 (`HOB-48`). The
-§3.6 time length is not a minor: it is layout version 1 (§13 V-1).
+9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it); minor 2 = the `cgroup_id`
+selector (§4.2). `PROTO_MINOR` is 2 (`HOB-48`, B9). The §3.6 time length is not a minor: it is layout
+version 1 (§13 V-1).
 
 ## 10. Wire error codes (closed list, minor 0 + 1)
 

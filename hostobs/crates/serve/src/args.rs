@@ -546,13 +546,26 @@ fn entity(object: &Obj<'_>) -> Result<Sel, ArgError> {
     if object.len() != 1 {
         return Err(fail(&object.path));
     }
-    object.only(&["inc", "path", "prefix", "all"])?;
+    object.only(&["inc", "cgroup_id", "path", "prefix", "all"])?;
     let Some(member) = object.members.first() else {
         return Err(fail(&object.path));
     };
     let key = object.key_of(member);
     match key {
         b"inc" => object.uint("inc", u64::MAX).map(Sel::Inc),
+        b"cgroup_id" => {
+            let id = object.object("cgroup_id")?;
+            id.only(&["dev", "inode"])?;
+            let dev = id.uint("dev", u64::MAX)?;
+            if dev == 0 {
+                return Err(fail(&join(&id.path, "dev")));
+            }
+            let inode = id.uint("inode", u64::MAX)?;
+            if inode == 0 {
+                return Err(fail(&join(&id.path, "inode")));
+            }
+            Ok(Sel::CgroupId { dev, inode })
+        }
         b"path" => {
             let path = join(&object.path, "path");
             if member.kind != Kind::Str {
@@ -695,7 +708,7 @@ mod tests {
     };
     use crate::limits::IntervalRule;
 
-    const PROTO: &str = "{\"major\":1,\"minor\":1}";
+    const PROTO: &str = "{\"major\":1,\"minor\":2}";
 
     /// `~` stands for a backslash, so no backslash-u sequence appears in this source.
     fn bs(text: &str) -> String {
@@ -737,7 +750,7 @@ mod tests {
         let expect = HelloArgs {
             client: "probe".to_string(),
             major: 1,
-            minor: 1,
+            minor: 2,
         };
         assert_eq!(hello(text.as_bytes()), Ok(expect));
         let spaced = " { \"proto\" : { \"minor\" : 0 , \"major\" : 1 } , \"client\" : \"\" } ";

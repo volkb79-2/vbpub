@@ -586,7 +586,7 @@ mod tests {
     use crate::tick::BlockBounds;
 
     const MS: u64 = 1_000_000;
-    const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":1}}"#;
+    const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":2}}"#;
     const CURRENT_ARGS: &str = r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
 
     fn req(corr: u32, verb: &str) -> Vec<u8> {
@@ -880,7 +880,7 @@ mod tests {
         }
 
         fn ready(&mut self, id: ConnId) {
-            let mut input = client_prefix(1);
+            let mut input = client_prefix(2);
             input.extend_from_slice(&req(1, "hello"));
             self.send(id, &input);
             self.pump(id, usize::MAX);
@@ -1222,7 +1222,7 @@ mod tests {
     fn path_hello_timer(d: &mut Driver, level: Level) {
         let id = d.open(level, 1000);
         register(d, id, 2, 1);
-        d.send(id, &client_prefix(1));
+        d.send(id, &client_prefix(2));
         let deadline_ms = d
             .server
             .limits()
@@ -1533,7 +1533,7 @@ mod tests {
     fn r20_hello_deadline_beats_the_stall_on_the_unread_prefix() {
         let mut d = Driver::new();
         let id = d.open(Level::Observe, 1000);
-        d.send(id, &client_prefix(1));
+        d.send(id, &client_prefix(2));
         d.tick(5_001 * MS);
         assert_eq!(d.close_code(id), Some(Code::Deadline));
         let last = d.server.take_final(id).expect("final");
@@ -1547,7 +1547,7 @@ mod tests {
         limits.observe.hello_deadline_ms = 10_000;
         let mut d = Driver::with(limits);
         let id = d.open(Level::Observe, 1000);
-        d.send(id, &client_prefix(1));
+        d.send(id, &client_prefix(2));
         d.tick(5_000 * MS);
         assert_eq!(d.close_code(id), None);
         d.tick(MS);
@@ -1611,9 +1611,9 @@ mod tests {
         let mut d = Driver::new();
         let undecided = d.open(Level::Observe, 1);
         let awaiting = d.open(Level::Operator, 1);
-        d.send(awaiting, &client_prefix(1));
+        d.send(awaiting, &client_prefix(2));
         let partial = d.open(Level::Observe, 2);
-        d.send(partial, &client_prefix(1));
+        d.send(partial, &client_prefix(2));
         assert_eq!(d.pump(partial, 5), 5);
         let swept = d.server.shutdown();
         assert_eq!(swept, vec![undecided, partial]);
@@ -1629,7 +1629,7 @@ mod tests {
     // ---- interleaving, status, control cap ----
 
     fn binary_script() -> Vec<u8> {
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         input.extend_from_slice(&req(2, "status"));
         input
@@ -1698,7 +1698,7 @@ mod tests {
     }
 
     fn pipeline_of_forbidden_requests() -> Vec<u8> {
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         for corr in 2..122 {
             input.extend_from_slice(&req(corr, "status"));
@@ -1941,12 +1941,12 @@ mod tests {
         limits.probe.max_block_bytes = query_cap.saturating_mul(4);
         let mut d = Driver::with(limits);
         let id = d.open(Level::Observe, 1);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         d.send(id, &input);
         d.pump(id, usize::MAX);
         let hello = d.take_out(id);
-        let prefix = server_prefix(1, 1);
+        let prefix = server_prefix(1, 2);
         assert_eq!(hello.get(..8), Some(prefix.as_slice()));
         let rep = frames(hello.get(8..).unwrap_or_default());
         assert_eq!(rep.len(), 1);
@@ -1992,7 +1992,7 @@ mod tests {
         let mut d = Driver::with(limits);
         assert_eq!(d.server.limits(), &unified);
         let id = d.open(Level::Observe, 1);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         d.send(id, &input);
         d.pump(id, usize::MAX);
@@ -2178,7 +2178,7 @@ mod tests {
         let mut d = Driver::new();
         for level in SERVED {
             let id = d.open(level, 1);
-            let mut input = client_prefix(1);
+            let mut input = client_prefix(2);
             input.extend_from_slice(&req(1, "hello"));
             d.send(id, &input);
             d.pump(id, usize::MAX);
@@ -2768,7 +2768,7 @@ mod tests {
 
     fn payload(seed: &mut u64) -> Vec<u8> {
         match xorshift(seed) % 9 {
-            0 => client_prefix(1),
+            0 => client_prefix(2),
             1 => req(1, "hello"),
             2 => req(2, "status"),
             3 => line(1, "hello", HELLO_ARGS),

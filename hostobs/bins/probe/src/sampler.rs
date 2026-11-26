@@ -58,6 +58,8 @@ const METRIC_MAPPINGS: &[MetricMapping] = &[
     ("cgroup.freeze", "cgroup.freeze", "cgroup.freeze"),
     ("cgroup.events", "cgevents.frozen", "cgevents.frozen"),
     ("cgroup.events", "cgevents.populated", "cgevents.populated"),
+    ("cpu.max", "limit.cpu.max.quota", "limit.cpu.max.quota"),
+    ("cpu.max", "limit.cpu.max.period", "limit.cpu.max.period"),
     ("cpu.stat", "cpu.usage_usec", "cpu.usage_usec"),
     ("cpu.stat", "cpu.user_usec", "cpu.user_usec"),
     ("cpu.stat", "cpu.system_usec", "cpu.system_usec"),
@@ -122,6 +124,7 @@ const METRIC_MAPPINGS: &[MetricMapping] = &[
 
 type MetricColumnIndex = BTreeMap<String, usize>;
 type EntityIndex = BTreeMap<u64, usize>;
+type CgroupKeyIndex = BTreeMap<CgroupKey, usize>;
 type LabelIndex = BTreeMap<String, usize>;
 
 /// The fixed facts of one sampler process.
@@ -146,6 +149,7 @@ pub struct Tick {
     scan_ms: u32,
     metric_columns: Arc<MetricColumnIndex>,
     entity_inc: EntityIndex,
+    entity_key: CgroupKeyIndex,
     entity_label: LabelIndex,
 }
 
@@ -160,6 +164,7 @@ impl Tick {
             scan_ms,
             metric_columns,
             entity_inc,
+            entity_key: CgroupKeyIndex::new(),
             entity_label,
         }
     }
@@ -168,6 +173,7 @@ impl Tick {
         data: TickData,
         scan_ms: u32,
         metric_columns: Arc<MetricColumnIndex>,
+        entity_key: CgroupKeyIndex,
     ) -> Tick {
         let (entity_inc, entity_label) = entity_index(&data);
         Tick {
@@ -175,6 +181,7 @@ impl Tick {
             scan_ms,
             metric_columns,
             entity_inc,
+            entity_key,
             entity_label,
         }
     }
@@ -204,6 +211,10 @@ impl Tick {
 
     pub(crate) fn row_for_inc(&self, inc: u64) -> Option<usize> {
         self.entity_inc.get(&inc).copied()
+    }
+
+    pub(crate) fn row_for_key(&self, key: CgroupKey) -> Option<usize> {
+        self.entity_key.get(&key).copied()
     }
 
     pub(crate) fn row_for_label(&self, label: &str) -> Option<usize> {
@@ -416,7 +427,13 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
             &self.metrics,
             &all_samples,
         );
-        Tick::with_metric_columns(data, scan_ms, Arc::clone(&self.metric_columns))
+        let entity_key = cgroup_key_index(&rows);
+        Tick::with_metric_columns(
+            data,
+            scan_ms,
+            Arc::clone(&self.metric_columns),
+            entity_key,
+        )
     }
 
     fn absent_samples(&self) -> Vec<Sample> {
@@ -456,6 +473,7 @@ impl<F: Fs, C: Clock> Sampler<F, C> {
                                 path: path.clone(),
                                 label: label.clone(),
                                 inc: inc.raw(),
+                                key,
                             });
                             published = true;
                         }
@@ -514,6 +532,14 @@ struct WalkedRow {
     path: PathBuf,
     label: String,
     inc: u64,
+    key: CgroupKey,
+}
+
+fn cgroup_key_index(rows: &[WalkedRow]) -> CgroupKeyIndex {
+    rows.iter()
+        .enumerate()
+        .map(|(row, walked)| (walked.key, row))
+        .collect()
 }
 
 fn empty_tick_data() -> TickData {
@@ -621,6 +647,9 @@ fn fill_cgroup<F: Fs>(
                 pressure = None;
             }
         }
+        let absent_quota = file == "cpu.max"
+            && reader == "limit.cpu.max.quota"
+            && matches!(snapshot.failure_of(file), Some(KernelError::Absent(_)));
         let sample = if let Some(result) = &pressure {
             match result {
                 Ok(contents) => contents
@@ -637,7 +666,11 @@ fn fill_cgroup<F: Fs>(
                 .copied()
                 .unwrap_or_else(|| missing(Quality::Absent))
         } else {
-            missing(failure_quality)
+            missing(if absent_quota {
+                Quality::Unsupported
+            } else {
+                failure_quality
+            })
         };
         set(positions, samples, published, sample);
     }
@@ -1031,6 +1064,23 @@ mod tests {
                 value(&tick, daemon, 1),
                 (0, Quality::Absent.code()),
                 "{daemon} is root-row only"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparseable_cpu_max_is_unreadable_not_a_measured_zero() {
+        let mut fs = MemFs::new();
+        fs.directory("/cg", 1);
+        fs.file("/cg/cpu.max", "200000 not-a-period\n", 2);
+
+        let mut sampler = sampler(fs, "/cg", 16, 64);
+        let tick = sampler.tick();
+        for name in ["limit.cpu.max.quota", "limit.cpu.max.period"] {
+            assert_eq!(
+                value(&tick, name, 0),
+                (0, Quality::Unreadable.code()),
+                "a parse failure carries no measured value for {name}"
             );
         }
     }
