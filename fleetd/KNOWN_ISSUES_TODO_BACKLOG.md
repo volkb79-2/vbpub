@@ -891,9 +891,9 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md H5, M1
 
 ## FD-042 Two schedulers book v1001: host-local weighted admission in the shared runner
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
+**State:** OPEN — P-fd-05 package C2 delivers the admission library only; it is not wired to a host agent or any caller. **Priority:** P1. **Filed:** 2026-11-24.
 
-runner: host-local weighted admission slots in run-job / fleet host start (weight from the job spec, budget from host /etc); remote-gate and fleetd both admit through it; probe reports held slots; closes FD-003/FD-004 at the host.
+`fleetd.admission` now supplies the stdlib host book: capacity checks, durable charges, a priority queue, aged reservations, and lease accounting. The remaining FD-042 work is the host agent and socket, wiring remote-gate, fleetd, run-gate and ciu callers to that one book, and exposing the held charges in the host probe. FD-003/FD-004 are not closed until that integration ships.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md H3
 

@@ -5,10 +5,12 @@ All notable changes to this project are recorded here.
 ## [Unreleased]
 
 ### Added
+- Add the stdlib host admission book for capacity fit, durable charges, flock liveness, priority queueing, aged reservations, and lease accounting. This is library-only and is not yet wired to the host agent or callers.
 - Collect, validate and consume `host-facts/2` with explicit null reasons, load, gate-slice, disk, guard and policy facts; `fleet facts validate` retains `/1` for one migration release.
 - Document the new facts and optional host policy keys without changing planner placement decisions; close FD-049's guard fact reshape.
 
 ### Changed
+- Assign prerequisite-missing exit code 79 in the fleetd runner contract; 73 is reserved by fleetd's runner and is not available for that result.
 - `fleet facts collect` emits `host-facts/2` only.
 - The planner reads `/2` `cpu.online` and `memory.total_bytes`, and refuses `/1`; legacy `/1` `cpu.for_lanes` and `memory.for_lanes_bytes` are therefore accepted only by `fleet facts validate` during the migration release and no longer affect placement.
 - The collector reads the parent control-plane slice's `memory.min` again and reports it as `control_plane.memory_min_bytes`; the planner ignores it.

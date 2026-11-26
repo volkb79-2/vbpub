@@ -7,6 +7,64 @@ collector, a deterministic RAM-first planner, and a one-shot lite campaign
 controller. The controller uses the existing identity-checked hx wrapper and
 runner jobs; it is not a daemon and has no socket or lease protocol.
 
+## Host admission core (P-fd-05 C2)
+
+`fleetd.admission` is a standard-library-only host admission library. It adds
+accounting and decisions only: it does not open sockets, create containers, or
+add CLI verbs, and fleetd's current planner and runners do not call it yet. The
+host agent package will wire callers to this book.
+
+`HostCapacity` is the typed projection of the admission-relevant `host-facts/2`
+fields. Each input is a `Fact[T]`: a known value has no reason; an unavailable
+value must carry a non-empty reason. A required unknown fact keeps that reason
+and returns 75; the library never substitutes a guessed capacity, policy, or
+guard value. Policy is host-owned and includes footprint charges, planned RAM
+and CPU caps, PSI and disk floors, allowed priorities, `aging_s`, and the
+required `legacy_charge_bytes`.
+
+`AdmissionBook(state_dir, clock, waiter)` makes one serialized decision at a
+time. The caller supplies the state directory (production uses
+`/var/lib/fleetd-agent/`). Under `queue.lock`, it reloads admitted records and
+waiters, checks live facts, and writes the admitted record atomically before
+releasing the lock. The executor holds that job's flock for its lifetime. A
+corrupt or unreadable record refuses further admission with 75 and keeps its
+charge. Dead waiting entries are removed only after their waiter flock can be
+acquired; they cannot reserve capacity.
+
+The RAM fit is the minimum of physical RAM after host reserve and existing
+charges, gate-slice ceiling after warm use and unconsumed reservations, and the
+per-host planned-byte cap after existing charges. Static eligibility refuses
+an impossible class or planned-core request with 2. Live admission also checks
+load, memory PSI, required disk floors, cgroup v2, and the freeze rule. Listed
+legacy jobs without an `EXIT` marker receive the required policy memory charge;
+because their planned-core use is unknown, they hold new admission with 75.
+
+The shared wait queue clamps priority to the authenticated group's host policy,
+orders by priority, submission time, then group-prefixed job id, and reserves
+RAM and planned cores for an aged head that cannot yet fit. An impossible head
+refuses with 2. Expiry withdraws the waiter and confirms that it never started
+before returning 75. The injected clock controls queue aging and wait expiry;
+there is no run wall-clock limit.
+
+Job ids use `^[A-Za-z0-9][A-Za-z0-9._-]*$`, with a maximum length of 128
+(`MAX_JOB_ID_LENGTH`), and the authenticated group must match the id prefix.
+Status and cancellation compare that group with the stored record. The /1
+request digest covers its contract fields except `job_id` and
+`requested_by.version`. A non-null `shard` or `resources.cpu_set` is refused
+with 2; both remain reserved in /1.
+
+Lease records use the same queue and capacity charges. They persist pending and
+bound state, bind once to an immutable container id, and remain tombstoned on
+revoke. The injected inspector releases a charge only for an explicit
+no-such-object answer; present, unknown, errors, and exceptions retain it.
+Released lease names remain tombstoned and cannot be reused. The package does
+not perform Docker operations; the host agent must enforce the bind/start and
+reconciliation protocol around this accounting API.
+
+The closed exit-code table assigns 79 to prerequisite-missing; 73 is reserved
+by fleetd's runner. Code 75 is a missing required fact, a held admission, or a
+wait withdrawn before start; code 2 is a request or static-eligibility refusal.
+
 ## Contracts
 
 - `host-facts/2` carries CPU, load, Geekbench, memory, PSI, gate-slice, disks,
