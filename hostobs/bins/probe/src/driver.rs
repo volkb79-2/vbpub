@@ -1311,9 +1311,10 @@ mod tests {
         let root = Path::new("fixture-cgroup-root");
 
         for target_identity in [(0, 23, true), (10, 0, true)] {
+            // The root shares the target's device, so only the zero checks can refuse the label.
             let key = read_cgroup_key(&fixture, root, |path| {
                 if path == root {
-                    Ok((10, 1, true))
+                    Ok((target_identity.0, 1, true))
                 } else {
                     assert_eq!(path, root.join("child"));
                     Ok(target_identity)
