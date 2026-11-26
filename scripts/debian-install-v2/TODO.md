@@ -582,3 +582,30 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 **Do.** Either pass the resolved `config.state_dir` to the allow-list and compare against it, or move that check into the installer-side caller where the config is known. Do not widen the current check as an alternative.
 
 **Close when.** A state-dir root other than `config.state_dir` is refused with a named error, and the legitimate installer argv (both rung-parametrized cases) is still accepted.
+
+## OPEN (DIV2-BL-21, 2026-11-26): the install-time Geekbench record as the CPU normalization source (recorded major's reference machine = 1.0)
+
+**Source.** Operator, 2026-11-25: every host's Geekbench (single and multi thread) runs at OS install time and the result is persisted as the CPU normalization source for assay and fleetd.
+
+**Exists already (read on origin/main, no live host checked).** The default-on stage-two step `run_cpu_benchmark` runs `tools/cpu_benchmark.py` once and writes `/var/lib/mdt/host-facts/cpu-benchmark.json` (mode 0644, schema `mdt-host-cpu-benchmark/1`, with `single_core` and `multi_core`; the claim link stays in a separate 0600 file). `mdt host-setup cpu-benchmark` writes the same record on hosts not installed by v2. fleetd reads it through `paths.geekbench_record` in `/etc/fleetd/facts.toml` and reports it in `host-facts/1`; cgprofile reads it (`cgprofile/src/cgprofile/machine.py`).
+
+**Proposal.** Keep that path and schema; add no second file. fleetd host facts stay the report channel (`geekbench_major`, `geekbench_version`, `baseline_score`, `single_core`, `multi_core`, `basis`). Consumers derive `cpu_factor = single_core / baseline_score`; the record does not store the factor.
+
+**Operator rules (2026-11-26).** Every score is recorded together with its Geekbench major version (the host record has `tool_major`; every place that copies or reports a score keeps the major beside it). A host without a record keeps its raw CPU values plus the processor model; no factor is invented for it.
+
+**Gaps.** The record can be missing: the `vanilla` profile turns the step off, a failed step is advisory (`warned`), and aarch64 has no verified pin. A record without scores (tool exit 4) needs `--resolve`; `multi_core` may be null. The GB7 stdout shape is unverified. An existing record is not re-measured by an install (readers reject a CPU model or vCPU mismatch).
+
+**Unit (operator decision 2026-11-26).** The recorded Geekbench major's own reference machine is 1.0 (`baseline_score`; GB7: 2500 single-core). 1500 is retired. Consumers derive `cpu_factor = single_core / baseline_score` and never compare across majors. assay SPEC TIM-030 (which still names 1500) and cgprofile CP-59 must follow this and the no-record rule above.
+
+**Close when.** The factor and the major rule are written in one consumer-facing spec, assay and fleetd use it, and every estate host has a record or a named reason for none.
+
+## OPEN (DIV2-BL-22, 2026-11-26): the R2 lane depends on host load through the derived per-candidate bound, and cannot resume
+
+**Source.** Survivors round 2 R2 campaigns and the pi final review (2026-11-25/26).
+
+**Finding.** `budget_per_candidate` is `auto`, derived from the baseline measured at start. A quiet baseline (46.5 s, bound 139.6 s) followed by a loaded host ended eight slow `layout_policy.py` candidates as `budget_exceeded` with reason `LANE_TIMEOUT` although the lane bound was far off; under a loaded baseline (97.8 s, bound 293 s) the same head had none. Resume rejects every earlier record in a new checkout (assay B577: the `PYTHONPATH` passthrough digest differs), and a `kind = "command"` lane cannot shard.
+
+**Do.** Convert the lane to a native R2 assay lane (shards, resume across checkouts) and take the verdict off host load: assay's CPU-time bound when it lands, else an explicit `budget_per_candidate` from the measured slow candidates (it is part of the judge identity, so it rebinds records). Check whether one per-candidate timeout should stop the remaining candidates. Record the four equivalent survivors (`installer.py:807`, `:811`, `:4109`, `layout_policy.py:236`; proofs in CHANGES.md, not waivers). In the `installer.py:4044` survivor test, also assert that no create-path `btrfs subvolume create` is planned.
+
+**Close when.** A 3-shard run with `--merge-shards` passes on two hosts, a second run resumes finished records, and the verdict does not change with host load.
+

@@ -11192,6 +11192,19 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
         if lane.get("_selective_assay") or lane.get("_r2_flex"):
             fail(f"selective assay flags for lane {lane_name!r} require an "
                  f"inventory proving that it declares R2: {why}")
+        if lane.get("_assay_forward"):
+            # RG-318 (review r2 M1): the floor above is read FROM the
+            # inventory, so a judge whose inventory cannot be read at all used
+            # to reach the lane, mount, admission and `docker run` and be
+            # refused by the in-lane capability probe -- the very judge RG-318
+            # exists to refuse before a container starts. `fail()` (exit 2)
+            # is the convention this branch already uses for the same fact
+            # (no inventory) one condition up; the version-based floor stays
+            # GateNotRunError/`judge-floor`, because only a readable inventory
+            # can state a version.
+            fail(f"arguments after '--' for lane {lane_name!r} need an "
+                 f"inventory proving the judge accepts them "
+                 f"(assay >= 12.3.0, RG-318): {why}")
         if base_flag:
             fail(f"--base {base_flag!r} was given but run-gate cannot tell "
                  f"whether lane {lane_name!r} delegates its comparison base: "
@@ -11242,6 +11255,25 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
                 f"assay lane {lane['assay_lane']!r} has version "
                 f"{assay_version!r}, which cannot be shown to support "
                 f"{flag}; requires assay >= {floor}")
+    if lane.get("_assay_forward"):
+        # RG-318: forwarded store flags need a judge that reports them in its
+        # own `capabilities` document, i.e. Assay >= 12.3.0. The floor is
+        # stated HERE, from the inventory version, so a too-old judge refuses
+        # by name before a container starts; the in-lane capability probe
+        # remains the check that actually decides (an unknown schema or an
+        # unlistable flag is refused there, whatever the version claims).
+        if (not isinstance(assay_version, str)
+                or not assay_inventory_version_meets_floor(
+                    assay_version, ASSAY_FORWARD_ASSAY_FLOOR)):
+            floor = ".".join(str(part)
+                             for part in ASSAY_FORWARD_ASSAY_FLOOR)
+            raise GateNotRunError(
+                "judge-floor",
+                f"assay lane {lane['assay_lane']!r} has version "
+                f"{assay_version!r}, which cannot be shown to accept "
+                f"arguments after '--'; requires assay >= {floor} "
+                f"(RG-318) -- update the checkout, or re-pin the judge to "
+                f">= {floor}")
     if entry.get("base_source") != "request":
         if base_flag:
             fail(f"--base {base_flag!r} was given but assay lane "
@@ -14849,8 +14881,16 @@ def git_safe_directory_setup() -> list[str]:
 # through and gives each shard its own lane instance.
 R2_SHARD_MAX = 64
 R2_FLEX_ASSAY_FLAG = "--merge-shard-store"
-#: Review B2: the flexible-campaign flags need this judge (B529-B531).
-R2_FLEX_ASSAY_FLOOR = (12, 2, 0)  # the help token proving judge support
+#: Review B2: the flexible-campaign flags need this judge (B529-B531);
+#: the help token proving judge support.
+R2_FLEX_ASSAY_FLOOR = (12, 2, 0)
+#: RG-318: the FIRST assay release whose judge reports a `capabilities`
+#: document and accepts the forwarded store flags Run-Gate passes after `--`.
+#: A lane that forwards arguments is held to it by the inventory version, the
+#: same way the RG-265 flexible flags are held to 12.2.0 above; the run-time
+#: capability probe stays the check (a judge that answers it is accepted on
+#: its own document -- an older build can never answer it).
+ASSAY_FORWARD_ASSAY_FLOOR = (12, 3, 0)
 
 
 def r2_flex_flags_given(args: argparse.Namespace) -> bool:
@@ -14893,11 +14933,13 @@ def attach_r2_flex(lane: dict, lane_name: str,
             fail(f"--merge-shards must be 1..{R2_SHARD_MAX} "
                  f"(got {args.merge_shards!r})")
         flex["merge_shards"] = int(args.merge_shards)
-    if bool(args.carry_over) != (args.carry_over_reason is not None):
-        fail("--carry-over and --carry-over-reason are required together")
+    # RG-297 (T12): `--carry-over` paired with a non-empty `--carry-over-reason`
+    # and the EXISTENCE of a candidate file are ASSAY's rules, not Run-Gate's
+    # (mutation_store.py pairs the reason, cli.py's reader opens the file).
+    # Run-Gate only resolves a path and proves it is visible in the lane
+    # (validate_r2_flex_paths); a bad pairing or an absent file is refused by
+    # the judge that owns it, unreworded.
     if args.carry_over_reason is not None:
-        if not args.carry_over_reason.strip() or "\0" in args.carry_over_reason:
-            fail("--carry-over-reason must be non-empty text")
         flex["carry_over_reason"] = args.carry_over_reason
     for key, values in (("carry_over", args.carry_over),
                         ("merge_state", args.merge_state)):
@@ -14906,10 +14948,8 @@ def attach_r2_flex(lane: dict, lane_name: str,
     for key, value in (("only_candidates", args.only_candidates),
                        ("exclude_candidates", args.exclude_candidates)):
         if value is not None:
-            path = os.path.abspath(os.path.expanduser(value))
-            if not os.path.isfile(path):
-                fail(f"--{key.replace('_', '-')} {value!r} is not a file")
-            flex[key] = path
+            # Assay reads the candidate file; Run-Gate only resolves it.
+            flex[key] = os.path.abspath(os.path.expanduser(value))
     lane = copy.deepcopy(lane)
     # Review B3: every shard artifact is keyed by the Run-Gate lane too, so
     # two Run-Gate lanes sharing one Assay lane never share a shard's store,
@@ -14926,25 +14966,237 @@ def attach_r2_flex(lane: dict, lane_name: str,
     return lane, run_name
 
 
-def validate_r2_flex_paths(flex: dict, repo: Path, worktree: Path) -> None:
+def validate_r2_flex_paths(flex: dict, repo: Path, worktree: Path,
+                           extra: list[tuple[str, str]] | None = None) -> None:
     """Every path handed to the judge must be visible in the lane
     environment: run-gate mounts the checkout (and its `.run-gate` state
     root), so a source outside `repo`/`worktree` is refused here rather than
-    as a confusing in-container `not an existing directory`."""
+    as a confusing in-container `not an existing directory`.
+
+    `extra` (RG-297) carries the `(flag, value)` pairs of an assay lane's
+    opaque `--` arguments: the same visibility rule, no Assay semantics. A
+    `--merge-manifest FILE` is checked on its PARENT DIRECTORY, because the
+    stores a manifest names resolve relative to the manifest itself, and
+    Run-Gate never opens the manifest."""
     roots = [repo.resolve(), worktree.resolve()]
+    candidates: list[tuple[str, object]] = []
     for key in ("carry_over", "merge_state", "only_candidates",
                 "exclude_candidates"):
         values = flex.get(key)
         if values is None:
             continue
         for value in values if isinstance(values, list) else [values]:
-            resolved = Path(value).resolve()
-            if not any(resolved == root or resolved.is_relative_to(root)
-                       for root in roots):
-                fail(f"--{key.replace('_', '-')} {value!r} is outside the "
-                     f"checkout {repo} and the judged worktree {worktree}; "
-                     "the lane environment cannot see it -- copy it under "
-                     "<checkout>/.run-gate/ (git-ignored) first")
+            candidates.append((key.replace('_', '-'), value))
+    for flag, value in extra or []:
+        name = flag.lstrip("-")
+        if flag == "--merge-manifest":
+            value = os.path.dirname(value) or "."
+        candidates.append((name, value))
+    for key, value in candidates:
+        resolved = Path(value).resolve()
+        if not any(resolved == root or resolved.is_relative_to(root)
+                   for root in roots):
+            fail(f"--{key} {str(value)!r} is outside the "
+                 f"checkout {repo} and the judged worktree {worktree}; "
+                 "the lane environment cannot see it -- copy it under "
+                 "<checkout>/.run-gate/ (git-ignored) first")
+
+
+# RG-297 (T12): an assay lane may pass Assay's OWN flags after `--`. Run-Gate
+# forwards them OPAQUELY -- it never restates Assay's store semantics (carry-over
+# pairing, candidate-file reading, rejudge buckets, manifest contents) -- and
+# checks only what is genuinely its own: the flags it injects or owns itself,
+# and the visibility of every host path the lane script will resolve.
+ASSAY_FORWARD_INJECTED = ("--state-dir", "--progress",
+                          "--progress-heartbeat", "--verdict-json", "--file",
+                          "--request-base")
+ASSAY_FORWARD_OWNED = ("--jobs", "--shard", "--merge-shards")
+#: Path-valued Assay flags: the lane environment mounts only the checkout and
+#: the judged worktree, so a value outside them is unseeable and refused.
+ASSAY_FORWARD_PATH_FLAGS = ("--merge-state", "--merge-shard-store",
+                            "--merge-manifest", "--carry-over",
+                            "--carry-forward", "--reuse-from",
+                            "--only-candidates", "--exclude-candidates",
+                            "--candidates-file")
+
+
+def assay_forward_owned_names(args: argparse.Namespace) -> set[str]:
+    """The Assay flag NAMES this invocation's own options already put on the
+    judge's argv.
+
+    A forwarded flag with the same name is not a second spelling of the same
+    request: `argparse` is last-wins for a replace-valued flag, so the judge
+    would run a selection Run-Gate never recorded, and an append-valued flag
+    would silently ADD a store next to the one the operator declared. Both
+    are refused by name instead (RG-297 review M5).
+
+    `--shard K/N` contributes `--merge-state` because that is what it really
+    adds to the judge's argv (the main store it reuses finished records
+    from), not as a convenience alias."""
+    names: set[str] = set()
+    if args.carry_over:
+        names.add("--carry-over")
+    if args.carry_over_reason is not None:
+        names.add("--carry-over-reason")
+    if args.merge_state:
+        names.add("--merge-state")
+    if args.shard is not None:
+        names.update(("--shard", "--merge-state"))
+    if args.merge_shards is not None:
+        names.add("--merge-shard-store")
+    for value, flag in ((args.only_candidates, "--only-candidates"),
+                        (args.exclude_candidates, "--exclude-candidates")):
+        if value is not None:
+            names.add(flag)
+    if args.reuse_from is not None:
+        names.add("--reuse-from")
+    if args.rejudge:
+        names.add("--rejudge")
+    if args.rejudge_outcome is not None:
+        names.add("--rejudge-outcome")
+    return names
+
+
+def parse_assay_forward(tokens: list[str], base_dir: Path | str,
+                        own_names: set[str] | None = None
+                        ) -> tuple[list[str], list[tuple[str,
+                                                          str]]]:
+    """Split Run-Gate's own rules out of an assay lane's `--` arguments.
+
+    Pure: no I/O, no manifest is opened. Returns the tokens verbatim (in
+    order, either spelling kept as given) and the `(flag, value)` pairs whose
+    value is a host path, made absolute AGAINST `base_dir`. Everything else --
+    including which values combine, what a candidate file holds, whether a
+    manifest is consistent -- is ASSAY's rule, refused by Assay.
+
+    `base_dir` is the project directory the generated lane script `cd`s into:
+    the SAME directory the judge resolves a relative value against. Resolving
+    against Run-Gate's own cwd instead would bless a path the lane never
+    opens -- Run-Gate never `chdir`s, so in a monorepo (or under
+    `--worktree`) that cwd is routinely a different tree. The token keeps the
+    caller's exact string; only the VALUE CHECKED is absolute.
+
+    `own_names` are the flag names this invocation's own options already put
+    on the argv (`assay_forward_owned_names`): forwarding one of them is
+    refused rather than handed to the judge as a duplicate."""
+    owned = set(ASSAY_FORWARD_INJECTED) | set(ASSAY_FORWARD_OWNED)
+    own_names = own_names or set()
+    path_flags = set(ASSAY_FORWARD_PATH_FLAGS)
+    forwarded: list[str] = []
+    pairs: list[tuple[str, str]] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("--"):
+            if not forwarded:
+                fail(f"argument {token!r} after '--' can only be the value of "
+                     "the preceding flag; give it as `--flag VALUE`")
+            # Opaque: whatever a caller passes after a flag is that flag's
+            # value, never re-read as a flag by Run-Gate.
+            forwarded.append(token)
+            index += 1
+            continue
+        flag, sep, inline = token.partition("=")
+        if flag in owned:
+            if flag in ASSAY_FORWARD_INJECTED:
+                fail(f"{flag} is injected by Run-Gate")
+            fail(f"{flag} is owned by Run-Gate: give it before '--' "
+                 "(or drop it)")
+        if flag in own_names:
+            # Already on this invocation's argv from a Run-Gate option: a
+            # second copy would be last-wins (replace-valued) or silently
+            # additive (append-valued) at the judge. Review r2 L3: the remedy
+            # is to DROP the copy after '--' -- "give it before '--'" is dead
+            # advice here, because it already IS before '--'.
+            fail(f"{flag} is already set by a Run-Gate option in this "
+                 "invocation; drop it after '--'")
+        if flag not in path_flags:
+            forwarded.append(token)
+            index += 1
+            continue
+        if sep:
+            raw = inline
+            if not raw:
+                fail(f"{flag} after '--' requires a value")
+            forwarded.append(token)
+            index += 1
+        else:
+            if index + 1 >= len(tokens) or tokens[index + 1].startswith("--"):
+                fail(f"{flag} after '--' requires a value")
+            raw = tokens[index + 1]
+            forwarded.extend([token, raw])
+            index += 2
+        value = os.path.expanduser(raw)
+        if not os.path.isabs(value):
+            # Relative to the directory the lane RUNS in, never to the
+            # invoking cwd (see the docstring: they differ across a monorepo
+            # and under --worktree).
+            value = os.path.join(str(base_dir), value)
+        pairs.append((flag, os.path.abspath(value)))
+    return forwarded, pairs
+
+
+def assay_forward_probe(command: str, flags: list[str]) -> str:
+    """The in-lane capability probe for an assay lane's forwarded flags.
+
+    One shell group, so a refusal leaves the lane before Assay runs. The
+    judge is asked for its own closed `capabilities --json` document and
+    Run-Gate reads ONLY `schema` and `commands.run`: every other key is the
+    judge's business, and an UNKNOWN schema is refused rather than
+    reinterpreted. The flag test is a JSON parse in Python (never a grep on
+    the document's text).
+
+    A non-zero exit or unparseable output refuses by name. A judge that
+    refuses `capabilities` itself (Assay before 12.3.0, or a build without
+    its required analysis package) keeps ITS OWN one line, unreworded: there
+    is no degraded mode and no fallback to the `run --help` probe, which
+    stays only for Run-Gate's OWN flags."""
+    wanted = json.dumps(flags)
+    code = f"""import json, sys
+
+document = None
+raw = sys.stdin.read()
+try:
+    document = json.loads(raw)
+except ValueError:
+    document = None
+if not isinstance(document, dict):
+    print("run-gate: this judge did not return a capability document "
+          "(assay capabilities --json); arguments after '--' cannot be "
+          "checked -- drop them or use a judge with `assay capabilities`",
+          file=sys.stderr)
+    sys.exit(2)
+schema = document.get("schema")
+if schema != "assay-capabilities/2":
+    print("run-gate: this judge reports capability document schema "
+          f"{{schema!r}}; only 'assay-capabilities/2' is understood",
+          file=sys.stderr)
+    sys.exit(2)
+commands = document.get("commands")
+supported = commands.get("run") if isinstance(commands, dict) else None
+if not isinstance(supported, list):
+    print("run-gate: this judge's capability document lists no "
+          "commands.run; arguments after '--' cannot be checked",
+          file=sys.stderr)
+    sys.exit(2)
+for flag in {wanted}:
+    if flag not in supported:
+        print(f"run-gate: this judge does not support {{flag}} "
+              "(assay capabilities)", file=sys.stderr)
+        sys.exit(2)
+"""
+    # The `printf` that feeds the parser MUST stay the LAST command of this
+    # group: the group is the left operand of the caller's `&&` chain, where
+    # bash ignores `errexit`, so the group's status is whatever its last
+    # command returned. Appending anything after it (a `:`, a `cd`, a cleanup)
+    # would hand the chain that command's status instead of the refusal.
+    return (
+        "{ __rg_fw_out=$(" + command + " capabilities --json 2>&1); "
+        "__rg_fw_rc=$?; "
+        "if [ \"$__rg_fw_rc\" -ne 0 ]; then "
+        "printf '%s\\n' \"$__rg_fw_out\" >&2; exit 2; fi; "
+        f"printf '%s\\n' \"$__rg_fw_out\" | python3 -c {shlex.quote(code)}; "
+        "__rg_fw_pr=$?; if [ \"$__rg_fw_pr\" -ne 0 ]; then exit 2; fi; }")
 
 
 def r2_flex_record(flex: dict) -> dict:
@@ -15163,6 +15415,10 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                        else repo / ".run-gate")
     flex_argv, flex_dirs = r2_flex_argv(lane, state_root_path, main_state_dir)
     flex = lane.get("_r2_flex") or {}
+    # RG-297: the assay lane's own `--` arguments, appended AFTER Run-Gate's
+    # argv so Assay sees both, and probed against the judge's capability
+    # document (below) instead of Run-Gate restating Assay's rules.
+    forward = list(lane.get("_assay_forward") or [])
     state_descendants = state_dir.relative_to(state_root_path).parts
     quoted_root = shlex.quote(str(state_root_path))
     unavailable = shlex.quote(
@@ -15204,6 +15460,18 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
             f"{{ __rg_flex_h=$({command} run --help 2>&1) || true; "
             f'case "$__rg_flex_h" in *{R2_FLEX_ASSAY_FLAG}*) : ;; '
             f"*) printf '%s\\n' {missing} >&2; exit 2 ;; esac; }}")
+    if forward:
+        # RG-297: a forwarded flag is Assay's rule, but the JUDGE must
+        # actually accept it. The judge's own closed capability document is
+        # the only fact worth reading here -- a name list of `run` flags,
+        # versioned so an unknown document is refused rather than guessed at.
+        # Not every judge has it (the released Assay 12.2.0 does not), and a
+        # judge whose document cannot be read or whose analysis package is
+        # absent refuses with ITS OWN one line, passed through unreworded:
+        # there is no degraded mode and no fallback to `run --help`.
+        names = sorted({token.split("=", 1)[0] for token in forward
+                        if token.startswith("--")})
+        parts.append(assay_forward_probe(command, names))
     progress = assay_progress_rel(assay_artifact_lane(lane))
     run_argv = ["run", lane["assay_lane"], "--file", "assay.toml",
                 "--verdict-json", verdict, "--resume", "--progress",
@@ -15226,6 +15494,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     if selective.get("rejudge_outcome"):
         run_argv += ["--rejudge-outcome", selective["rejudge_outcome"]]
     run_argv += flex_argv
+    run_argv += forward
     # RG-85: the test command needs a real, writable path inside the selected
     # checkout mount. A literal such as `/worktree/.run-gate` is not a
     # namespace fact: tester-unified runs at the mounted checkout's actual
@@ -21554,13 +21823,20 @@ def _dispatch(argv: list[str] | None = None, *,
         if args.footprint_lanes and args.target:
             fail("use either the positional footprint query lane or repeatable "
                  "--lane for a merged write, not both")
-        if args.rejudge_outcome and not args.rejudge:
-            fail("--rejudge-outcome requires at least one --rejudge ID")
+        # RG-297: `--rejudge-outcome` without `--rejudge` is ASSAY's shape to
+        # refuse, not Run-Gate's -- Assay documents the bucket as a union
+        # with the `--rejudge` ids, and a run that selects by bucket alone
+        # is legal there.
         if args.rejudge_contaminated:
             if args.lane is None or args.lane in (
                     "doctor", "history", "footprint", "validate-pointers",
                     "status"):
                 fail("--rejudge-contaminated applies only to an assay R2 lane")
+            # RG-297: the verb resolves its own selection from history, so an
+            # opaque store request after `--` would silently lose its target.
+            if args.lane_args:
+                fail("--rejudge-contaminated forces its own selection; it "
+                     "cannot be combined with arguments after '--'")
             if (args.rejudge or args.reuse_from is not None
                     or args.rejudge_outcome is not None
                     or args.jobs is not None):
@@ -21842,12 +22118,29 @@ def _dispatch(argv: list[str] | None = None, *,
                 admission_managed=_admission_managed)
         if lane_args:
             if lane["kind"] != "command":
-                fail(f"lane {args.lane!r} is an assay lane and does not accept "
-                     "selective command arguments")
-            if not lane.get("accepts_args", False):
-                fail(f"lane {args.lane!r} does not declare accepts_args = true")
-            lane = copy.deepcopy(lane)
-            lane["_request_args"] = list(lane_args)
+                if lane["kind"] != "assay":
+                    fail(f"lane {args.lane!r} has kind {lane['kind']!r} and "
+                         "does not accept selective command arguments")
+                # RG-297: an assay lane forwards ITS OWN flags opaquely:
+                # Run-Gate validates only the flags it injects or owns and
+                # the visibility of the host paths; every store semantic
+                # (carry-over pairing, candidate files, manifests, buckets)
+                # stays Assay's rule.
+                lane = copy.deepcopy(lane)
+                # The forwarded path values resolve against `project_dir`,
+                # the directory the lane will `cd` into (already relocated
+                # under --worktree), never this invocation's cwd.
+                forward, forward_paths = parse_assay_forward(
+                    list(lane_args), project_dir,
+                    assay_forward_owned_names(args))
+                lane["_assay_forward"] = forward
+                lane["_assay_forward_paths"] = forward_paths
+            else:
+                if not lane.get("accepts_args", False):
+                    fail(f"lane {args.lane!r} does not declare accepts_args = "
+                         "true")
+                lane = copy.deepcopy(lane)
+                lane["_request_args"] = list(lane_args)
         if assay_selective:
             if lane["kind"] != "assay":
                 fail(f"--reuse-from, --rejudge and --rejudge-outcome are "
@@ -21973,8 +22266,10 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail("--rejudge requires a non-empty candidate ID")
             if selected.get("rejudge_outcome") == "":
                 fail("--rejudge-outcome requires a non-empty bucket")
+        if lane.get("_r2_flex") or lane.get("_assay_forward_paths"):
+            validate_r2_flex_paths(lane.get("_r2_flex") or {}, repo, worktree,
+                                   extra=lane.get("_assay_forward_paths"))
         if lane.get("_r2_flex"):
-            validate_r2_flex_paths(lane["_r2_flex"], repo, worktree)
             refuse_missing_merge_shard_stores(lane, repo, eff_proj, env)
         if request_base:
             # R-05: mechanics are visible before execution, live AND dry.
@@ -22036,6 +22331,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 # its verdict says.
                 record["selective"] = True
                 record["r2_flex"] = r2_flex_record(lane["_r2_flex"])
+            if lane.get("_assay_forward"):
+                # RG-297: an opaque Assay store-flag request selects its own
+                # candidates (or folds other stores in), exactly like a shard:
+                # it never certifies the whole lane's duration either.
+                record["selective"] = True
+                record["assay_forward"] = list(lane["_assay_forward"])
             if assay_selective:
                 record["selective"] = True
                 selected = lane.get("_selective_assay", {})

@@ -217,9 +217,32 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
 
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
-    assert "source roots MUST be unchanged between them" in spec
+    # KI-211: cmru's two R2 tools pass `delegated=True` to Assay's base
+    # resolution because the lane supplies the comparison base itself. That is a
+    # call-site keyword argument, NOT a lane declaration: no cmru lane declares
+    # `judge.base_source` (Assay refuses it under `whole_target`). Pin the real
+    # call sites, not a phrase about lane configuration.
+    tools = (ROOT / "tools").resolve()
+    for tool, function in (
+        ("check_assay_baseline.py", "resolve_base"),
+        ("check_assay_baseline.py", "base_resolution_mode"),
+        ("mutation_campaign.py", "resolve_base"),
+    ):
+        source = (tools / tool).read_text(encoding="utf-8")
+        assert re.search(
+            rf"assay_git\.{function}\([^)]*delegated=True", source,
+        ), f"{tool} must delegate its base to Assay ({function})"
+    assert "delegated=True" in spec
+    # The docs must not claim a lane declares the base (M1): no cmru lane does.
+    for document in ("docs/SPEC.md", "docs/DESIGN-GUIDE.md", "docs/CONSUMERS.md", "README.md", "CHANGES.md"):
+        assert 'judge.base_source = "request"' not in (ROOT / document).read_text(encoding="utf-8"), document
+    assert "source roots MUST be unchanged between them" not in spec
 
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    for lane_name in ("cmru", "cmru-r0-r1", "cmru-first-release-r2"):
+        # No cmru lane declares a base; the delegation is the tools' own call.
+        assert "base_source" not in assay_config[lane_name]["judge"]
+        assert "base" not in assay_config[lane_name]["judge"]
     lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
     # R1 needs the complete baseline run to produce its whole-target coverage judgment.

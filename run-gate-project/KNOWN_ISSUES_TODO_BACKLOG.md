@@ -187,7 +187,7 @@ SPEC §9.
 | RG-294 | private scratch directories leak into the repository | Major | FIXED 2026-11-24 (P-core-01) |
 | RG-295 | no owner-side scratch prune | Minor | FIXED 2026-11-24 (P-core-01) |
 | RG-296 | projects restate lane rules instead of checking them | Minor | FIXED IN THIS BRANCH (P-core-08) |
-| RG-297 | run-gate re-validates Assay flags it should forward opaquely | Minor | OPEN 2026-11-24 (Opus design review) |
+| RG-297 | run-gate re-validates Assay flags it should forward opaquely | Minor | FIXED IN THIS BRANCH (RG-297) |
 | RG-298 | durable R2 store transport is not shipped or re-seeded | Minor | OPEN 2026-11-24 (Opus design review; owner T3/T1, file only) |
 | RG-299 | a signal during scratch cleanup re-raises after the verdict | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
 | RG-300 | `doctor --prune` ignores `--worktree` and imported lane budgets | Minor | OPEN 2026-11-24 (P-core-01 review round 1) |
@@ -205,6 +205,11 @@ SPEC §9.
 | RG-312 | R-59 does not cover enclosing `kind = "command"` lanes or consumer timeouts; P-core-RG307 r1 follow-ups | Minor | OPEN 2026-11-24 (P-core-RG307 review r1; the two known enclosing budgets were fixed forward) |
 | RG-313 | `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record` asserts "no direct child left" immediately after the client exits, racing the fake `docker logs -f` shell's 0.2 s `sleep` window | Minor | OPEN 2026-11-24 (rg307b gate-full on v1001, assay-r1 R0; passed in the selftest lane on the same sha) |
 | RG-314 | `lanes --check` does not warn when a lane's env value contains `{worktree}` AND the same variable is in the Assay lane's `env_passthrough`: Assay folds passthrough values into `judge_sha256`, so every remote-gate throwaway checkout rejects a seeded resume | Minor | OPEN 2026-11-24 (rollback `rgw-r2-20261124T162538-r1002`, `rejected_total=14`, Assay B577) |
+| RG-315 | a remote r2 lane does not collect `r2-progress.jsonl` into `artifacts.tgz` (the collector glob is `progress*.jsonl`) | Minor | OPEN 2026-11-25 (filed by RG-297; owner of `scripts/netcup/runner`) |
+| RG-316 | `run-gate lanes --check` does not decide several lane-contract rules (lane pairing, canary policy, native r2 contract) | Minor | OPEN 2026-11-25 (filed by RG-297) |
+| RG-317 | two tests judge other projects from run-gate's suite (`test_lanes_check.py` real-repository sweep, `test_tester_unified_base_variants.py`) | Minor | OPEN 2026-11-25 (filed by RG-297) |
+| RG-318 | the assay version pin for forwarded store flags (`assay >= 12.3.0` floor, `capabilities` probe at run time) | Minor | CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0` released) |
+| RG-319 | no per-run `--env` in `remote-gate`: a job's only environment is the per-repo PROFILE `env` table | Minor | OPEN 2026-11-25 (filed by the RG-297 fix round) |
 | RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto 300 s bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source; sequence stays unwatched by decision (members carry the watches); `budget = "unbounded"` remains P2 |
 ---
 
@@ -9588,10 +9593,56 @@ Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and c
 
 ## RG-297 — run-gate re-validates Assay flags
 
-**Status:** OPEN 2026-11-24 (Opus design review). Severity: Minor.
+**Status:** FIXED IN THIS BRANCH (RG-297). Severity: Minor.
 
-Forward Assay flags opaquely after `--`, check only mounts and shard names, and
-use `assay capabilities --json`. This waits for Assay P-assay-10/12 (T3).
+**Forward path.** An assay lane accepts Assay's own flags after `--`
+(`run_gate.py` `parse_assay_forward`): the tokens are kept verbatim and in
+order (both `--flag VALUE` and `--flag=VALUE`), appended AFTER Run-Gate's own
+constructed argv, and recorded in history as `selective` with an
+`assay_forward` token list. Lanes that forward nothing generate the same inner
+script as before.
+
+**Owned flags refused by name** (exit 2): `--state-dir`, `--progress`,
+`--progress-heartbeat`, `--verdict-json`, `--file`, `--request-base` are
+injected by Run-Gate; `--jobs`, `--shard`, `--merge-shards` are Run-Gate's
+own and must be given before `--`. A bare token is legal only as the value of
+the preceding flag.
+
+**Mount rule.** Every path value of `--merge-state`, `--merge-shard-store`,
+`--merge-manifest`, `--carry-over`, `--carry-forward`, `--reuse-from`,
+`--only-candidates`, `--exclude-candidates` and `--candidates-file` is made
+absolute -- a RELATIVE value against the project directory the lane runs in
+(`project_dir`), which is the directory the judge resolves it against, never
+the invoking cwd -- and must resolve under the repo or the judged worktree,
+reusing `validate_r2_flex_paths`; a `--merge-manifest` is checked on its
+parent directory tree. Run-Gate adds no mount and never opens or parses a
+manifest. A forwarded flag that repeats a name this same invocation's own
+options put on the argv (`--rejudge-outcome`, `--carry-over`, `--merge-state`,
+`--merge-shard-store` from `--merge-shards`, ...) is refused too, because a
+duplicate is last-wins (replace-valued) or silently additive (append-valued)
+at the judge; its own line says the remedy, `<flag> is already set by a
+Run-Gate option in this invocation; drop it after '--'` (review r2 L3 -- "give
+it before '--'" was dead advice, since it already is).
+`--rejudge-contaminated` refuses `--` arguments (it forces its own selection).
+
+**Capability probe and floor.** Forwarded store flags need `assay >= 12.3.0`
+(RG-318), read from the inventory version before a container starts. Only when
+tokens were forwarded, the lane runs `<judge> capabilities --json` and
+Run-Gate reads exactly `schema` (must be `assay-capabilities/2`; anything
+else, unparseable output or a non-zero exit is refused) and `commands.run`
+(every forwarded long flag must be listed by EXACT name -- the text before the
+first `=`, so `--merge-manifest-x` is a different flag -- else `this judge does
+not support <flag> (assay capabilities)`). Above the floor the probe, not the
+version, is what decides. A judge that refuses `capabilities` itself keeps its
+own line, unreworded. The `run --help` grep for Run-Gate's OWN flags stays
+(it covers the flexible R2 flags of Assay 12.2.0, which has no `capabilities`).
+
+**Removed duplicated checks (Assay owns them now).** `--carry-over` paired
+with a non-empty `--carry-over-reason` (Assay `mutation_store.py`), the
+"`--only-candidates`/`--exclude-candidates` is not a file" check (Assay
+`cli.py`'s candidate reader), and `--rejudge-outcome requires at least one
+--rejudge ID` (Assay documents the bucket as a union with the ids). Each now
+has a test showing the argv reaches Assay unchanged.
 Source: .controller-state/design-review-2026-11-24/SYNTHESIS.md section 5 (and cmru-cli-extended.md M5 for RG-296)
 
 ## RG-298 — durable R2 store transport
@@ -9887,6 +9938,110 @@ Source: vbpub-core, rg307b gate-full failure 2026-11-24 (`~/controller/remote-ga
 
 Source: vbpub-core, filed on vbpub-rollback's report 2026-11-24.
 
+## RG-315 — a remote r2 lane does not collect `r2-progress.jsonl`
+
+**Status:** OPEN 2026-11-25 (filed by RG-297; owner of `scripts/netcup/runner` decides). Severity: Minor.
+
+- **Cause (verified).** `scripts/netcup/runner/remote-gate.py` (~758-762) collects
+  `\( -path './.assay/*' -o -path './.run-gate/*' \) -type f \( -name 'verdict*.json' -o -name 'progress*.jsonl' ... \)`: the glob is anchored at the basename start, so `progress*.jsonl` matches native run-gate assay lanes' `progress-<artifact_lane>.jsonl` but NOT `r2-progress.jsonl`. The command lane `scripts/debian-install-v2/run-gate.toml` passes `--progress .assay/r2-progress.jsonl` itself (its `artifacts = [...]` lists it), so the file exists on the remote host and is simply not collected.
+- **Effect.** Nobody can tell how many candidates resumed from a seeded store. Evidence run `rgw-r2-20261124T230949-r1002`: the collected `artifacts.tgz` holds only `./.assay/verdict-r2.json`; the Assay side is B577/B580.
+- **Wanted.** The collector's glob also matches `*progress*.jsonl`, which is a one-line change in the tracked runner.
+- **Not fixed here.** RG-297 does not touch `scripts/netcup/runner/**`.
+Source: RG-297 workspace filing (P-core-12 follow-up note), evidence run `rgw-r2-20261124T230949-r1002`.
+
+## RG-316 — `run-gate lanes --check` does not decide several lane-contract rules
+
+**Status:** OPEN 2026-11-25 (filed by RG-297). Severity: Minor.
+
+- **Gap.** `lanes --check` does not decide: exact outer-to-inner lane pairing; the canary policy (cmru's `r0-r1` has no canary, cmru has `budget_per_attempt`); a command-lane mutation `--timeout-seconds` >= 1800; and the entire native r2 lane contract (`kind = "assay"`, `assay_lane`, ephemeral environment, `carry_over` accepted, `attach_r2_flex`'s refusal of a command-kind r2 lane, `select_r2_jobs` worker counts, `candidate_ram` >= 256 MiB, `resource_observer`/`clean_tree`/`pids`, no argv).
+- **Kept today** in `cmru/tests/test_gate_budgets.py` and `libraries/cli-extended/tests/test_r2_lane_contract.py` (CLI-EXT-45 PARTLY DONE).
+- **Wanted.** Extend `lanes --check` to these rules or accept the loss explicitly.
+Source: P-core-12.
+
+## RG-317 — two tests judge other projects from run-gate's suite
+
+**Status:** OPEN 2026-11-25 (filed by RG-297). Severity: Minor.
+
+- `run-gate-project/tests/test_lanes_check.py:383-412 test_real_repository_all_has_no_findings` duplicates step 2 of the `estate-lint/suite` lane and turns Run-Gate red for any OTHER project's bad budget.
+- `run-gate-project/tests/test_tester_unified_base_variants.py` WATCHES `tester-unified/Dockerfile` (read at `tests/test_tester_unified_base_variants.py:27`), another project's image, rather than judging one of Run-Gate's own rules.
+- **Wanted.** Decide keep/remove for the first and move the second to `tester-unified/tests`.
+Source: P-core-12.
+
+## RG-318 — the assay version pin for forwarded store flags
+
+**Status:** CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0`
+is now RELEASED: tag `assay-v12.3.0`, wheel sha256
+`18b03b198830a9d2732da7f235c431118ab6567d13371c46d41dd19c3c2873ba`).
+Severity: Minor.
+
+- **The floor, as the repo expresses version floors.** Run-Gate's own
+  mechanism for a feature floor is a named tuple compared against the
+  judge's INVENTORY version (`assay_inventory_version_meets_floor`), exactly
+  as `R2_FLEX_ASSAY_FLOOR = (12, 2, 0)` holds the flexible R2 flags.
+  `ASSAY_FORWARD_ASSAY_FLOOR = (12, 3, 0)` is the new one: a lane that
+  forwards arguments after `--` is refused, exit 3 / NOT_RUN
+  `judge-floor`, with `requires assay >= 12.3.0 (RG-318)` before any
+  container starts. No new mechanism was built.
+- **The check stays at run time.** Above the floor the `capabilities --json`
+  probe decides: an unknown schema, unparseable output, a missing
+  `commands.run`, or a forwarded flag the judge does not list is refused. A
+  version claim alone never accepts a flag the judge does not advertise.
+- **An unreadable inventory is refused too (review r2 M1).** The floor is read
+  FROM the inventory version, so a judge whose `assay lanes --json` cannot
+  answer at all used to skip the floor entirely and be refused only by the
+  in-lane probe, inside a container. `plan_comparison_base` now refuses a
+  forwarding lane in that state as well, before a container starts, with its
+  own line (`arguments after '--' for lane 'x' need an inventory proving the
+  judge accepts them (assay >= 12.3.0, RG-318): <why>`); a lane that forwards
+  nothing keeps its old behaviour. Both refusals name the remedy (`update the
+  checkout, or re-pin the judge to >= 12.3.0`).
+- **tester-unified carries assay from SOURCE, not as a wheel.** The image
+  copies `assay/` (`tester-unified/Dockerfile:361`, metadata at `:203`) for
+  dependency-closure generation and denies the name to any PyPI-bound pip
+  (`tester-unified/gen-requirements.py:43`), and Run-Gate's source-backed
+  lane setup installs the SELECTED WORKTREE's `assay/` into
+  `/opt/tester-venv` at lane runtime (`run_gate.py` `assay_source_setup`).
+  There is therefore no assay version pin in the image to raise: any
+  checkout carrying `assay-v12.3.0` (or later) satisfies the floor, and a
+  checkout older than it is refused loudly by the floor above.
+- **What an image rebuild still has to do (not done here, and none of it in
+  this package):** none of it moves the judge's version. A rebuild is needed
+  only for the usual reasons (a new Run-Gate wheel, a moved cli-extended
+  pin), and after it a source-backed lane must still install the worktree's
+  `assay/` at or above `assay-v12.3.0`.
+Source: RG-297.
+
+## RG-319 — no per-run `--env` in `remote-gate`
+
+**Status:** OPEN 2026-11-25 (filed by the RG-297 fix round). Severity: Minor.
+
+- **Gap.** `scripts/netcup/runner/remote-gate.py:1323-1354` (`run`) accepts
+  `--hosts-file`, `--out-dir`, `--project-dir`, `--repo`, `--base`,
+  `--min-run-gate`, `--allow-exec-env`, `--name`, `--detach`, the resource
+  and PSI/wait flags, `--collect-store`, `--seed-store`, `--store-max-mib`,
+  `--poll` and the trailing `extra nargs="*"` (run-gate arguments after
+  `--`) — and NO flag for one run's environment. The only environment a job
+  receives is the per-repo PROFILE `env` table of the hosts file
+  (`scripts/netcup/runner/remote-gate.py:162-168` validates it, `:870`
+  renders it into `ENVX` as `docker exec -e K=V ...`, `:746` uses it), and
+  `RESERVED_ENV` (`:87`) only guards names the job itself sets.
+- **Effect.** A lane whose declared inputs change per run cannot be gated
+  remotely. Concretely, cmru's lane `r2` needs `CMRU_ASSAY_BASELINE_FACTS`
+  (`cmru/run-gate.toml:234` `required_env`, and
+  `cmru/run-gate.toml:207` forwards it into the ephemeral environment); a
+  remote run of it therefore requires editing the controller's private copy
+  of the hosts file (a repo-profile `env` entry, which then applies to EVERY
+  lane of that repo, not to this run). Run-Gate's own `preflight_required_env`
+  (`run-gate-project/run_gate.py:9009-9021`) refuses the missing variable by
+  name, so the run fails rather than misjudging — loud, but unavoidable in
+  the current surface.
+- **Wanted.** A repeatable `--env KEY=VALUE` on `remote-gate run`, rendered
+  into the job's `docker exec` environment for that run alone, with the same
+  validation the profile table already gets (`ENV_KEY_RE`, and the
+  `RESERVED_ENV` / `RUN_GATE_ALLOW_*` refusals — a per-run override must not
+  be able to displace the safety posture). The value must never be logged or
+  written into the run record.
+Source: RG-297 fix round (subtask 5); verified against the script, not inferred.
 ## RG-320 — a stall watch on every watchable lane kind (P1 of the no-time-budgets design)
 
 **Status:** FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`,

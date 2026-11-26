@@ -253,8 +253,16 @@ and merged strictly (`--merge-shards N`: every shard store must exist and
 be complete for the current judge and plan), resumed across a judge change
 (`--carry-over DIR --carry-over-reason TEXT`), merged from another store
 (`--merge-state`) or restricted to a candidate list (`--only-candidates`,
-`--exclude-candidates`); see
-[shard, merge, carry over and target](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265). See the
+`--exclude-candidates`). Any other Assay flag — `--merge-manifest`,
+`--carry-forward`, `--merge-shard-store`, `--reuse-from`,
+`--candidates-file`, a future store flag — travels after `--` and is passed
+to Assay unchanged: Run-Gate forwards those arguments opaquely and checks
+only its own flags and the visibility of the paths, so a new Assay store
+flag needs no Run-Gate change (the judge must report it in
+`assay capabilities --json`, which is Assay 12.3.0 or newer: an older judge
+refuses the forwarded form by name before a container starts). See
+[shard, merge, carry over and target](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265) and
+[Assay flags after `--`](CONSUMERS.md#assay-flags-after----for-an-assay-lane-rg-297). See the
 [consumer example](CONSUMERS.md#native-r2-worker-selection) and
 [design rationale](docs/DESIGN-GUIDE.md#native-r2-worker-selection). A
 source-backed lane uses the selected worktree's `assay/` even when its tester
@@ -460,9 +468,13 @@ refuse with a remedy if the judge is unavailable rather than report a clean
 result or write a manifest that omits imported lanes.
 
 An assay lane can pass `--reuse-from PATH`, repeatable `--rejudge ID`, and
-`--rejudge-outcome BUCKET` to one selected Assay run. A command lane accepts
-arguments after `--` only when it declares `accepts_args = true`; sequences
-and composite commands refuse them. See [selective requests](CONSUMERS.md#selective-lane-requests)
+`--rejudge-outcome BUCKET` to one selected Assay run, and any OTHER Assay flag
+after `--` (Run-Gate forwards it opaquely; see [Assay flags after
+`--`](CONSUMERS.md#assay-flags-after----for-an-assay-lane-rg-297)); that
+forwarded form needs Assay 12.3.0 or newer. A command
+lane accepts arguments after `--` only when it declares
+`accepts_args = true`; sequences and composite commands refuse them. See
+[selective requests](CONSUMERS.md#selective-lane-requests)
 and the [request-scope rationale](docs/DESIGN-GUIDE.md#selective-requests-stay-with-the-selected-lane).
 Run-Gate checks the Assay inventory version before forwarding these options.
 It accepts stable `X.Y.Z` releases and worktree source builds shaped as
