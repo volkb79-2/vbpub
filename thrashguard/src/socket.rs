@@ -98,16 +98,19 @@ impl<R: std::io::Read, W: Write> Session<R, W> {
 
     /// Read one request line. `Ok(None)` means the peer closed cleanly.
     pub fn read_request(&mut self) -> std::io::Result<Option<String>> {
-        let mut line = String::new();
+        let mut bytes = Vec::new();
         let mut bounded = self
             .reader
             .by_ref()
             .take((crate::wire::MAX_LINE_BYTES + 1) as u64);
-        let read = bounded.read_line(&mut line)?;
+        let read = bounded.read_until(b'\n', &mut bytes)?;
         if read == 0 {
             return Ok(None);
         }
-        Ok(Some(line))
+        // Lossy decoding preserves the byte bound: if the cut lands inside a
+        // multibyte character, its replacement makes the request over limit so
+        // the normal parser returns the named `too-large` refusal.
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     /// Write one reply line, newline-terminated.
@@ -301,6 +304,28 @@ mod tests {
             line.len() <= crate::wire::MAX_LINE_BYTES + 1,
             "read more than the protocol bound: {} bytes",
             line.len()
+        );
+    }
+
+    #[test]
+    fn an_oversized_line_cut_inside_utf8_gets_the_too_large_reply() {
+        let fixed = format!("{{\"v\":\"{STATE_VERSION}\",\"verb\":\"status\",\"x\":\"");
+        let padding = "x".repeat(crate::wire::MAX_LINE_BYTES - fixed.len());
+        let line = format!("{fixed}{padding}é\"}}\n");
+        let mut session = Session::new(
+            std::io::Cursor::new(line.into_bytes()),
+            Vec::<u8>::new(),
+            Role::Reader,
+        );
+        let request = session
+            .read_request()
+            .expect("bounded byte read")
+            .expect("oversized request");
+        let reply = answer(&mut Recorder::default(), Role::Reader, &request);
+        assert_eq!(reply.get("ok").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            reply.get("reason").and_then(Value::as_str),
+            Some("too-large")
         );
     }
 
