@@ -504,8 +504,7 @@ check_caller_extra_args_replaced() {
     cat "$ROOT/rev-extrawide.launch.log" >&2
     fail "a review whose caller set PI_EXTRA_ARGS exited $rc"
   fi
-  argv0_pair '--tools' 'read,grep,find,ls' 'the launcher REPLACES a caller PI_EXTRA_ARGS instead of merging it'
-  argv0_lacks 'bash,read' 'a caller-provided tool list never reaches pi'
+  assert_review_argv0
   contains "$ROOT/rev-extrawide.launch.log" 'run mode review' \
     'the review is launched in pi-impl.sh review mode, which owns the tool set'
   [[ $(cat "$RUNS/rev-extrawide.mode") == review ]] \

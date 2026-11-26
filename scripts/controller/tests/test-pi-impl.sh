@@ -2116,10 +2116,14 @@ check_review_argv_single_definition() {
 # "implementer" (a default that substitutes for a fact).
 check_mode_value_refused() {
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-value-session FAKE_PI_RC=0 \
     PI_RUN_MODE=reviewe "$SRC" "$WORKTREE" "$PROMPT" mode-typo
   contains "$ROOT/focused-command.out" "PI_RUN_MODE must be 'implementer' or 'review'" \
     'an unknown run mode is refused by name'
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-value-session FAKE_PI_RC=0 \
     PI_RUN_MODE='' "$SRC" "$WORKTREE" "$PROMPT" mode-empty
   contains "$ROOT/focused-command.out" "PI_RUN_MODE must be 'implementer' or 'review'" \
     'a set-but-empty run mode is refused rather than read as unset'
@@ -2134,6 +2138,8 @@ check_mode_extra_args_refused() {
     [[ -n $line ]] || continue
     attempt=$(( attempt + 1 ))
     expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID=review-extra-session FAKE_PI_RC=0 \
       PI_RUN_MODE=review PI_EXTRA_ARGS="$line" \
       "$SRC" "$WORKTREE" "$PROMPT" "review-extra-$attempt"
     contains "$ROOT/focused-command.out" \
@@ -2163,6 +2169,8 @@ CASES
   [[ $(pi_invocations) == "$before" ]] || fail 'a review launched with a widened PI_EXTRA_ARGS'
   # An argument outside that list is refused too, and by the general rule.
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=review-extra-session FAKE_PI_RC=0 \
     PI_RUN_MODE=review PI_EXTRA_ARGS='--verbose' \
     "$SRC" "$WORKTREE" "$PROMPT" review-extra-verbose
   contains "$ROOT/focused-command.out" 'may not add anything in review mode' \
@@ -2186,6 +2194,9 @@ check_mode_sticky_resume() {
     || fail 'the review launch recorded no mode to resume from'
   [[ $(cat "$runs/mode-sticky.mode") == review ]] || fail 'the review launch recorded the wrong mode'
   # (a) A resume that asks for nothing is forced into review.
+  # Keep this arm isolated to the run-name record: old runs have no session-mode
+  # file, and the run-name sticky refusal/selection must still work for them.
+  rm -f -- "$runs/session-modes/mode-sticky-session"
   argv_reset
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     CONTROLLER_OD_STATE="$ROOT/mode-sticky-resume-state.json" PI_LIVE=0 \
@@ -2203,11 +2214,14 @@ check_mode_sticky_resume() {
   local before after
   before=$(pi_invocations)
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-sticky-session FAKE_PI_RC=0 \
     PI_RUN_MODE=implementer "$SRC" "$WORKTREE" "$PROMPT" mode-sticky resume mode-sticky-session
   contains "$ROOT/focused-command.out" 'was started as a REVIEW and cannot be resumed in implementer mode' \
     'an implementer resume of a review is refused by name'
   after=$(pi_invocations)
   [[ $after == "$before" ]] || fail 'a refused implementer resume of a review still launched pi'
+  rm -f -- "$runs/session-modes/mode-sticky-session"
   # (c) The reverse direction is allowed: an implementer name may be launched
   # STRICTER, and its record says so afterwards.
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
@@ -2236,6 +2250,8 @@ check_mode_sticky_resume() {
   printf 'mode-garbled-session\n' > "$runs/mode-garbled.thread"
   before=$(pi_invocations)
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-garbled-session FAKE_PI_RC=0 \
     "$SRC" "$WORKTREE" "$PROMPT" mode-garbled resume mode-garbled-session
   contains "$ROOT/focused-command.out" 'cannot establish the run mode of mode-garbled' \
     'an unreadable mode record is refused instead of guessed'
@@ -2345,7 +2361,9 @@ check_mode_session_record_resume() {
 
   before=$(pi_invocations)
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
-    PI_RUN_MODE=implementer "$SRC" "$WORKTREE" "$PROMPT" fresh-session-record-implementer resume "$session"
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 PI_RUN_MODE=implementer \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-session-record-implementer resume "$session"
   contains "$ROOT/focused-command.out" 'is recorded as a REVIEW and cannot be resumed in implementer mode' \
     'a session-recorded review refuses an implementer request under a fresh name'
   after=$(pi_invocations)
@@ -2480,12 +2498,45 @@ check_rule_file_missing_refused() {
     rm -f "$mutilated/pi-shims"
     cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
     expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID=rules-missing-session FAKE_PI_RC=0 \
       PI_RUN_MODE=$mode "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" "rules-missing-$mode"
     contains "$ROOT/focused-command.out" "pi $mode prompt rule file is missing or unreadable" \
       "a $mode launch without its rule paragraph is refused"
     [[ ! -e $CONTROLLER_ROOT/runs/rules-missing-$mode.lock ]] \
       || fail "a refused $mode launch claimed the run name"
   done
+}
+
+check_mode_not_written_on_refusal() {
+  local runs=$CONTROLLER_ROOT/runs home=$ROOT/mode-refusal-home
+  clean_worktree
+  rm -rf -- "$home"
+  mkdir -p "$home" "$runs"
+  rm -f -- "$runs/mode-refusal".*
+  printf 'review\n' > "$runs/mode-refusal.mode"
+  printf 'previous-session\n' > "$runs/mode-refusal.thread"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$home" PI_ROUTE=deepseek-pi-volker \
+    PI_RUN_MODE=implementer CONTROLLER_RUN_FORCE=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-refusal
+  contains "$ROOT/focused-command.out" 'requires the local' \
+    'the missing credential file is what refused the forced reuse'
+  grep -qx review "$runs/mode-refusal.mode" \
+    || fail 'a refused forced reuse overwrote the previous review mode record'
+  [[ ! -e $runs/retired/mode-refusal ]] \
+    || fail 'a forced reuse refused at credentials retired the previous review records'
+}
+
+check_mode_rule_paragraph() {
+  # The paragraph every implementer prompt carries must say the three things
+  # an agent can otherwise only be asked politely: the pattern ban, the capped
+  # container with a private PID namespace, and "no shell experiments".
+  contains "$IMPLEMENTER_RULES" 'never pkill' 'the implementer rule names the pattern kill'
+  contains "$IMPLEMENTER_RULES" 'killall' 'the implementer rule names killall'
+  contains "$IMPLEMENTER_RULES" 'recorded itself' 'the implementer rule pins the kill to recorded pids'
+  contains "$IMPLEMENTER_RULES" 'TERM-trap' 'the implementer rule names the trap tests'
+  contains "$REVIEW_RULES" 'The review is read from' 'the review rule names what the review is read from'
+  contains "$REVIEW_RULES" 'say that it is unknown' 'the review rule names the honest report of an unreadable fact'
 }
 
 # A controller.local.env that names a mode must not survive a caller who named
@@ -2537,6 +2588,8 @@ check_run_mode() {
   check_mode_value_refused
   check_mode_extra_args_refused
   check_rule_file_missing_refused
+  check_mode_not_written_on_refusal
+  check_mode_rule_paragraph
   check_review_mode_argv
   check_mode_local_env_not_weaker
   check_mode_sticky_resume
@@ -3234,20 +3287,7 @@ PY
       grep -qx review "$retired_mode" || fail 'the retired mode record is not the previous review'
       ;;
     mode-not-written-on-refusal)
-      # A refusal AFTER the claim (a missing credential file) must not touch the
-      # mode record of the run it refused on: a later resume still reads review.
-      runs=$CONTROLLER_ROOT/runs
-      mkdir -p "$CONTROLLER_ROOT/mode-refusal-home" "$runs"
-      printf 'review\n' > "$runs/mode-refusal.mode"
-      printf 'previous-session\n' > "$runs/mode-refusal.thread"
-      printf 'EXIT=0 OUTCOME=SUCCESS\n' > "$runs/mode-refusal.done"
-      : > "$CONTROLLER_ROOT/mode-refusal-home/.env.ai"
-      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$CONTROLLER_ROOT/mode-refusal-home" \
-        PI_ROUTE=deepseek-pi-volker PI_RUN_MODE=review \
-        "$SRC" "$WORKTREE" "$PROMPT" mode-refusal resume previous-session
-      contains "$ROOT/focused-command.out" 'requires the local' 'the missing credential file is what refused the resume'
-      grep -qx review "$runs/mode-refusal.mode" \
-        || fail 'a refused launch overwrote the previous run mode record'
+      check_mode_not_written_on_refusal
       ;;
     mode-no-argv-file)
       # A review that cannot read its one definition is refused before the name
@@ -3291,15 +3331,7 @@ PY
         || fail 'a refused empty review argv claimed the run name'
       ;;
     mode-rule-paragraph)
-      # The paragraph every implementer prompt carries must say the three things
-      # an agent can otherwise only be asked politely: the pattern ban, the capped
-      # container with a private PID namespace, and "no shell experiments".
-      contains "$IMPLEMENTER_RULES" 'never pkill' 'the implementer rule names the pattern kill'
-      contains "$IMPLEMENTER_RULES" 'killall' 'the implementer rule names killall'
-      contains "$IMPLEMENTER_RULES" 'recorded itself' 'the implementer rule pins the kill to recorded pids'
-      contains "$IMPLEMENTER_RULES" 'TERM-trap' 'the implementer rule names the trap tests'
-      contains "$REVIEW_RULES" 'The review is read from' 'the review rule names what the review is read from'
-      contains "$REVIEW_RULES" 'say that it is unknown' 'the review rule names the honest report of an unreadable fact'
+      check_mode_rule_paragraph
       ;;
     auth-file)
       local_home=$ROOT/focused-no-env

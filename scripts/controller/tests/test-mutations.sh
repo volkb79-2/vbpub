@@ -233,7 +233,8 @@ for pi_case in \
   pi-mode-value-guard:mode-value pi-mode-argv-append-dropped:review-argv \
   pi-mode-argv-missing-guard:mode-no-argv-file \
   pi-mode-argv-empty-guard:mode-empty-argv \
-  pi-mode-record-not-written:mode-record pi-mode-sticky-refusal-dropped:mode-sticky \
+  pi-mode-record-not-written:mode-record pi-mode-record-written-before-refusal:mode-not-written-on-refusal \
+  pi-mode-sticky-refusal-dropped:mode-sticky \
   pi-mode-record-ignored:mode-sticky pi-mode-narrow-dropped:mode-sticky \
   pi-mode-invalid-record-guessed:mode-sticky pi-mode-evidence-dropped:mode-evidence \
   pi-mode-extra-args-allowed:mode-extra-args \

@@ -853,6 +853,10 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-argv-empty-guard.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-mode-record-not-written.sh",
        'printf \'%s\\n\' "$run_mode" > "$out/$name.mode"',
        ': # mode record not written')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-record-written-before-refusal.sh",
+       'controller_run_claim "$name" || exit 2',
+       'controller_run_claim "$name" || exit 2\n'
+       'printf \'%s\\n\' "$run_mode" > "$out/$name.mode"')
 # A resume of a review must refuse a CALLER that asks for implementer mode, and
 # must otherwise take the record: dropping the refusal widens a review, dropping
 # the record reading loses the stickiness.
