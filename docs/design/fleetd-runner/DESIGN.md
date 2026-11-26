@@ -223,7 +223,7 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `cgroup_v2.mounted`, `cgroup_v2.controllers` | bool, list | mountinfo | refuse (admission and the guard both need it) |
 | `kernel_interfaces.*`, `ksm.*` | bools, ints | kept from /1 | `null`+reason, never a synthetic 0 |
 | `control_plane.slice`, `.present`, `.cpu_weight`, `.memory_min_bytes`, `.service_memory_min` | as /1 (`fleetd/src/fleetd/contracts.py:464-506`) | `systemctl show`, `/etc/fleetd/facts.toml` | defaults (`fleetd/docs/SPEC.md:100-160`); 768 MiB profile only with no service fact |
-| `guard.guard_present` | bool | config path present | `false` + reason `thrashguard-absent` (`docs/design/thrashguard/DESIGN.md:375-381`) |
+| `guard.guard_present` | bool | config path present | `{"v": false}` without a reason (an absent config is a known fact); `guard.frozen_units` then carries reason `thrashguard-absent` (`docs/design/thrashguard/DESIGN.md` section 6a) |
 | `guard.guard_state` | `off|report|enforce|unknown` | guard runtime file (`fleetd/src/fleetd/facts.py:517-522`) | omitted with reason; never `off` by default |
 | `guard.config_digest` | sha256 hex | `/etc` bytes incl. drop-ins (`fleetd/src/fleetd/facts.py:440-514`) | `null`+reason |
 | `guard.frozen_units` | int | **hostobs** freeze/thaw events (§6) | `null`+reason; `frozen = frozen_units > 0` is then `null`, not `false` |
