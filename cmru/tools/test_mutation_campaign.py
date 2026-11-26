@@ -585,8 +585,9 @@ def test_assay_source_status_refuses_hidden_index_entries(tmp_path, index_flag):
 def test_campaign_status_ignores_a_shared_library_released_artifact_tree(tmp_path):
     """M2/L3: only `libraries/test-policy/src` is carried, so a released tree is clean.
 
-    The library ships `artifacts/`, `evidence/` and `logs/` as ignored outputs
-    (`libraries/test-policy/.gitignore`), and the dirty check excuses caches only.
+    The repository root `.gitignore` ignores these released output directories
+    with its `**/artifacts/`, `**/evidence/` and `**/logs/` rules;
+    the dirty check excuses caches only.
     A whole-tree pathspec would therefore refuse a checkout that is committed and
     clean -- the same "control dies before a mutant" class as KI-209.
     """
