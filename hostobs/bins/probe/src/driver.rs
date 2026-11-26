@@ -596,7 +596,6 @@ mod tests {
     const CURRENT_ARGS: &str = r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
 
     static NEXT_SOCKET: AtomicU32 = AtomicU32::new(0);
-    static NEXT_TEMP_DIR: AtomicU32 = AtomicU32::new(0);
 
     fn peer_fixture_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-label")
@@ -1217,32 +1216,30 @@ mod tests {
 
     #[test]
     fn symlinked_or_non_directory_peer_cgroup_path_is_omitted() {
-        let serial = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
-        let temporary = std::env::temp_dir().join(format!(
-            "hostobs-peer-label-{}-{serial}",
-            std::process::id()
-        ));
-        let cgroup_root = temporary.join("cgroup");
-        let outside = temporary.join("outside");
-        let proc_cgroup = temporary.join("proc-cgroup");
-        std::fs::create_dir(&temporary).expect("temporary fixture root");
-        std::fs::create_dir(&cgroup_root).expect("temporary cgroup root");
-        std::fs::create_dir_all(outside.join("grandchild")).expect("outside target");
-        std::fs::write(&proc_cgroup, b"0::/child/grandchild\n").expect("proc cgroup fixture");
-        std::os::unix::fs::symlink(&outside, cgroup_root.join("child")).expect("child symlink");
+        // Committed trees: writes are not allowed in this crate, test code included.
+        let paths = peer_fixture_root().join("cgroup-paths");
+        let nested = paths.join("grandchild.cgroup");
+
+        // Positive control: the same membership resolves where `child` is a real directory.
+        assert!(
+            read_cgroup_key(&nested, &paths.join("directory"), cgroup_path_identity).is_some()
+        );
+
+        let linked = paths.join("linked");
+        // The committed link must still be a link to a real tree, or the refusal proves nothing.
+        assert!(linked.join("child").is_symlink());
+        assert!(linked.join("child/grandchild").is_dir());
         assert_eq!(
-            read_cgroup_key(&proc_cgroup, &cgroup_root, cgroup_path_identity),
+            read_cgroup_key(&nested, &linked, cgroup_path_identity),
             None
         );
 
-        std::fs::remove_file(cgroup_root.join("child")).expect("remove child symlink");
-        std::fs::write(cgroup_root.join("child"), b"not a directory").expect("child file");
-        std::fs::write(&proc_cgroup, b"0::/child\n").expect("proc cgroup file fixture");
+        let file = paths.join("file");
+        assert!(file.join("child").is_file());
         assert_eq!(
-            read_cgroup_key(&proc_cgroup, &cgroup_root, cgroup_path_identity),
+            read_cgroup_key(&paths.join("child.cgroup"), &file, cgroup_path_identity),
             None
         );
-        std::fs::remove_dir_all(temporary).expect("remove temporary cgroup fixture");
     }
 
     #[test]
