@@ -192,6 +192,12 @@ missing optional file is `absent` or `unsupported` according to a code the calle
 (`Absence::Controller` versus `Absence::Feature`). Nothing in a reader writes a zero for a
 failure.
 
+`cgroup.freeze` is the cgroup's own freeze setting; `cgevents.frozen` is its effective
+state, including a frozen ancestor, and `cgevents.populated` says whether it has live tasks.
+Missing `cgroup.freeze` or `cgroup.events` files are `unsupported`; a missing key in a
+successfully read `cgroup.events` file is `absent`, because the quality vocabulary treats a
+missing key as absent and reserves unsupported for a fact the kernel does not provide.
+
 **Unknown device topology is a state, not a bottom device.** The sampler asked each device
 whether its `/sys/dev/block/<dev>/slaves` listing was non-empty and reused the last answer
 on failure, treating an unclassified device as bottom (`last.get(dev).copied().unwrap_or(true)`);

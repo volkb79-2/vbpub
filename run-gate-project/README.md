@@ -417,6 +417,14 @@ counters are unavailable or cannot be compared safely. The standalone
 `--version` operation remains available. See the [design rationale](docs/DESIGN-GUIDE.md#pid-1-and-cgroup-resource-events)
 and the [consumer setup](CONSUMERS.md#init-reaping-and-resource-events).
 
+Ephemeral gate lane containers start with Docker `--oom-score-adj 500`. Linux
+uses this OOM score adjustment to make a gate lane more likely to be selected
+than the controller when host memory is exhausted; `memory.low` does not choose
+the OOM victim. Run-Gate prints the value and includes it in the live and
+dry-run Docker argv. The setting covers only the detached gate lane container:
+short `docker run --rm` probes, `docker exec` lanes, and bare-host lanes do not
+receive it. See [the design guide](docs/DESIGN-GUIDE.md#gate-lane-oom-priority).
+
 For Assay lanes, `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` maps to gate
 `ERROR`: the R2 measurement could not be made safely, so the gate must not
 report a product failure. Before applying that mapping, run-gate checks the
