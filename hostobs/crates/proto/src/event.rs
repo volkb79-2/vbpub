@@ -1006,7 +1006,7 @@ mod tests {
                 error.kind()
             );
         }
-        assert!(decode_event_payload(body).is_ok());
+        assert!(decode_event_payload(&body).is_ok());
     }
 
     #[test]
