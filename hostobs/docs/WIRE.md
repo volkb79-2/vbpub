@@ -12,9 +12,11 @@ Offsets are bytes from the start of the named structure. `align8(x)` = smallest 
 1.1 **Transport.** `AF_UNIX` `SOCK_STREAM` sockets from systemd `.socket` units (plan §A.2): observe,
 operator, observer (served by the probe) and control (served by act). Access is the socket's file
 permission; issuer identity and peer binding come from `SO_PEERCRED`/`SO_PEERPIDFD` on the
-**server** side only; a client never sends a uid, pid or cgroup and a request key naming one is
-`bad-request`. Because the listening socket is held by systemd, a probe restart does not refuse new
-connections; it closes every accepted connection (EOF or `ECONNRESET` for the client).
+**server** side only; a top-level args key naming the caller's identity (`uid`, `gid`, `pid`,
+`cgroup`, `peer`) is `bad-request` in every verb; a selector or attrs value that names a *subject*
+cgroup is data, never identity (§4.2, §4.12). Because the listening socket is held by systemd, a
+probe restart does not refuse new connections; it closes every accepted connection (EOF or
+`ECONNRESET` for the client).
 
 1.2 **Who speaks first.** The client. The server sends nothing before the client's first byte; a
 connection over a cap is closed without a byte (§5.4 `refuse`), and one that sends nothing is closed
@@ -284,14 +286,22 @@ has none (`HOB-54`, §6.1).
 `agg-name` = `raw|last|delta|mean|min|max` (the §3.6 codes 0-5). String bounds are on the decoded
 UTF-8 length.
 **Selection**: `{"entities": [sel, ...] (1..16), "metrics": [metric-name, ...] (1..64)}`, `sel` is
-exactly one of `{"inc": u64}`, `{"path": str ≤ 512}`, `{"prefix": str ≤ 512}`, `{"all": true}`; an empty
-path or prefix is refused, and paths contain no character below 0x20 or 0x7F (as dictionary text,
-§3.7). `all` must have the JSON literal `true`. A repeated `sel` or metric name, compared after JSON
-decoding, is `bad-request`; the selector object, its one member and each element's JSON type use the
-schema paths named by design S1. **Canonical form** (the identity of "distinct selection", §5.1):
-`sel`s sorted by (variant `inc` < `path` < `prefix` < `all`, then value), metric names sorted bytewise;
-two selections are the same iff their canonical forms are equal (no resolution: `{"inc":5}` and the
-`path` of incarnation 5 are distinct). A selection resolving to more than `limits.max_rows` entities is
+exactly one of `{"inc": u64}`, `{"cgroup_id": {"dev": u64, "inode": u64}}`,
+`{"path": str ≤ 512}`, `{"prefix": str ≤ 512}`, `{"all": true}`. For `cgroup_id`, `dev` is the
+directory's `stat(2)` `st_dev`, not a mount id; both fields are non-zero. A selector that names a
+subject cgroup is data, never caller identity. Zero fields are `bad-request` at
+`selection.entities.cgroup_id.dev` or `.inode`; an unknown member is `bad-request` at
+`selection.entities.cgroup_id.<k>`. An empty path or prefix is refused, and paths contain no character
+below 0x20 or 0x7F (as dictionary text, §3.7). `all` must have the JSON literal `true`. A repeated
+`sel` or metric name, compared after JSON decoding, is `bad-request` at `selection.entities` or
+`selection.metrics`; the selector object, its one member and each element's JSON type use the schema
+paths named by design S1. At negotiated minor below 2, `cgroup_id` is `unsupported-feature`
+`{"feature":"cgroup_id"}` after schema validation (step 11); there is no hello feature probe.
+**Canonical form** (the identity of "distinct selection", §5.1): `sel`s sorted by (variant `inc` <
+`cgroup_id` < `path` < `prefix` < `all`; within `cgroup_id`, numeric `dev` then `inode`; otherwise by
+value), metric names sorted bytewise; two selections are the same iff their canonical forms are equal
+(no resolution: `{"inc":5}` and the `path` of incarnation 5 are distinct). A selection resolving to
+more than `limits.max_rows` entities is
 `budget` `{"pool":"rows"}`. Every object below is **strict**: a missing required key, an unknown key or
 a wrong type is `bad-request`. JSON text rules (both modes): UTF-8, no duplicate key at any depth,
 nesting depth ≤ 8 (the envelope object is depth 1; the bound holds for requests and for the client's
@@ -374,8 +384,9 @@ with `detail.key` `proto.major` or `proto.minor`; JSON: a `proto.major` other th
 C). The result carries `proto.minor` N = min(C, the server's minor), in both modes; a second `hello` on a
 connection, either mode, is `bad-request` `{"key":"verb"}` (JSON mode accepts `hello` only as the first
 line). `client` is 0 to 64 decoded bytes without a control character (below 0x20 or 0x7F) and without a
-lone surrogate; it is a free label, never an identity, and a request key naming a uid, pid or cgroup is
-`bad-request`. Result:
+lone surrogate; it is a free label, never an identity. A top-level args key naming the caller's
+identity (`uid`, `gid`, `pid`, `cgroup`, `peer`) is `bad-request` in every verb; a selector or attrs
+value that names a *subject* cgroup is data, never identity (§4.2, §4.12). Result:
 `{"proto": {"major": 1, "minor": N}, "level": "observe|operator|observer|control", "server": str,
 "boot_id": "<uuid text>", "epoch": u64, "features": [str], "verbs": [str], "quality_codes":
 [{"code": u8, "name": str}], "limits": {"max_frame_bytes": u32, "max_request_bytes": u32,
@@ -434,7 +445,10 @@ counted in END `dropped`; a pinned tick is written before the END and counted in
 **Live-block contents.** A live block has one row per published cgroup incarnation, labelled by the
 cgroup's path relative to the configured root (`/` for the root and `/a.slice/b.scope` below it);
 `path` and `prefix` match that label bytewise (exact or byte prefix), `inc` matches the incarnation,
-and `all` matches every row. It contains only metrics registered in the model table, with that table's
+`cgroup_id` matches the row whose published incarnation has that `(dev, inode)` key, and `all` matches
+every row. An unpublished key (outside the root, retired or with the wrong `dev`) matches nothing and
+returns zero rows successfully. The selector is resolved from the turn's published tick; clients do not
+send a path for it. It contains only metrics registered in the model table, with that table's
 facts; host readings from `/proc` and daemon `probe.*` metrics appear only on the root row and are
 `absent` on every other row, while cgroup columns are dense and carry a quality code on every row
 (a missing or failed reading has a non-measured placeholder, never a measured zero).
@@ -442,6 +456,18 @@ facts; host readings from `/proc` and daemon `probe.*` metrics appear only on th
 (a refused listing counts once).
 Derived metrics are not produced. A selection resolving to no rows is successful with zero rows; only the seq-0
 "no tick yet" state is `unavailable`, and an unregistered requested metric yields no column.
+`limit.cpu.max.quota` and `limit.cpu.max.period` are Gauge metrics in microseconds, cgroup scope,
+`cgroupfs` source, with the Gauge-derived aggregation mask. For a readable `Q P` line, quota `Q` and
+period `P` are measured. For a readable `max P` line, quota is `unsupported` and period `P` is measured.
+If `cpu.max` is absent, quota is also `unsupported`, while period keeps the file's own quality
+(`absent` when the file is missing). Thus `unsupported` quota does not by itself say that `cpu.max`
+exists. An unreadable or unparseable line marks both readings `unreadable`; no case publishes a
+measured zero. The effective CPU cap also depends on ancestor cgroups.
+
+The `(dev, inode)` pair selects a cgroup from the tick being served. It is not a durable record key,
+and hostobs does not guarantee that a key never names a later cgroup, including after a reboot or on
+another host. A record that needs stable identity keeps the reply's `inc` together with `boot_id` and
+`epoch` and compares those fields.
 
 Note (non-normative) — the root row's `cpu.usage_usec` is tick-accounted and is not comparable
 with its children's. The kernel computes the root cgroup's `cpu.stat` from tick-sampled `kcpustat`
@@ -1009,10 +1035,11 @@ peer that negotiated `< m`.
 unknown version is refused, `frame.rs` `decode_block`). Unknown optional sections are skipped by
 `len`; unknown required ones are refused, surfaced to the client caller as `unsupported-section`.
 9.3 A major change changes the frame grammar; only the 8-byte prefix survives it.
-9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it); `PROTO_MINOR` is 1 (`HOB-48`). The
-§3.6 time length is not a minor: it is layout version 1 (§13 V-1).
+9.4 Minor 1 = kind 6 `subject` (and `series_batch`, which needs it); minor 2 = the `cgroup_id`
+selector (§4.2). `PROTO_MINOR` is 2 (`HOB-48`, B9). The §3.6 time length is not a minor: it is layout
+version 1 (§13 V-1).
 
-## 10. Wire error codes (closed list, minor 0 + 1)
+## 10. Wire error codes (closed list, minor 0 + 1 + 2)
 
 `unknown-mode`, `binary-required`, `unsupported-version`, `hello-required`, `bad-frame`,
 `frame-too-large`, `deadline`, `idle`, `slow-client`, `shutting-down` (the §5.4 fatal set),
@@ -1309,7 +1336,7 @@ zipimport}.py` with the scripted fake probe `fake_probe.py`. Decisions and ambig
   with kinds `json-text`, `duplicate-key`, `unknown-key`, `missing-key`, `wrong-type`); the connection closes.
   `ProtocolError` (also a `WireError` subclass) names what is not a decoder error: `unexpected-frame`,
   `unknown-corr`, `bad-reply`, `end-counts`, `hello-mismatch`, `queue-overflow`, `corr-exhausted`.
-- **Handshake.** The prefix (`HOB\x01`, major 1, minor 1) is sent alone, the 8-byte server prefix is read with a
+- **Handshake.** The prefix (`HOB\x01`, major 1, minor 2) is sent alone, the 8-byte server prefix is read with a
   `recv_into` that never over-reads, then the `hello` REQ goes out with `corr` 1. A closed socket before the
   prefix is `ConnectionLost`; a wrong magic is `unknown-mode`; another major is `unsupported-version`; a server
   minor above the client's, a `proto` that disagrees with the prefix, another `level` than requested and a missing or

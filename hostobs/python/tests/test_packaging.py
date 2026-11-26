@@ -430,6 +430,7 @@ class Packaging(unittest.TestCase):
             self.assertIn("No hostobs probe currently serves `annotate`", document)
             self.assertIn("`deploy/` installs the observer socket", document)
             self.assertNotIn("does not install an observer socket", document)
+            self.assertNotIn("Not available yet:** the observer socket", document)
             self.assertIn("prints a notice and exits 0", document)
             self.assertIn("membership in the `hostobs-observer` group", document)
         self.assertIn("adding `--require` makes it exit 1", consumers)

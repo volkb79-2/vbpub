@@ -419,6 +419,32 @@ the registry-set identity, so a workspace-only lock edit (a path dependency betw
 needs no image rebuild. An image with the older whole-lock identity rejects ANY lock byte
 change. Which tag a host carries is a fact of that host and is not recorded in this repository.
 
+## Select a published cgroup
+
+A minor-2 `current` request can select a cgroup by its `stat(2)` identity and read its CPU usage and
+CPU limit readings:
+
+```json
+{
+  "verb": "current",
+  "args": {
+    "selection": {
+      "entities": [{"cgroup_id": {"dev": 2049, "inode": 5159}}],
+      "metrics": ["cpu.usage_usec", "limit.cpu.max.period", "limit.cpu.max.quota"]
+    }
+  }
+}
+```
+
+Call `stat(2)` on the cgroup directory and use `st_dev` for `dev` and `st_ino` for `inode`; `dev` is
+not a mount ID. The selector resolves only against the tick served for that request. It is not a
+durable record key, and hostobs does not guarantee that the pair never names a later cgroup,
+including after a reboot or on another host. Keep the reply's `inc` together with `boot_id` and
+`epoch` when recording identity, then compare those fields. `limit.cpu.max.quota` and
+`limit.cpu.max.period` are gauge values in microseconds: quota is `unsupported` for `max` and for an
+absent `cpu.max`; period reports `P` for a readable `Q P` or `max P` line and is `absent` when the
+file is missing.
+
 ## Status: the live slice
 
 The hostobs live slice is on `main`. It is **not** a versioned release: no tag, package or
@@ -427,11 +453,14 @@ are installed by hand).
 
 **Available:** the observe and operator sockets; the verbs `hello`, `status`, `current`,
 `subscribe` and `unsubscribe`; fixed-width BLOCK frames with a quality byte per value; the
-Rust client (`hostobs/crates/client`) and the stdlib-only Python `hostobs_client`.
+Rust client (`hostobs/crates/client`) and the stdlib-only Python `hostobs_client`; the
+`cgroup_id` selector and the `limit.cpu.max.*` metrics (wire minor 2). `deploy/` also installs the
+observer socket, which answers only `hello` so far.
 
-**Not available yet:** the observer socket; `annotate`, `events` and `spans` (they answer
-`unknown-verb`); the control level and sessions; the install CLI. Version 0.1.0 follows after
-M3, once the release packages are in.
+**Not available yet:** `events` and `spans` (they answer `unknown-verb` at observe and operator);
+`annotate` (`unknown-verb` on the observer socket, `forbidden` at observe and operator); the
+control level and sessions; the install CLI. Version 0.1.0 follows after M3, once the release
+packages are in.
 
 Limits:
 
@@ -439,8 +468,9 @@ Limits:
    emulation (27.3 CPU-s in 59 s, median 434 ms per 1 s tick). No release build was measured on
    native hardware. The VM result is functional only.
 2. **What the demo exercised.** Only `cpu.usage_usec`, `mem.current` and `pids.current`. It did
-   not exercise PSI, `io.stat`, `memory.stat`, the host `/proc` metrics, `probe.*`, a reboot, the
-   operator-only differences, or a non-root operator-group member.
+   not exercise PSI, `io.stat`, `memory.stat`, the host `/proc` metrics, `probe.*`, the observer
+   socket, the `cgroup_id` selector, the `limit.cpu.max.*` metrics, a reboot, the operator-only
+   differences, or a non-root operator-group member.
 3. **The root cgroup is not a share denominator.** The root's `cpu.usage_usec` is tick-accounted
    and is not comparable with child cgroups; do not compute shares against `/`. On the root,
    `mem.current` and `pids.current` are always `absent` (expected — see the table below).
@@ -473,7 +503,6 @@ consumer's own backlog, not something to derive from the root's `mem.current`.
 In part (a)'s container run (`evidence/live-container-20261124.txt`) the root row is `ok` for all
 three metrics, and that is consistent: `/sys/fs/cgroup` there is the container's
 cgroup-namespace root, a non-root cgroup of the real hierarchy, so `memory.current` exists.
-
 ## Boundaries
 
 These four rules say where hostobs ends and its neighbours begin; later packages and other tools
