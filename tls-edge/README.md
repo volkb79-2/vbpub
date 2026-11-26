@@ -136,8 +136,9 @@ python3 tools/render_standalone.py --out "$PWD/edge-proxy" --defaults-only
 cd edge-proxy
 docker compose up -d
 
-# 4. Verify the trial.
-bash ../scripts/verify.sh
+# 4. Verify the trial (--no-canary: 4.0.0's canary orders a real certificate for
+#    verify.<domain>; see docs/INSTALL.md section 3 and the backlog's known limitations).
+bash ../scripts/verify.sh --no-canary
 
 # 5. Onboard your services — see CONSUMER_GUIDE.md.
 ```
@@ -247,22 +248,28 @@ only `live/` causes silent TLS failure inside the container.
 
 ## Verification
 
-`scripts/verify.sh` runs a post-install checklist.  Categories checked:
+`scripts/verify.sh` runs a post-install checklist. Strictly, it checks, in order:
 
 | Check | What it verifies |
 |---|---|
-| Stack health | Both containers report healthy (`docker inspect`) |
-| Port binding | Configured HTTP/HTTPS ports and any enabled HTTP/3 socket are bound on the expected interface |
-| TLS handshake | `openssl s_client` against the host FQDN; cert loaded (not the Traefik default self-signed) |
-| ACME volume | `acme.json` exists, is non-empty, and has mode 0600 |
-| Network | `ingress_public` network exists and Traefik is attached |
-| DNS | Host FQDN resolves to the host's public IP |
-| Port 80 | Reports whether HTTP→HTTPS redirect is active or port is closed |
+| 1. ciu configuration | The bundled `<root>/ciu check` passes (SKIPs when the ciu launcher is absent) |
+| 2. compose | `docker compose config -q` accepts the rendered stack |
+| 3. health | Both containers report `healthy` (`docker inspect`) |
+| 4. networks | `ingress_public` exists; `traefik_internal` exists and is internal |
+| 5. socket proxy | A GET is allowed and a POST is refused at `dockerproxy:2375` |
+| 6. redirect | With `expose_http = true`: the HTTP entrypoint answers 301/308 |
+| 7. TLS | A certificate is served for the domain and it is not Traefik's default self-signed |
+| 8. ACME/static | The ACME volume holds a non-empty `acme.json` at mode 0600, or the static cert file is readable |
+| 9. canary | A labelled `whoami` container is routed through `websecure` |
+| 10. access log | Traefik's recent log lines are JSON carrying `RouterName` |
+| 11. ops isolation | With `--ops-check`: an ops endpoint is unreachable from the given network |
 
-Run at any time:
+Run at any time, with `--no-canary` until 4.0.1 (4.0.0's canary orders a real certificate for
+`verify.<domain>`, and its checks 5 and 9 and the exit status are known-bad; see
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md#known-limitations)):
 
 ```bash
-bash scripts/verify.sh
+bash scripts/verify.sh --no-canary
 ```
 
 ---

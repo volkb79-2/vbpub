@@ -361,11 +361,15 @@ at it.
 ### 1. Run the codified check suite
 
 ```sh
-tls-edge/scripts/verify.sh
+tls-edge/scripts/verify.sh --no-canary
 ```
 
-Checks: template freshness, socket-proxy policy, TLS cert loaded (not the
-Traefik self-signed default), canary route end-to-end, ops isolation probe.
+Checks: the bundled `<root>/ciu check`, the rendered compose, container health,
+the `ingress_public` and internal networks, the socket-proxy policy, the
+optional HTTP redirect, the served certificate, the ACME state and access-log
+format. `--no-canary` is required until 4.0.1: 4.0.0's canary (check 9) orders a
+real certificate for `verify.<--domain>` and probes before issuance completes
+(see `docs/INSTALL.md` section 3 and `KNOWN_ISSUES_TODO_BACKLOG.md`).
 
 ### 2. Check Traefik saw your service
 

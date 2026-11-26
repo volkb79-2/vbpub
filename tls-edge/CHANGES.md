@@ -5,7 +5,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+### Changed
+- The `dockerproxy` service now sets `EVENTS: 1` explicitly. The Docker provider's `watch: true` needs
+  the event stream, which the proxy image already enabled by default; the instance no longer relies on
+  that default (TE-14, verified on a host on 2026-11-26: a container started after Traefik was
+  routed by the second 0.5 s poll (about 1 s), without a Traefik restart).
 
+### Known issues
+- `scripts/verify.sh` is unchanged in 4.0.0 and must be run with `--no-canary` until the fix ships: its
+  canary routes `Host(verify.<--domain>)` on `websecure` without router-level `tls=true`, so the
+  entrypoint's `certResolver` orders a REAL certificate for `verify.<domain>` (public CT entry, CA
+  rate-limit count), then probes 5 s later before issuance completes. Its check 5 always FAILs (the
+  probe is single-quoted, so the proxy name never expands) and a run that reaches the canary exits 127
+  (the EXIT trap calls the undefined `cleanup_tmp`). `docs/INSTALL.md` section 3 says so; the fix is
+  TE-15 (planned 4.0.1).
+- `TE-13`: the ownership of `vol-traefik-acme` under rootless Docker is unverified (not checked before
+  4.0.0; waived by the main controller on 2026-11-26). The `py314` bundle passed the release gates but
+  was not installed on a host (no python 3.14 there). Both are in
+  `KNOWN_ISSUES_TODO_BACKLOG.md`.
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

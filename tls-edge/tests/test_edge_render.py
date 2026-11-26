@@ -52,6 +52,22 @@ def test_default_public_ports_are_web_only(tmp_path):
     assert "ports" not in compose["services"]["dockerproxy"]
 
 
+def test_socket_proxy_environment_enables_the_event_stream(tmp_path):
+    """`EVENTS` is what the Docker provider's `watch: true` needs, and it is explicit.
+
+    The image default is already 1 (TE-14, acceptance on 2026-11-26), but a
+    change of that default must not silently stop new containers from being
+    routed; ARCHITECTURE reproduces the shipped block and must agree.
+    """
+    out = render_to(tmp_path, defaults_config())
+    compose = yaml.safe_load((out / "docker-compose.yml").read_text())
+    env = compose["services"]["dockerproxy"]["environment"]
+    assert env["EVENTS"] in (1, "1"), env
+    assert env["POST"] in (0, "0"), env
+    architecture = " ".join((ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8").split())
+    assert "EVENTS: 1 # read the event stream the Docker provider watches" in architecture
+
+
 def test_http3_publishes_udp_on_https_port_and_keeps_tcp(tmp_path):
     cfg = merge(defaults_config(), {"http3": {"enabled": True}})
     out = render_to(tmp_path, cfg)
