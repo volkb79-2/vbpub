@@ -35,16 +35,168 @@ def _cid(label):
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
 
 
+def _v(value):
+    return {"v": value}
+
+
+def _unknown(reason="not-collected by this host-facts source"):
+    return {"v": None, "reason": reason}
+
+
+def _host_facts_2():
+    services = {
+        unit: {"memory_min_bytes": _v(1024), "load_state": _v("loaded")}
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+    speed = {
+        "geekbench_major": _v(6), "geekbench_version": _v("6.4.0"),
+        "baseline_score": _v(2500), "single_core": _v(2100), "multi_core": _v(7800),
+        "basis": _v("geekbench6-measured"),
+    }
+    return {
+        "schema": "host-facts/2",
+        "agent_version": "1.2.3",
+        "collected_utc": "2026-11-26T12:34:56Z",
+        "boot_id": _v("00112233-4455-6677-8899-aabbccddeeff"),
+        "cpu": {"online": _v(4), "planning_cap": _v(5), "oversubscribe_max": _v(1.25)},
+        "load1": _v(0.5), "load5": _v(0.4), "load15": _v(0.3),
+        "speed": _v(speed),
+        "memory": {
+            "total_bytes": _v(8 * 1024**3), "available_bytes": _v(6 * 1024**3),
+            "host_reserve_bytes": _v(512 * 1024**2), "swap_total_bytes": _v(0),
+            "swap_free_bytes": _v(0), "overcommit": _v(1.5),
+        },
+        "psi": {
+            name: {
+                f"{pressure}_avg{window}_pct": _v(0.5)
+                for pressure in ("some", "full") for window in (10, 60, 300)
+            }
+            for name in ("cpu", "memory", "io")
+        },
+        "gate_slice": {
+            "memory_current_bytes": _v(1024), "memory_warm_bytes": _v(512),
+            "memory_high_bytes": _v(4096), "memory_max_bytes": _v(8192),
+            "cpu_max": _v({"quota_us": 500000, "period_us": 100000}),
+        },
+        "disks": _v([{
+            "name": _v("checkout"), "mount": _v("/work"), "total_bytes": _v(10000),
+            "free_bytes": _v(5000), "fs": _v("btrfs"), "floor_bytes": _v(1000),
+        }]),
+        "cgroup_v2": {"mounted": _v(True), "controllers": _v(["cpu", "io", "memory"])},
+        "kernel_interfaces": {
+            "cgroup_freeze": _v(True), "memory_reclaim": _v(True),
+            "memory_reclaim_swappiness_arg": _unknown(),
+        },
+        "ksm": {
+            "run": _v(1), "advisor_mode": _v("scan-time"), "advisor_max_cpu": _v(8),
+            "pages_sharing": _v(16), "lane_optin_shim": _v(True),
+        },
+        "control_plane": {
+            "slice": _v("ctl.slice"), "present": _v(True), "cpu_weight": _v(10000),
+            "memory_min_bytes": _v(1024), "profile_reserve_bytes": _v(768 * 1024**2),
+            "service_memory_min": services,
+        },
+        "guard": {
+            "guard_present": _v(True), "guard_state": _v("report"),
+            "config_digest": _v("sha256:" + "a" * 64), "frozen_units": _unknown(),
+        },
+        "freeze": {
+            "since_utc": _unknown(), "by": _unknown(), "reason": _unknown(), "queued": _unknown(),
+        },
+        "policy": {
+            "host_role": _v("dedicated-dev"), "psi_refuse_some_avg10": _v(25),
+            "max_lane_containers": _v(8), "planning_cap": _v(5), "max_footprint": _v("large"),
+            "max_planned_bytes": _v(7 * 1024**3),
+            "footprint_charges_bytes": _v({"tiny": 1024, "small": 2048, "medium": 4096, "large": 8192}),
+            "priority_classes_by_principal": _v({"test": ["dev", "gate"]}),
+            "disk_floors": _v({"checkout": 1000, "docker": 2000}),
+            "max_upload_bytes": _v(1024**3),
+            "admission": _v({"queue_path": "/run/fleetd/queue", "wait_s": 30, "settle_s": 5}),
+        },
+        "queue": {
+            "planned_cores": _unknown("not-collected: admission book arrives with the host agent"),
+            "charged_bytes": _unknown("not-collected: admission book arrives with the host agent"),
+            "waiting": _unknown("not-collected: admission book arrives with the host agent"),
+        },
+        "jobs": _unknown("not-collected"),
+        "tools": _unknown("not-collected"),
+    }
+
+
+def _walk_v2_wrappers(value, path=()):
+    if isinstance(value, dict):
+        if "v" in value and set(value) <= {"v", "reason"}:
+            yield path, value
+            return
+        for key, item in value.items():
+            yield from _walk_v2_wrappers(item, (*path, key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _walk_v2_wrappers(item, (*path, index))
+
+
+def _at_path(value, path):
+    current = value
+    for part in path:
+        current = current[part]
+    return current
+
+
 def test_host_facts_fixture_is_typed_and_preserved():
     result = validate_host_facts(_fixture("host-facts.valid.json"))
     assert isinstance(result, HostFacts)
     assert result.to_dict()["schema"] == "host-facts/1"
 
 
+def test_host_facts_v2_validates_wrapped_values_and_metadata():
+    data = _host_facts_2()
+    result = validate_host_facts(data)
+    assert isinstance(result, HostFacts)
+    assert result.to_dict() == data
+    assert result.to_dict()["schema"] == "host-facts/2"
+
+
+def test_host_facts_v2_applies_null_reason_rules_to_every_wrapped_field():
+    data = _host_facts_2()
+    wrappers = list(_walk_v2_wrappers(data))
+    assert len(wrappers) > 60
+    for path, _wrapper in wrappers:
+        candidate = json.loads(json.dumps(data))
+        target = _at_path(candidate, path)
+        target["v"] = None
+        target.pop("reason", None)
+        _fails(lambda candidate=candidate: validate_host_facts(candidate), "null requires reason")
+
+    for path, wrapper in wrappers:
+        if wrapper["v"] is None:
+            continue
+        candidate = json.loads(json.dumps(data))
+        target = _at_path(candidate, path)
+        target["reason"] = "stale reason beside a value"
+        _fails(lambda candidate=candidate: validate_host_facts(candidate), "only allowed when v is null")
+
+
+def test_host_facts_v2_rejects_invalid_metadata_shapes_and_policy_values():
+    mutations = (
+        (lambda data: data.update(agent_version="1.2"), "agent_version: expected SemVer"),
+        (lambda data: data.update(collected_utc="yesterday"), "expected an RFC 3339 UTC timestamp"),
+        (lambda data: data["cpu"].update(extra=_v(1)), "cpu: unknown field.*extra"),
+        (lambda data: data["memory"].update(total_bytes={"v": None}), "null requires reason"),
+        (lambda data: data["policy"].update(max_footprint=_v("huge")), "expected tiny, small, medium, or large"),
+        (lambda data: data["policy"].update(admission=_v({"queue_path": "/queue", "wait_s": 1})), "missing field.*settle_s"),
+        (lambda data: data["queue"].update(extra=_v(0)), "unknown field.*extra"),
+        (lambda data: data.update(extra=True), "unknown field.*extra"),
+    )
+    for mutate, message in mutations:
+        data = _host_facts_2()
+        mutate(data)
+        _fails(lambda data=data: validate_host_facts(data), message)
+
+
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda data: data.update(schema="host-facts/2"), "expected 'host-facts/1'"),
+        (lambda data: data.update(schema="host-facts/other"), "expected 'host-facts/1' or 'host-facts/2'"),
         (lambda data: data.update(extra=True), "unknown field.*extra"),
         (lambda data: data.pop("policy"), "missing field.*policy"),
         (lambda data: data.update(boot_id=None), "null requires boot_id_reason"),

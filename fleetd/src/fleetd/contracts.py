@@ -6,6 +6,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -92,6 +93,11 @@ class ContractError(ValueError):
 
 
 _CANDIDATE_ID = re.compile(r"[0-9a-f]{64}\Z")
+_SEMVER = re.compile(
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?\Z"
+)
+_UTC_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z\Z")
 
 
 def is_candidate_id(value: object) -> bool:
@@ -101,7 +107,7 @@ def is_candidate_id(value: object) -> bool:
 
 @dataclass(frozen=True)
 class HostFacts:
-    """Validated ``host-facts/1`` document."""
+    """Validated versioned host-facts document."""
 
     data: Mapping[str, Any]
 
@@ -388,7 +394,7 @@ def _validate_group(
             raise ContractError(f"{where}.{key}: unsupported contract type {kind}")
 
 
-def validate_host_facts(value: object) -> HostFacts:
+def _validate_host_facts_1(value: object) -> HostFacts:
     root = _object(
         value, "host-facts/1",
         {"schema", "boot_id", "host_now_boottime_s", "cpu", "speed", "memory", "psi", "cgroup_v2", "kernel_interfaces", "ksm", "control_plane", "guard", "policy", "jobs", "tools"},
@@ -522,6 +528,408 @@ def validate_host_facts(value: object) -> HostFacts:
     jobs, _jobs_reason = _nullable(root, "jobs", "jobs_reason", "host-facts/1", _validate_jobs)
     tools, _tools_reason = _nullable(root, "tools", "tools_reason", "host-facts/1", _validate_tools)
     return HostFacts(root)
+
+
+def _wrapped(
+    value: object,
+    where: str,
+    check: Callable[[object, str], object],
+) -> object:
+    """Validate a /2 value wrapper, including the reason/value exclusivity rule."""
+    obj = _object(value, where, {"v"}, {"reason"})
+    if obj["v"] is None:
+        if "reason" not in obj:
+            raise ContractError(f"{where}: null requires reason")
+        _string(obj["reason"], f"{where}.reason")
+        return None
+    if "reason" in obj:
+        raise ContractError(f"{where}.reason: only allowed when v is null")
+    return check(obj["v"], f"{where}.v")
+
+
+def _wrapped_int(value: object, where: str, *, minimum: int = 0) -> object:
+    return _wrapped(value, where, lambda item, path: _integer(item, path, minimum=minimum))
+
+
+def _wrapped_num(
+    value: object,
+    where: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> object:
+    return _wrapped(
+        value, where,
+        lambda item, path: _number(item, path, minimum=minimum, maximum=maximum),
+    )
+
+
+def _wrapped_str(value: object, where: str) -> object:
+    return _wrapped(value, where, _string)
+
+
+def _wrapped_bool(value: object, where: str) -> object:
+    return _wrapped(value, where, _boolean)
+
+
+def _wrapped_group(
+    value: object,
+    where: str,
+    fields: Mapping[str, Callable[[object, str], object]],
+) -> dict[str, Any]:
+    obj = _object(value, where, set(fields))
+    for key, check in fields.items():
+        check(obj[key], f"{where}.{key}")
+    return obj
+
+
+def _plain_strings(value: object, where: str) -> object:
+    return list(_strings(value, where))
+
+
+def _v2_timestamp(value: object, where: str) -> str:
+    text = _string(value, where)
+    if _UTC_TIMESTAMP.fullmatch(text) is None:
+        raise ContractError(f"{where}: expected an RFC 3339 UTC timestamp ending in Z")
+    try:
+        datetime.fromisoformat(text[:-1] + "+00:00")
+    except ValueError:
+        raise ContractError(f"{where}: expected a valid RFC 3339 UTC timestamp") from None
+    return text
+
+
+def _wrapped_timestamp(value: object, where: str) -> object:
+    return _wrapped(value, where, _v2_timestamp)
+
+
+def _v2_semver(value: object, where: str) -> str:
+    text = _string(value, where)
+    if _SEMVER.fullmatch(text) is None:
+        raise ContractError(f"{where}: expected SemVer")
+    return text
+
+
+def _number_map(value: object, where: str, *, integer: bool = False) -> dict[str, int | float]:
+    if not isinstance(value, dict):
+        raise ContractError(f"{where}: expected object")
+    result: dict[str, int | float] = {}
+    for key, item in value.items():
+        name = _string(key, f"{where} key")
+        result[name] = (
+            _integer(item, f"{where}.{name}", minimum=0)
+            if integer else _number(item, f"{where}.{name}", minimum=0)
+        )
+    return result
+
+
+def _v2_admission(value: object, where: str) -> dict[str, Any]:
+    obj = _object(value, where, {"queue_path", "wait_s", "settle_s"})
+    _string(obj["queue_path"], f"{where}.queue_path")
+    _number(obj["wait_s"], f"{where}.wait_s", minimum=0)
+    _number(obj["settle_s"], f"{where}.settle_s", minimum=0)
+    return obj
+
+
+def _v2_policy_object(kind: str) -> Callable[[object, str], object]:
+    if kind == "footprint_charges_bytes":
+        def check_charges(value: object, where: str) -> object:
+            obj = _number_map(value, where, integer=True)
+            if any(key not in {"tiny", "small", "medium", "large"} for key in obj):
+                raise ContractError(f"{where}: expected footprint class keys")
+            return obj
+        return check_charges
+    if kind == "priority_classes_by_principal":
+        def check_priorities(value: object, where: str) -> object:
+            if not isinstance(value, dict):
+                raise ContractError(f"{where}: expected object")
+            allowed = {"merge-gate", "dev", "gate", "campaign"}
+            for principal, classes in value.items():
+                _string(principal, f"{where} principal")
+                values = _strings(classes, f"{where}.{principal}")
+                if any(item not in allowed for item in values):
+                    raise ContractError(f"{where}.{principal}: contains an unknown priority class")
+            return value
+        return check_priorities
+    if kind == "disk_floors":
+        return lambda value, where: _number_map(value, where, integer=True)
+    if kind == "admission":
+        return _v2_admission
+    raise ContractError(f"unsupported host-facts/2 policy field {kind!r}")
+
+
+def _validate_v2_speed(value: object, where: str) -> None:
+    fields = {
+        "geekbench_major": lambda item, path: _wrapped_int(item, path, minimum=1),
+        "geekbench_version": _wrapped_str,
+        "baseline_score": lambda item, path: _wrapped_int(item, path, minimum=1),
+        "single_core": lambda item, path: _wrapped_int(item, path, minimum=1),
+        "multi_core": lambda item, path: _wrapped_int(item, path, minimum=1),
+        "basis": _wrapped_str,
+    }
+    speed = _wrapped(value, where, lambda item, path: _validate_wrapped_object(item, path, fields))
+    if speed is not None:
+        major_obj = speed["geekbench_major"]
+        basis_obj = speed["basis"]
+        major = major_obj["v"]
+        basis = basis_obj["v"]
+        if major is not None and basis is not None and basis not in {f"geekbench{major}-measured", f"geekbench{major}-table"}:
+            raise ContractError(f"{where}.basis.v: must name the record's Geekbench major and basis")
+
+
+def _validate_wrapped_object(
+    value: object,
+    where: str,
+    fields: Mapping[str, Callable[[object, str], object]],
+) -> dict[str, Any]:
+    return _wrapped_group(value, where, fields)
+
+
+def _validate_v2_psi(value: object, where: str) -> None:
+    fields = {
+        f"{pressure}_avg{window}_pct": lambda item, path: _wrapped_num(item, path, minimum=0, maximum=100)
+        for pressure in ("some", "full")
+        for window in (10, 60, 300)
+    }
+    _wrapped_group(value, where, fields)
+
+
+def _validate_v2_cpu_max(value: object, where: str) -> object:
+    def check(raw: object, path: str) -> object:
+        obj = _object(raw, path, {"quota_us", "period_us"})
+        quota = obj["quota_us"]
+        if quota != "max":
+            _integer(quota, f"{path}.quota_us", minimum=1)
+        _integer(obj["period_us"], f"{path}.period_us", minimum=1)
+        return obj
+    return _wrapped(value, where, check)
+
+
+def _validate_v2_memory_limit(value: object, where: str) -> object:
+    def check(raw: object, path: str) -> object:
+        if raw == "max":
+            return raw
+        return _integer(raw, path, minimum=0)
+    return _wrapped(value, where, check)
+
+
+def _validate_v2_disks(value: object, where: str) -> None:
+    def check(raw: object, path: str) -> object:
+        if not isinstance(raw, list):
+            raise ContractError(f"{path}: expected array")
+        seen: set[str] = set()
+        for index, value in enumerate(raw):
+            row_path = f"{path}[{index}]"
+            row = _object(value, row_path, {"name", "mount", "total_bytes", "free_bytes", "fs", "floor_bytes"})
+            name = _wrapped(row["name"], f"{row_path}.name", _string)
+            if isinstance(name, str):
+                if name in seen:
+                    raise ContractError(f"{path}: duplicate disk name {name!r}")
+                seen.add(name)
+            _wrapped(row["mount"], f"{row_path}.mount", _string)
+            _wrapped_int(row["total_bytes"], f"{row_path}.total_bytes", minimum=0)
+            _wrapped_int(row["free_bytes"], f"{row_path}.free_bytes", minimum=0)
+            _wrapped(row["fs"], f"{row_path}.fs", _string)
+            _wrapped_int(row["floor_bytes"], f"{row_path}.floor_bytes", minimum=0)
+        return raw
+    _wrapped(value, where, check)
+
+
+def _validate_v2_service_memory_min(value: object, where: str) -> None:
+    table = _object(value, where, set(CONTROL_PLANE_SERVICE_UNITS))
+    for unit in CONTROL_PLANE_SERVICE_UNITS:
+        path = f"{where}.{unit}"
+        row = _object(table[unit], path, {"memory_min_bytes", "load_state"})
+        _wrapped_int(row["memory_min_bytes"], f"{path}.memory_min_bytes", minimum=0)
+        _wrapped(row["load_state"], f"{path}.load_state", _string)
+
+
+def _validate_v2_jobs(value: object, where: str) -> object:
+    def check(raw: object, path: str) -> object:
+        if not isinstance(raw, list):
+            raise ContractError(f"{path}: expected array")
+        seen: set[str] = set()
+        for index, item in enumerate(raw):
+            job_path = f"{path}[{index}]"
+            job = _object(item, job_path, {
+                "id", "state", "requested_by", "resources", "started_utc",
+                "progress_done", "progress_total", "progress_unit", "last_progress_utc",
+            })
+            job_id = _wrapped(job["id"], f"{job_path}.id", _string)
+            if isinstance(job_id, str):
+                if job_id in seen:
+                    raise ContractError(f"{path}: duplicate job id {job_id!r}")
+                seen.add(job_id)
+            _wrapped(job["state"], f"{job_path}.state", _string)
+            _wrapped(job["requested_by"], f"{job_path}.requested_by", _mapping_object)
+            _wrapped(job["resources"], f"{job_path}.resources", _mapping_object)
+            _wrapped(job["started_utc"], f"{job_path}.started_utc", _v2_timestamp)
+            _wrapped_int(job["progress_done"], f"{job_path}.progress_done", minimum=0)
+            _wrapped_int(job["progress_total"], f"{job_path}.progress_total", minimum=0)
+            _wrapped(job["progress_unit"], f"{job_path}.progress_unit", _string)
+            _wrapped(job["last_progress_utc"], f"{job_path}.last_progress_utc", _v2_timestamp)
+        return raw
+    return _wrapped(value, where, check)
+
+
+def _mapping_object(value: object, where: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ContractError(f"{where}: expected object")
+    return value
+
+
+def _validate_v2_tools(value: object, where: str) -> None:
+    def check(raw: object, path: str) -> object:
+        tools = _object(raw, path, {"run_gate", "images"})
+        _strings(tools["run_gate"], f"{path}.run_gate")
+        images = tools["images"]
+        if not isinstance(images, dict):
+            raise ContractError(f"{path}.images: expected object")
+        for name, digest in images.items():
+            _string(name, f"{path}.images name")
+            _string(digest, f"{path}.images.{name}")
+        return tools
+    _wrapped(value, where, check)
+
+
+def _validate_host_facts_2(value: object) -> HostFacts:
+    root = _object(
+        value, "host-facts/2",
+        {
+            "schema", "agent_version", "collected_utc", "boot_id", "cpu", "load1", "load5", "load15",
+            "speed", "memory", "psi", "gate_slice", "disks", "cgroup_v2", "kernel_interfaces", "ksm",
+            "control_plane", "guard", "freeze", "policy", "queue", "jobs", "tools",
+        },
+    )
+    if root["schema"] != "host-facts/2":
+        raise ContractError("host-facts/2.schema: expected 'host-facts/2'")
+    _v2_semver(root["agent_version"], "host-facts/2.agent_version")
+    _v2_timestamp(root["collected_utc"], "host-facts/2.collected_utc")
+    _wrapped(root["boot_id"], "host-facts/2.boot_id", _string)
+
+    _wrapped_group(root["cpu"], "host-facts/2.cpu", {
+        "online": lambda item, path: _wrapped_int(item, path, minimum=1),
+        "planning_cap": lambda item, path: _wrapped_num(item, path, minimum=0),
+        # Kept for this package's equivalent-plan guarantee; admission uses planning_cap later.
+        "oversubscribe_max": lambda item, path: _wrapped_num(item, path, minimum=0.000001),
+    })
+    for name in ("load1", "load5", "load15"):
+        _wrapped_num(root[name], f"host-facts/2.{name}", minimum=0)
+    _validate_v2_speed(root["speed"], "host-facts/2.speed")
+
+    _wrapped_group(root["memory"], "host-facts/2.memory", {
+        "total_bytes": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "available_bytes": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "host_reserve_bytes": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "swap_total_bytes": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "swap_free_bytes": lambda item, path: _wrapped_int(item, path, minimum=0),
+        # Preserves the planner's existing expected-sum policy without making it
+        # depend on any of the admission-only policy keys.
+        "overcommit": lambda item, path: _wrapped_num(item, path, minimum=0.000001),
+    })
+    psi = _object(root["psi"], "host-facts/2.psi", {"cpu", "memory", "io"})
+    for name in ("cpu", "memory", "io"):
+        _validate_v2_psi(psi[name], f"host-facts/2.psi.{name}")
+
+    _wrapped_group(root["gate_slice"], "host-facts/2.gate_slice", {
+        "memory_current_bytes": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "memory_warm_bytes": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "memory_high_bytes": _validate_v2_memory_limit,
+        "memory_max_bytes": _validate_v2_memory_limit,
+        "cpu_max": _validate_v2_cpu_max,
+    })
+    _validate_v2_disks(root["disks"], "host-facts/2.disks")
+
+    cgroup = _wrapped_group(root["cgroup_v2"], "host-facts/2.cgroup_v2", {
+        "mounted": _wrapped_bool,
+        "controllers": lambda item, path: _wrapped(item, path, _plain_strings),
+    })
+    _validate_wrapped_object(root["kernel_interfaces"], "host-facts/2.kernel_interfaces", {
+        "cgroup_freeze": _wrapped_bool,
+        "memory_reclaim": _wrapped_bool,
+        "memory_reclaim_swappiness_arg": _wrapped_bool,
+    })
+    _validate_wrapped_object(root["ksm"], "host-facts/2.ksm", {
+        "run": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "advisor_mode": _wrapped_str,
+        "advisor_max_cpu": lambda item, path: _wrapped_num(item, path, minimum=0, maximum=100),
+        "pages_sharing": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "lane_optin_shim": _wrapped_bool,
+    })
+
+    control = _object(root["control_plane"], "host-facts/2.control_plane", {
+        "slice", "present", "cpu_weight", "memory_min_bytes", "profile_reserve_bytes", "service_memory_min",
+    })
+    _wrapped(control["slice"], "host-facts/2.control_plane.slice", _string)
+    _wrapped(control["present"], "host-facts/2.control_plane.present", _boolean)
+    _wrapped_int(control["cpu_weight"], "host-facts/2.control_plane.cpu_weight", minimum=1)
+    _wrapped_int(control["memory_min_bytes"], "host-facts/2.control_plane.memory_min_bytes", minimum=0)
+    _wrapped_int(control["profile_reserve_bytes"], "host-facts/2.control_plane.profile_reserve_bytes", minimum=1)
+    _validate_v2_service_memory_min(control["service_memory_min"], "host-facts/2.control_plane.service_memory_min")
+
+    guard = _object(root["guard"], "host-facts/2.guard", {"guard_present", "guard_state", "config_digest", "frozen_units"})
+    _wrapped(guard["guard_present"], "host-facts/2.guard.guard_present", _boolean)
+    def guard_state(value: object, where: str) -> object:
+        state = _string(value, where)
+        if state not in {"off", "report", "enforce", "unknown"}:
+            raise ContractError(f"{where}: expected off, report, enforce, or unknown")
+        return state
+    _wrapped(guard["guard_state"], "host-facts/2.guard.guard_state", guard_state)
+    _wrapped(guard["config_digest"], "host-facts/2.guard.config_digest", _string)
+    _wrapped_int(guard["frozen_units"], "host-facts/2.guard.frozen_units", minimum=0)
+
+    freeze = _object(root["freeze"], "host-facts/2.freeze", {"since_utc", "by", "reason", "queued"})
+    _wrapped_timestamp(freeze["since_utc"], "host-facts/2.freeze.since_utc")
+    _wrapped_str(freeze["by"], "host-facts/2.freeze.by")
+    _wrapped_str(freeze["reason"], "host-facts/2.freeze.reason")
+    _wrapped_int(freeze["queued"], "host-facts/2.freeze.queued", minimum=0)
+
+    policy = _object(root["policy"], "host-facts/2.policy", {
+        "host_role", "psi_refuse_some_avg10", "max_lane_containers", "planning_cap", "max_footprint",
+        "max_planned_bytes", "footprint_charges_bytes", "priority_classes_by_principal", "disk_floors",
+        "max_upload_bytes", "admission",
+    })
+    def host_role(value: object, where: str) -> object:
+        role = _string(value, where)
+        if role not in {"dedicated-dev", "shared-prod"}:
+            raise ContractError(f"{where}: expected 'dedicated-dev' or 'shared-prod'")
+        return role
+    _wrapped(policy["host_role"], "host-facts/2.policy.host_role", host_role)
+    _wrapped_num(policy["psi_refuse_some_avg10"], "host-facts/2.policy.psi_refuse_some_avg10", minimum=0, maximum=100)
+    _wrapped_int(policy["max_lane_containers"], "host-facts/2.policy.max_lane_containers", minimum=1)
+    _wrapped_num(policy["planning_cap"], "host-facts/2.policy.planning_cap", minimum=0)
+    def footprint(value: object, where: str) -> object:
+        name = _string(value, where)
+        if name not in {"tiny", "small", "medium", "large"}:
+            raise ContractError(f"{where}: expected tiny, small, medium, or large")
+        return name
+    _wrapped(policy["max_footprint"], "host-facts/2.policy.max_footprint", footprint)
+    _wrapped_int(policy["max_planned_bytes"], "host-facts/2.policy.max_planned_bytes", minimum=1)
+    _wrapped(policy["footprint_charges_bytes"], "host-facts/2.policy.footprint_charges_bytes", _v2_policy_object("footprint_charges_bytes"))
+    _wrapped(policy["priority_classes_by_principal"], "host-facts/2.policy.priority_classes_by_principal", _v2_policy_object("priority_classes_by_principal"))
+    _wrapped(policy["disk_floors"], "host-facts/2.policy.disk_floors", _v2_policy_object("disk_floors"))
+    _wrapped_int(policy["max_upload_bytes"], "host-facts/2.policy.max_upload_bytes", minimum=1)
+    _wrapped(policy["admission"], "host-facts/2.policy.admission", _v2_policy_object("admission"))
+
+    _wrapped_group(root["queue"], "host-facts/2.queue", {
+        "planned_cores": lambda item, path: _wrapped_num(item, path, minimum=0),
+        "charged_bytes": lambda item, path: _wrapped_int(item, path, minimum=0),
+        "waiting": lambda item, path: _wrapped_int(item, path, minimum=0),
+    })
+    _validate_v2_jobs(root["jobs"], "host-facts/2.jobs")
+    _validate_v2_tools(root["tools"], "host-facts/2.tools")
+    return HostFacts(root)
+
+
+def validate_host_facts(value: object) -> HostFacts:
+    """Validate ``host-facts/1`` for migration or the current ``/2`` contract."""
+    if not isinstance(value, dict):
+        raise ContractError("host-facts: expected object")
+    schema = value.get("schema")
+    if schema == "host-facts/1":
+        return _validate_host_facts_1(value)
+    if schema == "host-facts/2":
+        return _validate_host_facts_2(value)
+    raise ContractError("host-facts.schema: expected 'host-facts/1' or 'host-facts/2'")
 
 
 def validate_work_request(value: object) -> WorkRequest:
