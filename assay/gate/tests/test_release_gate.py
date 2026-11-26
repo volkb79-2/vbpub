@@ -72,6 +72,7 @@ if args[0] == "cancel":
         # correct run into a failure.
         (remote_out / "remote-cancel-holding.txt").write_text("holding", encoding="utf-8")
         ticks_path = remote_out / "remote-cancel-hold-ticks.txt"
+        ticks_tmp_path = ticks_path.with_name(ticks_path.name + ".tmp")
         ticks = 0
         deadline = time.monotonic() + float(config.get("cancel_hold_max_seconds", 120))
         while not Path(cancel_hold_until).exists():
@@ -82,7 +83,12 @@ if args[0] == "cancel":
                 )
                 raise SystemExit(91)
             ticks += 1
-            ticks_path.write_text(str(ticks), encoding="utf-8")
+            # Written to a side name and renamed over the counter, so a reader can
+            # never catch the file between truncation and the new digits: the test
+            # waits for this counter, and a read of a half-written file is a test
+            # defect, not a slow host.
+            ticks_tmp_path.write_text(str(ticks), encoding="utf-8")
+            ticks_tmp_path.replace(ticks_path)
             time.sleep(0.01)
     if config.get("signal_mode"):
         pid = int((remote_out / "remote-child.pid").read_text(encoding="utf-8"))
@@ -433,6 +439,68 @@ def _heartbeat_lines(text: str) -> list[re.Match[str]]:
     ]
 
 
+def _pid_state(pid: int) -> str | None:
+    """The kernel's state letter for `pid`, or None when the pid no longer exists."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return stat.rsplit(")", 1)[1].split()[0]
+
+
+def _pid_running(pid: int) -> bool:
+    """True while `pid` is a live process; a zombie has exited and is only unreaped."""
+    return _pid_state(pid) not in (None, "Z")
+
+
+def _wait_until(predicate, what: str, *, timeout_s: float = 60.0) -> None:
+    """An event-driven wait with a ceiling; never a fixed pause deciding a verdict."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"timed out after {timeout_s} s waiting for {what}")
+
+
+def _hold_ticks_reached(path: Path, wanted: int) -> bool:
+    """Has the fake's held-cancel counter reached `wanted`?
+
+    The counter is the test's event, so a value it cannot parse yet (the file is
+    absent, or a reader raced a write before the fake switched to side-name-plus-
+    rename) means "not yet", never a failure: the caller's own ceiling decides.
+    """
+    try:
+        return int(path.read_text(encoding="utf-8")) >= wanted
+    except (OSError, ValueError):
+        return False
+
+
+# Finding 1 (B579 round 2): the heartbeat's trap names `${!:-}`, and a bash subshell
+# INHERITS `$!` from its parent -- at that moment the wrapper's `remote-gate.py` child,
+# which the wrapper forked and recorded (`remote_gate_pid`) just before it started the
+# heartbeat. This hook holds the heartbeat inside its own `trap` builtin: the trap is
+# installed, the loop's first `sleep ... &` has not run, and the pid its `${!:-}` would
+# kill is written down. The test puts a TERM into that exact window, so nothing here
+# depends on a duration: the seam file and the release file are the two events.
+HEARTBEAT_TRAP_HOOK = (
+    "trap() {\n"
+    '  case "$*" in\n'
+    "    *sleep_pid*)\n"
+    '      printf \'%s\\t%s\\n\' "$BASHPID" "${!:-}" > "$ASSAY_HEARTBEAT_TRAP_SEAM"\n'
+    '      builtin trap "$@"\n'
+    "      local ticks=0\n"
+    '      while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" && $ticks -lt 6000 ]]; do\n'
+    "        /bin/sleep 0.01\n"
+    "        ticks=$((ticks + 1))\n"
+    "      done\n"
+    "      ;;\n"
+    '    *) builtin trap "$@" ;;\n'
+    "  esac\n"
+    "}\n"
+)
+
+
 @pytest.mark.parametrize("value", ["10", "1501", "zero", "300.5", "", " 300"])
 def test_release_gate_rejects_an_unusable_heartbeat_interval(
     tmp_path: Path, value: str
@@ -555,8 +623,7 @@ def test_release_gate_heartbeat_still_cancels_the_remote_run_on_term(
         wrapper.proc.send_signal(signal.SIGTERM)
         wrapper.wait_for(
             lambda _text: (out_dir / "remote-cancel-holding.txt").exists()
-            and hold_ticks.exists()
-            and int(hold_ticks.read_text(encoding="utf-8")) >= 10,
+            and _hold_ticks_reached(hold_ticks, 10),
             "held the remote cancel for ten ticks",
         )
         # The assertion M2 replaces: `stderr[cancel_at:]` is the whole window in which a
@@ -590,6 +657,63 @@ def test_release_gate_heartbeat_still_cancels_the_remote_run_on_term(
     assert all(cancel_secrets[name] is False for name in secret_names)
     # And still nothing after the cancel once the run has ended.
     assert _heartbeat_lines(stderr[stderr.index("attempting to cancel remote run"):]) == []
+
+
+def test_release_gate_heartbeat_trap_never_signals_the_remote_gate_child(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    released = tmp_path / "release-the-fake-run"
+    seam = tmp_path / "heartbeat-trap-seam.txt"
+    seam_release = tmp_path / "release-the-heartbeat-trap"
+    hook = tmp_path / "heartbeat-trap-hook.sh"
+    hook.write_text(HEARTBEAT_TRAP_HOOK, encoding="utf-8")
+    env.update(
+        {
+            "BASH_ENV": str(hook),
+            "ASSAY_HEARTBEAT_TRAP_SEAM": str(seam),
+            "ASSAY_HEARTBEAT_TRAP_RELEASE": str(seam_release),
+        }
+    )
+    # A fake run that stays attached and alive until this test releases it, so nothing
+    # is decided by a duration.
+    _configure_fake(env, hold_until=str(released))
+    out_dir = Path(env["REMOTE_GATE_OUT"])
+    child_pid_path = out_dir / "remote-child.pid"
+    wrapper = Wrapper(tmp_path, env)
+    try:
+        _wait_until(
+            lambda: seam.exists() and child_pid_path.exists(),
+            "the heartbeat's trap and the fake remote-gate's recorded pid",
+        )
+        heartbeat_text, named_text = seam.read_text(encoding="utf-8").split("\t")
+        heartbeat_pid = int(heartbeat_text)
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        # The whole finding: in the window this seam holds open, `${!:-}` must name a
+        # pid the heartbeat forked itself, never the remote-gate child the wrapper had
+        # recorded immediately before. Restoring the pre-fix code (`$!` left inherited)
+        # makes this the child's pid and the run below dies with it.
+        assert int(named_text) != child_pid, (
+            "the heartbeat trap would signal the remote-gate child, not its own sleep"
+        )
+        assert _pid_running(child_pid), "the fake remote-gate must still be running"
+        os.kill(heartbeat_pid, signal.SIGTERM)
+        seam_release.write_text("go", encoding="utf-8")
+        # A zombie has exited (only its parent has not reaped it yet), so this is the
+        # exit event and not a race against `stop_heartbeat`.
+        _wait_until(lambda: not _pid_running(heartbeat_pid), "the heartbeat subshell to exit")
+        assert _pid_running(child_pid), (
+            "the heartbeat's trap signal must not reach the remote-gate child"
+        )
+        released.write_text("go", encoding="utf-8")
+        status = wrapper.reap()
+    finally:
+        released.write_text("go", encoding="utf-8")
+        seam_release.write_text("go", encoding="utf-8")
+        wrapper.kill_leftovers()
+
+    # The run that the heartbeat was watching still ends with its own verdict.
+    assert status == 0, wrapper.stderr()
 
 
 def _run(tmp_path: Path, lane: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:

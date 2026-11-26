@@ -972,12 +972,26 @@ heartbeat `sleep` holding the caller's pipe for up to one interval (cmru's
 procio waits 2 s for the drain and then logs an abandoned holder): between the
 heartbeat's `sleep ... &` fork and the `sleep_pid=$!` that records it, and
 between the wrapper's fork of the heartbeat subshell and the `heartbeat_pid=$!`
-that records it. The trap names `${!:-}` beside `$sleep_pid` so the first one
-kills the fork itself, and the wrapper records the pid while the two signals
-are deferred through a `heartbeat_starting` flag the handler already uses for
-the launch window, so no signal is dropped either. A test that cancels while
-the remote `cancel` call is held open pins that no beat survives the cancel:
-with the heartbeat stopped, the wrapper prints nothing at all during that hold.
+that records it. The first one is closed from inside the subshell, and what
+closed it had to be corrected: `${!:-}` in the trap names the sleep the loop
+forked, but a subshell INHERITS `$!` from its parent, and the pid the wrapper
+had just recorded was the `remote-gate.py` child (`remote_gate_pid`). A TERM in
+that window would therefore have signalled the run the trap exists to protect,
+and the wrapper's own forward would have been a no-op. The subshell now consumes
+the inherited `$!` before it installs the trap, by forking and reaping a
+placeholder child (`{ : & wait "$!"; }`), so `${!:-}` can only name a pid this
+loop forked; after a reaped `wait` it names that freed pid until the next fork,
+which is a no-op unless the kernel has reused it. The second race is closed by
+the wrapper: it records `heartbeat_pid` while the two signals are deferred
+through a `heartbeat_starting` flag the handler already uses for the launch
+window, so no signal is dropped either. A test that cancels while the remote
+`cancel` call is held open pins that no beat survives the cancel: with the
+heartbeat stopped, the wrapper prints nothing at all during that hold.
+
+A wrapper killed by `SIGKILL` cannot stop that heartbeat, so the loop's own
+`kill -0 "$parent_pid"` guard is the fallback: it ends the loop within one
+iteration, which means at most one more line can reach the caller's still-open
+pipe before the subshell exits.
 
 The two non-load settings, the host table and the output directory, had no
 source at all: the wrapper inherited `remote-gate.py`'s cockpit-specific

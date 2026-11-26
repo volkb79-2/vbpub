@@ -377,14 +377,26 @@ start_heartbeat() {
   (
     set +e
     sleep_pid=""
-    # `$!` is the pid of the sleep current at trap time. The first loop iteration forks
-    # its `sleep` BEFORE `sleep_pid=$!` assigns it, so a TERM landing in that window
-    # would have killed the empty string, left the real sleep running for up to
-    # `interval` seconds and held the caller's pipe open. `${!:-}` names the fork
-    # itself, which is the very job the trap exists to kill.
+    # A bash subshell inherits the parent's `$!`, and at this point that is the
+    # remote-gate child the wrapper forked moments before it started this heartbeat
+    # (remote_gate_pid). `${!:-}` in the trap below is meant to name a sleep THIS loop
+    # forked, so the inherited pid is consumed first: a placeholder child is forked
+    # below this subshell's own jobs and reaped, which leaves `$!` naming a pid the
+    # loop never owned and that is already gone. Without this line a TERM landing
+    # before the loop's first `sleep ... &` would have sent TERM to remote-gate.py and
+    # left the sleep it was protecting to run on.
+    { : & wait "$!"; } 2>/dev/null
+    # `$!` is now the pid of the most recent sleep this loop forked. The first iteration
+    # forks its `sleep` BEFORE `sleep_pid=$!` records it, so a TERM landing in that
+    # window would have killed the empty string, left the real sleep running for up to
+    # `interval` seconds and held the caller's pipe open. `${!:-}` names that fork, which
+    # is the very job the trap exists to kill; after a `wait` has reaped a sleep it names
+    # that reaped pid until the next fork, and `kill` on it is a no-op unless the kernel
+    # has reused it (`sleep_pid` is cleared right after every `wait`).
     trap 'kill "${!:-}" 2>/dev/null; kill "${sleep_pid:-}" 2>/dev/null; exit 0' INT TERM
     # `$$` is the wrapper's own pid inside a subshell, so a wrapper that dies by SIGKILL
-    # cannot leave a heartbeat printing into a closed terminal: the loop ends with it.
+    # stops this loop within one iteration: the `kill -0` check ends it, so at most one
+    # more line is printed into the caller's still-open pipe and then the subshell exits.
     while kill -0 "$parent_pid" 2>/dev/null; do
       sleep "$interval" &
       sleep_pid=$!
