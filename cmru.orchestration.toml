@@ -35,6 +35,7 @@ registry = ["ghcr.io"]
 #   vm-lab <- vmscreen  (declared release order)
 #   rigor-record <- cli-extended  (declared release order)
 #   test-policy <- none  (declared release order)
+#   agctl <- cli-extended  (declared release order)
 #   tls-edge <- cli-extended  (declared release order)
 #   iogovmon <- none  (declared release order)
 #   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgprofile, augeaswrap  (declared release order)
@@ -43,7 +44,7 @@ registry = ["ghcr.io"]
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended, assay, test-policy, iogovmon, tester-base
-#   L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, vmscreen, rigor-record, tls-edge
+#   L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, vmscreen, rigor-record, agctl, tls-edge
 #   L2: cgprofile, topos, vm-lab
 #   L3: run-gate-project
 #   L4: cmru
@@ -57,7 +58,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "augeaswrap", "tnt", "cgprofile", "run-gate-project", "cmru", "ciu", "assay", "fleetd", "topos", "nyxloom", "pwmcp", "iobench", "vmscreen", "vm-lab", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "augeaswrap", "tnt", "cgprofile", "run-gate-project", "cmru", "ciu", "assay", "fleetd", "topos", "nyxloom", "pwmcp", "iobench", "vmscreen", "vm-lab", "rigor-record", "test-policy", "agctl", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -301,6 +302,15 @@ config = "run-gate-project/cmru.toml"
 # the deployed CGProfile host daemon. A local source-built Run-Gate candidate
 # is used to qualify CGProfile first; publishing Run-Gate follows CGProfile.
 depends_on = ["cgprofile"]
+
+# agctl (AGENTS.md / docs/design/agctl/DESIGN.md section 2): the agent-control package -
+# controller state, the run registry and the estate view. Its wheel requires cli-extended (the
+# shared CLI contract, CX-D1), so it is L1 and releases after that wheel; the run-gate and cmru
+# tooling it is gated with are installed tools, not artifact edges. NOT HOLDING A RELEASE YET:
+# the FIRST `agctl-v*` release waits for slice 1 (DESIGN section 8).
+[orchestration.project.agctl]
+config = "agctl/cmru.toml"
+depends_on = ["cli-extended"]
 
 # RG-55 daemon image release. Its lifecycle is CIU-owned; CMRU builds and
 # publishes the tagged image, while the controller deploys it via `ciu up`.
