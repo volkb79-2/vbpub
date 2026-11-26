@@ -9,6 +9,53 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.10.0] - 2026-11-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=be24e4ecca48cccf29b71c6ebd6a117d5afb154d -->
+
+### Added
+- feat(run-gate): a stall watch on every watchable lane kind (RG-320, no-time-budgets P1) (b81c6c2ab)
+
+### Fixed
+- fix(run-gate): close the RG-320 delta review findings (controller fix-forward) (5ea5145d6)
+- fix(run-gate): bound silent command lanes across estate (18b12369d)
+- fix(run-gate): close RG-320 P1 review findings (3b2076056)
+- fix(run-gate): arm container stall watch by runner (2e84cedaf)
+- fix(run-gate): H1 second pass: the seven canary-runner lanes are silent by construction (RG-326, RG-328) (7d2b98142)
+- fix(run-gate): M6/L1-L4/FOLLOW-UP 1 of the RG-320 fix round — correct the toml comment, the STALLED survivor sentence and the docs (cbe231d91)
+- fix(run-gate): M4/M5/L5 of the RG-320 fix round — observe the pressure-pause cap, judge a chatty lane on arrivals, bound the output drain (973d17e60)
+- fix(run-gate): M1/M2/M3 of the RG-320 fix round — one bound per lane, an honest unknown signal, an explicit derived-key set (3cfc12352)
+- fix(run-gate): H1 — declare an explicit silence bound on lanes that are silent by construction (RG-320 fix round 1) (ed9a28248)
+- fix(run-gate): keep run -d --name at the head of the lane argv (ff706061b)
+- fix(run-gate): prefer lane OOM victims and close RG-297 lows (6319d0388)
+
+### Changed
+- docs+test(run-gate): close rg-oom review r1: wall-stop and inventory filings match Assay's decided contract, SPEC argv and refusal quotes complete, tests read the container name by flag (RG-321, RG-322, RG-324, RG-325) (5cb80ae2f)
+- wip(run-gate): no-time-budgets P1, interrupted (ntb-p1-y2) (35d42d535)
+- wip(run-gate): RG-297 fix round 2, interrupted (rg297fix2) (0ecc29f65)
+- run-gate: fix RG-297 review r1 (relative path base, duplicate flags, assay 12.3.0 floor) (1a8217fe9)
+- run-gate: let Assay own carry-over pairing, candidate files and rejudge-outcome (RG-297) (5ae3954f8)
+- run-gate: forward assay lane flags after -- (RG-297) (d42cb0c4a)
+
+### Documentation
+- docs(run-gate): point the RG-320 revision comments at the merged rev 77 (4243f179b)
+- docs(run-gate): RG-297 fix round 2 -- backlog names the duplicate-flag remedy (d81147163)
+- docs(run-gate): RG-297 review r1 docs, RG-317/318 status, RG-319 filed (be4edd980)
+- docs(run-gate): assay flag forwarding (RG-297) and RG-315..318 (b732b8370)
+- docs(run-gate-project): file RG-314 (a {worktree} env value also passed through to Assay breaks seeded resumes; lanes --check lint wanted) (da4e6e616)
+- docs(run-gate): RG-263 addendum, docs-only diff reports FAIL NO_MUTANTS (P-plat-docs2) (d83a34e31)
+
+### Testing
+- test(run-gate): assert exec stream disclosure reliably (8b9f69c55)
+- test(run-gate): accept command_signal in the dry-run print_lane_bounds stub (e2101e00a)
+- test(run-gate): cover the exec lane's output-stream watch arm and the bare-host no-watch wait (92f3f4391)
+- test(run-gate): cover LogStreamWatch's pressure pause and print_lane_bounds' inert/unknown-signal lines (8161238b9)
+- test(run-gate): cover the retained inert-reason helper, the environment stamp guard and OutputTee's on_chunk/join timeout (77a9a1654)
+- test(run-gate): let the print_lane_bounds stubs accept command_signal (RG-320 controller fix-forward) (9fd8c5d0d)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - run-gate: a stall watch on every watchable lane kind (RG-320, P1 of
   `docs/design/no-time-budgets/DESIGN.md`) — a COMMAND lane declaring no
@@ -74,8 +121,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `auto-derived` by lane kind.
 - docs(run-gate): correct the RG-318 refusal quote and file RG-323–RG-325
   follow-ups for effective CPU-time support.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.9.0] - 2026-11-24
 <!-- cmru: generated -->
