@@ -43226,6 +43226,30 @@ class TestJobEventOptionsAndWriter:
         assert not event_file.exists()
         assert "apply to a lane run only" in capsys.readouterr().err
 
+    def test_event_environment_variables_are_ignored_without_flags(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        config = f"""\
+            schema_version = 1
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = {json.dumps(["bash", "-c", "true"])}
+            clean_tree = false
+        """
+        project = make_project(repo, config)
+        event_file = tmp_path / "ambient-events.jsonl"
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("RUN_GATE_EVENT_FILE", str(event_file))
+        monkeypatch.setenv("RUN_GATE_JOB_ID", "ambient-job")
+        monkeypatch.setenv("RUN_GATE_PROFILE", "off")
+
+        assert run_gate.main(["suite"]) == 0
+        captured = capsys.readouterr()
+        assert "run-gate: lane 'suite' verdict PASS; exit_code 0" in captured.out
+        assert not event_file.exists()
+
     def test_writer_appends_one_json_line_and_enforces_mode_0600(self,
                                                                  tmp_path):
         path = tmp_path / "events.jsonl"
