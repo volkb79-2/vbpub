@@ -1060,11 +1060,14 @@ and [KI-151](KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled
 It accepts the tag or the exact commit ID that `remote-gate` resolves from that
 tag. For example, use `run-gate --base cmru-v6.1.0 r2` when that is the
 controller-selected R2 floor tag.
-The standalone `r2` lane has no total wall budget. Its `stall_timeout` is 15
-minutes, while the campaign prints a heartbeat every five minutes during its
-known-good control and each candidate test. The 1800-second control ceiling
-and candidate timeout floor/scaling below remain in force. The separate
-aggregate `[lanes.mutation]` lane retains its 7-hour budget.
+The standalone `r2` lane has no total wall budget or per-child elapsed limit.
+CMRU samples child output growth at most every 30 seconds and prints a
+still-running line only after output has grown. A child that keeps printing is
+unbounded by the tool. Silence ends a child within its measured idle window;
+memory-pressure credit follows Run-Gate RG-320 and is capped so the effective
+window, polling, and process cleanup take at most 820 seconds, below the
+15-minute `stall_timeout`. The same silence bound protects the aggregate
+`[lanes.mutation]` lane, which retains its separate 7-hour total budget.
 
 The lane accepts Assay-style zero-based shards over the ordered candidate list.
 For example, run `run-gate --base cmru-v6.1.0 r2 -- --shard 0/3` for shard zero;
@@ -1177,17 +1180,24 @@ the ancestry check. A missing tag or mismatch fails the gate. Run the
 registered `gate` lane so it prepares fresh origin facts immediately before
 mutation.
 Each mutation test command runs in a fresh process group while CMRU's host
-process acts as a Linux child subreaper. If a candidate times out, CMRU kills
-and reaps its process tree before sampling resource counters or starting
-another candidate, including descendants that call `setsid()` or double-fork.
-A normal leader exit with remaining descendants is recorded as `crashed`; CMRU
-cleans them up and continues without calling the mutant killed or survived.
-Timeouts and cgroup resource events are also inconclusive, never killed
-mutants. Resume accepts a killed result only when its process-tree proof says
-the leader exited and no descendants outlived it. See the
+process acts as a Linux child subreaper. A silent child is ended through the
+existing process-tree cleanup before resource counters are sampled or another
+candidate starts, including descendants that call `setsid()` or double-fork.
+A candidate ended for silence is recorded as `outcome: timeout` in its own
+bucket; it is neither killed nor survived, and its shard and any merge fail.
+A control ended for silence records `status: inconclusive`,
+`baseline_exit_code: 124`, and `baseline_termination: no-output`, with no
+candidate judgment; the tool exits 2 and Run-Gate reports `ERROR`, so retry it
+instead of treating it as a pass. A normal leader exit with remaining
+descendants is recorded as `crashed`; CMRU cleans them up and continues
+without calling the mutant killed or survived. Cgroup resource events also
+remain separate from kills. Resume accepts a killed result only when its
+process-tree proof says the leader exited and no descendants outlived it. See the
 [mutation-isolation design](docs/DESIGN-GUIDE.md#mutation-process-tree-isolation)
 and [consumer evidence contract](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
-Evidence schema 7 records `assay_distribution_version` as package metadata and
+Evidence schema 8 records the silence policy, measured control output-gap
+bound, and per-candidate idle bounds, as well as
+`assay_distribution_version` as package metadata and
 `assay_source_commit` as the exact implementation identity. CMRU verifies Assay
 source cleanliness with an independent Git process before importing it, and
 refuses package layouts it cannot bind safely. Before an editable Assay install,
@@ -1249,16 +1259,27 @@ candidate HEAD. The
 selected worktree's Assay source is installed at lane time.
 See the [Assay baseline design](docs/DESIGN-GUIDE.md#whole-target-assay-and-explicit-r2-bases).
 Mutation runs stop each failing candidate at its first failed test
-(`--maxfail=1`). Both mutation lanes give the known-good full-suite control a
-1800-second ceiling (30 minutes). The 2026-11-12 rehearsal measured controls
-at 368, 752, and 825 seconds while other lanes ran; 1800 seconds is 2.18 times
-the longest measurement. Each candidate has a timeout of at least 1800 seconds
-and scales to twice the measured control when that is higher. This is a hang
-bound, not a speed target. Resume reuses killed outcomes from
-`.assay/mutation-cmru.json` only
-while the test suite, copied fixture closure, and timeout are unchanged. Changing
-the timeout starts a fresh campaign because it changes whether a candidate could
-have completed. Resume also requires the selected Assay source tree to be clean
+(`--maxfail=1`). The known-good control has a 600-second no-output window.
+For a completed control, each candidate's window is
+`min(600, max(300, 2 * control_longest_output_gap_upper_bound))` seconds; the
+gap upper bound includes the 30-second sampling resolution. The longest
+concrete silent subprocess timeout found in the tracked test suite is 300
+seconds (`cmru/tests/test_release_end_to_end_real_git.py:212`). Historic
+campaign logs measured control wall times of 1684 and 1794 seconds and
+candidate wall times up to 1855 seconds, but did not record output gaps
+(`cmru-r2lane-review-r1.md:67`); those observations support removing elapsed
+limits, not estimating quiet gaps. The control's bound is therefore a
+600-second policy choice. During full memory PSI pressure (avg10 above 5),
+credited silence uses the Run-Gate RG-320 pattern and is capped by the lesser
+of 1800 seconds or the remaining allowance under the 780-second effective
+silence bound. The per-child effective silence bound is at most 780 seconds;
+30-second polling and the
+10-second process-tree cleanup window make the maximum 820 seconds, below the
+900-second Run-Gate stall timeout. A child that keeps printing has no elapsed
+limit and can continue indefinitely. Resume reuses killed outcomes from
+`.assay/mutation-cmru.json` only while the suite, copied fixture closure,
+silence policy and recorded bounds are unchanged. Resume also requires the
+selected Assay source tree to be clean
 and unchanged across every packaged source root declared in its `pyproject.toml`.
 A package root may be a sibling library directory inside the same Git worktree,
 including a named `package-dir` mapping; roots outside that worktree or any

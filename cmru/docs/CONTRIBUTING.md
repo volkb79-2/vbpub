@@ -37,13 +37,25 @@ The gate prepares authenticated origin baseline facts on the host, then runs
 the campaign in `tester-unified`; the publisher token is not forwarded into the
 test container. Run `mutation` directly only when you have supplied fresh
 `CMRU_ASSAY_BASELINE_FACTS` from the host preflight. The known-good full-suite
-control has an 1800-second ceiling, and each candidate has at least that timeout,
-scaled to twice the measured control when higher. A timed-out candidate is
-inconclusive and cannot count as killed, so an infinite-loop mutation cannot hold
-one candidate indefinitely. The standalone T3 `r2` lane has no total wall budget;
-it uses a 15-minute `stall_timeout` and prints a heartbeat every five minutes
-while the control or a candidate test runs. The aggregate `[lanes.mutation]`
-lane still has its separate 7-hour budget. The runner updates
+control has a 600-second no-output window; candidates use
+`min(600, max(300, 2 * control_longest_output_gap_upper_bound))` seconds,
+including the 30-second sampling resolution. The longest concrete silent
+subprocess timeout found in the tracked test suite is 300 seconds
+(`cmru/tests/test_release_end_to_end_real_git.py:212`). There is no elapsed-time
+limit: a child that keeps printing can run indefinitely. The tool samples
+output growth at most every 30 seconds with `os.fstat`; it prints a
+still-running line only after output grows. Memory-pressure credit follows
+Run-Gate RG-320, capped so the effective window plus polling and cleanup stays
+below the R2 lane's 15-minute `stall_timeout`. A control ended for silence
+produces inconclusive evidence (`baseline_exit_code: 124`,
+`baseline_termination: no-output`), exits 2, and maps to Run-Gate `ERROR`; it
+has no candidate judgment and must be retried. A candidate ended for silence
+is recorded in its own `outcome: timeout` bucket, never as killed or survived,
+and makes the shard and any merge fail. Both `mutation` and `r2` run the
+campaign setup test with `PYTHONUNBUFFERED=1`. The standalone T3 `r2` lane has
+no total wall budget; the aggregate `[lanes.mutation]` lane retains its
+separate 7-hour budget. The tool's silence bound applies to both lanes. The
+runner updates
 `.assay/mutation-cmru.json` and appends per-candidate events to
 `.assay/progress-mutation-cmru.jsonl`; another run resumes from completed killed
 results and retries survivors or interrupted candidates. **Read the evidence
@@ -54,50 +66,61 @@ operator, exact `Op->Op` description, outcome, and termination reason.
 
 The lane accepts zero-based `--shard INDEX/COUNT`, partitioned round-robin over
 the full ordered Assay candidate list. Forward it through Run-Gate after its
-argument separator:
+argument separator. The lane accepts no extra arguments or exactly one valid
+`--shard K/N`; it rejects `--help`, `--base`, `--evidence`, and extra
+separators before its source checks, Assay installation, or setup tests:
 
 ```bash
 run-gate --base cmru-v6.1.0 r2 -- --shard 0/3
 ```
 
 Each shard's `mutation-cmru.json` has `scope: shard`, `status: partial`, the
-full candidate manifest, and results only for its assigned indexes. A Run-Gate
-PASS for one shard is only that shard's process result; it does not establish a
-whole-campaign verdict. Use the same base and candidate commit for all three
-shards.
+full candidate manifest, and results only for its assigned indexes. A shard's
+Run-Gate PASS is partial; the merged evidence file is the only whole-change R2
+record. Use the same base and candidate commit for all three shards.
+The evidence JSON is unsigned and does not establish who produced it.
 
 For remote hosts, collect the ignored `.assay` store explicitly. `remote-gate`
 archives the run's own checkout before removing it; the generic artifact bundle
 includes `progress-mutation-cmru.jsonl` but omits `mutation-cmru.json`.
 
 ```bash
-scripts/controller/remote-gate.sh run <host> <worktree> r2 \
-  --base cmru-v6.1.0 --name cmru-r2-0 --collect-store cmru/.assay \
-  -- -- --shard 0/3
-scripts/controller/remote-gate.sh collect cmru-r2-0
+BASE=$(git rev-parse --verify 'cmru-v6.1.0^{commit}')
+SHA=$(git rev-parse --verify 'HEAD^{commit}')
+scripts/controller/remote-gate.sh <host> cmru r2 "$SHA" \
+  --collect-store cmru/.assay -- --bas "$BASE" -- --shard 0/3
 ```
 
-The first `--` ends remote-gate options; the second is Run-Gate's lane-argument
-separator. `collect` fetches and verifies `assay-store.tgz` under the selected
-run output directory.
-Repeat with unique names and shard indexes `1/3` and `2/3`. The fetched
-`assay-store.tgz` keeps its `cmru/.assay/` prefix. Extract each archive into a
-separate local store directory so the shard evidence files do not overwrite
-one another. To resume a stopped shard, seed its extracted `.assay` directory
-back to the same target and keep the same shard argument:
+`remote-gate.sh` generates the run name and collects and verifies
+`assay-store.tgz` during that invocation; use the printed local output
+directory as `<run-dir-0>`. `--bas` is intentional: the wrapper intercepts an
+exact `--base` option and the remote runner appends that base after the lane
+arguments, while Run-Gate requires the base before the lane-argument separator.
+Repeat the command for shard indexes `1/3` and `2/3`, keeping the same base and
+candidate commit. The fetched archive keeps its `cmru/.assay/` prefix. Extract
+each archive into a separate local store directory so shard evidence files do
+not overwrite one another:
 
 ```bash
-scripts/controller/remote-gate.sh run <host> <worktree> r2 \
-  --base cmru-v6.1.0 --name cmru-r2-0-resume \
+mkdir -p <store-root>/0
+tar -xzf <run-dir-0>/assay-store.tgz -C <store-root>/0
+```
+
+Repeat extraction for runs 1 and 2. To resume a stopped shard, seed its
+extracted `.assay` directory back to the same target, keep the same shard
+argument, base, and candidate commit, and collect again:
+
+```bash
+scripts/controller/remote-gate.sh <host> cmru r2 "$SHA" \
   --seed-store <store-root>/0/cmru/.assay=cmru/.assay \
-  --collect-store cmru/.assay -- -- --shard 0/3
+  --collect-store cmru/.assay -- --bas "$BASE" -- --shard 0/3
 ```
 
 After collecting all three complete files, merge them from the repository root:
 
 ```bash
 mkdir -p cmru/.assay
-/opt/tester-venv/bin/python cmru/tools/mutation_campaign.py --merge-shards 3 \
+python3 cmru/tools/mutation_campaign.py --merge-shards 3 \
   --shard-evidence <store-root>/0/cmru/.assay/mutation-cmru.json \
   --shard-evidence <store-root>/1/cmru/.assay/mutation-cmru.json \
   --shard-evidence <store-root>/2/cmru/.assay/mutation-cmru.json \
@@ -106,10 +129,16 @@ mkdir -p cmru/.assay
 
 The merge refuses a missing or duplicate shard, an incomplete assignment, or
 any difference in HEAD, base, manifest, or campaign identity. Its output is the
-only evidence with `scope: whole`; a surviving mutant makes the merge fail.
-`remote-gate cancel` stops before store collection, so use it only when the
-current shard's on-host evidence can be discarded; an ordinary lane exit,
-including `stall_timeout`, reaches the collect-store step.
+only evidence with `scope: whole`; a surviving, crashed, or timed-out mutant
+makes the merged campaign fail. Resume accepts a descendant HEAD only when
+the campaign identity, source and test closure, fixture, configuration,
+Assay source, silence policy, and recorded bounds still validate; it reuses
+only validated killed outcomes. A local Run-Gate session may delegate command
+lane liveness to cgprofile instead of watching log output, but CMRU's own
+silence bound applies in either mode. `remote-gate cancel` stops before store
+collection, so use it only when the current shard's on-host evidence can be
+discarded; an ordinary lane exit, including `stall_timeout`, reaches the
+collect-store step.
 
 ## 2. The default dry-run uses the `origin/main` snapshot
 

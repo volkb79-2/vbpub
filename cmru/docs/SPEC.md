@@ -3708,13 +3708,22 @@ Git transport and passes only token-free tag and commit facts through
 `CMRU_ASSAY_BASELINE_FACTS` to its dedicated `cmru-mutation` environment. The
 facts are bound to HEAD. The aggregate release flow retains its current
 latest-published-ancestor selection until the R2 lane transition is complete.
-An empty source diff writes skip evidence bound to HEAD. The known-good control
-has an 1800-second ceiling; each serial candidate has at least that timeout and
-scales to twice the measured control when higher. This ceiling is based on the
-2026-11-12 rehearsal's 368-, 752-, and 825-second controls under concurrent
-lanes; it is a hang bound, not a speed target. The campaign also uses
-`--maxfail=1`, `--resume`, and a progress stream. `run-gate gate` runs the Assay R0/R1/R3
-lane plus the tag-based R2 campaign. Assay's whole-target R1 judgment owns the
+An empty source diff writes skip evidence bound to HEAD. Neither the known-good
+control nor a candidate has an elapsed-time limit. The control ends after 600
+seconds without output growth; after a successful control, each candidate's
+idle window is `min(600, max(300, 2 * control_longest_output_gap_upper_bound))`
+seconds, where the measured upper bound includes the 30-second sampling
+resolution. The longest concrete silent subprocess timeout found in the
+tracked test suite is 300 seconds
+(`cmru/tests/test_release_end_to_end_real_git.py:212`). Memory-pressure credit
+uses the Run-Gate RG-320 pattern and is capped by the lesser of 1800 seconds
+or the remaining allowance under the 780-second effective silence bound. The
+effective per-child window is at most 780 seconds; polling
+and process cleanup add at most 40 seconds, below the R2 lane's 900-second
+stall timeout. A child that continues printing has no elapsed limit and can
+continue indefinitely. The campaign also uses `--maxfail=1`, `--resume`, and a
+progress stream. `run-gate gate` runs the Assay R0/R1/R3 lane plus the tag-based
+R2 campaign. Assay's whole-target R1 judgment owns the
 100% floor; CMRU has no separate coverage or pytest-cov canary lane.
 
 **S16.1 — Snapshot boundary.** Assay R1/R3 run in
@@ -3733,28 +3742,40 @@ mutation lane records `.assay/mutation-cmru.json` and appends
 file is an append-only progress stream. Its first-failure limit stops a bad mutant from running
 the rest of the suite. Mutation outcomes MAY be reused on resume only when the test suite and
 copied fixture closure exactly match the recorded run; any test or fixture change requires a
-new campaign. The standalone `r2` lane has no total wall budget; its 15-minute
-`stall_timeout` is served by five-minute control/candidate heartbeats. Its
-1800-second known-good control ceiling and candidate timeout floor/scaling are
-per-child hang bounds. The separate aggregate `mutation` lane retains its
+new campaign. The standalone `r2` lane has no total wall budget. The campaign
+polls at most every 30 seconds using `os.fstat` and prints a heartbeat only
+after output grows; its own silence bound also applies in the aggregate
+`mutation` lane. Memory-pressure credit follows Run-Gate RG-320 and keeps the
+maximum effective silence bound, poll interval, and process cleanup under the
+R2 lane's 15-minute `stall_timeout`. A continuously printing child is not
+bounded by elapsed time. The separate aggregate `mutation` lane retains its
 7-hour lane budget.
 
-Mutation evidence uses schema 7 and records `candidate_manifest`,
+Mutation evidence uses schema 8 and records the silence policy, control output
+gap evidence, and candidate idle bounds together with `candidate_manifest`,
 `candidate_indices`, `scope`, and `shard` alongside
 `candidate_isolation = "process-tree/1"` and per-run process-tree evidence.
 With zero-based `--shard K/N`, candidates are assigned round-robin over the
 ordered candidate list and the full manifest is repeated in every shard file;
 unassigned result slots are `null`, and evidence is marked
 `scope: shard`, `status: partial`; `shard_complete` and `shard_outcome` are set
-only after every assigned candidate finishes. A shard result MUST NOT be read
-as a whole-campaign verdict. `--merge-shards N` accepts exactly one complete
+only after every assigned candidate finishes. A shard's Run-Gate PASS is
+partial and MUST NOT be read as a whole-campaign verdict; the merged evidence
+file is the only whole-change R2 record. `--merge-shards N` accepts exactly one complete
 file for every index, requires identical HEAD, base, manifest and campaign
 identity, and writes `scope: whole` evidence only after every candidate is
 covered. Resume is bound to the same shard identity and assignment. The `r2`
 command lane forwards selectors through `run-gate r2 -- --shard K/N`.
+A candidate ended by the silence bound has `outcome: timeout` in its own
+bucket and makes its shard and merged campaign fail; it is never counted as
+killed or survived. A control ended by the silence bound records
+`status: inconclusive`, `baseline_exit_code: 124`, and
+`baseline_termination: no-output`; the tool exits 2 and the lane reports
+`ERROR`, with no candidate judgment.
+The evidence JSON is unsigned and does not establish who produced it.
 
 A reusable kill requires a normally exited leader, no outliving descendants,
-and clean cgroup resource evidence. Schema 7 records configured resource-limit
+and clean cgroup resource evidence. Schema 8 records configured resource-limit
 changes as advisories separately from cgroup limit events. It records
 `assay_distribution_version` as package metadata and `assay_source_commit` as
 the exact source identity. CMRU checks Assay's declared package roots with

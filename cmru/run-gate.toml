@@ -224,8 +224,13 @@ io_sync = "relaxed"
 # An empty source diff writes skip evidence bound to candidate HEAD and emits
 # no tag; otherwise only an older skip record is removed before emitting it.
 # No elapsed-time limit applies to the known-good control or candidates. The
-# tool ends a child only after its output stops growing, credits memory PSI
-# pauses within the R2 lane's 15m stall window, and records its bounds.
+# tool runs them with PYTHONUNBUFFERED=1, polls output size via os.fstat at
+# most every 30s, and emits a still-running heartbeat only after output grows.
+# The control's active silence window is 600s; candidate windows are derived
+# from the measured control output-gap bound and capped at 600s. RG-320-style
+# memory-PSI credit is capped so the effective window, polling, and 10s
+# process cleanup fit below the R2 lane's 15m stall_timeout. A child that keeps
+# printing has no elapsed limit. Schema-8 evidence records each bound.
 [lanes.mutation]
 kind = "command"
 environment = "cmru-mutation"

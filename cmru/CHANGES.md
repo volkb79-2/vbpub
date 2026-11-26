@@ -58,6 +58,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   resumable by shard, and mergeable only from three complete matching evidence
   files; remote runs collect `.assay` with `--collect-store` (KI-213, open in
   part).
+- fix(cmru): remove R2 and mutation child elapsed limits, bound only output
+  silence with measured candidate windows and capped RG-320 memory-pressure
+  credit, and bind shard/merge/resume to schema-8 evidence (KI-213).
 - docs: correct the 2026-11-26 CMRU/CIU review claims. KI-215 is closed by
   design with prose left to review and `assay.toml` lane facts structurally
   pinned; KI-213 records the silent command-lane log, the temporary evidence
