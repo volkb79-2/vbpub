@@ -584,9 +584,12 @@ def test_acme_nonexistent_volume_override_is_not_mounted(tmp_path: Path):
     assert "does not exist (it was not created)" in _assert_check(output, 8, "FAIL")
     calls = _docker_calls(env)
     assert ["volume", "inspect", "missing-volume-test"] in calls
+    # The name would sit inside a `--mount source=...` or `-v name:/a` argument,
+    # so look inside every argument of every `docker run`.
     assert not any(
-        "--mount" in call and "missing-volume-test" in call for call in calls
-    )
+        call[0] == "run" and any("missing-volume-test" in arg for arg in call)
+        for call in calls
+    ), calls
 
 
 def test_acme_bind_path_override_is_used_without_volume_inspect(tmp_path: Path):

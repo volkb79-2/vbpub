@@ -13,10 +13,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 - `scripts/verify.sh` check 5 could never pass because the proxy name was not passed to its probe; it
-  now requires an explicit HTTP 403 response. Check 8 warns on zero domain matches and fails when
-  storage or its log scan cannot be read. Check 11 passes only on recognized transport errors; HTTP
-  answers and inconclusive probes fail. Check 8 discovers ACME storage from Traefik's volume name or
-  bind-mount source without creating storage, and warns when `acme.json` does not mention `--domain`.
+  now requires an explicit HTTP 403 response.
+- Check 8 passed the domain test when `acme.json` did not mention `--domain` at all; it now warns. It
+  also reported no ACME errors when the log scan could not read the logs; that now fails.
+- Check 8 read only a volume name for ACME storage, so a `hostdir` instance fell back to a volume name
+  that `docker run` creates empty (found by reading the code, not on a host). It now uses Traefik's
+  volume name or bind-mount source, fails when neither exists, and creates no storage.
+- Check 11 reported "isolation working" whenever its probe returned nothing, including HTTP error
+  answers and a probe that did not run. It now passes only on recognized transport errors.
 - Check 9 now routes the canary through a fixed `.invalid` Host with `tls=true` and no `certresolver`,
   so it orders no certificate. Runs that reached the 4.0.0 canary exited 127 because `cleanup_tmp` did
   not exist. From 3.0.0 to 4.0.0, an ACME-mode canary run could order a real certificate for

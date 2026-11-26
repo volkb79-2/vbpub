@@ -318,9 +318,10 @@ the preflight hook refuses a `consumer.env` that lacks an owned contract key. `c
 managed override fields, so the override is written in the schema of the installed release.
 
 An instance whose override adopts an existing volume keeps it: `acme.volume_name` names that exact external
-volume and `configure` writes `store = "volume"` explicitly. `down -v` and `ciu --reset` preserve an external
-volume, but `ciu clean` may remove it when it carries this project's labels; only the hostdir is guaranteed to
-survive `ciu clean`.
+volume and `configure` writes `store = "volume"` explicitly. Run with the instance's Compose model,
+`docker compose down -v` and `ciu --reset` preserve an external volume (section 3 covers the
+`docker compose -p <project> down` form), but `ciu clean` may remove it when it carries this project's labels; only
+the hostdir is guaranteed to survive `ciu clean`.
 
 To move an existing instance to the durable hostdir manually:
 

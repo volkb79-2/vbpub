@@ -80,6 +80,12 @@ credential in the gitignored `edge-proxy/.env` file and relying on Compose
 
 ---
 
+### TE-17 — `verify.sh` can miss `static.domains` when auto-detecting `--domain`
+
+Auto-detection reads `domains` only within 5 lines below the `static` table header. In an override
+that keeps the defaults file's comments, the key sits further down, so checks 6, 7 and 9 (and check 8
+in static mode) SKIP. Workaround: pass `--domain`. Found by review on 2026-11-26, not seen on a host.
+
 ### TE-13 — rootless Docker ownership of `vol-traefik-acme`
 
 Under rootless Docker the S6.5 helper's `chown 0:0` of `ciu-stack/vol-traefik-acme`
