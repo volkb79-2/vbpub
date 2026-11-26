@@ -167,7 +167,7 @@ def cgprofile_sessions() -> None:
         raise Refusal(f"cgprofilectl reports sessions_live={match.group(1)}: a live cgprofile session holds kdamonds")
 
 
-def set_ops_filters(scheme_dir: str, leaf_abs: str) -> None:
+def set_ops_filters(scheme_dir: str, memcg_path: str) -> None:
     """The AND chain of 4.1. `nr_filters` goes first because that write is what creates the filter directories."""
     ops = os.path.join(scheme_dir, "ops_filters")
     if not os.path.isdir(ops):
@@ -177,7 +177,11 @@ def set_ops_filters(scheme_dir: str, leaf_abs: str) -> None:
         if not os.path.isfile(os.path.join(ops, idx, "allow")):
             raise Refusal(f"{ops}/{idx}/allow is missing after nr_filters=2: no ops-filter chain on this kernel")
     write_text(os.path.join(ops, "0", "type"), "memcg")
-    write_text(os.path.join(ops, "0", "memcg_path"), leaf_abs)
+    # DAMON's memcg_path is relative to the cgroups mount, not a host
+    # filesystem path such as /sys/fs/cgroup/system.slice/ssh.service.
+    if not memcg_path.startswith("/"):
+        raise Refusal(f"{memcg_path!r} is not a cgroup-mount-relative memcg path")
+    write_text(os.path.join(ops, "0", "memcg_path"), memcg_path)
     write_text(os.path.join(ops, "0", "matching"), "N")
     write_text(os.path.join(ops, "0", "allow"), "N")
     write_text(os.path.join(ops, "1", "type"), "young")
@@ -193,6 +197,40 @@ def mem_total_bytes(proc: str) -> int:
             except (IndexError, ValueError):
                 break
     raise Refusal(f"no MemTotal in {proc}/meminfo: the paddr target cannot be sized")
+
+
+def physical_ranges(iomem: str, mem_total: int) -> list[tuple[int, int]]:
+    """Return merged, end-exclusive System RAM ranges from /proc/iomem.
+
+    DAMON paddr targets are physical addresses. MemTotal is a byte count, not
+    the highest physical address; using it as an endpoint misses RAM above
+    address holes. /proc/iomem reports inclusive resource endpoints.
+    """
+    pattern = re.compile(r"^\s*([0-9a-fA-F]+)-([0-9a-fA-F]+)\s*:\s*System RAM\s*$")
+    found: list[tuple[int, int]] = []
+    try:
+        with open(iomem, encoding="ascii") as fh:
+            for line in fh:
+                match = pattern.match(line)
+                if match:
+                    start, end = (int(value, 16) for value in match.groups())
+                    if end < start:
+                        raise Refusal(f"{iomem} has a reversed System RAM range: {line.strip()}")
+                    found.append((start, end + 1))
+    except OSError as exc:
+        raise Refusal(f"cannot read {iomem}: {exc}; physical DAMON target ranges are unknown") from exc
+    if not found:
+        raise Refusal(f"{iomem} has no readable System RAM ranges; physical DAMON target ranges are unknown")
+    found.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in found:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    if sum(end - start for start, end in merged) < mem_total:
+        raise Refusal(f"{iomem} System RAM ranges are smaller than MemTotal ({mem_total} bytes); refusing an incomplete paddr target")
+    return merged
 
 
 def load_lib(path: str, admin: str):
@@ -235,7 +273,8 @@ def select_kdamond(admin: str, state: str) -> int:
     return idx
 
 
-def configure(da, admin: str, kd: int, entries: list[tuple[str, str]], cg: str, mem_total: int, commit: bool) -> None:
+def configure(da, admin: str, kd: int, entries: list[tuple[str, str]],
+              ranges: list[tuple[int, int]], commit: bool) -> None:
     ctx = 0
     da.SysfsInterface.create_context(kd, ctx)
     da.SysfsInterface.set_operations(kd, ctx, "paddr")
@@ -243,12 +282,13 @@ def configure(da, admin: str, kd: int, entries: list[tuple[str, str]], cg: str, 
     da.SysfsInterface.set_nr_regions(kd, ctx, MIN_REGIONS, MAX_REGIONS)
     da.SysfsInterface.set_nr_targets(kd, ctx, 1)   # recreates the target array: the schemes below are configured after it
     regions = os.path.join(admin, "kdamonds", str(kd), "contexts", str(ctx), "targets", "0", "regions")
-    write_text(os.path.join(regions, "nr_regions"), 1)   # the kernel creates regions/0 on that write
-    for idx in ("0",):
+    write_text(os.path.join(regions, "nr_regions"), len(ranges))   # the kernel creates these regions on that write
+    for i, (start, end) in enumerate(ranges):
+        idx = str(i)
         if not os.path.isdir(os.path.join(regions, idx)):
-            raise Refusal(f"{regions}/{idx} does not exist after nr_regions=1: this kernel does not expose physical regions")
-    write_text(os.path.join(regions, "0", "start"), 0)
-    write_text(os.path.join(regions, "0", "end"), mem_total)
+            raise Refusal(f"{regions}/{idx} does not exist after nr_regions={len(ranges)}: this kernel does not expose physical regions")
+        write_text(os.path.join(regions, idx, "start"), start)
+        write_text(os.path.join(regions, idx, "end"), end)
     schemes = os.path.join(admin, "kdamonds", str(kd), "contexts", str(ctx), "schemes")
     write_text(os.path.join(schemes, "nr_schemes"), len(entries))
     for i, (unit, leaf) in enumerate(entries):
@@ -260,7 +300,7 @@ def configure(da, admin: str, kd: int, entries: list[tuple[str, str]], cg: str, 
                           "bytes, and the regions-based end-start number is the machine's hot set, never a leaf's (4.1)")
         write_text(os.path.join(sdir, "action"), "stat")
         da.SysfsInterface.set_scheme_access_pattern(kd, ctx, i, 0, MAX_SZ, 0, MAX_U32, 0, MAX_U32)
-        set_ops_filters(sdir, os.path.join(cg, leaf))
+        set_ops_filters(sdir, "/" + leaf.lstrip("/"))
     write_text(os.path.join(admin, "kdamonds", str(kd), "refresh_ms"), 0)   # N5: no periodic refresh aliasing aggr_us
     if commit:
         da.SysfsInterface.kdamond_commit(kd)
@@ -284,8 +324,9 @@ def setup(args) -> int:
     da = load_lib(args.lib, args.admin)
     if not da.SysfsInterface.is_available():
         raise Refusal(f"{args.admin}/kdamonds is absent: DAMON sysfs is unavailable")
-    idx = select_kdamond(args.admin, args.state)
     entries = entries_or_refuse(units, args.cgroup)
+    ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
+    idx = select_kdamond(args.admin, args.state)
     # `contexts/0` is created only by writing `1` to contexts/nr_contexts.
     # A fresh kdamond has nr_contexts=0, so avail_operations is not readable
     # until this write has happened.  Keep this before every read below
@@ -296,7 +337,7 @@ def setup(args) -> int:
         raise Refusal(f"kdamonds/{idx}/contexts/0/avail_operations is unreadable")
     if "paddr" not in avail[0].split():
         raise Refusal(f"avail_operations [{avail[0].strip()}] has no paddr: this kernel cannot monitor physical regions")
-    configure(da, args.admin, idx, entries, args.cgroup, mem_total_bytes(args.proc), commit=False)
+    configure(da, args.admin, idx, entries, ranges, commit=False)
     da.SysfsInterface.kdamond_on(idx)
     st = read_lines(os.path.join(args.admin, "kdamonds", str(idx), "state"))
     if not st or st[0].strip() != "on":
@@ -315,9 +356,8 @@ def refresh(args) -> int:
     entries = entries_or_refuse(units, cg)
     da = load_lib(args.lib, args.admin)
     kd = resolve_kdamond(args)
-    for idx in range(len(entries)):   # a scheme changed mid-run, and the commit applies the new leaf list
-        da.SysfsInterface.set_scheme_action(kd, 0, idx, "stat")
-    configure(da, args.admin, kd, entries, cg, mem_total_bytes(args.proc), commit=True)
+    ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
+    configure(da, args.admin, kd, entries, ranges, commit=True)
     say(f"kdamond {kd}: {len(entries)} leaf schemes re-enumerated for step {args.step}")
     return 0
 
@@ -381,6 +421,7 @@ def sample(args) -> int:
     da = load_lib(args.lib, args.admin)
     kd, cg = resolve_kdamond(args), args.cgroup
     entries = entries_or_refuse(units, cg)
+    da.SysfsInterface.kdamond_update_stats(kd)
     da.SysfsInterface.kdamond_update_tried_regions(kd)   # exactly one apply per sample
     per: dict[str, dict] = {}
     for i, (unit, _leaf) in enumerate(entries):
@@ -435,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--admin", default="/sys/kernel/mm/damon/admin")
     ap.add_argument("--cgroup", default="/sys/fs/cgroup")
     ap.add_argument("--proc", default="/proc")
+    ap.add_argument("--iomem", default="/proc/iomem")
     ap.add_argument("--lib", default=DEFAULT_LIB)
     ap.add_argument("--damon-stat", default="/sys/module/damon_stat/parameters/enabled")
     ap.add_argument("--kdamond", type=int, help="override the index the WAL records")
