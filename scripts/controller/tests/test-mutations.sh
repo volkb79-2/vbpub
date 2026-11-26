@@ -229,7 +229,15 @@ for pi_case in \
   pi-force-retire-early:refusal-keeps-records \
   pi-force-retire-before-credentials:refusal-keeps-records \
   pi-resume-block-inverted:accepted-resume-records \
-  pi-record-owner-new-only:accepted-resume-records; do
+  pi-record-owner-new-only:accepted-resume-records \
+  pi-mode-value-guard:mode-value pi-mode-argv-append-dropped:review-argv \
+  pi-mode-record-not-written:mode-record pi-mode-sticky-refusal-dropped:mode-sticky \
+  pi-mode-record-ignored:mode-sticky pi-mode-narrow-dropped:mode-sticky \
+  pi-mode-invalid-record-guessed:mode-sticky pi-mode-evidence-dropped:mode-evidence \
+  pi-mode-extra-args-allowed:mode-extra-args \
+  pi-mode-extra-args-list-dropped:mode-extra-args \
+  pi-mode-rules-file-refusal-dropped:mode-rules-file \
+  pi-mode-prompt-dropped:mode-prompt pi-mode-local-env-flip:mode-local-env; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \
