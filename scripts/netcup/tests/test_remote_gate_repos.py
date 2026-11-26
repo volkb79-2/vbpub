@@ -713,7 +713,12 @@ def test_collect_extracts_artifacts_and_maps_cancel(tmp_path):
 def test_collected_artifacts_include_every_progress_file_in_the_two_dirs(tmp_path):
     """RG-315: `find -name 'progress*.jsonl'` matches the BASENAME, so a lane's own
     `r2-progress.jsonl` never came back in artifacts.tgz. The pattern is `*progress*.jsonl`;
-    the `.assay`/`.run-gate` path filter and the 50M cap stay."""
+    the `.assay`/`.run-gate` path filter and the 50M cap stay.
+
+    The negative legs are INSIDE the two collected dirs on purpose: an unrelated file
+    elsewhere only proved the path filter, so a mutant widening the basename pattern to
+    `-name '*.jsonl'` survived every assertion. The names avoid the literal "progress",
+    which `*progress*.jsonl` matches anywhere in the basename."""
     job = rg.render_job(hosts()["v1001"], "prog", {"sha": SHA, "base": None, "tags": []}, "suite", ".", "", 0, [])
     snippet = job[job.index("( cd \"$CKDIR/$PROJ\""):job.index("# store collection")]  # the artifact find|tar line, verbatim
     ckdir = tmp_path / "ck"
@@ -724,11 +729,12 @@ def test_collected_artifacts_include_every_progress_file_in_the_two_dirs(tmp_pat
     (ckdir / ".assay" / "r2-progress.jsonl").write_text("{}\n")
     (ckdir / ".run-gate" / "r2-progress.jsonl").write_text("{}\n")
     (ckdir / "elsewhere" / "unrelated.jsonl").write_text("{}\n")
-    # A `.jsonl` INSIDE one of the two collected dirs that is not a progress
-    # file: the path filter alone would not exclude it, so only the correct
-    # basename pattern does. Without this a mutant widening the pattern to
-    # `-name '*.jsonl'` passed every assertion above.
-    (ckdir / ".assay" / "not-a-progress.jsonl").write_text("{}\n")
+    # A `.jsonl` INSIDE one of the two collected dirs whose name does NOT
+    # contain "progress": the path filter alone would not exclude it, so only the
+    # correct basename pattern does. Without this a mutant widening the pattern
+    # to `-name '*.jsonl'` passed every assertion above. (The name must avoid the
+    # literal "progress": `*progress*.jsonl` matches it anywhere in the basename.)
+    (ckdir / ".assay" / "other-lane.jsonl").write_text("{}\n")
     (ckdir / ".run-gate" / "something.jsonl").write_text("{}\n")
     d = tmp_path / "d"
     d.mkdir()
@@ -743,7 +749,7 @@ def test_collected_artifacts_include_every_progress_file_in_the_two_dirs(tmp_pat
     # The two collected dirs contain non-progress `.jsonl` files: they must stay
     # out, which is what makes `-name '*.jsonl'` (and `progress*.jsonl` again)
     # fail instead of merely narrowing the collected set.
-    assert not any(name.endswith("not-a-progress.jsonl") for name in listing), listing
+    assert not any(name.endswith("other-lane.jsonl") for name in listing), listing
     assert not any(name.endswith(".run-gate/something.jsonl") for name in listing), listing
 
 
