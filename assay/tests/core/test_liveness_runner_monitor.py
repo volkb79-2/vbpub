@@ -2119,6 +2119,51 @@ def test_event_file_reset_without_completion_does_not_redate_progress_windows(
     assert excinfo.value.resource_evidence["decision"] == "cpu-without-progress"
 
 
+def test_event_file_reset_restarts_a_same_nodeid_per_test_window(tmp_path: Path) -> None:
+    """Cumulative record indexes prevent a reset test from reusing an old window."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7023)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replaced
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            _append_event(
+                events_path, {"event": "test_start", "nodeid": "test::same"}
+            )
+            initialized = True
+        elif not replaced and clock.t >= 2.0:
+            replacement = events_path.with_suffix(".replacement")
+            _append_event(
+                replacement, {"event": "test_start", "nodeid": "test::same"}
+            )
+            replacement.replace(events_path)
+            replaced = True
+        if clock.t >= 8.0:
+            proc.finish(0)
+        return clock.t * 10.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        expect_next_event_within_s=1000.0,
+        per_test_cpu_baseline_s={"test::same": 1.0},
+    )
+
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=1000.0)
+
+    assert result.returncode == 0
+    assert replaced
+    assert clock.t == 9.0  # the pre-reset 60s CPU window would fire at t=7.
+
+
 def test_session_finish_redates_the_wall_backstop_once(tmp_path: Path) -> None:
     clock = _FakeClock()
     proc = _ScriptedProc(pid=7011)

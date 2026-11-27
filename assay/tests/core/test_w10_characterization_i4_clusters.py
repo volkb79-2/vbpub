@@ -237,14 +237,18 @@ def test_reset_restores_file_state_keeps_cumulative_progress_and_keeps_the_pid()
         "_candidate_pid": 7,
         **_READER_DEFAULTS,
         **_READER_PROGRESS_DEFAULTS,
+        "_count": 3,
         "completed_events": 4,
+        "overlapping_tests": True,
     }
     reader._reset(Path("/tmp/events"), (1, 2))
     assert vars(reader) == {
         "_candidate_pid": 7,
         **_READER_DEFAULTS,
         **_READER_PROGRESS_DEFAULTS,
+        "_count": 3,
         "completed_events": 4,
+        "overlapping_tests": True,
         "_path": Path("/tmp/events"),
         "_identity": (1, 2),
     }
