@@ -7,8 +7,11 @@ hooks. ``plugin.py`` wires it into pytest.
 from __future__ import annotations
 
 import ast
+import functools
+import io
 import re
 import textwrap
+import tokenize
 from dataclasses import dataclass
 
 RULE_SLEEP = "fixed-sleep"
@@ -115,6 +118,51 @@ def _tainted_clock_names(tree: ast.AST) -> set[str]:
     return tainted
 
 
+def _function_at_line(tree: ast.AST, line: int) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    functions = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    matches = [node for node in functions if node.lineno == line]
+    if not matches:
+        matches = [node for node in functions if any(decorator.lineno == line for decorator in node.decorator_list)]
+    return matches[0] if len(matches) == 1 else None
+
+
+@functools.lru_cache(maxsize=64)
+def _module_tree(source: str) -> ast.Module:
+    """Parse a whole source module once per cached source string."""
+    return ast.parse(source)
+
+
+def _dedent_outside_multiline_strings(source: str) -> str:
+    """Dedent an inspected function without changing multiline string contents."""
+    lines = source.splitlines(keepends=True)
+    protected: set[int] = set()
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    fstring_tokens = {
+        token_type
+        for token_type in (
+            getattr(tokenize, "FSTRING_START", None),
+            getattr(tokenize, "FSTRING_MIDDLE", None),
+            getattr(tokenize, "FSTRING_END", None),
+        )
+        if token_type is not None
+    }
+    for token in tokens:
+        if token.type in ({tokenize.STRING} | fstring_tokens) and token.end[0] > token.start[0]:
+            protected.update(range(token.start[0] + 1, token.end[0] + 1))
+    indents = [
+        len(line) - len(line.lstrip(" \t"))
+        for number, line in enumerate(lines, start=1)
+        if number not in protected and line.strip()
+    ]
+    margin = min(indents, default=0)
+    for number, line in enumerate(lines, start=1):
+        if number in protected or not line.strip():
+            continue
+        leading = len(line) - len(line.lstrip(" \t"))
+        lines[number - 1] = line[min(margin, leading) :]
+    return "".join(lines)
+
+
 def _check_sleeps(tree: ast.AST, parents: dict[ast.AST, ast.AST], threshold: float) -> list[Violation]:
     found = []
     for node in ast.walk(tree):
@@ -198,12 +246,41 @@ def _check_walltime(tree: ast.AST) -> list[Violation]:
     return found
 
 
-def analyze_source(source: str, *, sleep_threshold: float = SLEEP_THRESHOLD_S, first_line: int = 1) -> list[Violation]:
-    """Static violations of one test function (or any code fragment); ``first_line`` maps lines to the file."""
-    tree = ast.parse(textwrap.dedent(source))
+def analyze_source(
+    source: str,
+    *,
+    sleep_threshold: float = SLEEP_THRESHOLD_S,
+    first_line: int = 1,
+    function_line: int | None = None,
+) -> list[Violation]:
+    """Analyze a source fragment or one function from a whole file.
+
+    ``first_line`` maps fragment lines to the file. When ``function_line`` is
+    supplied, ``source`` is parsed as a whole file and only the function whose
+    definition (or decorator) is on that line is analyzed. An unmatched or
+    ambiguous line analyzes nothing rather than a different function.
+    """
+    if function_line is None:
+        fragment = textwrap.dedent(source)
+        try:
+            tree = ast.parse(fragment)
+        except IndentationError:
+            tree = ast.parse(_dedent_outside_multiline_strings(source))
+        line_offset = first_line - 1
+    else:
+        module = _module_tree(source)
+        tree = _function_at_line(module, function_line)
+        if tree is None:
+            return []
+        line_offset = 0
+    return _analyze_tree(tree, sleep_threshold, line_offset)
+
+
+def _analyze_tree(tree: ast.AST, sleep_threshold: float, line_offset: int = 0) -> list[Violation]:
+    """Apply every static rule to an already parsed tree or function node."""
     parents = _parents(tree)
     found = _check_sleeps(tree, parents, sleep_threshold) + _check_timeouts(tree) + _check_walltime(tree)
-    shifted = [Violation(v.rule, v.lineno + first_line - 1, v.message) for v in found]
+    shifted = [Violation(v.rule, v.lineno + line_offset, v.message) for v in found]
     return sorted(shifted, key=lambda v: (v.lineno, v.rule))
 
 
