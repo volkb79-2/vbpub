@@ -55,6 +55,7 @@ _STORE_PATH_RE = re.compile(r"[A-Za-z0-9._@+=,:-]+(?:/[A-Za-z0-9._@+=,:-]+)*\Z")
 _IMAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}\Z")
 _CONTAINER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _SHARD_EVENT_RE = re.compile(r"(.+)\.shard[1-9][0-9]*of[1-9][0-9]*\Z")
+_RELEASE_TAG_RE = re.compile(r"[^/\s]+-v[0-9][^\s]*\Z")
 _PSI_LIMIT = 25.0
 _PSI_WAIT_S = 900
 _PSI_POLL_S = 30
@@ -981,7 +982,20 @@ class HostJobWorker:
 
     def _copy_seed_refs(self, seed_rel: str) -> None:
         seed_path = str(self.repo_root / seed_rel)
-        for ref in ("refs/remotes/origin/main", "refs/tags/*"):
+        listed = self._run([
+            "git", "-C", seed_path, "for-each-ref", "--format=%(refname)", "refs/tags",
+        ], cwd_fd=self.repo_root_fd)
+        if listed.returncode != 0:
+            self._log(f"release tag listing from seed {seed_rel} failed; retaining no additional tags")
+            return
+        try:
+            refs = listed.stdout.decode("ascii", "strict").splitlines()
+        except UnicodeDecodeError:
+            self._log(f"release tag listing from seed {seed_rel} was unreadable; retaining no additional tags")
+            return
+        for ref in refs:
+            if not ref.startswith("refs/tags/") or _RELEASE_TAG_RE.fullmatch(ref[len("refs/tags/"):]) is None:
+                continue
             result = self._run([
                 "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet",
                 seed_path, f"+{ref}:{ref}",
@@ -1003,21 +1017,10 @@ class HostJobWorker:
                 "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "-d", "refs/remote-gate/base",
             ], cwd_fd=self.repo_root_fd)
 
-        main = self._run([
-            "git", "-C", str(self.repo_root / self.checkout_rel), "rev-parse", "--verify",
-            "refs/remotes/origin/main^{commit}",
-        ], cwd_fd=self.repo_root_fd)
-        main_sha = main.stdout.decode("ascii", "replace").strip() if main.returncode == 0 else ""
-        if main_sha and _COMMIT_RE.fullmatch(main_sha):
-            self._run_checked([
-                "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "refs/heads/main", main_sha,
-            ], cwd_fd=self.repo_root_fd, exit_code=ExitCode.CHECKOUT_FAILURE,
-            detail="cannot align local main with origin/main")
-        else:
-            for ref in ("refs/remotes/origin/main", "refs/heads/main"):
-                self._run([
-                    "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "-d", ref,
-                ], cwd_fd=self.repo_root_fd)
+        for ref in ("refs/remotes/origin/main", "refs/heads/main"):
+            self._run([
+                "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "-d", ref,
+            ], cwd_fd=self.repo_root_fd)
 
     def _uploaded_objects(self, name: str) -> list[tuple[str, int]]:
         root_fd = os.open(self.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -1102,7 +1105,7 @@ class HostJobWorker:
                     ], cwd_fd=self.repo_root_fd)
                     if fetched.returncode != 0:
                         continue
-                    for ref in ("refs/remote-gate/base", "refs/remotes/origin/main"):
+                    for ref in ("refs/remote-gate/base",):
                         self._run([
                             "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet",
                             bundle, f"+{ref}:{ref}",
@@ -1111,7 +1114,12 @@ class HostJobWorker:
                     if tags.returncode == 0:
                         for line in tags.stdout.decode("ascii", "replace").splitlines():
                             fields = line.split("\t", 1)
-                            if len(fields) != 2 or not fields[1].startswith("refs/tags/") or fields[1].endswith("^{}"):
+                            if (
+                                len(fields) != 2
+                                or not fields[1].startswith("refs/tags/")
+                                or fields[1].endswith("^{}")
+                                or _RELEASE_TAG_RE.fullmatch(fields[1][len("refs/tags/"):]) is None
+                            ):
                                 continue
                             exists = self._run([
                                 "git", "-C", str(self.repo_root / self.checkout_rel),
@@ -1240,7 +1248,16 @@ class HostJobWorker:
                              "runner_name": None}
 
     def _check_declared_base(self, lane: Mapping[str, object]) -> None:
-        base = lane.get("base")
+        declared = lane.get("base")
+        request_base = self.request.get("base")
+        if request_base is not None and not isinstance(request_base, str):
+            raise AdmissionError(ExitCode.MISSING_BASE, "request base is invalid")
+        if isinstance(declared, str) and declared in {"main", "origin/main"} and request_base is None:
+            raise AdmissionError(
+                ExitCode.MISSING_BASE,
+                f"lane base {declared!r} requires an explicit request base; the host has no authenticated current main",
+            )
+        base = request_base if request_base is not None else declared
         if base is None:
             return
         if not isinstance(base, str) or not base or base.startswith("-") or "\0" in base:

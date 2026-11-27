@@ -3607,6 +3607,7 @@ def test_synchronize_job_refs_removes_stale_refs_and_requires_a_present_base(tmp
     subprocess.run(["git", "-C", str(checkout), "update-ref", "refs/remotes/origin/main", blob], check=True)
     subprocess.run(["git", "-C", str(checkout), "update-ref", "refs/heads/main", sha], check=True)
     subprocess.run(["git", "-C", str(checkout), "update-ref", "refs/remote-gate/base", sha], check=True)
+    subprocess.run(["git", "-C", str(checkout), "update-ref", "refs/remotes/origin/main", sha], check=True)
     worker.request.pop("base", None)
     worker._synchronize_job_refs()
     for ref in ("refs/remotes/origin/main", "refs/heads/main", "refs/remote-gate/base"):
@@ -3616,12 +3617,14 @@ def test_synchronize_job_refs_removes_stale_refs_and_requires_a_present_base(tmp
     subprocess.run(["git", "-C", str(checkout), "update-ref", "refs/remotes/origin/main", sha], check=True)
     worker.request["base"] = sha
     worker._synchronize_job_refs()
-    for ref in ("refs/remotes/origin/main", "refs/heads/main", "refs/remote-gate/base"):
-        answer = subprocess.run(
-            ["git", "-C", str(checkout), "rev-parse", "--verify", f"{ref}^{{commit}}"],
-            check=True, capture_output=True, text=True,
-        )
-        assert answer.stdout.strip() == sha
+    answer = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "--verify", "refs/remote-gate/base^{commit}"],
+        check=True, capture_output=True, text=True,
+    )
+    assert answer.stdout.strip() == sha
+    for ref in ("refs/remotes/origin/main", "refs/heads/main"):
+        answer = subprocess.run(["git", "-C", str(checkout), "show-ref", "--verify", ref], check=False)
+        assert answer.returncode != 0
 
     worker.request["base"] = "missing-base"
     with pytest.raises(AdmissionError, match="cannot install requested base"):
@@ -4284,10 +4287,11 @@ def test_worker_fetch_uploaded_bundle_skips_bad_candidate_and_imports_refs_and_t
             if call[1:3] == ["ls-remote", call[-2]]:
                 return CommandResult(
                     0,
-                    b"abc\trefs/tags/existing\nabc\trefs/tags/new\nabc\trefs/tags/existing^{}\n",
+                    b"abc\trefs/tags/existing-v25.1.0\nabc\trefs/tags/new-v7.2.0\n"
+                    b"abc\trefs/tags/notes\nabc\trefs/tags/existing-v25.1.0^{}\n",
                 )
             if "show-ref" in call:
-                return CommandResult(0 if call[-1].endswith("existing") else 1)
+                return CommandResult(0 if call[-1].endswith("existing-v25.1.0") else 1)
             if "cat-file" in call:
                 return CommandResult(0 if call[-1] == f"{request_sha}^{{commit}}" else 1)
             return CommandResult(0)
@@ -4297,7 +4301,9 @@ def test_worker_fetch_uploaded_bundle_skips_bad_candidate_and_imports_refs_and_t
     worker._fetch_uploaded_bundle(seeds=("seed",))
     assert runner.verified == [digests[0], digests[0], digests[1]]
     assert any(call[-1] == f"+refs/remote-gate/base:refs/remote-gate/base" for call in runner.calls)
-    assert any(call[-1] == "+refs/tags/new:refs/tags/new" for call in runner.calls)
+    assert any(call[-1] == "+refs/tags/new-v7.2.0:refs/tags/new-v7.2.0" for call in runner.calls)
+    assert not any("refs/remotes/origin/main" in call for call in runner.calls)
+    assert not any("refs/tags/notes" in call for call in runner.calls)
     assert len(removed) == 2 and all(mode == "remove-tree" for mode, _args in removed)
     os.close(worker.repo_root_fd)
 
@@ -5817,7 +5823,7 @@ def test_uploaded_object_scan_filters_bad_entries_and_wraps_directory_errors(tmp
                 os.close(fd)
 
 
-def test_checkout_ref_synchronization_removes_stale_refs_and_aligns_main(tmp_path):
+def test_checkout_ref_synchronization_always_removes_untrusted_main_refs(tmp_path):
     class _Commands:
         def __init__(self, main_result):
             self.main_result = main_result
@@ -5845,7 +5851,69 @@ def test_checkout_ref_synchronization_removes_stale_refs_and_aligns_main(tmp_pat
         commands.main_result = CommandResult(0, f"{SHA}\n".encode(), b"")
         worker._synchronize_job_refs()
         assert any("refs/remote-gate/base" in call and SHA in call for call in commands.calls)
-        assert any("refs/heads/main" in call and SHA in call for call in commands.calls)
+        assert any("refs/remotes/origin/main" in call and "-d" in call for call in commands.calls)
+        assert any("refs/heads/main" in call and "-d" in call for call in commands.calls)
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_declared_main_base_requires_an_explicit_request_base(tmp_path):
+    class _BaseRunner:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, argv, **_kwargs):
+            self.calls.append(list(argv))
+            return CommandResult(0)
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    commands = _BaseRunner()
+    worker.runner = commands
+    worker.request.pop("base", None)
+    try:
+        with pytest.raises(AdmissionError, match="lane base 'main' requires an explicit request base"):
+            worker._check_declared_base({"base": "main"})
+        with pytest.raises(AdmissionError, match="lane base 'origin/main' requires an explicit request base"):
+            worker._check_declared_base({"base": "origin/main"})
+        assert commands.calls == []
+
+        worker.request["base"] = SHA
+        worker._check_declared_base({"base": "main"})
+        assert commands.calls[-1][-1] == f"{SHA}^{{commit}}"
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_copy_seed_refs_uses_only_release_tags_and_never_seed_main(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+
+    class _RefRunner:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, argv, **_kwargs):
+            self.calls.append(list(argv))
+            if "for-each-ref" in argv:
+                return CommandResult(
+                    0,
+                    b"refs/tags/run-gate-v25.1.0\nrefs/tags/notes\nrefs/tags/assay-v7.2.0\n",
+                )
+            return CommandResult(0)
+
+    commands = _RefRunner()
+    worker.runner = commands
+    try:
+        worker._copy_seed_refs(SHA)
+        fetches = [call for call in commands.calls if "fetch" in call]
+        assert all("refs/remotes/origin/main" not in call for call in fetches)
+        assert [call[-1] for call in fetches] == [
+            "+refs/tags/run-gate-v25.1.0:refs/tags/run-gate-v25.1.0",
+            "+refs/tags/assay-v7.2.0:refs/tags/assay-v7.2.0",
+        ]
     finally:
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:
