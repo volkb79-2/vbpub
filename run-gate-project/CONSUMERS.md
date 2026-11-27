@@ -3138,15 +3138,22 @@ characters. There is no environment-variable fallback. The flags apply only
 to lane runs and cannot be combined with `--dry-run`. Use one fresh path for
 one Run-Gate invocation; the file is append-only, and a refusal after opening
 can leave an empty file. With the event writer active, an unresolvable host
-source on a Docker mount-bearing token causes a named pre-start refusal.
+source on a Docker mount-bearing token causes a named pre-start refusal. The
+path is compared with every Docker mount source in Run-Gate's own mount
+namespace, without resolving the sources: run Run-Gate in the Docker host's
+namespace and keep the event directory out of reach of a symlinked mount source
+(RG-331).
 
 Each line is one JSON event with `api: "fleet-host-agent/1"`, `job_id`, and
 `lane`. Run-Gate writes until a whole line is complete, then flushes it to
 disk. `lane-started` carries Docker's full `container_id` and `image_id`,
 plus `adopted`; a container ID is present only when its source is a full
 lowercase 64-hex Docker id. Otherwise it is null with reason
-`container-id-unrecognised`. A lane with no container carries null IDs and a
-`reason`.
+`container-id-unrecognised`; `image_id` is null whenever `container_id` is. A
+lane with no container carries null IDs and a `reason`. A shard run reports its
+`lane` as `<lane>.shard<K>of<N>`, in the events and in the anchored line; a
+composite run forwards its members' `lane-started` lines under the member lane
+names, so match a request against those names.
 `lane-verdict` carries Run-Gate's `verdict`, process `exit_code`, and
 `lane_exit_code` (the raw lane status printed by the anchored summary, or
 null). The event is written after the summary line; for `--json`, the JSON
@@ -3157,7 +3164,7 @@ while only the top-level invocation writes a verdict event. A failed event
 write after lane start produces one warning but does not change Run-Gate's
 verdict or process status. A write error after a partial write can leave an
 unparseable final line; ignore that last line. A missing verdict is not
-passed.
+passed, and any other unparseable line means not passed.
 
 **Acceptance rule:** a verdict is accepted only when the file contains exactly
 one parseable `lane-verdict` event for this `job_id` and all three sources

@@ -858,14 +858,6 @@ def inspect_container_id_best_effort_with_status(
     return container_id, unrecognised
 
 
-def inspect_container_id_best_effort(docker: str,
-                                     container: str) -> str | None:
-    """Return Docker's reported full id, or None without guessing."""
-    container_id, _unrecognised = \
-        inspect_container_id_best_effort_with_status(docker, container)
-    return container_id
-
-
 def emit_lane_started(container_id: str | None, image_id: str | None,
                       adopted: bool, *, reason: str | None = None,
                       lane: str | None = None) -> None:
@@ -878,7 +870,10 @@ def emit_lane_started(container_id: str | None, image_id: str | None,
     reason_override = reason
     if unrecognised:
         reason_override = "container-id-unrecognised"
-    fields = {"container_id": published, "image_id": image_id,
+    # An image id says something about ONE container; without an identified
+    # container there is nothing it can describe.
+    fields = {"container_id": published,
+              "image_id": image_id if published is not None else None,
               "adopted": bool(adopted)}
     if reason_override is not None:
         fields["reason"] = reason_override
@@ -19572,7 +19567,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # this invocation did not create).
         "runner": "container",
         "container": name,
-        "container_id": started_container_id or "",
+        # The raw line is recorded when it is not a recognised id: only the
+        # EVENT refuses it. An empty record would skip the same-name identity
+        # check on the next run and let it adopt or remove a foreign
+        # container.
+        "container_id": started_container_id or raw_started_id or "",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         # The epoch is stored beside the ISO stamp deliberately: human output
         # wants the stamp, elapsed time and RW-3's duration want a number,
@@ -22360,8 +22359,8 @@ def _dispatch(argv: list[str] | None = None, *,
             if current_job_event_writer() is not None:
                 fail("nested run-gate invocations cannot use the active job "
                      "event file")
-        # `_dispatch` is also called recursively and can be used as a library
-        # entry, so keep this guard in addition to `main`'s earlier refusal.
+        # `_dispatch` can be used as a library entry, which skips `main`'s
+        # earlier refusal, so keep this guard here as well.
         if is_pid1_without_init() and not args.version:
             return LaneResult("ERROR", reason="pid1-without-init",
                               _json=args.json)

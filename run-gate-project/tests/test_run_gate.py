@@ -43951,19 +43951,25 @@ class TestJobEventOptionsAndWriter:
         path check and the open; `O_NOFOLLOW` is what answers that, and its
         refusal must stay honest."""
         event_file = tmp_path / "swapped.jsonl"
+        outside = tmp_path / "outside.jsonl"
+        outside.write_text("")
         real_open = os.open
 
-        def nofollow_swapped(path, flags, mode=0o777, **kwargs):
+        def swap_in_a_symlink(path, flags, mode=0o777, **kwargs):
             if Path(path) == event_file:
-                raise OSError(errno.ELOOP, "fixture swapped a symlink in")
+                # A real swap, then the real call: only the flags run-gate
+                # passed decide whether the kernel follows the link.
+                event_file.symlink_to(outside)
             return real_open(path, flags, mode, **kwargs)
 
-        monkeypatch.setattr(run_gate.os, "open", nofollow_swapped)
+        monkeypatch.setattr(run_gate.os, "open", swap_in_a_symlink)
         with pytest.raises(run_gate.GateError) as exc:
             run_gate.open_job_event_writer(str(event_file), "job-elooop",
                                            "suite")
         assert "cannot open --event-file" in str(exc.value)
         assert f"[Errno {errno.ELOOP}]" in str(exc.value)
+        assert event_file.is_symlink()
+        assert outside.read_text() == ""
 
     def test_event_writer_open_refusal_names_the_os_error(self, tmp_path,
                                                            monkeypatch):
@@ -44197,8 +44203,6 @@ class TestJobEventOptionsAndWriter:
             return subprocess.CompletedProcess(argv, 0, payload, "")
 
         monkeypatch.setattr(run_gate.subprocess, "run", inspect)
-        assert run_gate.inspect_container_id_best_effort(
-            "docker", "runner") == expected
         assert run_gate.inspect_container_id_best_effort_with_status(
             "docker", "runner") == (expected, unrecognised)
 
@@ -44225,7 +44229,8 @@ class TestJobEventOptionsAndWriter:
                   for line in event_file.read_text().splitlines()]
         assert [event["container_id"] for event in events] == [
             None, None, None, None]
-        assert events[0]["image_id"] == "sha256:image"
+        # No identified container, so no image id either.
+        assert events[0]["image_id"] is None
         assert [event.get("reason") for event in events] == [
             "container-id-unrecognised", "container-id-unrecognised",
             "container-id-unrecognised", "container-id-unavailable"]
@@ -44947,6 +44952,32 @@ class TestJobEventContainerEvents:
                      if '"event":"lane-started"' in line]
         assert started["container_id"] is None
         assert started["reason"] == "container-id-unrecognised"
+
+    @pytest.mark.parametrize("event_flags", [False, True])
+    def test_inflight_record_keeps_an_unrecognised_start_line(
+            self, tmp_path, monkeypatch, capsys, event_flags):
+        """r2 N1: only the EVENT refuses a value that is not a full id. The
+        re-attach record keeps the line, so the next run's same-name identity
+        check still has something to disagree with; an empty value would skip
+        that check."""
+        event_file = tmp_path / "inflight-unrecognised.jsonl"
+        records = []
+
+        def record_inflight(_project_dir, _worktree, _lane_name, payload):
+            records.append(dict(payload))
+            return True
+
+        monkeypatch.setattr(run_gate, "write_inflight_record",
+                            record_inflight)
+        code, _calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="f" * 64,
+            image_id="sha256:" + "e" * 64,
+            lane_stdout_text="warning: fixture shim", inspect_id=False,
+            event_flags=event_flags)
+        assert code == 0
+        capsys.readouterr()
+        assert records
+        assert records[0]["container_id"] == "warning: fixture shim"
 
     def test_partial_start_without_event_flags_keeps_normal_refusal(
             self, tmp_path, monkeypatch, capsys):

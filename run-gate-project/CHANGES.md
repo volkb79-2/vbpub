@@ -18,6 +18,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - fix(run-gate): validate event container identities, protect event files,
   bind consumer acceptance to lane mode, and close the RG-329 review findings
   (rev 78).
+- fix(run-gate): keep an unrecognised start line in the re-attach record so the
+  same-name identity check still applies, and publish no image id without a
+  container id (RG-329, rev 78).
 <!-- cmru: release history -->
 
 ## [25.10.0] - 2026-11-26

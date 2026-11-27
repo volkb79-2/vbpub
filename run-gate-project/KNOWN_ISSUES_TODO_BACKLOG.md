@@ -217,6 +217,7 @@ SPEC §9.
 | RG-324 | Run-Gate's non-judgement mapping of Assay's wall stop is not pinned to the final reason contract | Minor | OPEN 2026-11-26 |
 | RG-325 | A future Assay lane inventory schema bump needs a Run-Gate release that accepts only the new version | Minor | OPEN 2026-11-26 |
 | RG-329 | a host runner cannot trust the shared lane log for container identity or verdict | Enhancement | FIXED IN THIS BRANCH (rev 78) |
+| RG-331 | the job event sink check and acceptance rule can be hardened (mount-source resolution, non-empty file, image id shape) | Low | OPEN 2026-11-27 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -10316,8 +10317,9 @@ write host-owned JSONL events outside the checkout and lane mounts. Start
 events carry Docker's identity (or explicit nulls); the sole normal `finish`
 path writes the verdict only after its anchored summary. Nested member, retry,
 and worker dispatches never inherit the event file. Consumer acceptance
-requires agreement among the event, anchored log line, process status, Docker
-labels, and the submitted checkout path.
+requires agreement among the event, anchored log line, process status and
+container inspection: the submitted checkout mount in both modes, Docker labels
+only for a container Run-Gate started.
 
 **Oracles.** Tests cover paired-option and ID validation, path refusals and
 mode, ephemeral and adopted IDs, foreign same-name rejection, null-container
@@ -10339,6 +10341,32 @@ proof, strict mount-source refusal, a forged PASS relayed by a failing lane,
 the direct `_dispatch` PID-1 library guard, and shard-name verdict fallback.
 The consumer contract also says a cleanup-time signal status mismatch and a
 container removed after a partial start are not-pass cases.
+
+**Review r2 closure.** The re-attach record keeps a start line that is not a
+recognised id, so the same-name identity check cannot be skipped; the
+symlink-swap oracle now makes the kernel refuse because of `O_NOFOLLOW`; an
+unidentified container publishes no image id; the contract states the lane
+names of shard and composite runs, what any other unparseable line means and the
+mount-namespace assumption. Left open as RG-331.
+
+## RG-331 — the job event sink check and acceptance rule can be hardened
+
+**State:** open · **Severity:** low · **Owner:** - · **Links:** RG-329
+
+**Problem.** (1) The event path is compared with every mount source as a
+normalised string in run-gate's own mount namespace: a symlinked source, or a
+runner mounting the directory under another namespace's path, passes although the
+lane can see the file. The acceptance rule rejects extra or forged lines, so this
+is not a way to a pass; whether Docker reports a symlinked source resolved was
+not checked. (2) An existing non-empty event file is accepted and appended to;
+one fresh path per invocation is only a consumer duty. (3) An image id is
+published as Docker prints it, without a shape check.
+
+**Candidate fixes.** Resolve local sources best-effort before comparing; refuse a
+destination with `st_size > 0` at the path and descriptor checks; accept only
+`sha256:` followed by 64 lowercase hex characters, else null with a reason.
+
+Source: P-fd-05 package A2 review r2, findings N3, N4 and N5.
 
 ## RG-330 — the command-lane liveness check has known escapes and untested rules
 

@@ -205,7 +205,8 @@ then writes its verdict after the anchored summary line; `--json` keeps its
 JSON result on stdout and prints that summary on stderr. Missing verdict events
 are never PASS. See the [consumer acceptance rule](CONSUMERS.md#host-owned-job-event-file)
 for the ID grammar and the required agreement between event, log, process
-status, Docker labels, and checkout path.
+status and container inspection (the checkout mount in both modes; Docker
+labels only for a container Run-Gate started).
 
 ### Combined resource settings
 

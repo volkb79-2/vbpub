@@ -380,7 +380,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   until the whole line is complete, then flushes it to disk. `lane-started`
   adds `container_id`, `image_id`, and `adopted`; a `container_id` is present
   only when the source is a full lowercase 64-hex Docker id. An unrecognised
-  id is null with reason `container-id-unrecognised`. A no-container lane or
+  id is null with reason `container-id-unrecognised`; `image_id` is null
+  whenever `container_id` is. A shard run reports its `lane` as
+  `<lane>.shard<K>of<N>`, in the events and in the anchored line; a composite
+  run forwards its members' `lane-started` events under the member lane names.
+  The event path is compared with every Docker mount source in Run-Gate's own
+  mount namespace, without resolving the sources: the host runner runs
+  Run-Gate in the Docker host's namespace and keeps the event directory out of
+  reach of a symlinked mount source (RG-331). A no-container lane or
   environment writes both IDs as null and includes a `reason` string. A
   same-named container whose ID does not match the inflight record is never
   reported as that run's container.
@@ -393,7 +400,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   before the event. An invocation that never reaches `finish()` has no
   verdict event. A write error after a partial write can leave an
   unparseable final line. Consumers ignore an unparseable last line, and a
-  missing verdict is never passed. An event write failure after lane start
+  missing verdict is never passed; any other unparseable line means not
+  passed. An event write failure after lane start
   prints one `run-gate: WARNING:` line and cannot change the verdict or
   process exit.
   Composite members, nested dispatches, serial retries, and worker runs do not
