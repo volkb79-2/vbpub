@@ -198,6 +198,12 @@ still use the durable C2 book. A live lease connection holds its lease flock
 until disconnect; bind/reconnect verify the immutable container ID and
 host-inspected lease label. No run or lane wall-clock limit is added.
 
+Submits for the same job ID serialize the `request.json` write, admission,
+failure cleanup, and executor start under `jobs/<job_id>/submit.lock`. The lock
+is a private regular file opened without following symlinks. Status and cancel
+do not acquire it, so an admission waiter cannot block those verbs behind the
+submit transaction.
+
 ## Contracts
 
 - `host-facts/2` carries CPU, load, Geekbench, memory, PSI, gate-slice, disks,

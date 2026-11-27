@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import queue
+import stat
 import tempfile
 import threading
 import time
@@ -225,6 +227,39 @@ class AgentAdmission:
             raise AdmissionError(ExitCode.REFUSAL, f"job directory {job_id!r} is accessible by other users")
         return path
 
+    def _submit_lock(self, job_id: str) -> int:
+        """Serialize same-id submit write, admission and cleanup transactions."""
+
+        job_dir = self._job_dir(job_id)
+        directory_fd = -1
+        lock_fd = -1
+        try:
+            directory_fd = os.open(
+                job_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            lock_fd = os.open(
+                "submit.lock",
+                os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            lock_info = os.fstat(lock_fd)
+            if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_mode & 0o077:
+                raise AdmissionError(ExitCode.REFUSAL, "job submit lock is not a private regular file")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            return lock_fd
+        except AdmissionError:
+            if lock_fd >= 0:
+                os.close(lock_fd)
+            raise
+        except OSError as exc:
+            if lock_fd >= 0:
+                os.close(lock_fd)
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot lock durable job state: {exc}") from exc
+        finally:
+            if directory_fd >= 0:
+                os.close(directory_fd)
+
     @staticmethod
     def _existing_request(path: Path, *, group: str, digest: str) -> bool:
         if path.is_symlink():
@@ -322,6 +357,20 @@ class AgentAdmission:
     def submit(self, request: Mapping[str, Any], identity: AgentIdentity, executor: AgentExecutor) -> Mapping[str, object]:
         model = self.request_model(request)
         digest = model.digest()
+        lock_fd = self._submit_lock(model.job_id)
+        try:
+            return self._submit_locked(request, identity, executor, model, digest)
+        finally:
+            os.close(lock_fd)
+
+    def _submit_locked(
+        self,
+        request: Mapping[str, Any],
+        identity: AgentIdentity,
+        executor: AgentExecutor,
+        model: AdmissionRequest,
+        digest: str,
+    ) -> Mapping[str, object]:
         request_path, created_request = self._write_request(request, identity, digest)
         try:
             result = self.book.submit(
