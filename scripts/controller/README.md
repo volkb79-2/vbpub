@@ -760,21 +760,42 @@ come from `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK`; see
 `controller.local.env.example` and export both before invoking the wrapper.
 
 `tests/test-mutations.sh` keeps its `expect_killed` checks and per-check logs,
-but runs up to three mutation checks at once. The `tester-unified` environment
-enforces 3 CPUs and declares no memory cap; the default width is `nproc`, capped
-at 3. Set `CONTROLLER_MUTATION_JOBS=1` for serial mutation checks or choose 2
-or 3 explicitly. Empty, non-integer, zero or above-cap values refuse the
-mutation run with exit 2. As before, nonzero check statuses are KILLED and zero
-is SURVIVED; an unresolved command is a spawn error, while an executed
-command's nonzero status—including 126 or 127—remains KILLED. Each killed check
-prints `KILLED: <label>` as it finishes. The final wait verifies that each
-registered check has one result. `test-ctl-status.sh`, `test-ctx-hooks.sh`,
-`test-pi-review.sh` and `test_remote_gate_cache.sh` run alone relative to
-mutation workers because they contain five-second boundaries or one-second
-timeouts. Repeated mutations of wrappers, pi-impl, remote-gate and `test_dev.py`
-are serialized by suite so their longer event polls do not race copies of the
-same suite. Those marker-based waits can overlap checks from other files. Unit
-test files in `tests/run-suite.sh` remain sequential and unchanged.
+and runs up to three mutation checks at once. The `tester-unified` environment
+enforces 3 CPUs; the suite lane caps memory at 4 GiB. The default width is
+`nproc`, capped at 3. Set `CONTROLLER_MUTATION_JOBS=1` for serial mutation
+checks or choose 2 or 3 explicitly. Empty, non-integer, zero or above-cap
+values refuse with exit 2, and the effective width is checked again at
+dispatch.
+
+The dispatcher keeps blocked commands pending and starts the next eligible
+check from another suite while a serialized suite is active. Checks in the
+same serialized suite never overlap. `test-ctl-status.sh`, `test-ctx-hooks.sh`,
+`test-pi-review.sh` and `test_remote_gate_cache.sh` remain exclusive: each waits
+for the pool to drain and runs alone. The parent reaps whichever recorded
+worker finishes first. Every registered check is either started or reported as
+not started after a survivor; the final counts still require one result for
+each started check.
+
+Each worker command has a 600-second wall limit. GNU `timeout` sends TERM at
+the limit and KILL after a two-second grace period if needed. Each worker also
+gets a 1 GiB virtual-address-space limit through `ulimit -v`; the lane's 4 GiB
+memory cap contains aggregate use across the three workers and the suite
+parent. A wall timeout, a memory/resource-limit death, a timeout utility error,
+or an unresolved command fails the lane and is never counted as KILLED. An
+ordinary started command returning nonzero—including 126 or 127—remains KILLED;
+zero is SURVIVED. The longest single event or hang guard in these suites is 300
+seconds (`test-pi-impl.sh` and a held-wrapper marker in `test-wrappers.sh`); the
+600-second worker limit leaves a twofold margin. Passing marker-driven checks
+release on observed state and should finish well before those guards.
+`test_dev.py` uses a 180-second subprocess limit. Short 10- and 20-second
+readiness polls in `test-wrappers.sh` and `test-pi-impl.sh` now allow 60 seconds
+under pool load. Actual per-check durations remain unmeasured until the
+controller runs the gate.
+
+Mutation workers are asynchronous commands in non-interactive Bash. They
+inherit ignored SIGINT/SIGQUIT dispositions and stdin from `/dev/null`; a test
+that needs a signal restores the intended disposition in its own child.
+Ordinary `tests/run-suite.sh` test files remain sequential and unchanged.
 
 The number of local slots is `CONTROLLER_GATE_SLOTS` (an integer from 1 to 8; unset
 or empty means 2, so nothing changes for a controller that sets nothing). The default

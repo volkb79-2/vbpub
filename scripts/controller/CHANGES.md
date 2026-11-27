@@ -10,18 +10,20 @@ no separate version number, so entries are grouped by the work that landed.
 - `tests/test-mutations.sh` now submits the existing `expect_killed` calls to a
   bounded pool, defaulting to `nproc` capped at the inherited 3-CPU
   `tester-unified` environment limit. `CONTROLLER_MUTATION_JOBS=1..3` selects an
-  explicit width; invalid values refuse with exit 2. Workers retain one log per
-  label and preserve the existing nonzero-is-KILLED rule for every command
-  that starts. An unresolved command is a spawn failure. Workers print `KILLED`
-  as each check finishes, stop new work after a survivor, and fail closed on
-  missing results, duplicate labels, incomplete counts or survivors.
-  ctl-status, ctx-hooks, pi-review and remote-gate-cache checks run alone
-  relative to mutation workers because they contain short time boundaries.
-  Repeated wrappers, pi-impl, remote-gate and `test_dev.py` checks are
-  serialized by suite around their longer marker polling. The ordinary suite
-  test files remain sequential and unchanged.
-  `tests/test-mutation-runner.sh` covers the runner's fail-closed cases; the
-  ordinary suite tests remain sequential.
+  explicit width; invalid or ineffective values refuse. Worker checks have a
+  600-second wall bound, a 1 GiB virtual-address-space bound, and the suite
+  lane has a 4 GiB memory cap. Timeout, memory/resource-limit and runner errors
+  fail the lane instead of counting as KILLED. The pending dispatcher skips
+  blocked same-suite checks, starts other eligible checks, preserves exclusive
+  groups, and reaps whichever recorded worker finishes first. Missing results,
+  duplicate labels, incomplete counts and survivors still fail closed. The
+  ordinary suite test files remain sequential and unchanged.
+- Fix round 1 adds deterministic two-survivor ordering, per-bound unit cases,
+  effective-width and no-worker wait guards, and reporting that summarizes
+  checks left unstarted after a survivor. It lengthens three pi-impl event and
+  readiness bounds and three wrapper readiness polls to 60 seconds. The round
+  1 work report records the review dispositions and per-file scheduling
+  estimate.
 
 ### Added
 - **A pi run mode, and review mode is the wrapper's own switch (P-plat-26c).**

@@ -1194,7 +1194,8 @@ progress_tick() {
   local epoch=$1 wanted
   printf '%s\n' "$epoch" >&"$PROGRESS_FD"
   wanted=$(( PROGRESS_TICKS + 1 ))
-  for _ in {1..2000}; do
+  # A sidecar tick is event-driven; allow up to a minute under pool load.
+  for _ in {1..6000}; do
     PROGRESS_TICKS=$(progress_tick_count)
     (( PROGRESS_TICKS >= wanted )) && return 0
     # A sidecar that died cannot deliver the tick: say so instead of spinning.
@@ -2917,7 +2918,8 @@ release_owned_run() { : > "$ROOT/$1.release"; }
 # stream, so a kill at this point happens while the agent works.
 wait_for_stream() {
   local name=$1 waited=0
-  while (( waited < 200 )); do
+  # Allow a full minute for the marker under concurrent mutation workers.
+  while (( waited < 1200 )); do
     [[ -s $CONTROLLER_ROOT/runs/$name.jsonl ]] && return 0
     sleep 0.05
     waited=$(( waited + 1 ))
@@ -3176,7 +3178,8 @@ time.sleep(120)' > "$ROOT/dead-wrapper-tool.pid" ) &
   spawn_pid=$!
   # Read the tool's exact pid back from the record the agent wrote.
   local waited=0
-  while [[ ! -s $ROOT/dead-wrapper-tool.pid ]] && (( waited < 200 )); do
+  # Allow a full minute for the child to publish its pid under pool load.
+  while [[ ! -s $ROOT/dead-wrapper-tool.pid ]] && (( waited < 1200 )); do
     sleep 0.05
     waited=$(( waited + 1 ))
   done

@@ -571,18 +571,38 @@ expect_killed() {
   return 0
 }
 
-mutation_runner_print_failures() {
-  local index label log
-  for (( index = 0; index < ${#MUTATION_RUNNER_FAILURE_LABELS[@]}; index++ )); do
-    label=${MUTATION_RUNNER_FAILURE_LABELS[index]}
-    printf 'FAIL: %s: %s\n' "$label" "${MUTATION_RUNNER_FAILURE_REASONS[index]}" >&2
-    if [[ $label =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-      log=$MUTATION_RUNNER_ROOT/$label.log
-      if [[ -f $log ]]; then
-        printf '%s\n' "--- tail: $log ---" >&2
-        tail -n 40 -- "$log" >&2
-      fi
+mutation_runner_print_failure_entry() {
+  local index=$1 label log
+  label=${MUTATION_RUNNER_FAILURE_LABELS[index]}
+  printf 'FAIL: %s: %s\n' "$label" "${MUTATION_RUNNER_FAILURE_REASONS[index]}" >&2
+  if [[ $label =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    log=$MUTATION_RUNNER_ROOT/$label.log
+    if [[ -f $log ]]; then
+      printf '%s\n' "--- tail: $log ---" >&2
+      tail -n 40 -- "$log" >&2
     fi
+  fi
+}
+
+mutation_runner_print_failures() {
+  local index reason not_started=0
+  local -a survivor_indices=()
+  for (( index = 0; index < ${#MUTATION_RUNNER_FAILURE_LABELS[@]}; index++ )); do
+    reason=${MUTATION_RUNNER_FAILURE_REASONS[index]}
+    if [[ $reason == 'not started after a survivor was observed' ]]; then
+      not_started=$((not_started + 1))
+    elif [[ $reason == *surviv* ]]; then
+      survivor_indices+=("$index")
+    else
+      mutation_runner_print_failure_entry "$index"
+    fi
+  done
+  if (( not_started > 0 )); then
+    printf 'FAIL: %s registered checks were not started after a survivor was observed\n' \
+      "$not_started" >&2
+  fi
+  for index in "${survivor_indices[@]}"; do
+    mutation_runner_print_failure_entry "$index"
   done
 }
 

@@ -5,12 +5,14 @@ ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-mutation-runner-test.XXXXXX")
 SURVIVOR_FIRST_FD=
 SURVIVOR_SECOND_FD=
 LATE_EARLIER_FD=
+LATE_WORKER_FD=
 QUEUE_FIRST_FD=
 QUEUE_SECOND_FD=
 cleanup() {
   if [[ -n $SURVIVOR_FIRST_FD ]]; then printf 'release\n' >&"$SURVIVOR_FIRST_FD" || :; fi
   if [[ -n $SURVIVOR_SECOND_FD ]]; then printf 'release\n' >&"$SURVIVOR_SECOND_FD" || :; fi
   if [[ -n $LATE_EARLIER_FD ]]; then printf 'release\n' >&"$LATE_EARLIER_FD" || :; fi
+  if [[ -n $LATE_WORKER_FD ]]; then printf 'release\n' >&"$LATE_WORKER_FD" || :; fi
   if [[ -n $QUEUE_FIRST_FD ]]; then printf 'release\n' >&"$QUEUE_FIRST_FD" || :; fi
   if [[ -n $QUEUE_SECOND_FD ]]; then printf 'release\n' >&"$QUEUE_SECOND_FD" || :; fi
   rm -rf -- "$ROOT"
@@ -79,6 +81,13 @@ contains "$ROOT/survivors.out" 'SURVIVED: survivor-first'
 contains "$ROOT/survivors.out" 'SURVIVED: survivor-second'
 not_contains "$ROOT/survivors.out" 'KILLED: after-survivors'
 [[ ! -e $after_survivor_marker ]] || fail 'a new check started after the first observed survivor'
+contains "$ROOT/survivors.out" '1 registered checks were not started after a survivor was observed'
+unstarted_summary_line=$(grep -nF '1 registered checks were not started after a survivor was observed' \
+  "$ROOT/survivors.out" | cut -d: -f1)
+survivor_failure_line=$(grep -nF 'FAIL: survivor-first: mutant survived' "$ROOT/survivors.out" | cut -d: -f1)
+survivor_tail_line=$(grep -nF 'first survivor log' "$ROOT/survivors.out" | cut -d: -f1)
+(( survivor_failure_line > unstarted_summary_line && survivor_tail_line > unstarted_summary_line )) \
+  || fail 'survivor details were printed before the unstarted-check summary'
 contains "$ROOT/survivors.out" 'SUMMARY: FAIL checks=3 reported=2 killed=0 elapsed_seconds='
 
 export CONTROLLER_MUTATION_JOBS=1
@@ -208,7 +217,7 @@ earlier_fifo=$ROOT/earlier-survivor.fifo
 late_fifo=$ROOT/late-survivor.fifo
 mkfifo "$earlier_fifo" "$late_fifo" || fail 'could not create late-survivor FIFOs'
 exec {LATE_EARLIER_FD}<>"$earlier_fifo" || fail 'could not open earlier-survivor FIFO'
-exec {late_fifo_fd}<>"$late_fifo" || fail 'could not open late-survivor FIFO'
+exec {LATE_WORKER_FD}<>"$late_fifo" || fail 'could not open late-survivor FIFO'
 {
   # Hold the first survivor until both worker slots are registered. The late
   # worker then stays blocked while the parent observes the first survivor.
@@ -223,7 +232,7 @@ exec {late_fifo_fd}<>"$late_fifo" || fail 'could not open late-survivor FIFO'
   printf 'release\n' >&"$LATE_EARLIER_FD"
   mutation_runner_reap_one
   [[ -f $MUTATION_RUNNER_RESULTS/earlier-check.result ]] || fail 'earlier check was not collected first'
-  printf 'release\n' >&"$late_fifo_fd"
+  printf 'release\n' >&"$LATE_WORKER_FD"
   mutation_runner_finish
   finish_rc=$?
   reported_at_finish=$MUTATION_RUNNER_REPORTED_COUNT
@@ -240,8 +249,9 @@ exec {late_fifo_fd}<>"$late_fifo" || fail 'could not open late-survivor FIFO'
   (( ${#MUTATION_RUNNER_PIDS[@]} == 0 )) || late_reap_failed=1
 } > "$ROOT/late-survivor.out" 2>&1
 exec {LATE_EARLIER_FD}>&-
-exec {late_fifo_fd}>&-
+exec {LATE_WORKER_FD}>&-
 LATE_EARLIER_FD=
+LATE_WORKER_FD=
 (( finish_rc != 0 )) || fail 'late survivor passed'
 (( late_result_present == 1 )) || fail 'final wait did not collect the late survivor result'
 (( reported_at_finish == 2 )) || fail 'final wait returned before reaping the late survivor worker'
