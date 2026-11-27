@@ -407,10 +407,11 @@ Assay's own generated receipt hooks and their code objects are captured before
 candidate conftests load as well. The reviewed Hypothesis and pytest-cov code
 objects are pinned too; replacing one in place makes the attempt unsupported,
 even when its visible fingerprint stays the same.
-When liveness is active, the materialized liveness plugin's
-`pytest_configure`, `pytest_runtest_logstart`, `pytest_runtest_logreport`,
-`pytest_sessionfinish` and `pytest_unconfigure` HookImpls, functions, code
-objects and globals are pinned to the selected plugin path too. A candidate
+When liveness is active, six pinned hooks from the materialized liveness
+plugin are tied to the selected plugin path: `pytest_configure`,
+`pytest_runtest_logstart`, `pytest_runtest_logreport`,
+`pytest_runtest_logfinish`, `pytest_sessionfinish` and `pytest_unconfigure`.
+Their HookImpls, functions, code objects and globals are checked. A candidate
 that replaces one while preserving its visible fingerprint cannot certify a
 cold kill or survivor.
 
@@ -4618,9 +4619,31 @@ fallback appears on that candidate's evidence as
 [what each runtime actually watches](../README.md#mutation-runtime-matrix);
 `hung` remains native-Python-only.
 
+**No-progress wall stop.** An armed watch also stops a candidate if no
+completed `test` or `phase` event arrives for four times the calibrated
+CPU-without-progress bound in wall time. Its window starts at spawn and is
+re-dated by each completed event and once at the first `session_finish`. The
+stop does not depend on CPU readability or host pressure. The CPU and per-test
+`hung` bounds and the lane deadline still win if they fire first. This stop is
+an unclassified fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`: it writes no candidate
+result or mutation bucket, and `assay run` ends so `--resume` retries the
+missing candidate. It is never reported as `hung` or placed in the
+`budget_exceeded` bucket. If CPU remains unreadable, the existing binding
+candidate budget can still expire first.
+
+For `jobs > 1`, candidates already in flight are allowed to finish and persist
+their results before the fatal error is raised; no additional candidates are
+submitted. Unstarted candidates remain for the normal scheduler on resume. In
+a serial run, when the stopped candidate is the first outstanding candidate,
+it is retried first on every resume, so the same stall can prevent later
+candidates from running. Backlog B597 tracks ending only the stopped candidate
+and continuing the sweep.
+
 **Known false-stop cases.** The CPU-without-progress threshold is derived
 from baseline wall seconds (`max(3 x baseline wall, baseline wall + 60s)`) but
-compared with process-tree CPU. It is lenient for a serial suite. A parallel
+compared with process-tree CPU, so the time to a `hung` stop is about that
+bound divided by the candidate's average process-tree CPU share. It is lenient
+for a serial suite. A parallel
 suite whose baseline tree CPU exceeds wall time can stop a healthy candidate
 as `hung`, never `killed`. The per-test bound is
 `max(10 x that test's baseline seconds, 60s)`, also compared with process-tree

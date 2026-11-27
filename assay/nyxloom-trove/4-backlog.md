@@ -239,6 +239,7 @@ items:
   - {id: B590, title: "release-gate.sh can signal a reaped pid when TERM or INT arrives after the remote child's wait (also in 12.3.0)", type: bugfix, component: gate, context_estimate: small}
   - {id: B591, title: "P-assay-14b final-review follow-ups: a test read race, a wrong CONSUMERS reason, a wrong CHANGES claim about 12.3.0, trap loose ends", type: bugfix, component: gate, context_estimate: small}
   - {id: B592, title: "release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown", type: bugfix, component: gate, context_estimate: small}
+  - {id: B597, title: "An armed no-progress wall stop ends the sweep and can repeat on resume", type: bugfix, component: mutation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -16215,3 +16216,23 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 **Wanted.** Make heartbeat shutdown safe when the signal handler re-enters after the heartbeat has been reaped, while still stopping and waiting for a live heartbeat.
 
 **Close when.** A gate-lane test pins the post-wait, pre-clear window and proves the handler does not signal the reaped heartbeat pid, while the live-heartbeat cancellation test still proves shutdown completes.
+
+## B597 — an armed no-progress wall stop ends the sweep and can repeat on resume
+
+**Status: OPEN (filed 2026-11-27 from the P-assay-4f final review); severity: medium.**
+
+**Symptom.** The no-progress wall stop is an unclassified fatal lane timeout. It
+leaves no candidate result, so resume retries the missing candidate in normal
+dispatch order. In a serial run, if the stopped candidate is the first
+outstanding one, every resume encounters it again and candidates after it stay
+untried. With `jobs > 1`, already in-flight candidates drain and persist their
+results before the fatal error; unstarted work remains for a later resume.
+
+**Wanted.** Consider ending only the stopped candidate as an unclassified
+attempt and continuing the sweep, while retaining the no-bucket/no-result
+semantics and making resume safe for the candidate's retry.
+
+**Close when.** A design and tests pin the sweep and resume behavior for both
+serial and parallel jobs, including a repeated stall, without turning the
+attempt into `hung` or `budget_exceeded` and without persisting a candidate
+result for the stopped attempt.

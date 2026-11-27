@@ -1178,16 +1178,16 @@ unchanged function identity or fingerprint. A candidate-only `pytest_configure`
 replacement of the receipt hook is therefore unsupported before a cold result
 can be classified.
 
-When liveness is active, Assay also captures the exact materialized
-`assay_liveness_plugin` registrations for `pytest_configure`,
-`pytest_runtest_logstart`, `pytest_runtest_logreport`, `pytest_sessionfinish`
-and `pytest_unconfigure`. They must come from the selected plugin path and
-retain the same HookImpl, function, code object and globals. This closes a
-same-module/path substitution that could otherwise alter a test report before
-the witness hook sees it while leaving the displayed hook fingerprint
-unchanged. Collection compares all five registrations; the registry monitor
-then checks each hook as pytest calls it. A mismatch disables both cold and
-replay proof.
+When liveness is active, Assay captures six pinned hooks from the exact
+materialized `assay_liveness_plugin` registrations: `pytest_configure`,
+`pytest_runtest_logstart`, `pytest_runtest_logreport`,
+`pytest_runtest_logfinish`, `pytest_sessionfinish` and `pytest_unconfigure`.
+They must come from the selected plugin path and retain the same HookImpl,
+function, code object and globals. This closes a same-module/path substitution
+that could otherwise alter a test report before the witness hook sees it while
+leaving the displayed hook fingerprint unchanged. Collection compares all
+six registrations; the registry monitor then checks each hook as pytest calls
+it. A mismatch disables both cold and replay proof.
 
 `pytest_runtest_logstart` is on that list because of P4/S2, and the failure it
 would cause without being there is worth stating: the liveness plugin's
@@ -2112,10 +2112,15 @@ renamed `budget_exceeded`.
 
 ### Why a hang is `hung` and never `killed` (P4)
 
-A candidate ended by ANY progress bound -- the idle rule, the
-CPU-without-progress bound, the per-test CPU bound -- is bucketed `hung`. It
-is never `killed`, however it was stopped. This is a decision, not an artifact
-of the code path, and it is worth stating plainly because the rest of the
+A candidate ended by the idle rule, CPU-without-progress bound, or per-test CPU
+bound is bucketed `hung`. It is never `killed`, however it was stopped. The
+separate no-progress wall backstop is a fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`
+with no candidate bucket or stored candidate result; it is not `hung` and does
+not become `budget_exceeded`. It applies to armed watches after four times the
+CPU-without-progress bound in wall time without a completed event, independent
+of CPU readability or pressure. The lane deadline and the CPU/per-test bounds
+still win when they fire first. This is a decision, not an artifact of the
+code path, and it is worth stating plainly because the rest of the
 mutation-tooling world reports the opposite.
 
 The reasoning is what each bucket *claims*. `killed` asserts that the suite

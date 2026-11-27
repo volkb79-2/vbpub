@@ -5,14 +5,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
-- The `self-qualification-provisional` lane budget is 150 minutes (was 60). A
-  loaded gate host needed 1991 s for the baseline alone and the lane ended
+- `self-qualification-provisional` keeps a 150-minute assay-command budget
+  (was 60) and its campaign expiry is now 3 hours from init (was 2). A loaded
+  gate host needed 1991 s for the baseline alone and the lane ended
   `BUDGET_EXCEEDED` before the canary finished
-  (`rgw-self-qualification-provisional-20261126T225114-v1001`).
+  (`rgw-self-qualification-provisional-20261126T225114-v1001`). The whole
+  container invocation is bounded by its 3-hour inner command cap; Run-Gate's
+  outer budget is 210 minutes. The effective total is therefore at most 3
+  hours from container entry, including setup and finalization, while the
+  assay command itself remains capped at 150 minutes.
 - A native Python/pytest R2 lane now detects a candidate that stops making
-  progress, instead of ending it on elapsed wall time. Three bounds, all
-  reported as `hung` (never `killed`) and both new decisions accepted by the
-  durable evidence path, resume and `--rejudge-outcome`:
+  progress, instead of ending it on elapsed wall time. The idle,
+  CPU-without-progress, and per-test bounds are reported as `hung` (never
+  `killed`) and both new decisions are accepted by the durable evidence path,
+  resume and `--rejudge-outcome`:
   * **CPU without progress** -- process-tree CPU seconds since the last
     COMPLETED plugin event (a `test` or a `phase` report; stdout/stderr growth,
     `test_start` and `test_finish` do not reset it) exceeds `max(3x baseline wall,
@@ -27,6 +33,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
     skipped for a nodeid the baseline never measured. The evidence names the
     nodeid, the bound and the measured value.
   * The existing pressure-adjusted idle rule is unchanged.
+  * An armed watch also has a no-progress wall stop: when no completed
+    `test`/`phase` event arrives for four times the CPU-without-progress bound,
+    the attempt ends unclassified as `BUDGET_EXCEEDED`/`LANE_TIMEOUT`. It
+    writes no candidate result or mutation bucket and is retried on resume; it
+    is neither `hung` nor `budget_exceeded`. This wall bound does not depend
+    on CPU readability or pressure. The CPU and per-test `hung` bounds and
+    lane deadline still win when they fire first.
   A retained resource trace is now COMPACTED past its 1024-sample cap instead of
   being marked incomplete, so no hang verdict is disabled by trace length and
   the stored evidence stays bounded.
@@ -86,6 +99,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   2026-11-25, recorded in the 12.3.0 notes): a gap fill, with no code or behaviour change.
 
 ### Known issues
+- The no-progress wall stop ends the mutation run with
+  `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, leaves the stopped candidate without a
+  result record, and retries that missing identity on resume. With one job,
+  if it is the first outstanding candidate, the same stop repeats on every
+  resume and candidates after it remain untried. With multiple jobs, already
+  in-flight candidates drain and persist their results before the fatal stop;
+  unstarted candidates remain for normal dispatch on resume. Ending only the
+  stopped candidate and continuing the sweep is the remaining design option
+  tracked by B597.
 - The CPU-without-progress threshold is derived from baseline **wall** seconds
   (`max(3 x baseline wall, baseline wall + 60s)`) and compared with
   process-tree CPU. This is lenient for a serial suite because tree CPU grows

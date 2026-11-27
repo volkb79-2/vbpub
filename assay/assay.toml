@@ -496,8 +496,10 @@ argv = [
 ]
 env = {}
 env_passthrough = ["PATH"]
-# Covers the baseline and the R3 canary's full-suite runs on a loaded gate host
-# (one measured baseline: 1991 s); inside the container's 3 h command cap.
+# Caps the assay lane command at 150m. The campaign expires 3h after init;
+# the container command cap is 3h from entry and Run-Gate allows 210m, so the
+# effective whole-container bound is 3h, with at most 30m beyond the lane cap
+# for setup and finalization (less if the container cap arrives first).
 budget = "150m"
 allow_argv_append = false
 

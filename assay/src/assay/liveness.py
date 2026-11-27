@@ -1388,14 +1388,12 @@ def baseline_event_gaps(
     first_event: Any = None
     timestamped: list[tuple[float, Any, int | None]] = []
     for record in records:
-        # (P4/S2) `test_start` is a NEW event kind. It is deliberately not a
-        # calibration stamp: the idle bound is derived from how long this
-        # suite goes QUIET, and a "this test began" report inside a quiet
-        # stretch would shorten a gap that never actually closed -- silently
-        # tightening every lane's idle bound the moment the plugin started
-        # writing it. `test`/`phase`/`session_*` keep their exact pre-P4
-        # meaning, so calibration is byte-identical for a file that differs
-        # only by the new events.
+        # (P4/S2) `test_start` is deliberately not a calibration stamp: a
+        # "this test began" report inside a quiet stretch would shorten a gap
+        # that never actually closed, silently tightening every lane's idle
+        # bound. `test_finish` is a real timestamp after teardown and can add
+        # an inter-event gap; only files differing by `test_start` records
+        # alone retain byte-identical calibration.
         if record.get("event") == TEST_START_EVENT:
             continue
         stamp = record.get("t")

@@ -2626,18 +2626,20 @@ def _refuse_unbounded_without_unit_bounds(
     the unit that has none.
 
     **(P4) ``unbounded`` is still refused, and its meaning is now stated
-    per-run rather than per-unit.** After P4 a native R2 candidate is bounded
-    by the *no-progress watch* the run actually arms (a completed plugin event
-    every `max(3 x baseline, baseline + 60 s)` of process-tree CPU, plus a
-    per-test CPU bound), and `judge.mutation.budget_per_candidate` is ADVISORY
-    while that watch is armed. But arming is a RUNTIME fact -- it needs liveness
-    injection, a baseline that produced plugin events, and a readable CPU
-    series (`runner._run_prepared_lane`, `assay.liveness.
-    plugin_events_observed`) -- and a config file is read before any of it is
-    known. So this rule keeps refusing `"none"` by name (the one spelling that
-    asks for a genuinely unbounded command) and keeps admitting the omitted /
-    `"auto"` key: that key is never unbounded, because where the watch is NOT
-    armed it binds exactly as it did before P4.
+    per-run rather than per-unit.** A native R2 candidate with an armed watch
+    has a CPU-without-progress bound (`max(3 x baseline, baseline + 60 s)` of
+    process-tree CPU), a per-test CPU bound, and a wall backstop after four
+    times the CPU bound without a completed event. The wall backstop does not
+    depend on CPU readability or pressure. The per-candidate budget is
+    ADVISORY while the watch is armed. Arming is a RUNTIME fact -- it needs
+    liveness injection and baseline plugin records -- and a config file is read
+    before either is known. So this rule keeps refusing `"none"` by name and
+    admitting the omitted / `"auto"` key: it is never unbounded for a candidate
+    that stops completing events, because either the armed watch's finite
+    bounds or the binding per-candidate budget ends that stalled attempt. A
+    candidate that keeps completing events can renew the watch; an
+    `unbounded` lane gives that progressing command no total wall cap by
+    design.
 
     **(B091/D-23) An omitted ``judge.mutation.budget_per_candidate`` is no
     longer such a unit with no bound.** It now means ``"auto"`` -- see

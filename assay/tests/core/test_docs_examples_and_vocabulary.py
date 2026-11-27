@@ -40,6 +40,7 @@ from typing import NamedTuple
 import pytest
 
 from assay.cli import _built_in_registry
+from assay import mutation_witness
 from assay.config import (
     EVIDENCE_SOURCES,
     JUDGE_BASE_SOURCES,
@@ -1382,7 +1383,9 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
         ).split()
     )
     consumers = " ".join(CONSUMERS.read_text(encoding="utf-8").split())
+    design = " ".join(DESIGN_GUIDE.read_text(encoding="utf-8").split())
     readme = " ".join(README.read_text(encoding="utf-8").split())
+    assay_toml = " ".join((REPO_ROOT / "assay.toml").read_text(encoding="utf-8").split())
 
     assert "### Known issues" in changes
     assert "max(3 x baseline wall, baseline wall + 60s)" in changes
@@ -1390,6 +1393,13 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
     assert "never counts as `killed`" in changes
     assert "max(10 x that test's baseline seconds, 60s)" in changes
     assert "randomized test order can stop a healthy candidate as `hung`" in changes
+    assert "four times the CPU-without-progress bound" in changes
+    assert "unclassified as `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in changes
+    assert "same stop repeats on every resume" in changes
+    assert "150-minute assay-command budget" in changes
+    assert "3-hour inner command cap" in changes
+    assert "effective total is therefore at most 3 hours from container entry" in changes
+    assert "effective whole-container bound is 3h" in assay_toml
 
     for text, paragraph in (
         (
@@ -1420,3 +1430,35 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
     assert "`budget-expired-watch-unarmed`" in consumers
     assert "The first `session_finish` closes the per-test window" in consumers
     assert "session or module fixture cost moving to another nodeid under randomized order" in consumers
+    assert (
+        "the time to a `hung` stop is about that bound divided by the candidate's "
+        "average process-tree CPU share"
+    ) in consumers
+    assert "unclassified fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in consumers
+    assert "writes no candidate result or mutation bucket" in consumers
+    assert "same stall can prevent later candidates from running" in consumers
+    assert "separate no-progress wall backstop is a fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in design
+    assert "does not become `budget_exceeded`" in design
+
+
+def test_p4_liveness_hook_docs_follow_the_pinned_hook_list():
+    consumers = " ".join(CONSUMERS.read_text(encoding="utf-8").split())
+    design = " ".join(DESIGN_GUIDE.read_text(encoding="utf-8").split())
+    plugin_namespace: dict[str, object] = {}
+    exec(
+        compile(
+            mutation_witness._PLUGIN_SOURCE,
+            "assay_mutation_witness_plugin.py",
+            "exec",
+        ),
+        plugin_namespace,
+    )
+    hooks = plugin_namespace["_LIVENESS_PLUGIN_HOOKS"]
+
+    assert len(hooks) == 6
+    for text in (consumers, design):
+        assert "six pinned hooks" in text
+        for hook in hooks:
+            assert f"`{hook}`" in text
+    assert "`pytest_runtest_logfinish`" in consumers
+    assert "`pytest_runtest_logfinish`" in design
