@@ -102,7 +102,7 @@ def read_process(
     *,
     reader: Callable[[Path], str] = _read_stat,
 ) -> ProcessRecord | None:
-    """Read ``(pid, ppid, state, comm, starttime)``; None means the process vanished."""
+    """Read process identity; None means its stat path is absent or the process vanished."""
     path = Path(proc_root) / str(pid) / "stat"
     try:
         stat = reader(path)
@@ -110,7 +110,7 @@ def read_process(
         return None
     except OSError as exc:
         if exc.errno == errno.EACCES:
-            # hidepid can also block a child that changed credentials; procfs alone cannot establish ownership.
+            # Under hidepid=1, a credential-changed child can be unreadable; procfs alone cannot establish ownership.
             try:
                 os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
             except OSError as ownership_error:
@@ -148,7 +148,10 @@ def direct_children(
     *,
     reader: Callable[[Path], str] = _read_stat,
 ) -> dict[tuple[int, int], ProcessRecord]:
-    """Current direct children, zombies included, keyed by pid and start time."""
+    """Visible direct children, zombies included, keyed by pid and start time.
+
+    PIDs omitted from procfs enumeration, as with hidepid=2 for another user's process, cannot be detected here.
+    """
     parent = os.getpid() if root_pid is None else root_pid
     try:
         entries = os.listdir(proc_root)

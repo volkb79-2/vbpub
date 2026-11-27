@@ -1,3 +1,5 @@
+import ast
+
 import pytest
 
 from estate_test_policy import policy
@@ -75,6 +77,42 @@ def test_analyze_source_handles_method_with_column_zero_string_lines():
     out = policy.analyze_source(source, first_line=40)
 
     assert [(violation.rule, violation.lineno) for violation in out] == [("fixed-sleep", 44)]
+
+
+def test_analyze_source_handles_multiline_fstring_with_column_zero_content():
+    source = (
+        "    def test_method(value):\n"
+        "        command = f\"\"\"\n"
+        "column-zero {value}\n"
+        "        \"\"\"\n"
+        "        time.sleep(1)\n"
+    )
+
+    out = policy.analyze_source(source, first_line=60)
+
+    assert [(violation.rule, violation.lineno) for violation in out] == [("fixed-sleep", 64)]
+
+
+def test_function_line_analysis_caches_a_read_only_module_tree(monkeypatch):
+    source = "# unique cached-tree regression\nclass Example:\n    def test_one(self):\n        time.sleep(1)\n"
+    real_parse = policy.ast.parse
+    parsed = []
+
+    def track_parse(text, *args, **kwargs):
+        parsed.append(text)
+        return real_parse(text, *args, **kwargs)
+
+    monkeypatch.setattr(policy.ast, "parse", track_parse)
+    module = policy._module_tree(source)
+    original_tree = ast.dump(module, include_attributes=True)
+
+    first = policy.analyze_source(source, function_line=3)
+    second = policy.analyze_source(source, function_line=3)
+
+    assert first == second
+    assert [(violation.rule, violation.lineno) for violation in first] == [("fixed-sleep", 4)]
+    assert parsed == [source]
+    assert ast.dump(module, include_attributes=True) == original_tree
 
 
 def test_analyze_source_selects_method_inside_nested_class():

@@ -15,6 +15,7 @@ import linecache
 import os
 import threading
 import time
+import tokenize
 import warnings
 
 import pytest
@@ -126,22 +127,26 @@ def _static_lines(item: pytest.Item, allowed: set[str], threshold: float) -> lis
     if function is None:
         return []
     try:
+        function = inspect.unwrap(function)
         filename = inspect.getsourcefile(function)
         code = function.__code__
         if filename is None:
             return []
+        linecache.checkcache(filename)
         source = "".join(linecache.getlines(filename))
-    except (AttributeError, OSError, TypeError):  # dynamically created tests have no source
+    except (AttributeError, OSError, TypeError, ValueError):  # dynamically created tests have no source
         return []
     if not source:
         return []
-    return [
-        violation.render()
-        for violation in policy.analyze_source(
-            source, sleep_threshold=threshold, function_line=code.co_firstlineno
-        )
-        if violation.rule not in allowed
-    ]
+    function_line = code.co_firstlineno
+    try:
+        module = policy._module_tree(source)
+        if policy._function_at_line(module, function_line) is None:
+            return [f"[source-analysis] cannot locate test function in {filename} at line {function_line}"]
+        violations = policy.analyze_source(source, sleep_threshold=threshold, function_line=function_line)
+    except (SyntaxError, tokenize.TokenError) as exc:
+        return [f"[source-analysis] could not analyze {filename}: {exc}"]
+    return [violation.render() for violation in violations if violation.rule not in allowed]
 
 
 def _settled_leaks(before: policy.Snapshot, settle: float) -> list[str]:

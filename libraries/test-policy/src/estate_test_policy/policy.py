@@ -7,6 +7,7 @@ hooks. ``plugin.py`` wires it into pytest.
 from __future__ import annotations
 
 import ast
+import functools
 import io
 import re
 import textwrap
@@ -125,13 +126,28 @@ def _function_at_line(tree: ast.AST, line: int) -> ast.FunctionDef | ast.AsyncFu
     return matches[0] if len(matches) == 1 else None
 
 
+@functools.lru_cache(maxsize=64)
+def _module_tree(source: str) -> ast.Module:
+    """Parse a whole source module once per cached source string."""
+    return ast.parse(source)
+
+
 def _dedent_outside_multiline_strings(source: str) -> str:
     """Dedent an inspected function without changing multiline string contents."""
     lines = source.splitlines(keepends=True)
     protected: set[int] = set()
     tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    fstring_tokens = {
+        token_type
+        for token_type in (
+            getattr(tokenize, "FSTRING_START", None),
+            getattr(tokenize, "FSTRING_MIDDLE", None),
+            getattr(tokenize, "FSTRING_END", None),
+        )
+        if token_type is not None
+    }
     for token in tokens:
-        if token.type == tokenize.STRING and token.end[0] > token.start[0]:
+        if token.type in ({tokenize.STRING} | fstring_tokens) and token.end[0] > token.start[0]:
             protected.update(range(token.start[0] + 1, token.end[0] + 1))
     indents = [
         len(line) - len(line.lstrip(" \t"))
@@ -252,7 +268,7 @@ def analyze_source(
             tree = ast.parse(_dedent_outside_multiline_strings(source))
         line_offset = first_line - 1
     else:
-        module = ast.parse(source)
+        module = _module_tree(source)
         tree = _function_at_line(module, function_line)
         if tree is None:
             return []

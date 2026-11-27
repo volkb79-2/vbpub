@@ -40,9 +40,13 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
   `@pytest.mark.estate_allow("children", reason="...", backlog="XX-NN")`. Non-Linux runs are a no-op and record
   one warning. Allowed tests leave live children alone but new direct-child zombies are reaped with
   `waitid(WNOHANG)` so they do not accumulate (TP-12). With procfs `hidepid=1`, reading another user's
-  `/proc/<pid>/stat` can return `EACCES`; a child can also become unreadable if it changes credentials. The guard
-  uses non-reaping `waitid(P_PID, pid, WEXITED|WNOHANG|WNOWAIT)` to distinguish a waitable child from a non-child:
-  an unreadable child or an ownership-check error still fails loudly. See [proc(5)'s `hidepid` description](https://manpages.debian.org/trixie/manpages/proc.5.en.html).
+  `/proc/<pid>/stat` can return `EACCES`; a child can also become unreadable if it changes credentials. On
+  `EACCES`, the guard uses non-reaping `waitid(P_PID, pid, WEXITED|WNOHANG|WNOWAIT)`: a successful probe means
+  the pid is our child, alive or waitable, and fails loudly; `ECHILD` or `ESRCH` permits skipping it, while
+  another probe error fails loudly. Under `hidepid=2` or `hidepid=invisible`, another user's `/proc/<pid>`
+  directory is omitted from the `/proc` listing. Since the guard enumerates that listing, a child that becomes
+  invisible is **not detected**. TP-19 tracks a possible alternate enumeration source. See [proc(5)'s `hidepid`
+  description](https://manpages.debian.org/trixie/manpages/proc.5.en.html).
 
   **Adopting the child guard:** a process created lazily by module or session code, or by a self-daemonizing tool
   (`gpg-agent`, SSH `ControlPersist`, git `gc.autoDetach` or automatic maintenance), is a new child of pytest and
@@ -81,9 +85,12 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
 
 ## Limits
 
-* Plugin, static analysis: only the test function's own source is analysed, not helpers it calls (the thread,
-  fd and child checks are the backstop). Quiet false negatives, backlog TP-09: aliased clock imports
-  (`from time import perf_counter as pc`), `datetime.now()` deltas, sleeps in helpers, randomness.
+* Plugin, static analysis: only a named test function's own source is analysed, not helpers it calls (the thread,
+  fd and child checks are the backstop). The plugin unwraps `functools.wraps` decorators, caches up to 64 parsed
+  source strings, and reports one `[source-analysis]` policy line if it cannot locate a function at the source
+  line. Lambda tests have no matching function node, so their bodies are not analyzed. Quiet false negatives,
+  backlog TP-09: aliased clock imports (`from time import perf_counter as pc`), `datetime.now()` deltas, sleeps
+  in helpers, randomness.
 * Order and shared-state dependence is NOT detected (backlog TP-07): a test that passes only in file order is stable
   when the file runs whole and fails with exit 1 when run alone, which looks like an ordinary failure.
 * flakehunt validation: only `slow-cpu` in container mode has run against real docker (v1001). `cpu-contended`
