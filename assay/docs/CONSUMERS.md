@@ -1986,9 +1986,14 @@ mutant was never re-executed against the assertion that kills it.
   fingerprint in the verdict without exposing the value. A changed DSN,
   credential, worktree path or `TERM` therefore makes saved candidate results
   stale and they run again. For `PYTHONPATH`, Assay fingerprints the resolved
-  value before adding its per-run liveness and cold-witness plugin paths. The
-  child still receives those injected paths, but they do not change the judge
-  identity; a consumer's own `PYTHONPATH` value remains fingerprinted.
+  value before adding its per-run liveness and cold-witness plugin paths only
+  when the recorded insertions exactly reproduce the current effective value;
+  otherwise it fingerprints the current value. The child still receives the
+  injected paths, and a consumer's own `PYTHONPATH` value remains part of the
+  judge identity. For resume diagnostics, the limit is: “Only `PATH` and
+  `PYTHONPATH` receive per-name passthrough value digests.” All other present passthrough
+  variables share one aggregate digest over their names and values, with the
+  names retained for candidate diagnostics.
   Infrastructure facts remain name-only under B088's existing rule;
 * **`cwd` and the project prefix** — which decide what the relative paths in
   `argv` resolve to;
@@ -2002,9 +2007,26 @@ When resume rejects records for a judge mismatch, the store keeps the
 component digests beside that judge's records in
 `judges/<judge>/judge-components.json`. The `resume` progress event and stderr
 name the differing components. For passthrough changes they report variable
-names only; they never print an environment value or its fingerprint. Stores
-without component metadata still use the same resume rules and report that the
-component digests are unavailable.
+names only; they never print an environment value or its fingerprint. When
+the aggregate digest changes, the diagnostic names “one or more of” its
+shared candidate variables; variables that appear or disappear are named
+exactly. Stores with the earlier B577 sidecar format, or without component
+metadata, still use the same resume rules and report that the component
+digests are unavailable.
+
+**Resume migration.** On the first resume using the pre-injection identity,
+records whose old judge included run-local assay-injected `PYTHONPATH` entries
+re-execute once. This covers a passthrough `PYTHONPATH`, whose old value
+fingerprint included the plugin paths. It also covers the earlier identity's
+injected ambient name, including when `PYTHONPATH` was absent before injection
+and was not passed through. It does not change the identity of a present,
+non-passthrough consumer `PYTHONPATH` by itself: that name remains present
+before and after. Plans with no assay `PYTHONPATH` insertion are also
+unchanged by this rule. A plan whose effective `PYTHONPATH` was rewritten
+after resolution now fingerprints that current value unless the recorded
+insertions exactly reproduce it, so records made under the earlier stale
+snapshot are rejected and re-executed. Normal Assay-version invalidation is
+independent of these cases.
 
 A new Assay build re-executes resumed campaign state because the Assay version
 is part of the judge identity. A matching cached `crashed` record is reused by

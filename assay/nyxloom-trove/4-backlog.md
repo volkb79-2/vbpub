@@ -15997,7 +15997,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B577 — A resume that rejects every record does not say why
 
-**Status: FIXED 2026-11-27 in test commit `0600b4c85` and implementation commit `754d2761a`; severity was medium (operational).**
+**Status: FIXED 2026-11-27 in test commits `0600b4c85` and `79136e9ff`, implementation commits `754d2761a` and `66e3ccb6e`; severity was medium (operational).**
 
 **Symptom.** A seeded remote-gate resume (scripts/debian-install-v2, lane r2, head 2ea1912ca, r1002, run-gate 25.7.0, image dcaf4222) rejected every prior record.
 - Chunk 1, rgw-r2-20261124T155402-r1002, collected 14 killed records.
@@ -16008,13 +16008,13 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 **Correction to the earlier advice.** The relative-path workaround recorded here does not work: it cannot remove assay's per-run injected entries from the effective value that is fingerprinted. The consumer's declared path is not the changing component; assay's injection is.
 
-**Decided design.** Fingerprint the pre-injection `PYTHONPATH` value and exclude assay's own injected entries. The child still receives the injected paths. A consumer's own passthrough value remains part of the identity. Assay's own R2 lanes pass through `PATH` only and are unaffected.
+**Decided design.** Fingerprint the pre-injection `PYTHONPATH` value only when the current effective value exactly matches it with every recorded assay insertion applied; otherwise fingerprint the current effective value. The child still receives the injected paths. A consumer's own passthrough value remains part of the identity. The storage limit is: “Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.” All other present passthrough variables share one aggregate digest over their names and values, with their names retained for diagnostics. Assay's own R2 lanes pass through `PATH` only and are unaffected.
 
 **Gap (the assay part).** Nothing tells the operator why. `resume` counts `rejected_total`, but neither the event nor the log names which judge component moved. Diagnosing this took a manual record diff and reading the judge docstring.
 
 **Wanted.**
-1. When a resume rejects records for a judge mismatch, report the judge-identity components that differ between the stored records and this run: tree, argv, declared env, passthrough names and values (by name only, value fingerprints never printed), cwd/prefix, link paths, tool version and fingerprints. For this, the judge's component digests must be stored in the store (for example, beside the store manifest), not only their combined hash.
-2. In CONSUMERS, explain that the pre-injection `PYTHONPATH` value is fingerprinted, assay-injected plugin paths are excluded from identity but remain in the child environment, and the consumer's own passthrough value still changes identity. Do not recommend a relative-path workaround.
+1. When a resume rejects records for a judge mismatch, report the judge-identity components that differ between the stored records and this run: tree, argv, declared env, passthrough names and values (by name only, value fingerprints never printed), cwd/prefix, link paths, tool version and fingerprints. For this, the judge's component digests must be stored in the store (for example, beside the store manifest), not only their combined hash. Store per-name passthrough value digests only for `PATH` and `PYTHONPATH`; aggregate all other present passthrough values together and retain their names. If that aggregate changes, say “one or more of” the shared names unless the aggregate has exactly one name on both sides. Name additions and removals exactly.
+2. In CONSUMERS, explain that the pre-injection `PYTHONPATH` value is used only when recorded assay insertions reproduce the current effective value, assay-injected plugin paths remain in the child environment, and the consumer's own passthrough value still changes identity. Do not recommend a relative-path workaround.
 
 **Close when.** A test proves that a mismatch caused by a single passthrough value names that variable in the resume event and on stderr, and the CONSUMERS paragraph is in place. Source: vbpub-rollback's message to vbpub-assay at ~16:58Z; record diff by vbpub-assay.
 
@@ -16027,7 +16027,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 - This makes Wanted item 1 (name the judge component that moved) the way to find it, rather than another manual record diff.
 - Source: the main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
 
-**Implementation note (2026-11-27).** Judge components are stored under `judges/<judge>/judge-components.json`. A mismatch reports the changed component names in the `resume` event and on stderr. Passthrough changes name variables only; values and value fingerprints are not printed.
+**Implementation note (2026-11-27).** Judge components use sidecar schema `/2` under `judges/<judge>/judge-components.json`. A mismatch reports changed component names in the `resume` event and stderr. Other passthrough values share one aggregate digest; its diagnostic names candidates as “one or more of,” while names that appear or disappear are exact. Sidecar names and diagnostic sizes are bounded and validated; malformed or oversized metadata is unavailable. The first resume after the pre-injection identity change re-executes old records whose judge included run-local assay-injected `PYTHONPATH` entries, including when `PYTHONPATH` was absent before injection and was not passed through. Older sidecars report component digests unavailable but do not change record acceptance.
 
 ## B578 — A kill with rc!=0 and no failing test named is still counted as killed
 

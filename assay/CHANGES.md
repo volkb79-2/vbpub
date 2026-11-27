@@ -5,7 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Fixed
-- assay: stabilize B577 resume identity across plugin injection and report judge mismatch components
+- assay: stabilize B577 resume identity across plugin injection, aggregate non-path passthrough diagnostics, and bound untrusted component metadata. **Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.** On first resume, old records whose judge included run-local assay-injected `PYTHONPATH` entries re-execute once, including when `PYTHONPATH` was absent before injection and not passed through; a present non-passthrough consumer `PYTHONPATH` and plans with no assay insertion are unchanged by this identity rule. Records made under a stale post-resolution PYTHONPATH snapshot also miss once when the current value differs from the recorded insertions. Older component sidecars report diagnostics unavailable.
 
 <!-- cmru: release history -->
 
