@@ -1985,8 +1985,11 @@ mutant was never re-executed against the assertion that kills it.
   a SHA-256 fingerprint of its value are folded in; B142 emits the same
   fingerprint in the verdict without exposing the value. A changed DSN,
   credential, worktree path or `TERM` therefore makes saved candidate results
-  stale and they run again. Infrastructure facts remain name-only under
-  B088's existing rule;
+  stale and they run again. For `PYTHONPATH`, Assay fingerprints the resolved
+  value before adding its per-run liveness and cold-witness plugin paths. The
+  child still receives those injected paths, but they do not change the judge
+  identity; a consumer's own `PYTHONPATH` value remains fingerprinted.
+  Infrastructure facts remain name-only under B088's existing rule;
 * **`cwd` and the project prefix** — which decide what the relative paths in
   `argv` resolve to;
 * **the declared `link_paths`** — declaring, dropping or re-pointing one
@@ -1994,6 +1997,14 @@ mutant was never re-executed against the assertion that kills it.
 * **assay's own version** — the code that classifies a result is part of the
   judge, so an assay upgrade re-executes rather than replaying verdicts
   produced by different classification logic.
+
+When resume rejects records for a judge mismatch, the store keeps the
+component digests beside that judge's records in
+`judges/<judge>/judge-components.json`. The `resume` progress event and stderr
+name the differing components. For passthrough changes they report variable
+names only; they never print an environment value or its fingerprint. Stores
+without component metadata still use the same resume rules and report that the
+component digests are unavailable.
 
 A new Assay build re-executes resumed campaign state because the Assay version
 is part of the judge identity. A matching cached `crashed` record is reused by

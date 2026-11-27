@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- assay: stabilize B577 resume identity across plugin injection and report judge mismatch components
+
 <!-- cmru: release history -->
 
 ## [12.4.0] - 2026-11-27

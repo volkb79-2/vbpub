@@ -15997,24 +15997,24 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B577 — A resume that rejects every record does not say why
 
-**Status: OPEN (filed 2026-11-24 from a rollback (T6) report); severity: medium (operational).**
+**Status: FIXED 2026-11-27 in test commit `0600b4c85` and implementation commit `754d2761a`; severity was medium (operational).**
 
 **Symptom.** A seeded remote-gate resume (scripts/debian-install-v2, lane r2, head 2ea1912ca, r1002, run-gate 25.7.0, image dcaf4222) rejected every prior record.
 - Chunk 1, rgw-r2-20261124T155402-r1002, collected 14 killed records.
 - Chunk 2, rgw-r2-20261124T162538-r1002, was seeded with them (STORE-SEEDED). Its `resume` event read `rejected_total: 14, resumed_total: 0`, it re-ran candidates 0-13, and it hit the budget again at candidate 13.
 - The stores are kept at `.controller-state/rollback/gates/icm1a-r2-store-c{1,2}`.
 
-**Cause (re-verified in assay source).** `judge_sha256` fingerprints the effective value of every present `env_passthrough` name (`src/assay/mutation.py:1603-1610`). When native liveness is injected, assay prepends a per-run temporary plugin directory to the candidate's `PYTHONPATH` (`src/assay/liveness.py:630-636`); cold-witness execution also prepends its receipt-plugin directory (`src/assay/mutation_witness.py:1165-1168`). The injected path changes between runs, so any `PYTHONPATH` included in `env_passthrough` changes the judge identity even when the consumer's own path spelling is relative.
+**Cause (the pre-fix behavior).** `judge_sha256` fingerprinted the effective value of every present `env_passthrough` name (`src/assay/mutation.py:1603-1610`). Native liveness prepended a per-run temporary plugin directory to the candidate's `PYTHONPATH` (`src/assay/liveness.py:630-636`); cold-witness execution also prepended its receipt-plugin directory (`src/assay/mutation_witness.py:1165-1168`). The injected path changed between runs, so any `PYTHONPATH` included in `env_passthrough` changed the judge identity even when the consumer's own path spelling was relative.
 
 **Correction to the earlier advice.** The relative-path workaround recorded here does not work: it cannot remove assay's per-run injected entries from the effective value that is fingerprinted. The consumer's declared path is not the changing component; assay's injection is.
 
-**Decided design and workaround.** Fingerprint the pre-injection `PYTHONPATH` value and exclude assay's own injected entries. Do not ask lane authors to encode a workaround in their ambient path. Until that code change lands, the supported workaround is a declared `env` `PYTHONPATH`, which is not hashed as a passthrough value. Assay's own R2 lanes pass through `PATH` only and are unaffected.
+**Decided design.** Fingerprint the pre-injection `PYTHONPATH` value and exclude assay's own injected entries. The child still receives the injected paths. A consumer's own passthrough value remains part of the identity. Assay's own R2 lanes pass through `PATH` only and are unaffected.
 
 **Gap (the assay part).** Nothing tells the operator why. `resume` counts `rejected_total`, but neither the event nor the log names which judge component moved. Diagnosing this took a manual record diff and reading the judge docstring.
 
 **Wanted.**
 1. When a resume rejects records for a judge mismatch, report the judge-identity components that differ between the stored records and this run: tree, argv, declared env, passthrough names and values (by name only, value fingerprints never printed), cwd/prefix, link paths, tool version and fingerprints. For this, the judge's component digests must be stored in the store (for example, beside the store manifest), not only their combined hash.
-2. In CONSUMERS, the `env_passthrough` section: explain that an assay-injected `PYTHONPATH` entry changes the fingerprint even when the consumer's own value is relative. Document the declared `env` workaround while the code fix is pending and the pre-injection fingerprint design; do not recommend a relative path.
+2. In CONSUMERS, explain that the pre-injection `PYTHONPATH` value is fingerprinted, assay-injected plugin paths are excluded from identity but remain in the child environment, and the consumer's own passthrough value still changes identity. Do not recommend a relative-path workaround.
 
 **Close when.** A test proves that a mismatch caused by a single passthrough value names that variable in the resume event and on stderr, and the CONSUMERS paragraph is in place. Source: vbpub-rollback's message to vbpub-assay at ~16:58Z; record diff by vbpub-assay.
 
@@ -16023,8 +16023,11 @@ The single error is at `descendants[0]`, so the only difference between an accep
 - It took 2h26m against 2h53m for the cold run, and it re-judged most candidates.
 - Result: 194 candidates, 145 killed, the same 47 survived, and 2 `budget_exceeded` (the installer at 750/751; both were killed in the cold run).
 - Suspect: another input that changes per checkout or per run is still folded into `judge_sha256`. It is not yet identified; the stored records of the two runs have not been diffed.
+- That historical suspicion is not a finding. A later mismatch can name its changed components only when the stored judge has component metadata; older stores report that the component digests are unavailable.
 - This makes Wanted item 1 (name the judge component that moved) the way to find it, rather than another manual record diff.
 - Source: the main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
+
+**Implementation note (2026-11-27).** Judge components are stored under `judges/<judge>/judge-components.json`. A mismatch reports the changed component names in the `resume` event and on stderr. Passthrough changes name variables only; values and value fingerprints are not printed.
 
 ## B578 — A kill with rc!=0 and no failing test named is still counted as killed
 
