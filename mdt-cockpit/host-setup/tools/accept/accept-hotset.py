@@ -19,8 +19,8 @@ kernel's own periodic refresh would alias the scheme's 8 s apply interval (r2 N5
     accept-hotset.py sample          --step N      (same args)
     accept-hotset.py off|on                        (same args)
 
-`preflight` checks DAMON_STAT, cgprofilectl, sysfs presence/ownership, paddr ranges, and existing daemon state/counts
-without writing sysfs. `setup` refuses (exit 3) when DAMON_STAT is not `N`, when any kdamond is not `off`, when no
+`preflight` checks DAMON_STAT, cgprofilectl, sysfs presence/ownership, and paddr ranges without writing sysfs.
+`setup` checks existing daemon state/counts and refuses (exit 3) when DAMON_STAT is not `N`, when any kdamond is not `off`, when no
 empty off daemon can be taken, when the kernel lacks `paddr`/`stats/sz_ops_filter_passed`/the `ops_filters` chain,
 or when a live cgprofile session multiplexes kdamonds (4.4). It syncs owner/count/index records to the WAL before
 growing `nr_kdamonds` or `nr_contexts`, creates the context before reading `avail_operations`, and starts only that
@@ -350,6 +350,9 @@ def restore_owned_kdamond(admin: str, state: str) -> None:
     owner = values.get("damon_owner")
     if owner not in ("created", "taken"):
         return
+    started = values.get("damon_started")
+    if started not in (None, "0", "1"):
+        raise Refusal("DAMON start ownership WAL is invalid; leaving its sysfs state untouched")
     try:
         original_nr = int(values["damon_nr_kdamonds"])
         kd = int(values["damon_kdamond"])
@@ -370,6 +373,8 @@ def restore_owned_kdamond(admin: str, state: str) -> None:
     if not current_state:
         raise Refusal(f"{state_path} is unreadable; leaving DAMON counts untouched")
     if current_state[0].strip() != "off":
+        if started == "0":
+            raise Refusal(f"kdamond {kd} is on without a successful kit start record; leaving it and the WAL untouched")
         write_text(state_path, "off")
         current_state = read_lines(state_path)
         if not current_state or current_state[0].strip() != "off":
@@ -457,7 +462,7 @@ def setup(args) -> int:
     # write to nr_kdamonds rebuilds every child, while a write to nr_contexts
     # creates contexts/0; the restore uses only the object explicitly named.
     append_wal(args.state, f"damon_owner={owner}", f"damon_nr_kdamonds={original_nr}",
-               f"damon_kdamond={idx}", "damon_nr_contexts=0", f"kdamond={idx}")
+               f"damon_kdamond={idx}", "damon_nr_contexts=0", "damon_started=0", f"kdamond={idx}")
     try:
         nrd = os.path.join(args.admin, "kdamonds")
         if owner == "created":
@@ -476,7 +481,15 @@ def setup(args) -> int:
         if "paddr" not in avail[0].split():
             raise Refusal(f"avail_operations [{avail[0].strip()}] has no paddr: this kernel cannot monitor physical regions")
         configure(da, args.admin, idx, entries, ranges, commit=False)
+        state_path = os.path.join(nrd, str(idx), "state")
+        state_before_on = read_lines(state_path)
+        if not state_before_on or state_before_on[0].strip() != "off":
+            raise Refusal(f"kdamond {idx} became {state_before_on[0].strip() if state_before_on else 'unreadable'} before setup could start it")
         da.SysfsInterface.kdamond_on(idx)
+        # Record successful ownership only after the sysfs transition succeeds. If the
+        # process dies between on and this fsynced WAL append, restore leaves an on
+        # daemon alone and reports pending rather than stopping a possible foreign owner.
+        append_wal(args.state, "damon_started=1")
         st = read_lines(os.path.join(nrd, str(idx), "state"))
         if not st or st[0].strip() != "on":
             raise Refusal(f"kdamond {idx} did not start (state {st[0].strip() if st else 'unreadable'!r})")

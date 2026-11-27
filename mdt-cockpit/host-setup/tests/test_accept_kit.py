@@ -425,7 +425,7 @@ class HotsetTests(unittest.TestCase):
 
     def sysfs_model(self, *, count: int = 0, state: str = "off", avail: str = "vaddr paddr",
                     stats: bool = True, filters: bool = True) -> F.DamonSysfsModel:
-        model = F.DamonSysfsModel(self.admin, avail=avail, stats=stats, filters=filters)
+        model = F.DamonSysfsModel(self.admin, cgroup=self.cg, avail=avail, stats=stats, filters=filters)
         model.initialize(count=count, state=state)
         da = hs.load_lib(self.lib, str(self.admin))
         self.enterContext(mock.patch.object(hs, "load_lib", return_value=da))
@@ -434,8 +434,6 @@ class HotsetTests(unittest.TestCase):
         self.enterContext(mock.patch.object(hs, "read_int", model.read_int))
         self.enterContext(mock.patch.object(da.SysfsInterface, "_write", model.write))
         self.enterContext(mock.patch.object(da.SysfsInterface, "_read", model.read))
-        if hasattr(hs, "physical_ranges"):
-            self.enterContext(mock.patch.object(hs, "physical_ranges", return_value=[(0, 8 * 1024 ** 3)]))
         return model
 
     def restore_model(self) -> subprocess.CompletedProcess:
@@ -493,6 +491,7 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "1")
         self.assertIn("damon_owner=taken", self.wal.read_text())
+        self.assertIn("damon_started=1", self.wal.read_text())
         self.assertEqual((self.kd / "0" / "state").read_text().strip(), "on")
         rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
         self.assertEqual(rc, 0, out)
@@ -507,6 +506,64 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual((self.kd / "0" / "contexts" / "nr_contexts").read_text().strip(), "0")
         self.assertEqual((self.kd / "0" / "state").read_text().strip(), "off")
         self.assertFalse(self.wal.exists())
+
+    def test_a_foreign_damon_start_between_configure_and_on_is_left_running(self) -> None:
+        model = self.sysfs_model()
+        da = hs.load_lib(self.lib, str(self.admin))
+        original_write = model.write
+        state_path = str(self.kd / "0" / "state")
+
+        def foreign_start(path: str, value: object) -> None:
+            if path == state_path and value == "on":
+                original_write(path, value)  # the other actor wins immediately before our sysfs write
+                raise OSError("device or resource busy")
+            original_write(path, value)
+
+        self.enterContext(mock.patch.object(da.SysfsInterface, "_write", foreign_start))
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 3, out)
+        self.assertIn("immediate DAMON restore is pending", out)
+        self.assertIn("damon_started=0", self.wal.read_text())
+        self.assertNotIn("damon_started=1", self.wal.read_text())
+        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "on")
+
+        restored = self.restore_model()
+        self.assertEqual(restored.returncode, 1, restored.stdout + restored.stderr)
+        self.assertIn("without a successful kit start record", restored.stdout)
+        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "on")
+        self.assertTrue(self.wal.exists(), "the pending WAL remains for an operator to resolve")
+
+    def test_refresh_commit_is_refused_when_the_kdamond_is_off(self) -> None:
+        self.sysfs_model()
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 0, out)
+        rc, out = run_hotset("off", *self.args())
+        self.assertEqual(rc, 0, out)
+
+        rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
+        self.assertEqual(rc, 3, out)
+        self.assertIn("commit requires a running kdamond", out)
+        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "off")
+
+    def test_start_refuses_a_memcg_path_the_kernel_cannot_resolve(self) -> None:
+        model = self.sysfs_model()
+        da = hs.load_lib(self.lib, str(self.admin))
+        original_write = model.write
+        memcg_path = str(self.kd / "0" / "contexts" / "0" / "schemes" / "0" / "ops_filters" / "0" / "memcg_path")
+
+        def missing_memcg(path: str, value: object) -> None:
+            if path == memcg_path:
+                original_write(path, "/not-mounted.service")
+            else:
+                original_write(path, value)
+
+        self.enterContext(mock.patch.object(hs, "write_text", missing_memcg))
+        self.enterContext(mock.patch.object(da.SysfsInterface, "_write", missing_memcg))
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 3, out)
+        self.assertIn("memcg_path '/not-mounted.service' is not an existing cgroup", out)
+        self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "0",
+                         "setup restores the structural count after rejecting invalid filter input")
 
     def test_a_damon_stat_of_y_refuses_with_nothing_written(self) -> None:
         self.sysfs_model()

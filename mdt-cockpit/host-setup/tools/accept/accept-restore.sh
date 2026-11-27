@@ -71,7 +71,7 @@ if [ "$IN_RUN" != 1 ]; then   # --in-run means accept-run.sh's own finish: the c
 fi
 
 declare -a MAXES=() MINS=() NAMES=()
-boot=""; kd=""; damon_owner=""; damon_nr=""; damon_ctx_nr=""
+boot=""; kd=""; damon_owner=""; damon_nr=""; damon_ctx_nr=""; damon_started=""
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
     MAX=*) MAXES+=("${line#MAX=}") ;;
@@ -82,6 +82,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     damon_owner=*) damon_owner=${line#damon_owner=} ;;
     damon_nr_kdamonds=*) damon_nr=${line#damon_nr_kdamonds=} ;;
     damon_nr_contexts=*) damon_ctx_nr=${line#damon_nr_contexts=} ;;
+    damon_started=*) damon_started=${line#damon_started=} ;;
     damon_restore_nr_kdamonds=*|damon_restore_nr_contexts=*) ;;
     dev_orig=*|k_tested=*|pid=*|started_utc=*|kit_boot=*|'') ;;
     '# '*|'#'*) ;;
@@ -206,6 +207,10 @@ restore_damon() {
       *[!0-9:]*|:*|*:) damon_refuse "DAMON ownership WAL is incomplete"; return 0 ;;
     esac
   fi
+  case "$damon_started" in
+    ""|0|1) ;;
+    *) damon_refuse "DAMON start ownership WAL has invalid value '$damon_started'"; return 0 ;;
+  esac
   nrfile="$DAMON_ADMIN/kdamonds/nr_kdamonds"
   nrnow=$(cat "$nrfile" 2>/dev/null) || nrnow=""
   case "$nrnow" in ''|*[!0-9]*) damon_refuse "DAMON nr_kdamonds is unreadable"; return 0 ;; esac
@@ -231,6 +236,10 @@ restore_damon() {
   kof="$DAMON_ADMIN/kdamonds/$kd/state"
   if [ -r "$kof" ]; then
     if [ "$(cat "$kof" 2>/dev/null)" != off ]; then
+      if [ "$damon_started" = 0 ]; then
+        damon_refuse "kdamond $kd is on without a successful kit start record; it was left untouched"
+        return 0
+      fi
       if echo off >"$kof" 2>/dev/null && [ "$(cat "$kof" 2>/dev/null)" = off ]; then
         say "kdamond $kd -> off"
       else

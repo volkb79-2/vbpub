@@ -237,9 +237,10 @@ class DamonSysfsModel:
     read/write in the wrong order fails against this fake as it does in sysfs.
     """
 
-    def __init__(self, admin: Path, *, avail: str = "vaddr paddr", stats: bool = True,
+    def __init__(self, admin: Path, *, cgroup: Path, avail: str = "vaddr paddr", stats: bool = True,
                  filters: bool = True) -> None:
         self.admin = admin
+        self.cgroup = cgroup
         self.kdamonds = admin / "kdamonds"
         self.avail = avail
         self.stats = stats
@@ -345,18 +346,51 @@ class DamonSysfsModel:
                      "damon_target_idx"):
             (filter_dir / name).write_text("\n")
 
+    def _validate_configuration(self, kdamond: Path) -> None:
+        contexts = kdamond / "contexts"
+        if self.read(str(contexts / "nr_contexts")) != "1":
+            raise OSError("DAMON fake: on and commit require exactly one context")
+        context = contexts / "0"
+        if self.read(str(context / "operations")) != "paddr":
+            raise OSError("DAMON fake: this acceptance kit requires paddr operations")
+        schemes = context / "schemes"
+        if int(self.read(str(schemes / "nr_schemes"))) < 1:
+            raise OSError("DAMON fake: on and commit require at least one scheme")
+        for scheme in self._numbered_children(schemes):
+            memcg_filter = scheme / "ops_filters" / "0"
+            if self.read(str(memcg_filter / "type")) != "memcg":
+                raise OSError("DAMON fake: scheme filter 0 must be memcg")
+            memcg_path = self.read(str(memcg_filter / "memcg_path"))
+            if not memcg_path.startswith("/") or not (self.cgroup / memcg_path.lstrip("/")).is_dir():
+                raise OSError(f"DAMON fake: memcg_path {memcg_path!r} is not an existing cgroup")
+
     def write(self, path: str, value: object) -> None:
         target = Path(path)
         if not target.is_file():
             raise FileNotFoundError(path)
         text = f"{value}\n"
         prior = target.read_text()
-        target.write_text(text)
         try:
             relative = target.relative_to(self.kdamonds)
         except ValueError:
+            relative = ()
+        parts = relative.parts if relative else ()
+        if len(parts) == 2 and parts[1] == "state":
+            state = prior.strip()
+            if value == "on":
+                if state != "off":
+                    raise OSError("DAMON fake: refusing to start a running kdamond")
+                self._validate_configuration(target.parent)
+            elif value == "commit":
+                if state != "on":
+                    raise OSError("DAMON fake: commit requires a running kdamond")
+                self._validate_configuration(target.parent)
+            elif value in ("update_schemes_stats", "update_schemes_tried_regions", "clear_schemes_tried_regions"):
+                if state != "on":
+                    raise OSError(f"DAMON fake: {value} requires a running kdamond")
+        target.write_text(text)
+        if not relative:
             return
-        parts = relative.parts
         if parts == ("nr_kdamonds",):
             count = int(value)
             for child in self._numbered_children(self.kdamonds):

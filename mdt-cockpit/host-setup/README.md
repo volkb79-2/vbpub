@@ -1312,6 +1312,7 @@ refuses or exits before the post-run block, do not continue: finish `accept-rest
    SHA=<same-full-40-character-commit-sha>
    CK="/root/vbpub-accept-${SHA:0:12}"
    K="$CK/mdt-cockpit/host-setup/tools/accept"
+   KEY=/root/.ssh/mdt-accept-loopback_ed25519
    PATH=/opt/mdt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
    [ -f "$K/accept-hotset.py" ] || { echo "archived accept-hotset.py is missing from $K" >&2; exit 1; }
    PYTHON=$(command -v python3 2>/dev/null || true)
@@ -1361,8 +1362,9 @@ refuses or exits before the post-run block, do not continue: finish `accept-rest
    [ -n "$LOCAL_BOOT" ] && [ "$REMOTE_BOOT" = "$LOCAL_BOOT" ] || { echo "loopback SSH did not return this host's boot_id" >&2; exit 1; }
    UNITS='docker.service=system.slice/docker.service ssh.service=system.slice/ssh.service containerd.service=system.slice/containerd.service systemd-journald.service=system.slice/systemd-journald.service mdt-psi-guard.service=system.slice/mdt-psi-guard.service cgprofiled.service=cgprofile.slice/cgprofiled.service user.slice=user.slice dev-interactive.slice=dev.slice/dev-interactive.slice'
    "$PYTHON" "$K/accept-hotset.py" preflight --evidence /root/accept-preflight --units "$UNITS" 2>&1 || { echo "accept-kit read-only preflight refused; no acceptance run was started" >&2; exit 1; }
-   IMAGE_ID=$(docker image inspect tester-unified:local --format '{{.Id}}' 2>&1 || true)
-   [ -n "$IMAGE_ID" ] || { echo "tester-unified:local is unavailable" >&2; exit 1; }
+   IMAGE_RC=0
+   IMAGE_ID=$(docker image inspect tester-unified:local --format '{{.Id}}' 2>&1) || IMAGE_RC=$?
+   [ "$IMAGE_RC" = 0 ] && [ -n "$IMAGE_ID" ] || { echo "tester-unified:local image inspect failed (rc $IMAGE_RC): $IMAGE_ID" >&2; exit 1; }
    ```
 
    The kit repeats its SSH, cgprofile, DAMON_STAT, DAMON sysfs presence/ownership, and DAMON capability checks read-only immediately before its first sysfs write.
@@ -1410,7 +1412,7 @@ refuses or exits before the post-run block, do not continue: finish `accept-rest
      --setenv=MDT_ACCEPT_SSH_TARGET=root@127.0.0.1 --setenv="MDT_ACCEPT_SSH_KEY=$KEY" \
      -p ExecStopPost="$K/accept-restore.sh --from-unit --lock-timeout 30 --evidence $EV" \
      "$K/accept-run.sh" --evidence "$EV" --steps 6 --step 128M --dwell 300
-   journalctl -u mdt-accept-1 -f || true
+   journalctl -u mdt-accept-1 --no-pager -n 100 || true
    ```
 
    `HOME`, `PATH`, and `/` are explicit for the noninteractive unit. Operator part during the run: one gate lane, the cockpit attached and idle, one SSH login.
@@ -1457,8 +1459,6 @@ refuses or exits before the post-run block, do not continue: finish `accept-rest
    [ -d "$EV" ] || { echo "set EV to the exact evidence directory printed by step 3" >&2; exit 1; }
    UNIT_STATE=$(systemctl is-active mdt-accept-1 2>&1 || true)
    echo "unit active state: $UNIT_STATE"
-   UNIT_RESULT=$(systemctl show mdt-accept-1 -p Result -p ExecMainCode -p ExecMainStatus 2>&1 || true)
-   printf '%s\n' "$UNIT_RESULT"
    journalctl -u mdt-accept-1 --no-pager 2>&1 | grep -E 'Main process exited|status=|Deactivated|Succeeded|Failed' | tail -n 5 || true
    EVAL_RC=0
    "$K/accept-eval.py" "$EV" >"$EV/eval.txt" 2>&1 || EVAL_RC=$?
@@ -1499,8 +1499,18 @@ refuses or exits before the post-run block, do not continue: finish `accept-rest
    AUTH_LINE="from=\"127.0.0.1,::1\",no-agent-forwarding,no-port-forwarding,no-X11-forwarding $KEY_TYPE $KEY_DATA mdt-accept-loopback"
    read -r HOST_TYPE HOST_DATA _ </etc/ssh/ssh_host_ed25519_key.pub || { echo "host Ed25519 key is unreadable" >&2; exit 1; }
    HOST_LINE="127.0.0.1 $HOST_TYPE $HOST_DATA"
-   grep -F -v -x -- "$AUTH_LINE" "$AUTH" >"$AUTH.tmp" 2>/dev/null || true
-   grep -F -v -x -- "$HOST_LINE" "$KNOWN" >"$KNOWN.tmp" 2>/dev/null || true
+   AUTH_GREP_RC=0
+   grep -F -v -x -- "$AUTH_LINE" "$AUTH" >"$AUTH.tmp" 2>/dev/null || AUTH_GREP_RC=$?
+   case "$AUTH_GREP_RC" in
+     0|1) ;;
+     *) rm -f "$AUTH.tmp" "$KNOWN.tmp"; echo "authorized_keys filter grep failed (rc $AUTH_GREP_RC); no cleanup file was installed" >&2; exit 1 ;;
+   esac
+   KNOWN_GREP_RC=0
+   grep -F -v -x -- "$HOST_LINE" "$KNOWN" >"$KNOWN.tmp" 2>/dev/null || KNOWN_GREP_RC=$?
+   case "$KNOWN_GREP_RC" in
+     0|1) ;;
+     *) rm -f "$AUTH.tmp" "$KNOWN.tmp"; echo "known_hosts filter grep failed (rc $KNOWN_GREP_RC); no cleanup file was installed" >&2; exit 1 ;;
+   esac
    chmod 600 "$AUTH.tmp" "$KNOWN.tmp"
    mv "$AUTH.tmp" "$AUTH"
    mv "$KNOWN.tmp" "$KNOWN"
