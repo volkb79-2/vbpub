@@ -662,3 +662,21 @@ snapshot without omitting changes.
 
 **Close when.** Each item has a test or a documented limit.
 
+
+## OPEN (DIV2-BL-26, 2026-11-27): swap-span extent recovery was never run on a host
+
+**Source.** WP-10 P3 swap span (main merge `5a4d33698`). This is a known issue.
+
+**Finding.** The refusal message and the README give a manual recovery:
+`losetup` over the named disk extent only, `wipefs` to list signatures,
+`wipefs -a` on the loop device, `losetup -d`, then resume. Nobody has run this
+sequence on a host. Treat it as unverified.
+
+**Do.** Run it on a leased disposable host against an extent that carries a
+leftover signature, then resume.
+
+**Acceptance idea.** The signature is gone, the partition table is unchanged and
+the resumed install passes the extent probe.
+
+**Close when.** Host evidence records the run, or the message and the README are
+corrected to what a host run showed.
