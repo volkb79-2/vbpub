@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,16 +11,22 @@ use hostobs_probe::live::ProbeBackend;
 use hostobs_probe::sampler::{Published, Sampler, SamplerConfig, Tick};
 use hostobs_proto::dict::Entry;
 use hostobs_proto::envelope::{check_end, check_rep};
+use hostobs_proto::event::{decode_event_frame, EventPayload};
 use hostobs_proto::frame::{decode_block, Block, FrameType};
-use hostobs_serve::backend::{Backend, BackendError, Identity};
-use hostobs_serve::conn::Peer;
+use hostobs_serve::backend::{
+    AnnotateArgs, AnnotateCtxKey, AnnotateKind, AnnotateOutcome, AnnotateRefusal, Backend,
+    BackendError, Identity,
+};
+use hostobs_serve::conn::{CgroupKey as PeerCgroupKey, Peer};
 use hostobs_serve::hub::ConnId;
 use hostobs_serve::limits::Level;
 use hostobs_serve::selection::{Sel, Selection};
 use hostobs_serve::server::{Accept, Server, ServerLimits};
 use hostobs_store::annotate::Annotator;
+use hostobs_store::events::MAX_OPEN_SPANS_PER_ISSUER;
 use hostobs_store::fsio::testdir::TempDir;
-use hostobs_store::store::{Store, StoreConfig};
+use hostobs_store::segment::scan_bytes;
+use hostobs_store::store::{Store, StoreConfig, StoreDirs};
 use hostobs_store::tmpfs::MountTable;
 
 const WALL: i64 = 1_700_000_000_000_000_000;
@@ -649,4 +656,311 @@ fn direct_backend_unavailable_is_distinct_from_a_nonexistent_path() {
     let (_, _, tick) = first_tick();
     published.store(tick);
     assert!(backend.begin_turn(2));
+}
+
+// ---- annotate: the probe's mapping from the checked arguments to stored event/1 records ---
+
+const STARTED: u64 = 1_000_000;
+
+fn annotating_backend(temp: &TempDir, annotator: Annotator) -> ProbeBackend {
+    ProbeBackend::new(
+        identity(),
+        Arc::new(Published::new(STARTED, WALL)),
+        fixture_store(temp),
+        annotator,
+        || 0,
+    )
+}
+
+fn emitter() -> Peer {
+    Peer {
+        uid: 1000,
+        pid: Some(7),
+        comm: Some("emitter".into()),
+        cgroup: Some(PeerCgroupKey { dev: 3, inode: 9 }),
+    }
+}
+
+fn annotation(kind: AnnotateKind, key: &str) -> AnnotateArgs {
+    AnnotateArgs {
+        kind,
+        name: "lane".into(),
+        key: Some(key.into()),
+        ctx: BTreeMap::new(),
+        outcome: None,
+        code: None,
+        attrs: BTreeMap::new(),
+        idempotency: None,
+    }
+}
+
+fn ending(key: &str) -> AnnotateArgs {
+    let mut args = annotation(AnnotateKind::End, key);
+    args.outcome = Some(AnnotateOutcome::Ok);
+    args
+}
+
+/// Every event record on disk, in server-time order.
+fn stored_events(temp: &TempDir) -> Vec<EventPayload> {
+    let events_dir = StoreDirs::under(temp.path()).events;
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&events_dir).expect("events directory") {
+        let entry = entry.expect("directory entry");
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("events-") {
+            continue;
+        }
+        let bytes = std::fs::read(entry.path()).expect("segment bytes");
+        let scan = scan_bytes(&name, &bytes, 4096).expect("events segment");
+        for record in scan.records {
+            out.push(decode_event_frame(&record.payload).expect("event/1 frame"));
+        }
+    }
+    out.sort_by_key(|event| (event.t_mono_ns, event.span));
+    out
+}
+
+fn mono(ns: u64) -> i64 {
+    i64::try_from(ns).expect("small test time")
+}
+
+#[test]
+fn annotate_stores_the_checked_fields_with_peer_facts_and_server_time() {
+    let temp = TempDir::new("live-backend");
+    let mut backend = annotating_backend(&temp, fixture_annotator());
+    let now = STARTED + 5_000;
+    backend.begin_turn(now);
+    let mut begin = annotation(AnnotateKind::Begin, "k");
+    begin.ctx = BTreeMap::from([
+        (AnnotateCtxKey::Run, "r".into()),
+        (AnnotateCtxKey::Lane, "l".into()),
+        (AnnotateCtxKey::Candidate, "c".into()),
+        (AnnotateCtxKey::Txn, "t".into()),
+        (AnnotateCtxKey::Session, "s".into()),
+    ]);
+    begin.attrs = BTreeMap::from([("host".into(), "v".into())]);
+
+    let reply = backend
+        .annotate(ConnId(4), &emitter(), &begin)
+        .expect("begin");
+    assert_eq!((reply.t_mono_ns, reply.span), (now, Some(1)));
+
+    let events = stored_events(&temp);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!((event.kind, event.outcome, event.inferred), (1, 0, false));
+    assert_eq!((event.span, event.t_mono_ns), (1, mono(now)));
+    assert_eq!(
+        (event.uid, event.peer_pid, event.peer_dev, event.peer_inode),
+        (1000, 7, 3, 9)
+    );
+    assert_eq!(event.comm.as_deref(), Some("emitter"));
+    assert_eq!((event.name.as_str(), event.key.as_str()), ("lane", "k"));
+    let ctx: Vec<(u8, &str)> = event
+        .ctx
+        .iter()
+        .map(|entry| (entry.key, entry.value.as_str()))
+        .collect();
+    assert_eq!(ctx, [(0, "r"), (1, "l"), (2, "c"), (3, "t"), (4, "s")]);
+    let attrs: Vec<(&str, &str)> = event
+        .attrs
+        .iter()
+        .map(|entry| (entry.key.as_str(), entry.value.as_str()))
+        .collect();
+    assert_eq!(attrs, [("host", "v")]);
+}
+
+#[test]
+fn annotate_drops_peer_labels_that_event_1_cannot_carry() {
+    let temp = TempDir::new("live-backend");
+    let mut backend = annotating_backend(&temp, fixture_annotator());
+    let unusable = [
+        ("", 0, 9),
+        ("sixteen-bytes-xx", 3, 0),
+        ("two\nlines", 0, 0),
+        ("del\u{7f}", 0, 9),
+    ];
+    for (index, (comm, dev, inode)) in (0u64..).zip(unusable) {
+        backend.begin_turn(STARTED + 1_000 + index);
+        let peer = Peer {
+            uid: 1000,
+            pid: Some(0),
+            comm: Some(comm.into()),
+            cgroup: Some(PeerCgroupKey { dev, inode }),
+        };
+        backend
+            .annotate(ConnId(4), &peer, &annotation(AnnotateKind::Point, "p"))
+            .expect("an unusable label never refuses the event");
+    }
+
+    let events = stored_events(&temp);
+    assert_eq!(events.len(), 4);
+    for event in events {
+        assert_eq!(event.comm, None);
+        assert_eq!(
+            (event.peer_pid, event.peer_dev, event.peer_inode),
+            (0, 0, 0)
+        );
+        assert_eq!((event.kind, event.span), (3, 0));
+    }
+}
+
+#[test]
+fn every_end_outcome_and_its_code_reach_the_stored_record() {
+    let temp = TempDir::new("live-backend");
+    let mut backend = annotating_backend(&temp, fixture_annotator());
+    let outcomes = [
+        AnnotateOutcome::Ok,
+        AnnotateOutcome::Fail,
+        AnnotateOutcome::Error,
+        AnnotateOutcome::Skipped,
+        AnnotateOutcome::Cancelled,
+        AnnotateOutcome::Timeout,
+        AnnotateOutcome::Abandoned,
+    ];
+    for (index, outcome) in (0u64..).zip(outcomes) {
+        let key = format!("k{index}");
+        // Two minutes apart, so each pair also seals the previous events segment.
+        let now = STARTED + index * 120_000_000_000;
+        backend.begin_turn(now);
+        let begin = backend
+            .annotate(ConnId(4), &emitter(), &annotation(AnnotateKind::Begin, &key))
+            .expect("begin");
+        backend.begin_turn(now + 1_000);
+        let mut end = annotation(AnnotateKind::End, &key);
+        end.outcome = Some(outcome);
+        end.code = Some(format!("c{index}"));
+        let reply = backend
+            .annotate(ConnId(4), &emitter(), &end)
+            .expect("end");
+        assert_eq!(reply.span, begin.span);
+    }
+
+    let ends: Vec<(u8, bool, Option<String>)> = stored_events(&temp)
+        .into_iter()
+        .filter(|event| event.kind == 2)
+        .map(|event| (event.outcome, event.inferred, event.code))
+        .collect();
+    let expected: Vec<(u8, bool, Option<String>)> = (1u8..=7)
+        .map(|code| (code, false, Some(format!("c{}", code - 1))))
+        .collect();
+    assert_eq!(ends, expected);
+}
+
+#[test]
+fn a_repeated_idempotent_point_replies_as_before_and_is_stored_once() {
+    let temp = TempDir::new("live-backend");
+    let mut backend = annotating_backend(&temp, fixture_annotator());
+    let mut point = annotation(AnnotateKind::Point, "p");
+    point.idempotency = Some((ID_BOOT.into(), 5));
+
+    backend.begin_turn(STARTED + 1_000);
+    let first = backend
+        .annotate(ConnId(4), &emitter(), &point)
+        .expect("first point");
+    backend.begin_turn(STARTED + 2_000);
+    let again = backend
+        .annotate(ConnId(5), &emitter(), &point)
+        .expect("repeated point");
+
+    assert_eq!(again, first);
+    assert_eq!(first.t_mono_ns, STARTED + 1_000);
+    assert_eq!(stored_events(&temp).len(), 1);
+}
+
+#[test]
+fn closing_a_connection_ends_only_its_own_open_spans() {
+    let temp = TempDir::new("live-backend");
+    let mut backend = annotating_backend(&temp, fixture_annotator());
+    backend.begin_turn(STARTED + 1_000);
+    for (conn, key) in [(ConnId(4), "a"), (ConnId(5), "b")] {
+        backend
+            .annotate(conn, &emitter(), &annotation(AnnotateKind::Begin, key))
+            .expect("begin");
+    }
+
+    backend.begin_turn(STARTED + 2_000);
+    backend.connection_closed(ConnId(4));
+
+    let events = stored_events(&temp);
+    assert_eq!(events.len(), 3);
+    let end = &events[2];
+    assert_eq!((end.kind, end.outcome, end.inferred), (2, 7, true));
+    assert_eq!(
+        (end.span, end.key.as_str(), end.t_mono_ns),
+        (1, "a", mono(STARTED + 2_000))
+    );
+    assert_eq!(
+        backend.annotate(ConnId(4), &emitter(), &ending("a")),
+        Err(AnnotateRefusal::SpanUnknown)
+    );
+    let other = backend
+        .annotate(ConnId(5), &emitter(), &ending("b"))
+        .expect("the other connection keeps its span");
+    assert_eq!(other.span, Some(2));
+}
+
+#[test]
+fn a_turn_time_before_startup_refuses_appends_and_forgets_a_closed_connection() {
+    let temp = TempDir::new("live-backend");
+    let mut backend = annotating_backend(&temp, fixture_annotator());
+    backend.begin_turn(STARTED + 1_000);
+    backend
+        .annotate(
+            ConnId(4),
+            &emitter(),
+            &annotation(AnnotateKind::Begin, "a"),
+        )
+        .expect("begin");
+
+    backend.begin_turn(STARTED - 1);
+    assert_eq!(
+        backend.annotate(ConnId(5), &emitter(), &annotation(AnnotateKind::Point, "p")),
+        Err(AnnotateRefusal::Internal)
+    );
+    backend.connection_closed(ConnId(4));
+    assert_eq!(stored_events(&temp).len(), 1, "no inferred end has a time");
+
+    backend.begin_turn(STARTED + 2_000);
+    assert_eq!(
+        backend.annotate(ConnId(4), &emitter(), &ending("a")),
+        Err(AnnotateRefusal::SpanUnknown)
+    );
+}
+
+#[test]
+fn rate_and_span_limits_reach_the_caller_as_typed_refusals() {
+    let temp = TempDir::new("live-backend");
+    let one = Annotator::new(1, 1).expect("one token per second");
+    let mut backend = annotating_backend(&temp, one);
+    backend.begin_turn(STARTED + 1_000);
+    let point = annotation(AnnotateKind::Point, "p");
+    backend
+        .annotate(ConnId(4), &emitter(), &point)
+        .expect("the one token");
+    assert_eq!(
+        backend.annotate(ConnId(4), &emitter(), &point),
+        Err(AnnotateRefusal::RateLimited {
+            retry_after_ms: 1_000
+        })
+    );
+
+    let temp = TempDir::new("live-backend");
+    let roomy = Annotator::new(1_000, 1_024).expect("largest limits");
+    let mut backend = annotating_backend(&temp, roomy);
+    backend.begin_turn(STARTED + 1_000);
+    for index in 0..MAX_OPEN_SPANS_PER_ISSUER {
+        let begin = annotation(AnnotateKind::Begin, &format!("k{index}"));
+        backend
+            .annotate(ConnId(4), &emitter(), &begin)
+            .expect("under the span limit");
+    }
+    assert_eq!(
+        backend.annotate(
+            ConnId(4),
+            &emitter(),
+            &annotation(AnnotateKind::Begin, "over")
+        ),
+        Err(AnnotateRefusal::Budget)
+    );
 }
