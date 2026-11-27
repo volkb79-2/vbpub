@@ -1060,6 +1060,10 @@ def test_other_inspect_failure_after_mount_failure_refuses_without_fallback(
         [[1, ""], [1, "WARNING: unrelated CLI notice\nerror: no such object: {target}"]],
         [[1, ""], [124, "error: no such object: {target}"]],
         [[124, "error: no such object: {target}"]],
+        # The fake adds one newline, so this is an extra blank line.
+        [[1, ""], [1, "error: no such object: {target}\n"]],
+        # bash drops NUL bytes from a command substitution.
+        [[1, ""], [1, "error: no such object: {target}\0"]],
     ],
 )
 def test_inexact_absence_keeps_a_created_probe_for_exit_cleanup(
