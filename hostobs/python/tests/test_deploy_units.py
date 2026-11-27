@@ -104,6 +104,18 @@ class DeployUnits(unittest.TestCase):
             "2",
             f"{SERVICE}: [Service] RestartPreventExitStatus",
         )
+        for key, value in {
+            "RuntimeDirectory": "hostobs/tiers",
+            "RuntimeDirectoryMode": "0700",
+            "RuntimeDirectoryPreserve": "restart",
+            "StateDirectory": "hostobs/probe",
+            "StateDirectoryMode": "0700",
+        }.items():
+            self.assertEqual(
+                self.one(service, "Service", key, SERVICE),
+                value,
+                f"{SERVICE}: [Service] {key}",
+            )
         self.assertEqual(
             self.one(service, "Install", "WantedBy", SERVICE),
             "multi-user.target",
@@ -177,8 +189,9 @@ class DeployUnits(unittest.TestCase):
                     f"{path}: [{section}] {key}",
                 )
 
-    def test_tmpfiles_creates_the_socket_directories(self):
+    def test_tmpfiles_creates_runtime_and_socket_directories(self):
         expected = [("/run/hostobs", "0755", "root", "root", "-")]
+        expected.append(("/run/hostobs/tiers", "0700", "hostobs", "hostobs", "-"))
         expected.extend(
             (f"/run/hostobs/{level}", "0750", "root", f"hostobs-{level}", "-")
             for level in LEVELS
@@ -196,10 +209,15 @@ class DeployUnits(unittest.TestCase):
             len(set(directories)),
             f"{TMPFILES}: duplicate directory line",
         )
+        self.assertNotIn(
+            "/var/lib/hostobs/probe",
+            [directory[0] for directory in directories],
+            f"{TMPFILES}: StateDirectory owns durable probe storage",
+        )
 
     def test_config_has_exactly_the_probe_process_keys(self):
         self.assertEqual(
-            set(self.config), {"probe", "limits"}, f"{CONFIG}: root table keys"
+            set(self.config), {"probe", "limits", "store"}, f"{CONFIG}: root table keys"
         )
         self.assertEqual(
             set(self.config["probe"]),
@@ -222,6 +240,21 @@ class DeployUnits(unittest.TestCase):
         )
         self.assertEqual(
             self.config["limits"]["max_rows"], 1024, f"{CONFIG}: [limits] max_rows"
+        )
+        self.assertEqual(
+            set(self.config["store"]),
+            {"dir", "tmpfs_dir", "events_cap_bytes", "events_ring_bytes"},
+            f"{CONFIG}: [store] keys",
+        )
+        self.assertEqual(
+            self.config["store"],
+            {
+                "dir": "/var/lib/hostobs/probe",
+                "tmpfs_dir": "/run/hostobs/tiers",
+                "events_cap_bytes": 67_108_864,
+                "events_ring_bytes": 4_194_304,
+            },
+            f"{CONFIG}: [store] values",
         )
 
 

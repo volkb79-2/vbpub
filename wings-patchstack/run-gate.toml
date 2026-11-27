@@ -11,6 +11,13 @@ argv = [
 ]
 clean_tree = false
 budget = "30m"
+stall_timeout = "30m"
+# RG-320/H1: SILENT BY CONSTRUCTION. scripts/run-tests-in-gate.sh runs
+# `go build ./...` (:26-27), `go vet` (:28-39) and the pytest phase before them;
+# none of those prints a byte on success, and a cold build on a loaded host can
+# exceed 300 s. Declared EQUAL to this lane's budget, so a slow cold build cannot
+# be reported STALLED. No silence bound has been measured yet; RG-326 tracks a
+# real progress signal.
 
 [lanes.wings.resources]
 memory = "4g"
@@ -25,6 +32,11 @@ argv = [
 ]
 clean_tree = false
 budget = "60m"
+stall_timeout = "60m"
+# RG-320/H1: SILENT BY CONSTRUCTION. Same script shape as `wings` above plus
+# `go mod download` (:53-54) and the assay coverage run, whose candidate progress
+# is a FILE (.assay/progress-coverage.jsonl) this lane only prints after it ends.
+# Declared EQUAL to this lane's budget; no silence bound measured yet (RG-326).
 artifacts = [
   ".assay/coverage/verdict.json",
   ".assay/coverage/cover.out",

@@ -1,0 +1,14 @@
+# thrashguard's ignored build and lane outputs.
+#
+# The R1 lane writes `lcov.info` and `cov-summary.json` into the crate directory,
+# and Assay refuses to judge a tree its own command dirtied
+# (`NO_MEASUREMENT/DIRTY_TREE`): what it measured must stay the commit it judged.
+# The target directory is the shared gate cache in the image, but a local build
+# still writes here.
+/target/
+/lcov.info
+/cov-summary.json
+# The journal and the lane's own state, as hostobs ignores its own copies.
+/.assay/
+/.run-gate/
+/artifacts/

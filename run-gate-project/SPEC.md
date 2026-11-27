@@ -134,6 +134,17 @@ environment only. `[profile] socket_path` is refused by name; there is no
 file-read, built-in-path, or legacy fallback. Observer directory binds use
 identity paths, and Assay receives `ASSAY_RESOURCE_OBSERVER_SOCKET` at the
 same endpoint.
+Rev 25 (Run-Gate 25.9.x, RG-320 — P1 of
+`docs/design/no-time-budgets/DESIGN.md`): EVERY watchable lane kind is armed
+with a stall bound (new `R-40i`), including the exec and bare-host command
+runners that had no signal at all (`R-40f` extended to the output stream); no
+cap is removed and `budget = "unbounded"` is still refused (that is P2). The
+bound, its SOURCE (`declared`/`auto`/`auto-derived`) and the signal it judges
+are disclosed on the line and recorded as `stall_bound`; command lanes use
+`auto` for the 300 s default and assay lanes use `auto-derived` for the RG-7
+rule. A sequence lane declares none of its
+own and its members carry the watches. RG-58's bare-host "inert" WARN and
+`doctor` 2d are retired because the fact they asserted became false.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -444,8 +455,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   lane's liveness signal, never total elapsed time; legal on BOTH `assay`
   and `command` lanes since RG-41 (rev 36 dropped the earlier assay-only
   restriction — a command lane's liveness signal is its own log stream,
-  `R-40f`), meaningless on host/exec lanes, which start nothing to watch;
-  `R-40c`), `memory` (`\d+[bkmg]?`, docker `--memory` — superseded by
+  `R-40f`), and since RG-320 (`R-40i`) a lane
+  that declares NOTHING is still bounded (`DEFAULT_STALL_BOUND_SECONDS`
+  300 s for command lanes, source `auto`); an assay lane keeps RG-7's derived
+  bound with source `auto-derived` and its rule recorded. The source and signal
+  are disclosed and recorded as `stall_bound`; a declared bound has source
+  `declared` on either watched kind. The signal depends on the lane kind
+  (assay → progress file, container command → log stream, exec/bare-host
+  command → its own output stream, sequence → none, its members carry
+  theirs); `R-40c`), `memory` (`\d+[bkmg]?`, docker `--memory` — superseded by
   `resources.memory`, declaring both is refused), `resources` (`R-29`: a
   table — `memory`, `memory_swap`, `cpu_weight`, `io_weight`, `shared`,
   `cpus` (RG-48, rev 10)), `profile` (RG-55, rev 10: `false` to disable
@@ -1633,10 +1651,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   otherwise) — the WORKAROUND `R-29`'s own private-cgroup-namespace WARN
   points to, since a private namespace (the devcontainer/CI default)
   cannot read that truth directly but the daemon, outside that namespace,
-  can. RG-58's bare-host `stall_timeout` load-time warning (`_validate_
-  lane`) gets a matching per-lane `[WARN]` here too, from the SAME shared
-  `bare_host_stall_timeout_inert_reason()` both sites use so the two
-  surfaces cannot drift apart.
+  can. RG-58's bare-host `stall_timeout` load-time warning and its matching
+  per-lane `[WARN]` here are RETIRED by RG-320, not reworded: the claim they
+  made ("no watch of any kind exists on that runner") became false when the
+  bare-host runner got a real `StreamWatch` over its own output stream, and a
+  check whose message outlives its code is this project's most expensive
+  defect class. `host_mode_stall_timeout_inert_reason()` is kept only as an
+  unused compatibility helper whose docstring says so; no in-tree caller uses
+  it and neither surface prints anything for a watched lane any more.
 
 - `R-31` **Wheel-only SemVer distribution (RG-14, superseded by RG-94):**
   the installed wheel is the only supported distribution and the
@@ -2377,9 +2399,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     file, so the key could never do anything); RG-41 gave command lanes
     their OWN liveness signal (the arrival time of their log lines,
     `LogStreamWatch`, `R-40f`), which is what makes the key meaningful
-    there now. Meaningless — accepted, but inert — on a host/exec lane,
-    which runs inline (host) or execs into a runner this tool started
-    nothing of its own to watch (exec).
+    there now. RG-320 (P1) then closed the two kinds that were still
+    accepted-but-inert: an `exec` or `bare-host` command lane runs a child
+    this tool STARTED, so its own stdout IS a signal (`StreamWatch` over
+    `OutputTee`'s chunk arrivals — `R-40f`), and a lane declaring no
+    `stall_timeout` at all is armed with `DEFAULT_STALL_BOUND_SECONDS`
+    (300 s, the operator's answer to the design's open question Q4) rather
+    than left unwatched. The arcity is gone, so there is no row left to
+    warn about: a SEQUENCE lane has no signal of its own by construction
+    and does not reach this rule — its members carry the watches (`R-40i`).
     - **Where the silence is measured FROM: the FILE.** Real movement
       restarts the clock; the watch's FIRST observation is not movement —
       there is no earlier event for it to have moved from; it is the
@@ -2441,6 +2469,46 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     judging the lane — "its progress file" or "its own log output" — so an
     operator never has to guess which of the two mechanisms a given
     `stall_timeout` bounds.
+    - **RG-320 extended `R-40f` to the OUTPUT stream of an exec/bare-host
+      command lane.** Neither of those runners has a container log to tail;
+      both start a child whose stdout this tool already streams, so the
+      ARRIVAL TIME of each stdout chunk is their liveness signal
+      (`StreamWatch` over `OutputTee`). Same rule as above: silence, never
+      total elapsed time, and the same PSI pause on an auto bound (`R-40h`'s
+      rule, extended to it). The blind spot is named rather than hidden: a
+      child that BLOCKS on its own buffering (a fully buffered writer that
+      never flushes) is silent for its whole run, which is a stall by this
+      rule's own definition — the lane declaring an explicit `stall_timeout`
+      sized for that command is the escape, and it is disclosed as such in
+      the authoring guide.
+  - **`R-40i` (RG-320, P1 of the no-time-budgets design) EVERY watched lane
+    is bounded, and the bound names its SOURCE.** A command lane that declares
+    no `stall_timeout` is armed with `DEFAULT_STALL_BOUND_SECONDS` (300 s — the
+    operator's answer to the design's question Q4); its disclosure line, stall
+    message and run record say `source: auto` (`run-gate: stall bound 300s
+    (source: auto)`). An assay lane without a declared value keeps RG-7's
+    derived rule (`max(300s, 3x cadence)`, 600 s post-command); its disclosure
+    and run record say `source: auto-derived` and include the rule, rather than
+    claiming the command-lane default. A declared number on either watched
+    kind says `source: declared` and is NEVER paused by host pressure (it is
+    the operator's own number). `stall_bound_facts(lane)` is the single
+    derivation all three read, so the number, the source and the signal cannot
+    disagree. A SEQUENCE lane has no runner-level signal and does not invoke
+    these runner disclosure or record helpers; its schema rejects runner keys
+    such as `stall_timeout`, while each member carries its own watch. Nothing
+    in this rule removes a cap: `budget`
+    stays exactly as binding as it was (`R-40e`), and `budget = "unbounded"`
+    is P2's, not this one. **One limit is stated here rather than buried:**
+    the 300 s floor is NOT sound for a mutation shard whose SINGLE candidate
+    can legitimately run longer than that while writing no progress record —
+    Assay records a candidate once it finishes, so a slow candidate looks
+    exactly like a wedge until it ends. Until Assay emits a per-candidate
+    heartbeat (or an `expect_next_event_within_s` that covers one candidate),
+    such a shard can be reported STALLED by a bound nobody measured it against.
+    That is design package **P4** (`docs/design/no-time-budgets/DESIGN.md`
+    §7.1 and its P4 row), which arms a per-candidate no-progress watch; this
+    rule does not pre-empt it, and assay-side work is tracked there, not
+    here.
   - **`R-40g` Assay progress is scoped to the latest run header (RG-90,
     rev 59).** Assay appends a `run` event at the start of each invocation;
     Run-Gate considers candidate events only after the latest valid `run`

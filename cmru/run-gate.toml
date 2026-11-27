@@ -88,6 +88,11 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py"]
 budget = "10m"
+stall_timeout = "10m"
+# RG-320/H1: SILENT BY CONSTRUCTION. installed_wheel_smoke.py captures the
+# wheel build, venv install and render commands, then prints only after all
+# steps finish. No silence bound has been measured yet; RG-326 tracks a real
+# progress signal.
 
 [lanes.installed-wheel.resources]
 pids = 8192
@@ -103,6 +108,11 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py --require-live-snapshot"]
 budget = "10m"
+stall_timeout = "10m"
+# RG-320/H1: SILENT BY CONSTRUCTION. installed_wheel_smoke.py captures the
+# wheel build, venv install and render commands, then prints only after all
+# steps finish. No silence bound has been measured yet; RG-326 tracks a real
+# progress signal.
 
 [lanes.installed-wheel-live.resources]
 pids = 8192
@@ -131,6 +141,9 @@ exec git update-ref "refs/cmru-gate/${branch#cmru-gate-}/ref-probe" HEAD
 ''',
 ]
 budget = "5m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the local ref-probe git steps;
+# no <=300s output cadence is measured; see RG-326.
+stall_timeout = "5m"
 
 [lanes.ref-probe.resources]
 pids = 8192
@@ -158,6 +171,9 @@ exec /opt/tester-venv/bin/python -m pytest \
 ''',
 ]
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the release-preconditions
+# pytest selection runs; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "10m"
 
 [lanes.release-preconditions.resources]
 pids = 8192
@@ -195,6 +211,9 @@ exec nice -n 10 /opt/tester-venv/bin/python -m pytest -q --cli-case-partial "$@"
   "--",
 ]
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the quiet editable Assay
+# install and survivor-regression pytest; no output bound is measured; see RG-326.
+stall_timeout = "10m"
 
 # Dedicated ephemeral environment for CMRU's mutation lane. Project environment
 # tables replace central ones as a whole, so this repeats the tester image and
@@ -258,6 +277,9 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
 ''',
 ]
 budget = "7h"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during mutation_campaign.py; it writes
+# candidate progress to a file, not this command's stdout; no bound is measured.
+stall_timeout = "7h"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.mutation.resources]
@@ -298,6 +320,9 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {work
   "--",
 ]
 budget = "7h"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during mutation_campaign.py; it writes
+# candidate progress to a file, not this command's stdout; no bound is measured.
+stall_timeout = "7h"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.r2.resources]
@@ -336,6 +361,14 @@ clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The conjunction includes the Assay R0/R1/R3 lane (budget: [lanes.assay])
 # plus the 7h tag-based R2 mutation.
 budget = "14h"
+stall_timeout = "14h"
+# RG-320/H1: SILENT BY CONSTRUCTION across a nested R2 assay member. This
+# wrapper relays its members' stdout, but an assay mutation candidate writes
+# nothing but a FILE record (assay/src/assay/mutation.py ProgressStream; run-gate
+# prints `progress <lane>` only when that file MOVES), so one candidate running
+# longer than 300 s leaves this lane's stdout empty for that whole window
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 can never fail a
+# wrapper main would let finish. No silence bound has been measured yet.
 
 # The release gate under the standing release rule (KI-79/KI-159; operator
 # decision 2026-11-18): R0/R1 (full line and branch coverage), R3 (canary) and
@@ -353,3 +386,8 @@ argv = [
 ]
 clean_tree = false
 budget = "3h"
+# RG-320/H1: SILENT BY CONSTRUCTION. run_release_gate.py relays the nested
+# installed-wheel-live lane, whose wheel build, venv install and offline render
+# are captured before the producer prints. No silence bound is measured for
+# that step; RG-326 tracks a real progress signal.
+stall_timeout = "3h"
