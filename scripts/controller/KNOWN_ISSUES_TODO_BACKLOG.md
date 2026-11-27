@@ -74,6 +74,7 @@ together.
 | CTL-63 | `ctl-hygiene.sh` B1 is blind to 6 of the 21 tracked backlogs: `**State:** DONE` files and files without any status line read as all-open, and the `unparsed` report fires only at 0 entries | Nice-to-have | OPEN 2026-11-24 |
 | CTL-64 | `ctl-hygiene.sh` reads the backlogs (B1) of the checkout that holds the script, the state of the main checkout: a lagging worktree reports stale B1 numbers next to fresh state numbers | Nice-to-have | OPEN 2026-11-24 |
 | CTL-65 | The pi PID namespace guard's same-user-writable assets can be edited by an implementer, changing how later commands launch | Known limit | BY DESIGN 2026-11-27 (H2 ruling) |
+| CTL-67 | P-plat-26d review follow-ups: guard test gaps, no live isolation coverage, a process-group kill in a test, a missing mutant file counting as killed | Nice-to-have | OPEN |
 
 ---
 
@@ -1845,3 +1846,14 @@ Source: P-plat-26d final safety review H2; controller and main ruling, 2026-11-2
 **Status:** OPEN (filed 2026-11-27 by vbpub-core on main's request). Do not fix with this entry.
 
 Run rgw-r2-20261127T021120-v1001 (cmru `r2`, shard 1) ended with `admission: weight=2048MiB slots=1/8 slice_oom_kill_delta=-1`. A counter delta cannot be negative. Read from `scripts/controller/remote-gate.sh`: `oomd` starts at `-1` and is replaced only when both readings of the `dev-gates.slice` `oom_kill` counter are non-negative integers; `oom_kill()` prints `-1` when the identity check or the probe fails. So `-1` is most likely the "unreadable" sentinel (not established for this run: the two readings are not logged). It is also indistinguishable from a real difference of -1, which a recreated slice could produce. Wanted: print an explicit `unknown` with the reason (which reading failed), and report a decreased counter by name instead of subtracting.
+
+## CTL-67 — P-plat-26d review follow-ups: guard test gaps and the missing mutant file
+
+**Status:** OPEN (filed 2026-11-27 by vbpub-platform on main's request).
+
+From the static delta review of P-plat-26d:
+
+- No mutant covers the Bash startup-hook stripping in `pi-pidns-bash` or `sanitize_bash_child_environment`, and the continuation leg of that check in `tests/test-pi-impl.sh` ignores the launch status and counts no invocations, so it can pass without a launch.
+- The live PID namespace check is skipped in the gate image (no `/usr/bin/bwrap`): add bwrap to the image, or record one `PI_PIDNS_TEST_FOCUS=live` run in a capped container that has it. `CHANGES.md` names only the "gate forbids user namespaces" skip.
+- `tests/test-wrappers.sh` still sends `kill -TERM` to a process group, against the exact-recorded-PID rule.
+- `tests/test-mutations.sh` must report ERROR, not KILLED, when any mutant's target file is missing. Today only the three pi override variables are covered.
