@@ -30,6 +30,9 @@ def run_probe(
     cgroup_values: dict[str, str | None] | None = None,
     cgroup_transport_exit: int | None = None,
     memory_reserve_bytes: int | None = None,
+    memory_stat: str | None = None,
+    memory_stat_read_error: bool = False,
+    memory_stat_mount_failure: bool = False,
     probe_parent: str | None = "dev-interactive.slice",
     container_parent: str = "dev-interactive.slice",
     remote_mnt_namespace: str | None = None,
@@ -91,7 +94,21 @@ if args and args[0] == "wait":
     print(os.environ["SYSTEMCTL_EXIT"])
     raise SystemExit(int(os.environ.get("CGROUP_TRANSPORT_EXIT", "0")))
 if args and args[0] == "logs":
-    print(os.environ["SYSTEMD_OUTPUT"])
+    output = os.environ["SYSTEMD_OUTPUT"]
+    try:
+        probe = json.loads(Path(os.environ["UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        probe = {}
+    if probe.get("memory_stat_mount"):
+        output += "\nASSAY_MEMORY_STAT_BEGIN\n"
+        if os.environ["MEMORY_STAT_READ_ERROR"] == "1":
+            output += "ASSAY_MEMORY_STAT_READ_ERROR\n"
+        else:
+            output += os.environ["MEMORY_STAT_DATA"]
+            if not output.endswith("\n"):
+                output += "\n"
+        output += "ASSAY_MEMORY_STAT_END"
+    print(output)
     raise SystemExit(0)
 if args and args[0] == "rm":
     raise SystemExit(0)
@@ -103,11 +120,19 @@ if is_unit_probe:
     name = name_arg.split("=", 1)[1]
     owner = label_arg.split("=", 2)[2]
     mode = os.environ["UNIT_PROBE_RUN_MODE"]
+    memory_stat_mounts = [
+        arg for arg in args
+        if arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+    ]
     probe = {"id": "f" * 64, "name": name, "owner": owner}
+    if len(memory_stat_mounts) == 1:
+        probe["memory_stat_mount"] = memory_stat_mounts[0]
     if mode == "collision":
         probe.update({"id": "a" * 64, "owner": "another-container"})
     Path(os.environ["UNIT_PROBE_STATE"]).write_text(json.dumps(probe), encoding="utf-8")
-    if mode in ("collision", "created-failure"):
+    if mode in ("collision", "created-failure") or (
+        memory_stat_mounts and os.environ["MEMORY_STAT_MOUNT_FAILURE"] == "1"
+    ):
         raise SystemExit(125)
     print(probe["id"])
     raise SystemExit(0)
@@ -171,6 +196,9 @@ raise SystemExit(2)
         "CALL_ORDER": str(call_order),
         "UNIT_PROBE_STATE": str(tmp_path / "unit-probe-state.json"),
         "UNIT_PROBE_RUN_MODE": unit_probe_run_mode,
+        "MEMORY_STAT_DATA": memory_stat or "",
+        "MEMORY_STAT_READ_ERROR": "1" if memory_stat_read_error else "0",
+        "MEMORY_STAT_MOUNT_FAILURE": "1" if memory_stat_mount_failure else "0",
         "HOSTNAME": "assay-probe-test",
         "HOST_CONFIGURED_HOSTNAME": KERNEL_HOSTNAME,
         "HOST_CGROUP_PARENT": container_parent,
@@ -610,6 +638,26 @@ def test_b105_requires_finite_point_in_time_ram_headroom(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert "RAM admission OK" in proc.stderr
     assert proc.stdout == "dev-gates.slice\n"
+
+
+def test_b105_admits_when_reclaimable_cache_makes_reservation_fit(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "7516192768"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "raw_headroom=1073741824" in proc.stderr
+    assert "adjusted_headroom=3221225472" in proc.stderr
 
 
 def test_b105_refuses_insufficient_or_unknown_ram_headroom(tmp_path: Path):
