@@ -20,11 +20,13 @@ The command is installed at `.venv/bin/hostobs-mark` and is available as
 `hostobs-mark` while the environment is active. Its target is
 `hostobs_client.mark:main`.
 
-**Current server and deployment status:** B5 serves `annotate` at observer.
-`deploy/` installs the observer socket
+**Current server and deployment status:** The probe serves `annotate` on the
+observer socket. `deploy/` installs the observer socket
 (`hostobs-observer.socket`), and connecting to it needs membership in the
-`hostobs-observer` group. When the socket is unavailable, `hostobs-mark` prints
-a notice and exits 0; adding `--require` makes it exit 1.
+`hostobs-observer` group. `hostobs-mark` exits 0 once the probe accepts the
+annotation. When the annotation cannot be written (variable unset, socket
+unreachable, error reply or bad reply), `hostobs-mark` prints a notice and exits
+0; adding `--require` makes it exit 1.
 
 Set the socket path and pass an annotation name accepted by WIRE §4.12:
 
@@ -540,9 +542,8 @@ follow them.
    observer features are built in hostobs.
 2. **A span is one JSON line on the observer socket.** The line is a JSON-mode request
    (WIRE §8.1, §8.2) with verb `annotate` and the args of WIRE §4.12 (typed span fields in plan v4
-   §C.4). WIRE §4.12 fixes its args and result, and B5 serves `annotate` at observer. The old
-   status sentence “No hostobs probe currently serves `annotate`” and placeholder “Once the probe
-   serves `annotate`” are superseded by this implementation. The future control client sends
+   §C.4). WIRE §4.12 fixes its args and result, and the probe serves `annotate` on the observer
+   socket. The future control client sends
    the same line to act on the control socket. The intended integration keeps the judges, assay and
    run-gate dependency-free; they write that line themselves. `hostobs_client` (WIRE §7) and
    `hostobs-mark` (WIRE §8.5) serve importers such as cmru, iobench and `cgprofile mark`:
