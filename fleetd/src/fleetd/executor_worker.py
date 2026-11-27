@@ -70,6 +70,10 @@ _RUN_GATE_VERDICT_CODES = {
     "NOT_RUN": 3,
     "BUDGET_EXCEEDED": 4,
 }
+_HELPER_BOOTSTRAP = (
+    "import sys; root = sys.argv.pop(1); sys.path.insert(0, root); "
+    "from fleetd.executor_worker import main; raise SystemExit(main())"
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,8 @@ class CommandResult:
 
 class RunnerProcess(Protocol):
     pid: int
+
+    def poll(self) -> int | None: ...
 
     def wait(self) -> int: ...
 
@@ -231,7 +237,9 @@ class DockerClient:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker returned an invalid image inspection")
         return value[0]
 
-    def check_passwd(self, image: str, username_or_uid: str, job_id: str) -> None:
+    def check_passwd(
+        self, image: str, username_or_uid: str, job_id: str, *, expected_gid: int | None = None,
+    ) -> None:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "-", job_id)[:100]
         result = self.command(
             "run", "--rm", "--pull=never", "--network", "none", "--name", f"fleetd-uid-{safe}",
@@ -242,12 +250,26 @@ class DockerClient:
                 ExitCode.PREREQUISITE_MISSING,
                 f"image {image!r} has no passwd entry for lane user {username_or_uid!r}",
             )
+        if expected_gid is not None:
+            try:
+                fields = result.stdout.decode("utf-8").strip().split(":")
+                uid, gid = int(fields[2]), int(fields[3])
+            except (UnicodeDecodeError, IndexError, ValueError) as exc:
+                raise AdmissionError(
+                    ExitCode.PREREQUISITE_MISSING,
+                    f"image {image!r} returned an unreadable passwd entry for uid {username_or_uid!r}",
+                ) from exc
+            if uid != int(username_or_uid) or gid != expected_gid:
+                raise AdmissionError(
+                    ExitCode.PREREQUISITE_MISSING,
+                    f"image {image!r} passwd identity for uid {username_or_uid!r} differs from runner uid/gid",
+                )
 
     def inspect(self, target: str) -> Mapping[str, object] | None:
         result = self.command("inspect", target)
         if result.returncode != 0:
             detail = result.stderr.decode("utf-8", "replace").strip()
-            if detail == f"Error: No such object: {target}":
+            if _docker_missing_object(detail, target):
                 return None
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect {target!r} failed: {detail}")
         try:
@@ -265,9 +287,44 @@ class DockerClient:
         if result.returncode == 0:
             return
         detail = result.stderr.decode("utf-8", "replace").strip()
-        if detail == f"Error: No such container: {container_id}":
+        if _docker_missing_object(detail, container_id, container=True):
             return
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker could not remove stopped container {container_id}: {detail}")
+
+    def job_containers(self, job_id: str) -> tuple[str, ...]:
+        if _CONTAINER_NAME_RE.fullmatch(job_id) is None:
+            raise AdmissionError(ExitCode.REFUSAL, "Docker job-container query requires a safe job id")
+        result = self.command(
+            "ps", "-a", "--no-trunc", "--quiet", "--filter", f"label=run-gate.job={job_id}",
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", "replace").strip()
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker job-container query failed: {detail}")
+        try:
+            lines = result.stdout.decode("ascii").splitlines()
+        except UnicodeDecodeError as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker job-container query returned non-ASCII ids") from exc
+        ids = tuple(line.strip() for line in lines if line.strip())
+        if any(_CONTAINER_ID_RE.fullmatch(container_id) is None for container_id in ids):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker job-container query returned a non-full id")
+        if len(ids) != len(set(ids)):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker job-container query returned duplicate ids")
+        return ids
+
+
+def _docker_missing_object(detail: str, target: str, *, container: bool = False) -> bool:
+    normalized = " ".join(detail.split()).casefold()
+    normalized_target = target.casefold()
+    accepted = {
+        f"error: no such object: {normalized_target}",
+        f"error response from daemon: no such object: {normalized_target}",
+    }
+    if container:
+        accepted.update({
+            f"error: no such container: {normalized_target}",
+            f"error response from daemon: no such container: {normalized_target}",
+        })
+    return normalized in accepted
 
 
 def _read_regular(path: Path, *, limit: int = 65536) -> bytes:
@@ -421,39 +478,69 @@ def _archive_artifacts(root_fd: int, output_fd: int) -> Mapping[str, object]:
     return {"files": sum(not is_directory for _path, is_directory, _size in entries)}
 
 
-def _archive_store(root_fd: int, output_fd: int, relative: str) -> Mapping[str, object]:
-    if (
-        _STORE_PATH_RE.fullmatch(relative) is None
-        or any(part in {".", "..", ".git"} for part in relative.split("/"))
-    ):
-        return {"status": "failed", "reason": "invalid-path", "log": f"STORE-COLLECT-FAILED {relative} invalid-path"}
-    try:
-        entries, special = _tree_entries(root_fd, relative, reject_special=True)
-    except NotADirectoryError:
-        return {"status": "failed", "reason": "not-a-directory",
-                "log": f"STORE-COLLECT-FAILED {relative} not-a-directory"}
-    except OSError as exc:
-        reason = "symlink" if exc.errno == errno.ELOOP else "unreadable"
-        return {"status": "failed", "reason": reason,
-                "log": f"STORE-COLLECT-FAILED {relative} {reason}"}
-    if special == "absent":
-        return {"status": "absent", "log": f"STORE-ABSENT {relative}"}
-    if special:
-        return {"status": "failed", "reason": special,
-                "log": f"STORE-COLLECT-FAILED {relative} {special}"}
-    total = sum(size for _path, is_directory, size in entries if not is_directory)
-    if total > _STORE_MAX_BYTES:
-        return {"status": "too-large", "bytes": total,
-                "log": f"STORE-TOO-LARGE {relative} {total}"}
+def _archive_store(root_fd: int, output_fd: int, relatives: Sequence[str]) -> Mapping[str, object]:
+    entries: list[tuple[str, bool, int]] = []
+    stores: list[dict[str, object]] = []
+    logs: list[str] = []
+    total = 0
+    for relative in relatives:
+        if (
+            _STORE_PATH_RE.fullmatch(relative) is None
+            or any(part in {".", "..", ".git"} for part in relative.split("/"))
+        ):
+            status, reason = "failed", "invalid-path"
+            found: list[tuple[str, bool, int]] = []
+        else:
+            try:
+                found, special = _tree_entries(root_fd, relative, reject_special=True)
+            except NotADirectoryError:
+                found, special = [], "not-a-directory"
+            except OSError as exc:
+                found, special = [], "symlink" if exc.errno == errno.ELOOP else "unreadable"
+            if special == "absent":
+                status, reason = "absent", None
+            elif special:
+                status, reason = "failed", special
+            else:
+                size = sum(item_size for _path, is_directory, item_size in found if not is_directory)
+                if size > _STORE_MAX_BYTES or total + size > _STORE_MAX_BYTES:
+                    status, reason = "too-large", str(size)
+                    found = []
+                else:
+                    status, reason = "collected", None
+                    total += size
+        stores.append({"path": relative, "status": status, "reason": reason})
+        if status == "collected":
+            entries.extend(found)
+            logs.append(f"STORE-COLLECTED {relative}")
+        elif status == "absent":
+            logs.append(f"STORE-ABSENT {relative}")
+        else:
+            logs.append(f"STORE-COLLECT-FAILED {relative} {reason}")
     try:
         _write_archive(root_fd, output_fd, entries)
     except (OSError, tarfile.TarError, ValueError):
-        return {"status": "failed", "reason": "pack-failed",
-                "log": f"STORE-COLLECT-FAILED {relative} pack-failed"}
-    return {"status": "collected", "bytes": total, "log": f"STORE-COLLECTED {relative}"}
+        for item in stores:
+            if item["status"] == "collected":
+                item.update(status="failed", reason="pack-failed")
+        logs = [
+            f"STORE-COLLECT-FAILED {item['path']} pack-failed"
+            if item["reason"] == "pack-failed" else log_line
+            for item, log_line in zip(stores, logs)
+        ]
+        return {"status": "failed", "reason": "pack-failed", "stores": stores, "logs": logs}
+    successful = any(item["status"] == "collected" for item in stores)
+    return {
+        "status": "collected" if successful else "none",
+        "bytes": total,
+        "stores": stores,
+        "logs": logs,
+    }
 
 
-def _verify_archive_fd(fd: int, *, kind: str, store_path: str | None = None) -> int:
+def _verify_archive_fd(
+    fd: int, *, kind: str, store_path: str | Sequence[str] | None = None,
+) -> int:
     """Verify a just-written archive's complete member set and return its size."""
 
     info = os.fstat(fd)
@@ -470,6 +557,7 @@ def _verify_archive_fd(fd: int, *, kind: str, store_path: str | None = None) -> 
         os.lseek(fd, 0, os.SEEK_SET)
     seen: set[str] = set()
     total = 0
+    store_paths = (store_path,) if isinstance(store_path, str) else tuple(store_path or ())
     for member in members:
         name = member.name.rstrip("/")
         parts = name.split("/")
@@ -488,7 +576,7 @@ def _verify_archive_fd(fd: int, *, kind: str, store_path: str | None = None) -> 
         if kind == "artifacts" and member.isfile() and member.size >= _ARTIFACT_MAX_BYTES:
             raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "artifact archive contains an oversized file")
         if kind == "store":
-            if store_path is None or not (name == store_path or name.startswith(store_path + "/")):
+            if not any(name == path or name.startswith(path + "/") for path in store_paths):
                 raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "store archive contains an unexpected path")
             total += member.size if member.isfile() else 0
             if total > _STORE_MAX_BYTES:
@@ -616,6 +704,8 @@ class HostJobWorker:
         clock: Callable[[], str] | None = None,
         run_gate_finder: Callable[[str], str | None] = shutil.which,
         process_signals: ProcessSignals | None = None,
+        scope_process_reader: Callable[[str], Sequence[int]] | None = None,
+        thrashguard_client: object | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.jobs_dir = self.state_dir / "jobs"
@@ -632,6 +722,8 @@ class HostJobWorker:
         self.clock = clock or _utc_now
         self.run_gate_finder = run_gate_finder
         self.process_signals = process_signals or SystemProcessSignals()
+        self.scope_process_reader = scope_process_reader or _scope_processes
+        self.thrashguard_client = thrashguard_client
         self.request: dict[str, object] = {}
         self.request_digest = ""
         self.group = ""
@@ -644,9 +736,15 @@ class HostJobWorker:
         self.project_fd = -1
         self.event_rel = ""
         self.event_path = Path()
+        self.runner_process: RunnerProcess | None = None
+        self.event_cursor = 0
+        self.event_observations: list[Mapping[str, object]] = []
+        self.lane_error: str | None = None
+        self.terminal_completed = False
+        self.memory_lock_fd = -1
 
     def _state(self) -> dict[str, object]:
-        raw = _read_regular(self.job_dir / "state.json")
+        raw = _read_regular(self.job_dir / "state.json", limit=1024 * 1024)
         try:
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -658,7 +756,10 @@ class HostJobWorker:
     def _save_state(self, **updates: object) -> dict[str, object]:
         with _job_state_lock(self.job_dir):
             state = self._state()
-            if updates.get("state") == "running" and state.get("state") == "stopping":
+            if (
+                updates.get("state") not in {None, "done", "failed", "cancelled"}
+                and state.get("state") == "stopping"
+            ):
                 updates = {key: value for key, value in updates.items() if key != "state"}
             state.update(updates)
             _atomic_json(self.job_dir / "state.json", state)
@@ -735,10 +836,20 @@ class HostJobWorker:
 
     def _helper(self, mode: str, *args: str, cwd_fd: int | None = None) -> CommandResult:
         return self._run_checked(
-            [sys.executable, "-m", "fleetd.executor_worker", mode, *args],
+            self._helper_argv(mode, *args),
             cwd_fd=self.repo_root_fd if cwd_fd is None else cwd_fd,
             detail=f"runner-user helper {mode!r} failed",
         )
+
+    @staticmethod
+    def _helper_argv(mode: str, *args: str) -> list[str]:
+        """Launch a helper with only the packaged source root on its project import path."""
+
+        package_root = str(Path(__file__).resolve().parent.parent)
+        return [
+            sys.executable, "-I", "-P", "-c", _HELPER_BOOTSTRAP,
+            package_root, mode, *args,
+        ]
 
     def _cancel_checkpoint(self) -> None:
         state = self._state()
@@ -772,46 +883,20 @@ class HostJobWorker:
         self.repo_root = self.policy.repo_roots[repo]
         self.repo_root_fd = _open_absolute_directory(self.repo_root)
         self.checkout_rel = f".fleetd-worktrees/{self.job_id}"
-        self._helper("prepare", "--relative", self.checkout_rel)
-        try:
-            self.checkout_fd = open_beneath(self.repo_root_fd, self.checkout_rel, directory=True)
-        except (OSError, ValueError) as exc:
-            raise AdmissionError(ExitCode.REFUSAL, f"host checkout path is unsafe: {exc}") from exc
+        self._helper("prepare", "--relative", ".fleetd-worktrees")
         checkout_record = {"schema": "fleet-host-checkout/1", "repo": repo, "relative": self.checkout_rel}
         _atomic_json(self.job_dir / "checkout.json", checkout_record)
 
-        # A prior have() result may let the client omit its bundle.  The
-        # existing host checkout is then the seed; otherwise a verified bundle
-        # is fetched below.  Both paths execute git as the runner user.
-        source_rel = sha
-        source_fd = -1
-        try:
-            source_fd = open_beneath(self.repo_root_fd, source_rel, directory=True)
-        except FileNotFoundError:
-            source_fd = -1
-        except (OSError, ValueError) as exc:
-            raise AdmissionError(ExitCode.REFUSAL, f"existing checkout {sha!r} is unsafe: {exc}") from exc
-        if source_fd >= 0:
-            _close(self.checkout_fd)
-            self.checkout_fd = -1
-            try:
-                self._run_checked(
-                    ["git", "clone", "--quiet", "--no-checkout", str(self.repo_root / source_rel),
-                     str(self.repo_root / self.checkout_rel)],
-                    cwd_fd=self.repo_root_fd,
-                    exit_code=ExitCode.CHECKOUT_FAILURE,
-                    detail="cannot clone the host's existing checkout",
-                )
-            finally:
-                _close(source_fd)
-            self.checkout_fd = open_beneath(self.repo_root_fd, self.checkout_rel, directory=True)
+        seeds = self._host_checkout_candidates()
+        if sha in seeds:
+            if not self._reset_checkout(sha):
+                raise AdmissionError(ExitCode.CHECKOUT_FAILURE, f"cannot clone host checkout seed {sha}")
+            self._copy_seed_refs(sha)
+            if self._uploaded_objects("in.bundle"):
+                self._fetch_uploaded_bundle(seeds)
         else:
-            self._run_checked(
-                ["git", "init", "--quiet", "--initial-branch=main", str(self.repo_root / self.checkout_rel)],
-                cwd_fd=self.repo_root_fd, exit_code=ExitCode.CHECKOUT_FAILURE, detail="cannot initialize job checkout",
-            )
-            self.checkout_fd = open_beneath(self.repo_root_fd, self.checkout_rel, directory=True)
-            self._fetch_uploaded_bundle()
+            self._fetch_uploaded_bundle(seeds)
+        self._synchronize_job_refs()
 
         base = self.request.get("base")
         if isinstance(base, str):
@@ -831,6 +916,93 @@ class HostJobWorker:
             raise AdmissionError(ExitCode.CHECKOUT_FAILURE, f"host checkout commit {actual!r} does not match request sha")
         self._log(f"checkout {self.repo_root / self.checkout_rel} at {actual}")
         self._save_state(checkout={"ready": True, "sha": actual})
+
+    def _host_checkout_candidates(self) -> list[str]:
+        """Return only real, full-commit directories that can seed a local clone."""
+
+        candidates: list[str] = []
+        for name in sorted(os.listdir(self.repo_root_fd)):
+            if _COMMIT_RE.fullmatch(name) is None:
+                continue
+            try:
+                fd = open_beneath(self.repo_root_fd, name, directory=True)
+            except (OSError, ValueError):
+                continue
+            else:
+                os.close(fd)
+                candidates.append(name)
+        return candidates
+
+    def _reset_checkout(self, seed_rel: str | None) -> bool:
+        if self.project_fd >= 0 or self.checkout_fd >= 0:
+            _close(self.project_fd, self.checkout_fd)
+            self.project_fd = self.checkout_fd = -1
+        self._helper("remove-tree", "--relative", self.checkout_rel)
+        if seed_rel is None:
+            result = self._run([
+                "git", "init", "--quiet", "--initial-branch=main",
+                str(self.repo_root / self.checkout_rel),
+            ], cwd_fd=self.repo_root_fd)
+        else:
+            seed_fd = -1
+            try:
+                seed_fd = open_beneath(self.repo_root_fd, seed_rel, directory=True)
+            except (OSError, ValueError):
+                return False
+            finally:
+                _close(seed_fd)
+            result = self._run([
+                "git", "clone", "--quiet", "--no-checkout",
+                str(self.repo_root / seed_rel), str(self.repo_root / self.checkout_rel),
+            ], cwd_fd=self.repo_root_fd)
+        if result.returncode != 0:
+            self._helper("remove-tree", "--relative", self.checkout_rel)
+            return False
+        try:
+            self.checkout_fd = open_beneath(self.repo_root_fd, self.checkout_rel, directory=True)
+        except (OSError, ValueError) as exc:
+            raise AdmissionError(ExitCode.REFUSAL, f"host checkout path is unsafe: {exc}") from exc
+        return True
+
+    def _copy_seed_refs(self, seed_rel: str) -> None:
+        seed_path = str(self.repo_root / seed_rel)
+        for ref in ("refs/remotes/origin/main", "refs/tags/*"):
+            result = self._run([
+                "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet",
+                seed_path, f"+{ref}:{ref}",
+            ], cwd_fd=self.repo_root_fd)
+            if result.returncode != 0:
+                self._log(f"seed ref {ref} unavailable from {seed_rel}")
+
+    def _synchronize_job_refs(self) -> None:
+        assert self.checkout_fd >= 0
+        base = self.request.get("base")
+        if isinstance(base, str):
+            self._run_checked(
+                ["git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "refs/remote-gate/base", base],
+                cwd_fd=self.repo_root_fd, exit_code=ExitCode.MISSING_BASE,
+                detail=f"cannot install requested base {base}",
+            )
+        else:
+            self._run([
+                "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "-d", "refs/remote-gate/base",
+            ], cwd_fd=self.repo_root_fd)
+
+        main = self._run([
+            "git", "-C", str(self.repo_root / self.checkout_rel), "rev-parse", "--verify",
+            "refs/remotes/origin/main^{commit}",
+        ], cwd_fd=self.repo_root_fd)
+        main_sha = main.stdout.decode("ascii", "replace").strip() if main.returncode == 0 else ""
+        if main_sha and _COMMIT_RE.fullmatch(main_sha):
+            self._run_checked([
+                "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "refs/heads/main", main_sha,
+            ], cwd_fd=self.repo_root_fd, exit_code=ExitCode.CHECKOUT_FAILURE,
+            detail="cannot align local main with origin/main")
+        else:
+            for ref in ("refs/remotes/origin/main", "refs/heads/main"):
+                self._run([
+                    "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "-d", ref,
+                ], cwd_fd=self.repo_root_fd)
 
     def _uploaded_objects(self, name: str) -> list[tuple[str, int]]:
         root_fd = os.open(self.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -869,26 +1041,29 @@ class HostJobWorker:
         finally:
             _close(name_fd, group_fd, uploads_fd, root_fd)
 
-    def _fetch_uploaded_bundle(self) -> None:
+    def _fetch_uploaded_bundle(self, seeds: Sequence[str] = ()) -> None:
         objects = self._uploaded_objects("in.bundle")
         if not objects:
             raise AdmissionError(ExitCode.CHECKOUT_FAILURE, "no verified in.bundle upload contains the requested commit")
         assert self.runner is not None
+        request_sha = self.request.get("sha")
+        if not isinstance(request_sha, str) or _COMMIT_RE.fullmatch(request_sha) is None:
+            raise AdmissionError(ExitCode.REFUSAL, "job request sha is invalid during bundle resolution")
         for digest, size in objects:
             root_fd = os.open(self.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             source_fd = -1
             uploads_fd = group_fd = name_fd = -1
+            target_rel = f".fleetd-worktrees/.{self.job_id}.bundle-{digest}"
             try:
                 uploads_fd = open_beneath(root_fd, "uploads", directory=True)
                 group_fd = open_beneath(uploads_fd, self.group, directory=True)
                 name_fd = open_beneath(group_fd, "in.bundle", directory=True)
                 source_fd = open_beneath(name_fd, digest)
-                target_rel = f"{self.checkout_rel}/in.bundle-{digest}"
                 copied = self.runner.run_with_input(
-                    [
-                        sys.executable, "-m", "fleetd.executor_worker", "write-file",
-                        "--relative", target_rel, "--sha256", digest, "--bytes", str(size),
-                    ],
+                    self._helper_argv(
+                        "write-file", "--relative", target_rel, "--sha256", digest,
+                        "--bytes", str(size),
+                    ),
                     cwd_fd=self.repo_root_fd, env=self._environment(), source_fd=source_fd,
                 )
                 if copied.returncode != 0:
@@ -898,22 +1073,51 @@ class HostJobWorker:
             finally:
                 _close(source_fd, name_fd, group_fd, uploads_fd, root_fd)
             bundle = str(self.repo_root / target_rel)
-            fetched = self._run(
-                ["git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet", bundle, "HEAD"],
-                cwd_fd=self.repo_root_fd,
-            )
-            if fetched.returncode == 0:
-                tags = self._run([
-                    "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet",
-                    bundle, "refs/tags/*:refs/tags/*",
-                ])
-                if tags.returncode != 0:
-                    self._log("release tag fetch failed; retaining bundle HEAD")
-                for ref in ("refs/remote-gate/base", "refs/remotes/origin/main"):
-                    self._run([
-                        "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet", bundle, ref,
-                    ])
-                return
+            try:
+                for seed_rel in (*seeds, None):
+                    if not self._reset_checkout(seed_rel):
+                        continue
+                    verified = self._run([
+                        "git", "-C", str(self.repo_root / self.checkout_rel), "bundle", "verify", bundle,
+                    ], cwd_fd=self.repo_root_fd)
+                    if verified.returncode != 0:
+                        continue
+                    fetched = self._run([
+                        "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet", bundle, "HEAD",
+                    ], cwd_fd=self.repo_root_fd)
+                    if fetched.returncode != 0:
+                        continue
+                    for ref in ("refs/remote-gate/base", "refs/remotes/origin/main"):
+                        self._run([
+                            "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet",
+                            bundle, f"+{ref}:{ref}",
+                        ], cwd_fd=self.repo_root_fd)
+                    tags = self._run(["git", "ls-remote", bundle, "refs/tags/*"], cwd_fd=self.repo_root_fd)
+                    if tags.returncode == 0:
+                        for line in tags.stdout.decode("ascii", "replace").splitlines():
+                            fields = line.split("\t", 1)
+                            if len(fields) != 2 or not fields[1].startswith("refs/tags/") or fields[1].endswith("^{}"):
+                                continue
+                            exists = self._run([
+                                "git", "-C", str(self.repo_root / self.checkout_rel),
+                                "show-ref", "--verify", "--quiet", fields[1],
+                            ], cwd_fd=self.repo_root_fd)
+                            if exists.returncode == 0:
+                                continue
+                            self._run([
+                                "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet",
+                                bundle, f"+{fields[1]}:{fields[1]}",
+                            ], cwd_fd=self.repo_root_fd)
+                    else:
+                        self._log("release tag listing from bundle failed; retaining seed tags")
+                    resolved = self._run([
+                        "git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e",
+                        f"{request_sha}^{{commit}}",
+                    ], cwd_fd=self.repo_root_fd)
+                    if resolved.returncode == 0:
+                        return
+            finally:
+                self._helper("remove-tree", "--relative", target_rel, cwd_fd=self.repo_root_fd)
         raise AdmissionError(ExitCode.CHECKOUT_FAILURE, "verified host bundles do not contain the requested commit")
 
     def _select_run_gate(self) -> tuple[str, str]:
@@ -958,17 +1162,53 @@ class HostJobWorker:
             raise AdmissionError(ExitCode.REFUSAL, "request project or lane is invalid")
         lane, environment = _lane_environment(self.checkout_fd, project, lane_name)
         mode = str(environment["mode"])
+        project_rel = "" if project == "." else project
+        project_fd = os.dup(self.checkout_fd) if not project_rel else open_beneath(self.checkout_fd, project_rel, directory=True)
+        try:
+            config_rel = "run-gate.toml" if project == "." else f"{project}/run-gate.toml"
+            config = _parse_toml_fd(self.checkout_fd, config_rel) or {}
+            admission = config.get("admission")
+            if isinstance(admission, Mapping) and admission.get("enabled") is True:
+                try:
+                    answer = self.runner.run(
+                        [binary, "admission", "show"], cwd_fd=project_fd, env=self._environment(),
+                        timeout=self.policy.query_timeout_s,
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise AdmissionError(
+                        ExitCode.PREREQUISITE_MISSING, f"run-gate admission show failed: {exc}",
+                    ) from exc
+                output = answer.stdout.decode("utf-8", "replace")
+                if answer.returncode != 0:
+                    raise AdmissionError(
+                        ExitCode.PREREQUISITE_MISSING,
+                        f"run-gate admission show failed (rc {answer.returncode}): {output[:200]}",
+                    )
+                enabled = re.search(r"(?m)^.*admission: enabled=(true|false).*$", output)
+                if enabled is None:
+                    raise AdmissionError(
+                        ExitCode.PREREQUISITE_MISSING,
+                        f"run-gate admission show printed no enabled=true|false statement: {output[:200]}",
+                    )
+                if enabled.group(1) == "true" and re.search(r"(?m)^.*max_concurrent=[0-9]+.*$", output) is None:
+                    raise AdmissionError(
+                        ExitCode.PREREQUISITE_MISSING,
+                        "run-gate admission is enabled by the repo but this host publishes no gates cap",
+                    )
+        finally:
+            os.close(project_fd)
         if mode == "ephemeral":
             image = environment.get("image")
             image_env = environment.get("image_env")
             if isinstance(image_env, str):
-                image = os.environ.get(image_env)
+                image = self._environment().get(image_env, image)
             if not isinstance(image, str) or _IMAGE_RE.fullmatch(image) is None:
                 raise AdmissionError(ExitCode.PREREQUISITE_MISSING, "ephemeral Run-Gate environment has no resolved image")
             image_info = self.docker.image(image)
             self._check_lane_user(image, image_info, environment)
+            self._check_declared_base(lane)
             return binary, mode, {"image": image, "lane": lane, "environment": environment,
-                                 "run_gate_version": version}
+                                 "run_gate_version": version, "runner_name": None}
         if mode == "exec":
             container_name = _exec_container_name(self.checkout_fd, str(lane["environment"]), environment)
             if _CONTAINER_NAME_RE.fullmatch(container_name) is None:
@@ -977,9 +1217,24 @@ class HostJobWorker:
             container_state = existing.get("State") if isinstance(existing, Mapping) else None
             if existing is None or not isinstance(container_state, Mapping) or container_state.get("Running") is not True:
                 raise AdmissionError(ExitCode.PREREQUISITE_MISSING, f"persistent runner {container_name!r} is not running")
+            self._check_declared_base(lane)
             return binary, mode, {"container_name": container_name, "lane": lane, "environment": environment,
-                                 "run_gate_version": version}
-        return binary, mode, {"lane": lane, "environment": environment, "run_gate_version": version}
+                                 "run_gate_version": version, "runner_name": container_name}
+        self._check_declared_base(lane)
+        return binary, mode, {"lane": lane, "environment": environment, "run_gate_version": version,
+                             "runner_name": None}
+
+    def _check_declared_base(self, lane: Mapping[str, object]) -> None:
+        base = lane.get("base")
+        if base is None:
+            return
+        if not isinstance(base, str) or not base or base.startswith("-") or "\0" in base:
+            raise AdmissionError(ExitCode.PREREQUISITE_MISSING, "Run-Gate lane declares an invalid comparison base")
+        result = self._run([
+            "git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e", f"{base}^{{commit}}",
+        ], cwd_fd=self.repo_root_fd)
+        if result.returncode != 0:
+            raise AdmissionError(ExitCode.MISSING_BASE, f"Run-Gate lane base {base!r} is missing from the host checkout")
 
     def _check_lane_user(
         self, image: str, image_info: Mapping[str, object], environment: Mapping[str, object],
@@ -991,12 +1246,27 @@ class HostJobWorker:
             config = image_info.get("Config")
             config_user = config.get("User") if isinstance(config, Mapping) else None
             user = config_user if isinstance(config_user, str) else ""
+        if user == "invoker":
+            assert self.runner_identity is not None
+            if self.runner_identity.uid == 0:
+                raise AdmissionError(ExitCode.PREREQUISITE_MISSING, "lane user invoker resolves to uid 0")
+            self.docker.check_passwd(
+                image, str(self.runner_identity.uid), self.job_id,
+                expected_gid=self.runner_identity.gid,
+            )
+            return
         if user in {"", "0", "root"}:
             return
         if user.isdigit():
             if int(user) == 0:
                 return
-            self.docker.check_passwd(image, user, self.job_id)
+            gid = None
+            if isinstance(declared, str) and ":" in declared:
+                try:
+                    gid = int(declared.split(":", 1)[1])
+                except ValueError as exc:
+                    raise AdmissionError(ExitCode.PREREQUISITE_MISSING, "lane user gid is invalid") from exc
+            self.docker.check_passwd(image, user, self.job_id, expected_gid=gid)
             return
         # Named users are established facts only after the selected image
         # resolves them.  Run-Gate's own preflight handles non-numeric users;
@@ -1018,6 +1288,7 @@ class HostJobWorker:
                 raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"PSI above {_PSI_LIMIT:g} after {waited}s")
             self.waiter(_PSI_POLL_S)
             waited += _PSI_POLL_S
+            self._cancel_checkpoint()
 
     def _memory_admission(self) -> int | None:
         resources = self.request.get("resources")
@@ -1045,6 +1316,7 @@ class HostJobWorker:
                         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "memory admission ticket wait expired")
                     self.waiter(_MEMORY_POLL_S)
                     waited += _MEMORY_POLL_S
+                    self._cancel_checkpoint()
             while True:
                 try:
                     total, available = _parse_meminfo(self.meminfo_reader())
@@ -1058,6 +1330,7 @@ class HostJobWorker:
                     raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "memory admission wait expired")
                 self.waiter(_MEMORY_POLL_S)
                 waited += _MEMORY_POLL_S
+                self._cancel_checkpoint()
         except BaseException:
             os.close(fd)
             raise
@@ -1092,9 +1365,10 @@ class HostJobWorker:
         source_fd = self._open_upload_object(upload_name, str(digest))
         try:
             result = self.runner.run_with_input(
-                [sys.executable, "-m", "fleetd.executor_worker", "extract-seed",
-                 "--relative", target, "--sha256", str(digest), "--bytes", str(size),
-                 "--max-bytes", str(_STORE_MAX_BYTES)],
+                self._helper_argv(
+                    "extract-seed", "--relative", target, "--sha256", str(digest),
+                    "--bytes", str(size), "--max-bytes", str(_STORE_MAX_BYTES),
+                ),
                 cwd_fd=self.checkout_fd, env=self._environment(), source_fd=source_fd,
             )
         finally:
@@ -1184,43 +1458,212 @@ class HostJobWorker:
         if isinstance(base, str):
             argv.extend(("--base", base))
         argv.extend(("--event-file", str(self.event_path), "--job-id", self.job_id))
-        if mode == "exec":
-            env = dict(self._environment())
-            env["RUN_GATE_EXPECTED_RUNNER"] = str(facts["container_name"])
-        else:
-            env = self._environment()
+        env = self._environment()
+        if mode == "ephemeral":
+            env["RUN_GATE_TESTER_UNIFIED_IMAGE"] = str(facts["image"])
         log_fd = os.open(self.job_dir / "lane.log", os.O_CREAT | os.O_TRUNC | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         try:
+            runner_name = facts.get("runner_name")
+            self._save_state(
+                state="lane-starting", lane_may_be_live=True, lane=lane, lane_mode=mode,
+                runner_name=runner_name, lane_status_owner="worker", event_file=str(self.event_path),
+                container={"id": None, "name": runner_name, "image": facts.get("image")},
+            )
+            try:
+                self._cancel_checkpoint()
+            except AdmissionError as exc:
+                if exc.exit_code == ExitCode.CANCELLED:
+                    # This worker knows start() has not been called. Clear the
+                    # conservative marker before taking the never-started path.
+                    self._retry_state_save(lane_may_be_live=False, lane_start_attempted=False)
+                raise
             process = self.runner.start(argv, cwd_fd=self.project_fd, env=env, output_fd=log_fd)
         finally:
             os.close(log_fd)
-        state = self._save_state(lane_pid=process.pid, state="running", lane=lane, event_file=str(self.event_path), container={
-            "id": None, "name": facts.get("container_name"), "image": facts.get("image"),
-        })
-        if state.get("cancel_requested") is True:
-            try:
-                self.process_signals.terminate_group(process.pid)
-            except ProcessLookupError:
-                self._save_state(stop_signal="process-already-exited")
-            except OSError as exc:
-                self._save_state(state="stopping", reason=f"TERM failed: {exc}", stop_signal="failed")
-            else:
-                self._save_state(stop_signal="sent")
+        self.runner_process = process
+        self._retry_state_save(lane_pid=process.pid, state="running", lane_status_owner="worker")
+        status: int | None = None
         if memory_lock_fd is not None:
-            self.waiter(_MEMORY_SETTLE_S)
-            fcntl.flock(memory_lock_fd, fcntl.LOCK_UN)
-            os.close(memory_lock_fd)
-        status = process.wait()
-        state = self._state()
-        while state.get("cancel_requested") is True and state.get("stop_signal") not in {
-            "sent", "process-already-exited",
-        }:
-            self._save_state(state="stopping", reason="TERM was not confirmed; waiting for a stop retry")
+            try:
+                self.waiter(_MEMORY_SETTLE_S)
+                try:
+                    status = process.poll()
+                except Exception:
+                    status = None
+                if status is not None:
+                    self.runner_process = None
+                    self._record_lane_exit(status)
+                try:
+                    self._cancel_checkpoint()
+                except AdmissionError as exc:
+                    if exc.exit_code != ExitCode.CANCELLED:
+                        raise
+                    # The lane has started.  The worker owns its process and
+                    # must stop it through the guard/TERM path before waiting
+                    # for exit and collection.
+                if status is None and self._state().get("cancel_requested") is True:
+                    self._request_worker_stop(process)
+            finally:
+                fcntl.flock(memory_lock_fd, fcntl.LOCK_UN)
+                os.close(memory_lock_fd)
+                self.memory_lock_fd = -1
+        while status is None:
+            self._follow_lane_events(final=False)
+            try:
+                status = process.poll()
+            except Exception:
+                status = None
+            if status is not None:
+                self.runner_process = None
+                self._record_lane_exit(status)
+                break
+            try:
+                state = self._state()
+            except AdmissionError:
+                state = {}
+            if state.get("cancel_requested") is True:
+                try:
+                    self._request_worker_stop(process)
+                except AdmissionError:
+                    pass
             self.waiter(1)
-            state = self._state()
-        self._save_state(state="collecting", lane_process_status=status, exit_code=status)
+            try:
+                status = process.poll()
+            except Exception:
+                status = None
+            if status is not None:
+                self.runner_process = None
+                self._record_lane_exit(status)
+            try:
+                cancel_after_wait = self._state().get("cancel_requested") is True
+            except AdmissionError:
+                cancel_after_wait = False
+            if status is not None:
+                break
+            if cancel_after_wait:
+                try:
+                    self._request_worker_stop(process)
+                except AdmissionError:
+                    pass
+        try:
+            self._follow_lane_events(final=True)
+        except AdmissionError as exc:
+            self.lane_error = self.lane_error or exc.reason
         self._log(f"lane exited rc={status}")
         return status
+
+    def _record_lane_exit(self, status: int) -> None:
+        """Persist the worker-owned child status before any other lane work."""
+
+        self._retry_state_save(
+            state="collecting", lane_process_status=status, exit_code=status,
+            lane_may_be_live=False, lane_status_owner="worker",
+        )
+
+    def _retry_state_save(self, **updates: object) -> dict[str, object]:
+        while True:
+            try:
+                return self._save_state(**updates)
+            except (AdmissionError, OSError):
+                self.waiter(1)
+                if self.runner_process is not None and not {
+                    "stop_signal", "cancel_refused", "guard_deregistered",
+                }.intersection(updates):
+                    try:
+                        current = self._state()
+                    except AdmissionError:
+                        continue
+                    if current.get("cancel_requested") is True:
+                        self._request_worker_stop(self.runner_process)
+
+    def _request_worker_stop(self, process: RunnerProcess) -> None:
+        poll = getattr(process, "poll", None)
+        if callable(poll):
+            try:
+                status = poll()
+            except Exception:
+                status = None
+            if status is not None:
+                self.runner_process = None
+                self._record_lane_exit(status)
+                return
+        state = self._state()
+        if state.get("stop_signal") in {"sent", "process-already-exited"}:
+            return
+        if state.get("lane_mode") == "exec":
+            reason = "exec-cancel-cannot-prove-runner-process-stopped"
+            self.lane_error = self.lane_error or reason
+            self._retry_state_save(state="stopping", reason=reason, cancel_refused=True)
+            return
+        guard = state.get("guard")
+        present = guard.get("present") if isinstance(guard, Mapping) else None
+        if present is True:
+            action = getattr(self.thrashguard_client, "deregister", None)
+            if not callable(action):
+                self.lane_error = self.lane_error or "thrashguard-deregister-unavailable"
+                self._retry_state_save(
+                    state="stopping", reason=self.lane_error, cancel_refused=True,
+                )
+                return
+            try:
+                action(self.job_id)
+            except Exception as exc:
+                self._retry_state_save(
+                    state="stopping", reason=f"thrashguard-deregister-failed: {exc}",
+                    cancel_refused=True,
+                )
+                return
+            self._retry_state_save(guard_deregistered=True, cancel_refused=False)
+        elif present is not False:
+            self.lane_error = self.lane_error or "thrashguard-presence-unknown"
+            self._retry_state_save(state="stopping", reason=self.lane_error, cancel_refused=True)
+            return
+        try:
+            self.process_signals.terminate_group(process.pid)
+        except ProcessLookupError:
+            self._retry_state_save(stop_signal="process-already-exited")
+        except OSError as exc:
+            self._retry_state_save(state="stopping", reason=f"TERM failed: {exc}", stop_signal="failed")
+        else:
+            self._retry_state_save(stop_signal="sent", cancel_refused=False)
+
+    def _follow_lane_events(self, *, final: bool) -> None:
+        try:
+            events = self._read_events(final=final)
+        except AdmissionError as exc:
+            if exc.exit_code != ExitCode.QUEUED_WITHDRAWN:
+                self.lane_error = self.lane_error or exc.reason
+            return
+        for index in range(self.event_cursor, len(events)):
+            event = events[index]
+            if event.get("event") == "lane-started":
+                container_id = event.get("container_id")
+                lane = event.get("lane")
+                if not isinstance(lane, str):
+                    self.lane_error = self.lane_error or "lane-started event has no lane"
+                    continue
+                try:
+                    binding = self._inspect_container_binding(event, expected_sha=str(self.request.get("sha", "")),
+                                                              require_stopped=False)
+                    if isinstance(container_id, str) and binding is None:
+                        raise AdmissionError(
+                            ExitCode.IDENTITY_OR_TRANSPORT,
+                            f"lane-started container {container_id} was gone at observation",
+                        )
+                    observation: Mapping[str, object] = {
+                        "index": index, "event": dict(event),
+                        "binding": dict(binding) if binding is not None else {
+                            "id": None, "lane": lane, "mode": "host", "status": "no-container",
+                        },
+                    }
+                except AdmissionError as exc:
+                    if exc.exit_code == ExitCode.QUEUED_WITHDRAWN:
+                        break
+                    observation = {"index": index, "event": dict(event), "error": exc.reason}
+                    self.lane_error = self.lane_error or exc.reason
+                self.event_observations.append(observation)
+                self._retry_state_save(lane_event_observations=list(self.event_observations))
+            self.event_cursor = index + 1
 
     @staticmethod
     def _hash_fd(fd: int) -> tuple[str, int]:
@@ -1251,7 +1694,7 @@ class HostJobWorker:
 
     def _write_archive_from_runner(
         self, helper_command: str, destination_name: str, arguments: Sequence[str], *, root_fd: int,
-        kind: str, store_path: str | None = None,
+        kind: str, store_path: str | Sequence[str] | None = None,
     ) -> tuple[str, int, Mapping[str, object]]:
         assert self.runner is not None
         run_to_fd = getattr(self.runner, "run_to_fd", None)
@@ -1261,8 +1704,7 @@ class HostJobWorker:
         temporary_path, output_fd = self._open_job_output(temporary_name)
         try:
             answer = run_to_fd(
-                [sys.executable, "-m", "fleetd.executor_worker", helper_command, *arguments,
-                 "--output-fd", str(output_fd)],
+                self._helper_argv(helper_command, *arguments, "--output-fd", str(output_fd)),
                 cwd_fd=root_fd, env=self._environment(), output_fd=output_fd,
             )
             if answer.returncode != 0:
@@ -1294,7 +1736,9 @@ class HostJobWorker:
         finally:
             os.close(output_fd)
 
-    def _archive_saved(self, name: str, *, kind: str, store_path: str | None = None) -> tuple[str, int]:
+    def _archive_saved(
+        self, name: str, *, kind: str, store_path: str | Sequence[str] | None = None,
+    ) -> tuple[str, int]:
         path = self.job_dir / name
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -1335,7 +1779,7 @@ class HostJobWorker:
         finally:
             _close(fd)
 
-    def _saved_collection(self, store_rel: str | None) -> Mapping[str, object] | None:
+    def _saved_collection(self, store_rel: str | list[str] | None) -> Mapping[str, object] | None:
         state = self._state()
         collection = state.get("collection")
         if not isinstance(collection, Mapping) or collection.get("store_rel") != store_rel:
@@ -1376,11 +1820,20 @@ class HostJobWorker:
             self.project_fd = os.dup(self.checkout_fd) if project == "." else open_beneath(self.checkout_fd, project, directory=True)
         stores = self.request.get("stores")
         store_rel = stores.get("collect") if isinstance(stores, Mapping) else None
-        if store_rel is not None and (
-            not isinstance(store_rel, str) or _STORE_PATH_RE.fullmatch(store_rel) is None
-            or any(part in {"", ".", "..", ".git"} for part in store_rel.split("/"))
-        ):
-            raise AdmissionError(ExitCode.REFUSAL, "stores.collect is not a safe relative path")
+        if store_rel is None:
+            store_paths: list[str] = []
+        elif isinstance(store_rel, str):
+            store_paths = [store_rel]
+        elif isinstance(store_rel, list) and all(isinstance(item, str) for item in store_rel):
+            store_paths = list(store_rel)
+        else:
+            raise AdmissionError(ExitCode.REFUSAL, "stores.collect is not a path or a list of paths")
+        if (store_rel is not None and not store_paths) or any(
+            _STORE_PATH_RE.fullmatch(path) is None
+            or any(part in {"", ".", "..", ".git"} for part in path.split("/"))
+            for path in store_paths
+        ) or len(store_paths) != len(set(store_paths)):
+            raise AdmissionError(ExitCode.REFUSAL, "stores.collect contains an unsafe or duplicate relative path")
         saved = self._saved_collection(store_rel)
         if saved is not None:
             return saved
@@ -1394,7 +1847,7 @@ class HostJobWorker:
         _fsync_dir(self.job_dir)
 
         store_details: dict[str, object] = {"status": "none"}
-        if store_rel is not None:
+        if store_paths:
             store_part = self.job_dir / ".assay-store.tgz.part"
             store_path = self.job_dir / "assay-store.tgz"
             checksum_path = self.job_dir / "assay-store.tgz.sha256"
@@ -1405,18 +1858,24 @@ class HostJobWorker:
                     pass
             try:
                 store_digest, store_size, details = self._write_archive_from_runner(
-                    "archive-store", "assay-store.tgz", ("--relative", store_rel),
-                    root_fd=self.project_fd, kind="store", store_path=store_rel,
+                    "archive-store", "assay-store.tgz",
+                    tuple(argument for path in store_paths for argument in ("--relative", path)),
+                    root_fd=self.checkout_fd, kind="store", store_path=store_paths,
                 )
-                log_line = details.get("log")
-                if isinstance(log_line, str):
-                    self._log(log_line)
+                logs = details.get("logs")
+                if isinstance(logs, list):
+                    for log_line in logs:
+                        if isinstance(log_line, str):
+                            self._log(log_line)
+                elif isinstance(details.get("log"), str):
+                    self._log(str(details["log"]))
                 if details.get("status") == "collected":
                     os.replace(store_part, store_path)
                     _fsync_dir(self.job_dir)
                     self._write_checksum(store_digest, "assay-store.tgz")
                     store_details = {
                         "status": "collected", "sha256": store_digest, "size": store_size,
+                        "stores": details.get("stores"),
                     }
                 else:
                     try:
@@ -1426,14 +1885,14 @@ class HostJobWorker:
                     store_details = {
                         "status": str(details.get("status", "failed")),
                         "reason": details.get("reason"),
+                        "stores": details.get("stores"),
                     }
-            except AdmissionError as exc:
-                self._log(f"STORE-COLLECT-FAILED {store_rel} pack-failed {exc.reason[:160]}")
+            except AdmissionError:
                 try:
                     store_part.unlink()
                 except FileNotFoundError:
                     pass
-                store_details = {"status": "failed", "reason": "pack-failed"}
+                raise
         collection: dict[str, object] = {
             "artifacts_sha256": artifact_digest,
             "artifacts_size": artifact_size,
@@ -1445,7 +1904,7 @@ class HostJobWorker:
         self._save_state(state="collecting", collection=collection)
         return collection
 
-    def _read_events(self) -> list[Mapping[str, object]]:
+    def _read_events(self, *, final: bool = True) -> list[Mapping[str, object]]:
         if not self.event_rel or not self.repo_root.is_absolute():
             raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "host-owned Run-Gate event file was not established")
         parent_fd = _open_absolute_directory(self.repo_root.parent)
@@ -1476,6 +1935,8 @@ class HostJobWorker:
                     if not line:
                         break
                     line_number += 1
+                    if not line.endswith(b"\n") and not final:
+                        break
                     if len(line) > 65536 or not line.endswith(b"\n"):
                         raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} is incomplete or too large")
                     try:
@@ -1524,6 +1985,7 @@ class HostJobWorker:
             _close(event_fd, parent_fd)
 
     def _wait_for_lane_containers(self) -> list[Mapping[str, object]]:
+        self._follow_lane_events(final=True)
         events = self._read_events()
         started = [event for event in events if event.get("event") == "lane-started"]
         inspect = getattr(self.docker, "inspect", None)
@@ -1571,7 +2033,89 @@ class HostJobWorker:
         self._save_state(live_containers=[], retry_required=False)
         return events
 
+    def _ensure_scope_is_only_worker(self) -> None:
+        state = self._state()
+        unit = state.get("scope")
+        if not isinstance(unit, str) or not unit.endswith(".scope"):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor scope identity is unavailable")
+        try:
+            pids = tuple(sorted(set(self.scope_process_reader(unit))))
+        except Exception as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot inspect executor scope processes: {exc}") from exc
+        if pids != (os.getpid(),):
+            raise AdmissionError(
+                ExitCode.QUEUED_WITHDRAWN,
+                f"executor scope {unit} contains processes {pids!r}, expected only worker {os.getpid()}",
+            )
+
+    def _ensure_job_containers_stopped(self, *, remove: bool) -> None:
+        query = getattr(self.docker, "job_containers", None)
+        inspect = getattr(self.docker, "inspect", None)
+        remove_exact = getattr(self.docker, "remove_stopped", None)
+        if not callable(query) or not callable(inspect) or (remove and not callable(remove_exact)):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker job-container teardown provider is unavailable")
+        while True:
+            try:
+                container_ids = query(self.job_id)
+            except AdmissionError:
+                raise
+            except Exception as exc:
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker job-container query failed: {exc}") from exc
+            if not isinstance(container_ids, Sequence) or isinstance(container_ids, (str, bytes)):
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker job-container query returned an invalid result")
+            running = False
+            for container_id in container_ids:
+                if not isinstance(container_id, str) or _CONTAINER_ID_RE.fullmatch(container_id) is None:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker job-container query returned a non-full id")
+                try:
+                    answer = inspect(container_id)
+                except AdmissionError:
+                    raise
+                except Exception as exc:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect {container_id} failed: {exc}") from exc
+                if answer is None:
+                    continue
+                if not isinstance(answer, Mapping) or answer.get("Id") != container_id:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect did not confirm exact id {container_id}")
+                config = answer.get("Config")
+                labels = config.get("Labels") if isinstance(config, Mapping) else None
+                if not isinstance(labels, Mapping) or labels.get("run-gate.job") != self.job_id:
+                    raise AdmissionError(
+                        ExitCode.IDENTITY_OR_TRANSPORT,
+                        f"Docker container {container_id} does not carry run-gate.job={self.job_id}",
+                    )
+                state = answer.get("State")
+                if not isinstance(state, Mapping) or type(state.get("Running")) is not bool:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker state for {container_id} is unreadable")
+                if state.get("Running") is True:
+                    running = True
+                    continue
+                if remove:
+                    try:
+                        remove_exact(container_id)
+                    except AdmissionError:
+                        raise
+                    except Exception as exc:
+                        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker remove {container_id} failed: {exc}") from exc
+            if running:
+                self._retry_state_save(
+                    state="stopping", live_containers=list(container_ids), retry_required=True,
+                )
+                self.waiter(1)
+                continue
+            if not remove or not container_ids:
+                self._retry_state_save(live_containers=[], retry_required=False)
+                return
+            # Confirm that exact-label enumeration is empty after removals.
+            self.waiter(1)
+
     def _container_mode(self, event_lane: str) -> tuple[str, str | None]:
+        if event_lane == self.request.get("lane"):
+            state = self._state()
+            captured_mode = state.get("lane_mode")
+            captured_name = state.get("runner_name")
+            if captured_mode in {"host", "exec", "ephemeral"}:
+                return str(captured_mode), captured_name if isinstance(captured_name, str) else None
         lane_name = event_lane
         shard = _SHARD_EVENT_RE.fullmatch(event_lane)
         if shard is not None:
@@ -1634,8 +2178,13 @@ class HostJobWorker:
                 labels.get("run-gate.lane") != event_lane
                 or labels.get("run-gate.commit") != expected_sha
                 or labels.get("run-gate.job") != self.job_id
+                or labels.get("run-gate.repo") != self.request.get("repo")
+                or labels.get("run-gate.project") != self.request.get("project")
             ):
-                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"container {container_id} labels do not bind this job")
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"container {container_id} run-gate labels do not bind repo, project, lane, commit, and job",
+                )
             state = answer.get("State")
             if require_stopped and (not isinstance(state, Mapping) or state.get("Running") is not False):
                 raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Run-Gate container {container_id} is not confirmed stopped")
@@ -1650,16 +2199,15 @@ class HostJobWorker:
             "observed_name": answer.get("Name"),
         }
         if mode == "ephemeral":
-            config = answer.get("Config")
-            labels = config.get("Labels") if isinstance(config, Mapping) else None
-            if isinstance(labels, Mapping):
-                binding["labels"] = {
-                    key: labels.get(key) for key in sorted(labels) if isinstance(key, str) and key.startswith("run-gate.")
-                }
+            config = answer["Config"]
+            labels = config["Labels"]
+            binding["labels"] = {
+                key: labels.get(key) for key in sorted(labels) if isinstance(key, str) and key.startswith("run-gate.")
+            }
         return binding
 
     def _inspect_container_binding(
-        self, event: Mapping[str, object], *, expected_sha: str,
+        self, event: Mapping[str, object], *, expected_sha: str, require_stopped: bool = True,
     ) -> Mapping[str, object] | None:
         container_id = event.get("container_id")
         if container_id is None:
@@ -1701,7 +2249,7 @@ class HostJobWorker:
                 )
         return self._verify_container_observation(
             answer, container_id=container_id, event_lane=lane, mode=mode,
-            persistent_name=persistent_name, expected_sha=expected_sha,
+            persistent_name=persistent_name, expected_sha=expected_sha, require_stopped=require_stopped,
         )
 
     def _teardown_containers(self, containers: Sequence[Mapping[str, object]], *, expected_sha: str) -> None:
@@ -1834,6 +2382,8 @@ class HostJobWorker:
         for container in containers:
             if container.get("status") == "missing-object":
                 reasons.append(f"Run-Gate container {container.get('id')} disappeared before binding")
+            elif container.get("status") == "inspection-error":
+                reasons.append(str(container.get("reason") or "Run-Gate container inspection was not confirmed"))
         checkout_line: str | None = None
         checkout_sha: str | None = None
         try:
@@ -1884,7 +2434,9 @@ class HostJobWorker:
         if cancelled:
             final_verdict = "CANCELLED"
             final_exit = int(ExitCode.CANCELLED)
-        elif reasons:
+        elif reasons or self.lane_error is not None:
+            if self.lane_error is not None:
+                reasons.append(self.lane_error)
             final_verdict = "ERROR"
             final_exit = int(ExitCode.IDENTITY_OR_TRANSPORT)
         else:
@@ -1904,12 +2456,13 @@ class HostJobWorker:
             "anchored_summary": summary_line,
             "lane_verdict_event": dict(verdict_event) if verdict_event is not None else None,
             "containers": [dict(container) for container in containers],
+            "collection": self._state().get("collection"),
             "verdict": final_verdict,
             "exit_code": final_exit,
             "binding": {"status": "refused" if reasons else "verified", "reasons": reasons},
         }
-        _atomic_json(self.job_dir / "result.json", result)
-        result_fd = os.open(self.job_dir / "result.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        _atomic_json(self.job_dir / "result-pending.json", result)
+        result_fd = os.open(self.job_dir / "result-pending.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             result_sha, result_size = self._hash_fd(result_fd)
         finally:
@@ -1931,8 +2484,14 @@ class HostJobWorker:
     def _bind_container_events(
         self, events: Sequence[Mapping[str, object]], *, expected_sha: str,
     ) -> list[Mapping[str, object]]:
+        state = self._state()
+        raw_observations = state.get("lane_event_observations")
+        observations = {
+            value.get("index"): value for value in raw_observations
+            if isinstance(raw_observations, list) and isinstance(value, Mapping)
+        } if isinstance(raw_observations, list) else {}
         bindings: list[Mapping[str, object]] = []
-        for event in events:
+        for index, event in enumerate(events):
             if event.get("event") != "lane-started":
                 continue
             lane = event.get("lane")
@@ -1940,15 +2499,29 @@ class HostJobWorker:
                 raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lane-started event has no lane")
             mode, persistent_name = self._container_mode(lane)
             container_id = event.get("container_id")
-            inspected = self._inspect_container_binding(event, expected_sha=expected_sha)
-            if inspected is None:
+            observed = observations.get(index)
+            if isinstance(observed, Mapping) and isinstance(observed.get("error"), str):
+                bindings.append({
+                    "id": container_id, "lane": lane, "mode": mode, "name": persistent_name,
+                    "status": "inspection-error", "reason": observed["error"],
+                })
+                continue
+            inspected = observed.get("binding") if isinstance(observed, Mapping) else None
+            if not isinstance(inspected, Mapping):
+                self.lane_error = self.lane_error or f"lane-started event {index} was not durably observed"
+                bindings.append({
+                    "id": container_id, "lane": lane, "mode": mode, "name": persistent_name,
+                    "status": "inspection-error", "reason": self.lane_error,
+                })
+                continue
+            if inspected.get("status") == "no-container":
                 status = "no-container" if container_id is None and mode == "host" else "missing-object"
                 bindings.append({
                     "id": container_id, "lane": lane, "mode": mode,
                     "name": persistent_name, "status": status,
                 })
             else:
-                bindings.append({**inspected, "status": "verified"})
+                bindings.append({**dict(inspected), "status": "verified"})
         return bindings
 
     def _remove_checkout(self) -> None:
@@ -1981,12 +2554,13 @@ class HostJobWorker:
             "anchored_summary": None,
             "lane_verdict_event": None,
             "containers": [],
+            "collection": collection,
             "verdict": verdict,
             "exit_code": exit_code,
             "binding": {"status": "not-run", "reasons": [reason]},
         }
-        _atomic_json(self.job_dir / "result.json", document)
-        fd = os.open(self.job_dir / "result.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        _atomic_json(self.job_dir / "result-pending.json", document)
+        fd = os.open(self.job_dir / "result-pending.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             result_sha, result_size = self._hash_fd(fd)
         finally:
@@ -2004,6 +2578,60 @@ class HostJobWorker:
             "collected_at": collected_at,
         }
 
+    def _persist_pending_terminal(self, terminal: Mapping[str, object]) -> None:
+        fields = (
+            "verdict", "exit_code", "lane", "api", "collected_at", "result_sha256", "result_size",
+        )
+        record = {field: terminal[field] for field in fields}
+        _atomic_json(self.job_dir / "terminal-pending.json", record)
+
+    def _read_pending_terminal(self) -> Mapping[str, object]:
+        raw = _read_regular(self.job_dir / "terminal-pending.json", limit=65536)
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"pending terminal result is unreadable: {exc}") from exc
+        required = {
+            "verdict", "exit_code", "lane", "api", "collected_at", "result_sha256", "result_size",
+        }
+        if not isinstance(value, dict) or set(value) != required:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "pending terminal result has an invalid closed shape")
+        return value
+
+    def _publish_terminal(self, terminal: Mapping[str, object], *, final_state: str, reason: str | None) -> None:
+        if not self.terminal_completed:
+            while True:
+                try:
+                    self._complete_admission(terminal)
+                    self.terminal_completed = True
+                    break
+                except AdmissionError as exc:
+                    try:
+                        self._save_state(
+                            state="stopping", reason=f"terminal record persistence deferred: {exc.reason}",
+                            retry_required=True,
+                        )
+                    except (AdmissionError, OSError):
+                        pass
+                    self.waiter(1)
+        pending = self.job_dir / "result-pending.json"
+        result = self.job_dir / "result.json"
+        if pending.exists():
+            os.replace(pending, result)
+            _fsync_dir(self.job_dir)
+        elif not result.is_file():
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "durable terminal record has no result artifact")
+        try:
+            (self.job_dir / "terminal-pending.json").unlink()
+        except FileNotFoundError:
+            pass
+        self._retry_state_save(
+            state=final_state, verdict=terminal.get("verdict"), exit_code=terminal.get("exit_code"),
+            result_sha256=terminal.get("result_sha256"), result_size=terminal.get("result_size"),
+            lane=terminal.get("lane"), api=terminal.get("api"), collected_at=terminal.get("collected_at"),
+            reason=reason, ended_utc=self.clock(), retry_required=False,
+        )
+
     def _complete_admission(self, terminal_details: Mapping[str, object]) -> None:
         if not self.group or not self.request_digest or self.lock_fd < 0:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor has no inherited live admission lock")
@@ -2020,12 +2648,167 @@ class HostJobWorker:
         book.complete(handle, terminal_details=terminal_details)
         self.lock_fd = -1
 
+    def _validate_run_gate_after_run(self) -> None:
+        project = self.request.get("project")
+        lane = self.request.get("lane")
+        if not isinstance(project, str) or not isinstance(lane, str):
+            self.lane_error = self.lane_error or "run-gate-request-identity-invalid"
+            return
+        try:
+            _lane, environment = _lane_environment(self.checkout_fd, project, lane)
+            state = self._state()
+            if environment.get("mode") != state.get("lane_mode"):
+                self.lane_error = self.lane_error or "run-gate-environment-changed-during-lane"
+        except AdmissionError as exc:
+            self.lane_error = self.lane_error or f"run-gate-config-invalid-after-lane: {exc.reason}"
+        if self.project_fd >= 0:
+            try:
+                info = os.stat(".assay", dir_fd=self.project_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                self.lane_error = self.lane_error or f"assay-directory-unreadable-after-lane: {exc}"
+            else:
+                if stat.S_ISLNK(info.st_mode):
+                    self.lane_error = self.lane_error or "assay-directory-symlink-after-lane"
+
+    def _finalize_lane(self, process_status: int) -> int:
+        while True:
+            try:
+                pending_path = self.job_dir / "terminal-pending.json"
+                if pending_path.is_file():
+                    terminal = self._read_pending_terminal()
+                else:
+                    try:
+                        self._follow_lane_events(final=True)
+                        events = self._read_events()
+                    except AdmissionError as exc:
+                        if exc.exit_code == ExitCode.QUEUED_WITHDRAWN:
+                            raise
+                        self.lane_error = self.lane_error or exc.reason
+                        events = []
+                    if self.event_cursor < len(events) and self.lane_error is None:
+                        self.waiter(1)
+                        continue
+                    state = self._state()
+                    mode = state.get("lane_mode")
+                    verdict_events = [event for event in events if event.get("event") == "lane-verdict"]
+                    if mode == "exec" and state.get("cancel_requested") is True:
+                        reason = "exec-cancel-cannot-prove-runner-process-stopped"
+                        self._save_state(state="stopping", reason=reason, retry_required=True)
+                        self.waiter(1)
+                        continue
+                    if state.get("cancel_requested") is True:
+                        if state.get("stop_signal") == "failed":
+                            reason = str(state.get("reason") or "TERM failed; cancellation finalization is refused")
+                            self._save_state(state="stopping", reason=reason, retry_required=True)
+                            self.waiter(1)
+                            continue
+                        guard = state.get("guard")
+                        present = guard.get("present") if isinstance(guard, Mapping) else None
+                        if present is True and state.get("guard_deregistered") is not True:
+                            action = getattr(self.thrashguard_client, "deregister", None)
+                            if not callable(action):
+                                reason = "thrashguard-deregister-unavailable"
+                                self._save_state(state="stopping", reason=reason, retry_required=True)
+                                self.waiter(1)
+                                continue
+                            try:
+                                action(self.job_id)
+                                self._retry_state_save(guard_deregistered=True, cancel_refused=False)
+                            except Exception as exc:
+                                self._save_state(
+                                    state="stopping", reason=f"thrashguard-deregister-failed: {exc}",
+                                    retry_required=True,
+                                )
+                                self.waiter(1)
+                                continue
+                        elif present is not False:
+                            reason = "thrashguard-presence-unknown"
+                            self._save_state(state="stopping", reason=reason, retry_required=True)
+                            self.waiter(1)
+                            continue
+                    if mode == "exec" and (
+                        len(verdict_events) != 1
+                        or verdict_events[0].get("lane") != self.request.get("lane")
+                    ):
+                        reason = "exec-end-without-run-gate-verdict-cannot-prove-runner-process-stopped"
+                        self._save_state(state="stopping", reason=reason, retry_required=True)
+                        self.waiter(1)
+                        continue
+                    self._validate_run_gate_after_run()
+                    request_sha = self.request.get("sha")
+                    if not isinstance(request_sha, str):
+                        raise AdmissionError(ExitCode.REFUSAL, "request sha is invalid during cleanup")
+                    self._ensure_scope_is_only_worker()
+                    self._ensure_job_containers_stopped(remove=False)
+                    containers = self._bind_container_events(events, expected_sha=request_sha)
+                    self._retry_state_save(container_bindings=containers)
+                    self._collect()
+                    state = self._state()
+                    cancelled = state.get("cancel_requested") is True
+                    terminal = self._bind_verdict(events, process_status, containers, cancelled=cancelled)
+                    self._persist_pending_terminal(terminal)
+                pending_result = json.loads(_read_regular(self.job_dir / "result-pending.json", limit=1024 * 1024).decode("utf-8"))
+                containers = pending_result.get("containers", []) if isinstance(pending_result, Mapping) else []
+                expected_sha = str(self.request.get("sha", ""))
+                verified = [
+                    value for value in containers
+                    if isinstance(value, Mapping) and value.get("status") == "verified"
+                ] if isinstance(containers, list) else []
+                self._teardown_containers(verified, expected_sha=expected_sha)
+                self._ensure_job_containers_stopped(remove=True)
+                self._ensure_scope_is_only_worker()
+                self._remove_checkout()
+                self._ensure_scope_is_only_worker()
+                self._ensure_job_containers_stopped(remove=False)
+                reason: str | None = None
+                reasons = pending_result.get("binding", {}).get("reasons") if isinstance(pending_result, Mapping) else None
+                if isinstance(reasons, list) and reasons:
+                    reason = "; ".join(str(item) for item in reasons)
+                elif terminal.get("verdict") == "CANCELLED":
+                    current = self._state()
+                    reason = str(current.get("cancel_reason") or "cancelled")
+                final_state = "cancelled" if terminal.get("verdict") == "CANCELLED" else (
+                    "done" if terminal.get("verdict") == "PASS" else "failed"
+                )
+                self._publish_terminal(terminal, final_state=final_state, reason=reason)
+                return int(terminal["exit_code"])
+            except AdmissionError as exc:
+                if exc.exit_code in {
+                    ExitCode.IDENTITY_OR_TRANSPORT, ExitCode.REFUSAL,
+                    ExitCode.PREREQUISITE_MISSING, ExitCode.CHECKOUT_FAILURE, ExitCode.MISSING_BASE,
+                } and self.lane_error is None:
+                    self.lane_error = exc.reason
+                try:
+                    self._save_state(
+                        state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                        reason=f"lane finalization deferred: {exc.reason}", retry_required=True,
+                    )
+                except (AdmissionError, OSError):
+                    pass
+                self.waiter(1)
+            except (OSError, ValueError, UnicodeError) as exc:
+                if self.lane_error is None:
+                    self.lane_error = f"lane finalization failed: {exc}"
+                try:
+                    self._save_state(
+                        state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                        reason=f"lane finalization deferred: {exc}", retry_required=True,
+                    )
+                except (AdmissionError, OSError):
+                    pass
+                self.waiter(1)
+
     def _finish_unstarted(self, exit_code: int, reason: str) -> int:
         try:
             current = self._state()
         except AdmissionError:
             return int(exit_code)
-        if current.get("lane_pid") is not None and current.get("lane_process_status") is None:
+        if (
+            current.get("lane_process_status") is None
+            and (current.get("lane_pid") is not None or current.get("lane_may_be_live") is True)
+        ):
             self._save_state(
                 state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
                 reason="lane process start could not be confirmed stopped", retry_required=True,
@@ -2038,36 +2821,40 @@ class HostJobWorker:
                 retry_required=True,
             )
             return int(ExitCode.QUEUED_WITHDRAWN)
-        try:
-            if self.checkout_fd >= 0:
-                self._collect()
-            if self.checkout_rel and self.runner is not None:
-                self._remove_checkout()
-            verdict = "CANCELLED" if exit_code == ExitCode.CANCELLED else "NOT_RUN"
-            terminal = self._simple_result(verdict, int(exit_code), reason)
-            final_state = "cancelled" if verdict == "CANCELLED" else "failed"
-            self._save_state(
-                state=final_state, verdict=verdict, exit_code=exit_code, reason=reason,
-                result_sha256=terminal["result_sha256"], result_size=terminal["result_size"],
-                lane=terminal["lane"], api=terminal["api"], collected_at=terminal["collected_at"],
-                ended_utc=self.clock(),
-            )
+        permanent = exit_code in {ExitCode.IDENTITY_OR_TRANSPORT, ExitCode.REFUSAL} or (
+            exit_code == ExitCode.PREREQUISITE_MISSING and "Run-Gate" in reason
+        )
+        verdict = "CANCELLED" if exit_code == ExitCode.CANCELLED else "ERROR" if permanent else "NOT_RUN"
+        final_state = "cancelled" if verdict == "CANCELLED" else "failed"
+        while True:
             try:
-                self._complete_admission(terminal)
-            except AdmissionError as exc:
-                self._save_state(
-                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
-                    reason=f"terminal record persistence deferred: {exc.reason}", retry_required=True,
-                )
-                return int(ExitCode.QUEUED_WITHDRAWN)
-            return int(exit_code)
-        except (AdmissionError, OSError, ValueError, UnicodeError) as exc:
-            detail = exc.reason if isinstance(exc, AdmissionError) else str(exc)
-            self._save_state(
-                state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
-                reason=f"pre-lane finalization deferred: {detail}", retry_required=True,
-            )
-            return int(ExitCode.QUEUED_WITHDRAWN)
+                pending_path = self.job_dir / "terminal-pending.json"
+                if pending_path.is_file():
+                    terminal = self._read_pending_terminal()
+                else:
+                    self._ensure_scope_is_only_worker()
+                    self._ensure_job_containers_stopped(remove=False)
+                    if self.checkout_fd >= 0 and self.runner is not None:
+                        self._collect()
+                    terminal = self._simple_result(verdict, int(exit_code), reason)
+                    self._persist_pending_terminal(terminal)
+                self._ensure_job_containers_stopped(remove=True)
+                if self.checkout_rel and self.runner is not None:
+                    self._remove_checkout()
+                self._ensure_scope_is_only_worker()
+                self._ensure_job_containers_stopped(remove=False)
+                self._publish_terminal(terminal, final_state=final_state, reason=reason)
+                return int(terminal["exit_code"])
+            except (AdmissionError, OSError, ValueError, UnicodeError) as exc:
+                detail = exc.reason if isinstance(exc, AdmissionError) else str(exc)
+                try:
+                    self._save_state(
+                        state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                        reason=f"pre-lane finalization deferred: {detail}", retry_required=True,
+                    )
+                except (AdmissionError, OSError):
+                    pass
+                self.waiter(1)
 
     def run(self) -> int:
         """Run checkout and lane prerequisites, then return the Run-Gate status."""
@@ -2090,63 +2877,29 @@ class HostJobWorker:
             if self.request.get("kind") != "lane":
                 raise AdmissionError(ExitCode.REFUSAL, "kind=dev is outside the C3b-1 lane executor")
             binary, mode, facts = self._prerequisites()
+            self._save_state(
+                lane_mode=mode,
+                runner_name=facts.get("runner_name"),
+                captured_lane=self.request.get("lane"),
+                captured_at=self.clock(),
+            )
             self._cancel_checkpoint()
             self._wait_for_psi()
             self._cancel_checkpoint()
             self._seed_stores()
             self._cancel_checkpoint()
             memory_lock_fd = self._memory_admission()
+            self.memory_lock_fd = memory_lock_fd if memory_lock_fd is not None else -1
             status = self._run_lane(binary, mode, facts, memory_lock_fd)
-            events = self._wait_for_lane_containers()
-            request_sha = self.request.get("sha")
-            if not isinstance(request_sha, str):
-                raise AdmissionError(ExitCode.REFUSAL, "request sha is invalid during cleanup")
-            containers = self._bind_container_events(events, expected_sha=request_sha)
-            self._save_state(container_bindings=containers)
-            self._collect()
-            state = self._state()
-            cancelled = state.get("cancel_requested") is True
-            terminal = self._bind_verdict(events, status, containers, cancelled=cancelled)
-            self._save_state(**terminal)
-            self._teardown_containers(
-                [container for container in containers if container.get("status") == "verified"],
-                expected_sha=request_sha,
-            )
-            self._remove_checkout()
-            state = self._state()
-            if state.get("cancel_requested") is True and terminal.get("verdict") != "CANCELLED":
-                terminal = self._bind_verdict(events, status, containers, cancelled=True)
-            final_state = "cancelled" if terminal.get("verdict") == "CANCELLED" else (
-                "done" if terminal.get("verdict") == "PASS" else "failed"
-            )
-            self._save_state(
-                state=final_state, verdict=terminal.get("verdict"), exit_code=terminal.get("exit_code"),
-                result_sha256=terminal.get("result_sha256"), result_size=terminal.get("result_size"),
-                lane=terminal.get("lane"), api=terminal.get("api"), collected_at=terminal.get("collected_at"),
-                reason=("; ".join(terminal.get("binding_reasons", []))
-                        if isinstance(terminal.get("binding_reasons"), list) and terminal.get("binding_reasons")
-                        else state.get("cancel_reason") if final_state == "cancelled" else None),
-                ended_utc=self.clock(),
-            )
-            try:
-                self._complete_admission({
-                    field: terminal[field] for field in (
-                        "verdict", "exit_code", "lane", "api", "collected_at", "result_sha256", "result_size",
-                    )
-                })
-            except AdmissionError as exc:
-                self._save_state(
-                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
-                    reason=f"terminal record persistence deferred: {exc.reason}", retry_required=True,
-                )
-                return int(ExitCode.QUEUED_WITHDRAWN)
-            return int(terminal["exit_code"])
+            return self._finalize_lane(status)
         except AdmissionError as exc:
             try:
                 current = self._state()
             except AdmissionError:
                 current = {}
-            if current.get("lane_pid") is not None and current.get("lane_process_status") is None:
+            if current.get("lane_process_status") is None and (
+                current.get("lane_pid") is not None or current.get("lane_may_be_live") is True
+            ):
                 self._log(f"executor cleanup deferred exit={exc.exit_code}: {exc.reason}")
                 self._save_state(
                     state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN, reason=exc.reason,
@@ -2168,7 +2921,11 @@ class HostJobWorker:
                 current = self._state()
             except AdmissionError:
                 current = {}
-            if current.get("lane_pid") is not None or current.get("lane_process_status") is not None:
+            if (
+                current.get("lane_pid") is not None
+                or current.get("lane_process_status") is not None
+                or current.get("lane_may_be_live") is True
+            ):
                 self._save_state(
                     state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
                     reason=f"finalization deferred: {exc}", retry_required=True,
@@ -2176,12 +2933,38 @@ class HostJobWorker:
                 return int(ExitCode.QUEUED_WITHDRAWN)
             return self._finish_unstarted(int(ExitCode.RUNNER_FAILURE), str(exc))
         finally:
+            if self.memory_lock_fd >= 0:
+                try:
+                    fcntl.flock(self.memory_lock_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                _close(self.memory_lock_fd)
             _close(self.project_fd, self.checkout_fd, self.repo_root_fd)
 
 
 def _read_text_file(path: str) -> str:
     with open(path, "r", encoding="ascii") as stream:
         return stream.read()
+
+
+def _scope_processes(unit: str) -> tuple[int, ...]:
+    """Read process membership for this worker's unified cgroup scope."""
+
+    cgroup = ""
+    with open("/proc/self/cgroup", "r", encoding="ascii") as stream:
+        for line in stream:
+            hierarchy, _controllers, path = line.rstrip("\n").split(":", 2)
+            if hierarchy == "0":
+                cgroup = path
+                break
+    parts = PurePosixPath(cgroup)
+    if not cgroup.startswith("/") or ".." in parts.parts or parts.name != unit:
+        raise OSError(f"worker cgroup {cgroup!r} does not match scope {unit!r}")
+    with open(Path("/sys/fs/cgroup") / cgroup.lstrip("/") / "cgroup.procs", "r", encoding="ascii") as stream:
+        values = tuple(int(line) for line in stream if line.strip())
+    if any(pid <= 0 for pid in values):
+        raise OSError("scope cgroup.procs contains an invalid pid")
+    return values
 
 
 def _read_meminfo() -> str:
@@ -2231,11 +3014,15 @@ def _mkdir_beneath(root_fd: int, relative: str) -> int:
     current = os.dup(root_fd)
     try:
         for part in parts:
+            created = False
             try:
-                os.mkdir(part, mode=0o700, dir_fd=current)
+                os.mkdir(part, mode=0o755, dir_fd=current)
+                created = True
             except FileExistsError:
                 pass
             next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            if created:
+                os.fchmod(next_fd, 0o755)
             os.close(current)
             current = next_fd
         result, current = current, -1
@@ -2346,13 +3133,13 @@ def _extract_seed(
     if _SHA256_RE.fullmatch(expected_sha256) is None or expected_bytes <= 0 or max_bytes <= 0:
         raise ValueError(f"STORE-SEED-FAILED {relative} invalid-descriptor")
     temporary = f".fleetd-seed-input-{os.getpid()}-{time.monotonic_ns()}"
-    fd = -1
-    created = False
+    try:
+        fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
+    except OSError as exc:
+        raise ValueError(f"STORE-SEED-FAILED {relative} unpack-failed") from exc
     size = 0
     hasher = hashlib.sha256()
     try:
-        fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
-        created = True
         while True:
             chunk = os.read(input_fd, 1024 * 1024)
             if not chunk:
@@ -2364,6 +3151,8 @@ def _extract_seed(
             view = memoryview(chunk)
             while view:
                 written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("seed archive write made no progress")
                 view = view[written:]
         if size != expected_bytes:
             raise ValueError(f"STORE-SEED-FAILED {relative} size")
@@ -2431,9 +3220,8 @@ def _extract_seed(
                     os.close(directory_fd)
                     continue
                 parent_rel = name.rpartition("/")[0]
-                if parent_rel:
-                    created_parent = _mkdir_beneath(root_fd, parent_rel)
-                    os.close(created_parent)
+                created_parent = _mkdir_beneath(root_fd, parent_rel)
+                os.close(created_parent)
                 parent_fd, leaf = _open_parent(root_fd, name)
                 member_fd = -1
                 try:
@@ -2441,6 +3229,7 @@ def _extract_seed(
                         leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                         0o644, dir_fd=parent_fd,
                     )
+                    os.fchmod(member_fd, 0o644)
                     source = archive.extractfile(member)
                     if source is None:
                         raise ValueError(f"STORE-SEED-FAILED {relative} unreadable-archive")
@@ -2465,28 +3254,14 @@ def _extract_seed(
         raise ValueError(f"STORE-SEED-FAILED {relative} unpack-failed") from exc
     finally:
         _close(fd)
-        if created:
-            try:
-                os.unlink(temporary, dir_fd=root_fd)
-            except FileNotFoundError:
-                pass
+        try:
+            os.unlink(temporary, dir_fd=root_fd)
+        except FileNotFoundError:
+            pass
 
 
 def _helper_main(argv: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="fleetd-executor-worker-helper")
-    commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "prepare-event", "write-file", "remove-tree", "archive-artifacts", "archive-store"):
-        command = commands.add_parser(name)
-        command.add_argument("--relative", required=name in {"write-file", "remove-tree", "archive-store"})
-        command.add_argument("--output-fd", type=int, required=name in {"archive-artifacts", "archive-store"})
-        if name == "write-file":
-            command.add_argument("--sha256", required=True)
-            command.add_argument("--bytes", type=int, required=True)
-    seed = commands.add_parser("extract-seed")
-    seed.add_argument("--relative", required=True)
-    seed.add_argument("--sha256", required=True)
-    seed.add_argument("--bytes", type=int, required=True)
-    seed.add_argument("--max-bytes", type=int, required=True)
+    parser = _helper_parser()
     args = parser.parse_args(argv)
     cwd_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -2515,16 +3290,46 @@ def _helper_main(argv: Sequence[str]) -> int:
     return 0
 
 
+def _helper_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="fleetd-executor-worker-helper")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("prepare", "prepare-event", "write-file", "remove-tree", "archive-artifacts", "archive-store"):
+        command = commands.add_parser(name)
+        if name == "archive-store":
+            command.add_argument("--relative", action="append", required=True)
+        elif name in {"prepare", "prepare-event", "write-file", "remove-tree"}:
+            command.add_argument("--relative", required=True)
+        command.add_argument("--output-fd", type=int, required=name in {"archive-artifacts", "archive-store"})
+        if name == "write-file":
+            command.add_argument("--sha256", required=True)
+            command.add_argument("--bytes", type=int, required=True)
+    seed = commands.add_parser("extract-seed")
+    seed.add_argument("--relative", required=True)
+    seed.add_argument("--sha256", required=True)
+    seed.add_argument("--bytes", type=int, required=True)
+    seed.add_argument("--max-bytes", type=int, required=True)
+    return parser
+
+
 def _worker_main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="fleetd-executor-worker")
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--lock-fd", type=int, required=True)
+    parser.add_argument("--handshake-fd", type=int, required=True)
     args = parser.parse_args(argv)
     try:
         policy = load_agent_policy(args.policy)
-        os.fstat(args.lock_fd)
+        lock_info = os.fstat(args.lock_fd)
+        if not stat.S_ISREG(lock_info.st_mode):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "inherited admission lock is not a regular file")
+        fcntl.flock(args.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        handshake = f"{os.getpid()}\n".encode("ascii")
+        written = os.write(args.handshake_fd, handshake)
+        if written != len(handshake):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "worker start handshake was incomplete")
+        os.close(args.handshake_fd)
         worker = HostJobWorker(args.state_dir, policy, args.job_id, args.lock_fd)
         return worker.run()
     except (AdmissionError, OSError, ValueError) as exc:
@@ -2534,11 +3339,17 @@ def _worker_main(argv: Sequence[str]) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if args and args[0] in {"prepare", "prepare-event", "write-file", "extract-seed"}:
+    helper_parser = _helper_parser()
+    helper_commands = helper_parser._subparsers._group_actions[0].choices
+    if args and args[0] in helper_commands:
         return _helper_main(args)
     if args and args[0] == "worker":
         return _worker_main(args[1:])
-    print("fleetd-executor-worker: expected worker, prepare, prepare-event, or write-file", file=sys.stderr)
+    print(
+        "fleetd-executor-worker: expected worker or one of: "
+        + ", ".join(sorted(helper_commands)),
+        file=sys.stderr,
+    )
     return int(ExitCode.REFUSAL)
 
 

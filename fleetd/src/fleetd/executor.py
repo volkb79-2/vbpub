@@ -13,11 +13,14 @@ import fcntl
 import json
 import os
 import re
+import select
 import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +31,7 @@ from .agent_policy import AgentPolicy, DEFAULT_AGENT_POLICY_PATH
 
 _JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_EXECUTOR_JSON_MAX = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -47,11 +51,14 @@ class ScopeState:
 
     unit: str
     active: bool
-    main_pid: int
+    worker_pid: int
 
 
 class ScopeLauncher(Protocol):
-    def launch(self, unit: str, argv: Sequence[str], lock_fd: int) -> ScopeState: ...
+    def launch(
+        self, unit: str, argv: Sequence[str], lock_fd: int,
+        handshake_read_fd: int, handshake_write_fd: int,
+    ) -> ScopeState: ...
 
 
 class ProcessSignals(Protocol):
@@ -66,7 +73,7 @@ class SystemProcessSignals:
 
 
 class SystemdScopeLauncher:
-    """Start and inspect a transient scope without a shell command string."""
+    """Start a transient scope and confirm its exec'd worker through a pipe."""
 
     def __init__(
         self,
@@ -74,67 +81,135 @@ class SystemdScopeLauncher:
         *,
         popen: Callable[..., Any] = subprocess.Popen,
         run: Callable[..., Any] = subprocess.run,
+        pid_cgroup: Callable[[int], str] | None = None,
+        waiter: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+        reaper_start: Callable[[Callable[[], int]], None] | None = None,
     ) -> None:
         self.query_timeout_s = query_timeout_s
         self._popen = popen
         self._run = run
+        self._pid_cgroup = pid_cgroup or _read_pid_cgroup
+        self._waiter = waiter
+        self._monotonic = monotonic
+        self._reaper_start = reaper_start or _start_reaper
 
-    def launch(self, unit: str, argv: Sequence[str], lock_fd: int) -> ScopeState:
-        command = [
-            "systemd-run", "--scope", "--quiet", "--collect", "--unit", unit,
-            "--", *argv,
-        ]
+    def launch(
+        self, unit: str, argv: Sequence[str], lock_fd: int,
+        handshake_read_fd: int, handshake_write_fd: int,
+    ) -> ScopeState:
+        deadline = self._monotonic() + self.query_timeout_s
+        command = ["systemd-run", "--scope", "--quiet", "--collect", "--unit", unit, "--", *argv]
         try:
-            self._popen(
+            process = self._popen(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
-                pass_fds=(lock_fd,),
+                pass_fds=(lock_fd, handshake_write_fd),
                 start_new_session=True,
             )
         except OSError as exc:
+            try:
+                os.close(handshake_write_fd)
+            except OSError:
+                pass
             raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot start job scope {unit}: {exc}") from exc
+        try:
+            os.close(handshake_write_fd)
+        except OSError:
+            pass
+        try:
+            self._reaper_start(process.wait)
+        except Exception as exc:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot reap job scope command {unit}: {exc}") from exc
 
-        try:
-            result = self._run(
-                ["systemctl", "show", "--no-pager", "--property=ActiveState", "--property=MainPID", unit],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-                timeout=self.query_timeout_s,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot confirm job scope {unit}: {exc}") from exc
-        if result.returncode != 0:
-            detail = str(result.stderr).strip()
+        worker_pid = self._read_worker_handshake(handshake_read_fd, deadline, unit)
+        if worker_pid != process.pid:
             raise AdmissionError(
                 ExitCode.RUNNER_FAILURE,
-                f"cannot confirm job scope {unit}: {detail or f'exit {result.returncode}'}",
+                f"job scope {unit} handshake pid {worker_pid} differs from systemd-run exec pid {process.pid}",
             )
-        values: dict[str, str] = {}
-        for line in str(result.stdout).splitlines():
-            key, separator, value = line.partition("=")
-            if separator:
-                values[key] = value
-        try:
-            main_pid = int(values.get("MainPID", "0"))
-        except ValueError:
-            main_pid = 0
-        active = values.get("ActiveState") == "active" and main_pid > 0
-        if not active:
-            raise AdmissionError(
-                ExitCode.RUNNER_FAILURE,
-                f"job scope {unit} did not confirm an active worker (state={values.get('ActiveState', 'unknown')}, pid={main_pid})",
+
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"timed out confirming active job scope {unit}")
+            try:
+                result = self._run(
+                    ["systemctl", "show", "--no-pager", "--property=ActiveState", unit],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=remaining,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                if self._monotonic() >= deadline:
+                    raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot confirm job scope {unit}: {exc}") from exc
+                self._waiter(min(0.05, remaining))
+                continue
+            active = result.returncode == 0 and any(
+                line.strip() == "ActiveState=active" for line in str(result.stdout).splitlines()
             )
-        return ScopeState(unit, True, main_pid)
+            if active:
+                try:
+                    cgroup = self._pid_cgroup(worker_pid)
+                except (OSError, ValueError) as exc:
+                    raise AdmissionError(
+                        ExitCode.RUNNER_FAILURE, f"cannot read worker {worker_pid} cgroup: {exc}",
+                    ) from exc
+                if cgroup.rstrip("/").rsplit("/", 1)[-1] != unit:
+                    raise AdmissionError(
+                        ExitCode.RUNNER_FAILURE,
+                        f"worker {worker_pid} is in cgroup {cgroup!r}, not scope {unit}",
+                    )
+                return ScopeState(unit, True, worker_pid)
+            self._waiter(min(0.05, remaining))
+
+    def _read_worker_handshake(self, read_fd: int, deadline: float, unit: str) -> int:
+        received = bytearray()
+        while b"\n" not in received:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"worker handshake timed out for scope {unit}")
+            readable, _, _ = select.select([read_fd], [], [], remaining)
+            if not readable:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"worker handshake timed out for scope {unit}")
+            chunk = os.read(read_fd, 65 - len(received))
+            if not chunk:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"worker exited before its handshake for scope {unit}")
+            received.extend(chunk)
+            if len(received) > 64:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"worker handshake is too large for scope {unit}")
+        line, _tail = bytes(received).split(b"\n", 1)
+        if not line.isdigit():
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"worker handshake is invalid for scope {unit}")
+        pid = int(line)
+        if pid <= 0:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"worker handshake pid is invalid for scope {unit}")
+        return pid
 
 
 def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _read_pid_cgroup(pid: int) -> str:
+    with open(f"/proc/{pid}/cgroup", "r", encoding="ascii") as stream:
+        for line in stream:
+            hierarchy, _controllers, path = line.rstrip("\n").split(":", 2)
+            if hierarchy == "0":
+                return path
+    raise OSError(f"pid {pid} has no unified cgroup entry")
+
+
+def _start_reaper(
+    wait: Callable[[], int], *, thread_factory: Callable[..., Any] = threading.Thread,
+) -> None:
+    thread_factory(target=wait, daemon=True).start()
 
 
 def _fsync_directory(path: Path) -> None:
@@ -151,6 +226,8 @@ def _atomic_json(path: Path, document: Mapping[str, object]) -> None:
         payload = json.dumps(
             document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
         ).encode("utf-8")
+        if len(payload) > _EXECUTOR_JSON_MAX:
+            raise ValueError(f"executor JSON record exceeds {_EXECUTOR_JSON_MAX} bytes")
         fd, temporary = tempfile.mkstemp(prefix=".executor-", dir=path.parent)
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as stream:
@@ -173,10 +250,12 @@ def _atomic_json(path: Path, document: Mapping[str, object]) -> None:
 def _job_state_lock(job_dir: Path) -> Iterator[None]:
     """Serialize agent and worker read/modify/write operations on state.json."""
 
-    fd = -1
-    locked = False
     try:
         fd = os.open(job_dir / "state.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot lock executor state: {exc}") from exc
+    locked = False
+    try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state lock is not a private regular file")
@@ -188,8 +267,7 @@ def _job_state_lock(job_dir: Path) -> Iterator[None]:
     finally:
         if locked:
             fcntl.flock(fd, fcntl.LOCK_UN)
-        if fd >= 0:
-            os.close(fd)
+        os.close(fd)
 
 
 def _job_id(value: object) -> str:
@@ -231,7 +309,6 @@ class HostJobExecutor:
         scope_launcher: ScopeLauncher | None = None,
         user_resolver: Callable[[str], RunnerIdentity] | None = None,
         guard_presence: Callable[[], bool | None] | None = None,
-        process_signals: ProcessSignals | None = None,
         clock: Callable[[], str] = _utc_now,
         python_executable: str = sys.executable,
     ) -> None:
@@ -242,7 +319,6 @@ class HostJobExecutor:
         self.scope_launcher = scope_launcher
         self.user_resolver = user_resolver
         self.guard_presence = guard_presence or (lambda: None)
-        self.process_signals = process_signals or SystemProcessSignals()
         self.clock = clock
         self.python_executable = python_executable
 
@@ -317,7 +393,6 @@ class HostJobExecutor:
             "started_utc": self.clock(),
             "ended_utc": None,
             "exit_code": None,
-            "verdict": None,
             "reason": None,
             "checkout": None,
             "container": {"id": None, "name": None, "image": None},
@@ -331,30 +406,56 @@ class HostJobExecutor:
             "--job-id", job_id, "--lock-fd", str(admission.fileno()),
         ]
         start_gate_fd = -1
+        handshake_read_fd = -1
+        handshake_write_fd = -1
         try:
+            handshake_read_fd, handshake_write_fd = os.pipe()
+            argv.extend(("--handshake-fd", str(handshake_write_fd)))
             start_gate_fd = os.open(
                 job_dir / "start.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600,
             )
             fcntl.flock(start_gate_fd, fcntl.LOCK_EX)
             launcher = self.scope_launcher or SystemdScopeLauncher(self.policy.query_timeout_s)
-            launched = launcher.launch(unit, argv, admission.fileno())
-            if not launched.active or launched.main_pid <= 0 or launched.unit != unit:
+            launched = launcher.launch(
+                unit, argv, admission.fileno(), handshake_read_fd, handshake_write_fd,
+            )
+            if not launched.active or launched.worker_pid <= 0 or launched.unit != unit:
                 raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor scope start was not confirmed")
-            # The worker is blocked on start.lock. Hand off the charge only
-            # after the scope query has confirmed a live worker, then publish
-            # the confirmation before opening the gate.
-            admission.handoff()
+            # The worker is blocked on start.lock. Persist confirmation before
+            # transferring the charge; a failed save leaves the agent's copy live.
             with _job_state_lock(job_dir):
                 current = self.read_state(job_id)
                 if current is None:
                     raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state disappeared during scope start")
                 running = dict(current)
-                running.update(start_confirmed=True, executor_pid=launched.main_pid)
+                running.update(start_confirmed=True, executor_pid=launched.worker_pid)
                 if running.get("state") != "stopping":
                     running["state"] = "running"
                 _atomic_json(job_dir / "state.json", running)
+            admission.handoff()
             return running
+        except Exception as exc:
+            try:
+                with _job_state_lock(job_dir):
+                    current = self.read_state(job_id)
+                    if current is not None and current.get("start_confirmed") is not True:
+                        failed = dict(current)
+                        failed["start_error"] = str(exc)[:1000]
+                        _atomic_json(job_dir / "state.json", failed)
+            except (AdmissionError, OSError):
+                pass
+            raise
         finally:
+            if handshake_write_fd >= 0:
+                try:
+                    os.close(handshake_write_fd)
+                except OSError:
+                    pass
+            if handshake_read_fd >= 0:
+                try:
+                    os.close(handshake_read_fd)
+                except OSError:
+                    pass
             if start_gate_fd >= 0:
                 try:
                     fcntl.flock(start_gate_fd, fcntl.LOCK_UN)
@@ -364,12 +465,6 @@ class HostJobExecutor:
     def request_stop(self, job_id: str, reason: str) -> Mapping[str, object] | None:
         job_id = _job_id(job_id)
         job_dir = self._job_dir(job_id, create=False)
-        try:
-            guard_present = self.guard_presence()
-        except Exception:
-            guard_present = None
-        if not isinstance(guard_present, bool):
-            guard_present = None
         with _job_state_lock(job_dir):
             current = self.read_state(job_id)
             if current is None:
@@ -379,51 +474,8 @@ class HostJobExecutor:
             if current.get("lane_process_status") is not None:
                 raise AdmissionError(ExitCode.REFUSAL, f"lane for job {job_id!r} has exited and is being finalized")
             state = dict(current)
-            if guard_present is not False:
-                refusal = (
-                    "thrashguard presence is unknown; cancellation deferred"
-                    if guard_present is None else
-                    "thrashguard deregister/thaw client is unavailable; cancellation deferred"
-                )
-                state.update(state="stopping", reason=refusal,
-                             guard={"present": guard_present, "reason": refusal})
-                _atomic_json(job_dir / "state.json", state)
-                raise AdmissionError(ExitCode.REFUSAL, refusal)
-            state.update(
-                state="stopping", reason=reason,
-                guard={"present": False, "reason": "thrashguard-absent"},
-                cancel_requested=True, cancel_reason=reason,
-            )
+            state.update(state="stopping", reason=reason, cancel_requested=True, cancel_reason=reason)
             _atomic_json(job_dir / "state.json", state)
-        pid = state.get("lane_pid")
-        if type(pid) is int and pid > 0:
-            try:
-                self.process_signals.terminate_group(pid)
-            except ProcessLookupError:
-                signal_state = "process-already-exited"
-            except OSError as exc:
-                signal_state = "failed"
-                signal_reason = f"TERM failed: {exc}"
-            else:
-                signal_state = "sent"
-                signal_reason = reason
-            with _job_state_lock(job_dir):
-                latest = self.read_state(job_id)
-                if latest is None:
-                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state disappeared during TERM")
-                state = dict(latest)
-                state["stop_signal"] = signal_state
-                if signal_state == "failed":
-                    state["reason"] = signal_reason
-                _atomic_json(job_dir / "state.json", state)
-        else:
-            with _job_state_lock(job_dir):
-                latest = self.read_state(job_id)
-                if latest is None:
-                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state disappeared before lane start")
-                state = dict(latest)
-                state["stop_signal"] = "pending-lane-start"
-                _atomic_json(job_dir / "state.json", state)
         return state
 
     def read_state(self, job_id: str) -> Mapping[str, object] | None:
@@ -440,11 +492,11 @@ class HostJobExecutor:
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state record is not a regular file")
-            raw = os.read(fd, 65537)
+            raw = os.read(fd, _EXECUTOR_JSON_MAX + 1)
         finally:
             os.close(fd)
-        if len(raw) > 65536:
-            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state record exceeds 64 KiB")
+        if len(raw) > _EXECUTOR_JSON_MAX:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state record exceeds 1 MiB")
         try:
             document = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

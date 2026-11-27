@@ -369,6 +369,64 @@ def test_executor_terminal_details_survive_completion_and_restart(tmp_path):
     assert terminal["state"] == "completed"
 
 
+@pytest.mark.parametrize("field, value, message", [
+    ("partial", None, "incomplete executor result details"),
+    ("verdict", "MAYBE", "invalid executor verdict"),
+    ("exit_code", True, "invalid executor exit code"),
+    ("lane", "", "invalid executor identity details"),
+    ("api", "other", "invalid executor identity details"),
+    ("collected_at", "not-a-time", "invalid collected_at"),
+    ("result_sha256", "not-a-digest", "invalid result sha256"),
+    ("result_size", -1, "invalid result size"),
+])
+def test_terminal_record_executor_details_are_closed_and_typed(tmp_path, field, value, message):
+    record = _parser_record("terminal")
+    details = {
+        "verdict": "PASS", "exit_code": 0, "lane": "r0-r1", "api": "fleet-host-agent/1",
+        "collected_at": "2026-11-27T00:00:00Z", "result_sha256": "a" * 64, "result_size": 12,
+    }
+    record.update(details)
+    if field == "partial":
+        record.pop("result_size")
+    else:
+        record[field] = value
+    path = _parser_path(tmp_path, "terminal")
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(AdmissionError, match=message):
+        admission_module._read_terminal_record(path, expected_id="ops-record")
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("partial", None, "closed field set"),
+    ("verdict", "MAYBE", "terminal verdict is invalid"),
+    ("exit_code", True, "terminal exit code is invalid"),
+    ("lane", "", "identity details are invalid"),
+    ("api", "other", "identity details are invalid"),
+    ("collected_at", "bad", "collected_at is invalid"),
+    ("result_sha256", "bad", "result sha256 is invalid"),
+    ("result_size", -1, "result size is invalid"),
+])
+def test_admission_completion_rejects_invalid_executor_details_without_releasing_charge(
+    tmp_path, field, value, message,
+):
+    book = _book(tmp_path / "state")
+    admitted = _admit(book, _capacity(), job_id="ops-invalid-details")
+    details = {
+        "verdict": "PASS", "exit_code": 0, "lane": "r0-r1", "api": "fleet-host-agent/1",
+        "collected_at": "2026-11-27T00:00:00Z", "result_sha256": "a" * 64, "result_size": 12,
+    }
+    if field == "partial":
+        details.pop("result_size")
+    else:
+        details[field] = value
+
+    with pytest.raises(AdmissionError, match=message):
+        admitted.handle.complete(terminal_details=details)
+    assert admitted.handle.live is True
+    assert book.is_live("ops-invalid-details") is True
+
+
 def test_record_and_executor_flock_exist_before_queue_lock_is_released(tmp_path, monkeypatch):
     capacity = _capacity()
     book = _book(tmp_path / "state")
