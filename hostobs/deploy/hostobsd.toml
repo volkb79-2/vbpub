@@ -6,6 +6,8 @@ cgroup_root = "/sys/fs/cgroup"
 
 [limits]
 max_rows = 1024
+annotate_rate_per_s = 50
+annotate_burst = 64
 
 [store]
 dir = "/var/lib/hostobs/probe"

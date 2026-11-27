@@ -61,14 +61,15 @@ use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, PROTO_MINOR};
 use hostobs_proto::quality;
 use hostobs_proto::stream::{ConnTimers, Detect, Feed, FrameReader, ModeDetect, RawFrame, Timer};
 
-use crate::backend::{Backend, Identity, StatusInfo};
+use crate::backend::{AnnotateKind, AnnotateRefusal, Backend, Identity, StatusInfo};
 use crate::classify::{
     classify_with, Call, ConnFacts, Dispatch, Mode, Phase, Prefix, Query, Refusal, SERVER_MAJOR,
 };
 use crate::codes::{Code, Detail, Pool};
 use crate::encode::{
-    closing_evt, current_result, end_error, end_ok, error_line, push_string, rep_error, rep_ok,
-    rep_ok_line, server_prefix, subscribe_result, unknown_mode_line, EndReason, UNSUBSCRIBE_RESULT,
+    annotate_result, closing_evt, current_result, end_error, end_ok, error_line, push_string,
+    rep_error, rep_ok, rep_ok_line, server_prefix, subscribe_result, unknown_mode_line, EndReason,
+    UNSUBSCRIBE_RESULT,
 };
 use crate::limits::{ConnLimits, Level};
 use crate::lines::{LineError, LineFeed, LineReader};
@@ -278,6 +279,7 @@ pub struct Conn {
     close_code: Option<Code>,
     final_bytes: Option<Vec<u8>>,
     subs: BTreeMap<u32, SelId>,
+    open_spans: usize,
 }
 
 impl Conn {
@@ -304,6 +306,7 @@ impl Conn {
             close_code: None,
             final_bytes: None,
             subs: BTreeMap::new(),
+            open_spans: 0,
         }
     }
 
@@ -374,7 +377,7 @@ impl Conn {
         bytes: &[u8],
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         if bytes.is_empty() || self.state == State::Closed {
@@ -553,7 +556,8 @@ impl Conn {
         let idle = self.state == State::Ready
             && self.at_boundary()
             && hub.queued(self.id) == Pools::default()
-            && self.subs.is_empty();
+            && self.subs.is_empty()
+            && self.open_spans == 0;
         self.timers.on_idle_condition(idle, now_ns);
     }
 
@@ -634,7 +638,7 @@ impl Conn {
         bytes: &[u8],
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         match self.detect.feed(bytes) {
@@ -671,7 +675,7 @@ impl Conn {
         rest: &[u8],
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         let [_, _, _, _, a0, a1, b0, b1] = prefix;
@@ -699,7 +703,7 @@ impl Conn {
         bytes: &[u8],
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         if bytes.is_empty() || self.state == State::Closed {
@@ -771,7 +775,7 @@ impl Conn {
         input: &Input,
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         let first_line = self.state == State::JsonNoHello;
@@ -799,7 +803,7 @@ impl Conn {
         dispatch: &Dispatch,
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         if self.is_closed() {
@@ -923,6 +927,33 @@ impl Conn {
                 self.push(hub, bytes, now_ns);
                 return;
             }
+            Call::Annotate(args) => match backend.annotate(self.id, &self.peer, args) {
+                Ok(reply) => {
+                    match args.kind {
+                        AnnotateKind::Begin => {
+                            self.open_spans = self.open_spans.saturating_add(1);
+                        }
+                        AnnotateKind::End => {
+                            self.open_spans = self.open_spans.saturating_sub(1);
+                        }
+                        AnnotateKind::Point => {}
+                    }
+                    annotate_result(reply.t_mono_ns, reply.span)
+                }
+                Err(refusal) => {
+                    let (code, detail) = match refusal {
+                        AnnotateRefusal::RateLimited { retry_after_ms } => {
+                            (Code::RateLimited, Detail::RetryAfterMs(retry_after_ms))
+                        }
+                        AnnotateRefusal::Budget => (Code::Budget, Detail::Pool(Pool::Spans)),
+                        AnnotateRefusal::SpanUnknown => (Code::SpanUnknown, Detail::Empty),
+                        AnnotateRefusal::Internal => (Code::Internal, Detail::Empty),
+                    };
+                    let bytes = self.error_bytes(dispatch.corr, code, &detail);
+                    self.push(hub, bytes, now_ns);
+                    return;
+                }
+            },
         };
         let bytes = self.reply_bytes(dispatch.corr, &result);
         self.push(hub, bytes, now_ns);
@@ -941,7 +972,7 @@ impl Conn {
         selection: Selection,
         now_ns: u64,
         hub: &mut SendHub,
-        backend: &dyn Backend,
+        backend: &mut dyn Backend,
         streams: &mut SelectionStreams,
     ) {
         self.execute(
@@ -989,6 +1020,7 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
     use crate::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
@@ -1000,7 +1032,8 @@ mod tests {
     use super::{Call, Conn, Dispatch, Peer, Pools, Reader, State, SERVER_MINOR};
     use crate::args::SubscribeArgs;
     use crate::backend::{
-        Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, TickInfo, TierInfo,
+        AnnotateRefusal, AnnotateReply, Backend, BackendError, FixedBackend, Identity, StatusInfo,
+        TickData, TickInfo, TierInfo,
     };
     use crate::codes::{Code, Detail};
     use crate::encode::{
@@ -1013,6 +1046,14 @@ mod tests {
 
     const MS: u64 = 1_000_000;
     const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":2}}"#;
+    const BEGIN_ARGS: &str = concat!(
+        r#"{"kind":"begin","name":"run","key":null,"ctx":{},"#,
+        r#""outcome":null,"code":null,"attrs":{}}"#,
+    );
+    const END_ARGS: &str = concat!(
+        r#"{"kind":"end","name":"run","key":null,"ctx":{},"#,
+        r#""outcome":"ok","code":null,"attrs":{}}"#,
+    );
 
     fn req(corr: u32, verb: &str) -> Vec<u8> {
         let args = if verb == "hello" { HELLO_ARGS } else { "{}" };
@@ -1125,6 +1166,8 @@ mod tests {
     struct CountingBackend {
         inner: FixedBackend,
         current_calls: Cell<usize>,
+        /// `annotate` answers in order; the fixed backend answers once this is empty.
+        annotate_script: VecDeque<Result<AnnotateReply, AnnotateRefusal>>,
     }
 
     impl CountingBackend {
@@ -1132,6 +1175,7 @@ mod tests {
             CountingBackend {
                 inner: FixedBackend::new(),
                 current_calls: Cell::new(0),
+                annotate_script: VecDeque::new(),
             }
         }
     }
@@ -1149,6 +1193,78 @@ mod tests {
             self.current_calls
                 .set(self.current_calls.get().saturating_add(1));
             self.inner.current(selection, max_rows)
+        }
+
+        fn annotate(
+            &mut self,
+            conn: ConnId,
+            peer: &Peer,
+            args: &crate::backend::AnnotateArgs,
+        ) -> Result<AnnotateReply, AnnotateRefusal> {
+            match self.annotate_script.pop_front() {
+                Some(answer) => answer,
+                None => self.inner.annotate(conn, peer, args),
+            }
+        }
+
+        fn connection_closed(&mut self, conn: ConnId) {
+            self.inner.connection_closed(conn);
+        }
+    }
+
+    fn send_annotate(rig: &mut Rig, backend: &mut CountingBackend, corr: u32, args: &str) {
+        let input = line(corr, "annotate", args);
+        rig.conn
+            .on_bytes(&input, rig.now, &mut rig.hub, backend, &mut rig.streams);
+        rig.pump(usize::MAX);
+    }
+
+    #[test]
+    fn annotate_replies_with_the_stamp_and_maps_every_refusal_to_its_wire_error() {
+        let args = r#"{"kind":"point","name":"run","key":null,"ctx":{},"outcome":null,"code":null,"attrs":{}}"#;
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend.annotate_script.extend([
+            Ok(AnnotateReply {
+                t_mono_ns: 41,
+                span: Some(3),
+            }),
+            Ok(AnnotateReply {
+                t_mono_ns: 42,
+                span: None,
+            }),
+            Err(AnnotateRefusal::RateLimited { retry_after_ms: 20 }),
+            Err(AnnotateRefusal::Budget),
+            Err(AnnotateRefusal::SpanUnknown),
+        ]);
+        // The sixth request finds the script empty and the fixed backend refuses it.
+        let expected: [&[&str]; 6] = [
+            &[r#""t_mono_ns":41,"span":3"#],
+            &[r#""t_mono_ns":42,"span":null"#],
+            &[r#""code":"rate-limited""#, r#""retry_after_ms":20"#],
+            &[r#""code":"budget""#, r#""pool":"spans""#],
+            &[r#""code":"span-unknown""#],
+            &[r#""code":"internal""#],
+        ];
+        for (corr, _) in (2_u32..).zip(expected) {
+            rig.conn.on_bytes(
+                &line(corr, "annotate", args),
+                rig.now,
+                &mut rig.hub,
+                &mut backend,
+                &mut rig.streams,
+            );
+            rig.pump(usize::MAX);
+        }
+        assert_eq!(rig.conn.state(), State::Ready);
+        let out = text(&rig.finish());
+        let replies: Vec<&str> = out.lines().collect();
+        assert_eq!(replies.len(), expected.len(), "{out}");
+        for ((corr, reply), needles) in (2_u32..).zip(replies).zip(expected) {
+            assert!(reply.contains(&format!("\"corr\":{corr},")), "{reply}");
+            for needle in needles {
+                assert!(reply.contains(needle), "{needle} in {reply}");
+            }
         }
     }
 
@@ -1199,7 +1315,7 @@ mod tests {
                 bytes,
                 self.now,
                 &mut self.hub,
-                &self.backend,
+                &mut self.backend,
                 &mut self.streams,
             );
         }
@@ -1223,7 +1339,7 @@ mod tests {
                 &dispatch,
                 self.now,
                 &mut self.hub,
-                &self.backend,
+                &mut self.backend,
                 &mut self.streams,
             );
         }
@@ -1482,7 +1598,7 @@ mod tests {
         assert!(body.contains(codes));
         assert!(body.contains("\"limits\":{\"max_frame_bytes\":16777216,"));
         let observer = text(&ready_hello_body(Level::Observer));
-        assert!(observer.contains("\"verbs\":[\"hello\"]"));
+        assert!(observer.contains("\"verbs\":[\"hello\",\"annotate\"]"));
         assert!(observer.contains("\"max_subscriptions\":0"));
     }
 
@@ -1609,6 +1725,80 @@ mod tests {
         assert_eq!(json.conn.close_code(), Some(Code::Idle));
         let expected = error_line(0, Code::Idle, &Detail::Empty);
         assert_eq!(json.conn.take_final(), Some(expected));
+    }
+
+    #[test]
+    fn conn_idle_stays_disarmed_while_a_span_is_open() {
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend.annotate_script.push_back(Ok(AnnotateReply {
+            t_mono_ns: 1,
+            span: Some(1),
+        }));
+        send_annotate(&mut rig, &mut backend, 2, BEGIN_ARGS);
+        rig.tick(400_000 * MS);
+        assert_eq!(rig.conn.state(), State::Ready);
+        assert_eq!(rig.conn.close_code(), None);
+    }
+
+    #[test]
+    fn conn_idle_rearms_after_the_last_span_ends() {
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend.annotate_script.extend([
+            Ok(AnnotateReply {
+                t_mono_ns: 1,
+                span: Some(1),
+            }),
+            Ok(AnnotateReply {
+                t_mono_ns: 2,
+                span: Some(1),
+            }),
+        ]);
+        send_annotate(&mut rig, &mut backend, 2, BEGIN_ARGS);
+        send_annotate(&mut rig, &mut backend, 3, END_ARGS);
+        rig.tick(300_000 * MS);
+        assert_eq!(rig.conn.state(), State::Ready);
+        rig.tick(1);
+        assert_eq!(rig.conn.close_code(), Some(Code::Idle));
+    }
+
+    #[test]
+    fn conn_refused_begin_does_not_hold_the_idle_slot() {
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend
+            .annotate_script
+            .push_back(Err(AnnotateRefusal::Internal));
+        send_annotate(&mut rig, &mut backend, 2, BEGIN_ARGS);
+        rig.tick(300_000 * MS + 1);
+        assert_eq!(rig.conn.close_code(), Some(Code::Idle));
+    }
+
+    #[test]
+    fn conn_one_ended_span_keeps_idle_disarmed_while_another_remains_open() {
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend.annotate_script.extend([
+            Ok(AnnotateReply {
+                t_mono_ns: 1,
+                span: Some(1),
+            }),
+            Ok(AnnotateReply {
+                t_mono_ns: 2,
+                span: Some(2),
+            }),
+            Ok(AnnotateReply {
+                t_mono_ns: 3,
+                span: Some(2),
+            }),
+        ]);
+        send_annotate(&mut rig, &mut backend, 2, BEGIN_ARGS);
+        send_annotate(&mut rig, &mut backend, 3, BEGIN_ARGS);
+        send_annotate(&mut rig, &mut backend, 4, END_ARGS);
+        rig.tick(400_000 * MS);
+        assert_eq!(rig.conn.state(), State::Ready);
+        assert_eq!(rig.conn.close_code(), None);
     }
 
     #[test]
@@ -2235,7 +2425,7 @@ mod tests {
             cgroup: None,
         };
         let mut conn = Conn::new(id, Level::Observe, peer, &limits, 0);
-        let backend = CountingBackend::new();
+        let mut backend = CountingBackend::new();
         let mut streams = SelectionStreams::new(StreamLimits {
             bounds: BlockBounds {
                 max_rows: limits.probe.max_rows,
@@ -2244,7 +2434,7 @@ mod tests {
         });
         let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
-        conn.on_bytes(&input, 0, &mut hub, &backend, &mut streams);
+        conn.on_bytes(&input, 0, &mut hub, &mut backend, &mut streams);
         let _ = drain_hub(&mut hub, id, 0);
         assert_eq!(conn.state(), State::Ready);
 
@@ -2258,7 +2448,7 @@ mod tests {
             },
             0,
             &mut hub,
-            &backend,
+            &mut backend,
             &mut streams,
         );
         assert_eq!(backend.current_calls.get(), 0);
