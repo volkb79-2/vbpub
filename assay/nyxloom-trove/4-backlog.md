@@ -16328,7 +16328,7 @@ implementation and tests `b34868fa7`, M3/L4/L5 code and tests `13053b72a`,
 characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
 `edb509410`); severity: small.**
 
-- **M1:** `assay/tests/core/test_liveness_runner_monitor.py:2317` pins the
+- **M1:** `assay/tests/core/test_liveness_runner_monitor.py:3047` pins the
   session-owner PID and nested-pytest exclusion (`b9b4c775f`, red proof;
   `7010cc267`, implementation). `assay/src/assay/liveness.py:1635` stores the
   owner, and `assay/tests/core/test_w10_characterization_i4_clusters.py:181`
@@ -16343,7 +16343,7 @@ characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
   `assay/tests/core/test_liveness_runner_monitor.py:218` pins the idle and
   `ASSAY_LIVENESS_EXIT` behavior (`13053b72a`).
 - **L5:** `assay/src/assay/liveness.py:1719` clears the in-flight item at
-  `session_finish`; `assay/tests/core/test_liveness_runner_monitor.py:2497`
+  `session_finish`; `assay/tests/core/test_liveness_runner_monitor.py:3196`
   pins teardown survival (`13053b72a`).
 - **L6:** `assay/tools/self-qualification-gate.sh:767` sets the provisional
   expiry to 3 hours; `assay/assay.toml:499` and `assay/CHANGES.md:6` state the
