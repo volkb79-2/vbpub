@@ -809,22 +809,24 @@ class AgentVerbService:
         finally:
             if result is not None and result.handle is not None:
                 if pending_new_lease:
-                    tombstoned = False
-                    try:
-                        self.admission.revoke_lease(lease_id, identity)
-                        tombstoned = True
-                    except Exception:
-                        pass
-                    finally:
-                        result.handle.close()
-                    if tombstoned:
-                        try:
-                            self.admission.reconcile_lease(lease_id, identity)
-                        except Exception:
-                            # A failed inspection leaves the tombstone charged for later reconciliation.
-                            pass
+                    self._revoke_unbound_lease(lease_id, identity, result.handle)
                 else:
                     result.handle.close()
+
+    def _revoke_unbound_lease(self, lease_id: str, identity: AgentIdentity, handle: Any) -> None:
+        """Tombstone an unbound lease, release its flock, then reconcile; a failed step keeps the charge."""
+        try:
+            self.admission.revoke_lease(lease_id, identity)
+        except Exception:
+            # No durable tombstone: keep the charge and skip inspection.
+            return
+        finally:
+            handle.close()
+        try:
+            self.admission.reconcile_lease(lease_id, identity)
+        except Exception:
+            # A failed inspection leaves the tombstone charged for later reconciliation.
+            return
 
     def _write_lease_message(self, stream: object, **fields: object) -> None:
         write_frame(stream, self._envelope(**fields))
