@@ -16359,13 +16359,87 @@ characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
 
 ## B599 — B105 RAM admission counts reclaimable file cache as used
 
-**Status: OPEN, filed 2026-11-27 (fix after 12.4.0); severity: medium.**
+**Status: FIXED by b427d48d9; round-1 review HOLD closed by c93755545; red
+proof f94090150 and a6b9f193a at baseline 268725a06; Docker's real
+absent-object answer handled by efa9aae16, red proof 2ee5aa9a4; exact exit-1
+single-statement rule in 6104416d6, red proof c4dc20c85; byte-exact capture
+(round-2 HOLD finding left open by round 3: extra newlines and NUL bytes were
+dropped) in aa2a1ab85, red proof a822202f4; Docker's stderr now goes to a file
+with no pipeline between Docker and its exit status (follow-up review HOLD), in
+353b1fce6, red proof 9822c7ead; severity: medium. The unchecked removal of that
+capture file is filed as B608.**
 
-`assay/tools/cgroup-parent.sh` computes the gates slice headroom as
-`memory.max - memory.current`. `memory.current` includes reclaimable file
-cache and reclaimable slab, so an idle-cached slice refuses a self-qualification
-run although the kernel could reclaim the memory. Observed on v1001 at
-2026-11-27T07:31Z: 2066 MB reported against the 2147 MB requirement, with
-about 3.3 GB of the slice usage in file cache and memory PSI full avg60 0.06
+Implementation: `assay/tools/cgroup-parent.sh:125` (verified probe identity and
+definite-absence classification), `:205` (ambiguous failure retains ownership),
+`:229` (bounded memory.stat reader), `:502` (validated reclaimable calculation),
+and `:568` (bounded admission). Behavioral tests:
+`assay/gate/tests/test_cgroup_parent.py:829` (admission), `:849` (single-file
+mount), `:889` (invalid stat fallback), `:929` (mount fallback), `:996`
+(definite absence), `:1044` (other inspect failures), `:1078` (inexact absence
+keeps a created probe), `:1105` (failing text tool), `:1135` (stderr warning),
+`:1149` (ambiguous inspect and EXIT cleanup), `:1174` (owner mismatch), `:1196`
+(execute generated probe script), `:1295` (dirty and writeback), `:1319`
+(clamp), and `:1340` (continued refusal). Documentation and
+changelog: `assay/docs/DESIGN-GUIDE.md:3119` and `assay/CHANGES.md:7`.
+
+Before the fix, `assay/tools/cgroup-parent.sh` computed the gates slice
+headroom as `memory.max - memory.current`. `memory.current` includes
+reclaimable file cache and reclaimable slab, so an idle-cached slice refused a
+self-qualification run although the kernel could reclaim the memory. Observed
+on v1001 at 2026-11-27T07:31Z: 2066 MB reported against the 2147 MB
+requirement, with about 3.3 GB of the slice usage in file cache and memory PSI
+full avg60 0.06
 (`rgw-self-qualification-provisional-20261127T073114-v1001`, refused before
 the lane started). The matching run-gate admission defect is RG-332.
+
+## B600 — P4 advisory-budget comments overstate when the budget binds
+
+**Status: OPEN, filed 2026-11-27 (P-assay-4f round-4 review, low); severity:
+low.**
+
+The comments at `assay/src/assay/runner.py:6121` and
+`assay/src/assay/mutation.py:2307` say the candidate budget binds if CPU
+*becomes* unreadable. `assay/src/assay/liveness.py` sets `cpu_readable` after
+the first successful sample and never clears it, so the budget binds on this
+ground only when candidate CPU was never readable. If CPU reads start failing
+later while the event stream stays intact, the budget stays advisory, and
+continuing completed events can keep resetting the no-progress wall stop. The
+stream-break exception in both comments is accurate.
+
+**Close when.** Both comments say "was never readable", or the runtime policy
+changes to bind on a later loss and a test pins that behaviour.
+
+## B601 — the `tooling-tests` lane runs only part of `gate/tests`
+
+**Status: OPEN, filed 2026-11-27 (found while gating B599); severity:
+medium.**
+
+The `tooling-tests` lane in `assay/run-gate.toml` names its test files one by
+one. From `gate/tests` it lists `test_b105_report_check.py`,
+`test_distribution_gate.py`, `test_release_gate.py`,
+`test_self_qualification_container.py` and `test_self_lane.py`. Other files
+there, `test_cgroup_parent.py` among them, are collected only by the
+`tester-unified` lane (`pytest tests gate/tests` in `assay/assay.toml`). A
+`tooling-tests` PASS therefore says nothing about a change to
+`assay/tools/cgroup-parent.sh`: the B599 PASS
+`rgw-tooling-tests-20261127T141630-v1001` did not run its new tests.
+
+**Close when.** The lane collects every `gate/tests` file it can run, with each
+exclusion named and explained, or a check fails when a `gate/tests` file is in
+neither the lane's list nor that exclusion list.
+
+## B608 — a failed removal of the probe's capture file is ignored
+
+**Status: OPEN, filed 2026-11-27 (final B599 review, accepted as a follow-up);
+severity: low.**
+
+`inspect_owned_unit_probe` (`assay/tools/cgroup-parent.sh:155`) runs
+`rm -f -- "$stderr_file"` without checking its status. The function is called
+from `if` and `||` contexts, where `errexit` does not apply. If the removal
+fails, an exact absent-object answer still returns 1,
+`discard_failed_unit_probe` clears the probe identity, the unmounted retry
+runs, and the file stays behind.
+
+**Close when.** A failed removal returns 3 (`rm -f -- "$stderr_file" || return
+3`), so there is no unmounted retry and the identity stays for the EXIT trap,
+and a `tester-unified` case that makes only this removal fail proves it.
