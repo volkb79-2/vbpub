@@ -17,7 +17,13 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 74  # rev 74: RG-307/RG-308a -- R-59-consistent wrapper-budget warning
+__revision__ = 78  # rev 78: RG-329 -- job event file for fleet runners
+# rev 77: RG-320 -- a stall watch on every watchable lane kind
+# rev 76: RG-321/RG-322 -- lane OOM bias and inventory refusals
+# Linux's oom_score_adj steers OOM victim choice; disposable gate lanes
+# should be selected before the interactive controller.
+LANE_CONTAINER_OOM_SCORE_ADJ = 500
+# rev 74: RG-307/RG-308a -- R-59-consistent wrapper-budget warning
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -82,9 +88,10 @@ __revision__ = 74  # rev 74: RG-307/RG-308a -- R-59-consistent wrapper-budget wa
 # (`daemon_not_running_reason()`, shared with `doctor`'s own wording,
 # RG-59) instead of reusing "produced unparsable stdout" for two
 # structurally different failures. RG-58: a bare-host lane declaring
-# `stall_timeout` (silently inert -- no watch of any kind exists on that
-# runner) gets a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
-# never refuse), one shared reason function. RG-61: eight-item SPEC/
+# `stall_timeout` (silently inert -- no watch of any kind existed on that
+# runner) got a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
+# never refuse), one shared reason function. SUPERSEDED by RG-320 (rev 77):
+# that runner has a watch now, so both surfaces print NOTHING for it. RG-61: eight-item SPEC/
 # CONSUMERS/LANE-AUTHORING/backlog/usage() documentation drift sweep (new
 # `R-30c` for the doctor profiler check, R-30's status count, the stale
 # 0/0-as-100% narrative corrected to RW-5's actual SKIPPED design,
@@ -221,8 +228,28 @@ LANE_KILL_GRACE_SECONDS = 5
 # container alive. Docker logs normally replay quickly; 60 s leaves ample room
 # for a large log while still reaching `rm -f` when the daemon is wedged.
 CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS = 60
+# RG-320 fix round 1 (L5): the drain `OutputTee.join()` waits for a child's
+# last chunks must be BOUNDED, for the same reason `LogStreamWatch.join()` is
+# (RG-41 round 1). A local sweep at `OutputTee`'s drain is not enough: a
+# GRANDCHILD that left the terminated lane's process group (`setsid`, a daemon,
+# a `docker` client that outlives its caller) keeps the write end of the lane's
+# pipe open, so `read()` never returns EOF and an unbounded join would hang the
+# lane after its budget and its stall watch had both already ended it. Normal
+# drains finish in milliseconds; this only bounds the pathological case, and the
+# join DISCLOSES when it did not finish rather than silently dropping output.
+OUTPUT_DRAIN_TIMEOUT_SECONDS = 5.0
 FAILED_EVIDENCE_KEEP = 10
 FAILED_NODE_LIMIT = 5
+JOB_EVENT_API = "fleet-host-agent/1"
+JOB_ID_MAX_LENGTH = 128
+JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# Docker's FULL container id. A shim, a relay, or a docker plugin on PATH can
+# put arbitrary text on `docker run`'s stdout or in an inspect answer, so only
+# this shape is ever published as a run's container identity (RG-329).
+CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}")
+
+_ACTIVE_JOB_EVENT_WRITER = None
+_NESTED_JOB_EVENT_WRITER = None
 
 SCRATCH_RUN_ID_RE = re.compile(r"[1-9][0-9]*-[0-9]{16,}-[0-9a-f]{16}")
 SCRATCH_LEGACY_PREFIXES = ("run-gate-gitcfg-", "run-gate-test-")
@@ -446,6 +473,7 @@ def _observer_unavailable_rollup(
 
 def finish(result: LaneResult) -> int:
     """The single normal exit path; persist once, summarize, and close the table."""
+    event_writer = _ACTIVE_JOB_EVENT_WRITER
     record = result._record
     log_path = result.log_path or (record.get("log_path")
                                    if record is not None else None)
@@ -459,6 +487,21 @@ def finish(result: LaneResult) -> int:
     if result._json:
         print(json.dumps({**result.as_dict(), "log_path": log_path},
                          sort_keys=True))
+        if event_writer is not None:
+            lane_name = result._lane_name or event_writer.lane
+            details = [f"verdict {result.verdict}"]
+            if result.exit_code is not None:
+                details.append(f"exit_code {result.exit_code}")
+            if result.reason:
+                details.append(f"reason {result.reason}")
+                if result.reason == "command-exit-map":
+                    last = last_log_line(log_path)
+                    if last:
+                        details.append(f"last_output {json.dumps(last)}")
+            if log_path:
+                details.append(f"log {log_path}")
+            print(f"run-gate: lane {lane_name!r} " + "; ".join(details),
+                  file=sys.stderr, flush=True)
     elif result._lane_name is not None:
         details = [f"verdict {result.verdict}"]
         if result.exit_code is not None:
@@ -473,7 +516,370 @@ def finish(result: LaneResult) -> int:
             details.append(f"log {log_path}")
         print(f"run-gate: lane {result._lane_name!r} " + "; ".join(details),
               flush=True)
+    elif event_writer is not None:
+        details = [f"verdict {result.verdict}"]
+        if result.exit_code is not None:
+            details.append(f"exit_code {result.exit_code}")
+        if result.reason:
+            details.append(f"reason {result.reason}")
+        if log_path:
+            details.append(f"log {log_path}")
+        print(f"run-gate: lane {event_writer.lane!r} " + "; ".join(details),
+              flush=True)
+    if event_writer is not None:
+        event_writer.emit(
+            "lane-verdict", lane=result._lane_name or event_writer.lane,
+            verdict=result.verdict, exit_code=result.gate_exit_code,
+            lane_exit_code=result.exit_code)
     return result.gate_exit_code
+
+
+def validate_job_event_options(event_file: str | None,
+                               job_id: str | None) -> None:
+    """Validate the paired opt-in flags without consulting the environment."""
+    if (event_file is None) != (job_id is None):
+        fail("--event-file and --job-id must be supplied together")
+    if job_id is None:
+        return
+    if (not isinstance(job_id, str)
+            or len(job_id) > JOB_ID_MAX_LENGTH
+            or JOB_ID_RE.fullmatch(job_id) is None):
+        fail(f"--job-id must match [A-Za-z0-9][A-Za-z0-9._-]* and be at "
+             f"most {JOB_ID_MAX_LENGTH} characters")
+
+
+def _event_path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_job_event_destination(event_file: str,
+                                   *, worktree: Path | None = None,
+                                   repo: Path | None = None,
+                                   mount_sources=()) -> Path:
+    """Return the canonical event path after its pre-start safety checks.
+
+    The final component may be absent or a regular file, never a symlink or
+    another file type. Existing parent directories are resolved so a path
+    reached through a symlink is compared at its real location.
+    """
+    if not isinstance(event_file, str) or "\x00" in event_file:
+        fail("--event-file must be an absolute path")
+    path = Path(event_file)
+    if not path.is_absolute():
+        fail(f"--event-file {event_file!r} must be an absolute path")
+    try:
+        parent = path.parent.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        fail(f"--event-file parent {path.parent} must already exist: {exc}")
+    if not parent.is_dir():
+        fail(f"--event-file parent {path.parent} is not a directory")
+    canonical = parent / path.name
+    try:
+        info = canonical.lstat()
+    except FileNotFoundError:
+        info = None
+    except OSError as exc:
+        fail(f"cannot inspect --event-file {event_file!r}: {exc}")
+    if info is not None:
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"--event-file {event_file!r} must not be a symlink")
+        if not stat.S_ISREG(info.st_mode):
+            fail(f"--event-file {event_file!r} must be a regular file")
+        if info.st_nlink > 1:
+            # A hardlink defeats every PATH check below: the link this run
+            # names can sit outside the checkout while the SAME inode is
+            # reachable inside a tree the judged checkout or a lane container
+            # can see. Refuse rather than append event bytes into it.
+            fail(f"--event-file {event_file!r} already has "
+                 f"{info.st_nlink} hard links; a shared inode is not a "
+                 f"host-owned sink")
+
+    # `canonical` has a resolved parent and a verified non-symlink final
+    # component. Worktree/repository roots are local paths and can be resolved
+    # by this process. Docker mount sources are compared lexically because a
+    # source may be in the host namespace and must not be stat'd here.
+    resolved = canonical
+    protected_roots: list[Path] = []
+    for root in (worktree, repo):
+        if root is not None:
+            try:
+                protected_roots.append(root.resolve(strict=False))
+            except (OSError, RuntimeError):
+                protected_roots.append(Path(os.path.abspath(root)))
+    for root in protected_roots:
+        if _event_path_is_within(resolved, root):
+            fail(f"--event-file {event_file!r} resolves inside protected "
+                 f"checkout path {root}")
+    lexical = Path(os.path.normpath(event_file))
+    for source in mount_sources:
+        if not isinstance(source, (str, os.PathLike)):
+            continue
+        source_text = os.fspath(source)
+        if not source_text or not os.path.isabs(source_text):
+            continue
+        source_path = Path(os.path.normpath(source_text))
+        if (_event_path_is_within(resolved, source_path)
+                or _event_path_is_within(lexical, source_path)):
+            fail(f"--event-file {event_file!r} resolves inside a host path "
+                 f"mounted by this lane: {source_text}")
+    return resolved
+
+
+class JobEventWriter:
+    """Append one durable JSON object per event to a host-owned file."""
+
+    def __init__(self, fd: int, path: Path, job_id: str, lane: str):
+        self.fd = fd
+        self.path = path
+        self.job_id = job_id
+        self.lane = lane
+        self.failed = False
+        self.warned = False
+
+    def _warning(self, exc: BaseException) -> None:
+        if self.warned:
+            return
+        self.warned = True
+        print(f"{PROG}: WARNING: job event file {self.path} could not be "
+              f"written: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+    def emit(self, event: str, *, lane: str | None = None, **fields) -> None:
+        if self.failed:
+            return
+        record = {**fields, "api": JOB_EVENT_API, "event": event,
+                  "job_id": self.job_id,
+                  "lane": self.lane if lane is None else lane}
+        try:
+            payload = (json.dumps(record, sort_keys=True,
+                                  separators=(",", ":")) + "\n").encode()
+            written = 0
+            while written < len(payload):
+                count = os.write(self.fd, payload[written:])
+                if count <= 0:
+                    raise OSError(
+                        f"short event write ({written}/{len(payload)} bytes)")
+                written += count
+            os.fsync(self.fd)
+        except Exception as exc:
+            self.failed = True
+            self._warning(exc)
+
+    def close(self) -> None:
+        if self.fd < 0:
+            return
+        fd, self.fd = self.fd, -1
+        try:
+            os.close(fd)
+        except OSError as exc:
+            self._warning(exc)
+
+
+@contextlib.contextmanager
+def suppress_job_events(*, forward_starts: bool = False):
+    """Hide flags and file from a child while its parent receives start facts."""
+    global _ACTIVE_JOB_EVENT_WRITER, _NESTED_JOB_EVENT_WRITER
+    previous = _ACTIVE_JOB_EVENT_WRITER
+    previous_nested = _NESTED_JOB_EVENT_WRITER
+    _ACTIVE_JOB_EVENT_WRITER = None
+    _NESTED_JOB_EVENT_WRITER = (
+        previous or previous_nested if forward_starts else None)
+    try:
+        yield
+    finally:
+        _ACTIVE_JOB_EVENT_WRITER = previous
+        _NESTED_JOB_EVENT_WRITER = previous_nested
+
+
+def current_job_event_writer() -> JobEventWriter | None:
+    """Return the sink whose file must stay outside every child mount."""
+    return _ACTIVE_JOB_EVENT_WRITER or _NESTED_JOB_EVENT_WRITER
+
+
+def strip_job_event_options(argv: list[str]) -> list[str]:
+    """Remove the caller's event flags before an internal worker dispatch."""
+    output: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            output.extend(argv[index:])
+            break
+        if token in ("--event-file", "--job-id"):
+            index += 2
+            continue
+        if token.startswith("--event-file=") or token.startswith("--job-id="):
+            index += 1
+            continue
+        output.append(token)
+        index += 1
+    return output
+
+
+def open_job_event_writer(event_file: str, job_id: str, lane: str,
+                          *, worktree: Path | None = None,
+                          repo: Path | None = None,
+                          mount_sources=()) -> JobEventWriter:
+    """Open the opt-in stream append-only, without following its final link."""
+    validate_job_event_options(event_file, job_id)
+    path = validate_job_event_destination(
+        event_file, worktree=worktree, repo=repo,
+        mount_sources=mount_sources)
+    flags = (os.O_WRONLY | os.O_APPEND | os.O_CREAT
+             | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        fail(f"cannot open --event-file {event_file!r}: {exc}")
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            fail(f"--event-file {event_file!r} must be a regular file")
+        if opened.st_nlink > 1:
+            # Re-checked on the DESCRIPTOR, not just on the path: the path
+            # checks above answer about a name, this answers about the inode
+            # this run is about to append into.
+            fail(f"--event-file {event_file!r} has {opened.st_nlink} hard "
+                 f"links once opened; refusing a sink another path reaches")
+        os.fchmod(fd, 0o600)
+    except OSError as exc:
+        os.close(fd)
+        fail(f"cannot secure --event-file {event_file!r} as mode 0600: {exc}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return JobEventWriter(fd, path, job_id, lane)
+
+
+def mount_flag_sources(flags: list[str], *,
+                       strict_sources: bool = False) -> list[str]:
+    """Read host sources from Docker mount flags; refuse unknown shapes when
+    a job event sink needs a complete visibility check."""
+    sources: list[str] = []
+
+    def refuse(token: str) -> None:
+        fail(f"cannot derive host source from Docker mount token {token!r} "
+             "while validating --event-file")
+
+    index = 0
+    while index < len(flags):
+        token = flags[index]
+        if token in ("-v", "--volume", "--mount"):
+            if index + 1 >= len(flags):
+                if strict_sources:
+                    refuse(token)
+                index += 1
+                continue
+            value = flags[index + 1]
+            if token in ("-v", "--volume"):
+                source = value.split(":", 1)[0]
+                if os.path.isabs(source):
+                    sources.append(source)
+                elif strict_sources:
+                    refuse(token)
+                index += 2
+                continue
+            spec = value
+            source = next((part.split("=", 1)[1]
+                           for part in spec.split(",")
+                           if part.startswith(("source=", "src="))), None)
+            if source is not None and os.path.isabs(source):
+                sources.append(source)
+            elif strict_sources:
+                refuse(token)
+            index += 2
+            continue
+        if token.startswith("--mount="):
+            spec = token.split("=", 1)[1]
+            source = next((part.split("=", 1)[1]
+                           for part in spec.split(",")
+                           if part.startswith(("source=", "src="))), None)
+            if source is not None and os.path.isabs(source):
+                sources.append(source)
+            elif strict_sources:
+                refuse("--mount")
+            index += 1
+            continue
+        if strict_sources and any(
+                token == name or token.startswith(f"{name}=")
+                for name in ("--volumes-from", "--device", "--tmpfs",
+                             "--volume", "-v")):
+            refuse(token.split("=", 1)[0])
+        index += 1
+    return sources
+
+
+def inspect_container_mount_sources(docker: str, container: str) -> list[str]:
+    """Return the host-side sources mounted into a persistent runner."""
+    result = subprocess.run(
+        [docker, "inspect", "--type", "container", "--format",
+         "{{range .Mounts}}{{println .Source}}{{end}}", container],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or
+                  f"exit {result.returncode}").strip()
+        fail_infra(f"cannot inspect host mount sources of container "
+                   f"{container!r}: {detail}")
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def recognised_container_id(value) -> str | None:
+    """Return Docker's container id only in its full 64-hex form.
+
+    Any other text (a warning line from a shim, a relay's message, a plugin's
+    extra output) is NOT this run's container identity: publishing it would
+    be an invented fact in a file a host agent trusts, so it reads as no id
+    at all and the reason field says why.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if CONTAINER_ID_RE.fullmatch(candidate) else None
+
+
+def inspect_container_id_best_effort_with_status(
+        docker: str, container: str) -> tuple[str | None, bool]:
+    """Return the validated inspect id and whether nonempty output was bad."""
+    try:
+        result = subprocess.run(
+            [docker, "inspect", "--type", "container", "--format",
+             "{{.Id}}", container], capture_output=True, text=True,
+            timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, False
+    if result.returncode != 0:
+        return None, False
+    container_id = recognised_container_id(result.stdout)
+    unrecognised = bool((result.stdout or "").strip()) and container_id is None
+    return container_id, unrecognised
+
+
+def emit_lane_started(container_id: str | None, image_id: str | None,
+                      adopted: bool, *, reason: str | None = None,
+                      lane: str | None = None) -> None:
+    """Write the lane's container identity before its output is relayed."""
+    writer = _ACTIVE_JOB_EVENT_WRITER or _NESTED_JOB_EVENT_WRITER
+    if writer is None:
+        return
+    published = recognised_container_id(container_id)
+    unrecognised = container_id is not None and published is None
+    reason_override = reason
+    if unrecognised:
+        reason_override = "container-id-unrecognised"
+    # An image id says something about ONE container; without an identified
+    # container there is nothing it can describe.
+    fields = {"container_id": published,
+              "image_id": image_id if published is not None else None,
+              "adopted": bool(adopted)}
+    if reason_override is not None:
+        fields["reason"] = reason_override
+    elif published is None:
+        fields["reason"] = "container-id-unavailable"
+    writer.emit("lane-started", lane=lane, **fields)
 
 
 def operation_result(code: int, reason: str) -> LaneResult:
@@ -729,6 +1135,41 @@ ASSAY_STALL_FLOOR_SECONDS = 2 * ASSAY_PROGRESS_HEARTBEAT_SECONDS
 # Idle bound for an R2 lane between Assay's `command_finished` and its `plan`
 # (evaluate_r1 runs there, unheartbeated; 253 s measured, so 600 s is >2x).
 POST_COMMAND_BOUND_SECONDS = 600.0
+# RG-320 (P1 of the no-time-budgets design, docs/design/no-time-budgets/
+# DESIGN.md 3.4 step 1): the silence bound EVERY lane kind that can be watched
+# is armed with when it declares no `stall_timeout`. Operator answer Q4
+# (2026-11-25): 300 s for a lane of unknown cadence. It is a FLOOR, never a
+# ceiling -- an assay lane with a published cadence keeps `max(300, 3x cadence)`
+# (RG-7) and an R2 lane between `command_finished` and `plan` keeps the 600 s
+# POST_COMMAND_BOUND_SECONDS. Nothing is REMOVED by this bound: a lane's
+# `budget` stays exactly as binding as it was (P2 accepts `unbounded`, not this).
+DEFAULT_STALL_BOUND_SECONDS = 300.0
+# What a watch judges silence FROM, per lane kind -- disclosed by name
+# (`print_lane_bounds`) and recorded (`stall_bound`) so an operator reading a
+# run record never has to infer which signal actually stood behind a bound.
+STALL_SIGNAL_PROGRESS_FILE = "progress-file"
+STALL_SIGNAL_LOG_STREAM = "log-stream"
+STALL_SIGNAL_OUTPUT_STREAM = "output-stream"
+# RG-320 fix round 1 (M2): "cannot tell" is its own answer. A lane table that
+# arrives without `_environment_mode` (a re-attach/follow of a lane whose
+# `[environments.*]` entry has since moved, which `_stamp_environment_modes`
+# deliberately leaves unstamped rather than guessing) must NOT be dressed in a
+# plausible signal: naming one there substitutes a default for a fact (RG-101)
+# and sends an operator debugging the wrong stream.
+STALL_SIGNAL_UNKNOWN = "unknown"
+# The two sources a bound can have. `auto` is the flat 300 s default a COMMAND
+# lane gets; `auto-derived` is the RULE an ASSAY lane is actually armed with
+# (RG-320 fix round 1, M1) — it is not one number, so it is not reported as one.
+STALL_BOUND_DECLARED = "declared"
+STALL_BOUND_AUTO = "auto"
+STALL_BOUND_AUTO_DERIVED = "auto-derived"
+# RG-320 fix round 1 (M1): the RULE a `kind = "assay"` lane's auto bound
+# follows, spelled once. `ProgressWatch._idle_bound` is the enforcer; the
+# disclosure line, the run record and the stop message all name this same
+# rule, because before this an assay lane was disclosed and recorded at 300 s
+# while the watch stopped it at 600 s (or 3x its cadence).
+ASSAY_AUTO_BOUND_RULE = ("max(300s, 3x the published cadence), or 600s "
+                         "between command_finished and the R2 plan")
 
 # RG-55 / SPEC R-43: cgprofile daemon client
 # (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
@@ -1119,11 +1560,41 @@ def _read_toml(path: Path) -> dict:
     return _read_toml_snapshot(path)[0]
 
 
-def _check_keys(table: dict, allowed: set, where: str) -> None:
-    unknown = sorted(set(table) - allowed)
+def _check_keys(table: dict, allowed: set, where: str, *,
+                derived: frozenset = frozenset()) -> None:
+    """Refuse every key this table does not own, by name.
+
+    `derived` lists the names RUN-GATE ITSELF attaches to the table after it
+    is validated (`DERIVED_LANE_KEYS`). They are not config keys: they are
+    run-gate's own state, which is why they are accepted only on a table that
+    has already been through load (`_validate_lane(derived_attached=True)`) —
+    a config file that declares one is refused by name, exactly like any other
+    unknown key (RG-101: an internal fact a config may set is a default where
+    a fact belongs). Nothing else gets a pass: before fix round 1 (M3) EVERY
+    `_`-prefixed key was skipped, so a user's `_stall_timeout` next to
+    `stall_timeout` loaded clean, was inert, and the disclosure printed the
+    auto bound — RG-32's accepted-and-inert shape, re-opened one prefix
+    wider."""
+    unknown = sorted(key for key in set(table) - allowed
+                     if str(key) not in derived)
     if unknown:
         fail(f"{where}: unknown key(s) {', '.join(unknown)} "
              f"(allowed: {', '.join(sorted(allowed))})")
+
+
+# RG-320 fix round 1 (M3): the EXPLICIT set of `_`-prefixed names Run-Gate
+# attaches to a LANE table. Every one is written after `_validate_lane` has
+# passed at load (`_stamp_environment_modes` runs immediately after), so this
+# list only has to be complete — it is never what makes a key legal.
+# `_image_selection` is NOT here: it is attached to an ENVIRONMENT table, in
+# `resolve_environment`, and environment tables take no derived names.
+DERIVED_LANE_KEYS = frozenset({
+    "_environment_mode", "_imported", "_import_unresolved",
+    "_assay_inventory", "_assay_inventory_error", "_selective_assay",
+    "_r2_flex", "_r2_jobs_selection", "_request_args", "_assay_forward",
+    "_assay_forward_paths", "_judge_identity", "_workers_env",
+    "_workers_selection", "_artifact_lane",
+})
 
 
 RESOURCE_IO_SYNC_VALUES = frozenset({"durable", "strict", "relaxed"})
@@ -1441,18 +1912,25 @@ def _validate_pids(value: object, where: str) -> None:
 
 
 def host_mode_stall_timeout_inert_reason(lane_name: str) -> str:
-    """RG-58 (RW-27a: WARN, never refuse — D5's option 2). The ONE wording
-    both the load-time WARNING (`_validate_lane`) and `doctor`'s matching
-    WARN use for a host-mode lane declaring `stall_timeout`:
-    `run_bare_host_lane` is a plain `subprocess.run` with no ProgressWatch,
-    no LogStreamWatch, no timer of any kind (R-40 applies to container/exec
-    lanes only, where `await_container` actually tails logs/polls
-    progress) — the key is accepted at load and then silently inert for
-    the lane's entire run, exactly the "copied a container lane's config
-    as a template" trap the backlog entry describes."""
-    return (f"lane {lane_name!r}: stall_timeout is inert on a host-mode "
-            f"lane (no watch, no timer; R-40 applies to container/exec "
-            f"lanes only)")
+    """SUPERSEDED by RG-320 (P1) — kept only because `doctor` and the load
+    path print NOTHING for this case now, so no wording is needed for it.
+
+    RG-58 (RW-27a) used to WARN here, and it was true then:
+    `run_bare_host_lane` ran the child and only copied its output, so a
+    `stall_timeout` on a host-mode lane loaded clean and did nothing for the
+    lane's whole run. P1 gives that runner a real watch (`StreamWatch` over
+    `OutputTee`'s own chunk arrivals), so the key is no longer inert and a
+    warning claiming it is would be the estate's most expensive defect class
+    — a check whose message asserts a conclusion its code no longer supports.
+    A bare-host lane declaring nothing is watched by the default bound too
+    (`DEFAULT_STALL_BOUND_SECONDS`), disclosed by `print_lane_bounds`.
+
+    This helper is retained (rather than deleted) solely so an out-of-tree
+    caller importing it does not break; no in-tree caller uses it."""
+    return (f"lane {lane_name!r}: stall_timeout is INERT only on a lane "
+            f"runner with no watch — since RG-320 every container, exec and "
+            f"bare-host lane is watched (a sequence lane is not: its members "
+            f"carry the watches)")
 
 
 def _validate_workers_keys(name: str, table: dict, where: str,
@@ -1500,8 +1978,14 @@ def _validate_workers_keys(name: str, table: dict, where: str,
              f"({table.get('workers_max', WORKERS_DEFAULT_MAX)})")
 
 
-def _validate_lane(name: str, table: dict, where: str) -> None:
-    _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
+def _validate_lane(name: str, table: dict, where: str, *,
+                   derived_attached: bool = False) -> None:
+    # `derived_attached` is set by the SECOND pass (`merge_lanes` re-validates
+    # the assay lanes of the effective set, which `_stamp_environment_modes`
+    # has already stamped): only then may Run-Gate's own derived names be
+    # present. A config file is always validated with the default (M3).
+    _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]",
+                derived=DERIVED_LANE_KEYS if derived_attached else frozenset())
     kind = table.get("kind")
     if kind not in ("command", "assay", "sequence"):
         fail(f"{where} [lanes.{name}]: 'kind' must be \"command\", \"assay\" or \"sequence\" (got {kind!r})")
@@ -1654,6 +2138,11 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # thing to get wrong.
         _validate_budget(table["stall_timeout"], f"{where} [lanes.{name}]",
                          "stall_timeout")
+        # RG-320: a sequence lane never reaches this code at all — the
+        # sequence branch above returns before any runner key is read, and
+        # its own key list excludes `stall_timeout` (`_validate_lane`'s
+        # `invalid` check), so a sequence declaring it is REFUSED by name
+        # there rather than accepted and silently inert (RG-32's shape).
         if table.get("kind") == "assay" \
                 and budget_seconds(table["stall_timeout"]) \
                 < ASSAY_STALL_FLOOR_SECONDS:
@@ -1669,6 +2158,9 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # container lane) rather than the assay progress file — the two
         # sources are disclosed by name at run time (print_lane_bounds), not
         # distinguished here. Nothing left to refuse by kind alone.
+        # RG-320: and, since P1, a command lane without this key is watched
+        # anyway (DEFAULT_STALL_BOUND_SECONDS) from its own log stream;
+        # declaring the key only replaces that default with a larger value.
     if "memory" in table:
         _validate_memory(table["memory"], f"{where} [lanes.{name}]")
     if "resources" in table:
@@ -2095,15 +2587,16 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
         _validate_environment(name, table, where)
     for name, table in lanes.items():
         _validate_lane(name, table, where)
-        # RG-58 (RW-27a): a host-mode lane has no stall watch. Resolve this
-        # from the declaration, not the environment name: explicit modes
-        # deliberately removed name-based behavior (RG-78).
-        env = envs.get(table.get("environment"))
-        if table.get("stall_timeout") and isinstance(env, dict) \
-                and env.get("mode") == "host":
-            print(f"{PROG}: WARNING "
-                  f"{host_mode_stall_timeout_inert_reason(name)}",
-                  file=sys.stderr, flush=True)
+    # RG-320 (P1): `_environment_mode` is the one fact the disclosure
+    # functions need about how this lane's output is observed — an ephemeral
+    # `kind = "command"` lane's silence comes from `docker logs`, an exec or
+    # host-mode one's from its own child's stdout. Recorded at LOAD time (the
+    # declaration, not a guess), so the re-attach and follow paths — where the
+    # resolved environment is not in hand — can still name the right signal
+    # instead of defaulting to the container one (RG-58's own remaining
+    # hazard, one level over). `merge_lanes` stamps the EFFECTIVE lane set the
+    # same way, so a lane inherited from a central config gets the fact too.
+    _stamp_environment_modes(lanes, cfg, {})
     for name, table in lanes.items():
         if table.get("kind") == "sequence":
             for member in table["lanes"]:
@@ -2866,10 +3359,45 @@ def _validate_effective_network_settings(project: dict, central: dict,
                  f"{environment.get('mode')!r}; it requires mode = 'ephemeral'")
 
 
+def _stamp_environment_modes(lanes: dict, project: dict, central: dict) -> None:
+    """RG-320 (P1): record each lane's DECLARED environment mode in place.
+
+    The disclosure functions (`lane_stall_signal`) must name the signal a
+    lane's silence is judged by, and where the lane is declared is not where
+    it is watched: an INHERITED central lane is merged here and watched from
+    the project's run, and the follow/re-attach paths do not hold a resolved
+    environment at all. So the mode is read once, from the merged declaration
+    (project `[environments.*]` shadows the central one, as the resolver
+    itself does), and never guessed later.
+
+    A lane whose environment the merge cannot resolve is left UNSTAMPED
+    rather than given a plausible default: `resolve_environment` refuses that
+    lane at run time, naming the file it searched, so stamping a mode here
+    would be a default standing in for a fact (`RG-101`).
+    """
+    project_envs = project.get("environments", {})
+    central_envs = central.get("environments", {})
+    for lane in lanes.values():
+        if not isinstance(lane, dict):
+            continue
+        name = lane.get("environment")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        table = project_envs.get(name)
+        if not isinstance(table, dict):
+            table = central_envs.get(name)
+        mode = table.get("mode") if isinstance(table, dict) else None
+        if isinstance(mode, str):
+            lane["_environment_mode"] = mode
+        elif name == BARE_HOST_ENV:
+            lane["_environment_mode"] = "host"
+
+
 def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
                 project_path: Path, central_path: Path | None,
                 assay_defaults: dict | None = None,
-                imported_lanes: dict | None = None) -> dict:
+                imported_lanes: dict | None = None,
+                project: dict | None = None) -> dict:
     """Effective lane set: central [lanes.*] inherited, project entries
     shadow BY NAME (whole lane — no field merging, RG-16).
 
@@ -2910,7 +3438,7 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
                 or not lane["environment"].strip():
             fail(f"lane '[lanes.{name}]' has no 'environment'; set it on the "
                  f"lane or in [assay] ({project_path})")
-        _validate_lane(name, lane, str(project_path))
+        _validate_lane(name, lane, str(project_path), derived_attached=True)
         if was_imported:
             lane["assay_command"] = copy.deepcopy(defaults["command"])
             lane["pins"] = copy.deepcopy(defaults["pins"])
@@ -2940,6 +3468,7 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
             fail(f"{origin}: pin '{pin_name}' sidecar {pin['sha256']} does not "
                  f"exist in this project ({project_dir}) — vendor it or shadow "
                  f"the lane")
+    _stamp_environment_modes(merged, project or {}, central)
     return merged
 
 
@@ -8562,12 +9091,32 @@ def allocate_lane_log(lane_name: str, run_id: str) -> Path | None:
 
 
 class OutputTee:
-    """Copy a child's combined output to a private log and the live terminal."""
+    """Copy a child's combined output to a private log and the live terminal.
 
-    def __init__(self, proc: subprocess.Popen, path: Path | None):
+    RG-320 (P1): this thread's chunk arrivals are also the ONLY liveness
+    signal an exec/bare-host lane has (no progress file, no `docker logs`
+    stream to time), so the arrival instant of the last chunk is recorded
+    here, where the chunk actually arrives. Reading the lane's `log_path`
+    file from a watcher instead would measure a different clock (the child
+    may buffer, and the file is flushed here, not there). Deliberately NOT
+    an `os.stat` poll: `stream.read(65536)` on a PIPE returns as soon as a
+    partial buffer is available (verified directly), so this is the true
+    arrival time of the bytes, not the time a stat happened to notice them.
+
+    `clock` is injectable exactly like every other watch in this module
+    (tests drive a `FakeClock`); `on_chunk` is called after each arrival so
+    a caller can wake a watcher, and is defaulted to nothing for the two
+    call sites that only want the log copy."""
+
+    def __init__(self, proc: subprocess.Popen, path: Path | None,
+                 clock=time.monotonic, on_chunk=None):
         self.proc = proc
         self.path = path
         self.error: BaseException | None = None
+        self.clock = clock
+        self.last_chunk_at: float | None = None
+        self.chunks = 0
+        self.on_chunk = on_chunk
         self.thread = threading.Thread(target=self._copy, daemon=True)
         self.thread.start()
 
@@ -8593,17 +9142,173 @@ class OutputTee:
                         target.flush()
                     sys.stdout.write(display)
                     sys.stdout.flush()
+                    self.chunks += 1
+                    self.last_chunk_at = self.clock()
+                    if self.on_chunk is not None:
+                        try:
+                            self.on_chunk()
+                        except Exception:
+                            # A watcher wake-up is never the child's problem.
+                            pass
             finally:
                 if target is not None:
                     target.close()
         except BaseException as exc:
             self.error = exc
 
-    def join(self) -> None:
-        self.thread.join()
+    def join(self, timeout: float | None = None) -> bool:
+        """Wait for this reflector to drain what the child last wrote, and
+        return whether the drain actually FINISHED.
+
+        Fix round 1 (L5): `thread.join()` with no timeout is only bounded by
+        EOF on the lane's pipe, and a grandchild that left the process group
+        (`setsid`, a daemon, a `docker` client) can hold that pipe open after
+        the lane itself has been terminated — so the lane would never return,
+        no matter that its `budget` expired or that its stall watch already
+        stopped it. `OUTPUT_DRAIN_TIMEOUT_SECONDS` bounds the wait and an
+        incomplete drain is DISCLOSED (a trailing chunk may still be in flight),
+        exactly as `LogStreamWatch.join()` already does for the container case.
+
+        The timeout is resolved at CALL time rather than defaulted in the
+        signature, so the module constant is the one place the value lives
+        (a `timeout=OUTPUT_DRAIN_TIMEOUT_SECONDS` default would freeze the
+        value at import time and quietly ignore any later change)."""
+        if timeout is None:
+            timeout = OUTPUT_DRAIN_TIMEOUT_SECONDS
+        self.thread.join(timeout)
+        drained = not self.thread.is_alive()
+        if not drained:
+            print(f"{PROG}: WARNING: output drain did not finish within "
+                  f"{timeout}s — a trailing chunk may still be in flight",
+                  file=sys.stderr, flush=True)
         if self.error is not None:
             print(f"{PROG}: WARNING: output log capture stopped: {self.error}",
                   file=sys.stderr, flush=True)
+        return drained
+
+
+class StreamWatch:
+    """RG-320 (P1) — liveness for an exec or bare-host command lane, judged
+    from the ARRIVAL TIME of its own output chunks.
+
+    `LogStreamWatch` (RG-41) covers a container lane, where `await_container`
+    owns the `docker logs -f` pipe. An exec lane and a bare-host lane have no
+    such stream: `OutputTee` pumps the child's own stdout, and until P1 that
+    pump was only a log copy. This watch times the same arrivals, so the
+    statement `stall_timeout` makes is finally true for those two kinds
+    (DESIGN.md G1: on a bare-host lane the key used to be accepted, warned
+    about and then silently inert).
+
+    Same rule as both existing watches -- SILENCE, never total elapsed time
+    -- with `ProgressWatch`'s pressure pause. An AUTO bound pauses only for
+    host memory PSI (`full avg10 > 5`), capped at
+    `PRESSURE_PAUSE_MAX_SECONDS`; CPU contention and IO PSI alone never pause
+    the 300 s clock. Declared bounds do not pause.
+
+    A child that BUFFERS its output is silent for its whole run and this
+    watch cannot tell that apart from a hang; a lane that genuinely prints
+    nothing for minutes must declare a `stall_timeout` wide enough for its
+    quietest phase. That is a documented limit, not a defect to paper over.
+    """
+
+    def __init__(self, tee: "OutputTee", stall_seconds: int | None,
+                 lane_name: str, clock=time.monotonic,
+                 pressure_reader=None, *, auto_bound: bool = False):
+        self.tee = tee
+        self.lane = lane_name
+        self.stall_seconds = stall_seconds
+        self.clock = clock
+        self.auto_bound = auto_bound
+        self.pressure_reader = pressure_reader or (lambda: False)
+        self._paused_total = 0.0
+        self._pause_started: float | None = None
+        # The tee starts pumping at construction time, before this object
+        # exists; anchor the clock at construction of the WATCH so a lane
+        # that prints nothing at all still gets its full window rather than
+        # an age measured from an unset `last_chunk_at`.
+        self._started_at = clock()
+
+    def _pressure_high(self) -> bool:
+        try:
+            value = self.pressure_reader()
+        except Exception:
+            return False
+        return isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and value > 5
+
+    def _update_pressure_pause(self, now: float) -> None:
+        if not self.auto_bound:
+            return
+        if self._pressure_high():
+            if self._pause_started is None:
+                self._pause_started = now
+            return
+        if self._pause_started is not None:
+            self._paused_total += max(0.0, now - self._pause_started)
+            self._pause_started = None
+
+    def _age(self, now: float) -> float:
+        paused = self._paused_total
+        if self._pause_started is not None:
+            paused += max(0.0, now - self._pause_started)
+        paused = min(paused, PRESSURE_PAUSE_MAX_SECONDS)
+        last = self.tee.last_chunk_at
+        since = self._started_at if last is None else last
+        return max(0.0, now - since - paused)
+
+    def poll(self) -> str | None:
+        if self.stall_seconds is None:
+            return None
+        now = self.clock()
+        self._update_pressure_pause(now)
+        age = self._age(now)
+        if age < self.stall_seconds:
+            return None
+        chunks = self.tee.chunks
+        seen = (f"{chunks} chunk(s) of output, the last arriving "
+                f"{int(age)}s ago" if chunks else "(no output yet)")
+        label = (f"stall_timeout {self.stall_seconds}s"
+                 if not self.auto_bound
+                 else f"auto stall bound {int(self.stall_seconds)}s")
+        return (f"the lane subprocess is still RUNNING but has written "
+                f"nothing for {int(age)}s ({label}); "
+                f"last output: {seen}")
+
+
+def stall_bound_facts(lane: dict) -> dict:
+    """RG-320: the silence bound THIS lane is actually armed with, and
+    whether it is the lane's own declaration or the default.
+
+    Derived once, from the config, so the disclosure line, the run record
+    and the two watches cannot disagree about the number they are all
+    talking about (`R-35`'s own rule: read one fact in one place).
+
+    Fix round 1 (M1): the derivation is KIND-AWARE, because the watch is. An
+    ASSAY lane is not armed with the flat default — `ProgressWatch` stops it
+    at `_idle_bound`, i.e. `max(300, 3x its published cadence)` or
+    `POST_COMMAND_BOUND_SECONDS` between `command_finished` and the R2 plan,
+    and those inputs do not exist before the lane runs. So an assay lane's
+    facts name the RULE (`ASSAY_AUTO_BOUND_RULE`), keep `seconds` at None
+    rather than inventing a number, and say so in `text`; its watch and its
+    stop message publish the same rule from the same string, so an operator
+    can verify they agree instead of reading two different numbers.
+
+    `seconds` is None ONLY where nothing is missing: a DECLARED value and a
+    command lane's flat default are both exact, and both report a number."""
+    declared = lane.get("stall_timeout")
+    if declared:
+        return {"seconds": float(budget_seconds(declared)),
+                "source": STALL_BOUND_DECLARED,
+                "text": declared, "rule": None}
+    if lane.get("kind") == "assay":
+        return {"seconds": None,
+                "source": STALL_BOUND_AUTO_DERIVED,
+                "text": ASSAY_AUTO_BOUND_RULE,
+                "rule": ASSAY_AUTO_BOUND_RULE}
+    return {"seconds": DEFAULT_STALL_BOUND_SECONDS,
+            "source": STALL_BOUND_AUTO,
+            "text": f"{int(DEFAULT_STALL_BOUND_SECONDS)}s",
+            "rule": None}
 
 
 class StdinForwarder:
@@ -9416,7 +10121,7 @@ def _pointer_defects(text: str, file_path: Path, root: Path, where: str,
                     repo, worktree, effective)
             lanes_cache[key] = merge_lanes(
                 cfg.get("lanes", {}), central, proj, cfg_path, central_path,
-                assay_defaults, imported)
+                assay_defaults, imported, cfg)
         except GateError as exc:
             lanes_cache[key] = None
             defects.append(f"{where}: loading {proj / CONFIG_NAME}: {exc}")
@@ -9765,6 +10470,15 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         if name is None:
             name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                          worktree, env_source)
+        event_writer = current_job_event_writer()
+        if event_writer is not None:
+            if not inspect_mounts:
+                fail("cannot verify the host mounts for --event-file before "
+                     "an exec-environment probe")
+            validate_job_event_destination(
+                str(event_writer.path), worktree=worktree,
+                repo=repo,
+                mount_sources=inspect_container_mount_sources(docker, name))
         forwarded = resource_forwarded_env(
             resource_settings or {}, "exec",
             exec_mounts=((lambda: container_mount_destinations(docker, name))
@@ -9786,6 +10500,11 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     for key, value in forwarded.items():
         argv += ["-e", f"{key}={value}"]
     argv += [env["image"], "bash", "-c", script]
+    event_writer = current_job_event_writer()
+    if event_writer is not None:
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_flag_sources(argv, strict_sources=True))
     return argv
 
 
@@ -10976,6 +11695,23 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     if entry is None:
         lane["_assay_inventory_error"] = why or "Assay lane inventory is unavailable"
         lane.pop("_assay_inventory", None)
+        if lane.get("_assay_forward"):
+            # RG-318 (review r2 M1): the floor above is read FROM the
+            # inventory, so a judge whose inventory cannot be read at all used
+            # to reach the lane, mount, admission and `docker run` and be
+            # refused by the in-lane capability probe -- the very judge RG-318
+            # exists to refuse before a container starts. `fail()` (exit 2)
+            # is the convention this branch already uses for the same fact
+            # (no inventory) in the selective-flags refusal below; the
+            # version-based floor stays
+            # GateNotRunError/`judge-floor`, because only a readable inventory
+            # can state a version.
+            floor = ".".join(str(part)
+                             for part in ASSAY_FORWARD_ASSAY_FLOOR)
+            fail(f"arguments after '--' for lane {lane_name!r} need an "
+                 f"inventory proving the judge accepts them "
+                 f"(assay >= {floor}, RG-318): {why}. Update the checkout, "
+                 f"or re-pin the judge to >= {floor}")
         if lane.get("_selective_assay") or lane.get("_r2_flex"):
             fail(f"selective assay flags for lane {lane_name!r} require an "
                  f"inventory proving that it declares R2: {why}")
@@ -11029,6 +11765,25 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
                 f"assay lane {lane['assay_lane']!r} has version "
                 f"{assay_version!r}, which cannot be shown to support "
                 f"{flag}; requires assay >= {floor}")
+    if lane.get("_assay_forward"):
+        # RG-318: forwarded store flags need a judge that reports them in its
+        # own `capabilities` document, i.e. Assay >= 12.3.0. The floor is
+        # stated HERE, from the inventory version, so a too-old judge refuses
+        # by name before a container starts; the in-lane capability probe
+        # remains the check that actually decides (an unknown schema or an
+        # unlistable flag is refused there, whatever the version claims).
+        if (not isinstance(assay_version, str)
+                or not assay_inventory_version_meets_floor(
+                    assay_version, ASSAY_FORWARD_ASSAY_FLOOR)):
+            floor = ".".join(str(part)
+                             for part in ASSAY_FORWARD_ASSAY_FLOOR)
+            raise GateNotRunError(
+                "judge-floor",
+                f"assay lane {lane['assay_lane']!r} has version "
+                f"{assay_version!r}, which cannot be shown to accept "
+                f"arguments after '--'; requires assay >= {floor} "
+                f"(RG-318) -- update the checkout, or re-pin the judge to "
+                f">= {floor}")
     if entry.get("base_source") != "request":
         if base_flag:
             fail(f"--base {base_flag!r} was given but assay lane "
@@ -11670,24 +12425,12 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                f"{len(checked)} lane(s) spawning workers by name: every one "
                f"declares 'resources.cpus' (lane or environment)")
 
-    # 2d. RG-58 (RW-27a): a bare-host lane declaring `stall_timeout` — no
-    # watch, no timer on that runner — gets a matching doctor WARN alongside
-    # the load-time one `_validate_lane` already prints; SAME shared reason
-    # function, so the two can never drift apart.
-    stall_bare_host = []
-    for n in sorted(lanes):
-        if not lanes[n].get("stall_timeout"):
-            continue
-        try:
-            resolved_env, _ = resolve_environment(lanes[n], n, cfg, central,
-                                                  cfg_path, central_path)
-        except GateError:
-            continue
-        if not resolved_env or resolved_env.get("mode") == "host":
-            stall_bare_host.append(n)
-    for name in stall_bare_host:
-        record("WARN", f"lane {name!r} stall_timeout (RG-58)",
-               host_mode_stall_timeout_inert_reason(name))
+    # 2d. RG-320 (P1) REPLACES RG-58's WARN here: a bare-host lane DOES have
+    # a watch now (`StreamWatch` over its own output stream), so doctor has
+    # nothing to warn about. The one kind that remains genuinely unwatched at
+    # its own level is a sequence lane, and its members' watches are the
+    # answer — `lanes --check` reports the sequence row instead of a WARN on
+    # a lane an operator can do nothing about.
 
     # 3. physical-path derivability + git health
     doctor_repo: Path | None = None
@@ -13506,11 +14249,13 @@ def run_workers_step(args: argparse.Namespace, base_argv: list[str],
                      count: int, dispatch: Callable[..., "LaneResult"],
                      *, scaling: bool) -> dict:
     """One measured step: dispatch at N, record it, read back its outcomes."""
-    result = dispatch(base_argv, _workers_options={
-        "workers": count, "junit": True, "scaling": scaling,
-        "no_recheck": True})
-    record = result._record or {}
-    finish(result)
+    with suppress_job_events(forward_starts=True):
+        result = dispatch(strip_job_event_options(base_argv),
+                          _workers_options={
+                              "workers": count, "junit": True,
+                              "scaling": scaling, "no_recheck": True})
+        record = result._record or {}
+        finish(result)
     junit = (record.get("workers") or {}).get("junit")
     outcomes = junit_outcomes(Path(junit)) if junit else None
     if junit:
@@ -14648,8 +15393,16 @@ def git_safe_directory_setup() -> list[str]:
 # through and gives each shard its own lane instance.
 R2_SHARD_MAX = 64
 R2_FLEX_ASSAY_FLAG = "--merge-shard-store"
-#: Review B2: the flexible-campaign flags need this judge (B529-B531).
-R2_FLEX_ASSAY_FLOOR = (12, 2, 0)  # the help token proving judge support
+#: Review B2: the flexible-campaign flags need this judge (B529-B531);
+#: the help token proving judge support.
+R2_FLEX_ASSAY_FLOOR = (12, 2, 0)
+#: RG-318: the FIRST assay release whose judge reports a `capabilities`
+#: document and accepts the forwarded store flags Run-Gate passes after `--`.
+#: A lane that forwards arguments is held to it by the inventory version, the
+#: same way the RG-265 flexible flags are held to 12.2.0 above; the run-time
+#: capability probe stays the check (a judge that answers it is accepted on
+#: its own document -- an older build can never answer it).
+ASSAY_FORWARD_ASSAY_FLOOR = (12, 3, 0)
 
 
 def r2_flex_flags_given(args: argparse.Namespace) -> bool:
@@ -14692,11 +15445,13 @@ def attach_r2_flex(lane: dict, lane_name: str,
             fail(f"--merge-shards must be 1..{R2_SHARD_MAX} "
                  f"(got {args.merge_shards!r})")
         flex["merge_shards"] = int(args.merge_shards)
-    if bool(args.carry_over) != (args.carry_over_reason is not None):
-        fail("--carry-over and --carry-over-reason are required together")
+    # RG-297 (T12): `--carry-over` paired with a non-empty `--carry-over-reason`
+    # and the EXISTENCE of a candidate file are ASSAY's rules, not Run-Gate's
+    # (mutation_store.py pairs the reason, cli.py's reader opens the file).
+    # Run-Gate only resolves a path and proves it is visible in the lane
+    # (validate_r2_flex_paths); a bad pairing or an absent file is refused by
+    # the judge that owns it, unreworded.
     if args.carry_over_reason is not None:
-        if not args.carry_over_reason.strip() or "\0" in args.carry_over_reason:
-            fail("--carry-over-reason must be non-empty text")
         flex["carry_over_reason"] = args.carry_over_reason
     for key, values in (("carry_over", args.carry_over),
                         ("merge_state", args.merge_state)):
@@ -14705,10 +15460,8 @@ def attach_r2_flex(lane: dict, lane_name: str,
     for key, value in (("only_candidates", args.only_candidates),
                        ("exclude_candidates", args.exclude_candidates)):
         if value is not None:
-            path = os.path.abspath(os.path.expanduser(value))
-            if not os.path.isfile(path):
-                fail(f"--{key.replace('_', '-')} {value!r} is not a file")
-            flex[key] = path
+            # Assay reads the candidate file; Run-Gate only resolves it.
+            flex[key] = os.path.abspath(os.path.expanduser(value))
     lane = copy.deepcopy(lane)
     # Review B3: every shard artifact is keyed by the Run-Gate lane too, so
     # two Run-Gate lanes sharing one Assay lane never share a shard's store,
@@ -14722,28 +15475,242 @@ def attach_r2_flex(lane: dict, lane_name: str,
         run_name = f"{lane_name}{suffix}"
         lane["_artifact_lane"] = f"{lane['assay_lane']}.{lane_name}{suffix}"
         flex["base_lane"] = lane_name
+    if run_name != lane_name and _ACTIVE_JOB_EVENT_WRITER is not None:
+        _ACTIVE_JOB_EVENT_WRITER.lane = run_name
     return lane, run_name
 
 
-def validate_r2_flex_paths(flex: dict, repo: Path, worktree: Path) -> None:
+def validate_r2_flex_paths(flex: dict, repo: Path, worktree: Path,
+                           extra: list[tuple[str, str]] | None = None) -> None:
     """Every path handed to the judge must be visible in the lane
     environment: run-gate mounts the checkout (and its `.run-gate` state
     root), so a source outside `repo`/`worktree` is refused here rather than
-    as a confusing in-container `not an existing directory`."""
+    as a confusing in-container `not an existing directory`.
+
+    `extra` (RG-297) carries the `(flag, value)` pairs of an assay lane's
+    opaque `--` arguments: the same visibility rule, no Assay semantics. A
+    `--merge-manifest FILE` is checked on its PARENT DIRECTORY, because the
+    stores a manifest names resolve relative to the manifest itself, and
+    Run-Gate never opens the manifest."""
     roots = [repo.resolve(), worktree.resolve()]
+    candidates: list[tuple[str, object]] = []
     for key in ("carry_over", "merge_state", "only_candidates",
                 "exclude_candidates"):
         values = flex.get(key)
         if values is None:
             continue
         for value in values if isinstance(values, list) else [values]:
-            resolved = Path(value).resolve()
-            if not any(resolved == root or resolved.is_relative_to(root)
-                       for root in roots):
-                fail(f"--{key.replace('_', '-')} {value!r} is outside the "
-                     f"checkout {repo} and the judged worktree {worktree}; "
-                     "the lane environment cannot see it -- copy it under "
-                     "<checkout>/.run-gate/ (git-ignored) first")
+            candidates.append((key.replace('_', '-'), value))
+    for flag, value in extra or []:
+        name = flag.lstrip("-")
+        if flag == "--merge-manifest":
+            value = os.path.dirname(value) or "."
+        candidates.append((name, value))
+    for key, value in candidates:
+        resolved = Path(value).resolve()
+        if not any(resolved == root or resolved.is_relative_to(root)
+                   for root in roots):
+            fail(f"--{key} {str(value)!r} is outside the "
+                 f"checkout {repo} and the judged worktree {worktree}; "
+                 "the lane environment cannot see it -- copy it under "
+                 "<checkout>/.run-gate/ (git-ignored) first")
+
+
+# RG-297 (T12): an assay lane may pass Assay's OWN flags after `--`. Run-Gate
+# forwards them OPAQUELY -- it never restates Assay's store semantics (carry-over
+# pairing, candidate-file reading, rejudge buckets, manifest contents) -- and
+# checks only what is genuinely its own: the flags it injects or owns itself,
+# and the visibility of every host path the lane script will resolve.
+ASSAY_FORWARD_INJECTED = ("--state-dir", "--progress",
+                          "--progress-heartbeat", "--verdict-json", "--file",
+                          "--request-base")
+ASSAY_FORWARD_OWNED = ("--jobs", "--shard", "--merge-shards")
+#: Path-valued Assay flags: the lane environment mounts only the checkout and
+#: the judged worktree, so a value outside them is unseeable and refused.
+ASSAY_FORWARD_PATH_FLAGS = ("--merge-state", "--merge-shard-store",
+                            "--merge-manifest", "--carry-over",
+                            "--carry-forward", "--reuse-from",
+                            "--only-candidates", "--exclude-candidates",
+                            "--candidates-file")
+
+
+def assay_forward_owned_names(args: argparse.Namespace) -> set[str]:
+    """The Assay flag NAMES this invocation's own options already put on the
+    judge's argv.
+
+    A forwarded flag with the same name is not a second spelling of the same
+    request: `argparse` is last-wins for a replace-valued flag, so the judge
+    would run a selection Run-Gate never recorded, and an append-valued flag
+    would silently ADD a store next to the one the operator declared. Both
+    are refused by name instead (RG-297 review M5).
+
+    `--shard K/N` contributes `--merge-state` because that is what it really
+    adds to the judge's argv (the main store it reuses finished records
+    from), not as a convenience alias."""
+    names: set[str] = set()
+    if args.carry_over:
+        names.add("--carry-over")
+    if args.carry_over_reason is not None:
+        names.add("--carry-over-reason")
+    if args.merge_state:
+        names.add("--merge-state")
+    if args.shard is not None:
+        names.update(("--shard", "--merge-state"))
+    if args.merge_shards is not None:
+        names.add("--merge-shard-store")
+    for value, flag in ((args.only_candidates, "--only-candidates"),
+                        (args.exclude_candidates, "--exclude-candidates")):
+        if value is not None:
+            names.add(flag)
+    if args.reuse_from is not None:
+        names.add("--reuse-from")
+    if args.rejudge:
+        names.add("--rejudge")
+    if args.rejudge_outcome is not None:
+        names.add("--rejudge-outcome")
+    return names
+
+
+def parse_assay_forward(tokens: list[str], base_dir: Path | str,
+                        own_names: set[str] | None = None
+                        ) -> tuple[list[str], list[tuple[str,
+                                                          str]]]:
+    """Split Run-Gate's own rules out of an assay lane's `--` arguments.
+
+    Pure: no I/O, no manifest is opened. Returns the tokens verbatim (in
+    order, either spelling kept as given) and the `(flag, value)` pairs whose
+    value is a host path, made absolute AGAINST `base_dir`. Everything else --
+    including which values combine, what a candidate file holds, whether a
+    manifest is consistent -- is ASSAY's rule, refused by Assay.
+
+    `base_dir` is the project directory the generated lane script `cd`s into:
+    the SAME directory the judge resolves a relative value against. Resolving
+    against Run-Gate's own cwd instead would bless a path the lane never
+    opens -- Run-Gate never `chdir`s, so in a monorepo (or under
+    `--worktree`) that cwd is routinely a different tree. The token keeps the
+    caller's exact string; only the VALUE CHECKED is absolute.
+
+    `own_names` are the flag names this invocation's own options already put
+    on the argv (`assay_forward_owned_names`): forwarding one of them is
+    refused rather than handed to the judge as a duplicate."""
+    owned = set(ASSAY_FORWARD_INJECTED) | set(ASSAY_FORWARD_OWNED)
+    own_names = own_names or set()
+    path_flags = set(ASSAY_FORWARD_PATH_FLAGS)
+    forwarded: list[str] = []
+    pairs: list[tuple[str, str]] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("--"):
+            if not forwarded:
+                fail(f"argument {token!r} after '--' can only be the value of "
+                     "the preceding flag; give it as `--flag VALUE`")
+            # Opaque: whatever a caller passes after a flag is that flag's
+            # value, never re-read as a flag by Run-Gate.
+            forwarded.append(token)
+            index += 1
+            continue
+        flag, sep, inline = token.partition("=")
+        if flag in owned:
+            if flag in ASSAY_FORWARD_INJECTED:
+                fail(f"{flag} is injected by Run-Gate")
+            fail(f"{flag} is owned by Run-Gate: give it before '--' "
+                 "(or drop it)")
+        if flag in own_names:
+            # Already on this invocation's argv from a Run-Gate option: a
+            # second copy would be last-wins (replace-valued) or silently
+            # additive (append-valued) at the judge. Review r2 L3: the remedy
+            # is to DROP the copy after '--' -- "give it before '--'" is dead
+            # advice here, because it already IS before '--'.
+            fail(f"{flag} is already set by a Run-Gate option in this "
+                 "invocation; drop it after '--'")
+        if flag not in path_flags:
+            forwarded.append(token)
+            index += 1
+            continue
+        if sep:
+            raw = inline
+            if not raw:
+                fail(f"{flag} after '--' requires a value")
+            forwarded.append(token)
+            index += 1
+        else:
+            if index + 1 >= len(tokens) or tokens[index + 1].startswith("--"):
+                fail(f"{flag} after '--' requires a value")
+            raw = tokens[index + 1]
+            forwarded.extend([token, raw])
+            index += 2
+        value = os.path.expanduser(raw)
+        if not os.path.isabs(value):
+            # Relative to the directory the lane RUNS in, never to the
+            # invoking cwd (see the docstring: they differ across a monorepo
+            # and under --worktree).
+            value = os.path.join(str(base_dir), value)
+        pairs.append((flag, os.path.abspath(value)))
+    return forwarded, pairs
+
+
+def assay_forward_probe(command: str, flags: list[str]) -> str:
+    """The in-lane capability probe for an assay lane's forwarded flags.
+
+    One shell group, so a refusal leaves the lane before Assay runs. The
+    judge is asked for its own closed `capabilities --json` document and
+    Run-Gate reads ONLY `schema` and `commands.run`: every other key is the
+    judge's business, and an UNKNOWN schema is refused rather than
+    reinterpreted. The flag test is a JSON parse in Python (never a grep on
+    the document's text).
+
+    A non-zero exit or unparseable output refuses by name. A judge that passes
+    the inventory floor but refuses `capabilities` itself (or a build without
+    its required analysis package) keeps ITS OWN one line, unreworded: there
+    is no degraded mode and no fallback to the `run --help` probe, which
+    stays only for Run-Gate's OWN flags."""
+    wanted = json.dumps(flags)
+    code = f"""import json, sys
+
+document = None
+raw = sys.stdin.read()
+try:
+    document = json.loads(raw)
+except ValueError:
+    document = None
+if not isinstance(document, dict):
+    print("run-gate: this judge did not return a capability document "
+          "(assay capabilities --json); arguments after '--' cannot be "
+          "checked -- drop them or use a judge with `assay capabilities`",
+          file=sys.stderr)
+    sys.exit(2)
+schema = document.get("schema")
+if schema != "assay-capabilities/2":
+    print("run-gate: this judge reports capability document schema "
+          f"{{schema!r}}; only 'assay-capabilities/2' is understood",
+          file=sys.stderr)
+    sys.exit(2)
+commands = document.get("commands")
+supported = commands.get("run") if isinstance(commands, dict) else None
+if not isinstance(supported, list):
+    print("run-gate: this judge's capability document lists no "
+          "commands.run; arguments after '--' cannot be checked",
+          file=sys.stderr)
+    sys.exit(2)
+for flag in {wanted}:
+    if flag not in supported:
+        print(f"run-gate: this judge does not support {{flag}} "
+              "(assay capabilities)", file=sys.stderr)
+        sys.exit(2)
+"""
+    # The `printf` that feeds the parser MUST stay the LAST command of this
+    # group: the group is the left operand of the caller's `&&` chain, where
+    # bash ignores `errexit`, so the group's status is whatever its last
+    # command returned. Appending anything after it (a `:`, a `cd`, a cleanup)
+    # would hand the chain that command's status instead of the refusal.
+    return (
+        "{ __rg_fw_out=$(" + command + " capabilities --json 2>&1); "
+        "__rg_fw_rc=$?; "
+        "if [ \"$__rg_fw_rc\" -ne 0 ]; then "
+        "printf '%s\\n' \"$__rg_fw_out\" >&2; exit 2; fi; "
+        f"printf '%s\\n' \"$__rg_fw_out\" | python3 -c {shlex.quote(code)}; "
+        "__rg_fw_pr=$?; if [ \"$__rg_fw_pr\" -ne 0 ]; then exit 2; fi; }")
 
 
 def r2_flex_record(flex: dict) -> dict:
@@ -14962,6 +15929,10 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                        else repo / ".run-gate")
     flex_argv, flex_dirs = r2_flex_argv(lane, state_root_path, main_state_dir)
     flex = lane.get("_r2_flex") or {}
+    # RG-297: the assay lane's own `--` arguments, appended AFTER Run-Gate's
+    # argv so Assay sees both, and probed against the judge's capability
+    # document (below) instead of Run-Gate restating Assay's rules.
+    forward = list(lane.get("_assay_forward") or [])
     state_descendants = state_dir.relative_to(state_root_path).parts
     quoted_root = shlex.quote(str(state_root_path))
     unavailable = shlex.quote(
@@ -15003,6 +15974,18 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
             f"{{ __rg_flex_h=$({command} run --help 2>&1) || true; "
             f'case "$__rg_flex_h" in *{R2_FLEX_ASSAY_FLAG}*) : ;; '
             f"*) printf '%s\\n' {missing} >&2; exit 2 ;; esac; }}")
+    if forward:
+        # RG-297: a forwarded flag is Assay's rule, but the JUDGE must
+        # actually accept it. The judge's own closed capability document is
+        # the only fact worth reading here -- a name list of `run` flags,
+        # versioned so an unknown document is refused rather than guessed at.
+        # Not every judge has it (the released Assay 12.2.0 does not), and a
+        # judge whose document cannot be read or whose analysis package is
+        # absent refuses with ITS OWN one line, passed through unreworded:
+        # there is no degraded mode and no fallback to `run --help`.
+        names = sorted({token.split("=", 1)[0] for token in forward
+                        if token.startswith("--")})
+        parts.append(assay_forward_probe(command, names))
     progress = assay_progress_rel(assay_artifact_lane(lane))
     run_argv = ["run", lane["assay_lane"], "--file", "assay.toml",
                 "--verdict-json", verdict, "--resume", "--progress",
@@ -15025,6 +16008,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     if selective.get("rejudge_outcome"):
         run_argv += ["--rejudge-outcome", selective["rejudge_outcome"]]
     run_argv += flex_argv
+    run_argv += forward
     # RG-85: the test command needs a real, writable path inside the selected
     # checkout mount. A literal such as `/worktree/.run-gate` is not a
     # namespace fact: tester-unified runs at the mounted checkout's actual
@@ -16500,9 +17484,17 @@ class ProgressWatch:
                    and not isinstance(total, bool) else ""))
 
     def _stall(self, age: float) -> str:
+        # RG-320 fix round 1 (M1): the label names the SAME derivation the
+        # disclosure line and the run record name (`ASSAY_AUTO_BOUND_RULE`),
+        # plus the number this poll actually enforced. Before this the file
+        # said `300s (source: auto)` at start and `idle_bound auto 600s` here,
+        # i.e. one lane published two different bounds about itself.
         bound = self._idle_bound()
-        label = (f"stall_timeout {int(bound)}s" if self.stall_seconds is not None
-                 else f"idle_bound auto {int(bound)}s")
+        if self.stall_seconds is not None:
+            label = f"stall_timeout {int(bound)}s"
+        else:
+            label = (f"auto-derived bound, {ASSAY_AUTO_BOUND_RULE}; "
+                     f"this window was {int(bound)}s")
         return (f"the container is still RUNNING but "
                 f"{self.path.name} has not advanced for {int(age)}s "
                 f"({label}); last event seen: "
@@ -16670,10 +17662,15 @@ class LogStreamWatch:
     the last one"."""
 
     def __init__(self, proc: subprocess.Popen, stall_seconds: int | None,
-                 lane_name: str, clock=time.monotonic):
+                 lane_name: str, clock=time.monotonic,
+                 pressure_reader=None, *, auto_bound: bool = False):
         self.stall_seconds = stall_seconds
         self.lane = lane_name
         self.clock = clock
+        self.auto_bound = auto_bound
+        self.pressure_reader = pressure_reader or (lambda: False)
+        self._paused_total = 0.0
+        self._pause_started: float | None = None
         self._lock = threading.Lock()
         self._last_line_at = clock()
         self._last_line: str | None = None
@@ -16772,17 +17769,44 @@ class LogStreamWatch:
         self._thread.join(timeout)
         return not self._thread.is_alive()
 
+    def _pressure_high(self) -> bool:
+        try:
+            value = self.pressure_reader()
+        except Exception:
+            return False
+        return isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and value > 5
+
     def poll(self) -> str | None:
         if self.stall_seconds is None:
             return None               # no stall_timeout: nothing to check
+        now = self.clock()
+        if self.auto_bound:
+            # RG-320: an AUTO bound is a guess, and a host under memory
+            # pressure delivers `docker logs` lines late for a reason that is
+            # the HOST's, not the lane's. Credit that silence only while the
+            # pressure holds, capped in total exactly like ProgressWatch.
+            if self._pressure_high():
+                if self._pause_started is None:
+                    self._pause_started = now
+            elif self._pause_started is not None:
+                self._paused_total += max(0.0, now - self._pause_started)
+                self._pause_started = None
         with self._lock:
-            age = self.clock() - self._last_line_at
+            age = now - self._last_line_at
             last_line = self._last_line
+        if self.auto_bound:
+            paused = self._paused_total
+            if self._pause_started is not None:
+                paused += max(0.0, now - self._pause_started)
+            age = max(0.0, age - min(paused, PRESSURE_PAUSE_MAX_SECONDS))
         if age < self.stall_seconds:
             return None
         seen = f"{last_line!r}" if last_line is not None else "(no output yet)"
+        label = (f"stall_timeout {self.stall_seconds}s" if not self.auto_bound
+                 else f"auto stall bound {int(self.stall_seconds)}s")
         return (f"the container is still RUNNING but has printed nothing "
-                f"for {int(age)}s (stall_timeout {self.stall_seconds}s); "
+                f"for {int(age)}s ({label}); "
                 f"last line seen: {seen}")
 
 
@@ -16844,7 +17868,59 @@ def print_assay_lane_budget(lane: dict) -> None:
           end="", flush=True)
 
 
-def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
+def lane_stall_signal(lane: dict,
+                      command_signal: str | None = None) -> str:
+    """RG-320: which signal actually judges this lane's SILENCE, named.
+
+    The two facts are independent: the LANE KIND decides whether there is a
+    progress file at all (assay only), and the RUNNER decides how a command
+    lane's own output is observed — `await_container` tails `docker logs -f`
+    for a container lane (either `ephemeral` or, since RG-43, the container
+    `host` environment), while `run_exec_lane` and `run_bare_host_lane`
+    pump the child's own stdout through `OutputTee`. `command_signal` is
+    therefore supplied by the caller that KNOWS which runner it is.
+
+    When no `command_signal` is supplied, the CONFIG's own environment mode
+    decides — `_environment_mode` is stamped from the declaration at load and
+    at merge. A lane table with NEITHER (a caller that never loaded a config,
+    or a replayed lane whose `[environments.*]` entry has since moved, which
+    `_stamp_environment_modes` deliberately leaves unstamped rather than
+    guessing) gets `STALL_SIGNAL_UNKNOWN` and NOT a plausible one: naming a
+    signal there would substitute a default for a fact (RG-101) and send an
+    operator debugging the wrong stream (fix round 1, M2 — the docstring used
+    to promise the container kind and the code answered it, both wrong).
+    A sequence never asks: its dispatch returns before any runner, and its
+    members carry the watches (G2).
+
+    Which signal judged a lane is a fact the operator is entitled to
+    (`R-05`) — they differ in what they can miss (a single silent compile
+    is a line-arrival watch's blind spot, and a fully BUFFERED child is
+    silent for its whole run)."""
+    if lane.get("kind") == "assay":
+        return STALL_SIGNAL_PROGRESS_FILE
+    if command_signal is not None:
+        return command_signal
+    mode = lane.get("_environment_mode")
+    if mode == "ephemeral":
+        return STALL_SIGNAL_LOG_STREAM
+    if isinstance(mode, str) and mode.strip():
+        # `exec` and `host` (the bare-subprocess mode RG-43 renamed
+        # `bare-host` to) both hand the child's own stdout to `OutputTee`.
+        return STALL_SIGNAL_OUTPUT_STREAM
+    return STALL_SIGNAL_UNKNOWN
+
+
+_STALL_SIGNAL_TEXT = {
+    STALL_SIGNAL_PROGRESS_FILE: ("its progress file", "progress file"),
+    STALL_SIGNAL_LOG_STREAM: ("its own log output", "log stream"),
+    STALL_SIGNAL_OUTPUT_STREAM: ("its own output stream", "output stream"),
+    STALL_SIGNAL_UNKNOWN: ("no signal this invocation can name",
+                          "signal not resolvable for this lane"),
+}
+
+
+def print_lane_bounds(lane: dict, owner_pid: int | None = None, *,
+                      command_signal: str | None = None) -> None:
     """RW-18 (review S6): the two numbers that can END this lane, disclosed
     before it is watched — on the fresh path, the RE-ATTACH path and the
     FOLLOW path alike.
@@ -16855,6 +17931,12 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
     and a slice this client did not choose, these two are facts about the
     LANE: whoever is watching it is entitled to them (`R-05`).
 
+    RG-320 (P1): the line is printed for EVERY lane that is actually
+    watched, whether the bound is the lane's own `stall_timeout` or the
+    default one — and it always names the SOURCE, because a lane that
+    declares nothing is now still bounded, and "which number, and whose" is
+    exactly the fact that used to be unknown.
+
     `owner_pid` names the client that will act on the stall when this one is
     only a follower — the same fact, without the false implication that this
     invocation would be the one to stop the container."""
@@ -16862,26 +17944,97 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
     print_assay_lane_budget(lane)
-    if lane.get("stall_timeout"):
+    signal = lane_stall_signal(lane, command_signal)
+    facts = stall_bound_facts(lane)
+    where, source = _STALL_SIGNAL_TEXT[signal]
+    enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
+                f"this one only watches" if owner_pid is not None else "")
+    if facts["source"] == STALL_BOUND_DECLARED:
         # R-40: what this bounds is SILENCE, not elapsed time. Saying so on
         # the line next to the hard budget is the whole point — the two
         # numbers mean opposite things and used to be confused for each
         # other (RG-32's lesson, one lane key over).
-        #
-        # RG-41: the source is DISCLOSED, never inferred — an assay lane's
-        # progress file and a command lane's log stream differ in what they
-        # can miss (a single silent compile is the log stream's known blind
-        # spot), so which one is judging THIS lane is a fact the operator is
-        # entitled to, same as the number itself.
-        signal = ("its progress file" if lane["kind"] == "assay"
-                  else "its own log output")
-        source = "progress file" if lane["kind"] == "assay" else "log stream"
-        enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
-                    f"this one only watches" if owner_pid is not None else "")
         print(f"run-gate: stall_timeout {lane['stall_timeout']} (source: "
-              f"{source}) — the lane is stopped only if {signal} goes "
+              f"{source}) — the lane is stopped only if {where} goes "
               f"silent that long, never on total elapsed time{enforcer}",
               flush=True)
+        return
+    # RG-320: nobody declared a bound, so the derived one is what can stop
+    # this lane. Disclosing it is not noise: an operator who never typed a
+    # number is about to have their lane stopped by one.
+    #
+    # Fix round 1 (M1): an ASSAY lane's derivation is a RULE, not a flat
+    # number, and its disclosure says exactly that — the same string its
+    # `ProgressWatch` stop message carries, so the two cannot describe
+    # different bounds for one lane.
+    if facts["source"] == STALL_BOUND_AUTO_DERIVED:
+        print(f"run-gate: stall bound {facts['text']} (source: auto-derived) "
+              f"— no stall_timeout is declared, so {where} ({source}) is "
+              f"watched and the lane is stopped only if it goes silent past "
+              f"that bound, never on total elapsed time{enforcer}",
+              flush=True)
+        return
+    if signal == STALL_SIGNAL_UNKNOWN:
+        # M2: never wear a plausible name here. The bound is still real and
+        # still disclosed; only the STREAM it is judged from is unknown to
+        # this invocation.
+        print(f"run-gate: stall bound {facts['text']} (source: "
+              f"{facts['source']}) — no stall_timeout is declared and "
+              f"({source}); the lane is stopped only if that silence "
+              f"signal passes the bound, never on total elapsed time"
+              f"{enforcer}", flush=True)
+        return
+    print(f"run-gate: stall bound {facts['text']} (source: "
+          f"{facts['source']}) — no stall_timeout is declared, so {where} "
+          f"({source}) is watched and the lane is stopped only if it goes "
+          f"silent that long, never on total elapsed time{enforcer}",
+          flush=True)
+
+
+def make_output_stream_watch(lane: dict, lane_name: str, tee: "OutputTee",
+                             *, clock=time.monotonic
+                             ) -> "StreamWatch | None":
+    """RG-320 (P1): the watch an exec or bare-host COMMAND lane gets.
+
+    `None` for an assay lane: its liveness is its progress file
+    (`make_progress_watch`, armed by both runners since before P1) and a
+    second, differently-shaped bound on the same lane would double-report.
+    Also `None` when nothing is to be bounded — but there is no such case
+    any more, because a lane declaring no `stall_timeout` gets the default
+    (`stall_bound_facts`): that is the whole point of P1."""
+    if lane.get("kind") != "command":
+        return None
+    facts = stall_bound_facts(lane)
+    pressure_reader = None
+    if facts["source"] == STALL_BOUND_AUTO:
+        def pressure_reader():
+            snapshot = read_host_pressure_snapshot() or {}
+            return snapshot.get("full_avg10")
+    return StreamWatch(tee, int(facts["seconds"]), lane_name, clock,
+                       pressure_reader,
+                       auto_bound=facts["source"] == STALL_BOUND_AUTO)
+
+
+def record_stall_bound(run_record: dict | None, lane: dict, *,
+                       command_signal: str | None = None) -> None:
+    """RG-320: the bound and its source go into the RUN RECORD too.
+
+    Deliberately a NEW key (`stall_bound`), never `run_record['watch']`:
+    that one is the cgprofile daemon's own payload (set by
+    `consume_profiler_watch`), and writing two different facts under one
+    name is how a record stops being readable. Nothing is written for a
+    kind that has no watch, because a record claiming a bound nothing
+    enforces is worse than a record saying nothing."""
+    if run_record is None:
+        return
+    signal = lane_stall_signal(lane, command_signal)
+    facts = stall_bound_facts(lane)
+    run_record["stall_bound"] = {
+        "seconds": (None if facts["seconds"] is None
+                    else int(facts["seconds"])),
+        "source": facts["source"],
+        "signal": signal,
+        "rule": facts["rule"]}
 
 
 _POST_COMMAND_UNPROVEN_ANNOUNCED: set = set()
@@ -17141,15 +18294,14 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
     # future re-attach — a lossy filter defended by a rationale that plain
     # `logs -f` already satisfied (RW-15). Start it inside the guarded block
     # below so every post-spawn failure reaches the same process cleanup.
-    # RG-41: a `kind = "command"` lane declaring `stall_timeout` has no
-    # progress file to watch (that is `watch`/`ProgressWatch`'s case, assay
-    # only) — its only liveness signal is this SAME log stream, timed by
-    # arrival instead of read passively. Captured (PIPE) rather than
-    # inherited only when that watch is actually needed; every other lane
-    # keeps the zero-overhead inherited-stdout path unchanged.
+    # RG-320 (P1): this is the container path by construction, so every
+    # command lane here has a `docker logs -f` signal to watch, whether or not
+    # the loaded lane still carries `_environment_mode`. Disclosure helpers
+    # describe a watch; they do not decide whether this runner arms one.
+    # Assay lanes keep their progress-file watch and inherited-stdout path.
     log_watch: "LogStreamWatch | None" = None
-    watch_log_stream = (lane["kind"] == "command"
-                        and bool(lane.get("stall_timeout")))
+    stall_bound = stall_bound_facts(lane)
+    watch_log_stream = lane.get("kind") == "command"
     proc: subprocess.Popen | None = None
     saved_log: Path | None = None
     stalled: str | None = None
@@ -17222,8 +18374,15 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 [docker, "logs", "-f", "--timestamps", name],
                 stdout=subprocess.PIPE, text=True, bufsize=1,
                 errors="replace")
+            pressure_reader = None
+            if stall_bound["source"] == STALL_BOUND_AUTO:
+                def pressure_reader():
+                    snapshot = read_host_pressure_snapshot() or {}
+                    return snapshot.get("full_avg10")
             log_watch = LogStreamWatch(
-                proc, budget_seconds(lane["stall_timeout"]), lane_name)
+                proc, int(stall_bound["seconds"]), lane_name,
+                auto_bound=stall_bound["source"] == STALL_BOUND_AUTO,
+                pressure_reader=pressure_reader)
         else:
             proc = subprocess.Popen([docker, "logs", "-f", name])
         while True:
@@ -17825,6 +18984,31 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
              f"but {worktree} is now at {head} — run-gate will not attach "
              f"that run to this commit, and will not start a second "
              f"container for the same lane. {remedy}")
+    event_writer = current_job_event_writer()
+    if event_writer is not None:
+        raw_container_id = state.get("id")
+        container_id = recognised_container_id(
+            raw_container_id)
+        unrecognised_id = (raw_container_id is not None
+                           and container_id is None)
+        mount_sources = inspect_container_mount_sources(
+            docker, container_id or name)
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_sources)
+        if container_id and recorded_id == container_id:
+            image_id, image_error = inspect_container_image_id(
+                docker, container_id)
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(container_id, image_id, True,
+                              reason=reason, lane=lane_name)
+        else:
+            emit_lane_started(
+                None, None, True,
+                reason=("container-id-unrecognised" if unrecognised_id else
+                        "inflight-container-identity-unverified"),
+                lane=lane_name)
     # A lost container or a `--fresh` discard starts under today's config and
     # must keep the fresh run's mode. Arm the recorded identity only after
     # this call has committed to following, re-attaching to, or collecting
@@ -17851,7 +19035,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         # RW-18: the lane's own bounds, on this path too — a follower that is
         # never told the `stall_timeout` cannot make sense of the owner
         # stopping the container out from under its log stream.
-        print_lane_bounds(lane, owner_pid=owner)
+        print_lane_bounds(lane, owner_pid=owner,
+                          command_signal=STALL_SIGNAL_LOG_STREAM)
         disown_run_record(run_record)
         if run_record is not None:
             for artifact in ("verdict", "progress"):
@@ -17931,7 +19116,11 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # RW-18: the `budget` and `stall_timeout` this invocation is armed with.
     # A re-attached lane used to be stopped against a `stall_timeout` its own
     # output had never mentioned — the watch below is armed either way.
-    print_lane_bounds(lane)
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_LOG_STREAM)
+    # RG-320: the bound this re-attach is armed with, in the record too (the
+    # same facts the line above just printed).
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_LOG_STREAM)
     # N3: the artifacts THAT run declared, not the ones this invocation's
     # config would construct — a lane retargeted between the two invocations
     # would otherwise watch a file nothing is appending to and point the
@@ -18143,6 +19332,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         else f"this lane's mount set (including ${EXTRA_MOUNT_ENV_VAR})")
     judge_flags = judge_mount_flags(lane, worktree)
     mounts += judge_flags
+    event_writer = current_job_event_writer()
+    if event_writer is not None:
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_flag_sources(mounts, strict_sources=True))
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
@@ -18155,7 +19349,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     identity = lane_container_identity(repo, project_dir, lane_name,
                                        head_commit(worktree))
     name = identity["name"]
+    # `run -d --name <name>` stays the head of the argv; new flags go after it.
     argv = [docker, "run", "-d", "--name", name, "--init",
+            "--oom-score-adj", str(LANE_CONTAINER_OOM_SCORE_ADJ),
             "--cgroup-parent", slice_name,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}"]
     network, network_source = resolve_network_setting(lane, env)
@@ -18217,6 +19413,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
           f"slice {slice_name} ({slice_src})", flush=True)
     print(f"run-gate: effective network: {network} (source: {network_source})",
           flush=True)
+    print(f"run-gate: gate lane OOM score adjustment: "
+          f"{LANE_CONTAINER_OOM_SCORE_ADJ} (higher scores are selected sooner)",
+          flush=True)
     print(f"run-gate: KSM opt-in: {'enabled' if ksm_enabled else 'disabled'} "
           f"(source: {ksm_settings.get('source', 'unknown')}; image shim: "
           f"{shim_status})", flush=True)
@@ -18228,7 +19427,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     log_resource_forwarded_env(resource_env)
     print_judge_provider(lane)
-    print_lane_bounds(lane)
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_LOG_STREAM)
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_LOG_STREAM)
     print(f"run-gate: docker argv: "
           f"{shlex.join(redact_forwarded_values(
               argv, [*env.get('forward_env', []), *resource_env]))}",
@@ -18278,6 +19479,30 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if started.returncode != 0:
         if ksm_monitor is not None:
             report_ksm_measurement(ksm_monitor, run_record)
+        if event_writer is not None:
+            raw_id = ((started.stdout or "").strip().splitlines()
+                      or [None])[-1]
+            container_id = recognised_container_id(raw_id)
+            if container_id:
+                image_id, image_error = inspect_container_image_id(
+                    docker, container_id)
+                reason = (f"image-id-unavailable: {image_error}"
+                          if image_id is None else None)
+                emit_lane_started(container_id, image_id, False,
+                                  reason=reason, lane=lane_name)
+            elif raw_id:
+                # Docker's stdout carried text that is not a full container
+                # id (a shim's warning, a relay's line): publish null plus
+                # the reason rather than an invented identity.
+                emit_lane_started(
+                    None, None, False,
+                    reason="container-id-unrecognised",
+                    lane=lane_name)
+            else:
+                emit_lane_started(
+                    None, None, False,
+                    reason="docker-run-failed-before-container-id",
+                    lane=lane_name)
         # RG-12: a failed `docker run` may still have created the container
         # (pull/entrypoint failures) — preserve its logs, then show a REAL
         # tail of stderr instead of only the last line.
@@ -18288,8 +19513,41 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
         fail_infra(f"docker run failed (exit {started.returncode}); last "
                    f"stderr line(s):\n{tail}{where}")
+    raw_started_id = ((started.stdout or "").strip().splitlines()
+                      or [None])[-1]
+    started_container_id = recognised_container_id(raw_started_id)
+    unrecognised_id = (raw_started_id is not None
+                       and started_container_id is None)
+    if event_writer is not None and not started_container_id:
+        (started_container_id,
+         inspect_unrecognised_id) = inspect_container_id_best_effort_with_status(
+             docker, name)
+        unrecognised_id = unrecognised_id or inspect_unrecognised_id
+    image_id = image_error = None
+    if isinstance(selection, dict) or event_writer is not None:
+        image_target = (started_container_id
+                        if event_writer is not None and started_container_id
+                        else name)
+        image_id, image_error = inspect_container_image_id(docker, image_target)
+    if event_writer is not None:
+        if started_container_id:
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(started_container_id, image_id, False,
+                              reason=reason, lane=lane_name)
+        elif unrecognised_id:
+            # Neither Docker's stdout nor a nonempty inspect fallback gave a
+            # full id, so the event names the rejected identity source.
+            emit_lane_started(
+                None, None, False,
+                reason="container-id-unrecognised",
+                lane=lane_name)
+        else:
+            emit_lane_started(
+                None, None, False,
+                reason="docker-run-succeeded-without-container-id",
+                lane=lane_name)
     if isinstance(selection, dict):
-        image_id, image_error = inspect_container_image_id(docker, name)
         selection["image_id"] = image_id
         selection["image_id_status"] = "observed" if image_id else "unavailable"
         selection["image_id_error"] = image_error
@@ -18309,7 +19567,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # this invocation did not create).
         "runner": "container",
         "container": name,
-        "container_id": (started.stdout.strip().splitlines() or [""])[-1],
+        # The raw line is recorded when it is not a recognised id: only the
+        # EVENT refuses it. An empty record would skip the same-name identity
+        # check on the next run and let it adopt or remove a foreign
+        # container.
+        "container_id": started_container_id or raw_started_id or "",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         # The epoch is stored beside the ISO stamp deliberately: human output
         # wants the stamp, elapsed time and RW-3's duration want a number,
@@ -18576,10 +19838,49 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         fail_infra(f"docker ps failed for exec-mode preflight: {detail[0]}")
     names = set(running.stdout.strip().splitlines())
     if name not in names:
+        if current_job_event_writer() is not None:
+            emit_lane_started(
+                None, None, False, reason="exec-environment-not-running",
+                lane=lane_name)
         raise GateNotRunError(
             "environment-down",
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
+    event_writer = current_job_event_writer()
+    if event_writer is not None and not dry_run:
+        inspected = container_state(docker, name)
+        raw_container_id = inspected.get("id") if inspected else None
+        container_id = recognised_container_id(
+            raw_container_id)
+        unrecognised_id = (raw_container_id is not None
+                           and container_id is None)
+        if not container_id:
+            (container_id,
+             inspect_unrecognised_id) = \
+                inspect_container_id_best_effort_with_status(docker, name)
+            unrecognised_id = unrecognised_id or inspect_unrecognised_id
+        mount_sources = inspect_container_mount_sources(
+            docker, container_id or name)
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_sources)
+        if container_id:
+            image_id, image_error = inspect_container_image_id(
+                docker, container_id)
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(container_id, image_id, True,
+                              reason=reason, lane=lane_name)
+            exec_target = container_id
+        else:
+            emit_lane_started(
+                None, None, True,
+                reason=("container-id-unrecognised" if unrecognised_id else
+                        "exec-runner-inspect-returned-no-container-id"),
+                lane=lane_name)
+            exec_target = name
+    else:
+        exec_target = name
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
                               state_root=env.get("state_root"),
@@ -18600,7 +19901,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     resource_env = {**resource_forwarded_env(
                         resource_settings or {}, "exec",
                         exec_mounts=lambda: container_mount_destinations(
-                            docker, name),
+                            docker, exec_target),
                         not_forwarded=skipped_resource_env),
                     **lane_workers_env(lane)}
     argv += env_flags_by_name(resource_env, docker_env_values)
@@ -18613,11 +19914,11 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # `docker exec` disconnecting does not reliably stop the in-container
         # child, so the bound must be enforced inside the persistent runner.
         # GNU coreutils timeout is present in supported runner images.
-        argv += [name, "timeout", "--preserve-status", "--signal=TERM",
+        argv += [exec_target, "timeout", "--preserve-status", "--signal=TERM",
                  f"--kill-after={LANE_KILL_GRACE_SECONDS}s",
                  f"{budget_seconds(lane['budget'])}s", "bash", "-c", inner]
     else:
-        argv += [name, "bash", "-c", inner]
+        argv += [exec_target, "bash", "-c", inner]
     exec_command_index = len(argv) - (8 if lane.get("budget") else 3)
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
           f"container {name} ({name_src}) | "
@@ -18625,10 +19926,13 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
           flush=True)
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
     log_resource_forwarded_env(resource_env, skipped_resource_env)
-    if lane.get("budget"):
-        print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
-              f"after admission and lock waits)", flush=True)
-    print_assay_lane_budget(lane)
+    # RG-320 (P1): the silence bound and its source (declared/auto) — this
+    # runner's signal is the child's own output stream, and it is disclosed
+    # here exactly as on the container paths (this is the call site that used
+    # to print the budget inline and say nothing about a stall).
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_OUTPUT_STREAM)
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_OUTPUT_STREAM)
     # Review fix (R-05/R-28): exec lanes disclose the assembled plan exactly
     # like ephemeral lanes do — live AND dry, forwarded VALUES redacted
     # (RG-19). The slice name itself stays visible: it is mechanics, not a
@@ -18870,6 +20174,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         print(f"run-gate: in-process watch — {cause} for lane "
               f"{lane_name!r}", flush=True)
     output_tee = None
+    stream_watch = None
     stdin_forwarder = None
     budget_expired = False
     try:
@@ -18891,6 +20196,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         output_tee = OutputTee(
             proc, Path(run_record["log_path"])
             if run_record is not None and run_record.get("log_path") else None)
+        # RG-320 (P1): the only liveness signal this lane has. Armed AFTER
+        # the tee exists (it times that tee's arrivals) and, when nothing
+        # else was polling, it is what makes the wait loop tick at all.
+        stream_watch = make_output_stream_watch(lane, lane_name, output_tee)
+        if stream_watch is not None and tick is None:
+            tick = PROGRESS_POLL_SECONDS
         while True:
             try:
                 wait_for = tick
@@ -18967,6 +20278,30 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                                       f"for lane {lane_name!r} unavailable; "
                                       "continuing without daemon liveness",
                                       file=sys.stderr, flush=True)
+                if daemon_watch is None and stream_watch is not None:
+                    # RG-320: SILENCE of this lane's own output, on the
+                    # existing tick — the same terminate-then-wait gradation
+                    # the fallback watch path below uses, so a stall ends the
+                    # lane the same way whichever watch saw it. A watch that
+                    # raises is dropped with a disclosure, never turned into
+                    # a verdict (the fallback path's own rule, one signal
+                    # over): a broken liveness reader is not evidence about
+                    # the child.
+                    try:
+                        stalled = stream_watch.poll()
+                    except Exception as exc:
+                        stream_watch = None
+                        print(f"run-gate: WARNING liveness: output-stream "
+                              f"watch failed unexpectedly: {exc}",
+                              file=sys.stderr, flush=True)
+                    if stalled is not None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=LANE_KILL_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        break
                 if daemon_watch is None and fallback_watch is not None:
                     try:
                         stalled = fallback_watch.poll()
@@ -19060,7 +20395,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         raise GateBudgetExceeded(code,
                                  run_record.get("log_path") if run_record else None)
     if stalled is not None:
-        fail_infra(f"lane {lane_name!r} STALLED: {stalled}")
+        # RG-320 fix round 1 (L1): a stall on an exec lane stops the CLIENT,
+        # not the runner's inner command — `docker exec` disconnecting does not
+        # reliably stop the in-container child (the `budget` wrapper above says
+        # exactly that). The message must not leave an operator believing the
+        # suite is gone; ending the survivor itself is RG-327 (a marker-based
+        # stop on a SHARED runner is a design change, not a sentence).
+        fail_infra(f"lane {lane_name!r} STALLED: {stalled}. The `docker exec` "
+                   f"client was stopped; the command inside the runner may "
+                   f"STILL BE RUNNING (KNOWN_ISSUES RG-327)")
     return code
 
 
@@ -19097,10 +20440,13 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         assure_assay_state_root(
             None, lane, {}, lane_environment_name(lane), env_source,
             repo, project_dir, worktree, "", dry_run=dry_run)
-    if lane.get("budget"):
-        print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
-              f"after admission and lock waits)", flush=True)
-    print_assay_lane_budget(lane)
+    # RG-320 (P1): the lane's silence bound and its source, disclosed on
+    # this path (fresh AND dry) exactly as on the container paths —
+    # `print_lane_bounds` also carries the hard budget, so it replaces the
+    # two inline prints this runner used to have.
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_OUTPUT_STREAM)
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_OUTPUT_STREAM)
     if dry_run:
         if profile_plan and profile_plan["enabled"]:
             # Match the live bare-host order: only a discoverable Docker
@@ -19290,6 +20636,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     floor_bytes = (_self_rss_bytes()
                   if profiler_state["mode"] == "rusage" else None)
     output_tee = None
+    stream_watch = None
     budget_expired = False
     daemon_watch = None
     watch_restarts = 0
@@ -19314,7 +20661,20 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
               f"{lane_name!r}", flush=True)
 
     def poll_fallback_watch() -> str | None:
-        nonlocal fallback_watch
+        nonlocal fallback_watch, stream_watch
+        # RG-320 (P1): a bare-host COMMAND lane's watch is its own output
+        # stream, not a progress file it never writes. Polled from the same
+        # place as the assay watch so both wait paths (this one and the
+        # rusage loop above) get the same liveness rule.
+        if stream_watch is not None:
+            try:
+                return stream_watch.poll()
+            except Exception as exc:
+                stream_watch = None
+                print(f"run-gate: WARNING liveness: output-stream watch "
+                      f"failed unexpectedly: {exc}", file=sys.stderr,
+                      flush=True)
+                return None
         if fallback_watch is None:
             return None
         try:
@@ -19341,6 +20701,12 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         output_tee = OutputTee(
             proc, Path(run_record["log_path"])
             if run_record is not None and run_record.get("log_path") else None)
+        # RG-320 (P1): a bare-host COMMAND lane is watched from its own
+        # output stream — the watch RG-58 used to declare impossible here.
+        # Armed before the first wait establishes that the child is running
+        # (`wait4(WNOHANG)` returning 0, or the timeout branch), which is RW-5's
+        # own precondition for deciding a stall.
+        stream_watch = make_output_stream_watch(lane, lane_name, output_tee)
         if profiler_state["mode"] == "rusage":
             kill_deadline = None
             next_progress_poll = 0.0   # first look is immediate
@@ -19364,7 +20730,9 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                     proc.returncode = code
                     break
                 now = time.monotonic()
-                if stalled is None and fallback_watch is not None \
+                if stalled is None \
+                        and (fallback_watch is not None
+                             or stream_watch is not None) \
                         and now >= next_progress_poll:
                     # wait4(WNOHANG) keeps reaping the exact child, so the
                     # liveness poll never costs the lane's rusage accounting.
@@ -19388,7 +20756,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                             pass
                         kill_deadline = float("inf")
                 time.sleep(0.05)
-        elif daemon_watch is not None or fallback_watch is not None:
+        elif daemon_watch is not None or fallback_watch is not None \
+                or stream_watch is not None:
             while True:
                 try:
                     wait_for = PROGRESS_POLL_SECONDS
@@ -19889,6 +21258,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    first — by name, disclosed — and runs anew. Refused",
         "                    by name on host and exec lanes, which start no",
         "                    container of run-gate's own",
+        "  --event-file ABSOLUTE_PATH --job-id ID  write host-owned lane events",
+        "                    as one JSON object per line; flags are paired, the",
+        "                    file stays outside the checkout and lane mounts,",
+        "                    and --dry-run is refused with these flags",
         "  --json            `history`/`footprint`/`status`: emit one JSON",
         "                    document (history has latest + bounded history +",
         "                    duration stats; footprint has the manifest shape;",
@@ -19918,10 +21291,13 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "              liveness signal (progress file or log stream) has been",
         "              silent that long: ERROR (exit 2), evidence saved, the last",
         "              event/line named. NEVER on total elapsed time; `budget`",
-        "              is a hard elapsed-time bound. Legal on both assay and command",
-        "              lanes; only meaningful where a container is actually",
-        "              watched — accepted but inert on a host/exec lane,",
-        "              which runs inline and starts nothing to watch",
+        "              is a hard elapsed-time bound. Legal on assay and command",
+        "              lanes. Since RG-320 EVERY watched lane is bounded even",
+        "              when it declares nothing: assay lanes keep their",
+        "              progress-file bound, a command lane is judged from its",
+        "              log stream (container) or its own output stream (exec,",
+        "              bare-host), and the default is 300s. A SEQUENCE lane has",
+        "              no signal of its own — its members carry the watches",
         "  shape       mutation lane: a generous assay `budget` +",
         "              judge.mutation.budget_per_candidate + this key. R0/R1:",
         "              the command's own bound is all there is",
@@ -20086,7 +21462,7 @@ def _lanes_check_effective_lanes(project_dir: Path) -> tuple[
     declared.update(cfg.get("lanes", {}))
     imported = unresolved_import_placeholders(defaults, declared)
     lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
-                        cfg_path, central_path, defaults, imported)
+                        cfg_path, central_path, defaults, imported, cfg)
     return lanes, cfg, cfg_path, central, central_path
 
 
@@ -20748,12 +22124,13 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                     member_argv.append("--fresh")
             if request_base and any(leaf in delegates for leaf in member_leaves):
                 member_argv += ["--base", request_base]
-            result = _dispatch(member_argv,
-                               _admission_ticket=ticket,
-                               _admission_managed=True)
-            # Persist each member's independent history result now; a later
-            # failure in the sequence must not discard earlier measurements.
-            finish(result)
+            with suppress_job_events(forward_starts=True):
+                result = _dispatch(member_argv,
+                                   _admission_ticket=ticket,
+                                   _admission_managed=True)
+                # Persist each member's independent history result now; a later
+                # failure in the sequence must not discard earlier measurements.
+                finish(result)
             entry = {"lane": member_name, "result": result.as_dict()}
             member_results.append(entry)
             if record is not None:
@@ -20801,6 +22178,7 @@ def _dispatch(argv: list[str] | None = None, *,
               _admission_ticket=None,
               _admission_managed: bool = False,
               _workers_options: dict | None = None) -> LaneResult:
+    global _ACTIVE_JOB_EVENT_WRITER
     parser = RunGateArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("target", nargs="?")
@@ -20825,6 +22203,10 @@ def _dispatch(argv: list[str] | None = None, *,
                         "root {worktree} stands for (default: git toplevel of "
                         "the pointer file)")
     parser.add_argument("--worktree")
+    parser.add_argument("--event-file", metavar="ABSOLUTE_PATH",
+                        help="append host-owned lane events to this absolute path")
+    parser.add_argument("--job-id", metavar="ID",
+                        help="job identifier paired with --event-file")
     parser.add_argument("--base", help="RG-26: the comparison base for a lane "
                         "that delegates it (assay judge.base_source = "
                         "\"request\"), and for conjunction lanes carrying a "
@@ -20961,6 +22343,27 @@ def _dispatch(argv: list[str] | None = None, *,
         args.lane_args = lane_args
         args.jobs_request = parse_r2_jobs_cli(args.jobs)
         args.workers_request = parse_workers_cli(args.workers)
+        validate_job_event_options(args.event_file, args.job_id)
+        job_events_requested = args.event_file is not None
+        if job_events_requested:
+            validate_job_event_destination(args.event_file)
+            if (args.lane is None or args.list or args.check_env
+                    or args.help or args.version
+                    or args.lane in _NO_LANE_FACT_VERBS
+                    or args.lane in {"doctor", "history", "footprint",
+                                     "validate-pointers", "migrate-modes",
+                                     "admission", "status", "lanes"}):
+                fail("--event-file and --job-id apply to a lane run only")
+            if args.dry_run:
+                fail("--event-file and --job-id cannot be used with --dry-run")
+            if current_job_event_writer() is not None:
+                fail("nested run-gate invocations cannot use the active job "
+                     "event file")
+        # `_dispatch` can be used as a library entry, which skips `main`'s
+        # earlier refusal, so keep this guard here as well.
+        if is_pid1_without_init() and not args.version:
+            return LaneResult("ERROR", reason="pid1-without-init",
+                              _json=args.json)
         if args.prune and args.lane != "doctor":
             fail("--prune is honored by the `doctor` verb only "
                  "(run-gate doctor --prune)")
@@ -21133,13 +22536,20 @@ def _dispatch(argv: list[str] | None = None, *,
         if args.footprint_lanes and args.target:
             fail("use either the positional footprint query lane or repeatable "
                  "--lane for a merged write, not both")
-        if args.rejudge_outcome and not args.rejudge:
-            fail("--rejudge-outcome requires at least one --rejudge ID")
+        # RG-297: `--rejudge-outcome` without `--rejudge` is ASSAY's shape to
+        # refuse, not Run-Gate's -- Assay documents the bucket as a union
+        # with the `--rejudge` ids, and a run that selects by bucket alone
+        # is legal there.
         if args.rejudge_contaminated:
             if args.lane is None or args.lane in (
                     "doctor", "history", "footprint", "validate-pointers",
                     "status"):
                 fail("--rejudge-contaminated applies only to an assay R2 lane")
+            # RG-297: the verb resolves its own selection from history, so an
+            # opaque store request after `--` would silently lose its target.
+            if args.lane_args:
+                fail("--rejudge-contaminated forces its own selection; it "
+                     "cannot be combined with arguments after '--'")
             if (args.rejudge or args.reuse_from is not None
                     or args.rejudge_outcome is not None
                     or args.jobs is not None):
@@ -21208,6 +22618,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail(f"--worktree {args.worktree!r} selects {target_config}, "
                      f"but that worktree has no {CONFIG_NAME}; refusing to use "
                      f"the invoking checkout's config")
+        if job_events_requested:
+            event_repo, event_worktree, _event_toplevel = \
+                resolve_repo_and_worktree(project_dir, None)
+            _ACTIVE_JOB_EVENT_WRITER = open_job_event_writer(
+                args.event_file, args.job_id, args.lane,
+                worktree=event_worktree, repo=event_repo)
         (cfg, cfg_path, central, central_path,
          cfg_sha256, central_cfg_sha256) = load_config_snapshot(project_dir)
         if args.lane == "status":
@@ -21268,7 +22684,7 @@ def _dispatch(argv: list[str] | None = None, *,
         # namespace before any CLI verb looks at a lane name.
         lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
                             cfg_path, central_path, assay_defaults,
-                            imported_lanes)
+                            imported_lanes, cfg)
         if args.help or (args.lane is None and not args.list
                          and not args.check_env):
             print(usage(lanes, (set(central.get("lanes", {}))
@@ -21414,6 +22830,9 @@ def _dispatch(argv: list[str] | None = None, *,
             if assay_selective:
                 fail("--reuse-from, --rejudge and --rejudge-outcome apply to "
                      "one assay member, not a sequence")
+            emit_lane_started(None, None, False,
+                              reason="composite-sequence-has-no-container",
+                              lane=args.lane)
             return _dispatch_sequence(
                 args.lane, lane, args, lanes, cfg, cfg_path, central,
                 central_path, cfg_sha256, central_cfg_sha256, project_dir,
@@ -21421,12 +22840,29 @@ def _dispatch(argv: list[str] | None = None, *,
                 admission_managed=_admission_managed)
         if lane_args:
             if lane["kind"] != "command":
-                fail(f"lane {args.lane!r} is an assay lane and does not accept "
-                     "selective command arguments")
-            if not lane.get("accepts_args", False):
-                fail(f"lane {args.lane!r} does not declare accepts_args = true")
-            lane = copy.deepcopy(lane)
-            lane["_request_args"] = list(lane_args)
+                if lane["kind"] != "assay":
+                    fail(f"lane {args.lane!r} has kind {lane['kind']!r} and "
+                         "does not accept selective command arguments")
+                # RG-297: an assay lane forwards ITS OWN flags opaquely:
+                # Run-Gate validates only the flags it injects or owns and
+                # the visibility of the host paths; every store semantic
+                # (carry-over pairing, candidate files, manifests, buckets)
+                # stays Assay's rule.
+                lane = copy.deepcopy(lane)
+                # The forwarded path values resolve against `project_dir`,
+                # the directory the lane will `cd` into (already relocated
+                # under --worktree), never this invocation's cwd.
+                forward, forward_paths = parse_assay_forward(
+                    list(lane_args), project_dir,
+                    assay_forward_owned_names(args))
+                lane["_assay_forward"] = forward
+                lane["_assay_forward_paths"] = forward_paths
+            else:
+                if not lane.get("accepts_args", False):
+                    fail(f"lane {args.lane!r} does not declare accepts_args = "
+                         "true")
+                lane = copy.deepcopy(lane)
+                lane["_request_args"] = list(lane_args)
         if assay_selective:
             if lane["kind"] != "assay":
                 fail(f"--reuse-from, --rejudge and --rejudge-outcome are "
@@ -21552,8 +22988,10 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail("--rejudge requires a non-empty candidate ID")
             if selected.get("rejudge_outcome") == "":
                 fail("--rejudge-outcome requires a non-empty bucket")
+        if lane.get("_r2_flex") or lane.get("_assay_forward_paths"):
+            validate_r2_flex_paths(lane.get("_r2_flex") or {}, repo, worktree,
+                                   extra=lane.get("_assay_forward_paths"))
         if lane.get("_r2_flex"):
-            validate_r2_flex_paths(lane["_r2_flex"], repo, worktree)
             refuse_missing_merge_shard_stores(lane, repo, eff_proj, env)
         if request_base:
             # R-05: mechanics are visible before execution, live AND dry.
@@ -21615,6 +23053,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 # its verdict says.
                 record["selective"] = True
                 record["r2_flex"] = r2_flex_record(lane["_r2_flex"])
+            if lane.get("_assay_forward"):
+                # RG-297: an opaque Assay store-flag request selects its own
+                # candidates (or folds other stores in), exactly like a shard:
+                # it never certifies the whole lane's duration either.
+                record["selective"] = True
+                record["assay_forward"] = list(lane["_assay_forward"])
             if assay_selective:
                 record["selective"] = True
                 selected = lane.get("_selective_assay", {})
@@ -21755,6 +23199,9 @@ def _dispatch(argv: list[str] | None = None, *,
             if not env:  # built-in 'bare-host' — 'host' now resolves to a
                          # non-empty synthetic env and falls through to
                          # run_container_lane() below like any named env.
+                emit_lane_started(None, None, False,
+                                  reason="bare-host-lane-has-no-container",
+                                  lane=args.lane)
                 disclose_r2_jobs(args.lane, r2_jobs_selection)
                 budget_started_epoch, budget_started_monotonic = admit_now()
                 budget_deadline = (budget_started_monotonic
@@ -21911,14 +23358,19 @@ def _dispatch(argv: list[str] | None = None, *,
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:
+            def recheck_without_parent_events():
+                with suppress_job_events(forward_starts=True):
+                    return _dispatch(
+                        strip_job_event_options(request_argv),
+                        _admission_ticket=_admission_ticket,
+                        _admission_managed=_admission_managed,
+                        _workers_options={**workers_options, "workers": 1,
+                                          "lf": True, "no_recheck": True})
+
             result = xdist_isolation_recheck(
                 command_lane_result(code, lane), lane, record,
                 workers_options,
-                lambda: _dispatch(
-                    request_argv, _admission_ticket=_admission_ticket,
-                    _admission_managed=_admission_managed,
-                    _workers_options={**workers_options, "workers": 1,
-                                      "lf": True, "no_recheck": True}))
+                recheck_without_parent_events)
         if (lane["kind"] == "assay" and not args.dry_run
                 and result.verdict != "PASS"):
             _report_failed_assay(args.lane, record, eff_proj, repo, lane,
@@ -22069,9 +23521,15 @@ def is_pid1_without_init() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_JOB_EVENT_WRITER
     arguments = list(sys.argv[1:] if argv is None else argv)
     option_argv = (arguments[:arguments.index("--")]
                    if "--" in arguments else arguments)
+    event_flags_present = any(
+        token in ("--event-file", "--job-id")
+        or token.startswith("--event-file=")
+        or token.startswith("--job-id=")
+        for token in option_argv)
     if is_pid1_without_init() and "--version" not in option_argv:
         print(f"{PROG}: run-gate is PID 1 with no init: start the container "
               "with `--init` (Docker) or `init: true` (Compose)",
@@ -22080,6 +23538,9 @@ def main(argv: list[str] | None = None) -> int:
             "ERROR", reason="pid1-without-init",
             _json="--json" in option_argv))
     previous_scratch = _active_scratch_run()
+    previous_event_writer = _ACTIVE_JOB_EVENT_WRITER
+    nested_event_attempt = (
+        event_flags_present and current_job_event_writer() is not None)
     scratch_state = _begin_scratch_run()
     previous_sigterm = None
     try:
@@ -22133,12 +23594,22 @@ def main(argv: list[str] | None = None) -> int:
                 "ERROR",
                 reason=f"unexpected-exception: {type(exc).__name__}: {exc}",
                 _json="--json" in option_argv)
+        if nested_event_attempt:
+            # `_dispatch` returns the ordinary closed refusal result, but this
+            # nested invocation must not finish through its parent's sink.
+            with suppress_job_events():
+                return finish(result)
         return finish(result)
     finally:
         try:
             with deferred_sigterm():
                 _cleanup_scratch_run(scratch_state)
         finally:
+            active_event_writer = _ACTIVE_JOB_EVENT_WRITER
+            if active_event_writer is not previous_event_writer:
+                _ACTIVE_JOB_EVENT_WRITER = previous_event_writer
+                # The only transition from this invocation is None -> writer.
+                active_event_writer.close()
             if previous_scratch is None:
                 _end_scratch_run()
             else:

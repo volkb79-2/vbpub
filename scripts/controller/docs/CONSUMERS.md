@@ -182,7 +182,14 @@ In `review` mode the wrapper puts the read-only set from `scripts/controller/pi-
 (`--tools read,grep,find,ls`, `--exclude-tools mcp__*`, `--no-extensions`, `--no-mcp`)
 in its OWN argv, so the first launch, a manual `resume` and every automatic
 continuation carry it, and every prompt gets `review-prompt-rules.md` (execute
-nothing). The mode is recorded as `<runs-dir>/<run>.mode` and is **sticky**:
+nothing). The mode is recorded as `<runs-dir>/<run>.mode` and
+`<runs-dir>/session-modes/<session-id>`; a resume records its known ID before
+invoking pi, while a first launch records it after pi returns with the ID. A resume requires
+an exact id in a session-mode record, a `.thread`, or a session event in the
+bounded 64 KiB head of a run stream; this finds a running or stopped first
+review before its `.thread` or session-mode record exists. Forced name reuse
+persists the previous session mode before retiring its `.thread` and `.jsonl`.
+The mode is **sticky across run names**:
 
 ```text
 run name pi-review-run was started as a REVIEW and cannot be resumed in implementer mode
@@ -190,11 +197,20 @@ run name pi-review-run was started as a REVIEW and cannot be resumed in implemen
 ```
 
 Resume it with `PI_RUN_MODE=review`, or with no `PI_RUN_MODE` at all and the
-record decides. The reverse direction is allowed: an implementer name may be
-resumed as a review, and the record then becomes `review`. A record that says
-neither word is refused rather than guessed, and a name that carries
+record decides. The wrapper also scans `<runs-dir>/*.thread` and the bounded
+heads of `<runs-dir>/*.jsonl` for exact matches to the resumed session id, then
+reads those run names' mode records and review material. Any review record
+forces review;
+an explicit implementer request is refused before the new name is claimed when
+its review record is already visible, and the name is re-read after claim. Resume
+ids must match recorded ids exactly; prefixes and ids ending `.jsonl` are
+refused. The
+session record is locked and monotonic, so it cannot be changed back to
+`implementer`. The reverse direction is allowed: an implementer name or session
+may be resumed as a review, and its records then become `review`. An unreadable
+or invalid record is refused rather than guessed, and a name that carries
 `<run>.review/before-state.txt` but no mode record is resumed as a review. A
-pre-existing implementer session (no record, no material) resumes unchanged.
+pre-existing implementer session without review evidence resumes unchanged.
 
 In `review` mode a caller's `PI_EXTRA_ARGS` is refused (exit 2) instead of
 merged: any element at all, and every spelling pi accepts for tools
@@ -206,7 +222,7 @@ merged: any element at all, and every spelling pi accepts for tools
 `--no-approve`/`-na`) is refused by name. A caller who exported the old
 `PI_EXTRA_ARGS` review seam gets that refusal and should drop the export.
 
-Every launch also needs both rule files (`implementer-prompt-rules.md`,
+Every launch also needs its mode's rule file (`implementer-prompt-rules.md` or
 `review-prompt-rules.md`) beside the wrapper; a missing one refuses the launch.
 
 **Implementer bash runs in a user and PID namespace.** `pi-impl.sh` explicitly

@@ -37,6 +37,39 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   order checks moved to the new `estate-lint/` project, and
   `tests/test_gate_budgets.py` keeps only the budget facts `run-gate lanes --check`
   does not decide.
+- fix(cmru): the R2 mutation fixture carries `libraries/test-policy`, so the
+  copied suite's conftest locates the estate test-policy source it imports
+  instead of failing the known-good control before any mutant is judged
+  (KI-209).
+- fix(cmru): cmru's R2 lane accepts a merge HEAD. Both R2 tools pass
+  `delegated=True` to Assay's `git.resolve_base`; the baseline checker includes
+  the result of `git.base_resolution_mode` in its refusal detail when the
+  effective base differs, but does not report it on a passing path. The
+  mutation campaign does not call that helper or report the mode.
+  The lane supplies its own comparison base (`judge.base_source` is not
+  involved: cmru's own Assay lanes are `whole_target` and declare no base),
+  so the judged diff is
+  `selected-release-tag..HEAD` on every HEAD shape instead of the merge's
+  first-parent payload; the checker still refuses any effective base that is
+  not the selected tag (KI-211).
+- tests(cmru): the upload-coordinate refusal stubs the release transport, so
+  it no longer needs api.github.com to reach its assertion (KI-210).
+- feat(cmru): make the standalone R2 campaign unbudgeted but stall-bounded,
+  resumable by shard, and mergeable only from three complete matching evidence
+  files; remote runs collect `.assay` with `--collect-store` (KI-213, open in
+  part).
+- fix(cmru): remove R2 and mutation child elapsed limits, bound only output
+  silence with measured candidate windows and capped RG-320 memory-pressure
+  credit, and bind shard/merge/resume to schema-8 evidence (KI-213).
+- fix(cmru): keep the candidate silence window a 120-second margin above the
+  suite's longest declared silent timeout and the control's measured gap
+  (floor 420 seconds; a wider control gap is INCONCLUSIVE), and let a resumed
+  shard merge kills judged under an earlier window (KI-213).
+- docs: correct the 2026-11-26 CMRU/CIU review claims. KI-215 is closed by
+  design with prose left to review and `assay.toml` lane facts structurally
+  pinned; KI-213 records the silent command-lane log, the temporary evidence
+  location and separate Run-Gate owner; CIU-231(b) distinguishes cwd root
+  discovery from CIU-228's `--dir`/`--root-folder` join.
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

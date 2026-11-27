@@ -34,6 +34,9 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the R0/R1 pytest suite; no
+# <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "5m"
 [lanes.r0-r1.resources]
 cpus = "3"
 
@@ -51,6 +54,12 @@ argv = [
 ]
 clean_tree = false
 budget = "30m"
+stall_timeout = "30m"
+# RG-320/H1: SILENT BY CONSTRUCTION — this lane runs `assay.cli run` directly,
+# so candidate progress goes to .assay/r2-progress.jsonl (a FILE only an
+# assay-kind lane reads) and stdout stays empty until the final summary; one
+# candidate can exceed 300 s with no progress record (R-40i / RG-326).
+# Declared EQUAL to the lane budget; no silence bound measured yet.
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 [lanes.r2.resources]
 memory = "2g"
@@ -70,6 +79,14 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+# RG-320/H1: SILENT BY CONSTRUCTION. This lane is the canary runner, whose
+# per-canary step CAPTURES the pytest it cares about and prints only the
+# verdict AFTER it returns (scripts/damon-analysis/tools/canary-run.sh:55-57 (`out="$(... pytest ... 2>&1)"`)),
+# so not one byte of the selector's own progress reaches this lane's stdout
+# while it runs: a single slow selector is a silent window of unknown length
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 cannot fail a
+# lane main would let finish. No silence bound has been measured yet.
+stall_timeout = "5m"
 [lanes.r3.resources]
 cpus = "3"
 
@@ -86,3 +103,8 @@ argv = [
 ]
 clean_tree = false
 budget = "1h"
+stall_timeout = "1h"
+# RG-320/H1: SILENT BY CONSTRUCTION — a wrapper over nested run-gate lanes,
+# including the Assay `r2` above whose progress is a file it never reads
+# (R-40i / RG-326). Declared EQUAL to the lane budget; no silence bound
+# measured yet.

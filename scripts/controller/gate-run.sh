@@ -58,10 +58,12 @@ command -v flock >/dev/null 2>&1 || { echo 'flock is required' >&2; exit 2; }
 command -v run-gate >/dev/null 2>&1 || { echo 'run-gate is required on PATH' >&2; exit 2; }
 
 # CTL-57: a slot is not an admission. After it holds a slot and before it starts run-gate, wait while the host's memory
-# PSI `full` avg10 is >= 3 (the programme's stop signal; no knob), one log line per minute, bounded by
-# CONTROLLER_GATE_PSI_WAIT_S (default 1800). The wait is counted in its own sleeps, not read from a clock. Giving up is
-# exit 75 "not admitted, nothing ran": never a lane verdict. An UNREADABLE value is not waited on: exit 75 at once. Same
-# rule as `dev` host-admission/1.
+# PSI `full` avg60 is >= 10 (the programme's stop signal, operator 2026-11-27: avg10 spikes are ignored; no knob), one
+# log line per minute, bounded by CONTROLLER_GATE_PSI_WAIT_S (default 1800). The wait is counted in its own sleeps, not
+# read from a clock. Giving up is exit 75 "not admitted, nothing ran": never a lane verdict. An UNREADABLE value is not
+# waited on: exit 75 at once. Other admissions use other rules and are not unified yet: `dev` host-admission/1 waits on
+# memory `full` avg10 >= 3, and scripts/netcup/runner/remote-gate.py on memory `some` / io `full` avg10 > 25 (operator
+# 2026-11-04b) for host choice and job start.
 psi_file=${CONTROLLER_GATE_PSI_FILE:-/proc/pressure/memory}
 psi_wait_limit=${CONTROLLER_GATE_PSI_WAIT_S:-1800}
 [[ $psi_wait_limit =~ ^[0-9]+$ ]] || {
@@ -71,12 +73,12 @@ psi_wait_limit=${CONTROLLER_GATE_PSI_WAIT_S:-1800}
 psi_why=
 memory_state() {   # 0 busy (psi_why names it), 1 quiet, 2 unreadable
   local full
-  full=$(awk '/^full/ { sub("avg10=", "", $2); print $2; exit }' "$psi_file" 2>/dev/null) || full=
+  full=$(awk '/^full/ { sub("avg60=", "", $3); print $3; exit }' "$psi_file" 2>/dev/null) || full=
   case $full in
     ''|*[!0-9.]*|.*|*.|*.*.*) return 2 ;;
   esac
-  psi_why="memory PSI full avg10=$full >= 3"
-  awk -v m="$full" 'BEGIN { exit !(m + 0 >= 3) }'
+  psi_why="memory PSI full avg60=$full >= 10"
+  awk -v m="$full" 'BEGIN { exit !(m + 0 >= 10) }'
 }
 memory_refuse_unreadable() {
   echo "gate-run: not admitted (memory PSI unreadable: $psi_file); nothing ran" >&2

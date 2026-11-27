@@ -14,3 +14,6 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/plesk-mailbox-create && python3 -m py_compile email_creator.py && echo 'smoke: OK'"]
 budget = "1m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the py_compile smoke command;
+# it has no output cadence guarantee; no bound is measured; see RG-326.
+stall_timeout = "1m"

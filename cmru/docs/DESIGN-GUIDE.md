@@ -789,24 +789,48 @@ verified against origin.
 
 The gate also verifies every CMRU release tag at HEAD against its exact origin
 commit, including older tag names that point to the same commit.
-If HEAD is a merge whose first parent comes after the base tag, the CMRU source
-roots must be unchanged across that gap, or the checker refuses: Assay would
-otherwise mutate only the merge's own changes.
+Both of CMRU's R2 tools resolve the base as delegated: they pass
+`delegated=True` to Assay's `git.resolve_base` (Assay B552); on a merge HEAD
+that is what makes the answer the requested comparison instead of the first
+parent. The baseline checker includes the result of `git.base_resolution_mode` in its refusal
+detail when the effective base differs; it does not report the mode on a
+passing path. The campaign does not call that helper or report the mode. This
+is a call-site keyword, not a lane setting -- CMRU's own Assay lanes are
+`whole_target` and declare no base. The comparison is therefore
+`merge-base(selected tag, HEAD)` — and because the tag is proven to be in
+HEAD's ancestry, that is the tag itself. A merge HEAD is therefore judged
+against the selected tag like any other, covering the merged-in parent's
+changes too; an undeligated Assay resolution would answer with the first
+parent and mutate only the merge's own changes, so the checker refuses any
+effective base that is not the selected tag commit.
 When no explicit base is supplied by the existing aggregate release flow, it
 retains
 the latest-published-ancestor selection for that flow. An empty source diff
-records skip evidence bound to the candidate HEAD. The known-good full-suite
-control has an 1800-second ceiling, and each candidate has at least that
-timeout, scaled to twice the measured control when higher. The 2026-11-12
-rehearsal measured controls at 368, 752, and 825 seconds under concurrent lanes, so
-1800 seconds gives more than twice the longest observed run. This is a hang
-bound, not a speed target. Each failed candidate stops at its first failing
-test (`--maxfail=1`). Mutation outcomes
-live in `.assay/mutation-cmru.json`; the append-only
-`.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume requires
-the exact test and copied-fixture fingerprints. An added test can change
-pytest collection or install an autouse fixture, so even an additive suite
-cannot reuse older kills.
+records skip evidence bound to the candidate HEAD. There is no elapsed-time
+limit on the known-good control or any candidate. The control has a fixed
+600-second no-output window; after a successful control, candidates use
+`min(600, max(420, 2 * control_longest_output_gap_upper_bound))` seconds. The
+measured gap upper bound includes the 30-second sampling resolution. The floor is
+the suite's longest declared silent subprocess timeout, 300 seconds
+(`cmru/tests/test_release_end_to_end_real_git.py:212`), plus a 120-second margin:
+without it the tool stops a hung mutant before the test that would kill it can
+time out, and records a timeout no retry can clear. A control gap bound above 480
+seconds leaves no such margin under the cap, so the run is INCONCLUSIVE and
+judges nothing. Full memory PSI
+pressure (`full avg10 > 5`) pauses the silence clock under the Run-Gate RG-320
+pattern; credit is capped by the lesser of 1800 seconds or the remaining
+allowance under the 780-second effective silence bound. Polling and process
+cleanup add at most 40 seconds, below R2's 900-second `stall_timeout`. A child
+that continues printing is unbounded by elapsed time. Each failed candidate
+stops at its first failing test (`--maxfail=1`). Mutation outcomes live in
+`.assay/mutation-cmru.json`; the append-only
+`.assay/progress-mutation-cmru.jsonl` stream reports progress. Evidence schema
+8 records the silence policy and measured bounds. Resume requires the exact
+test, copied-fixture and silence-policy fingerprints. A kill does not depend on
+the window, so a reused kill keeps the window it was judged under while the new
+control derives the bounds for everything run now. An added test can
+change pytest collection or install an autouse fixture, so even an additive
+suite cannot reuse older kills.
 
 Under the standing release rule (operator decision 2026-11-18) the long R2
 campaign is owed asynchronously on the latest release rather than run per
@@ -876,16 +900,20 @@ embedding process.
 
 A normal leader exit with descendants becomes `crashed` after successful
 cleanup; the campaign continues, and the attempt cannot count as killed or
-survived. Cleanup failures stop the campaign as infrastructure errors.
-Timeouts and cgroup resource events also remain inconclusive. The schema-6
-resume record identifies `candidate_isolation = "process-tree/1"` and stores
-per-candidate process-tree evidence. A killed result is reusable only when its
-leader exited normally, no descendants outlived it, the timeout is unchanged,
-and resource counters show no limit event. Schema 6 also records configured
-resource-limit changes as advisories alongside the event evidence. Changing
-the timeout starts a fresh campaign because it changes whether a candidate
-could have completed. Earlier
-schemas are refused so they cannot silently reuse a result without those proofs.
+survived. Cleanup failures stop the campaign as infrastructure errors. A
+candidate ended by output silence has `outcome: timeout` in its own bucket and
+makes its shard and any merge fail; it is never killed or survived. A control
+ended by silence produces `status: inconclusive`, `baseline_exit_code: 124`,
+and `baseline_termination: no-output`, with no candidate judgment; the tool
+exits 2 and Run-Gate reports `ERROR`. Cgroup resource events also remain
+separate from kills. The schema-8 resume record identifies
+`candidate_isolation = "process-tree/1"` and stores per-run process-tree and
+silence evidence. A killed result is reusable only when its leader exited
+normally, no descendants outlived it, resource counters show no limit event,
+and the campaign's silence policy and bounds still match. Schema 8 also
+records configured resource-limit changes as advisories alongside event
+evidence. Earlier schemas are refused so they cannot silently reuse a result
+without those proofs.
 
 Resume also binds the Assay implementation that runs the campaign. CMRU derives
 the shipped package roots from Assay's `pyproject.toml` and uses a sanitized Git

@@ -229,6 +229,15 @@ items:
   - {id: B577, title: "A resume that rejects every record does not say why", type: feature, component: mutation, context_estimate: small}
   - {id: B578, title: "A kill with rc!=0 and no failing test named is still counted as killed", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B579, title: "release-gate.sh needs a host, a hosts file and an output dir that nothing supplies", type: bugfix, component: gate, context_estimate: small}
+  - {id: B580, title: "A seeded run's verdict does not say how much it resumed", type: feature, component: evidence, context_estimate: medium}
+  - {id: B581, title: "release-gate.sh reads newline-packed controller values and loses fields when a value contains a newline; an explicit CONTROLLER_HOSTS_FILE at its default spelling that is missing falls through to the module default", type: bugfix, component: gate, context_estimate: small}
+  - {id: B590, title: "release-gate.sh can signal a reaped pid when TERM or INT arrives after the remote child's wait (also in 12.3.0)", type: bugfix, component: gate, context_estimate: small}
+  - {id: B591, title: "P-assay-14b final-review follow-ups: a test read race, a wrong CONSUMERS reason, a wrong CHANGES claim about 12.3.0, trap loose ends", type: bugfix, component: gate, context_estimate: small}
+  - {id: B592, title: "release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown", type: bugfix, component: gate, context_estimate: small}
+  - {id: B593, title: "R3 canary control failures omit the first failing test and bounded output tail", type: bugfix, component: canary, context_estimate: small}
+  - {id: B594, title: "per-attempt canary expiry is reported as a lane-wide deadline expiry", type: bugfix, component: canary, context_estimate: small}
+  - {id: B595, title: "native R2 tail retries can start with any positive lane time when the candidate budget is disabled", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B596, title: "release gate should simulate the cmru CHANGES fold as a pre-flight", type: bugfix, component: gate, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -16033,7 +16042,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B579 — release-gate.sh needs a host, a hosts file and an output dir that nothing supplies
 
-**Status: FIXED 2026-11-25 in `38598081d` (settings) and `58ef72042` (heartbeat), plus the docs/CHANGES/backlog commit on the same branch; severity was medium (every release stalled).**
+**Status: FIXED 2026-11-25 in `38598081d` (settings) and `58ef72042` (heartbeat), round-1 corrections in `7ef807f80` (refusal sources, controller read, cancel races) and `8801bc5c3` (docs), round-2 follow-ups in `fe15f0efc` (heartbeat trap), `f6b8be0c0` (defaults reason, check order) and `c92c9556c` (tests, shellcheck, docs, CHANGES), round-3 follow-ups in `ae997bd6f` (the trap's job-table targets), `d2efe71a0` (a silent defaults import's exit status) and `ea7f6e542` (CONSUMERS exit-code split, CHANGES); severity was medium (every release stalled).**
 
 **What happened.** The cmru release transaction ran the release gate (`cmru.toml:29-34`, `tools/release-gate.sh <lane>`), and it stopped twice before it started:
 1. `ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002` (`tools/release-gate.sh:24-25`). No default, and neither cmru.toml nor the release docs say who sets it.
@@ -16067,3 +16076,88 @@ The main controller resumed with `ASSAY_RELEASE_GATE_HOST=v1001 REMOTE_GATE_HOST
 **Not assay's part.** Collecting `r2-progress.jsonl` from remote lanes is the run-gate half; the main controller routed it to vbpub-core.
 
 **Close when.** A seeded run's verdict carries the resume counts, a test pins them for one resumed and one rejected record, and the schema docs list them. Source: main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
+
+## B581 — release-gate.sh's controller read loses a field on a newline, and one default spelling falls through
+
+**Status: OPEN (filed 2026-11-25 by the P14 round-2 review, finding nit 1); severity: low (edge cases, deliberate in one half).**
+
+**Symptom.** `tools/release-gate.sh:112-118` returns the four controller values as ONE `printf "%s\n%s\n%s\n%s\n"` and reads them back with `mapfile`, so a configured value that contains a newline shifts every field AFTER it: a newline in `CONTROLLER_HOME`, `CONTROLLER_HOSTS_FILE` or `CONTROLLER_REMOTE_HOSTS_FILE` pushes the later fields one line down (`CONTROLLER_REMOTE_OUT` then reads whatever line its own source moved to, or nothing), while the last field's own newline merely truncates itself. The controller file is operator-owned and a path with a newline is legal on Linux.
+
+Second half (deliberate, hence documented rather than taken here): `tools/release-gate.sh:253-262` treats a `CONTROLLER_HOSTS_FILE` whose spelling is exactly `$CONTROLLER_HOME/hosts.local.json` and does not exist as "this controller configures no host table", so the module default still applies instead of refusing a stated path. That is `controller_init`'s own default spelling (`scripts/controller/lib.sh:41`), so a controller that never set the variable takes the fallback while one that set the same string explicitly cannot be told apart.
+
+**Wanted.** Return the four values through something a newline cannot corrupt (one line per value with the newline rejected, a temp file, or a delimiter that is refused if present), and either keep the default-spelling rule with a test that pins the explicit-set case as accepted behaviour, or make an explicit `CONTROLLER_HOSTS_FILE` a stated fact like `REMOTE_GATE_HOSTS` is.
+
+**Close when.** A controller file with a newline inside `CONTROLLER_REMOTE_HOSTS_FILE` still resolves `CONTROLLER_REMOTE_OUT` correctly (the field a mapfile reader shifts), and a test pins the chosen disposition of the default-spelling fall-through. Source: P14 round-2 review (`assay/tools/release-gate.sh` finding nit 1), 2026-11-25.
+
+## B590 — release-gate.sh can signal a reaped pid when TERM or INT arrives after the remote child's `wait`
+
+**Status: FIXED (test 7792fba2d; code 6fe093201; stderr handling and strengthened test d3d828b3d; filed 2026-11-26 from the P-assay-14b final review, finding 1); severity: low. In released 12.3.0 and on main.**
+
+**Symptom.** `tools/release-gate.sh` waits for `remote-gate.py` (`if wait "$remote_gate_pid"`), then calls `stop_heartbeat`, and only then sets `remote_gate_pid=""`. A TERM or INT that arrives in between, in practice while `stop_heartbeat` waits for the heartbeat subshell, enters `handle_remote_signal`, which runs `kill -s "$signal_name" "$remote_gate_pid"` on an already reaped pid; if the kernel has reused it, an unrelated process is signalled. The handler also requests a remote cancel of a finished run (`meta.json` exists). P-assay-14b widens the window slightly because the heartbeat trap now forks `jobs -p` before it exits. Harm needs pid reuse within milliseconds. Established by reading the code; not reproduced.
+
+**Wanted.** Set `remote_gate_pid=""` immediately after the `if wait ... fi`, before `stop_heartbeat`; retain the remote cancel request when metadata exists because a failed client does not prove the host job ended.
+
+**Close when.** A gate-lane test holds the wrapper inside `stop_heartbeat` (a `BASH_ENV` override of `kill`), asserts the client is already reaped while held, and records every non-`-0` `kill` call whose arguments include the child pid; it fails on the old order at the reaped-client signal assertion. The CHANGES entry names 12.3.0 as affected.
+
+## B591 — P-assay-14b final-review follow-ups: a test read race, two wrong doc claims, trap loose ends
+
+**Status: FIXED (item 1 in 7792fba2d; remaining items fixed or declined in P-assay-14c, with the script/test follow-up in d3d828b3d; filed 2026-11-26 from the P-assay-14b final review, findings 2-4 and 6-8); severity: low.**
+
+1. `gate/tests/test_release_gate.py:787` (writer `:141`): the heartbeat-trap seam test waits for `remote-child.pid` to exist and then reads it, but the fake writes it with a plain `write_text`; a preempted writer gives `int('')` and fails a correct run under load. Publish through a side name and `replace()`, as the tick counter does.
+2. `docs/CONSUMERS.md:718-720`: the stated reason for the exit-3 / exit-2 split is false. `release_gate_problems` is created before the controller reader's `mktemp` and the same block appends to it, so the reader could join the combined refusal. Say it is a choice, or join it and drop the split.
+3. `CHANGES.md:15-18` (the P-assay-14b entry) says the heartbeat trap "had already stopped" naming the inherited pid. Released 12.3.0 still has `trap 'kill "${!:-}" ...'` without a placeholder and does signal the `remote-gate.py` child before the loop's first sleep; the unreleased entry is what fixes it. Reword before the next release.
+4. Optional: the trap now depends on a fork (`jobs -p` in a process substitution) with no builtin fallback, so under pid or memory exhaustion a live `sleep` survives for up to one interval. Use a job spec (`kill %%`) or record the limit in DESIGN-GUIDE.
+5. Optional tests and comments: no test looks at the job table after a completed `wait`; `_parent_pid`'s docstring claims None for a zombie; the trap hook's hold loop is unbounded without a parent-alive check; one comment cites `release-gate.sh:54-56` for lines `:55-57`.
+   Declined: no post-wait job-table test; the seam test catches a re-added `${!:-}` kill, other post-wait regressions stay unpinned.
+
+**Close when.** Items 1-3 are fixed (item 1 with the publish-by-rename, items 2 and 3 as text that matches the code); items 4 and 5 are fixed or declined with a line here.
+
+## B592 — release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown
+
+**Status: OPEN (filed 2026-11-26 from the P-assay-14c round 1 review, finding 6); severity: low.**
+
+**Symptom.** `stop_heartbeat` sends a signal to `heartbeat_pid`, waits for that process, and only then clears the variable. A signal handled after the wait has reaped the heartbeat but before the assignment can re-enter `stop_heartbeat` and signal the stale pid; if the kernel has reused it, an unrelated process could receive the signal. This is pre-existing and narrower than B590.
+
+**Wanted.** Make heartbeat shutdown safe when the signal handler re-enters after the heartbeat has been reaped, while still stopping and waiting for a live heartbeat.
+
+**Close when.** A gate-lane test pins the post-wait, pre-clear window and proves the handler does not signal the reaped heartbeat pid, while the live-heartbeat cancellation test still proves shutdown completes.
+
+## B593 — R3 canary control failures omit the first failing test and bounded output tail
+
+**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 1); severity: medium (diagnostic evidence).**
+
+**Symptom.** When the known-good control does not pass, the canary result retains its coarse outcome but not its reason code, the failing test identity or a bounded output tail. `CanaryAttempt` records `control_outcome` but no control reason code and no command output (`src/assay/verdict.py:1639,1651`; `expected_reason_code`/`observed_reason_code` describe the transformed half, and `control_reason_code`, computed at `src/assay/canary.py:793`, is used only for the contention classification); the isolated control call obtains a `control_unit` and then passes only `control_outcome` into the attempt (`src/assay/canary.py:773,811,932`). Established by reading; not reproduced with a live gate in this filing. The related absence of `command_started`/`command_finished` progress events for canary halves is already tracked by B064 (`src/assay/runner.py:3946-3950`) and is not duplicated here.
+
+**Wanted.** For a non-PASS control, preserve its reason code, the first failing test and a bounded tail of its output in the canary diagnostic evidence. Keep this evidence tied to the control half so it is distinguishable from a transformed-run failure.
+
+**Close when.** A registered-lane test with a failing control exposes the correct failing test and bounded output tail, and a passing control does not add failure details. The existing B064 progress work remains separate.
+
+## B594 — per-attempt canary expiry is reported as a lane-wide deadline expiry
+
+**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 2); severity: low (misleading diagnosis).**
+
+**Symptom.** `run_isolated_canary` tightens the lane deadline to the canary's `budget_per_attempt` (`src/assay/canary.py:737-740`), but `LaneDeadline.remaining()` raises the fixed message “the lane-wide deadline expired” for any finite deadline (`src/assay/runner.py:392`). Thus an attempt-level expiry names the wrong clock. Established by reading; not reproduced with a live gate in this filing.
+
+**Wanted.** Preserve whether the active deadline is lane-wide or per-attempt and report the matching scope when it expires.
+
+**Close when.** A registered-lane test proves a per-attempt expiry identifies the attempt budget, while a true lane expiry continues to identify the lane budget.
+
+## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
+
+**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 3); severity: low (campaign time use).**
+
+**Symptom.** The finding that `budget_per_candidate = "none"` is silently unbounded is false (established by reading): the runner warns that each mutant command is unbounded (`src/assay/runner.py:6031-6038`), and inactive pytest liveness also emits a warning that liveness and hung detection are off (`src/assay/liveness.py:585-597`). The remaining behavior is that the serial retry admission guard compares remaining time with the per-candidate budget only when that budget is non-null (`src/assay/mutation.py:4814-4821`). With the explicit `none` setting, a retry can start whenever the lane deadline has any positive time left; the lane deadline still bounds that attempt. Established by reading; not reproduced with a live gate in this filing.
+
+**Wanted.** Define and pin whether an unbounded per-candidate setting permits a best-effort tail retry on any positive lane remainder or whether a separate admission rule should apply. Any reserve must come from a declared or derived source, not a host-specific constant.
+
+**Close when.** A registered-lane test exercises a retry with `budget_per_candidate = "none"` and little lane time remaining, and the chosen admission policy is recorded and enforced.
+
+## B596 — release gate should simulate the cmru CHANGES fold as a pre-flight
+
+**Status: OPEN (filed 2026-11-27 from the 2026-11-26 manual release simulation); severity: medium.**
+
+**Symptom.** cmru folds `[Unreleased]` into the new release section in the release candidate before the release gate runs. A docs test that reads `[Unreleased]` or assumes only branch-current sections can pass on every package head and then fail after the fold; this happened on the first 12.3.0 attempt and again in the 2026-11-26 manual simulation (`tooling-tests` run `rgw-tooling-tests-20261126T231821-v1001`). The affected test is `test_rust_baseline_docs_match_the_available_assay_surface` (`tests/core/test_docs_examples_and_vocabulary.py:230` at c06b1a829). At that base it still reads current sections only (`:236`, `:249-250`), while the entry it needs is in `[12.3.0]` (`CHANGES.md:388`), so the next fold fails it. The helper it uses, `_current_changes_text` (`[Unreleased]` plus the newest release, `:146`), and the helper's two tests (`:253`, `:267`) came from commit `08e27ea7f`. Commit `153737031` (on main through merge `a4571315c`, q342; not in this branch's base) fixes this one test by reading the whole history. Its original form, `0fb0b687b` (branch-only), also covers a P4 liveness pin of the same shape. Neither makes the release gate run the docs tests against a changelog folded by cmru.
+
+**Wanted.** Before the release gate's long lanes, or in a registered lane on every package head, make a disposable copy and fold the changelog with cmru's own functions twice: once for this release and once for the following release. Run the docs tests against both folded states. No design decision is taken here.
+
+**Close when.** A registered pre-flight exercises both consecutive release folds using cmru's implementation and the docs tests pass against both resulting changelogs without mutating the package worktree.

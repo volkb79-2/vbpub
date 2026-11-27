@@ -153,9 +153,15 @@ Use this order for each implementation task.
    tool set from `pi-review-argv` in the wrapper's OWN argv (first run, resume
    and every automatic continuation), every prompt carries
    `review-prompt-rules.md` (execute nothing), and `PI_EXTRA_ARGS` that would
-   widen it is refused. The mode is recorded as `<runs-dir>/<run>.mode` and is
-   **sticky**: a resume of a review is a review, and asking for implementer mode
-   on it is refused. A missing rule file refuses the launch (exit 2).
+   widen it is refused. The mode is recorded as `<runs-dir>/<run>.mode` and
+   `<runs-dir>/session-modes/<session-id>`; a resume records its known ID before
+   invoking pi, and a first launch records it after pi returns with the ID.
+   A resume also checks the session event in the bounded head of each run stream,
+   so a running or stopped first review is found before its `.thread` and
+   session-mode records are written.
+   It is **sticky per run name and session**: a review resumed under a fresh name
+   is still a review, and asking for implementer mode on it is refused. A
+   missing rule file refuses the launch (exit 2).
 
    Use `CODEX_ROUTE=deepseek` to select an Open Design account automatically,
    or pin one with `CODEX_ROUTE=deepseek-volker` or
@@ -444,20 +450,38 @@ spellings; it is not itself a security boundary. The implementer prompt still
 forbids experiments in the shared devcontainer, whose own shell does not run
 under this guard.
 
-**Review mode is sticky per run name.** Every launch records it as
-`<runs-dir>/<run>.mode` (`review` or `implementer`) beside `--report`'s material
-and the route record, and a resume is forced into the recorded mode: a resume
-that ASKS for implementer mode on a review is refused (exit 2, before the name
-is claimed), while a resume that names no mode simply takes the record. A
-record that exists but is neither word is refused rather than guessed, and a
-name that carries review material (`<run>.review/before-state.txt`) but no mode
-record is resumed as a review — the session is known to be one, so the safe
-direction is failing closed. A pre-existing implementer session (no record, no
-material) resumes unchanged. A `PI_RUN_MODE` value that only the host's
-`controller.local.env` supplied is a default for launches that name none: it
-cannot flip a review, and a request naming the wrong mode is not obeyed either.
-An implementer run may be resumed STRICTER (as a review); the record then
-becomes `review` and the run is a review for the rest of its life.
+**Review mode is sticky per run name and pi session.** Every launch records it as
+`<runs-dir>/<run>.mode` (`review` or `implementer`). A resume records its known
+session ID in `<runs-dir>/session-modes/<session-id>` before invoking pi; a first
+launch records it after pi returns with the ID. On resume, the wrapper requires an exact
+session id in a session-mode record, a `.thread` file, or a session event in a
+run stream. It scans only the first 64 KiB of each `.jsonl` stream, so large
+streams stay bounded and a running or stopped first review is found without a
+`.thread` or session-mode record. It reads each matching run name's mode or
+review material. Review from any of these sources forces review, even when the
+caller uses a fresh name. A caller that ASKS for implementer mode on that
+session is refused (exit 2, before the new name is claimed when the review
+record is already visible); the name is re-read after claim to catch a review
+record written during preflight. No mode takes the recorded review. A resume id
+must match a recorded id exactly; prefixes and ids ending `.jsonl` are refused.
+Forced name reuse first persists the old session's mode, using
+the same locked monotonic record, before it retires the `.thread` and `.jsonl`
+files. The session record can become `review`, but no later implementer launch
+can replace it. A forced reuse is refused when the old name has a session id but
+no recorded mode and no review evidence (for example a run made before mode
+records existed, or a Codex run that left only a `.thread`). Use a new run name,
+or write the true mode of that session (the one word `review` or `implementer`;
+`review` if unsure) to `<runs-dir>/<run>.mode` and force the reuse again.
+
+A record that exists but is unreadable or neither word is refused rather than
+guessed. A name that carries review material (`<run>.review/before-state.txt`)
+but no mode record is resumed as a review. A pre-existing implementer session
+with no review evidence or matching review record resumes unchanged. A
+`PI_RUN_MODE` value that only the host's `controller.local.env` supplied is a
+default for launches that name none; it cannot flip a review, and a request
+naming the wrong mode is not obeyed either. An implementer run may be resumed
+STRICTER (as a review); the name and session records then become `review` and
+the session stays a review for the rest of its life.
 
 It also carries a **review budget**, enforced while the run is going:
 `PI_REVIEW_MAX_SECONDS` (wall clock, default **7200** — a max-effort review of a
@@ -788,16 +812,17 @@ caller sets it: the resource observer needs the rebuilt container, and a lane
 that declares one goes to a remote gate worker instead.
 
 A held slot is not an admission (CTL-57): after it holds a slot and before it starts
-`run-gate`, `gate-run.sh` waits while the host's memory PSI `full` avg10
-(`/proc/pressure/memory`) is at or above 3, the programme's stop signal (fixed, no
+`run-gate`, `gate-run.sh` waits while the host's memory PSI `full` avg60
+(`/proc/pressure/memory`) is at or above 10, the programme's stop signal (fixed, no
 knob). It prints `gate-run: waiting for host admission: <value>, <n>s of <bound>s`
 once a minute (the wait is counted in its own 10 s sleeps, never read from a clock)
 and gives up after `CONTROLLER_GATE_PSI_WAIT_S` seconds (default 1800) with exit 75 and
-`gate-run: not admitted (memory PSI full avg10=X >= 3 for Ns); nothing ran`. A value that
+`gate-run: not admitted (memory PSI full avg60=X >= 10 for Ns); nothing ran`. A value that
 cannot be read is not waited on: exit 75 at once, `not admitted (memory PSI unreadable:
 <path>); nothing ran`. Exit 75 from this step is "nothing ran", never a lane verdict.
-Same rule as `dev` host-admission/1. `CONTROLLER_GATE_PSI_FILE` replaces the PSI path
-(a test seam).
+`avg10` spikes are ignored. `dev` host-admission/1 and
+`scripts/netcup/runner/remote-gate.py` use other rules.
+`CONTROLLER_GATE_PSI_FILE` replaces the PSI path (a test seam).
 
 ## Run one lane on a remote gate worker
 

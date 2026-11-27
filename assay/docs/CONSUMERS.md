@@ -705,11 +705,26 @@ a decision, not a fallback.
 The combined refusal covers the remote host's settings only: the host selector,
 `ASSAY_RELEASE_GATE_HEARTBEAT_S`, the host table, the output directory and
 `HOME`. A local host (`ASSAY_RELEASE_GATE_HOST=local`) execs the ordinary local
-lane and never reads or validates any of them. The CMRU binding
-(`CMRU_RELEASE_GATE_COMMIT` unset or malformed, and a commit that does not match
-the worktree `HEAD`) and a missing `remote-gate.py` stay separate refusals with
-their own exit codes, because they can only be judged after the settings are
-known and they are not one of them.
+lane and never reads or validates any of them. Two checks stay separate refusals
+with their own exit codes, and they are judged at different points: a missing
+`remote-gate.py` is checked BEFORE the settings (exit 3 -- the wrapper cannot
+locate the module whose defaults it would import), while the CMRU binding
+(`CMRU_RELEASE_GATE_COMMIT` unset or malformed, and a commit that does not
+match the worktree `HEAD`) is judged AFTER them, so a run outside CMRU hears
+what is wrong with its settings first.
+
+One cause reaches two exit codes, and deliberately so: if `mktemp` cannot create
+its temporary file, the controller-configuration reader deliberately stops at
+once with exit 3 (`cannot create a temporary file to read the controller
+configuration`), because it cannot resolve a source the run may depend on; the
+`remote-gate.py` defaults loader instead adds
+`cannot create a temporary file for the remote-gate.py defaults import` to the
+combined refusal (exit 2), because it supplies only a fallback and the run can
+still report every other unusable setting in the same attempt. Read the message,
+not only the number: both name the temporary file, and neither reports a path
+nothing supplied. A broken `TMPDIR` therefore costs one exit 3 attempt when the
+controller configuration is needed and one exit 2 attempt when only the module
+defaults are left, and an operator who fixes `TMPDIR` fixes both.
 
 While a remote lane runs, the wrapper prints one progress line per interval to
 stderr,
@@ -1903,10 +1918,10 @@ state. Progress emits
 
 `--resume` reuses matching saved records, including records bucketed
 `crashed`; those records do not receive an automatic tail retry. To explicitly
-execute cached crashes again, pass `--rejudge crashed` with `--resume`:
+execute cached crashes again, pass `--resume --rejudge-outcome crashed`:
 
 ```sh
-assay run <lane> --resume --rejudge crashed \
+assay run <lane> --resume --rejudge-outcome crashed \
   --progress .assay/progress-<lane>.jsonl
 ```
 
@@ -1981,7 +1996,7 @@ mutant was never re-executed against the assertion that kills it.
 A new Assay build re-executes resumed campaign state because the Assay version
 is part of the judge identity. A matching cached `crashed` record is reused by
 `--resume`; see [B179](#retry-unresolved-native-r2-candidates-at-sweep-end-b179)
-for the explicit `--rejudge crashed` command.
+for the explicit `--resume --rejudge-outcome crashed` command.
 
 Every native R2 `candidate` progress event includes `resource_limit_changes`,
 with an empty list when no configured limit values changed.
@@ -2184,9 +2199,11 @@ format still lets the annotated lines feed `--only-candidates`.
 
 A carried survivor can be carried again from the old generation even after a
 new test would kill it. When at least one survivor is carried, the run's text
-output says once that carried survivors stay carried until `--rejudge-carried`
-(or a WP4 replay) runs. Until that flag lands, `--rejudge-outcome survived`
-forces the full re-run now.
+output says once that carried survivors stay carried. Re-run them with
+`assay run <lane> --resume --rejudge-outcome survived`; the resume path drops
+matching `survived` records before it resumes candidates. The printed command
+shows only these flags: keep the run's own `--state-dir`, `--file`, `--shard`
+and appended arguments when you repeat it.
 
 `--merge-state DIR` (repeatable) copies records of the SAME judge from another
 store -- the way shard stores are merged (below). It needs no reason; records
@@ -3070,9 +3087,9 @@ run-gate assay-r1      # command lane: no install, no pip needed (B549 / HOB-44)
 Rust R2 is not adopted yet; this is a known issue, not a per-release waiver.
 Assay's side of it (B245 U0-U5c: the `cargo-mutants-outcomes` ingestion, the
 changed-lines diff and the zero-mutant verdict) is implemented and documented
-in [Rust R2 lanes (cargo-mutants)](#rust-r2-lanes-cargo-mutants); what is still
-open is the consumer lane itself (hostobs, B245 U8) and the real-run
-qualification (U7). Its
+in [Rust R2 lanes (cargo-mutants)](#rust-r2-lanes-cargo-mutants). Real Rust R2
+qualification passed and hostobs has a hand-run consumer lane; what is still
+open is adoption, since no release gate runs Rust R2. Its
 target is a diff-scoped, 100%-killed cargo-mutants campaign at T3, run
 asynchronously against the latest release with `--base <previous release
 tag>`. It never gates a merge or release, and survivors become backlog items.

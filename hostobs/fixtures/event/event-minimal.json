@@ -1,0 +1,21 @@
+{
+  "case": "event-minimal",
+  "doc": "event/1 body fixture generated from the independent Python codec",
+  "event": {
+    "t_mono_ns": 0,
+    "span": 0,
+    "peer_dev": 0,
+    "peer_inode": 0,
+    "uid": 0,
+    "peer_pid": 0,
+    "kind": 3,
+    "outcome": 0,
+    "inferred": false,
+    "ctx": [],
+    "attrs": [],
+    "name": "a",
+    "key": "k",
+    "code": null,
+    "comm": null
+  }
+}

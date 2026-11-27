@@ -1157,17 +1157,34 @@ mutation. When that source diff is empty,
 it records a skipped result bound to the candidate HEAD instead of claiming
 mutants ran. If rerun at a release-tagged HEAD, the checker excludes every
 local CMRU release tag at HEAD and selects the highest-version published tag
-from its full ancestry for the existing aggregate release flow. The known-good
-full-suite control has an 1800-second ceiling (30 minutes), and each serial R2
-candidate has at least that timeout, scaled to twice the measured control when
-higher. The 2026-11-12 rehearsal measured controls at 368, 752, and 825 seconds
-under concurrent lanes; 1800 seconds is 2.18 times the longest measurement.
-This is a hang bound, not a speed target. A failed candidate stops after its
-first failing test (`--maxfail=1`). Mutation outcomes are in
+from its full ancestry for the existing aggregate release flow. There is no
+elapsed-time limit on the known-good control or any candidate. The control
+has a fixed 600-second no-output window; after a successful control, each
+candidate uses
+`min(600, max(420, 2 * control_longest_output_gap_upper_bound))` seconds. The
+measured gap upper bound includes the 30-second sampling resolution. The floor
+is the suite's longest declared silent subprocess timeout, 300 seconds
+(`cmru/tests/test_release_end_to_end_real_git.py:212`), plus a 120-second
+margin. A control gap bound above 480 seconds leaves no such margin under the
+cap: the run is INCONCLUSIVE (exit 2), judges nothing and leaves an existing
+evidence file untouched. Full memory PSI
+pressure (`full avg10 > 5`) pauses the silence clock under the Run-Gate RG-320
+pattern; credit is capped by the lesser of 1800 seconds or the remaining
+allowance under the 780-second effective silence bound. Polling and process
+cleanup add at most 40 seconds, below the R2 lane's 900-second
+`stall_timeout`. A child that keeps printing is unbounded by elapsed time. A
+failed candidate stops after its first failing test (`--maxfail=1`). Mutation outcomes are in
 `.assay/mutation-cmru.json`; the append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume reuses killed outcomes only
-when the tests, copied fixture closure, and timeout exactly match the recorded run. Changing
-the timeout requires a new campaign because it changes whether a candidate could have completed.
+when the tests, copied fixture closure, Assay source and silence policy exactly
+match the campaign. A reused kill keeps the silence window of the run that judged
+it (it must be one the policy derives); every other recorded outcome must carry
+the file's own candidate bounds. A control ended for silence writes
+`status: inconclusive`, `baseline_exit_code: 124`, and
+`baseline_termination: no-output`, with no candidate judgment; the tool exits
+2 and Run-Gate reports `ERROR`. A candidate ended for silence has its own
+`outcome: timeout` bucket and makes its shard and any merge fail; it is never
+counted as killed or survived.
 Any test or fixture change also requires a new campaign. Resume also requires a
 clean Assay source tree and unchanged code under every package root declared by
 Assay's `pyproject.toml` (including `analysis/src/` when present). Passing
@@ -1209,8 +1226,16 @@ the same base; its progress and evidence are in
 When T3 invokes the lane through `remote-gate`, Run-Gate receives the base's
 full commit ID; the lane accepts it only if a bundled published tag points to
 that exact commit.
-Run it at a non-merge commit such as the release-tag commit. On a merge HEAD
-whose first parent has CMRU source changes after the base, the lane refuses.
+Run it at any commit, including a merge HEAD: both R2 tools pass
+`delegated=True` to Assay's `git.resolve_base`. The baseline checker includes
+the result of `git.base_resolution_mode` in its refusal detail when the
+effective base differs; it does not report the mode on a passing path. The
+mutation campaign does not call that helper or report the mode. This is a
+call-site keyword, not a lane setting. The delegated resolution gives
+`merge-base(selected tag, HEAD)` — the tag itself, since the tag is proven to
+be in HEAD's ancestry — so a merge is judged against the selected release tag
+like any other HEAD. The lane refuses if the effective base is not the selected
+base tag.
 Local tags alone do not prove publication, so do not run this outside the T3
 controller-managed checkout while [KI-151](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published)
 remains open. The existing aggregate `gate` retains its own R2 lane until the
@@ -1240,12 +1265,16 @@ child subreaper. On timeout or normal exit, CMRU removes and reaps descendants
 before resource counters are sampled or another mutant starts, including
 helpers that call `setsid()` or double-fork. A normal leader exit with leftover
 descendants is recorded as `crashed`; the campaign continues after cleanup,
-but this attempt cannot count as killed or survived. A timeout and any
-observed cgroup resource event are also inconclusive. The evidence file uses
-schema 6 and records `candidate_isolation = "process-tree/1"` plus process-tree
-proof for each run; it also preserves configured resource-limit changes as
-advisories alongside cgroup event evidence. Resume reuses a kill only when
-that proof, the unchanged timeout, and clean resource counters are present.
+but this attempt cannot count as killed or survived. A candidate ended by
+output silence has `outcome: timeout` in its own bucket and fails its shard and
+any merge. A control ended by silence writes inconclusive evidence, exits 2,
+and maps to Run-Gate `ERROR`, with no candidate judgment. Cgroup resource
+events remain separate from kills. The evidence file uses schema 8 and records
+`candidate_isolation = "process-tree/1"`, per-run process-tree proof, the
+silence policy, control output-gap measurement, and candidate idle bounds; it
+also preserves configured resource-limit changes as advisories alongside
+cgroup event evidence. Resume reuses a kill only when that proof, campaign
+identity, silence policy and bounds, and clean resource counters are present.
 Older evidence schemas are refused.
 The record names `assay_distribution_version` as package metadata and
 `assay_source_commit` as the exact source identity. CMRU checks Assay source

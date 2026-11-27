@@ -80,6 +80,41 @@ credential in the gitignored `edge-proxy/.env` file and relying on Compose
 
 ---
 
+### TE-17 — `verify.sh` can miss `static.domains` when auto-detecting `--domain`
+
+Auto-detection reads `domains` only within 5 lines below the `static` table header. In an override
+that keeps the defaults file's comments, the key sits further down, so checks 6, 7 and 9 (and check 8
+in static mode) SKIP. Workaround: pass `--domain`. Found by review on 2026-11-26, not seen on a host.
+
+### TE-18 — `verify.sh` check 1 fails when run from outside the instance's `stack/` directory
+
+Check 1 calls the bundled `ciu check` without changing to the instance root, so from another
+directory it FAILs with `[no-ciu-root]` and the script exits 1; the other checks are unaffected.
+Workaround: run it from `stack/`, as INSTALL.md section 3 does. Seen on a host on 2026-11-26 with
+4.0.1. Fix, for the next release made for another reason: run check 1 from the instance root
+(`(cd "$ROOT" && ./ciu check)`).
+
+### TE-13 — rootless Docker ownership of `vol-traefik-acme`
+
+Under rootless Docker the S6.5 helper's `chown 0:0` of `ciu-stack/vol-traefik-acme`
+maps to the user's uid, so the directory a rootless run creates is not the
+`0:0 0700` directory a rootful run expects. CIU's S6.3 check
+(`ciu/src/ciu/engine.py`) compares the existing dir against the declared owner
+and may then refuse it on the next run with `[S6.3] Existing hostdir has
+incompatible ownership/permissions`.
+
+Known issue, not a verified defect: no rootless host was available, and 4.0.0
+was not checked for this before release. The main controller waived the check
+on 2026-11-26 (the P-edge-11b 4.0.0 acceptance did not test rootless Docker),
+and no host is known to have failed this way. Workaround if it happens: remove
+the directory and let the next run create it, or run the instance as the user
+that owns it.
+
+Source: P-edge-04b fix review (2026-11-24); moved here from the Roadmap after
+4.0.0 (P-edge-12).
+
+---
+
 ### `ingress_public` east-west visibility
 
 All containers that join `ingress_public` can attempt TCP connections to each
@@ -108,7 +143,30 @@ deployment.
 
 ---
 
+### py314 bundle: gates only
+
+The release publishes one bundle per interpreter. The `py314` bundle of 4.0.0
+passed the release gates but was never installed on a host: no host in the
+estate runs python 3.14, so `get.py install --variant py314` on a real
+installation is unverified. Use `--variant py313` (see INSTALL section 3) until
+a py314 host exercises it.
+
+---
+
 ## Roadmap
+
+### TE-16 — a volume-store instance still creates an unused `vol-traefik-acme` (planned)
+
+A volume-store instance (an adopted external ACME volume, or the default
+volume) still makes ciu create `ciu-stack/vol-traefik-acme` through the S6.5
+root helper, although nothing mounts it: the compose template mounts the
+external volume instead. On a non-root host this means the root helper and
+`CGROUP_PARENT_DEV_INTERACTIVE` are required for a directory that is never used
+(P-edge-11b report section 5, P1). Fix: have the stack declare no hostdir volume
+when `store = "volume"`, so a non-root run needs no root helper; then drop the
+known-limitation caveat about it and the INSTALL section 9 note.
+
+Source: P-edge-11b 4.0.0 acceptance report section 5 (2026-11-26).
 
 ### TE-08 — tests exercise the wrong renderer; coverage rule
 
@@ -117,26 +175,6 @@ private-helper, source-grep and config-literal oracles in P-edge-04. P-edge-03
 covers the standalone/ciu renderer oracles and D10's coverage-exclusion policy.
 
 Source: `.controller-state/design-review-2026-11-24/tls-edge.md` M5, M6
-
-### TE-13 — rootless Docker ownership of vol-traefik-acme
-
-Question: Under rootless Docker, the S6.5 helper's `chown 0:0` of
-`vol-traefik-acme` maps to the user's uid; ciu's S6.3 check
-(`ciu/src/ciu/engine.py:899-914`) may then reject the existing dir on the next
-run. Unverified; check on a rootless host before 4.0.0.
-
-Source: P-edge-04b fix review (2026-11-24).
-
-### TE-14 — docker provider `watch` vs socket-proxy `EVENTS`
-
-Question: `ciu-stack/traefik.yml.j2:116` sets the Docker provider `watch: true`,
-but the socket proxy's allowlist (`ciu-stack/ciu.compose.yml.j2:29-33`) does not
-enable `EVENTS`. Unverified whether containers created after Traefik starts are
-routed; check on a host (start a labelled container alongside a running
-Traefik). If they are not, enable `EVENTS: 1` in both files and update
-ARCHITECTURE's socket-proxy section accordingly.
-
-Source: P-edge-09 review r1b (2026-11-24).
 
 ### FEAT-01 — bearer-token authentication middleware for routed services
 

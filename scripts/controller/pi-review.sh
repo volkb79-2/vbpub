@@ -26,10 +26,11 @@
 #    a multi-gigabyte stream through one. What it needs instead is pre-rendered:
 #    the commits, the diff and the file list are written to
 #    <runs-dir>/<run>.review/ (OUTSIDE the reviewed worktree) and a copy of the
-#    prompt naming those files and the tool set is what pi reads. Because the
-#    mode is STICKY on the run name (<run>.mode), a later resume of this name is
-#    forced back into review mode even when the caller does not ask for it, and a
-#    resume that asks for implementer mode on it is refused. pi-impl.sh also
+#    prompt naming those files and the tool set is what pi reads. The mode is
+#    sticky per run name and per pi session: a later resume of this name is
+#    forced back into review mode even when the caller does not ask for it, and
+#    a resume of that session under a fresh name is also forced into review.
+#    Either resume is refused if the caller asks for implementer mode. pi-impl.sh also
 #    appends its own fixed review rule paragraph (`review-prompt-rules.md`:
 #    execute nothing) to the prompt of every launch.
 #    A review report is not written by the reviewer either (it has no write
@@ -80,10 +81,11 @@
 # file; the wrapper persists the final message instead). The model and thinking
 # level are pi-impl.sh's defaults (the eco model at `max`) unless the caller
 # already set PI_MODEL / PI_THINKING, which pi-impl.sh preserves. The run's mode
-# record (<run>.mode) is review for a name this launcher starts, so a manual
-# `pi-impl.sh ... resume <session-id>` of it is a review too (pi-impl.sh forces
-# the recorded mode and refuses an implementer resume), and pi does the same for
-# a name that carries <run>.review/ material but no mode record.
+# record (<run>.mode) is review for a name this launcher starts, and pi-impl.sh
+# also records the learned session id. A manual `pi-impl.sh ... resume
+# <session-id>` of either that name or session is a review too (pi-impl.sh forces
+# review and refuses an implementer resume), and it does the same for a name
+# that carries <run>.review/ material but no mode record.
 #
 # Exit codes: 2 for the refusals above (usage, unreadable worktree, report
 # inside the worktree, an existing report, an earlier review of this name's own

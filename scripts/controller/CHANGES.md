@@ -20,18 +20,25 @@ no separate version number, so entries are grouped by the work that landed.
   tools, extensions, MCP, skills, prompt templates and project trust is named in
   the message first — so a review cannot be widened back to a shell, and an
   unclassified spelling takes the same exit rather than slipping through. The
-  mode is a name-owned record (`<runs-dir>/<run>.mode`, written only by a launch
-  that got past every refusal and retired with the other records on a forced
-  reuse), and it is STICKY: a resume of a `review` name is a review, a CALLER
-  asking for implementer mode on it is refused before the name is claimed, and
-  an implementer name resumed as a review keeps the stricter mode and records
-  it. A record that exists but says neither word is refused instead of guessed,
-  a missing record with `<run>.review/before-state.txt` beside it is resumed as
-  a review (fail closed where the session is known), and a missing record with
-  no material keeps the mode the launch named — which is what leaves
-  pre-existing implementer sessions unchanged. A `PI_RUN_MODE` value supplied
-  only by `controller.local.env` is a default for launches that name none: it
-  never flips a caller's review, and against a record it is printed, not obeyed.
+  mode is recorded by run name (`<runs-dir>/<run>.mode`) and by session
+  (`<runs-dir>/session-modes/<session-id>`): a resume records its known id before
+  invoking pi, and a first launch records it after pi returns with the id.
+  Resumes require an exact id in a session-mode record, `.thread`, or a session
+  event in the bounded 64 KiB head of a run stream. They read the matching
+  names' mode records and review material, so an active or killed first review
+  is found before `.thread` or session-mode state exists. Forced name reuse
+  persists the old session mode before retiring its `.thread` and `.jsonl`.
+  Review is sticky across
+  fresh run names; a CALLER asking for implementer mode on a recorded review is
+  refused before the name is claimed. Session records are locked and monotonic:
+  review can never be replaced with implementer. An implementer name or session
+  resumed as review keeps the stricter mode and records it. An unreadable or
+  invalid record is refused instead of guessed, a missing current-name record
+  with `<run>.review/before-state.txt` beside it is resumed as review, and a
+  pre-existing implementer session without review evidence resumes unchanged.
+  A `PI_RUN_MODE` value supplied only by `controller.local.env` is a default for
+  launches that name none: it never flips a caller's review, and against a
+  record it is printed, not obeyed.
 - **A fixed rule paragraph on every pi prompt.** `<mode>-prompt-rules.md` beside
   the wrapper is appended to the prompt of every launch and to the automatic
   continuation; a launch whose file is missing is refused (exit 2). The
@@ -42,11 +49,37 @@ no separate version number, so entries are grouped by the work that landed.
   devcontainer; the review paragraph says the run executes nothing.
 - Tests: `tests/test-pi-impl.sh` gains the run-mode checks (`review-argv`,
   `implementer-mode`, `review-argv-definition`, `mode-value`, `mode-extra-args`,
-  `mode-sticky`, `mode-evidence`, `mode-rules-file`, `mode-local-env`,
+  `mode-sticky`, `mode-session-thread`, `mode-session-record`,
+  `mode-session-implementer`, `mode-evidence`, `mode-rules-file`, `mode-local-env`,
   `mode-record`, `mode-prompt`), the fake pi now records one argv element per
   NUL-terminated record, and `tests/test-mutations.sh`/`mutate-sources.py` carry
   one hand mutant per new refusal. `tests/test-pi-review.sh` asserts the review
   launch is in review mode and records its mode.
+
+### Local gate admission on the 60 s window (CTL-57, operator 2026-11-27)
+- `gate-run.sh` now waits while memory PSI `full` **avg60 >= 10** (was avg10 >= 3); avg10 spikes are ignored. The wait,
+  bound, exit 75 and unreadable-file rules are unchanged. `dev` host-admission/1 (`full` avg10 >= 3) and
+  `scripts/netcup/runner/remote-gate.py` (memory `some` / io `full` avg10 > 25) are unchanged and differ; unifying them
+  is open. Tests: `tests/test-gate-slots.sh`; one new hand mutant (`psi-window`).
+
+### Resume and keep-alive pane guards (P-plat-22c)
+- `resume-lib.sh` owns the pane view and shared markers used by both resume helpers and `ctl-keepalive.sh`. `pane_view`
+  trims rows below the mode line only for the unfocused agents-panel hint, so panel rows cannot hide busy markers or
+  dialogs. A resume helper proceeds only when it recognizes a prompt box: the top rule is directly above the live input
+  row, a plain rule is directly below it, the input is empty, and no dialog or busy marker is present. The live main
+  controller's labelled top rule is recognized. Missing boxes, drafts, dialogs, text and busy panes remain not ready;
+  no-box, dialog and spinner refusals log their reason once per wait. Compaction is busy when its marker appears at or below the box's top rule, or
+  when one of `·✢✳✶✻✽*` precedes `Compacting` and an ellipsis within the six non-blank lines above that rule. The
+  keep-alive watcher uses the shared plain/labelled rule matchers and dialog check, while retaining its 80-column and
+  six-line input-box checks. Dash-prefixed draft lines are data to the rule matchers, never command-line switches.
+  Tests: panel heights 1, 3, 6 and 12; another permission mode; empty-first-row drafts including dash-prefixed lines;
+  spinner frames at the scan boundary and `● Compacting now.` prose; and the live labelled top rule, all in the resume
+  tests. Keep-alive draft and pane checks use the shared `tests/pane-frame-lib.sh` and the sanitized real panel capture.
+- The logged footer uses the same trimmed view as the idle check. The helpers still do not impose the watcher's width
+  floor, so a very narrow pane can wrap or truncate a busy marker; the known limits are recorded in
+  `docs/design/agctl/CONTEXT-ECONOMY.md`.
+- `ctl-doctor.sh` compares `CONTROLLER_HOME` against a quoted `"${HOME:-}/controller"` (an unquoted right-hand side is
+  a glob pattern), and the design note describes the shared pane view without treating the focused panel as captured fact.
 
 ### Changed
 - **Signal guard for every pi run (P-plat-31).** `pi-impl.sh` now prepends

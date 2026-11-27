@@ -39,8 +39,56 @@ OPERATORS = (
     "python:bool-const-flip",
     "python:falsy-swap",
 )
+EVIDENCE_SCHEMA_VERSION = 8
 _CANDIDATE_CLEANUP_SECONDS = 10.0
 _CANDIDATE_OUTPUT_TAIL_BYTES = 1 << 20
+_MUTATION_PROGRESS_INTERVAL_SECONDS = 30.0
+# The 2026-11-26 relay measured controls at 1684s and 1794s and candidates at
+# 26s to 1855s (run rgw-r2-20261126T195900-v1001 and its sibling shard), but
+# did not record output gaps. Until a control gap is measured, its silence window
+# is fixed at 600s. A candidate window stays a margin above both silent stretches
+# known before the candidate runs: the longest subprocess timeout the tracked
+# suite declares (a mutant that hangs there must reach that timeout and fail the
+# test) and the longest output gap the control measured. It is twice that gap
+# when larger, capped at 600s so 180s remains for RG-320-style pressure credit.
+# A control gap that leaves no margin under the cap judges nothing. These are
+# silence bounds, never elapsed-time limits.
+_CONTROL_IDLE_WINDOW_SECONDS = 600.0
+# cmru/tests/test_release_end_to_end_real_git.py declares timeout=300; a test
+# fails when a tracked test declares a longer one.
+_SUITE_SILENT_TIMEOUT_SECONDS = 300.0
+# Room for the test's setup and teardown around that stretch (pytest prints only
+# when a test ends) and for slowdown that memory PSI credit does not see.
+_CANDIDATE_IDLE_MARGIN_SECONDS = 120.0
+_CANDIDATE_IDLE_FLOOR_SECONDS = _SUITE_SILENT_TIMEOUT_SECONDS + _CANDIDATE_IDLE_MARGIN_SECONDS
+_CANDIDATE_IDLE_WINDOW_MAX_SECONDS = 600.0
+_CANDIDATE_IDLE_CONTROL_GAP_MULTIPLIER = 2.0
+# RG-320 pauses an automatic stall clock only while memory PSI full avg10 > 5
+# and caps credited pressure at 1800s (run-gate-project/run_gate.py:722,
+# 8800-8867 at 5ea5145d657). This tool follows that signal and cap, then
+# constrains the credit further: each child's effective idle age is capped at
+# 780s to fit the R2 lane's 900s stall_timeout. Allow one 30s poll and the existing
+# 10s process-tree cleanup. The resulting 820s maximum leaves 80s for Run-Gate
+# to observe the timeout and prevents its stall watch from ending the lane first.
+_MAX_EFFECTIVE_IDLE_SECONDS = 780.0
+_MAX_PRESSURE_CREDIT_SECONDS = 1800.0
+_MEMORY_PRESSURE_FULL_AVG10_THRESHOLD = 5.0
+_R2_STALL_TIMEOUT_SECONDS = 900.0
+_IDLE_BOUND_POLICY = {
+    "version": "output-growth/1",
+    "control_idle_window_seconds": _CONTROL_IDLE_WINDOW_SECONDS,
+    "suite_silent_timeout_seconds": _SUITE_SILENT_TIMEOUT_SECONDS,
+    "candidate_idle_margin_seconds": _CANDIDATE_IDLE_MARGIN_SECONDS,
+    "candidate_idle_floor_seconds": _CANDIDATE_IDLE_FLOOR_SECONDS,
+    "candidate_idle_window_max_seconds": _CANDIDATE_IDLE_WINDOW_MAX_SECONDS,
+    "candidate_control_gap_multiplier": _CANDIDATE_IDLE_CONTROL_GAP_MULTIPLIER,
+    "max_effective_idle_seconds": _MAX_EFFECTIVE_IDLE_SECONDS,
+    "poll_interval_seconds": _MUTATION_PROGRESS_INTERVAL_SECONDS,
+    "pressure_trigger": "memory-full-avg10>5",
+    "pressure_credit_max_seconds": _MAX_PRESSURE_CREDIT_SECONDS,
+    "process_cleanup_seconds": _CANDIDATE_CLEANUP_SECONDS,
+    "r2_stall_timeout_seconds": _R2_STALL_TIMEOUT_SECONDS,
+}
 _SETUPTOOLS_SOURCE_KEYS = frozenset({
     "include-package-data",
     "package-data",
@@ -54,12 +102,27 @@ class CandidateIsolationError(RuntimeError):
     """The candidate process tree could not be proven empty and reaped."""
 
 
+class NoOutputGrowthExpired(RuntimeError):
+    """The child exceeded its silence bound and was stopped by this tool."""
+
+    def __init__(self, command: Sequence[str], *, silence_evidence: dict[str, Any],
+                 stdout: str, process_tree_evidence: dict[str, Any],
+                 descendants_killed: int):
+        super().__init__("child output did not grow within its silence bound")
+        self.command = list(command)
+        self.silence_evidence = silence_evidence
+        self.stdout = stdout
+        self.process_tree_evidence = process_tree_evidence
+        self.descendants_killed = descendants_killed
+
+
 @dataclass(frozen=True)
 class CommandRun:
     returncode: int
     stdout: str
     descendants_killed: int
     process_tree_evidence: dict[str, Any]
+    silence_evidence: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -76,6 +139,7 @@ class Result:
     resource_limit_evidence: dict[str, Any] | None = None
     resource_limit_advisories: tuple[str, ...] = ()
     process_tree_evidence: dict[str, Any] | None = None
+    silence_evidence: dict[str, Any] | None = None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -85,13 +149,16 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Assay source tree (default: <repo-root>/assay)",
     )
-    parser.add_argument("--repo-root", type=Path, required=True)
-    parser.add_argument("--project-root", type=Path, required=True)
-    parser.add_argument("--base", required=True)
-    parser.add_argument("--max-mutants", type=int, required=True)
-    parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--progress", type=Path, required=True)
-    parser.add_argument("--timeout-seconds", type=float, required=True)
+    parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--project-root", type=Path)
+    parser.add_argument("--base")
+    parser.add_argument("--max-mutants", type=int)
+    parser.add_argument("--evidence", type=Path)
+    parser.add_argument("--progress", type=Path)
+    parser.add_argument("--shard", metavar="INDEX/COUNT")
+    parser.add_argument("--merge-shards", type=int, metavar="COUNT")
+    parser.add_argument("--shard-evidence", type=Path, action="append", default=[])
+    parser.add_argument("--merge-output", type=Path)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--require-candidates", action="store_true")
     parser.add_argument("test_argv", nargs=argparse.REMAINDER)
@@ -129,15 +196,144 @@ def _read_output_tail(stream) -> str:
     return stream.read().decode("utf-8", errors="replace")
 
 
-def candidate_timeout_seconds(configured: float, control_seconds: float) -> float:
-    """Return the per-candidate timeout scaled from the measured control duration.
+def _read_memory_pressure_full_avg10() -> float | None:
+    """Read host memory PSI using Run-Gate RG-320's signal and threshold."""
+    proc_root = Path(os.environ.get("RUN_GATE_PROC_ROOT", "/proc"))
+    try:
+        lines = (proc_root / "pressure" / "memory").read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    for line in lines:
+        fields = line.split()
+        if not fields or fields[0] != "full":
+            continue
+        for field in fields[1:]:
+            if field.startswith("avg10="):
+                try:
+                    return float(field.partition("=")[2])
+                except ValueError:
+                    return None
+    return None
 
-    A surviving mutant runs the whole suite, so the same host contention that
-    stretched the control stretches it too; a fixed cap would then time out a
-    candidate the control proves can finish (KI-106). The configured value stays
-    the floor.
-    """
-    return max(configured, 2.0 * control_seconds)
+
+class ControlGapTooWide(ValueError):
+    """The control was silent so long that no capped candidate window can sit a margin above it."""
+
+
+def candidate_idle_window_seconds(control_gap_seconds: float) -> float:
+    """Give candidates at least the floor and twice the measured control gap."""
+    if not math.isfinite(control_gap_seconds) or control_gap_seconds < 0:
+        raise ValueError("control output-gap measurement must be finite and non-negative")
+    if control_gap_seconds + _CANDIDATE_IDLE_MARGIN_SECONDS > _CANDIDATE_IDLE_WINDOW_MAX_SECONDS:
+        raise ControlGapTooWide(
+            f"known-good control output gap of up to {control_gap_seconds:g}s leaves less than "
+            f"{_CANDIDATE_IDLE_MARGIN_SECONDS:g}s under the {_CANDIDATE_IDLE_WINDOW_MAX_SECONDS:g}s "
+            "candidate silence cap"
+        )
+    derived = max(
+        _CANDIDATE_IDLE_FLOOR_SECONDS,
+        _CANDIDATE_IDLE_CONTROL_GAP_MULTIPLIER * control_gap_seconds,
+    )
+    return min(_CANDIDATE_IDLE_WINDOW_MAX_SECONDS, derived)
+
+
+def _pressure_credit_cap(idle_window_seconds: float) -> float:
+    """Constrain RG-320-style memory-pressure credit to the lane's safe window."""
+    if not math.isfinite(idle_window_seconds) or idle_window_seconds <= 0:
+        raise ValueError("idle window must be finite and positive")
+    available = max(0.0, _MAX_EFFECTIVE_IDLE_SECONDS - idle_window_seconds)
+    return min(_MAX_PRESSURE_CREDIT_SECONDS, available)
+
+
+class _OutputGrowthWatch:
+    """Observe child output growth and bound only silence, with capped PSI credit."""
+
+    def __init__(
+        self, *, idle_window_seconds: float, pressure_credit_cap_seconds: float,
+        started_at: float, initial_size: int, clock, pressure_reader,
+    ):
+        self.idle_window_seconds = idle_window_seconds
+        self.pressure_credit_cap_seconds = pressure_credit_cap_seconds
+        self.clock = clock
+        self.pressure_reader = pressure_reader
+        self.last_growth_at = started_at
+        self.last_growth_observed_at = started_at
+        self.last_size = initial_size
+        self.longest_observed_gap_seconds = 0.0
+        self.pressure_paused_total_seconds = 0.0
+        self.pressure_pause_started_at: float | None = None
+
+    def _pressure_high(self) -> bool:
+        try:
+            value = self.pressure_reader()
+        except Exception:
+            return False
+        return (
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            and value > _MEMORY_PRESSURE_FULL_AVG10_THRESHOLD
+        )
+
+    def _pressure_credit(self, now: float) -> float:
+        if self._pressure_high():
+            if self.pressure_pause_started_at is None:
+                self.pressure_pause_started_at = now
+        elif self.pressure_pause_started_at is not None:
+            self.pressure_paused_total_seconds += max(
+                0.0, now - self.pressure_pause_started_at,
+            )
+            self.pressure_pause_started_at = None
+
+        paused = self.pressure_paused_total_seconds
+        if self.pressure_pause_started_at is not None:
+            paused += max(0.0, now - self.pressure_pause_started_at)
+        return min(self.pressure_credit_cap_seconds, paused)
+
+    def sample(self, *, now: float, size: int) -> bool:
+        grew = size > self.last_size
+        if grew:
+            self.longest_observed_gap_seconds = max(
+                self.longest_observed_gap_seconds,
+                max(0.0, now - self.last_growth_observed_at),
+            )
+            self.last_growth_at = now
+            self.last_growth_observed_at = now
+            self.last_size = size
+        return grew
+
+    def idle_age(self, now: float) -> float:
+        credit = self._pressure_credit(now)
+        return max(0.0, now - self.last_growth_at - credit)
+
+    def expired(self, now: float) -> bool:
+        return self.idle_age(now) >= self.idle_window_seconds
+
+    def seconds_until_expiry(self, now: float) -> float:
+        credit = self._pressure_credit(now)
+        active_remaining = max(
+            0.0,
+            self.idle_window_seconds - max(0.0, now - self.last_growth_at - credit),
+        )
+        pressure_remaining = (
+            max(0.0, self.pressure_credit_cap_seconds - credit)
+            if self.pressure_pause_started_at is not None else 0.0
+        )
+        return active_remaining + pressure_remaining
+
+    def evidence(self, *, now: float, size: int) -> dict[str, Any]:
+        return {
+            "idle_window_seconds": round(self.idle_window_seconds, 3),
+            "pressure_credit_cap_seconds": round(self.pressure_credit_cap_seconds, 3),
+            "pressure_credit_seconds": round(self._pressure_credit(now), 3),
+            "max_effective_idle_seconds": round(
+                self.idle_window_seconds + self.pressure_credit_cap_seconds, 3,
+            ),
+            "longest_output_gap_upper_bound_seconds": round(max(
+                self.longest_observed_gap_seconds,
+                max(0.0, now - self.last_growth_observed_at),
+            ) + _MUTATION_PROGRESS_INTERVAL_SECONDS, 3),
+            "output_gap_measurement_resolution_seconds": _MUTATION_PROGRESS_INTERVAL_SECONDS,
+            "output_bytes": size,
+        }
 
 
 def _copy_full_output(output, log) -> None:
@@ -164,10 +360,13 @@ def _stream_control_output(control_log) -> None:
 
 
 def _run(
-    argv: Sequence[str], *, cwd: Path, timeout_seconds: float,
+    argv: Sequence[str], *, cwd: Path, idle_window_seconds: float,
+    pressure_credit_cap_seconds: float | None = None,
     output_dir: Path | None = None, full_output_log=None,
+    progress_label: str | None = None,
+    clock=None, pressure_reader=None,
 ) -> CommandRun:
-    """Run one command and prove its descendants are gone before returning."""
+    """Run one command without an elapsed cap; stop it only after output idles."""
     try:
         from assay.process_tree import ProcessTreeError, ProcessTreeWindow
     except ImportError as exc:
@@ -175,16 +374,34 @@ def _run(
             "the selected Assay source does not provide process-tree isolation"
         ) from exc
 
+    clock = time.monotonic if clock is None else clock
+    pressure_reader = (
+        _read_memory_pressure_full_avg10 if pressure_reader is None else pressure_reader
+    )
+    if not math.isfinite(idle_window_seconds) or idle_window_seconds <= 0:
+        raise ValueError("idle window must be finite and positive")
+    if pressure_credit_cap_seconds is None:
+        pressure_credit_cap_seconds = _pressure_credit_cap(idle_window_seconds)
+    if (
+        not math.isfinite(pressure_credit_cap_seconds)
+        or pressure_credit_cap_seconds < 0
+        or idle_window_seconds + pressure_credit_cap_seconds > _MAX_EFFECTIVE_IDLE_SECONDS
+    ):
+        raise ValueError("effective idle bound exceeds the R2 lane silence allowance")
+
     command = list(argv)
     if output_dir is not None:
         output_dir = _require_directory(output_dir, "candidate output directory")
     with tempfile.TemporaryDirectory(prefix="cmru-mutation-pycache-") as pycache:
         child_env = os.environ.copy()
         child_env["PYTHONPYCACHEPREFIX"] = pycache
+        child_env["PYTHONUNBUFFERED"] = "1"
         with tempfile.TemporaryFile(mode="w+b", dir=output_dir) as output:
             window = ProcessTreeWindow(cleanup_seconds=_CANDIDATE_CLEANUP_SECONDS)
             try:
                 with window:
+                    if progress_label is not None:
+                        print(f"mutation: {progress_label} starting", flush=True)
                     try:
                         process = window.spawn(
                             command,
@@ -200,32 +417,81 @@ def _run(
                         raise CandidateIsolationError(
                             f"cannot start candidate command: {exc}"
                         ) from exc
+                    wait_started = clock()
+                    watch = _OutputGrowthWatch(
+                        idle_window_seconds=idle_window_seconds,
+                        pressure_credit_cap_seconds=pressure_credit_cap_seconds,
+                        started_at=wait_started,
+                        initial_size=os.fstat(output.fileno()).st_size,
+                        clock=clock,
+                        pressure_reader=pressure_reader,
+                    )
                     try:
-                        returncode = process.wait(timeout=timeout_seconds)
-                    except subprocess.TimeoutExpired as exc:
-                        evidence = window.finish(timed_out=True, force=True)
-                        if full_output_log is not None:
-                            _copy_full_output(output, full_output_log)
-                        timeout_error = subprocess.TimeoutExpired(
-                            command,
-                            timeout_seconds,
-                            output=_read_output_tail(output),
-                        )
-                        timeout_error.process_tree_evidence = evidence.to_dict()
-                        timeout_error.descendants_killed = evidence.outliving_descendants
-                        raise timeout_error from exc
+                        while True:
+                            try:
+                                wait_seconds = min(
+                                    _MUTATION_PROGRESS_INTERVAL_SECONDS,
+                                    watch.seconds_until_expiry(clock()),
+                                )
+                                returncode = process.wait(timeout=wait_seconds)
+                                break
+                            except subprocess.TimeoutExpired:
+                                now = clock()
+                                size = os.fstat(output.fileno()).st_size
+                                grew = watch.sample(now=now, size=size)
+                                if grew and progress_label is not None:
+                                    print(
+                                        f"mutation: {progress_label} still running; "
+                                        f"elapsed={now - wait_started:.0f}s; "
+                                        f"output_bytes={size}",
+                                        flush=True,
+                                    )
+                                if watch.expired(now):
+                                    silence_evidence = watch.evidence(now=now, size=size)
+                                    evidence = window.finish(timed_out=True, force=True)
+                                    if full_output_log is not None:
+                                        _copy_full_output(output, full_output_log)
+                                    if progress_label is not None:
+                                        print(
+                                            f"mutation: {progress_label} ended without output growth "
+                                            f"for the {silence_evidence['idle_window_seconds']:g}s window "
+                                            f"plus {silence_evidence['pressure_credit_seconds']:g}s "
+                                            "pressure credit",
+                                            flush=True,
+                                        )
+                                    idle_error = NoOutputGrowthExpired(
+                                        command,
+                                        silence_evidence=silence_evidence,
+                                        stdout=_read_output_tail(output),
+                                        process_tree_evidence=evidence.to_dict(),
+                                        descendants_killed=evidence.outliving_descendants,
+                                    )
+                                    raise idle_error
+                    except NoOutputGrowthExpired:
+                        raise
                     except BaseException:
                         window.finish(force=True)
                         raise
+                    now = clock()
+                    size = os.fstat(output.fileno()).st_size
+                    watch.sample(now=now, size=size)
+                    silence_evidence = watch.evidence(now=now, size=size)
                     evidence = window.finish()
                     if full_output_log is not None:
                         _copy_full_output(output, full_output_log)
                     stdout = _read_output_tail(output)
+                    if progress_label is not None:
+                        print(
+                            f"mutation: {progress_label} command exited "
+                            f"{returncode}; elapsed={now - wait_started:.0f}s",
+                            flush=True,
+                        )
                     return CommandRun(
                         returncode=returncode,
                         stdout=stdout,
                         descendants_killed=evidence.outliving_descendants,
                         process_tree_evidence=evidence.to_dict(),
+                        silence_evidence=silence_evidence,
                     )
             except ProcessTreeError as exc:
                 raise CandidateIsolationError(str(exc)) from exc
@@ -249,12 +515,582 @@ def _result_identity(result: dict[str, Any]) -> tuple[str, int, str, str]:
     return result["path"], result["line"], result["operator"], result["description"]
 
 
+def _parse_shard_spec(raw: str) -> tuple[int, int]:
+    parts = raw.split("/")
+    if len(parts) != 2 or any(not part.isascii() or not part.isdecimal() for part in parts):
+        raise ValueError(
+            f"--shard {raw!r} must be INDEX/COUNT with zero-based integers"
+        )
+    index, count = (int(part) for part in parts)
+    if count < 1 or not 0 <= index < count:
+        raise ValueError(
+            f"--shard {raw!r} requires 1 <= COUNT and 0 <= INDEX < COUNT"
+        )
+    return index, count
+
+
+def validate_r2_lane_args(argv: Sequence[str]) -> tuple[int, int] | None:
+    """Accept no lane args or exactly the shard selector, before lane setup."""
+    if not argv:
+        return None
+    if len(argv) != 2 or argv[0] != "--shard":
+        raise ValueError("only --shard K/N is accepted by the r2 lane")
+    try:
+        return _parse_shard_spec(argv[1])
+    except ValueError as exc:
+        raise ValueError(f"invalid r2 lane shard selector: {exc}") from exc
+
+
+def _candidate_manifest(jobs: Sequence[Any]) -> list[dict[str, Any]]:
+    """Return the full, ordered identity manifest used by every shard."""
+    return [
+        {
+            "index": index,
+            "path": job.path,
+            "line": job.site.lineno,
+            "operator": job.site.operator,
+            "description": job.site.description,
+        }
+        for index, job in enumerate(jobs)
+    ]
+
+
+def _shard_candidate_indices(
+    candidate_total: int, shard: tuple[int, int] | None,
+) -> list[int]:
+    """Assign identity-ordered candidates round-robin to zero-based shards."""
+    if shard is None:
+        return list(range(candidate_total))
+    index, count = shard
+    return [candidate for candidate in range(candidate_total) if candidate % count == index]
+
+
+def _validate_manifest(manifest: Any, *, source: Path) -> list[dict[str, Any]]:
+    if not isinstance(manifest, list) or not manifest:
+        raise ValueError(f"shard evidence {source}: candidate_manifest must be a non-empty list")
+    for index, entry in enumerate(manifest):
+        if (
+            not isinstance(entry, dict)
+            or type(entry.get("index")) is not int
+            or entry["index"] != index
+        ):
+            raise ValueError(
+                f"shard evidence {source}: candidate_manifest index {index} is missing or out of order"
+            )
+        if (
+            not isinstance(entry.get("path"), str) or not entry["path"]
+            or isinstance(entry.get("line"), bool)
+            or not isinstance(entry.get("line"), int) or entry["line"] < 1
+            or not isinstance(entry.get("operator"), str) or not entry["operator"]
+            or not isinstance(entry.get("description"), str) or not entry["description"]
+        ):
+            raise ValueError(
+                f"shard evidence {source}: candidate_manifest entry {index} is malformed"
+            )
+    return manifest
+
+
+def _resource_limit_was_hit(evidence: Any, *, shard_label: str) -> bool:
+    if not isinstance(evidence, dict) or set(evidence) != {
+        "cgroup_version", "pids_events", "memory_events",
+    } or evidence.get("cgroup_version") != 2:
+        raise ValueError(f"shard {shard_label}: malformed resource-limit evidence")
+    pids = evidence.get("pids_events")
+    memory = evidence.get("memory_events")
+    if not isinstance(pids, dict) or set(pids) != {"max"}:
+        raise ValueError(f"shard {shard_label}: malformed pids resource-limit evidence")
+    if not isinstance(memory, dict) or set(memory) != {
+        "max", "oom", "oom_kill", "oom_group_kill",
+    }:
+        raise ValueError(f"shard {shard_label}: malformed memory resource-limit evidence")
+    counters = {
+        "pids.max": pids["max"],
+        **{f"memory.{name}": memory[name] for name in (
+            "max", "oom", "oom_kill", "oom_group_kill",
+        )},
+    }
+    for counter in counters.values():
+        if (
+            not isinstance(counter, dict) or set(counter) != {"before", "after", "delta"}
+            or any(type(value) is not int or value < 0 for value in counter.values())
+            or counter["after"] - counter["before"] != counter["delta"]
+        ):
+            raise ValueError(f"shard {shard_label}: malformed resource-limit counter")
+    # memory.events:max is telemetry; only pids.max and the OOM counters
+    # invalidate a kill or survivor claim.
+    return any(counters[name]["delta"] for name in (
+        "pids.max", "memory.oom", "memory.oom_kill", "memory.oom_group_kill",
+    ))
+
+
+def _validate_shard_result(
+    result: Any, manifest_entry: dict[str, Any], *, shard_label: str,
+) -> dict[str, Any]:
+    candidate_index = manifest_entry["index"]
+    if not isinstance(result, dict):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has no completed result"
+        )
+    try:
+        identity = _result_identity(result)
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has a malformed result identity"
+        ) from exc
+    if (
+        not isinstance(result.get("path"), str)
+        or type(result.get("line")) is not int
+        or not isinstance(result.get("operator"), str)
+        or not isinstance(result.get("description"), str)
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has a malformed result identity"
+        )
+    expected_identity = (
+        manifest_entry["path"], manifest_entry["line"],
+        manifest_entry["operator"], manifest_entry["description"],
+    )
+    if identity != expected_identity:
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} result does not match its manifest entry"
+        )
+    if (
+        not isinstance(result.get("outcome"), str)
+        or result["outcome"] not in {"killed", "survived", "crashed", "timeout"}
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has an invalid outcome"
+        )
+    if (
+        not isinstance(result.get("termination"), str)
+        or type(result.get("exit_code")) is not int
+        or not isinstance(result.get("resource_limit_advisories"), list)
+        or any(not isinstance(item, str) or not item for item in result["resource_limit_advisories"])
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has incomplete evidence"
+        )
+    resource_limit_hit = _resource_limit_was_hit(
+        result.get("resource_limit_evidence"), shard_label=shard_label,
+    )
+    process_tree = result.get("process_tree_evidence")
+    valid_leader_statuses = {"exited", "signaled", "timeout-killed", "not-started"}
+    if (
+        not isinstance(process_tree, dict)
+        or set(process_tree) != {
+            "protocol", "leader_status", "group_signalled_before_reap",
+            "outliving_descendants", "descendants_signalled", "signal",
+            "descendants", "clean",
+        }
+        or process_tree.get("protocol") != "assay-process-tree/2"
+        or not isinstance(process_tree.get("leader_status"), str)
+        or process_tree["leader_status"] not in valid_leader_statuses
+        or type(process_tree.get("group_signalled_before_reap")) is not bool
+        or type(process_tree.get("outliving_descendants")) is not int
+        or process_tree["outliving_descendants"] < 0
+        or type(process_tree.get("descendants_signalled")) is not int
+        or process_tree["descendants_signalled"] < 0
+        or process_tree["descendants_signalled"] > process_tree["outliving_descendants"]
+        or process_tree.get("clean") is not True
+        or not isinstance(process_tree.get("descendants"), list)
+        or len(process_tree["descendants"]) != process_tree["outliving_descendants"]
+        or any(
+            not isinstance(descendant, dict)
+            or set(descendant) not in ({"pid", "ppid", "comm"}, {"pid", "ppid", "comm", "cmdline"})
+            or type(descendant.get("pid")) is not int
+            or descendant["pid"] < 1
+            for descendant in process_tree["descendants"]
+        )
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has incomplete process-tree evidence"
+        )
+    if result["outcome"] in {"killed", "survived"}:
+        if (
+            resource_limit_hit
+            or process_tree.get("leader_status") != "exited"
+            or process_tree.get("outliving_descendants") != 0
+            or type(result.get("descendants_killed")) is not int
+            or result["descendants_killed"] != 0
+        ):
+            raise ValueError(
+                f"shard {shard_label}: candidate {candidate_index} has an unsupported "
+                "kill or survivor claim"
+            )
+        expected_exit = 1 if result["outcome"] == "killed" else 0
+        if result["termination"] != "exit" or result["exit_code"] != expected_exit:
+            raise ValueError(
+                f"shard {shard_label}: candidate {candidate_index} has an unsupported "
+                f"{result['outcome']} claim"
+            )
+    if result["outcome"] == "timeout" and (
+        result["termination"] != "no-output"
+        or result["exit_code"] != 124
+        or process_tree.get("leader_status") != "timeout-killed"
+        or resource_limit_hit
+        or type(result.get("descendants_killed")) is not int
+        or result["descendants_killed"] != process_tree.get("outliving_descendants")
+    ):
+        raise ValueError(
+            f"shard {shard_label}: candidate {candidate_index} has an unsupported timeout claim"
+        )
+    _validate_silence_evidence(
+        result.get("silence_evidence"),
+        source=f"shard {shard_label}: candidate {candidate_index}",
+        allow_control_window=False,
+    )
+    return result
+
+
+def _validate_silence_evidence(
+    evidence: Any, *, source: str, allow_control_window: bool,
+) -> dict[str, Any]:
+    required = {
+        "idle_window_seconds", "pressure_credit_cap_seconds",
+        "pressure_credit_seconds", "max_effective_idle_seconds",
+        "longest_output_gap_upper_bound_seconds",
+        "output_gap_measurement_resolution_seconds", "output_bytes",
+    }
+    if not isinstance(evidence, dict) or not required <= set(evidence):
+        raise ValueError(f"{source}: missing silence-bound evidence")
+    numeric_fields = required - {
+        "output_gap_measurement_resolution_seconds", "output_bytes",
+    }
+    if any(
+        not isinstance(evidence.get(field), (int, float))
+        or isinstance(evidence.get(field), bool)
+        or not math.isfinite(evidence[field])
+        or evidence[field] < 0
+        for field in numeric_fields
+    ):
+        raise ValueError(f"{source}: malformed silence-bound evidence")
+    if (
+        evidence["idle_window_seconds"] <= 0
+        or evidence["pressure_credit_seconds"] > evidence["pressure_credit_cap_seconds"]
+        or evidence["max_effective_idle_seconds"]
+        != evidence["idle_window_seconds"] + evidence["pressure_credit_cap_seconds"]
+        or evidence["max_effective_idle_seconds"] > _MAX_EFFECTIVE_IDLE_SECONDS
+        or evidence["output_gap_measurement_resolution_seconds"]
+        != _MUTATION_PROGRESS_INTERVAL_SECONDS
+        or type(evidence["output_bytes"]) is not int
+        or evidence["output_bytes"] < 0
+    ):
+        raise ValueError(f"{source}: inconsistent silence-bound evidence")
+    if allow_control_window:
+        return evidence
+    if evidence["idle_window_seconds"] < _CANDIDATE_IDLE_FLOOR_SECONDS:
+        raise ValueError(f"{source}: candidate silence window is below its policy floor")
+    if evidence["idle_window_seconds"] > _CANDIDATE_IDLE_WINDOW_MAX_SECONDS or not math.isclose(
+        evidence["pressure_credit_cap_seconds"],
+        _pressure_credit_cap(evidence["idle_window_seconds"]),
+        rel_tol=0.0, abs_tol=2e-3,
+    ):
+        raise ValueError(f"{source}: candidate silence bounds are not ones the policy derives")
+    return evidence
+
+
+def _validate_baseline_evidence(document: dict[str, Any], *, shard_label: str) -> None:
+    if type(document.get("baseline_exit_code")) is not int or document["baseline_exit_code"] != 0:
+        raise ValueError(f"shard {shard_label}: baseline_exit_code must be 0")
+    try:
+        resource_limit_hit = _resource_limit_was_hit(
+            document.get("baseline_resource_limit_evidence"), shard_label=shard_label,
+        )
+    except ValueError as exc:
+        raise ValueError(f"shard {shard_label}: malformed baseline resource evidence") from exc
+    if resource_limit_hit:
+        raise ValueError(f"shard {shard_label}: baseline resource limit was hit")
+    tree = document.get("baseline_process_tree_evidence")
+    if (
+        not isinstance(tree, dict)
+        or set(tree) != {
+            "protocol", "leader_status", "group_signalled_before_reap",
+            "outliving_descendants", "descendants_signalled", "signal",
+            "descendants", "clean",
+        }
+        or tree.get("protocol") != "assay-process-tree/2"
+        or tree.get("leader_status") != "exited"
+        or tree.get("group_signalled_before_reap") is not False
+        or tree.get("outliving_descendants") != 0
+        or tree.get("descendants_signalled") != 0
+        or tree.get("signal") is not None
+        or tree.get("descendants") != []
+        or tree.get("clean") is not True
+    ):
+        raise ValueError(f"shard {shard_label}: baseline process tree is not clean")
+    if document.get("baseline_termination") != "exit":
+        raise ValueError(f"shard {shard_label}: baseline termination must be exit")
+    advisories = document.get("baseline_resource_limit_advisories")
+    if not isinstance(advisories, list) or any(
+        not isinstance(item, str) or not item for item in advisories
+    ):
+        raise ValueError(f"shard {shard_label}: invalid baseline resource advisories")
+    _validate_silence_evidence(
+        document.get("baseline_silence_evidence"),
+        source=f"shard {shard_label}: baseline",
+        allow_control_window=True,
+    )
+    if document.get("baseline_silence_evidence", {}).get("idle_window_seconds") != \
+            _CONTROL_IDLE_WINDOW_SECONDS:
+        raise ValueError(f"shard {shard_label}: baseline silence window differs from policy")
+    bounds = document.get("candidate_silence_bounds")
+    if not isinstance(bounds, dict):
+        raise ValueError(f"shard {shard_label}: missing candidate silence bounds")
+    try:
+        expected_window = candidate_idle_window_seconds(
+            document["baseline_silence_evidence"]["longest_output_gap_upper_bound_seconds"]
+        )
+        expected_credit_cap = _pressure_credit_cap(expected_window)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"shard {shard_label}: malformed candidate silence bounds") from exc
+    if bounds != {
+        "idle_window_seconds": round(expected_window, 3),
+        "pressure_credit_cap_seconds": round(expected_credit_cap, 3),
+        "max_effective_idle_seconds": round(expected_window + expected_credit_cap, 3),
+    }:
+        raise ValueError(f"shard {shard_label}: candidate silence bounds disagree with control evidence")
+
+
+def _validate_merge_common_fields(document: dict[str, Any], *, shard_label: str) -> None:
+    for field in (
+        "head", "base", "project_prefix", "assay_source_commit",
+        "assay_distribution_version",
+    ):
+        if not isinstance(document.get(field), str) or not document[field]:
+            raise ValueError(f"shard {shard_label}: missing non-empty common field {field}")
+    if type(document.get("candidate_count")) is not int or document["candidate_count"] < 1:
+        raise ValueError(f"shard {shard_label}: candidate_count must be positive")
+    if not isinstance(document.get("test_argv"), list) or not document["test_argv"] or any(
+        not isinstance(argument, str) or not argument for argument in document["test_argv"]
+    ):
+        raise ValueError(f"shard {shard_label}: test_argv must be a non-empty string list")
+    if not isinstance(document.get("test_manifest"), dict) or not document["test_manifest"]:
+        raise ValueError(f"shard {shard_label}: test_manifest must be non-empty")
+    if not isinstance(document.get("operators"), list) or not document["operators"] or any(
+        not isinstance(operator, str) or not operator for operator in document["operators"]
+    ):
+        raise ValueError(f"shard {shard_label}: operators must be a non-empty string list")
+    if type(document.get("max_mutants")) is not int or document["max_mutants"] < 1:
+        raise ValueError(f"shard {shard_label}: max_mutants must be positive")
+    if document.get("silence_policy") != _IDLE_BOUND_POLICY:
+        raise ValueError(f"shard {shard_label}: silence_policy does not match schema 8")
+
+
+def _prepare_merge_output(evidence_paths: Sequence[Path], output_path: Path) -> None:
+    """Remove a stale merge result only after proving it aliases no input."""
+    resolved_paths = [path.resolve(strict=False) for path in evidence_paths]
+    if len(set(resolved_paths)) != len(resolved_paths):
+        raise ValueError("--merge-shards received the same --shard-evidence path more than once")
+    if output_path.resolve(strict=False) in resolved_paths:
+        raise ValueError("--merge-output must not replace a --shard-evidence file")
+    if not (output_path.exists() or output_path.is_symlink()):
+        return
+    for path in evidence_paths:
+        if path.exists():
+            try:
+                is_same_file = os.path.samefile(output_path, path)
+            except OSError as exc:
+                raise ValueError(
+                    "cannot verify whether --merge-output aliases --shard-evidence"
+                ) from exc
+            if is_same_file:
+                raise ValueError("--merge-output must not be the same file as --shard-evidence")
+    if output_path.is_file() or output_path.is_symlink():
+        output_path.unlink()
+
+
+def merge_shard_evidence(
+    *, shard_count: int, evidence_paths: Sequence[Path], output_path: Path,
+) -> dict[str, Any]:
+    """Validate exactly one complete evidence document for every shard."""
+    _prepare_merge_output(evidence_paths, output_path)
+    if type(shard_count) is not int or shard_count < 1:
+        raise ValueError(f"--merge-shards COUNT must be positive, got {shard_count}")
+    if len(evidence_paths) != shard_count:
+        raise ValueError(
+            f"--merge-shards {shard_count} requires exactly {shard_count} "
+            f"--shard-evidence paths, got {len(evidence_paths)}"
+        )
+    documents: dict[int, tuple[Path, dict[str, Any]]] = {}
+    common_fields = (
+        "head", "base", "candidate_count", "candidate_manifest", "project_prefix",
+        "assay_source_commit", "assay_distribution_version", "test_argv", "test_manifest",
+        "operators", "max_mutants", "silence_policy",
+    )
+    reference: dict[str, Any] | None = None
+    manifest: list[dict[str, Any]] | None = None
+    for path in evidence_paths:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"shard evidence {path}: expected a regular file")
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"shard evidence {path}: cannot read valid JSON") from exc
+        if not isinstance(document, dict):
+            raise ValueError(f"shard evidence {path}: expected a JSON object")
+        if (
+            document.get("schema_version") != EVIDENCE_SCHEMA_VERSION
+            or document.get("candidate_isolation") != "process-tree/1"
+        ):
+            raise ValueError(
+                f"shard evidence {path}: unsupported schema_version; expected "
+                f"{EVIDENCE_SCHEMA_VERSION}, got {document.get('schema_version')!r}"
+            )
+        shard = document.get("shard")
+        if not isinstance(shard, dict):
+            raise ValueError(f"shard evidence {path}: missing shard identity")
+        index, count = shard.get("index"), shard.get("count")
+        if (
+            isinstance(index, bool) or not isinstance(index, int)
+            or isinstance(count, bool) or not isinstance(count, int)
+        ):
+            raise ValueError(f"shard evidence {path}: shard index/count must be integers")
+        label = f"{index}/{count}"
+        if count != shard_count or not 0 <= index < shard_count:
+            raise ValueError(
+                f"shard {label} in {path}: expected an index in 0..{shard_count - 1} "
+                f"with count {shard_count}"
+            )
+        if index in documents:
+            raise ValueError(f"duplicate shard {label}: {path} and {documents[index][0]}")
+        if document.get("scope") != "shard" or document.get("status") != "partial":
+            raise ValueError(f"shard {label} in {path}: evidence is not marked partial")
+        if document.get("shard_complete") is not True:
+            raise ValueError(f"shard {label} in {path}: evidence is incomplete")
+        if (
+            not isinstance(document.get("shard_outcome"), str)
+            or document["shard_outcome"] not in {"passed", "failed"}
+        ):
+            raise ValueError(f"shard {label} in {path}: missing completed shard outcome")
+
+        _validate_merge_common_fields(document, shard_label=label)
+        _validate_baseline_evidence(document, shard_label=label)
+        current_manifest = _validate_manifest(document.get("candidate_manifest"), source=path)
+        if (
+            type(document.get("candidate_count")) is not int
+            or document["candidate_count"] != len(current_manifest)
+        ):
+            raise ValueError(f"shard {label} in {path}: candidate_count does not match manifest")
+        expected_indices = _shard_candidate_indices(len(current_manifest), (index, shard_count))
+        candidate_indices = document.get("candidate_indices")
+        if (
+            not isinstance(candidate_indices, list)
+            or any(type(candidate_index) is not int for candidate_index in candidate_indices)
+            or candidate_indices != expected_indices
+        ):
+            raise ValueError(f"shard {label} in {path}: candidate assignment does not match manifest")
+        results = document.get("results")
+        if not isinstance(results, list) or len(results) != len(current_manifest):
+            raise ValueError(f"shard {label} in {path}: result list does not match manifest")
+        assigned = set(expected_indices)
+        for candidate_index, result in enumerate(results):
+            if candidate_index not in assigned:
+                if result is not None:
+                    raise ValueError(
+                        f"shard {label} in {path}: has a result for unassigned candidate {candidate_index}"
+                    )
+                continue
+            _validate_shard_result(
+                result, current_manifest[candidate_index], shard_label=label,
+            )
+            result_bounds = result["silence_evidence"]
+            candidate_bounds = document["candidate_silence_bounds"]
+            # A kill is a failed test and does not depend on the silence window; a
+            # kill reused by a resumed run keeps the window of the control that judged
+            # it. Every other outcome must carry this shard's bounds.
+            if result["outcome"] != "killed" and any(
+                result_bounds[field] != candidate_bounds[field]
+                for field in (
+                    "idle_window_seconds", "pressure_credit_cap_seconds",
+                    "max_effective_idle_seconds",
+                )
+            ):
+                raise ValueError(
+                    f"shard {label}: candidate {candidate_index} silence evidence "
+                    "does not match the shard's candidate bounds"
+                )
+        shard_outcome = (
+            "passed"
+            if all(results[candidate_index]["outcome"] == "killed" for candidate_index in expected_indices)
+            else "failed"
+        )
+        if document["shard_outcome"] != shard_outcome:
+            raise ValueError(f"shard {label} in {path}: shard_outcome disagrees with its results")
+
+        if reference is None:
+            reference = document
+            manifest = current_manifest
+        else:
+            for field in common_fields:
+                if document.get(field) != reference.get(field):
+                    raise ValueError(f"shard {label} in {path}: {field} differs from the other shards")
+        documents[index] = (path, document)
+
+    missing = sorted(set(range(shard_count)) - set(documents))
+    if missing:
+        names = ", ".join(f"{index}/{shard_count}" for index in missing)
+        raise ValueError(f"--merge-shards {shard_count} is missing shard(s): {names}")
+    assert reference is not None and manifest is not None
+
+    combined_results: list[dict[str, Any] | None] = [None] * len(manifest)
+    for index in range(shard_count):
+        _path, document = documents[index]
+        for candidate_index in document["candidate_indices"]:
+            combined_results[candidate_index] = document["results"][candidate_index]
+    if any(result is None for result in combined_results):
+        missing_candidates = [
+            index for index, result in enumerate(combined_results) if result is None
+        ]
+        raise ValueError(
+            "--merge-shards left candidate(s) uncovered: "
+            + ", ".join(str(index) for index in missing_candidates)
+        )
+    survivors = [result for result in combined_results if result["outcome"] != "killed"]
+    shard_records = [
+        {
+            "index": index,
+            "count": shard_count,
+            "evidence": str(documents[index][0]),
+            "shard_outcome": documents[index][1]["shard_outcome"],
+            "control_seconds": documents[index][1].get("control_seconds"),
+            "candidate_silence_bounds": documents[index][1].get("candidate_silence_bounds"),
+            "baseline_silence_evidence": documents[index][1].get("baseline_silence_evidence"),
+        }
+        for index in range(shard_count)
+    ]
+    first_shard = documents[0][1]
+    merged = {
+        **{field: reference.get(field) for field in common_fields},
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "candidate_isolation": "process-tree/1",
+        "tool": "cmru mutation campaign shard merge",
+        "assay_source": first_shard.get("assay_source"),
+        "scope": "whole",
+        "shard": None,
+        "candidate_indices": list(range(len(manifest))),
+        "status": "failed" if survivors else "passed",
+        "results": combined_results,
+        "control_seconds": first_shard.get("control_seconds"),
+        "baseline_silence_evidence": first_shard.get("baseline_silence_evidence"),
+        "candidate_silence_bounds": first_shard.get("candidate_silence_bounds"),
+        "baseline_termination": first_shard.get("baseline_termination"),
+        "baseline_exit_code": first_shard.get("baseline_exit_code"),
+        "baseline_resource_limit_evidence": first_shard.get("baseline_resource_limit_evidence"),
+        "baseline_resource_limit_advisories": first_shard.get("baseline_resource_limit_advisories"),
+        "baseline_process_tree_evidence": first_shard.get("baseline_process_tree_evidence"),
+        "shard_merge": {"count": shard_count, "shards": shard_records},
+    }
+    _write_evidence(output_path, merged)
+    return merged
+
+
 def _candidate_result(
-    job: Any, *, returncode: int | None, elapsed_seconds: float, timed_out: bool,
+    job: Any, *, returncode: int | None, elapsed_seconds: float, idle_stopped: bool,
     descendants_killed: int = 0,
     resource_limit_evidence: Any | None = None,
     resource_limit_advisories: Sequence[str] = (),
     process_tree_evidence: dict[str, Any],
+    silence_evidence: dict[str, Any] | None = None,
 ) -> Result:
     evidence = (
         resource_limit_evidence.to_dict()
@@ -264,10 +1100,10 @@ def _candidate_result(
         resource_limit_evidence is not None
         and resource_limit_evidence.limit_hit
     )
-    if timed_out:
+    if idle_stopped:
         exit_code = 124
-        outcome = "crashed"
-        termination = "resource-limit" if resource_limited else "timeout"
+        outcome = "timeout"
+        termination = "no-output"
     else:
         assert returncode is not None
         exit_code = returncode
@@ -293,6 +1129,7 @@ def _candidate_result(
         resource_limit_evidence=evidence,
         resource_limit_advisories=tuple(resource_limit_advisories),
         process_tree_evidence=process_tree_evidence,
+        silence_evidence=silence_evidence,
     )
 
 
@@ -864,8 +1701,13 @@ def _resume_results(
     test_argv: Sequence[str],
     jobs: Sequence[Any],
     max_mutants: int,
-    timeout_seconds: float,
+    silence_policy: dict[str, Any],
+    shard: tuple[int, int] | None = None,
+    candidate_manifest: Sequence[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any] | None]:
+    candidate_manifest = list(candidate_manifest or _candidate_manifest(jobs))
+    candidate_indices = _shard_candidate_indices(len(jobs), shard)
+    shard_document = None if shard is None else {"index": shard[0], "count": shard[1]}
     if assay_source_root is None:
         raise ValueError("mutation resume requires an Assay source root")
     if evidence_path.is_symlink():
@@ -882,12 +1724,37 @@ def _resume_results(
         raise ValueError(f"could not read mutation resume evidence: {evidence_path}") from exc
     previous_head = previous.get("head") if isinstance(previous, dict) else None
     if not isinstance(previous, dict) \
-            or previous.get("schema_version") != 6 \
+            or previous.get("schema_version") != EVIDENCE_SCHEMA_VERSION \
             or previous.get("candidate_isolation") != "process-tree/1":
         raise ValueError(
-            "mutation resume evidence predates the current resource and process-tree evidence schema; "
+            f"mutation resume evidence has an unsupported schema version; expected "
+            f"{EVIDENCE_SCHEMA_VERSION}, got "
+            f"{previous.get('schema_version') if isinstance(previous, dict) else 'missing'}; "
             f"archive or remove {evidence_path} and start a fresh campaign"
         )
+    if previous.get("silence_policy") != silence_policy:
+        raise ValueError("mutation resume evidence does not match the current silence policy")
+    baseline_exit_code = previous.get("baseline_exit_code")
+    if type(baseline_exit_code) is not int:
+        raise ValueError("mutation resume evidence has an invalid baseline exit code")
+    baseline_silence = previous.get("baseline_silence_evidence")
+    if baseline_exit_code == 0:
+        _validate_baseline_evidence(previous, shard_label="resume")
+    elif (
+        baseline_exit_code != 124
+        or previous.get("baseline_termination") != "no-output"
+        or previous.get("status") != "inconclusive"
+        or not isinstance(previous.get("candidate_silence_bounds"), type(None))
+    ):
+        raise ValueError("mutation resume evidence has an invalid baseline outcome")
+    else:
+        _validate_silence_evidence(
+            baseline_silence,
+            source="mutation resume baseline",
+            allow_control_window=True,
+        )
+        if baseline_silence.get("idle_window_seconds") != _CONTROL_IDLE_WINDOW_SECONDS:
+            raise ValueError("mutation resume evidence has an invalid baseline silence window")
     baseline_advisories = previous.get("baseline_resource_limit_advisories")
     if not isinstance(baseline_advisories, list) or any(
         not isinstance(item, str) or not item for item in baseline_advisories
@@ -903,9 +1770,10 @@ def _resume_results(
         raise ValueError(
             "mutation resume evidence has invalid baseline process-tree proof"
         ) from exc
+    expected_baseline_tree_status = "exited" if baseline_exit_code == 0 else "timeout-killed"
     if (
-        baseline_tree.leader_status != "exited"
-        or baseline_tree.outliving_descendants != 0
+        baseline_tree.leader_status != expected_baseline_tree_status
+        or (baseline_exit_code == 0 and baseline_tree.outliving_descendants != 0)
     ):
         raise ValueError("mutation resume evidence has an invalid baseline process-tree proof")
     source_paths = [(project_prefix / "src").as_posix()]
@@ -967,11 +1835,14 @@ def _resume_results(
     if (
         previous.get("base") != base
         or previous.get("candidate_count") != len(jobs)
+        or previous.get("candidate_manifest") != candidate_manifest
+        or previous.get("scope") != ("whole" if shard is None else "shard")
+        or previous.get("shard") != shard_document
+        or previous.get("candidate_indices") != candidate_indices
         or previous.get("max_mutants") != max_mutants
         or previous.get("project_prefix") != (project_prefix.as_posix() or ".")
         or previous.get("operators") != list(OPERATORS)
         or previous.get("test_argv") != list(test_argv)
-        or previous.get("timeout_seconds") != timeout_seconds
     ):
         raise ValueError("mutation resume evidence does not match this campaign")
     prior_results = previous.get("results")
@@ -983,8 +1854,31 @@ def _resume_results(
     for index, prior in enumerate(prior_results):
         if prior is None:
             continue
+        if index not in candidate_indices:
+            raise ValueError(
+                f"mutation resume evidence for shard {shard_document} contains "
+                f"unassigned candidate {index}"
+            )
         if not isinstance(prior, dict) or _result_identity(prior) != _job_identity(jobs[index]):
             raise ValueError(f"mutation resume evidence does not match candidate {index}")
+        _validate_silence_evidence(
+            prior.get("silence_evidence"),
+            source=f"mutation resume candidate {index}",
+            allow_control_window=False,
+        )
+        candidate_bounds = previous.get("candidate_silence_bounds")
+        if prior.get("outcome") != "killed" and (
+            not isinstance(candidate_bounds, dict) or any(
+                prior["silence_evidence"].get(field) != candidate_bounds.get(field)
+                for field in (
+                    "idle_window_seconds", "pressure_credit_cap_seconds",
+                    "max_effective_idle_seconds",
+                )
+            )
+        ):
+            raise ValueError(
+                f"mutation resume evidence has mismatched silence bounds for candidate {index}"
+            )
         advisories = prior.get("resource_limit_advisories")
         if not isinstance(advisories, list) or any(
             not isinstance(item, str) or not item for item in advisories
@@ -1016,6 +1910,8 @@ def _resume_results(
                     f"mutation resume evidence contains an unsupported kill claim for candidate {index}"
                 )
             reusable[index] = prior
+    if baseline_exit_code != 0 and any(result is not None for result in reusable):
+        raise ValueError("inconclusive mutation resume evidence contains candidate results")
     return reusable
 
 
@@ -1038,10 +1934,91 @@ def run(argv: Sequence[str] | None = None) -> int:
             sys.pycache_prefix = old_pycache_prefix
 
 
+def _judged_base(repo_root: Path, base: str, assay_git) -> str:
+    """The commit this campaign judges the candidate against.
+
+    ``base`` is the caller's (the lane's ``--base``), never a base this script
+    declares, so Assay's resolution is DELEGATED (B552): an undeligated
+    ``resolve_base`` answers a merge ``HEAD`` with its FIRST PARENT and
+    discards the requested comparison, which narrowed a real R2 lane to the
+    merge's own payload (run ``rgw-r2-20261125T202359-r1002``). Delegated,
+    it answers ``merge-base(base, HEAD)``; the caller has already proven
+    ``base`` is in HEAD's ancestry (``check_assay_baseline.py``), so the
+    answer IS ``base`` and the diff below is ``base..HEAD`` -- every changed
+    source, including what a second parent brought in (KI-211).
+    """
+    return assay_git.resolve_base(repo_root, base, delegated=True)
+
+
 def _run_campaign(
     argv: Sequence[str] | None = None, *, template_root: Path,
 ) -> int:
     args = _parser().parse_args(argv)
+    if args.merge_output is not None:
+        _prepare_merge_output(args.shard_evidence, args.merge_output)
+    if args.merge_shards is not None:
+        if args.shard is not None:
+            raise ValueError("--merge-shards cannot be combined with --shard")
+        if args.merge_output is None:
+            raise ValueError("--merge-shards requires --merge-output PATH")
+        if args.evidence is not None:
+            raise ValueError("use --merge-output for a shard merge, not --evidence")
+        if args.resume or args.test_argv:
+            raise ValueError("--merge-shards cannot be combined with --resume or test argv")
+        campaign_options = [
+            flag for flag, value in (
+                ("--assay-source", args.assay_source),
+                ("--repo-root", args.repo_root),
+                ("--project-root", args.project_root),
+                ("--base", args.base),
+                ("--max-mutants", args.max_mutants),
+                ("--evidence", args.evidence),
+                ("--progress", args.progress),
+            ) if value is not None
+        ]
+        if args.require_candidates:
+            campaign_options.append("--require-candidates")
+        if campaign_options:
+            raise ValueError(
+                "--merge-shards cannot be combined with campaign option(s): "
+                + ", ".join(campaign_options)
+            )
+        merged = merge_shard_evidence(
+            shard_count=args.merge_shards,
+            evidence_paths=args.shard_evidence,
+            output_path=args.merge_output,
+        )
+        if merged["status"] == "failed":
+            non_killed = [
+                result for result in merged["results"]
+                if result["outcome"] != "killed"
+            ]
+            print(
+                "mutation: merged complete shards; whole-campaign status=failed; "
+                f"non-killed={len(non_killed)}; evidence={args.merge_output}",
+                flush=True,
+            )
+            return 1
+        print(
+            "mutation: merged complete shards; whole-campaign status=passed; "
+            f"head={merged['head']} base={merged['base']} evidence={args.merge_output}",
+            flush=True,
+        )
+        return 0
+    if args.shard_evidence or args.merge_output is not None:
+        raise ValueError("--shard-evidence and --merge-output require --merge-shards")
+    missing = [
+        flag for flag, value in (
+            ("--repo-root", args.repo_root),
+            ("--project-root", args.project_root),
+            ("--base", args.base),
+            ("--max-mutants", args.max_mutants),
+            ("--evidence", args.evidence),
+            ("--progress", args.progress),
+        ) if value is None
+    ]
+    if missing:
+        raise ValueError("mutation run requires " + ", ".join(missing))
     test_argv = list(args.test_argv)
     if test_argv[:1] == ["--"]:
         test_argv = test_argv[1:]
@@ -1049,9 +2026,6 @@ def _run_campaign(
         raise ValueError("test argv is required after '--'")
     if args.max_mutants < 1:
         raise ValueError("--max-mutants must be positive")
-    if args.timeout_seconds <= 0:
-        raise ValueError("--timeout-seconds must be positive")
-
     repo_root = _require_directory(args.repo_root, "--repo-root")
     project_root = _require_directory(args.project_root, "--project-root")
     assay_source = _require_directory(
@@ -1082,6 +2056,14 @@ def _run_campaign(
     from assay import diff, git, mutation
     from assay.adapters.python import PythonAdapter
 
+    shard = None
+    if args.shard is not None:
+        shard = _parse_shard_spec(args.shard)
+        try:
+            mutation.select_mutation_shard((), index=shard[0], count=shard[1])
+        except ValueError as exc:
+            raise ValueError(f"--shard {args.shard!r}: {exc}") from exc
+
     if not _assay_import_is_bound_to_source(assay_source, assay.__file__):
         raise ValueError(
             "mutation campaign imported Assay outside its configured package source roots"
@@ -1091,7 +2073,7 @@ def _run_campaign(
             "mutation campaign requires a clean Assay source tree across every packaged root and pyproject.toml"
         )
     assay_source_commit = _git_head(assay_source)
-    base = git.resolve_base(repo_root, args.base)
+    base = _judged_base(repo_root, args.base, git)
     head = _git_head(repo_root)
     diff_text = git.run(repo_root, "diff", "--unified=0", base, head)
     added = diff.parse_added_lines(diff_text)
@@ -1115,6 +2097,15 @@ def _run_campaign(
         )
     if args.require_candidates and not jobs:
         raise RuntimeError("the declared source diff produced no mutation candidates")
+    candidate_manifest = _candidate_manifest(jobs)
+    candidate_indices = _shard_candidate_indices(len(jobs), shard)
+    shard_document = None if shard is None else {"index": shard[0], "count": shard[1]}
+    shard_text = "whole campaign" if shard is None else f"shard {shard[0]}/{shard[1]}"
+    print(
+        f"mutation: candidate inventory ready ({len(jobs)} candidates); "
+        f"{shard_text} has {len(candidate_indices)} assigned",
+        flush=True,
+    )
 
     results = _resume_results(
         evidence_path=args.evidence,
@@ -1129,7 +2120,9 @@ def _run_campaign(
         test_argv=test_argv,
         jobs=jobs,
         max_mutants=args.max_mutants,
-        timeout_seconds=args.timeout_seconds,
+        silence_policy=_IDLE_BOUND_POLICY,
+        shard=shard,
+        candidate_manifest=candidate_manifest,
     )
 
     test_manifest = _test_manifest(repo_root, project_prefix)
@@ -1154,6 +2147,8 @@ def _run_campaign(
     started = time.monotonic()
     control_log = tempfile.TemporaryFile(mode="w+b")
     control_seconds = 0.0
+    control_idle_timeout: NoOutputGrowthExpired | None = None
+    print("mutation: preparing known-good control", flush=True)
     try:
         with tempfile.TemporaryDirectory(prefix="cmru-mutation-baseline-") as temporary:
             baseline_root = _copy_frozen_fixture(
@@ -1161,30 +2156,33 @@ def _run_campaign(
                 project_prefix=project_prefix,
                 workspace=Path(temporary),
             )
+            print("mutation: known-good control fixture ready", flush=True)
             # Refuse before the campaign if exact cgroup-v2 counters or contract-2
             # observer access are unavailable. A mutation result without this
             # evidence cannot support a kill claim.
             baseline_resource_before = _read_resource_limit_counters()
             control_started = time.monotonic()
             try:
-                baseline = _run(
-                    test_argv, cwd=baseline_root,
-                    timeout_seconds=args.timeout_seconds,
-                    output_dir=Path(temporary),
-                    full_output_log=control_log,
-                )
+                try:
+                    baseline = _run(
+                        test_argv, cwd=baseline_root,
+                        idle_window_seconds=_CONTROL_IDLE_WINDOW_SECONDS,
+                        pressure_credit_cap_seconds=_pressure_credit_cap(
+                            _CONTROL_IDLE_WINDOW_SECONDS,
+                        ),
+                        output_dir=Path(temporary),
+                        full_output_log=control_log,
+                        progress_label="known-good control",
+                    )
+                except NoOutputGrowthExpired as exc:
+                    control_idle_timeout = exc
+                    baseline = None
             finally:
                 control_seconds = time.monotonic() - control_started
             baseline_resource_after = _read_resource_limit_counters()
             baseline_resource_evidence, baseline_resource_advisories = _resource_limit_evidence(
                 baseline_resource_before, baseline_resource_after
             )
-    except subprocess.TimeoutExpired as exc:
-        _stream_control_output(control_log)
-        raise RuntimeError(
-            f"the known-good mutation control exceeded {args.timeout_seconds:g} seconds; "
-            "its complete output is above in the lane log"
-        ) from exc
     except CandidateIsolationError as exc:
         raise RuntimeError(
             f"could not isolate the known-good mutation control: {exc}"
@@ -1193,6 +2191,63 @@ def _run_campaign(
         raise RuntimeError(
             f"could not verify cgroup resource counters for the known-good control: {exc}"
         ) from exc
+    if control_idle_timeout is not None:
+        if shard is not None:
+            control_scope = {"index": shard[0], "count": shard[1]}
+        else:
+            control_scope = None
+        inconclusive = {
+            "schema_version": EVIDENCE_SCHEMA_VERSION,
+            "candidate_isolation": "process-tree/1",
+            "tool": "cmru mutation campaign using worktree Assay mutation sites",
+            "assay_distribution_version": assay.__version__,
+            "assay_source": str(assay_source),
+            "assay_source_commit": assay_source_commit,
+            "base": base,
+            "head": head,
+            "project_prefix": project_prefix.as_posix() or ".",
+            "max_mutants": args.max_mutants,
+            "silence_policy": _IDLE_BOUND_POLICY,
+            "control_seconds": round(control_seconds, 3),
+            "candidate_silence_bounds": None,
+            "operators": list(OPERATORS),
+            "test_argv": test_argv,
+            "test_manifest": test_manifest,
+            "candidate_count": len(jobs),
+            "candidate_manifest": candidate_manifest,
+            "candidate_indices": candidate_indices,
+            "scope": "whole" if shard is None else "shard",
+            "shard": control_scope,
+            "baseline_exit_code": 124,
+            "baseline_termination": "no-output",
+            "baseline_resource_limit_evidence": baseline_resource_evidence.to_dict(),
+            "baseline_resource_limit_advisories": list(baseline_resource_advisories),
+            "baseline_process_tree_evidence": control_idle_timeout.process_tree_evidence,
+            "baseline_silence_evidence": control_idle_timeout.silence_evidence,
+            "status": "inconclusive",
+            "inconclusive_reason": "known-good control stopped after no output growth",
+            "results": [None] * len(jobs),
+        }
+        if shard is not None:
+            inconclusive["shard_complete"] = False
+            inconclusive["shard_outcome"] = None
+        _write_evidence(args.evidence, inconclusive)
+        _append_progress(args.progress, {
+            "event": "complete",
+            "status": "inconclusive",
+            "reason": inconclusive["inconclusive_reason"],
+            "baseline_silence_evidence": control_idle_timeout.silence_evidence,
+            "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
+        })
+        _stream_control_output(control_log)
+        control_log.close()
+        print(
+            "mutation: INCONCLUSIVE known-good control stopped after no output growth; "
+            f"evidence={args.evidence}; exit=2 (retry; no candidates judged)",
+            flush=True,
+        )
+        return 2
+    assert baseline is not None
     if baseline_resource_evidence.limit_hit:
         raise RuntimeError(
             "a cgroup resource-limit event occurred during the known-good mutation control"
@@ -1210,7 +2265,32 @@ def _run_campaign(
             f"{project_fixture.failure_excerpt(baseline.stdout, 1000)}"
         )
     control_log.close()
-    candidate_timeout = candidate_timeout_seconds(args.timeout_seconds, control_seconds)
+    try:
+        candidate_idle_window = candidate_idle_window_seconds(
+            baseline.silence_evidence["longest_output_gap_upper_bound_seconds"]
+        )
+    except ControlGapTooWide as exc:
+        # No evidence write: a resumed run keeps its earlier file and its kills.
+        _append_progress(args.progress, {
+            "event": "complete",
+            "status": "inconclusive",
+            "reason": str(exc),
+            "baseline_silence_evidence": baseline.silence_evidence,
+            "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
+        })
+        print(
+            f"mutation: INCONCLUSIVE {exc}; exit=2 (retry; no candidates judged)",
+            flush=True,
+        )
+        return 2
+    candidate_pressure_credit_cap = _pressure_credit_cap(candidate_idle_window)
+    candidate_silence_bounds = {
+        "idle_window_seconds": round(candidate_idle_window, 3),
+        "pressure_credit_cap_seconds": round(candidate_pressure_credit_cap, 3),
+        "max_effective_idle_seconds": round(
+            candidate_idle_window + candidate_pressure_credit_cap, 3,
+        ),
+    }
     if _campaign_tree_status(repo_root, project_prefix):
         raise RuntimeError("mutation campaign inputs changed while the known-good control ran")
     if _assay_source_tree_status(assay_source):
@@ -1227,7 +2307,7 @@ def _run_campaign(
         raise RuntimeError("frozen test fixture changed while the known-good control ran")
 
     document: dict[str, Any] = {
-        "schema_version": 6,
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
         "candidate_isolation": "process-tree/1",
         "tool": "cmru mutation campaign using worktree Assay mutation sites",
         "assay_distribution_version": assay.__version__,
@@ -1237,28 +2317,39 @@ def _run_campaign(
         "head": head,
         "project_prefix": project_prefix.as_posix() or ".",
         "max_mutants": args.max_mutants,
-        "timeout_seconds": args.timeout_seconds,
+        "silence_policy": _IDLE_BOUND_POLICY,
         "control_seconds": round(control_seconds, 3),
-        "candidate_timeout_seconds": round(candidate_timeout, 3),
+        "baseline_silence_evidence": baseline.silence_evidence,
+        "candidate_silence_bounds": candidate_silence_bounds,
         "operators": list(OPERATORS),
         "test_argv": test_argv,
         "test_manifest": test_manifest,
         "candidate_count": len(jobs),
+        "candidate_manifest": candidate_manifest,
+        "candidate_indices": candidate_indices,
+        "scope": "whole" if shard is None else "shard",
+        "shard": shard_document,
         "baseline_exit_code": baseline.returncode,
+        "baseline_termination": "exit",
         "baseline_resource_limit_evidence": baseline_resource_evidence.to_dict(),
         "baseline_resource_limit_advisories": list(baseline_resource_advisories),
         "baseline_process_tree_evidence": baseline.process_tree_evidence,
-        "status": "running",
+        "status": "running" if shard is None else "partial",
         "results": results,
     }
+    if shard is not None:
+        document["shard_complete"] = False
+        document["shard_outcome"] = None
     _write_evidence(args.evidence, document)
     _append_progress(args.progress, {
         "event": "start",
         "base": base,
         "head": head,
         "candidate_total": len(jobs),
+        "candidate_indices": candidate_indices,
+        "shard": shard_document,
         "resumed_total": sum(item is not None for item in results),
-        "timeout_seconds": args.timeout_seconds,
+        "candidate_silence_bounds": candidate_silence_bounds,
     })
 
     def fail_if_assay_source_changed(context: str) -> None:
@@ -1286,6 +2377,8 @@ def _run_campaign(
             raise RuntimeError(message)
 
     for index, job in enumerate(jobs):
+        if index not in candidate_indices:
+            continue
         fail_if_assay_source_changed(f"before candidate {index}")
         if not _fixture_matches_manifest(
             template_root=template_root,
@@ -1305,6 +2398,11 @@ def _run_campaign(
             raise RuntimeError(document["infrastructure_error"])
         existing = results[index]
         if existing is not None and existing.get("outcome") == "killed":
+            print(
+                f"mutation: candidate {index + 1}/{len(jobs)} reused "
+                "(previously killed)",
+                flush=True,
+            )
             _append_progress(args.progress, {
                 "event": "candidate",
                 "candidate_index": index,
@@ -1320,6 +2418,8 @@ def _run_campaign(
         relative = _relative_project_path(
             job.path, repo_root=repo_root, project_root=project_root
         )
+        progress_label = f"candidate {index + 1}/{len(jobs)}"
+        print(f"mutation: {progress_label} preparing", flush=True)
         with tempfile.TemporaryDirectory(prefix="cmru-mutation-") as temporary:
             candidate_root = _copy_frozen_fixture(
                 template_root=template_root,
@@ -1349,14 +2449,17 @@ def _run_campaign(
             try:
                 completed = _run(
                     test_argv, cwd=candidate_root,
-                    timeout_seconds=candidate_timeout,
+                    idle_window_seconds=candidate_idle_window,
+                    pressure_credit_cap_seconds=candidate_pressure_credit_cap,
                     output_dir=Path(temporary),
+                    progress_label=progress_label,
                 )
-            except subprocess.TimeoutExpired as exc:
-                timed_out = True
+            except NoOutputGrowthExpired as exc:
+                idle_stopped = True
                 returncode = None
-                descendants_killed = getattr(exc, "descendants_killed", 0)
-                process_tree_evidence = getattr(exc, "process_tree_evidence", None)
+                descendants_killed = exc.descendants_killed
+                process_tree_evidence = exc.process_tree_evidence
+                silence_evidence = exc.silence_evidence
             except (CandidateIsolationError, OSError) as exc:
                 document["status"] = "infrastructure-error"
                 document["infrastructure_error"] = (
@@ -1370,10 +2473,11 @@ def _run_campaign(
                 })
                 raise RuntimeError(document["infrastructure_error"]) from exc
             else:
-                timed_out = False
+                idle_stopped = False
                 returncode = completed.returncode
                 descendants_killed = completed.descendants_killed
                 process_tree_evidence = completed.process_tree_evidence
+                silence_evidence = completed.silence_evidence
             try:
                 resource_after = _read_resource_limit_counters()
                 limit_evidence, limit_advisories = _resource_limit_evidence(
@@ -1391,25 +2495,27 @@ def _run_campaign(
                     "infrastructure_error": document["infrastructure_error"],
                 })
                 raise RuntimeError(document["infrastructure_error"]) from exc
-            if timed_out:
+            if idle_stopped:
                 result = _candidate_result(
                     job, returncode=None,
                     elapsed_seconds=time.monotonic() - candidate_started,
-                    timed_out=True,
+                    idle_stopped=True,
                     descendants_killed=descendants_killed,
                     resource_limit_evidence=limit_evidence,
                     resource_limit_advisories=limit_advisories,
                     process_tree_evidence=process_tree_evidence,
+                    silence_evidence=silence_evidence,
                 )
             else:
                 result = _candidate_result(
                     job, returncode=completed.returncode,
                     elapsed_seconds=time.monotonic() - candidate_started,
-                    timed_out=False,
+                    idle_stopped=False,
                     descendants_killed=descendants_killed,
                     resource_limit_evidence=limit_evidence,
                     resource_limit_advisories=limit_advisories,
                     process_tree_evidence=process_tree_evidence,
+                    silence_evidence=silence_evidence,
                 )
         fail_if_assay_source_changed(f"during candidate {index}")
         if not _fixture_matches_manifest(
@@ -1445,9 +2551,14 @@ def _run_campaign(
             "resource_limit_evidence": result.resource_limit_evidence,
             "resource_limit_advisories": list(result.resource_limit_advisories),
             "process_tree_evidence": result.process_tree_evidence,
+            "silence_evidence": result.silence_evidence,
             "elapsed_seconds": result.elapsed_seconds,
             "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
         })
+        print(
+            f"mutation: {progress_label} recorded outcome={result.outcome}",
+            flush=True,
+        )
         if limit_evidence.limit_hit:
             document["status"] = "infrastructure-error"
             document["infrastructure_error"] = (
@@ -1477,22 +2588,43 @@ def _run_campaign(
             "infrastructure_error": document["infrastructure_error"],
         })
         raise RuntimeError(document["infrastructure_error"])
-    survivors = [result for result in results if result is not None and result["outcome"] != "killed"]
-    document["status"] = "failed" if survivors else "passed"
+    not_killed = [
+        result for result in results
+        if result is not None and result["outcome"] != "killed"
+    ]
+    survivors = [result for result in not_killed if result["outcome"] == "survived"]
+    timeouts = [result for result in not_killed if result["outcome"] == "timeout"]
+    if shard is None:
+        document["status"] = "failed" if not_killed else "passed"
+    else:
+        document["status"] = "partial"
+        document["shard_complete"] = True
+        document["shard_outcome"] = "failed" if not_killed else "passed"
     _write_evidence(args.evidence, document)
     _append_progress(args.progress, {
         "event": "complete",
         "status": document["status"],
+        "shard": shard_document,
+        "shard_outcome": document.get("shard_outcome"),
         "candidate_total": len(jobs),
         "survivor_total": len(survivors),
+        "timeout_total": len(timeouts),
+        "not_killed_total": len(not_killed),
         "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
     })
-    if survivors:
+    if shard is not None:
+        print(
+            f"mutation: PARTIAL shard {shard[0]}/{shard[1]} complete; "
+            f"shard_outcome={document['shard_outcome']}; "
+            "merge all shard evidence for a whole-campaign verdict",
+            flush=True,
+        )
+    if not_killed:
         raise RuntimeError(
-            "mutation campaign did not kill every candidate: "
+            "mutation campaign did not kill every candidate (TIMEOUT remains a separate outcome): "
             + ", ".join(
                 f"{item['path']}:{item['line']}:{item['operator']}:{item['outcome']}"
-                for item in survivors
+                for item in not_killed
             )
         )
     return 0

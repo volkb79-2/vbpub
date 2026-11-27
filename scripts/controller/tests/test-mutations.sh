@@ -231,13 +231,32 @@ for pi_case in \
   pi-resume-block-inverted:accepted-resume-records \
   pi-record-owner-new-only:accepted-resume-records \
   pi-mode-value-guard:mode-value pi-mode-argv-append-dropped:review-argv \
-  pi-mode-record-not-written:mode-record pi-mode-sticky-refusal-dropped:mode-sticky \
+  pi-mode-jsonl-session-id-allowed:session-id \
+  pi-mode-unknown-session-allowed:mode-resume-exact \
+  pi-mode-stream-session-mismatch-allowed:mode-resume-mismatch \
+  pi-mode-claimed-name-reread-dropped:mode-claimed-name-reread \
+  pi-mode-argv-missing-guard:mode-no-argv-file \
+  pi-mode-argv-empty-guard:mode-empty-argv \
+  pi-mode-record-not-written:mode-record pi-mode-record-written-before-refusal:mode-not-written-on-refusal \
+  pi-mode-sticky-refusal-dropped:mode-sticky \
   pi-mode-record-ignored:mode-sticky pi-mode-narrow-dropped:mode-sticky \
   pi-mode-invalid-record-guessed:mode-sticky pi-mode-evidence-dropped:mode-evidence \
   pi-mode-extra-args-allowed:mode-extra-args \
   pi-mode-extra-args-list-dropped:mode-extra-args \
   pi-mode-rules-file-refusal-dropped:mode-rules-file \
-  pi-mode-prompt-dropped:mode-prompt pi-mode-local-env-flip:mode-local-env; do
+  pi-mode-prompt-dropped:mode-prompt pi-mode-local-env-flip:mode-local-env \
+  pi-mode-session-thread-ignored:mode-session-thread \
+  pi-mode-thread-evidence-dropped:mode-session-thread \
+  pi-mode-stream-review-ignored:mode-stream-review \
+  pi-mode-review-material-unreadable-allowed:mode-review-material-unreadable \
+  pi-mode-retired-session-not-preserved:mode-stream-review \
+  pi-mode-session-write-dropped:mode-session-thread \
+  pi-mode-session-implementer-refusal-dropped:mode-session-thread \
+  pi-mode-session-thread-invalid-record-guessed:mode-session-thread \
+  pi-mode-session-record-ignored:mode-session-record \
+  pi-mode-session-monotonic-dropped:mode-session-record \
+  pi-mode-session-invalid-record-guessed:mode-session-record \
+  pi-mode-session-implementer-as-review:mode-session-implementer; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \
@@ -431,7 +450,7 @@ expect_killed gate-run-refusal-names-example \
 for gate_slots_mutant in slots-range slots-default one-slot-needs-gate2 one-slot-message lock-dir-absolute lock-dir-unused-below-three \
                          distinct-detail two-slot-distinct-oneline first-pass-last-slot poll-last-slot poll-open-last-slot fd-shared fd-first-slots \
                          slot-label lock-held-while-running wait-two wait-many wait-one progress-many progress-two progress-one labels-join exit-code \
-                         psi-threshold psi-unreadable-quiet psi-unreadable-waits psi-unreadable-in-wait psi-timeout-rc psi-bound psi-log-rate psi-first-pass-skip psi-poll-skip; do
+                         psi-threshold psi-window psi-unreadable-quiet psi-unreadable-waits psi-unreadable-in-wait psi-timeout-rc psi-bound psi-log-rate psi-first-pass-skip psi-poll-skip; do
   expect_killed "gate-run-$gate_slots_mutant" \
     env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-$gate_slots_mutant.sh" bash "$SCRIPT_DIR/test-gate-slots.sh"
 done

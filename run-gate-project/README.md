@@ -73,8 +73,25 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    but it bounds SILENCE in the lane's liveness signal — an assay lane's
    progress file, or (RG-41, rev 36) a command lane's own log-stream
    arrival times, `SPEC` `R-40f` — never total elapsed time. Legal on both
-   `assay` and `command` lanes since RG-41; meaningless, but accepted, on
-   host/exec lanes, which start nothing to watch. The documented shape for
+   `assay` and `command` lanes since RG-41, and since RG-320 (`P1` of
+   [the no-time-budgets design](../../docs/design/no-time-budgets/DESIGN.md))
+   **every watched lane is bounded even when it declares nothing**: a COMMAND
+   lane's default bound is `DEFAULT_STALL_BOUND_SECONDS` = 300 s, an ASSAY lane
+   keeps the auto bound it already had (RG-7: `max(300s, 3x its published
+   cadence)`, or 600 s between `command_finished` and the R2 `plan`) — and the
+   disclosure line plus the run record's `stall_bound` name the number AND its
+   source (`declared` / `auto` / `auto-derived`, the last for an assay lane,
+   whose derivation is a RULE and is published as that rule rather than as a
+   number invented before the lane ran). What judges the silence differs by
+   kind: an assay lane's progress file; a container command lane's `docker logs -f` arrival
+   times; an exec or bare-host command lane's own output stream (RG-320 added
+   that signal — before it, a host/exec lane's `stall_timeout` loaded clean and
+   did nothing); a SEQUENCE lane has none of its own, its members carry the
+   watches (`SPEC` `R-40i`). An AUTO bound (only) pauses when host memory
+   `full avg10` PSI exceeds 5; CPU contention and IO PSI alone never pause its
+   300 s clock, exactly as `ProgressWatch` does
+   ([design rationale](docs/DESIGN-GUIDE.md#every-watchable-lane-is-bounded-and-which-signal-is-never-guessed-rg-320)).
+   The documented shape for
    a mutation lane is a generous assay `budget` +
    `judge.mutation.budget_per_candidate` + this key; progress output is
    scoped to the latest Assay run header, with rates and ETAs based on that
@@ -178,6 +195,19 @@ environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
 judge-digest, provenance-mismatch, and state-mount.
 
+### Host-owned job events
+
+A host runner can request a private event stream with the paired flags
+`--event-file /absolute/host/path/events.jsonl --job-id ID`. The file must
+stay outside the judged checkout and every path mounted into the lane
+container. Run-Gate writes the container identity before relaying lane output,
+then writes its verdict after the anchored summary line; `--json` keeps its
+JSON result on stdout and prints that summary on stderr. Missing verdict events
+are never PASS. See the [consumer acceptance rule](CONSUMERS.md#host-owned-job-event-file)
+for the ID grammar and the required agreement between event, log, process
+status and container inspection (the checkout mount in both modes; Docker
+labels only for a container Run-Gate started).
+
 ### Combined resource settings
 
 Run-Gate reads one `[resources]` table from central/project defaults,
@@ -241,8 +271,16 @@ and merged strictly (`--merge-shards N`: every shard store must exist and
 be complete for the current judge and plan), resumed across a judge change
 (`--carry-over DIR --carry-over-reason TEXT`), merged from another store
 (`--merge-state`) or restricted to a candidate list (`--only-candidates`,
-`--exclude-candidates`); see
-[shard, merge, carry over and target](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265). See the
+`--exclude-candidates`). Any other Assay flag — `--merge-manifest`,
+`--carry-forward`, `--merge-shard-store`, `--reuse-from`,
+`--candidates-file`, a future store flag — travels after `--` and is passed
+to Assay unchanged: Run-Gate forwards those arguments opaquely and checks
+only its own flags and the visibility of the paths, so a new Assay store
+flag needs no Run-Gate change (the judge must report it in
+`assay capabilities --json`, which is Assay 12.3.0 or newer: an older judge
+refuses the forwarded form by name before a container starts). See
+[shard, merge, carry over and target](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265) and
+[Assay flags after `--`](CONSUMERS.md#assay-flags-after----for-an-assay-lane-rg-297). See the
 [consumer example](CONSUMERS.md#native-r2-worker-selection) and
 [design rationale](docs/DESIGN-GUIDE.md#native-r2-worker-selection). A
 source-backed lane uses the selected worktree's `assay/` even when its tester
@@ -409,6 +447,14 @@ counters are unavailable or cannot be compared safely. The standalone
 `--version` operation remains available. See the [design rationale](docs/DESIGN-GUIDE.md#pid-1-and-cgroup-resource-events)
 and the [consumer setup](CONSUMERS.md#init-reaping-and-resource-events).
 
+Ephemeral gate lane containers start with Docker `--oom-score-adj 500`. Linux
+uses this OOM score adjustment to make a gate lane more likely to be selected
+than the controller when host memory is exhausted; `memory.low` does not choose
+the OOM victim. Run-Gate prints the value and includes it in the live and
+dry-run Docker argv. The setting covers only the detached gate lane container:
+short `docker run --rm` probes, `docker exec` lanes, and bare-host lanes do not
+receive it. See [the design guide](docs/DESIGN-GUIDE.md#gate-lane-oom-priority).
+
 For Assay lanes, `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` maps to gate
 `ERROR`: the R2 measurement could not be made safely, so the gate must not
 report a product failure. Before applying that mapping, run-gate checks the
@@ -448,9 +494,13 @@ refuse with a remedy if the judge is unavailable rather than report a clean
 result or write a manifest that omits imported lanes.
 
 An assay lane can pass `--reuse-from PATH`, repeatable `--rejudge ID`, and
-`--rejudge-outcome BUCKET` to one selected Assay run. A command lane accepts
-arguments after `--` only when it declares `accepts_args = true`; sequences
-and composite commands refuse them. See [selective requests](CONSUMERS.md#selective-lane-requests)
+`--rejudge-outcome BUCKET` to one selected Assay run, and any OTHER Assay flag
+after `--` (Run-Gate forwards it opaquely; see [Assay flags after
+`--`](CONSUMERS.md#assay-flags-after----for-an-assay-lane-rg-297)); that
+forwarded form needs Assay 12.3.0 or newer. A command
+lane accepts arguments after `--` only when it declares
+`accepts_args = true`; sequences and composite commands refuse them. See
+[selective requests](CONSUMERS.md#selective-lane-requests)
 and the [request-scope rationale](docs/DESIGN-GUIDE.md#selective-requests-stay-with-the-selected-lane).
 Run-Gate checks the Assay inventory version before forwarding these options.
 It accepts stable `X.Y.Z` releases and worktree source builds shaped as

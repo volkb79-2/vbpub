@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import re
 import signal
@@ -37,6 +38,29 @@ class ProcessRecord:
     @property
     def identity(self) -> tuple[int, int]:
         return self.pid, self.start_time
+
+
+@dataclass(frozen=True)
+class RemovalOutcome:
+    message: str
+    unreaped: bool = False
+
+
+def _open_pidfd(pid: int) -> int:
+    # Resolve pidfd_open at call time because it is absent on some supported platforms.
+    return os.pidfd_open(pid)
+
+
+@dataclass(frozen=True)
+class PidfdOps:
+    """PIDFD open/close seam; tests can use fake descriptors without patching ``os.close``."""
+
+    open: Callable[[int], int] = _open_pidfd
+    close: Callable[[int], None] = os.close
+
+
+_SYSTEM_PIDFD_OPS = PidfdOps()
+_waitid = os.waitid
 
 
 def is_linux() -> bool:
@@ -86,13 +110,29 @@ def read_process(
     *,
     reader: Callable[[Path], str] = _read_stat,
 ) -> ProcessRecord | None:
-    """Read ``(pid, ppid, state, comm, starttime)``; None means the process vanished."""
+    """Read process identity; None means its stat path is absent or the process vanished."""
     path = Path(proc_root) / str(pid) / "stat"
     try:
         stat = reader(path)
     except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            # A hidepid procfs can refuse the read, also for a child of ours that changed credentials,
+            # so procfs alone cannot establish ownership.
+            try:
+                _waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except OSError as ownership_error:
+                if ownership_error.errno in (errno.ECHILD, errno.ESRCH):
+                    return None
+                raise ProcessGuardError(
+                    f"cannot verify whether process {pid} is our child after {errno.errorcode[exc.errno]} "
+                    f"reading {path}: {ownership_error}"
+                ) from ownership_error
+            raise ProcessGuardError(
+                f"cannot read process stat file {path}: {exc}; waitid confirms pid {pid} is our child, "
+                "so refusing to skip it (the child may have changed credentials)"
+            ) from exc
         raise ProcessGuardError(f"cannot read process stat file {path}: {exc}") from exc
     open_paren = stat.find("(")
     close_paren = stat.rfind(")")
@@ -118,7 +158,10 @@ def direct_children(
     *,
     reader: Callable[[Path], str] = _read_stat,
 ) -> dict[tuple[int, int], ProcessRecord]:
-    """Current direct children, zombies included, keyed by pid and start time."""
+    """Visible direct children, zombies included, keyed by pid and start time.
+
+    PIDs omitted from procfs enumeration, as with hidepid=2 for another user's process, cannot be detected here.
+    """
     parent = os.getpid() if root_pid is None else root_pid
     try:
         entries = os.listdir(proc_root)
@@ -154,6 +197,7 @@ def wait_for_new_children(
     settle_seconds: float,
     root_pid: int | None = None,
     proc_root: Path = DEFAULT_PROC_ROOT,
+    ignore: set[tuple[int, int]] | frozenset[tuple[int, int]] = frozenset(),
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[tuple[int, int], ProcessRecord]:
@@ -162,7 +206,11 @@ def wait_for_new_children(
     A remaining zombie has already exited but needs the guard's reap, so it
     ends the wait immediately and is returned for reporting.
     """
-    current = new_children(before, root_pid=root_pid, proc_root=proc_root)
+    current = {
+        identity: record
+        for identity, record in new_children(before, root_pid=root_pid, proc_root=proc_root).items()
+        if identity not in ignore
+    }
     if not current or all(record.state == "Z" for record in current.values()):
         return current
     deadline = clock() + settle_seconds
@@ -171,7 +219,11 @@ def wait_for_new_children(
         if remaining <= 0:
             return current
         sleeper(min(SETTLE_POLL_SECONDS, remaining))
-        current = new_children(before, root_pid=root_pid, proc_root=proc_root)
+        current = {
+            identity: record
+            for identity, record in new_children(before, root_pid=root_pid, proc_root=proc_root).items()
+            if identity not in ignore
+        }
         if not current or all(record.state == "Z" for record in current.values()):
             return current
 
@@ -184,13 +236,15 @@ def remove_if_still_ours(
     reap_timeout: float = REAP_GRACE_SECONDS,
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
+    kill_live: bool = True,
     waiter: Callable[[int, int, int], os.siginfo_t | None] = os.waitid,
     reader: Callable[[Path], str] = _read_stat,
-) -> str | None:
-    """Kill/reap one pinned child; None means it vanished or was no longer ours."""
+    pidfd_ops: PidfdOps = _SYSTEM_PIDFD_OPS,
+) -> RemovalOutcome | None:
+    """Optionally kill and then reap one pinned child; None means it vanished or was no longer ours."""
     parent = os.getpid() if root_pid is None else root_pid
     try:
-        pidfd = os.pidfd_open(record.pid)
+        pidfd = pidfd_ops.open(record.pid)
     except ProcessLookupError:
         return None
     try:
@@ -198,7 +252,7 @@ def remove_if_still_ours(
         if current is None or current.ppid != parent or current.start_time != record.start_time:
             return None
         zombie = current.state == "Z"
-        if not zombie:
+        if not zombie and kill_live:
             try:
                 signal.pidfd_send_signal(pidfd, signal.SIGKILL)
             except ProcessLookupError:  # pragma: no cover - vanished after the identity re-check
@@ -212,15 +266,15 @@ def remove_if_still_ours(
             remaining = deadline - clock()
             if remaining <= 0:
                 kind = "unreaped after SIGKILL" if not zombie else "unreaped zombie"
-                return f"pid {record.pid} comm {command} ({kind})"
+                return RemovalOutcome(f"pid {record.pid} comm {command} ({kind})", unreaped=True)
             sleeper(min(REAP_POLL_SECONDS, remaining))
         if zombie:
-            return f"pid {record.pid} comm {command} (zombie; reaped)"
-        return f"pid {record.pid} comm {command} (alive; SIGKILL sent and reaped)"
+            return RemovalOutcome(f"pid {record.pid} comm {command} (zombie; reaped)")
+        return RemovalOutcome(f"pid {record.pid} comm {command} (alive; SIGKILL sent and reaped)")
     except (ChildProcessError, ProcessLookupError):  # pragma: no cover - concurrent reap/exit race
         return None
     finally:
-        os.close(pidfd)
+        pidfd_ops.close(pidfd)
 
 
 def reap_new_zombies(
@@ -230,6 +284,7 @@ def reap_new_zombies(
     proc_root: Path = DEFAULT_PROC_ROOT,
     reader: Callable[[Path], str] = _read_stat,
     waiter: Callable[[int, int, int], os.siginfo_t | None] = os.waitid,
+    pidfd_ops: PidfdOps = _SYSTEM_PIDFD_OPS,
 ) -> int:
     """Reap only new zombie direct children; live allowlisted children are untouched."""
     parent = os.getpid() if root_pid is None else root_pid
@@ -239,7 +294,7 @@ def reap_new_zombies(
         if identity in before or record.state != "Z":
             continue
         try:
-            pidfd = os.pidfd_open(record.pid)
+            pidfd = pidfd_ops.open(record.pid)
         except ProcessLookupError:
             continue
         try:
@@ -251,7 +306,7 @@ def reap_new_zombies(
         except (ChildProcessError, ProcessLookupError):  # pragma: no cover - concurrent reap/exit race
             continue
         finally:
-            os.close(pidfd)
+            pidfd_ops.close(pidfd)
     return reaped
 
 
@@ -266,45 +321,74 @@ class ChildGuard:
         settle_seconds: float,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        pidfd_ops: PidfdOps = _SYSTEM_PIDFD_OPS,
     ) -> None:
         self.root_pid = os.getpid() if root_pid is None else root_pid
         self.proc_root = Path(proc_root)
         self.settle_seconds = settle_seconds
         self.clock = clock
         self.sleeper = sleeper
+        self.pidfd_ops = pidfd_ops
         self.before = direct_children(self.root_pid, self.proc_root)
 
     def check(self) -> list[str]:
         leaked = []
+        unreaped: set[tuple[int, int]] = set()
+        awaiting_retry: dict[tuple[int, int], ProcessRecord] = {}
+        pass_bound_reached = True
         for _pass in range(MAX_CLEANUP_PASSES):
             current = wait_for_new_children(
                 self.before,
                 settle_seconds=self.settle_seconds,
                 root_pid=self.root_pid,
                 proc_root=self.proc_root,
+                ignore=set(unreaped),
                 clock=self.clock,
                 sleeper=self.sleeper,
             )
             if not current:
-                return leaked
+                if self._retry_unreaped(awaiting_retry):
+                    continue  # a late exit can hand its own children to us: scan again
+                pass_bound_reached = False
+                break
             for record in sorted(current.values(), key=lambda item: item.pid):
-                outcome = remove_if_still_ours(
-                    record,
-                    root_pid=self.root_pid,
-                    proc_root=self.proc_root,
-                    reap_timeout=self.settle_seconds + REAP_GRACE_SECONDS,
-                    clock=self.clock,
-                    sleeper=self.sleeper,
-                )
+                outcome = self._remove(record, kill_live=True)
                 if outcome is not None:
-                    leaked.append(outcome)
+                    leaked.append(outcome.message)
+                    if outcome.unreaped:
+                        unreaped.add(record.identity)
+                        awaiting_retry[record.identity] = record
+        self._retry_unreaped(awaiting_retry)
+        if not pass_bound_reached:
+            return leaked
         remaining = new_children(self.before, root_pid=self.root_pid, proc_root=self.proc_root)
         details = "; ".join(
             f"pid {record.pid} comm {record.command}"
             for record in sorted(remaining.values(), key=lambda item: item.pid)
+            if record.identity not in unreaped
         )
-        leaked.append(
-            f"child cleanup reached the {MAX_CLEANUP_PASSES}-pass bound; "
-            f"remaining new children: {details or 'none'}"
-        )
+        if details:
+            leaked.append(f"child cleanup reached the {MAX_CLEANUP_PASSES}-pass bound; remaining new children: {details}")
         return leaked
+
+    def _remove(self, record: ProcessRecord, *, kill_live: bool) -> RemovalOutcome | None:
+        return remove_if_still_ours(
+            record,
+            root_pid=self.root_pid,
+            proc_root=self.proc_root,
+            reap_timeout=self.settle_seconds + REAP_GRACE_SECONDS,
+            clock=self.clock,
+            sleeper=self.sleeper,
+            kill_live=kill_live,
+            pidfd_ops=self.pidfd_ops,
+        )
+
+    def _retry_unreaped(self, awaiting: dict[tuple[int, int], ProcessRecord]) -> bool:
+        """Give each waiting identity one reap-only retry; True when at least one of them is gone."""
+        gone = False
+        for record in sorted(awaiting.values(), key=lambda item: item.pid):
+            outcome = self._remove(record, kill_live=False)
+            if outcome is None or not outcome.unreaped:
+                gone = True
+        awaiting.clear()
+        return gone

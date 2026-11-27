@@ -25,10 +25,12 @@ from fleetd.contracts import (
 )
 from fleetd.cli import main
 from fleetd.facts import _parse_systemd_memory_min
+from host_facts_v2 import host_set_v2, write_host_set_v2
 from fleetd.plan import (
     _assign_candidates,
     _capacity,
     _control_plane_reserve,
+    _fact_value,
     _host_eta,
     _host_time,
     _number,
@@ -38,6 +40,7 @@ from fleetd.plan import (
     _resolve_memory,
     _resolve_time,
     _reverse_id,
+    _speed,
     _time_reference,
     _waves,
     extract_demand,
@@ -65,22 +68,54 @@ def _read_fixture(name):
 
 
 def _hosts():
-    return _read_fixture("fleet-host-set.valid.json")
+    return host_set_v2(_read_fixture("fleet-host-set.valid.json"))
 
 
 def _facts(host_set, host_id):
     return next(host["facts"] for host in host_set["hosts"] if host["id"] == host_id)
 
 
+def _value(facts, group, name):
+    return facts[group][name]["v"]
+
+
+def _set_field(table, name, value, reason="test source unavailable"):
+    table[name] = {"v": None, "reason": reason} if value is None else {"v": value}
+
+
+def _set_value(facts, group, name, value, reason="test source unavailable"):
+    _set_field(facts[group], name, value, reason)
+
+
+def _set_top_value(facts, name, value, reason="test source unavailable"):
+    facts[name] = {"v": None, "reason": reason} if value is None else {"v": value}
+
+
+def _set_speed(facts, value, reason="test score unavailable"):
+    if value is None:
+        facts["speed"] = {"v": None, "reason": reason}
+    else:
+        facts["speed"] = {"v": {key: {"v": item} for key, item in value.items()}}
+
+
+def _update_speed(facts, **values):
+    speed = facts["speed"]["v"]
+    for key, value in values.items():
+        speed[key] = {"v": value}
+
+
 def _set_service_memory_mins(control_plane, values, load_states=None):
     control_plane["service_memory_min"] = {}
     load_states = load_states or ["loaded"] * len(CONTROL_PLANE_SERVICE_UNITS)
     for unit, value, load_state in zip(CONTROL_PLANE_SERVICE_UNITS, values, load_states, strict=True):
-        row = {"memory_min_bytes": value, "load_state": load_state}
-        if value is None:
-            row["memory_min_bytes_reason"] = "systemd did not report a positive MemoryMin"
-        if load_state is None:
-            row["load_state_reason"] = "systemd did not report a load state"
+        row = {
+            "memory_min_bytes": {"v": value} if value is not None else {
+                "v": None, "reason": "systemd did not report a positive MemoryMin",
+            },
+            "load_state": {"v": load_state} if load_state is not None else {
+                "v": None, "reason": "systemd did not report a load state",
+            },
+        }
         control_plane["service_memory_min"][unit] = row
 
 
@@ -153,27 +188,16 @@ def _golden_8g_host_set():
         host["id"] = host_profile["id"]
         host["f_h"] = host_profile["f_h"]
         facts = host["facts"]
-        facts["cpu"].update(
-            online=profile["cpu"]["online"],
-            for_lanes=profile["cpu"]["for_lanes"],
-            oversubscribe_max=profile["cpu"]["oversubscribe_max"],
-            model=host_profile["cpu_model"],
-        )
-        facts["memory"].update(
-            total_bytes=profile["memory"]["total_bytes"],
-            available_bytes=profile["memory"]["available_bytes"],
-            for_lanes_bytes=profile["memory"]["for_lanes_bytes"],
-            overcommit=profile["memory"]["overcommit"],
-        )
-        facts["control_plane"].update(
-            slice="ctl.slice",
-            present=False,
-            memory_min_bytes=None,
-            memory_min_bytes_reason="ctl.slice has not been installed on this host",
-            cpu_weight=None,
-            cpu_weight_reason="ctl.slice has not been installed on this host",
-        )
-        facts["speed"] = dict(host_profile["speed"])
+        _set_value(facts, "cpu", "online", profile["cpu"]["online"])
+        _set_value(facts, "cpu", "oversubscribe_max", profile["cpu"]["oversubscribe_max"])
+        _set_value(facts, "memory", "total_bytes", profile["memory"]["total_bytes"])
+        _set_value(facts, "memory", "available_bytes", profile["memory"]["available_bytes"])
+        _set_value(facts, "memory", "overcommit", profile["memory"]["overcommit"])
+        _set_value(facts, "control_plane", "slice", "ctl.slice")
+        _set_value(facts, "control_plane", "present", False)
+        _set_value(facts, "control_plane", "memory_min_bytes", None, "ctl.slice has not been installed on this host")
+        _set_value(facts, "control_plane", "cpu_weight", None, "ctl.slice has not been installed on this host")
+        _set_speed(facts, dict(host_profile["speed"]))
         host["other_running"] = []
         hosts.append(host)
     return {"schema": "fleet-host-set/1", "hosts": hosts}
@@ -236,6 +260,27 @@ def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
     assert large["eta_seconds"] == pytest.approx(expected_eta)
     assert plan["eta_seconds"] > 0
     assert "eta_reason" not in plan
+
+
+def test_host_facts_v2_keeps_the_legacy_plan_capacity_and_assignment():
+    """Pinned pre-migration /1 capacity figures for equivalent /2 inputs."""
+    legacy = _read_fixture("fleet-host-set.valid.json")
+    migrated = host_set_v2(legacy)
+    plan = _plan([_candidate("same-placement", 120_000_000)], hosts=migrated)
+
+    expected = {
+        "host-small": (7_784_628_224, 11_414_798_336, 7_522_484_224),
+        "host-large": (16_374_562_816, 24_299_700_224, 16_112_418_816),
+    }
+    for host_id, (physical, budget, cap_alone) in expected.items():
+        host = _host_plan(plan, host_id)
+        assert host["status"] == "available"
+        assert host["physical_bytes"] == physical
+        assert host["budget_bytes"] == budget
+        assert host["cap_alone_bytes"] == cap_alone
+        assert host["cpu_worker_slots"] == 5
+        assert host["worker_slots"] == 2
+    assert _assigned_host(plan, "same-placement")["id"] == "host-large"
 
 
 def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_commands():
@@ -429,13 +474,13 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
         for host in host_set["hosts"]:
             facts = host["facts"]
             total = generator.choice([4, 6, 8, 8, 12, 16, 32]) * 1024**3
-            facts["memory"].update(
-                total_bytes=total, for_lanes_bytes=total, available_bytes=total // 2,
-                overcommit=generator.choice([1.0, 1.25, 1.5, 2.0]),
-            )
+            overcommit = generator.choice([1.0, 1.25, 1.5, 2.0])
+            _set_value(facts, "memory", "total_bytes", total)
+            _set_value(facts, "memory", "available_bytes", total // 2)
+            _set_value(facts, "memory", "overcommit", overcommit)
             control = facts["control_plane"]
-            control["memory_min_bytes"] = generator.choice([0, 768, 1024, 2048]) * 1024**2
-            control["profile_reserve_bytes"] = generator.choice([768, 896, 1024]) * 1024**2
+            _set_value(facts, "control_plane", "memory_min_bytes", generator.choice([0, 768, 1024, 2048]) * 1024**2)
+            _set_value(facts, "control_plane", "profile_reserve_bytes", generator.choice([768, 896, 1024]) * 1024**2)
             # Per-service facts stay inside each unit's documented ceiling, so
             # every generated host is plannable; the recomputation below still
             # derives the reserve from the INPUT facts, never from the plan.
@@ -449,11 +494,11 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
                 for unit in CONTROL_PLANE_SERVICE_UNITS
             ]
             _set_service_memory_mins(control, service_values)
-            facts["cpu"].update(
-                online=generator.choice([2, 4, 8]), oversubscribe_max=generator.choice([1.0, 1.25, 1.5]),
-            )
-            facts["cpu"]["for_lanes"] = float(facts["cpu"]["online"])
-            facts["speed"]["single_core"] = generator.choice([1500, 2000, 2500, 3000])
+            online = generator.choice([2, 4, 8])
+            oversubscribe = generator.choice([1.0, 1.25, 1.5])
+            _set_value(facts, "cpu", "online", online)
+            _set_value(facts, "cpu", "oversubscribe_max", oversubscribe)
+            _update_speed(facts, single_core=generator.choice([1500, 2000, 2500, 3000]))
             host["f_h"] = generator.choice([0.5, 1.0, 1.7, 2.0])
             if generator.random() < 0.4:
                 host["other_running"] = [{
@@ -471,10 +516,10 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
             physical = total - reserve
             overhead = sum(job["expected_memory_bytes"] for job in other) + instance
             slots = min(
-                int(facts["cpu"]["for_lanes"] * facts["cpu"]["oversubscribe_max"]) - sum(job["workers"] for job in other),
+                int(online * oversubscribe) - sum(job["workers"] for job in other),
                 demand["efficient_upper_bound"],
             )
-            expected[host["id"]] = (physical, overhead, physical * facts["memory"]["overcommit"] - overhead, slots)
+            expected[host["id"]] = (physical, overhead, physical * overcommit - overhead, slots)
         rows = []
         for index in range(generator.randint(1, 30)):
             row = _candidate(f"p{seed}-{index}", int(generator.choice(sizes)), source=f"src/{index % 4}.py")
@@ -664,8 +709,7 @@ def test_mix_violation_is_flagged_without_turning_missing_eta_into_a_mix_flag():
 
     no_speed = _hosts()
     for host in no_speed["hosts"]:
-        host["facts"]["speed"] = None
-        host["facts"]["speed_reason"] = "synthetic missing score"
+        _set_speed(host["facts"], None, "synthetic missing score")
     eta_plan = _plan([_candidate("a", 120_000_000)], hosts=no_speed)
     assigned_host = _assigned_host(eta_plan, "a")
     assert assigned_host["mix_holds"] is True
@@ -710,7 +754,7 @@ def test_own_file_and_lane_time_fallbacks_use_exact_geekbench_version(tmp_path):
     assert assigned[_cid("file")]["time_ref_seconds"] == 80
 
     changed = _hosts()
-    _facts(changed, "host-large")["speed"]["geekbench_version"] = "6.5.0"
+    _update_speed(_facts(changed, "host-large"), geekbench_version="6.5.0")
     mismatched = _plan([_candidate("x", 120_000_000)], hosts=changed)
     assert mismatched["eta_seconds"] is None
     assert mismatched["time_reference"]["reason"] == "host Geekbench versions differ; scores are never mixed"
@@ -723,7 +767,7 @@ def test_correction_factor_and_single_core_change_eta_but_multicore_does_not():
     _host(changed_factor, "host-large")["f_h"] = 1.4
     slower = _plan(rows, hosts=changed_factor)
     changed_multi = _hosts()
-    _facts(changed_multi, "host-large")["speed"]["multi_core"] = 1
+    _update_speed(_facts(changed_multi, "host-large"), multi_core=1)
     same_eta = _plan(rows, hosts=changed_multi)
     assert original["eta_seconds"] != slower["eta_seconds"]
     assert original["eta_seconds"] == same_eta["eta_seconds"]
@@ -733,59 +777,49 @@ def test_correction_factor_and_single_core_change_eta_but_multicore_does_not():
 def test_host_refusals_have_explicit_reasons_and_null_eta_reasons():
     variants = []
     host_set = _hosts()
-    _facts(host_set, "host-small")["policy"]["host_role"] = "shared-prod"
+    _set_value(_facts(host_set, "host-small"), "policy", "host_role", "shared-prod")
     variants.append((host_set, "shared-prod hosts are not eligible"))
 
     host_set = _hosts()
-    policy = _facts(host_set, "host-small")["policy"]
-    policy["host_role"] = None
-    policy["host_role_reason"] = "not configured"
-    variants.append((host_set, "host role is unknown"))
+    _set_value(_facts(host_set, "host-small"), "policy", "host_role", None, "not configured")
+    variants.append((host_set, "policy.host_role: not configured"))
 
     host_set = _hosts()
-    _facts(host_set, "host-small")["psi"]["memory"]["some_avg10_pct"] = 26
+    _set_top_value(_facts(host_set, "host-small")["psi"]["memory"], "some_avg10_pct", 26)
     variants.append((host_set, "memory PSI some avg10 26% exceeds"))
 
     host_set = _hosts()
     psi = _facts(host_set, "host-small")["psi"]["io"]
-    psi["some_avg10_pct"] = None
-    psi["some_avg10_pct_reason"] = "fixture unavailable"
-    variants.append((host_set, "io PSI some avg10 is unknown"))
+    psi["some_avg10_pct"] = {"v": None, "reason": "fixture unavailable"}
+    variants.append((host_set, "psi.io.some_avg10_pct: fixture unavailable"))
 
     host_set = _hosts()
-    _facts(host_set, "host-small")["cgroup_v2"]["mounted"] = False
+    _set_top_value(_facts(host_set, "host-small")["cgroup_v2"], "mounted", False)
     variants.append((host_set, "cgroup v2 is not mounted"))
 
     host_set = _hosts()
     cgroup = _facts(host_set, "host-small")["cgroup_v2"]
-    cgroup["controllers"] = None
-    cgroup["controllers_reason"] = "not readable"
-    variants.append((host_set, "controller list is unknown"))
+    cgroup["controllers"] = {"v": None, "reason": "not readable"}
+    variants.append((host_set, "cgroup_v2.controllers: not readable"))
 
     host_set = _hosts()
-    memory = _facts(host_set, "host-small")["memory"]
-    memory["for_lanes_bytes"] = None
-    memory["for_lanes_bytes_reason"] = "not readable"
-    variants.append((host_set, "physical lane memory is unknown"))
+    _set_value(_facts(host_set, "host-small"), "memory", "total_bytes", None, "not readable")
+    variants.append((host_set, "memory.total_bytes: not readable"))
 
-    # The reserve is independent of MemTotal, so this remains a valid host.
+    # An unknown raw MemTotal is now an explicit planning refusal.
     host_set = _hosts()
-    _facts(host_set, "host-small")["memory"]["total_bytes"] = None
-    _facts(host_set, "host-small")["memory"]["total_bytes_reason"] = "not readable"
+    _set_value(_facts(host_set, "host-small"), "memory", "total_bytes", None, "not readable")
     plan = _plan([_candidate("candidate", 120_000_000)], hosts=host_set)
-    assert _host_plan(plan, "host-small")["status"] == "available"
+    assert _host_plan(plan, "host-small")["status"] == "refused"
+    assert _host_plan(plan, "host-small")["reason"] == "memory.total_bytes: not readable"
 
     host_set = _hosts()
-    cpu = _facts(host_set, "host-small")["cpu"]
-    cpu["for_lanes"] = None
-    cpu["for_lanes_reason"] = "not readable"
-    variants.append((host_set, "CPU capacity for lanes is unknown"))
+    _set_value(_facts(host_set, "host-small"), "cpu", "online", None, "not readable")
+    variants.append((host_set, "cpu.online: not readable"))
 
     host_set = _hosts()
-    policy = _facts(host_set, "host-small")["policy"]
-    policy["max_lane_containers"] = None
-    policy["max_lane_containers_reason"] = "not configured"
-    variants.append((host_set, "maximum lane container count is unknown"))
+    _set_value(_facts(host_set, "host-small"), "policy", "max_lane_containers", None, "not configured")
+    variants.append((host_set, "policy.max_lane_containers: not configured"))
 
     for host_set, reason in variants:
         plan = _plan([_candidate("candidate", 120_000_000)], hosts=host_set)
@@ -794,6 +828,100 @@ def test_host_refusals_have_explicit_reasons_and_null_eta_reasons():
         assert reason in refused["reason"]
         assert refused["eta_seconds"] is None
         assert refused["eta_reason"] == refused["reason"]
+
+
+def test_fact_value_and_partial_speed_keep_unknown_reasons_explicit():
+    with pytest.raises(ContractError, match="speed: expected host-facts/2 value wrapper"):
+        _fact_value(None, "speed")
+    with pytest.raises(ContractError, match="speed: expected host-facts/2 value wrapper"):
+        _fact_value({"reason": "missing wrapper"}, "speed")
+    assert _fact_value({"v": None, "reason": "not collected"}, "speed") == (None, "not collected")
+
+    host = parse_host_set(_hosts())[0]
+    host.facts["speed"] = {
+        "v": {
+            "geekbench_major": {"v": 6}, "geekbench_version": {"v": "6.4.0"},
+            "baseline_score": {"v": None, "reason": "no score"}, "single_core": {"v": 2100},
+            "multi_core": {"v": 7800}, "basis": {"v": "geekbench6-measured"},
+        },
+    }
+    assert _speed(host) is None
+
+
+def test_parse_host_set_refuses_unknown_running_job_state_and_id():
+    host_set = _hosts()
+    facts = _facts(host_set, "host-small")
+    job = {
+        "id": {"v": "running-job"}, "state": {"v": None, "reason": "state unavailable"},
+        "requested_by": {"v": None, "reason": "unknown"}, "resources": {"v": None, "reason": "unknown"},
+        "started_utc": {"v": None, "reason": "unknown"}, "progress_done": {"v": 0},
+        "progress_total": {"v": 1}, "progress_unit": {"v": "candidate"},
+        "last_progress_utc": {"v": None, "reason": "unknown"},
+    }
+    facts["jobs"] = {"v": [job]}
+    with pytest.raises(ContractError, match=r"jobs\[\]\.state: state unavailable"):
+        parse_host_set(host_set)
+
+    job["state"] = {"v": "running"}
+    job["id"] = {"v": None, "reason": "identifier unavailable"}
+    with pytest.raises(ContractError, match=r"jobs\[\]\.id: identifier unavailable"):
+        parse_host_set(host_set)
+
+
+@pytest.mark.parametrize(
+    ("group", "name", "value", "reason"),
+    [
+        ("policy", "host_role", None, "policy.host_role: role source unavailable"),
+        ("policy", "psi_refuse_some_avg10", None, "policy.psi_refuse_some_avg10: threshold unavailable"),
+        ("cgroup_v2", "mounted", None, "cgroup_v2.mounted: mount source unavailable"),
+        ("cgroup_v2", "controllers", None, "cgroup_v2.controllers: controller source unavailable"),
+        ("memory", "total_bytes", None, "memory.total_bytes: memory source unavailable"),
+        ("cpu", "online", None, "cpu.online: cpu source unavailable"),
+        ("cpu", "oversubscribe_max", None, "cpu.oversubscribe_max: cpu policy unavailable"),
+        ("policy", "max_lane_containers", None, "policy.max_lane_containers: container policy unavailable"),
+        ("memory", "overcommit", None, "memory.overcommit: overcommit policy unavailable"),
+    ],
+)
+def test_refusal_names_each_required_unknown_fact(group, name, value, reason):
+    host = parse_host_set(_hosts())[0]
+    _set_value(host.facts, group, name, value, reason.split(": ", 1)[1])
+    assert _refusal(host, 0, 0, 0) == reason
+
+
+def test_refusal_names_psi_thresholds_and_exhausted_capacity_reasons():
+    host = parse_host_set(_hosts())[0]
+    host.facts["psi"]["memory"]["some_avg10_pct"] = {"v": 26}
+    assert _refusal(host, 0, 0, 0) == "memory PSI some avg10 26% exceeds host refusal threshold 25%"
+
+    host = parse_host_set(_hosts())[0]
+    host.facts["psi"]["io"]["some_avg10_pct"] = {"v": 26}
+    assert _refusal(host, 0, 0, 0) == "io PSI some avg10 26% exceeds host refusal threshold 25%"
+
+    host = parse_host_set(_hosts())[0]
+    host.facts["psi"]["io"]["some_avg10_pct"] = {"v": None, "reason": "io PSI unavailable"}
+    assert _refusal(host, 0, 0, 0) == "psi.io.some_avg10_pct: io PSI unavailable"
+
+    host = parse_host_set(_hosts())[0]
+    host.facts["cpu"]["oversubscribe_max"] = {"v": 1}
+    assert _refusal(host, 0, 4, 0) == "no worker slots remain after other running jobs"
+
+    host = parse_host_set(_hosts())[0]
+    assert _refusal(host, 0, 0, 8) == "no lane container slots remain after other running jobs"
+
+    host = parse_host_set(_hosts())[0]
+    assert _refusal(host, 10**20, 0, 0) == "other running work consumes the host's overcommitted RAM budget"
+
+
+def test_refusal_reports_profile_reserve_reason_when_per_service_collection_failed():
+    host = parse_host_set(_hosts())[0]
+    control = host.facts["control_plane"]
+    control["profile_reserve_bytes"] = {"v": None, "reason": "profile reserve not configured"}
+    for row in control["service_memory_min"].values():
+        row["memory_min_bytes"] = {"v": None, "reason": "query failed"}
+        row["load_state"] = {"v": None, "reason": "query failed"}
+    assert _refusal(host, 0, 0, 0) == (
+        "control_plane.profile_reserve_bytes: profile reserve not configured"
+    )
 
 
 @pytest.mark.parametrize(
@@ -837,7 +965,7 @@ def test_control_plane_reserve_resolves_one_term_per_service_with_provenance(
     host_set = _hosts()
     facts = _facts(host_set, "host-small")
     control = facts["control_plane"]
-    control["profile_reserve_bytes"] = 768 * 1024**2
+    _set_field(control, "profile_reserve_bytes", 768 * 1024**2)
     if values_mib is not None:
         _set_service_memory_mins(
             control,
@@ -871,9 +999,8 @@ def test_the_reserve_never_drops_below_what_was_actually_reported():
     # An absent optional unit is the only way a term may become zero, and it is
     # named as absent rather than silently dropped.
     control["service_memory_min"]["mdt-psi-guard.service"] = {
-        "memory_min_bytes": None,
-        "memory_min_bytes_reason": "unit is absent",
-        "load_state": "not-found",
+        "memory_min_bytes": {"v": None, "reason": "unit is absent"},
+        "load_state": {"v": "not-found"},
     }
     absent = _control_plane_reserve(facts)
     assert absent.bytes == sum(reported.values()) - reported["mdt-psi-guard.service"]
@@ -886,9 +1013,9 @@ def test_the_reserve_never_drops_below_what_was_actually_reported():
 @pytest.mark.parametrize("total_bytes", [1, 2**60])
 def test_reserve_does_not_change_with_tiny_or_huge_ram(total_bytes):
     facts = _facts(_hosts(), "host-small")
-    facts["memory"]["total_bytes"] = total_bytes
+    _set_value(facts, "memory", "total_bytes", total_bytes)
     control = facts["control_plane"]
-    control["profile_reserve_bytes"] = 900 * 1024**2
+    _set_field(control, "profile_reserve_bytes", 900 * 1024**2)
     # Per-service facts are present but none reports a value: every term is that
     # service's documented floor, and the total still ignores installed RAM.
     _set_service_memory_mins(control, [None] * len(CONTROL_PLANE_SERVICE_UNITS))
@@ -907,8 +1034,8 @@ def test_legacy_parent_slice_memory_min_is_ignored_by_service_sum():
     host_set = _hosts()
     facts = _facts(host_set, "host-small")
     control = facts["control_plane"]
-    control["present"] = False
-    control["memory_min_bytes"] = 7 * 1024**3
+    _set_field(control, "present", False)
+    _set_field(control, "memory_min_bytes", 7 * 1024**3)
     _set_service_memory_mins(control, [floor * 1024**2 for floor in FLOOR_MIB])
     plan = _plan([_candidate("reserve", 120_000_000)], hosts=host_set)
     host = _host_plan(plan, "host-small")
@@ -925,7 +1052,9 @@ def test_infinity_memory_min_is_not_reported_and_uses_that_service_default():
     values = [floor * 1024**2 for floor in FLOOR_MIB]
     values[0] = None
     _set_service_memory_mins(control, values)
-    control["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[0]]["memory_min_bytes_reason"] = reason
+    control["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[0]]["memory_min_bytes"] = {
+        "v": None, "reason": reason,
+    }
     plan = _plan([_candidate("infinity", 120_000_000)], hosts=host_set)
     host = _host_plan(plan, "host-small")
     assert host["reserve_bytes"] == sum(FLOOR_MIB) * 1024**2
@@ -935,8 +1064,8 @@ def test_infinity_memory_min_is_not_reported_and_uses_that_service_default():
 
 def test_profile_fallback_varies_by_host_profile_without_cross_host_pooling():
     host_set = _hosts()
-    _facts(host_set, "host-small")["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
-    _facts(host_set, "host-large")["control_plane"]["profile_reserve_bytes"] = 1024 * 1024**2
+    _set_field(_facts(host_set, "host-small")["control_plane"], "profile_reserve_bytes", 768 * 1024**2)
+    _set_field(_facts(host_set, "host-large")["control_plane"], "profile_reserve_bytes", 1024 * 1024**2)
     plan = _plan([_candidate("reserve", 120_000_000)], hosts=host_set)
     assert _host_plan(plan, "host-small")["reserve_bytes"] == 768 * 1024**2
     assert _host_plan(plan, "host-large")["reserve_bytes"] == 1024 * 1024**2
@@ -947,9 +1076,9 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
     host_set = _hosts()
     small = _facts(host_set, "host-small")
     large = _facts(host_set, "host-large")
-    large["policy"]["host_role"] = "shared-prod"
-    small["memory"].update(total_bytes=8 * 1024**3, for_lanes_bytes=8 * 1024**3)
-    small["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
+    _set_value(large, "policy", "host_role", "shared-prod")
+    _set_value(small, "memory", "total_bytes", 8 * 1024**3)
+    _set_field(small["control_plane"], "profile_reserve_bytes", 768 * 1024**2)
     # Real reported floors (each within its documented ceiling) that sum to
     # 600 MiB, so this host's reserve differs from the 768 MiB constant by 168 MiB.
     reported_mib = [40, 300, 200, 50, 8, 2]
@@ -967,7 +1096,11 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
     fallback_facts = _facts(fallback_set, "host-small")
     # No per-service fact at all is the only remaining use of the constant, so
     # the fallback direction of this difference is still exercised.
-    del fallback_facts["control_plane"]["service_memory_min"]
+    _set_service_memory_mins(
+        fallback_facts["control_plane"],
+        [None] * len(CONTROL_PLANE_SERVICE_UNITS),
+        [None] * len(CONTROL_PLANE_SERVICE_UNITS),
+    )
     fallback_plan = _plan([edge_candidate], hosts=fallback_set, demand=demand)
     fallback_host = _host_plan(fallback_plan, "host-small")
     reserve_delta = 768 * 1024**2 - 600 * 1024**2
@@ -984,7 +1117,7 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
 
     refusal_set = _hosts()
     refusal_facts = _facts(refusal_set, "host-small")
-    refusal_facts["memory"]["for_lanes_bytes"] = 600 * 1024**2
+    _set_value(refusal_facts, "memory", "total_bytes", 600 * 1024**2)
     refusal_control = refusal_facts["control_plane"]
     refusal_mib = [10, 210, 92, 24, 4, 5]
     assert sum(refusal_mib) == 345
@@ -992,7 +1125,11 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
     service_input = next(host for host in parse_host_set(refusal_set) if host.host_id == "host-small")
     assert _refusal(service_input, 0, 0, 0) is None
     # Only the no-per-service-fact case still uses the 768 MiB constant.
-    del refusal_control["service_memory_min"]
+    _set_service_memory_mins(
+        refusal_control,
+        [None] * len(CONTROL_PLANE_SERVICE_UNITS),
+        [None] * len(CONTROL_PLANE_SERVICE_UNITS),
+    )
     fallback_input = next(host for host in parse_host_set(refusal_set) if host.host_id == "host-small")
     assert "reserve leaves no physical RAM" in _refusal(fallback_input, 0, 0, 0)
 
@@ -1124,7 +1261,7 @@ def test_retry_terminal_unplaceable_and_no_available_host_paths():
 
     no_hosts = _hosts()
     for host in no_hosts["hosts"]:
-        host["facts"]["psi"]["memory"]["some_avg10_pct"] = 99
+        _set_top_value(host["facts"]["psi"]["memory"], "some_avg10_pct", 99)
     none_available = _plan([
         _candidate("normal", 100_000_000),
         _candidate("retry", 100_000_000, memory_crash_evidence=True),
@@ -1200,7 +1337,7 @@ def test_replan_pending_places_what_fits_and_returns_the_unplaceable_ids_with_re
 def test_overcommit_changes_sum_budget_but_never_physical_alone_cap():
     host_set = _hosts()
     for host in host_set["hosts"]:
-        host["facts"]["memory"]["overcommit"] = 0.5
+        _set_value(host["facts"], "memory", "overcommit", 0.5)
     plan = _plan([
         _candidate("alone-over-budget", 8 * 1024**3),
         _candidate("retry-over-budget", 8 * 1024**3, memory_crash_evidence=True),
@@ -1263,6 +1400,9 @@ def test_parse_host_contract_edges_and_other_job_ownership():
         parse_host_set({"schema": "fleet-host-set/1", "hosts": [], "extra": True})
     with pytest.raises(ContractError, match="expected 'fleet-host-set/1'"):
         parse_host_set({"schema": "fleet-host-set/2", "hosts": []})
+    legacy = _read_fixture("fleet-host-set.valid.json")
+    with pytest.raises(ContractError, match="expected host-facts/2; host-facts/1 is not read"):
+        parse_host_set(legacy)
     with pytest.raises(ContractError, match="expected array"):
         parse_host_set({"schema": "fleet-host-set/1", "hosts": None})
     with pytest.raises(ContractError, match="at least one host"):
@@ -1299,15 +1439,23 @@ def test_parse_host_contract_edges_and_other_job_ownership():
 
     job_host_set = _hosts()
     facts = _facts(job_host_set, "host-small")
-    facts.pop("jobs_reason")
-    facts["jobs"] = [{
-        "name": "running-job", "running": True, "exit": None, "exit_reason": "running",
-        "progress_mtime_s": None, "progress_mtime_s_reason": "not recorded",
-        "candidates_done": 0, "candidates_total": 10,
+    facts["jobs"] = {"v": [{
+        "id": {"v": "running-job"}, "state": {"v": "running"},
+        "requested_by": {"v": None, "reason": "unknown"},
+        "resources": {"v": None, "reason": "unknown"},
+        "started_utc": {"v": None, "reason": "unknown"},
+        "progress_done": {"v": 0}, "progress_total": {"v": 10},
+        "progress_unit": {"v": "candidate"},
+        "last_progress_utc": {"v": None, "reason": "unknown"},
     }, {
-        "name": "finished-job", "running": False, "exit": 0,
-        "progress_mtime_s": 1.0, "candidates_done": 10, "candidates_total": 10,
-    }]
+        "id": {"v": "finished-job"}, "state": {"v": "complete"},
+        "requested_by": {"v": None, "reason": "unknown"},
+        "resources": {"v": None, "reason": "unknown"},
+        "started_utc": {"v": None, "reason": "unknown"},
+        "progress_done": {"v": 10}, "progress_total": {"v": 10},
+        "progress_unit": {"v": "candidate"},
+        "last_progress_utc": {"v": None, "reason": "unknown"},
+    }]}
     with pytest.raises(ContractError, match="missing running host job.*running-job"):
         parse_host_set(job_host_set)
     _host(job_host_set, "host-small")["other_running"] = [{
@@ -1387,10 +1535,8 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
 
     refused_mismatch = _hosts()
     small_facts = _facts(refused_mismatch, "host-small")
-    small_facts["policy"]["host_role"] = "shared-prod"
-    small_facts["speed"]["geekbench_major"] = 7
-    small_facts["speed"]["geekbench_version"] = "7.0.0"
-    small_facts["speed"]["basis"] = "geekbench7-measured"
+    _set_value(small_facts, "policy", "host_role", "shared-prod")
+    _update_speed(small_facts, geekbench_major=7, geekbench_version="7.0.0", basis="geekbench7-measured")
     eligible_reference = _plan([_candidate("x", 100_000_000)], hosts=refused_mismatch)
     assert eligible_reference["time_reference"]["geekbench_major"] == 6
     assert "reason" not in eligible_reference["time_reference"]
@@ -1399,10 +1545,8 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
 
     incomparable_source = _hosts()
     source_facts = _facts(incomparable_source, "host-small")
-    source_facts["policy"]["host_role"] = "shared-prod"
-    source_facts["speed"]["geekbench_major"] = 7
-    source_facts["speed"]["geekbench_version"] = "7.0.0"
-    source_facts["speed"]["basis"] = "geekbench7-measured"
+    _set_value(source_facts, "policy", "host_role", "shared-prod")
+    _update_speed(source_facts, geekbench_major=7, geekbench_version="7.0.0", basis="geekbench7-measured")
     ignored_timing = _plan(
         [_candidate("x", 100_000_000, elapsed_seconds=12, measured_on_host="host-small")],
         hosts=incomparable_source,
@@ -1416,8 +1560,7 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
 
     no_scores = _hosts()
     for host in no_scores["hosts"]:
-        host["facts"]["speed"] = None
-        host["facts"]["speed_reason"] = "no score"
+        _set_speed(host["facts"], None, "no score")
     assert _time_reference(parse_host_set(no_scores)) == (None, None, None, "no host has a Geekbench record")
     balanced = _plan([_candidate(f"balanced-{index}", 100_000_000) for index in range(12)], hosts=no_scores)
     assert all(_host_plan(balanced, host_id)["assigned"] for host_id in ("host-small", "host-large"))
@@ -1429,7 +1572,7 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
 
     no_eligible_hosts = _hosts()
     for host in no_eligible_hosts["hosts"]:
-        host["facts"]["policy"]["host_role"] = "shared-prod"
+        _set_value(host["facts"], "policy", "host_role", "shared-prod")
     no_eligible_plan = _plan([_candidate("x", 100_000_000)], hosts=no_eligible_hosts)
     assert no_eligible_plan["time_reference"]["reason"] == (
         "no eligible host is available for a Geekbench reference"
@@ -1445,16 +1588,16 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
     ):
         mismatch = _hosts()
         if field == "geekbench_major":
-            _facts(mismatch, "host-large")["speed"][field] = 7
-            _facts(mismatch, "host-large")["speed"]["basis"] = "geekbench7-measured"
+            _update_speed(_facts(mismatch, "host-large"), geekbench_major=7, basis="geekbench7-measured")
         else:
-            _facts(mismatch, "host-large")["speed"][field] = 999 if field == "baseline_score" else "6.5.0"
+            _update_speed(_facts(mismatch, "host-large"), **{
+                field: 999 if field == "baseline_score" else "6.5.0",
+            })
         assert _time_reference(parse_host_set(mismatch))[3] == expected
 
     known_reference = _hosts()
-    _facts(known_reference, "host-small")["speed"] = None
-    _facts(known_reference, "host-small")["speed_reason"] = "unknown score"
-    _facts(known_reference, "host-large")["psi"]["memory"]["some_avg10_pct"] = 99
+    _set_speed(_facts(known_reference, "host-small"), None, "unknown score")
+    _set_top_value(_facts(known_reference, "host-large")["psi"]["memory"], "some_avg10_pct", 99)
     no_host_score = _plan([_candidate("x", 100_000_000)], hosts=known_reference)
     assert _assigned_host(no_host_score, "x")["eta_reason"] == "common Geekbench reference is unavailable"
     assert no_host_score["eta_seconds"] is None
@@ -1474,11 +1617,11 @@ def test_host_refusal_arithmetic_helpers_and_wave_invariant_error():
 
     bad_host = copy.deepcopy(host)
     facts = bad_host.facts
-    facts["memory"]["overcommit"] = -1
+    _set_value(facts, "memory", "overcommit", -1)
     assert "overcommit factor is invalid" in _refusal(bad_host, 0, 0, 0)
 
     reserve_host = copy.deepcopy(host)
-    reserve_host.facts["memory"]["for_lanes_bytes"] = 1
+    _set_value(reserve_host.facts, "memory", "total_bytes", 1)
     assert "reserve leaves no physical RAM" in _refusal(reserve_host, 0, 0, 0)
 
     high_host = dict(capacity)
@@ -1515,17 +1658,15 @@ def test_missing_measurement_host_is_ignored_for_time_and_reported():
     assert "measurement host 'absent' is absent" in ignored["time_reason"]
 
     host_set = _hosts()
-    _facts(host_set, "host-small")["speed"] = None
-    _facts(host_set, "host-small")["speed_reason"] = "missing record"
-    _facts(host_set, "host-large")["psi"]["memory"]["some_avg10_pct"] = 99
+    _set_speed(_facts(host_set, "host-small"), None, "missing record")
+    _set_top_value(_facts(host_set, "host-large")["psi"]["memory"], "some_avg10_pct", 99)
     result = _plan([_candidate("x", 100_000_000, elapsed_seconds=2, measured_on_host="host-small")], hosts=host_set)
     assigned = {item["id"]: item for host in result["hosts"] for item in host["assigned"]}[_cid("x")]
     assert assigned["time_source"] == "declared_reference"
     assert result["eta_reason"]
 
     host_set = _hosts()
-    _facts(host_set, "host-small")["speed"] = None
-    _facts(host_set, "host-small")["speed_reason"] = "missing record"
+    _set_speed(_facts(host_set, "host-small"), None, "missing record")
     result = _plan(
         [_candidate("x", 100_000_000, elapsed_seconds=2, measured_on_host="host-small")],
         hosts=host_set,
@@ -1543,7 +1684,7 @@ def test_plan_cli_json_commands_and_errors(tmp_path, capsys):
         encoding="utf-8",
     )
     candidates_path = FIXTURES / "candidate-table.valid.json"
-    hosts_path = FIXTURES / "fleet-host-set.valid.json"
+    hosts_path = write_host_set_v2(FIXTURES / "fleet-host-set.valid.json", tmp_path / "hosts-v2.json")
     args = [
         "plan", "r2", "--candidates", str(candidates_path), "--hosts", str(hosts_path),
         "--demand", str(demand_path),
@@ -1571,8 +1712,10 @@ def test_reserve_treats_every_non_positive_integer_service_value_as_not_reported
     facts = _facts(_hosts(), "host-small")
     control = facts["control_plane"]
     _set_service_memory_mins(control, [floor * 1024**2 for floor in FLOOR_MIB])
-    control["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[2]]["memory_min_bytes"] = bad
-    control["profile_reserve_bytes"] = 900 * 1024**2
+    control["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[2]]["memory_min_bytes"] = (
+        {"v": None, "reason": "no positive report"} if bad is None else {"v": bad}
+    )
+    _set_field(control, "profile_reserve_bytes", 900 * 1024**2)
     reserve = _control_plane_reserve(facts)
     assert reserve.source == "per-service-default"
     assert reserve.missing == (CONTROL_PLANE_SERVICE_UNITS[2],)
@@ -1589,7 +1732,7 @@ def test_reserve_uses_the_profile_constant_only_when_no_per_service_fact_exists(
     facts = _facts(_hosts(), "host-small")
     control = facts["control_plane"]
     control["service_memory_min"] = table
-    control["profile_reserve_bytes"] = 800 * 1024**2
+    _set_field(control, "profile_reserve_bytes", 800 * 1024**2)
     reserve = _control_plane_reserve(facts)
     assert (reserve.bytes, reserve.source, reserve.missing, reserve.services) == (
         800 * 1024**2, "profile-constant", CONTROL_PLANE_SERVICE_UNITS, (),
@@ -1603,7 +1746,7 @@ def test_reserve_refuses_an_implausible_reported_value_instead_of_summing_it():
     _set_service_memory_mins(control, [floor * 1024**2 for floor in FLOOR_MIB])
     unit = "docker.service"
     over = CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS[unit] + 1
-    control["service_memory_min"][unit]["memory_min_bytes"] = over
+    control["service_memory_min"][unit]["memory_min_bytes"] = {"v": over}
     plan = _plan([_candidate("x", 120_000_000)], hosts=host_set)
     refused = _host_plan(plan, "host-small")
     assert refused["status"] == "refused"
@@ -1654,9 +1797,12 @@ def test_a_partial_per_service_table_still_resolves_per_service_terms():
     for kept in ("ssh.service", "docker.service"):
         facts = _facts(_hosts(), "host-small")
         control = facts["control_plane"]
-        control["profile_reserve_bytes"] = 800 * 1024**2
+        _set_field(control, "profile_reserve_bytes", 800 * 1024**2)
         control["service_memory_min"] = {
-            kept: {"memory_min_bytes": CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[kept], "load_state": "loaded"},
+            kept: {
+                "memory_min_bytes": {"v": CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[kept]},
+                "load_state": {"v": "loaded"},
+            },
         }
         reserve = _control_plane_reserve(facts)
         assert reserve.source == "per-service-default"
@@ -1682,7 +1828,7 @@ def test_reserve_falls_back_per_service_when_the_table_has_rows_with_a_load_stat
         unit: {"memory_min_bytes": None, "load_state": "loaded"}
         for unit in CONTROL_PLANE_SERVICE_UNITS
     }
-    control["profile_reserve_bytes"] = 800 * 1024**2
+    _set_field(control, "profile_reserve_bytes", 800 * 1024**2)
     reserve = _control_plane_reserve(facts)
     assert reserve.source == "per-service-default"
     assert reserve.bytes == sum(FLOOR_MIB) * 1024**2
@@ -1707,7 +1853,7 @@ def test_reserve_keeps_the_profile_constant_when_every_row_is_a_failed_query(row
     facts = _facts(_hosts(), "host-small")
     control = facts["control_plane"]
     control["service_memory_min"] = {unit: row for unit in CONTROL_PLANE_SERVICE_UNITS}
-    control["profile_reserve_bytes"] = 800 * 1024**2
+    _set_field(control, "profile_reserve_bytes", 800 * 1024**2)
     reserve = _control_plane_reserve(facts)
     assert (reserve.bytes, reserve.source, reserve.services) == (
         800 * 1024**2, "profile-constant", (),

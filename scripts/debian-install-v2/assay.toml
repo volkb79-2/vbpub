@@ -1,41 +1,72 @@
 # debian-install-v2's assay lane declarations. Consumed by run-gate.toml's
-# [lanes.r2] via a live, worktree-installed assay (assay/docs/
-# INTERNAL-CONSUMERS.md) — no pinned zipapp for an in-repo consumer.
+# [lanes.r2] as a NATIVE Assay lane (DIV2-BL-22).
+#
+# run-gate binds the judge from the JUDGED WORKTREE's own `assay/` source
+# (RG-285: editable install, import identity verified) rather than from a
+# pinned zipapp, which is why nothing here names an assay version or path --
+# assay/docs/INTERNAL-CONSUMERS.md's mechanism for an in-repo consumer.
 schema_version = 2
 
 [lanes.r2]
 scope = "S1"
 rigor = ["R0", "R2"]
 # `enforcement` is verdict metadata for a downstream aggregator to read --
-# empirically verified this session it does NOT change `assay run`'s own
-# exit code for a standalone invocation (tried "advisory" here first;
-# `assay run r2` still exited 1 on survived mutants). A NATIVE mutation
-# lane can only ever be 100%-or-FAIL by assay's own design
-# (judge.mutation.fail_under is REQUIRED for an ingested report and
-# FORBIDDEN for a native one), so "gate" is the accurate value regardless
-# -- the actual mechanism for "R2 runs and reports its real result without
-# blocking run-gate.toml's own [lanes.gate] aggregate" is excluding it
-# from that conjunction (see run-gate.toml's header comment, same
-# treatment fake-integration/r1-vm-real-commit already get).
+# measured on a standalone `assay run r2`, it does NOT change assay's own exit
+# code (tried "advisory" first; the run still exited 1 on survived mutants).
+# A NATIVE mutation lane can only ever be 100%-or-FAIL by assay's own design
+# (judge.mutation.fail_under is REQUIRED for an ingested report and FORBIDDEN
+# for a native one), so "gate" is the accurate value regardless -- the actual
+# mechanism for "R2 runs and reports its real result without blocking
+# run-gate.toml's own [lanes.gate] aggregate" is excluding it from that
+# conjunction (see run-gate.toml's header comment, the same treatment
+# fake-integration/r1-vm-real-commit already get).
 enforcement = "gate"
-# /opt/tester-venv/bin/python3, not bare "python3": assay spawns this argv
-# as its own subprocess, independent of whatever interpreter invoked
-# `assay.cli` itself -- bare "python3" resolves via PATH to
-# /usr/local/bin/python3 inside tester-unified, which has no pytest.
-# Hardcoded because this file is scoped to its one documented consumption
-# path (run-gate.toml's [lanes.r2], always inside a tester-unified
-# container); this devcontainer itself has no /opt/tester-venv, so `assay
-# run r2` cannot be run locally outside that container as a side effect.
+# /opt/tester-venv/bin/python3, not bare "python3": assay spawns this argv as
+# its own subprocess, independent of whatever interpreter runs `assay.cli` --
+# bare "python3" resolves via PATH to /usr/local/bin/python3 inside
+# tester-unified, which has no pytest. Hardcoded because this lane is scoped to
+# its one documented environment (run-gate.toml's [lanes.r2], always inside
+# tester-unified); the devcontainer has no /opt/tester-venv, so `assay run r2`
+# is not runnable locally outside that container.
 argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests", "-m", "not os_integration", "-q"]
-# PYTHONPATH is passed through, not declared: the cli-extended library path
-# lives only in run-gate.toml's [lanes.r2] (the one file the cli-extended
-# audit exempts from its no-path-hacks check). pytest adds the working
-# directory (the project) to sys.path itself.
-env = { PYTHONDONTWRITEBYTECODE = "1" }
-env_passthrough = ["PATH", "PYTHONPATH"]
-# 179 candidates x ~137 s / 2 jobs x 1.5 slack = ~306.5 min; rounded up so a
-# resumed full campaign has a workable bound without dropping the last candidates.
-budget = "310m"
+# DECLARED, checkout-RELATIVE paths, never an absolute `{worktree}`: Assay
+# folds the lane's own `env` table (names AND values) plus a SHA-256 fingerprint
+# of every PRESENT `env_passthrough` value into judge_sha256
+# (assay/src/assay/mutation.py:1594-1611). An absolute path in either makes a
+# seeded resume in a new checkout a judge mismatch and reuses nothing -- the
+# 14-record rejection of 2026-11-24, whose lane carried
+# `PYTHONPATH={worktree}/assay/src` (run-gate.toml branch c2d7d6729..2ea1912ca;
+# assay B577, run-gate RG-314).
+#
+# `.` is the project dir (what pytest adds anyway) and
+# `../../libraries/cowtree/src` is the repo path config's library, declared for
+# the TEST processes (this table is their environment, not the judge's).
+# cli-extended is deliberately
+# NOT here (AC-25): the tester-unified image installs the RELEASED cli-extended
+# wheel and the lane must test against that, not against the library checkout
+# (the same rule ciu/assay.toml:43-47 records).
+env = { PYTHONPATH = ".:../../libraries/cowtree/src", PYTHONDONTWRITEBYTECODE = "1" }
+# PATH only: every passthrough value that is PRESENT is folded into
+# judge_sha256 as a value fingerprint, so a passthrough whose value embeds a
+# checkout path makes every new checkout a new judge. PYTHONPATH is DECLARED
+# above instead and absent from this list, which is structural: no passthrough
+# value can carry a checkout path at all. The list it replaces,
+# `env_passthrough = ["PATH", "PYTHONPATH"]` made checkout-relative by
+# c17b2f5f9, was the weaker guarantee and it did NOT restore resume -- the
+# 186-record rejection of 2026-11-25 happened at a head that already carried
+# that relative value, because the old lane ran with liveness on (the default):
+# Assay prepends a per-run `assay-liveness-*` temp dir to PYTHONPATH
+# (liveness.py:600-603), and the passed-through effective value entered the
+# digest. Established from code and recorded fingerprints, not reproduced.
+env_passthrough = ["PATH"]
+# Sized in run-gate.toml [lanes.r2] (450m, 5m above this per R-59). Headroom for
+# slow or loaded hosts, not a measured need: complete 194-candidate runs took
+# 174-224 min at 2 jobs (2026-11-24/25, on the preceding command lane under
+# tester-unified's RELAXED io_sync -- the sizing is history, not a measurement
+# of this lane's `durable` mode). A LANE_TIMEOUT verdict can no longer come from
+# the derived per-candidate bound (DIV2-BL-22): see
+# judge.mutation.budget_per_candidate below.
+budget = "430m"
 allow_argv_append = false
 
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
@@ -55,6 +86,12 @@ unsafe_symlink_omissions = [
 [lanes.r2.judge]
 language = "python"
 source_roots = ["debian_install_v2"]
+# assay B019/A-328: the COMPARISON COMMIT is the gate request's to supply, never
+# a literal here. run-gate passes `--base <ref>` through as `--request-base`
+# because the lane inventory it reads at construction says this lane delegates
+# (RG-26/R-35). A lane declaring this REFUSES to run without a request base --
+# no fallback to HEAD or to a default branch, because a changed-line judgment
+# whose base was guessed is not a changed-line judgment.
 base_source = "request"
 
 [lanes.r2.judge.mutation]
@@ -69,3 +106,27 @@ operators = [
   "python:bool-const-flip",
   "python:falsy-swap",
 ]
+# EXPLICIT, because the verdict must not move with host load (DIV2-BL-22).
+# `auto` derives the bound from the baseline measured at START
+# (max(3 x baseline, baseline + 60), assay/src/assay/mutation.py:2136-2153), so
+# a quiet baseline (46.5 s -> bound 139.6 s) followed by a loaded host ended
+# eight slow layout_policy.py candidates as `budget_exceeded` / LANE_TIMEOUT
+# while a loaded baseline (97.8 s -> bound 293 s) let the same candidates
+# finish. 10m (600 s) is twice that 293 s bound -- at which all 194 candidates
+# completed -- and is a CEILING for a slow or contended mutant, not a target.
+# It is part of the judge identity, so changing it rebinds every stored record.
+# (assay's CPU-time bound has not landed yet; when it does, this value may be
+# revisited, not silently re-derived.)
+budget_per_candidate = "10m"
+# Off, as libraries/iobench's `iobench-diff` lane declares. Liveness watches each
+# candidate's PROCESS TREE and ends a candidate that has gone idle (`hung`, a
+# bucket of its own: assay/src/assay/mutation_store.py:595-600 groups it with
+# `crashed`/`budget_exceeded` as resource-sensitive). With `liveness = false`
+# this is NOT unbounded -- the explicit 10m `budget_per_candidate` above still
+# kills a hung candidate -- but the two outcomes differ in what the operator
+# learns and what it costs: without liveness a hung candidate is recorded
+# exactly like a merely slow one and burns the full 600s ceiling, ten minutes
+# per attempt, paid again only when the record is rejudged or the resource
+# digest moves. Turn it on when a campaign shows
+# one; see docs/R2-RUNBOOK.md.
+liveness = false

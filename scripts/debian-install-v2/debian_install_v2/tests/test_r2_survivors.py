@@ -108,7 +108,9 @@ def test_resume_installer_constructor_does_not_inspect_host(
     StateStore(config.state_dir).save_new(StateStore.new(config))
     monkeypatch.setenv("VBPUB_STATE_DIR", config.state_dir)
     inspected: list[Installer] = []
-    monkeypatch.setattr(Installer, "inspect", inspected.append)
+    # A real method (not list.append): the mutant is then killed by the
+    # assertion below, not by a TypeError from an arity mismatch.
+    monkeypatch.setattr(Installer, "inspect", lambda self: inspected.append(self))
 
     installer = _make_resume_installer(SimpleNamespace(dry_run=True))
 

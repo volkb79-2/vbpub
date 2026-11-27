@@ -9,6 +9,8 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from cmru import config
 from cmru.config import load_forge_config
 from cmru.version_config import SOURCE_FIELDS
@@ -215,11 +217,49 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
     assert roots == ["src", "../libraries/worktree/src"]
 
 
+def _assert_cmru_assay_lane_contract(lanes):
+    expected_modes = {
+        "cmru": "whole_target",
+        "cmru-r0-r1": "whole_target",
+        "cmru-first-release-r2": "whole_target",
+    }
+    assert set(lanes) == set(expected_modes)
+    for lane_name, expected_mode in expected_modes.items():
+        judge = lanes[lane_name]["judge"]
+        assert "base_source" not in judge, f"{lane_name} declares judge.base_source"
+        assert "base" not in judge, f"{lane_name} declares judge.base"
+        assert judge["mode"] == expected_mode, lane_name
+
+
+def test_cmru_assay_lane_contract_rejects_an_injected_base_source():
+    lanes = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    lanes["cmru"]["judge"]["base_source"] = "request"
+    with pytest.raises(AssertionError, match="cmru declares judge.base_source"):
+        _assert_cmru_assay_lane_contract(lanes)
+
+
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
-    assert "source roots MUST be unchanged between them" in spec
+    # KI-211: cmru's two R2 tools pass `delegated=True` to Assay's base
+    # resolution because the lane supplies the comparison base itself. That is a
+    # call-site keyword argument, NOT a lane declaration: no cmru lane declares
+    # `judge.base_source` (Assay refuses it under `whole_target`). Pin the real
+    # call sites, not a phrase about lane configuration.
+    tools = (ROOT / "tools").resolve()
+    for tool, function in (
+        ("check_assay_baseline.py", "resolve_base"),
+        ("check_assay_baseline.py", "base_resolution_mode"),
+        ("mutation_campaign.py", "resolve_base"),
+    ):
+        source = (tools / tool).read_text(encoding="utf-8")
+        assert re.search(
+            rf"assay_git\.{function}\([^)]*delegated=True", source,
+        ), f"{tool} must delegate its base to Assay ({function})"
+    assert "delegated=True" in spec
+    assert "source roots MUST be unchanged between them" not in spec
 
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    _assert_cmru_assay_lane_contract(assay_config)
     lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
     # R1 needs the complete baseline run to produce its whole-target coverage judgment.
@@ -470,26 +510,27 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "S16.3b — T3 explicit R2 base" in spec
 
 
-def test_r2_timeout_and_assay_source_contract_are_synchronized_across_user_docs():
+def test_r2_silence_and_assay_source_contract_are_synchronized_across_user_docs():
     readme, design, consumers = [
         path.read_text(encoding="utf-8") for path in DOCS
     ]
     for text in (readme, design, consumers):
         normalized = " ".join(text.split())
-        assert "1800 seconds" in normalized
-        assert "368" in normalized and "752" in normalized and "825" in normalized
+        assert "no elapsed-time limit" in normalized
+        assert "600-second no-output window" in normalized
+        assert "control_longest_output_gap_upper_bound" in normalized
+        assert "schema 8" in normalized
         assert "named `package-dir`" in normalized
         assert "Git worktree" in normalized
     assert "mutation source binding design" in readme
     assert "mutation-process-tree-isolation" in {
         _slug(line) for line in design.splitlines()
     }
-    assert "schema 6" in consumers
     contributing = " ".join(
         (ROOT / "docs" / "CONTRIBUTING.md").read_text(encoding="utf-8").split()
     )
-    assert "1800-second ceiling" in contributing
-    assert "timed-out candidate is inconclusive" in contributing
+    assert "600-second no-output window" in contributing
+    assert "outcome: timeout" in contributing
 
 
 def test_cmru_changelog_uses_the_real_canonical_history_validator():
@@ -778,7 +819,10 @@ def test_ki143_documented_cleanup_refuses_when_origin_cannot_be_queried(tmp_path
     result = _run_ki143_cleanup(
         consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
     )
-    assert result.returncode != 0
+    assert result.returncode != 0, (
+        "documented cleanup unexpectedly succeeded when origin could not be queried; "
+        f"child stdout:\n{result.stdout}\nchild stderr:\n{result.stderr}"
+    )
     assert candidate.is_dir()
     assert _ki143_branch_exists(repo, KI143_BRANCH)
 

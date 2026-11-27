@@ -13,7 +13,7 @@ use hostobs_proto::envelope::{check_req, members_up_to, EnvelopeError, Kind, Mem
 use crate::error::ClientError;
 
 /// The `proto` value of a `hello` request (WIRE.md §4.4): the client's own major and minor.
-const HELLO_PROTO: &str = "{\"major\":1,\"minor\":1}";
+const HELLO_PROTO: &str = "{\"major\":1,\"minor\":2}";
 
 /// The most bytes a verb may have.
 const MAX_VERB_BYTES: usize = 64;
@@ -331,7 +331,7 @@ mod tests {
     fn hello_args_escapes_quote_and_backslash() {
         assert_eq!(
             hello_args("probe"),
-            "{\"client\":\"probe\",\"proto\":{\"major\":1,\"minor\":1}}"
+            "{\"client\":\"probe\",\"proto\":{\"major\":1,\"minor\":2}}"
         );
         let escaped = hello_args("a\"b\\c");
         assert!(escaped.starts_with("{\"client\":\"a\\\"b\\\\c\""));
