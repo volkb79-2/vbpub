@@ -15997,7 +15997,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B577 — A resume that rejects every record does not say why
 
-**Status: FIXED 2026-11-27 in test commits `0600b4c85` and `79136e9ff`, implementation commits `754d2761a` and `66e3ccb6e`, with the record-isolation follow-up in `ebd069b5f`; severity was medium (operational).**
+**Status: FIXED 2026-11-27 in test commits `0600b4c85`, `79136e9ff`, and `aee37b238`; implementation commits `754d2761a`, `66e3ccb6e`, and `45bff0aa6`, with the record-isolation follow-up in `ebd069b5f`; severity was medium (operational).**
 
 **Symptom.** A seeded remote-gate resume (scripts/debian-install-v2, lane r2, head 2ea1912ca, r1002, run-gate 25.7.0, image dcaf4222) rejected every prior record.
 - Chunk 1, rgw-r2-20261124T155402-r1002, collected 14 killed records.
@@ -16027,7 +16027,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 - This makes Wanted item 1 (name the judge component that moved) the way to find it, rather than another manual record diff.
 - Source: the main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
 
-**Implementation note (2026-11-27).** Judge components use sidecar schema `/2` at `.diagnostics/judge-components/<judge>.json` inside the state-store root, outside candidate records and judge generations. It travels with collected and seeded stores; a merged target store writes the current judge's sidecar after record and deadline work. A mismatch reports changed component names in the `resume` event and stderr. “Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.” Other passthrough values share one aggregate digest; its diagnostic names candidates as “one or more of,” while names that appear or disappear are exact. Sidecar names and diagnostic sizes are bounded and validated; malformed or oversized metadata is unavailable. The first resume after the pre-injection identity change re-executes old records whose judge included run-local assay-injected `PYTHONPATH` entries, including when `PYTHONPATH` was absent before injection and was not passed through. Older stores without usable sidecars report component digests unavailable but do not change record acceptance.
+**Implementation note (2026-11-27).** Judge components use sidecar schema `/2` at `.diagnostics/judge-components/<judge>.json` inside the state-store root, outside candidate records and judge generations. It travels with collected and seeded stores; a merged target store writes the current judge's sidecar after record and deadline work, and only after a successful current-judge record commit or a validated resumed record. A mismatch reports changed component names in the `resume` event and stderr. “Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.” Other passthrough values share one aggregate digest; its diagnostic names candidates as “one or more of,” while names that appear or disappear are exact. Sidecar names and diagnostic sizes are bounded and validated; malformed or oversized metadata is unavailable. A `/1` sidecar at the legacy `judges/<judge>/judge-components.json` path is not read; only this unmerged branch ever wrote `/1` (B602). The first resume after the pre-injection identity change re-executes old records whose judge included run-local assay-injected `PYTHONPATH` entries, including when `PYTHONPATH` was absent before injection and was not passed through. Older stores without usable sidecars report component digests unavailable but do not change record acceptance. A valid-format sidecar can still misname which component changed; that affects the diagnostic only, not resume acceptance (B603).
 
 ## B578 — A kill with rc!=0 and no failing test named is still counted as killed
 
@@ -16430,6 +16430,37 @@ there, `test_cgroup_parent.py` among them, are collected only by the
 **Close when.** The lane collects every `gate/tests` file it can run, with each
 exclusion named and explained, or a check fails when a `gate/tests` file is in
 neither the lane's list nor that exclusion list.
+
+## B602 — A `/1` judge-component sidecar at the legacy path is not read
+
+**Status: OPEN, filed 2026-11-27 (Assay B577 review, finding 1); severity:
+low (diagnostic only).**
+
+`read_judge_components` falls back to
+`judges/<judge>/judge-components.json` when the current
+`.diagnostics/judge-components/<judge>.json` file is absent, but validates only
+schema `/2`. A `/1` sidecar at the legacy path is therefore unavailable and
+the resume diagnostic reports component digests unavailable. Only this
+unmerged branch ever wrote `/1`; no released store was produced with it.
+
+**Close when.** The reader accepts valid `/1` metadata at the legacy path, or
+the fallback is removed and the documentation consistently describes the
+metadata as unavailable.
+
+## B603 — A valid-format judge-component sidecar can misname the mismatch cause
+
+**Status: OPEN, filed 2026-11-27 (Assay B577 review, finding 4); severity:
+low (diagnostic only).**
+
+A sidecar can pass its schema and digest-shape checks while carrying a
+component digest that does not describe the judge named by its file. Comparing
+that metadata can report the wrong changed component. This cannot change
+record acceptance or a mutation result; it only weakens the explanation shown
+for a judge mismatch.
+
+**Close when.** A valid-format sidecar with an incorrect component digest is
+rejected as unavailable or its contents are bound to the recorded judge, with
+a test proving the diagnostic cannot name a false cause.
 
 ## B608 — a failed removal of the probe's capture file is ignored
 
