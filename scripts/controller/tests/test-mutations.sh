@@ -221,7 +221,7 @@ for pi_case in \
   pi-continue-bound-validation:retry-validation \
   pi-report-unset-skips:report-unset \
   pi-run-name-refusal-overwrites:refusal-own-record \
-  pi-run-name-refusal-overwrites:refusal-keeps-records \
+  pi-run-name-refusal-overwrites-records:refusal-keeps-records \
   pi-record-owner-before-accounts:refusal-keeps-records \
   pi-record-owner-before-credentials:refusal-keeps-records \
   pi-done-removed-before-credentials:refusal-keeps-records \

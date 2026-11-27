@@ -2137,7 +2137,8 @@ check_implementer_mode_unchanged() {
   clean_worktree
   argv_reset
   PI_LIVE=0 wait_launch_sequence implementer-mode deepseek-pi-volker pi-success
-  argv_absent '--no-extensions' 'an implementer launch does not carry the review extension switch'
+  argv_has --no-extensions 'an implementer launch disables extension discovery for the fixed backend'
+  argv_has_pair -e "$TEST_CONTROLLER/pi-pidns-extension.js" 'an implementer launch loads the fixed namespace extension'
   argv_absent '--no-mcp' 'an implementer launch does not carry the review MCP switch'
   argv_absent 'read,grep,find,ls' 'an implementer launch does not carry the review tool list'
   assert_mode_prompt implementer 'implementer launch'
@@ -2177,7 +2178,7 @@ check_mode_value_refused() {
 # In review mode the seam may not add ANYTHING: adding a tool is a widening, and
 # a vocabulary of allowed additions is the kind of rule that does not hold.
 check_mode_extra_args_refused() {
-  local before line attempt=0
+  local before line attempt=0 runs=$CONTROLLER_ROOT/runs run_name
   before=$(pi_invocations)
   while IFS= read -r line; do
     [[ -n $line ]] || continue
@@ -2190,6 +2191,11 @@ check_mode_extra_args_refused() {
     contains "$ROOT/focused-command.out" \
       "PI_EXTRA_ARGS may not set '$line' in review mode" \
       "review mode refuses the widening spelling '$line'"
+    run_name=review-extra-$attempt
+    [[ ! -e $runs/$run_name.lock && ! -e $runs/$run_name.mode ]] \
+      || fail "a refused review extra argument '$line' claimed or wrote its run mode"
+    [[ ! -e $runs/session-modes/review-extra-session ]] \
+      || fail "a refused review extra argument '$line' wrote a session mode"
   done <<'CASES'
 --tools
 --tools=read,bash
@@ -2201,11 +2207,6 @@ check_mode_extra_args_refused() {
 -nt
 --no-builtin-tools
 -nbt
---extension
--e
---extension=/tmp/x.js
---no-extensions
--ne
 --no-mcp
 --skill
 --skill=/tmp/skill.md
@@ -2640,6 +2641,7 @@ check_mode_session_record_resume() {
 
 check_mode_session_implementer_unchanged() {
   local runs=$CONTROLLER_ROOT/runs session=mode-session-implementer-only
+  local extension=$TEST_CONTROLLER/pi-pidns-extension.js
   clean_worktree
   mkdir -p "$runs/session-modes"
   printf 'implementer\n' > "$runs/session-modes/$session"
@@ -2654,9 +2656,10 @@ check_mode_session_implementer_unchanged() {
     "$SRC" "$WORKTREE" "$PROMPT" fresh-session-implementer resume "$session" \
     > "$ROOT/fresh-session-implementer.launch.log" 2>&1 < /dev/null \
     || fail 'a pre-existing implementer session was changed into a review'
-  argv_absent '--no-extensions' 'an implementer session does not acquire the review extension switch'
   argv_absent '--no-mcp' 'an implementer session does not acquire the review MCP switch'
   argv_absent 'read,grep,find,ls' 'an implementer session does not acquire the review tool set'
+  argv_has --no-extensions 'an implementer resume selected by the session record disables extension discovery'
+  argv_has_pair -e "$extension" 'an implementer resume selected by the session record loads the fixed extension'
   assert_mode_prompt implementer 'session implementer resume'
   [[ $(cat "$runs/fresh-session-implementer.mode") == implementer ]] \
     || fail 'a pre-existing implementer session recorded review mode'
@@ -2754,6 +2757,8 @@ check_rule_file_missing_refused() {
   local rules=$IMPLEMENTER_RULES
   [[ -r $rules ]] || fail 'the implementer rule paragraph file is missing'
   contains "$rules" 'private PID namespace' 'the implementer rule names the container the signal tests belong in'
+  contains "$rules" 'host procfs' 'the implementer rule states that /proc remains the host procfs'
+  contains "$rules" 'kill -0 1 succeeds' 'the implementer rule documents the namespace PID 1 behavior'
   contains "$rules" 'Never kill by pattern' 'the implementer rule refuses pattern kills'
   contains "$rules" 'no shell experiment' 'the implementer rule refuses shell experiments in the devcontainer'
   [[ -r $REVIEW_RULES ]] || fail 'the review rule paragraph file is missing'
@@ -2805,6 +2810,8 @@ check_mode_rule_paragraph() {
   contains "$IMPLEMENTER_RULES" 'killall' 'the implementer rule names killall'
   contains "$IMPLEMENTER_RULES" 'recorded itself' 'the implementer rule pins the kill to recorded pids'
   contains "$IMPLEMENTER_RULES" 'TERM-trap' 'the implementer rule names the trap tests'
+  contains "$IMPLEMENTER_RULES" 'outer PIDs' 'the implementer rule explains the visible host procfs PIDs'
+  contains "$IMPLEMENTER_RULES" 'kill -0 1 succeeds' 'the implementer rule documents the namespace PID 1 behavior'
   contains "$REVIEW_RULES" 'The review is read from' 'the review rule names what the review is read from'
   contains "$REVIEW_RULES" 'say that it is unknown' 'the review rule names the honest report of an unreadable fact'
 }
@@ -2937,6 +2944,8 @@ JSON
     "$SRC" "$WORKTREE" "$PROMPT" pidns-review > "$ROOT/pidns-review.launch.log" 2>&1 < /dev/null \
     || { cat "$ROOT/pidns-review.launch.log" >&2; fail 'the PID namespace contract changed the review launch'; }
   assert_review_argv 'review remains unchanged'
+  argv_has --no-extensions 'review keeps extension discovery disabled'
+  argv_absent -e 'review argv never loads an extension with -e'
   argv_absent "$extension" 'review does not load the implementer PID namespace extension'
   [[ $(pidns_probe_count) == 0 ]] || fail 'review mode ran an implementer shell preflight'
 }
@@ -2948,40 +2957,80 @@ check_pidns_preflight_refused() {
   : > "$PI_PIDNS_PROBE_LOG"
   before=$(pi_invocations)
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
-    FAKE_PIDNS_WRAPPER_RC=125 "$SRC" "$WORKTREE" "$PROMPT" pidns-preflight-failed
+    FAKE_PIDNS_WRAPPER_RC=125 FAKE_PI_SESSION_ID=pidns-preflight-session \
+    "$SRC" "$WORKTREE" "$PROMPT" pidns-preflight-failed
   contains "$ROOT/focused-command.out" 'pi implementer launch refused before run name claim: PID namespace preflight failed' \
     'a failed namespace preflight refuses the implementer launch'
   [[ $(pi_invocations) == "$before" ]] || fail 'pi started after the PID namespace preflight failed'
   [[ ! -e $runs/pidns-preflight-failed.lock ]] || fail 'a failed PID namespace preflight claimed the run name'
+  [[ ! -e $runs/pidns-preflight-failed.mode ]] || fail 'a failed PID namespace preflight wrote a run mode'
+  [[ ! -e $runs/session-modes/pidns-preflight-session ]] || fail 'a failed PID namespace preflight wrote a session mode'
+
+  # The same ordering applies to a manual implementer resume: preserve its
+  # existing name mode and thread, but do not claim the name or write a session
+  # mode while the required shell wrapper fails preflight.
+  local resume_session=pidns-resume-preflight-session
+  printf 'implementer\n' > "$runs/pidns-resume-preflight.mode"
+  printf '%s\n' "$resume_session" > "$runs/pidns-resume-preflight.thread"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_PIDNS_WRAPPER_RC=125 FAKE_PI_SESSION_ID="$resume_session" \
+    "$SRC" "$WORKTREE" "$PROMPT" pidns-resume-preflight resume "$resume_session"
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi started after the resumed PID namespace preflight failed'
+  [[ ! -e $runs/pidns-resume-preflight.lock ]] || fail 'a refused resumed preflight claimed the run name'
+  [[ $(cat "$runs/pidns-resume-preflight.mode") == implementer ]] \
+    || fail 'a refused resumed preflight changed the existing run mode'
+  [[ $(cat "$runs/pidns-resume-preflight.thread") == "$resume_session" ]] \
+    || fail 'a refused resumed preflight changed the existing thread record'
+  [[ ! -e $runs/session-modes/$resume_session ]] || fail 'a refused resumed preflight wrote a session mode'
 
   mv -- "$TEST_CONTROLLER/pi-pidns-bash" "$TEST_CONTROLLER/pi-pidns-bash.saved"
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
-    "$SRC" "$WORKTREE" "$PROMPT" pidns-wrapper-missing
+    FAKE_PI_SESSION_ID=pidns-wrapper-missing-session "$SRC" "$WORKTREE" "$PROMPT" pidns-wrapper-missing
   mv -- "$TEST_CONTROLLER/pi-pidns-bash.saved" "$TEST_CONTROLLER/pi-pidns-bash"
   contains "$ROOT/focused-command.out" 'pi PID namespace wrapper is missing or not executable' \
     'an absent shell wrapper refuses before claim'
   [[ $(pi_invocations) == "$before" ]] || fail 'pi started while its PID namespace wrapper was missing'
   [[ ! -e $runs/pidns-wrapper-missing.lock ]] || fail 'a missing PID namespace wrapper claimed the run name'
+  [[ ! -e $runs/pidns-wrapper-missing.mode ]] || fail 'a missing PID namespace wrapper wrote a run mode'
+  [[ ! -e $runs/session-modes/pidns-wrapper-missing-session ]] \
+    || fail 'a missing PID namespace wrapper wrote a session mode'
 
   mv -- "$TEST_CONTROLLER/pi-pidns-extension.js" "$TEST_CONTROLLER/pi-pidns-extension.js.saved"
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
-    "$SRC" "$WORKTREE" "$PROMPT" pidns-extension-missing
+    FAKE_PI_SESSION_ID=pidns-extension-missing-session "$SRC" "$WORKTREE" "$PROMPT" pidns-extension-missing
   mv -- "$TEST_CONTROLLER/pi-pidns-extension.js.saved" "$TEST_CONTROLLER/pi-pidns-extension.js"
   contains "$ROOT/focused-command.out" 'pi PID namespace extension is missing or unreadable' \
     'an absent namespace extension refuses before claim'
   [[ $(pi_invocations) == "$before" ]] || fail 'pi started while its PID namespace extension was missing'
   [[ ! -e $runs/pidns-extension-missing.lock ]] || fail 'a missing PID namespace extension claimed a run name'
+  [[ ! -e $runs/pidns-extension-missing.mode ]] || fail 'a missing PID namespace extension wrote a run mode'
+  [[ ! -e $runs/session-modes/pidns-extension-missing-session ]] \
+    || fail 'a missing PID namespace extension wrote a session mode'
 }
 
 check_pidns_extension_args_refused() {
-  local line attempt=0 before=$CONTROLLER_ROOT/runs
-  for line in --extension --extension=/tmp/override.js -e --no-extensions -ne; do
-    attempt=$(( attempt + 1 ))
-    expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
-      PI_EXTRA_ARGS="$line" "$SRC" "$WORKTREE" "$PROMPT" "pidns-extra-$attempt"
-    contains "$ROOT/focused-command.out" 'PI_EXTRA_ARGS may not load or disable extensions in implementer mode' \
-      "implementer PI_EXTRA_ARGS refuses extension control '$line'"
-    [[ ! -e $before/pidns-extra-$attempt.lock ]] || fail "the refused extension argument '$line' claimed a run name"
+  local line run_mode attempt=0 runs=$CONTROLLER_ROOT/runs run_name session_id
+  local -a extension_controls=(--extension --extension=/tmp/override.js -e --no-extensions -ne)
+  for run_mode in implementer review; do
+    for line in "${extension_controls[@]}"; do
+      attempt=$(( attempt + 1 ))
+      run_name=pidns-extra-$run_mode-$attempt
+      session_id=pidns-extra-$run_mode-$attempt-session
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+        PI_RUN_MODE="$run_mode" PI_EXTRA_ARGS="$line" FAKE_PI_SESSION_ID="$session_id" \
+        "$SRC" "$WORKTREE" "$PROMPT" "$run_name"
+      if [[ $run_mode == review ]]; then
+        contains "$ROOT/focused-command.out" "PI_EXTRA_ARGS may not set '$line' in review mode" \
+          "review PI_EXTRA_ARGS refuses extension control '$line' through the shared classification"
+      else
+        contains "$ROOT/focused-command.out" 'PI_EXTRA_ARGS may not load or disable extensions in implementer mode' \
+          "implementer PI_EXTRA_ARGS refuses extension control '$line' through the shared classification"
+      fi
+      [[ ! -e $runs/$run_name.lock && ! -e $runs/$run_name.mode ]] \
+        || fail "the refused $run_mode extension argument '$line' claimed or wrote its run mode"
+      [[ ! -e $runs/session-modes/$session_id ]] \
+        || fail "the refused $run_mode extension argument '$line' wrote a session mode"
+    done
   done
 }
 

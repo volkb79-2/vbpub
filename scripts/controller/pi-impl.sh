@@ -48,9 +48,10 @@
 # `--session-dir`, `-c`/`--continue`, `-r`/`--resume`, `--fork` and a bare `--`
 # are refused before anything is claimed or launched. The seam exists for a
 # caller that must restrict pi's tools; an empty or unset value adds nothing.
-# Implementer mode refuses extension load/disable flags so this seam cannot
-# replace the fixed PID namespace backend. In REVIEW mode the seam is narrower
-# still (see PI_RUN_MODE below).
+# One shared classifier refuses extension load/disable flags in both modes: the
+# implementer keeps its fixed PID namespace backend, and review cannot add code.
+# In REVIEW mode the seam is narrower still: every element is refused (see
+# PI_RUN_MODE below).
 #
 # PI_RUN_MODE selects the contract this launch runs under:
 #
@@ -770,6 +771,13 @@ fi
 # before the run name is claimed, so a malformed value retires and overwrites
 # nothing.
 extra_pi_args=()
+is_pi_extension_control_arg() {
+  case $1 in
+    --extension | --extension=* | -e | --no-extensions | -ne) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 parse_extra_pi_args() {
   local line
   [[ -n ${PI_EXTRA_ARGS-} ]] || return 0
@@ -784,6 +792,17 @@ parse_extra_pi_args() {
         return 1
         ;;
     esac
+    # One shared classification keeps these extension controls refused in both
+    # modes. Implementer mode must keep its fixed namespace extension; review
+    # mode must not load an extension (and independently rejects every extra).
+    if is_pi_extension_control_arg "$line"; then
+      if [[ $run_mode == review ]]; then
+        echo "PI_EXTRA_ARGS may not set '$line' in review mode: PI_RUN_MODE=review owns pi's extension selection" >&2
+      else
+        echo "PI_EXTRA_ARGS may not load or disable extensions in implementer mode: the PID namespace shell is fixed" >&2
+      fi
+      return 1
+    fi
     if [[ $run_mode == review ]]; then
       # Review mode owns what the reviewer may DO, so the seam may not touch it.
       # Every spelling is pi 1.6.0's own (its `--help` and dist/cli/args.js, read
@@ -793,37 +812,23 @@ parse_extra_pi_args() {
       #   --exclude-tools/-xt                :127  edits that selection
       #   --no-tools/-nt, --no-builtin-tools/-nbt :108/:111 change it (the latter
       #                     keeps extension/custom tools enabled)
-      #   --extension/-e    :156  loads code, and explicit -e paths still work
-      #                     WITH --no-extensions (its own --help, :320)
-      #   --no-extensions/-ne, --no-mcp      :160/:163  the flags the review sets
       #   --skill, --no-skills/-ns, --prompt-template, --no-prompt-templates/-np
       #                     :166,:188,:170,:191  instructions the reviewer reads
       #   --approve/-a, --no-approve/-na     :229/:232  project trust, which lets
       #                     project-local extensions load and execute
       #                     (dist/main.js:631-659, dist/core/project-trust.js:18-24)
-      # Flags outside this list cannot add a tool or code here: `--no-extensions`
-      # and `--no-mcp` load none, and an unparsed `--flag value` only reaches
-      # extensions through extensionFlagValues (dist/cli/args.js:236-256,
-      # dist/main.js:665), of which there are none.
+      # Extension controls are classified once above. `--no-mcp` loads none,
+      # and an unparsed `--flag value` only reaches extensions through
+      # extensionFlagValues (dist/cli/args.js:236-256, dist/main.js:665), of
+      # which there are none.
       case $line in
         --tools | --tools=* | -t | --exclude-tools | --exclude-tools=* | -xt | \
           --no-tools | -nt | --no-builtin-tools | -nbt | \
-          --extension | --extension=* | -e | --no-extensions | -ne | --no-mcp | \
+          --no-mcp | \
           --skill | --skill=* | --no-skills | -ns | \
           --prompt-template | --prompt-template=* | --no-prompt-templates | -np | \
           --approve | -a | --no-approve | -na)
           echo "PI_EXTRA_ARGS may not set '$line' in review mode: PI_RUN_MODE=review owns pi's tool selection, extensions, MCP, skills, prompt templates and project trust" >&2
-          return 1
-          ;;
-      esac
-    fi
-    if [[ $run_mode == implementer ]]; then
-      # The extension is a launch invariant, not another PI_EXTRA_ARGS seam.
-      # An extra extension could intercept user_bash before the guard handler
-      # or replace the bash tool after it.
-      case $line in
-        --extension | --extension=* | -e | --no-extensions | -ne)
-          echo "PI_EXTRA_ARGS may not load or disable extensions in implementer mode: the PID namespace shell is fixed" >&2
           return 1
           ;;
       esac

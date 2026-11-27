@@ -791,6 +791,12 @@ pi_wrapper_with_lib_mutant(
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites.sh",
        'controller_run_claim "$name" || exit 2',
        'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
+# Keep the same owner-ordering defect under a distinct mutant name for the
+# accepted-record oracle; test-mutations.sh gives each named mutant one loop
+# entry even when two focused checks exercise the same weak source edge.
+mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites-records.sh",
+       'controller_run_claim "$name" || exit 2',
+       'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
 # CTL-23: the owner record belongs to a launch that is REAL. One mutant per
 # refusal the record must stay behind, so each clause is judged by its own case.
 mutant("scripts/controller/pi-impl.sh", "pi-record-owner-before-accounts.sh",
@@ -989,13 +995,8 @@ mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-check-dropped.sh",
        '  fi\n',
        '  : # the extension file is assumed present\n')
 mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-args-allowed.sh",
-       '      case $line in\n'
-       '        --extension | --extension=* | -e | --no-extensions | -ne)\n'
-       '          echo "PI_EXTRA_ARGS may not load or disable extensions in implementer mode: the PID namespace shell is fixed" >&2\n'
-       '          return 1\n'
-       '          ;;\n'
-       '      esac',
-       '      : # extension args are allowed')
+       '    --extension | --extension=* | -e | --no-extensions | -ne) return 0 ;;',
+       '    --extension | --extension=* | -e | --no-extensions | -ne) return 1 ;;')
 
 mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-user-namespace",
        '  --unshare-user\n  --unshare-pid',
