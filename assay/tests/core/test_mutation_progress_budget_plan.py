@@ -2384,3 +2384,74 @@ def test_plan_discloses_a_binding_budget_with_its_reason(tmp_path):
     assert bound["cpu_without_progress_s"] is None
     assert bound["per_test_baseline_tests"] is None
     assert plan["budget_per_candidate_s"] == 30.0
+
+
+def test_no_progress_wall_stop_is_unclassified_and_retried_on_resume(tmp_path):
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    calls = []
+
+    def stop_without_progress(argv, *, env, cwd, timeout):
+        calls.append(timeout)
+        raise liveness.LivenessNoProgressWallExpired(
+            argv,
+            timeout=timeout,
+            wall_seconds=48.25,
+            wall_bound_s=48.0,
+            output=b"",
+            stderr=b"",
+        )
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(
+        lane,
+        cwd=repo.path,
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
+            list(argv), returncode=0
+        ),
+    )
+    for resume in (False, True):
+        with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+            with pytest.raises(AssayError) as excinfo:
+                run_mutation(
+                    baseline=baseline,
+                    prepared=prepared,
+                    plan=make_plan(lane),
+                    deadline=make_deadline(budget_seconds=180.0),
+                    targets=_TARGETS,
+                    adapter=PythonAdapter(),
+                    jobs=1,
+                    max_mutants=10,
+                    operators=("python:bool-const-flip",),
+                    process_runner=stop_without_progress,
+                    clock=lambda: datetime.now(timezone.utc),
+                    budget_per_candidate_seconds=12.0,
+                    liveness_watch_armed=True,
+                    liveness_cpu_without_progress_bound_s=12.0,
+                    liveness_per_test_baseline_s={},
+                    progress_artifact=progress_path,
+                    state_root=state_root,
+                    resume=resume,
+                )
+        error = excinfo.value
+        assert error.outcome is Outcome.BUDGET_EXCEEDED
+        assert error.reason_code is ReasonCode.LANE_TIMEOUT
+        assert "candidate " in str(error)
+        assert "48.2 wall seconds" in str(error)
+        assert "48.0s" in str(error)
+        assert "attempt is unclassified" in str(error)
+        assert "retried on resume" in str(error)
+        # A second resume reaches the same command because the interrupted
+        # attempt wrote no candidate result or budget/hung bucket.
+        assert not list(state_root.rglob("*.json"))
+
+    assert len(calls) == 2
+    progress = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert not any(event.get("event") == "candidate" for event in progress)

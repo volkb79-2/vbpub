@@ -695,12 +695,36 @@ class LivenessHungExpired(subprocess.TimeoutExpired):
         self.resource_evidence = dict(resource_evidence)
 
 
+class LivenessNoProgressWallExpired(subprocess.TimeoutExpired):
+    """Raised when an armed candidate has no completed event for its wall cap.
+
+    This stops the run without classifying the attempt. `mutation.run_mutation`
+    converts it to the existing lane-timeout fatal path, so there is no
+    candidate bucket or stored result.
+    """
+
+    def __init__(
+        self,
+        cmd: Sequence[str],
+        *,
+        timeout: float,
+        wall_seconds: float,
+        wall_bound_s: float,
+        output: bytes,
+        stderr: bytes,
+    ) -> None:
+        super().__init__(cmd, timeout=timeout, output=output, stderr=stderr)
+        self.wall_seconds = wall_seconds
+        self.wall_bound_s = wall_bound_s
+
+
 #: (B091/RW-33, P7 A3) The idle-stall thresholds, named once rather than as
 #: bare literals scattered through the monitoring loop below.
 _HUNG_CPU_WINDOW_S = 30.0
 _HUNG_CPU_GROWTH_FLOOR_S = 1.0
 _HUNG_CPU_GROWTH_FRACTION = 1.0 / 30.0
 _HUNG_SESSION_FINISH_GRACE_S = 30.0
+NO_PROGRESS_WALL_FACTOR = 4.0
 _LIVENESS_POLL_INTERVAL_S = 1.0
 _LIVENESS_RESOURCE_TRACE_MAX_SAMPLES = 1024
 
@@ -2374,6 +2398,7 @@ class LivenessRunner:
         previous_poll_at = start
         liveness_clock = 0.0
         last_progress_at = 0.0
+        no_progress_wall_marker = start
         last_event_count = 0
         session_finish_at: float | None = None
         last_stdout_size = 0
@@ -2642,6 +2667,7 @@ class LivenessRunner:
                 completed_marker_count = event_reader.completed_events
                 completed_marker_cpu = cpu_series
                 completed_marker_wall = now
+                no_progress_wall_marker = now
             if session_finish_first_seen:
                 # `session_finish` is not a completed test/phase event, but
                 # teardown after it gets one full CPU-without-progress bound
@@ -2653,6 +2679,7 @@ class LivenessRunner:
                 completed_marker_count = event_reader.completed_events
                 completed_marker_cpu = cpu_series
                 completed_marker_wall = now
+                no_progress_wall_marker = now
 
             cpu_growing = True
             if resource_status == "clear" and cpu_now is not None:
@@ -2820,6 +2847,31 @@ class LivenessRunner:
                     "configured-budget-expired", required_idle_s=bound
                 )
                 raise exc
+
+            # (P4/M2) A wall backstop for candidates that keep burning a
+            # little CPU, or whose CPU source later becomes unreadable. It is
+            # armed only with the calibrated CPU bound, but elapsed wall time
+            # is measured independently of CPU and pressure. Completed events
+            # and the first session_finish re-date the window above. CPU and
+            # per-test hung bounds run first; the lane timeout above also wins
+            # when it reaches its deadline first.
+            if self.cpu_without_progress_bound_s is not None:
+                wall_bound_s = (
+                    NO_PROGRESS_WALL_FACTOR * self.cpu_without_progress_bound_s
+                )
+                wall_seconds = max(0.0, now - no_progress_wall_marker)
+                if wall_seconds >= wall_bound_s:
+                    if window is not None:
+                        window.close()
+                    self._kill(proc)
+                    raise LivenessNoProgressWallExpired(
+                        cmd=list(argv),
+                        timeout=wall_bound_s,
+                        wall_seconds=wall_seconds,
+                        wall_bound_s=wall_bound_s,
+                        output=_read_bytes(stdout_path),
+                        stderr=_read_bytes(stderr_path),
+                    )
 
             self._sleep(self._poll_interval_s)
 

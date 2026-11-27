@@ -186,6 +186,7 @@ from .mutation_store import (
     terminal_record_judges,
     valid_hung_resource_evidence,
 )
+
 from .r2_command import transform_argv
 from .mutation_witness import (
     ReceiptCapture,
@@ -238,6 +239,11 @@ from .vocabulary import (
     CARGO_MUTANTS_REPORT_SCHEMA,
     MUTATION_OPERATORS,
 )
+
+
+class _UnclassifiedLivenessWallStop(AssayError):
+    """A candidate wall backstop ends the sweep without a stored outcome."""
+
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation-only imports; importing at runtime creates cycles
     # Annotation-only: `.adapters.base` imports `MutationSite` from this
@@ -3888,6 +3894,18 @@ def _execute_mutation_jobs(
                             outcome=Outcome.ERROR,
                             reason_code=ReasonCode.EXEC_FAILED,
                         ) from execution_error
+                    if isinstance(
+                        execution_error, liveness.LivenessNoProgressWallExpired
+                    ):
+                        raise _UnclassifiedLivenessWallStop(
+                            f"native R2 candidate {candidate_id(job)} stopped "
+                            f"after {execution_error.wall_seconds:.1f} wall "
+                            f"seconds without a completed event (wall bound "
+                            f"{execution_error.wall_bound_s:.1f}s); the attempt "
+                            "is unclassified and will be retried on resume",
+                            outcome=Outcome.BUDGET_EXCEEDED,
+                            reason_code=ReasonCode.LANE_TIMEOUT,
+                        ) from execution_error
                     raise execution_error
                 assert result is not None
                 if result.process_tree_evidence is None:
@@ -4799,7 +4817,14 @@ def _execute_mutation_jobs(
                         try:
                             results[position] = future.result()
                         except AssayError as exc:
-                            if (
+                            if isinstance(exc, _UnclassifiedLivenessWallStop):
+                                # Unlike an elapsed lane deadline that can
+                                # leave a `budget_exceeded` summary, the wall
+                                # backstop has no candidate result at all.
+                                # Keep it on the fatal path so resume retries
+                                # this identity without a bucket.
+                                fatals[position] = exc
+                            elif (
                                 exc.outcome is Outcome.BUDGET_EXCEEDED
                                 and exc.reason_code is ReasonCode.LANE_TIMEOUT
                             ):

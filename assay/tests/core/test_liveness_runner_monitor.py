@@ -1807,6 +1807,139 @@ def test_the_runner_never_invents_a_cpu_bound_of_its_own() -> None:
     assert runner.cpu_without_progress_bound_s is None
 
 
+def test_wall_backstop_stops_an_armed_candidate_without_completed_events(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7006)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+    assert excinfo.value.wall_bound_s == 4 * 2.0
+    assert excinfo.value.wall_seconds >= excinfo.value.wall_bound_s
+    assert clock.t >= excinfo.value.wall_bound_s
+    assert proc.waited
+
+
+def test_completed_events_redate_the_wall_backstop(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7007)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    reader = _scripted_events(
+        clock,
+        events_path,
+        [(2.0, {"event": "phase"}), (7.0, {"event": "phase"}),
+         (12.0, {"event": "phase"}), (17.0, {"event": "phase"})],
+        proc=proc,
+        finish_at=(24.0, 0),
+    )
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=40.0)
+    assert result.returncode == 0
+    assert clock.t >= 24.0
+
+
+def test_session_finish_redates_the_wall_backstop_once(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7011)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    reader = _scripted_events(
+        clock,
+        events_path,
+        [(5.0, {"event": "session_finish"})],
+    )
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+    assert excinfo.value.wall_seconds >= 8.0
+    assert clock.t >= 13.0
+
+
+def test_wall_backstop_still_fires_after_cpu_becomes_unreadable(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7008)
+    reads = {"count": 0}
+
+    def cpu_reader(_pid: int) -> float:
+        reads["count"] += 1
+        if reads["count"] == 1:
+            return 0.0
+        raise OSError("scripted CPU source became unreadable")
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+    assert excinfo.value.wall_seconds >= 8.0
+    assert reads["count"] > 1
+
+
+def test_wall_backstop_is_disabled_without_a_calibrated_cpu_bound(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7009)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        cpu_without_progress_bound_s=None,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=8.0)
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 8.0
+
+
+def test_lane_deadline_precedes_the_wall_backstop(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7010)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=5.0)
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert excinfo.value.timeout == 5.0
+    assert clock.t == 5.0
+
+
 # --------------------------------------------------------------------------
 # P4/S2: the per-test CPU bound. `pytest_runtest_logstart` dates each test's
 # own window; a candidate whose single in-flight test burns

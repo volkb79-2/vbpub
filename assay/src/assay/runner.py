@@ -1810,6 +1810,11 @@ def _execute_plan_inner(
             cwd=run_cwd,
             timeout=child_timeout,
         )
+    except liveness.LivenessNoProgressWallExpired:
+        # This is an unclassified attempt, not the command result used for a
+        # `budget_exceeded` bucket. Preserve the marker until run_mutation can
+        # attach the candidate identity and take its resume-safe fatal path.
+        raise
     except subprocess.TimeoutExpired as exc:
         # (B027) `TimeoutExpired.stdout`/`.stderr` carry whatever partial
         # bytes `Popen._communicate` had buffered when the timeout fired --
