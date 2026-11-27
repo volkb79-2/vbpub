@@ -135,14 +135,26 @@ inspect_owned_unit_probe() {
     # Absence needs Docker's own statement for this exact name. Ask again with
     # only stderr captured: with --format, a failed inspect also writes an
     # empty stdout line. The second call must exit 1 and its whole stderr must
-    # be that one statement; success, another status or any extra text is
-    # ambiguous.
-    if message="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
-      --format "$format" 2>&1 >/dev/null)"; then
+    # be that one statement with at most one line terminator; success, another
+    # status or any extra byte is ambiguous. The final "x" stops $(...) from
+    # stripping newlines, and NUL becomes "?" so that bash cannot drop it.
+    if message="$(
+      set -o pipefail
+      if timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
+        --format "$format" 2>&1 >/dev/null | tr '\0' '?'; then
+        probe_status=0
+      else
+        probe_status=$?
+      fi
+      printf x
+      exit "$probe_status"
+    )"; then
       return 3
     else
       inspect_status=$?
     fi
+    message="${message%x}"
+    message="${message%$'\n'}"
     absent="no such object: $target"
     [[ "$inspect_status" == 1 \
       && ( "${message,,}" == "${absent,,}" \

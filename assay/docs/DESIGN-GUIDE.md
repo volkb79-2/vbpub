@@ -3117,8 +3117,9 @@ loaded, instantiated, resource-configured slice before starting gate probes.
 Its short verifier runs in the trusted interactive slice, with a private
 cgroup namespace, a quarter-CPU and 128 MiB cap, no capabilities, and no
 network. When a RAM
-reservation is requested, it mounts exactly one host `memory.stat` file
-read-only; it does not mount a cgroupfs tree or change the cgroup namespace. It
+reservation is requested, it attempts to mount exactly one host `memory.stat`
+file read-only; if that mount fails, it retries without it and admits on the raw
+headroom. It never mounts a cgroupfs tree or changes the cgroup namespace. It
 queries the host system manager through the
 mounted system-bus socket as UID 1003, using only `GetUnit` and
 `GetProperty` calls for `LoadState`, `FragmentPath`, and the slice's
