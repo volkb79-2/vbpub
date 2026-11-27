@@ -1512,7 +1512,7 @@ mod tests {
         assert!(body.contains(codes));
         assert!(body.contains("\"limits\":{\"max_frame_bytes\":16777216,"));
         let observer = text(&ready_hello_body(Level::Observer));
-        assert!(observer.contains("\"verbs\":[\"hello\"]"));
+        assert!(observer.contains("\"verbs\":[\"hello\",\"annotate\"]"));
         assert!(observer.contains("\"max_subscriptions\":0"));
     }
 

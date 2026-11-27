@@ -2331,7 +2331,7 @@ mod tests {
             let expected = if level.serves_blocks() {
                 "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]"
             } else {
-                "\"verbs\":[\"hello\"]"
+                "\"verbs\":[\"hello\",\"annotate\"]"
             };
             assert!(out.contains(expected), "{level:?}: {out}");
         }
