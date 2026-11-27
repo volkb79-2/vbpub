@@ -51,7 +51,15 @@
 | FD-046 | Facts tables and one lane-cost store | P2 | OPEN | 2026-11-24 |
 | FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
 | FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
-| FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | OPEN | 2026-11-24 |
+| FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | DONE in P-fd-05 C1 | 2026-11-24 |
+| FD-050 | Add admission queue and legacy charges to the host policy schema before deployment | P1 | OPEN | 2026-11-26 |
+| FD-051 | Retain and prune completed admission terminal records in host agent package C | P2 | OPEN | 2026-11-26 |
+| FD-052 | An inspector ERROR at a fitting lease waiter blocks every later waiter until expiry | P2 | OPEN (known limit) | 2026-11-26 |
+| FD-053 | Prevent overlapping authenticated group prefixes in package C policy | P2 | OPEN | 2026-11-26 |
+| FD-054 | Package C must bound every provider and inspector call made under the queue lock | P1 | OPEN | 2026-11-26 |
+| FD-055 | A stray record after an unconfirmed rollback can leave a charge the waiter never claims | P2 | OPEN | 2026-11-26 |
+| FD-056 | The wait deadline is not rechecked after the queue lock is taken | P3 | OPEN | 2026-11-26 |
+| FD-057 | Admission subprocess tests have no timeout, and the two-process test is weak | P3 | OPEN | 2026-11-26 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -143,8 +151,9 @@ missing service units. The compatibility profile constant is 768 MiB, the
 former lower bound and above the measured 450–500 MB near-idle hot RSS on the
 two 8 GiB hosts (2026-11-14). No reserve term depends on installed RAM.
 
-The collector does not read parent `ctl.slice/memory.min`; older facts may
-contain that field, which is accepted for compatibility and ignored. Fleetd
+Parent `ctl.slice/memory.min` plays no part in the reserve: the planner ignores
+`control_plane.memory_min_bytes`. (`host-facts/2` collects that field again, for
+reporting only.) Fleetd
 emits `reserve_bytes`, `reserve_source`, and
 `reserve_missing_services` in plan and campaign status output. Old host facts
 without the new service values use their profile constant, allowing host
@@ -890,9 +899,9 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md H5, M1
 
 ## FD-042 Two schedulers book v1001: host-local weighted admission in the shared runner
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-24.
+**State:** OPEN — P-fd-05 package C2 delivers the admission library only; it is not wired to a host agent or any caller. **Priority:** P1. **Filed:** 2026-11-24.
 
-runner: host-local weighted admission slots in run-job / fleet host start (weight from the job spec, budget from host /etc); remote-gate and fleetd both admit through it; probe reports held slots; closes FD-003/FD-004 at the host.
+`fleetd.admission` now supplies the stdlib host book: capacity checks, durable charges, a priority queue, aged reservations, and lease accounting. The remaining FD-042 work is the host agent and socket, wiring remote-gate, fleetd, run-gate and ciu callers to that one book, and exposing the held charges in the host probe. FD-003/FD-004 are not closed until that integration ships.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md H3
 
@@ -966,11 +975,106 @@ nothing reads it except tests. Document it as a status marker or drop it.
 
 ## FD-049 host-facts/2: guard_present reshape together with FD-012
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-24.
+**State:** DONE in P-fd-05 C1. **Priority:** P2. **Filed:** 2026-11-24.
 
-Replace the current `host-facts/1` guard block with `guard_present` plus the
-owner's own runtime state. FD-012 becomes registration of each started
-campaign job on thrashguard's registrant socket when present; fleetd does not
-validate or enforce guard rules.
+`host-facts/2` now reports `guard_present`, `guard_state`, `config_digest`, and
+`frozen_units` with explicit wrapped values and null reasons. Freeze events
+remain null until their source is available. This closes the guard-fact reshape
+only. FD-012 remains the separate follow-up to register each started campaign
+job on thrashguard's registrant socket when present; fleetd does not validate
+or enforce guard rules.
 
 Source: .controller-state/design-review-2026-11-24/fleetd.md M1; FD-012
+
+## FD-050 Add host admission policy keys before deployment writes them
+
+**State:** OPEN for design package C. **Priority:** P1. **Filed:** 2026-11-26.
+
+Design package C must add `policy.aging_s`, `policy.legacy_charge_bytes`, and
+`policy.legacy_planned_cores` to the `facts.toml.policy` closed key set in
+`fleetd/src/fleetd/facts.py` before any deployment writes those keys. Writing
+them first breaks fact collection. `aging_s` is required for every queue
+decision; the two legacy charge values are required when a listed job lacks an
+`EXIT` marker. Unknown `policy.legacy_planned_cores` returns 75 with that key
+in the refusal reason.
+
+Source: P-fd-05 C2 controller ruling M4 and the package C host-facts/2 policy
+row.
+
+## FD-051 Retain completed admission terminal records
+
+**State:** OPEN for host agent package C. **Priority:** P2. **Filed:** 2026-11-26.
+
+`fleetd.admission` writes terminal group/digest state before removing the active
+charge-bearing record and does not prune terminal records. The host agent
+package C owns the retention policy and safe pruning boundary.
+
+Source: P-fd-05 C2 controller ruling M2.
+
+## FD-052 Lease inspector ERROR can block later waiters
+
+**State:** OPEN (known limit). **Priority:** P2. **Filed:** 2026-11-26.
+
+A fitting lease waiter whose inspector keeps answering `ERROR` holds no charge
+but can block every waiter that sorts after it, in lower priority classes too,
+until its admission wait expires. The book fails closed; package C may add an
+explicit recovery or retry policy.
+
+Source: P-fd-05 review r1 Low 2 and controller ruling.
+
+## FD-053 Prevent overlapping authenticated group prefixes
+
+**State:** OPEN for host agent package C. **Priority:** P2. **Filed:** 2026-11-26.
+
+The current id check is textual: group `ops` can claim `ops-ci-run-1`, which
+also has a valid-looking prefix for group `ops-ci`. Package C's authenticated
+group policy must prevent overlapping prefixes or assign an unambiguous
+group-specific id namespace. This package records the limit without changing
+the `/1` grammar.
+
+Source: P-fd-05 C2 controller ruling for FU12 group-prefix ambiguity.
+
+## FD-054 Bound every call made under the admission queue lock
+
+**State:** OPEN for host agent package C. **Priority:** P1. **Filed:** 2026-11-26.
+
+`capacity_provider`, `legacy_jobs_provider` and the Docker `inspector` run while
+`queue.lock` is held, and that flock blocks without a timeout. One hung call
+stops every submit, completion, status, cancel and wait expiry, so a merge gate
+waits for ever and a finished job keeps its charge. Nothing over-admits.
+Package C must bound each call and map a timeout to 75 or `ERROR`, before the
+book is wired to a host.
+
+Source: P-fd-05 C2 review r2 M-2.
+
+## FD-055 Stray charged record after an unconfirmed rollback
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-26.
+
+`_atomic_new_json` unlinks the path even when the write failed before the rename,
+and the wait loop does not look for an existing record before admitting. If a
+rollback cannot be confirmed, the waiter counts the stray record against itself
+and expires with "never started" while the record stays charged. Unlink only
+after a successful rename, and check for the record inside the loop.
+
+Source: P-fd-05 C2 review r2 L-5.
+
+## FD-056 Wait deadline is not rechecked under the lock
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-26.
+
+The wait loop checks its deadline before it takes `queue.lock`, so a decision
+delayed by lock contention can admit after the deadline. Harmless for an
+in-process caller; the socket agent must handle a late grant.
+
+Source: P-fd-05 C2 review r2 L-6.
+
+## FD-057 Admission subprocess tests: no timeout, weak two-process case
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-26.
+
+A stalled child hangs the test run instead of failing it, and the two-process
+admission test detects a missing lock only when the interleaving is unlucky. It
+cannot fail spuriously.
+
+Source: P-fd-05 C2 review r2 L-8.

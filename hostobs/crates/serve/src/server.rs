@@ -334,9 +334,10 @@ impl<B: Backend> Server<B> {
         if self.counts.uid(level, peer.uid) >= conn_limits.level.max_connections_per_uid {
             return Accept::Refused;
         }
+        let uid = peer.uid;
         let id = self.hub.add(now_ns);
         let conn = Conn::new(id, level, peer, &conn_limits, now_ns);
-        self.counts.add(level, peer.uid);
+        self.counts.add(level, uid);
         self.conns.insert(id, conn);
         Accept::Accepted(id)
     }
@@ -586,7 +587,7 @@ mod tests {
     use crate::tick::BlockBounds;
 
     const MS: u64 = 1_000_000;
-    const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":1}}"#;
+    const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":2}}"#;
     const CURRENT_ARGS: &str = r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
 
     fn req(corr: u32, verb: &str) -> Vec<u8> {
@@ -784,7 +785,12 @@ mod tests {
         }
 
         fn try_open(&mut self, level: Level, uid: u32) -> Accept {
-            let peer = Peer { uid, pid: 7 };
+            let peer = Peer {
+                uid,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            };
             let accept = self.server.accept(level, Some(peer), self.now);
             if let Accept::Accepted(id) = accept {
                 self.opened.push(id);
@@ -880,7 +886,7 @@ mod tests {
         }
 
         fn ready(&mut self, id: ConnId) {
-            let mut input = client_prefix(1);
+            let mut input = client_prefix(2);
             input.extend_from_slice(&req(1, "hello"));
             self.send(id, &input);
             self.pump(id, usize::MAX);
@@ -1098,7 +1104,12 @@ mod tests {
     #[test]
     fn accept_row_control_level_and_missing_peer_are_refused_uncounted() {
         let mut d = Driver::new();
-        let peer = Peer { uid: 1, pid: 7 };
+        let peer = Peer {
+            uid: 1,
+            pid: Some(7),
+            comm: None,
+            cgroup: None,
+        };
         let control = d.server.accept(Level::Control, Some(peer), 0);
         assert_eq!(control, Accept::Refused);
         assert_eq!(d.server.accept(Level::Observe, None, 0), Accept::Refused);
@@ -1112,11 +1123,54 @@ mod tests {
         let mut d = Driver::new();
         let id = d.open(Level::Observer, 42);
         let conn = d.server.conn(id).expect("conn");
-        assert_eq!(conn.peer(), Peer { uid: 42, pid: 7 });
+        assert_eq!(
+            conn.peer(),
+            &Peer {
+                uid: 42,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            }
+        );
         assert_eq!(conn.state(), State::Undecided);
         assert_eq!(d.server.uid_count(Level::Observer, 42), 1);
         d.tick(5_001 * MS);
         assert!(d.server.is_closed(id));
+    }
+
+    #[test]
+    fn accept_serves_an_invisible_pid_and_keeps_the_uid_cap_authoritative() {
+        let mut limits = ServerLimits::new();
+        limits.observe.max_connections_per_uid = 1;
+        let mut d = Driver::with(limits);
+        let invisible = Peer {
+            uid: 42,
+            pid: None,
+            comm: None,
+            cgroup: None,
+        };
+        let expected = invisible.clone();
+        let id = match d.server.accept(Level::Observe, Some(invisible), 0) {
+            Accept::Accepted(id) => id,
+            Accept::Refused => panic!("peer with invisible pid was refused"),
+        };
+        assert_eq!(d.server.conn(id).expect("conn").peer(), &expected);
+        assert_eq!(d.server.uid_count(Level::Observe, 42), 1);
+
+        assert_eq!(
+            d.server.accept(
+                Level::Observe,
+                Some(Peer {
+                    uid: 42,
+                    pid: Some(99),
+                    comm: Some(String::from("different-label")),
+                    cgroup: None,
+                }),
+                0,
+            ),
+            Accept::Refused
+        );
+        assert_eq!(d.server.uid_count(Level::Observe, 42), 1);
     }
 
     // ---- R22: every close path releases everything ----
@@ -1222,7 +1276,7 @@ mod tests {
     fn path_hello_timer(d: &mut Driver, level: Level) {
         let id = d.open(level, 1000);
         register(d, id, 2, 1);
-        d.send(id, &client_prefix(1));
+        d.send(id, &client_prefix(2));
         let deadline_ms = d
             .server
             .limits()
@@ -1533,11 +1587,11 @@ mod tests {
     fn r20_hello_deadline_beats_the_stall_on_the_unread_prefix() {
         let mut d = Driver::new();
         let id = d.open(Level::Observe, 1000);
-        d.send(id, &client_prefix(1));
+        d.send(id, &client_prefix(2));
         d.tick(5_001 * MS);
         assert_eq!(d.close_code(id), Some(Code::Deadline));
         let last = d.server.take_final(id).expect("final");
-        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(1))));
+        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(2))));
         assert!(text(&last).contains("deadline"));
     }
 
@@ -1547,13 +1601,13 @@ mod tests {
         limits.observe.hello_deadline_ms = 10_000;
         let mut d = Driver::with(limits);
         let id = d.open(Level::Observe, 1000);
-        d.send(id, &client_prefix(1));
+        d.send(id, &client_prefix(2));
         d.tick(5_000 * MS);
         assert_eq!(d.close_code(id), None);
         d.tick(MS);
         assert_eq!(d.close_code(id), Some(Code::SlowClient));
         let last = d.server.take_final(id).expect("final");
-        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(1))));
+        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(2))));
         assert!(text(&last).contains("slow-client"));
     }
 
@@ -1611,15 +1665,15 @@ mod tests {
         let mut d = Driver::new();
         let undecided = d.open(Level::Observe, 1);
         let awaiting = d.open(Level::Operator, 1);
-        d.send(awaiting, &client_prefix(1));
+        d.send(awaiting, &client_prefix(2));
         let partial = d.open(Level::Observe, 2);
-        d.send(partial, &client_prefix(1));
+        d.send(partial, &client_prefix(2));
         assert_eq!(d.pump(partial, 5), 5);
         let swept = d.server.shutdown();
         assert_eq!(swept, vec![undecided, partial]);
         assert!(d.server.is_closed(awaiting));
         let last = d.server.take_final(awaiting).expect("final");
-        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(1))));
+        assert!(last.starts_with(&server_prefix(1, SERVER_MINOR.min(2))));
         assert!(text(&last).contains("shutting-down"));
         assert_eq!(d.server.take_final(partial), None);
         d.settle_all();
@@ -1629,7 +1683,7 @@ mod tests {
     // ---- interleaving, status, control cap ----
 
     fn binary_script() -> Vec<u8> {
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         input.extend_from_slice(&req(2, "status"));
         input
@@ -1698,7 +1752,7 @@ mod tests {
     }
 
     fn pipeline_of_forbidden_requests() -> Vec<u8> {
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         for corr in 2..122 {
             input.extend_from_slice(&req(corr, "status"));
@@ -1829,14 +1883,28 @@ mod tests {
         backend.current.insert(selection.clone(), Ok(data));
         let mut server = Server::new(limits, backend);
         let uid = 42;
-        let Accept::Accepted(observe) =
-            server.accept(Level::Observe, Some(Peer { uid, pid: 7 }), 0)
-        else {
+        let Accept::Accepted(observe) = server.accept(
+            Level::Observe,
+            Some(Peer {
+                uid,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            }),
+            0,
+        ) else {
             panic!("observe accepted");
         };
-        let Accept::Accepted(operator) =
-            server.accept(Level::Operator, Some(Peer { uid, pid: 8 }), 0)
-        else {
+        let Accept::Accepted(operator) = server.accept(
+            Level::Operator,
+            Some(Peer {
+                uid,
+                pid: Some(8),
+                comm: None,
+                cgroup: None,
+            }),
+            0,
+        ) else {
             panic!("operator accepted");
         };
 
@@ -1941,12 +2009,12 @@ mod tests {
         limits.probe.max_block_bytes = query_cap.saturating_mul(4);
         let mut d = Driver::with(limits);
         let id = d.open(Level::Observe, 1);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         d.send(id, &input);
         d.pump(id, usize::MAX);
         let hello = d.take_out(id);
-        let prefix = server_prefix(1, 1);
+        let prefix = server_prefix(1, 2);
         assert_eq!(hello.get(..8), Some(prefix.as_slice()));
         let rep = frames(hello.get(8..).unwrap_or_default());
         assert_eq!(rep.len(), 1);
@@ -1992,7 +2060,7 @@ mod tests {
         let mut d = Driver::with(limits);
         assert_eq!(d.server.limits(), &unified);
         let id = d.open(Level::Observe, 1);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         d.send(id, &input);
         d.pump(id, usize::MAX);
@@ -2178,7 +2246,7 @@ mod tests {
         let mut d = Driver::new();
         for level in SERVED {
             let id = d.open(level, 1);
-            let mut input = client_prefix(1);
+            let mut input = client_prefix(2);
             input.extend_from_slice(&req(1, "hello"));
             d.send(id, &input);
             d.pump(id, usize::MAX);
@@ -2768,7 +2836,7 @@ mod tests {
 
     fn payload(seed: &mut u64) -> Vec<u8> {
         match xorshift(seed) % 9 {
-            0 => client_prefix(1),
+            0 => client_prefix(2),
             1 => req(1, "hello"),
             2 => req(2, "status"),
             3 => line(1, "hello", HELLO_ARGS),
@@ -2836,7 +2904,12 @@ mod tests {
                     let pick = usize::try_from(xorshift(&mut seed) % 4).unwrap_or(0);
                     let level = Level::ALL[pick];
                     let uid = 1 + u32::try_from(xorshift(&mut seed) % 3).unwrap_or(0);
-                    let mut peer = Some(Peer { uid, pid: 7 });
+                    let mut peer = Some(Peer {
+                        uid,
+                        pid: Some(7),
+                        comm: None,
+                        cgroup: None,
+                    });
                     if xorshift(&mut seed).is_multiple_of(8) {
                         peer = None;
                     }

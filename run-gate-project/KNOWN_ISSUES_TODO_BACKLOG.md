@@ -210,6 +210,7 @@ SPEC §9.
 | RG-317 | two tests judge other projects from run-gate's suite (`test_lanes_check.py` real-repository sweep, `test_tester_unified_base_variants.py`) | Minor | OPEN 2026-11-25 (filed by RG-297) |
 | RG-318 | the assay version pin for forwarded store flags (`assay >= 12.3.0` floor, `capabilities` probe at run time) | Minor | CLOSED IN THIS DOCUMENTATION-AND-CODE CHANGE 2026-11-25 (`assay-v12.3.0` released) |
 | RG-319 | no per-run `--env` in `remote-gate`: a job's only environment is the per-repo PROFILE `env` table | Minor | OPEN 2026-11-25 (filed by the RG-297 fix round) |
+| RG-320 | no stall watch on exec/bare-host command lanes or on any lane that declares no `stall_timeout`; RG-58's WARN asserted the gap | Enhancement | FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`): auto bound on every watchable kind, NEW output-stream signal for exec/bare-host, disclosure + run record name the bound and its source (an assay lane publishes the RG-7 RULE it already had, `auto-derived`); sequence stays unwatched by decision (members carry the watches); command lanes without measured output declare a bound, as a rule equal to their budget, and every command lane without one needs progress evidence in `estate-lint/stall-progress-inventory.toml`, enforced by estate-lint (RG-326, finding RG-328); `budget = "unbounded"` remains P2 |
 | RG-321 | ephemeral gate lane containers do not lose host OOM selection to the interactive controller | Enhancement | FIXED IN THIS BRANCH (rev 76) |
 | RG-322 | RG-297 review L-a/L-b/L-c follow-ups: refusal text, remedy and precedence | Low | FIXED IN THIS BRANCH (rev 76) |
 | RG-323 | gate containers lack Assay's benchmark record and host identity inputs for effective CPU-time bounds | Enhancement | OPEN 2026-11-26 |
@@ -9932,6 +9933,11 @@ Source: vbpub-core, P-core-RG307 Opus review r1 (`~/core-runs/rg307b-review-r1.m
 
 Source: vbpub-core, rg307b gate-full failure 2026-11-24 (`~/controller/remote-gates/rgw-gate-full-20261124T144400-v1001/`), main's ruling "file RG-313 now" (load-independent testing rule).
 
+Second sighting 2026-11-26 (`rgw-gate-full-20261126T211128-v1001`, head 690bb5e49, assay-r1; passed in the selftest lane
+and in the retry). Review note, not reproduced: the client waits for the follower, so the sleep window alone does not explain a
+leaked shell; SIGTERM arriving inside `Popen`, before `proc` is bound, would. RG-320 adds a pipe to that call (every command
+lane), which may widen such a window; no evidence either way.
+
 ## RG-314 — a `{worktree}` env value that is also passed through to Assay breaks every seeded resume
 
 **Status:** OPEN 2026-11-24 (reported by vbpub-rollback from the R2 run `rgw-r2-20261124T162538-r1002`: `rejected_total=14`, Assay B577). Severity: Minor, a lane-authoring trap with a lint gap (no product defect).
@@ -10048,6 +10054,174 @@ Source: RG-297.
   be able to displace the safety posture). The value must never be logged or
   written into the run record.
 Source: RG-297 fix round (subtask 5); verified against the script, not inferred.
+## RG-320 — a stall watch on every watchable lane kind (P1 of the no-time-budgets design)
+
+**Status:** FIXED IN THIS BRANCH (P1 of `docs/design/no-time-budgets/DESIGN.md`,
+operator decision 2026-11-25 "no time budgets that constrain a run"). No cap is
+removed here and `budget = "unbounded"` is still refused (that is P2). Severity: Enhancement.
+
+- **What was wrong.** Silence was bounded only where somebody had declared
+  `stall_timeout`: exactly two lanes in the estate
+  (`truenas/tnt/run-gate.toml` `live-v27`, `live-update`). An assay lane at least
+  had RG-7's auto bound; a `kind = "command"` lane that declared nothing was
+  unwatched, and G1 of the design (exec/bare-host command lanes) had NO signal at
+  all — RG-58's load-time WARN said so out loud ("accepted, but inert").
+- **What ships.** (1) `stall_bound_facts(lane)` is the one derivation of the
+  bound, its SOURCE (`declared`/`auto`) and the text; a lane that declares
+  nothing is armed with `DEFAULT_STALL_BOUND_SECONDS` = 300 s (operator answer
+  Q4), disclosed as `run-gate: stall bound 300s (source: auto)` and recorded as
+  `run_record["stall_bound"] = {seconds, source, signal}` (never
+  `run_record["watch"]`, which is the cgprofile payload). (2) A NEW signal for
+  the exec and bare-host runners: `StreamWatch` over `OutputTee`'s chunk
+  arrivals (`make_output_stream_watch` returns `None` for any non-command kind —
+  an assay lane's liveness stays its progress file, and two differently shaped
+  bounds on one lane would double-report). (3) Container command lanes arm
+  `LogStreamWatch` for EVERY such lane, not only the ones declaring the key.
+  (4) Both watches pause under host memory PSI (`full avg10` above 5) — but ONLY on an auto bound: a
+  declared number is the operator's own and is never paused. (5) Doctors/load
+  WARN retire with the fact they asserted (`host_mode_stall_timeout_inert_reason`
+  survives only as an unused compatibility helper).
+- **Sequence lanes stay unwatched BY DECISION (design G2).** A sequence returns
+  from the dispatch before any runner, so nothing is disclosed or recorded for the
+  sequence itself; each member is watched by its own runner, and `_validate_lane`
+  still REFUSES `stall_timeout` by name there — no accepted-and-inert key is possible.
+  Rejected alternative: a "did the member history move" heartbeat, which is
+  written only on member completion and therefore cannot show progress.
+- **Docs in this change:** README, SPEC (`R-40f` extended, new `R-40i`, `R-08`,
+  `R-30`), CONSUMERS, LANE-AUTHORING, CHANGES.
+- **Open, reported not fixed:** no archived measurement of COMMAND-lane log
+  silence exists, so the 300 s default is a judgement for those lanes rather
+  than a measurement. Known quiet-by-design candidates that may legitimately
+  exceed it are `ciu` `enroll` and `ciu-run-os-integration` (both host-mode, 20 m)
+  and any lane whose child blocks on its own stdout buffering; a false STALL on
+  such a lane is answered by an explicit `stall_timeout` in ITS toml with the
+  measured reason, not by widening the default. The assay side of this (legit
+  1935 s inter-event gaps measured on healthy runs, saved only by the PSI pause)
+  belongs to P4.
+
+Source: vbpub-core, P1 of `docs/design/no-time-budgets/DESIGN.md`.
+
+## RG-326 — lanes that are silent by construction need a real progress signal
+
+**State:** open · **Severity:** medium · **Owner:** - · **Links:** RG-320, docs/design/no-time-budgets/DESIGN.md
+
+**Problem.** RG-320 armed a silence bound on every watchable lane kind, but a
+watch can only judge a signal that moves. Several lanes in this estate are silent
+BY CONSTRUCTION for the whole duration of one step: their script captures the
+interesting subprocess's output itself (`subprocess.run(..., capture_output=True)`
+around `docker load` / `docker build`, `docker run -d` + `docker wait` +
+`docker logs`, a shell `out="$(...)"` around a canary's pytest call), or the
+progress they emit goes to a FILE that only an `assay`-kind lane reads while the
+lane itself is `kind = "command"`. For those lanes the only sound bound is their
+own `budget`, which is why each of them now declares `stall_timeout` EQUAL to its
+`budget` (`estate-lint/stall-progress-inventory.toml` names the command lanes that stay
+unbounded, one on 2026-11-26 out of 131 outside test fixtures; annotated lanes include `assay`
+`rust-r1-qualification`/`rust-r2-qualification`/`replay-pilot` and `cmru`
+`installed-wheel`/`installed-wheel-live`; `mdt-cockpit`
+`oci-push`/`image-runtime`/`image-runtime-built`/
+`vm-system`, `ciu` `enroll`/`ciu-run-os-integration`,
+`shared-ramdisk-depot-manager` `unit`/`coverage`, `cgprofile` `r0-r1`/`gate`,
+`augeaswrap`-family r2 lanes, `wings-patchstack` `wings`/`coverage`, the
+`gate`/`gate-full` wrappers, and others — each `run-gate.toml` comment names the
+exact silent step and says that no silence bound has been measured). The
+`r3`/`assay-r3` CANARY RUNNERS are the same shape and were found in the
+fix-round audit (`run-gate-project` `assay-r3`, `cgprofile` `r3`, `augeaswrap`
+`r3`, `libraries/cli-extended` `r3`, `scripts/damon-analysis` `r3`,
+`scripts/debian-install-v2` `r3`, `scripts/gstammtisch-guide` `r3`): each
+`tools/canary-run.sh` runs its selector with output CAPTURED
+(`out="$(... pytest ... 2>&1)"`, or `>/dev/null 2>&1`) and prints only the
+verdict after it returns, so the lane is silent for the whole of every
+selector with a bound of its own `budget`. An equal-to-
+budget bound cannot fail a lane `main` would let finish, but it also does not
+detect a wedge: it converts "no progress signal" into "no protection". A false
+STALL cannot happen; a real hang is not caught either.
+
+**Wanted.** A real progress signal per lane, so the bound can be tightened below
+the budget honestly:
+- `assay` run from a `kind = "command"` lane: either run it as `kind = "assay"`
+  (so run-gate reads the progress file it already writes), or give the lane a
+  heartbeat on stdout — Assay's `ProgressStream` already records
+  `expect_next_event_within_s` per candidate, which is the fact a bound needs.
+- the `docker load`/`docker build` steps: stream instead of capture
+  (`capture_output=False`), or print a per-step marker from the driver before
+  each import, so the lane's own stdout moves.
+- the detached `docker wait` gates: `docker logs -f` in the background, or a
+  per-suite marker printed as each target finishes.
+- the `out="$(...)"` canary pattern (`tools/canary-run.sh`, seven lanes above):
+  `tee` through a file, or print the selector's name BEFORE the captured call.
+  Then each lane's `stall_timeout` can be measured and lowered; until then its
+  comment stays true and its bound stays equal to its budget.
+
+The five additions in round 2 were checked against their producers: Rust R1
+captures all Cargo output and prints no progress; Rust R2 captures each
+cargo-mutants case and reports after it returns; replay-pilot captures pytest
+and reports after each mutant/pristine pair; installed-wheel captures its
+build/install/render commands and prints after completion.
+
+Source: H1 of the RG-320 fix rounds 1 and 2 (reviews `ntb-p1-review-r1.md` and
+`ntb-p1-review-r2b.md`, controller rulings H1); every claim above was checked
+in the code that produces the output, not inferred from lane names.
+
+## RG-327 — a STALLED `exec` lane leaves the in-container command running
+
+**State:** open · **Severity:** medium · **Owner:** - · **Links:** RG-320, RG-41, run-gate-project/run_gate.py (exec stall path)
+
+**Problem.** A stall on an `exec` lane terminates the `docker exec` CLIENT
+process group. `docker exec` disconnecting does not reliably stop the
+in-container child (`run_gate.py` says so at its own exec-spawn comment, and the
+same fact is why the container path calls `docker kill`), so a stalled exec lane
+reports `STALLED`/`ERROR` while the suite it started keeps consuming the shared
+persistent runner's CPU. Before RG-320 this path was reachable only for an assay
+lane's progress watch; RG-320 arms every `exec` command lane, so the exposure
+widened from a few lanes to all of them. The STALLED message now says the
+in-container command may still be running (one sentence, added in the RG-320 fix
+round), so the operator is not misled, but nothing stops the survivor.
+
+**Wanted.** On the exec stall path, ask the runner to stop the in-container child
+before/after terminating the client — e.g. a per-invocation `timeout` wrapper
+around the in-container command (the `budget` wrapper the lane already uses when
+it declares one), or a `docker exec <container> pkill -f <marker>` using a marker
+run-gate itself put on the command line, disclosed by name in the STALLED
+message. Do NOT kill by container: the exec target is SHARED between lanes.
+Failures of the stop attempt must be reported, never swallowed — a survivor that
+nobody noticed is the defect this item exists for.
+
+Source: L1 of the RG-320 fix round 1.
+
+## RG-328 — a lane's `stall_timeout` and its `budget` are read side by side but nothing checks that the bound is fitting
+
+**State:** open · **Severity:** low · **Owner:** - · **Links:** RG-320, RG-326, RG-320 fix round 1 (H1)
+
+**Problem.** H1 of the RG-320 fix round declared `stall_timeout` EQUAL to each
+lane's own `budget` wherever a lane is silent by construction, which is an
+honest and safe bound (it can never stop a lane `main` would let finish) but it
+also means those lanes are effectively UNWATCHED: a real wedge in them is only
+noticed when the budget ends the lane, so P1 adds no protection there and RG-326
+records that as "no protection" rather than "protection". Today nothing notices
+such a pairing: `budget` and `stall_timeout` are separate keys with the same
+duration grammar, read side by side by `print_lane_bounds`, validated
+independently, and never compared. A lane that later drifts into the same shape
+(silent by construction, bound declared, bound set wrong) is invisible, and the
+reverse case — a `stall_timeout` declared SHORTER than a lane's own legitimate
+silent window — is invisible too, right up to the false STALL that H1 exists to
+prevent.
+
+**Wanted.** A load-time (or `lanes --check`) FINDING, not a refusal, that names a
+lanes whose `stall_timeout >= budget` as "this lane is silent-by-construction or
+declares a bound it can never reach: the bound protects nothing" — so the estate
+can see how many lanes are in that state, and so a new lane in the same shape is
+visible at review instead of only on a wedge. Pair it with RG-326's progress-signal
+work: the finding should disappear exactly when a lane gains a real signal and
+its bound can be lowered below its budget.
+
+**Do not** turn it into an error: a bound equal to a budget is legitimate (a lane
+of unknown cadence whose budget is the only fact anyone has), and refusing it
+would make a first-ever lane unwatchable again — the exact trade-off Q4 already
+settled in the other direction.
+
+Source: H1 of the RG-320 fix round 1, and the seven canary runners found in the
+same audit (RG-326's own note).
+
 
 ## RG-321 — ephemeral gate lanes should lose host OOM races before the controller
 
@@ -10133,7 +10307,7 @@ dual-version support. Sources: `assay/src/assay/cli.py` and
 
 ## RG-329 — host runners need a private Run-Gate start and verdict event stream
 
-**Status:** FIXED IN THIS BRANCH (rev 77, P-fd-05 package A2). Severity: Enhancement.
+**Status:** FIXED IN THIS BRANCH (rev 78, P-fd-05 package A2). Severity: Enhancement.
 
 A fleet runner cannot trust the shared lane log for container identity or
 verdict: lane output can forge Run-Gate's anchored summary, and Run-Gate can
@@ -10153,3 +10327,18 @@ summary and sequence-inheritance tests were observed failing before their
 implementation.
 
 Source: P-fd-05 package A2 controller rulings and design §§2.2, 4.4, 7.
+
+## RG-330 — the command-lane liveness check has known escapes and untested rules
+
+**State:** open · **Severity:** low · **Owner:** - · **Links:** RG-320, RG-326
+
+**Problem.** `estate-lint/tests/test_command_liveness_inventory.py` reads only files named `run-gate.toml` (a central
+`[lanes.*]` table in `run-gate.root.toml` would escape; none exists today); its `RUN_GATE` spellings omit `run_gate.py`
+and path forms; calls made inside scripts are not followed; sequence members and derived assay bounds are not compared
+with a wrapper's bound; the progress evidence check is textual, so a false guarantee passes it. No synthetic test covers
+`_progress_errors`, a removed or renamed lane, the undeclared wrapper's 300 s default, or a stale wrapper entry.
+
+**Wanted.** Close the escapes that are cheap to close, add a synthetic test per untested rule, and review each new
+inventory entry against a gate log (longest observed gap between output lines).
+
+Source: vbpub-core, RG-320 P1 delta review, 2026-11-26.

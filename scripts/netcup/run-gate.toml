@@ -23,3 +23,6 @@ argv = ["bash", "-c", "cd {worktree}/scripts/netcup && export PYTHONPATH=\"{work
 # measured here or a real regression in the suite's cost; investigate it, do not
 # absorb it here.
 budget = "11m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during pytest -q; the test output
+# cadence is not guaranteed within 300s; no silence bound is measured; see RG-326.
+stall_timeout = "11m"

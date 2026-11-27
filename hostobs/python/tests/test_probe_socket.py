@@ -9,6 +9,7 @@ missing or non-executable value is a failure, never a skip.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -40,9 +41,42 @@ class RealProbeSocket(unittest.TestCase):
         self.binary = os.path.abspath(binary)
         self.temp = tempfile.TemporaryDirectory(prefix="hostobs-p09-")
         self.addCleanup(self.temp.cleanup)
+        self.tmpfs_dir = Path("/dev/shm") / (
+            f"hostobs-conformance-{os.getpid()}-{time.monotonic_ns()}"
+        )
+        self.addCleanup(shutil.rmtree, self.tmpfs_dir, True)
+        self.assert_dev_shm_tmpfs()
+        self.store_dir = Path(self.temp.name) / "store"
         self.listener, self.address = self.listener_address()
         self.addCleanup(self.listener.close)
         self.config = Path(self.temp.name) / "hostobsd.toml"
+        self.write_config(self.tmpfs_dir, self.store_dir)
+
+    def assert_dev_shm_tmpfs(self) -> None:
+        try:
+            lines = Path("/proc/self/mounts").read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            self.fail(
+                "/dev/shm must be verified as tmpfs for store.tmpfs_dir in the conformance lane; "
+                f"cannot read /proc/self/mounts: {error}"
+            )
+        wanted = Path("/dev/shm")
+        covering: list[tuple[int, int, str]] = []
+        for index, line in enumerate(lines):
+            fields = line.split()
+            if len(fields) < 3:
+                continue
+            mountpoint = fields[1].replace("\\040", " ").replace("\\134", "\\")
+            point = Path(mountpoint)
+            if wanted == point or point in wanted.parents:
+                covering.append((len(point.parts), index, fields[2]))
+        if not covering or max(covering)[2] != "tmpfs":
+            self.fail(
+                "/dev/shm must be tmpfs for store.tmpfs_dir in the conformance lane; "
+                "the real-probe test cannot use /tmp"
+            )
+
+    def write_config(self, tmpfs_dir: Path, store_dir: Path) -> None:
         self.config.write_text(
             "[probe]\n"
             'levels = ["observe"]\n'
@@ -50,7 +84,13 @@ class RealProbeSocket(unittest.TestCase):
             f'cgroup_root = "{FIXTURE_CGROUP}"\n'
             "\n"
             "[limits]\n"
-            "max_rows = 1024\n",
+            "max_rows = 1024\n"
+            "\n"
+            "[store]\n"
+            f'dir = "{store_dir}"\n'
+            f'tmpfs_dir = "{tmpfs_dir}"\n'
+            "events_cap_bytes = 67108864\n"
+            "events_ring_bytes = 4194304\n",
             encoding="utf-8",
         )
 
@@ -144,6 +184,10 @@ class RealProbeSocket(unittest.TestCase):
                 self.address, "observe", client="p09-real-socket", timeout_s=CHILD_WAIT_S
             )
             self.assertEqual(connection.level, "observe")
+            self.assertEqual(
+                connection.verbs,
+                ["hello", "status", "current", "subscribe", "unsubscribe"],
+            )
             self.assertEqual(connection.limits["tick_ms"], 100)
             self.assertEqual(connection.limits["min_interval_ms"], 1_000)
             self.assertEqual(connection.limits["max_rows"], 1024)
@@ -203,6 +247,21 @@ class RealProbeSocket(unittest.TestCase):
         finally:
             client.close()
             self.reap(child)
+
+    def test_disk_backed_store_tmpfs_dir_refuses_before_creating_tiers(self) -> None:
+        disk_tmpfs_dir = Path(self.temp.name) / "disk-tiers"
+        durable_dir = Path(self.temp.name) / "durable-store"
+        self.write_config(disk_tmpfs_dir, durable_dir)
+        child = self.spawn_probe()
+        _, stderr = self.reap(child)
+        self.assertEqual(child.returncode, 2)
+        self.assertEqual(
+            stderr,
+            "hostobs-probe: store.tmpfs_dir must be on tmpfs; "
+            "store.dir is durable storage\n",
+        )
+        self.assertFalse(disk_tmpfs_dir.exists())
+        self.assertFalse(durable_dir.exists())
 
     def test_missing_config_is_refused(self) -> None:
         child = self.spawn_probe(with_config=False)

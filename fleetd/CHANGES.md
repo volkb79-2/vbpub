@@ -4,6 +4,19 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Added
+- Add the stdlib host admission book for capacity fit, durable charges, executor and waiter flock liveness, priority queueing, aged reservations, legacy RAM/core charges, warm-sample decisions, and lease accounting. This is library-only and is not yet wired to the host agent or callers.
+- Persist terminal job group/digest records before releasing completed charges; the host agent package C owns terminal retention.
+- Collect, validate and consume `host-facts/2` with explicit null reasons, load, gate-slice, disk, guard and policy facts; `fleet facts validate` retains `/1` for one migration release.
+- Document the new facts and optional host policy keys without changing planner placement decisions; close FD-049's guard fact reshape.
+
+### Changed
+- Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.
+- The first aged waiter in queue order holds the reservation, fitting or not: nothing else is admitted before it except a strictly higher-priority merge gate. An expired wait names its last refusal, a raising capacity provider refuses with 75, and only the terminal record of a still-active job is read during admission. Lease reconciliation changes a record only on confirmed absence; explicit revoke tombstones while retaining its charge.
+- `fleet facts collect` emits `host-facts/2` only.
+- The planner reads `/2` `cpu.online` and `memory.total_bytes`, and refuses `/1`; legacy `/1` `cpu.for_lanes` and `memory.for_lanes_bytes` are therefore accepted only by `fleet facts validate` during the migration release and no longer affect placement.
+- The collector reads the parent control-plane slice's `memory.min` again and reports it as `control_plane.memory_min_bytes`; the planner ignores it.
+
 <!-- cmru: release history -->
 
 ## [0.1.0] - 2026-11-24

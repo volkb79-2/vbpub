@@ -22,6 +22,7 @@ Two things, both estate-wide:
    and with `--strict` the "outer budget >= inner budget + 5m" margin is a
    failure rather than a warning. A project's own tests no longer restate those
    rules.
+3. **Command-lane liveness** (`tests/test_command_liveness_inventory.py`) checks every tracked lane against `stall-progress-inventory.toml` for missing or stale progress evidence and wrapper bounds.
 
 ## How to run it
 

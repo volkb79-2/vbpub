@@ -80,13 +80,32 @@ use crate::verbs::served_at;
 /// The highest protocol minor the probe serves.
 pub const SERVER_MINOR: u16 = PROTO_MINOR;
 
-/// The peer credentials captured once at accept (R23: `pid` is unused in P5b-1).
+/// A cgroup identity label captured from the peer's `/proc` entry.
+///
+/// This is the same `(st_dev, inode)` pair stored by the model cgroup identity and used by the
+/// `cgroup_id` selector, read from the peer's unverified `/proc` entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CgroupKey {
+    /// The `st_dev` device number of the cgroup directory.
+    pub dev: u64,
+    /// The inode number of the cgroup directory.
+    pub inode: u64,
+}
+
+/// The peer credentials and advisory process label captured once at accept.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Peer {
     /// The peer's uid.
     pub uid: u32,
-    /// The peer's pid.
-    pub pid: u32,
+    /// The pid reported by `SO_PEERCRED` at connect time, in the probe's PID namespace,
+    /// if visible.
+    /// A `/proc` label read later for this pid can describe another process.
+    pub pid: Option<u32>,
+    /// The unverified process name when valid UTF-8 and free of control characters.
+    pub comm: Option<String>,
+    /// The peer's cgroup device and inode for a directory joined under the configured root and
+    /// found on that root's device.
+    pub cgroup: Option<CgroupKey>,
 }
 
 /// The connection states of WIRE.md section 5.4. `Closing` is not a state: it is the moment
@@ -302,8 +321,8 @@ impl Conn {
 
     /// The peer credentials captured at accept.
     #[must_use]
-    pub fn peer(&self) -> Peer {
-        self.peer
+    pub fn peer(&self) -> &Peer {
+        &self.peer
     }
 
     /// The current state.
@@ -993,7 +1012,7 @@ mod tests {
     use crate::tick::BlockBounds;
 
     const MS: u64 = 1_000_000;
-    const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":1}}"#;
+    const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":2}}"#;
 
     fn req(corr: u32, verb: &str) -> Vec<u8> {
         let args = if verb == "hello" { HELLO_ARGS } else { "{}" };
@@ -1154,7 +1173,12 @@ mod tests {
         fn with(level: Level, limits: ConnLimits) -> Rig {
             let mut hub = SendHub::new(queue_limits(&limits));
             let id = hub.add(0);
-            let peer = Peer { uid: 1000, pid: 7 };
+            let peer = Peer {
+                uid: 1000,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            };
             let conn = Conn::new(id, level, peer, &limits, 0);
             let streams = SelectionStreams::new(StreamLimits {
                 bounds: limits.probe.block_bounds(),
@@ -1185,7 +1209,7 @@ mod tests {
         }
 
         fn ready(&mut self) {
-            let mut input = client_prefix(1);
+            let mut input = client_prefix(2);
             input.extend_from_slice(&req(1, "hello"));
             self.send(&input);
             self.pump(usize::MAX);
@@ -1291,7 +1315,7 @@ mod tests {
 
     fn ready_bin(level: Level) -> Rig {
         let mut rig = Rig::new(level);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         rig.send(&input);
         rig.pump(usize::MAX);
@@ -1311,7 +1335,7 @@ mod tests {
 
     fn await_rig() -> Rig {
         let mut rig = Rig::new(Level::Observe);
-        rig.send(&client_prefix(1));
+        rig.send(&client_prefix(2));
         rig.pump(usize::MAX);
         rig.out.clear();
         assert_eq!(rig.conn.state(), State::AwaitHello);
@@ -1322,7 +1346,15 @@ mod tests {
     fn conn_row_1_accept_arms_the_hello_deadline_and_starts_undecided() {
         let rig = Rig::new(Level::Observe);
         assert_eq!(rig.conn.state(), State::Undecided);
-        assert_eq!(rig.conn.peer(), Peer { uid: 1000, pid: 7 });
+        assert_eq!(
+            rig.conn.peer(),
+            &Peer {
+                uid: 1000,
+                pid: Some(7),
+                comm: None,
+                cgroup: None,
+            }
+        );
         assert_eq!(rig.conn.level(), Level::Observe);
         assert_eq!(rig.conn.id(), ConnId(1));
         assert_eq!(rig.conn.bytes_written(), 0);
@@ -1339,8 +1371,8 @@ mod tests {
         let out = text(&rig.finish());
         let head = "{\"ok\":true,\"corr\":1,\"result\":{\"proto\":{\"major\":1";
         assert!(out.starts_with(head));
-        assert!(out.contains("\"minor\":1}") && out.ends_with("}\n"));
-        assert_eq!(rig.conn.minor(), 1);
+        assert!(out.contains("\"minor\":2}") && out.ends_with("}\n"));
+        assert_eq!(rig.conn.minor(), 2);
     }
 
     #[test]
@@ -1372,7 +1404,7 @@ mod tests {
 
     #[test]
     fn conn_row_3_prefix_progression_and_the_negotiated_minor() {
-        for (client, negotiated) in [(0u16, 0u16), (1, 1), (5, 1)] {
+        for (client, negotiated) in [(0u16, 0u16), (1, 1), (5, 2)] {
             let mut rig = Rig::new(Level::Observe);
             let prefix = client_prefix(client);
             for byte in &prefix[..7] {
@@ -1414,9 +1446,9 @@ mod tests {
         assert_eq!(rig.conn.close_code(), Some(Code::Deadline));
         assert_eq!(rig.conn.take_final(), Some(expected.clone()));
         let mut unwritten = Rig::new(Level::Observe);
-        unwritten.send(&client_prefix(1));
+        unwritten.send(&client_prefix(2));
         unwritten.tick(deadline + 1);
-        let mut both = server_prefix(1, 1).to_vec();
+        let mut both = server_prefix(1, 2).to_vec();
         both.extend_from_slice(&expected);
         assert_eq!(unwritten.conn.close_code(), Some(Code::Deadline));
         assert_eq!(unwritten.conn.take_final(), Some(both));
@@ -1431,14 +1463,14 @@ mod tests {
     #[test]
     fn conn_row_6_hello_in_await_hello_answers_and_becomes_ready() {
         let mut rig = Rig::new(Level::Observe);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         rig.send(&input);
         assert_eq!(rig.conn.state(), State::Ready);
         let out = rig.finish();
         let len = u64::try_from(out.len()).unwrap_or(0);
         assert_eq!(rig.conn.bytes_written(), len);
-        assert_eq!(out[..8], server_prefix(1, 1));
+        assert_eq!(out[..8], server_prefix(1, 2));
         let parsed = frames(&out[8..]);
         assert_eq!((parsed[0].0, parsed[0].1), (FrameType::Rep.code(), 1));
         let body = &parsed[0].2;
@@ -1456,7 +1488,7 @@ mod tests {
 
     fn ready_hello_body(level: Level) -> Vec<u8> {
         let mut rig = Rig::new(level);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         rig.send(&input);
         rig.finish()
@@ -1521,7 +1553,7 @@ mod tests {
         let key = "\"corr\":0,\"error\":{\"code\":\"bad-request\"";
         assert!(reply.contains(key));
         let mut major = Rig::new(Level::Control);
-        let skew = r#"{"client":"t","proto":{"major":2,"minor":1}}"#;
+        let skew = r#"{"client":"t","proto":{"major":2,"minor":2}}"#;
         major.send(&line(1, "hello", skew));
         let expected = error_line(1, Code::UnsupportedVersion, &Detail::Empty);
         assert_eq!(major.conn.close_code(), Some(Code::UnsupportedVersion));
@@ -1690,15 +1722,15 @@ mod tests {
     #[test]
     fn conn_a_head_pinned_with_nothing_written_then_a_fatal_outcome_repeats_the_prefix() {
         let mut rig = Rig::new(Level::Observe);
-        rig.send(&client_prefix(1));
+        rig.send(&client_prefix(2));
         let id = rig.conn.id();
         let pinned = rig.hub.head(id, rig.now).map(|[a, b]| [a, b].concat());
-        assert_eq!(pinned, Some(server_prefix(1, 1).to_vec()));
+        assert_eq!(pinned, Some(server_prefix(1, 2).to_vec()));
         assert!(!rig.hub.head_partial(id));
         rig.send(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
         assert!(rig.conn.is_closed());
         assert_eq!(rig.conn.bytes_written(), 0);
-        let mut expected = server_prefix(1, 1).to_vec();
+        let mut expected = server_prefix(1, 2).to_vec();
         expected.extend_from_slice(&rep_error(0, Code::BadFrame, &Detail::Empty));
         assert_eq!(rig.conn.take_final(), Some(expected));
         // The hub still holds the pinned prefix: the final bytes carry it, so a driver that wrote
@@ -1713,23 +1745,23 @@ mod tests {
     #[test]
     fn conn_r2_prefix_and_a_bad_request_in_one_read_keep_the_handshake_whole() {
         let mut rig = Rig::new(Level::Observe);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
         rig.send(&input);
         assert!(rig.conn.is_closed() && rig.queue_empty());
-        let mut expected = server_prefix(1, 1).to_vec();
+        let mut expected = server_prefix(1, 2).to_vec();
         expected.extend_from_slice(&rep_error(0, Code::BadFrame, &Detail::Empty));
         assert_eq!(rig.conn.close_code(), Some(Code::BadFrame));
         assert_eq!(rig.conn.take_final(), Some(expected));
         let mut half = Rig::new(Level::Observe);
-        half.send(&client_prefix(1));
+        half.send(&client_prefix(2));
         half.pump(3);
         assert_eq!(half.conn.bytes_written(), 3);
         half.send(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
         assert!(half.conn.is_closed());
         assert_eq!(half.conn.close_code(), Some(Code::BadFrame));
         assert_eq!(half.conn.take_final(), None);
-        assert_eq!(half.out, server_prefix(1, 1)[..3].to_vec());
+        assert_eq!(half.out, server_prefix(1, 2)[..3].to_vec());
     }
 
     #[test]
@@ -1739,7 +1771,7 @@ mod tests {
         rig.send(&wrong);
         assert!(rig.conn.is_closed() && rig.queue_empty());
         assert_eq!(rig.conn.close_code(), Some(Code::UnsupportedVersion));
-        assert_eq!(rig.conn.take_final(), Some(server_prefix(1, 1).to_vec()));
+        assert_eq!(rig.conn.take_final(), Some(server_prefix(1, 2).to_vec()));
     }
 
     #[test]
@@ -1791,19 +1823,19 @@ mod tests {
         let mut limits = limits(Level::Observe);
         limits.level.control_queue_bytes = 600;
         let mut rig = Rig::with(Level::Observe, limits);
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         rig.send(&input);
         assert!(rig.conn.is_closed());
         assert_eq!(rig.conn.close_code(), Some(Code::SlowClient));
-        let mut expected = server_prefix(1, 1).to_vec();
+        let mut expected = server_prefix(1, 2).to_vec();
         expected.extend_from_slice(&closing_evt(Code::SlowClient));
         assert_eq!(rig.conn.take_final(), Some(expected));
     }
 
     #[test]
     fn conn_bytewise_delivery_gives_the_one_shot_reply_in_both_modes() {
-        let mut binary = client_prefix(1);
+        let mut binary = client_prefix(2);
         binary.extend_from_slice(&req(1, "hello"));
         binary.extend_from_slice(&req(2, "status"));
         let mut json = line(1, "hello", HELLO_ARGS);
@@ -1970,7 +2002,7 @@ mod tests {
 
     #[test]
     fn conn_hello_negotiates_the_minor_in_both_modes() {
-        assert_eq!(SERVER_MINOR, 1);
+        assert_eq!(SERVER_MINOR, 2);
         for client in [0u16, 1, 5] {
             let negotiated = client.min(SERVER_MINOR);
             let proto = format!("{{\"major\":1,\"minor\":{negotiated}}}");
@@ -2196,7 +2228,12 @@ mod tests {
         let limits = limits(Level::Observe);
         let mut hub = SendHub::new(queue_limits(&limits));
         let id = hub.add(0);
-        let peer = Peer { uid: 1000, pid: 7 };
+        let peer = Peer {
+            uid: 1000,
+            pid: Some(7),
+            comm: None,
+            cgroup: None,
+        };
         let mut conn = Conn::new(id, Level::Observe, peer, &limits, 0);
         let backend = CountingBackend::new();
         let mut streams = SelectionStreams::new(StreamLimits {
@@ -2205,7 +2242,7 @@ mod tests {
                 max_block_bytes: limits.probe.max_block_bytes,
             },
         });
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         conn.on_bytes(&input, 0, &mut hub, &backend, &mut streams);
         let _ = drain_hub(&mut hub, id, 0);
@@ -2420,7 +2457,7 @@ mod tests {
         limits.level.control_queue_bytes = 1;
         let mut rig = Rig::with(Level::Observe, limits);
         let sub_selection = selection(1);
-        rig.send(&client_prefix(1));
+        rig.send(&client_prefix(2));
         rig.pump(usize::MAX);
         rig.out.clear();
         rig.send(&req(1, "hello"));
@@ -2577,7 +2614,7 @@ mod tests {
     fn conn_hello_result_pins_every_field_and_the_key_order() {
         let mut rig = Rig::new(Level::Observe);
         rig.backend = rich_backend();
-        let mut input = client_prefix(1);
+        let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
         rig.send(&input);
         let out = rig.finish();
@@ -2610,7 +2647,7 @@ mod tests {
         }
         assert!(codes.starts_with(r#"[{"code":0,"name":"ok"}"#));
         let proto = member(&result, "proto");
-        let expected = want(&[("major", "1"), ("minor", "1")]);
+        let expected = want(&[("major", "1"), ("minor", "2")]);
         assert_eq!(pairs(&proto), expected);
         let announced_limits = member(&result, "limits");
         let announced = limits(Level::Observe).hello_json();
@@ -2754,7 +2791,7 @@ mod tests {
         }
         {
             let mut owed = Rig::new(Level::Observe);
-            let mut input = client_prefix(1);
+            let mut input = client_prefix(2);
             input.extend_from_slice(&[12, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
             owed.send(&input);
             closed_oracle(&mut owed, 0, 0, &mut coverage);

@@ -1,0 +1,13 @@
+# nextest profiles for thrashguard (the R1 lane runs `--profile ci`).
+#
+# A profile must exist or nextest refuses with "profile `ci` not found" and the
+# coverage artifact is never written -- which Assay reports as
+# `NO_MEASUREMENT/EMPTY_COVERAGE`, the correct answer to a lane whose command
+# produced nothing. hostobs declares the same one-line profile
+# (`hostobs/.config/nextest.toml`); this file is that shape for this crate.
+#
+# `retries = 0` in CI is deliberate: a test that passes on a second attempt is a
+# defect of the test (AGENTS.md "tests never depend on host load or speed"), and
+# a retry hides it in exactly the lane that is supposed to catch it.
+[profile.ci]
+retries = 0

@@ -664,7 +664,42 @@ impl MetricRegistry {
 /// its keys against the same registry when the collectors are imported.
 pub fn sampler_baseline() -> Result<MetricRegistry, MetricError> {
     let mut registry = MetricRegistry::new();
-    // cgroupfs counters and gauges (collect.rs `Ids::new`, `CG_FILES`).
+    // cgroupfs facts (collect.rs `Ids::new`, `CG_FILES`).
+    registry.declare(
+        "cgroup.freeze",
+        MetricKind::State,
+        Unit::None,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
+    registry.declare(
+        "cgevents.frozen",
+        MetricKind::State,
+        Unit::None,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
+    registry.declare(
+        "cgevents.populated",
+        MetricKind::State,
+        Unit::None,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
+    registry.declare(
+        "limit.cpu.max.quota",
+        MetricKind::Gauge,
+        Unit::Microseconds,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
+    registry.declare(
+        "limit.cpu.max.period",
+        MetricKind::Gauge,
+        Unit::Microseconds,
+        Scope::Cgroup,
+        Source::CgroupFs,
+    )?;
     registry.declare(
         "cpu.usage_usec",
         MetricKind::Counter,
@@ -1387,6 +1422,33 @@ mod tests {
             Ok(Scope::Cgroup),
             "mem.current is inclusive of descendants and is never summed with them"
         );
+        for name in ["cgroup.freeze", "cgevents.frozen", "cgevents.populated"] {
+            let metric = registry.get(name).expect("freezer state is registered");
+            assert_eq!(
+                (
+                    metric.kind(),
+                    metric.unit(),
+                    metric.scope(),
+                    metric.source()
+                ),
+                (
+                    MetricKind::State,
+                    Unit::None,
+                    Scope::Cgroup,
+                    Source::CgroupFs
+                ),
+                "{name} is sampled cgroup state"
+            );
+            assert_eq!(
+                metric.aggregations(),
+                vec![Aggregation::Last],
+                "{name} is last-only"
+            );
+            assert!(
+                !metric.allows(Aggregation::Mean),
+                "{name} cannot be averaged"
+            );
+        }
         assert_eq!(
             registry.get("probe.resets").map(|m| m.source()),
             Ok(Source::Probe),
@@ -1415,6 +1477,53 @@ mod tests {
                 Source::Probe
             ))
         );
+    }
+
+    #[test]
+    fn cpu_max_quota_metrics_follow_the_freeze_state_declarations_and_use_the_gauge_mask() {
+        let registry = sampler_baseline().expect("baseline declares cleanly");
+        let names: Vec<&str> = registry.metrics()[..5]
+            .iter()
+            .map(|metric| metric.name())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "cgroup.freeze",
+                "cgevents.frozen",
+                "cgevents.populated",
+                "limit.cpu.max.quota",
+                "limit.cpu.max.period",
+            ]
+        );
+        for name in ["limit.cpu.max.quota", "limit.cpu.max.period"] {
+            let metric = registry.get(name).expect("cpu.max metric is registered");
+            assert_eq!(
+                (
+                    metric.kind(),
+                    metric.unit(),
+                    metric.scope(),
+                    metric.source()
+                ),
+                (
+                    MetricKind::Gauge,
+                    Unit::Microseconds,
+                    Scope::Cgroup,
+                    Source::CgroupFs
+                ),
+                "{name} facts"
+            );
+            assert_eq!(
+                metric.aggregations(),
+                vec![
+                    Aggregation::Last,
+                    Aggregation::Mean,
+                    Aggregation::Min,
+                    Aggregation::Max
+                ],
+                "the wire mask is derived from Gauge"
+            );
+        }
     }
 
     #[test]

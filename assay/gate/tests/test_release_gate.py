@@ -72,6 +72,7 @@ if args[0] == "cancel":
         # correct run into a failure.
         (remote_out / "remote-cancel-holding.txt").write_text("holding", encoding="utf-8")
         ticks_path = remote_out / "remote-cancel-hold-ticks.txt"
+        ticks_tmp_path = ticks_path.with_name(ticks_path.name + ".tmp")
         ticks = 0
         deadline = time.monotonic() + float(config.get("cancel_hold_max_seconds", 120))
         while not Path(cancel_hold_until).exists():
@@ -82,7 +83,12 @@ if args[0] == "cancel":
                 )
                 raise SystemExit(91)
             ticks += 1
-            ticks_path.write_text(str(ticks), encoding="utf-8")
+            # Written to a side name and renamed over the counter, so a reader can
+            # never catch the file between truncation and the new digits: the test
+            # waits for this counter, and a read of a half-written file is a test
+            # defect, not a slow host.
+            ticks_tmp_path.write_text(str(ticks), encoding="utf-8")
+            ticks_tmp_path.replace(ticks_path)
             time.sleep(0.01)
     if config.get("signal_mode"):
         pid = int((remote_out / "remote-child.pid").read_text(encoding="utf-8"))
@@ -132,7 +138,10 @@ if config.get("write_result", True):
     }),
     encoding="utf-8",
 )
-(remote_out / "remote-child.pid").write_text(str(os.getpid()), encoding="utf-8")
+child_pid_path = remote_out / "remote-child.pid"
+child_pid_tmp_path = child_pid_path.with_name(child_pid_path.name + ".tmp")
+child_pid_tmp_path.write_text(str(os.getpid()), encoding="utf-8")
+child_pid_tmp_path.replace(child_pid_path)
 hold_until = config.get("hold_until")
 if hold_until:
     # Event-driven, so the test's assertions never rest on a duration: the wrapper's
@@ -211,6 +220,18 @@ def _environment(tmp_path: Path, *, host: str = "v1001") -> dict[str, str]:
         "            # removes HOME must see the missing-path refusal the real module\n"
         "            # would produce.\n"
         "            hosts = os.path.expanduser('~/.config/remote-gate/hosts.json')\n"
+        "        if wanted.get('import_failure'):\n"
+        "            # The import that failed is not an empty default (finding 5):\n"
+        "            # the loader must report the failure, never a blank path.\n"
+        "            print('remote-gate.py cannot be imported', file=sys.stderr)\n"
+        "            raise SystemExit(3)\n"
+        "        if wanted.get('import_failure_silent'):\n"
+        "            # The round-3 finding: an import that dies printing NOTHING (a\n"
+        "            # SIGKILL or OOM-kill, or a bare SystemExit) leaves no last stderr\n"
+        "            # line to quote. An empty reason would make both consumers report\n"
+        "            # 'DEFAULT_HOSTS resolved to an empty path' -- a path nothing\n"
+        "            # supplied. The status is the one fact left; the loader names it.\n"
+        "            raise SystemExit(3)\n"
         "        print(hosts)\n"
         "        print(wanted['out'])\n"
         "        raise SystemExit(0)\n"
@@ -433,6 +454,142 @@ def _heartbeat_lines(text: str) -> list[re.Match[str]]:
     ]
 
 
+def _pid_state(pid: int) -> str | None:
+    """The kernel's state letter for `pid`, or None when the pid no longer exists."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return stat.rsplit(")", 1)[1].split()[0]
+
+
+def _pid_running(pid: int) -> bool:
+    """True while `pid` is a live process; a zombie has exited and is only unreaped."""
+    return _pid_state(pid) not in (None, "Z")
+
+
+def _wait_until(predicate, what: str, *, timeout_s: float = 60.0) -> None:
+    """An event-driven wait with a ceiling; never a fixed pause deciding a verdict."""
+    _wait_for_value(lambda: True if predicate() else None, what, timeout_s=timeout_s)
+
+
+def _wait_for_value(producer, what: str, *, timeout_s: float = 60.0):
+    """The first truthy value `producer` returns before the ceiling.
+
+    Same event-driven contract as `_wait_until`, for an event whose value the test
+    needs (a pid it must watch) rather than only its occurrence.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        value = producer()
+        if value:
+            return value
+        time.sleep(0.01)
+    raise AssertionError(f"timed out after {timeout_s} s waiting for {what}")
+
+
+def _publish_text(path: Path, text: str) -> None:
+    """Publish a whole event file under its final name."""
+    side = path.with_name(path.name + ".tmp")
+    side.write_text(text, encoding="utf-8")
+    side.replace(path)
+
+
+def _hold_ticks_reached(path: Path, wanted: int) -> bool:
+    """Has the fake's held-cancel counter reached `wanted`?
+
+    The counter is the test's event. The fake publishes it by writing a side name
+    and renaming it over the counter, so a file a reader can open holds whole
+    digits; the predicate still treats an absent or unreadable file as "not yet",
+    because the caller's own ceiling -- never a fixed pause -- decides a failure.
+    """
+    try:
+        return int(path.read_text(encoding="utf-8")) >= wanted
+    except (OSError, ValueError):
+        return False
+
+
+def _parent_pid(pid: int) -> int | None:
+    """The kernel's recorded parent of `pid`, or None when its stat cannot be read."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    fields = stat.rsplit(")", 1)[1].split()
+    return int(fields[1])
+
+
+def _descends_from(pid: int, ancestor: int) -> bool:
+    """True when `pid`'s parent chain reaches `ancestor`."""
+    seen: set[int] = set()
+    current = _parent_pid(pid)
+    while current is not None and current > 0 and current not in seen:
+        if current == ancestor:
+            return True
+        seen.add(current)
+        current = _parent_pid(current)
+    return False
+
+
+def _heartbeat_sleep(ancestor: int, interval: int) -> tuple[int, int] | None:
+    """The heartbeat's live `sleep <interval>` child: (sleep pid, heartbeat pid).
+
+    The wrapper forks the heartbeat subshell, which forks exactly one foreground
+    `sleep` per iteration. Both carry the wrapper's own command line, because a
+    subshell does not exec, so this finds the pair by walking /proc: a process
+    whose argv is exactly `sleep <interval>` and whose parent chain reaches the
+    wrapper is either the sleep the trap must kill or the next iteration's.
+    """
+    wanted = b"".join(f"{part}\0".encode() for part in ("sleep", str(interval)))
+    found: list[tuple[int, int]] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        pid = int(entry.name)
+        if cmdline != wanted or not _pid_running(pid):
+            continue
+        parent = _parent_pid(pid)
+        if parent is None or parent == ancestor:
+            continue
+        if _descends_from(pid, ancestor):
+            found.append((pid, parent))
+    return found[0] if len(found) == 1 else None
+
+
+# Finding 3 (B579 round 2 review): the heartbeat's trap must name only a job the
+# loop still owns. This hook holds the heartbeat inside its own `trap` builtin, at
+# the instant the real trap is installed: the loop's first `sleep ... &` has not run
+# yet, so the subshell's job table must be empty, and `$!` still carries the pid the
+# subshell INHERITED from its parent -- the wrapper's `remote-gate.py` child
+# (`remote_gate_pid`). The first seam line is `$BASHPID` and that inherited `$!`; the
+# lines after it are the job table the trap would take its targets from. The hook
+# publishes the seam under a side name and renames it into place, so a reader that
+# sees the file at all sees a whole one, and it holds until the test's release file
+# appears (the `finally` block always writes it) rather than for a counted number of
+# ticks, and the `$PPID` check releases it if its pytest parent exits first.
+HEARTBEAT_TRAP_HOOK = (
+    "trap() {\n"
+    '  case "$*" in\n'
+    "    *stop_heartbeat_sleeps*) heartbeat_trap_seam \"$@\" ;;\n"
+    '    *INT*TERM*) heartbeat_trap_seam "$@" ;;\n'
+    '    *) builtin trap "$@" ;;\n'
+    "  esac\n"
+    "}\n"
+    "heartbeat_trap_seam() {\n"
+    '  { printf \'%s\\t%s\\n\' "$BASHPID" "${!:-}"; jobs -p; } >"$ASSAY_HEARTBEAT_TRAP_SEAM.tmp"\n'
+    '  mv -f -- "$ASSAY_HEARTBEAT_TRAP_SEAM.tmp" "$ASSAY_HEARTBEAT_TRAP_SEAM"\n'
+    '  builtin trap "$@"\n'
+    '  while [[ ! -e "$ASSAY_HEARTBEAT_TRAP_RELEASE" ]] && builtin kill -0 "$PPID" 2>/dev/null; do\n'
+    "    /bin/sleep 0.01\n"
+    "  done\n"
+    "}\n"
+)
+
+
 @pytest.mark.parametrize("value", ["10", "1501", "zero", "300.5", "", " 300"])
 def test_release_gate_rejects_an_unusable_heartbeat_interval(
     tmp_path: Path, value: str
@@ -555,8 +712,7 @@ def test_release_gate_heartbeat_still_cancels_the_remote_run_on_term(
         wrapper.proc.send_signal(signal.SIGTERM)
         wrapper.wait_for(
             lambda _text: (out_dir / "remote-cancel-holding.txt").exists()
-            and hold_ticks.exists()
-            and int(hold_ticks.read_text(encoding="utf-8")) >= 10,
+            and _hold_ticks_reached(hold_ticks, 10),
             "held the remote cancel for ten ticks",
         )
         # The assertion M2 replaces: `stderr[cancel_at:]` is the whole window in which a
@@ -590,6 +746,206 @@ def test_release_gate_heartbeat_still_cancels_the_remote_run_on_term(
     assert all(cancel_secrets[name] is False for name in secret_names)
     # And still nothing after the cancel once the run has ended.
     assert _heartbeat_lines(stderr[stderr.index("attempting to cancel remote run"):]) == []
+
+
+def test_release_gate_does_not_signal_the_reaped_client_while_stopping_heartbeat(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    held = tmp_path / "stop-heartbeat-held.txt"
+    release = tmp_path / "stop-heartbeat-release.txt"
+    signal_target = tmp_path / "reaped-client-signal.txt"
+    hook = tmp_path / "stop-heartbeat-hook.sh"
+    hook.write_text(
+        "publish_event() {\n"
+        '  local path="$1" text="$2" side="$1.tmp"\n'
+        '  printf "%s\\n" "$text" >"$side"\n'
+        '  mv -f -- "$side" "$path"\n'
+        "}\n"
+        "kill() {\n"
+        "  local child_pid arg prior= includes_child=false is_liveness=false\n"
+        '  if [[ -f "$ASSAY_REMOTE_CHILD_PID" ]]; then\n'
+        '    IFS= read -r child_pid <"$ASSAY_REMOTE_CHILD_PID"\n'
+        '    for arg in "$@"; do\n'
+        '      [[ "$arg" == "$child_pid" ]] && includes_child=true\n'
+        '      [[ "$arg" == "-0" ]] && is_liveness=true\n'
+        "    done\n"
+        '    if [[ "$includes_child" == true && "$is_liveness" == false ]]; then\n'
+        '      if [[ -f "$ASSAY_REAPED_CLIENT_SIGNAL" ]]; then\n'
+        '        prior="$(<"$ASSAY_REAPED_CLIENT_SIGNAL")"\n'
+        "        prior+=$'\\n'\n"
+        "      fi\n"
+        '      publish_event "$ASSAY_REAPED_CLIENT_SIGNAL" "${prior}$*"\n'
+        "      return 0\n"
+        "    fi\n"
+        "  fi\n"
+        '  if [[ "$#" == 1 && ! -e "$ASSAY_STOP_HEARTBEAT_HELD" ]]; then\n'
+        '    publish_event "$ASSAY_STOP_HEARTBEAT_HELD" "$1"\n'
+        '    while [[ ! -e "$ASSAY_STOP_HEARTBEAT_RELEASE" ]] && builtin kill -0 "$PPID" 2>/dev/null; do\n'
+        '      /bin/sleep 0.01\n'
+        "    done\n"
+        "  fi\n"
+        '  command kill "$@"\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    env.update(
+        {
+            "BASH_ENV": str(hook),
+            "ASSAY_STOP_HEARTBEAT_HELD": str(held),
+            "ASSAY_STOP_HEARTBEAT_RELEASE": str(release),
+            "ASSAY_REMOTE_CHILD_PID": str(Path(env["REMOTE_GATE_OUT"]) / "remote-child.pid"),
+            "ASSAY_REAPED_CLIENT_SIGNAL": str(signal_target),
+        }
+    )
+    child_pid_path = Path(env["REMOTE_GATE_OUT"]) / "remote-child.pid"
+    wrapper = Wrapper(tmp_path, env)
+    try:
+        _wait_until(
+            lambda: held.exists() and child_pid_path.exists(),
+            "the wrapper to hold inside stop_heartbeat after the remote wait",
+        )
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        assert _pid_state(child_pid) is None, (
+            "the remote client must already be reaped while stop_heartbeat is held"
+        )
+        wrapper.proc.send_signal(signal.SIGTERM)
+        _publish_text(release, "go")
+        wrapper.wait_for(
+            lambda text: "attempting to cancel remote run" in text,
+            "to request cancellation after the remote client was reaped",
+        )
+        status = wrapper.reap()
+    finally:
+        _publish_text(release, "go")
+        wrapper.kill_leftovers()
+
+    stderr = wrapper.stderr()
+    assert status == 143, stderr
+    assert not signal_target.exists(), (
+        f"the reaped remote client {child_pid} was signalled: "
+        f"{signal_target.read_text(encoding='utf-8') if signal_target.exists() else ''}"
+    )
+    assert [call[0] for call in _remote_calls(env)] == ["run", "cancel"]
+    assert "remote cancellation was requested" in stderr
+
+
+def _trap_seam_lines(seam: Path) -> tuple[int, int, list[int]]:
+    """The hook's published seam: (heartbeat pid, inherited `$!`, job table).
+
+    The hook writes a side name and renames it into place, so a file a reader can
+    open holds every line; a reader that never gets a whole file is still waited
+    for by the caller's ceiling, never decided by a fixed pause.
+    """
+    lines = seam.read_text(encoding="utf-8").splitlines()
+    heartbeat_text, inherited_text = lines[0].split("\t")
+    return int(heartbeat_text), int(inherited_text), [int(line) for line in lines[1:]]
+
+
+def test_release_gate_heartbeat_trap_never_names_a_job_it_does_not_own(
+    tmp_path: Path,
+) -> None:
+    # Finding 3: the trap took `${!:-}` as a kill target. A subshell INHERITS `$!`
+    # from its parent -- at trap-install time the wrapper's `remote-gate.py` child,
+    # which it forked and recorded (`remote_gate_pid`) -- so a TERM before the first
+    # `sleep ... &` used to signal the run the trap exists to protect; and after a
+    # reaped `wait`, `$!` names a freed and possibly reused pid instead. The trap now
+    # takes its targets from the subshell's own job table, which the hook records.
+    env = _environment(tmp_path)
+    released = tmp_path / "release-the-fake-run"
+    seam = tmp_path / "heartbeat-trap-seam.txt"
+    seam_release = tmp_path / "release-the-heartbeat-trap"
+    hook = tmp_path / "heartbeat-trap-hook.sh"
+    hook.write_text(HEARTBEAT_TRAP_HOOK, encoding="utf-8")
+    env.update(
+        {
+            "BASH_ENV": str(hook),
+            "ASSAY_HEARTBEAT_TRAP_SEAM": str(seam),
+            "ASSAY_HEARTBEAT_TRAP_RELEASE": str(seam_release),
+        }
+    )
+    # A fake run that stays attached and alive until this test releases it, so nothing
+    # is decided by a duration.
+    _configure_fake(env, hold_until=str(released))
+    out_dir = Path(env["REMOTE_GATE_OUT"])
+    child_pid_path = out_dir / "remote-child.pid"
+    wrapper = Wrapper(tmp_path, env)
+    try:
+        _wait_until(
+            lambda: seam.exists() and child_pid_path.exists(),
+            "the heartbeat's trap seam and the fake remote-gate's recorded pid",
+        )
+        heartbeat_pid, inherited_pid, job_table = _trap_seam_lines(seam)
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        # The pre-first-fork window the old code got wrong: the inherited `$!` really
+        # is the remote-gate child here, and the job table the trap reads is empty.
+        assert inherited_pid == child_pid, (
+            "the seam must hold the window in which the inherited $! is the child"
+        )
+        assert job_table == [], (
+            "before the loop's first fork the trap's job table must be empty"
+        )
+        assert _pid_running(child_pid), "the fake remote-gate must still be running"
+        # The trap is installed by the time the seam is published, so this TERM
+        # exercises it, not the deferred or uninstalled path.
+        os.kill(heartbeat_pid, signal.SIGTERM)
+        seam_release.write_text("go", encoding="utf-8")
+        # A zombie has exited (only its parent has not reaped it yet), so this is the
+        # exit event and not a race against `stop_heartbeat`.
+        _wait_until(lambda: not _pid_running(heartbeat_pid), "the heartbeat subshell to exit")
+        assert _pid_running(child_pid), (
+            "the heartbeat's trap signal must not reach the remote-gate child"
+        )
+        released.write_text("go", encoding="utf-8")
+        status = wrapper.reap()
+    finally:
+        released.write_text("go", encoding="utf-8")
+        seam_release.write_text("go", encoding="utf-8")
+        wrapper.kill_leftovers()
+
+    # The run that the heartbeat was watching still ends with its own verdict.
+    assert status == 0, wrapper.stderr()
+
+
+def test_release_gate_heartbeat_trap_kills_the_sleep_it_owns(
+    tmp_path: Path,
+) -> None:
+    # Decision 3's second direction: the job-table fix must not turn the trap into a
+    # no-op. The wrapper is TERMed while its heartbeat waits on a real `sleep 300`, and
+    # the test then requires the very process whose pid it captured beforehand to be
+    # gone. It captures the pid while the sleep is still a descendant of this wrapper,
+    # so a trap that killed nothing is caught no matter what the kernel does with the
+    # orphan afterwards (a reparented survivor would be found by ancestry, not by this
+    # exact pid, which is the false-pass this capture avoids).
+    env = _environment(tmp_path)
+    released = tmp_path / "release-the-fake-run"
+    _configure_fake(env, hold_until=str(released))
+    child_pid_path = Path(env["REMOTE_GATE_OUT"]) / "remote-child.pid"
+    wrapper = Wrapper(tmp_path, env)
+    try:
+        sleep_pid, heartbeat_pid = _wait_for_value(
+            # Both events, never a pause: the fake records its pid only after it has
+            # written the run's meta.json, so this also proves the wrapper's cancel
+            # path can find the run it was watching.
+            lambda: child_pid_path.exists()
+            and _heartbeat_sleep(wrapper.proc.pid, 300),
+            "the heartbeat's live sleep below the wrapper and the fake run's pid",
+        )
+        assert _pid_running(sleep_pid) and _pid_running(heartbeat_pid)
+        # The trap is installed before the loop's first fork, so this TERM exercises it.
+        wrapper.proc.send_signal(signal.SIGTERM)
+        _wait_until(
+            lambda: not _pid_running(sleep_pid),
+            "the heartbeat's trap to kill the sleep it owns",
+        )
+        status = wrapper.reap()
+    finally:
+        released.write_text("go", encoding="utf-8")
+        wrapper.kill_leftovers()
+
+    # The trap did its job without changing the cancellation's exit status.
+    assert status == 143, wrapper.stderr()
+    assert "attempting to cancel remote run" in wrapper.stderr()
 
 
 def _run(tmp_path: Path, lane: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -802,6 +1158,63 @@ def test_remote_release_gate_reports_an_unset_or_empty_home_with_the_other_setti
     assert not _remote_calls(env)
 
 
+def test_release_gate_reports_a_defaults_temp_file_failure_as_its_own_reason(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path)
+    # Finding 2: a temporary file that cannot be created is not a default that
+    # resolved to nothing. With no HOME the controller configuration is not read at
+    # all, so the only `mktemp` this run can reach is the one the module-defaults
+    # reader uses; before the fix that failure was reported as the host table
+    # "resolved to an empty path", naming DEFAULT_HOSTS for a file nothing read.
+    env.pop("HOME")
+    env["TMPDIR"] = str(tmp_path / "no-such-tmpdir")
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [
+            "cannot read remote-gate.py's default host table: cannot create a "
+            "temporary file for the remote-gate.py defaults import",
+            "HOME is unset; remote-gate needs it for the host table and ~/.ssh",
+        ]
+    )
+    assert not _remote_calls(env)
+
+
+def test_release_gate_judges_the_missing_remote_gate_file_before_the_settings(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path, host="")
+    # Finding 3: CONSUMERS.md says which check runs first. The missing-script check
+    # (tools/release-gate.sh:55-57) is before the settings resolution, so a fresh
+    # clone that also has no host hears only the exit-3 file refusal and a SECOND
+    # run is needed for the settings -- the two-attempt cost B579 removed for the
+    # settings themselves. Running the real script (an absolute path) in a directory
+    # whose `../scripts/netcup/runner` does not exist reproduces that clone without
+    # copying the script.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    assert not (outside / ".." / "scripts" / "netcup" / "runner" / "remote-gate.py").exists()
+    proc = subprocess.run(
+        ["/bin/bash", str(SCRIPT), "tester-unified"],
+        cwd=outside,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert proc.returncode == 3, proc.stderr
+    assert proc.stderr == (
+        "assay release-gate: remote-gate.py is missing at "
+        "../scripts/netcup/runner/remote-gate.py\n"
+    )
+    assert COMBINED_REFUSAL_HEADER not in proc.stderr
+    assert not _remote_calls(env)
+
+
 def test_release_gate_reports_every_unusable_setting_in_one_refusal(
     tmp_path: Path,
 ) -> None:
@@ -931,6 +1344,155 @@ def test_release_gate_refuses_an_unusable_explicit_setting_instead_of_falling_th
         [f"host table from REMOTE_GATE_HOSTS is missing: {missing}"]
     )
     assert _remote_calls(env) == []
+
+
+def test_release_gate_refuses_an_unusable_explicit_out_instead_of_falling_through(
+    tmp_path: Path,
+) -> None:
+    # Finding 5a: only the HOSTS half of "an explicit setting is a fact" was pinned.
+    # Here the controller configuration supplies a usable output directory and the
+    # operator's own REMOTE_GATE_OUT is a regular file: falling through to the
+    # controller value would silently ignore the value B579's operator hand-set.
+    env = _environment(tmp_path)
+    controller = _controller_home(tmp_path)
+    env["CONTROLLER_HOME"] = str(controller)
+    unusable_out = tmp_path / "explicit-out-is-a-file"
+    unusable_out.write_text("not a directory", encoding="utf-8")
+    env["REMOTE_GATE_OUT"] = str(unusable_out)
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [
+            "output directory from REMOTE_GATE_OUT exists but is not a directory: "
+            f"{unusable_out}"
+        ]
+    )
+    # Neither the controller's output directory nor the module default may run work.
+    assert not (controller / "controller-gates" / "remote-calls.jsonl").exists()
+    assert _remote_calls(env) == []
+
+
+@pytest.mark.parametrize("setting", ["REMOTE_GATE_HOSTS", "REMOTE_GATE_OUT"])
+def test_release_gate_refuses_a_set_but_empty_explicit_setting(
+    tmp_path: Path, setting: str
+) -> None:
+    # Finding 5b: `[[ -v ]]` deliberately makes an empty stated value a refusal
+    # ("resolved to an empty path") instead of the pre-change dedicated die, and
+    # `${VAR:-}` semantics would silently treat "" as unset and fall through.
+    env = _environment(tmp_path)
+    env["CONTROLLER_HOME"] = str(_controller_home(tmp_path))
+    env[setting] = ""
+    proc = _run(tmp_path, "tester-unified", env)
+
+    label = "host table" if setting == "REMOTE_GATE_HOSTS" else "output directory"
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [f"{label} from {setting} resolved to an empty path"]
+    )
+    assert _remote_calls(env) == []
+
+
+def test_release_gate_reports_a_module_default_that_could_not_be_imported(
+    tmp_path: Path,
+) -> None:
+    # Finding 5c: nothing made the shim fail its import, so "an import that failed
+    # is not an empty default" was an untested claim. An import failure must name
+    # the import, never report the table as resolved to an empty path.
+    env = _environment(tmp_path)
+    env["CONTROLLER_HOME"] = str(tmp_path / "no-controller")
+    env.pop("REMOTE_GATE_HOSTS", None)
+    env.pop("REMOTE_GATE_OUT")
+    _configure_fake(env, module_defaults={"import_failure": True})
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [
+            "cannot read remote-gate.py's default host table: "
+            "remote-gate.py cannot be imported",
+            "cannot read remote-gate.py's default output directory: "
+            "remote-gate.py cannot be imported",
+        ]
+    )
+    assert _remote_calls(env) == []
+
+
+def test_release_gate_names_the_exit_status_of_a_silent_defaults_import(
+    tmp_path: Path,
+) -> None:
+    # Finding 1 of the round-2 review: the failure branch quoted the import's LAST
+    # stderr line, so an import that died with no output at all (SIGKILL on the host,
+    # cgroup OOM-kill, a bare SystemExit) left that variable empty. Both consumers then
+    # took their success-side branch over the empty string and told the operator
+    # "DEFAULT_HOSTS resolved to an empty path", the false-source message the previous
+    # round removed, through its sibling door. The reason now names the status.
+    env = _environment(tmp_path)
+    env["CONTROLLER_HOME"] = str(tmp_path / "no-controller")
+    env.pop("REMOTE_GATE_HOSTS", None)
+    env.pop("REMOTE_GATE_OUT")
+    _configure_fake(env, module_defaults={"import_failure_silent": True})
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stderr == _combined_refusal(
+        [
+            "cannot read remote-gate.py's default host table: "
+            "remote-gate.py defaults import exited 3",
+            "cannot read remote-gate.py's default output directory: "
+            "remote-gate.py defaults import exited 3",
+        ]
+    )
+    assert "resolved to an empty path" not in proc.stderr
+    assert _remote_calls(env) == []
+
+
+def _probe_controller_home(tmp_path: Path) -> Path:
+    """A controller file whose bare probe fails but whose values are usable (finding 4).
+
+    The reader must run `set -uo pipefail` WITHOUT `-e` (tools/release-gate.sh:109,
+    matching scripts/controller/remote-gate.sh:24): a `command -v` for a tool this
+    cockpit lacks, or a failing `cd`, exits non-zero without being fatal, and the
+    values the file already defined stay usable. `_broken_controller_home` above
+    pins the FATAL half (a `set -u` expansion error, which kills the reader under
+    `-u` alone); this file pins the half that only `-e` would kill.
+    """
+    controller = tmp_path / "probe-controller-home"
+    controller.mkdir()
+    (controller / "controller-hosts.json").write_text("{}", encoding="utf-8")
+    (controller / "controller.local.env").write_text(
+        "CONTROLLER_HOSTS_FILE=controller-hosts.json\n"
+        # A bare probe this host does not satisfy: exit 1, not fatal.
+        "command -v assay-absent-probe-tool >/dev/null\n"
+        # ... and a failing `cd`, the other shape the comment names.
+        "cd -- /nonexistent-assay-probe-dir 2>/dev/null\n",
+        encoding="utf-8",
+    )
+    return controller
+
+
+def test_release_gate_reads_a_controller_file_whose_bare_probe_fails(
+    tmp_path: Path,
+) -> None:
+    # Finding 4: the reader was changed to `set -uo pipefail` (no `-e`) so a
+    # controller file with a failing-but-non-fatal line is not reported as
+    # unreadable. Neither earlier test covers that half: `_broken_controller_home`
+    # fails fatally under `-u` alone. Re-adding `-e` to the reader turns this run
+    # into a "cannot read the controller configuration" refusal.
+    env = _environment(tmp_path)
+    controller = _probe_controller_home(tmp_path)
+    env["CONTROLLER_HOME"] = str(controller)
+    env.pop("REMOTE_GATE_HOSTS", None)
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "cannot read the controller configuration" not in proc.stderr
+    # The child is the witness that the values survived the failing probe, and that
+    # the controller's host table is the one the wrapper handed it (remote-gate.sh:24
+    # parity is the comment's claim).
+    selection = _remote_selection_at(Path(env["REMOTE_GATE_OUT"]))
+    assert selection["REMOTE_GATE_HOSTS"] == str(controller / "controller-hosts.json")
+    assert len(_remote_calls(env)) == 1
 
 
 def test_release_gate_reads_the_controller_config_only_when_a_setting_is_missing(

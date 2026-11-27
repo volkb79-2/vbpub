@@ -133,6 +133,20 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    classification (see
    [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md#liveness-is-evidence-not-a-verdict)).
 
+   Every lane whose kind can be watched is bounded even if it declares
+   nothing (RG-320): the bound is `stall_timeout` when you write one, else
+   300 s for a COMMAND lane and, for an ASSAY lane, the `max(300s, 3x its
+   published cadence)` / 600 s-post-command rule it already had since RG-7 —
+   published as that RULE (`source: auto-derived`) rather than as a number.
+   The disclosure line and the run record's `stall_bound` say which.
+   The signal differs by kind — an assay lane's progress file, a container
+   command lane's `docker logs -f` arrivals, an exec or bare-host command
+   lane's own stdout — and an AUTO bound (only) pauses while host memory PSI
+   is high. A lane whose child never flushes its own stdout is silent by this
+   definition for its whole run; give that lane an explicit `stall_timeout`
+   sized for it. A sequence lane has no signal of its own: its members carry
+   the watches.
+
    <!-- run-gate-config -->
    ```toml
    schema_version = 1

@@ -25,7 +25,7 @@ from pathlib import Path
 
 MAGIC = b"HOB\x01"
 PROTO_MAJOR = 1
-PROTO_MINOR = 1
+PROTO_MINOR = 2
 FRAME_HEADER_LEN = 12
 SECTION_DIR_ENTRY_LEN = 8
 MAX_FRAME_BYTES = 16 * 1024 * 1024
@@ -38,6 +38,26 @@ FRAME_TYPES_BY_CODE = {code: name for name, code in FRAME_TYPES.items()}
 
 SECTION_KINDS = {"header": 1, "rows": 2, "columns": 3, "time": 4, "dictionary": 5, "subject": 6}
 SECTION_KINDS_BY_CODE = {code: name for name, code in SECTION_KINDS.items()}
+EVENT_SECTION_KIND = 7
+EVENT_SECTION_VERSION = 1
+EVENT_SECTION_REQUIRED_FLAGS = 1
+EVENT_KIND_NAMES = {1: "begin", 2: "end", 3: "point"}
+EVENT_OUTCOME_NAMES = {
+    1: "ok",
+    2: "fail",
+    3: "error",
+    4: "skipped",
+    5: "cancelled",
+    6: "timeout",
+    7: "abandoned",
+}
+EVENT_CONTEXT_KEY_NAMES = {
+    0: "run",
+    1: "lane",
+    2: "candidate",
+    3: "txn",
+    4: "session",
+}
 ONE_OF = {1, 2, 4, 5, 6}
 SUBJECT_BODY_LEN = 8
 
@@ -139,8 +159,661 @@ class WireError(ValueError):
         return f"{self.refusal}({details})" if details else self.refusal
 
 
+class SelectionError(ValueError):
+    """A reference refusal for a request selection, including its schema path or feature."""
+
+    def __init__(
+        self,
+        path: str | None,
+        *,
+        code: str = "bad-request",
+        feature: str | None = None,
+        step: int | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.path = path
+        self.code = code
+        self.feature = feature
+        self.step = step
+
+
+def _selection_bad(path: str) -> None:
+    raise SelectionError(path)
+
+
+def _unknown_member_path(path: str, member: object) -> str:
+    if (
+        isinstance(member, str)
+        and len(member) <= 64
+        and member.isascii()
+        and all(char.isalnum() or char in "_.-" for char in member)
+    ):
+        return f"{path}.{member}"
+    return path
+
+
+def _selection_object(value: object, path: str, keys: tuple[str, ...]) -> dict:
+    if not isinstance(value, dict):
+        _selection_bad(path)
+    for member in value:
+        if member not in keys:
+            _selection_bad(_unknown_member_path(path, member))
+    return value
+
+
+def _selection_member(value: dict, member: str, path: str) -> object:
+    if member not in value:
+        _selection_bad(f"{path}.{member}")
+    return value[member]
+
+
+def _selection_u64(value: object, path: str) -> int:
+    if type(value) is not int or value < 0 or value > 0xFFFF_FFFF_FFFF_FFFF:
+        _selection_bad(path)
+    return value
+
+
+def _selection_text(value: object, path: str) -> str:
+    if not isinstance(value, str):
+        _selection_bad(path)
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        _selection_bad(path)
+    if not encoded or len(encoded) > 512 or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        _selection_bad(path)
+    return value
+
+
+def canonical_selection(
+    value: object,
+    negotiated_minor: int = PROTO_MINOR,
+) -> tuple[tuple[tuple[object, ...], ...], tuple[str, ...]]:
+    """Validate and canonicalize WIRE §4.2 selectors, including B9's ``cgroup_id`` form.
+
+    The feature gate runs after the complete selection schema, at request step 11. Entity
+    tuples use the wire's variant order: ``inc``, ``cgroup_id``, ``path``, ``prefix``, ``all``.
+    """
+    selection = _selection_object(value, "selection", ("entities", "metrics"))
+    entities = _selection_member(selection, "entities", "selection")
+    if not isinstance(entities, list) or not 1 <= len(entities) <= 16:
+        _selection_bad("selection.entities")
+    canonical_entities: list[tuple[object, ...]] = []
+    for entity_value in entities:
+        if not isinstance(entity_value, dict) or len(entity_value) != 1:
+            _selection_bad("selection.entities")
+        selector, contents = next(iter(entity_value.items()))
+        if selector == "inc":
+            canonical_entities.append(("inc", _selection_u64(contents, "selection.entities.inc")))
+        elif selector == "cgroup_id":
+            path = "selection.entities.cgroup_id"
+            key = _selection_object(contents, path, ("dev", "inode"))
+            dev = _selection_u64(_selection_member(key, "dev", path), f"{path}.dev")
+            if dev == 0:
+                _selection_bad(f"{path}.dev")
+            inode = _selection_u64(_selection_member(key, "inode", path), f"{path}.inode")
+            if inode == 0:
+                _selection_bad(f"{path}.inode")
+            canonical_entities.append(("cgroup_id", dev, inode))
+        elif selector in ("path", "prefix"):
+            canonical_entities.append(
+                (selector, _selection_text(contents, f"selection.entities.{selector}"))
+            )
+        elif selector == "all" and contents is True:
+            canonical_entities.append(("all",))
+        elif selector in ("path", "prefix") or selector == "all":
+            _selection_bad(f"selection.entities.{selector}")
+        else:
+            _selection_bad(_unknown_member_path("selection.entities", selector))
+
+    metrics = _selection_member(selection, "metrics", "selection")
+    if not isinstance(metrics, list) or not 1 <= len(metrics) <= 64:
+        _selection_bad("selection.metrics")
+    if any(
+        not isinstance(metric, str)
+        or not metric.isascii()
+        or not 1 <= len(metric) <= 64
+        or not metric[0].islower()
+        or not metric[0].isalpha()
+        or any(not (char.islower() or char.isdigit() or char in "_.-") for char in metric[1:])
+        for metric in metrics
+    ):
+        _selection_bad("selection.metrics")
+
+    if len(set(canonical_entities)) != len(canonical_entities):
+        _selection_bad("selection.entities")
+    ranks = {"inc": 0, "cgroup_id": 1, "path": 2, "prefix": 3, "all": 4}
+    canonical_entities.sort(key=lambda entity: (ranks[entity[0]], *entity[1:]))
+
+    if len(set(metrics)) != len(metrics):
+        _selection_bad("selection.metrics")
+
+    if negotiated_minor < 2 and any(entity[0] == "cgroup_id" for entity in canonical_entities):
+        raise SelectionError(None, code="unsupported-feature", feature="cgroup_id", step=11)
+    return tuple(canonical_entities), tuple(sorted(metrics, key=lambda metric: metric.encode("utf-8")))
+
+
 def _align8(value: int) -> int:
     return value if value % 8 == 0 else value + (8 - value % 8)
+
+
+def event_kind_name(code: int) -> str | None:
+    """Return the event/1 name for a kind code, or ``None`` outside its table."""
+    return EVENT_KIND_NAMES.get(code) if type(code) is int else None
+
+
+def event_outcome_name(code: int) -> str | None:
+    """Return the event/1 name for an outcome code; zero means no outcome."""
+    return EVENT_OUTCOME_NAMES.get(code) if type(code) is int else None
+
+
+def event_context_key_name(code: int) -> str | None:
+    """Return the event/1 name for a context key code, or ``None`` if unknown."""
+    return EVENT_CONTEXT_KEY_NAMES.get(code) if type(code) is int else None
+
+
+def _event_error(kind: str, **fields: object) -> None:
+    raise WireError(kind, **fields)
+
+
+def _event_take(body: bytes, offset: int, count: int) -> tuple[bytes, int]:
+    end = offset + count
+    if end > len(body):
+        raise WireError(
+            "section-length",
+            section=EVENT_SECTION_KIND,
+            declared=len(body),
+            expected=end,
+        )
+    return body[offset:end], end
+
+
+def _event_u8(body: bytes, offset: int) -> tuple[int, int]:
+    value, end = _event_take(body, offset, 1)
+    return value[0], end
+
+
+def _event_u16(body: bytes, offset: int) -> tuple[int, int]:
+    value, end = _event_take(body, offset, 2)
+    return struct.unpack("<H", value)[0], end
+
+
+def _event_layout(body: bytes) -> tuple[tuple, tuple, int, int, int]:
+    if len(body) < 48:
+        raise WireError("truncated", context="event body", need=48, have=len(body))
+
+    fixed = struct.unpack_from("<qQQQIIBBBBBBH", body, 0)
+    offset = 48
+    strings = []
+    for _ in range(4):
+        length, offset = _event_u16(body, offset)
+        start = offset
+        _raw, offset = _event_take(body, offset, length)
+        strings.append((start, offset))
+
+    n_ctx = fixed[9]
+    ctx_start = offset
+    for _ in range(n_ctx):
+        _key, offset = _event_u8(body, offset)
+        length, offset = _event_u16(body, offset)
+        _value, offset = _event_take(body, offset, length)
+
+    n_attrs = fixed[10]
+    attrs_start = offset
+    for _ in range(n_attrs):
+        key_length, offset = _event_u16(body, offset)
+        _key, offset = _event_take(body, offset, key_length)
+        value_length, offset = _event_u16(body, offset)
+        _value, offset = _event_take(body, offset, value_length)
+
+    aligned = _align8(offset)
+    if len(body) != aligned:
+        raise WireError(
+            "section-length",
+            section=EVENT_SECTION_KIND,
+            declared=len(body),
+            expected=aligned,
+        )
+    return fixed, tuple(strings), ctx_start, attrs_start, offset
+
+
+def _event_name(raw: bytes) -> bool:
+    return bool(raw) and raw[0:1].islower() and raw[0:1].isascii() and all(
+        byte == 0x2e
+        or byte == 0x5f
+        or byte == 0x2d
+        or 0x30 <= byte <= 0x39
+        or 0x61 <= byte <= 0x7a
+        for byte in raw[1:]
+    )
+
+
+def _event_text(body: bytes, span: tuple[int, int], field: str, grammar: bool = False) -> str:
+    raw = body[span[0] : span[1]]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise WireError("event-text", field=field) from None
+    if any(byte < 0x20 or byte == 0x7F for byte in raw) or (grammar and not _event_name(raw)):
+        raise WireError("event-text", field=field)
+    return text
+
+
+def _event_validate_codes(body: bytes, fixed: tuple, ctx_start: int) -> None:
+    kind, outcome, inferred, n_ctx = fixed[6], fixed[7], fixed[8], fixed[9]
+    if kind not in (1, 2, 3):
+        raise WireError("event-unknown-code", field="kind", code=kind)
+    if outcome > 7:
+        raise WireError("event-unknown-code", field="outcome", code=outcome)
+    if (kind == 2) != (outcome != 0):
+        raise WireError("event-unknown-code", field="outcome/kind", code=outcome)
+    if inferred & 1 and kind != 2:
+        raise WireError("event-unknown-code", field="inferred/kind", code=inferred & 1)
+
+    offset = ctx_start
+    for _ in range(n_ctx):
+        key, offset = _event_u8(body, offset)
+        if key > 4:
+            raise WireError("event-unknown-code", field="ctx", code=key)
+        length, offset = _event_u16(body, offset)
+        _value, offset = _event_take(body, offset, length)
+
+
+def _event_validate_bounds(body: bytes, fixed: tuple, strings: tuple, ctx_start: int, attrs_start: int) -> None:
+    t_mono_ns, span, peer_dev, peer_inode = fixed[:4]
+    kind, n_ctx, n_attrs = fixed[6], fixed[9], fixed[10]
+    if t_mono_ns < 0:
+        raise WireError("event-field-bound", field="t_mono_ns")
+    if (kind == 3) != (span == 0):
+        raise WireError("event-field-bound", field="span")
+    if (peer_dev == 0) != (peer_inode == 0):
+        raise WireError("event-field-bound", field="peer")
+    if n_ctx > 5:
+        raise WireError("event-field-bound", field="n_ctx")
+    if n_attrs > 8:
+        raise WireError("event-field-bound", field="n_attrs")
+
+    bounds = ((1, 64, "name"), (1, 64, "key"), (0, 64, "code"), (0, 15, "comm"))
+    for (start, end), (minimum, maximum, field) in zip(strings, bounds):
+        length = end - start
+        if length < minimum or length > maximum:
+            raise WireError("event-field-bound", field=field)
+
+    offset = ctx_start
+    for _ in range(n_ctx):
+        _key, offset = _event_u8(body, offset)
+        length, offset = _event_u16(body, offset)
+        if not 1 <= length <= 128:
+            raise WireError("event-field-bound", field="ctx.value")
+        _value, offset = _event_take(body, offset, length)
+
+    offset = attrs_start
+    for _ in range(n_attrs):
+        key_length, offset = _event_u16(body, offset)
+        if not 1 <= key_length <= 64:
+            raise WireError("event-field-bound", field="attrs.key")
+        _key, offset = _event_take(body, offset, key_length)
+        value_length, offset = _event_u16(body, offset)
+        if value_length > 256:
+            raise WireError("event-field-bound", field="attrs.value")
+        _value, offset = _event_take(body, offset, value_length)
+
+
+def _event_validate_text(body: bytes, strings: tuple, ctx_start: int, attrs_start: int, fixed: tuple) -> None:
+    for span, field in zip(strings, ("name", "key", "code", "comm")):
+        _event_text(body, span, field, grammar=field == "name")
+
+    offset = ctx_start
+    for _ in range(fixed[9]):
+        _key, offset = _event_u8(body, offset)
+        length, offset = _event_u16(body, offset)
+        start = offset
+        _value, offset = _event_take(body, offset, length)
+        _event_text(body, (start, offset), "ctx.value")
+
+    offset = attrs_start
+    for _ in range(fixed[10]):
+        key_length, offset = _event_u16(body, offset)
+        key_start = offset
+        _key, offset = _event_take(body, offset, key_length)
+        value_length, offset = _event_u16(body, offset)
+        value_start = offset
+        _value, offset = _event_take(body, offset, value_length)
+        _event_text(body, (key_start, key_start + key_length), "attrs.key", grammar=True)
+        _event_text(body, (value_start, offset), "attrs.value")
+
+
+def _event_validate_order(body: bytes, fixed: tuple, ctx_start: int, attrs_start: int) -> None:
+    previous_context = None
+    offset = ctx_start
+    for index in range(fixed[9]):
+        key, offset = _event_u8(body, offset)
+        if previous_context is not None and key <= previous_context:
+            raise WireError("event-order", field="ctx", index=index)
+        previous_context = key
+        length, offset = _event_u16(body, offset)
+        _value, offset = _event_take(body, offset, length)
+
+    previous_key = None
+    offset = attrs_start
+    for index in range(fixed[10]):
+        key_length, offset = _event_u16(body, offset)
+        key, offset = _event_take(body, offset, key_length)
+        if previous_key is not None and key <= previous_key:
+            raise WireError("event-order", field="attrs", index=index)
+        previous_key = key
+        value_length, offset = _event_u16(body, offset)
+        _value, offset = _event_take(body, offset, value_length)
+
+
+def _event_encode_raw(value: object, field: str) -> tuple[bytes | None, int]:
+    if not isinstance(value, str):
+        raise WireError("event-field-bound", field=field)
+    try:
+        raw = value.encode("utf-8")
+    except UnicodeEncodeError:
+        # Keep text validation in its decoder pass, after every measurable bound.
+        return None, len(value.encode("utf-8", errors="surrogatepass"))
+    return raw, len(raw)
+
+
+def _event_check_encoded_text(raw: bytes | None, field: str, grammar: bool = False) -> bytes:
+    if raw is None:
+        raise WireError("event-text", field=field)
+    if any(byte < 0x20 or byte == 0x7F for byte in raw) or (grammar and not _event_name(raw)):
+        raise WireError("event-text", field=field)
+    return raw
+
+
+def encode_event_payload(event: dict) -> bytes:
+    """Encode one event/1 section body, including zero padding to an eight-byte boundary."""
+    required = {
+        "t_mono_ns", "span", "peer_dev", "peer_inode", "uid", "peer_pid", "kind",
+        "outcome", "inferred", "ctx", "attrs", "name", "key", "code", "comm",
+    }
+    if not isinstance(event, dict) or set(event) != required:
+        raise WireError("event-field-bound", field="shape")
+
+    kind = event["kind"]
+    outcome = event["outcome"]
+    inferred = event["inferred"]
+    if type(kind) is not int or kind not in (1, 2, 3):
+        raise WireError("event-unknown-code", field="kind", code=kind)
+    if type(outcome) is not int or outcome < 0 or outcome > 7:
+        raise WireError("event-unknown-code", field="outcome", code=outcome)
+    if (kind == 2) != (outcome != 0):
+        raise WireError("event-unknown-code", field="outcome/kind", code=outcome)
+    if type(inferred) is not bool:
+        raise WireError("event-field-bound", field="inferred")
+    if inferred and kind != 2:
+        raise WireError("event-unknown-code", field="inferred/kind", code=1)
+
+    ctx = event["ctx"]
+    attrs = event["attrs"]
+    if not isinstance(ctx, list) or not isinstance(attrs, list):
+        raise WireError("event-field-bound", field="collections")
+    for entry in ctx:
+        if not isinstance(entry, dict) or set(entry) != {"key", "value"}:
+            raise WireError("event-field-bound", field="ctx")
+        key = entry["key"]
+        if type(key) is not int or key < 0 or key > 4:
+            raise WireError("event-unknown-code", field="ctx", code=key)
+    for entry in attrs:
+        if not isinstance(entry, dict) or set(entry) != {"key", "value"}:
+            raise WireError("event-field-bound", field="attrs")
+
+    def integer(field: str, minimum: int, maximum: int) -> int:
+        value = event[field]
+        if type(value) is not int or value < minimum or value > maximum:
+            raise WireError("event-field-bound", field=field)
+        return value
+
+    t_mono_ns = integer("t_mono_ns", 0, (1 << 63) - 1)
+    span = integer("span", 0, (1 << 64) - 1)
+    peer_dev = integer("peer_dev", 0, (1 << 64) - 1)
+    peer_inode = integer("peer_inode", 0, (1 << 64) - 1)
+    if (kind == 3) != (span == 0):
+        raise WireError("event-field-bound", field="span")
+    if (peer_dev == 0) != (peer_inode == 0):
+        raise WireError("event-field-bound", field="peer")
+    uid = integer("uid", 0, (1 << 32) - 1)
+    peer_pid = integer("peer_pid", 0, (1 << 32) - 1)
+    if len(ctx) > 5:
+        raise WireError("event-field-bound", field="n_ctx")
+    if len(attrs) > 8:
+        raise WireError("event-field-bound", field="n_attrs")
+
+    fixed_values = (
+        (event["name"], "name", 1, 64, True, False),
+        (event["key"], "key", 1, 64, False, False),
+        (
+            "" if event["code"] is None else event["code"],
+            "code",
+            0,
+            64,
+            False,
+            event["code"] is not None,
+        ),
+        (
+            "" if event["comm"] is None else event["comm"],
+            "comm",
+            0,
+            15,
+            False,
+            event["comm"] is not None,
+        ),
+    )
+    fixed_raw = []
+    for value, field, minimum, maximum, _grammar, present in fixed_values:
+        raw, length = _event_encode_raw(value, field)
+        if length < minimum or length > maximum or (present and length == 0):
+            raise WireError("event-field-bound", field=field)
+        fixed_raw.append(raw)
+
+    ctx_raw = []
+    for entry in ctx:
+        raw, length = _event_encode_raw(entry["value"], "ctx.value")
+        if not 1 <= length <= 128:
+            raise WireError("event-field-bound", field="ctx.value")
+        ctx_raw.append(raw)
+
+    attrs_raw = []
+    for entry in attrs:
+        key_raw, key_length = _event_encode_raw(entry["key"], "attrs.key")
+        if not 1 <= key_length <= 64:
+            raise WireError("event-field-bound", field="attrs.key")
+        value_raw, value_length = _event_encode_raw(entry["value"], "attrs.value")
+        if value_length > 256:
+            raise WireError("event-field-bound", field="attrs.value")
+        attrs_raw.append((key_raw, value_raw))
+
+    texts = []
+    for raw, (_value, field, _minimum, _maximum, grammar, _present) in zip(
+        fixed_raw, fixed_values, strict=True
+    ):
+        texts.append(_event_check_encoded_text(raw, field, grammar))
+    for raw in ctx_raw:
+        _event_check_encoded_text(raw, "ctx.value")
+    for key_raw, value_raw in attrs_raw:
+        _event_check_encoded_text(key_raw, "attrs.key", grammar=True)
+        _event_check_encoded_text(value_raw, "attrs.value")
+
+    for index in range(1, len(ctx)):
+        if ctx[index - 1]["key"] >= ctx[index]["key"]:
+            raise WireError("event-order", field="ctx", index=index)
+    attr_keys = [key_raw for key_raw, _value_raw in attrs_raw]
+    for index in range(1, len(attr_keys)):
+        if attr_keys[index - 1] >= attr_keys[index]:
+            raise WireError("event-order", field="attrs", index=index)
+
+    out = bytearray(
+        struct.pack(
+            "<qQQQIIBBBBBBH",
+            t_mono_ns,
+            span,
+            peer_dev,
+            peer_inode,
+            uid,
+            peer_pid,
+            kind,
+            outcome,
+            int(inferred),
+            len(ctx),
+            len(attrs),
+            0,
+            0,
+        )
+    )
+
+    def put_string(value: bytes) -> None:
+        out.extend(struct.pack("<H", len(value)))
+        out.extend(value)
+
+    for value in texts:
+        put_string(value)
+    for entry, value in zip(ctx, ctx_raw, strict=True):
+        out.extend(struct.pack("<B", entry["key"]))
+        put_string(value)
+    for key_raw, value_raw in attrs_raw:
+        put_string(key_raw)
+        put_string(value_raw)
+    out.extend(b"\x00" * (-len(out) % 8))
+    return bytes(out)
+
+
+def decode_event_payload(body: bytes) -> dict:
+    """Decode one event/1 section body in the normative refusal order."""
+    fixed, strings, ctx_start, attrs_start, content_end = _event_layout(body)
+    flags = fixed[8]
+    if flags & 0xFE:
+        raise WireError("non-zero-reserved", value=flags & 0xFE)
+    if fixed[11] != 0:
+        raise WireError("non-zero-reserved", value=fixed[11])
+    if fixed[12] != 0:
+        raise WireError("non-zero-reserved", value=fixed[12])
+    for byte in body[content_end:]:
+        if byte:
+            raise WireError("non-zero-reserved", value=byte)
+
+    _event_validate_codes(body, fixed, ctx_start)
+    _event_validate_bounds(body, fixed, strings, ctx_start, attrs_start)
+    _event_validate_text(body, strings, ctx_start, attrs_start, fixed)
+    _event_validate_order(body, fixed, ctx_start, attrs_start)
+
+    ctx = []
+    offset = ctx_start
+    for _ in range(fixed[9]):
+        key_code, offset = _event_u8(body, offset)
+        length, offset = _event_u16(body, offset)
+        raw, offset = _event_take(body, offset, length)
+        ctx.append({"key": key_code, "value": raw.decode("utf-8")})
+
+    attrs = []
+    offset = attrs_start
+    for _ in range(fixed[10]):
+        key_length, offset = _event_u16(body, offset)
+        key_raw, offset = _event_take(body, offset, key_length)
+        value_length, offset = _event_u16(body, offset)
+        value_raw, offset = _event_take(body, offset, value_length)
+        attrs.append({"key": key_raw.decode("utf-8"), "value": value_raw.decode("utf-8")})
+
+    texts = [
+        _event_text(body, strings[index], field, grammar=field == "name")
+        for index, field in enumerate(("name", "key", "code", "comm"))
+    ]
+    return {
+        "t_mono_ns": fixed[0],
+        "span": fixed[1],
+        "peer_dev": fixed[2],
+        "peer_inode": fixed[3],
+        "uid": fixed[4],
+        "peer_pid": fixed[5],
+        "kind": fixed[6],
+        "outcome": fixed[7],
+        "inferred": bool(flags & 1),
+        "ctx": ctx,
+        "attrs": attrs,
+        "name": texts[0],
+        "key": texts[1],
+        "code": texts[2] or None,
+        "comm": texts[3] or None,
+    }
+
+
+def encode_event_frame(event: dict) -> bytes:
+    """Encode the one-section EVT+SECTIONED frame stored in the events corpus."""
+    body = encode_event_payload(event)
+    total = FRAME_HEADER_LEN + 4 + 8 + len(body)
+    if total > MAX_FRAME_BYTES:
+        raise WireError("oversized-frame", len=total, max=MAX_FRAME_BYTES)
+    return (
+        struct.pack("<IBBHI", total, FRAME_TYPES["evt"], FRAME_SECTIONED, 0, 0)
+        + struct.pack(
+            "<HHHBBI",
+            1,
+            0,
+            EVENT_SECTION_KIND,
+            EVENT_SECTION_VERSION,
+            EVENT_SECTION_REQUIRED_FLAGS,
+            len(body),
+        )
+        + body
+    )
+
+
+def event_body_from_frame(frame: bytes) -> bytes:
+    """Return the body from one canonical stored event frame."""
+    if len(frame) < 24:
+        raise WireError("truncated", context="event frame", need=24, have=len(frame))
+    length, frame_type, flags, reserved, corr = struct.unpack_from("<IBBHI", frame, 0)
+    if frame_type != FRAME_TYPES["evt"]:
+        raise WireError("unknown-frame-type", code=frame_type)
+    if flags != FRAME_SECTIONED:
+        raise WireError("unknown-frame-flags", flags=flags)
+    if reserved != 0 or corr != 0:
+        raise WireError("non-zero-reserved", value=reserved or corr)
+    if length > MAX_FRAME_BYTES:
+        raise WireError("oversized-frame", len=length, max=MAX_FRAME_BYTES)
+    if length != len(frame):
+        raise WireError("truncated", context="event frame", need=length, have=len(frame))
+    if len(frame) % 8:
+        raise WireError(
+            "section-length",
+            section=EVENT_SECTION_KIND,
+            declared=len(frame),
+            expected=_align8(len(frame)),
+        )
+    n_sec, directory_reserved, kind, version, section_flags, body_len = struct.unpack_from(
+        "<HHHBBI", frame, 12
+    )
+    if directory_reserved != 0:
+        raise WireError("section-reserved", value=directory_reserved)
+    if n_sec != 1:
+        raise WireError(
+            "section-length",
+            section=EVENT_SECTION_KIND,
+            declared=n_sec,
+            expected=1,
+        )
+    if kind != EVENT_SECTION_KIND:
+        raise WireError("unsupported-required-section", kind_code=kind)
+    if version != EVENT_SECTION_VERSION:
+        raise WireError(
+            "unsupported-section-version",
+            kind_code=kind,
+            version=version,
+            supported=EVENT_SECTION_VERSION,
+        )
+    if section_flags != EVENT_SECTION_REQUIRED_FLAGS:
+        raise WireError("unknown-section-flags", kind_code=kind, flags=section_flags)
+    if body_len != len(frame) - 24:
+        raise WireError(
+            "section-length",
+            section=EVENT_SECTION_KIND,
+            declared=body_len,
+            expected=len(frame) - 24,
+        )
+    return frame[24:]
 
 
 def boot_id_bytes(text: str) -> bytes:

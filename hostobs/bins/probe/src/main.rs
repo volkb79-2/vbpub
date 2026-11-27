@@ -16,11 +16,14 @@ use hostobs_probe::live::ProbeBackend;
 use hostobs_probe::sampler::{self, Published, SamplerConfig, SamplerError};
 use hostobs_serve::backend::Identity;
 use hostobs_serve::server::Server;
+use hostobs_store::error::StoreError;
+use hostobs_store::store::Store;
 use rustix::event::{eventfd, EventfdFlags};
 
 use crate::config::{Action, ConfigError, LevelMapError};
 
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
+const PROC_ROOT: &str = "/proc";
 const MAX_BOOT_ID_BYTES: usize = 64;
 
 fn main() {
@@ -87,6 +90,11 @@ fn serve(config_path: &Path) -> Result<(), ProcessError> {
     let started_mono_ns = clock.mono_ns();
     let started_real_ns = clock.wall_ns();
     let identity = identity(&boot_id, epoch);
+    let store_config = config
+        .store_config(epoch)
+        .map_err(|error| ProcessError::Startup(StartupError::Store(error)))?;
+    // The probe opens the store at startup and records nothing yet.
+    let store = open_store(store_config).map_err(ProcessError::Startup)?;
 
     let wake = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).map_err(|error| {
         ProcessError::Startup(StartupError::Eventfd(io::Error::from_raw_os_error(
@@ -102,7 +110,7 @@ fn serve(config_path: &Path) -> Result<(), ProcessError> {
         boot_id: boot_bytes,
         epoch,
         tick_ms: config.tick_ms,
-        cgroup_root: config.cgroup_root,
+        cgroup_root: config.cgroup_root.clone(),
         max_rows: config.max_rows,
     };
     let stop = Arc::new(AtomicBool::new(false));
@@ -116,7 +124,26 @@ fn serve(config_path: &Path) -> Result<(), ProcessError> {
     let backend = ProbeBackend::new(identity, Arc::clone(&published));
     let server = Server::new(limits, backend);
     let mut now_ns = || clock.mono_ns();
-    driver::run(server, listeners, wake, stop, &mut now_ns).map_err(ProcessError::Run)
+    let result = driver::run(
+        server,
+        listeners,
+        wake,
+        stop,
+        Path::new(PROC_ROOT),
+        &config.cgroup_root,
+        &mut now_ns,
+    );
+    drop(store);
+    result.map_err(ProcessError::Run)
+}
+
+fn open_store(config: hostobs_store::store::StoreConfig) -> Result<Store, StartupError> {
+    Store::open(config).map_err(|error| match error {
+        StoreError::NotTmpfs { .. }
+        | StoreError::MountTableUnreadable { .. }
+        | StoreError::MountNotFound { .. } => StartupError::StoreTmpfsDir,
+        error => StartupError::Store(error),
+    })
 }
 
 fn listen_variable(name: &'static str) -> Result<Option<String>, StartupError> {
@@ -167,6 +194,8 @@ enum StartupError {
     Eventfd(io::Error),
     WakeClone(io::Error),
     Sampler(SamplerError),
+    Store(StoreError),
+    StoreTmpfsDir,
 }
 
 impl fmt::Display for StartupError {
@@ -181,6 +210,10 @@ impl fmt::Display for StartupError {
             StartupError::Eventfd(error) => write!(f, "cannot create wake eventfd: {error}"),
             StartupError::WakeClone(error) => write!(f, "cannot clone wake eventfd: {error}"),
             StartupError::Sampler(error) => error.fmt(f),
+            StartupError::Store(error) => write!(f, "store: {error}"),
+            StartupError::StoreTmpfsDir => {
+                f.write_str("store.tmpfs_dir must be on tmpfs; store.dir is durable storage")
+            }
         }
     }
 }

@@ -147,7 +147,7 @@ impl<'a> Cursor<'a> {
         for _ in 0..pad {
             let byte = self.u8()?;
             if byte != 0 {
-                return Err(ProtoError::NonZeroReserved(u16::from(byte)));
+                return Err(ProtoError::NonZeroReserved(u32::from(byte)));
             }
         }
         if !self.is_empty() {
@@ -167,7 +167,7 @@ impl<'a> Cursor<'a> {
         for _ in 0..len {
             let byte = self.u8()?;
             if byte != 0 {
-                return Err(ProtoError::NonZeroReserved(u16::from(byte)));
+                return Err(ProtoError::NonZeroReserved(u32::from(byte)));
             }
         }
         Ok(())

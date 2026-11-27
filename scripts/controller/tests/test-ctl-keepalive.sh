@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016 # fixture text carries literal $ and backticks
+# shellcheck disable=SC1091,SC2016 # fixture text carries literal $ and backticks; the shared frame lib is sourced
 set -uo pipefail
 # ctl-keepalive.sh --once against a STUB tmux first on PATH, fake ~/.claude/sessions + projects JSONL, a fake /proc and a
 # fixed clock (KEEPALIVE_NOW). The stub records every call and serves capture-pane frames per phase (pre = before the
@@ -19,6 +19,10 @@ not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
 T0=1800000000   # the fixed "now"
 TEXT='[keepalive] cache refresh only: reply ok, no tools'
 RULE=$(printf '─%.0s' {1..40})
+# The frames built from the sanitized REAL agents-panel capture (PANELFIX, panel_frame, typed_row, draft_row, menu_frame) are
+# shared with the resume-helper tests: they must measure the same pane view.
+# shellcheck source=pane-frame-lib.sh
+source "$SCRIPT_DIR/pane-frame-lib.sh"
 
 mkdir -p "$ROOT/bin"
 cat > "$ROOT/bin/tmux" <<'SH'
@@ -49,32 +53,6 @@ chmod +x "$ROOT/bin/tmux"
 # box <row> [footer]: an idle prompt box, `%b` expands \xc2\xa0 (NBSP) and \e escapes in the row
 box() { printf 'output\n%s\n%b\n%s\n%b\n' "$RULE" "$1" "$RULE" "${2:-  ctx 41%}"; }
 BUSYL='  * Thinking (12s . esc to interrupt)'
-MENU=' Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel'
-PANELFIX=$SCRIPT_DIR/fixtures/keepalive/idle-agents-panel.ansi                     # the sanitized REAL idle agents-panel capture
-# panel_frame <dest> <extra panel rows> <busy 0|1> <unfocused hint 0|1>: a temp copy of the REAL capture, edited line by line:
-# `· esc to interrupt` added to its mode line when busy, ` · ↓ to manage` removed when the panel has focus, N rows appended.
-panel_frame() {
-  local dest=$1 rows=$2 busy=$3 hint=$4 k mode_line
-  mode_line=$(grep -nFm1 -- '⏵⏵ bypass permissions on' "$PANELFIX" | cut -d: -f1)
-  local esc=$'\033'
-  cp -- "$PANELFIX" "$dest"
-  # append the busy marker at the END of the mode line's text: the line is captured with colour runs, and appending is what
-  # a real busy pane shows (the mode line grows, the rest of the layout does not move)
-  if (( busy )); then sed -i "${mode_line}s/${esc}\\[39m$/ · esc to interrupt${esc}\\[39m/" "$dest"; fi
-  if (( ! hint )); then sed -i "${mode_line}s/ · ↓ to manage//" "$dest"; fi
-  for ((k = 1; k <= rows; k++)); do printf '  \e[38;5;246m◯ general-purpose\e[39m  \e[38;5;246magent %s running a foreground tool\e[39m\n' "$k" >>"$dest"; done
-}
-# typed_row <dest> <text>: the read-back shape: the capture's EMPTY input row now holds the text
-typed_row() { sed -i "s/❯$(printf '\xc2\xa0')/❯ $2/" "$1"; }
-# draft_row <dest>: a continuation line right under the live input row (a multi-line draft)
-draft_row() { perl -i -pe 'if (!$d && /\xe2\x9d\xaf\xc2\xa0/) { $_ .= "  foo\n"; $d = 1 }' "$1"; }
-# menu_frame <dest> <extra panel rows>: an MB layout, built from the REAL capture's last section: the permission menu above
-# the capture's own top box rule, its empty box, its mode line and its panel plus N extra rows
-menu_frame() {
-  local dest=$1 rows=$2 first k
-  first=$(grep -nFm1 -- '❯' "$PANELFIX" | cut -d: -f1)   # -m1: grep stops itself, no `| head` SIGPIPE under pipefail
-  { printf '%b\n' "$MENU"; tail -n "+$((first - 1))" "$PANELFIX"; for ((k = 1; k <= rows; k++)); do printf '  \e[38;5;246m◯ general-purpose\e[39m  \e[38;5;246magent %s running a foreground tool\e[39m\n' "$k"; done; } >"$dest"
-}
 # frame <dir> <phase> <n> <kind>
 frame() {
   local f; f=$(printf '%s/frames/%s.%03d' "$1" "$2" "$3")
@@ -92,10 +70,12 @@ frame() {
     ROK2) box "❯ $TEXT" >"$f" ;;                                          # ... plain space
     ROK3) box "❯\xc2\xa0\xc2\xa0$TEXT\xc2\xa0 " >"$f" ;;                  # ... NBSP gap doubled, trailing NBSP
     LID) panel_frame "$f" 3 0 1 ;;                                        # the REAL idle agents panel plus 3 rows: pingable
+    LRID) panel_frame "$f" 3 0 1; typed_row "$f" "$TEXT" ;;                # L-a: the read-back ON that real panel: trimmed view ends in Enter
     LB) panel_frame "$f" 6 1 1 ;;                                         # H1: real frame, `esc to interrupt` in the mode line, 9 panel rows
     LRB) panel_frame "$f" 6 1 1; typed_row "$f" "$TEXT" ;;                # H1: the read-back of the ping on such a pane
     LMB) menu_frame "$f" 12 ;;                                            # H1: a menu above the box, then the real mode line, then a 15-row panel
     LMLP) panel_frame "$f" 6 0 1; draft_row "$f" ;;                       # H1: a draft line under the live row, mode line and panel below
+    DRAFT_FIX|DRAFT_VERIFY) draft_frame "$f" "$4" ;;                      # dash continuation in a box-rule position
     LFOC) panel_frame "$f" 0 0 0 ;;                                       # M1: the real frame WITHOUT the unfocused-panel hint (focused panel)
     RPF) box '❯ [keepalive] cache ref' >"$f" ;;                           # only a prefix of our text
     RFO) box "❯ hello $TEXT" >"$f" ;;                                     # foreign text typed by the operator
@@ -138,7 +118,7 @@ prep() { echo pre >"$D/phase"; rm -f "$D"/idx.*; find "$D/projects" -name '*.jso
 run() { # the watcher once; sets RC
   prep
   STUB_DIR=$D PATH=$ROOT/bin:$PATH KEEPALIVE_HOME=$D/home KEEPALIVE_SESSIONS_DIR=$D/sessions KEEPALIVE_PROJECTS_DIR=$D/projects \
-    KEEPALIVE_PROC=$D/proc KEEPALIVE_NOW=$T0 KEEPALIVE_READBACK_WAIT=0.01 bash "$KA" --once 2>"$D/stderr"; RC=$?
+    KEEPALIVE_PROC=$D/proc KEEPALIVE_NOW=$T0 KEEPALIVE_READBACK_WAIT=0.01 bash "$KA" --once </dev/null 2>"$D/stderr"; RC=$?
 }
 calls() { cat -- "$D/calls.log" 2>/dev/null; }
 klog() { cat -- "$D/home/logs/keepalive.log"; }
@@ -219,7 +199,8 @@ scenario pane-narrow 3400 "I" "ROK"; echo "%1 main 70" >"$D/panes.txt"; run
 [[ $(sent_keys) -eq 0 ]] || fail "a pane narrower than 80 columns must not be pinged"; logged 'pane-narrow (70)' || fail "narrow logged"
 
 # 4a. H1: on a frame built from the REAL agents-panel capture the trim is the only reason a busy pane whose mode line sits
-#     above a tall panel is recognised. Each case would type (and submit) the ping at 3539714d1.
+#     above a tall panel is recognised. Each case would type (and submit) the ping at 3539714d1 (h1-draft only pins the
+#     existing draft refusal).
 scenario h1-busy-panel 3400 "LB" "ROK"; run
 [[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a busy pane with 9 panel rows must not be pinged (esc to interrupt is 10 lines up)"; }
 logged 'skip busy' || fail "H1: the pane must be skipped as busy, not as an unknown box layout"
@@ -233,12 +214,17 @@ logged 'skip dialog' || fail "H1: the dialog must be found below a tall panel to
 scenario h1-draft 3400 "LMLP" "ROK"; run
 [[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a draft line under the live row must never be typed into"; }
 logged 'skip input-box-layout' || fail "H1: a draft is refused by the box geometry"
+for kind in DRAFT_FIX DRAFT_VERIFY; do
+  scenario "dash-draft-$kind" 3400 "$kind" "ROK"; run
+  [[ $(sent_keys) -eq 0 ]] || fail "dash draft $kind must never be pinged"
+  logged 'skip input-box-layout' || fail "dash draft $kind is refused by the box geometry"
+done
 # 4a2. M1: the trim needs the mode line's unfocused-panel hint (`↓ to manage`); without it the panel may hold the
 #      keyboard focus and the strict box geometry must refuse the pane (nothing is typed into a focused panel)
 scenario m1-focused 3400 "LFOC" "ROK"; run
 [[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "M1: a panel without the unfocused hint may be focused and must not be pinged"; }
 logged 'skip input-box-layout' || fail "M1: the focused-panel frame is refused by the box geometry"
-scenario m1-unfocused 3400 "LID" "ROK"; run
+scenario m1-unfocused 3400 "LID" "LRID"; run
 called 'send-keys %1 Enter' || { calls >&2; fail "M1: the unfocused agents panel (hint present) stays pingable"; }
 
 # 4b. M1: a multi-line draft (box row empty, continuation line below it) is never typed into, and never erased or submitted
@@ -326,7 +312,7 @@ helper() { # <script> <args...> with the stub and a short lock wait; sets RC
   STUB_DIR=$D PATH=$ROOT/bin:$PATH CLEAR_RESUME_LOCK_DIR=$D/home/locks COMPACT_RESUME_LOCK_DIR=$D/home/locks \
     CLEAR_RESUME_LOCK_WAIT=0.2 COMPACT_RESUME_LOCK_WAIT=0.2 CLEAR_RESUME_POLL=0.01 CLEAR_RESUME_TYPE_PAUSE=0.01 CLEAR_RESUME_FINAL_WAIT=0.01 \
     CLEAR_RESUME_CLEAR_TRIES=1 COMPACT_RESUME_POLL=0.01 COMPACT_RESUME_TYPE_PAUSE=0.01 COMPACT_RESUME_FINAL_WAIT=0.01 COMPACT_RESUME_SETTLE=0.01 \
-    COMPACT_RESUME_START_TRIES=1 bash "$@" 2>"$D/stderr"; RC=$?
+    COMPACT_RESUME_START_TRIES=1 bash "$@" </dev/null 2>"$D/stderr"; RC=$?
 }
 scenario lockhelp 3400 "I I I I I I I I I I I I" "I"; echo "prompt" >"$D/prompt.txt"; echo "guide" >"$D/guide.txt"; mkdir -p "$D/home/locks"
 hold "$D/home/locks/%1.lock" 2

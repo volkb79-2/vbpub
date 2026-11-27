@@ -774,6 +774,31 @@ def test_orchestration_image_defaults_are_read_from_the_release_source_snapshot(
     assert observed["path"] == Path("cmru.orchestration.toml")
 
 
+def test_orchestration_image_defaults_refuse_publisher_credentials_without_echo(
+    tmp_path, monkeypatch, capsys,
+):
+    orchestration_env = {"GITHUB_TOKEN": "made-up-orchestration-token-value"}
+    token = orchestration_env["GITHUB_TOKEN"]
+    content = (
+        "[orchestration.defaults.env]\n"
+        f'GITHUB_TOKEN = "{token}"\n'
+    )
+    monkeypatch.setattr(
+        cli, "_read_git_path_at_commit",
+        lambda *_args, **_kwargs: content,
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._orchestration_env_for_release_snapshot(
+            tmp_path, "a" * 40, tmp_path / "cmru.orchestration.toml",
+        )
+
+    assert caught.value.code == 2
+    captured = capsys.readouterr()
+    assert "orchestration.defaults.env.GITHUB_TOKEN is reserved" in captured.err
+    assert token not in captured.out + captured.err
+
+
 def test_orchestration_image_defaults_refuse_config_outside_release_source(tmp_path):
     with pytest.raises(RuntimeError, match="outside the release source"):
         cli._orchestration_env_for_release_snapshot(

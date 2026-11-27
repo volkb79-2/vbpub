@@ -73,8 +73,25 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    but it bounds SILENCE in the lane's liveness signal — an assay lane's
    progress file, or (RG-41, rev 36) a command lane's own log-stream
    arrival times, `SPEC` `R-40f` — never total elapsed time. Legal on both
-   `assay` and `command` lanes since RG-41; meaningless, but accepted, on
-   host/exec lanes, which start nothing to watch. The documented shape for
+   `assay` and `command` lanes since RG-41, and since RG-320 (`P1` of
+   [the no-time-budgets design](../../docs/design/no-time-budgets/DESIGN.md))
+   **every watched lane is bounded even when it declares nothing**: a COMMAND
+   lane's default bound is `DEFAULT_STALL_BOUND_SECONDS` = 300 s, an ASSAY lane
+   keeps the auto bound it already had (RG-7: `max(300s, 3x its published
+   cadence)`, or 600 s between `command_finished` and the R2 `plan`) — and the
+   disclosure line plus the run record's `stall_bound` name the number AND its
+   source (`declared` / `auto` / `auto-derived`, the last for an assay lane,
+   whose derivation is a RULE and is published as that rule rather than as a
+   number invented before the lane ran). What judges the silence differs by
+   kind: an assay lane's progress file; a container command lane's `docker logs -f` arrival
+   times; an exec or bare-host command lane's own output stream (RG-320 added
+   that signal — before it, a host/exec lane's `stall_timeout` loaded clean and
+   did nothing); a SEQUENCE lane has none of its own, its members carry the
+   watches (`SPEC` `R-40i`). An AUTO bound (only) pauses when host memory
+   `full avg10` PSI exceeds 5; CPU contention and IO PSI alone never pause its
+   300 s clock, exactly as `ProgressWatch` does
+   ([design rationale](docs/DESIGN-GUIDE.md#every-watchable-lane-is-bounded-and-which-signal-is-never-guessed-rg-320)).
+   The documented shape for
    a mutation lane is a generous assay `budget` +
    `judge.mutation.budget_per_candidate` + this key; progress output is
    scoped to the latest Assay run header, with rates and ETAs based on that

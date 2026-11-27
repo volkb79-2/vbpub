@@ -82,13 +82,13 @@ remain P-fd-05 (`fleetd/src/fleetd/cli.py:396-440`; `fleetd/KNOWN_ISSUES_TODO_BA
 
 | field | type | meaning |
 |---|---|---|
-| `job_id` | string | group-prefixed idempotency key; the host rejects ids outside its grammar |
+| `job_id` | string | idempotency key, prefixed by the authenticated group; `/1` grammar is `^[A-Za-z0-9][A-Za-z0-9._-]*$`, maximum 128 characters, and the host rejects ids outside it |
 | `repo` | string | repo name (`REPO_NAME_RE`, `scripts/netcup/runner/remote-gate.py:81`) |
 | `sha`, `base` | full hex, hex or null | the commit to judge; the base (already resolved by the client) |
 | `project`, `lane` | string | as `--project-dir`/lane today |
 | `shard` | `{index,total}` or null | reserved for P-fd-06; `/1` refuses a non-null value |
 | `resources.planned_cores` | positive number | derived from the lane declaration or measured job shape; no default |
-| `resources.cpu_set` | CPU ids or null | exact host CPU set to use; null lets placement choose an allowed set |
+| `resources.cpu_set` | CPU ids or null | `/1` refuses a non-null value with 2, reserved like `shard`; absent lets the executor choose an allowed set |
 | `resources.footprint` | `tiny|small|medium|large` | derived by the client from its warm-set table; §3.3 |
 | `resources.declared_peak_bytes` | int or null | lane declaration; a hint, not a cgroup limit |
 | `priority` | `merge-gate|dev|gate|campaign` | requested queue class; host clamps it to the authenticated principal's `/etc` allow-list |
@@ -105,6 +105,9 @@ remain P-fd-05 (`fleetd/src/fleetd/cli.py:396-440`; `fleetd/KNOWN_ISSUES_TODO_BA
 the authenticated group separately. Same id and digest returns existing state; same id with a
 different digest is refusal (2). This preserves today's run-dir and `run-job` duplicate refusals
 (`scripts/netcup/runner/remote-gate.py:1048-1050`; `scripts/netcup/runner/run-job:14`).
+After completion, a durable terminal record retains the group and digest without a charge. Replay
+of the same id and digest returns that terminal state without a handle; another digest or group
+is refusal (2).
 
 For `kind: dev`, the host derives a persistent workspace from authenticated group, repo and
 `worktree_key`, and takes one lock per key. The patches restore the dirty tracked and untracked
@@ -115,8 +118,9 @@ The payload has no `max_s`, removing today's timeout wrapper (`scripts/controlle
 streamed body; only `in.bundle`, indexed seed archives and the two dev patch archives are valid
 names. The agent checks length and checksum and creates the destination itself.
 
-Controller-only **lease** takes `{container_name, footprint, planned_cores, priority}`. The host returns a `lease_id`; the
-client binds the created container ID on that connection. A reconnect names the existing `lease_id` and immutable container ID.
+Controller-only **lease** takes `{lease_id, container_name, footprint, planned_cores, priority}`. The client supplies a group-prefixed
+idempotency key; the host reserves that id and the client binds the created container ID on that connection. A reconnect names the
+existing `lease_id` and immutable container ID.
 
 Local framing: ordinary verbs use one request per connection, 4-byte big-endian byte length + UTF-8 JSON object, max 64 KiB.
 `lease` is controller-socket-only and keeps its connection open for the full gate-container lifetime; grant/bind/ack messages use the same frame size, then Run-Gate closes after removal.
@@ -150,14 +154,14 @@ a running job follows §4.3. An unknown or finished id is a refusal (2).
 `lane-detail.log`, `artifacts.tgz`, `assay-store.tgz`, `assay-store.tgz.sha256`, `result.json`, and answers a byte range
 plus `{size, sha256, next_offset}`.
 
-**Exit codes.** `0` PASS; `1` lane FAIL; `2` request, path, preflight or prerequisite refusal;
+**Exit codes.** `0` PASS; `1` lane FAIL; `2` request, path or preflight refusal;
 `3` identity or transport failure; `4` run-gate `BUDGET_EXCEEDED`; `70` unexpected runner
-failure; `71` checkout failure; `72` missing base; `73` prerequisite missing (moved from today's
-76); `75` queued job withdrawn before it started; `76` INCONCLUSIVE-OOM; `77` store collection
-failed; `78` store seed failed; `143` cancelled. Store collection failure does not change the
+failure; `71` checkout failure; `72` missing base; `73` reserved by fleetd's runner; `75` queued job
+withdrawn before it started; `76` INCONCLUSIVE-OOM; `77` store collection failed; `78` store seed
+failed; `79` prerequisite missing (moved from today's 76); `143` cancelled. Store collection failure does not change the
 lane verdict. The former preflight exit 4 maps to 2 so 4 has one meaning. OOM is attributed to
-this job's containers, never a whole-slice counter. Record preflight `4`→`2` and prerequisite
-`76`→`73` in `fleetd/CHANGES.md`.
+this job's containers, never a whole-slice counter. A non-null `resources.cpu_set` is also refused
+with 2 in `/1`. Record preflight `4`→`2` and prerequisite `76`→`79` in `fleetd/CHANGES.md`.
 
 **The host-owned event file run-gate emits.** run-gate already writes the container it started
 into `.run-gate/inflight/<lane>.json` (`run-gate-project/run_gate.py:7350-7399`) and its id is
@@ -213,9 +217,8 @@ Per worker host `H`:
 - and bounded by `planning_cap(H)`, read from the host's worker slice `cpu.max` and capped at
   `cores(H)+1`. On the controller host this is 6 planned cores, the `dev-gates.slice` CPU limit
   (`.controller-state/operator-decisions.md:680-684`). The cap is a host fact, never a client number;
-- if `resources.cpu_set` is present, every selected CPU must be online and allowed by that host's
-  worker slice; the executor applies that set to the lane container. Otherwise the scheduler
-  chooses from the host's allowed CPUs;
+- `/1` refuses a non-null `resources.cpu_set` with 2, reserved like `shard`. With it absent, the
+  executor chooses from the host's allowed CPUs; selecting a CPU set is deferred to a later API;
 - several low-core jobs may exceed the core count in number: 5 jobs of 1 planned core on a 4-core
   host is legitimate *if their RAM fits*;
 - **RAM is the scarce dimension**: plan each job's warm working set, not its hot set or peak RSS.
@@ -241,31 +244,34 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `schema`, `agent_version` | literal, SemVer | agent | not enrolled → client refuses (major mismatch) |
 | `boot_id` | string | `/proc/sys/kernel/random/boot_id` | — |
 | `cpu.online` | int | `/sys/devices/system/cpu/online` (`fleetd/src/fleetd/facts.py:257`) | refuse (capacity unknown) |
-| `cpu.planning_cap` | number | worker slice `cpu.max`, capped at `cpu.online + 1` | refuse; never default to `cores+1` |
-| `load1`,`load5`,`load15` | number | `/proc/loadavg` | `null`+reason; the host is not placed (never "assume idle") |
-| `memory.total_bytes`, `memory.available_bytes` | bytes | `/proc/meminfo` (`fleetd/src/fleetd/facts.py:267-290`) | `null`+reason; placement refuses |
-| `memory.host_reserve_bytes` | bytes | `/etc/fleetd/facts.toml` | `null`+reason; placement refuses |
+| `cpu.planning_cap` | number | worker slice `cpu.max`, capped at `cpu.online + 1` | `null`+reason; never default to `cores+1`; later host admission refuses on null, today's planner does not read it |
+| `load1`,`load5`,`load15` | number | `/proc/loadavg` | `null`+reason; later host admission does not place the host (never "assume idle"), today's planner does not read load |
+| `memory.total_bytes`, `memory.available_bytes` | bytes | `/proc/meminfo` (`fleetd/src/fleetd/facts.py:267-290`) | `null`+reason; today's planner refuses on a null `total_bytes` and does not read `available_bytes` (later host admission does) |
+| `memory.host_reserve_bytes` | bytes | `/etc/fleetd/facts.toml` | `null`+reason; later host admission may require it, but today's planner does not read it |
 | `memory.swap_total_bytes`, `memory.swap_free_bytes` | bytes | `/proc/meminfo` | report only; never counted as capacity |
-| `psi.{cpu,memory,io}.{some,full}_avg10_pct` | percent | `/proc/pressure/*` (`fleetd/src/fleetd/facts.py:306-324`) | `null`+reason; planner refuses unknown (`fleetd/src/fleetd/plan.py:485-490`), remote-gate refuses unreadable (`scripts/netcup/runner/remote-gate.py:248-255`) |
-| `psi.*.avg60`, `psi.*.avg300` | percent | host-facts/1 reads avg10 only (`fleetd/src/fleetd/facts.py:306-324`) | `not-collected`; /2 uses avg10 for admission |
-| `gate_slice.memory_current_bytes`, `.memory_warm_bytes`, `.memory_high_bytes`, `.memory_max_bytes`, `.cpu_max` | bytes, quota/period | cgroup v2; warm is current minus `memory.stat[inactive_file]` | missing inputs → `null`+reason; refuse placement |
-| `disks[]` | `{name,mount,total_bytes,free_bytes,fs,floor_bytes}` | `statvfs`; checkout and Docker roots plus per-host `/etc` floors | `null`+reason; refuse that host |
+| `psi.{cpu,memory,io}.{some,full}_avg{10,60,300}_pct` | percent | `/proc/pressure/{cpu,memory,io}` | missing line, malformed value, or value outside 0–100 → `null`+reason; admission uses avg10 only, and today's planner requires only memory/io `some_avg10` |
+| `gate_slice.memory_current_bytes`, `.memory_warm_bytes`, `.memory_high_bytes`, `.memory_max_bytes`, `.cpu_max` | bytes, quota/period | cgroup v2; warm is current minus `memory.stat[inactive_file]` | missing inputs → `null`+reason; later host admission refuses placement, today's planner does not read the gate slice |
+| `disks[]` | `{name,mount,total_bytes,free_bytes,fs,floor_bytes}` | `statvfs`; checkout and Docker roots plus per-host `/etc` floors | `null`+reason; later host admission applies disk policy, but today's planner does not read disks |
 | `cgroup_v2.mounted`, `cgroup_v2.controllers` | bool, list | mountinfo | refuse (admission and the guard both need it) |
 | `kernel_interfaces.*`, `ksm.*` | bools, ints | kept from /1 | `null`+reason, never a synthetic 0 |
 | `control_plane.slice`, `.present`, `.cpu_weight`, `.memory_min_bytes`, `.service_memory_min` | as /1 (`fleetd/src/fleetd/contracts.py:464-506`) | `systemctl show`, `/etc/fleetd/facts.toml` | defaults (`fleetd/docs/SPEC.md:100-160`); 768 MiB profile only with no service fact |
-| `guard.guard_present` | bool | config path present | `false` + reason `thrashguard-absent` (`docs/design/thrashguard/DESIGN.md:375-381`) |
+| `guard.guard_present` | bool | config path present | `{"v": false}` without a reason (an absent config is a known fact); `guard.frozen_units` then carries reason `thrashguard-absent` (`docs/design/thrashguard/DESIGN.md` section 6a) |
 | `guard.guard_state` | `off|report|enforce|unknown` | guard runtime file (`fleetd/src/fleetd/facts.py:517-522`) | omitted with reason; never `off` by default |
 | `guard.config_digest` | sha256 hex | `/etc` bytes incl. drop-ins (`fleetd/src/fleetd/facts.py:440-514`) | `null`+reason |
 | `guard.frozen_units` | int | **hostobs** freeze/thaw events (§6) | `null`+reason; `frozen = frozen_units > 0` is then `null`, not `false` |
-| `freeze.since_utc`, `freeze.by`, `freeze_reason` | time, strings | hostobs events | `not-collected` until thrashguard P4 |
-| `freeze.queued` | int | none (agctl draft has no source, `agctl-estate-snapshot-draft.md:38-39`) | `not-collected` |
+| `freeze.since_utc`, `freeze.by`, `freeze_reason` | time, strings | hostobs events | `null`+reason `not-collected until thrashguard P4` |
+| `freeze.queued` | int | none (agctl draft has no source, `agctl-estate-snapshot-draft.md:38-39`) | `null`+reason `not-collected` |
 | `policy.host_role`, `.psi_refuse_some_avg10`, `.max_lane_containers` | as /1 (`fleetd/src/fleetd/contracts.py:510-524`) | `/etc/fleetd/facts.toml` | role null → refuse (`fleetd/src/fleetd/plan.py:480-483`) |
-| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.host_reserve_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors` | number, class, bytes | required `/etc/fleetd/facts.toml`; charges and allowed priorities are per host/principal | missing value → refuse placement; no defaults |
-| `policy.max_upload_bytes` | bytes | required `/etc/fleetd/facts.toml` | null+reason; refuse `put` |
-| `policy.admission` | `{queue_path, wait_s, settle_s}` | host config | refuse; admission is not optional |
+| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors`, `.max_upload_bytes`, `.admission` | number, class, bytes, admission settings | optional `/etc/fleetd/facts.toml` host policy | missing value → `null`+reason; later host admission consumes these optional settings, current planner does not require them; requirement on the `put` verb, which package C adds: it must refuse (2) every upload while `policy.max_upload_bytes` is null |
+| `policy.aging_s`, `.legacy_charge_bytes`, `.legacy_planned_cores` | seconds, bytes per legacy job, planned cores per legacy job | `/etc/fleetd/facts.toml` host policy added by design package C | missing value → `null`+reason; `aging_s` is required for queue decisions; the two legacy values are required when a legacy job is listed; unknown needed values return 75 |
 | `queue.planned_cores`, `.charged_bytes`, `.waiting` | number, bytes, count | host agent's admission book | `null`+reason |
-| `jobs[]` | `{id,state,requested_by,resources,started_utc,progress_done,progress_total,progress_unit,last_progress_utc}` | `jobs/` dir | `null`+reason (today's `jobs_reason`, `fleetd/src/fleetd/facts.py:735-736`) |
+| `jobs[]` | `{id,state,requested_by,resources,started_utc,progress_done,progress_total,progress_unit,last_progress_utc}` | `jobs/` dir | `null`+reason `not-collected` |
 | `tools[]` | as /1 | probes | `null`+reason |
+
+`facts.toml.policy` currently has a closed key set (`fleetd/src/fleetd/facts.py`, `_object`). Design package C must add acceptance for
+`aging_s`, `legacy_charge_bytes`, and `legacy_planned_cores` before any deployment writes those keys; writing one first breaks fact
+collection. This library requires `policy.legacy_planned_cores` when the legacy provider lists a job and returns 75 with that key in
+the reason when it is unknown.
 
 **Changes this design asks of the draft's rows** (`.controller-state/platform/design/agctl-estate-snapshot-draft.md`), named for the agctl owner: the draft's
 `queue.*` row ("slots stay `source: remote-gate`/`run-gate`") is replaced by the agent's queue;
@@ -308,6 +314,10 @@ fit_bytes = min(
 admit iff fit_bytes >= charge_new
 ```
 
+At each admission decision the capacity provider supplies current warm samples for live jobs and leases. The book never uses a stored
+sample to lower a reservation. A missing sample is `current_j = 0`, so the full charge remains reserved; this is the conservative
+direction.
+
 The first term plans warm sets against physical RAM minus the host-services reserve. The slice term subtracts warm observed
 use plus only unconsumed reservations, so actual use is not counted twice. `max_planned_bytes` is the per-host `/etc` cap.
 For each eligible host, static plannable RAM is the minimum of total RAM minus host reserve, slice ceiling and planned-byte cap.
@@ -326,42 +336,53 @@ uses the `lease` verb for accounting, while fleetd-placed execution there is exc
 /var/lib/fleetd-agent/       # systemd StateDirectory; root:root 0700, survives agent/devcontainer restart
   admission/
     admitted/<job_id>.json   # charge and CPUs; executor holds flock while alive
+    completed/<job_id>.json  # terminal group/digest, no charge; written before admitted removal
     leases/<lease_id>.json   # local gate charge and immutable container identity
     queue.lock              # one admission decision at a time
-    waiting/<job_id>        # ciu-direct waiters; fleetd waits in its global queue
+    waiting/<job_id>.json    # durable waiter state
+    waiting/<job_id>.lock    # waiter liveness flock
+    locks/<id>.lock          # executor flock for an admitted job or lease
 ```
 
 - **Host decision** (inside `queue.lock`): reread `host-facts/2`, the gate-slice ceiling, disk
-  floors and the active book. `ciu-direct` may wait on this host. `fleetd-placed` sends `wait: 0`:
+  floors and the active book; the capacity provider supplies fresh warm samples for live jobs and leases. A missing warm sample is zero,
+  keeping the full charge reserved. `legacy_jobs_provider` lists jobs without an `EXIT` marker on each decision under this same lock;
+  each listed job carries `legacy_charge_bytes` and `legacy_planned_cores`. A directory without `EXIT` remains charged. `ciu-direct` may wait on this host. `fleetd-placed` sends `wait: 0`:
   admit now or return 75 with the facts that refused it, then fleetd tries another host.
 - **Disk floor.** Below either configured checkout-root or Docker-root free-space floor, ciu-direct
   waits in its host queue and fleetd gets an immediate 75 to try another host.
-- **Fleetd placement.** A candidate must pass load, memory PSI, warm-set RAM, gate-slice, CPU-set
-  and disk-floor checks. The controller host is not a fleetd execution candidate yet. Choose greatest remaining warm-set RAM fit, then planned-core headroom,
-  lowest memory-full avg10, greatest disk headroom and stable `host_id`. `cpu_set` restricts eligible
-  hosts and the executor applies it.
+- **Fleetd placement.** A candidate must pass load, memory PSI, warm-set RAM, gate-slice and
+  disk-floor checks. `/1` rejects every non-null `cpu_set` with 2, so this version does no CPU-set
+  placement; a later API may use one to restrict eligible hosts and executor affinity. The
+  controller host is not a fleetd execution candidate yet. Choose greatest remaining warm-set RAM
+  fit, then planned-core headroom, lowest memory-full avg10, greatest disk headroom and stable
+  `host_id`.
 - **Queue order and reservation** (N3/MF1): order `merge-gate`, `dev`, `gate`, `campaign`; within a class use submit time and
-  group-prefixed id. When an aged head cannot fit, reserve its RAM and cores on its best statically
-  eligible host using the placement ranking but ignoring active jobs. Backfill there only below that reservation; higher-priority merge gates may pass.
-  Recompute the target when facts or eligibility change. The head starts before later arrivals as
-  soon as it fits, so small jobs cannot consume its reserved capacity.
+  group-prefixed id. The reservation holder is the first aged, statically eligible waiter in that order, whether it fits or not. While one
+  exists, only the holder itself and a `merge-gate` with strictly higher priority may be admitted. Recompute the holder when facts or
+  eligibility change. The holder starts as soon as it fits: it passes earlier-sorting waiters that are not aged and yields only to an
+  earlier fitting `merge-gate`.
+- **Bounded calls (package C, FD-054).** Capacity, legacy-job and Docker inspection calls run under `queue.lock`, which has no timeout.
+  Package C bounds each call and maps a timeout to 75 or `ERROR`.
 - **Priority authorization.** Host `/etc` policy lists allowed priorities for each credential principal. Missing policy or absent/unknown priority refuses (2).
   A valid disallowed value clamps only down, to the most urgent allowed class that is no more urgent than requested; if none exists, refuse (2). Fleetd clamps for its caller before forwarding; the host clamps again for fleetd's credential. `requested_by` never selects priority.
+- **Authenticated group prefixes.** Package C's host policy must prevent overlapping group prefixes: with only a textual prefix check,
+  group `ops` can claim an id such as `ops-ci-run-1` that also appears prefixed by group `ops-ci`.
 - **Local run-gate lease (MF3).** On the controller host, `lease` uses this same queue lock, warm charge, planned-core and priority
   checks; `frozen_units > 0` refuses with 75 (N4). Run-Gate supplies a fresh `container_name` in `{container_name, footprint, planned_cores, priority}`; a class
   impossible on this host or a name collision refuses with 2. The host waits in the same priority/reservation queue under `queue.lock`; disconnect before grant withdraws the waiter.
-  On grant it writes a pending lease and returns a new `lease_id`. Run-Gate creates the named container stopped with label `fleetd.lease=<lease_id>`, sends its immutable Docker ID on the same connection, and starts it only after the agent
+  On grant it writes a pending lease under `queue.lock` using the requested `lease_id`. Run-Gate creates the named container stopped with label `fleetd.lease=<lease_id>`, sends its immutable Docker ID on the same connection, and starts it only after the agent
   verifies name, ID and label and acknowledges the bind. The client persists lease/container identity before start; write or bind
   failure means no start. Today Run-Gate starts with `docker run -d --name` and writes a best-effort in-flight record afterwards
   (`run-gate-project/run_gate.py:18424-18437,18566-18589,18644,7350-7389`); package H replaces that order. The devcontainer remains the
-  executor; fleetd does not run this lease as a host job.
+  executor; fleetd does not run this lease as a host job. Explicit revoke may tombstone a lease before its container disappears but keeps its charge. Reconcile is an observation: it releases only on `NO_SUCH_OBJECT` (and a pending lease also needs an acquirable flock); `PRESENT`, `ERROR`, other answers and exceptions leave the record unchanged. A fitting lease waiter whose inspector keeps returning `ERROR` can block every later-sorting waiter until its admission wait expires; this is a known limit (FD-052).
 - **Reservation parity.** With continuous small arrivals, a large head job starts in the first
   admission cycle after it becomes feasible; later jobs cannot consume its reserved RAM or cores.
 - **Wait expiry.** On timeout, withdraw a fleetd waiter from its global queue or a ciu-direct waiter under `queue.lock`.
   The agent confirms a submitted job never started before returning 75; if started, the client follows it. Network error is 3.
 - **Charge lifetime.** The executor holds the per-job flock for the whole job. Kernel process
   death releases it; the reaper still stops and collects any surviving lane before deleting the
-  record. No heartbeat, `lost_after_s` or probe-before-reclaim is needed.
+  record. Completion first writes a terminal group/digest record, then removes the admitted record; a crash between those writes resolves as completed. Terminal retention belongs to the host agent package C. No heartbeat, `lost_after_s` or probe-before-reclaim is needed.
 - **Relation to `run-job` and today's slots.** Keep the legacy controller slots, workroot and
   runner snapshot while any client uses the legacy path. The agent charges every legacy host job
   without `EXIT`; a later flag-removal change deletes those old mechanisms. `dev` also moves into
@@ -513,32 +534,46 @@ today's behaviour verbatim. The carry's *format* belongs to assay's `assay-merge
 
 ## 6. thrashguard and hostobs
 
-The thrashguard design sends `thrashguard.freeze`/`thrashguard.thaw` through hostobs, not its
-socket; P-fd-05 reads that state through hostobs (`docs/design/thrashguard/DESIGN.md:206-230,280-286`).
-Hostobs currently has the event store but does not serve `annotate` or `events`; those APIs and a
-freeze sample are prerequisites to guarded-host admission (`docs/design/thrashguard/DESIGN.md:230-241`).
+Thrashguard emits `thrashguard.freeze`/`thrashguard.thaw` to hostobs, not to its own reader socket
+(`docs/design/thrashguard/DESIGN.md` §6a, “Frozen-time accounting — one path: thrashguard → hostobs →
+consumers”). Under hostobs M3, `annotate` is served on the OBSERVER socket at
+`/run/hostobs/observer/hostobs.sock`, group `hostobs-observer`; the control socket answers
+`unknown-verb` until hostobs M6. The `events` API is hostobs M3 work. The admission package
+supplies only the library; the host agent must connect to hostobs and enforce this intake when it
+is wired (`.controller-state/hostobs/PLAN-M3-carve.md` §6.5).
+
+Each event's issuer is exactly `uid:<n>` from the accepted peer credentials. The associated pid,
+comm and cgroup are an unverified peer label, not an issuer identity; no pidfd attribution is used
+(`.controller-state/hostobs/PLAN-M3-carve.md` §6.5). The pidfd wording in hostobs WIRE is pending
+alignment with that plan. Count `thrashguard.*` events only when that uid is 0 or the configured
+thrashguard uid. Never authorize from the peer label or event subject fields.
 
 1. **The agent reports freeze state** in `host-facts/2` as §3.2's four names (`guard_present`,
-   `guard_state`, `config_digest`, `frozen_units`), `frozen_units` from hostobs and
-   `guard_state` from the guard's runtime file (`fleetd/src/fleetd/facts.py:440-522`). Freeze timing, owner, reason
-   and `freeze.queued` remain not collected until thrashguard P4.
+   `guard_state`, `config_digest`, `frozen_units`), `frozen_units` from a complete hostobs event
+   window and `guard_state` from the guard's runtime file (`fleetd/src/fleetd/facts.py`). The M3
+   event ring is RAM-only: when the requested window is not provably complete, report
+   `frozen_units` as unknown, never 0. Freeze timing, owner, reason and `freeze.queued` remain not
+   collected until thrashguard P4 (`docs/design/thrashguard/DESIGN.md` §6b, “fleetd: freeze state
+   for the estate snapshot”).
 2. **The agent registers each started job** with thrashguard's registrant socket when present: one
    `register {unit: <job_id>, container: <id from §2.2's event>, score, priority,
    owner: "fleetd", run: <job_id>}`, heartbeat on its tick, and deregister before removal
-   (`docs/design/thrashguard/DESIGN.md:287-301,357-381`). There is one registrant: run-gate owns jobs before this
-   package; the agent owns them after migration. Run-gate stops registering an agent-owned job.
+   (`docs/design/thrashguard/DESIGN.md` §6c, “fleetd: the cross-host placer and registrant”). There is
+   one registrant: run-gate owns jobs before this package; the agent owns them after migration.
+   Run-gate stops registering an agent-owned job.
 
-**Freeze rule [N4].** If `frozen_units > 0`, hold new admission; do not pause or kill running jobs.
-Exclude the frozen interval from progress-stall accounting. If hostobs cannot report state while
-thrashguard is present, treat it as unknown and return 75; never treat null as zero. If the guard
-is absent, report that fact and there can be no guard-owned freeze. This also works without fleetd:
-ciu-direct uses the same host queue.
+**Freeze rule [N4].** Only `guard_state: enforce` requires `frozen_units`: a positive count holds
+new admission; an unknown count returns 75; a known zero permits admission. An unknown guard
+state also returns 75. An absent guard (`guard_present` false), or state `off` or `report`, does not block. Do not pause or kill
+running jobs. Exclude a proven frozen interval from progress-stall accounting; an incomplete
+hostobs window is unknown and never zero. This also works without fleetd: ciu-direct uses the
+same host queue.
 
 ## 7. Migration, packages, parity
 
 **Migration order.** Ship run-gate's host-owned event file, verdict agreement, OOM score and freeze-aware stall watch (RG-321 first), then hostobs event APIs and persistent cockpit `MemoryLow`. Ship the host agent with StateDirectory, tmpfiles socket directory, client group and devcontainer mount; enable after the socket lifecycle probe. Then package H switches local `run-gate` to lease admission; next switch `remote-gate.py`, `dev`, fleetd campaigns and the dr runner. Keep legacy paths for rollback; remove slots/workroot/snapshot after every client migrates. ciu-direct uses runner queue when installed, else own admission (D12).
 
-**Parity rows.** Each must fail independently: (a) unique exit codes (preflight 4→2, prerequisite 76→73, budget 4, OOM 76, store 77/78, queue 75); (b) forge a perfect anchored PASS line in lane output and prove the event/process still report the real FAIL; separately exit before `finish` with a forged line and prove no `lane-verdict` event exists; (c) cancel stops before collecting every flushed record; (d) expired wait never starts later; (e) aged reservation starts on first feasible admission; (f) unreadable PSI/meminfo refuse (`scripts/netcup/tests/test_remote_gate_repos.py:597-600`; `scripts/netcup/tests/test_remote_gate_memory.py:91`); (g) footprint/slice/disk limits; (h) the emitted container and image ids equal Docker's report for the labeled container, and a same-named foreign container is never emitted; consumer acceptance also checks labels and checkout; (i) per-job OOM and adjustment 500; (j) identity/path/argv/artifact validation; (k) bundle replay and sha binding (`scripts/netcup/tests/test_remote_gate.py:227,322`); (l) restart/dead-executor/reboot preserve charge through cleanup; (m) socket identity/no shell/restart/missing-socket behavior; (n) lease under `queue.lock`, N4 refusal, no start without bind ack, pending-client death, unique-name collision, reconnect/restart retention through Docker-confirmed disappearance.
+**Parity rows.** Each must fail independently: (a) unique exit codes (preflight 4→2, prerequisite 76→79, budget 4, OOM 76, store 77/78, queue 75; 73 remains reserved by fleetd's runner); (b) forge a perfect anchored PASS line in lane output and prove the event/process still report the real FAIL; separately exit before `finish` with a forged line and prove no `lane-verdict` event exists; (c) cancel stops before collecting every flushed record; (d) expired wait withdraws and confirms never-started before 75, and cannot start later; (e) an aged reservation holder reserves RAM and planned cores, fitting or not; nothing else is admitted before it except a strictly higher-priority merge gate; (f) unreadable PSI/meminfo refuse (`scripts/netcup/tests/test_remote_gate_repos.py:597-600`; `scripts/netcup/tests/test_remote_gate_memory.py:91`); (g) footprint/slice/disk limits; (h) the emitted container and image ids equal Docker's report for the labeled container, and a same-named foreign container is never emitted; consumer acceptance also checks labels and checkout; (i) per-job OOM and adjustment 500; (j) identity/path/argv/artifact validation; (k) bundle replay and sha binding (`scripts/netcup/tests/test_remote_gate.py:227,322`); (l) admission, terminal and lease records survive reload; a dead executor's released flock does not release its charge, and the reaper preserves charge through cleanup after restart or reboot; (m) socket identity/no shell/restart/missing-socket behavior; (n) a lease reserves under `queue.lock`, enforces N4 freeze refusal, binds immutably, and tombstones without releasing until explicit no-such-object reconciliation. The host-agent integration still must prove stopped-container bind-before-start, pending-client death, collision handling, reconnect and release on confirmed disappearance.
 Contract gates also cover same-digest idempotence and major-version refusal.
 
 **Rollback.** Each client owns one `legacy|agent` flag. The agent keeps legacy jobs charged during overlap. Downgrade within a major is safe because executors run in separate scopes; major mismatches refuse and minor additions are capability-advertised. Flag and legacy-path removal is separate.
@@ -572,7 +607,6 @@ No P-fd-05 questions remain open: Q1, Q2, Q6, N1 and N3–N5 are in §§0 and 3;
   verdict acceptance now requires agreement between Run-Gate's event, anchored summary, and
   process status, including the no-`finish` case.
 - FU3 (A): keep thrashguard registration with one owner.
-- FU4 (C): resolve exit-code 73 collision.
 - FU5 (C+F): carry fleetd campaign candidate lists.
 - FU6 (C+F): persist global queue and share aged reservations.
 - FU7 (F): resolve unknown submit outcomes on the same host.

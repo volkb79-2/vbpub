@@ -7,6 +7,30 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 controller_init
 [[ $# == 0 ]] || { echo "usage: $0" >&2; exit 2; }
 
+done_state() {
+  # $1 the run's completion marker. pi-review.sh APPENDS its own verdict line
+  # (REVIEW-MODIFIED-TREE, REVIEW-BUDGET, REVIEW-NO-REPORT, REVIEW-NOT-SETTLED)
+  # after pi-impl.sh's line 1, which can read `EXIT=0 OUTCOME=SUCCESS` for a
+  # reviewer commit; reading line 1 alone shows a tampered or stopped review as
+  # green. One rule for all three readers (job-check.sh, job-status.sh and here):
+  # a verdict is ANY line of the marker that contains it.
+  local marker=$1 first verdict=''
+  first=$(head -n 1 "$marker" | head -c 70)
+  for candidate in REVIEW-MODIFIED-TREE REVIEW-BUDGET REVIEW-NO-REPORT REVIEW-NOT-SETTLED; do
+    grep -qF -- "$candidate" "$marker" && verdict=$candidate
+  done
+  if [[ -n $verdict ]]; then
+    # The no-marker fallback writes the verdict INTO line 1: printing it twice
+    # in one row is noise, not evidence.
+    case $first in
+      *"$verdict"*) printf '%s' "$first" ;;
+      *) printf '%s %s' "$verdict" "$first" ;;
+    esac
+  else
+    printf '%s' "$first"
+  fi
+}
+
 now=$(date +%s)
 age() {
   local then=${1:-} delta
@@ -68,7 +92,7 @@ PY
     route=$(cat "$CONTROLLER_HOME/runs/$name.route" 2>/dev/null || echo unknown)
     if [[ -f $CONTROLLER_HOME/runs/$name.done ]]; then
       printf '  %s route=%s %s age=%s\n' "$name" "$route" \
-        "$(head -n 1 "$CONTROLLER_HOME/runs/$name.done" | head -c 70)" "$(age "$mtime")"
+        "$(done_state "$CONTROLLER_HOME/runs/$name.done")" "$(age "$mtime")"
     else
       size=$(stat -c %s "$file" 2>/dev/null || echo '?')
       state="RUNNING (last write $(age "$mtime") ago, ${size} bytes)"
