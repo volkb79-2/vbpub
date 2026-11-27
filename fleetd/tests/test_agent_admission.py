@@ -11,7 +11,7 @@ from fleetd.agent_admission import AgentAdmission, BoundedCall
 from fleetd.contracts import ContractError, validate_host_facts
 from fleetd import agent_admission
 from test_agent_capacity import _collect
-from test_admission import _capacity
+from test_admission import _capacity, _lease_request
 from test_agent_protocol import _policy, _submit
 
 
@@ -768,6 +768,46 @@ def test_cancel_handles_waiting_terminal_and_executor_stop_paths(tmp_path):
     assert agent.cancel("active", "reason", identity, executor) == {
         "job_id": "active", "state": "running",
     }
+
+
+def test_status_and_cancel_refuse_a_real_book_lease_without_executor_calls(tmp_path):
+    identities = (
+        '[[identities]]\n'
+        'transport = "peer"\n'
+        'principal = "ops"\n'
+        'group = "ops"\n'
+        'uid = 1000\n'
+        'gid = 100\n'
+    )
+    policy, _checkout = _policy(tmp_path, identities=identities)
+    identity = policy.resolve_peer(1000, 100)
+    agent = AgentAdmission(tmp_path / "state", policy, lambda: {})
+    lease_result = agent.book.reserve_lease(
+        _lease_request(lease_id="ops-lease-1"),
+        authenticated_group=identity.group,
+        capacity_provider=lambda: _capacity(),
+        legacy_jobs_provider=lambda: (),
+        inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
+        wait_s=0,
+    )
+    assert lease_result.record["schema"] == "fleet-admission-lease/1"
+    assert agent.book.status("ops-lease-1", identity.group)["schema"] == "fleet-admission-lease/1"
+    calls = []
+    executor = SimpleNamespace(
+        read_state=lambda job_id: calls.append(("status", job_id)) or {"state": "running"},
+        request_stop=lambda job_id, reason: calls.append(("cancel", job_id, reason)) or {"state": "stopping"},
+    )
+
+    with pytest.raises(AdmissionError, match="not an admitted job") as status_error:
+        agent.status("ops-lease-1", identity, executor)
+    with pytest.raises(AdmissionError, match="not an admitted job") as cancel_error:
+        agent.cancel("ops-lease-1", "operator request", identity, executor)
+
+    assert status_error.value.exit_code == ExitCode.REFUSAL
+    assert cancel_error.value.exit_code == ExitCode.REFUSAL
+    assert calls == []
+    if lease_result.handle is not None:
+        lease_result.handle.close()
 
 
 def test_reserve_lease_validates_reconnects_and_creates_only_with_inspection(tmp_path):

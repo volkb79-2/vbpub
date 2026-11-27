@@ -424,6 +424,8 @@ class AgentAdmission:
             return {"job_id": job_id, "state": "queued", "reason": None}
         if record.get("schema") == "fleet-admission-terminal/1":
             return self._terminal_state(job_id, record)
+        if record.get("schema") != "fleet-admission-job/1":
+            raise AdmissionError(ExitCode.REFUSAL, f"record for {job_id!r} is not an admitted job")
         if executor is None:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor unavailable: cannot read admitted job state")
         state = executor.read_state(job_id)
@@ -449,6 +451,8 @@ class AgentAdmission:
             return {"job_id": job_id, "state": "cancelled", "reason": reason}
         if record.get("schema") == "fleet-admission-terminal/1":
             raise AdmissionError(ExitCode.REFUSAL, f"finished job {job_id!r} cannot be cancelled")
+        if record.get("schema") != "fleet-admission-job/1":
+            raise AdmissionError(ExitCode.REFUSAL, f"record for {job_id!r} is not an admitted job")
         if executor is None:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor unavailable: cannot stop admitted job")
         state = executor.request_stop(job_id, reason)
