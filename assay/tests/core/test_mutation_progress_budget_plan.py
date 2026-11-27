@@ -2455,3 +2455,68 @@ def test_no_progress_wall_stop_is_unclassified_and_retried_on_resume(tmp_path):
         for line in progress_path.read_text(encoding="utf-8").splitlines()
     ]
     assert not any(event.get("event") == "candidate" for event in progress)
+
+
+@pytest.mark.parametrize(
+    ("armed", "first_timeout", "attempt_count"),
+    [(True, 60.0, 2), (False, 10.0, 1)],
+    ids=("armed-lane-remainder-and-retry", "unarmed-budget-and-gate"),
+)
+def test_mutation_timeout_and_tail_retry_follow_the_watch_regime(
+    tmp_path, armed, first_timeout, attempt_count
+):
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=60.0, monotonic=lambda: now[0])
+    timeouts = []
+
+    def process_runner(argv, *, env, cwd, timeout):
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            # Leave less than the candidate budget so the unarmed retry gate
+            # closes, while the armed run must still make its tail retry.
+            now[0] = 56.0
+            raise timeout_expired(list(argv), timeout=timeout, output=b"partial")
+        return completed_process(list(argv), returncode=0, stdout="", stderr="")
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(
+        lane,
+        cwd=repo.path,
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
+            list(argv), returncode=0
+        ),
+    )
+    target = (
+        MutationTarget(path="pkg/flags.py", text=_TEXT, lines=frozenset({2})),
+    )
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=deadline,
+            targets=target,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=process_runner,
+            clock=lambda: datetime.now(timezone.utc),
+            budget_per_candidate_seconds=10.0,
+            liveness_watch_armed=armed,
+            liveness_cpu_without_progress_bound_s=10.0 if armed else None,
+            liveness_per_test_baseline_s={} if armed else None,
+        )
+
+    assert result is not None and not isinstance(result, str)
+    assert timeouts[0] == first_timeout
+    assert len(timeouts) == attempt_count
+    if armed:
+        assert timeouts[1] == 4.0
+        assert len(result.survived) == 1
+        assert not result.budget_exceeded
+    else:
+        assert len(result.budget_exceeded) == 1

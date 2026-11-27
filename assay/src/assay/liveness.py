@@ -1718,6 +1718,13 @@ class _EventProgressReader:
                 and self.in_flight[0] == nodeid
             ):
                 self.in_flight = None
+        elif kind == SESSION_FINISH_EVENT:
+            # Pytest can omit `pytest_runtest_logfinish` when a test aborts
+            # with KeyboardInterrupt/pytest.exit. Once the owning session
+            # finishes, no item remains in flight; keeping this sticky in the
+            # reader prevents the monitor from reopening a per-test window on
+            # the next poll during session teardown.
+            self.in_flight = None
 
     def _summary(self) -> tuple[int, bool]:
         tail = self._parse_line(self._pending.decode("utf-8"))

@@ -6089,7 +6089,7 @@ def _run_prepared_lane(
                     f"so a candidate may use the remaining lane budget",
                     file=diagnostics,
                 )
-            if watch_armed:
+            if liveness_injected:
                 assert liveness_calibration is not None
                 assert liveness_candidates_dir is not None
                 candidate_process_runner: ProcessRunner = liveness.LivenessRunner(
@@ -6107,19 +6107,27 @@ def _run_prepared_lane(
                     # derivation of "how long does this suite take".
                     cpu_without_progress_bound_s=(
                         liveness_calibration.cpu_without_progress_bound_s
+                        if watch_armed
+                        else None
                     ),
                     per_test_cpu_baseline_s=(
                         liveness_calibration.per_test_baseline_s
+                        if watch_armed
+                        else None
                     ),
                     # (P4/S2) `jobs > 1` runs the suite distributed, where
                     # "exactly one test in flight" is false by construction.
                     per_test_xdist=lane.judge.mutation.jobs > 1,
                     # (P4/S3) The per-candidate budget as an ADVISORY wall
                     # bound: never a stop for this run (one WARN when first
-                    # exceeded), with the CPU bounds as the real stop.
+                    # exceeded), with the CPU and no-progress wall bounds as
+                    # the real stop when the watch is armed.
                     advisory_budget_s=(
                         explicit_budget_per_candidate_seconds
-                        if explicit_budget_per_candidate_seconds is not None
+                        if (
+                            watch_armed
+                            and explicit_budget_per_candidate_seconds is not None
+                        )
                         else (
                             # The SAME derivation `run_mutation` makes for the
                             # binding case (`budget_per_candidate_auto`), so the
@@ -6128,7 +6136,7 @@ def _run_prepared_lane(
                             mutation.auto_budget_per_candidate_seconds(
                                 mutation.baseline_wall_seconds(result)
                             )
-                            if budget_per_candidate_auto
+                            if watch_armed and budget_per_candidate_auto
                             else None
                         )
                     ),

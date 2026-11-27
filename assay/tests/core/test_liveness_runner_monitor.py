@@ -90,7 +90,7 @@ class _FakePopen:
         self.calls: list[dict[str, object]] = []
 
     def __call__(self, argv, *, env, cwd, stdout, stderr, start_new_session):
-        self.calls.append({"argv": tuple(argv), "cwd": cwd})
+        self.calls.append({"argv": tuple(argv), "cwd": cwd, "env": dict(env)})
         return self._proc
 
 
@@ -213,6 +213,39 @@ def test_idle_with_flat_cpu_is_hung(tmp_path: Path) -> None:
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
     assert excinfo.value.timeout == 600.0
     assert proc.waited  # `_kill` reaped it.
+
+
+def test_unarmed_liveness_runner_keeps_idle_rule_and_exit_hygiene(
+    tmp_path: Path,
+) -> None:
+    """Without P4 progress bounds, the injected runner still has its
+    pre-P4 idle detection and `ASSAY_LIVENESS_EXIT` behavior."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=4243)
+    popen = _FakePopen(proc)
+    cwd = tmp_path / "candidate"
+    cwd.mkdir()
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "candidates",
+        expect_next_event_within_s=15.0,
+        monotonic=clock.now,
+        sleep=clock.advance,
+        cpu_reader=lambda _pid: 0.0,
+        resource_reader=lambda _pid: _clear_resource_snapshot(),
+        popen=popen,
+        process_group_killer=_ignore_process_group,
+        cpu_without_progress_bound_s=None,
+        per_test_cpu_baseline_s=None,
+        advisory_budget_s=None,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("python", "-m", "pytest", "-q"), env={}, cwd=cwd, timeout=90.0)
+
+    assert excinfo.value.resource_evidence["decision"] == "idle-hang"
+    assert runner.cpu_without_progress_bound_s is None
+    assert runner._per_test_cpu_baseline_s == {}
+    assert runner.advisory_budget_s is None
+    assert popen.calls[0]["env"][liveness.ASSAY_LIVENESS_EXIT_ENV] == "1"
     # `hung` requires >= 30s of CPU history (the trailing window) as well as
     # the 15s idle threshold -- the loop must not fire before both are
     # satisfied.
@@ -2459,6 +2492,37 @@ def test_session_finish_restarts_cpu_bound_and_closes_test_window_for_teardown(
     assert result.returncode == 0
     # The finish is consumed at t=60; the candidate exits after 50 more CPU-s.
     assert clock.t >= 110.0
+
+
+def test_session_finish_does_not_reopen_a_missing_test_finish_window(
+    tmp_path: Path,
+) -> None:
+    """A test that omitted `test_finish` must not regain its per-test cap
+    during session teardown. Teardown here exceeds the 60 CPU-s per-test
+    floor but remains under the full 180 CPU-s bound dated at session_finish.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7117)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=_reader_with_session_finish_after_59_cpu_s(clock, events_path),
+        per_test_cpu_baseline_s={"t::late": 0.1},
+        cpu_without_progress_bound_s=180.0,
+        expect_next_event_within_s=600.0,
+    )
+
+    def finish_after_120_cpu_s_of_teardown(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t >= 180.0:
+            proc.finish(0)
+
+    runner._sleep = finish_after_120_cpu_s_of_teardown  # type: ignore[assignment]
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=300.0)
+    assert result.returncode == 0
+    assert clock.t >= 180.0
 
 
 def test_cpu_spin_after_session_finish_stops_after_a_full_new_bound(
