@@ -1,0 +1,20 @@
+#!/usr/bin/python3 -IS
+"""Strip Bash startup hooks before starting the namespace wrapper."""
+
+import os
+import signal
+import sys
+
+
+_BASH_STARTUP_ENV = {"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"}
+for _name in tuple(os.environ):
+    if _name in _BASH_STARTUP_ENV or _name.startswith("BASH_FUNC_"):
+        os.environ.pop(_name, None)
+
+# CPython ignores these signals at startup. execve preserves ignored
+# dispositions, so restore the defaults before handing control to Bash.
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+
+_worker = os.path.join(os.path.dirname(os.path.realpath(__file__)), "pi-pidns-bash-worker.sh")
+os.execve("/bin/bash", ["/bin/bash", _worker, *sys.argv[1:]], os.environ)

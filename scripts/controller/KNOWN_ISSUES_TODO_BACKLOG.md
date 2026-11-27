@@ -73,6 +73,7 @@ together.
 | CTL-62 | remote-gate admission holds the admit ticket while waiting, is not PSI-only, and lets an identical live launch through | Must-fix | OPEN 2026-11-24 |
 | CTL-63 | `ctl-hygiene.sh` B1 is blind to 6 of the 21 tracked backlogs: `**State:** DONE` files and files without any status line read as all-open, and the `unparsed` report fires only at 0 entries | Nice-to-have | OPEN 2026-11-24 |
 | CTL-64 | `ctl-hygiene.sh` reads the backlogs (B1) of the checkout that holds the script, the state of the main checkout: a lagging worktree reports stale B1 numbers next to fresh state numbers | Nice-to-have | OPEN 2026-11-24 |
+| CTL-65 | The pi PID namespace guard's same-user-writable assets can be edited by an implementer, changing how later commands launch | Known limit | BY DESIGN 2026-11-27 (H2 ruling) |
 
 ---
 
@@ -1819,3 +1820,22 @@ B1 counts an entry as closed only from a `Status:` line (or a closed word in the
 **Status:** OPEN (filed 2026-11-24, P-plat-22b-C review r1 F6).
 
 `ctl-hygiene.sh` resolves `state_dir` to the main checkout's `.controller-state` but leaves `repo` at the checkout that holds the script. Run from a lagging worktree such as `.worktrees/controller-tools`, B1 reports stale backlog numbers beside fresh state numbers. Fix: resolve the default `repo` to the main checkout too (`${common%/.git}`), or say in the header that B1 follows the script's checkout.
+
+## CTL-65 — the same-user implementer can edit the Pi signal guard for later commands
+
+**Status:** BY DESIGN (filed 2026-11-27; controller and main ruling on P-plat-26d H2).
+
+The extension, Python bootstrap, Bash worker, and launcher live in the
+controller checkout writable by the implementer. The bootstrap runs Python
+interpreter startup before bwrap with `-I -S`, which ignores `PYTHON*`
+interpreter settings and skips site initialization; its original environment
+is still passed through to the command. The guard prevents accidental signal
+commands from an agent using the current launch path, but it does not stop a
+same-user agent from editing those files and changing how a later command
+starts. This is a documented limit, not a tamper-resistance guarantee.
+
+No stronger same-user protection is part of P-plat-26d. If that guarantee is
+needed later, the enforcement assets must be installed somewhere the agent UID
+cannot modify and mounted or owned read-only to that UID.
+
+Source: P-plat-26d final safety review H2; controller and main ruling, 2026-11-27.

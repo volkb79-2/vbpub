@@ -105,13 +105,15 @@ child a trailing empty field, and an empty `PATH` field means the **current
 directory** — the agent's own worktree — both to the shim's lookup and to every
 command its bash tool runs.
 
-The guard is a mechanical refusal for the ordinary spellings, **not a security
-boundary**: the bash builtin `kill` (a negative group pid or a pid the agent
-did not start), an absolute path such as `/usr/bin/pkill`, a shell loop over
-`/proc`, an `xargs kill`, `python3 -c 'os.kill(...)'`, and any script that
-resets `PATH` itself are outside it. A download into the managed bin directory
-is refused at launch, not audited later, which is why that one case is in the
-preflight rather than in the shims.
+The shims themselves are mechanical refusals for ordinary `PATH` spellings,
+**not a security boundary**. The current tracked launcher imposes the user+PID
+namespace described below. With those guard assets unchanged, it blocks that
+command's signal attempts to outer PIDs. The checkout is
+writable by the same user as the agent, so this is an accidental-command guard,
+not tamper-resistant protection against an agent that edits the guard files.
+The shims still refuse `pkill`, `killall`, and signalling `pgrep`, and their
+managed-bin shadow check still fails at launch rather than hoping a download
+does not take precedence.
 
 How each of those can go red is in `tests/test-pi-impl.sh`: the fake pi
 asserts with `command -v` that each spelling resolves **inside** the shim
@@ -122,6 +124,65 @@ the `~/` expansion and the relative-value refusal, `check_signal_guard_fail_clos
 the missing/non-executable shim and the managed-bin shadow (all with no pi
 invocation and no claimed run name), and the continuation case requires every
 guard fact **twice**, because the continuation is a launch too.
+
+### Why implementer bash runs in a user and PID namespace
+
+The PATH shims cannot catch Bash builtins such as `kill`, and a written ban did
+not stop a pi agent from running signal probes in the shared devcontainer. The
+current launcher therefore starts each implementer Bash execution in a user
+and PID namespace. While its tracked guard files are unchanged, this prevents
+accidental signal commands issued through that launch path from reaching outer
+processes. It is not tamper-resistant: a same-user agent can edit the extension,
+Python bootstrap, worker, or launcher and change how a later command starts
+(CTL-65).
+
+`pi-impl.sh` passes `--no-extensions -e <absolute pi-pidns-extension.js>` on
+every implementer invocation. The explicit extension replaces the built-in
+`bash` tool with `createBashTool(..., {operations})`, where the operations use
+`createLocalBashOperations({shellPath})` with `pi-pidns-bash`. Its `user_bash`
+handler returns those same operations for `!` and `!!`. Pi 1.6.0 documents that
+`user_bash` fires for those commands and that returned operations handle them
+(`docs/extensions.md:1078-1095`); same-name extension tools replace built-ins
+(`docs/extensions.md:2358-2360`). With `--no-extensions`, the resource loader
+selects only CLI extension paths (`dist/core/resource-loader.js:426-428`), so a
+worktree's `.pi/settings.json` cannot load a later extension; the explicit
+extension installs its own `shellPath` via the local operations factory
+(`dist/core/tools/bash.js:156-157`). Implementer `PI_EXTRA_ARGS` cannot add or
+disable extension flags. No user or worktree settings file is edited. Review
+mode is unchanged and has no bash tool.
+
+The Python bootstrap itself starts before bwrap as `/usr/bin/python3 -IS`.
+Those flags make Python interpreter startup ignore `PYTHON*` settings and skip
+site initialization, including `sitecustomize.py` and user-site hooks. The
+bootstrap passes the original environment through to Bash, so `PYTHON*`
+variables remain available to commands inside the namespace.
+
+Before the run name is claimed, `pi-impl.sh` calls the wrapper with `-c true`.
+A missing wrapper or extension, a missing bwrap executable, or a namespace
+setup failure refuses with exit 2 and leaves the name unclaimed. Each actual
+command uses these bubblewrap namespace and root-bind options, plus private
+tmpfs mounts over `${TMUX_TMPDIR:-/tmp}/tmux-<uid>` and `/run/docker-api`:
+
+```text
+bwrap --unshare-user --unshare-pid --die-with-parent --dev-bind / /
+```
+
+The wrapper unsets `TMUX`, `TMUX_PANE`, and `DOCKER_HOST`, and covers an
+existing default or `DOCKER_HOST=unix://` Docker socket outside
+`/run/docker-api` with `/dev/null`. A `--json-status-fd` child-start record lets
+the wrapper distinguish a setup failure from a command's own exit code.
+
+With the tracked guard assets unchanged, the namespace blocks PID-based signals
+from that pi bash process to processes outside its PID namespace. The same-user
+edit limitation above means this does not guarantee that future commands will
+continue to use the guard. The mount namespace does not confine file writes,
+network traffic, or other Unix sockets. `/proc` stays the outer procfs because
+mounting `--proc /proc` fails with `Operation not permitted` in the supported
+container;
+process listings therefore show outer PIDs and `/proc/$$` does not match the
+namespace shell. PID 1 inside is bwrap, so `kill -0 1` succeeds by design.
+`sudo` fails inside, and background jobs end with their command. These are
+documented limits, not an expanded filesystem sandbox.
 
 ### Why a review mode is the wrapper's own switch, and sticky
 
@@ -194,7 +255,7 @@ The mode is therefore `pi-impl.sh`'s own switch:
   local value (it breaks hosts that put their default there) and letting it
   override a record (a silent widening of a review).
 
-### Why every pi prompt carries a rule paragraph, and why it is only an instruction
+### Why every pi prompt carries a rule paragraph, and where enforcement applies
 
 Both modes append a fixed paragraph to every prompt: the implementer one names
 the pattern-kill ban and confines signal/TERM-trap tests to a capped container
@@ -205,14 +266,18 @@ every launch and to the automatic continuation, and a launch whose file is
 missing is refused: a prompt that lost the rule is not the contract the wrapper
 promises, so the absence must be loud rather than silent.
 
-It is still only an INSTRUCTION. In the implementer mode the agent has `bash`,
-so the bash builtin `kill`, a TERM-trap script and a direct syscall are not
-technically prevented by anything here; the mechanical part is the `pi-shims`
-`PATH` guard above, whose own limits are recorded there. Review mode is stronger
-because the tool set contains no tool that can execute or write at all — an
-enforcement of the argv, not a sandbox — and even it leaves `read` unconfined.
-Writing that down is part of the contract: a document that claimed prevention
-would be the false certification this kit exists to prevent.
+The prompt's ban on shell experiments in the shared devcontainer remains an
+INSTRUCTION. With the tracked guard assets unchanged, each implementer bash
+command, including a builtin `kill` or a direct signal syscall, runs in a fresh
+user and PID namespace and cannot address outer processes by PID. A same-user
+agent can edit those assets and change a later command's launch path (CTL-65),
+so this prevents accidental signals through the current guard without claiming
+tamper resistance. The `pi-shims` PATH guard still refuses ordinary `pkill`,
+`killall`, and signalling `pgrep` spellings. Review mode is
+tool-set enforcement (no tool that can execute or write), not a sandbox, and
+even it leaves `read` unconfined. The namespace also leaves filesystem writes,
+network traffic, and other Unix sockets available; only the tmux socket
+directory, `/run/docker-api`, and the identified Docker socket paths are hidden.
 
 ### Why a run name is owned by one live wrapper
 

@@ -46,6 +46,20 @@ mutation_runner_init "$ROOT/status-127" || fail 'valid width 1 was refused for s
 [[ $status_127_rc == 0 ]] || fail 'an executed command returning 127 was not counted as KILLED'
 contains "$ROOT/status-127.out" 'KILLED: command-status-127'
 
+mutation_runner_init "$ROOT/override" || fail 'valid width 1 was refused for override case'
+{
+  # shellcheck disable=SC2016 # the variable is expanded by the child check
+  expect_killed unreadable-override env PI_IMPL_SCRIPT=/nonexistent bash -c \
+    'printf "ERROR: unreadable override PI_IMPL_SCRIPT: %s\n" "$PI_IMPL_SCRIPT" >&2; exit 2'
+  expect_killed override-text-only bash -c 'printf "ERROR: unreadable override quoted by a test\n"; exit 2'
+  if mutation_runner_finish; then override_rc=0; else override_rc=$?; fi
+} > "$ROOT/override.out" 2>&1
+[[ $override_rc != 0 ]] || fail 'an unreadable mutation override passed'
+not_contains "$ROOT/override.out" 'KILLED: unreadable-override'
+contains "$ROOT/override.out" 'KILLED: override-text-only'
+contains "$ROOT/override.out" 'used an unreadable mutation override'
+contains "$ROOT/override.out" 'SUMMARY: FAIL checks=2 reported=2 killed=1 elapsed_seconds='
+
 export CONTROLLER_MUTATION_JOBS=2
 mutation_runner_init "$ROOT/survivors" || fail 'valid width 2 was refused'
 survivor_marker=$ROOT/survivor-second-started

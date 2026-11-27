@@ -213,6 +213,23 @@ mutation_runner_command_available() {
   fi
 }
 
+# A pi source mutant is judged through an override variable. A test that cannot
+# read the overriding file says so and exits nonzero: a broken check, never a
+# killed mutant. Only commands that set such a variable are read for the line.
+mutation_runner_override_unreadable() {
+  local log=$1 argument
+  shift
+  for argument in "$@"; do
+    case $argument in
+      PI_PIDNS_WORKER_SCRIPT=*|PI_PIDNS_WRAPPER_SCRIPT=*|PI_IMPL_SCRIPT=*)
+        grep -q '^ERROR: unreadable override ' "$log"
+        return
+        ;;
+    esac
+  done
+  return 1
+}
+
 mutation_runner_worker() {
   local label=$1 log=$2 status outcome result_tmp stop_rc=0 log_fd
   shift 2
@@ -262,6 +279,8 @@ mutation_runner_worker() {
     elif (( status >= 128 )) \
       || grep -Eiq 'out of memory|cannot allocate|failed to allocate|allocation failed|xmalloc:|memoryerror' "$log"; then
       outcome=RESOURCE_LIMIT
+    elif mutation_runner_override_unreadable "$log" "$@"; then
+      outcome=OVERRIDE_ERROR
     else
       outcome=KILLED
     fi
@@ -291,6 +310,9 @@ mutation_runner_worker() {
       "$label" "$status" >&2
   elif [[ $outcome == RUNNER_ERROR ]]; then
     printf 'WORKER ERROR: timeout utility failed for %s (status %s)\n' \
+      "$label" "$status" >&2
+  elif [[ $outcome == OVERRIDE_ERROR ]]; then
+    printf 'WORKER ERROR: unreadable mutation override for %s (status %s)\n' \
       "$label" "$status" >&2
   else
     printf 'KILLED: %s\n' "$label"
@@ -500,6 +522,9 @@ mutation_runner_reap_one() {
     RUNNER_ERROR)
       mutation_runner_fail "$label" "timeout utility failed (status ${status:-missing})"
       ;;
+    OVERRIDE_ERROR)
+      mutation_runner_fail "$label" 'used an unreadable mutation override; this is not a killed mutant'
+      ;;
     *)
       mutation_runner_fail "$label" "invalid worker result: $(<"$result_file")"
       ;;
@@ -672,7 +697,7 @@ mutation_runner_finish() {
       : # The reap path has already recorded this as a failed command spawn.
     elif [[ $outcome == TIMEOUT && ( $status == 124 || $status == 137 ) ]] \
       || [[ $outcome == RESOURCE_LIMIT && $status =~ ^[0-9]+$ ]] \
-      || [[ $outcome == RUNNER_ERROR ]]; then
+      || [[ $outcome == RUNNER_ERROR || $outcome == OVERRIDE_ERROR ]]; then
       : # The reap path records these as lane failures, never as KILLED.
     elif [[ $outcome != KILLED || ! $status =~ ^[0-9]+$ ]] || (( status == 0 )); then
       mutation_runner_fail "$label" 'worker result did not say the check was killed'

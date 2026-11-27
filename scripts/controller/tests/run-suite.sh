@@ -16,6 +16,7 @@ files=(
   "$SCRIPT_DIR/../hx.sh"
   "$SCRIPT_DIR/../codex-impl.sh"
   "$SCRIPT_DIR/../pi-impl.sh"
+  "$SCRIPT_DIR/../pi-pidns-bash-worker.sh"
   "$SCRIPT_DIR/../codex-review.sh"
   "$SCRIPT_DIR/../pi-review.sh"
   "$SCRIPT_DIR/../opencode-impl.sh"
@@ -47,6 +48,7 @@ files=(
   "$SCRIPT_DIR/test-job-check.sh"
   "$SCRIPT_DIR/test-wrappers.sh"
   "$SCRIPT_DIR/test-pi-impl.sh"
+  "$SCRIPT_DIR/test-pi-pidns.sh"
   "$SCRIPT_DIR/test-pi-review.sh"
   "$SCRIPT_DIR/test-hardening-tools.sh"
   "$SCRIPT_DIR/test-gate-slots.sh"
@@ -67,8 +69,8 @@ files=(
   "$queue_test"
 )
 for file in "${files[@]}"; do bash -n "$file" || exit $?; done
-for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/test_dev.py" "$SCRIPT_DIR/mutate-sources.py"; do
-  python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
+for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/../pi-pidns-bash" "$SCRIPT_DIR/test_dev.py" "$SCRIPT_DIR/mutate-sources.py"; do
+  python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
 done
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck "${files[@]}" || exit $?
@@ -82,6 +84,7 @@ bash "$SCRIPT_DIR/test-ctl-status.sh" || exit $?
 bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
+bash "$SCRIPT_DIR/test-pi-pidns.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-review.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?
 bash "$SCRIPT_DIR/test-gate-slots.sh" || exit $?

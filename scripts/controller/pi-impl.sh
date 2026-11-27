@@ -47,9 +47,11 @@
 # `--print`, `--mode`, `--model`, `--thinking`, `--session`, `--session-id`,
 # `--session-dir`, `-c`/`--continue`, `-r`/`--resume`, `--fork` and a bare `--`
 # are refused before anything is claimed or launched. The seam exists for a
-# caller that must restrict pi's tools; an empty or unset value adds nothing, so
-# the implementer contract is unchanged. In REVIEW mode the seam is narrower
-# still (see PI_RUN_MODE below).
+# caller that must restrict pi's tools; an empty or unset value adds nothing.
+# One shared classifier refuses extension load/disable flags in both modes: the
+# implementer keeps its fixed PID namespace backend, and review cannot add code.
+# In REVIEW mode the seam is narrower still: every element is refused (see
+# PI_RUN_MODE below).
 #
 # PI_RUN_MODE selects the contract this launch runs under:
 #
@@ -112,13 +114,15 @@
 # stale `PI_RUN_MODE=implementer` in a local environment file cannot flip a
 # review back to the implementer tool set.
 #
-# Review mode is an ENFORCEMENT of the tool selection, not a sandbox. What it
-# does not prevent: a tool the read-only set does not name cannot be called, but
-# the `read` tool still reads anything the wrapper's user can (credentials
-# included), and an implementer's bash builtin `kill`, a TERM-trap script and a
-# direct syscall are NOT technically prevented. Only the implementer rule
-# paragraph below instructs against them; the mechanical guard is the pi-shims
-# PATH entry.
+# Review mode enforces its tool selection, not a sandbox: the `read` tool still
+# reads anything the wrapper's user can (credentials included). With tracked
+# guard assets unchanged, each implementer bash command runs in its own user
+# and PID namespace, which blocks that command's builtin `kill` and direct
+# signal syscalls from addressing outer processes by PID. This prevents
+# accidental signals through the current launch path; a same-user agent can edit
+# the guard files and change how a later command starts (CTL-65). The prompt
+# still forbids experiments in the shared devcontainer; the pi-shims PATH entry
+# also refuses ordinary `pkill`, `killall` and signalling `pgrep` spellings.
 #
 # A run NAME is owned by one live wrapper: the wrapper takes an exclusive
 # flock on <runs-dir>/<name>.lock before it writes anything (lib.sh
@@ -153,12 +157,40 @@
 # absolute after that expansion is refused, because pi would join it to ITS OWN
 # working directory, which this wrapper cannot check beforehand.
 #
-# Known limits, which the shims cannot cover: the bash builtin `kill` (a
-# negative group pid or any pid the agent did not start), an ABSOLUTE path such
-# as /usr/bin/pkill or /usr/bin/killall, a shell loop over /proc, and a script
-# that resets PATH itself. The guard is a mechanical refusal for the ordinary
-# spellings, not a security boundary.
-set -uo pipefail
+# PID namespace guard. Every implementer launch also loads the tracked
+# pi-pidns-extension.js explicitly with `-e` and `--no-extensions`. That
+# extension replaces the built-in bash tool and handles user `!`/`!!` commands;
+# both call pi-pidns-bash, which starts each command in a fresh user+PID
+# namespace while the tracked guard assets remain unchanged. The project
+# settings file cannot replace the explicit extension:
+# `--no-extensions` selects only CLI extension paths (dist/core/resource-loader.js:426-428),
+# a same-name extension tool replaces built-in bash (docs/extensions.md:2358-2360),
+# and the extension supplies its own shellPath through createLocalBashOperations
+# (dist/core/tools/bash.js:156-157). Pi's user_bash event covers `!` and `!!`
+# (docs/extensions.md:1078-1095). Review mode has no bash in its fixed tool set
+# and does not load this extension.
+#
+# With the tracked guard assets unchanged, this blocks bash signal attempts to
+# outer PIDs. It does not protect against a same-user edit to those assets, or
+# confine filesystem access: file writes and other Unix sockets remain
+# available. `/proc` is deliberately left as the host
+# procfs because `--proc /proc` is unavailable in the supported container; a
+# shell can see outer PIDs there, but its PID namespace cannot signal them. PID
+# 1 inside is bwrap, so `kill -0 1` succeeds by design. `sudo` fails inside, and
+# background jobs end with their command. Only the Docker default socket and an
+# existing socket named by DOCKER_HOST=unix:// outside /run/docker-api are
+# covered; other Unix sockets and network access are not isolated.
+builtin set -uo pipefail
+# An exported Bash function is imported before a noninteractive Bash script's
+# first command. Drop those inherited functions before the first external
+# command so none can shadow the launcher itself. BASH_ENV is too late to clear
+# here if it ran at interpreter startup; child-process boundaries below clear
+# it before this launcher's preflight and every Pi invocation.
+builtin unset BASH_ENV ENV
+while IFS= builtin read -r inherited_function; do
+  builtin unset -f "$inherited_function"
+done < <(builtin compgen -A function)
+builtin unset inherited_function
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
 caller_pi_model=${PI_MODEL-}
@@ -174,8 +206,22 @@ caller_pi_run_mode=${PI_RUN_MODE-}
 caller_pi_run_mode_set=0
 [[ -v PI_RUN_MODE ]] && caller_pi_run_mode_set=1
 # shellcheck source=lib.sh
+# shellcheck disable=SC1091 # lib.sh is linted separately; the source path is resolved at runtime.
 . "$SCRIPT_DIR/lib.sh"
 controller_init
+
+# controller.local.env is sourced after this script's Bash startup, so it can
+# still set BASH_ENV/ENV and export functions. Remove the startup hooks before
+# any child Bash (the namespace preflight or Pi's bash tool) can inherit them.
+sanitize_bash_child_environment() {
+  builtin unset BASH_ENV ENV
+  local function_name
+  while IFS= builtin read -r function_name; do
+    builtin export -n -f "${function_name?}"
+  done < <(builtin compgen -A function)
+}
+sanitize_bash_child_environment
+
 [[ -z $caller_pi_route ]] || PI_ROUTE=$caller_pi_route
 [[ -z $caller_pi_model ]] || PI_MODEL=$caller_pi_model
 [[ -z $caller_pi_thinking ]] || PI_THINKING=$caller_pi_thinking
@@ -321,7 +367,7 @@ inspect_review_material() {
 # incomplete and therefore refuses a resume rather than being treated as no
 # record.
 scan_run_stream_sessions() {
-  python3 - "$1" <<'PY'
+  python3 -I - "$1" <<'PY'
 import json
 import re
 import sys
@@ -755,6 +801,13 @@ fi
 # before the run name is claimed, so a malformed value retires and overwrites
 # nothing.
 extra_pi_args=()
+is_pi_extension_control_arg() {
+  case $1 in
+    --extension | --extension=* | -e | --no-extensions | -ne) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 parse_extra_pi_args() {
   local line
   [[ -n ${PI_EXTRA_ARGS-} ]] || return 0
@@ -769,6 +822,17 @@ parse_extra_pi_args() {
         return 1
         ;;
     esac
+    # One shared classification keeps these extension controls refused in both
+    # modes. Implementer mode must keep its fixed namespace extension; review
+    # mode must not load an extension (and independently rejects every extra).
+    if is_pi_extension_control_arg "$line"; then
+      if [[ $run_mode == review ]]; then
+        echo "PI_EXTRA_ARGS may not set '$line' in review mode: PI_RUN_MODE=review owns pi's extension selection" >&2
+      else
+        echo "PI_EXTRA_ARGS may not load or disable extensions in implementer mode: the PID namespace shell is fixed" >&2
+      fi
+      return 1
+    fi
     if [[ $run_mode == review ]]; then
       # Review mode owns what the reviewer may DO, so the seam may not touch it.
       # Every spelling is pi 1.6.0's own (its `--help` and dist/cli/args.js, read
@@ -778,22 +842,19 @@ parse_extra_pi_args() {
       #   --exclude-tools/-xt                :127  edits that selection
       #   --no-tools/-nt, --no-builtin-tools/-nbt :108/:111 change it (the latter
       #                     keeps extension/custom tools enabled)
-      #   --extension/-e    :156  loads code, and explicit -e paths still work
-      #                     WITH --no-extensions (its own --help, :320)
-      #   --no-extensions/-ne, --no-mcp      :160/:163  the flags the review sets
       #   --skill, --no-skills/-ns, --prompt-template, --no-prompt-templates/-np
       #                     :166,:188,:170,:191  instructions the reviewer reads
       #   --approve/-a, --no-approve/-na     :229/:232  project trust, which lets
       #                     project-local extensions load and execute
       #                     (dist/main.js:631-659, dist/core/project-trust.js:18-24)
-      # Flags outside this list cannot add a tool or code here: `--no-extensions`
-      # and `--no-mcp` load none, and an unparsed `--flag value` only reaches
-      # extensions through extensionFlagValues (dist/cli/args.js:236-256,
-      # dist/main.js:665), of which there are none.
+      # Extension controls are classified once above. `--no-mcp` loads none,
+      # and an unparsed `--flag value` only reaches extensions through
+      # extensionFlagValues (dist/cli/args.js:236-256, dist/main.js:665), of
+      # which there are none.
       case $line in
         --tools | --tools=* | -t | --exclude-tools | --exclude-tools=* | -xt | \
           --no-tools | -nt | --no-builtin-tools | -nbt | \
-          --extension | --extension=* | -e | --no-extensions | -ne | --no-mcp | \
+          --no-mcp | \
           --skill | --skill=* | --no-skills | -ns | \
           --prompt-template | --prompt-template=* | --no-prompt-templates | -np | \
           --approve | -a | --no-approve | -na)
@@ -944,6 +1005,34 @@ for shim in pkill killall pgrep; do
   fi
 done
 
+# The implementer shell boundary is a launch prerequisite. Probe it before the
+# run name is claimed, so missing bubblewrap, unavailable namespaces, or a bad
+# wrapper leaves no run record. Project shellPath/extensions cannot override
+# this CLI-selected extension: --no-extensions ignores discovered settings
+# extensions, while the explicit -e extension replaces the built-in bash tool
+# and installs a custom createLocalBashOperations({shellPath}) backend.
+pidns_wrapper=$SCRIPT_DIR/pi-pidns-bash
+pidns_extension=$SCRIPT_DIR/pi-pidns-extension.js
+if [[ $run_mode == implementer ]]; then
+  if [[ ! -x $pidns_wrapper ]]; then
+    echo "pi PID namespace wrapper is missing or not executable: $pidns_wrapper" >&2
+    exit 2
+  fi
+  if [[ ! -r $pidns_extension ]]; then
+    echo "pi PID namespace extension is missing or unreadable: $pidns_extension" >&2
+    exit 2
+  fi
+  sanitize_bash_child_environment
+  if pidns_probe_output=$(/usr/bin/env -u SHELLOPTS -u BASHOPTS "$pidns_wrapper" -c true 2>&1); then
+    :
+  else
+    pidns_probe_rc=$?
+    printf 'pi implementer launch refused before run name claim: PID namespace preflight failed (exit %s): %s\n' \
+      "$pidns_probe_rc" "${pidns_probe_output:-no diagnostic from the wrapper}" >&2
+    exit 2
+  fi
+fi
+
 out=$CONTROLLER_RUNS_DIR
 # Ownership first: nothing below may write a name-owned record until this
 # invocation holds the name. A refusal here names the live owner and exits 2.
@@ -1086,6 +1175,12 @@ IFS= read -r -d '' rules_text < "$rules_file" || :
 printf -v prompt_text '%s\n%s' "$prompt_text" "$rules_text"
 printf -v continue_prompt '%s\n%s' "$continue_prompt" "$rules_text"
 base_pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" --session-dir "$session_dir")
+# Every implementer invocation carries the protected shell extension, including
+# the first launch, a resume and each automatic continuation. `--no-extensions`
+# excludes project/user extension discovery but keeps the explicit `-e` path.
+if [[ $run_mode == implementer ]]; then
+  base_pi_args+=(--no-extensions -e "$pidns_extension")
+fi
 # A review's read-only set comes from its one definition (pi-review-argv) and is
 # part of the wrapper's OWN argv, so every path below -- the first run, a resume
 # and every automatic continuation -- carries it through invoke_pi unchanged.
@@ -1146,6 +1241,7 @@ fi
 invoke_pi() {
   local prompt_text=$1 stream=$2 first_run=$3
   local -a argv=("${base_pi_args[@]}")
+  sanitize_bash_child_environment
   [[ -z $resume_target ]] || argv+=(--session "$resume_target")
   # The shim directory goes FIRST on the agent's PATH and only there: this
   # wrapper's own commands keep the caller's PATH. pi's bash tool hands its
@@ -1156,11 +1252,11 @@ invoke_pi() {
   # command the agent runs.
   if [[ $first_run == 1 ]]; then
     (cd -- "$worktree" && controller_close_ownership_fds \
-      && PATH=$pi_shims_dir${PATH:+:$PATH} exec nice pi "${argv[@]}" -- "$prompt_text" \
+      && PATH=$pi_shims_dir${PATH:+:$PATH} exec /usr/bin/env -u SHELLOPTS -u BASHOPTS nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null > "$stream" 2> "$out/$name.err")
   else
     (cd -- "$worktree" && controller_close_ownership_fds \
-      && PATH=$pi_shims_dir${PATH:+:$PATH} exec nice pi "${argv[@]}" -- "$prompt_text" \
+      && PATH=$pi_shims_dir${PATH:+:$PATH} exec /usr/bin/env -u SHELLOPTS -u BASHOPTS nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null >> "$stream" 2>> "$out/$name.err")
   fi
 }
@@ -1170,7 +1266,7 @@ invoke_pi() {
 # flag, aborted flag, has-text flag, has-tool-call flag. The turn count, tool
 # call count and token total are the live sidecar's job (pi-live.py).
 inspect_run() {
-  python3 - "$out/$name.jsonl" "$out/$name.last.txt" <<'PY'
+  python3 -I - "$out/$name.jsonl" "$out/$name.last.txt" <<'PY'
 import json
 import sys
 from pathlib import Path
