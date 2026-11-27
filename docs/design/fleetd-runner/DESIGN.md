@@ -115,8 +115,11 @@ files; the key is not a path. The host runs only the validated verb argv. `tty` 
 The payload has no `max_s`, removing today's timeout wrapper (`scripts/controller/dev:159`); `dev stop` remains available (`scripts/controller/dev:550`).
 
 **have** returns the refs the host already has. **put** takes `{name, sha256, bytes}` plus a
-streamed body; only `in.bundle`, indexed seed archives and the two dev patch archives are valid
-names. The agent checks length and checksum and creates the destination itself.
+streamed body; only `in.bundle`, indexed `assay-seed-<n>.tgz` archives and their checksum files,
+the two dev patch archives, and `candidates` are valid names. The agent checks length and checksum
+and creates the destination itself. A submit may use `--only-candidates` only when its path is the
+host-created `candidates` file uploaded by the same authenticated group; an arbitrary client path
+is refused.
 
 Controller-only **lease** takes `{lease_id, container_name, footprint, planned_cores, priority}`. The client supplies a group-prefixed
 idempotency key; the host reserves that id and the client binds the created container ID on that connection. A reconnect names the
@@ -140,8 +143,9 @@ verdict, reason, progress:{done,total,unit,last_utc}, container:{id,name,image},
 anchored line parsed exactly as `scripts/controller/remote-gate.sh:291-294` does (prefix at line start, never a
 substring).
 
-**progress** for assay lanes is read from `.assay/progress-<lane>.jsonl` in the job checkout and
-streamed by byte offset (`run-gate-project/SPEC.md:2321-2342`). Command lanes have no candidates
+**progress** for assay lanes is read from `.assay/progress-<assay_lane>.jsonl` in the job checkout,
+where `assay_lane` comes from `hostside.resolve_assay_lane(checkout, project, lane)`, and is streamed
+by byte offset (`run-gate-project/SPEC.md:2321-2342`). Command lanes have no candidates
 (`run-gate-project/SPEC.md:416-436`): `done` and `total` are null, with
 `unit: log_bytes` from the agent's `lane.log` offset. The executor records start, stage and end
 for `dev`. Answers include `{done,total,unit,last_progress_utc}`; `jobs[]` uses

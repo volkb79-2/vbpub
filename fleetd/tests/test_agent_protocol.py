@@ -23,7 +23,7 @@ SHA = "a" * 40
 SHA256 = "b" * 64
 
 
-def _policy(tmp_path, identities=""):
+def _policy(tmp_path, identities="", extra_argv='[["--verbose"]]'):
     checkouts = tmp_path / "checkouts"
     checkouts.mkdir()
     path = tmp_path / "agent.toml"
@@ -42,7 +42,7 @@ group = "worker"
     path.write_text(f'''schema_version = 1
 idle_connection_s = 20
 requested_by_clients = ["fleetd"]
-extra_argv = [["--verbose"]]
+extra_argv = {extra_argv}
 dev_argv = [["status"]]
 
 [repo_roots]
@@ -258,8 +258,11 @@ def test_validate_request_checks_put_and_fetch_closed_names_and_ranges(tmp_path)
         {"verb": "put", "name": "candidates", "sha256": SHA256, "bytes": 12}, identity, policy,
     )["name"] == "candidates"
     assert validate_request(
-        {"verb": "put", "name": "seed-17.tar", "sha256": SHA256, "bytes": 12}, identity, policy,
-    )["name"] == "seed-17.tar"
+        {"verb": "put", "name": "assay-seed-17.tgz", "sha256": SHA256, "bytes": 12}, identity, policy,
+    )["name"] == "assay-seed-17.tgz"
+    assert validate_request(
+        {"verb": "put", "name": "assay-seed-17.tgz.sha256", "sha256": SHA256, "bytes": 12}, identity, policy,
+    )["name"] == "assay-seed-17.tgz.sha256"
     with pytest.raises(AdmissionError, match="closed artifact set"):
         validate_request(
             {"verb": "put", "name": "../../outside", "sha256": SHA256, "bytes": 12}, identity, policy,
@@ -314,3 +317,17 @@ def test_validate_request_checks_dev_payload_and_allowlist(tmp_path):
     request["dev"]["verb_argv"] = []
     with pytest.raises(AdmissionError, match="must not be empty"):
         validate_request(request, identity, policy)
+
+
+def test_only_candidates_requires_an_allowlisted_host_created_file(tmp_path):
+    policy, _checkout = _policy(tmp_path, extra_argv='[["--only-candidates", "<host-candidates>"]]')
+    identity = policy.resolve_peer(1000, 100)
+    candidate_path = "/var/lib/fleetd-agent/uploads/controller/candidates/" + SHA256
+    request = _submit()
+    request["extra_argv"] = ["--only-candidates", candidate_path]
+
+    with pytest.raises(AdmissionError, match="host-created"):
+        validate_request(request, identity, policy)
+    assert validate_request(
+        request, identity, policy, created_candidate_paths=frozenset({candidate_path}),
+    )["extra_argv"] == ["--only-candidates", candidate_path]

@@ -25,7 +25,7 @@ _SHA40_RE = re.compile(r"[0-9a-f]{40}\Z")
 _SHA64_RE = re.compile(r"[0-9a-f]{64}\Z")
 _BASE_RE = re.compile(r"[0-9a-f]{1,64}\Z")
 _LANE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
-_SEED_NAME_RE = re.compile(r"seed-[0-9]+\.tar\Z")
+_SEED_NAME_RE = re.compile(r"assay-seed-[0-9]+\.tgz(?:\.sha256)?\Z")
 _WORKTREE_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _SEMVER_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z")
 
@@ -275,7 +275,13 @@ def _sha(value: object, where: str, *, full: bool) -> str:
     return digest
 
 
-def validate_request(value: object, identity: AgentIdentity, policy: AgentPolicy) -> dict[str, Any]:
+def validate_request(
+    value: object,
+    identity: AgentIdentity,
+    policy: AgentPolicy,
+    *,
+    created_candidate_paths: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     """Validate one complete request before any verb takes a queue lock or writes."""
     if not isinstance(value, dict):
         _refuse("request must be a JSON object")
@@ -389,7 +395,23 @@ def validate_request(value: object, identity: AgentIdentity, policy: AgentPolicy
     if stores["seed"] is not None:
         seed = _file_descriptor(stores["seed"], "stores.seed")
         _inside(checkout_root, str(seed["path"]), "stores.seed.path")
-    _check_argv(request["extra_argv"], "extra_argv", policy.extra_argv)
+    extra_argv_value = request["extra_argv"]
+    if not isinstance(extra_argv_value, list):
+        _refuse("extra_argv must be an argv array")
+    extra_argv = tuple(_string(item, f"extra_argv[{index}]") for index, item in enumerate(extra_argv_value))
+    candidate_indexes = [index for index, item in enumerate(extra_argv) if item == "--only-candidates"]
+    if candidate_indexes:
+        if len(candidate_indexes) != 1 or candidate_indexes[0] + 1 >= len(extra_argv):
+            _refuse("--only-candidates requires exactly one host-created file")
+        index = candidate_indexes[0]
+        candidate_path = extra_argv[index + 1]
+        if candidate_path not in created_candidate_paths:
+            _refuse("--only-candidates must name a host-created candidates file for the authenticated group")
+        normalized_argv = (*extra_argv[:index], "--only-candidates", "<host-candidates>", *extra_argv[index + 2:])
+        if normalized_argv not in policy.extra_argv:
+            _refuse("extra_argv is not on the host allow-list")
+    elif extra_argv and extra_argv not in policy.extra_argv:
+        _refuse("extra_argv is not on the host allow-list")
     _check_env(request["env"], policy)
 
     kind = request["kind"]
