@@ -2808,7 +2808,8 @@ check_rule_file_missing_refused() {
   [[ -r $rules ]] || fail 'the implementer rule paragraph file is missing'
   contains "$rules" 'private PID namespace' 'the implementer rule names the container the signal tests belong in'
   contains "$rules" 'host procfs' 'the implementer rule states that /proc remains the host procfs'
-  contains "$rules" 'kill -0 1 succeeds' 'the implementer rule documents the namespace PID 1 behavior'
+  # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+  contains "$rules" '`kill -0 1` succeeds' 'the implementer rule documents the namespace PID 1 behavior'
   contains "$rules" 'Never kill by pattern' 'the implementer rule refuses pattern kills'
   contains "$rules" 'no shell experiment' 'the implementer rule refuses shell experiments in the devcontainer'
   [[ -r $REVIEW_RULES ]] || fail 'the review rule paragraph file is missing'
@@ -2861,7 +2862,8 @@ check_mode_rule_paragraph() {
   contains "$IMPLEMENTER_RULES" 'recorded itself' 'the implementer rule pins the kill to recorded pids'
   contains "$IMPLEMENTER_RULES" 'TERM-trap' 'the implementer rule names the trap tests'
   contains "$IMPLEMENTER_RULES" 'outer PIDs' 'the implementer rule explains the visible host procfs PIDs'
-  contains "$IMPLEMENTER_RULES" 'kill -0 1 succeeds' 'the implementer rule documents the namespace PID 1 behavior'
+  # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+  contains "$IMPLEMENTER_RULES" '`kill -0 1` succeeds' 'the implementer rule documents the namespace PID 1 behavior'
   contains "$REVIEW_RULES" 'The review is read from' 'the review rule names what the review is read from'
   contains "$REVIEW_RULES" 'say that it is unknown' 'the review rule names the honest report of an unreadable fact'
 }
