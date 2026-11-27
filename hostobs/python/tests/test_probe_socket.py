@@ -249,7 +249,8 @@ class RealProbeSocket(unittest.TestCase):
                 self.address, "observer", client="m3-b5-annotate", timeout_s=CHILD_WAIT_S
             )
             self.assertEqual(connection.verbs, ["hello", "annotate"])
-            self.assertEqual(connection.limits["max_rows"], 1024)
+            # WIRE 4.4: a level that serves no block verb reports the block keys as 0.
+            self.assertEqual(connection.limits["max_rows"], 0)
 
             key = f"span-{os.getpid()}-{time.monotonic_ns()}"
             begin = connection.request(
