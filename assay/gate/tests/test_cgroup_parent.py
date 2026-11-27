@@ -38,6 +38,8 @@ def run_probe(
     remote_mnt_namespace: str | None = None,
     remote_pid_namespace: str | None = None,
     unit_probe_run_mode: str = "owned",
+    absent_inspect_stderr: str = "error: no such object: {target}",
+    inspect_stderr_warning: str = "",
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -94,13 +96,20 @@ if args and args[0] == "inspect":
     state = load_probe_state()
     probe = find_probe(state, target)
     if probe is None:
-        print(f"Error: No such object: {target}", file=sys.stderr)
+        # Docker 29.9.3 with --format: an empty stdout line, then the stderr text.
+        print("", flush=True)
+        print(
+            os.environ["ABSENT_INSPECT_STDERR"].replace("{target}", target),
+            file=sys.stderr,
+        )
         raise SystemExit(1)
     if probe.get("inspect_ambiguous_once"):
         probe["inspect_ambiguous_once"] = False
         save_probe_state(state)
         print("Error: Docker daemon unavailable", file=sys.stderr)
         raise SystemExit(1)
+    if os.environ["INSPECT_STDERR_WARNING"]:
+        print(os.environ["INSPECT_STDERR_WARNING"], file=sys.stderr)
     print("|".join((probe["id"], "/" + probe["name"], probe["owner"])))
     raise SystemExit(0)
 if args and args[0] == "exec":
@@ -244,6 +253,8 @@ raise SystemExit(2)
         "CALL_ORDER": str(call_order),
         "UNIT_PROBE_STATE": str(tmp_path / "unit-probe-state.json"),
         "UNIT_PROBE_RUN_MODE": unit_probe_run_mode,
+        "ABSENT_INSPECT_STDERR": absent_inspect_stderr,
+        "INSPECT_STDERR_WARNING": inspect_stderr_warning,
         "MEMORY_STAT_DATA": memory_stat or "",
         "MEMORY_STAT_READ_ERROR": "1" if memory_stat_read_error else "0",
         "MEMORY_STAT_MOUNT_FAILURE": "1" if memory_stat_mount_failure else "0",
@@ -965,8 +976,18 @@ def test_memory_stat_mount_failure_retries_unmounted_and_cleans_owned_probe(
     assert state["containers"] == {}
 
 
+@pytest.mark.parametrize(
+    "absent_inspect_stderr",
+    [
+        "error: no such object: {target}",
+        "Error: No such object: {target}",
+        "no such object: {target}",
+        "WARNING: unrelated CLI notice\nerror: no such object: {target}",
+    ],
+)
 def test_mount_failure_with_absent_container_retries_without_removal(
     tmp_path: Path,
+    absent_inspect_stderr: str,
 ):
     proc, argv_log = run_probe(
         tmp_path,
@@ -975,6 +996,7 @@ def test_mount_failure_with_absent_container_retries_without_removal(
         cgroup_values={"memory.current": "5368709120"},
         memory_reserve_bytes=2147483648,
         unit_probe_run_mode="mount-failure-absent",
+        absent_inspect_stderr=absent_inspect_stderr,
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -997,6 +1019,52 @@ def test_mount_failure_with_absent_container_retries_without_removal(
     )
     state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
     assert state["containers"] == {}
+
+
+@pytest.mark.parametrize(
+    "inspect_stderr",
+    [
+        "error: no such object: {target}-other",
+        "error: no such object: {target} (daemon unreachable)",
+        "Error response from daemon: no such object: {target}",
+        "Cannot connect to the Docker daemon",
+        "",
+    ],
+)
+def test_other_inspect_failure_after_mount_failure_refuses_without_fallback(
+    tmp_path: Path,
+    inspect_stderr: str,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="mount-failure-absent",
+        absent_inspect_stderr=inspect_stderr,
+    )
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "refusing fallback" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len([call for call in calls if call[0] == "run"]) == 1
+    assert not any(call[0] == "rm" for call in calls)
+
+
+def test_docker_warning_on_stderr_does_not_break_probe_verification(tmp_path: Path):
+    proc, _ = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        inspect_stderr_warning="WARNING: unrelated CLI notice",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "dev-gates.slice\n"
 
 
 def test_ambiguous_mount_failure_inspect_refuses_then_exit_trap_removes_probe(
