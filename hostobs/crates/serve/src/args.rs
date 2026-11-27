@@ -1565,6 +1565,46 @@ mod tests {
     }
 
     #[test]
+    fn annotate_keeps_every_context_key_and_names_a_member_of_the_wrong_type() {
+        use crate::backend::AnnotateCtxKey;
+
+        let ctx = r#"{"run":"r","lane":"l","candidate":"c","txn":"t","session":"s"}"#;
+        let accepted = super::annotate(point_args("{}", ctx).as_bytes()).expect("full context");
+        let kept: Vec<(AnnotateCtxKey, &str)> = accepted
+            .ctx
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                (AnnotateCtxKey::Run, "r"),
+                (AnnotateCtxKey::Lane, "l"),
+                (AnnotateCtxKey::Candidate, "c"),
+                (AnnotateCtxKey::Txn, "t"),
+                (AnnotateCtxKey::Session, "s"),
+            ]
+        );
+
+        let point = point_args("{}", "{}");
+        for (member, value, key) in [
+            ("\"kind\":\"point\"", "\"kind\":\"mark\"", "kind"),
+            ("\"key\":null", "\"key\":1", "key"),
+            ("\"code\":null", "\"code\":false", "code"),
+            ("\"outcome\":null", "\"outcome\":[]", "outcome"),
+        ] {
+            let text = point.replace(member, value);
+            assert_eq!(annotate_refused(&text), key, "{value}");
+        }
+        assert_eq!(
+            annotate_refused(&point_args("{}", "{\"lane\":1}")),
+            "ctx.lane"
+        );
+        assert_eq!(annotate_refused(&point_args("{\"a\":1}", "{}")), "attrs.a");
+        assert_eq!(annotate_refused(&point_args("{\"A\":\"x\"}", "{}")), "attrs.A");
+    }
+
+    #[test]
     fn annotate_outcome_and_point_idempotency_rules_are_exact() {
         let end = r#"{"kind":"end","name":"run","key":null,"ctx":{},"outcome":"ok","code":null,"attrs":{}}"#;
         assert_eq!(

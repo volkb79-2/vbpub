@@ -1006,6 +1006,7 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
     use crate::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
@@ -1017,7 +1018,8 @@ mod tests {
     use super::{Call, Conn, Dispatch, Peer, Pools, Reader, State, SERVER_MINOR};
     use crate::args::SubscribeArgs;
     use crate::backend::{
-        Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, TickInfo, TierInfo,
+        AnnotateRefusal, AnnotateReply, Backend, BackendError, FixedBackend, Identity, StatusInfo,
+        TickData, TickInfo, TierInfo,
     };
     use crate::codes::{Code, Detail};
     use crate::encode::{
@@ -1142,6 +1144,8 @@ mod tests {
     struct CountingBackend {
         inner: FixedBackend,
         current_calls: Cell<usize>,
+        /// `annotate` answers in order; the fixed backend answers once this is empty.
+        annotate_script: VecDeque<Result<AnnotateReply, AnnotateRefusal>>,
     }
 
     impl CountingBackend {
@@ -1149,6 +1153,7 @@ mod tests {
             CountingBackend {
                 inner: FixedBackend::new(),
                 current_calls: Cell::new(0),
+                annotate_script: VecDeque::new(),
             }
         }
     }
@@ -1173,12 +1178,64 @@ mod tests {
             conn: ConnId,
             peer: &Peer,
             args: &crate::backend::AnnotateArgs,
-        ) -> Result<crate::backend::AnnotateReply, crate::backend::AnnotateRefusal> {
-            self.inner.annotate(conn, peer, args)
+        ) -> Result<AnnotateReply, AnnotateRefusal> {
+            match self.annotate_script.pop_front() {
+                Some(answer) => answer,
+                None => self.inner.annotate(conn, peer, args),
+            }
         }
 
         fn connection_closed(&mut self, conn: ConnId) {
             self.inner.connection_closed(conn);
+        }
+    }
+
+    #[test]
+    fn annotate_replies_with_the_stamp_and_maps_every_refusal_to_its_wire_error() {
+        let args = r#"{"kind":"point","name":"run","key":null,"ctx":{},"outcome":null,"code":null,"attrs":{}}"#;
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend.annotate_script.extend([
+            Ok(AnnotateReply {
+                t_mono_ns: 41,
+                span: Some(3),
+            }),
+            Ok(AnnotateReply {
+                t_mono_ns: 42,
+                span: None,
+            }),
+            Err(AnnotateRefusal::RateLimited { retry_after_ms: 20 }),
+            Err(AnnotateRefusal::Budget),
+            Err(AnnotateRefusal::SpanUnknown),
+        ]);
+        // The sixth request finds the script empty and the fixed backend refuses it.
+        let expected: [&[&str]; 6] = [
+            &[r#""t_mono_ns":41,"span":3"#],
+            &[r#""t_mono_ns":42,"span":null"#],
+            &[r#""code":"rate-limited""#, r#""retry_after_ms":20"#],
+            &[r#""code":"budget""#, r#""pool":"spans""#],
+            &[r#""code":"span-unknown""#],
+            &[r#""code":"internal""#],
+        ];
+        for (corr, _) in (2_u32..).zip(expected) {
+            rig.conn.on_bytes(
+                &line(corr, "annotate", args),
+                rig.now,
+                &mut rig.hub,
+                &mut backend,
+                &mut rig.streams,
+            );
+            rig.pump(usize::MAX);
+        }
+        assert_eq!(rig.conn.state(), State::Ready);
+        let out = text(&rig.finish());
+        let replies: Vec<&str> = out.lines().collect();
+        assert_eq!(replies.len(), expected.len(), "{out}");
+        for ((corr, reply), needles) in (2_u32..).zip(replies).zip(expected) {
+            assert!(reply.contains(&format!("\"corr\":{corr},")), "{reply}");
+            for needle in needles {
+                assert!(reply.contains(needle), "{needle} in {reply}");
+            }
         }
     }
 
