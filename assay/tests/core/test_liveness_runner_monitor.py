@@ -2646,7 +2646,7 @@ def test_wall_backstop_still_fires_after_cpu_becomes_unreadable(
 
 
 def test_readable_cpu_budget_warning_is_emitted_once_and_candidate_can_finish(
-    tmp_path: Path,
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     clock = _FakeClock()
     proc = _ScriptedProc(pid=7016)
@@ -2654,10 +2654,17 @@ def test_readable_cpu_budget_warning_is_emitted_once_and_candidate_can_finish(
     reader = _scripted_events(
         clock, events_path, [], proc=proc, finish_at=(4.0, 0), cpu=0.0
     )
+    completed_polls: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        completed_polls.append(clock.t)
+        clock.advance(seconds)
+
     runner, cwd = _runner(
         tmp_path,
         proc=proc,
         clock=clock,
+        sleep=sleep,
         cpu_reader=reader,
         advisory_budget_s=2.0,
         expect_next_event_within_s=600.0,
@@ -2667,7 +2674,14 @@ def test_readable_cpu_budget_warning_is_emitted_once_and_candidate_can_finish(
 
     assert result.returncode == 0
     assert runner.advisory_exceeded_at_s == 2.0
-    assert runner._advisory_warned is True
+    # At least two consecutive polls ran over budget, and only the first warned.
+    assert len([t for t in completed_polls if t >= 2.0]) >= 2
+    warnings = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("assay: WARN: candidate overran")
+    ]
+    assert len(warnings) == 1
 
 
 def test_unarmed_budget_expiry_closes_an_open_observer_window(

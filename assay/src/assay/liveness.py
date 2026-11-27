@@ -2166,7 +2166,6 @@ class LivenessRunner:
         # watch cannot remain armed, so this bound falls back to binding.
         self.advisory_budget_s = advisory_budget_s
         self.advisory_exceeded_at_s: float | None = None
-        self._advisory_warned = False
 
     def assay_window_host_spec(self) -> Mapping[str, object] | None:
         """Describe a production-configured runner for an isolated host.
@@ -2838,19 +2837,17 @@ class LivenessRunner:
                     if cpu_readable and not stream_broken:
                         if self.advisory_exceeded_at_s is None:
                             self.advisory_exceeded_at_s = elapsed_wall
-                            if not self._advisory_warned:
-                                self._advisory_warned = True
-                                print(
-                                    f"assay: WARN: candidate overran "
-                                    f"judge.mutation.budget_per_candidate "
-                                    f"({self.advisory_budget_s:.1f}s) but is "
-                                    f"still watched for progress: the "
-                                    f"budget is ADVISORY for this run (a "
-                                    f"hang is caught by the "
-                                    f"CPU-without-progress and per-test "
-                                    f"bounds, bucket 'hung')",
-                                    file=sys.stderr,
-                                )
+                            print(
+                                f"assay: WARN: candidate overran "
+                                f"judge.mutation.budget_per_candidate "
+                                f"({self.advisory_budget_s:.1f}s) but is "
+                                f"still watched for progress: the "
+                                f"budget is ADVISORY for this run (a "
+                                f"hang is caught by the "
+                                f"CPU-without-progress and per-test "
+                                f"bounds, bucket 'hung')",
+                                file=sys.stderr,
+                            )
                     else:
                         if window is not None:
                             window.close()
