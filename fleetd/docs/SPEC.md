@@ -66,28 +66,42 @@ timeouts become 75, and inspector timeouts become `ERROR`. One callback can
 time out without retaining `queue.lock` or creating an unbounded worker backlog
 (FD-054).
 
-The host agent's legacy-job provider scans the required absolute
-`agent.toml.legacy_jobs_dir`. Every directory entry is charged unless it safely
-contains a regular `EXIT` file. Symlinks, non-directories, unreadable entries,
-and names outside the admission-ID grammar remain charged; generated IDs are
-valid, unique, and deterministic for a sorted listing. A root-directory listing
-failure or provider timeout returns 75 rather than an empty list. The scan uses
-directory descriptors and no-follow opens below the configured root. The
-legacy `run-job` writer creates `EXIT` only after the command exits; a host
-reboot can therefore leave a directory charged until it is removed manually
-(FD-064).
+The host agent's legacy-job provider scans the required absolute,
+fully-resolved `agent.toml.legacy_jobs_dir`. It opens the path from `/` one
+component at a time with `O_DIRECTORY | O_NOFOLLOW`; a symlink or non-directory
+component refuses admission. Every entry is charged unless it safely contains
+a regular `EXIT` file. Symlinks, non-directories, unreadable entries, and odd
+names remain charged. IDs are `legacy-` plus the first 40 lowercase hex digits
+of SHA-256 over `os.fsencode(name)`, so another entry's insertion or removal
+does not change an existing ID. The provider lists the pinned directory twice,
+keeps entries judged live in the first pass, evaluates names found only in the
+second pass, and reopens the configured path to require the same device and
+inode. A scan error, changed root, or more than `MAX_LEGACY_JOB_ENTRIES`
+(65,536) entries refuses admission with 75. This is a point-in-time observation,
+not a writer protocol: `run-job` does not take `queue.lock`, a job created after
+the final listing is not seen, and the jobs-directory owner is trusted to write
+its own `EXIT` markers. Completed directories therefore accumulate and must be
+pruned before the entry limit. The legacy `run-job` writer creates `EXIT` only
+after the command exits; a host reboot can therefore leave a directory charged
+until someone removes it manually (FD-064).
 
-The lease object inspector invokes `docker inspect --type=container` with one
-argv target, never a shell. It accepts only a syntactically exact container
-name or a full lowercase 64-character ID, and reports `PRESENT` only when one
-complete object matches that exact name or ID. `NO_SUCH_OBJECT` requires a
-non-zero Docker exit, no object output, and Docker's explicit no-such-object or
-no-such-container response for that target. Missing Docker, timeout, partial or
-unparseable output, ambiguous output, and mismatched identities are `ERROR`.
-The bind identity inspector accepts a full ID only, never an ID prefix, and
-returns Docker's name, full ID, and labels only when that exact ID is inspected.
-Docker child processes receive `query_timeout_s`; timeout terminates and waits
-for the child before returning.
+The lease object inspector invokes exactly `/usr/bin/docker --host
+unix:///var/run/docker.sock inspect --type=container <target>` with argv, never
+a shell, cwd `/`, and environment `PATH=/usr/bin:/bin`,
+`HOME=/nonexistent`, `LC_ALL=C`. It accepts an exact container name or full
+lowercase 64-character ID; a lowercase hex target of length 12 through 63 is
+ambiguous and returns `ERROR`. It reports `PRESENT` only when one complete
+object matches that exact name or ID. `NO_SUCH_OBJECT` requires a non-zero
+Docker exit, no object output, and Docker's explicit no-such-object or
+no-such-container response for that target. Missing Docker, timeout, output
+over 4 MiB on either stream, invalid UTF-8, partial or unparseable output,
+ambiguous output, and mismatched identities are `ERROR`. The bind identity
+inspector accepts a full ID only, never an ID prefix, and returns Docker's
+name, full ID, and labels only when that exact ID is inspected. One monotonic
+`query_timeout_s` deadline covers spawn, output draining and reaping. Each
+stream is drained with a 4 MiB cap; expiry, a cap breach, or a pipe still held
+at the deadline kills the child process group with `SIGKILL` and makes a
+deadline-bounded reap attempt before returning `ERROR`.
 
 Every `host-facts/2` policy object carries `aging_s`,
 `legacy_charge_bytes`, and `legacy_planned_cores`. An unconfigured key is

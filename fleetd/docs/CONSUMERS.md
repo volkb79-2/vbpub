@@ -94,24 +94,48 @@ group and host mounts belong to C3c.
 `lease_reconcile_interval_s`, `lease_bind_timeout_s`, `max_connections`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
 `env_values`; none has a consumer-invented fallback. All four time values are
-positive. `legacy_jobs_dir` is an absolute path with no default. It points to
-the legacy `run-job` directory scanned for entries without a regular `EXIT`
-file. The provider treats symlinks, non-directories, unreadable entries and
-unexpected names as charged work, and refuses admission if it cannot list the
-root directory. It uses descriptor-relative no-follow access below that root.
+positive. `legacy_jobs_dir` is an absolute, fully-resolved path with no
+default. It must point to the legacy runner user's real `$HOME/jobs`
+directory, and the resolved directory must be checked before enabling the
+agent. The provider opens every path component from `/` with descriptor-
+relative `O_DIRECTORY | O_NOFOLLOW`; any symlink or non-directory component
+refuses admission. It charges every entry without a regular `EXIT` marker,
+including symlinks, non-directories, unreadable entries and odd names. IDs are
+derived from each name, so inserting or removing other entries does not change
+them. It lists the pinned directory twice, retains entries judged live in the
+first pass, judges second-pass-only names by the same marker rule, then requires
+the configured path to reopen to the same device and inode. These listings
+are a point-in-time observation: `run-job` does not take `queue.lock`, a job
+created after the final listing is not seen, and the jobs-directory owner is
+trusted to write its own `EXIT` markers. Listing errors, a changed root, or
+more than 65,536 entries refuse admission with 75. Completed directories
+accumulate and must be pruned before the limit. A host reboot can leave a job
+without `EXIT` charged until someone removes its directory (FD-064).
 `lease_reconcile_interval_s` sets the exact-lease reconciliation
 period; there is no default. `lease_bind_timeout_s` is also positive with no
 default; it bounds the whole bind frame from grant on the monotonic clock, so
 trickling bytes cannot extend it. It has no effect after bind. `max_connections`
 is a positive integer with no default and bounds ordinary local connections.
 `query_timeout_s` bounds capacity, legacy-job-list, object-inspector and
-container-identity inspector calls. Docker is run as argv with one exact name
-or full container ID; it is never invoked through a shell. The Docker child is
-terminated and waited for at the timeout. The peer
+container-identity inspector calls. Production Docker execution uses exactly
+`/usr/bin/docker --host unix:///var/run/docker.sock inspect --type=container
+<target>`, cwd `/`, and environment `PATH=/usr/bin:/bin`, `HOME=/nonexistent`,
+`LC_ALL=C`; it is argv, never a shell or environment-selected Docker context.
+Names must be exact, full IDs are 64 lowercase hex characters, and lowercase
+hex targets of length 12 through 63 return `ERROR`. Each output stream is
+drained up to 4 MiB with strict UTF-8 decoding. One monotonic deadline covers
+spawn, output collection and reaping; on expiry or output-cap breach the agent
+kills the child process group and attempts a bounded reap. The peer
 table maps exact UID/primary-GID pairs to a principal and group;
 forced-command entries map their trusted group argument to the same identity
 shape. Request fields cannot choose either value. Loading the policy refuses
 overlapping authenticated group prefixes.
+
+Deploy the required key and provider binary together. Stop the agent, install
+the new binary, add the `legacy_jobs_dir` key, then start the agent. For
+rollback, stop the agent, remove that key, reinstall the old binary, then start
+it. Do not enable the new agent until the resolved legacy runner user's
+`$HOME/jobs` directory has been checked.
 
 The agent sends and receives four-byte big-endian length-prefixed UTF-8 JSON
 objects capped at 64 KiB. Each ordinary connection carries one request; the

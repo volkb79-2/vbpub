@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
+import selectors
+import signal
 import stat
 import subprocess
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -15,8 +19,13 @@ from typing import Any
 from .admission import InspectorAnswer
 from .hostside import open_beneath
 
+MAX_LEGACY_JOB_ENTRIES = 65536
+MAX_DOCKER_OUTPUT_BYTES = 4 * 1024 * 1024
+_DOCKER_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C"}
+_DOCKER_HOST = "unix:///var/run/docker.sock"
 _ADMISSION_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _FULL_CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}\Z")
+_AMBIGUOUS_ID_TARGET_RE = re.compile(r"[0-9a-f]{12,63}\Z")
 _MISSING_OBJECT_RE = re.compile(
     r"(?:Error:\s*|Error response from daemon:\s*)?"
     r"No such (?:object|container):\s*([^\s]+)\Z",
@@ -28,40 +37,118 @@ class DockerInspectionError(RuntimeError):
     """Docker did not provide one complete, exact container inspection."""
 
 
-def legacy_job_ids(directory: Path) -> tuple[str, ...]:
-    """List every legacy entry without a regular EXIT marker, without following links.
+def legacy_job_ids(
+    directory: Path,
+    *,
+    root_opener: Callable[[str], int] | None = None,
+    directory_scanner: Callable[[int], list[str]] | None = None,
+    marker_checker: Callable[[int, str], bool] | None = None,
+) -> tuple[str, ...]:
+    """Charge every observed legacy entry without a safely opened regular EXIT.
 
-    The returned IDs are stable for a given sorted directory listing and always
-    satisfy AdmissionBook's identifier contract, including for unexpected
-    names and non-directory entries. The provider accounts for every entry;
-    only a safely opened regular EXIT file marks it complete.
+    The configured absolute path is opened from ``/`` one component at a time.
+    The two listings narrow rename races; they do not make this a writer
+    protocol, so this remains a point-in-time observation.
     """
 
-    root = Path(directory)
-    if not root.is_absolute():
+    configured = os.fspath(directory)
+    if not isinstance(configured, str) or not configured.startswith("/"):
         raise ValueError("legacy jobs directory must be absolute")
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    root_fd = os.open(root, flags)
+    opener = _open_directory_from_root if root_opener is None else root_opener
+    scanner = _directory_names if directory_scanner is None else directory_scanner
+    marker = _has_regular_exit_marker if marker_checker is None else marker_checker
+
+    root_fd = opener(configured)
     try:
-        names = sorted(os.listdir(root_fd))
-        live: list[str] = []
-        for index, name in enumerate(names):
+        first_names = scanner(root_fd)
+        first_set = set(first_names)
+        live_names: list[str] = []
+        for name in first_names:
             if not isinstance(name, str):
                 raise OSError("legacy jobs directory returned a non-text entry name")
-            if not _has_regular_exit_marker(root_fd, name):
-                legacy_id = f"legacy-job-{index}"
-                if _ADMISSION_NAME_RE.fullmatch(legacy_id) is None:
-                    raise OSError("legacy job entry count exceeds admission identifier limits")
-                live.append(legacy_id)
-        return tuple(live)
+            if not marker(root_fd, name):
+                live_names.append(name)
+
+        second_names = scanner(root_fd)
+        for name in second_names:
+            if not isinstance(name, str):
+                raise OSError("legacy jobs directory returned a non-text entry name")
+            if name not in first_set and not marker(root_fd, name):
+                live_names.append(name)
+
+        reopened_fd = opener(configured)
+        try:
+            pinned = os.fstat(root_fd)
+            current = os.fstat(reopened_fd)
+            if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
+                raise OSError("legacy jobs directory changed during admission scan")
+        finally:
+            os.close(reopened_fd)
+
+        result: list[str] = []
+        seen_ids: set[str] = set()
+        for name in live_names:
+            legacy_id = _legacy_job_id(name)
+            if legacy_id in seen_ids:
+                raise OSError("legacy jobs directory produced a duplicate admission id")
+            seen_ids.add(legacy_id)
+            result.append(legacy_id)
+        return tuple(result)
     finally:
         os.close(root_fd)
+
+
+def _open_directory_from_root(path: str) -> int:
+    """Open an absolute, resolved directory path without following components."""
+
+    if os.path.normpath(path) != path:
+        raise ValueError("legacy jobs directory path must be fully resolved")
+    components = path.split("/")[1:]
+    if any(component in {"", ".", ".."} for component in components):
+        raise ValueError("legacy jobs directory path must be fully resolved")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    current_fd = os.open("/", flags)
+    try:
+        for component in components:
+            next_fd = os.open(
+                component,
+                flags | os.O_NOFOLLOW,
+                dir_fd=current_fd,
+            )
+            os.close(current_fd)
+            current_fd = next_fd
+        result, current_fd = current_fd, -1
+        return result
+    finally:
+        if current_fd >= 0:
+            os.close(current_fd)
+
+
+def _directory_names(root_fd: int) -> list[str]:
+    names: list[str] = []
+    with os.scandir(root_fd) as entries:
+        for entry in entries:
+            name = entry.name
+            if not isinstance(name, str):
+                raise OSError("legacy jobs directory returned a non-text entry name")
+            names.append(name)
+            if len(names) > MAX_LEGACY_JOB_ENTRIES:
+                raise OSError(
+                    f"legacy jobs directory exceeds MAX_LEGACY_JOB_ENTRIES ({MAX_LEGACY_JOB_ENTRIES})"
+                )
+    return sorted(names)
+
+
+def _legacy_job_id(name: str) -> str:
+    digest = hashlib.sha256(os.fsencode(name)).hexdigest()[:40]
+    return f"legacy-{digest}"
 
 
 def _has_regular_exit_marker(root_fd: int, name: str) -> bool:
     try:
         entry_fd = open_beneath(root_fd, name, directory=True)
-    except (OSError, ValueError):
+    except Exception:
+        # Anything that cannot be safely opened remains charged.
         return False
     try:
         try:
@@ -70,7 +157,7 @@ def _has_regular_exit_marker(root_fd: int, name: str) -> bool:
                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                 dir_fd=entry_fd,
             )
-        except OSError:
+        except Exception:
             return False
         try:
             return stat.S_ISREG(os.fstat(marker_fd).st_mode)
@@ -84,16 +171,15 @@ def docker_object_inspector(
     timeout_s: float,
     *,
     runner: Callable[..., Any] | None = None,
-    docker_binary: str = "docker",
+    docker_binary: str = "/usr/bin/docker",
 ) -> Callable[[str], InspectorAnswer]:
     """Build an exact-name/full-ID inspector for admission lease decisions."""
 
     timeout = _positive_timeout(timeout_s)
-    run = subprocess.run if runner is None else runner
 
     def inspect(target: str) -> InspectorAnswer:
         try:
-            observed = _inspect_one(target, timeout, run, docker_binary=docker_binary)
+            observed = _inspect_one(target, timeout, runner, docker_binary=docker_binary)
             if observed is None:
                 return InspectorAnswer.NO_SUCH_OBJECT
             container_id, _raw_name, normalized_name, _labels = _container_details(observed)
@@ -110,17 +196,16 @@ def docker_container_identity_inspector(
     timeout_s: float,
     *,
     runner: Callable[..., Any] | None = None,
-    docker_binary: str = "docker",
+    docker_binary: str = "/usr/bin/docker",
 ) -> Callable[[str], Mapping[str, object] | None]:
     """Build an inspector that returns name, full ID and labels for one full ID."""
 
     timeout = _positive_timeout(timeout_s)
-    run = subprocess.run if runner is None else runner
 
     def inspect(container_id: str) -> Mapping[str, object] | None:
         try:
             observed = _inspect_one(
-                container_id, timeout, run, docker_binary=docker_binary, full_id_only=True,
+                container_id, timeout, runner, docker_binary=docker_binary, full_id_only=True,
             )
             if observed is None:
                 return None
@@ -149,34 +234,55 @@ def _positive_timeout(timeout_s: float) -> float:
 def _inspect_one(
     target: str,
     timeout_s: float,
-    runner: Callable[..., Any],
+    runner: Callable[..., Any] | None,
     *,
     docker_binary: str,
     full_id_only: bool = False,
 ) -> dict[str, object] | None:
     _validate_target(target, full_id_only=full_id_only)
-    if not isinstance(docker_binary, str) or not docker_binary or docker_binary.startswith("-"):
+    if (
+        not isinstance(docker_binary, str)
+        or not os.path.isabs(docker_binary)
+        or docker_binary.startswith("-")
+    ):
         raise DockerInspectionError("Docker executable is invalid")
-    argv = [docker_binary, "inspect", "--type=container", target]
+    argv = [docker_binary, "--host", _DOCKER_HOST, "inspect", "--type=container", target]
     try:
-        result = runner(
-            argv,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            shell=False,
-        )
+        if runner is None:
+            result = _run_bounded(argv, timeout_s)
+        else:
+            result = runner(
+                argv,
+                check=False,
+                capture_output=True,
+                text=False,
+                timeout=timeout_s,
+                shell=False,
+                env=dict(_DOCKER_ENV),
+                cwd="/",
+                start_new_session=True,
+            )
     except Exception as exc:
         raise DockerInspectionError(f"Docker inspect command failed: {exc}") from exc
     try:
         returncode = result.returncode
-        stdout = result.stdout
-        stderr = result.stderr
+        stdout_bytes = result.stdout
+        stderr_bytes = result.stderr
     except Exception as exc:
         raise DockerInspectionError("Docker inspect runner returned an invalid result") from exc
-    if type(returncode) is not int or not isinstance(stdout, str) or not isinstance(stderr, str):
+    if (
+        type(returncode) is not int
+        or not isinstance(stdout_bytes, bytes)
+        or not isinstance(stderr_bytes, bytes)
+    ):
         raise DockerInspectionError("Docker inspect runner returned an invalid result")
+    if len(stdout_bytes) > MAX_DOCKER_OUTPUT_BYTES or len(stderr_bytes) > MAX_DOCKER_OUTPUT_BYTES:
+        raise DockerInspectionError("Docker inspect output exceeded MAX_DOCKER_OUTPUT_BYTES")
+    try:
+        stdout = stdout_bytes.decode("utf-8", errors="strict")
+        stderr = stderr_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise DockerInspectionError("Docker inspect output is not strict UTF-8") from exc
     if returncode != 0:
         if not stdout.strip() and _is_explicit_missing(stderr, target):
             return None
@@ -196,6 +302,141 @@ def _inspect_one(
     return payload
 
 
+def _run_bounded(
+    argv: list[str],
+    timeout_s: float,
+    *,
+    popen_factory: Callable[..., Any] | None = None,
+    selector_factory: Callable[[], Any] | None = None,
+    monotonic: Callable[[], float] | None = None,
+    kill_group: Callable[[int, int], None] | None = None,
+    output_limit: int | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run Docker with one deadline, bounded pipes and a private process group."""
+
+    spawn = subprocess.Popen if popen_factory is None else popen_factory
+    selector_type = selectors.DefaultSelector if selector_factory is None else selector_factory
+    clock = time.monotonic if monotonic is None else monotonic
+    group_kill = os.killpg if kill_group is None else kill_group
+    limit = MAX_DOCKER_OUTPUT_BYTES if output_limit is None else output_limit
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("Docker output limit must be a positive integer")
+
+    deadline = clock() + timeout_s
+    process: Any | None = None
+    selector: Any | None = None
+    stdout = bytearray()
+    stderr = bytearray()
+    group_terminated = False
+
+    def terminate_group() -> None:
+        nonlocal group_terminated
+        if process is not None and not group_terminated:
+            _kill_process_group_and_reap(process, deadline, clock, group_kill)
+            group_terminated = True
+
+    try:
+        process = spawn(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd="/",
+            env=dict(_DOCKER_ENV),
+            shell=False,
+            close_fds=True,
+            start_new_session=True,
+            bufsize=0,
+        )
+        if clock() >= deadline:
+            terminate_group()
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s during spawn")
+
+        selector = selector_type()
+        streams = (("stdout", process.stdout, stdout), ("stderr", process.stderr, stderr))
+        for stream_name, stream, buffer in streams:
+            if stream is None:
+                raise DockerInspectionError("Docker inspect process did not provide output pipes")
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, (stream_name, buffer))
+
+        while selector.get_map():
+            remaining = deadline - clock()
+            if remaining <= 0:
+                terminate_group()
+                raise DockerInspectionError("Docker inspect exceeded query_timeout_s")
+            ready = selector.select(remaining)
+            if not ready:
+                continue
+            for key, _events in ready:
+                buffer = key.data[1]
+                room = limit - len(buffer)
+                try:
+                    chunk = os.read(key.fileobj.fileno(), min(65536, max(1, room)))
+                except OSError as exc:
+                    terminate_group()
+                    raise DockerInspectionError("Docker inspect output pipe failed") from exc
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if len(chunk) > room:
+                    terminate_group()
+                    raise DockerInspectionError("Docker inspect output exceeded MAX_DOCKER_OUTPUT_BYTES")
+                buffer.extend(chunk)
+
+        remaining = deadline - clock()
+        if remaining <= 0:
+            terminate_group()
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping")
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            terminate_group()
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping") from exc
+        if clock() >= deadline:
+            terminate_group()
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping")
+        return subprocess.CompletedProcess(argv, returncode, bytes(stdout), bytes(stderr))
+    except DockerInspectionError:
+        terminate_group()
+        raise
+    except Exception as exc:
+        terminate_group()
+        raise DockerInspectionError(f"Docker inspect process failed: {exc}") from exc
+    finally:
+        if selector is not None:
+            selector.close()
+        if process is not None:
+            for stream in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
+                if stream is not None:
+                    stream.close()
+
+
+def _kill_process_group_and_reap(
+    process: Any,
+    deadline: float,
+    clock: Callable[[], float],
+    kill_group: Callable[[int, int], None],
+) -> None:
+    """Kill the private group and make only a deadline-bounded reap attempt."""
+
+    try:
+        kill_group(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        kill_error: OSError | None = None
+    except OSError as exc:
+        kill_error: OSError | None = exc
+    else:
+        kill_error = None
+    remaining = max(0.0, deadline - clock())
+    try:
+        process.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        pass
+    if kill_error is not None:
+        raise DockerInspectionError("could not kill Docker inspect process group") from kill_error
+
+
 def _validate_target(target: str, *, full_id_only: bool) -> None:
     if not isinstance(target, str):
         raise DockerInspectionError("Docker target must be text")
@@ -203,10 +444,11 @@ def _validate_target(target: str, *, full_id_only: bool) -> None:
         if _FULL_CONTAINER_ID_RE.fullmatch(target) is None:
             raise DockerInspectionError("container identity target must be a full lowercase Docker ID")
         return
-    if (
-        _FULL_CONTAINER_ID_RE.fullmatch(target) is None
-        and _ADMISSION_NAME_RE.fullmatch(target) is None
-    ):
+    if _FULL_CONTAINER_ID_RE.fullmatch(target) is not None:
+        return
+    if _AMBIGUOUS_ID_TARGET_RE.fullmatch(target) is not None:
+        raise DockerInspectionError("Docker target is an ambiguous container ID prefix")
+    if _ADMISSION_NAME_RE.fullmatch(target) is None:
         raise DockerInspectionError("Docker target is not an exact name or full container ID")
 
 
