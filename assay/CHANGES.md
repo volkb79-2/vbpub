@@ -4,6 +4,86 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [12.4.0] - 2026-11-27
+<!-- cmru: generated -->
+<!-- cmru: source-end=92203057faa57b12f345321dc8dfa7fc2a562b87 -->
+
+### Fixed
+- fix(assay): drop the redundant advisory-warned flag (6c51ecf6b)
+- fix(assay): inspect opened event stream descriptor (36b1143d6)
+- fix(assay): disarm progress bounds for broken event streams (37980e741)
+- fix(assay): keep event reader progress cumulative (4876ff7fb)
+- fix(assay): keep event progress monotonic across resets (32575b3a3)
+- fix(assay): keep injected liveness for idle lanes (13053b72a)
+- fix(assay): stop armed candidates stalled without progress (b34868fa7)
+- fix(assay): attribute liveness records to session owner (7010cc267)
+- fix(assay): preserve release gate signal diagnostics (d3d828b3d)
+- fix(run-gate): close the RG-320 delta review findings (controller fix-forward) (5ea5145d6)
+- fix(assay): clear reaped release client before heartbeat stop (6fe093201)
+- fix(run-gate): close RG-320 P1 review findings (3b2076056)
+- fix(assay): a silent defaults import names its exit status (B579 round 3) (d2efe71a0)
+- fix(assay): the heartbeat trap names only jobs its own loop owns (B579 round 3) (ae997bd6f)
+- fix(run-gate): arm container stall watch by runner (2e84cedaf)
+- fix(assay): S2's test_start hook must join the witness liveness pin set (325bdf3ca)
+- fix(assay): name the defaults temp-file failure, and correct which check runs first (f6b8be0c0)
+- fix(assay): release-gate heartbeat trap never signals the inherited $! (B579 round 2) (fe15f0efc)
+
+### Changed
+- assay: credit pressure in no-progress stop (c751a6b19)
+- chore(assay): raise the self-qualification-provisional lane budget to 150m (29a898d57)
+- Revert "test only: restore the old order for the red proof" (9300d52ca)
+- test only: restore the old order for the red proof (a42c55662)
+- Correct B577 PYTHONPATH workaround (1b15e891b)
+- Document P4 liveness limits and cleanup (699610357)
+- Bound compacted liveness evidence (3390e291c)
+- Fix per-test CPU window timing (777e3f666)
+- Fix per-test liveness windows (7400360ff)
+- chore(assay): add mutation_runtime.py to every whole-target judge lane (d4b61b1e6)
+
+### Documentation
+- docs(assay): add --only-candidates evidence under B532 (23981d8ab)
+- docs(assay): refresh P4 review test line references (74b7cafca)
+- docs(assay): file B599, B105 headroom counts file cache as used (c7eb90044)
+- docs(assay): clarify fallback ends the mutation sweep (23ee40754)
+- docs(assay): disclose liveness wall fallback risk (5874b40c4)
+- docs(assay): record P4 follow-up backlog closure (66457dfd0)
+- docs(assay): disclose P4 liveness stop behavior (edb509410)
+- docs(assay): fix the A3 review findings that are text only (B596 facts, CHANGES entry, Rust R2 status wording, B593/B595) (87a64954c)
+- docs(assay): fix rejudge guidance and file A3 findings (2cf8f00d8)
+- docs(assay): address P-assay-14c review findings (e621058d0)
+- docs(assay): close B591 review follow-ups (25d3890c4)
+- docs(assay): file B590 and B591, P-assay-14b final-review follow-ups; fix B581 citation (78b9e4a2f)
+- docs(assay): B579's round-3 commits in its status line (9ce67a977)
+- docs(assay): the release gate's exit-code split, B581's citations and CHANGES (ea7f6e542)
+- docs(assay): A2 — the one v21 delta amendment (wall-stop result, timeout kills, P-13 decoupled) (d937b74be)
+- docs(assay): S4 language matrix generated from one code source, advisory-budget migration note (73d9b3ade)
+- docs(assay): design — effective CPU time (A1) (a8ff8fde8)
+- docs(assay): design — effective CPU time (A1) (cc0fcb0ae)
+- docs(assay): SPEC TIM-030 — CPU normalization unit is the recorded Geekbench major's reference machine (01524eb6a)
+- docs(assay): SPEC.md fix round 1 (independent review findings F1-F23) (d66a8094e)
+- docs(assay): SPEC.md chapters 5-9 (store, liveness, time semantics, CLI, consumer contract) (72480d0a6)
+- docs(assay): SPEC.md chapters 0-4 (purpose, rigor, verdict, judge identity) (26c3013ab)
+
+### Testing
+- test(assay): cover remaining R1 liveness evidence branches (b7ca0b87f)
+- test(assay): cover event reader open races (e5c176cd4)
+- test(assay): expect cumulative reader counts (fa25982ee)
+- test(assay): exercise liveness stop in parallel mutation run (f6e397d0e)
+- test(assay): cover liveness event reader resets (1647b43d9)
+- test(assay): refresh liveness reader and coverage pins (c56273ab5)
+- test(assay): read the one-time Rust baseline CHANGES entry from the whole history, so the next release does not fail the docs lane (153737031)
+- test(assay): pin liveness progress to session owner pid (b9b4c775f)
+- test(assay): pin B590 reaped client signal window (7792fba2d)
+- test(assay): pin the reverted branches the round-2 review found, and shellcheck both scripts (c92c9556c)
+- test(assay): S1's pressure test asserts the CPU evidence policy, dropping an unused local (b1a6bee88)
+- test(assay): window-host budget-kill test no longer races process START-UP (14f81bb97)
+- test(assay): S3 advisory-vs-binding budget regimes, hung rejudge/resume, B581/B582, protocol /3 (3bab655a1)
+- test(assay): S2 per-test CPU bound tests (looping, slow-but-under, unknown nodeid, xdist, overlap) (25af53625)
+- test(assay): S1 CPU-without-progress bound, monotonic CPU series, compacted trace (567fe9e22)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - `self-qualification-provisional` keeps a 150-minute assay-command budget
   (was 60) and its campaign expiry is now 3 hours from init (was 2). A loaded
@@ -154,8 +234,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   test order can stop a healthy candidate as `hung`.
 - The P4 behavior is not yet synchronized with SPEC LIV-070/075/080 and
   LIV-110..140. Backlog B584 tracks that documentation update.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [12.3.0] - 2026-11-25
 <!-- cmru: generated -->
