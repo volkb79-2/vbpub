@@ -1608,6 +1608,9 @@ class _EventProgressReader:
         self._has_finish = False
         self._all_finish_pids_valid = True
         self._candidate_finish_seen = False
+        #: The first stamped `session_start` identifies the process whose
+        #: pytest hooks own this stream. Before it arrives, use the spawned pid.
+        self._owner_pid: int | None = None
         self.completed_events = 0
         self.in_flight = None
         #: (P4/S2) A file that opened a SECOND test before the first
@@ -1638,25 +1641,29 @@ class _EventProgressReader:
         record_pid = _record_pid(record)
         if record_pid is None:
             self._all_finish_pids_valid = False
-        elif record_pid == self._candidate_pid:
+        elif record_pid == (self._owner_pid or self._candidate_pid):
             self._candidate_finish_seen = True
 
     def _track_progress(self, record: Mapping[str, Any]) -> None:
         """(P4/S1,S2) Date the two CPU bounds against THIS record.
 
-        Only when the file carries producer pids AND this reader knows the
-        candidate's own pid (a native liveness lane always does): another
-        process's report (an xdist worker under a coordinator, a subprocess
-        pytest) must never complete or start a test on the candidate
-        timeline. Files that do not carry usable identity keep the merged
-        interpretation, which is the same rule :func:`_owner_stream` uses.
+        The first stamped `session_start` identifies the pytest session
+        owner, which can be a child of the process Assay spawned (for example
+        `timeout ... python -m pytest`). Until that record arrives, the
+        spawned pid is the fallback. This is the same owner-selection rule as
+        :func:`_owner_stream`; records from a nested pytest or xdist worker do
+        not enter the owner's timeline. Unstamped records retain the merged
+        interpretation because they cannot be attributed to a process.
         """
         kind = record.get("event")
         record_pid = _record_pid(record)
+        if kind == SESSION_START_EVENT and self._owner_pid is None:
+            self._owner_pid = _session_owner_pid((record,))
+        owner_pid = self._owner_pid or self._candidate_pid
         if (
-            self._candidate_pid is not None
+            owner_pid is not None
             and record_pid is not None
-            and record_pid != self._candidate_pid
+            and record_pid != owner_pid
         ):
             # Another process's report (an xdist worker under the coordinator,
             # a nested pytest). An UNSTAMPED record keeps the legacy merged
@@ -1700,10 +1707,14 @@ class _EventProgressReader:
             tail_pid = _record_pid(tail)
             if tail_pid is None:
                 all_finish_pids_valid = False
-            elif tail_pid == self._candidate_pid:
+            elif tail_pid == (self._owner_pid or self._candidate_pid):
                 candidate_finish_seen = True
         saw_finish = has_finish
-        if self._candidate_pid is not None and has_finish and all_finish_pids_valid:
+        if (
+            (self._owner_pid is not None or self._candidate_pid is not None)
+            and has_finish
+            and all_finish_pids_valid
+        ):
             saw_finish = candidate_finish_seen
         return count, saw_finish
 
