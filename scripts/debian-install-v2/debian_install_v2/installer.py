@@ -3403,7 +3403,19 @@ MaxFileSec=1month
                     f"{device} contains a nested {partition_table} partition table"
                 )
 
-    def _probe_swap_span_extent(self, number: int, start: int, size: int) -> None:
+    @staticmethod
+    def _swap_span_extent_recovery(disk_device: str, offset_bytes: int, size_bytes: int) -> str:
+        """Operator recovery bound to one disk extent; the planned partition may not exist."""
+        return (
+            f"manual recovery (never run `wipefs -a` on {disk_device}: it erases the disk's partition table): "
+            "preserve any needed data in this extent; attach only the extent with "
+            f"`losetup --find --show --offset {offset_bytes} --sizelimit {size_bytes} {disk_device}` "
+            "(it prints a /dev/loopN); list its signatures, which changes nothing, with `wipefs /dev/loopN`; "
+            "only then erase them on that loop device with `wipefs -a /dev/loopN`; "
+            "detach it with `losetup -d /dev/loopN`; resume"
+        )
+
+    def _probe_swap_span_extent(self, start: int, size: int) -> None:
         """Read-only low-level signature probe over the planned disk extent."""
         if self.actions.dry_run:
             return
@@ -3423,7 +3435,9 @@ MaxFileSec=1month
             if "action failed (2)" in str(exc):
                 return
             raise InstallerError(
-                f"cannot probe planned swap-span extent on {disk_device}: {exc}"
+                f"cannot probe planned swap-span extent on {disk_device} bytes "
+                f"{offset_bytes}-{offset_bytes + size_bytes - 1}: {exc}; "
+                f"{self._swap_span_extent_recovery(disk_device, offset_bytes, size_bytes)}"
             ) from exc
         tags = {
             key: value
@@ -3439,12 +3453,10 @@ MaxFileSec=1month
                 for key, value in (("TYPE", signature), ("PTTYPE", partition_table))
                 if value
             )
-            span_device = f"{self._partition_base}{number}"
             raise InstallerError(
                 "io_benchmark_swap_span_foreign_signature: refusing to write the span over "
                 f"{disk_device} bytes {offset_bytes}-{offset_bytes + size_bytes - 1} ({detail}); "
-                "manual recovery: inspect and preserve any needed data in this exact extent, "
-                f"remove the foreign signature from its owning device (planned span {span_device}), then resume"
+                f"{self._swap_span_extent_recovery(disk_device, offset_bytes, size_bytes)}"
             )
 
     def _apply_known_swap_shape(
@@ -3500,7 +3512,7 @@ MaxFileSec=1month
             if expected_swap_span:
                 affected_numbers.append(expected_swap_span[0])
             if tail_swap_span and not current_has_span and expected_swap_span:
-                self._probe_swap_span_extent(*expected_swap_span)
+                self._probe_swap_span_extent(*expected_swap_span[1:])
             self._assert_swap_span_partitions_quiescent(current_entries, affected_numbers)
         # Check the affected devices first so a mounted, active or foreign-signed
         # swap/span gets the specific refusal below instead of the broader disk

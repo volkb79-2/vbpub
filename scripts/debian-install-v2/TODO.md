@@ -643,3 +643,22 @@ snapshot without omitting changes.
 
 **Close when.** The concurrent-change regression passes in `r3`.
 
+## OPEN (DIV2-BL-25, 2026-11-27): swap-span review leftovers
+
+**Source.** WP-10 P3 review r2, findings L-3 to L-5 and its out-of-contract items.
+
+**Findings.**
+- No test asserts the `Resolved capacity table` refusal in `plan_preview.py`.
+- The resize-policy test in `test_disk_policy.py` no longer pins the swap
+  position at the disk end.
+- The GPT partition cap in `config.py` assumes the root number is at most two
+  above the data start (fail-closed at the boundary only).
+- After a `partx` failure, a resume without reboot runs on a stale kernel table,
+  so the benchmark can end `warned`.
+- The extent probe sees signatures at the span's start and end only.
+- `_validate_btrfs_raw_plan` keeps an unused `run_io_benchmark` parameter.
+
+**Do.** Fix or document each item.
+
+**Close when.** Each item has a test or a documented limit.
+

@@ -27,7 +27,12 @@ for both temporary table writes.
   expect_partuuid)`; its iobench `Config` opts into `raw_write=True`.
 - Before the first span table write, a read-only `blkid` probe checks the
   planned extent on the disk at its byte offset and size. A non-swap signature
-  or any `PTTYPE` refuses without a table write and names manual recovery.
+  or any `PTTYPE`, or a failed probe, refuses without a table write and names
+  manual recovery bound to that extent: a loop device attached with `losetup
+  --offset --sizelimit`, listed with `wipefs`, erased with `wipefs -a` on the
+  loop device only, then detached. It never runs `wipefs -a` on the whole disk
+  (that erases the partition table) and never names the planned partition node,
+  which may not exist.
   On a fresh benchmark install, a different tail-swap layout that the
   benchmark-disabled path would replace is also replaceable after the same
   inactive and blank-or-swap checks; resume still requires the planned swaps

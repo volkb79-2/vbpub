@@ -244,6 +244,20 @@ def test_install_benchmark_uses_the_exact_temporary_tail_swap_span(tmp_path):
     assert ("iobench-install-runner", IO_BENCHMARK_OUTER_TIMEOUT_S["quick"]) in disk.timeouts
 
 
+def assert_extent_recovery(message: str, disk: SimDisk) -> None:
+    """The recovery text names the probed extent and erases only through a loop device bound to it."""
+    probe = next(
+        action.argv for action in disk.planned
+        if Path(action.argv[0]).name == "blkid" and "-O" in action.argv
+    )
+    offset, size = probe[probe.index("-O") + 1], probe[probe.index("-S") + 1]
+    assert f"losetup --find --show --offset {offset} --sizelimit {size} /dev/vda`" in message
+    assert "never run `wipefs -a` on /dev/vda:" in message
+    assert re.findall(r"`wipefs -a ([^`\s]+)`", message) == ["/dev/loopN"]
+    assert "`losetup -d /dev/loopN`" in message
+    assert not re.search(r"/dev/vda\d", message)
+
+
 @pytest.mark.parametrize(
     ("probe_output", "probe_error"),
     [
@@ -283,7 +297,7 @@ def test_foreign_extent_signature_is_refused_before_first_table_write(
     with pytest.raises(InstallerError, match="io_benchmark_swap_span_foreign_signature") as raised:
         installer._prepare_swap_span_benchmark()
 
-    assert "manual recovery" in str(raised.value)
+    assert_extent_recovery(str(raised.value), disk)
     assert not disk.table_writes
     assert not any(
         Path(action.argv[0]).name == "sfdisk" and "--force" in action.argv
@@ -291,14 +305,16 @@ def test_foreign_extent_signature_is_refused_before_first_table_write(
     )
 
 
-def test_extent_probe_io_error_refuses_before_table_write(tmp_path):
+@pytest.mark.parametrize("failure", ["1): device read error", "8): ambivalent signatures"])
+def test_extent_probe_failure_refuses_before_table_write(tmp_path, failure):
     installer, disk = make(tmp_path)
     disk.load_entries({3: disk.table[3]})
-    disk.extent_probe_error = ActionError("action failed (1): device read error")
+    disk.extent_probe_error = ActionError(f"action failed ({failure}")
 
-    with pytest.raises(InstallerError, match="cannot probe planned swap-span extent"):
+    with pytest.raises(InstallerError, match="cannot probe planned swap-span extent") as raised:
         installer._prepare_swap_span_benchmark()
 
+    assert_extent_recovery(str(raised.value), disk)
     assert not disk.table_writes
 
 
@@ -306,7 +322,7 @@ def test_extent_probe_is_skipped_in_dry_run(tmp_path):
     installer, disk = make(tmp_path)
     installer.actions.dry_run = True
 
-    installer._probe_swap_span_extent(4, 2048, 4096)
+    installer._probe_swap_span_extent(2048, 4096)
 
     assert not any(
         Path(action.argv[0]).name == "blkid" and "-O" in action.argv
@@ -349,6 +365,30 @@ def test_resume_does_not_replace_an_unplanned_tail_swap_layout(tmp_path):
     installer._mark_step("io_benchmark", "started", "resuming")
 
     with pytest.raises(InstallerError, match="io_benchmark_swap_span_state_mismatch"):
+        installer._prepare_swap_span_benchmark()
+
+    assert not disk.table_writes
+
+
+@pytest.mark.parametrize("guard", ["mounted", "foreign-signature"])
+def test_unusual_tail_swap_in_use_or_foreign_signed_is_not_replaced(tmp_path, guard):
+    installer, disk = make(tmp_path)
+    partitions, _target_root = installer._plan_swap_partitions()
+    before_root = installer._planned_before_root()
+    _number, start, size = installer._planned_tail_swap_span(partitions, before_root)
+    disk.load_entries({
+        3: dict(disk.table[3]),
+        30: {
+            "start": str(start), "size": str(size),
+            "type": installer_module.SWAP_TYPE_GUID, "name": "provider-swap",
+        },
+    })
+    if guard == "mounted":
+        disk.findmnt_output += "/dev/vda30 /mnt/provider ext4\n"
+    else:
+        disk.signatures["/dev/vda30"] = "ext4"
+
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_(partition_in_use|foreign_signature)"):
         installer._prepare_swap_span_benchmark()
 
     assert not disk.table_writes
@@ -400,16 +440,25 @@ def test_schema_one_ext4_benchmark_refusal_reaches_root_aware_validation(tmp_pat
         invalid._validate_root_config()
 
 
-def test_benchmark_plan_refuses_an_unknown_partition_after_root_without_writing(tmp_path):
+@pytest.mark.parametrize(
+    ("from_root_end", "refusal"),
+    [
+        (2048, "io_benchmark_swap_span_state_mismatch: non-swap partition"),
+        (-4096, "io_benchmark_swap_span_geometry_mismatch: partition.*overlap"),
+    ],
+)
+def test_benchmark_plan_refuses_an_unknown_partition_after_root_without_writing(
+    tmp_path, from_root_end, refusal,
+):
     installer, disk = make(tmp_path)
-    disk.table[100] = {
-        "start": str(ROOT_START + ROOT_SIZE + 2048),
-        "size": "2048",
-        "type": LINUX,
-        "name": "foreign",
-    }
+    root = dict(disk.table[3])
+    root_end = int(root["start"]) + int(root["size"])
+    disk.load_entries({
+        3: root,
+        100: {"start": str(root_end + from_root_end), "size": "2048", "type": LINUX, "name": "foreign"},
+    })
 
-    with pytest.raises(InstallerError, match="io_benchmark_swap_span_geometry_mismatch"):
+    with pytest.raises(InstallerError, match=refusal):
         installer._plan_swap_partitions()
 
     assert not disk.table_writes
@@ -531,6 +580,23 @@ def test_span_identity_is_rechecked_after_fio_package_setup(tmp_path):
 
     installer._packages = change_span
     with pytest.raises(InstallerError, match="io_benchmark_swap_span_identity_changed"):
+        installer._run_io_benchmark()
+
+    assert not any(
+        Path(action.argv[0]).name in {"wipefs", "iobench-install-runner"}
+        for action in disk.planned
+    )
+
+
+def test_signature_appearing_during_fio_setup_stops_before_wipe(tmp_path):
+    installer, disk = make(tmp_path)
+    span_number = make_span(installer, disk)
+
+    def sign_span(*_args):
+        disk.signatures[f"/dev/vda{span_number}"] = "ext4"
+
+    installer._packages = sign_span
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_foreign_signature"):
         installer._run_io_benchmark()
 
     assert not any(

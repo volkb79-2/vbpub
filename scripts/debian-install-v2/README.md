@@ -318,7 +318,14 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   A missing tail span is recorded as `no_tail_swap_span` and the install
   continues. Before the first table write, a read-only probe checks the full
   planned extent; any signature other than swap, or any nested partition
-  table, refuses with manual recovery instructions. The installer rechecks
+  table, refuses with manual recovery instructions, as does a failed probe. The
+  planned span partition may not exist yet, so recovery works on the byte extent
+  the message names. Never run `wipefs -a` on the whole disk: it erases the
+  disk's partition table. Preserve any needed data in the extent, attach only the
+  extent with `losetup --find --show --offset <bytes> --sizelimit <bytes>
+  /dev/<disk>`, list its signatures with `wipefs /dev/loopN` (changes nothing),
+  erase them on that loop device only with `wipefs -a /dev/loopN`, detach it with
+  `losetup -d /dev/loopN`, then resume. The installer rechecks
   span identity and quiescence after package setup, then runs `wipefs -a`
   before the runner. A fresh install may replace existing tail swap partitions
   that the benchmark-disabled layout would replace; resumes still require the
