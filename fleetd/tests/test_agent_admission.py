@@ -33,11 +33,15 @@ def test_bounded_call_times_out_without_leaking_unbounded_workers():
     call = BoundedCall(5, name="test", completion_waiter=lambda _event, _timeout: False)
     with pytest.raises(TimeoutError, match="timed out"):
         call(blocked_query)
-    started.wait()
+    assert started.wait(3), "bounded query did not start before the failure watchdog"
     with condition:
         released = True
         condition.notify_all()
-    finished.wait()
+    assert finished.wait(3), "bounded query did not finish before the failure watchdog"
+    worker = call._last_worker
+    assert worker is not None
+    worker.join(timeout=3)
+    assert not worker.is_alive(), "bounded query worker remained alive after its completion event"
 
     call.completion_waiter = lambda event, timeout: event.wait(timeout)
     assert call(lambda: "recovered") == "recovered"

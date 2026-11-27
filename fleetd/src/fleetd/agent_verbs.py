@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -19,9 +20,17 @@ from typing import Any, Callable, Iterable, Mapping
 from .admission import AdmissionError, ExitCode, InspectorAnswer
 from .agent_admission import AgentAdmission, AgentExecutor
 from .agent_policy import AgentIdentity, AgentPolicy
-from .agent_protocol import FrameError, _write_all, read_frame, validate_request, write_frame
+from .agent_protocol import (
+    MAX_FETCH_BYTES,
+    FrameError,
+    _write_all,
+    read_frame,
+    validate_relative_path,
+    validate_request,
+    write_frame,
+)
 from .contracts import ContractError, HostFacts, validate_host_facts
-from .hostside import resolve_assay_lane
+from .hostside import open_beneath, resolve_assay_lane
 
 AGENT_SCHEMA = "fleet-host-agent/1"
 _COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
@@ -147,6 +156,16 @@ class AgentVerbService:
     def _envelope(self, **fields: object) -> dict[str, object]:
         return {"schema": AGENT_SCHEMA, "agent_version": self.agent_version, **fields}
 
+    def _capabilities(self) -> dict[str, list[str]]:
+        capabilities = {verb: list(fields) for verb, fields in _CAPABILITIES.items()}
+        if (
+            self.admission.inspector is None
+            or self.admission.legacy_jobs_provider is None
+            or self.admission.container_inspector is None
+        ):
+            capabilities.pop("lease")
+        return capabilities
+
     def _facts(self) -> dict[str, Any]:
         try:
             raw = self.facts_provider()
@@ -178,7 +197,7 @@ class AgentVerbService:
         )
         verb = normalized["verb"]
         if verb == "probe":
-            return AgentReply(self._envelope(capabilities=_CAPABILITIES))
+            return AgentReply(self._envelope(capabilities=self._capabilities()))
         if verb == "facts":
             return AgentReply(self._envelope(facts=self._facts()))
         if verb == "have":
@@ -537,17 +556,22 @@ class AgentVerbService:
         ), body=b"".join(body_parts))
 
     @staticmethod
-    def _lane_kind(checkout: Path, project: str, lane: str) -> str:
-        project_dir = checkout if project == "." else checkout / project
-        checkout_root = checkout.resolve(strict=True)
-        for config_path in (project_dir / "run-gate.toml", checkout / "run-gate.root.toml"):
+    def _lane_kind(checkout_fd: int, project: str, lane: str) -> str:
+        config_paths = (
+            "run-gate.toml" if project == "." else f"{project}/run-gate.toml",
+            "run-gate.root.toml",
+        )
+        for config_path in config_paths:
             try:
-                resolved_config = config_path.resolve(strict=True)
-                resolved_config.relative_to(checkout_root)
-                document = tomllib.loads(resolved_config.read_text(encoding="utf-8"))
+                config_fd = open_beneath(checkout_fd, config_path)
             except FileNotFoundError:
                 continue
-            except (OSError, RuntimeError, ValueError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            except (OSError, ValueError) as exc:
+                raise AdmissionError(ExitCode.REFUSAL, f"Run-Gate lane declaration path is unsafe: {exc}") from exc
+            try:
+                with os.fdopen(config_fd, "rb") as source:
+                    document = tomllib.loads(source.read().decode("utf-8"))
+            except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
                 raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read Run-Gate lane declaration: {exc}") from exc
             lanes = document.get("lanes")
             declaration = lanes.get(lane) if isinstance(lanes, Mapping) else None
@@ -557,6 +581,21 @@ class AgentVerbService:
                     return str(kind)
                 raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Run-Gate lane {lane!r} has an invalid kind")
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Run-Gate lane {lane!r} is not declared in the job checkout")
+
+    @staticmethod
+    def _progress_file(root_fd: int, relative: str) -> tuple[int, int] | None:
+        try:
+            fd = open_beneath(root_fd, relative)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            raise AdmissionError(ExitCode.REFUSAL, f"progress path {relative!r} is unsafe: {exc}") from exc
+        try:
+            size = os.fstat(fd).st_size
+        except OSError as exc:
+            os.close(fd)
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot inspect progress file {relative!r}: {exc}") from exc
+        return fd, size
 
     @staticmethod
     def _assay_done_count(fd: int, size: int) -> int:
@@ -583,27 +622,43 @@ class AgentVerbService:
     def _progress(self, request: Mapping[str, Any], identity: AgentIdentity) -> AgentReply:
         job_id = str(request["job_id"])
         job_dir, job_request = self._owned_job(job_id, identity)
-        checkout = job_dir / "checkout"
-        if checkout.is_symlink() or not checkout.is_dir():
-            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"job {job_id!r} checkout is unavailable")
-        checkout = checkout.resolve(strict=True)
-        project = str(job_request["project"])
-        project_dir = checkout if project == "." else (checkout / project).resolve(strict=True)
+        project = validate_relative_path(job_request.get("project"), "project", allow_dot=True)
+        lane = job_request.get("lane")
+        if not isinstance(lane, str):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"job {job_id!r} lane is invalid")
+        jobs_fd = -1
+        job_fd = -1
+        checkout_fd = -1
+        project_fd = -1
         try:
-            project_dir.relative_to(checkout)
-        except ValueError:
-            raise AdmissionError(ExitCode.REFUSAL, "job project path escapes its checkout") from None
-        lane = str(job_request["lane"])
-        lane_kind = self._lane_kind(checkout, project, lane)
-        if lane_kind == "assay":
-            assay_lane = resolve_assay_lane(checkout, project, lane)
-            path = project_dir / ".assay" / f"progress-{assay_lane}.jsonl"
-            unit = "assay_candidates"
-        else:
-            path = job_dir / "lane.log"
-            unit = "log_bytes"
+            jobs_fd = os.open(self.paths.jobs_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            job_fd = open_beneath(jobs_fd, job_id, directory=True)
+            checkout_fd = open_beneath(job_fd, "checkout", directory=True)
+            if project != ".":
+                project_fd = open_beneath(checkout_fd, project, directory=True)
+            lane_kind = self._lane_kind(checkout_fd, project, lane)
+            if lane_kind == "assay":
+                checkout = job_dir / "checkout"
+                assay_lane = resolve_assay_lane(checkout, project, lane, root_fd=checkout_fd)
+                project_prefix = "" if project == "." else f"{project}/"
+                progress_path = f"{project_prefix}.assay/progress-{assay_lane}.jsonl"
+                opened = self._progress_file(checkout_fd, progress_path)
+                unit = "assay_candidates"
+            else:
+                opened = self._progress_file(jobs_fd, f"{job_id}/lane.log")
+                unit = "log_bytes"
+        except FileNotFoundError as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"job {job_id!r} checkout is unavailable: {exc}") from exc
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise AdmissionError(ExitCode.REFUSAL, f"job {job_id!r} progress path is unsafe: {exc}") from exc
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot open job {job_id!r} progress tree: {exc}") from exc
+        finally:
+            for fd in (project_fd, checkout_fd, job_fd, jobs_fd):
+                if fd >= 0:
+                    os.close(fd)
+
         offset = int(request["offset"])
-        opened = self._safe_file(job_dir if lane_kind != "assay" else checkout, path, missing_ok=True)
         if opened is None:
             return AgentReply(self._envelope(
                 job_id=job_id, offset=offset, next_offset=offset, length=0,
@@ -613,10 +668,10 @@ class AgentVerbService:
         last_progress = dt.datetime.fromtimestamp(os.fstat(fd).st_mtime, tz=dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         done = self._assay_done_count(fd, size) if lane_kind == "assay" else None
         actual_offset = min(offset, size)
-        body_length = size - actual_offset
+        body_length = min(MAX_FETCH_BYTES, size - actual_offset)
         os.lseek(fd, actual_offset, os.SEEK_SET)
         document = self._envelope(
-            job_id=job_id, offset=actual_offset, next_offset=size, length=body_length,
+            job_id=job_id, offset=actual_offset, next_offset=actual_offset + body_length, length=body_length,
             done=done, total=None, unit=unit, last_progress_utc=last_progress,
         )
         return AgentReply(document, body_fd=fd, body_length=body_length)

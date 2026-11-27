@@ -63,6 +63,7 @@ class BoundedCall:
         self.name = name
         self.completion_waiter = completion_waiter or (lambda finished, timeout: finished.wait(timeout))
         self._slot = threading.BoundedSemaphore(1)
+        self._last_worker: threading.Thread | None = None
 
     def __call__(self, callback: Callable[[], Any]) -> Any:
         if not self._slot.acquire(blocking=False):
@@ -80,6 +81,7 @@ class BoundedCall:
                 finished.set()
 
         worker = threading.Thread(target=invoke, name=f"fleetd-{self.name}-query", daemon=True)
+        self._last_worker = worker
         try:
             worker.start()
         except RuntimeError:
@@ -418,6 +420,12 @@ class AgentAdmission:
             raise AdmissionError(ExitCode.REFUSAL, f"unknown job {job_id!r}")
         if record.get("schema") == "fleet-admission-waiting/1":
             return {"job_id": job_id, "state": "queued", "reason": None}
+        if record.get("schema") == "fleet-admission-terminal/1":
+            return {
+                "job_id": job_id,
+                "state": record["state"],
+                "completed_at": record["completed_at"],
+            }
         if executor is None:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor unavailable: cannot read admitted job state")
         state = executor.read_state(job_id)
@@ -433,6 +441,8 @@ class AgentAdmission:
             raise AdmissionError(ExitCode.REFUSAL, f"unknown job {job_id!r}")
         if record.get("schema") == "fleet-admission-waiting/1":
             return {"job_id": job_id, "state": "cancelled", "reason": reason}
+        if record.get("schema") == "fleet-admission-terminal/1":
+            raise AdmissionError(ExitCode.REFUSAL, f"finished job {job_id!r} cannot be cancelled")
         if executor is None:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor unavailable: cannot stop admitted job")
         state = executor.request_stop(job_id, reason)

@@ -14,7 +14,7 @@ from typing import Callable
 
 from .admission import AdmissionError, ExitCode
 from .agent_policy import AgentIdentity, AgentPolicy
-from .agent_protocol import FrameError, read_frame, write_frame
+from .agent_protocol import FrameError, read_frame, require_end_of_input, write_frame
 from .agent_verbs import AGENT_SCHEMA, AgentVerbService, write_agent_reply
 
 
@@ -308,6 +308,8 @@ def serve_connection(
                 request, identity, input_stream, on_lease_held=on_lease_held,
             )
             return ExitCode.PASS
+        if request.get("verb") != "put":
+            require_end_of_input(input_stream, policy.idle_connection_s)
         reply = service.handle(request, identity, body_stream=input_stream)
         write_agent_reply(output_stream, reply, policy.idle_connection_s)
         return ExitCode.PASS

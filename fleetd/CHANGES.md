@@ -16,6 +16,11 @@ All notable changes to this project are recorded here.
 - Reconcile pending and bound lease records at startup and at required `agent.toml.lease_reconcile_interval_s`; pre-bind disconnect tombstones before exact-name inspection, and only confirmed absence releases the charge.
 - Serialize same-job submit write, admission, cleanup and start transactions with a private per-job flock; status and cancel do not take that lock.
 - Require positive `agent.toml.max_connections`; refuse excess ordinary connections with exit 3, release a granted lease from the ordinary count, and bound response write-idle time without limiting total transfer time.
+- Require EOF after one ordinary request frame (after the declared body for `put`); clients half-close before dispatch, while lease keeps its write side open through bind and container life.
+- Convert JSON parser depth and integer-digit failures to protocol errors, type-check closed enum fields, and keep their exit codes on the wire.
+- Open lane declarations and progress streams through trusted directory descriptors without following any path component; cap progress ranges and client response bodies at 8 MiB.
+- Return terminal status only from its durable completion record and refuse cancel of completed jobs. C3b owns executor-backed terminal details (FD-061).
+- Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b wires those providers, so the shipped C3a CLI does not advertise it.
 
 ### Changed
 - Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.

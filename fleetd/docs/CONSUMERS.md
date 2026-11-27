@@ -103,7 +103,11 @@ shape. Request fields cannot choose either value. Loading the policy refuses
 overlapping authenticated group prefixes.
 
 The agent sends and receives four-byte big-endian length-prefixed UTF-8 JSON
-objects capped at 64 KiB. The idle deadline applies while reading a request
+objects capped at 64 KiB. Each ordinary connection carries one request; the
+client half-closes its write side before dispatch, and `put` does so after its
+declared body. The server rejects trailing bytes or a second frame. `lease`
+keeps its write side open through bind and the held connection. The idle
+deadline applies while reading a request
 and while a response write makes no progress; it is not a total transfer limit,
 submit wait or run limit, and it does not apply to a lease after grant. An
 excess ordinary connection receives exit 3; after a lease admission handle is
@@ -111,6 +115,9 @@ acquired, that held connection leaves the ordinary connection count. `probe`
 includes `agent_version` and the verb
 field capabilities. Clients refuse a major-version mismatch; a minor or patch
 mismatch requires the host to advertise the requested verb and every field.
+A probe includes `lease` only when exact-object inspection, the legacy-job
+list, and container-identity inspection are configured. C3b wires these
+providers; the shipped C3a CLI has none and refuses lease with exit 2.
 A configured inspector reconciles pending and bound leases at startup and at
 the configured interval. Pre-bind disconnect tombstones before checking the
 exact name; bound leases are checked by immutable ID. Only a confirmed absence
@@ -120,6 +127,14 @@ charged until disconnect and exact-name reconciliation confirms absence.
 A missing or refusing local socket returns 3 with no fallback transport. The
 C3a wheel has no executor: submit refuses with exit 2 and a named reason before
 admission or a durable request write.
+
+Lane declarations and progress files are opened from trusted directory
+descriptors with no-follow traversal of every component. Progress replies cap
+each range at 8 MiB and return the matching `next_offset`; the client refuses a
+larger response body. Terminal status reads only `fleet-admission-terminal/1`
+and returns `completed` plus its recorded completion time, without fabricating
+executor results. Cancel of a terminal job refuses with exit 2. C3b owns the
+durable executor result details (FD-061).
 
 ### Agent skills
 

@@ -23,6 +23,28 @@ SHA = "a" * 40
 SHA256 = "b" * 64
 
 
+def _recv_exact(stream, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = stream.recv(remaining)
+        assert chunk, "framed response ended before its declared length"
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _read_fd_exact(fd, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = os.read(fd, remaining)
+        assert chunk, "framed response ended before its declared length"
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def _policy(tmp_path, identities="", extra_argv='[["--verbose"]]'):
     checkouts = tmp_path / "checkouts"
     checkouts.mkdir()
@@ -94,10 +116,12 @@ def test_read_and_write_use_capped_big_endian_json_frames():
         assert read_frame(server, 2) == {"verb": "probe"}
 
         write_frame(server, {"ok": True})
-        header = client.recv(4)
+        header = _recv_exact(client, 4)
         length = struct.unpack(">I", header)[0]
         assert length <= MAX_FRAME_BYTES
-        assert json.loads(client.recv(length)) == {"ok": True}
+        response_body = _recv_exact(client, length)
+        assert json.loads(response_body) == {"ok": True}
+        assert header + response_body == struct.pack(">I", length) + b'{"ok":true}'
     finally:
         client.close()
         server.close()
@@ -121,9 +145,11 @@ def test_same_frame_helpers_work_on_stdin_stdout_style_pipes():
         write_frame(write_fd, {"ok": True})
         os.close(write_fd)
         write_fd = -1
-        header = os.read(read_fd, 4)
+        header = _read_fd_exact(read_fd, 4)
         length = struct.unpack(">I", header)[0]
-        assert json.loads(os.read(read_fd, length)) == {"ok": True}
+        response_body = _read_fd_exact(read_fd, length)
+        assert json.loads(response_body) == {"ok": True}
+        assert header + response_body == struct.pack(">I", length) + b'{"ok":true}'
     finally:
         os.close(read_fd)
         if write_fd >= 0:
@@ -148,6 +174,37 @@ def test_read_frame_rejects_invalid_wire_shapes(header, body, message):
         client.sendall(struct.pack(">I", header) + body)
         client.shutdown(socket.SHUT_WR)
         with pytest.raises(FrameError, match=message):
+            read_frame(server, 2)
+    finally:
+        client.close()
+        server.close()
+
+
+def test_read_frame_maps_json_parser_depth_to_frame_error(monkeypatch):
+    body = b'{"x":' + b"[" * 1100 + b"0" + b"]" * 1100 + b"}"
+
+    def depth_error(*_args, **_kwargs):
+        raise RecursionError("maximum parser depth exceeded")
+
+    monkeypatch.setattr("fleetd.agent_protocol.json.loads", depth_error)
+    client, server = socket.socketpair()
+    try:
+        client.sendall(struct.pack(">I", len(body)) + body)
+        client.shutdown(socket.SHUT_WR)
+        with pytest.raises(FrameError, match="not valid JSON"):
+            read_frame(server, 2)
+    finally:
+        client.close()
+        server.close()
+
+
+def test_read_frame_maps_integer_digit_limit_to_frame_error():
+    body = b"9" * 5000
+    client, server = socket.socketpair()
+    try:
+        client.sendall(struct.pack(">I", len(body)) + body)
+        client.shutdown(socket.SHUT_WR)
+        with pytest.raises(FrameError, match="not valid JSON"):
             read_frame(server, 2)
     finally:
         client.close()
@@ -206,6 +263,44 @@ def test_validate_request_accepts_closed_submit_and_protocol_verbs(tmp_path):
     assert validate_request({"verb": "probe"}, identity, policy)["verb"] == "probe"
     assert validate_request({"verb": "facts"}, identity, policy)["verb"] == "facts"
     assert validate_request({"verb": "have", "repo": "vbpub"}, identity, policy)["repo"] == "vbpub"
+
+
+@pytest.mark.parametrize(
+    ("edit", "fragment"),
+    [
+        (lambda request: request["resources"].update(footprint=[]), "resources.footprint is invalid"),
+        (lambda request: request.update(priority={}), "priority is invalid"),
+        (lambda request: request.update(kind=[]), "kind is invalid"),
+    ],
+)
+def test_validate_request_type_checks_closed_submit_enums(tmp_path, edit, fragment):
+    policy, _checkout = _policy(tmp_path)
+    request = _submit()
+    edit(request)
+
+    with pytest.raises(AdmissionError, match=fragment) as raised:
+        validate_request(request, policy.resolve_peer(1000, 100), policy)
+    assert raised.value.exit_code == ExitCode.REFUSAL
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "fragment"),
+    [
+        ("footprint", [], "lease.footprint is invalid"),
+        ("priority", {}, "lease.priority is invalid"),
+    ],
+)
+def test_validate_request_type_checks_closed_lease_enums(tmp_path, field, value, fragment):
+    policy, _checkout = _policy(tmp_path)
+    request = {
+        "verb": "lease", "lease_id": "controller-lease-1", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    request[field] = value
+
+    with pytest.raises(AdmissionError, match=fragment) as raised:
+        validate_request(request, policy.resolve_peer(1000, 100), policy)
+    assert raised.value.exit_code == ExitCode.REFUSAL
 
 
 @pytest.mark.parametrize(

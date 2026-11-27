@@ -165,6 +165,13 @@ submit waits for admission or after a lease is granted. The same framing is
 used on the socket and forced-command stdin/stdout. A server error response
 carries `exit_code` and `reason` from `admission.ExitCode`.
 
+Every ordinary verb uses exactly one request frame and the client half-closes
+its write side before dispatch. `put` instead reads exactly its declared body
+and then requires EOF. A second frame or trailing request bytes is a transport
+refusal. `lease` keeps its write side open for bind and the held connection
+lifetime; §2.2 does not require ordinary submits to keep it open while waiting
+for admission.
+
 Every answer also carries the `fleet-host-agent/1` schema and the agent's
 SemVer `agent_version`. The `facts` answer places the validated
 `host-facts/2` document under its `facts` field, preserving that document's
@@ -181,6 +188,11 @@ requires an existing real parent directory; restart may remove a stale socket
 file but never removes the directory. `fleetd-agent forced-command --group
 GROUP` applies the identical framing to ssh-provided stdin/stdout.
 
+The CLI omits `lease` from `probe` unless exact-object inspection, the
+legacy-job list and container-identity inspection are configured. C3b wires
+those runtime providers; the C3a CLI has none. A direct C3a service call to
+`lease` without them refuses with exit 2.
+
 The closed verbs are `probe`, `facts`, `have`, `put`, `fetch`, `progress`,
 `submit`, `status`, `cancel`, and controller-socket-only `lease`. Every field,
 repo, path, argv, environment value, artifact and upload name is checked before
@@ -188,7 +200,10 @@ side effects. `candidates` is a host-created content-addressed `put` object;
 `--only-candidates` is accepted only when it names that authenticated group's
 file. Assay progress reads `.assay/progress-<assay_lane>.jsonl` from the job
 checkout, resolving `assay_lane` through `hostside.resolve_assay_lane`, and
-streams from a byte offset.
+streams from a byte offset. Lane declarations and progress files are opened
+from trusted directory descriptors with no-follow traversal of every path
+component. Each progress response is capped at 8 MiB and includes the matching
+`next_offset`; clients refuse any response body larger than that cap.
 
 `agent.toml.max_connections` is a required positive integer with no default. It
 bounds ordinary local connections; an excess connection is refused with exit
@@ -213,6 +228,11 @@ failure cleanup, and executor start under `jobs/<job_id>/submit.lock`. The lock
 is a private regular file opened without following symlinks. Status and cancel
 do not acquire it, so an admission waiter cannot block those verbs behind the
 submit transaction.
+
+Status of a durable `fleet-admission-terminal/1` record returns only its
+recorded `job_id`, `state: completed` and `completed_at`; it does not invent a
+verdict, exit code or other executor result. Cancel of a finished job refuses
+with exit 2. Executor-backed terminal details remain for C3b (FD-061).
 
 ## Contracts
 

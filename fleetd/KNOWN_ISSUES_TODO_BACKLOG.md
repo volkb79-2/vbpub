@@ -63,6 +63,7 @@
 | FD-058 | Aged-holder scan can skip queue-ordered merge-gate waiters | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 | FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
 | FD-060 | A granted lease client can stay connected forever without binding | P2 | OPEN (design bound missing) | 2026-11-27 |
+| FD-061 | Persist executor result details for terminal status | P2 | OPEN | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1136,3 +1137,14 @@ separate binding deadline and how it is made compatible with slow container
 creation.
 
 Source: P-fd-05 C3a round 1 review and §4.5 contract audit (2026-11-27).
+
+## FD-061 Persist executor result details for terminal status
+
+**State:** OPEN; C3b follow-up. **Priority:** P2. **Filed:** 2026-11-27.
+
+C2's durable terminal record stores only job id, group, request digest,
+`state: completed`, and completion time. C3a status therefore returns only
+those durable facts and must not invent a verdict or exit code. C3b must decide
+which executor result fields are durable and atomically persist them before
+releasing the admission charge, then let terminal status answer from that
+record after restart. Cancel of this terminal record remains a refusal.

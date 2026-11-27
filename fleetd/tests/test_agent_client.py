@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from fleetd.admission import AdmissionError, ExitCode
-from fleetd.agent_client import AgentClient, require_compatible_agent
-from fleetd.agent_protocol import read_frame, write_frame
+from fleetd.agent_client import AgentClient, _read_body, require_compatible_agent
+from fleetd.agent_protocol import MAX_FETCH_BYTES, FrameError, read_frame, write_frame
 from fleetd.agent_server import AgentServer
 from test_agent_verbs import _service
 
@@ -53,6 +53,7 @@ def test_local_client_probes_before_request_and_uses_the_socket_service(tmp_path
     socket_path = tmp_path / "agent.sock"
     server = AgentServer.on_path(socket_path, service, policy)
     failures = []
+    finished = threading.Event()
 
     def serve_probe_and_request():
         try:
@@ -60,11 +61,15 @@ def test_local_client_probes_before_request_and_uses_the_socket_service(tmp_path
             server.serve_once()
         except BaseException as exc:
             failures.append(exc)
+        finally:
+            finished.set()
 
     worker = threading.Thread(target=serve_probe_and_request)
     worker.start()
     reply = AgentClient(socket_path, "1.0.0").request({"verb": "facts"})
-    worker.join()
+    assert finished.wait(3), "local client server did not finish before the failure watchdog"
+    worker.join(timeout=3)
+    assert not worker.is_alive(), "local client server worker remained alive after completion"
     server.close()
 
     assert reply.document["schema"] == "fleet-host-agent/1"
@@ -78,18 +83,23 @@ def test_major_version_refusal_does_not_send_the_job_request(tmp_path):
     )
     server = AgentServer.on_path(tmp_path / "agent.sock", service, service.policy)
     failures = []
+    finished = threading.Event()
 
     def serve_probe():
         try:
             server.serve_once()
         except BaseException as exc:
             failures.append(exc)
+        finally:
+            finished.set()
 
     worker = threading.Thread(target=serve_probe)
     worker.start()
     with pytest.raises(AdmissionError, match="client 2.0.0, host 1.0.0") as raised:
         AgentClient(tmp_path / "agent.sock", "2.0.0").request({"verb": "submit"})
-    worker.join()
+    assert finished.wait(3), "version-probe server did not finish before the failure watchdog"
+    worker.join(timeout=3)
+    assert not worker.is_alive(), "version-probe server worker remained alive after completion"
     server.close()
 
     assert raised.value.exit_code == ExitCode.REFUSAL
@@ -117,6 +127,7 @@ def test_lease_client_keeps_connection_and_validates_each_agent_reply(monkeypatc
     monkeypatch.setattr(client, "_check_version", lambda _request: "1.0.0")
     monkeypatch.setattr(client, "connect", lambda: client_stream)
     failures = []
+    finished = threading.Event()
 
     def serve_lease():
         try:
@@ -135,6 +146,8 @@ def test_lease_client_keeps_connection_and_validates_each_agent_reply(monkeypatc
             })
         except BaseException as exc:
             failures.append(exc)
+        finally:
+            finished.set()
 
     worker = threading.Thread(target=serve_lease)
     worker.start()
@@ -146,6 +159,21 @@ def test_lease_client_keeps_connection_and_validates_each_agent_reply(monkeypatc
     finally:
         session.close()
         server_stream.close()
-    worker.join()
+    assert finished.wait(3), "lease client server did not finish before the failure watchdog"
+    worker.join(timeout=3)
+    assert not worker.is_alive(), "lease client server worker remained alive after completion"
 
     assert failures == []
+
+
+def test_client_refuses_an_oversized_response_body_before_reading_it():
+    client, server = socket.socketpair()
+    try:
+        with pytest.raises(FrameError, match="response body exceeds"):
+            _read_body(client, MAX_FETCH_BYTES + 1)
+        server.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            server.recv(1)
+    finally:
+        client.close()
+        server.close()

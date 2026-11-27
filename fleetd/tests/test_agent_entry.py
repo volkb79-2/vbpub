@@ -1,7 +1,14 @@
+import os
+import socket
+import threading
+
 import pytest
 
+from fleetd import agent_entry
 from fleetd.agent_entry import DEFAULT_AGENT_STATE_DIR, _parser, agent_semver
+from fleetd.agent_protocol import read_frame, write_frame
 from fleetd.contracts import ContractError
+from test_agent_verbs import _service
 
 
 def test_agent_entry_converts_supported_distribution_versions_to_semver():
@@ -20,3 +27,64 @@ def test_agent_entry_selects_path_or_inherited_listener_and_declares_state_dir()
     assert path_args.socket_path.as_posix() == "/run/fleetd-agent/agent.sock"
     assert fd_args.listen_fd == 3
     assert path_args.state_dir == DEFAULT_AGENT_STATE_DIR
+
+
+def test_shipped_cli_probe_omits_lease_and_lease_refuses_without_c3b_providers(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    policy = service.policy
+    socket_path = tmp_path / "agent.sock"
+    server_ready = threading.Event()
+    cli_finished = threading.Event()
+    servers = []
+    original_on_path = agent_entry.AgentServer.on_path
+
+    def capture_server(path, configured_service, configured_policy):
+        server = original_on_path(path, configured_service, configured_policy)
+        servers.append(server)
+        server_ready.set()
+        return server
+
+    monkeypatch.setattr(agent_entry, "_service", lambda _policy_path, _state_dir: (service, policy))
+    monkeypatch.setattr(agent_entry.AgentServer, "on_path", staticmethod(capture_server))
+    results = []
+
+    def run_cli():
+        try:
+            results.append(agent_entry.main([
+                "serve", "--socket-path", str(socket_path),
+                "--policy", str(tmp_path / "agent.toml"),
+                "--state-dir", str(tmp_path / "cli-state"),
+            ]))
+        finally:
+            cli_finished.set()
+
+    cli = threading.Thread(target=run_cli)
+    cli.start()
+    assert server_ready.wait(3), "CLI server did not start before the failure watchdog"
+
+    probe_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe_client.connect(str(socket_path))
+    write_frame(probe_client, {"verb": "probe"})
+    probe_client.shutdown(socket.SHUT_WR)
+    probe = read_frame(probe_client, 3)
+    probe_client.close()
+    assert "lease" not in probe["capabilities"]
+
+    lease_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    lease_client.connect(str(socket_path))
+    write_frame(lease_client, {
+        "verb": "lease", "lease_id": "controller-cli-lease", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    })
+    refusal = read_frame(lease_client, 3)
+    lease_client.close()
+    assert refusal["exit_code"] == 2
+    assert "object inspector" in refusal["reason"]
+
+    servers[0].close()
+    assert cli_finished.wait(3), "CLI did not stop before the failure watchdog"
+    cli.join(timeout=3)
+    assert not cli.is_alive(), "CLI worker remained alive after close"
+    assert results == [0]

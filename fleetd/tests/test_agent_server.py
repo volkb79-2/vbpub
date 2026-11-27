@@ -16,6 +16,7 @@ def _round_trip(server, path):
     try:
         client.connect(str(path))
         write_frame(client, {"verb": "probe"})
+        client.shutdown(socket.SHUT_WR)
         server.serve_once()
         return read_frame(client, None)
     finally:
@@ -69,7 +70,13 @@ def test_held_idle_connection_does_not_block_another_client(tmp_path):
     socket_dir.mkdir()
     socket_path = socket_dir / "agent.sock"
     server = AgentServer.on_path(socket_path, service, service.policy)
-    serving = threading.Thread(target=server.serve_forever)
+    serving_done = threading.Event()
+
+    def serve():
+        server.serve_forever()
+        serving_done.set()
+
+    serving = threading.Thread(target=serve)
     serving.start()
 
     idle_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -78,13 +85,16 @@ def test_held_idle_connection_does_not_block_another_client(tmp_path):
         idle_client.connect(str(socket_path))
         active_client.connect(str(socket_path))
         write_frame(active_client, {"verb": "probe"})
+        active_client.shutdown(socket.SHUT_WR)
         reply = read_frame(active_client, None)
         assert reply["schema"] == "fleet-host-agent/1"
     finally:
         idle_client.close()
         active_client.close()
         server.close()
-        serving.join()
+        assert serving_done.wait(3), "server did not stop before the failure watchdog"
+        serving.join(timeout=3)
+        assert not serving.is_alive(), "server worker remained alive after close"
 
 
 def test_lease_reconciliation_uses_injected_interval_without_wall_clock_wait(tmp_path):
@@ -160,6 +170,7 @@ def test_connection_limit_refuses_excess_and_close_unparks_ordinary_worker(tmp_p
     server.close()
     assert serving_done.wait(3), "server did not stop after its wake event"
     serving.join(timeout=3)
+    assert not serving.is_alive(), "server worker remained alive after close"
     for worker in workers:
         worker.join(timeout=3)
         assert not worker.is_alive(), "parked connection worker remained alive after close"
@@ -202,12 +213,14 @@ def test_granted_lease_leaves_connection_budget_and_survives_server_close(tmp_pa
 
     probe_client.connect(str(socket_path))
     write_frame(probe_client, {"verb": "probe"})
+    probe_client.shutdown(socket.SHUT_WR)
     assert read_frame(probe_client, 3)["schema"] == "fleet-host-agent/1"
     probe_workers = tuple(worker for worker in server._client_threads if worker not in lease_workers)
 
     server.close()
     assert serving_done.wait(3), "server did not stop after its wake event"
     serving.join(timeout=3)
+    assert not serving.is_alive(), "server worker remained alive after close"
     write_frame(lease_client, {
         "event": "bind", "lease_id": lease_id, "container_id": "c" * 64,
     })
@@ -222,9 +235,9 @@ def test_granted_lease_leaves_connection_budget_and_survives_server_close(tmp_pa
         assert not worker.is_alive(), "held lease worker did not exit after client EOF"
 
 
-def test_nonreading_client_stalls_response_write_only_until_idle_deadline(tmp_path):
+def test_nonreading_client_stalls_response_write_only_until_idle_deadline(tmp_path, monkeypatch):
     service, identity, _checkout = _service(tmp_path)
-    policy = replace(service.policy, idle_connection_s=0.02)
+    policy = replace(service.policy, idle_connection_s=10)
     service.policy = policy
     service.handle = lambda _request, _identity, *, body_stream=None: AgentReply(  # type: ignore[method-assign]
         service._envelope(ok=True), body=b"x" * (1024 * 1024),
@@ -233,6 +246,14 @@ def test_nonreading_client_stalls_response_write_only_until_idle_deadline(tmp_pa
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
     write_frame(client_socket, {"verb": "probe"})
     client_socket.shutdown(socket.SHUT_WR)
+    real_select = select.select
+
+    def select_waiter(readers, writers, errors, timeout):
+        if writers:
+            return [], [], []
+        return real_select(readers, writers, errors, timeout)
+
+    monkeypatch.setattr("fleetd.agent_protocol.select.select", select_waiter)
     finished = threading.Event()
     results = []
 
@@ -249,6 +270,47 @@ def test_nonreading_client_stalls_response_write_only_until_idle_deadline(tmp_pa
     worker.join(timeout=3)
     assert not worker.is_alive()
     assert results == [ExitCode.IDENTITY_OR_TRANSPORT]
+    client_socket.close()
+
+
+def test_server_returns_protocol_exit_codes_on_the_wire(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    policy = service.policy
+
+    client_socket, server_socket = socket.socketpair()
+    write_frame(client_socket, {"verb": "probe", "extra": True})
+    client_socket.shutdown(socket.SHUT_WR)
+    result = serve_connection(server_socket, server_socket, service, policy, identity)
+    response = read_frame(client_socket, None)
+    assert result == ExitCode.REFUSAL
+    assert response["exit_code"] == ExitCode.REFUSAL
+    server_socket.close()
+    client_socket.close()
+
+    client_socket, server_socket = socket.socketpair()
+    client_socket.sendall(b"\x00\x00\x00\x01{")
+    client_socket.shutdown(socket.SHUT_WR)
+    result = serve_connection(server_socket, server_socket, service, policy, identity)
+    response = read_frame(client_socket, None)
+    assert result == ExitCode.IDENTITY_OR_TRANSPORT
+    assert response["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    server_socket.close()
+    client_socket.close()
+
+
+def test_server_rejects_data_after_one_ordinary_request(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    client_socket, server_socket = socket.socketpair()
+    write_frame(client_socket, {"verb": "probe"})
+    write_frame(client_socket, {"verb": "probe"})
+    client_socket.shutdown(socket.SHUT_WR)
+
+    result = serve_connection(server_socket, server_socket, service, service.policy, identity)
+    response = read_frame(client_socket, None)
+
+    assert result == ExitCode.IDENTITY_OR_TRANSPORT
+    assert response["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    server_socket.close()
     client_socket.close()
 
 

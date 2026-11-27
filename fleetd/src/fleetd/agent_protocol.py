@@ -98,7 +98,7 @@ def read_frame(stream: object, idle_timeout_s: float | None) -> dict[str, Any]:
         value = json.loads(
             decoded, object_pairs_hook=_unique_object, parse_constant=_invalid_json_constant,
         )
-    except (json.JSONDecodeError, FrameError) as exc:
+    except (ValueError, RecursionError) as exc:
         raise FrameError(f"frame body is not valid JSON: {exc}") from exc
     if not isinstance(value, dict):
         raise FrameError("frame body must be a JSON object")
@@ -180,6 +180,36 @@ def write_frame(
     _write_all(fd, struct.pack(">I", len(body)) + body, idle_timeout_s)
 
 
+def require_end_of_input(stream: object, idle_timeout_s: float) -> None:
+    """Require EOF after one ordinary request, using the connection idle deadline."""
+    if isinstance(idle_timeout_s, bool) or not isinstance(idle_timeout_s, (int, float)):
+        raise FrameError("idle timeout must be a positive number")
+    try:
+        timeout = float(idle_timeout_s)
+    except OverflowError as exc:
+        raise FrameError("idle timeout must be a positive number") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise FrameError("idle timeout must be a positive number")
+    try:
+        fd = stream if type(stream) is int else stream.fileno()
+    except (AttributeError, OSError, ValueError) as exc:
+        raise FrameError("framed stream must expose a file descriptor") from exc
+    if type(fd) is not int or fd < 0:
+        raise FrameError("framed stream has an invalid file descriptor")
+    try:
+        readable, _, _ = select.select([fd], [], [], timeout)
+    except (OSError, ValueError) as exc:
+        raise FrameError(f"cannot wait for request end: {exc}") from exc
+    if not readable:
+        raise FrameError("idle connection deadline expired before request end")
+    try:
+        extra = os.read(fd, 1)
+    except OSError as exc:
+        raise FrameError(f"cannot read request end: {exc}") from exc
+    if extra:
+        raise FrameError("unexpected bytes after request frame")
+
+
 def _refuse(reason: str) -> None:
     raise AdmissionError(ExitCode.REFUSAL, reason)
 
@@ -219,6 +249,12 @@ def _number(value: object, where: str, *, positive: bool = False) -> float:
     if not math.isfinite(number) or number < 0 or (positive and number == 0):
         _refuse(f"{where} must be a finite {'positive ' if positive else 'non-negative '}number")
     return number
+
+
+def _enum(value: object, where: str, allowed: frozenset[str] | set[str]) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        _refuse(f"{where} is invalid")
+    return value
 
 
 def validate_relative_path(value: object, where: str, *, allow_dot: bool = False) -> str:
@@ -397,10 +433,8 @@ def validate_request(
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None:
             _refuse("lease.container_name is invalid")
         _number(request["planned_cores"], "lease.planned_cores", positive=True)
-        if request["footprint"] not in {"tiny", "small", "medium", "large"}:
-            _refuse("lease.footprint is invalid")
-        if request["priority"] not in PRIORITIES:
-            _refuse("lease.priority is invalid")
+        _enum(request["footprint"], "lease.footprint", {"tiny", "small", "medium", "large"})
+        _enum(request["priority"], "lease.priority", PRIORITIES)
         return request
 
     _job_id(request["job_id"], identity, "job_id")
@@ -432,12 +466,10 @@ def validate_request(
         if len(set(resources["cpu_set"])) != len(resources["cpu_set"]):
             _refuse("resources.cpu_set contains duplicate CPU ids")
         _refuse("non-null resources.cpu_set is reserved in fleet-host-agent/1")
-    if resources["footprint"] not in {"tiny", "small", "medium", "large"}:
-        _refuse("resources.footprint is invalid")
+    _enum(resources["footprint"], "resources.footprint", {"tiny", "small", "medium", "large"})
     if resources["declared_peak_bytes"] is not None:
         _integer(resources["declared_peak_bytes"], "resources.declared_peak_bytes")
-    if request["priority"] not in PRIORITIES:
-        _refuse("priority is invalid")
+    _enum(request["priority"], "priority", PRIORITIES)
 
     requested_by = _object(request["requested_by"], "requested_by", {"client", "version", "run"})
     client = _string(requested_by["client"], "requested_by.client", maximum=128)
@@ -474,9 +506,7 @@ def validate_request(
         _refuse("extra_argv is not on the host allow-list")
     _check_env(request["env"], policy)
 
-    kind = request["kind"]
-    if kind not in {"lane", "dev"}:
-        _refuse("kind must be 'lane' or 'dev'")
+    kind = _enum(request["kind"], "kind", {"lane", "dev"})
     if kind == "lane":
         if request["dev"] is not None:
             _refuse("dev payload is only allowed for kind 'dev'")

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .admission import AdmissionError, ExitCode
-from .agent_protocol import FrameError, read_frame, write_frame
+from .agent_protocol import MAX_FETCH_BYTES, FrameError, read_frame, write_frame
 
 _SEMVER_RE = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -92,6 +92,8 @@ def _validate_agent_response(
 def _read_body(stream: socket.socket, length: object) -> bytes:
     if type(length) is not int or length < 0:
         raise FrameError("agent response body length must be a non-negative integer")
+    if length > MAX_FETCH_BYTES:
+        raise FrameError(f"agent response body exceeds {MAX_FETCH_BYTES} bytes")
     chunks: list[bytes] = []
     remaining = length
     while remaining:
@@ -172,7 +174,7 @@ class AgentClient:
             write_frame(stream, request)
             if body is not None:
                 stream.sendall(body)
-                stream.shutdown(socket.SHUT_WR)
+            stream.shutdown(socket.SHUT_WR)
             response = read_frame(stream, None)
             _validate_agent_response(response, expected_version=expected_version)
             _raise_remote_error(response)

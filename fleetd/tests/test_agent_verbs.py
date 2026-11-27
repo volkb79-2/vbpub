@@ -11,7 +11,7 @@ import pytest
 from fleetd.admission import AdmissionError, ExitCode
 from fleetd.admission import InspectorAnswer
 from fleetd.agent_verbs import AgentVerbService
-from fleetd.agent_protocol import FrameError, read_frame, write_frame
+from fleetd.agent_protocol import MAX_FETCH_BYTES, FrameError, read_frame, write_frame
 from fleetd.contracts import validate_host_facts
 from fleetd.facts import collect_host_facts
 from test_agent_protocol import _policy, _submit
@@ -447,6 +447,43 @@ def test_fetch_refuses_a_symlink_that_escapes_the_job_directory(tmp_path):
         }, identity)
 
 
+def test_progress_refuses_symlinked_lane_config_and_progress_components(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    job_dir = _job(service, identity)
+    checkout = job_dir / "checkout"
+    checkout.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "run-gate.toml").write_text('[lanes."r0-r1"]\nkind = "command"\n', encoding="utf-8")
+    (checkout / "run-gate.toml").symlink_to(outside / "run-gate.toml")
+
+    with pytest.raises(AdmissionError, match="lane declaration path is unsafe") as config_error:
+        service.handle({"verb": "progress", "job_id": "controller-run-1", "offset": 0}, identity)
+    assert config_error.value.exit_code == ExitCode.REFUSAL
+
+    (checkout / "run-gate.toml").unlink()
+    (checkout / "run-gate.toml").write_text('[lanes."r0-r1"]\nkind = "command"\n', encoding="utf-8")
+    (job_dir / "lane.log").symlink_to(outside / "run-gate.toml")
+    with pytest.raises(AdmissionError, match="progress path .* is unsafe") as progress_error:
+        service.handle({"verb": "progress", "job_id": "controller-run-1", "offset": 0}, identity)
+    assert progress_error.value.exit_code == ExitCode.REFUSAL
+
+
+def test_assay_progress_refuses_symlinked_project_path_component(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    job_dir = _job(service, identity, {"project": "project", "lane": "r0-r1"})
+    checkout = job_dir / "checkout"
+    checkout.mkdir()
+    outside = tmp_path / "outside-project"
+    outside.mkdir()
+    (outside / "run-gate.toml").write_text('[lanes."r0-r1"]\nkind = "assay"\n', encoding="utf-8")
+    (checkout / "project").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(AdmissionError, match="progress path is unsafe") as raised:
+        service.handle({"verb": "progress", "job_id": "controller-run-1", "offset": 0}, identity)
+    assert raised.value.exit_code == ExitCode.REFUSAL
+
+
 def test_assay_progress_uses_resolved_lane_and_streams_from_byte_offset(tmp_path):
     service, identity, _checkout = _service(tmp_path)
     job_dir = _job(service, identity)
@@ -488,6 +525,49 @@ def test_command_progress_uses_lane_log_byte_offset(tmp_path):
     assert reply.document["done"] is None
     assert reply.document["unit"] == "log_bytes"
     assert _body(reply) == b"two\n"
+
+
+def test_progress_caps_each_range_and_reports_the_next_offset(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    job_dir = _job(service, identity)
+    checkout = job_dir / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.toml").write_text(
+        '[lanes."r0-r1"]\nkind = "command"\n', encoding="utf-8",
+    )
+    progress = job_dir / "lane.log"
+    with progress.open("wb") as stream:
+        stream.truncate(MAX_FETCH_BYTES + 19)
+
+    reply = service.handle({
+        "verb": "progress", "job_id": "controller-run-1", "offset": 7,
+    }, identity)
+    try:
+        assert reply.document["offset"] == 7
+        assert reply.document["length"] == MAX_FETCH_BYTES
+        assert reply.document["next_offset"] == 7 + MAX_FETCH_BYTES
+        assert reply.body_length == MAX_FETCH_BYTES
+    finally:
+        reply.close()
+
+
+def test_terminal_status_uses_only_durable_record_and_cancel_refuses(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    terminal = service.admission.book._terminal_path("controller-run-1")
+    terminal.write_text(json.dumps({
+        "schema": "fleet-admission-terminal/1", "job_id": "controller-run-1",
+        "group": identity.group, "digest": "a" * 64, "state": "completed", "completed_at": 42,
+    }), encoding="utf-8")
+
+    status = service.handle({"verb": "status", "job_id": "controller-run-1"}, identity)
+    assert status.document["state"] == "completed"
+    assert status.document["completed_at"] == 42
+    assert "verdict" not in status.document
+    assert "exit_code" not in status.document
+
+    with pytest.raises(AdmissionError, match="finished job .* cannot be cancelled") as raised:
+        service.handle({"verb": "cancel", "job_id": "controller-run-1", "reason": "done"}, identity)
+    assert raised.value.exit_code == ExitCode.REFUSAL
 
 
 def test_unknown_group_upload_directory_cannot_authorize_candidates(tmp_path):
