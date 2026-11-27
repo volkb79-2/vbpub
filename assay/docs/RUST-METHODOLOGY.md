@@ -95,8 +95,8 @@ tripwire is cache/lock agreement at the start of a Rust lane.
 - Rust R2 is a T3 cargo-mutants campaign using `--in-diff` against the latest
   release, with `--base <previous release tag>`. It runs asynchronously and
   never gates a merge or release; survivors become backlog items.
-- Rust R2 not yet adopted (assay's ingestion side is shipped, B245 U0-U5c; the
-  hostobs consumer lane U8 and the real-run qualification U7 are open) is recorded once as a known issue,
+- Rust R2 not yet adopted (assay's ingestion side is shipped, B245 U0-U5c; real-run
+  qualification passed and hostobs has a hand-run consumer lane, but no release gate runs it) is recorded once as a known issue,
   not as a per-release waiver. The target remains the full R1-R3 contract;
   tests, reviews, R1, and the other release gates stay required.
 - Whole-crate mutation campaigns are advisory T3 lanes, run asynchronously on

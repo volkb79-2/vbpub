@@ -242,10 +242,14 @@ io_sync = "relaxed"
 # to prepare one-shot origin facts before its aggregate mutation campaign.
 # An empty source diff writes skip evidence bound to candidate HEAD and emits
 # no tag; otherwise only an older skip record is removed before emitting it.
-# The 2026-11-12 R2 rehearsal measured full-suite controls from 368 to 825 s
-# under concurrent lanes (CPU PSI 20-43). The 1800 s control ceiling is 2.18x
-# the longest observed run; it is also the candidate-timeout floor, while
-# candidate_timeout_seconds scales further from the measured control.
+# No elapsed-time limit applies to the known-good control or candidates. The
+# tool runs them with PYTHONUNBUFFERED=1, polls output size via os.fstat at
+# most every 30s, and emits a still-running heartbeat only after output grows.
+# The control's active silence window is 600s; candidate windows are derived
+# from the measured control output-gap bound and capped at 600s. RG-320-style
+# memory-PSI credit is capped so the effective window, polling, and 10s
+# process cleanup fit below the R2 lane's 15m stall_timeout. A child that keeps
+# printing has no elapsed limit. Schema-8 evidence records each bound.
 [lanes.mutation]
 kind = "command"
 environment = "cmru-mutation"
@@ -259,7 +263,7 @@ set -euo pipefail
 cd {worktree}/cmru
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
-/opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
+PYTHONUNBUFFERED=1 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
 BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --skip-evidence)
 if [ -z "$BASE" ]; then
     echo "mutation: no changed source — explicit skip evidence recorded"
@@ -268,7 +272,7 @@ fi
 mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
     --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
-    --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 \
+    --base "$BASE" --max-mutants 10000 \
     --evidence .assay/mutation-cmru.json \
     --progress .assay/progress-mutation-cmru.jsonl \
     --require-candidates --resume -- \
@@ -277,10 +281,12 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
 ''',
 ]
 budget = "7h"
-# RG-320/RG-326: SILENT BY CONSTRUCTION during mutation_campaign.py; it writes
-# candidate progress to a file, not this command's stdout; no bound is measured.
+# CMRU emits output-growth heartbeats while a control or candidate runs and
+# ends a silent child under its own measured window. This silence-only lane
+# bound matches the retained aggregate budget; it is not a child elapsed limit.
 stall_timeout = "7h"
 artifacts = [".assay/mutation-cmru.json"]
+exit_map = { "2" = "ERROR" }
 
 [lanes.mutation.resources]
 pids = 8192
@@ -297,16 +303,31 @@ kind = "command"
 environment = "cmru-mutation"
 resource_observer = "cgprofile"
 clean_tree = true
+accepts_args = true
 argv = [
   "bash",
   "-c",
   '''
 set -euo pipefail
 cd {worktree}/cmru
+if ! /opt/tester-venv/bin/python - "$@" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / "tools"))
+from mutation_campaign import validate_r2_lane_args
+try:
+    validate_r2_lane_args(sys.argv[1:])
+except ValueError as exc:
+    print(f"r2: {exc}", file=sys.stderr)
+    sys.exit(2)
+PY
+then
+    exit 2
+fi
 BASE="{base}"
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
-/opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
+PYTHONUNBUFFERED=1 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
 CMRU_ASSAY_BASELINE_FACTS=$(/opt/tester-venv/bin/python tools/local_baseline_facts.py --base "$BASE")
 export CMRU_ASSAY_BASELINE_FACTS
 BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --base "$BASE" --skip-evidence)
@@ -315,15 +336,20 @@ if [ -z "$BASE" ]; then
     exit 0
 fi
 mkdir -p .assay
-exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 --evidence .assay/mutation-cmru.json --progress .assay/progress-mutation-cmru.jsonl --require-candidates --resume -- env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
+exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
+    --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
+    --base "$BASE" --max-mutants 10000 \
+    --evidence .assay/mutation-cmru.json \
+    --progress .assay/progress-mutation-cmru.jsonl \
+    --require-candidates --resume "$@" -- \
+    env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 \
+    /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
 ''',
   "--",
 ]
-budget = "7h"
-# RG-320/RG-326: SILENT BY CONSTRUCTION during mutation_campaign.py; it writes
-# candidate progress to a file, not this command's stdout; no bound is measured.
-stall_timeout = "7h"
+stall_timeout = "15m"
 artifacts = [".assay/mutation-cmru.json"]
+exit_map = { "2" = "ERROR" }
 
 [lanes.r2.resources]
 pids = 8192

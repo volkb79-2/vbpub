@@ -17,7 +17,8 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 77  # rev 77: RG-320 -- a stall watch on every watchable lane kind
+__revision__ = 78  # rev 78: RG-329 -- job event file for fleet runners
+# rev 77: RG-320 -- a stall watch on every watchable lane kind
 # rev 76: RG-321/RG-322 -- lane OOM bias and inventory refusals
 # Linux's oom_score_adj steers OOM victim choice; disposable gate lanes
 # should be selected before the interactive controller.
@@ -239,6 +240,16 @@ CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS = 60
 OUTPUT_DRAIN_TIMEOUT_SECONDS = 5.0
 FAILED_EVIDENCE_KEEP = 10
 FAILED_NODE_LIMIT = 5
+JOB_EVENT_API = "fleet-host-agent/1"
+JOB_ID_MAX_LENGTH = 128
+JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# Docker's FULL container id. A shim, a relay, or a docker plugin on PATH can
+# put arbitrary text on `docker run`'s stdout or in an inspect answer, so only
+# this shape is ever published as a run's container identity (RG-329).
+CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}")
+
+_ACTIVE_JOB_EVENT_WRITER = None
+_NESTED_JOB_EVENT_WRITER = None
 
 SCRATCH_RUN_ID_RE = re.compile(r"[1-9][0-9]*-[0-9]{16,}-[0-9a-f]{16}")
 SCRATCH_LEGACY_PREFIXES = ("run-gate-gitcfg-", "run-gate-test-")
@@ -462,6 +473,7 @@ def _observer_unavailable_rollup(
 
 def finish(result: LaneResult) -> int:
     """The single normal exit path; persist once, summarize, and close the table."""
+    event_writer = _ACTIVE_JOB_EVENT_WRITER
     record = result._record
     log_path = result.log_path or (record.get("log_path")
                                    if record is not None else None)
@@ -475,6 +487,21 @@ def finish(result: LaneResult) -> int:
     if result._json:
         print(json.dumps({**result.as_dict(), "log_path": log_path},
                          sort_keys=True))
+        if event_writer is not None:
+            lane_name = result._lane_name or event_writer.lane
+            details = [f"verdict {result.verdict}"]
+            if result.exit_code is not None:
+                details.append(f"exit_code {result.exit_code}")
+            if result.reason:
+                details.append(f"reason {result.reason}")
+                if result.reason == "command-exit-map":
+                    last = last_log_line(log_path)
+                    if last:
+                        details.append(f"last_output {json.dumps(last)}")
+            if log_path:
+                details.append(f"log {log_path}")
+            print(f"run-gate: lane {lane_name!r} " + "; ".join(details),
+                  file=sys.stderr, flush=True)
     elif result._lane_name is not None:
         details = [f"verdict {result.verdict}"]
         if result.exit_code is not None:
@@ -489,7 +516,370 @@ def finish(result: LaneResult) -> int:
             details.append(f"log {log_path}")
         print(f"run-gate: lane {result._lane_name!r} " + "; ".join(details),
               flush=True)
+    elif event_writer is not None:
+        details = [f"verdict {result.verdict}"]
+        if result.exit_code is not None:
+            details.append(f"exit_code {result.exit_code}")
+        if result.reason:
+            details.append(f"reason {result.reason}")
+        if log_path:
+            details.append(f"log {log_path}")
+        print(f"run-gate: lane {event_writer.lane!r} " + "; ".join(details),
+              flush=True)
+    if event_writer is not None:
+        event_writer.emit(
+            "lane-verdict", lane=result._lane_name or event_writer.lane,
+            verdict=result.verdict, exit_code=result.gate_exit_code,
+            lane_exit_code=result.exit_code)
     return result.gate_exit_code
+
+
+def validate_job_event_options(event_file: str | None,
+                               job_id: str | None) -> None:
+    """Validate the paired opt-in flags without consulting the environment."""
+    if (event_file is None) != (job_id is None):
+        fail("--event-file and --job-id must be supplied together")
+    if job_id is None:
+        return
+    if (not isinstance(job_id, str)
+            or len(job_id) > JOB_ID_MAX_LENGTH
+            or JOB_ID_RE.fullmatch(job_id) is None):
+        fail(f"--job-id must match [A-Za-z0-9][A-Za-z0-9._-]* and be at "
+             f"most {JOB_ID_MAX_LENGTH} characters")
+
+
+def _event_path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_job_event_destination(event_file: str,
+                                   *, worktree: Path | None = None,
+                                   repo: Path | None = None,
+                                   mount_sources=()) -> Path:
+    """Return the canonical event path after its pre-start safety checks.
+
+    The final component may be absent or a regular file, never a symlink or
+    another file type. Existing parent directories are resolved so a path
+    reached through a symlink is compared at its real location.
+    """
+    if not isinstance(event_file, str) or "\x00" in event_file:
+        fail("--event-file must be an absolute path")
+    path = Path(event_file)
+    if not path.is_absolute():
+        fail(f"--event-file {event_file!r} must be an absolute path")
+    try:
+        parent = path.parent.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        fail(f"--event-file parent {path.parent} must already exist: {exc}")
+    if not parent.is_dir():
+        fail(f"--event-file parent {path.parent} is not a directory")
+    canonical = parent / path.name
+    try:
+        info = canonical.lstat()
+    except FileNotFoundError:
+        info = None
+    except OSError as exc:
+        fail(f"cannot inspect --event-file {event_file!r}: {exc}")
+    if info is not None:
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"--event-file {event_file!r} must not be a symlink")
+        if not stat.S_ISREG(info.st_mode):
+            fail(f"--event-file {event_file!r} must be a regular file")
+        if info.st_nlink > 1:
+            # A hardlink defeats every PATH check below: the link this run
+            # names can sit outside the checkout while the SAME inode is
+            # reachable inside a tree the judged checkout or a lane container
+            # can see. Refuse rather than append event bytes into it.
+            fail(f"--event-file {event_file!r} already has "
+                 f"{info.st_nlink} hard links; a shared inode is not a "
+                 f"host-owned sink")
+
+    # `canonical` has a resolved parent and a verified non-symlink final
+    # component. Worktree/repository roots are local paths and can be resolved
+    # by this process. Docker mount sources are compared lexically because a
+    # source may be in the host namespace and must not be stat'd here.
+    resolved = canonical
+    protected_roots: list[Path] = []
+    for root in (worktree, repo):
+        if root is not None:
+            try:
+                protected_roots.append(root.resolve(strict=False))
+            except (OSError, RuntimeError):
+                protected_roots.append(Path(os.path.abspath(root)))
+    for root in protected_roots:
+        if _event_path_is_within(resolved, root):
+            fail(f"--event-file {event_file!r} resolves inside protected "
+                 f"checkout path {root}")
+    lexical = Path(os.path.normpath(event_file))
+    for source in mount_sources:
+        if not isinstance(source, (str, os.PathLike)):
+            continue
+        source_text = os.fspath(source)
+        if not source_text or not os.path.isabs(source_text):
+            continue
+        source_path = Path(os.path.normpath(source_text))
+        if (_event_path_is_within(resolved, source_path)
+                or _event_path_is_within(lexical, source_path)):
+            fail(f"--event-file {event_file!r} resolves inside a host path "
+                 f"mounted by this lane: {source_text}")
+    return resolved
+
+
+class JobEventWriter:
+    """Append one durable JSON object per event to a host-owned file."""
+
+    def __init__(self, fd: int, path: Path, job_id: str, lane: str):
+        self.fd = fd
+        self.path = path
+        self.job_id = job_id
+        self.lane = lane
+        self.failed = False
+        self.warned = False
+
+    def _warning(self, exc: BaseException) -> None:
+        if self.warned:
+            return
+        self.warned = True
+        print(f"{PROG}: WARNING: job event file {self.path} could not be "
+              f"written: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+    def emit(self, event: str, *, lane: str | None = None, **fields) -> None:
+        if self.failed:
+            return
+        record = {**fields, "api": JOB_EVENT_API, "event": event,
+                  "job_id": self.job_id,
+                  "lane": self.lane if lane is None else lane}
+        try:
+            payload = (json.dumps(record, sort_keys=True,
+                                  separators=(",", ":")) + "\n").encode()
+            written = 0
+            while written < len(payload):
+                count = os.write(self.fd, payload[written:])
+                if count <= 0:
+                    raise OSError(
+                        f"short event write ({written}/{len(payload)} bytes)")
+                written += count
+            os.fsync(self.fd)
+        except Exception as exc:
+            self.failed = True
+            self._warning(exc)
+
+    def close(self) -> None:
+        if self.fd < 0:
+            return
+        fd, self.fd = self.fd, -1
+        try:
+            os.close(fd)
+        except OSError as exc:
+            self._warning(exc)
+
+
+@contextlib.contextmanager
+def suppress_job_events(*, forward_starts: bool = False):
+    """Hide flags and file from a child while its parent receives start facts."""
+    global _ACTIVE_JOB_EVENT_WRITER, _NESTED_JOB_EVENT_WRITER
+    previous = _ACTIVE_JOB_EVENT_WRITER
+    previous_nested = _NESTED_JOB_EVENT_WRITER
+    _ACTIVE_JOB_EVENT_WRITER = None
+    _NESTED_JOB_EVENT_WRITER = (
+        previous or previous_nested if forward_starts else None)
+    try:
+        yield
+    finally:
+        _ACTIVE_JOB_EVENT_WRITER = previous
+        _NESTED_JOB_EVENT_WRITER = previous_nested
+
+
+def current_job_event_writer() -> JobEventWriter | None:
+    """Return the sink whose file must stay outside every child mount."""
+    return _ACTIVE_JOB_EVENT_WRITER or _NESTED_JOB_EVENT_WRITER
+
+
+def strip_job_event_options(argv: list[str]) -> list[str]:
+    """Remove the caller's event flags before an internal worker dispatch."""
+    output: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            output.extend(argv[index:])
+            break
+        if token in ("--event-file", "--job-id"):
+            index += 2
+            continue
+        if token.startswith("--event-file=") or token.startswith("--job-id="):
+            index += 1
+            continue
+        output.append(token)
+        index += 1
+    return output
+
+
+def open_job_event_writer(event_file: str, job_id: str, lane: str,
+                          *, worktree: Path | None = None,
+                          repo: Path | None = None,
+                          mount_sources=()) -> JobEventWriter:
+    """Open the opt-in stream append-only, without following its final link."""
+    validate_job_event_options(event_file, job_id)
+    path = validate_job_event_destination(
+        event_file, worktree=worktree, repo=repo,
+        mount_sources=mount_sources)
+    flags = (os.O_WRONLY | os.O_APPEND | os.O_CREAT
+             | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        fail(f"cannot open --event-file {event_file!r}: {exc}")
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            fail(f"--event-file {event_file!r} must be a regular file")
+        if opened.st_nlink > 1:
+            # Re-checked on the DESCRIPTOR, not just on the path: the path
+            # checks above answer about a name, this answers about the inode
+            # this run is about to append into.
+            fail(f"--event-file {event_file!r} has {opened.st_nlink} hard "
+                 f"links once opened; refusing a sink another path reaches")
+        os.fchmod(fd, 0o600)
+    except OSError as exc:
+        os.close(fd)
+        fail(f"cannot secure --event-file {event_file!r} as mode 0600: {exc}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return JobEventWriter(fd, path, job_id, lane)
+
+
+def mount_flag_sources(flags: list[str], *,
+                       strict_sources: bool = False) -> list[str]:
+    """Read host sources from Docker mount flags; refuse unknown shapes when
+    a job event sink needs a complete visibility check."""
+    sources: list[str] = []
+
+    def refuse(token: str) -> None:
+        fail(f"cannot derive host source from Docker mount token {token!r} "
+             "while validating --event-file")
+
+    index = 0
+    while index < len(flags):
+        token = flags[index]
+        if token in ("-v", "--volume", "--mount"):
+            if index + 1 >= len(flags):
+                if strict_sources:
+                    refuse(token)
+                index += 1
+                continue
+            value = flags[index + 1]
+            if token in ("-v", "--volume"):
+                source = value.split(":", 1)[0]
+                if os.path.isabs(source):
+                    sources.append(source)
+                elif strict_sources:
+                    refuse(token)
+                index += 2
+                continue
+            spec = value
+            source = next((part.split("=", 1)[1]
+                           for part in spec.split(",")
+                           if part.startswith(("source=", "src="))), None)
+            if source is not None and os.path.isabs(source):
+                sources.append(source)
+            elif strict_sources:
+                refuse(token)
+            index += 2
+            continue
+        if token.startswith("--mount="):
+            spec = token.split("=", 1)[1]
+            source = next((part.split("=", 1)[1]
+                           for part in spec.split(",")
+                           if part.startswith(("source=", "src="))), None)
+            if source is not None and os.path.isabs(source):
+                sources.append(source)
+            elif strict_sources:
+                refuse("--mount")
+            index += 1
+            continue
+        if strict_sources and any(
+                token == name or token.startswith(f"{name}=")
+                for name in ("--volumes-from", "--device", "--tmpfs",
+                             "--volume", "-v")):
+            refuse(token.split("=", 1)[0])
+        index += 1
+    return sources
+
+
+def inspect_container_mount_sources(docker: str, container: str) -> list[str]:
+    """Return the host-side sources mounted into a persistent runner."""
+    result = subprocess.run(
+        [docker, "inspect", "--type", "container", "--format",
+         "{{range .Mounts}}{{println .Source}}{{end}}", container],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or
+                  f"exit {result.returncode}").strip()
+        fail_infra(f"cannot inspect host mount sources of container "
+                   f"{container!r}: {detail}")
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def recognised_container_id(value) -> str | None:
+    """Return Docker's container id only in its full 64-hex form.
+
+    Any other text (a warning line from a shim, a relay's message, a plugin's
+    extra output) is NOT this run's container identity: publishing it would
+    be an invented fact in a file a host agent trusts, so it reads as no id
+    at all and the reason field says why.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if CONTAINER_ID_RE.fullmatch(candidate) else None
+
+
+def inspect_container_id_best_effort_with_status(
+        docker: str, container: str) -> tuple[str | None, bool]:
+    """Return the validated inspect id and whether nonempty output was bad."""
+    try:
+        result = subprocess.run(
+            [docker, "inspect", "--type", "container", "--format",
+             "{{.Id}}", container], capture_output=True, text=True,
+            timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, False
+    if result.returncode != 0:
+        return None, False
+    container_id = recognised_container_id(result.stdout)
+    unrecognised = bool((result.stdout or "").strip()) and container_id is None
+    return container_id, unrecognised
+
+
+def emit_lane_started(container_id: str | None, image_id: str | None,
+                      adopted: bool, *, reason: str | None = None,
+                      lane: str | None = None) -> None:
+    """Write the lane's container identity before its output is relayed."""
+    writer = _ACTIVE_JOB_EVENT_WRITER or _NESTED_JOB_EVENT_WRITER
+    if writer is None:
+        return
+    published = recognised_container_id(container_id)
+    unrecognised = container_id is not None and published is None
+    reason_override = reason
+    if unrecognised:
+        reason_override = "container-id-unrecognised"
+    # An image id says something about ONE container; without an identified
+    # container there is nothing it can describe.
+    fields = {"container_id": published,
+              "image_id": image_id if published is not None else None,
+              "adopted": bool(adopted)}
+    if reason_override is not None:
+        fields["reason"] = reason_override
+    elif published is None:
+        fields["reason"] = "container-id-unavailable"
+    writer.emit("lane-started", lane=lane, **fields)
 
 
 def operation_result(code: int, reason: str) -> LaneResult:
@@ -10080,6 +10470,15 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         if name is None:
             name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                          worktree, env_source)
+        event_writer = current_job_event_writer()
+        if event_writer is not None:
+            if not inspect_mounts:
+                fail("cannot verify the host mounts for --event-file before "
+                     "an exec-environment probe")
+            validate_job_event_destination(
+                str(event_writer.path), worktree=worktree,
+                repo=repo,
+                mount_sources=inspect_container_mount_sources(docker, name))
         forwarded = resource_forwarded_env(
             resource_settings or {}, "exec",
             exec_mounts=((lambda: container_mount_destinations(docker, name))
@@ -10101,6 +10500,11 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     for key, value in forwarded.items():
         argv += ["-e", f"{key}={value}"]
     argv += [env["image"], "bash", "-c", script]
+    event_writer = current_job_event_writer()
+    if event_writer is not None:
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_flag_sources(argv, strict_sources=True))
     return argv
 
 
@@ -13845,11 +14249,13 @@ def run_workers_step(args: argparse.Namespace, base_argv: list[str],
                      count: int, dispatch: Callable[..., "LaneResult"],
                      *, scaling: bool) -> dict:
     """One measured step: dispatch at N, record it, read back its outcomes."""
-    result = dispatch(base_argv, _workers_options={
-        "workers": count, "junit": True, "scaling": scaling,
-        "no_recheck": True})
-    record = result._record or {}
-    finish(result)
+    with suppress_job_events(forward_starts=True):
+        result = dispatch(strip_job_event_options(base_argv),
+                          _workers_options={
+                              "workers": count, "junit": True,
+                              "scaling": scaling, "no_recheck": True})
+        record = result._record or {}
+        finish(result)
     junit = (record.get("workers") or {}).get("junit")
     outcomes = junit_outcomes(Path(junit)) if junit else None
     if junit:
@@ -15069,6 +15475,8 @@ def attach_r2_flex(lane: dict, lane_name: str,
         run_name = f"{lane_name}{suffix}"
         lane["_artifact_lane"] = f"{lane['assay_lane']}.{lane_name}{suffix}"
         flex["base_lane"] = lane_name
+    if run_name != lane_name and _ACTIVE_JOB_EVENT_WRITER is not None:
+        _ACTIVE_JOB_EVENT_WRITER.lane = run_name
     return lane, run_name
 
 
@@ -18576,6 +18984,31 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
              f"but {worktree} is now at {head} — run-gate will not attach "
              f"that run to this commit, and will not start a second "
              f"container for the same lane. {remedy}")
+    event_writer = current_job_event_writer()
+    if event_writer is not None:
+        raw_container_id = state.get("id")
+        container_id = recognised_container_id(
+            raw_container_id)
+        unrecognised_id = (raw_container_id is not None
+                           and container_id is None)
+        mount_sources = inspect_container_mount_sources(
+            docker, container_id or name)
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_sources)
+        if container_id and recorded_id == container_id:
+            image_id, image_error = inspect_container_image_id(
+                docker, container_id)
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(container_id, image_id, True,
+                              reason=reason, lane=lane_name)
+        else:
+            emit_lane_started(
+                None, None, True,
+                reason=("container-id-unrecognised" if unrecognised_id else
+                        "inflight-container-identity-unverified"),
+                lane=lane_name)
     # A lost container or a `--fresh` discard starts under today's config and
     # must keep the fresh run's mode. Arm the recorded identity only after
     # this call has committed to following, re-attaching to, or collecting
@@ -18899,6 +19332,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         else f"this lane's mount set (including ${EXTRA_MOUNT_ENV_VAR})")
     judge_flags = judge_mount_flags(lane, worktree)
     mounts += judge_flags
+    event_writer = current_job_event_writer()
+    if event_writer is not None:
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_flag_sources(mounts, strict_sources=True))
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
@@ -19041,6 +19479,30 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if started.returncode != 0:
         if ksm_monitor is not None:
             report_ksm_measurement(ksm_monitor, run_record)
+        if event_writer is not None:
+            raw_id = ((started.stdout or "").strip().splitlines()
+                      or [None])[-1]
+            container_id = recognised_container_id(raw_id)
+            if container_id:
+                image_id, image_error = inspect_container_image_id(
+                    docker, container_id)
+                reason = (f"image-id-unavailable: {image_error}"
+                          if image_id is None else None)
+                emit_lane_started(container_id, image_id, False,
+                                  reason=reason, lane=lane_name)
+            elif raw_id:
+                # Docker's stdout carried text that is not a full container
+                # id (a shim's warning, a relay's line): publish null plus
+                # the reason rather than an invented identity.
+                emit_lane_started(
+                    None, None, False,
+                    reason="container-id-unrecognised",
+                    lane=lane_name)
+            else:
+                emit_lane_started(
+                    None, None, False,
+                    reason="docker-run-failed-before-container-id",
+                    lane=lane_name)
         # RG-12: a failed `docker run` may still have created the container
         # (pull/entrypoint failures) — preserve its logs, then show a REAL
         # tail of stderr instead of only the last line.
@@ -19051,8 +19513,41 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
         fail_infra(f"docker run failed (exit {started.returncode}); last "
                    f"stderr line(s):\n{tail}{where}")
+    raw_started_id = ((started.stdout or "").strip().splitlines()
+                      or [None])[-1]
+    started_container_id = recognised_container_id(raw_started_id)
+    unrecognised_id = (raw_started_id is not None
+                       and started_container_id is None)
+    if event_writer is not None and not started_container_id:
+        (started_container_id,
+         inspect_unrecognised_id) = inspect_container_id_best_effort_with_status(
+             docker, name)
+        unrecognised_id = unrecognised_id or inspect_unrecognised_id
+    image_id = image_error = None
+    if isinstance(selection, dict) or event_writer is not None:
+        image_target = (started_container_id
+                        if event_writer is not None and started_container_id
+                        else name)
+        image_id, image_error = inspect_container_image_id(docker, image_target)
+    if event_writer is not None:
+        if started_container_id:
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(started_container_id, image_id, False,
+                              reason=reason, lane=lane_name)
+        elif unrecognised_id:
+            # Neither Docker's stdout nor a nonempty inspect fallback gave a
+            # full id, so the event names the rejected identity source.
+            emit_lane_started(
+                None, None, False,
+                reason="container-id-unrecognised",
+                lane=lane_name)
+        else:
+            emit_lane_started(
+                None, None, False,
+                reason="docker-run-succeeded-without-container-id",
+                lane=lane_name)
     if isinstance(selection, dict):
-        image_id, image_error = inspect_container_image_id(docker, name)
         selection["image_id"] = image_id
         selection["image_id_status"] = "observed" if image_id else "unavailable"
         selection["image_id_error"] = image_error
@@ -19072,7 +19567,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # this invocation did not create).
         "runner": "container",
         "container": name,
-        "container_id": (started.stdout.strip().splitlines() or [""])[-1],
+        # The raw line is recorded when it is not a recognised id: only the
+        # EVENT refuses it. An empty record would skip the same-name identity
+        # check on the next run and let it adopt or remove a foreign
+        # container.
+        "container_id": started_container_id or raw_started_id or "",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         # The epoch is stored beside the ISO stamp deliberately: human output
         # wants the stamp, elapsed time and RW-3's duration want a number,
@@ -19339,10 +19838,49 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         fail_infra(f"docker ps failed for exec-mode preflight: {detail[0]}")
     names = set(running.stdout.strip().splitlines())
     if name not in names:
+        if current_job_event_writer() is not None:
+            emit_lane_started(
+                None, None, False, reason="exec-environment-not-running",
+                lane=lane_name)
         raise GateNotRunError(
             "environment-down",
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
+    event_writer = current_job_event_writer()
+    if event_writer is not None and not dry_run:
+        inspected = container_state(docker, name)
+        raw_container_id = inspected.get("id") if inspected else None
+        container_id = recognised_container_id(
+            raw_container_id)
+        unrecognised_id = (raw_container_id is not None
+                           and container_id is None)
+        if not container_id:
+            (container_id,
+             inspect_unrecognised_id) = \
+                inspect_container_id_best_effort_with_status(docker, name)
+            unrecognised_id = unrecognised_id or inspect_unrecognised_id
+        mount_sources = inspect_container_mount_sources(
+            docker, container_id or name)
+        validate_job_event_destination(
+            str(event_writer.path), worktree=worktree, repo=repo,
+            mount_sources=mount_sources)
+        if container_id:
+            image_id, image_error = inspect_container_image_id(
+                docker, container_id)
+            reason = (f"image-id-unavailable: {image_error}"
+                      if image_id is None else None)
+            emit_lane_started(container_id, image_id, True,
+                              reason=reason, lane=lane_name)
+            exec_target = container_id
+        else:
+            emit_lane_started(
+                None, None, True,
+                reason=("container-id-unrecognised" if unrecognised_id else
+                        "exec-runner-inspect-returned-no-container-id"),
+                lane=lane_name)
+            exec_target = name
+    else:
+        exec_target = name
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
                               state_root=env.get("state_root"),
@@ -19363,7 +19901,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     resource_env = {**resource_forwarded_env(
                         resource_settings or {}, "exec",
                         exec_mounts=lambda: container_mount_destinations(
-                            docker, name),
+                            docker, exec_target),
                         not_forwarded=skipped_resource_env),
                     **lane_workers_env(lane)}
     argv += env_flags_by_name(resource_env, docker_env_values)
@@ -19376,11 +19914,11 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # `docker exec` disconnecting does not reliably stop the in-container
         # child, so the bound must be enforced inside the persistent runner.
         # GNU coreutils timeout is present in supported runner images.
-        argv += [name, "timeout", "--preserve-status", "--signal=TERM",
+        argv += [exec_target, "timeout", "--preserve-status", "--signal=TERM",
                  f"--kill-after={LANE_KILL_GRACE_SECONDS}s",
                  f"{budget_seconds(lane['budget'])}s", "bash", "-c", inner]
     else:
-        argv += [name, "bash", "-c", inner]
+        argv += [exec_target, "bash", "-c", inner]
     exec_command_index = len(argv) - (8 if lane.get("budget") else 3)
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
           f"container {name} ({name_src}) | "
@@ -20720,6 +21258,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    first — by name, disclosed — and runs anew. Refused",
         "                    by name on host and exec lanes, which start no",
         "                    container of run-gate's own",
+        "  --event-file ABSOLUTE_PATH --job-id ID  write host-owned lane events",
+        "                    as one JSON object per line; flags are paired, the",
+        "                    file stays outside the checkout and lane mounts,",
+        "                    and --dry-run is refused with these flags",
         "  --json            `history`/`footprint`/`status`: emit one JSON",
         "                    document (history has latest + bounded history +",
         "                    duration stats; footprint has the manifest shape;",
@@ -21582,12 +22124,13 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                     member_argv.append("--fresh")
             if request_base and any(leaf in delegates for leaf in member_leaves):
                 member_argv += ["--base", request_base]
-            result = _dispatch(member_argv,
-                               _admission_ticket=ticket,
-                               _admission_managed=True)
-            # Persist each member's independent history result now; a later
-            # failure in the sequence must not discard earlier measurements.
-            finish(result)
+            with suppress_job_events(forward_starts=True):
+                result = _dispatch(member_argv,
+                                   _admission_ticket=ticket,
+                                   _admission_managed=True)
+                # Persist each member's independent history result now; a later
+                # failure in the sequence must not discard earlier measurements.
+                finish(result)
             entry = {"lane": member_name, "result": result.as_dict()}
             member_results.append(entry)
             if record is not None:
@@ -21635,6 +22178,7 @@ def _dispatch(argv: list[str] | None = None, *,
               _admission_ticket=None,
               _admission_managed: bool = False,
               _workers_options: dict | None = None) -> LaneResult:
+    global _ACTIVE_JOB_EVENT_WRITER
     parser = RunGateArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("target", nargs="?")
@@ -21659,6 +22203,10 @@ def _dispatch(argv: list[str] | None = None, *,
                         "root {worktree} stands for (default: git toplevel of "
                         "the pointer file)")
     parser.add_argument("--worktree")
+    parser.add_argument("--event-file", metavar="ABSOLUTE_PATH",
+                        help="append host-owned lane events to this absolute path")
+    parser.add_argument("--job-id", metavar="ID",
+                        help="job identifier paired with --event-file")
     parser.add_argument("--base", help="RG-26: the comparison base for a lane "
                         "that delegates it (assay judge.base_source = "
                         "\"request\"), and for conjunction lanes carrying a "
@@ -21795,6 +22343,27 @@ def _dispatch(argv: list[str] | None = None, *,
         args.lane_args = lane_args
         args.jobs_request = parse_r2_jobs_cli(args.jobs)
         args.workers_request = parse_workers_cli(args.workers)
+        validate_job_event_options(args.event_file, args.job_id)
+        job_events_requested = args.event_file is not None
+        if job_events_requested:
+            validate_job_event_destination(args.event_file)
+            if (args.lane is None or args.list or args.check_env
+                    or args.help or args.version
+                    or args.lane in _NO_LANE_FACT_VERBS
+                    or args.lane in {"doctor", "history", "footprint",
+                                     "validate-pointers", "migrate-modes",
+                                     "admission", "status", "lanes"}):
+                fail("--event-file and --job-id apply to a lane run only")
+            if args.dry_run:
+                fail("--event-file and --job-id cannot be used with --dry-run")
+            if current_job_event_writer() is not None:
+                fail("nested run-gate invocations cannot use the active job "
+                     "event file")
+        # `_dispatch` can be used as a library entry, which skips `main`'s
+        # earlier refusal, so keep this guard here as well.
+        if is_pid1_without_init() and not args.version:
+            return LaneResult("ERROR", reason="pid1-without-init",
+                              _json=args.json)
         if args.prune and args.lane != "doctor":
             fail("--prune is honored by the `doctor` verb only "
                  "(run-gate doctor --prune)")
@@ -22049,6 +22618,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail(f"--worktree {args.worktree!r} selects {target_config}, "
                      f"but that worktree has no {CONFIG_NAME}; refusing to use "
                      f"the invoking checkout's config")
+        if job_events_requested:
+            event_repo, event_worktree, _event_toplevel = \
+                resolve_repo_and_worktree(project_dir, None)
+            _ACTIVE_JOB_EVENT_WRITER = open_job_event_writer(
+                args.event_file, args.job_id, args.lane,
+                worktree=event_worktree, repo=event_repo)
         (cfg, cfg_path, central, central_path,
          cfg_sha256, central_cfg_sha256) = load_config_snapshot(project_dir)
         if args.lane == "status":
@@ -22255,6 +22830,9 @@ def _dispatch(argv: list[str] | None = None, *,
             if assay_selective:
                 fail("--reuse-from, --rejudge and --rejudge-outcome apply to "
                      "one assay member, not a sequence")
+            emit_lane_started(None, None, False,
+                              reason="composite-sequence-has-no-container",
+                              lane=args.lane)
             return _dispatch_sequence(
                 args.lane, lane, args, lanes, cfg, cfg_path, central,
                 central_path, cfg_sha256, central_cfg_sha256, project_dir,
@@ -22621,6 +23199,9 @@ def _dispatch(argv: list[str] | None = None, *,
             if not env:  # built-in 'bare-host' — 'host' now resolves to a
                          # non-empty synthetic env and falls through to
                          # run_container_lane() below like any named env.
+                emit_lane_started(None, None, False,
+                                  reason="bare-host-lane-has-no-container",
+                                  lane=args.lane)
                 disclose_r2_jobs(args.lane, r2_jobs_selection)
                 budget_started_epoch, budget_started_monotonic = admit_now()
                 budget_deadline = (budget_started_monotonic
@@ -22777,14 +23358,19 @@ def _dispatch(argv: list[str] | None = None, *,
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:
+            def recheck_without_parent_events():
+                with suppress_job_events(forward_starts=True):
+                    return _dispatch(
+                        strip_job_event_options(request_argv),
+                        _admission_ticket=_admission_ticket,
+                        _admission_managed=_admission_managed,
+                        _workers_options={**workers_options, "workers": 1,
+                                          "lf": True, "no_recheck": True})
+
             result = xdist_isolation_recheck(
                 command_lane_result(code, lane), lane, record,
                 workers_options,
-                lambda: _dispatch(
-                    request_argv, _admission_ticket=_admission_ticket,
-                    _admission_managed=_admission_managed,
-                    _workers_options={**workers_options, "workers": 1,
-                                      "lf": True, "no_recheck": True}))
+                recheck_without_parent_events)
         if (lane["kind"] == "assay" and not args.dry_run
                 and result.verdict != "PASS"):
             _report_failed_assay(args.lane, record, eff_proj, repo, lane,
@@ -22935,9 +23521,15 @@ def is_pid1_without_init() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_JOB_EVENT_WRITER
     arguments = list(sys.argv[1:] if argv is None else argv)
     option_argv = (arguments[:arguments.index("--")]
                    if "--" in arguments else arguments)
+    event_flags_present = any(
+        token in ("--event-file", "--job-id")
+        or token.startswith("--event-file=")
+        or token.startswith("--job-id=")
+        for token in option_argv)
     if is_pid1_without_init() and "--version" not in option_argv:
         print(f"{PROG}: run-gate is PID 1 with no init: start the container "
               "with `--init` (Docker) or `init: true` (Compose)",
@@ -22946,6 +23538,9 @@ def main(argv: list[str] | None = None) -> int:
             "ERROR", reason="pid1-without-init",
             _json="--json" in option_argv))
     previous_scratch = _active_scratch_run()
+    previous_event_writer = _ACTIVE_JOB_EVENT_WRITER
+    nested_event_attempt = (
+        event_flags_present and current_job_event_writer() is not None)
     scratch_state = _begin_scratch_run()
     previous_sigterm = None
     try:
@@ -22999,12 +23594,22 @@ def main(argv: list[str] | None = None) -> int:
                 "ERROR",
                 reason=f"unexpected-exception: {type(exc).__name__}: {exc}",
                 _json="--json" in option_argv)
+        if nested_event_attempt:
+            # `_dispatch` returns the ordinary closed refusal result, but this
+            # nested invocation must not finish through its parent's sink.
+            with suppress_job_events():
+                return finish(result)
         return finish(result)
     finally:
         try:
             with deferred_sigterm():
                 _cleanup_scratch_run(scratch_state)
         finally:
+            active_event_writer = _ACTIVE_JOB_EVENT_WRITER
+            if active_event_writer is not previous_event_writer:
+                _ACTIVE_JOB_EVENT_WRITER = previous_event_writer
+                # The only transition from this invocation is None -> writer.
+                active_event_writer.close()
             if previous_scratch is None:
                 _end_scratch_run()
             else:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import builtins
 import hashlib
 import importlib
@@ -26,19 +27,22 @@ import mutation_campaign
 import project_fixture
 
 
-def test_registered_mutation_timeout_covers_known_good_suite():
+def test_registered_mutation_lanes_have_no_elapsed_child_limit():
     config = tomllib.loads(
         (REPO_ROOT / "cmru" / "run-gate.toml").read_text(encoding="utf-8")
     )
     for lane_name in ("mutation", "r2"):
         command = "\n".join(config["lanes"][lane_name]["argv"])
-        timeout = re.search(r"--timeout-seconds\s+([0-9]+)\b", command)
+        assert "--timeout-seconds" not in command
+        assert config["lanes"][lane_name]["exit_map"]["2"] == "ERROR"
+        assert "PYTHONUNBUFFERED=1" in command
 
-        assert timeout is not None, f"{lane_name} must declare its control timeout"
-        assert int(timeout.group(1)) >= 1800, (
-            f"{lane_name} must allow the 825-second control measured in the R2 rehearsal "
-            "more than two times to finish under contention"
-        )
+
+def test_elapsed_timeout_option_is_removed_without_a_compatibility_alias():
+    with pytest.raises(SystemExit) as error:
+        mutation_campaign._parser().parse_args(["--timeout-seconds", "1800"])
+
+    assert error.value.code == 2
 
 
 def test_disposable_fixture_copies_shared_libraries_and_estate_configs(tmp_path, monkeypatch):
@@ -753,7 +757,6 @@ def test_mutation_campaign_refuses_dirty_analysis_source_before_baseline(tmp_pat
                 "--max-mutants", "1",
                 "--evidence", str(project / ".assay" / "evidence.json"),
                 "--progress", str(project / ".assay" / "progress.jsonl"),
-                "--timeout-seconds", "1",
                 "--", sys.executable, "-m", "pytest", "tests",
             ])
     finally:
@@ -793,7 +796,7 @@ def test_mutation_resume_refusal_happens_before_baseline(tmp_path, monkeypatch):
     try:
         with pytest.raises(
             ValueError,
-            match="predates the current resource and process-tree evidence schema",
+            match="unsupported schema version; expected 8",
         ):
             mutation_campaign.run([
                 "--repo-root", str(repo),
@@ -803,7 +806,6 @@ def test_mutation_resume_refusal_happens_before_baseline(tmp_path, monkeypatch):
                 "--max-mutants", "1",
                 "--evidence", str(evidence),
                 "--progress", str(project / ".assay" / "progress.jsonl"),
-                "--timeout-seconds", "1",
                 "--resume",
                 "--", sys.executable, "-m", "pytest", "tests",
             ])
@@ -825,7 +827,7 @@ def test_resume_requires_an_assay_source_root_argument(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=[],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
@@ -844,7 +846,7 @@ def test_resume_refuses_an_explicit_none_assay_source_root(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=[],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
@@ -907,7 +909,7 @@ def test_resume_compares_assay_source_from_its_linked_worktree(
         "max_mutants": 1,
         "operators": list(mutation_campaign.OPERATORS),
         "test_argv": ["pytest", "tests"],
-        "timeout_seconds": 120,
+        "silence_policy": mutation_campaign._IDLE_BOUND_POLICY,
         "candidate_count": 1,
         "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
         "results": [{
@@ -938,7 +940,7 @@ def test_resume_compares_assay_source_from_its_linked_worktree(
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
@@ -982,6 +984,18 @@ def _process_tree_evidence(
     }
 
 
+def _silence_evidence(*, idle_window=420.0, pressure_cap=360.0, gap=30.0, output_bytes=12):
+    return {
+        "idle_window_seconds": idle_window,
+        "pressure_credit_cap_seconds": pressure_cap,
+        "pressure_credit_seconds": 0.0,
+        "max_effective_idle_seconds": idle_window + pressure_cap,
+        "longest_output_gap_upper_bound_seconds": gap,
+        "output_gap_measurement_resolution_seconds": 30.0,
+        "output_bytes": output_bytes,
+    }
+
+
 def test_process_tree_evidence_fixture_matches_the_assay_wire_schema():
     evidence = _process_tree_evidence()
 
@@ -1006,10 +1020,11 @@ def test_assay_resource_limit_advisories_are_recorded_in_candidate_evidence():
         before, after,
     )
     result = mutation_campaign._candidate_result(
-        _job(), returncode=1, elapsed_seconds=2, timed_out=False,
+        _job(), returncode=1, elapsed_seconds=2, idle_stopped=False,
         resource_limit_evidence=resource_evidence,
         resource_limit_advisories=advisories,
         process_tree_evidence=_process_tree_evidence(),
+        silence_evidence=_silence_evidence(),
     )
 
     assert isinstance(resource_evidence, ResourceLimitEvidence)
@@ -1018,7 +1033,10 @@ def test_assay_resource_limit_advisories_are_recorded_in_candidate_evidence():
     assert asdict(result)["resource_limit_advisories"] == advisories
 
 
-def test_campaign_control_unpacks_and_records_assay_resource_advisories(tmp_path, monkeypatch):
+@pytest.mark.parametrize("control_idle_timeout", [False, True])
+def test_campaign_control_unpacks_and_records_assay_resource_advisories(
+    tmp_path, monkeypatch, capsys, control_idle_timeout,
+):
     import assay
     from assay import diff as assay_diff
     from assay import mutation as assay_mutation
@@ -1054,13 +1072,30 @@ def test_campaign_control_unpacks_and_records_assay_resource_advisories(tmp_path
         lambda *, workspace, **_kwargs: workspace,
     )
     monkeypatch.setattr(mutation_campaign, "_read_resource_limit_counters", lambda: next(resource_reads))
-    monkeypatch.setattr(
-        mutation_campaign, "_run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    def fake_run(*_args, **kwargs):
+        if control_idle_timeout:
+            raise mutation_campaign.NoOutputGrowthExpired(
+                ["pytest"],
+                silence_evidence=_silence_evidence(
+                    idle_window=kwargs["idle_window_seconds"],
+                    pressure_cap=kwargs["pressure_credit_cap_seconds"],
+                ),
+                stdout="",
+                process_tree_evidence=_process_tree_evidence(
+                    leader_status="timeout-killed",
+                ),
+                descendants_killed=0,
+            )
+        return SimpleNamespace(
             returncode=0, stdout="", descendants_killed=0,
             process_tree_evidence=_process_tree_evidence(),
-        ),
-    )
+            silence_evidence=_silence_evidence(
+                idle_window=kwargs["idle_window_seconds"],
+                pressure_cap=kwargs["pressure_credit_cap_seconds"],
+            ),
+        )
+
+    monkeypatch.setattr(mutation_campaign, "_run", fake_run)
     monkeypatch.setattr(assay_git, "resolve_base", lambda *_args, **_kwargs: "base")
     monkeypatch.setattr(assay_git, "run", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(assay_diff, "parse_added_lines", lambda _diff: [])
@@ -1074,7 +1109,7 @@ def test_campaign_control_unpacks_and_records_assay_resource_advisories(tmp_path
         [
             "--repo-root", str(repo), "--project-root", str(project),
             "--assay-source", str(assay_source), "--base", "base",
-            "--max-mutants", "1", "--timeout-seconds", "1",
+            "--max-mutants", "1",
             "--evidence", str(evidence_path), "--progress", str(progress_path),
             "--", sys.executable, "-m", "pytest", "tests",
         ],
@@ -1082,10 +1117,25 @@ def test_campaign_control_unpacks_and_records_assay_resource_advisories(tmp_path
     )
 
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert result == 0
     assert evidence["baseline_resource_limit_advisories"] == [
         "cgroup[0].pids.max changed: 100 -> 120",
     ]
+    if control_idle_timeout:
+        progress = [
+            json.loads(line) for line in progress_path.read_text(encoding="utf-8").splitlines()
+        ]
+        output = capsys.readouterr().out
+        assert result == 2
+        assert evidence["status"] == "inconclusive"
+        assert evidence["baseline_exit_code"] == 124
+        assert evidence["baseline_termination"] == "no-output"
+        assert evidence["candidate_silence_bounds"] is None
+        assert evidence["results"] == []
+        assert progress[-1]["status"] == "inconclusive"
+        assert "exit=2" in output
+        assert "passed" not in output
+    else:
+        assert result == 0
 
 
 @pytest.mark.parametrize("candidate_limit_hit", [False, True])
@@ -1137,6 +1187,10 @@ def test_campaign_candidate_unpacks_and_records_assay_resource_advisories(
             stdout="",
             descendants_killed=0,
             process_tree_evidence=_process_tree_evidence(),
+            silence_evidence=_silence_evidence(
+                idle_window=_kwargs["idle_window_seconds"],
+                pressure_cap=_kwargs["pressure_credit_cap_seconds"],
+            ),
         )
 
     def copy_candidate_fixture(*, workspace, project_prefix, **_kwargs):
@@ -1169,7 +1223,7 @@ def test_campaign_candidate_unpacks_and_records_assay_resource_advisories(
     argv = [
         "--repo-root", str(repo), "--project-root", str(project),
         "--assay-source", str(assay_source), "--base", "base",
-        "--max-mutants", "1", "--timeout-seconds", "1",
+        "--max-mutants", "1",
         "--evidence", str(evidence_path), "--progress", str(progress_path),
         "--", sys.executable, "-m", "pytest", "tests",
     ]
@@ -1186,7 +1240,7 @@ def test_campaign_candidate_unpacks_and_records_assay_resource_advisories(
 
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     candidate_record = evidence["results"][0]
-    assert evidence["schema_version"] == 6
+    assert evidence["schema_version"] == mutation_campaign.EVIDENCE_SCHEMA_VERSION
     assert candidate_record["resource_limit_advisories"] == [
         "cgroup[0].pids.max changed: 100 -> 120",
     ]
@@ -1208,19 +1262,59 @@ def test_campaign_candidate_unpacks_and_records_assay_resource_advisories(
     assert evidence["status"] == ("infrastructure-error" if candidate_limit_hit else "passed")
 
 
-def _with_process_tree_contract(document):
-    document["schema_version"] = 6
+def _with_process_tree_contract(document, *, jobs=None):
+    document["schema_version"] = mutation_campaign.EVIDENCE_SCHEMA_VERSION
     document["candidate_isolation"] = "process-tree/1"
+    identities = jobs if jobs is not None else document.get("results", [])
+    document["candidate_manifest"] = [
+        {
+            "index": index,
+            "path": item.path if hasattr(item, "path") else item["path"],
+            "line": item.site.lineno if hasattr(item, "site") else item["line"],
+            "operator": item.site.operator if hasattr(item, "site") else item["operator"],
+            "description": (
+                item.site.description if hasattr(item, "site") else item["description"]
+            ),
+        }
+        for index, item in enumerate(identities)
+    ]
+    document["candidate_count"] = len(document["candidate_manifest"])
+    document["candidate_indices"] = list(range(len(document["candidate_manifest"])))
+    document["scope"] = "whole"
+    document["shard"] = None
+    document["silence_policy"] = dict(mutation_campaign._IDLE_BOUND_POLICY)
+    document.setdefault("baseline_exit_code", 0)
+    document.setdefault("baseline_termination", "exit")
+    document.setdefault("baseline_resource_limit_evidence", _zero_resource_evidence())
     document["baseline_resource_limit_advisories"] = []
     document["baseline_process_tree_evidence"] = _process_tree_evidence()
+    document["baseline_silence_evidence"] = _silence_evidence(
+        idle_window=mutation_campaign._CONTROL_IDLE_WINDOW_SECONDS,
+        pressure_cap=mutation_campaign._pressure_credit_cap(
+            mutation_campaign._CONTROL_IDLE_WINDOW_SECONDS,
+        ),
+        gap=30.0,
+    )
+    candidate_window = mutation_campaign.candidate_idle_window_seconds(30.0)
+    candidate_pressure_cap = mutation_campaign._pressure_credit_cap(candidate_window)
+    document["candidate_silence_bounds"] = {
+        "idle_window_seconds": candidate_window,
+        "pressure_credit_cap_seconds": candidate_pressure_cap,
+        "max_effective_idle_seconds": candidate_window + candidate_pressure_cap,
+    }
     for result in document.get("results", []):
         if result is None:
             continue
         result.setdefault("resource_limit_evidence", _zero_resource_evidence())
         result.setdefault("resource_limit_advisories", [])
+        if result.get("silence_evidence") is None:
+            result["silence_evidence"] = _silence_evidence(
+                idle_window=candidate_window,
+                pressure_cap=candidate_pressure_cap,
+            )
         if result.get("outcome") == "killed":
             result.setdefault("termination", "exit")
-        status = "timeout-killed" if result.get("termination") == "timeout" else "exited"
+        status = "timeout-killed" if result.get("outcome") == "timeout" else "exited"
         result["process_tree_evidence"] = _process_tree_evidence(
             leader_status=status,
             outliving_descendants=result.get("descendants_killed", 0),
@@ -1229,7 +1323,349 @@ def _with_process_tree_contract(document):
     return document
 
 
-def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
+def _shard_evidence_document(
+    shard_index, shard_count, *, head="head", base="base", manifest_change=None,
+    missing_candidate=None, survivor_candidate=None, timeout_candidate=None,
+):
+    jobs = [_job(line=20 + index) for index in range(5)]
+    manifest = mutation_campaign._candidate_manifest(jobs)
+    if manifest_change is not None:
+        manifest[manifest_change]["description"] += " changed"
+    candidate_indices = mutation_campaign._shard_candidate_indices(
+        len(jobs), (shard_index, shard_count),
+    )
+    results = [None] * len(jobs)
+    for candidate_index in candidate_indices:
+        if candidate_index == missing_candidate:
+            continue
+        idle_stopped = candidate_index == timeout_candidate
+        returncode = 0 if candidate_index == survivor_candidate else 1
+        result = mutation_campaign._candidate_result(
+            jobs[candidate_index],
+            returncode=None if idle_stopped else returncode,
+            elapsed_seconds=1,
+            idle_stopped=idle_stopped,
+            resource_limit_evidence=ResourceLimitEvidence.from_dict(
+                _zero_resource_evidence()
+            ),
+            process_tree_evidence=_process_tree_evidence(
+                leader_status="timeout-killed" if idle_stopped else "exited",
+            ),
+            silence_evidence=_silence_evidence(),
+        )
+        results[candidate_index] = asdict(result)
+    shard_outcome = (
+        "passed"
+        if all(
+            results[index] is not None and results[index]["outcome"] == "killed"
+            for index in candidate_indices
+        )
+        else "failed"
+    )
+    return {
+        "schema_version": mutation_campaign.EVIDENCE_SCHEMA_VERSION,
+        "candidate_isolation": "process-tree/1",
+        "tool": "test fixture",
+        "assay_source": "assay",
+        "assay_source_commit": "assay-head",
+        "assay_distribution_version": "test-version",
+        "base": base,
+        "head": head,
+        "project_prefix": "cmru",
+        "max_mutants": 100,
+        "silence_policy": dict(mutation_campaign._IDLE_BOUND_POLICY),
+        "operators": list(mutation_campaign.OPERATORS),
+        "test_argv": ["pytest", "tests"],
+        "test_manifest": {"files": {}, "fixture_files": {}, "pyproject_sha256": "test"},
+        "candidate_count": len(jobs),
+        "candidate_manifest": manifest,
+        "candidate_indices": candidate_indices,
+        "scope": "shard",
+        "shard": {"index": shard_index, "count": shard_count},
+        "shard_complete": True,
+        "shard_outcome": shard_outcome,
+        "status": "partial",
+        "results": results,
+        "control_seconds": 1794.0,
+        "baseline_exit_code": 0,
+        "baseline_termination": "exit",
+        "baseline_resource_limit_evidence": _zero_resource_evidence(),
+        "baseline_resource_limit_advisories": [],
+        "baseline_process_tree_evidence": _process_tree_evidence(),
+        "baseline_silence_evidence": _silence_evidence(
+            idle_window=mutation_campaign._CONTROL_IDLE_WINDOW_SECONDS,
+            pressure_cap=mutation_campaign._pressure_credit_cap(
+                mutation_campaign._CONTROL_IDLE_WINDOW_SECONDS,
+            ),
+            gap=30.0,
+        ),
+        "candidate_silence_bounds": {
+            "idle_window_seconds": mutation_campaign.candidate_idle_window_seconds(30.0),
+            "pressure_credit_cap_seconds": mutation_campaign._pressure_credit_cap(
+                mutation_campaign.candidate_idle_window_seconds(30.0),
+            ),
+            "max_effective_idle_seconds": mutation_campaign._MAX_EFFECTIVE_IDLE_SECONDS,
+        },
+    }
+
+
+def _write_shard_document(path, document):
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def test_shard_spec_uses_assay_zero_based_syntax_and_ordered_round_robin():
+    assert mutation_campaign._parse_shard_spec("0/3") == (0, 3)
+    assert mutation_campaign._shard_candidate_indices(10, (0, 3)) == [0, 3, 6, 9]
+    assert mutation_campaign._shard_candidate_indices(10, (1, 3)) == [1, 4, 7]
+    assert mutation_campaign._shard_candidate_indices(10, (2, 3)) == [2, 5, 8]
+    with pytest.raises(ValueError, match="INDEX/COUNT"):
+        mutation_campaign._parse_shard_spec("1 of 3")
+
+
+def test_r2_lane_guard_runs_before_expensive_steps_and_forwards_only_a_shard():
+    config = tomllib.loads((REPO_ROOT / "cmru" / "run-gate.toml").read_text(encoding="utf-8"))
+    lane = config["lanes"]["r2"]
+    command = "\n".join(lane["argv"])
+
+    assert lane["accepts_args"] is True
+    assert "validate_r2_lane_args(sys.argv[1:])" in command
+    assert command.index("validate_r2_lane_args") < command.index("check_assay_source.py")
+    assert command.index("validate_r2_lane_args") < command.index("pip install")
+    assert command.index("validate_r2_lane_args") < command.index("local_baseline_facts.py")
+    assert '--resume "$@" --' in command
+
+
+def test_r2_lane_argument_guard_accepts_only_empty_or_one_shard_selector():
+    assert mutation_campaign.validate_r2_lane_args([]) is None
+    assert mutation_campaign.validate_r2_lane_args(["--shard", "1/3"]) == (1, 3)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--base", "HEAD~1"],
+        ["--help"],
+        ["--evidence", "somewhere.json"],
+        ["--shard", "0/3", "--"],
+        ["--shard", "3/3"],
+    ],
+)
+def test_r2_lane_argument_guard_refuses_overrides_and_malformed_shards(argv):
+    with pytest.raises(ValueError):
+        mutation_campaign.validate_r2_lane_args(argv)
+
+
+def test_merge_requires_exactly_one_complete_evidence_file_per_shard(tmp_path):
+    evidence_paths = [
+        _write_shard_document(
+            tmp_path / f"shard-{index}.json",
+            _shard_evidence_document(index, 3),
+        )
+        for index in range(3)
+    ]
+    output = tmp_path / "merged.json"
+
+    merged = mutation_campaign.merge_shard_evidence(
+        shard_count=3,
+        evidence_paths=evidence_paths,
+        output_path=output,
+    )
+
+    assert output.is_file()
+    assert merged["scope"] == "whole"
+    assert merged["status"] == "passed"
+    assert merged["shard"] is None
+    assert merged["candidate_indices"] == list(range(5))
+    assert all(result["outcome"] == "killed" for result in merged["results"])
+    assert [item["index"] for item in merged["shard_merge"]["shards"]] == [0, 1, 2]
+
+    cli_output = tmp_path / "cli-merged.json"
+    cli_argv = ["--merge-shards", "3"]
+    for path in evidence_paths:
+        cli_argv.extend(["--shard-evidence", str(path)])
+    cli_argv.extend(["--merge-output", str(cli_output)])
+    assert mutation_campaign._run_campaign(cli_argv, template_root=tmp_path) == 0
+    assert json.loads(cli_output.read_text(encoding="utf-8"))["scope"] == "whole"
+    with pytest.raises(ValueError, match="campaign option.*--base"):
+        mutation_campaign._run_campaign(
+            [*cli_argv, "--base", "ignored"], template_root=tmp_path,
+        )
+    assert not cli_output.exists()
+
+    with pytest.raises(ValueError, match="requires exactly 3 .* got 2"):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3,
+            evidence_paths=evidence_paths[:2],
+            output_path=tmp_path / "short-merge.json",
+        )
+
+
+@pytest.mark.parametrize(
+    ("bad_shard", "change", "message"),
+    [
+        (1, {"shard_index": 0}, "duplicate shard 0/3"),
+        (1, {"head": "other-head"}, "shard 1/3 .* head differs"),
+        (1, {"base": "other-base"}, "shard 1/3 .* base differs"),
+        (1, {"manifest_change": 0}, "shard 1/3 .* candidate_manifest differs"),
+        (2, {"missing_candidate": 2}, "shard 2/3: candidate 2 has no completed result"),
+    ],
+)
+def test_merge_refuses_duplicate_mismatched_or_incomplete_named_shards(
+    tmp_path, bad_shard, change, message,
+):
+    paths = []
+    for index in range(3):
+        shard_index = change.get("shard_index", index) if index == bad_shard else index
+        kwargs = (
+            {key: value for key, value in change.items() if key != "shard_index"}
+            if index == bad_shard else {}
+        )
+        document = _shard_evidence_document(shard_index, 3, **kwargs)
+        paths.append(_write_shard_document(tmp_path / f"shard-{index}.json", document))
+
+    with pytest.raises(ValueError, match=message):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3,
+            evidence_paths=paths,
+            output_path=tmp_path / "merged.json",
+        )
+
+
+def test_merge_marks_whole_change_failed_when_a_complete_shard_has_a_survivor(tmp_path):
+    paths = [
+        _write_shard_document(
+            tmp_path / f"shard-{index}.json",
+            _shard_evidence_document(
+                index, 3, survivor_candidate=1 if index == 1 else None,
+            ),
+        )
+        for index in range(3)
+    ]
+
+    merged = mutation_campaign.merge_shard_evidence(
+        shard_count=3,
+        evidence_paths=paths,
+        output_path=tmp_path / "merged.json",
+    )
+
+    assert merged["scope"] == "whole"
+    assert merged["status"] == "failed"
+    assert merged["results"][1]["outcome"] == "survived"
+
+
+def test_merge_keeps_candidate_timeout_in_its_own_failed_bucket(tmp_path):
+    paths = [
+        _write_shard_document(
+            tmp_path / f"shard-{index}.json",
+            _shard_evidence_document(
+                index, 3, timeout_candidate=0 if index == 0 else None,
+            ),
+        )
+        for index in range(3)
+    ]
+
+    merged = mutation_campaign.merge_shard_evidence(
+        shard_count=3,
+        evidence_paths=paths,
+        output_path=tmp_path / "merged.json",
+    )
+
+    assert merged["status"] == "failed"
+    assert merged["results"][0]["outcome"] == "timeout"
+    assert merged["results"][0]["termination"] == "no-output"
+    assert merged["results"][0]["exit_code"] == 124
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"baseline_exit_code": 2}, "baseline_exit_code must be 0"),
+        ({"baseline_resource_limit": True}, "baseline resource limit was hit"),
+        ({"baseline_tree_clean": False}, "baseline process tree is not clean"),
+        ({"head": ""}, "missing non-empty common field head"),
+        ({"assay_source_commit": ""}, "missing non-empty common field assay_source_commit"),
+        ({"candidate_count": 0}, "candidate_count must be positive"),
+        ({"test_argv": []}, "test_argv must be a non-empty string list"),
+        ({"test_manifest": {}}, "test_manifest must be non-empty"),
+        ({"operators": []}, "operators must be a non-empty string list"),
+        ({"max_mutants": 0}, "max_mutants must be positive"),
+        ({"silence_policy": {}}, "silence_policy does not match schema 8"),
+    ],
+)
+def test_merge_requires_clean_baseline_and_nonempty_common_fields(
+    tmp_path, change, message,
+):
+    paths = []
+    for index in range(3):
+        document = _shard_evidence_document(index, 3)
+        if index == 1:
+            if "baseline_exit_code" in change:
+                document["baseline_exit_code"] = change["baseline_exit_code"]
+            if change.get("baseline_resource_limit"):
+                document["baseline_resource_limit_evidence"] = _limited_resource_evidence()
+            if "baseline_tree_clean" in change:
+                document["baseline_process_tree_evidence"]["clean"] = change["baseline_tree_clean"]
+            for field in (
+                "head", "base", "project_prefix", "assay_source_commit",
+                "assay_distribution_version", "candidate_count", "test_argv",
+                "test_manifest", "operators", "max_mutants", "silence_policy",
+            ):
+                if field in change:
+                    document[field] = change[field]
+        paths.append(_write_shard_document(tmp_path / f"shard-{index}.json", document))
+
+    with pytest.raises(ValueError, match=message):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3,
+            evidence_paths=paths,
+            output_path=tmp_path / "merged.json",
+        )
+
+
+def test_refused_merge_removes_stale_pass_file_after_alias_checks(tmp_path):
+    paths = [
+        _write_shard_document(
+            tmp_path / f"shard-{index}.json",
+            _shard_evidence_document(index, 3),
+        )
+        for index in range(3)
+    ]
+    paths[1].write_text('{"schema_version": 7}\n', encoding="utf-8")
+    output = tmp_path / "merged.json"
+    output.write_text('{"scope":"whole","status":"passed"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported schema_version; expected 8, got 7"):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3,
+            evidence_paths=paths,
+            output_path=output,
+        )
+
+    assert not output.exists()
+
+
+def test_merge_same_file_alias_check_preserves_the_input_evidence_path(tmp_path):
+    evidence = _write_shard_document(
+        tmp_path / "shard.json", _shard_evidence_document(0, 1),
+    )
+    hard_link = tmp_path / "merge-hard-link.json"
+    hard_link.hardlink_to(evidence)
+
+    with pytest.raises(ValueError, match="same file as --shard-evidence"):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=1,
+            evidence_paths=[evidence],
+            output_path=hard_link,
+        )
+
+    assert evidence.is_file()
+    assert hard_link.is_file()
+
+
+def _make_resume_case(
+    tmp_path, *, baseline_advisories, candidate_advisories, jobs=None, shard=None,
+):
     repo = tmp_path / "repo"
     project = repo / "cmru"
     assay = _make_assay_source(repo)
@@ -1250,7 +1686,7 @@ def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
         ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
         stdout=subprocess.PIPE,
     ).stdout.strip()
-    job = _job()
+    jobs = list(jobs or [_job()])
     previous = {
         "schema_version": 3,
         "candidate_isolation": "subreaper/1",
@@ -1258,30 +1694,49 @@ def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
         "head": head,
         "project_prefix": "cmru",
         "assay_source_commit": head,
-        "max_mutants": 1,
+        "max_mutants": max(1, len(jobs)),
         "operators": list(mutation_campaign.OPERATORS),
         "test_argv": ["pytest", "tests"],
-        "timeout_seconds": 120,
-        "candidate_count": 1,
+        "candidate_count": len(jobs),
         "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
-        "results": [{
-            "path": job.path,
-            "line": job.site.lineno,
-            "operator": job.site.operator,
-            "description": job.site.description,
-            "exit_code": 1,
-            "outcome": "killed",
-            "resource_limit_evidence": _zero_resource_evidence(),
-        }],
+        "results": [
+            asdict(mutation_campaign._candidate_result(
+                job,
+                returncode=1,
+                elapsed_seconds=1,
+                idle_stopped=False,
+                resource_limit_evidence=ResourceLimitEvidence.from_dict(
+                    _zero_resource_evidence()
+                ),
+                process_tree_evidence=_process_tree_evidence(),
+            ))
+            for job in jobs
+        ],
     }
-    document = _with_process_tree_contract(previous)
+    document = _with_process_tree_contract(previous, jobs=jobs)
+    if shard is not None:
+        candidate_indices = mutation_campaign._shard_candidate_indices(len(jobs), shard)
+        document["scope"] = "shard"
+        document["shard"] = {"index": shard[0], "count": shard[1]}
+        document["candidate_indices"] = candidate_indices
+        document["results"] = [
+            result if index in candidate_indices else None
+            for index, result in enumerate(document["results"])
+        ]
+        document["status"] = "partial"
+        document["shard_complete"] = False
+        document["shard_outcome"] = None
     document["baseline_resource_limit_advisories"] = baseline_advisories
-    document["results"][0]["resource_limit_advisories"] = candidate_advisories
+    first_completed = next(
+        (result for result in document["results"] if result is not None), None,
+    )
+    if first_completed is not None:
+        first_completed["resource_limit_advisories"] = candidate_advisories
     evidence = project / ".assay" / "mutation-cmru.json"
     evidence.parent.mkdir()
     evidence.write_text(json.dumps(document), encoding="utf-8")
 
-    def resume_results():
+    def resume_results(shard_override=shard):
         return mutation_campaign._resume_results(
             evidence_path=evidence,
             repo_root=repo,
@@ -1293,9 +1748,10 @@ def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
             assay_source_root=assay,
             assay_git=assay_git,
             test_argv=["pytest", "tests"],
-            jobs=[job],
-            max_mutants=1,
-            timeout_seconds=120,
+            jobs=jobs,
+            max_mutants=max(1, len(jobs)),
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
+            shard=shard_override,
         )
 
     return evidence, resume_results
@@ -1314,6 +1770,30 @@ def test_resume_accepts_valid_baseline_and_candidate_resource_advisories(tmp_pat
     assert json.loads(evidence.read_text(encoding="utf-8"))[
         "baseline_resource_limit_advisories"
     ] == ["baseline advisory"]
+
+
+def test_shard_resume_reuses_only_its_recorded_candidates(tmp_path):
+    evidence, resume_results = _make_resume_case(
+        tmp_path,
+        baseline_advisories=[],
+        candidate_advisories=[],
+        jobs=[_job(line=7), _job(line=8), _job(line=9)],
+        shard=(1, 2),
+    )
+
+    resumed = resume_results()
+
+    assert resumed[0] is None
+    assert resumed[1]["outcome"] == "killed"
+    assert resumed[2] is None
+    with pytest.raises(ValueError, match="does not match this campaign"):
+        resume_results((0, 2))
+
+    document = json.loads(evidence.read_text(encoding="utf-8"))
+    document["results"][0] = dict(document["results"][1])
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="unassigned candidate 0"):
+        resume_results()
 
 
 @pytest.mark.parametrize(
@@ -1358,7 +1838,7 @@ def test_resume_refuses_missing_or_mismatched_resource_advisories(
         resume_results()
 
 
-def _run_in_subreaper_process(argv, *, cwd, timeout_seconds, output_dir, full_log=None):
+def _run_in_subreaper_process(argv, *, cwd, idle_window_seconds, output_dir, full_log=None):
     helper = '''
 import json, subprocess, sys
 from pathlib import Path
@@ -1369,7 +1849,8 @@ log = open(sys.argv[7], "w+b") if len(sys.argv) > 7 else None
 try:
     result = mutation_campaign._run(
         json.loads(sys.argv[3]), cwd=Path(sys.argv[4]),
-        timeout_seconds=float(sys.argv[5]), output_dir=Path(sys.argv[6]),
+        idle_window_seconds=float(sys.argv[5]), pressure_credit_cap_seconds=0.0,
+        pressure_reader=lambda: None, output_dir=Path(sys.argv[6]),
         full_output_log=log,
     )
     payload = {
@@ -1378,12 +1859,13 @@ try:
         "descendants_killed": result.descendants_killed,
         "process_tree_evidence": result.process_tree_evidence,
     }
-except subprocess.TimeoutExpired as exc:
+except mutation_campaign.NoOutputGrowthExpired as exc:
     payload = {
-        "timed_out": True,
-        "stdout": exc.output,
+        "idle_stopped": True,
+        "stdout": exc.stdout,
         "descendants_killed": exc.descendants_killed,
         "process_tree_evidence": exc.process_tree_evidence,
+        "silence_evidence": exc.silence_evidence,
     }
 except mutation_campaign.CandidateIsolationError as exc:
     payload = {"isolation_error": str(exc)}
@@ -1394,7 +1876,7 @@ print(json.dumps(payload))
             sys.executable, "-c", helper,
             str(Path(mutation_campaign.__file__).parent),
             str(REPO_ROOT / "assay" / "src"), json.dumps(list(argv)),
-            str(cwd), str(timeout_seconds), str(output_dir),
+            str(cwd), str(idle_window_seconds), str(output_dir),
             *([str(full_log)] if full_log is not None else []),
         ],
         cwd=cwd, capture_output=True, text=True, timeout=20, check=False,
@@ -1403,16 +1885,139 @@ print(json.dumps(payload))
     return json.loads(process.stdout)
 
 
-def test_mutation_subprocess_has_a_hard_timeout(tmp_path):
+def test_silent_hung_control_has_no_running_heartbeat_after_poll_expiries(
+        monkeypatch, tmp_path, capsys):
+    process_tree = importlib.import_module("assay.process_tree")
+    now = [0.0]
+    poll_seconds = 2.0
+    monkeypatch.setattr(
+        mutation_campaign, "_MUTATION_PROGRESS_INTERVAL_SECONDS", poll_seconds,
+    )
+
+    class FakeProcess:
+        def __init__(self):
+            self.waits = 0
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            now[0] += timeout
+            raise subprocess.TimeoutExpired(["fake-command"], timeout)
+
+    class FakeWindow:
+        def __init__(self, cleanup_seconds):
+            self.process = FakeProcess()
+            self.finished_timed_out = False
+            self.child_env = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def spawn(self, *args, **kwargs):
+            self.child_env = kwargs["env"]
+            return self.process
+
+        def finish(self, **kwargs):
+            self.finished_timed_out = kwargs.get("timed_out", False)
+            return SimpleNamespace(
+                outliving_descendants=0,
+                to_dict=lambda: {"leader_status": "timeout-killed"},
+            )
+
+    created = []
+
+    def new_window(*args, **kwargs):
+        window = FakeWindow(*args, **kwargs)
+        created.append(window)
+        return window
+
+    monkeypatch.setattr(process_tree, "ProcessTreeWindow", new_window)
+
+    with pytest.raises(mutation_campaign.NoOutputGrowthExpired):
+        mutation_campaign._run(
+            ["fake-command"], cwd=tmp_path, idle_window_seconds=7.0,
+            pressure_credit_cap_seconds=0.0,
+            progress_label="known-good control", clock=lambda: now[0],
+            pressure_reader=lambda: None,
+        )
+
+    output = capsys.readouterr().out
+    assert created[0].process.waits == 4
+    assert created[0].finished_timed_out is True
+    assert created[0].child_env["PYTHONUNBUFFERED"] == "1"
+    assert "mutation: known-good control starting" in output
+    assert "mutation: known-good control still running" not in output
+
+
+def test_running_heartbeat_requires_output_growth(monkeypatch, tmp_path, capsys):
+    process_tree = importlib.import_module("assay.process_tree")
+    now = [0.0]
+    monkeypatch.setattr(mutation_campaign, "_MUTATION_PROGRESS_INTERVAL_SECONDS", 2.0)
+
+    class FakeProcess:
+        def __init__(self):
+            self.waits = 0
+            self.output = None
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                self.output.write(b"pytest progress\n")
+                self.output.flush()
+                now[0] += timeout
+                raise subprocess.TimeoutExpired(["fake-command"], timeout)
+            if self.waits == 2:
+                now[0] += timeout
+                raise subprocess.TimeoutExpired(["fake-command"], timeout)
+            return 0
+
+    class FakeWindow:
+        def __init__(self, cleanup_seconds):
+            self.process = FakeProcess()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def spawn(self, *args, **kwargs):
+            self.process.output = kwargs["stdout"]
+            self.child_env = kwargs["env"]
+            return self.process
+
+        def finish(self, **kwargs):
+            return SimpleNamespace(
+                outliving_descendants=0,
+                to_dict=lambda: {"leader_status": "exited"},
+            )
+
+    monkeypatch.setattr(process_tree, "ProcessTreeWindow", FakeWindow)
+    result = mutation_campaign._run(
+        ["fake-command"], cwd=tmp_path, idle_window_seconds=8.0,
+        pressure_credit_cap_seconds=0.0, progress_label="candidate 1/1",
+        clock=lambda: now[0], pressure_reader=lambda: None,
+    )
+    output = capsys.readouterr().out
+    assert result.returncode == 0
+    assert output.count("mutation: candidate 1/1 still running") == 1
+    assert "output_bytes=" in output
+    assert result.silence_evidence["longest_output_gap_upper_bound_seconds"] == 4.0
+    assert "mutation: candidate 1/1 command exited 0" in output
+
+
+def test_mutation_subprocess_stops_after_no_output_growth(tmp_path):
     result = _run_in_subreaper_process(
         [sys.executable, "-c", "import time; time.sleep(30)"],
-        cwd=tmp_path, timeout_seconds=2.0, output_dir=tmp_path,
+        cwd=tmp_path, idle_window_seconds=2.0, output_dir=tmp_path,
     )
-    assert result["timed_out"] is True
+    assert result["idle_stopped"] is True
     assert result["descendants_killed"] == 0
 
 
-def test_mutation_timeout_reaps_a_setsid_grandchild_before_returning(tmp_path):
+def test_mutation_idle_stop_reaps_a_setsid_grandchild_before_returning(tmp_path):
     pid_file = tmp_path / "grandchild.pid"
     child = (
         "import os,time; os.setsid(); "
@@ -1425,11 +2030,11 @@ def test_mutation_timeout_reaps_a_setsid_grandchild_before_returning(tmp_path):
     )
     result = _run_in_subreaper_process(
         [sys.executable, "-c", parent, child],
-        cwd=tmp_path, timeout_seconds=2.0, output_dir=tmp_path,
+        cwd=tmp_path, idle_window_seconds=2.0, output_dir=tmp_path,
     )
 
     child_pid = int(pid_file.read_text(encoding="ascii"))
-    assert result["timed_out"] is True
+    assert result["idle_stopped"] is True
     assert result["descendants_killed"] >= 1
     assert "parent-output" in result["stdout"]
     assert "detached-output" in result["stdout"]
@@ -1452,7 +2057,7 @@ def test_mutation_normal_exit_with_setsid_grandchild_is_crashed(tmp_path):
     )
     result = _run_in_subreaper_process(
         [sys.executable, "-c", parent, child, str(pid_file)],
-        cwd=tmp_path, timeout_seconds=5, output_dir=tmp_path,
+        cwd=tmp_path, idle_window_seconds=5, output_dir=tmp_path,
     )
 
     child_pid = int(pid_file.read_text(encoding="ascii"))
@@ -1465,7 +2070,7 @@ def test_mutation_normal_exit_with_setsid_grandchild_is_crashed(tmp_path):
 def test_mutation_output_is_bounded_to_the_last_mebibyte(tmp_path):
     result = _run_in_subreaper_process(
         [sys.executable, "-c", "print('x' * ((1 << 20) + 100))"],
-        cwd=tmp_path, timeout_seconds=5, output_dir=tmp_path,
+        cwd=tmp_path, idle_window_seconds=5, output_dir=tmp_path,
     )
     assert len(result["stdout"].encode("utf-8")) == \
         mutation_campaign._CANDIDATE_OUTPUT_TAIL_BYTES
@@ -1477,7 +2082,7 @@ def test_full_output_log_keeps_everything_the_bounded_tail_drops(tmp_path):
     result = _run_in_subreaper_process(
         [sys.executable, "-c",
          "print('FIRST-LINE'); print('x' * ((1 << 20) + 100)); print('LAST-LINE')"],
-        cwd=tmp_path, timeout_seconds=10, output_dir=tmp_path, full_log=log,
+        cwd=tmp_path, idle_window_seconds=10, output_dir=tmp_path, full_log=log,
     )
     assert "FIRST-LINE" not in result["stdout"]  # the in-memory tail is bounded
     complete = log.read_text(encoding="utf-8")
@@ -1485,13 +2090,13 @@ def test_full_output_log_keeps_everything_the_bounded_tail_drops(tmp_path):
     assert len(complete) > mutation_campaign._CANDIDATE_OUTPUT_TAIL_BYTES
 
 
-def test_full_output_log_is_also_kept_when_the_command_times_out(tmp_path):
+def test_full_output_log_is_also_kept_when_the_command_is_idle_stopped(tmp_path):
     log = tmp_path / "full.log"
     result = _run_in_subreaper_process(
         [sys.executable, "-c", "print('before-hang', flush=True); import time; time.sleep(30)"],
-        cwd=tmp_path, timeout_seconds=2.0, output_dir=tmp_path, full_log=log,
+        cwd=tmp_path, idle_window_seconds=2.0, output_dir=tmp_path, full_log=log,
     )
-    assert result["timed_out"] is True
+    assert result["idle_stopped"] is True
     assert log.read_text(encoding="utf-8") == "before-hang\n"
 
 
@@ -1506,33 +2111,174 @@ def test_stream_control_output_writes_the_complete_log_to_stderr(tmp_path, capfd
 
 
 @pytest.mark.parametrize(
-    ("configured", "control", "expected"),
-    [(600, 100, 600), (600, 300, 600), (600, 439, 878), (600, 1000, 2000), (60, 0, 60)],
+    ("control_gap", "expected"),
+    [(0, 420), (50, 420), (210, 420), (211, 422), (390, 600), (480, 600)],
 )
-def test_candidate_timeout_scales_from_the_measured_control_and_never_drops_below_the_floor(
-    configured, control, expected,
+def test_candidate_idle_window_scales_from_measured_control_output_gap(
+    control_gap, expected,
 ):
-    assert mutation_campaign.candidate_timeout_seconds(configured, control) == expected
+    assert mutation_campaign.candidate_idle_window_seconds(control_gap) == expected
 
 
-def test_timeout_is_inconclusive_and_cannot_count_as_a_kill():
+@pytest.mark.parametrize("control_gap", [0.0, 30.0, 150.0, 300.0, 301.0, 450.0, 480.0])
+def test_candidate_window_stays_a_margin_above_every_known_silent_stretch(control_gap):
+    longest = max(control_gap, mutation_campaign._SUITE_SILENT_TIMEOUT_SECONDS)
+    window = mutation_campaign.candidate_idle_window_seconds(control_gap)
+
+    assert window >= control_gap + mutation_campaign._CANDIDATE_IDLE_MARGIN_SECONDS
+    assert window > longest
+    assert window >= (
+        mutation_campaign._SUITE_SILENT_TIMEOUT_SECONDS
+        + mutation_campaign._CANDIDATE_IDLE_MARGIN_SECONDS
+    )
+
+
+@pytest.mark.parametrize("control_gap", [480.001, 500.0, 600.0, 780.0])
+def test_control_gap_without_margin_under_the_cap_derives_no_candidate_window(control_gap):
+    with pytest.raises(mutation_campaign.ControlGapTooWide, match="candidate silence cap"):
+        mutation_campaign.candidate_idle_window_seconds(control_gap)
+
+
+def test_no_tracked_test_declares_a_longer_silent_timeout_than_the_policy_assumes():
+    declared = {
+        (path.name, keyword.value.value)
+        for path in (REPO_ROOT / "cmru" / "tests").rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "timeout"
+        and isinstance(keyword.value, ast.Constant)
+        and isinstance(keyword.value.value, (int, float))
+    }
+
+    assert max(value for _name, value in declared) == \
+        mutation_campaign._SUITE_SILENT_TIMEOUT_SECONDS
+
+
+def test_resumed_kill_with_an_earlier_window_merges_with_the_new_control(tmp_path):
+    documents = [_shard_evidence_document(index, 3) for index in range(3)]
+    # Shard 0 was resumed: its control measured a wider gap than the control that
+    # judged its first, reused kill (which keeps the 420s window).
+    resumed = documents[0]
+    window = mutation_campaign.candidate_idle_window_seconds(250.0)
+    cap = mutation_campaign._pressure_credit_cap(window)
+    resumed["baseline_silence_evidence"]["longest_output_gap_upper_bound_seconds"] = 250.0
+    resumed["candidate_silence_bounds"] = {
+        "idle_window_seconds": window,
+        "pressure_credit_cap_seconds": cap,
+        "max_effective_idle_seconds": window + cap,
+    }
+    first, second = resumed["candidate_indices"][:2]
+    resumed["results"][second]["silence_evidence"] = _silence_evidence(
+        idle_window=window, pressure_cap=cap,
+    )
+    assert resumed["results"][first]["silence_evidence"]["idle_window_seconds"] != window
+    paths = [
+        _write_shard_document(tmp_path / f"shard-{index}.json", document)
+        for index, document in enumerate(documents)
+    ]
+
+    merged = mutation_campaign.merge_shard_evidence(
+        shard_count=3, evidence_paths=paths, output_path=tmp_path / "merged.json",
+    )
+
+    assert merged["status"] == "passed"
+
+
+def test_merge_refuses_an_unjudged_candidate_with_foreign_silence_bounds(tmp_path):
+    documents = [_shard_evidence_document(index, 3, timeout_candidate=0) for index in range(3)]
+    documents[0]["results"][0]["silence_evidence"] = _silence_evidence(
+        idle_window=500.0, pressure_cap=280.0,
+    )
+    paths = [
+        _write_shard_document(tmp_path / f"shard-{index}.json", document)
+        for index, document in enumerate(documents)
+    ]
+
+    with pytest.raises(ValueError, match="does not match the shard's candidate bounds"):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3, evidence_paths=paths, output_path=tmp_path / "merged.json",
+        )
+
+
+@pytest.mark.parametrize(("idle_window", "pressure_cap"), [(420, 360), (500, 200), (601, 179)])
+def test_candidate_evidence_with_bounds_the_policy_cannot_derive_is_refused(
+    idle_window, pressure_cap,
+):
+    evidence = _silence_evidence(idle_window=idle_window, pressure_cap=pressure_cap)
+
+    def validate():
+        return mutation_campaign._validate_silence_evidence(
+            evidence, source="candidate", allow_control_window=False,
+        )
+
+    if (idle_window, pressure_cap) == (420, 360):
+        assert validate() is evidence
+    else:
+        with pytest.raises(ValueError, match="not ones the policy derives"):
+            validate()
+
+
+@pytest.mark.parametrize(("idle_window", "pressure_cap"), [(420, 360), (600, 180)])
+def test_pressure_credit_is_capped_inside_the_r2_stall_window(idle_window, pressure_cap):
+    credit = mutation_campaign._pressure_credit_cap(idle_window)
+
+    assert credit == pressure_cap
+    assert idle_window + credit == mutation_campaign._MAX_EFFECTIVE_IDLE_SECONDS
+    assert credit <= mutation_campaign._MAX_PRESSURE_CREDIT_SECONDS
+    assert (
+        idle_window + credit + mutation_campaign._MUTATION_PROGRESS_INTERVAL_SECONDS
+        + mutation_campaign._CANDIDATE_CLEANUP_SECONDS
+        < mutation_campaign._R2_STALL_TIMEOUT_SECONDS
+    )
+
+
+def test_memory_pressure_credit_matches_rg320_threshold_and_cap():
+    pressure = [6.0]
+    watch = mutation_campaign._OutputGrowthWatch(
+        idle_window_seconds=4.0,
+        pressure_credit_cap_seconds=2.0,
+        started_at=0.0,
+        initial_size=0,
+        clock=lambda: 0.0,
+        pressure_reader=lambda: pressure[0],
+    )
+
+    assert watch.idle_age(1.0) == 1.0
+    assert watch.idle_age(3.0) == 1.0
+    assert watch.expired(6.0) is True
+    assert watch.evidence(now=6.0, size=0)["pressure_credit_seconds"] == 2.0
+
+    no_pause = mutation_campaign._OutputGrowthWatch(
+        idle_window_seconds=4.0,
+        pressure_credit_cap_seconds=2.0,
+        started_at=0.0,
+        initial_size=0,
+        clock=lambda: 0.0,
+        pressure_reader=lambda: 5.0,
+    )
+    assert no_pause.expired(4.0) is True
+    assert no_pause.evidence(now=4.0, size=0)["pressure_credit_seconds"] == 0.0
+
+
+def test_candidate_idle_timeout_is_a_distinct_non_kill_outcome():
     result = mutation_campaign._candidate_result(
-        _job(), returncode=None, elapsed_seconds=120, timed_out=True,
+        _job(), returncode=None, elapsed_seconds=120, idle_stopped=True,
         process_tree_evidence=_process_tree_evidence(leader_status="timeout-killed"),
     )
-    assert result.outcome == "crashed"
-    assert result.termination == "timeout"
+    assert result.outcome == "timeout"
+    assert result.termination == "no-output"
     assert result.exit_code == 124
 
 
-@pytest.mark.parametrize("schema_version", [1, 2, 3, 4, 5])
-def test_legacy_resume_evidence_without_subreaper_identity_is_refused(
+@pytest.mark.parametrize("schema_version", [1, 2, 3, 4, 5, 6, 7])
+def test_legacy_resume_evidence_without_idle_bound_schema_is_refused(
         tmp_path, schema_version):
     evidence = tmp_path / "mutation.json"
     evidence.write_text(json.dumps({"schema_version": schema_version}), encoding="utf-8")
     with pytest.raises(
         ValueError,
-        match=f"predates the current resource and process-tree evidence schema.*{evidence}",
+        match=f"unsupported schema version; expected 8, got {schema_version}.*{evidence}",
     ):
         mutation_campaign._resume_results(
             evidence_path=evidence,
@@ -1547,7 +2293,7 @@ def test_legacy_resume_evidence_without_subreaper_identity_is_refused(
             test_argv=["pytest", "tests"],
             jobs=[],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
@@ -1557,7 +2303,7 @@ def test_resource_limit_event_overrides_a_test_failure_kill():
         to_dict=lambda: _limited_resource_evidence(),
     )
     result = mutation_campaign._candidate_result(
-        _job(), returncode=1, elapsed_seconds=2, timed_out=False,
+        _job(), returncode=1, elapsed_seconds=2, idle_stopped=False,
         resource_limit_evidence=evidence,
         process_tree_evidence=_process_tree_evidence(),
     )
@@ -1568,7 +2314,7 @@ def test_resource_limit_event_overrides_a_test_failure_kill():
 
 def test_descendant_leak_is_crashed_and_cannot_count_as_a_kill():
     result = mutation_campaign._candidate_result(
-        _job(), returncode=1, elapsed_seconds=2, timed_out=False,
+        _job(), returncode=1, elapsed_seconds=2, idle_stopped=False,
         descendants_killed=1,
         process_tree_evidence=_process_tree_evidence(
             outliving_descendants=1, descendants_signalled=1
@@ -1608,7 +2354,6 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
         "max_mutants": 10,
         "operators": list(mutation_campaign.OPERATORS),
         "test_argv": ["pytest", "tests"],
-        "timeout_seconds": 120,
         "candidate_count": 3,
         "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
         "results": [
@@ -1634,8 +2379,8 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
                 "operator": jobs[2].site.operator,
                 "description": jobs[2].site.description,
                 "exit_code": 124,
-                "outcome": "crashed",
-                "termination": "timeout",
+                "outcome": "timeout",
+                "termination": "no-output",
             },
         ],
     }
@@ -1661,7 +2406,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=jobs,
             max_mutants=10,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
     with pytest.raises(ValueError, match="no exact test and fixture manifest"):
@@ -1673,6 +2418,23 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
     assert resumed[0] == previous["results"][0]
     assert resumed[1] is None
     assert resumed[2] is None  # timeout outcomes are retried, never reused.
+
+    # A candidate that was not killed must carry the file's own bounds.
+    document = json.loads(evidence.read_text(encoding="utf-8"))
+    document["results"][2]["silence_evidence"]["idle_window_seconds"] += 1
+    document["results"][2]["silence_evidence"]["pressure_credit_cap_seconds"] -= 1
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="mismatched silence bounds for candidate 2"):
+        resume_results()
+    # A kill reused from an earlier run keeps that run's window.
+    document = json.loads(evidence.read_text(encoding="utf-8"))
+    document["results"][2]["silence_evidence"]["idle_window_seconds"] -= 1
+    document["results"][2]["silence_evidence"]["pressure_credit_cap_seconds"] += 1
+    document["results"][0]["silence_evidence"]["idle_window_seconds"] += 1
+    document["results"][0]["silence_evidence"]["pressure_credit_cap_seconds"] -= 1
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+    assert resume_results()[0] == document["results"][0]
+    evidence.write_text(json.dumps(_with_process_tree_contract(previous)), encoding="utf-8")
 
     with pytest.raises(ValueError, match="does not match this campaign"):
         mutation_campaign._resume_results(
@@ -1687,8 +2449,8 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
             assay_git=assay_git,
             test_argv=["pytest", "tests"],
             jobs=jobs,
-            max_mutants=10,
-            timeout_seconds=60,
+            max_mutants=11,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
@@ -1768,7 +2530,7 @@ def test_resume_refuses_changed_source(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
@@ -1805,7 +2567,6 @@ def test_resume_refuses_changed_shared_library_in_the_executed_fixture(tmp_path)
         "max_mutants": 1,
         "operators": list(mutation_campaign.OPERATORS),
         "test_argv": ["pytest", "tests"],
-        "timeout_seconds": 120,
         "candidate_count": 1,
         "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
         "results": [{
@@ -1847,7 +2608,7 @@ def test_resume_refuses_changed_shared_library_in_the_executed_fixture(tmp_path)
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
@@ -1884,7 +2645,6 @@ def test_resume_refuses_added_or_changed_test_files(tmp_path):
         "max_mutants": 1,
         "operators": list(mutation_campaign.OPERATORS),
         "test_argv": ["pytest", "tests"],
-        "timeout_seconds": 120,
         "candidate_count": 1,
         "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
         "results": [{
@@ -1928,7 +2688,7 @@ def test_resume_refuses_added_or_changed_test_files(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
     test_file.write_text("def test_ok(): assert False\n", encoding="utf-8")
@@ -1955,7 +2715,7 @@ def test_resume_refuses_added_or_changed_test_files(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
@@ -2001,7 +2761,6 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
         "max_mutants": 1,
         "operators": list(mutation_campaign.OPERATORS),
         "test_argv": ["pytest", "tests"],
-        "timeout_seconds": 120,
         "candidate_count": 1,
         "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
         "results": [{
@@ -2043,7 +2802,7 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
         test_argv=["pytest", "tests"],
         jobs=[job],
         max_mutants=1,
-        timeout_seconds=120,
+        silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
     )
     assert resumed == [previous["results"][0]]
 
@@ -2064,7 +2823,7 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
     (assay / "analysis" / "src" / "assay_analysis" / "new_module.py").unlink()
     (assay / "analysis" / "src" / "assay_analysis" / "__init__.py").write_text(
@@ -2093,7 +2852,7 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
-            timeout_seconds=120,
+            silence_policy=mutation_campaign._IDLE_BOUND_POLICY,
         )
 
 
