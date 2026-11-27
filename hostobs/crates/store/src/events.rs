@@ -1097,7 +1097,7 @@ impl ConnectionSpanTable {
 
     /// The number of spans open across the probe.
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub const fn open_count(&self) -> usize {
         self.total
     }
 

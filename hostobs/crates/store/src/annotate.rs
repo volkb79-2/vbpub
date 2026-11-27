@@ -47,6 +47,17 @@ pub struct EventReply {
     pub span: Option<u64>,
 }
 
+/// The server-observed origin of one annotation.
+#[derive(Clone, Debug)]
+pub struct Caller {
+    /// The accepted connection, which owns any span the request opens.
+    pub conn: u64,
+    /// The issuer uid.
+    pub uid: u32,
+    /// Advisory process labels.
+    pub peer: EventPeer,
+}
+
 /// A typed refusal from the annotation engine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnnotateError {
@@ -171,7 +182,7 @@ impl Annotator {
     /// Number of open spans across the probe.
     #[must_use]
     pub const fn open_spans(&self) -> usize {
-        self.spans.len()
+        self.spans.open_count()
     }
 
     /// Number of open spans held by `uid` across its connections.
@@ -185,13 +196,12 @@ impl Annotator {
     pub fn annotate<S: EventSink>(
         &mut self,
         sink: &mut S,
-        conn: u64,
-        uid: u32,
-        peer: EventPeer,
+        caller: Caller,
         request: &EventRequest,
         t_mono_ns: u64,
         real_ns: i64,
     ) -> Result<EventReply, AnnotateError> {
+        let Caller { conn, uid, peer } = caller;
         if let Some((boot_id, seq)) = &request.idempotency {
             if request.kind != EventKind::Point {
                 return Err(AnnotateError::Internal);
@@ -200,7 +210,7 @@ impl Annotator {
                 .dedupe
                 .peek(uid, &request.name, boot_id, *seq, t_mono_ns)
             {
-                return Ok(reply_from_cache(reply)?);
+                return reply_from_cache(reply);
             }
         }
 
@@ -366,8 +376,8 @@ mod tests {
     use hostobs_proto::event::decode_event_frame;
 
     use super::{
-        AnnotateError, Annotator, EventReply, EventRequest, EventSink, MAX_ANNOTATE_BUCKETS,
-        NS_PER_MILLISECOND,
+        AnnotateError, Annotator, Caller, EventReply, EventRequest, EventSink,
+        MAX_ANNOTATE_BUCKETS, NS_PER_MILLISECOND,
     };
     use crate::error::StoreError;
     use crate::events::{CtxKey, Event, EventCgroupKey, EventKind, EventPeer, Outcome};
@@ -438,7 +448,12 @@ mod tests {
         request: &EventRequest,
         now_ns: u64,
     ) -> Result<EventReply, AnnotateError> {
-        annotator.annotate(sink, conn, uid, peer(), request, now_ns, 10_000)
+        let caller = Caller {
+            conn,
+            uid,
+            peer: peer(),
+        };
+        annotator.annotate(sink, caller, request, now_ns, 10_000)
     }
 
     fn expect_ok(
@@ -700,13 +715,18 @@ mod tests {
             comm: Some(String::from("hostobs")),
             cgroup: Some(EventCgroupKey { dev: 4, inode: 9 }),
         };
+        let caller = Caller {
+            conn: 4,
+            uid: 7,
+            peer: peer.clone(),
+        };
         let first = annotator
-            .annotate(&mut sink, 4, 7, peer.clone(), &begin, 10, 100)
+            .annotate(&mut sink, caller.clone(), &begin, 10, 100)
             .expect("begin");
         let mut second = request(EventKind::Begin, "candidate.build", Some("inner"));
         second.ctx.insert(CtxKey::Run, String::from("run-7"));
         annotator
-            .annotate(&mut sink, 4, 7, peer, &second, 11, 101)
+            .annotate(&mut sink, caller, &second, 11, 101)
             .expect("nested begin");
 
         annotator.connection_closed(&mut sink, 4, 20, 900);

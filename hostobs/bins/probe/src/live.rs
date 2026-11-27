@@ -14,7 +14,7 @@ use hostobs_serve::backend::{
 use hostobs_serve::conn::{CgroupKey as PeerCgroupKey, Peer};
 use hostobs_serve::hub::ConnId;
 use hostobs_serve::selection::{Sel, Selection};
-use hostobs_store::annotate::{AnnotateError, Annotator, EventRequest, EventSink};
+use hostobs_store::annotate::{AnnotateError, Annotator, Caller, EventRequest, EventSink};
 use hostobs_store::error::StoreError;
 use hostobs_store::events::{CtxKey, Event, EventCgroupKey, EventKind, EventPeer, Outcome};
 use hostobs_store::store::Store;
@@ -324,16 +324,13 @@ impl Backend for ProbeBackend {
             clock: self.append_clock.as_ref(),
             append_failed: &mut self.append_failed,
         };
+        let caller = Caller {
+            conn: u64::from(conn.0),
+            uid: peer.uid,
+            peer: event_peer(peer),
+        };
         self.annotator
-            .annotate(
-                &mut sink,
-                u64::from(conn.0),
-                peer.uid,
-                event_peer(peer),
-                &request,
-                self.now_ns,
-                real_ns,
-            )
+            .annotate(&mut sink, caller, &request, self.now_ns, real_ns)
             .map(|reply| AnnotateReply {
                 t_mono_ns: reply.t_mono_ns,
                 span: reply.span,
