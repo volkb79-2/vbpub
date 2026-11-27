@@ -216,7 +216,7 @@ SPEC §9.
 | RG-323 | gate containers lack Assay's benchmark record and host identity inputs for effective CPU-time bounds | Enhancement | OPEN 2026-11-26 |
 | RG-324 | Run-Gate's non-judgement mapping of Assay's wall stop is not pinned to the final reason contract | Minor | OPEN 2026-11-26 |
 | RG-325 | A future Assay lane inventory schema bump needs a Run-Gate release that accepts only the new version | Minor | OPEN 2026-11-26 |
-| RG-329 | a host runner cannot trust the shared lane log for container identity or verdict | Enhancement | FIXED IN THIS BRANCH (rev 77) |
+| RG-329 | a host runner cannot trust the shared lane log for container identity or verdict | Enhancement | FIXED IN THIS BRANCH (rev 78) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`

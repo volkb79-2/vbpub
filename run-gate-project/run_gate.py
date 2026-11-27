@@ -811,19 +811,29 @@ def recognised_container_id(value) -> str | None:
     return candidate if CONTAINER_ID_RE.fullmatch(candidate) else None
 
 
-def inspect_container_id_best_effort(docker: str,
-                                     container: str) -> str | None:
-    """Return Docker's reported full id, or None without guessing."""
+def inspect_container_id_best_effort_with_status(
+        docker: str, container: str) -> tuple[str | None, bool]:
+    """Return the validated inspect id and whether nonempty output was bad."""
     try:
         result = subprocess.run(
             [docker, "inspect", "--type", "container", "--format",
              "{{.Id}}", container], capture_output=True, text=True,
             timeout=10)
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return None, False
     if result.returncode != 0:
-        return None
-    return recognised_container_id(result.stdout)
+        return None, False
+    container_id = recognised_container_id(result.stdout)
+    unrecognised = bool((result.stdout or "").strip()) and container_id is None
+    return container_id, unrecognised
+
+
+def inspect_container_id_best_effort(docker: str,
+                                     container: str) -> str | None:
+    """Return Docker's reported full id, or None without guessing."""
+    container_id, _unrecognised = \
+        inspect_container_id_best_effort_with_status(docker, container)
+    return container_id
 
 
 def emit_lane_started(container_id: str | None, image_id: str | None,
@@ -836,7 +846,7 @@ def emit_lane_started(container_id: str | None, image_id: str | None,
     published = recognised_container_id(container_id)
     unrecognised = container_id is not None and published is None
     reason_override = reason
-    if unrecognised and reason is None:
+    if unrecognised:
         reason_override = "container-id-unrecognised"
     fields = {"container_id": published, "image_id": image_id,
               "adopted": bool(adopted)}
@@ -18949,8 +18959,11 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
              f"container for the same lane. {remedy}")
     event_writer = current_job_event_writer()
     if event_writer is not None:
+        raw_container_id = state.get("id")
         container_id = recognised_container_id(
-            state.get("id") if isinstance(state, dict) else None)
+            raw_container_id)
+        unrecognised_id = (raw_container_id is not None
+                           and container_id is None)
         mount_sources = inspect_container_mount_sources(
             docker, container_id or name)
         validate_job_event_destination(
@@ -18966,7 +18979,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         else:
             emit_lane_started(
                 None, None, True,
-                reason="inflight-container-identity-unverified",
+                reason=("container-id-unrecognised" if unrecognised_id else
+                        "inflight-container-identity-unverified"),
                 lane=lane_name)
     # A lost container or a `--fresh` discard starts under today's config and
     # must keep the fresh run's mode. Arm the recorded identity only after
@@ -19475,8 +19489,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     raw_started_id = ((started.stdout or "").strip().splitlines()
                       or [None])[-1]
     started_container_id = recognised_container_id(raw_started_id)
+    unrecognised_id = (raw_started_id is not None
+                       and started_container_id is None)
     if event_writer is not None and not started_container_id:
-        started_container_id = inspect_container_id_best_effort(docker, name)
+        (started_container_id,
+         inspect_unrecognised_id) = inspect_container_id_best_effort_with_status(
+             docker, name)
+        unrecognised_id = unrecognised_id or inspect_unrecognised_id
     image_id = image_error = None
     if isinstance(selection, dict) or event_writer is not None:
         image_target = (started_container_id
@@ -19489,9 +19508,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                       if image_id is None else None)
             emit_lane_started(started_container_id, image_id, False,
                               reason=reason, lane=lane_name)
-        elif raw_started_id:
-            # A `docker run` that SUCCEEDED but whose stdout was not a full
-            # container id, and whose inspect fallback found none either.
+        elif unrecognised_id:
+            # Neither Docker's stdout nor a nonempty inspect fallback gave a
+            # full id, so the event names the rejected identity source.
             emit_lane_started(
                 None, None, False,
                 reason="container-id-unrecognised",
@@ -19799,10 +19818,16 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     event_writer = current_job_event_writer()
     if event_writer is not None and not dry_run:
         inspected = container_state(docker, name)
+        raw_container_id = inspected.get("id") if inspected else None
         container_id = recognised_container_id(
-            inspected.get("id") if inspected else None)
+            raw_container_id)
+        unrecognised_id = (raw_container_id is not None
+                           and container_id is None)
         if not container_id:
-            container_id = inspect_container_id_best_effort(docker, name)
+            (container_id,
+             inspect_unrecognised_id) = \
+                inspect_container_id_best_effort_with_status(docker, name)
+            unrecognised_id = unrecognised_id or inspect_unrecognised_id
         mount_sources = inspect_container_mount_sources(
             docker, container_id or name)
         validate_job_event_destination(
@@ -19819,7 +19844,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         else:
             emit_lane_started(
                 None, None, True,
-                reason="exec-runner-inspect-returned-no-container-id",
+                reason=("container-id-unrecognised" if unrecognised_id else
+                        "exec-runner-inspect-returned-no-container-id"),
                 lane=lane_name)
             exec_target = name
     else:
