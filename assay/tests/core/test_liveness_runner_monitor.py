@@ -2148,6 +2148,56 @@ def test_the_window_stays_open_across_setup_and_a_slow_call(
     assert clock.t >= 61.0
 
 
+def test_progress_reader_uses_session_owner_pid_and_ignores_nested_pytest(
+    tmp_path: Path,
+) -> None:
+    """A pytest wrapper can spawn the session-owning interpreter as a child.
+
+    Its stamped session pid owns progress even when it differs from the pid
+    Assay spawned. A nested pytest's records still do not close or overlap
+    that owner's per-test window.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7113)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    records = [
+        {"event": "session_start", "pid": 8110},
+        {"event": "test_start", "nodeid": "t::owned", "pid": 8110},
+        {"event": "phase", "when": "setup", "nodeid": "t::owned", "pid": 8110},
+        # The nested interpreter sees the same nodeid but cannot close the
+        # owning session's test window.
+        {"event": "test_finish", "nodeid": "t::owned", "pid": 8111},
+    ]
+    written = {"done": False}
+
+    def reader(_spawned_pid: int) -> float:
+        if not written["done"]:
+            for record in records:
+                _append_event(events_path, record)
+            written["done"] = True
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::owned": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("timeout", "3600", "python", "-m", "pytest", "-q"), env={}, cwd=cwd, timeout=90.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound"
+    assert evidence["test_nodeid"] == "t::owned"
+    assert evidence["completed_events"] == 1
+    assert evidence["per_test_cpu_s"] >= 60.0
+    assert clock.t >= 60.0
+
+
 def test_a_rerun_of_one_nodeid_opens_a_new_window(tmp_path: Path) -> None:
     """The window is keyed on the `test_start` RECORD, not on the nodeid: a
     suite that runs one nodeid twice (a retry, a repeated parameter) must give
