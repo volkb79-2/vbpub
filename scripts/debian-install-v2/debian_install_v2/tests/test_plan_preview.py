@@ -80,7 +80,7 @@ def test_swap_preview_uses_the_filesystem_label_and_names_fstab_partuuid_binding
     swaps = [row for row in result["plan_table"] if row["entry"] == "swap"]
 
     assert [row["identifier"] for row in swaps] == [f"LABEL=vbpub-swap{offset}" for offset in range(1, 5)]
-    assert [row["number"] for row in swaps] == [6, 7, 8, 9]
+    assert [row["number"] for row in swaps] == [5, 6, 7, 8]
     assert "PARTUUID" in result["assumptions"][-1]
     assert "Identifier" in format_table(result["plan_table"])
 
@@ -136,7 +136,10 @@ def test_auto_swap_requires_ram_and_fit_refusal_prints_capacity_table():
         partitioning={}, swap_policy="on", swap_disk_total_gb=16,
         preserve_root_size_gb=10,
     )
-    with pytest.raises(PlanPreviewError, match="(?s)Resolved capacity table.*disk.*root-start.*usable-plan-end"):
+    with pytest.raises(
+        PlanPreviewError,
+        match=r"(?s)root is .*below the minimum.*Resolved plan table \(GiB\):.*LABEL=vbpub-swap4",
+    ):
         resolve_plan(too_small, disk_size="20GiB")
 
 

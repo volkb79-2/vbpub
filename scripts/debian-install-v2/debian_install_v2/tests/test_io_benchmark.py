@@ -45,10 +45,14 @@ class SimDisk(HostActions):
         self.findmnt_output = "/dev/vda3 / ext4\n"
         self.swap_output = ""
         self.signatures: dict[str, str] = {}
+        self.partition_tables: dict[str, str] = {}
+        self.extent_probe_output = ""
+        self.extent_probe_error: Exception | None = None
         self.partuuid_output = PARTUUID
         self.events: list[str] = []
         self.table_writes: list[dict[int, dict[str, str]]] = []
         self.crash_after_table_write: int | None = None
+        self.runner_signature_snapshots: list[tuple[str, str]] = []
         # What the fake runner records; a test may drop or invalidate a key.
         self.iobench_results: dict[str, object] | None = None
 
@@ -114,14 +118,25 @@ class SimDisk(HostActions):
             return self.findmnt_output
         if name == "swapon" and "--show=NAME,TYPE,SIZE,PRIO" in argv:
             return self.swap_output
+        if name == "blkid" and "-O" in argv:
+            if self.extent_probe_error is not None:
+                raise self.extent_probe_error
+            return self.extent_probe_output
         if name == "blkid" and "PARTUUID" in argv:
             return self.partuuid_output
+        if name == "blkid" and "PTTYPE" in argv:
+            return self.partition_tables.get(argv[-1], "")
         if name == "blkid" and "TYPE" in argv:
             return self.signatures.get(argv[-1], "")
         if name == "wipefs":
             self.signatures.pop(argv[-1], None)
             return ""
         if name == "iobench-install-runner":
+            target = argv[argv.index("--target") + 1]
+            signature = self.signatures.get(target, "")
+            self.runner_signature_snapshots.append((target, signature))
+            if signature:
+                raise ActionError(f"fake runner refuses target with signature {signature}")
             # The runner records exactly what its calibration produced; a test
             # may seed fewer coefficients than the six the step needs.
             results = RESULTS if self.iobench_results is None else self.iobench_results
@@ -217,7 +232,7 @@ def test_install_benchmark_uses_the_exact_temporary_tail_swap_span(tmp_path):
     assert actions[run].argv[6] == str(32 * GIB)
     assert not any("--force" in action.argv or "-N" in action.argv for action in actions)
     assert disk.table[span_number]["name"] == SWAP_SPAN_PARTLABEL
-    assert disk.table[span_number]["type"].lower() == LINUX_FS_TYPE_GUID
+    assert disk.table[span_number]["type"].lower() == LINUX_FS_TYPE_GUID.lower()
     assert not any(
         Path(action.argv[0]).name in {"mkfs.ext4", "mkfs.btrfs", "mkfs.xfs", "mount", "umount"}
         and span_device in action.argv
@@ -227,6 +242,127 @@ def test_install_benchmark_uses_the_exact_temporary_tail_swap_span(tmp_path):
     assert f"PARTUUID={PARTUUID}" in step(installer)["detail"]
     assert "start=" in step(installer)["detail"] and "size=" in step(installer)["detail"]
     assert ("iobench-install-runner", IO_BENCHMARK_OUTER_TIMEOUT_S["quick"]) in disk.timeouts
+
+
+@pytest.mark.parametrize(
+    ("probe_output", "probe_error"),
+    [
+        ("", ActionError("action failed (2): blank extent")),
+        ("TYPE=swap\n", None),
+    ],
+)
+def test_fresh_span_probe_accepts_blank_or_swap_extent_before_table_write(
+    tmp_path, probe_output, probe_error,
+):
+    installer, disk = make(tmp_path)
+    disk.load_entries({3: disk.table[3]})
+    disk.extent_probe_output = probe_output
+    disk.extent_probe_error = probe_error
+
+    installer._prepare_swap_span_benchmark()
+
+    probe = next(
+        i for i, action in enumerate(disk.planned)
+        if Path(action.argv[0]).name == "blkid" and "-O" in action.argv
+    )
+    write = next(
+        i for i, action in enumerate(disk.planned)
+        if Path(action.argv[0]).name == "sfdisk" and "--force" in action.argv
+    )
+    assert probe < write
+
+
+@pytest.mark.parametrize("signature", ["TYPE=crypto_LUKS\n", "PTTYPE=gpt\n"])
+def test_foreign_extent_signature_is_refused_before_first_table_write(
+    tmp_path, signature,
+):
+    installer, disk = make(tmp_path)
+    disk.load_entries({3: disk.table[3]})
+    disk.extent_probe_output = signature
+
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_foreign_signature") as raised:
+        installer._prepare_swap_span_benchmark()
+
+    assert "manual recovery" in str(raised.value)
+    assert not disk.table_writes
+    assert not any(
+        Path(action.argv[0]).name == "sfdisk" and "--force" in action.argv
+        for action in disk.planned
+    )
+
+
+def test_extent_probe_io_error_refuses_before_table_write(tmp_path):
+    installer, disk = make(tmp_path)
+    disk.load_entries({3: disk.table[3]})
+    disk.extent_probe_error = ActionError("action failed (1): device read error")
+
+    with pytest.raises(InstallerError, match="cannot probe planned swap-span extent"):
+        installer._prepare_swap_span_benchmark()
+
+    assert not disk.table_writes
+
+
+def test_extent_probe_is_skipped_in_dry_run(tmp_path):
+    installer, disk = make(tmp_path)
+    installer.actions.dry_run = True
+
+    installer._probe_swap_span_extent(4, 2048, 4096)
+
+    assert not any(
+        Path(action.argv[0]).name == "blkid" and "-O" in action.argv
+        for action in disk.planned
+    )
+
+
+def test_fresh_benchmark_can_replace_an_inactive_unusual_tail_swap_layout(tmp_path):
+    installer, disk = make(tmp_path)
+    partitions, _target_root = installer._plan_swap_partitions()
+    before_root = installer._planned_before_root()
+    _number, start, size = installer._planned_tail_swap_span(partitions, before_root)
+    disk.load_entries({
+        3: dict(disk.table[3]),
+        30: {
+            "start": str(start), "size": str(size),
+            "type": installer_module.SWAP_TYPE_GUID, "name": "provider-swap",
+        },
+    })
+
+    installer._prepare_swap_span_benchmark()
+
+    assert len(disk.table_writes) == 2
+    assert not any(number == 30 for number in disk.table)
+    assert not any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
+
+
+def test_resume_does_not_replace_an_unplanned_tail_swap_layout(tmp_path):
+    installer, disk = make(tmp_path)
+    partitions, _target_root = installer._plan_swap_partitions()
+    before_root = installer._planned_before_root()
+    _number, start, size = installer._planned_tail_swap_span(partitions, before_root)
+    disk.load_entries({
+        3: dict(disk.table[3]),
+        30: {
+            "start": str(start), "size": str(size),
+            "type": installer_module.SWAP_TYPE_GUID, "name": "provider-swap",
+        },
+    })
+    installer._mark_step("io_benchmark", "started", "resuming")
+
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_state_mismatch"):
+        installer._prepare_swap_span_benchmark()
+
+    assert not disk.table_writes
+
+
+def test_benchmark_disabled_does_not_rewrite_for_gpt_names_alone(tmp_path):
+    installer, disk = make(tmp_path, run_io_benchmark=False)
+    for number, entry in disk.table.items():
+        if installer._is_swap_partition(entry):
+            entry["name"] = f"provider-name-{number}"
+
+    installer._apply_known_swap_shape()
+
+    assert not disk.table_writes
 
 
 def test_final_benchmark_step_is_not_run_twice(tmp_path):
@@ -247,8 +383,18 @@ def test_schema_one_ext4_benchmark_refusal_reaches_root_aware_validation(tmp_pat
     valid.root_fs = "ext4"
     valid._validate_root_config()
 
-    invalid, _disk = make(tmp_path / "invalid", schema_version=1, run_io_benchmark=True,
-                          swap_policy="off", swap_partition_count=1)
+    invalid_config = Config(
+        state_dir=str(tmp_path / "invalid" / "state"),
+        log_dir=str(tmp_path / "invalid" / "logs"),
+        schema_version=1,
+        run_io_benchmark=True,
+        swap_policy="off",
+        swap_partition_count=1,
+    )
+    invalid = Installer(invalid_config, SimDisk(), inspect_host=False)
+    invalid.root_disk = "vda"
+    invalid.root_partition_path = "/dev/vda3"
+    invalid.root_number = 3
     invalid.root_fs = "ext4"
     with pytest.raises(HostIdentityRefusal, match="io_benchmark_requires_tail_swap_span"):
         invalid._validate_root_config()
@@ -263,7 +409,7 @@ def test_benchmark_plan_refuses_an_unknown_partition_after_root_without_writing(
         "name": "foreign",
     }
 
-    with pytest.raises(InstallerError, match="io_benchmark_swap_span_state_mismatch"):
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_geometry_mismatch"):
         installer._plan_swap_partitions()
 
     assert not disk.table_writes
@@ -323,7 +469,9 @@ def test_benchmark_failure_is_advisory_and_leaves_cleanup_to_stage_two(tmp_path)
 
     assert step(installer)["status"] == "warned"
     assert disk.table[span_number]["name"] == SWAP_SPAN_PARTLABEL
-    assert not any(Path(action.argv[0]).name in {"wipefs", "dd"} for action in disk.planned)
+    names = [Path(action.argv[0]).name for action in disk.planned]
+    assert names.index("wipefs") < names.index("iobench-install-runner")
+    assert "dd" not in names
     # The generic advisory line names the rung the install asked for.
     assert step(installer)["detail"].startswith(f"PARTLABEL={SWAP_SPAN_PARTLABEL} ")
     assert "iobench quick failed (advisory)" in step(installer)["detail"]
@@ -372,6 +520,23 @@ def test_benchmark_refuses_when_span_has_the_wrong_gpt_type(tmp_path):
         installer._run_io_benchmark()
 
     assert not disk.table_writes
+
+
+def test_span_identity_is_rechecked_after_fio_package_setup(tmp_path):
+    installer, disk = make(tmp_path)
+    span_number = make_span(installer, disk)
+
+    def change_span(*_args):
+        disk.table[span_number]["start"] = str(int(disk.table[span_number]["start"]) + 2048)
+
+    installer._packages = change_span
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_identity_changed"):
+        installer._run_io_benchmark()
+
+    assert not any(
+        Path(action.argv[0]).name in {"wipefs", "iobench-install-runner"}
+        for action in disk.planned
+    )
 
 
 def test_benchmark_requires_the_span_at_the_planned_partition_number(tmp_path):
@@ -474,7 +639,7 @@ def test_resume_refuses_data_area_without_its_tail_swaps(tmp_path):
     installer, disk = make(
         tmp_path,
         partitioning={"data": {"kind": "partitions", "volumes": [
-            {"size": "4G", "fs": "ext4", "mount": "/data", "label": "DATA"},
+            {"size": 4, "fs": "ext4", "mount": "/data", "label": "DATA"},
         ]}},
     )
     partitions, _target_root = installer._plan_swap_partitions()
@@ -517,16 +682,17 @@ def test_fresh_case_a_benchmarks_a_span_then_wipes_and_writes_regular_swaps(tmp_
 
     assert len(disk.table_writes) == 2
     assert next(entry for entry in disk.table_writes[0].values()
-                if entry.get("name") == SWAP_SPAN_PARTLABEL)["type"].lower() == LINUX_FS_TYPE_GUID
+                if entry.get("name") == SWAP_SPAN_PARTLABEL)["type"].lower() == LINUX_FS_TYPE_GUID.lower()
     assert not any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
     assert len([entry for entry in disk.table.values() if entry.get("type", "").lower() == installer_module.SWAP_TYPE_GUID]) == 8
     table_writes = [i for i, action in enumerate(disk.planned)
                     if Path(action.argv[0]).name == "sfdisk" and "--force" in action.argv]
     runner = next(i for i, action in enumerate(disk.planned)
                   if Path(action.argv[0]).name == "iobench-install-runner")
-    wipe = next(i for i, action in enumerate(disk.planned) if Path(action.argv[0]).name == "wipefs")
-    zero = next(i for i, action in enumerate(disk.planned) if Path(action.argv[0]).name == "dd")
-    assert len(table_writes) == 2 and table_writes[0] < runner < wipe < zero < table_writes[1]
+    wipes = [i for i, action in enumerate(disk.planned) if Path(action.argv[0]).name == "wipefs"]
+    assert len(table_writes) == 2 and len(wipes) == 2
+    assert table_writes[0] < wipes[0] < runner < wipes[1] < table_writes[1]
+    assert not any(Path(action.argv[0]).name == "dd" for action in disk.planned)
 
 
 def test_existing_swap_signatures_are_allowed_and_erased_by_the_span_cycle(tmp_path):
@@ -541,6 +707,21 @@ def test_existing_swap_signatures_are_allowed_and_erased_by_the_span_cycle(tmp_p
     assert len(disk.table_writes) == 2
     assert not any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
     assert f"/dev/vda{first_tail_swap}" not in disk.signatures
+    assert disk.runner_signature_snapshots == [(f"/dev/vda{first_tail_swap}", "")]
+
+
+def test_fake_runner_refuses_to_start_when_a_signature_remains(tmp_path):
+    installer, disk = make(tmp_path)
+    span_number = make_span(installer, disk)
+    installer._run_io_benchmark()
+    runner = next(
+        action.argv for action in disk.planned
+        if Path(action.argv[0]).name == "iobench-install-runner"
+    )
+    disk.signatures[f"/dev/vda{span_number}"] = "swap"
+
+    with pytest.raises(ActionError, match="fake runner refuses target with signature swap"):
+        disk.run(list(runner))
 
 
 def test_case_b_root_shrink_table_is_resumed_as_planned_swaps_then_span(tmp_path):
@@ -598,7 +779,7 @@ def test_unrecognized_resume_shape_is_refused_without_table_write(tmp_path, monk
     monkeypatch.setattr(
         installer,
         "_validate_swap_span_table_replacement",
-        lambda *_args: ("unknown", (4, 100, 200)),
+        lambda *_args, **_kwargs: ("unknown", (4, 100, 200)),
     )
 
     with pytest.raises(InstallerError, match="io_benchmark_swap_span_state_mismatch"):
@@ -623,6 +804,87 @@ def test_resume_recovers_a_crash_after_either_table_write(tmp_path, crash_after)
     assert step(installer)["status"] == "success"
 
 
+def test_stage2_resume_with_live_span_checks_layout_disables_swap_and_finishes(tmp_path):
+    installer, disk = make(
+        tmp_path,
+        run_zswap_config=False,
+        run_cgroup2_config=False,
+        run_ksm=False,
+        run_oomd_config=False,
+        run_fstrim=False,
+        run_auto_reboot=False,
+    )
+    make_span(installer, disk)
+    set_benchmark_step(installer, "started", span_identity=True)
+    installer._read_fstab_lines = lambda: []
+    checked_layouts = []
+    check_layout = installer._swap_partitions_already_planned_in_table
+
+    def observe_layout():
+        had_span = any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
+        result = check_layout()
+        checked_layouts.append((had_span, result))
+        return result
+
+    installer._swap_partitions_already_planned_in_table = observe_layout
+    for name in (
+        "_configure_control_plane_memory_min",
+        "_configure_iocost",
+        "_grow_root_to_plan",
+        "_configure_root_cap_boot_guards",
+        "_activate_swap_partitions",
+        "_health_gate_swap_devices",
+        "_verify_control_plane_memory_min",
+        "_run_cpu_benchmark",
+        "_release_apt_timers",
+        "_cleanup_cloud_init_cache",
+    ):
+        setattr(installer, name, lambda *_args, **_kwargs: None)
+
+    installer._stage2()
+
+    assert checked_layouts == [(True, False)]
+    assert installer.state.load()["steps"]["swap_backing_cleanup"]["status"] == "success"
+    assert len([action for action in disk.planned if Path(action.argv[0]).name == "iobench-install-runner"]) == 1
+    assert len([table for table in disk.table_writes
+                if any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in table.values())]) == 0
+    assert not any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
+    assert installer.state.load()["status"] == "success"
+
+
+def test_resume_after_sfdisk_then_partx_failure_uses_live_span_without_rewriting_it(tmp_path):
+    installer, disk = make(tmp_path)
+    retry = installer._run_with_retries
+    failed = {"once": False}
+
+    def fail_first_partx(argv, description, *args, **kwargs):
+        if Path(argv[0]).name == "partx" and not failed["once"]:
+            failed["once"] = True
+            raise ActionError("simulated partx failure after sfdisk")
+        return retry(argv, description, *args, **kwargs)
+
+    installer._run_with_retries = fail_first_partx
+    with pytest.raises(ActionError, match="simulated partx failure"):
+        installer._prepare_swap_span_benchmark()
+
+    span_writes_after_crash = [
+        table for table in disk.table_writes
+        if any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in table.values())
+    ]
+    assert len(span_writes_after_crash) == 1
+    assert not any(Path(action.argv[0]).name == "iobench-install-runner" for action in disk.planned)
+
+    installer._prepare_swap_span_benchmark()
+
+    span_writes_after_resume = [
+        table for table in disk.table_writes
+        if any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in table.values())
+    ]
+    assert len(span_writes_after_resume) == 1
+    assert len(disk.table_writes) == 2
+    assert not any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
+
+
 def test_final_benchmark_without_a_matching_table_shape_is_refused(tmp_path):
     installer, disk = make(tmp_path)
     disk.load_entries({3: disk.table[3]})
@@ -644,10 +906,13 @@ def test_advisory_benchmark_failure_still_wipes_span_and_restores_planned_swaps(
     assert step(installer)["status"] == "warned"
     assert not any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
     names = [Path(action.argv[0]).name for action in disk.planned]
-    assert names.index("iobench-install-runner") < names.index("wipefs") < names.index("dd")
+    wipes = [i for i, name in enumerate(names) if name == "wipefs"]
+    assert len(wipes) == 2
+    assert wipes[0] < names.index("iobench-install-runner") < wipes[1]
+    assert "dd" not in names
 
 
-def test_unreapable_runner_leaves_span_unwiped_and_does_not_repartition(tmp_path):
+def test_unreapable_runner_preserves_span_and_names_operator_recovery(tmp_path):
     installer, disk = make(tmp_path)
     disk.fail["iobench-install-runner"] = ActionUnreapable("runner process could not be reaped")
 
@@ -656,7 +921,11 @@ def test_unreapable_runner_leaves_span_unwiped_and_does_not_repartition(tmp_path
 
     assert len(disk.table_writes) == 1
     assert any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
-    assert not any(Path(action.argv[0]).name in {"wipefs", "dd"} for action in disk.planned)
+    names = [Path(action.argv[0]).name for action in disk.planned]
+    assert names.count("wipefs") == 1
+    assert names.index("wipefs") < names.index("iobench-install-runner")
+    assert "dd" not in names
+    assert "operator recovery" in step(installer)["detail"]
     span_number = next(number for number, entry in disk.table.items()
                        if entry.get("name") == SWAP_SPAN_PARTLABEL)
     span_device = f"/dev/vda{span_number}"
@@ -665,12 +934,35 @@ def test_unreapable_runner_leaves_span_unwiped_and_does_not_repartition(tmp_path
         for action in disk.planned
     )
 
-    with pytest.raises(InstallerError, match="io_benchmark_unreapable_span"):
+    with pytest.raises(InstallerError, match="io_benchmark_unreapable_span") as raised:
         installer._prepare_swap_span_benchmark()
 
     assert len(disk.table_writes) == 1
     assert any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
-    assert not any(Path(action.argv[0]).name in {"wipefs", "dd"} for action in disk.planned)
+    assert [Path(action.argv[0]).name for action in disk.planned].count("wipefs") == 1
+    assert "operator recovery" in str(raised.value)
+
+
+def test_unreapable_fio_package_step_is_not_reported_as_iobench(tmp_path):
+    installer, disk = make(tmp_path)
+    make_span(installer, disk)
+
+    def unreapable_packages(*_args):
+        raise ActionUnreapable("apt process could not be reaped")
+
+    installer._packages = unreapable_packages
+    with pytest.raises(InstallerError, match="fio package installation could not be reaped") as raised:
+        installer._run_io_benchmark()
+
+    package_step = step(installer, "io_benchmark_packages")
+    assert package_step["status"] == "failed"
+    assert "operator recovery" in package_step["detail"]
+    assert "iobench could not be reaped" not in package_step["detail"]
+    assert not any(
+        Path(action.argv[0]).name in {"wipefs", "iobench-install-runner"}
+        for action in disk.planned
+    )
+    assert "runner has not started" in str(raised.value)
 
 
 def test_no_tail_swap_span_is_warned_when_all_swap_is_retained_before_root(tmp_path):
@@ -905,7 +1197,7 @@ def test_unrelated_data_geometry_is_refused_before_span_conversion(tmp_path):
     installer, disk = make(
         tmp_path,
         partitioning={"data": {"kind": "partitions", "volumes": [
-            {"size": "4G", "fs": "ext4", "mount": "/data", "label": "DATA"},
+            {"size": 4, "fs": "ext4", "mount": "/data", "label": "DATA"},
         ]}},
     )
     data_number = next(number for number, entry in disk.table.items() if entry.get("name") == "DATA")
@@ -936,6 +1228,30 @@ def test_span_is_not_benchmarked_or_wiped_when_in_use_or_foreign_signed(tmp_path
     assert not any(Path(action.argv[0]).name in {"iobench-install-runner", "wipefs", "dd"}
                    for action in disk.planned)
     assert not disk.table_writes
+
+
+@pytest.mark.parametrize("kind", ["swap", "span"])
+def test_nested_partition_table_on_swap_or_span_is_foreign(tmp_path, kind):
+    installer, disk = make(tmp_path)
+    if kind == "span":
+        number = make_span(installer, disk)
+        operation = installer._run_io_benchmark
+    else:
+        partitions, _target_root = installer._plan_swap_partitions()
+        number = installer._tail_swap_numbers(
+            len(partitions), installer._planned_before_root()
+        )[0]
+        operation = lambda: installer._apply_known_swap_shape(tail_swap_span=True)
+    disk.partition_tables[f"/dev/vda{number}"] = "gpt"
+
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_foreign_signature"):
+        operation()
+
+    assert not disk.table_writes
+    assert not any(
+        Path(action.argv[0]).name in {"wipefs", "iobench-install-runner"}
+        for action in disk.planned
+    )
 
 
 def test_final_benchmark_span_identity_mismatch_stops_before_wipe(tmp_path):

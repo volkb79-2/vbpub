@@ -319,16 +319,32 @@ def test_schema_one_still_loads_and_means_ext4():
         )
 
 
-def test_btrfs_install_benchmark_keeps_its_named_refusal_without_the_legacy_key():
-    with pytest.raises(layout_policy.LayoutPolicyError, match="btrfs_iobench_raw_unavailable"):
-        layout_policy.disk_spec(
-            {"root": "*", "reserve_gb": 0},
-            root_fs="btrfs",
-            schema_version=2,
-            swap_policy="off",
-            swap_partition_count=0,
-            run_io_benchmark=True,
-        )
+@pytest.mark.parametrize("partitioning", [
+    {"root": "*", "reserve_gb": 0},
+    {"root": "*", "reserve_gb": 0, "iobench_raw_gb": False},
+])
+def test_btrfs_install_benchmark_request_is_accepted_but_stage_two_skips_it(
+    tmp_path, partitioning,
+):
+    spec = layout_policy.disk_spec(
+        partitioning,
+        root_fs="btrfs",
+        schema_version=2,
+        swap_policy="off",
+        swap_partition_count=0,
+        run_io_benchmark=True,
+    )
+    assert spec.partition_count == 0
+
+    installer = _btrfs_installer(
+        tmp_path,
+        partitioning=partitioning,
+        config_overrides={"run_io_benchmark": True},
+    )
+    installer._validate_root_config()
+    installer._stage2()
+    assert installer.state.data["steps"]["io_benchmark"]["status"] == "skipped"
+    assert "iobench_raw_unavailable_on_btrfs" in installer.state.data["steps"]["io_benchmark"]["detail"]
 
 
 def test_schema_two_btrfs_subvolume_config_loads_and_is_accepted():
@@ -809,7 +825,7 @@ def test_btrfs_iocost_ignores_a_stale_benchmark_file_and_names_the_skip(tmp_path
     step = installer.state.data["steps"]["iocost"]
     assert step["status"] == "skipped"
     assert "iocost_not_configured_btrfs" in step["detail"]
-    assert "Q-A" in step["detail"]
+    assert "install-time benchmark import on a btrfs root is pending" in step["detail"]
     assert actions.planned[0].argv == (
         "/usr/bin/systemctl", "disable", "vbpub-iocost.service",
     )

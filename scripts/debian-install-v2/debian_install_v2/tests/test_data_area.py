@@ -426,18 +426,21 @@ def test_default_layout_has_no_permanent_iobench_partition(tmp_path):
 
 
 def test_install_benchmark_targets_the_temporary_tail_swap_span(tmp_path):
-    installer = _planner(tmp_path)
-    installer.config = Config(**{**installer.config.__dict__, "run_io_benchmark": True})
-    StateStore(installer.config.state_dir).save_new(StateStore.new(installer.config))
+    from .test_io_benchmark import make as make_iobench, make_span
+
+    installer, disk = make_iobench(tmp_path)
+    span_number = make_span(installer, disk)
 
     installer._run_io_benchmark()
 
-    actions = installer.actions.planned
+    actions = disk.planned
     run_index = next(i for i, action in enumerate(actions) if action.argv[0].endswith("iobench-install-runner"))
-    assert not any(action.argv[0].endswith("wipefs") for action in actions)
-    assert actions[run_index].argv[4] == "/dev/vda5"
+    wipe_index = next(i for i, action in enumerate(actions) if action.argv[0].endswith("wipefs"))
+    assert actions[run_index].argv[4] == f"/dev/vda{span_number}"
     swaps, _root = installer._plan_swap_partitions()
     assert actions[run_index].argv[6] == str(sum(size for _start, size in swaps) * 512)
+    assert wipe_index < run_index
+    assert not any(action.argv[0].endswith("dd") for action in actions)
     assert not any(
         action.argv[0].endswith(("mkfs.ext4", "mkfs.btrfs", "mkfs.xfs", "mount", "umount"))
         for action in actions

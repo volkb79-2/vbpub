@@ -29,7 +29,7 @@ from debian_install_v2.config import (
     validate_config,
 )
 from debian_install_v2.installer import IOBENCH_RESULT_KEYS
-from debian_install_v2.tests.test_io_benchmark import GIB, RESULTS, make, step
+from debian_install_v2.tests.test_io_benchmark import GIB, RESULTS, make, make_span, step
 
 PROJECT = Path(__file__).resolve().parents[2]
 RUNNER = PROJECT / "tools" / "iobench-install-runner"
@@ -312,6 +312,7 @@ def _runner_argv(disk) -> tuple[str, ...]:
 @pytest.mark.parametrize("profile", IO_BENCHMARK_PROFILES)
 def test_each_rung_is_named_and_bounded_on_the_runner_called(tmp_path, profile):
     installer, disk = make(tmp_path, io_benchmark_profile=profile)
+    make_span(installer, disk)
     installer._run_io_benchmark()
 
     argv = _runner_argv(disk)
@@ -329,6 +330,7 @@ def test_each_rung_gets_its_own_state_dir(tmp_path):
     dirs = set()
     for profile in IO_BENCHMARK_PROFILES:
         installer, disk = make(tmp_path / profile, io_benchmark_profile=profile)
+        make_span(installer, disk)
         installer._run_io_benchmark()
         dirs.add(_runner_argv(disk)[10])
     assert dirs == {str(tmp_path / profile / "state" / "iobench" / profile) for profile in IO_BENCHMARK_PROFILES}
@@ -365,6 +367,7 @@ def test_the_runner_argv_passes_the_production_allowlist_and_the_old_shape_does_
 def test_a_failure_before_the_runner_starts_still_names_the_rung(tmp_path, profile):
     """The generic warned path (installer.py:3768) names the rung, not only its `started` detail."""
     installer, disk = make(tmp_path, io_benchmark_profile=profile)
+    make_span(installer, disk)
     disk.fail["apt-get"] = "simulated apt-get failure: install fio"   # before the runner starts
     sent: list[str] = []
     installer._notify = lambda message, **kwargs: sent.append(kwargs.get("event", message))  # type: ignore[method-assign]
@@ -377,7 +380,7 @@ def test_a_failure_before_the_runner_starts_still_names_the_rung(tmp_path, profi
     assert "simulated apt-get failure" in records["detail"]
     assert "profile=" not in records["detail"]          # the started detail is overwritten
     assert len(sent) == 1 and f"iobench {profile} failed (advisory)" in sent[0]
-    # It failed before the runner: nothing was wiped and nothing was executed.
+    # Apt failed before the runner, so the span keeps its existing signature.
     assert not any(Path(action.argv[0]).name in {"wipefs", "iobench-install-runner"}
                    for action in disk.planned)
 
@@ -385,6 +388,7 @@ def test_a_failure_before_the_runner_starts_still_names_the_rung(tmp_path, profi
 @pytest.mark.parametrize("missing", [["rbps"], ["rbps", "wbps", "wseqiops"]])
 def test_a_rung_without_every_coefficient_warns_with_the_missing_names(tmp_path, missing):
     installer, disk = make(tmp_path)
+    make_span(installer, disk)
     seeded = {key: value for key, value in RESULTS.items() if key not in missing}
     disk.iobench_results = seeded
     sent: list[str] = []
