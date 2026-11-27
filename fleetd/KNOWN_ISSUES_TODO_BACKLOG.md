@@ -62,7 +62,7 @@
 | FD-057 | Admission subprocess tests have no timeout, and the two-process test is weak | P3 | OPEN | 2026-11-26 |
 | FD-058 | Aged-holder scan can skip queue-ordered merge-gate waiters | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 | FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
-| FD-060 | A granted lease client can stay connected forever without binding | P2 | OPEN (design bound missing) | 2026-11-27 |
+| FD-060 | A granted lease client can stay connected forever without binding | P2 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 | FD-061 | Persist executor result details for terminal status | P2 | OPEN | 2026-11-27 |
 | FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b follow-up) | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
@@ -1152,18 +1152,16 @@ Source: operator ruling for P-fd-05 C3a subtask 6 (2026-11-27).
 
 ## FD-060 Granted lease never binds while its connection stays alive
 
-**State:** OPEN; waiting on an operator decision. **Priority:** P2. **Filed:** 2026-11-27.
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P2. **Filed:** 2026-11-27.
 
-Design §4.5 defines pre-bind disconnect cleanup, delayed-create refusal, and
-post-bind reconciliation, but gives no bound for a client that receives a grant,
-keeps the lease connection open, and never sends its bind frame. C3a must not
-invent a deadline: after grant the held connection has no idle timeout, and its
-flock prevents pending reconciliation while connected. The lease remains
-charged until disconnect and exact-name reconciliation confirms absence. Decide whether a future protocol needs a
-separate binding deadline and how it is made compatible with slow container
-creation.
+The required positive `agent.toml.lease_bind_timeout_s` bounds the complete
+bind frame from grant on the monotonic clock; trickled bytes do not extend the
+deadline. Expiry tombstones before inspecting the exact name, releases the
+charge only on confirmed absence, and keeps it on inspector error or presence.
+The client receives an error and the connection ends. Late create attempts are
+refused by the tombstone. The deadline ends when the bind frame completes.
 
-Source: P-fd-05 C3a round 1 review and §4.5 contract audit (2026-11-27).
+Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).
 
 ## FD-061 Persist executor result details for terminal status
 

@@ -90,12 +90,15 @@ the executor belongs to C3b.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
 `schema_version`, `idle_connection_s`, `query_timeout_s`,
-`lease_reconcile_interval_s`, `max_connections`, `identities`,
+`lease_reconcile_interval_s`, `lease_bind_timeout_s`, `max_connections`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
-`env_values`; none has a consumer-invented fallback. The three time values are
+`env_values`; none has a consumer-invented fallback. All four time values are
 positive. `lease_reconcile_interval_s` sets the exact-lease reconciliation
-period; there is no default. `max_connections` is a positive integer with no
-default and bounds ordinary local connections. `query_timeout_s` bounds each capacity,
+period; there is no default. `lease_bind_timeout_s` is also positive with no
+default; it bounds the whole bind frame from grant on the monotonic clock, so
+trickling bytes cannot extend it. It has no effect after bind. `max_connections`
+is a positive integer with no default and bounds ordinary local connections.
+`query_timeout_s` bounds each capacity,
 legacy-job-list and object-inspector callback made while the admission queue lock is held. The peer
 table maps exact UID/primary-GID pairs to a principal and group;
 forced-command entries map their trusted group argument to the same identity

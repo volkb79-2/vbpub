@@ -13,6 +13,7 @@ import select
 import socket
 import stat
 import tempfile
+import time
 import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -145,6 +146,8 @@ class AgentVerbService:
         legacy_jobs_provider: Callable[[], Iterable[str]] | None = None,
         inspector: Callable[[str], InspectorAnswer] | None = None,
         container_inspector: Callable[[str], Mapping[str, object] | None] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        lease_frame_waiter: Callable[..., tuple[list[int], list[int], list[int]]] | None = None,
     ) -> None:
         if not isinstance(agent_version, str) or _SEMVER_RE.fullmatch(agent_version) is None:
             raise AdmissionError(ExitCode.REFUSAL, "host agent version must be SemVer")
@@ -152,6 +155,8 @@ class AgentVerbService:
         self.policy = policy
         self.facts_provider = facts_provider
         self.agent_version = agent_version
+        self._monotonic = time.monotonic if monotonic is None else monotonic
+        self._lease_frame_waiter = lease_frame_waiter
         self.admission = admission or AgentAdmission(
             state_dir, policy, facts_provider,
             legacy_jobs_provider=legacy_jobs_provider, inspector=inspector,
@@ -570,7 +575,11 @@ class AgentVerbService:
                     stream, event="grant", lease_id=lease_id,
                     container_name=str(result.record["container_name"]),
                 )
-                bind_request = read_frame(stream, None)
+                bind_deadline = self._monotonic() + self.policy.lease_bind_timeout_s
+                bind_request = read_frame(
+                    stream, None, deadline=bind_deadline, clock=self._monotonic,
+                    waiter=self._lease_frame_waiter,
+                )
                 if (
                     set(bind_request) != {"event", "lease_id", "container_id"}
                     or bind_request.get("event") != "bind"

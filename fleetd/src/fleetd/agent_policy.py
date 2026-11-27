@@ -35,6 +35,7 @@ class AgentPolicy:
     idle_connection_s: float
     query_timeout_s: float
     lease_reconcile_interval_s: float
+    lease_bind_timeout_s: float
     max_connections: int
     identities: tuple[AgentIdentity, ...]
     repo_roots: Mapping[str, Path]
@@ -211,7 +212,8 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
     root = _object(
         parsed, "agent.toml",
         {"schema_version", "idle_connection_s", "query_timeout_s", "identities", "repo_roots", "requested_by_clients",
-         "extra_argv", "dev_argv", "env_values", "lease_reconcile_interval_s", "max_connections"},
+         "extra_argv", "dev_argv", "env_values", "lease_reconcile_interval_s", "lease_bind_timeout_s",
+         "max_connections"},
     )
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         raise ContractError("agent.toml.schema_version: expected integer 1")
@@ -219,6 +221,9 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
     query_timeout_s = _positive_number(root["query_timeout_s"], "agent.toml.query_timeout_s")
     lease_reconcile_interval_s = _positive_number(
         root["lease_reconcile_interval_s"], "agent.toml.lease_reconcile_interval_s",
+    )
+    lease_bind_timeout_s = _positive_number(
+        root["lease_bind_timeout_s"], "agent.toml.lease_bind_timeout_s",
     )
     max_connections = _positive_integer(root["max_connections"], "agent.toml.max_connections")
     identities = _identities(root["identities"])
@@ -245,6 +250,7 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
         env_values[name] = _string_set(values, f"agent.toml.env_values.{name}")
 
     return AgentPolicy(
-        idle_connection_s, query_timeout_s, lease_reconcile_interval_s, max_connections, identities, repo_roots, requested_by_clients,
+        idle_connection_s, query_timeout_s, lease_reconcile_interval_s, lease_bind_timeout_s,
+        max_connections, identities, repo_roots, requested_by_clients,
         extra_argv, dev_argv, env_values,
     )

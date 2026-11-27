@@ -17,6 +17,7 @@ from fleetd.admission import InspectorAnswer
 from fleetd.agent_verbs import AgentVerbService, MAX_ASSAY_PROGRESS_COUNT_BYTES
 from fleetd import agent_verbs
 from fleetd.agent_protocol import MAX_FETCH_BYTES, FrameError, read_frame, write_frame
+from fleetd.agent_server import serve_connection
 from fleetd.contracts import HostFacts, validate_host_facts
 from fleetd.facts import collect_host_facts
 from test_agent_protocol import _policy, _submit
@@ -155,7 +156,10 @@ def _body(reply):
         reply.close()
 
 
-def _lease_service(tmp_path, inspector, lease_id="controller-run-1", peer_credentials=None):
+def _lease_service(
+    tmp_path, inspector, lease_id="controller-run-1", peer_credentials=None,
+    monotonic=None, lease_frame_waiter=None,
+):
     identities = ""
     if peer_credentials is not None:
         uid, gid = peer_credentials
@@ -193,6 +197,8 @@ group = "worker"
             "id": inspected_id, "name": "rg-test",
             "labels": {"fleetd.lease": lease_id},
         },
+        monotonic=monotonic,
+        lease_frame_waiter=lease_frame_waiter,
     )
     uid, gid = (1000, 100) if peer_credentials is None else peer_credentials
     return service, policy.resolve_peer(uid, gid), facts
@@ -201,6 +207,16 @@ group = "worker"
 def _lease_worker(service, request, identity, server, outcomes, finished, on_lease_held=None):
     try:
         service.serve_lease(request, identity, server, on_lease_held=on_lease_held)
+    except BaseException as exc:
+        outcomes.append(exc)
+    finally:
+        server.close()
+        finished.set()
+
+
+def _lease_connection_worker(service, identity, server, outcomes, finished):
+    try:
+        outcomes.append(serve_connection(server, server, service, service.policy, identity))
     except BaseException as exc:
         outcomes.append(exc)
     finally:
@@ -377,6 +393,184 @@ def test_prebind_disconnect_tombstones_then_reconciles_exact_name(tmp_path):
             planned_cores=1.0, priority="gate",
         )
     assert duplicate_error.value.exit_code == ExitCode.REFUSAL
+
+
+@pytest.mark.parametrize(
+    ("inspector_mode", "expected_released"),
+    [
+        ("absent", True), ("present", False),
+        ("error_answer", False), ("exception", False),
+    ],
+)
+def test_lease_bind_deadline_tombstones_and_reconciles_exact_name(
+    tmp_path, inspector_mode, expected_released,
+):
+    inspections = []
+    expiry_inspections = []
+    bind_expired = threading.Event()
+
+    def inspect(name):
+        inspections.append(name)
+        if not bind_expired.is_set():
+            return InspectorAnswer.NO_SUCH_OBJECT
+        expiry_inspections.append(name)
+        if inspector_mode == "exception":
+            raise RuntimeError("inspector unavailable")
+        if inspector_mode == "present":
+            return InspectorAnswer.PRESENT
+        if inspector_mode == "error_answer":
+            return InspectorAnswer.ERROR
+        return InspectorAnswer.NO_SUCH_OBJECT
+
+    now = {"value": 100.0}
+    timeouts = []
+
+    def expire_wait(_readers, _writers, _errors, timeout):
+        timeouts.append(timeout)
+        bind_expired.set()
+        now["value"] += timeout
+        return [], [], []
+
+    service, identity, _facts = _lease_service(
+        tmp_path, inspect, monotonic=lambda: now["value"], lease_frame_waiter=expire_wait,
+    )
+    lease_id = "controller-run-1"
+    client, server = socket.socketpair()
+    outcomes = []
+    finished = threading.Event()
+    worker = threading.Thread(
+        target=_lease_connection_worker, args=(service, identity, server, outcomes, finished),
+    )
+    worker.start()
+    write_frame(client, {
+        "verb": "lease", "lease_id": lease_id, "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    })
+    assert read_frame(client, 3)["event"] == "grant"
+    error = read_frame(client, 3)
+
+    assert error["error"]["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    assert error["error"]["reason"] == "frame deadline expired"
+    assert set(error["error"]) == {"exit_code", "reason"}
+    assert "exit_code" not in error and "reason" not in error
+    assert outcomes == [ExitCode.IDENTITY_OR_TRANSPORT]
+    assert timeouts == [service.policy.lease_bind_timeout_s]
+    _assert_worker_finished(worker, finished)
+    record = service.admission.book.status(lease_id, identity.group)
+    assert record["state"] == "tombstone"
+    assert record["released"] is expected_released
+    assert inspections and set(inspections) == {"rg-test"}
+    assert expiry_inspections and set(expiry_inspections) == {"rg-test"}
+    with pytest.raises(AdmissionError, match="revoked lease") as delayed_create:
+        service.admission.reserve_lease(lease_id, identity, container_id="c" * 64)
+    assert delayed_create.value.exit_code == ExitCode.REFUSAL
+    client.close()
+
+
+def test_lease_bind_frame_completes_just_inside_absolute_deadline(tmp_path):
+    now = {"value": 100.0}
+    observed_timeouts = []
+
+    def become_ready_just_inside(readers, writers, errors, timeout):
+        ready = agent_verbs.select.select(readers, writers, errors, timeout)
+        observed_timeouts.append(timeout)
+        if ready[0]:
+            now["value"] = 100.0 + 10.0 - 0.001
+        return ready
+
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
+        monotonic=lambda: now["value"], lease_frame_waiter=become_ready_just_inside,
+    )
+    lease_id = "controller-run-1"
+    container_id = "c" * 64
+    client, server = socket.socketpair()
+    outcomes = []
+    finished = threading.Event()
+    worker = threading.Thread(
+        target=_lease_connection_worker, args=(service, identity, server, outcomes, finished),
+    )
+    worker.start()
+    write_frame(client, {
+        "verb": "lease", "lease_id": lease_id, "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    })
+    assert read_frame(client, 3)["event"] == "grant"
+    write_frame(client, {"event": "bind", "lease_id": lease_id, "container_id": container_id})
+    bound = read_frame(client, 3)
+    assert bound["event"] == "bound"
+    assert bound["container_id"] == container_id
+    assert now["value"] < 100.0 + service.policy.lease_bind_timeout_s
+    assert observed_timeouts
+    assert service.admission.book.status(lease_id, identity.group)["released"] is False
+    now["value"] += service.policy.lease_bind_timeout_s
+    client.close()
+    _assert_worker_finished(worker, finished)
+    assert outcomes == [ExitCode.PASS]
+
+
+def test_trickled_lease_bind_frame_cannot_extend_absolute_deadline(tmp_path):
+    now = {"value": 0.0}
+    observed_timeouts = []
+    send_next_fragment = [threading.Event(), threading.Event()]
+    advances = (3.0, 3.0, 5.0)
+
+    def trickle_waiter(readers, writers, errors, timeout):
+        call = len(observed_timeouts)
+        observed_timeouts.append(timeout)
+        if call:
+            send_next_fragment[call - 1].set()
+        ready = agent_verbs.select.select(readers, writers, errors, timeout)
+        now["value"] += advances[call]
+        return ready
+
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
+        monotonic=lambda: now["value"], lease_frame_waiter=trickle_waiter,
+    )
+    lease_id = "controller-run-1"
+    request = {
+        "event": "bind", "lease_id": lease_id, "container_id": "c" * 64,
+    }
+    bind_json = json.dumps(request, separators=(",", ":")).encode()
+    bind_frame = struct.pack(">I", len(bind_json)) + bind_json
+    client, server = socket.socketpair()
+    outcomes = []
+    finished = threading.Event()
+    worker = threading.Thread(
+        target=_lease_connection_worker, args=(service, identity, server, outcomes, finished),
+    )
+    worker.start()
+    write_frame(client, {
+        "verb": "lease", "lease_id": lease_id, "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    })
+    assert read_frame(client, 3)["event"] == "grant"
+    client.sendall(bind_frame[:1])
+    send_failures = []
+
+    def send_remaining_fragments():
+        for event, fragment in zip(send_next_fragment, (bind_frame[1:2], bind_frame[2:])):
+            if not event.wait(3):
+                send_failures.append("bind reader did not request the next fragment")
+                return
+            client.sendall(fragment)
+
+    sender = threading.Thread(target=send_remaining_fragments)
+    sender.start()
+    error = read_frame(client, 3)
+
+    assert error["error"]["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    assert error["error"]["reason"] == "frame deadline expired"
+    assert outcomes == [ExitCode.IDENTITY_OR_TRANSPORT]
+    assert now["value"] >= service.policy.lease_bind_timeout_s
+    assert observed_timeouts == [10.0, 7.0, 4.0]
+    assert send_failures == []
+    sender.join(timeout=3)
+    assert not sender.is_alive(), "trickled bind sender remained alive after the deadline response"
+    _assert_worker_finished(worker, finished)
+    assert service.admission.book.status(lease_id, identity.group)["released"] is True
+    client.close()
 
 
 @pytest.mark.parametrize("cleanup_stage", ["tombstone", "inspect"])

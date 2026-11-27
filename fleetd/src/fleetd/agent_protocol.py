@@ -10,7 +10,7 @@ import select
 import struct
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .admission import AdmissionError, ExitCode, JOB_ID_RE, MAX_JOB_ID_LENGTH, PRIORITIES
 from .agent_policy import AgentIdentity, AgentPolicy
@@ -35,16 +35,35 @@ class FrameError(ValueError):
     """A malformed, oversized, truncated, or idle agent frame."""
 
 
-def _read_exact(fd: int, size: int, idle_timeout_s: float | None) -> bytes:
+def _read_exact(
+    fd: int,
+    size: int,
+    idle_timeout_s: float | None,
+    *,
+    deadline: float | None = None,
+    clock: Callable[[], float] | None = None,
+    waiter: Callable[..., tuple[list[int], list[int], list[int]]] | None = None,
+) -> bytes:
     chunks: list[bytes] = []
     remaining = size
     while remaining:
+        timeout = idle_timeout_s
+        if deadline is not None:
+            now = time.monotonic() if clock is None else clock()
+            timeout = deadline - now
+            if timeout <= 0:
+                raise FrameError("frame deadline expired")
         try:
-            readable, _, _ = select.select([fd], [], [], idle_timeout_s)
+            wait = select.select if waiter is None else waiter
+            readable, _, _ = wait([fd], [], [], timeout)
         except (OSError, ValueError) as exc:
             raise FrameError(f"cannot wait for framed input: {exc}") from exc
         if not readable:
+            if deadline is not None:
+                raise FrameError("frame deadline expired")
             raise FrameError("idle connection deadline expired")
+        if deadline is not None and (time.monotonic() if clock is None else clock()) >= deadline:
+            raise FrameError("frame deadline expired")
         try:
             chunk = os.read(fd, remaining)
         except OSError as exc:
@@ -53,6 +72,8 @@ def _read_exact(fd: int, size: int, idle_timeout_s: float | None) -> bytes:
             raise FrameError("truncated frame")
         chunks.append(chunk)
         remaining -= len(chunk)
+        if deadline is not None and (time.monotonic() if clock is None else clock()) >= deadline:
+            raise FrameError("frame deadline expired")
     return b"".join(chunks)
 
 
@@ -69,8 +90,15 @@ def _invalid_json_constant(value: str) -> None:
     raise FrameError(f"invalid JSON constant {value!r}")
 
 
-def read_frame(stream: object, idle_timeout_s: float | None) -> dict[str, Any]:
-    """Read one frame; ``None`` waits without an idle deadline for a held lease."""
+def read_frame(
+    stream: object,
+    idle_timeout_s: float | None,
+    *,
+    deadline: float | None = None,
+    clock: Callable[[], float] | None = None,
+    waiter: Callable[..., tuple[list[int], list[int], list[int]]] | None = None,
+) -> dict[str, Any]:
+    """Read one frame with an optional absolute deadline that trickling cannot extend."""
     if idle_timeout_s is None:
         timeout = None
     else:
@@ -85,11 +113,11 @@ def read_frame(stream: object, idle_timeout_s: float | None) -> dict[str, Any]:
         raise FrameError("framed stream must expose a file descriptor") from exc
     if type(fd) is not int or fd < 0:
         raise FrameError("framed stream has an invalid file descriptor")
-    header = _read_exact(fd, 4, timeout)
+    header = _read_exact(fd, 4, timeout, deadline=deadline, clock=clock, waiter=waiter)
     length = struct.unpack(">I", header)[0]
     if length == 0 or length > MAX_FRAME_BYTES:
         raise FrameError(f"frame length {length} is outside 1..{MAX_FRAME_BYTES}")
-    body = _read_exact(fd, length, timeout)
+    body = _read_exact(fd, length, timeout, deadline=deadline, clock=clock, waiter=waiter)
     try:
         decoded = body.decode("utf-8")
     except UnicodeDecodeError as exc:

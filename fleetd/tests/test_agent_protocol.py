@@ -67,6 +67,7 @@ group = "worker"
 idle_connection_s = 20
 query_timeout_s = 5
 lease_reconcile_interval_s = 30
+lease_bind_timeout_s = 10
 max_connections = 4
 requested_by_clients = ["fleetd"]
 extra_argv = {extra_argv}
@@ -124,6 +125,54 @@ def test_read_and_write_use_capped_big_endian_json_frames():
         response_body = _recv_exact(client, length)
         assert json.loads(response_body) == {"ok": True}
         assert header + response_body == struct.pack(">I", length) + b'{"ok":true}'
+    finally:
+        client.close()
+        server.close()
+
+
+def test_read_frame_absolute_deadline_accepts_ready_frame_without_host_timing(monkeypatch):
+    monkeypatch.setattr(agent_protocol.time, "monotonic", lambda: 1.0)
+    client, server = socket.socketpair()
+    try:
+        expected = {"frame": "complete"}
+        write_frame(client, expected)
+        assert read_frame(server, None, deadline=2.0) == expected
+    finally:
+        client.close()
+        server.close()
+
+
+def test_read_frame_absolute_deadline_refuses_before_waiting_when_already_expired():
+    client, server = socket.socketpair()
+    waits = []
+
+    def waiter(*args):
+        waits.append(args)
+        return [], [], []
+
+    try:
+        with pytest.raises(FrameError, match="frame deadline expired"):
+            read_frame(server, None, deadline=10.0, clock=lambda: 10.0, waiter=waiter)
+        assert waits == []
+    finally:
+        client.close()
+        server.close()
+
+
+def test_read_frame_absolute_deadline_checks_time_after_reading_a_chunk():
+    client, server = socket.socketpair()
+    clock_values = iter((0.0, 0.0, 10.0))
+    waits = []
+
+    def waiter(*args):
+        waits.append(args)
+        return [args[0][0]], [], []
+
+    try:
+        write_frame(client, {"frame": "too-late"})
+        with pytest.raises(FrameError, match="frame deadline expired"):
+            read_frame(server, None, deadline=10.0, clock=lambda: next(clock_values), waiter=waiter)
+        assert len(waits) == 1
     finally:
         client.close()
         server.close()

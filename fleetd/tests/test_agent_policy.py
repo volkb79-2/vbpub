@@ -30,6 +30,7 @@ group = "worker"
 idle_connection_s = 20
 query_timeout_s = 5
 lease_reconcile_interval_s = 30
+lease_bind_timeout_s = 10
 max_connections = 4
 requested_by_clients = ["fleetd"]
 extra_argv = [["--verbose"]]
@@ -57,6 +58,7 @@ def test_agent_policy_loads_closed_identity_and_allowlist_config(tmp_path):
     assert policy.idle_connection_s == 20
     assert policy.query_timeout_s == 5
     assert policy.lease_reconcile_interval_s == 30
+    assert policy.lease_bind_timeout_s == 10
     assert policy.max_connections == 4
     assert policy.repo_roots["vbpub"] == tmp_path / "checkouts"
     assert policy.requested_by_clients == frozenset({"fleetd"})
@@ -129,6 +131,8 @@ group = "ops-ci"
         ("query_timeout_s = 5", "query_timeout_s = 0", "positive number"),
         ("lease_reconcile_interval_s = 30", "lease_reconcile_interval_s = 0", "positive number"),
         ("lease_reconcile_interval_s = 30", "lease_reconcile_interval_s = true", "positive number"),
+        ("lease_bind_timeout_s = 10", "lease_bind_timeout_s = 0", "positive number"),
+        ("lease_bind_timeout_s = 10", "lease_bind_timeout_s = true", "positive number"),
         ("max_connections = 4", "max_connections = 0", "positive integer"),
         ("max_connections = 4", "max_connections = true", "positive integer"),
         ("group = \"controller\"", "group = \"../controller\"", "safe identifier"),
@@ -161,6 +165,12 @@ def test_agent_policy_rejects_unknown_keys_and_unreadable_files(tmp_path):
         "lease_reconcile_interval_s = 30\n", "",
     ), encoding="utf-8")
     with pytest.raises(ContractError, match="missing key.*lease_reconcile_interval_s"):
+        load_agent_policy(path)
+
+    path.write_text(_policy_text(tmp_path / "checkouts").replace(
+        "lease_bind_timeout_s = 10\n", "",
+    ), encoding="utf-8")
+    with pytest.raises(ContractError, match="missing key.*lease_bind_timeout_s"):
         load_agent_policy(path)
 
     path.write_text(_policy_text(tmp_path / "checkouts").replace("max_connections = 4\n", ""), encoding="utf-8")

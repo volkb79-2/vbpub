@@ -119,10 +119,12 @@ tombstone. When an inspector is configured, the agent reconciles pending and
 bound records at startup and at the required positive
 `agent.toml.lease_reconcile_interval_s`; bound records are inspected by exact
 container ID. Each inspector call is bounded by `query_timeout_s`, and an
-unknown/error result retains the charge. No deadline applies after grant to a
-client that stays connected without binding: §4.5 does not define one, and the
-held flock prevents pending reconciliation. The charge remains until
-disconnect and exact-name reconciliation confirms absence.
+unknown/error result retains the charge. The required positive
+`agent.toml.lease_bind_timeout_s` bounds the complete bind frame from the grant
+on the monotonic clock; trickled bytes do not extend it. Expiry uses the same
+tombstone, exact-name inspection and charge-release rules as a pre-bind
+disconnect. The client receives an error reply and the connection ends. This
+deadline does not apply after binding.
 A fitting lease waiter whose inspector keeps answering `ERROR` can block every
 waiter that sorts after it, in lower priority classes too, until its admission
 wait expires; a waiter holds no charge. This is a known limit (FD-052). The package does

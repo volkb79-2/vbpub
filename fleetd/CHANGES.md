@@ -16,6 +16,7 @@ All notable changes to this project are recorded here.
 - Reconcile pending and bound lease records at startup and at required `agent.toml.lease_reconcile_interval_s`; pre-bind disconnect tombstones before exact-name inspection, and only confirmed absence releases the charge.
 - Serialize same-job submit write, admission, cleanup and start transactions with a private per-job flock; status and cancel do not take that lock.
 - Require positive `agent.toml.max_connections`; refuse excess ordinary connections with exit 3, release a granted lease from the ordinary count, and bound response write-idle time without limiting total transfer time.
+- Require positive `agent.toml.lease_bind_timeout_s`; expire an incomplete or trickled bind frame on an absolute monotonic deadline and reconcile its tombstone before replying (FD-060).
 - Require EOF after one ordinary request frame (after the declared body for `put`); clients half-close before dispatch, while lease keeps its write side open through bind and container life.
 - Convert JSON parser depth and integer-digit failures to protocol errors, type-check closed enum fields, and keep their exit codes on the wire.
 - Open lane declarations and progress streams through trusted directory descriptors without following any path component; cap progress ranges and client response bodies at 8 MiB.
@@ -31,6 +32,7 @@ All notable changes to this project are recorded here.
 - Replay terminal submits from the durable completion record, matching `status` without consulting executor memory.
 - Refuse lease records at the job `status` and `cancel` boundary before they can reach executor methods.
 - Separate error envelopes from successful status data with the nested `error` object, including on held lease connections.
+- Close FD-060 by applying the required absolute bind-frame deadline and pre-bind tombstone reconciliation on expiry.
 
 ### Changed
 - Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.

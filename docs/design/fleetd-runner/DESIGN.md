@@ -609,6 +609,7 @@ Today `run-job` detaches with `nohup` and writes `pid`/`EXIT` (`scripts/netcup/r
 | socket absent/refuses; bad policy/impossible class; frozen/wait expiry | no create or start; exit 3, 2, or 75 respectively |
 | client dies before grant | remove its connection-bound waiter; no lease or container |
 | client dies after grant, before create/bind | tombstone first, release the connection flock, then inspect the exact name; only confirmed absence releases the charge; a present container remains charged but cannot bind or start after tombstoning |
+| complete bind frame does not arrive before `lease_bind_timeout_s` | use the monotonic deadline from grant; trickled bytes do not extend it; tombstone first, release the connection flock, then inspect the exact name; return an error and close; only confirmed absence releases the charge |
 | delayed create after revoke | unique name and lease id stay tombstoned; stopped container has no bind ack, is removed when observed, and never starts |
 | EOF after bind or agent restart | keep charge while ID exists; startup and periodic reconciliation inspect the exact ID; reload StateDirectory; no start until same lease ID/ID reconnects, then continue or reattach |
 | container gone / Docker inspect error | events and periodic reconciliation inspect exact ID; only explicit no-such-object releases; `PRESENT`, `ERROR`, exceptions, and other answers retain charge (current Run-Gate rule: `run-gate-project/run_gate.py:7601-7645`) |
@@ -616,10 +617,14 @@ Today `run-job` detaches with `nohup` and writes `pid`/`EXIT` (`scripts/netcup/r
 
 The periodic reconciliation interval is required host policy with no default;
 each exact inspector call is bounded by `query_timeout_s`. There is no §4.5
-deadline for a client that receives a grant, stays connected, and never binds.
-Its held flock prevents pending reconciliation; the charge remains until
-disconnect and exact-name reconciliation confirms absence. FD-060 tracks the
-missing operator decision; C3a does not invent a binding timeout.
+`agent.toml.lease_bind_timeout_s` is required positive host policy with no
+default. It starts as the grant is sent and bounds receipt of the complete bind
+frame, including its header and body. Expiry runs the same tombstone and exact
+name reconciliation as a pre-bind disconnect: confirmed absence releases the
+charge, while a present object or inspector error retains it. A delayed create
+after tombstoning cannot bind. After the bind frame completes, the deadline no
+longer applies; EOF after bind retains the charge until exact-ID reconciliation.
+This closes FD-060.
 
 - **Dead executor, lane still alive:** the reaper finds containers by this job's labels, stops
   the lane, waits for exit, collects from the surviving checkout, then removes those containers
