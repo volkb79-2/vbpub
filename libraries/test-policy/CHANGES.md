@@ -3,10 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
-- TP-14: report each unreaped `(pid, start_time)` child identity once and skip it in later settle and cleanup passes; a reused pid with a new start time is still handled.
-- TP-15: for `hidepid=1` `EACCES`, use `waitid` to distinguish our child, alive or waitable, from a non-child. An unreadable child or an ownership-check error still fails loudly. `hidepid=2` can omit an invisible child from `/proc` enumeration; TP-19 tracks that gap.
+- TP-14: report each unreaped `(pid, start_time)` child identity once and skip it in later settle and cleanup passes; after the pass loop, make one reap-only retry without adding another report. A reused pid with a new start time is still handled.
+- TP-15: for `hidepid=1` `EACCES`, a successful `waitid` identifies our child, alive or waitable, and fails loudly; `ECHILD` or `ESRCH` permits skipping. Other ownership-check errors fail loudly. `hidepid=2` can omit an invisible child from `/proc` enumeration; TP-19 tracks that gap.
 - TP-16: inject pidfd open/close through `PidfdOps` in tests, without patching global `os.close`.
-- TP-18: unwrap decorated tests, select only the exact function at its source line from a bounded parse cache, refresh the line cache, report unmatched or unparseable source, and preserve multiline string and f-string contents in fragment fallback.
+- TP-18: unwrap decorated tests, select only the exact function at its definition or decorator line from a bounded 64-entry parse cache, check the line cache before reading, report unmatched or unparseable source, and preserve multiline string and f-string contents in fragment fallback.
 
 <!-- cmru: release history -->
 

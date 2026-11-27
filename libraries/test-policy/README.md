@@ -33,10 +33,11 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
   when alive, and reaped with bounded `waitid(P_PIDFD, WNOHANG)` polling. The scan/kill/reap sequence repeats so
   grandchildren reparented by killing their parent are found too. An identity that remains unreaped is reported
   once and excluded from later settle and cleanup passes; a reused pid with a different start time is still
-  examined. The 10-pass bound is reported when new children remain after those passes. A zombie is reported as a
-  zombie leak, a live child is reported after successful SIGKILL and reap, and a child still unreaped at the
-  deadline is reported as unreaped: cleanup never hangs or hides the leak. `fail` reports a
-  teardown error; `warn` warns and cleans up. A deliberate exception uses
+  examined. After the pass loop, the guard makes one reap-only retry for each reported unreaped identity without
+  adding another report or counting it as cleaned. The 10-pass bound is reported when other new children remain
+  after those passes. A zombie is reported as a zombie leak, a live child is reported after successful SIGKILL
+  and reap, and a child still unreaped at the deadline is reported as unreaped: cleanup never hides the leak.
+  `fail` reports a teardown error; `warn` warns and cleans up. A deliberate exception uses
   `@pytest.mark.estate_allow("children", reason="...", backlog="XX-NN")`. Non-Linux runs are a no-op and record
   one warning. Allowed tests leave live children alone but new direct-child zombies are reaped with
   `waitid(WNOHANG)` so they do not accumulate (TP-12). With procfs `hidepid=1`, reading another user's
