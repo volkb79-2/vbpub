@@ -47,11 +47,16 @@ MIN_REGIONS, MAX_REGIONS = 10, 1000
 MAX_U32 = 2 ** 32 - 1
 MAX_SZ = 2 ** 63 - 1
 HOTSET_COLUMNS = ("utc", "step", "unit", "memcg_leaves", "sz_filter_passed_one_apply", "sz_tried", "regions_hot_bytes_info")
+TOPOLOGY_LOG = "hotset-topology.jsonl"
 SELF_TEST_CURRENT = MIB   # above this, sz_filter_passed 0 is a refused floor, never "no hot pages" (4.1)
 RETRY_ATTEMPTS = 3
 
 
 class Refusal(Exception):
+    pass
+
+
+class Inconclusive(Refusal):
     pass
 
 
@@ -136,10 +141,6 @@ def leaf_cgroups(cg: str, rel: str) -> list[str]:
 
 def hot_leaves(units: list[tuple[str, str]], cg: str) -> list[tuple[str, str]]:
     return [(unit, leaf) for unit, rel in units for leaf in leaf_cgroups(cg, rel)]
-
-
-def unit_current(cg: str, entries: list[tuple[str, str]], unit: str) -> int:
-    return sum(read_int(os.path.join(cg, leaf, "memory.current")) for u, leaf in entries if u == unit)
 
 
 def resolve_kdamond(args) -> int:
@@ -443,6 +444,174 @@ def entries_or_refuse(units: list[tuple[str, str]], cg: str) -> list[tuple[str, 
     return entries
 
 
+def topology_snapshot(units: list[tuple[str, str]], cg: str) -> tuple[list[dict], dict[str, list[str]]]:
+    """Return readable leaf identities and unit-local gaps. Identity is relpath plus directory inode."""
+    leaves: list[dict] = []
+    gaps: dict[str, list[str]] = {}
+    for unit, rel in units:
+        base = os.path.join(cg, rel)
+        try:
+            if not os.path.isdir(base):
+                gaps.setdefault(unit, []).append(f"unit cgroup {rel} is absent")
+                continue
+            found = leaf_cgroups(cg, rel)
+        except OSError as exc:
+            gaps.setdefault(unit, []).append(f"cannot enumerate {rel}: {exc}")
+            continue
+        readable = 0
+        for leaf in found:
+            try:
+                identity = os.stat(os.path.join(cg, leaf)).st_ino
+                current = read_int(os.path.join(cg, leaf, "memory.current"))
+            except (FileNotFoundError, NotADirectoryError) as exc:
+                gaps.setdefault(unit, []).append(f"leaf {leaf} vanished during identity read: {exc}")
+                continue
+            except (OSError, ValueError) as exc:
+                gaps.setdefault(unit, []).append(f"leaf {leaf} is unreadable: {exc}")
+                continue
+            leaves.append({"unit": unit, "path": leaf, "inode": identity, "current": current})
+            readable += 1
+        if readable == 0 and unit not in gaps:
+            gaps.setdefault(unit, []).append(f"no readable leaf memcg under {rel}")
+    leaves.sort(key=lambda row: (row["unit"], row["path"], row["inode"]))
+    return leaves, gaps
+
+
+def topology_identity(leaves: list[dict]) -> tuple[tuple[str, str, int], ...]:
+    return tuple(sorted((row["unit"], row["path"], int(row["inode"])) for row in leaves))
+
+
+def topology_record_leaves(leaves: list[dict]) -> list[dict]:
+    return [{"unit": row["unit"], "path": row["path"], "inode": int(row["inode"])} for row in leaves]
+
+
+def append_topology(evidence: str, record: dict) -> None:
+    path = os.path.join(evidence, TOPOLOGY_LOG)
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError as exc:
+        raise Refusal(f"cannot record DAMON cgroup topology in {path}: {exc}") from exc
+
+
+def topology_history(evidence: str) -> list[dict]:
+    path = os.path.join(evidence, TOPOLOGY_LOG)
+    records = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line_number, line in enumerate(fh, 1):
+                try:
+                    record = json.loads(line)
+                except ValueError as exc:
+                    raise Refusal(f"{path}:{line_number} is not valid topology evidence: {exc}") from exc
+                if not isinstance(record, dict):
+                    raise Refusal(f"{path}:{line_number} is not a topology record")
+                records.append(record)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise Refusal(f"cannot read DAMON topology evidence {path}: {exc}") from exc
+    return records
+
+
+def configured_topology(evidence: str, *, required: bool = True) -> list[dict] | None:
+    for record in reversed(topology_history(evidence)):
+        if record.get("kind") != "configured":
+            continue
+        leaves = record.get("leaves")
+        if not isinstance(leaves, list):
+            raise Refusal(f"{TOPOLOGY_LOG} has a configured record without its leaf identities")
+        result = []
+        for row in leaves:
+            if (not isinstance(row, dict) or not isinstance(row.get("unit"), str)
+                    or not isinstance(row.get("path"), str) or not isinstance(row.get("inode"), int)):
+                raise Refusal(f"{TOPOLOGY_LOG} has a malformed configured leaf identity")
+            result.append({"unit": row["unit"], "path": row["path"], "inode": row["inode"]})
+        return result
+    if required:
+        raise Refusal(f"{TOPOLOGY_LOG} has no configured leaf identities; refusing a sample without its commit baseline")
+    return None
+
+
+def record_topology_change(evidence: str, step: int, source: str, before: list[dict] | None,
+                           after: list[dict], kind: str = "topology_change") -> None:
+    if before is None or topology_identity(before) == topology_identity(after):
+        return
+    append_topology(evidence, {"kind": kind, "step": step, "source": source,
+                               "before": topology_record_leaves(before), "after": topology_record_leaves(after)})
+
+
+def unit_for_memcg_path(memcg_path: str, units: list[tuple[str, str]]) -> str:
+    """Resolve a scheme by configured relpath components, independent of current cgroup enumeration."""
+    if not memcg_path.startswith("/") or memcg_path.startswith("//"):
+        raise Refusal(f"scheme memcg_path {memcg_path!r} is not an absolute cgroup-mount-relative path")
+    path_parts = memcg_path[1:].split("/") if memcg_path != "/" else []
+    if any(part in ("", ".", "..") for part in path_parts):
+        raise Refusal(f"scheme memcg_path {memcg_path!r} is not a normalized cgroup path")
+    matches = []
+    for unit, rel in units:
+        rel_parts = rel.strip("/").split("/") if rel.strip("/") else []
+        if any(part in ("", ".", "..") for part in rel_parts):
+            raise Refusal(f"configured unit {unit!r} has a non-normalized cgroup relpath {rel!r}")
+        if path_parts[:len(rel_parts)] == rel_parts:
+            matches.append(unit)
+    if len(matches) != 1:
+        why = "no configured unit" if not matches else f"multiple configured units {', '.join(matches)}"
+        raise Refusal(f"scheme memcg_path {memcg_path!r} belongs to {why}; refusing attribution")
+    return matches[0]
+
+
+def configure_topology(da, args, units: list[tuple[str, str]], kd: int, ranges: list[tuple[int, int]],
+                       step: int, source: str, previous: list[dict] | None) -> tuple[list[dict], dict[str, list[str]]]:
+    """Commit fresh schemes and retain only identities that survived the commit."""
+    before, _before_gaps = topology_snapshot(units, args.cgroup)
+    if not before:
+        raise Inconclusive(f"no configured leaf memcg remains under {args.cgroup}; the sample is INCONCLUSIVE")
+    configure(da, args.admin, kd, [(row["unit"], row["path"]) for row in before], ranges, commit=True)
+    after, after_gaps = topology_snapshot(units, args.cgroup)
+    if previous is not None:
+        record_topology_change(args.evidence, step, source, previous, before)
+    if topology_identity(before) != topology_identity(after):
+        record_topology_change(args.evidence, step, source, before, after, kind="commit_race")
+        before_by_path = {row["path"]: row for row in before}
+        after_by_path = {row["path"]: row for row in after}
+        for path, row in before_by_path.items():
+            live = after_by_path.get(path)
+            if live is not None and live["inode"] == row["inode"]:
+                continue
+            if live is not None:
+                reason = f"leaf {path} changed directory inode during commit ({row['inode']} -> {live['inode']})"
+                record_topology_drop(args, step, row["unit"], path, reason, row["inode"], live["inode"])
+            elif any(entry["path"].startswith(path.rstrip("/") + "/") for entry in after):
+                reason = f"leaf {path} gained child cgroups during commit and was no longer a leaf"
+                record_topology_drop(args, step, row["unit"], path, reason, row["inode"])
+            else:
+                reason = f"leaf {path} disappeared or became unreadable during commit"
+                record_topology_drop(args, step, row["unit"], path, reason, row["inode"])
+        for path, row in after_by_path.items():
+            prior = before_by_path.get(path)
+            if prior is None:
+                reason = f"leaf {path} appeared during commit and was not included in this apply"
+                record_topology_drop(args, step, row["unit"], path, reason, None, row["inode"])
+        for unit, reasons in after_gaps.items():
+            for reason in reasons:
+                record_topology_drop(args, step, unit, None, reason)
+        stable = set(topology_identity(before)) & set(topology_identity(after))
+        if not stable:
+            raise Inconclusive(f"no configured leaf identity survived the DAMON commit under {args.cgroup}; retrying with current topology")
+    elif not after:
+        raise Inconclusive(f"no configured leaf memcg remains under {args.cgroup}; the sample is INCONCLUSIVE")
+    append_topology(args.evidence, {"kind": "configured", "step": step, "source": source,
+                                   "leaves": topology_record_leaves(before),
+                                   "observed_after_commit": topology_record_leaves(after)})
+    for unit, reasons in after_gaps.items():
+        for reason in reasons:
+            record_topology_drop(args, step, unit, None, reason)
+    return before, after_gaps
+
+
 def setup(args) -> int:
     status = damon_stat_state(args.damon_stat)
     cgprofile_sessions()
@@ -455,7 +624,10 @@ def setup(args) -> int:
     da = load_lib(args.lib, args.admin)
     if not da.SysfsInterface.is_available():
         raise Refusal(f"{args.admin}/kdamonds is absent: DAMON sysfs is unavailable")
-    entries = entries_or_refuse(units, args.cgroup)
+    initial_topology, _initial_gaps = topology_snapshot(units, args.cgroup)
+    if not initial_topology:
+        raise Refusal(f"no leaf memcg under {args.cgroup} for the units given: a slice is measured as its leaves (4.2)")
+    entries = [(row["unit"], row["path"]) for row in initial_topology]
     ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
     idx, original_nr, owner = select_kdamond(args.admin)
     # These synced records establish ownership before either count write. A
@@ -493,6 +665,15 @@ def setup(args) -> int:
         st = read_lines(os.path.join(nrd, str(idx), "state"))
         if not st or st[0].strip() != "on":
             raise Refusal(f"kdamond {idx} did not start (state {st[0].strip() if st else 'unreadable'!r})")
+        current_topology, _current_gaps = topology_snapshot(units, args.cgroup)
+        if not current_topology:
+            raise Refusal(f"no configured leaf memcg remains under {args.cgroup}; setup is INCONCLUSIVE")
+        if topology_identity(current_topology) != topology_identity(initial_topology):
+            ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
+            entries, _gaps = configure_topology(da, args, units, idx, ranges, 0, "setup", initial_topology)
+        else:
+            append_topology(args.evidence, {"kind": "configured", "step": 0, "source": "setup",
+                                           "leaves": topology_record_leaves(current_topology)})
     except Exception as exc:
         try:
             restore_owned_kdamond(args.admin, args.state)
@@ -509,21 +690,22 @@ def refresh(args) -> int:
     if args.fixture:
         return 0
     units = parse_units(args.units)
-    cg = args.cgroup
     da = load_lib(args.lib, args.admin)
     kd = resolve_kdamond(args)
     ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
     last_error: Exception | None = None
+    previous = configured_topology(args.evidence, required=False)
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            entries = entries_or_refuse(units, cg)
-            configure(da, args.admin, kd, entries, ranges, commit=True)
+            entries, _gaps = configure_topology(da, args, units, kd, ranges, args.step, "step_refresh", previous)
             say(f"kdamond {kd}: {len(entries)} leaf schemes re-enumerated for step {args.step}")
             return 0
         except (Refusal, OSError, ValueError) as exc:
             last_error = exc
             if attempt < RETRY_ATTEMPTS:
                 note(f"scheme refresh attempt {attempt}/{RETRY_ATTEMPTS} failed ({exc}); re-enumerating cgroups and retrying")
+    if isinstance(last_error, Inconclusive):
+        raise last_error
     raise Refusal(f"scheme refresh failed after {RETRY_ATTEMPTS} attempts; refusing: {last_error}") from last_error
 
 
@@ -578,32 +760,104 @@ def fixture_rows(args, units: list[tuple[str, str]]) -> list[tuple[str, dict]]:
     return rows
 
 
+def record_topology_drop(args, step: int, unit: str, path: str | None, reason: str,
+                         configured_inode: int | None = None, current_inode: int | None = None) -> None:
+    event = {"kind": "dropped", "step": step, "unit": unit, "path": path, "reason": reason}
+    if configured_inode is not None:
+        event["configured_inode"] = configured_inode
+    if current_inode is not None:
+        event["current_inode"] = current_inode
+    append_topology(args.evidence, event)
+    record_refusal(args.evidence, unit, f"topology step {step}: {reason}")
+
+
 def sample_attempt(args, units: list[tuple[str, str]], da, kd: int, cg: str) -> tuple[list[tuple[str, dict]], list[tuple[str, str]]]:
-    """Collect one complete sample; callers may retry this after re-enumerating cgroup leaves."""
-    entries = entries_or_refuse(units, cg)
+    """Apply once and read only scheme identities that still match the committed cgroup topology."""
+    current, current_gaps = topology_snapshot(units, cg)
+    if not current:
+        for unit, _rel in units:
+            reasons = current_gaps.get(unit) or ["no readable leaf remains for this configured unit"]
+            for reason in reasons:
+                record_topology_drop(args, args.step, unit, None, reason)
+        raise Inconclusive(f"no configured leaf memcg remains under {cg}; the sample is INCONCLUSIVE")
+    configured = configured_topology(args.evidence)
+    if topology_identity(current) != topology_identity(configured):
+        ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
+        committed, _committed_gaps = configure_topology(
+            da, args, units, kd, ranges, args.step, "sample", configured)
+    else:
+        committed = configured
+
     da.SysfsInterface.kdamond_update_stats(kd)
     da.SysfsInterface.kdamond_update_tried_regions(kd)   # exactly one apply per sample
+    after, after_gaps = topology_snapshot(units, cg)
+    committed_by_path = {row["path"]: row for row in committed}
+    after_by_path = {row["path"]: row for row in after}
+    drops: list[tuple[str, str | None, str, int | None, int | None]] = []
+    for unit, reasons in after_gaps.items():
+        for reason in reasons:
+            drops.append((unit, None, reason, None, None))
+    for path, row in committed_by_path.items():
+        live = after_by_path.get(path)
+        if live is None:
+            same_path = next((entry for entry in after if entry["path"] == path), None)
+            if same_path is not None:
+                reason = f"leaf {path} changed directory inode after commit ({row['inode']} -> {same_path['inode']})"
+                drops.append((row["unit"], path, reason, row["inode"], same_path["inode"]))
+            elif any(entry["path"].startswith(path.rstrip("/") + "/") for entry in after):
+                reason = f"leaf {path} gained child cgroups after commit and was no longer a leaf"
+                drops.append((row["unit"], path, reason, row["inode"], None))
+            else:
+                reason = f"leaf {path} disappeared or became unreadable after commit"
+                drops.append((row["unit"], path, reason, row["inode"], None))
+        elif live["inode"] != row["inode"]:
+            reason = f"leaf {path} changed directory inode after commit ({row['inode']} -> {live['inode']})"
+            drops.append((row["unit"], path, reason, row["inode"], live["inode"]))
+    for row in after:
+        prior = committed_by_path.get(row["path"])
+        if prior is None:
+            drops.append((row["unit"], row["path"],
+                          f"leaf {row['path']} appeared after commit and was not included in this apply",
+                          None, row["inode"]))
+        elif prior["inode"] != row["inode"]:
+            # The path's replacement was already recorded as the configured leaf's drop above.
+            continue
+    if not after:
+        for unit, _rel in units:
+            if not any(drop[0] == unit for drop in drops):
+                drops.append((unit, None, "no readable leaf remained after the DAMON apply", None, None))
+    for unit, path, reason, configured_inode, current_inode in drops:
+        record_topology_drop(args, args.step, unit, path, reason, configured_inode, current_inode)
+    if not after:
+        raise Inconclusive(f"no configured leaf memcg remained after the DAMON apply under {cg}; the sample is INCONCLUSIVE")
+    if not any(after_by_path.get(row["path"], {}).get("inode") == row["inode"] for row in committed):
+        raise Inconclusive(f"no committed leaf identity remained after the DAMON apply under {cg}; the sample is INCONCLUSIVE")
+
     per: dict[str, dict] = {}
     schemes = os.path.join(args.admin, "kdamonds", str(kd), "contexts", "0", "schemes")
     nr_schemes = read_int(os.path.join(schemes, "nr_schemes"), -1)
     if nr_schemes <= 0:
         raise Refusal(f"{schemes}/nr_schemes is {nr_schemes}; configured DAMON schemes are unknown")
-    unit_by_memcg_path: dict[str, str] = {}
-    for unit, leaf in entries:
-        memcg_path = "/" + leaf.lstrip("/")
-        prior = unit_by_memcg_path.get(memcg_path)
-        if prior is not None and prior != unit:
-            raise Refusal(f"memcg path {memcg_path!r} belongs to both {prior} and {unit}; refusing ambiguous scheme attribution")
-        unit_by_memcg_path[memcg_path] = unit
+    seen_paths: set[str] = set()
     for i in range(nr_schemes):
         sdir = da.SysfsInterface._scheme_dir(kd, 0, i)
         path_lines = read_lines(os.path.join(sdir, "ops_filters", "0", "memcg_path"))
         if not path_lines or not path_lines[0].strip():
             raise Refusal(f"scheme {i} has no readable ops_filters/0/memcg_path; refusing to guess its unit")
         memcg_path = path_lines[0].strip()
-        unit = unit_by_memcg_path.get(memcg_path)
-        if unit is None:
-            raise Refusal(f"scheme {i} memcg_path {memcg_path!r} is not a current leaf under the configured units; refusing stale attribution")
+        unit = unit_for_memcg_path(memcg_path, units)
+        path = memcg_path[1:]
+        committed_leaf = committed_by_path.get(path)
+        if committed_leaf is None:
+            raise Refusal(f"scheme {i} memcg_path {memcg_path!r} has no configured leaf identity; refusing a sysfs/configuration mismatch")
+        if committed_leaf["unit"] != unit:
+            raise Refusal(f"scheme {i} memcg_path {memcg_path!r} disagrees with its configured unit; refusing attribution")
+        if path in seen_paths:
+            raise Refusal(f"multiple schemes configure memcg_path {memcg_path!r}; refusing duplicate attribution")
+        seen_paths.add(path)
+        live = after_by_path.get(path)
+        if live is None or live["inode"] != committed_leaf["inode"]:
+            continue  # the change was recorded above; this leaf contributes no bytes to this apply
         tried = os.path.join(sdir, "tried_regions")
         if not os.path.isdir(tried):
             raise Refusal(f"{tried} disappeared during sample; refusing an incomplete hot-set count")
@@ -635,10 +889,12 @@ def sample_attempt(args, units: list[tuple[str, str]], da, kd: int, cg: str) -> 
         acc["passed"] += passed
         acc["tried"] += stats["sz_tried"]
         acc["hot"] += hot
+    if seen_paths != set(committed_by_path):
+        raise Refusal(f"configured DAMON schemes do not cover the committed leaf identities; refusing an incomplete sample")
     rows = [(unit, acc) for unit, acc in sorted(per.items())]
     refused = []
     for unit, _acc in rows:
-        current = unit_current(cg, entries, unit)
+        current = sum(row["current"] for row in after if row["unit"] == unit)
         if per[unit]["passed"] == 0 and current > SELF_TEST_CURRENT:
             refused.append((unit, f"sz_filter_passed 0 with memory.current {current}"))
     return rows, refused
@@ -661,6 +917,8 @@ def sample(args) -> int:
             if attempt < RETRY_ATTEMPTS:
                 note(f"sample attempt {attempt}/{RETRY_ATTEMPTS} failed ({exc}); re-enumerating cgroups and retrying")
     else:
+        if isinstance(last_error, Inconclusive):
+            raise last_error
         raise Refusal(f"hot-set sample failed after {RETRY_ATTEMPTS} attempts; refusing: {last_error}") from last_error
     append_rows(os.path.join(args.evidence, "hotset.csv"), rows, args.step)
     for unit, why in refused:
@@ -709,6 +967,9 @@ def main(argv: list[str] | None = None) -> int:
                    "off": lambda a: kdamond_state_cmd(a, "off"),
                    "on": lambda a: kdamond_state_cmd(a, "on")}[args.command]
         return handler(args)
+    except Inconclusive as exc:
+        print(f"accept-hotset: {exc}", file=sys.stderr)
+        return 4
     except Refusal as exc:
         print(f"accept-hotset: {exc}", file=sys.stderr)
         return 3

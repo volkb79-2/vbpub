@@ -298,6 +298,25 @@ class EvalTests(unittest.TestCase):
         self.assertIn("FLOOR docker.service=237M source=damon:215.0M x1.10 tested=every step", out)
         self.assertIn("docker.service=237M", re.search(r'DEV_HOST_MEMORY_MIN="([^"]*)"', out).group(1))
 
+    def test_a_dropped_topology_step_cannot_prove_a_floor_or_pass_as_a_missing_measurement(self) -> None:
+        d = F.write_run(self.tmp / "topology-drop", steps=(0, 1), verdicts=("PASS", "PASS"))
+        rows = list(csv.DictReader((d / "hotset.csv").open()))
+        with (d / "hotset.csv").open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, F.HOT_HEAD)
+            writer.writeheader()
+            writer.writerows(row for row in rows if not (row["unit"] == "docker.service" and row["step"] == "1"))
+        (d / "hotset-topology.jsonl").write_text(json.dumps({"kind": "dropped", "step": 1,
+                                                              "unit": "docker.service", "path": "system.slice/docker.service",
+                                                              "reason": "directory identity changed after commit"}) + "\n")
+
+        evaluated = ev.evaluate(d, None)
+        self.assertEqual(ev.run_verdict(evaluated), "PASS", "the cgroup ladder verdict stays independent")
+        self.assertFalse(evaluated["floors"]["docker.service"]["proved"])
+        self.assertEqual(evaluated["floors"]["docker.service"]["steps"], [0])
+        rc, out = run_eval(str(d))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("FLOOR docker.service=220M source=damon candidate", out)
+
     def test_a_damon_refusal_names_the_table_row(self) -> None:
         d = F.write_run(self.tmp / "refused", steps=(0,), verdicts=("PASS",))
         (d / "hotset.csv").write_text(F.HOT_HEAD and ",".join(F.HOT_HEAD) + "\n")
@@ -417,11 +436,33 @@ class HotsetTests(unittest.TestCase):
                 (tried / name / "nr_accesses").write_text("3\n")
                 (tried / name / "age").write_text("4\n")
                 (tried / name / "sz_filter_passed").write_text(str((i + 1) * 4096 * (j + 1)) + "\n")
+        leaves = []
+        for unit, path in (("docker.service", "system.slice/docker.service"), ("user.slice", "user.slice")):
+            leaves.append({"unit": unit, "path": path, "inode": os.stat(self.cg / path).st_ino})
+        (self.ev / hs.TOPOLOGY_LOG).write_text(json.dumps({"kind": "configured", "step": 0, "source": "test",
+                                                            "leaves": leaves}) + "\n")
 
     def args(self, *extra: str) -> list[str]:
         return ["--evidence", str(self.ev), "--state", str(self.wal), "--units", self.units, "--admin", str(self.admin),
                 "--cgroup", str(self.cg), "--proc", str(self.tmp), "--iomem", str(self.iomem), "--lib", self.lib,
                 "--damon-stat", str(self.dstat), *extra]
+
+    def setup_user_topology(self, user_leaves: list[str] | None) -> F.DamonSysfsModel:
+        self.units = "user.slice=user.slice docker.service=system.slice/docker.service"
+        user_root = self.cg / "user.slice"
+        if user_leaves is not None:
+            (user_root / "memory.current").unlink(missing_ok=True)
+            for name in user_leaves:
+                leaf = user_root / name
+                leaf.mkdir(parents=True, exist_ok=True)
+                (leaf / "memory.current").write_text(f"{8 * M}\n")
+        model = self.sysfs_model(count=1)
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 0, out)
+        return model
+
+    def topology_records(self) -> list[dict]:
+        return [json.loads(line) for line in (self.ev / hs.TOPOLOGY_LOG).read_text().splitlines()]
 
     def sysfs_model(self, *, count: int = 0, state: str = "off", avail: str = "vaddr paddr",
                     stats: bool = True, filters: bool = True) -> F.DamonSysfsModel:
@@ -673,72 +714,51 @@ class HotsetTests(unittest.TestCase):
     def test_sample_retries_after_a_transient_scheme_read_failure(self) -> None:
         self.tree(nr=1, state="off")
         self.ready()
-        entries = hs.hot_leaves(hs.parse_units(self.units), str(self.cg))
         da = hs.load_lib(self.lib, str(self.admin))
-        with mock.patch.object(hs, "entries_or_refuse", side_effect=[entries, entries]) as enumerate_leaves, \
-                mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions",
-                                  side_effect=[OSError("transient vanished scheme"), None]):
+        with mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions",
+                               side_effect=[OSError("transient vanished scheme"), None]) as apply:
             rc, out = run_hotset("sample", *self.args("--step", "2", "--kdamond", "0"))
         self.assertEqual(rc, 0, out)
-        self.assertEqual(enumerate_leaves.call_count, 2, "the retry enumerates cgroup leaves again")
+        self.assertEqual(apply.call_count, 2, "the retry performs a fresh apply after rechecking cgroup identities")
         rows = list(csv.DictReader((self.ev / "hotset.csv").open()))
         self.assertEqual([row["unit"] for row in rows], ["docker.service", "user.slice"])
 
     def test_sample_refuses_after_all_retries_without_writing_a_row(self) -> None:
         self.tree(nr=1, state="off")
         self.ready()
-        entries = hs.hot_leaves(hs.parse_units(self.units), str(self.cg))
         da = hs.load_lib(self.lib, str(self.admin))
-        with mock.patch.object(hs, "entries_or_refuse", side_effect=[entries, entries, entries]) as enumerate_leaves, \
-                mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions",
-                                  side_effect=OSError("scheme keeps disappearing")):
+        with mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions",
+                               side_effect=OSError("scheme keeps disappearing")) as apply:
             rc, out = run_hotset("sample", *self.args("--step", "2", "--kdamond", "0"))
         self.assertEqual(rc, 3, out)
         self.assertIn("hot-set sample failed after 3 attempts", out)
-        self.assertEqual(enumerate_leaves.call_count, 3)
+        self.assertEqual(apply.call_count, 3)
         self.assertFalse((self.ev / "hotset.csv").exists(), "an incomplete sample is never appended")
 
     def test_refresh_reenumerates_and_retries_configuration(self) -> None:
-        old_entries = [("user.slice", "user.slice/session-a.scope")]
-        new_entries = [("user.slice", "user.slice/session-a.scope"), ("user.slice", "user.slice/session-b.scope")]
-        with mock.patch.object(hs, "entries_or_refuse", side_effect=[old_entries, new_entries]) as enumerate_leaves, \
-                mock.patch.object(hs, "load_lib", return_value=object()), \
+        with mock.patch.object(hs, "load_lib", return_value=object()), \
                 mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
                 mock.patch.object(hs, "configure", side_effect=[hs.Refusal("a leaf vanished"), None]) as configure:
             rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
         self.assertEqual(rc, 0, out)
-        self.assertEqual(enumerate_leaves.call_count, 2)
-        self.assertEqual(configure.call_args_list[0].args[3], old_entries)
-        self.assertEqual(configure.call_args_list[1].args[3], new_entries)
+        self.assertEqual(configure.call_count, 2)
+        self.assertEqual(set(configure.call_args_list[0].args[3]),
+                         {("user.slice", "user.slice"), ("docker.service", "system.slice/docker.service")})
+        self.assertEqual(configure.call_args_list[0].args[3], configure.call_args_list[1].args[3])
         self.assertTrue(configure.call_args_list[1].kwargs["commit"])
 
     def test_refresh_refuses_after_all_retries(self) -> None:
-        entries = [("user.slice", "user.slice/session-a.scope")]
-        with mock.patch.object(hs, "entries_or_refuse", return_value=entries) as enumerate_leaves, \
-                mock.patch.object(hs, "load_lib", return_value=object()), \
+        with mock.patch.object(hs, "load_lib", return_value=object()), \
                 mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
                 mock.patch.object(hs, "configure", side_effect=hs.Refusal("a leaf vanished")) as configure:
             rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
         self.assertEqual(rc, 3, out)
         self.assertIn("scheme refresh failed after 3 attempts", out)
-        self.assertEqual(enumerate_leaves.call_count, 3)
         self.assertEqual(configure.call_count, 3)
 
-    def test_sample_attributes_configured_schemes_by_path_after_a_leaf_is_inserted(self) -> None:
-        self.units = "user.slice=user.slice docker.service=system.slice/docker.service"
-        original = self.cg / "user.slice" / "session-a.scope"
-        original.mkdir()
-        (original / "memory.current").write_text(f"{8 * M}\n")
-        self.sysfs_model(count=1)
-        rc, out = run_hotset("setup", *self.args())
-        self.assertEqual(rc, 0, out)
-
-        schemes = self.kd / "0" / "contexts" / "0" / "schemes"
-        self.assertEqual((schemes / "0" / "ops_filters" / "0" / "memcg_path").read_text().strip(),
-                         "/user.slice/session-a.scope")
-        self.assertEqual((schemes / "1" / "ops_filters" / "0" / "memcg_path").read_text().strip(),
-                         "/system.slice/docker.service")
-        inserted = self.cg / "user.slice" / "session-0.scope"
+    def test_sample_reconfigures_and_measures_a_leaf_inserted_after_configure(self) -> None:
+        self.setup_user_topology(["session-a.scope"])
+        inserted = self.cg / "user.slice" / "session-b.scope"
         inserted.mkdir()
         (inserted / "memory.current").write_text(f"{8 * M}\n")
 
@@ -746,8 +766,127 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
         self.assertEqual(set(rows), {"docker.service", "user.slice"})
-        self.assertGreater(int(rows["docker.service"]["sz_filter_passed_one_apply"]), 0)
-        self.assertGreater(int(rows["user.slice"]["sz_filter_passed_one_apply"]), 0)
+        self.assertEqual(int(rows["user.slice"]["memcg_leaves"]), 2)
+        schemes = self.kd / "0" / "contexts" / "0" / "schemes"
+        configured_paths = {p.read_text().strip() for p in schemes.glob("*/ops_filters/0/memcg_path")}
+        self.assertIn("/user.slice/session-b.scope", configured_paths)
+        self.assertTrue(any(row["kind"] == "topology_change" and row["source"] == "sample"
+                            for row in self.topology_records()))
+
+    def test_configured_leaf_removed_after_configure_re_resolves_the_remaining_leaf(self) -> None:
+        self.setup_user_topology(["session-a.scope", "session-b.scope"])
+        shutil.rmtree(self.cg / "user.slice" / "session-a.scope")
+
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
+        self.assertEqual(int(rows["user.slice"]["memcg_leaves"]), 1)
+        changes = [row for row in self.topology_records() if row["kind"] == "topology_change"]
+        self.assertTrue(changes)
+        self.assertNotIn("user.slice/session-a.scope", {leaf["path"] for leaf in changes[-1]["after"]})
+
+    def test_configured_leaf_unit_that_gains_a_child_is_reconfigured_to_the_child(self) -> None:
+        self.setup_user_topology(None)
+        child = self.cg / "user.slice" / "session-a.scope"
+        child.mkdir()
+        (child / "memory.current").write_text(f"{8 * M}\n")
+
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
+        self.assertEqual(int(rows["user.slice"]["memcg_leaves"]), 1)
+        schemes = self.kd / "0" / "contexts" / "0" / "schemes"
+        paths = {p.read_text().strip() for p in schemes.glob("*/ops_filters/0/memcg_path")}
+        self.assertIn("/user.slice/session-a.scope", paths)
+        self.assertNotIn("/user.slice", paths)
+
+    def test_unit_restart_with_a_new_leaf_path_is_reconfigured(self) -> None:
+        self.setup_user_topology(["session-a.scope"])
+        shutil.rmtree(self.cg / "user.slice" / "session-a.scope")
+        replacement = self.cg / "user.slice" / "session-b.scope"
+        replacement.mkdir()
+        (replacement / "memory.current").write_text(f"{8 * M}\n")
+
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        schemes = self.kd / "0" / "contexts" / "0" / "schemes"
+        paths = {p.read_text().strip() for p in schemes.glob("*/ops_filters/0/memcg_path")}
+        self.assertIn("/user.slice/session-b.scope", paths)
+        self.assertNotIn("/user.slice/session-a.scope", paths)
+
+    def test_unit_restart_at_the_same_leaf_path_changes_the_directory_identity(self) -> None:
+        self.setup_user_topology(["session-a.scope"])
+        leaf = self.cg / "user.slice" / "session-a.scope"
+        old_inode = leaf.stat().st_ino
+        replacement = self.cg / "user.slice" / "session-replacement.scope"
+        replacement.mkdir()
+        (replacement / "memory.current").write_text(f"{8 * M}\n")
+        retired = self.cg / "user.slice" / "session-retired.scope"
+        leaf.rename(retired)
+        replacement.rename(leaf)
+        shutil.rmtree(retired)
+        new_inode = leaf.stat().st_ino
+        self.assertNotEqual(old_inode, new_inode)
+
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        changes = [row for row in self.topology_records() if row["kind"] == "topology_change"]
+        self.assertTrue(changes)
+        before = next(row for row in changes[-1]["before"] if row["path"] == "user.slice/session-a.scope")
+        after = next(row for row in changes[-1]["after"] if row["path"] == "user.slice/session-a.scope")
+        self.assertNotEqual(before["inode"], after["inode"])
+
+    def test_leaf_changed_between_commit_and_read_is_dropped_with_its_reason(self) -> None:
+        self.setup_user_topology(["session-a.scope"])
+        inserted = self.cg / "user.slice" / "session-b.scope"
+        inserted.mkdir()
+        (inserted / "memory.current").write_text(f"{8 * M}\n")
+        da = hs.load_lib(self.lib, str(self.admin))
+        apply = da.SysfsInterface.kdamond_update_tried_regions
+
+        def remove_after_apply(kdamond: int) -> None:
+            apply(kdamond)
+            shutil.rmtree(inserted)
+
+        with mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions", side_effect=remove_after_apply):
+            rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
+        self.assertEqual(int(rows["user.slice"]["memcg_leaves"]), 1)
+        dropped = [row for row in self.topology_records() if row["kind"] == "dropped"]
+        self.assertTrue(any(row["path"] == "user.slice/session-b.scope" and "after commit" in row["reason"]
+                            for row in dropped))
+
+    def test_single_leaf_unit_gone_has_no_zero_row_and_other_units_continue(self) -> None:
+        self.setup_user_topology(None)
+        shutil.rmtree(self.cg / "user.slice")
+
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        rows = list(csv.DictReader((self.ev / "hotset.csv").open()))
+        self.assertEqual([row["unit"] for row in rows], ["docker.service"])
+        self.assertNotIn("user.slice,0,0,0,0", (self.ev / "hotset.csv").read_text())
+        self.assertIn("damon_measure=failed:user.slice:topology step 0", (self.ev / "manifest.env").read_text())
+
+    def test_no_configured_leaf_left_is_inconclusive_without_a_hotset_row(self) -> None:
+        self.setup_user_topology(None)
+        shutil.rmtree(self.cg / "user.slice")
+        shutil.rmtree(self.cg / "system.slice" / "docker.service")
+
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 4, out)
+        self.assertIn("no configured leaf memcg remains", out)
+        self.assertFalse((self.ev / "hotset.csv").exists())
+
+    def test_scheme_attribution_uses_component_prefix_and_refuses_unowned_or_ambiguous_paths(self) -> None:
+        units = [("user.slice", "user.slice")]
+        self.assertEqual(hs.unit_for_memcg_path("/user.slice/session.scope", units), "user.slice")
+        for path, configured in (("/user.slice-x/session.scope", units),
+                                 ("/other.slice/session.scope", units),
+                                 ("/user.slice/session.scope", units + [("session.scope", "user.slice/session.scope")])):
+            with self.subTest(path=path, configured=configured):
+                with self.assertRaises(hs.Refusal):
+                    hs.unit_for_memcg_path(path, configured)
 
     def test_a_zero_filtered_count_above_1mib_refuses_that_floor_and_records_it(self) -> None:
         self.tree(nr=1, state="off")
@@ -838,6 +977,12 @@ class HotsetTests(unittest.TestCase):
 
 class ShellKitTests(F.ShellKitBase):
     """accept-run.sh: the ladder, the WAL, the per-step writes, the probes, the stop rule, the cleanup paths."""
+
+    def test_hotset_sample_runs_before_the_first_judged_row_of_each_window(self) -> None:
+        src = (KIT / "accept-run.sh").read_text()
+        tick = src[src.index('tick() { # <phase>'):src.index('dwell() { # <phase>')]
+        self.assertIn('[ "$i" = 1 ]', tick, "step 0 and every later judged window sample on their first tick")
+        self.assertLess(tick.index("hotset sample --step"), tick.index('write_row "$ph" "$s"'))
 
     def test_cgprofile_environment_refusal_happens_before_any_host_write(self) -> None:
         r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2", FAKE_SESSIONS_LIVE="1",

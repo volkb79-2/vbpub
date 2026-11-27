@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
+import json
 import math
 import sys
 from pathlib import Path
@@ -335,11 +336,35 @@ def installed_floors(base: dict[str, str]) -> dict[str, int]:
     return rows
 
 
+def topology_dropped_steps(evidence: Path) -> dict[str, set[int]]:
+    """A per-unit topology drop is evidence that the step's floor was not fully measured."""
+    path = evidence / "hotset-topology.jsonl"
+    if not path.is_file():
+        return {}
+    dropped: dict[str, set[int]] = {}
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for line_number, line in enumerate(fh, 1):
+                try:
+                    record = json.loads(line)
+                except ValueError as exc:
+                    raise Inconclusive(f"{path}:{line_number} is not valid topology evidence: {exc}") from exc
+                if not isinstance(record, dict) or record.get("kind") != "dropped":
+                    continue
+                unit, step = record.get("unit"), record.get("step")
+                if isinstance(unit, str) and isinstance(step, int):
+                    dropped.setdefault(unit, set()).add(step)
+    except OSError as exc:
+        raise Inconclusive(f"cannot read topology evidence {path}: {exc}") from exc
+    return dropped
+
+
 def damon_floors(evidence: Path, installed: dict[str, int], passing: set[int]) -> dict[str, dict]:
     """4.3: H_unit = the p95 of the one-apply values in the judged window, max over the passing steps; floor =
     ceil(1.10 x H_unit). A floor >= the installed row that passed every step with it in force is **proved**; one
     genuinely below it was never in force and stays a candidate."""
     rows = read_csv(evidence / "hotset.csv")
+    dropped_steps = topology_dropped_steps(evidence)
     out: dict[str, dict] = {}
     for unit in sorted({r.get("unit", "") for r in rows if r.get("unit")}):
         hot, steps = 0.0, []
@@ -356,8 +381,12 @@ def damon_floors(evidence: Path, installed: dict[str, int], passing: set[int]) -
         if not steps:
             continue
         floor = (int(hot) * 11 + 9) // 10   # ceil(1.10 x H) in integer bytes: no float ulp (400M -> 440M, not 441M)
+        measured_all_passes = bool(passing) and set(steps) == passing
+        no_dropped_pass = not (dropped_steps.get(unit, set()) & passing)
+        was_refused = hotset_refusal(evidence, unit) is not None
         out[unit] = {"hot": hot, "floor": floor, "steps": steps, "installed": installed.get(unit, 0),
-                     "proved": floor >= installed.get(unit, 0)}
+                     "proved": measured_all_passes and no_dropped_pass and not was_refused
+                     and floor >= installed.get(unit, 0)}
     return out
 
 
@@ -373,6 +402,10 @@ def margin(rows: list[dict], step: int) -> float | None:
 def hotset_refusal(evidence: Path, unit: str) -> str | None:
     marker = evidence / "hotset-refused"
     if marker.is_file() and unit in marker.read_text().split():
+        prefix = f"damon_measure=failed:{unit}:"
+        for line in (evidence / "manifest.env").read_text().splitlines() if (evidence / "manifest.env").is_file() else []:
+            if line.startswith(prefix):
+                return line[len(prefix):] or "DAMON measurement refused"
         return "sz_ops_filter_passed 0"
     return None
 

@@ -694,16 +694,16 @@ tick() { # <phase> <step> [judged_ticks] [i]
   guard_tick || return 1
   drift_tick || return 1
   SCOPE_ANON=$(scope_stat "$SCOPE" anon); SCOPE_ANON=${SCOPE_ANON:-0}
+  if [ "$ph" = judge ] && { [ "$i" = 1 ] || [ "$HOTSET_EVERY" -le 1 ] || [ $(((i - 1) % HOTSET_EVERY)) -eq 0 ]; }; then
+    hotset sample --step "$s" >>"$EVID/hotset-$s.log" 2>&1 || {
+      note "the hot-set sample of step $s failed (see $EVID/hotset-$s.log); the step is INCONCLUSIVE"
+      abort INCONCLUSIVE damon_sample
+      return 1
+    }
+  fi
   write_row "$ph" "$s"
   if [ "$ph" = judge ]; then
     probe_cycle "$s" "$i" "$judged" || return 1
-    if [ "$HOTSET_EVERY" -le 1 ] || [ $(( i % HOTSET_EVERY )) -eq 0 ]; then
-      hotset sample --step "$s" >>"$EVID/hotset-$s.log" 2>&1 || {
-        note "the hot-set sample of step $s failed (see $EVID/hotset-$s.log); the step is INCONCLUSIVE"
-        abort INCONCLUSIVE damon_sample
-        return 1
-      }
-    fi
   fi
   TICKS=$((TICKS + 1))
   if [ "${MAX_TICKS:-0}" -gt 0 ] && [ "$TICKS" -ge "$MAX_TICKS" ]; then abort INCONCLUSIVE ticks; return 1; fi
