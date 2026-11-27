@@ -1151,9 +1151,52 @@ class AgentVerbService:
                     candidate_ids.add(event["candidate_id"])
         return len(candidate_ids)
 
+    def _open_job_checkout(
+        self, job_fd: int, job_id: str, job_request: Mapping[str, Any],
+    ) -> tuple[int, Path]:
+        try:
+            return open_beneath(job_fd, "checkout", directory=True), self.paths.jobs_dir / job_id / "checkout"
+        except FileNotFoundError:
+            pass
+        pointer_fd = open_beneath(job_fd, "checkout.json")
+        try:
+            raw = os.read(pointer_fd, 4097)
+        finally:
+            os.close(pointer_fd)
+        if len(raw) > 4096:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"job {job_id!r} checkout pointer is too large")
+        try:
+            pointer = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"job {job_id!r} checkout pointer is unreadable: {exc}") from exc
+        repo = job_request.get("repo")
+        relative = f".fleetd-worktrees/{job_id}"
+        if (
+            not isinstance(pointer, dict)
+            or pointer.get("schema") != "fleet-host-checkout/1"
+            or pointer.get("repo") != repo
+            or pointer.get("relative") != relative
+            or not isinstance(repo, str)
+            or repo not in self.policy.repo_roots
+        ):
+            raise AdmissionError(ExitCode.REFUSAL, f"job {job_id!r} checkout pointer has an invalid identity or path")
+        root = self.policy.repo_roots[repo]
+        if not root.is_absolute() or root == Path("/") or ".." in root.parts:
+            raise AdmissionError(ExitCode.REFUSAL, f"configured repo root for {repo!r} is unsafe")
+        host_root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        repo_fd = -1
+        try:
+            repo_fd = open_beneath(host_root_fd, root.relative_to("/").as_posix(), directory=True)
+            checkout_fd = open_beneath(repo_fd, relative, directory=True)
+        finally:
+            for fd in (repo_fd, host_root_fd):
+                if fd >= 0:
+                    os.close(fd)
+        return checkout_fd, root / relative
+
     def _progress(self, request: Mapping[str, Any], identity: AgentIdentity) -> AgentReply:
         job_id = str(request["job_id"])
-        job_dir, job_request = self._owned_job(job_id, identity)
+        _job_dir, job_request = self._owned_job(job_id, identity)
         project = validate_relative_path(job_request.get("project"), "project", allow_dot=True)
         lane = job_request.get("lane")
         if not isinstance(lane, str):
@@ -1165,13 +1208,12 @@ class AgentVerbService:
         try:
             jobs_fd = os.open(self.paths.jobs_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             job_fd = open_beneath(jobs_fd, job_id, directory=True)
-            checkout_fd = open_beneath(job_fd, "checkout", directory=True)
+            checkout_fd, checkout_path = self._open_job_checkout(job_fd, job_id, job_request)
             if project != ".":
                 project_fd = open_beneath(checkout_fd, project, directory=True)
             lane_kind = self._lane_kind(checkout_fd, project, lane)
             if lane_kind == "assay":
-                checkout = job_dir / "checkout"
-                assay_lane = resolve_assay_lane(checkout, project, lane, root_fd=checkout_fd)
+                assay_lane = resolve_assay_lane(checkout_path, project, lane, root_fd=checkout_fd)
                 project_prefix = "" if project == "." else f"{project}/"
                 progress_path = f"{project_prefix}.assay/progress-{assay_lane}.jsonl"
                 opened = self._progress_file(checkout_fd, progress_path)

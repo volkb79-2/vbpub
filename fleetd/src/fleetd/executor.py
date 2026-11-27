@@ -35,6 +35,7 @@ class RunnerIdentity:
     uid: int
     gid: int
     groups: tuple[int, ...]
+    home: str = ""
 
 
 @dataclass(frozen=True)
@@ -273,7 +274,7 @@ class HostJobExecutor:
         }
         _atomic_json(job_dir / "state.json", initial)
         argv = [
-            self.python_executable, "-m", "fleetd.executor", "worker",
+            self.python_executable, "-m", "fleetd.executor_worker", "worker",
             "--state-dir", str(self.state_dir), "--policy", str(self.policy_path),
             "--job-id", job_id, "--lock-fd", str(admission.fileno()),
         ]
@@ -288,8 +289,7 @@ class HostJobExecutor:
         running = dict(initial)
         running["state"] = "running"
         running["executor_pid"] = launched.main_pid
-        _atomic_json(job_dir / "state.json", running)
-        return self.read_state(job_id) or running
+        return running
 
     def request_stop(self, job_id: str, reason: str) -> Mapping[str, object] | None:
         _job_id(job_id)
@@ -338,5 +338,5 @@ def _resolve_system_user(username: str) -> RunnerIdentity:
     # Resolve every group so a stale NSS gid is a refusal rather than a failed switch.
     for gid in groups:
         grp.getgrgid(gid)
-    return RunnerIdentity(username, account.pw_uid, account.pw_gid, groups)
+    return RunnerIdentity(username, account.pw_uid, account.pw_gid, groups, account.pw_dir)
 

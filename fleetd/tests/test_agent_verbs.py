@@ -2320,6 +2320,33 @@ def test_command_progress_uses_lane_log_byte_offset(tmp_path):
     assert _body(reply) == b"two\n"
 
 
+def test_progress_reads_executor_checkout_through_root_owned_pointer(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    job_id = "controller-run-1"
+    checkout_rel = f".fleetd-worktrees/{job_id}"
+    checkout = service.policy.repo_roots["vbpub"] / checkout_rel
+    checkout.mkdir(parents=True)
+    (checkout / "run-gate.toml").write_text(
+        '[lanes."r0-r1"]\nkind = "command"\n', encoding="utf-8",
+    )
+    job_dir = _job(service, identity, {"repo": "vbpub", "project": ".", "lane": "r0-r1"})
+    (job_dir / "checkout.json").write_text(json.dumps({
+        "schema": "fleet-host-checkout/1", "repo": "vbpub", "relative": checkout_rel,
+    }), encoding="utf-8")
+    (job_dir / "lane.log").write_bytes(b"host lane output")
+
+    reply = service.handle({"verb": "progress", "job_id": job_id, "offset": 5}, identity)
+
+    assert reply.document["unit"] == "log_bytes"
+    assert _body(reply) == b"lane output"
+
+    (job_dir / "checkout.json").write_text(json.dumps({
+        "schema": "fleet-host-checkout/1", "repo": "vbpub", "relative": "../outside",
+    }), encoding="utf-8")
+    with pytest.raises(AdmissionError, match="checkout pointer has an invalid identity or path"):
+        service.handle({"verb": "progress", "job_id": job_id, "offset": 0}, identity)
+
+
 def test_progress_caps_each_range_and_reports_the_next_offset(tmp_path):
     service, identity, _checkout = _service(tmp_path)
     job_dir = _job(service, identity)

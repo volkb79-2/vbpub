@@ -1,5 +1,9 @@
+import hashlib
+import io
 import json
+import os
 import subprocess
+import tarfile
 
 import pytest
 
@@ -12,6 +16,14 @@ from fleetd.executor import (
     ScopeState,
     SystemdScopeLauncher,
     validate_job_request,
+)
+from fleetd.executor_worker import (
+    CommandResult,
+    HostJobWorker,
+    _extract_seed,
+    _version_from_output,
+    _version_key,
+    _write_stdin_file,
 )
 from test_agent_protocol import SHA, _policy, _submit
 
@@ -83,7 +95,7 @@ def test_executor_start_hands_off_flock_only_after_scope_confirmation(tmp_path):
 
     unit, argv, lock_fd = scope.calls[0]
     assert unit == f"fleetd-job-{request['job_id']}.scope"
-    assert argv[:4] == [executor.python_executable, "-m", "fleetd.executor", "worker"]
+    assert argv[:4] == [executor.python_executable, "-m", "fleetd.executor_worker", "worker"]
     assert "--state-dir" in argv and str(state) in argv
     assert "--policy" in argv and str(executor.policy_path) in argv
     assert "--job-id" in argv and request["job_id"] in argv
@@ -221,3 +233,201 @@ def test_systemd_scope_launcher_refuses_when_scope_command_cannot_start():
     )
     with pytest.raises(AdmissionError, match="cannot start job scope"):
         launcher.launch("fleetd-job-x.scope", ["python3", "worker"], 8)
+
+
+def _worker(tmp_path, runner, *, finder=lambda _name: "/usr/bin/run-gate"):
+    policy, _ = _policy(tmp_path)
+    worker = HostJobWorker(
+        tmp_path / "state", policy, "controller-run-1", 9,
+        user_resolver=lambda name: RunnerIdentity(name, 1001, 1001, (1001,)),
+        runner_factory=lambda _identity: runner,
+        run_gate_finder=finder,
+    )
+    worker.runner_identity = RunnerIdentity("vscode", 1001, 1001, (1001,), "/home/vscode")
+    worker.runner = runner
+    worker.repo_root_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    return worker
+
+
+class _VersionRunner:
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def run(self, argv, **_kwargs):
+        self.calls.append(list(argv))
+        response = self.responses[argv[0]]
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+def test_run_gate_version_parser_handles_host_header_and_floor_order():
+    assert _version_from_output(b"run-gate (python 3.14) 25.0.2\n") == "25.0.2"
+    assert _version_key("25.0.1") == _version_key("25.0.1+local")
+    assert _version_key("25.0.1rc1") < _version_key("25.0.1")
+    assert _version_key("25.0.2.dev1") < _version_key("25.0.2")
+    assert _version_from_output(b"") is None
+    with pytest.raises(ValueError, match="unsupported run-gate version"):
+        _version_key("not-a-version")
+
+
+def test_run_gate_selection_uses_supported_fallback_and_refuses_old_tools(tmp_path):
+    from fleetd.executor_worker import _RG_FALLBACK
+
+    runner = _VersionRunner({
+        "/usr/bin/run-gate": CommandResult(0, b"run-gate 24.3.0\n"),
+        _RG_FALLBACK: CommandResult(0, b"run-gate 25.0.2\n"),
+    })
+    worker = _worker(tmp_path, runner)
+    try:
+        assert worker._select_run_gate() == (_RG_FALLBACK, "25.0.2")
+        assert [call[0] for call in runner.calls] == ["/usr/bin/run-gate", _RG_FALLBACK]
+    finally:
+        os.close(worker.repo_root_fd)
+
+    no_tools_dir = tmp_path / "none"
+    no_tools_dir.mkdir()
+    runner = _VersionRunner({
+        _RG_FALLBACK: CommandResult(0, b"run-gate 25.0.0\n"),
+    })
+    worker = _worker(no_tools_dir, runner, finder=lambda _name: None)
+    try:
+        with pytest.raises(AdmissionError, match="no usable run-gate >= 25.0.1"):
+            worker._select_run_gate()
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def _pipe_with(data):
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, data)
+    os.close(write_fd)
+    return read_fd
+
+
+def _seed_archive(member_name="store/value.txt", content=b"seed", member_type=tarfile.REGTYPE):
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w:gz") as archive:
+        member = tarfile.TarInfo(member_name)
+        member.type = member_type
+        if member_type == tarfile.REGTYPE:
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+        else:
+            archive.addfile(member)
+    return output.getvalue()
+
+
+def test_verified_bundle_copy_checks_length_digest_and_removes_partial(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "checkout").mkdir()
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    source = b"verified bundle"
+    source_fd = _pipe_with(source)
+    try:
+        _write_stdin_file(root_fd, "checkout/in.bundle", source_fd, hashlib.sha256(source).hexdigest(), len(source))
+    finally:
+        os.close(source_fd)
+    assert (root / "checkout" / "in.bundle").read_bytes() == source
+
+    source_fd = _pipe_with(b"changed")
+    try:
+        with pytest.raises(ValueError, match="digest or size changed"):
+            _write_stdin_file(root_fd, "checkout/partial", source_fd, hashlib.sha256(source).hexdigest(), len(source))
+    finally:
+        os.close(source_fd)
+        os.close(root_fd)
+    assert not (root / "checkout" / "partial").exists()
+
+
+def test_seed_unpack_verifies_archive_and_replaces_only_target_tree(tmp_path):
+    root = tmp_path / "checkout"
+    target = root / "store"
+    target.mkdir(parents=True)
+    (target / "stale").write_text("old", encoding="utf-8")
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    archive = _seed_archive()
+    input_fd = _pipe_with(archive)
+    try:
+        _extract_seed(root_fd, input_fd, "store", hashlib.sha256(archive).hexdigest(), len(archive), 100)
+    finally:
+        os.close(input_fd)
+    assert (target / "value.txt").read_bytes() == b"seed"
+    assert not (target / "stale").exists()
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "other").symlink_to(outside, target_is_directory=True)
+    escaped = _seed_archive("store/../outside/value.txt")
+    input_fd = _pipe_with(escaped)
+    try:
+        with pytest.raises(ValueError, match="member-outside-path"):
+            _extract_seed(root_fd, input_fd, "store", hashlib.sha256(escaped).hexdigest(), len(escaped), 100)
+    finally:
+        os.close(input_fd)
+        os.close(root_fd)
+    assert list(outside.iterdir()) == []
+
+
+def test_seed_unpack_refuses_special_members_bad_digest_and_unsafe_target(tmp_path):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    symlink_archive = _seed_archive("store/link", member_type=tarfile.SYMTYPE)
+    input_fd = _pipe_with(symlink_archive)
+    try:
+        with pytest.raises(ValueError, match="special-member"):
+            _extract_seed(
+                root_fd, input_fd, "store", hashlib.sha256(symlink_archive).hexdigest(),
+                len(symlink_archive), 100,
+            )
+    finally:
+        os.close(input_fd)
+
+    input_fd = _pipe_with(b"not the archive")
+    try:
+        with pytest.raises(ValueError, match="checksum"):
+            _extract_seed(root_fd, input_fd, "store", "0" * 64, 15, 100)
+    finally:
+        os.close(input_fd)
+
+    input_fd = _pipe_with(symlink_archive)
+    try:
+        with pytest.raises(ValueError, match="unsafe-target"):
+            _extract_seed(
+                root_fd, input_fd, ".git/store", hashlib.sha256(symlink_archive).hexdigest(),
+                len(symlink_archive), 100,
+            )
+    finally:
+        os.close(input_fd)
+        os.close(root_fd)
+
+
+def test_seed_upload_requires_matching_content_object_and_sha256_sidecar(tmp_path):
+    from fleetd.executor_worker import HostJobWorker
+
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.state_dir.mkdir()
+    worker.group = "controller"
+    upload_root = worker.state_dir / "uploads" / worker.group
+    upload_root.mkdir(parents=True)
+    archive = b"seed archive bytes"
+    archive_digest = hashlib.sha256(archive).hexdigest()
+
+    def publish(name, content):
+        digest = hashlib.sha256(content).hexdigest()
+        object_dir = upload_root / name
+        object_dir.mkdir()
+        (object_dir / digest).write_bytes(content)
+        return object_dir / digest
+
+    publish("assay-seed-0.tgz", archive)
+    sidecar = publish("assay-seed-0.tgz.sha256", f"{archive_digest}  assay-seed-0.tgz\n".encode())
+    try:
+        assert worker._find_seed_upload(archive_digest, len(archive)) == "assay-seed-0.tgz"
+        sidecar.unlink()
+        assert worker._find_seed_upload(archive_digest, len(archive)) is None
+    finally:
+        os.close(worker.repo_root_fd)
