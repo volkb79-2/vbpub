@@ -15997,7 +15997,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B577 — A resume that rejects every record does not say why
 
-**Status: FIXED 2026-11-27 in test commits `0600b4c85` and `79136e9ff`, implementation commits `754d2761a` and `66e3ccb6e`; severity was medium (operational).**
+**Status: FIXED 2026-11-27 in test commits `0600b4c85` and `79136e9ff`, implementation commits `754d2761a` and `66e3ccb6e`, with the record-isolation follow-up in `ebd069b5f`; severity was medium (operational).**
 
 **Symptom.** A seeded remote-gate resume (scripts/debian-install-v2, lane r2, head 2ea1912ca, r1002, run-gate 25.7.0, image dcaf4222) rejected every prior record.
 - Chunk 1, rgw-r2-20261124T155402-r1002, collected 14 killed records.
@@ -16027,7 +16027,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 - This makes Wanted item 1 (name the judge component that moved) the way to find it, rather than another manual record diff.
 - Source: the main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
 
-**Implementation note (2026-11-27).** Judge components use sidecar schema `/2` under `judges/<judge>/judge-components.json`. A mismatch reports changed component names in the `resume` event and stderr. Other passthrough values share one aggregate digest; its diagnostic names candidates as “one or more of,” while names that appear or disappear are exact. Sidecar names and diagnostic sizes are bounded and validated; malformed or oversized metadata is unavailable. The first resume after the pre-injection identity change re-executes old records whose judge included run-local assay-injected `PYTHONPATH` entries, including when `PYTHONPATH` was absent before injection and was not passed through. Older sidecars report component digests unavailable but do not change record acceptance.
+**Implementation note (2026-11-27).** Judge components use sidecar schema `/2` at `.diagnostics/judge-components/<judge>.json` inside the state-store root, outside candidate records and judge generations. It travels with collected and seeded stores; a merged target store writes the current judge's sidecar after record and deadline work. A mismatch reports changed component names in the `resume` event and stderr. “Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.” Other passthrough values share one aggregate digest; its diagnostic names candidates as “one or more of,” while names that appear or disappear are exact. Sidecar names and diagnostic sizes are bounded and validated; malformed or oversized metadata is unavailable. The first resume after the pre-injection identity change re-executes old records whose judge included run-local assay-injected `PYTHONPATH` entries, including when `PYTHONPATH` was absent before injection and was not passed through. Older stores without usable sidecars report component digests unavailable but do not change record acceptance.
 
 ## B578 — A kill with rc!=0 and no failing test named is still counted as killed
 

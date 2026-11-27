@@ -2004,14 +2004,16 @@ mutant was never re-executed against the assertion that kills it.
   produced by different classification logic.
 
 When resume rejects records for a judge mismatch, the store keeps the
-component digests beside that judge's records in
-`judges/<judge>/judge-components.json`. The `resume` progress event and stderr
-name the differing components. For passthrough changes they report variable
-names only; they never print an environment value or its fingerprint. When
-the aggregate digest changes, the diagnostic names “one or more of” its
-shared candidate variables; variables that appear or disappear are named
-exactly. Stores with the earlier B577 sidecar format, or without component
-metadata, still use the same resume rules and report that the component
+component digests in `.diagnostics/judge-components/<judge>.json` inside the
+state-store directory, outside candidate records and judge generations. The
+sidecar stays with a collected or seeded store; a merged target store writes
+the current judge's metadata after record and deadline work completes. The
+`resume` progress event and stderr name the differing components. For
+passthrough changes they report variable names only; they never print an
+environment value or its fingerprint. When the aggregate digest changes, the
+diagnostic names “one or more of” its shared candidate variables; variables
+that appear or disappear are named exactly. Older stores without usable
+component metadata still use the same resume rules and report that component
 digests are unavailable.
 
 **Resume migration.** On the first resume using the pre-injection identity,
