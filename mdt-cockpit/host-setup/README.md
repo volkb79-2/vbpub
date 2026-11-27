@@ -1229,6 +1229,20 @@ The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped pro
 `memory.min` keeping its protected part resident, judges **pressure and ssh/service latency** per step (refaults are now `INFO` only), and takes the floors from DAMON's
 `sz_ops_filter_passed` per leaf.
 
+Before step 0, stop the reconcile timer on r1002 and verify the reconcile service is inactive. Keep the timer stopped through setup, the run and restore. If any command
+refuses or exits before the post-run block, do not continue: finish `accept-restore.sh` first if the unit started or its WAL remains, then run
+`systemctl start mdt-dev-governance-reconcile.timer` and `systemctl start mdt-dev-governance-reconcile.service`; verify the timer with
+`systemctl is-active mdt-dev-governance-reconcile.timer`.
+
+   ```bash
+   set -euo pipefail
+   systemctl stop mdt-dev-governance-reconcile.timer
+   TIMER_STATE=$(systemctl is-active mdt-dev-governance-reconcile.timer 2>&1 || true)
+   [ "$TIMER_STATE" = inactive ] || { echo "reconcile timer state is $TIMER_STATE, expected inactive" >&2; exit 1; }
+   SERVICE_STATE=$(systemctl is-active mdt-dev-governance-reconcile.service 2>&1 || true)
+   [ "$SERVICE_STATE" = inactive ] || { echo "reconcile service state is $SERVICE_STATE, expected inactive" >&2; exit 1; }
+   ```
+
 0. **Deliver the exact source archive from the cockpit.** The host has no git checkout. Use the full commit SHA that will be run, and archive the three required trees from the cockpit checkout:
 
    ```bash
@@ -1353,6 +1367,21 @@ The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped pro
 
    The kit repeats its SSH, cgprofile, DAMON_STAT, DAMON sysfs presence/ownership, and DAMON capability checks read-only immediately before its first sysfs write.
 
+   **Snapshot before the run.** This block is standalone; run it as root on r1002 after preflight:
+
+   ```bash
+   set -euo pipefail
+   snap() {
+     for s in dev.slice dev.slice/dev-gates.slice; do for f in memory.max memory.min memory.current; do V=$(cat "/sys/fs/cgroup/$s/$f" 2>&1 || true); echo "$s/$f=$V"; done; done
+     for s in dev.slice dev-gates.slice; do V=$(systemctl show -p MemoryMax -p MemoryMin -p NeedDaemonReload "$s" 2>&1 || true); printf '%s\n' "$V" | sed "s/^/$s /"; done
+     d=/sys/kernel/mm/damon/admin/kdamonds; NR=$(cat "$d/nr_kdamonds" 2>&1 || true); echo "nr_kdamonds=$NR"
+     for k in "$d"/[0-9]*; do V=$(cat "$k/state" 2>&1 || true); if [ -n "$V" ]; then echo "$k/state=$V"; fi; done
+     docker inspect mdt-accept-squeeze --format '{{.State.Status}}' 2>&1 | tail -n 1 || true
+     systemctl is-active mdt-dev-governance-reconcile.timer 2>&1 || true
+   }
+   snap > /root/accept-snap-before.txt
+   ```
+
 3. **The squeeze run**, launched detached through `systemd-run`. This gives the unit the host endpoint variables from `/etc/host-endpoints.env`; transient units do not inherit them.
    The repository defines that record path in `.devcontainer/initialize_container_environment.py` (`ENDPOINT_RECORD_PATH`). The command requires `CGPROFILE_CONTROL_SOCKET` (the client-required key) and forwards every other published cgprofile endpoint key when present:
 
@@ -1389,26 +1418,66 @@ The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped pro
    seven 300 s dwells for steps 0–6, the DAMON-off control pass, plus margin); eval and apply add about 10 min. Exit codes: 0 a measured step passed and no blocking
    inconclusive occurred, 1 step 0 failed, 4 INCONCLUSIVE, 3 refused.
 
-4. **Eval and restore.** Save the eval output and its status. On any failure, or if restore is pending, run the WAL restore; never force a foreign cgroup value or DAMON count:
+4. **Eval, restore, snapshot and restart the reconcile timer.** Run this as root on r1002 in a new shell after the unit ended. Replace `EV` with the exact directory printed by step 3. The EXIT trap starts the timer and reconcile service even if a later command fails:
 
    ```bash
    set -euo pipefail
-   EV=<absolute-evidence-directory>
-   CK=<extracted-checkout>
+   PATH=/opt/mdt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+   export PATH
+   restart_reconcile() {
+     local status=$?
+     trap - EXIT
+     if ! systemctl start mdt-dev-governance-reconcile.timer; then
+       echo "could not restart mdt-dev-governance-reconcile.timer; restart it manually" >&2
+       [ "$status" -ne 0 ] || status=1
+     fi
+     if ! systemctl is-active --quiet mdt-dev-governance-reconcile.timer; then
+       echo "mdt-dev-governance-reconcile.timer is not active after restart" >&2
+       [ "$status" -ne 0 ] || status=1
+     fi
+     if ! systemctl start mdt-dev-governance-reconcile.service; then
+       echo "could not start mdt-dev-governance-reconcile.service; start it manually" >&2
+       [ "$status" -ne 0 ] || status=1
+     fi
+     exit "$status"
+   }
+   trap restart_reconcile EXIT
+   snap() {
+     for s in dev.slice dev.slice/dev-gates.slice; do for f in memory.max memory.min memory.current; do V=$(cat "/sys/fs/cgroup/$s/$f" 2>&1 || true); echo "$s/$f=$V"; done; done
+     for s in dev.slice dev-gates.slice; do V=$(systemctl show -p MemoryMax -p MemoryMin -p NeedDaemonReload "$s" 2>&1 || true); printf '%s\n' "$V" | sed "s/^/$s /"; done
+     d=/sys/kernel/mm/damon/admin/kdamonds; NR=$(cat "$d/nr_kdamonds" 2>&1 || true); echo "nr_kdamonds=$NR"
+     for k in "$d"/[0-9]*; do V=$(cat "$k/state" 2>&1 || true); if [ -n "$V" ]; then echo "$k/state=$V"; fi; done
+     docker inspect mdt-accept-squeeze --format '{{.State.Status}}' 2>&1 | tail -n 1 || true
+     systemctl is-active mdt-dev-governance-reconcile.timer 2>&1 || true
+   }
+   SHA=REPLACE_WITH_FINAL_40_CHARACTER_COMMIT_SHA
+   CK="/root/vbpub-accept-${SHA:0:12}"
    K="$CK/mdt-cockpit/host-setup/tools/accept"
+   EV=/root/accept-REPLACE_WITH_EXACT_EVIDENCE_DIRECTORY
+   [ -d "$EV" ] || { echo "set EV to the exact evidence directory printed by step 3" >&2; exit 1; }
+   UNIT_STATE=$(systemctl is-active mdt-accept-1 2>&1 || true)
+   echo "unit active state: $UNIT_STATE"
+   UNIT_RESULT=$(systemctl show mdt-accept-1 -p Result -p ExecMainCode -p ExecMainStatus 2>&1 || true)
+   printf '%s\n' "$UNIT_RESULT"
+   journalctl -u mdt-accept-1 --no-pager 2>&1 | grep -E 'Main process exited|status=|Deactivated|Succeeded|Failed' | tail -n 5 || true
    EVAL_RC=0
    "$K/accept-eval.py" "$EV" >"$EV/eval.txt" 2>&1 || EVAL_RC=$?
    cat "$EV/eval.txt" || true
    echo "eval rc=$EVAL_RC"
-   RESTORE_OUT=$("$K/accept-restore.sh" --evidence "$EV" 2>&1 || true)
-   printf '%s\n' "$RESTORE_OUT"
-   RESTORE_STATE=$(grep -E '^(restore|DAMON-RESTORE-PENDING|RESTORE-PENDING)' "$EV/manifest.env" 2>/dev/null || true)
+   journalctl -u mdt-accept-1 --no-pager >"$EV/unit.log" 2>&1 || true
+   RESTORE_STATE=$(grep -E '^(restore|squeeze_|restore_)|RESTORE-PENDING|DAMON-RESTORE-PENDING' "$EV/manifest.env" 2>/dev/null || true)
    printf '%s\n' "$RESTORE_STATE"
+   STATE_FILE=$(ls "$EV/squeeze-state.env" 2>/dev/null || true)
+   if [ -n "$STATE_FILE" ]; then RESTORE_OUT=$("$K/accept-restore.sh" --evidence "$EV" 2>&1 || true); printf '%s\n' "$RESTORE_OUT"; fi
+   snap > /root/accept-snap-after.txt
+   diff /root/accept-snap-before.txt /root/accept-snap-after.txt 2>&1 || true  # only memory.current and timer may differ; nr_kdamonds must match
+   cp /root/accept-snap-*.txt "$EV/"
+   tar -C /root -czf "$EV.tgz" "$(basename "$EV")"
    ```
 
    `accept-restore.sh` exits 0 when all kit-owned cgroup values and DAMON counts are restored, 1 when restoration is pending or a foreign value was left alone, and 3 when
-   there is nothing to do or it refuses. `restore=ok` is written only when every owned value is back at its start value; a pending WAL remains for a later restore.
-   `accept-run.sh` removes the dummy by its exact name in every exit path. A run whose evidence has no `restore=ok` is not complete.
+   there is nothing to do or it refuses. `restore=ok` is written only when every owned value is back at its start value; a pending WAL remains for a later restore. If restoration is still pending or reports a foreign value, keep the WAL and state untouched; never force a foreign cgroup value or DAMON count.
+   `accept-run.sh` removes the dummy by its exact name in every exit path. A run whose evidence has no `restore=ok` is not complete. If any earlier step refused, restore the WAL first if needed, then start the timer and service as described above.
 
 5. **Apply and verify** the eval's printed `DEV_HOST_MEMORY_MIN`/`DEV_HOST_MEMORY_MARGIN`/`DEV_HOST_MEMORY_MEASURED` in `/etc/mdt/host-setup.env` (**no KEEP pin**: K is derived again),
    then run `install.sh`, `mdt-host-check.sh`, and `tools/accept/daemon-reload-check.sh`. The latter refuses while a lowering is deferred or systemd and the kernel disagree on a dev `MemoryMax`.
@@ -1418,6 +1487,8 @@ The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped pro
 
    ```bash
    set -euo pipefail
+   EV=/root/accept-REPLACE_WITH_EXACT_EVIDENCE_DIRECTORY
+   [ -d "$EV" ] || { echo "set EV to the exact evidence directory printed by step 3" >&2; exit 1; }
    KEY=/root/.ssh/mdt-accept-loopback_ed25519
    AUTH=/root/.ssh/authorized_keys
    KNOWN=/root/.ssh/known_hosts
