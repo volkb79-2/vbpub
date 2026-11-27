@@ -599,6 +599,60 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual(int(rows[1]["regions_hot_bytes_info"]), 4096)
         self.assertEqual(rows[1]["unit"], "user.slice")
 
+    def test_sample_retries_after_a_transient_scheme_read_failure(self) -> None:
+        self.tree(nr=1, state="off")
+        self.ready()
+        entries = hs.hot_leaves(hs.parse_units(self.units), str(self.cg))
+        da = hs.load_lib(self.lib, str(self.admin))
+        with mock.patch.object(hs, "entries_or_refuse", side_effect=[entries, entries]) as enumerate_leaves, \
+                mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions",
+                                  side_effect=[OSError("transient vanished scheme"), None]):
+            rc, out = run_hotset("sample", *self.args("--step", "2", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(enumerate_leaves.call_count, 2, "the retry enumerates cgroup leaves again")
+        rows = list(csv.DictReader((self.ev / "hotset.csv").open()))
+        self.assertEqual([row["unit"] for row in rows], ["docker.service", "user.slice"])
+
+    def test_sample_refuses_after_all_retries_without_writing_a_row(self) -> None:
+        self.tree(nr=1, state="off")
+        self.ready()
+        entries = hs.hot_leaves(hs.parse_units(self.units), str(self.cg))
+        da = hs.load_lib(self.lib, str(self.admin))
+        with mock.patch.object(hs, "entries_or_refuse", side_effect=[entries, entries, entries]) as enumerate_leaves, \
+                mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions",
+                                  side_effect=OSError("scheme keeps disappearing")):
+            rc, out = run_hotset("sample", *self.args("--step", "2", "--kdamond", "0"))
+        self.assertEqual(rc, 3, out)
+        self.assertIn("hot-set sample failed after 3 attempts", out)
+        self.assertEqual(enumerate_leaves.call_count, 3)
+        self.assertFalse((self.ev / "hotset.csv").exists(), "an incomplete sample is never appended")
+
+    def test_refresh_reenumerates_and_retries_configuration(self) -> None:
+        old_entries = [("user.slice", "user.slice/session-a.scope")]
+        new_entries = [("user.slice", "user.slice/session-a.scope"), ("user.slice", "user.slice/session-b.scope")]
+        with mock.patch.object(hs, "entries_or_refuse", side_effect=[old_entries, new_entries]) as enumerate_leaves, \
+                mock.patch.object(hs, "load_lib", return_value=object()), \
+                mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
+                mock.patch.object(hs, "configure", side_effect=[hs.Refusal("a leaf vanished"), None]) as configure:
+            rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(enumerate_leaves.call_count, 2)
+        self.assertEqual(configure.call_args_list[0].args[3], old_entries)
+        self.assertEqual(configure.call_args_list[1].args[3], new_entries)
+        self.assertTrue(configure.call_args_list[1].kwargs["commit"])
+
+    def test_refresh_refuses_after_all_retries(self) -> None:
+        entries = [("user.slice", "user.slice/session-a.scope")]
+        with mock.patch.object(hs, "entries_or_refuse", return_value=entries) as enumerate_leaves, \
+                mock.patch.object(hs, "load_lib", return_value=object()), \
+                mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
+                mock.patch.object(hs, "configure", side_effect=hs.Refusal("a leaf vanished")) as configure:
+            rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
+        self.assertEqual(rc, 3, out)
+        self.assertIn("scheme refresh failed after 3 attempts", out)
+        self.assertEqual(enumerate_leaves.call_count, 3)
+        self.assertEqual(configure.call_count, 3)
+
     def test_sample_attributes_configured_schemes_by_path_after_a_leaf_is_inserted(self) -> None:
         self.units = "user.slice=user.slice docker.service=system.slice/docker.service"
         original = self.cg / "user.slice" / "session-a.scope"
@@ -643,6 +697,20 @@ class HotsetTests(unittest.TestCase):
         self.assertIn("system.slice/docker.service", hs.leaf_cgroups(str(self.cg), "system.slice"))
         self.assertNotIn("system.slice", hs.leaf_cgroups(str(self.cg), "system.slice"))
         self.assertEqual(hs.leaf_cgroups(str(self.cg), "user.slice"), ["user.slice"])
+
+    def test_leaf_enumeration_skips_a_session_scope_that_vanished_mid_walk(self) -> None:
+        vanished = self.cg / "user.slice" / "session-gone.scope"
+        vanished.mkdir()
+        (vanished / "memory.current").write_text("4096\n")
+        listdir = os.listdir
+
+        def vanish(path):
+            if os.fspath(path) == str(vanished):
+                raise FileNotFoundError(path)
+            return listdir(path)
+
+        with mock.patch.object(hs.os, "listdir", side_effect=vanish):
+            self.assertEqual(hs.leaf_cgroups(str(self.cg), "user.slice"), [])
 
     def test_no_leaf_at_all_refuses(self) -> None:
         self.tree()

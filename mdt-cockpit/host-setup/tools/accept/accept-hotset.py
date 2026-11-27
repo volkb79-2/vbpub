@@ -48,6 +48,7 @@ MAX_U32 = 2 ** 32 - 1
 MAX_SZ = 2 ** 63 - 1
 HOTSET_COLUMNS = ("utc", "step", "unit", "memcg_leaves", "sz_filter_passed_one_apply", "sz_tried", "regions_hot_bytes_info")
 SELF_TEST_CURRENT = MIB   # above this, sz_filter_passed 0 is a refused floor, never "no hot pages" (4.1)
+RETRY_ATTEMPTS = 3
 
 
 class Refusal(Exception):
@@ -121,7 +122,13 @@ def leaf_cgroups(cg: str, rel: str) -> list[str]:
     for root, _dirs, files in os.walk(base):
         if "memory.current" not in files:
             continue
-        if any(os.path.isfile(os.path.join(root, d, "memory.current")) for d in os.listdir(root)):
+        try:
+            children = os.listdir(root)
+        except (FileNotFoundError, NotADirectoryError):
+            continue   # a short-lived session scope vanished after os.walk yielded it
+        if not os.path.isfile(os.path.join(root, "memory.current")):
+            continue
+        if any(os.path.isfile(os.path.join(root, d, "memory.current")) for d in children):
             continue   # a slice or an intermediate cgroup: measured as its leaves, never as itself
         leaves.append(os.path.relpath(root, cg))
     return leaves
@@ -132,7 +139,7 @@ def hot_leaves(units: list[tuple[str, str]], cg: str) -> list[tuple[str, str]]:
 
 
 def unit_current(cg: str, entries: list[tuple[str, str]], unit: str) -> int:
-    return sum(read_int(os.path.join(cg, leaf, "memory.current"), 0) for u, leaf in entries if u == unit)
+    return sum(read_int(os.path.join(cg, leaf, "memory.current")) for u, leaf in entries if u == unit)
 
 
 def resolve_kdamond(args) -> int:
@@ -490,13 +497,21 @@ def refresh(args) -> int:
         return 0
     units = parse_units(args.units)
     cg = args.cgroup
-    entries = entries_or_refuse(units, cg)
     da = load_lib(args.lib, args.admin)
     kd = resolve_kdamond(args)
     ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
-    configure(da, args.admin, kd, entries, ranges, commit=True)
-    say(f"kdamond {kd}: {len(entries)} leaf schemes re-enumerated for step {args.step}")
-    return 0
+    last_error: Exception | None = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            entries = entries_or_refuse(units, cg)
+            configure(da, args.admin, kd, entries, ranges, commit=True)
+            say(f"kdamond {kd}: {len(entries)} leaf schemes re-enumerated for step {args.step}")
+            return 0
+        except (Refusal, OSError, ValueError) as exc:
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS:
+                note(f"scheme refresh attempt {attempt}/{RETRY_ATTEMPTS} failed ({exc}); re-enumerating cgroups and retrying")
+    raise Refusal(f"scheme refresh failed after {RETRY_ATTEMPTS} attempts; refusing: {last_error}") from last_error
 
 
 def append_rows(path: str, rows: list[tuple[str, dict]], step: int) -> None:
@@ -550,21 +565,16 @@ def fixture_rows(args, units: list[tuple[str, str]]) -> list[tuple[str, dict]]:
     return rows
 
 
-def sample(args) -> int:
-    units = parse_units(args.units)
-    if args.fixture:
-        append_rows(os.path.join(args.evidence, "hotset.csv"), fixture_rows(args, units), args.step)
-        return 0
-    da = load_lib(args.lib, args.admin)
-    kd, cg = resolve_kdamond(args), args.cgroup
+def sample_attempt(args, units: list[tuple[str, str]], da, kd: int, cg: str) -> tuple[list[tuple[str, dict]], list[tuple[str, str]]]:
+    """Collect one complete sample; callers may retry this after re-enumerating cgroup leaves."""
     entries = entries_or_refuse(units, cg)
     da.SysfsInterface.kdamond_update_stats(kd)
     da.SysfsInterface.kdamond_update_tried_regions(kd)   # exactly one apply per sample
     per: dict[str, dict] = {}
     schemes = os.path.join(args.admin, "kdamonds", str(kd), "contexts", "0", "schemes")
     nr_schemes = read_int(os.path.join(schemes, "nr_schemes"), -1)
-    if nr_schemes < 0:
-        raise Refusal(f"{schemes}/nr_schemes is unreadable: configured DAMON schemes are unknown")
+    if nr_schemes <= 0:
+        raise Refusal(f"{schemes}/nr_schemes is {nr_schemes}; configured DAMON schemes are unknown")
     unit_by_memcg_path: dict[str, str] = {}
     for unit, leaf in entries:
         memcg_path = "/" + leaf.lstrip("/")
@@ -582,28 +592,67 @@ def sample(args) -> int:
         if unit is None:
             raise Refusal(f"scheme {i} memcg_path {memcg_path!r} is not a current leaf under the configured units; refusing stale attribution")
         tried = os.path.join(sdir, "tried_regions")
+        if not os.path.isdir(tried):
+            raise Refusal(f"{tried} disappeared during sample; refusing an incomplete hot-set count")
         passed = hot = 0
-        names = sorted(os.listdir(tried)) if os.path.isdir(tried) else []
+        try:
+            names = sorted(os.listdir(tried))
+        except OSError as exc:
+            raise Refusal(f"cannot enumerate {tried} during sample: {exc}") from exc
         for name in names:
             rdir = os.path.join(tried, name)
             if not os.path.isdir(rdir):
+                if name.isdigit():
+                    raise Refusal(f"tried region {rdir} disappeared during sample")
                 continue
-            passed += read_int(os.path.join(rdir, "sz_filter_passed"), 0)
-            hot += read_int(os.path.join(rdir, "end"), 0) - read_int(os.path.join(rdir, "start"), 0)
+            try:
+                passed += read_int(os.path.join(rdir, "sz_filter_passed"))
+                end = read_int(os.path.join(rdir, "end"))
+                start = read_int(os.path.join(rdir, "start"))
+            except (OSError, ValueError) as exc:
+                raise Refusal(f"tried region {rdir} changed during sample: {exc}") from exc
+            if end < start:
+                raise Refusal(f"tried region {rdir} has end {end} before start {start}")
+            hot += end - start
         stats = da.SysfsInterface.read_stats(kd, 0, i)
+        if stats.get("sz_tried", -1) < 0 or stats.get("sz_ops_filter_passed", -1) < 0:
+            raise Refusal(f"scheme {i} statistics disappeared during sample")
         acc = per.setdefault(unit, {"leaves": 0, "passed": 0, "tried": 0, "hot": 0})
         acc["leaves"] += 1
         acc["passed"] += passed
-        acc["tried"] += max(0, stats.get("sz_tried", 0))
+        acc["tried"] += stats["sz_tried"]
         acc["hot"] += hot
     rows = [(unit, acc) for unit, acc in sorted(per.items())]
+    refused = []
     for unit, _acc in rows:
         current = unit_current(cg, entries, unit)
         if per[unit]["passed"] == 0 and current > SELF_TEST_CURRENT:
-            record_refusal(args.evidence, unit, f"sz_filter_passed 0 with memory.current {current}")
-            note(f"{unit}: sz_filter_passed is 0 with memory.current {current}; that unit's floor is refused, "
-                 "never read as no hot pages (4.1's self-test)")
+            refused.append((unit, f"sz_filter_passed 0 with memory.current {current}"))
+    return rows, refused
+
+
+def sample(args) -> int:
+    units = parse_units(args.units)
+    if args.fixture:
+        append_rows(os.path.join(args.evidence, "hotset.csv"), fixture_rows(args, units), args.step)
+        return 0
+    da = load_lib(args.lib, args.admin)
+    kd, cg = resolve_kdamond(args), args.cgroup
+    last_error: Exception | None = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            rows, refused = sample_attempt(args, units, da, kd, cg)
+            break
+        except (Refusal, OSError, ValueError) as exc:
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS:
+                note(f"sample attempt {attempt}/{RETRY_ATTEMPTS} failed ({exc}); re-enumerating cgroups and retrying")
+    else:
+        raise Refusal(f"hot-set sample failed after {RETRY_ATTEMPTS} attempts; refusing: {last_error}") from last_error
     append_rows(os.path.join(args.evidence, "hotset.csv"), rows, args.step)
+    for unit, why in refused:
+        record_refusal(args.evidence, unit, why)
+        note(f"{unit}: {why}; that unit's floor is refused, never read as no hot pages (4.1's self-test)")
     say(f"step {args.step}: {len(rows)} units, {sum(r['passed'] for _u, r in rows)} filtered bytes in one apply")
     return 0
 
