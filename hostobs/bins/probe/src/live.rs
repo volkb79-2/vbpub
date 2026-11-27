@@ -91,19 +91,16 @@ impl EventSink for TimedEventSink<'_> {
         {
             eprintln!("{line}");
         }
-        match &result {
-            Ok(outcome) => {
-                if let Some(line) = eviction_failure_line(
-                    self.eviction_failed,
-                    failed_eviction_note(&outcome.evicted),
-                ) {
-                    eprintln!("{line}");
-                }
-                if let Some(line) = seal_stall_line(outcome.sealed.as_deref(), elapsed_ns) {
-                    eprintln!("{line}");
-                }
+        if let Ok(outcome) = &result {
+            if let Some(line) = eviction_failure_line(
+                self.eviction_failed,
+                failed_eviction_note(&outcome.evicted),
+            ) {
+                eprintln!("{line}");
             }
-            Err(_) => {}
+            if let Some(line) = seal_stall_line(outcome.sealed.as_deref(), elapsed_ns) {
+                eprintln!("{line}");
+            }
         }
         result
     }
