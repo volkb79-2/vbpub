@@ -20,8 +20,23 @@ from test_agent_protocol import _policy, _submit
 FACTS_ROOT = Path(__file__).parent / "fixtures" / "facts-root"
 
 
-def _service(tmp_path, *, extra_argv='[["--verbose"]]'):
-    policy, checkout = _policy(tmp_path, extra_argv=extra_argv)
+def _service(tmp_path, *, extra_argv='[["--verbose"]]', peer_credentials=None):
+    identities = ""
+    if peer_credentials is not None:
+        uid, gid = peer_credentials
+        identities = f'''[[identities]]
+transport = "peer"
+principal = "controller-devcontainer"
+group = "controller"
+uid = {uid}
+gid = {gid}
+
+[[identities]]
+transport = "forced-command"
+principal = "worker"
+group = "worker"
+'''
+    policy, checkout = _policy(tmp_path, identities=identities, extra_argv=extra_argv)
     facts = validate_host_facts(collect_host_facts(
         FACTS_ROOT,
         disk_statvfs_reader=lambda _path: SimpleNamespace(
@@ -29,7 +44,8 @@ def _service(tmp_path, *, extra_argv='[["--verbose"]]'):
         ),
     ))
     service = AgentVerbService(tmp_path / "state", policy, lambda: facts, agent_version="1.0.0")
-    return service, policy.resolve_peer(1000, 100), checkout
+    peer_uid, peer_gid = (1000, 100) if peer_credentials is None else peer_credentials
+    return service, policy.resolve_peer(peer_uid, peer_gid), checkout
 
 
 def _put(service, identity, name, content):
@@ -85,8 +101,9 @@ def test_probe_facts_and_have_return_host_owned_data(tmp_path):
 
     assert probe.document["schema"] == "fleet-host-agent/1"
     assert "submit" in probe.document["capabilities"]
-    assert facts.document["schema"] == "host-facts/2"
-    assert facts.document["policy"]["max_upload_bytes"]["v"] == 1073741824
+    assert facts.document["schema"] == "fleet-host-agent/1"
+    assert facts.document["facts"]["schema"] == "host-facts/2"
+    assert facts.document["facts"]["policy"]["max_upload_bytes"]["v"] == 1073741824
     assert have.document["refs"] == ["a" * 40]
 
 

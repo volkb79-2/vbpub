@@ -4,15 +4,15 @@
 
 The package contains strict versioned contracts, an injectable read-only facts
 collector, a deterministic RAM-first planner, and a one-shot lite campaign
-controller. The controller uses the existing identity-checked hx wrapper and
-runner jobs; it is not a daemon and has no socket or lease protocol.
+controller. The campaign controller uses the existing identity-checked hx
+wrapper and runner jobs; the separate P-fd-05 C3a host-agent entry point serves
+the host protocol described below.
 
 ## Host admission core (P-fd-05 C2)
 
-`fleetd.admission` is a standard-library-only host admission library. It adds
-accounting and decisions only: it does not open sockets, create containers, or
-add CLI verbs, and fleetd's current planner and runners do not call it yet. The
-host agent package will wire callers to this book.
+`fleetd.admission` is a standard-library-only host admission library. Package
+C3a wires its book to the host protocol, but does not create containers or ship
+a real executor. The current planner and runners do not call it yet.
 
 `HostCapacity` is the typed projection of the admission-relevant `host-facts/2`
 fields. Each input is a `Fact[T]`: a known value has no reason; an unavailable
@@ -58,9 +58,11 @@ refuses with 2. A capacity
 provider that raises returns 75.
 
 The capacity provider, the legacy job provider and the inspector run under
-`queue.lock`, whose lock has no timeout. Package C must bound every one of those
-calls and turn a timeout into 75 or an `ERROR` answer; one hung call would stop
-every submit, completion and wait expiry on the host (FD-054).
+`queue.lock`, whose lock has no timeout. C3a bounds each callback with the
+required positive `agent.toml.query_timeout_s`: capacity and legacy-list
+timeouts become 75, and inspector timeouts become `ERROR`. One callback can
+time out without retaining `queue.lock` or creating an unbounded worker backlog
+(FD-054).
 
 The shared wait queue clamps priority to the authenticated group's host policy
 and orders by priority, submission time, then group-prefixed job id. The first
@@ -81,10 +83,9 @@ request digest covers its contract fields except `job_id` and
 `requested_by.version`. A non-null `shard` or `resources.cpu_set` is refused
 with 2; both remain reserved in /1.
 
-The textual group-prefix check has a known ambiguity: group `ops` can claim
-`ops-ci-run-1`, which also appears prefixed by group `ops-ci`. Package C's
-authenticated group policy must prevent overlapping prefixes or provide an
-unambiguous group-specific id namespace.
+The textual group-prefix check would be ambiguous if group `ops` and group
+`ops-ci` both existed. C3a's closed agent policy refuses a set of identities
+with overlapping `-`-separated group prefixes (FD-053).
 
 `complete` writes a durable terminal record containing `job_id`, group, digest,
 and completed state, with no charge, before removing the admitted record. If a
@@ -117,6 +118,66 @@ unknown guard state returns 75. This applies to jobs and leases.
 The closed exit-code table assigns 79 to prerequisite-missing; 73 is reserved
 by fleetd's runner. Code 75 is a missing required fact, a held admission, or a
 wait withdrawn before start; code 2 is a request or static-eligibility refusal.
+
+## Host agent protocol (P-fd-05 C3a)
+
+`fleetd.agent_policy`, `fleetd.agent_protocol`, `fleetd.agent_verbs`,
+`fleetd.agent_admission`, `fleetd.agent_server`, `fleetd.agent_client` and
+`fleetd.agent_entry` use the Python standard library only. The `fleetd-agent`
+entry point reads the closed host-owned `agent.toml` policy and serves a Unix
+socket path, an inherited listening descriptor, or one ssh forced-command
+request on stdin/stdout. It
+does not execute a shell command. C3a does not install a systemd unit or socket
+group, and does not include the C3b executor or C3c service setup.
+
+Local socket peers are authenticated from `SO_PEERCRED`'s UID and primary GID;
+the configured supplementary socket group only grants connect permission. The
+forced-command group is supplied by its trusted command line. Request fields
+never set identity or group. Unknown peer/group and transport failures use
+exit 3. Policy loading rejects overlapping authenticated group prefixes so a
+group cannot claim another group's `job_id` namespace.
+
+Every connection begins with a four-byte big-endian length and one UTF-8 JSON
+object, capped at 64 KiB. Requests are read completely before dispatch; response
+frames use the same cap. `put` streams its declared body after the request and
+`fetch`/`progress` may stream a body after the response frame. The idle
+connection deadline applies while the first request is being read, not while a
+submit waits for admission or after a lease is granted. The same framing is
+used on the socket and forced-command stdin/stdout. A server error response
+carries `exit_code` and `reason` from `admission.ExitCode`.
+
+Every answer also carries the `fleet-host-agent/1` schema and the agent's
+SemVer `agent_version`. The `facts` answer places the validated
+`host-facts/2` document under its `facts` field, preserving that document's
+own schema and facts metadata.
+
+`probe` advertises the supported verb field sets and a SemVer `agent_version`.
+`AgentClient` refuses a major mismatch while naming both versions. For a
+minor/patch/build mismatch it sends the requested verb only if the host's probe
+advertises that verb and every request field. A missing or refusing local
+socket is exit 3; `AgentClient` has no SSH or local-admission fallback. Use
+`fleetd-agent serve --socket-path PATH` for a directly bound socket or
+`fleetd-agent serve --listen-fd FD` for socket activation. The path form
+requires an existing real parent directory; restart may remove a stale socket
+file but never removes the directory. `fleetd-agent forced-command --group
+GROUP` applies the identical framing to ssh-provided stdin/stdout.
+
+The closed verbs are `probe`, `facts`, `have`, `put`, `fetch`, `progress`,
+`submit`, `status`, `cancel`, and controller-socket-only `lease`. Every field,
+repo, path, argv, environment value, artifact and upload name is checked before
+side effects. `candidates` is a host-created content-addressed `put` object;
+`--only-candidates` is accepted only when it names that authenticated group's
+file. Assay progress reads `.assay/progress-<assay_lane>.jsonl` from the job
+checkout, resolving `assay_lane` through `hostside.resolve_assay_lane`, and
+streams from a byte offset.
+
+The executor is an injected `AgentExecutor` Protocol (`start`, `request_stop`,
+`read_state`), not a C3a implementation. With no executor, `submit` refuses
+with exit 2 and a named `executor unavailable` reason before writing
+`request.json` or entering the admission book. The admission and lease verbs
+still use the durable C2 book. A live lease connection holds its lease flock
+until disconnect; bind/reconnect verify the immutable container ID and
+host-inspected lease label. No run or lane wall-clock limit is added.
 
 ## Contracts
 

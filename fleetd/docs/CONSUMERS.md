@@ -63,8 +63,10 @@ installed (`pip install -e .`).
 
 ### What a managed host needs
 
-A host that runs only `fleet facts collect` needs these two wheels and nothing
-from this repository. `fleet facts collect` reads
+A host that runs only `fleet facts collect` needs the fleetd wheel and its
+declared `cli-extended` dependency, plus nothing from this repository. The
+separate `fleetd-agent` entry point is also in the wheel; its runtime modules
+import only the Python standard library. `fleet facts collect` reads
 `/etc/fleetd/facts.toml` and the host's own `/proc`, `/sys`, `systemctl`
 service properties and Geekbench record; all of those are host-owned and
 absolute (see [the facts config below](#collect-and-validate-host-facts)).
@@ -74,6 +76,38 @@ The campaign commands are the *controller's*: `fleet run`, `status`, `tick` and
 wrapper, which must sit beside a repository checkout. A facts-only host needs
 neither the wrapper nor a checkout (FD-023 tracks the installed-wheel path for
 the wrapper).
+
+### Host agent package C3a
+
+`fleetd-agent serve --socket-path /run/fleetd-agent/agent.sock` binds a local
+Unix socket, while `fleetd-agent serve --listen-fd 3` accepts an inherited
+listening descriptor. The direct path form requires an existing real runtime
+directory and never creates or removes that directory. `fleetd-agent
+forced-command --group GROUP` serves one framed request on the ssh forced
+command's stdin/stdout. Package C3a supplies the protocol, admission wiring and
+CLI only; the systemd units, socket group and host mounts belong to C3c, and
+the executor belongs to C3b.
+
+`/etc/fleetd/agent.toml` is a closed host-owned config. It requires
+`schema_version`, `idle_connection_s`, `query_timeout_s`, `identities`,
+`repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
+`env_values`; none has a consumer-invented fallback. Both time values are
+positive. `query_timeout_s` bounds each capacity, legacy-job-list and
+object-inspector callback made while the admission queue lock is held. The peer
+table maps exact UID/primary-GID pairs to a principal and group;
+forced-command entries map their trusted group argument to the same identity
+shape. Request fields cannot choose either value. Loading the policy refuses
+overlapping authenticated group prefixes.
+
+The agent sends and receives four-byte big-endian length-prefixed UTF-8 JSON
+objects capped at 64 KiB. Its idle connection deadline only applies while
+reading a request; it is not a submit wait or a run limit, and it does not
+apply to a lease after grant. `probe` includes `agent_version` and the verb
+field capabilities. Clients refuse a major-version mismatch; a minor or patch
+mismatch requires the host to advertise the requested verb and every field.
+A missing or refusing local socket returns 3 with no fallback transport. The
+C3a wheel has no executor: submit refuses with exit 2 and a named reason before
+admission or a durable request write.
 
 ### Agent skills
 
@@ -211,12 +245,13 @@ without either configured root, the disk list is null with a reason, and a
 missing per-disk floor is null in that disk's row.
 
 The optional admission policy keys `aging_s`, `legacy_charge_bytes`, and
-`legacy_planned_cores` are accepted by this fleetd version. They are positive
+`legacy_planned_cores` are accepted by the C3a source. They are positive
 seconds, bytes, and cores respectively, and `/2` records their unit and
 `/etc/fleetd/facts.toml` source. Omission produces a null fact with a reason;
 it does not create an admission default. Add these keys to a host's config only
 after installing a released fleetd version that accepts them, because the
-config schema rejects unknown keys.
+config schema rejects unknown keys. In particular, do not copy the keys from
+this unreleased worktree into a host config before that release is installed.
 
 The host role is read from `host_setup_env`, which points to the existing
 host-owned `HOST_ROLE` setting. `max_lane_containers`, `guard_state`, and

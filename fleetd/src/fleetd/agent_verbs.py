@@ -25,6 +25,10 @@ from .hostside import resolve_assay_lane
 
 AGENT_SCHEMA = "fleet-host-agent/1"
 _COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_SEMVER_RE = re.compile(
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z"
+)
 _CAPABILITIES: dict[str, list[str]] = {
     "probe": ["verb"],
     "facts": ["verb"],
@@ -121,6 +125,8 @@ class AgentVerbService:
         inspector: Callable[[str], InspectorAnswer] | None = None,
         container_inspector: Callable[[str], Mapping[str, object] | None] | None = None,
     ) -> None:
+        if not isinstance(agent_version, str) or _SEMVER_RE.fullmatch(agent_version) is None:
+            raise AdmissionError(ExitCode.REFUSAL, "host agent version must be SemVer")
         self.paths = AgentPaths.initialize(state_dir)
         self.policy = policy
         self.facts_provider = facts_provider
@@ -168,7 +174,7 @@ class AgentVerbService:
         if verb == "probe":
             return AgentReply(self._envelope(capabilities=_CAPABILITIES))
         if verb == "facts":
-            return AgentReply(self._facts())
+            return AgentReply(self._envelope(facts=self._facts()))
         if verb == "have":
             return AgentReply(self._have(str(normalized["repo"])))
         if verb == "put":

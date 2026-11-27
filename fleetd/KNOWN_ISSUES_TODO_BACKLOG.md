@@ -52,11 +52,11 @@
 | FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
 | FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
 | FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | DONE in P-fd-05 C1 | 2026-11-24 |
-| FD-050 | Add admission queue and legacy charges to the host policy schema before deployment | P1 | OPEN | 2026-11-26 |
+| FD-050 | Add admission queue and legacy charges to the host policy schema before deployment | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-26 |
 | FD-051 | Retain and prune completed admission terminal records in host agent package C | P2 | OPEN | 2026-11-26 |
 | FD-052 | An inspector ERROR at a fitting lease waiter blocks every later waiter until expiry | P2 | OPEN (known limit) | 2026-11-26 |
-| FD-053 | Prevent overlapping authenticated group prefixes in package C policy | P2 | OPEN | 2026-11-26 |
-| FD-054 | Package C must bound every provider and inspector call made under the queue lock | P1 | OPEN | 2026-11-26 |
+| FD-053 | Prevent overlapping authenticated group prefixes in package C policy | P2 | FIXED IN THIS BRANCH (C3a) | 2026-11-26 |
+| FD-054 | Package C must bound every provider and inspector call made under the queue lock | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-26 |
 | FD-055 | A stray record after an unconfirmed rollback can leave a charge the waiter never claims | P2 | OPEN | 2026-11-26 |
 | FD-056 | The wait deadline is not rechecked after the queue lock is taken | P3 | OPEN | 2026-11-26 |
 | FD-057 | Admission subprocess tests have no timeout, and the two-process test is weak | P3 | OPEN | 2026-11-26 |
@@ -989,15 +989,15 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md M1; FD-012
 
 ## FD-050 Add host admission policy keys before deployment writes them
 
-**State:** OPEN for design package C. **Priority:** P1. **Filed:** 2026-11-26.
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P1. **Filed:** 2026-11-26.
 
-Design package C must add `policy.aging_s`, `policy.legacy_charge_bytes`, and
-`policy.legacy_planned_cores` to the `facts.toml.policy` closed key set in
-`fleetd/src/fleetd/facts.py` before any deployment writes those keys. Writing
-them first breaks fact collection. `aging_s` is required for every queue
-decision; the two legacy charge values are required when a listed job lacks an
-`EXIT` marker. Unknown `policy.legacy_planned_cores` returns 75 with that key
-in the refusal reason.
+`facts.py` and the `/2` validator accept `policy.aging_s`,
+`policy.legacy_charge_bytes`, and `policy.legacy_planned_cores`; the facts
+projection carries their units, source and unknown reasons. `aging_s` is
+required for every queue decision; the two legacy charge values are required
+when a listed job lacks an `EXIT` marker. Host configuration must still wait
+until a release containing this schema is installed. Unknown
+`policy.legacy_planned_cores` returns 75 with that key in the refusal reason.
 
 Source: P-fd-05 C2 controller ruling M4 and the package C host-facts/2 policy
 row.
@@ -1025,26 +1025,27 @@ Source: P-fd-05 review r1 Low 2 and controller ruling.
 
 ## FD-053 Prevent overlapping authenticated group prefixes
 
-**State:** OPEN for host agent package C. **Priority:** P2. **Filed:** 2026-11-26.
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P2. **Filed:** 2026-11-26.
 
 The current id check is textual: group `ops` can claim `ops-ci-run-1`, which
-also has a valid-looking prefix for group `ops-ci`. Package C's authenticated
-group policy must prevent overlapping prefixes or assign an unambiguous
-group-specific id namespace. This package records the limit without changing
-the `/1` grammar.
+also has a valid-looking prefix for group `ops-ci`. `agent_policy._identities`
+rejects a policy with overlapping groups; the `/1` id grammar remains
+unchanged.
 
 Source: P-fd-05 C2 controller ruling for FU12 group-prefix ambiguity.
 
 ## FD-054 Bound every call made under the admission queue lock
 
-**State:** OPEN for host agent package C. **Priority:** P1. **Filed:** 2026-11-26.
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P1. **Filed:** 2026-11-26.
 
 `capacity_provider`, `legacy_jobs_provider` and the Docker `inspector` run while
 `queue.lock` is held, and that flock blocks without a timeout. One hung call
 stops every submit, completion, status, cancel and wait expiry, so a merge gate
-waits for ever and a finished job keeps its charge. Nothing over-admits.
-Package C must bound each call and map a timeout to 75 or `ERROR`, before the
-book is wired to a host.
+waits forever and a finished job keeps its charge. C3a wraps each call in a
+single-outstanding daemon worker with the positive `agent.toml.query_timeout_s`:
+capacity and legacy-list timeout to 75, inspector timeout to `ERROR`. A timed
+out worker never owns `queue.lock`; later calls cannot create an unbounded
+backlog behind it.
 
 Source: P-fd-05 C2 review r2 M-2.
 
