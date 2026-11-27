@@ -322,7 +322,9 @@ def _run_bounded(
     The deadline starts before synchronous process creation, which cannot be
     cancelled; time spent there consumes the available query time. A pidfd
     selector wait observes exit without reaping the group leader, keeping its
-    PID pinned until SIGKILL has been attempted for every result path.
+    PID pinned until SIGKILL has been attempted for every result path. Cleanup
+    runs in ``finally`` after process creation, including interruption paths;
+    each descriptor close is attempted independently.
     """
 
     spawn = subprocess.Popen if popen_factory is None else popen_factory
@@ -340,11 +342,12 @@ def _run_bounded(
     stdout = bytearray()
     stderr = bytearray()
     termination_attempted = False
-
-    def terminate_group_and_reap() -> int:
-        nonlocal termination_attempted
-        termination_attempted = True
-        return _kill_process_group_and_reap(process, deadline, clock, group_kill)
+    returncode: int | None = None
+    success_observed = False
+    primary_error: BaseException | None = None
+    primary_traceback = None
+    cleanup_errors: list[BaseException] = []
+    close_errors: list[BaseException] = []
 
     try:
         process = spawn(
@@ -408,27 +411,72 @@ def _run_bounded(
         selector.unregister(pidfd)
         if clock() >= deadline:
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
-        returncode = terminate_group_and_reap()
-        if clock() >= deadline:
-            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping")
-        return subprocess.CompletedProcess(argv, returncode, bytes(stdout), bytes(stderr))
-    except DockerInspectionError:
-        if process is not None and not termination_attempted:
-            terminate_group_and_reap()
-        raise
-    except Exception as exc:
-        if process is not None and not termination_attempted:
-            terminate_group_and_reap()
-        raise DockerInspectionError(f"Docker inspect process failed: {exc}") from exc
+        success_observed = True
+    except BaseException as exc:
+        primary_error = exc
+        primary_traceback = exc.__traceback__
     finally:
+        if process is not None and not termination_attempted:
+            # Mark before entering the helper: a helper failure must not cause
+            # a second group signal from another cleanup path.
+            termination_attempted = True
+            try:
+                returncode = _kill_process_group_and_reap(process, deadline, clock, group_kill)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+            if success_observed:
+                try:
+                    if clock() >= deadline:
+                        cleanup_errors.append(
+                            DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping")
+                        )
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+
+        close_steps: list[Callable[[], object]] = []
         if pidfd is not None:
-            os.close(pidfd)
+            close_steps.append(lambda: os.close(pidfd))
         if selector is not None:
-            selector.close()
+            close_steps.append(lambda: selector.close())
         if process is not None:
-            for stream in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
-                if stream is not None:
-                    stream.close()
+            for stream_name in ("stdout", "stderr"):
+                def close_stream(name: str = stream_name) -> object:
+                    stream = getattr(process, name, None)
+                    if stream is not None:
+                        return stream.close()
+                    return None
+
+                close_steps.append(close_stream)
+        for close in close_steps:
+            try:
+                close()
+            except BaseException as exc:
+                close_errors.append(exc)
+
+    if primary_error is not None:
+        if not isinstance(primary_error, Exception):
+            raise primary_error.with_traceback(primary_traceback)
+    if cleanup_errors:
+        first_error = cleanup_errors[0]
+        if not isinstance(first_error, Exception):
+            raise first_error
+        if isinstance(first_error, DockerInspectionError):
+            raise first_error
+        raise DockerInspectionError(f"Docker inspect cleanup failed: {first_error}") from first_error
+    if primary_error is not None:
+        if isinstance(primary_error, DockerInspectionError):
+            raise primary_error.with_traceback(primary_traceback)
+        raise DockerInspectionError(f"Docker inspect process failed: {primary_error}") from primary_error
+    if close_errors:
+        first_error = close_errors[0]
+        if not isinstance(first_error, Exception):
+            raise first_error
+        if isinstance(first_error, DockerInspectionError):
+            raise first_error
+        raise DockerInspectionError(f"Docker inspect cleanup failed: {first_error}") from first_error
+    if returncode is None:
+        raise DockerInspectionError("Docker inspect process did not complete cleanup")
+    return subprocess.CompletedProcess(argv, returncode, bytes(stdout), bytes(stderr))
 
 
 def _kill_process_group_and_reap(
@@ -439,23 +487,51 @@ def _kill_process_group_and_reap(
 ) -> int:
     """Signal the private group before making a deadline-bounded reap attempt."""
 
+    kill_error: BaseException | None = None
     try:
         kill_group(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        kill_error: Exception | None = None
-    except Exception as exc:
+        pass
+    except BaseException as exc:
         kill_error = exc
-    else:
-        kill_error = None
-    remaining = max(0.0, deadline - clock())
+
+    budget_error: BaseException | None = None
+    try:
+        remaining = max(0.0, deadline - clock())
+    except BaseException as exc:
+        budget_error = exc
+        remaining = 0.0
+    reap_error: BaseException | None = None
+    returncode: int | None = None
     try:
         returncode = process.wait(timeout=remaining)
-    except subprocess.TimeoutExpired as exc:
-        raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping child") from exc
-    except Exception as exc:
-        raise DockerInspectionError("Docker inspect child reaping failed") from exc
+    except BaseException as exc:
+        reap_error = exc
+
     if kill_error is not None:
-        raise DockerInspectionError("could not kill Docker inspect process group") from kill_error
+        first_error = kill_error
+    elif budget_error is not None:
+        first_error = budget_error
+    else:
+        first_error = reap_error
+    if first_error is kill_error and kill_error is not None and not isinstance(kill_error, Exception):
+        raise kill_error
+    if first_error is budget_error and budget_error is not None and not isinstance(budget_error, Exception):
+        raise budget_error
+    if first_error is reap_error and reap_error is not None and not isinstance(reap_error, Exception):
+        raise reap_error
+    if first_error is reap_error and isinstance(reap_error, subprocess.TimeoutExpired):
+        raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping child") from first_error
+    if first_error is not None:
+        if isinstance(first_error, DockerInspectionError):
+            raise first_error
+        if first_error is kill_error:
+            raise DockerInspectionError("could not kill Docker inspect process group") from first_error
+        if first_error is budget_error:
+            raise DockerInspectionError("could not bound Docker inspect child reaping") from first_error
+        raise DockerInspectionError("Docker inspect child reaping failed") from first_error
+    if returncode is None:
+        raise DockerInspectionError("Docker inspect child reaping returned no status")
     return returncode
 
 

@@ -135,13 +135,18 @@ cancelled; it can finish after the outer call refuses, in which case the
 provider immediately attempts to signal the child process group with
 `SIGKILL` and makes a bounded reap attempt before returning `ERROR` (FD-066).
 On the normal result path, after both pipes reach EOF, the provider waits for
-the leader's pidfd to become readable without reaping it. For every
-child-created outcome, including errors before EOF, it attempts `SIGKILL` on
-the process group before the bounded reap. `ProcessLookupError` means the
-group is already empty; another signal or reap failure returns `ERROR`. A
-success requires pipe EOF, exit observed before the deadline, and status from
-the reap. Expiry or an output-cap breach also attempts group cleanup before
-reaping. The peer
+the leader's pidfd to become readable without reaping it. Cleanup runs in
+`finally`: every child-created outcome, including `Exception` and
+`BaseException` paths before EOF, attempts `SIGKILL` on the process group while
+the leader is unreaped, then attempts the bounded reap even if signaling
+raises. `ProcessLookupError` means the group is already empty; another signal
+or reap failure returns `ERROR`. The pidfd, selector, stdout pipe, and stderr
+pipe are each closed independently; a close failure is reported as `ERROR`
+after the remaining closes are attempted. A non-`Exception` interruption
+already in flight is re-raised after cleanup and is not replaced by cleanup or
+close errors. A success requires both pipes at EOF, exit observed before the
+deadline, and status from the reap. Expiry or an output-cap breach also uses
+this cleanup path. The peer
 table maps exact UID/primary-GID pairs to a principal and group;
 forced-command entries map their trusted group argument to the same identity
 shape. Request fields cannot choose either value. Loading the policy refuses

@@ -28,6 +28,10 @@ _DOCKER_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C"}
 _DOCKER_HOST = "unix:///var/run/docker.sock"
 
 
+class _BoundedRunnerInterruption(BaseException):
+    pass
+
+
 def _docker_record(container_id=_CONTAINER_ID, name="legacy-runner", labels=None):
     return {
         "Id": container_id,
@@ -1003,6 +1007,441 @@ def test_bounded_docker_runner_kills_on_selector_setup_error(monkeypatch):
     assert process.events == ["signal", "reap"]
 
 
+def test_bounded_docker_runner_reaps_after_interruption_during_selection(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map={}, clock=clock, selector=selector, process=process,
+    )
+
+    def interrupt_select(_timeout):
+        raise _BoundedRunnerInterruption("selection interrupted")
+
+    selector.select = interrupt_select
+    with pytest.raises(_BoundedRunnerInterruption, match="selection interrupted"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_reaps_after_interruption_during_read(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map={101: [b"data"]}, clock=clock, selector=selector, process=process,
+    )
+    monkeypatch.setattr(
+        agent_providers.os,
+        "read",
+        lambda _fd, _amount: (_ for _ in ()).throw(_BoundedRunnerInterruption("read interrupted")),
+    )
+
+    with pytest.raises(_BoundedRunnerInterruption, match="read interrupted"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_reaps_after_interruption_during_selector_setup(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    _, _selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map={}, clock=clock, process=process,
+    )
+
+    def interrupt_setup():
+        raise _BoundedRunnerInterruption("selector setup interrupted")
+
+    with pytest.raises(_BoundedRunnerInterruption, match="selector setup interrupted"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=interrupt_setup,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.wait_timeouts == [1]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_reaps_after_interruption_during_pidfd_observation(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+    original_select = selector.select
+
+    def interrupt_pidfd(timeout):
+        if any(isinstance(stream, int) for stream, _data in selector.entries.values()):
+            raise _BoundedRunnerInterruption("pidfd observation interrupted")
+        return original_select(timeout)
+
+    selector.select = interrupt_pidfd
+    with pytest.raises(_BoundedRunnerInterruption, match="pidfd observation interrupted"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_reaps_when_group_signal_raises_base_exception(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    _, selector, process, _killed, spawn, _kill = _bounded_seams(
+        monkeypatch, read_map={}, clock=clock, selector=selector, process=process,
+    )
+    calls = []
+
+    def interrupted_signal(pid, sig):
+        calls.append((pid, sig))
+        process.events.append("signal")
+        raise _BoundedRunnerInterruption("signal interrupted")
+
+    with pytest.raises(_BoundedRunnerInterruption, match="signal interrupted"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=interrupted_signal,
+        )
+    assert calls == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+    assert process.wait_timeouts == [1]
+
+
+def test_bounded_docker_runner_attempts_every_close_and_reports_first_after_success(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+    pidfd = 303
+    monkeypatch.setattr(agent_providers.os, "pidfd_open", lambda _pid: pidfd)
+    close_order = []
+    close_errors = {
+        "pidfd": OSError("pidfd close failed"),
+        "selector": OSError("selector close failed"),
+        "stdout": OSError("stdout close failed"),
+        "stderr": OSError("stderr close failed"),
+    }
+
+    def close_pidfd(fd):
+        assert fd == pidfd
+        close_order.append("pidfd")
+        raise close_errors["pidfd"]
+
+    monkeypatch.setattr(agent_providers.os, "close", close_pidfd)
+
+    def close_selector():
+        close_order.append("selector")
+        raise close_errors["selector"]
+
+    selector.close = close_selector
+
+    def close_stdout():
+        close_order.append("stdout")
+        raise close_errors["stdout"]
+
+    def close_stderr():
+        close_order.append("stderr")
+        raise close_errors["stderr"]
+
+    process.stdout.close = close_stdout
+    process.stderr.close = close_stderr
+
+    with pytest.raises(agent_providers.DockerInspectionError, match="cleanup failed") as caught:
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert caught.value.__cause__ is close_errors["pidfd"]
+    assert close_order == ["pidfd", "selector", "stdout", "stderr"]
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_preserves_interruption_over_close_errors(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    _, _selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map={}, clock=clock, process=process,
+    )
+    closed = []
+
+    def fail_close(stream_name):
+        def close():
+            closed.append(stream_name)
+            raise OSError(f"{stream_name} close failed")
+
+        return close
+
+    process.stdout.close = fail_close("stdout")
+    process.stderr.close = fail_close("stderr")
+
+    def interrupt_setup():
+        raise _BoundedRunnerInterruption("setup interrupted")
+
+    with pytest.raises(_BoundedRunnerInterruption, match="setup interrupted"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=interrupt_setup,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert closed == ["stdout", "stderr"]
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+@pytest.mark.parametrize(
+    ("close_error", "error_type"),
+    [
+        pytest.param(
+            _BoundedRunnerInterruption("descriptor close interrupted"),
+            _BoundedRunnerInterruption,
+            id="interruption",
+        ),
+        pytest.param(
+            agent_providers.DockerInspectionError("descriptor close failed"),
+            agent_providers.DockerInspectionError,
+            id="docker-inspection-error",
+        ),
+    ],
+)
+def test_bounded_docker_runner_attempts_later_closes_after_special_close_errors(
+    monkeypatch,
+    close_error,
+    error_type,
+):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+    pidfd = 303
+    monkeypatch.setattr(agent_providers.os, "pidfd_open", lambda _pid: pidfd)
+    close_order = []
+
+    def close_pidfd(_fd):
+        close_order.append("pidfd")
+        raise close_error
+
+    monkeypatch.setattr(agent_providers.os, "close", close_pidfd)
+    selector.close = lambda: close_order.append("selector")
+    process.stdout.close = lambda: close_order.append("stdout")
+    process.stderr.close = lambda: close_order.append("stderr")
+
+    with pytest.raises(error_type):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert close_order == ["pidfd", "selector", "stdout", "stderr"]
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+@pytest.mark.parametrize(
+    ("failure_call", "fault", "error_type", "match"),
+    [
+        pytest.param(
+            7,
+            RuntimeError("reap clock failed"),
+            agent_providers.DockerInspectionError,
+            "could not bound",
+            id="ordinary-reap-clock-error",
+        ),
+        pytest.param(
+            7,
+            _BoundedRunnerInterruption("reap clock interrupted"),
+            _BoundedRunnerInterruption,
+            "reap clock interrupted",
+            id="interrupted-reap-clock",
+        ),
+        pytest.param(
+            8,
+            RuntimeError("post-reap clock failed"),
+            agent_providers.DockerInspectionError,
+            "cleanup failed",
+            id="post-reap-clock-error",
+        ),
+    ],
+)
+def test_bounded_docker_runner_reaps_and_reports_cleanup_clock_errors(
+    monkeypatch,
+    failure_call,
+    fault,
+    error_type,
+    match,
+):
+    process = _FakeProcess()
+    selector = _FakeSelector()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, selector=selector, process=process,
+    )
+
+    class FaultClock:
+        calls = 0
+
+        def __call__(self):
+            self.calls += 1
+            if self.calls == failure_call:
+                raise fault
+            return 0.0
+
+    clock = FaultClock()
+    with pytest.raises(error_type, match=match):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 5,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert clock.calls >= failure_call
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+@pytest.mark.parametrize(
+    ("wait_error", "error_type", "match"),
+    [
+        pytest.param(
+            _BoundedRunnerInterruption("wait interrupted"),
+            _BoundedRunnerInterruption,
+            "wait interrupted",
+            id="wait-interruption",
+        ),
+        pytest.param(
+            agent_providers.DockerInspectionError("wait inspection error"),
+            agent_providers.DockerInspectionError,
+            "wait inspection error",
+            id="wait-inspection-error",
+        ),
+    ],
+)
+def test_bounded_docker_runner_preserves_reap_errors_after_attempting_signal(
+    monkeypatch,
+    wait_error,
+    error_type,
+    match,
+):
+    process = _FakeProcess(wait_error=wait_error)
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+
+    with pytest.raises(error_type, match=match):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_rejects_missing_reap_status(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+
+    def no_status(*, timeout):
+        assert process.events == ["signal"]
+        process.events.append("reap")
+        process.wait_timeouts.append(timeout)
+        return None
+
+    process.wait = no_status
+    with pytest.raises(agent_providers.DockerInspectionError, match="no status"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_rejects_cleanup_without_reap_status(monkeypatch):
+    process = _FakeProcess()
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+
+    def cleanup_without_status(child, deadline, active_clock, signal_group):
+        signal_group(child.pid, signal.SIGKILL)
+        child.wait(timeout=max(0.0, deadline - active_clock()))
+        return None
+
+    monkeypatch.setattr(
+        agent_providers,
+        "_kill_process_group_and_reap",
+        cleanup_without_status,
+    )
+    with pytest.raises(agent_providers.DockerInspectionError, match="did not complete cleanup"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
 def test_bounded_docker_runner_kills_and_reaps_when_pidfd_open_fails(monkeypatch):
     clock = _FakeClock()
     selector = _FakeSelector()
@@ -1183,6 +1622,88 @@ def test_docker_process_boundary_drops_ambient_environment_and_uses_fixed_host(t
         "cwd": "/",
         "argv": ["--host", _DOCKER_HOST, "inspect", "--type=container", "legacy-runner"],
     }
+
+
+def test_docker_process_boundary_kills_pipe_holding_descendant(tmp_path):
+    ready_read, ready_write = os.pipe()
+    pid_file = tmp_path / "descendant.pid"
+    script = tmp_path / "fake-docker-descendant"
+    script.write_text(
+        "#!" + sys.executable + "\n"
+        + "import os, signal\n"
+        + "leader = os.getpid()\n"
+        + "pid = os.fork()\n"
+        + "if pid == 0:\n"
+        + "    while os.getppid() == leader:\n"
+        + "        pass\n"
+        + f"    with open({str(pid_file)!r}, 'w', encoding='ascii') as output:\n"
+        + "        output.write(str(os.getpid()))\n"
+        + f"    os.write({ready_write}, b'R')\n"
+        + "    while True:\n"
+        + "        signal.pause()\n"
+        + "os._exit(0)\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+    class ReadyClock:
+        def __init__(self):
+            self.now = 0.0
+            self.deadline = 1.0
+            self.ready = False
+            self.calls = 0
+            self.pidfd = None
+
+        def __call__(self):
+            self.calls += 1
+            if self.calls == 2 and not self.ready:
+                assert os.read(ready_read, 1) == b"R"
+                descendant_pid = int(pid_file.read_text(encoding="ascii"))
+                self.pidfd = os.pidfd_open(descendant_pid)
+                self.ready = True
+            return self.now
+
+    clock = ReadyClock()
+
+    class ExpiringSelector:
+        def __init__(self):
+            self.entries = {}
+
+        def register(self, stream, _events, data):
+            self.entries[stream.fileno()] = (stream, data)
+
+        def get_map(self):
+            return dict(self.entries)
+
+        def select(self, _timeout):
+            assert clock.ready
+            clock.now = clock.deadline
+            return []
+
+        def close(self):
+            pass
+
+    def spawn(argv, **options):
+        options["pass_fds"] = (ready_write,)
+        return subprocess.Popen(argv, **options)
+
+    try:
+        with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
+            agent_providers._run_bounded(
+                [str(script), "--host", _DOCKER_HOST, "inspect", "--type=container", "legacy-runner"],
+                1,
+                popen_factory=spawn,
+                selector_factory=ExpiringSelector,
+                monotonic=clock,
+            )
+        assert clock.pidfd is not None
+        ready, _writable, _errors = select.select([clock.pidfd], [], [])
+        assert ready, "pipe-holding descendant did not exit after process-group termination"
+    finally:
+        if clock.pidfd is not None:
+            os.close(clock.pidfd)
+        os.close(ready_read)
+        os.close(ready_write)
 
 
 @pytest.mark.parametrize("late", [False, True], ids=["success", "late-result"])
