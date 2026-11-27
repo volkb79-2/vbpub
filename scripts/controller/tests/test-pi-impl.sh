@@ -193,6 +193,7 @@ if [[ -n ${FAKE_PI_PROBE_LOG:-} ]]; then
 fi
 # This blocks while stdin remains open. The wrapper must give pi /dev/null.
 if [[ -p /dev/stdin && -n ${FAKE_PI_STDIN_OPEN_MARKER:-} ]]; then
+  [[ -z ${FAKE_PI_STDIN_PID_FILE:-} ]] || printf '%s\n' "$$" > "$FAKE_PI_STDIN_PID_FILE"
   : > "$FAKE_PI_STDIN_OPEN_MARKER"
 fi
 while IFS= read -r _line; do :; done
@@ -335,6 +336,21 @@ wait_launch() {
     cat "$ROOT/$run.launch.log" >&2
     fail "pi wrapper failed for $run"
   fi
+}
+
+# On the failure path of the closed-stdin assertions, signal only the fake Pi
+# child that recorded its PID immediately before it wrote the open-stdin marker.
+# The wrapper then reaps that child and performs its normal sidecar cleanup.
+signal_owned_stdin_child_and_wait() {
+  local wrapper_pid=$1 pid_file=$2 child_pid=''
+  [[ -r $pid_file ]] && IFS= read -r child_pid < "$pid_file"
+  if [[ ! $child_pid =~ ^[0-9]+$ ]]; then
+    kill -TERM -- "$wrapper_pid" 2>/dev/null || true
+    wait "$wrapper_pid" 2>/dev/null || true
+    fail "fake Pi did not record a numeric child pid in $pid_file"
+  fi
+  kill -TERM -- "$child_pid" 2>/dev/null || true
+  wait "$wrapper_pid" 2>/dev/null || true
 }
 
 expect_rc() {
@@ -3941,11 +3957,13 @@ PY
       [[ $found_account == volker ]] || fail 'Pi session event recovered the wrong account'
       ;;
     stdin-closed)
+      stdin_pid_file=$ROOT/focused-stdin.pid
       mkfifo "$ROOT/focused-stdin.fifo"
       exec 9<> "$ROOT/focused-stdin.fifo"
       setsid env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
         FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_RC=0 \
         FAKE_PI_STDIN_OPEN_MARKER="$ROOT/focused-stdin-open.marker" \
+        FAKE_PI_STDIN_PID_FILE="$stdin_pid_file" \
         "$SRC" "$WORKTREE" "$PROMPT" focused-stdin \
         > "$ROOT/focused-stdin.launch.log" 2>&1 < "$ROOT/focused-stdin.fifo" &
       stdin_pid=$!
@@ -3953,8 +3971,8 @@ PY
         sleep 0.05
       done
       if [[ -e $ROOT/focused-stdin-open.marker ]]; then
-        kill -TERM -- "-$stdin_pid" 2>/dev/null || true
-        wait "$stdin_pid" 2>/dev/null || true
+        signal_owned_stdin_child_and_wait "$stdin_pid" "$stdin_pid_file"
+        exec 9>&-
         fail 'fake pi remained attached to caller stdin'
       fi
       if ! wait "$stdin_pid"; then
@@ -4240,11 +4258,13 @@ else rc=$?; [[ $rc == 3 ]] || fail "both-blocked resume exit was $rc, expected 3
 contains "$ROOT/both-blocked-resume.log" 'both Open Design accounts are blocked' 'both blocked pi resume accounts report their reset'
 [[ $(wc -l < "$PI_ARGV_LOG") == "$before" ]] || fail 'pi resume started while both accounts were blocked'
 
+stdin_pid_file=$ROOT/stdin-open.pid
 mkfifo "$ROOT/open-stdin.fifo"
 exec 9<> "$ROOT/open-stdin.fifo"
 setsid env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
   FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_RC=0 \
   FAKE_PI_STDIN_OPEN_MARKER="$ROOT/stdin-open.marker" \
+  FAKE_PI_STDIN_PID_FILE="$stdin_pid_file" \
   "$SRC" "$WORKTREE" "$PROMPT" stdin-closed > "$ROOT/stdin-closed.launch.log" 2>&1 \
   < "$ROOT/open-stdin.fifo" &
 stdin_pid=$!
@@ -4252,8 +4272,8 @@ while kill -0 "$stdin_pid" 2>/dev/null && [[ ! -e $ROOT/stdin-open.marker && ! -
   sleep 0.05
 done
 if [[ -e $ROOT/stdin-open.marker ]]; then
-  kill -TERM -- "-$stdin_pid" 2>/dev/null || true
-  wait "$stdin_pid" 2>/dev/null || true
+  signal_owned_stdin_child_and_wait "$stdin_pid" "$stdin_pid_file"
+  exec 9>&-
   fail 'fake pi remained attached to the caller stdin'
 fi
 if ! wait "$stdin_pid"; then
