@@ -16168,6 +16168,17 @@ also rewrite it for a later attempt. Current evidence is `src/assay/liveness.py`
 (`_append` and `PYTHONPATH` injection) and `src/assay/runner.py` (the plugin
 and event directories); the P4 design guide now discloses this boundary.
 
+An event stream breaks after at least one record has been read if the file is
+replaced (device/inode change), truncated, vanishes, or cannot be read; its
+first appearance is not a break. From the detecting poll, the
+CPU-without-progress `hung` bound, the per-test bound, and the no-progress wall
+stop are disarmed for the rest of that candidate run, even if the file
+returns. The candidate budget then binds through the same path used when
+candidate CPU is unreadable; with `budget_per_candidate = "none"`, only the
+lane deadline remains. Detection uses device/inode and length, not content
+comparison. A same-inode rewrite that is not shorter than the reader's offset
+between polls looks like an append, so candidate code can forge progress.
+
 **Wanted.** Decide and implement a candidate-inaccessible write channel or an
 authenticated event stream whose per-run key is unavailable to candidate code.
 Preserve the current read-only consumer interface and the rule that progress
@@ -16283,6 +16294,16 @@ are `unknown`. Both are ineligible. If pressure is unreadable throughout the
 run, the wall fallback remains active. If it is comparable once and becomes
 unreadable later, those `unknown` intervals pause the eligible clock and do
 not restore the fallback; sustained pressure can delay or prevent the stop.
+
+An event stream breaks after at least one record has been read if the file is
+replaced (device/inode change), truncated, vanishes, or cannot be read; its
+first appearance is not a break. From the detecting poll,
+the CPU-without-progress `hung` bound, the per-test bound, and the no-progress
+wall stop are disarmed for the rest of the candidate run, even if the file
+returns. The candidate budget then binds through the same path used when
+candidate CPU is unreadable. With `budget_per_candidate = "none"`, only the
+lane deadline remains. This stream-integrity limitation is separate from this
+entry's sweep-level retry limitation; B585 records the same-inode rewrite case.
 
 When pressure data is never comparable, the wall fallback can stop a
 candidate starved by host load after four times the bound if CPU remains

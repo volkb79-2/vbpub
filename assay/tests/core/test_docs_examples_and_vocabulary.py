@@ -1458,6 +1458,32 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
     assert "later unreadable intervals remain `unknown` and pause the eligible clock" in changes
     assert "The wall fallback can stop a candidate starved by host load when pressure data is never comparable" in changes
     assert "does not identify whether the candidate stalled or the host starved it" in changes
+    stream_break = (
+        "An event stream breaks after at least one record has been read if the "
+        "file is replaced (device/inode change), truncated, vanishes, or cannot "
+        "be read; its first appearance is not a break."
+    )
+    disarmed_bounds = (
+        "the CPU-without-progress `hung` bound, the per-test bound, and the "
+        "no-progress wall stop are disarmed for the rest of that candidate run"
+    )
+    binding_budget = (
+        "The candidate budget then binds through the same path used when "
+        "candidate CPU is unreadable"
+    )
+    same_inode_limit = (
+        "same-inode rewrite that is not shorter than the reader's offset "
+        "between polls looks like an append, so candidate code can forge progress"
+    )
+    for text in (changes, consumers, design, config, backlog):
+        assert stream_break in text
+        assert disarmed_bounds in text
+        assert binding_budget in text
+    for text in (changes, consumers, design, config):
+        assert same_inode_limit in text
+        assert "With `budget_per_candidate = \"none\"`, only the lane deadline remains" in text
+        assert "The idle rule keeps its origin/main current-file counting" in text
+    assert "After a stream break, `tests_completed` covers only the current event file" in consumers
     assert "Before the first comparable pressure interval (`clear` or `stalled` from the resource comparator), it uses plain wall time" in consumers
     assert "only `clear` intervals advance it" in consumers
     assert "without restoring the wall fallback" in consumers

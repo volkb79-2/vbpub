@@ -4610,7 +4610,7 @@ and the evidence decision is `budget-expired-watch-unarmed`.
 
 | `progress_bound.armed` | When | What `judge.mutation.budget_per_candidate` does |
 | --- | --- | --- |
-| `true` | liveness was injected for a native Python lane whose argv invokes pytest, and the BASELINE's own events file carries at least one plugin record | **advisory** once that candidate's process-tree CPU is readable: the wall budget never ends it. If CPU remains unreadable, the runtime demotes the candidate to a binding budget and writes the evidence decision above. One `assay: WARN: candidate overran judge.mutation.budget_per_candidate ...` line is printed the first time a candidate passes an advisory budget |
+| `true` | liveness was injected for a native Python lane whose argv invokes pytest, and the BASELINE's own events file carries at least one plugin record | **advisory** once that candidate's process-tree CPU is readable and its event stream remains intact: the wall budget never ends it. If CPU remains unreadable or the candidate event stream breaks, the runtime demotes the candidate to a binding budget and writes the evidence decision above. One `assay: WARN: candidate overran judge.mutation.budget_per_candidate ...` line is printed the first time a candidate passes an advisory budget |
 | `false` | every other run: a non-pytest argv, a non-Python language, an ingested R2 lane, or a plugin that wrote nothing | **binding**, exactly as before: a candidate that reaches it is `budget_exceeded` and the lane continues with the next one |
 
 `progress_bound.reason` describes the plan-time state (`armed`,
@@ -4647,6 +4647,20 @@ bucket, and `assay run` ends so `--resume` retries the missing candidate. It
 is never reported as `hung` or placed in the `budget_exceeded` bucket. If CPU
 remains unreadable, the existing binding candidate budget can still expire
 first.
+
+**Broken event stream.** An event stream breaks after at least one record has
+been read if the file is replaced (device/inode change), truncated, vanishes,
+or cannot be read; its first appearance is not a break. From the poll that
+detects the break, the CPU-without-progress `hung` bound, the per-test bound,
+and the no-progress wall stop are disarmed for the rest of that candidate run,
+even if the file returns. The candidate budget then binds through the same
+path used when candidate CPU is unreadable. With
+`budget_per_candidate = "none"`, only the lane deadline remains. The idle rule
+keeps its origin/main current-file counting: a vanished file reads as zero,
+and an empty return is not progress. Detection uses device/inode and length,
+not content comparison; a same-inode rewrite that is not shorter than the
+reader's offset between polls looks like an append, so candidate code can
+forge progress (B585).
 
 For `jobs > 1`, candidates already in flight are allowed to finish and persist
 their results before the fatal error is raised; no additional candidates are
@@ -4870,7 +4884,9 @@ wrote the first `session_start` (the controller), so worker reports forwarded
 to that controller do not duplicate the count; repeated records with an equal
 `nodeid` remain separate events. The monitor recognizes only its candidate
 process's stamped `session_finish`, so a worker finish cannot arm the
-post-finish grace while the candidate is still progressing.
+post-finish grace while the candidate is still progressing. After a stream
+break, `tests_completed` covers only the current event file; the reader does
+not carry the previous file's count across reset.
 
 When all timestamped baseline records carry usable pids, gap calibration orders
 each pid's records by event timestamp, computes that process's own gaps, and

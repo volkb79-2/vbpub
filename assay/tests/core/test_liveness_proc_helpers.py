@@ -1027,14 +1027,32 @@ def test_incremental_event_reader_resets_when_candidate_file_is_replaced_or_trun
     replacement_identity = (events.stat().st_dev, events.stat().st_ino)
     assert replacement_identity != original_identity
     assert events.stat().st_size > len('{"event":"session_finish","pid":100}\n')
-    assert reader.read(events) == (4, False)
+    assert reader.read(events) == (3, False)
     assert reader.completed_events == 3
+    assert reader.stream_broken is True
 
     # In-place truncation is a separate reset path; a shorter valid stream
-    # resets its parser state while both progress counters stay cumulative.
+    # resets its parser and per-file counters, while the break stays sticky.
     events.write_text('{"event":"test"}\n', encoding="utf-8")
-    assert reader.read(events) == (5, False)
-    assert reader.completed_events == 4
+    assert reader.read(events) == (1, False)
+    assert reader.completed_events == 1
+    assert reader.stream_broken is True
+
+
+def test_incremental_event_reader_marks_a_valid_unterminated_record_as_seen(
+    tmp_path: Path,
+) -> None:
+    events = tmp_path / "partial.ndjson"
+    events.write_text('{"event":"phase"}', encoding="utf-8")
+    reader = liveness._EventProgressReader(candidate_pid=100)
+
+    assert reader.read(events) == (1, False)
+    replacement = tmp_path / "partial-replacement.ndjson"
+    replacement.write_text("", encoding="utf-8")
+    replacement.replace(events)
+
+    assert reader.read(events) == (0, False)
+    assert reader.stream_broken is True
 
 
 # --------------------------------------------------------------------------

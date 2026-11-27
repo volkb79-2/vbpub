@@ -2644,10 +2644,22 @@ def _refuse_unbounded_without_unit_bounds(
     records -- and a config file is read before either is known. So this rule
     keeps refusing `"none"` by name and admitting the omitted / `"auto"` key, but it
     does not promise a total wall bound for every stalled candidate on an
-    armed run. The binding budget still ends runs where the watch is not armed
-    or CPU never becomes readable. A candidate that keeps completing events
-    can renew the watch; an `unbounded` lane gives that progressing command no
-    total wall cap by design.
+    armed run. The binding budget still ends runs where the watch is not armed,
+    CPU never becomes readable, or the event stream breaks. An event stream
+    breaks after at least one record has been read if the file is replaced
+    (device/inode change), truncated, vanishes, or cannot be read; its first
+    appearance is not a break. From the detecting poll, the CPU-without-progress
+    `hung` bound, the per-test bound, and the no-progress wall stop are
+    disarmed for the rest of that candidate run, even if the file returns. The
+    candidate budget then binds through the same path used when candidate CPU
+    is unreadable. With `budget_per_candidate = "none"`, only the lane deadline
+    remains. The idle rule keeps its origin/main current-file counting: a
+    vanished file reads as zero and an empty return is not progress. Detection
+    uses device/inode and length, not content comparison; a same-inode rewrite
+    that is not shorter than the reader's offset between polls looks like an
+    append, so candidate code can forge progress (B585). An intact stream that
+    keeps completing events can renew the watch; an `unbounded` lane gives that
+    progressing command no total wall cap by design.
 
     **(B091/D-23) An omitted ``judge.mutation.budget_per_candidate`` is no
     longer such a unit with no bound.** It now means ``"auto"`` -- see

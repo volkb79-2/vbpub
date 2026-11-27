@@ -127,6 +127,7 @@ def _runner(
     expect_next_event_within_s: float = 15.0,
     pre_first_event_within_s: float | None = None,
     sleep=None,
+    cpu_window_s: float | None = None,
     cpu_without_progress_bound_s: float | None = None,
     per_test_cpu_baseline_s=None,
     per_test_xdist: bool = False,
@@ -151,6 +152,7 @@ def _runner(
         ),
         popen=_FakePopen(proc),
         process_group_killer=_ignore_process_group,
+        cpu_window_s=cpu_window_s,
         cpu_without_progress_bound_s=cpu_without_progress_bound_s,
         per_test_cpu_baseline_s=per_test_cpu_baseline_s,
         per_test_xdist=per_test_xdist,
@@ -2021,70 +2023,71 @@ def test_completed_events_redate_the_wall_backstop(tmp_path: Path) -> None:
     assert clock.t >= 24.0
 
 
-@pytest.mark.parametrize("reset_kind", ["replace", "truncate"])
-def test_completed_events_after_event_file_reset_redate_both_progress_windows(
-    tmp_path: Path, reset_kind: str
+def test_replaced_stream_disarms_progress_bounds_but_candidate_budget_binds(
+    tmp_path: Path,
 ) -> None:
-    """A fresh event stream keeps renewing both bounds after reader reset.
+    """A replaced stream can keep making progress past every P4 bound.
 
-    The old stream has more completed records than the new stream initially,
-    which exposed the monitor comparing a reset counter with its stale
-    marker. The candidate then completes events for longer than both bounds;
-    neither the CPU bound nor the no-progress wall stop may fire.
+    Once the file changes after records were read, the CPU, per-test and
+    no-progress bounds are disarmed. Its candidate budget is binding again,
+    even though CPU remains readable.
     """
     clock = _FakeClock()
-    proc = _ScriptedProc(pid=7020 if reset_kind == "replace" else 7021)
+    proc = _ScriptedProc(pid=7020)
     events_path = liveness.candidate_events_path(
         tmp_path / "candidates", tmp_path / "cand"
     )
     initialized = False
-    reset_done = False
+    replaced = False
 
     def cpu_reader(_pid: int) -> float:
-        nonlocal initialized, reset_done
+        nonlocal initialized, replaced
         if not initialized:
             events_path.parent.mkdir(parents=True, exist_ok=True)
-            events_path.write_text(
-                "".join(json.dumps({"event": "phase"}) + "\n" for _ in range(20)),
-                encoding="utf-8",
-            )
+            _append_event(events_path, {"event": "test_start", "nodeid": "test::x"})
+            for _ in range(20):
+                _append_event(events_path, {"event": "phase"})
             initialized = True
-        elif not reset_done and clock.t >= 2.0:
-            if reset_kind == "replace":
-                replacement = events_path.with_suffix(".replacement")
-                replacement.write_text("", encoding="utf-8")
-                replacement.replace(events_path)
-            else:
-                events_path.write_text("", encoding="utf-8")
-            reset_done = True
-        elif reset_done and 3.0 <= clock.t < 30.0:
+        elif not replaced and clock.t >= 2.0:
+            replacement = events_path.with_suffix(".replacement")
+            _append_event(
+                replacement, {"event": "test_start", "nodeid": "test::x"}
+            )
+            replacement.replace(events_path)
+            replaced = True
+        elif replaced and 3.0 <= clock.t < 19.0:
             _append_event(events_path, {"event": "phase"})
-        if clock.t >= 30.0:
-            proc.finish(0)
-        return clock.t * 0.5
+        return clock.t * 10.0 if replaced and clock.t >= 3.0 else 0.0
 
     runner, cwd = _runner(
         tmp_path,
         proc=proc,
         clock=clock,
         cpu_reader=cpu_reader,
-        cpu_without_progress_bound_s=3.0,
+        cpu_without_progress_bound_s=2.0,
+        per_test_cpu_baseline_s={"test::x": 1.0},
+        advisory_budget_s=18.0,
         expect_next_event_within_s=1000.0,
     )
 
-    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=1000.0)
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
 
-    assert result.returncode == 0
-    assert reset_done
-    assert clock.t >= 30.0  # more than the 3s CPU and 12s wall bounds.
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert replaced
+    assert clock.t == 18.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+    assert sum(1 for line in events_path.read_text(encoding="utf-8").splitlines()) >= 15
 
 
-def test_event_file_reset_without_completion_does_not_redate_progress_windows(
+def test_truncated_stream_disarms_progress_bounds_and_candidate_budget_binds(
     tmp_path: Path,
 ) -> None:
-    """A reset alone is not progress and cannot renew either stop window."""
+    """An in-place truncation after a record read is a sticky stream break."""
     clock = _FakeClock()
-    proc = _ScriptedProc(pid=7022)
+    proc = _ScriptedProc(pid=7021)
     events_path = liveness.candidate_events_path(
         tmp_path / "candidates", tmp_path / "cand"
     )
@@ -2095,12 +2098,15 @@ def test_event_file_reset_without_completion_does_not_redate_progress_windows(
         nonlocal initialized, truncated
         if not initialized:
             events_path.parent.mkdir(parents=True, exist_ok=True)
-            _append_event(events_path, {"event": "phase"})
+            for _ in range(20):
+                _append_event(events_path, {"event": "phase"})
             initialized = True
         elif not truncated and clock.t >= 2.0:
             events_path.write_text("", encoding="utf-8")
             truncated = True
-        return clock.t * 0.5
+        elif truncated and 3.0 <= clock.t < 19.0:
+            _append_event(events_path, {"event": "phase"})
+        return clock.t * 10.0 if truncated and clock.t >= 3.0 else 0.0
 
     runner, cwd = _runner(
         tmp_path,
@@ -2108,19 +2114,331 @@ def test_event_file_reset_without_completion_does_not_redate_progress_windows(
         clock=clock,
         cpu_reader=cpu_reader,
         cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=18.0,
         expect_next_event_within_s=1000.0,
     )
 
-    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
-        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=1000.0)
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
 
     assert truncated
-    assert clock.t == 5.0
-    assert excinfo.value.resource_evidence["decision"] == "cpu-without-progress"
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 18.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
 
 
-def test_event_file_reset_restarts_a_same_nodeid_per_test_window(tmp_path: Path) -> None:
-    """Cumulative record indexes prevent a reset test from reusing an old window."""
+def test_stream_break_binds_a_candidate_budget_that_already_elapsed(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7028)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replaced
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not replaced and clock.t >= 2.0:
+            replacement = events_path.with_suffix(".replacement")
+            replacement.write_text("", encoding="utf-8")
+            replacement.replace(events_path)
+            replaced = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=1.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert replaced
+    assert clock.t == 3.0
+    assert runner.advisory_exceeded_at_s == 1.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_identical_replacement_without_new_completion_cannot_renew_bounds(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7022)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    replacements = 0
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replacements
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif clock.t >= 1.0:
+            replacement = events_path.with_suffix(".replacement")
+            replacement.write_text(events_path.read_text(encoding="utf-8"), encoding="utf-8")
+            replacement.replace(events_path)
+            replacements += 1
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=8.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert replacements >= 7
+    assert clock.t == 8.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_vanish_and_empty_return_keep_the_origin_main_idle_verdict_and_evidence(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7023)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = vanished = returned_empty = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, vanished, returned_empty
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not vanished and clock.t >= 2.0:
+            events_path.unlink()
+            vanished = True
+        elif vanished and not returned_empty:
+            events_path.write_text("", encoding="utf-8")
+            returned_empty = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_window_s=30.0,
+        expect_next_event_within_s=20.0,
+        pre_first_event_within_s=32.0,
+    )
+
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    evidence = excinfo.value.resource_evidence
+    assert vanished and returned_empty
+    assert evidence["decision"] == "idle-hang"
+    assert evidence["required_idle_eligible_s"] == 32.0
+    assert evidence["idle_eligible_s"] == 32.0
+    assert {
+        sample["wall_elapsed_s"]: sample["event_count"]
+        for sample in evidence["samples"]
+        if sample["wall_elapsed_s"] in {1.0, 2.0, 3.0, 4.0}
+    } == {1.0: 1, 2.0: 1, 3.0: 0, 4.0: 0}
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+
+
+def test_vanish_and_content_return_leave_the_binding_candidate_budget(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7024)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = vanished = returned_content = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, vanished, returned_content
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not vanished and clock.t >= 2.0:
+            events_path.unlink()
+            vanished = True
+        elif vanished and not returned_content:
+            _append_event(events_path, {"event": "phase"})
+            returned_content = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=18.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    assert vanished and returned_content
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 18.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_read_error_after_records_makes_the_candidate_budget_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7025)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    original_open = Path.open
+
+    def fail_event_reads_after_record(path, *args, **kwargs):
+        if path == events_path and clock.t >= 2.0:
+            raise PermissionError("scripted event read failure")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_event_reads_after_record)
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=8.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 8.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_stream_break_without_candidate_budget_leaves_only_lane_deadline(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7026)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = truncated = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, truncated
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not truncated and clock.t >= 2.0:
+            events_path.write_text("", encoding="utf-8")
+            truncated = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=None,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=10.0)
+
+    assert truncated
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "configured-budget-expired"
+    )
+    assert clock.t == 10.0
+
+
+def test_empty_file_replacement_before_any_record_keeps_bounds_armed(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7027)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replaced
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            events_path.write_text("", encoding="utf-8")
+            initialized = True
+        elif not replaced:
+            replacement = events_path.with_suffix(".replacement")
+            replacement.write_text("", encoding="utf-8")
+            replacement.replace(events_path)
+            replaced = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=20.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(liveness.LivenessNoProgressWallExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert replaced
+    assert clock.t == 8.0
+
+
+def test_event_file_reset_disarms_the_same_nodeid_per_test_window(
+    tmp_path: Path,
+) -> None:
+    """A replacement cannot rearm an event-derived per-test bound."""
     clock = _FakeClock()
     proc = _ScriptedProc(pid=7023)
     events_path = liveness.candidate_events_path(
@@ -2161,7 +2479,7 @@ def test_event_file_reset_restarts_a_same_nodeid_per_test_window(tmp_path: Path)
 
     assert result.returncode == 0
     assert replaced
-    assert clock.t == 9.0  # the pre-reset 60s CPU window would fire at t=7.
+    assert clock.t == 9.0  # CPU passes the per-test bound after the break.
 
 
 def test_session_finish_redates_the_wall_backstop_once(tmp_path: Path) -> None:

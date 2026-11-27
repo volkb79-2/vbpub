@@ -2135,6 +2135,19 @@ still win when they fire first. This is a decision, not an artifact of the
 code path, and it is worth stating plainly because the rest of the
 mutation-tooling world reports the opposite.
 
+An event stream breaks after at least one record has been read if the file is
+replaced (device/inode change), truncated, vanishes, or cannot be read; its
+first appearance is not a break. From the detecting poll, the
+CPU-without-progress `hung` bound, the per-test bound, and the no-progress wall
+stop are disarmed for the rest of that candidate run, even if the file returns.
+The candidate budget then binds through the same path used when candidate CPU
+is unreadable. With `budget_per_candidate = "none"`, only the lane deadline
+remains. The idle rule keeps its origin/main current-file counting: a vanished
+file reads as zero and an empty return is not progress. Detection uses
+device/inode and length, not content comparison; a same-inode rewrite that is
+not shorter than the reader's offset between polls looks like an append, so
+candidate code can forge progress (B585).
+
 The reasoning is what each bucket *claims*. `killed` asserts that the suite
 EXERCISED the mutant and failed on it: a specific test observed the changed
 behaviour and objected. A hang proves something weaker and different -- the

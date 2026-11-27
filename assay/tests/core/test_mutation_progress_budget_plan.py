@@ -2534,32 +2534,39 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
         def wait(self, timeout=None):
             return self.returncode
 
-    active = {"clock": None, "candidate": None, "proc": None, "pass": 1}
+    active = {"state": None, "pass": 1}
+    candidate_states = {}
     next_pid = 8100
     timeline = []
 
     def window_clock():
-        assert active["clock"] is not None
-        return active["clock"].now()
+        state = active["state"]
+        assert state is not None
+        return state["clock"].now()
 
     def window_sleep(duration):
-        assert active["clock"] is not None
-        active["clock"].advance(duration)
+        state = active["state"]
+        assert state is not None
+        state["clock"].advance(duration)
 
     def fake_popen(argv, *, env, cwd, stdout, stderr, start_new_session, **_kwargs):
         nonlocal next_pid
         next_pid += 1
-        active["proc"] = _Proc(next_pid)
-        return active["proc"]
+        state = active["state"]
+        assert state is not None
+        state["proc"] = _Proc(next_pid)
+        return state["proc"]
 
     def cpu_reader(_pid):
-        clock = active["clock"]
-        proc = active["proc"]
-        assert clock is not None and proc is not None
-        if not (active["candidate"] == "stopped" and active["pass"] == 1):
+        state = active["state"]
+        assert state is not None
+        clock = state["clock"]
+        proc = state["proc"]
+        assert proc is not None
+        if not (state["candidate"] == "stopped" and state["pass"] == 1):
             if clock.t >= 3.0 and proc.returncode is None:
                 proc.finish(0)
-                timeline.append((active["pass"], active["candidate"], "peer-complete"))
+                timeline.append((state["pass"], state["candidate"], "peer-complete"))
         return 0.0
 
     def unavailable_resources(_pid):
@@ -2595,9 +2602,14 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
             candidate = "third"
         else:
             raise AssertionError(f"unexpected mutation source: {source!r}")
-        active["clock"] = _Clock()
-        active["candidate"] = candidate
-        active["proc"] = None
+        state = {
+            "clock": _Clock(),
+            "candidate": candidate,
+            "pass": active["pass"],
+            "proc": None,
+        }
+        candidate_states[(state["pass"], candidate)] = state
+        active["state"] = state
         return runner_module.execute_plan(
             plan,
             cwd=cwd,
@@ -2631,12 +2643,23 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
         executors.append(executor)
         return executor
 
+    wait_stages = []
+    wait_count_by_pass = {}
+
     def controlled_wait(futures, *, return_when, timeout=None):
         selected = set(futures)
         pending = [
             entry for entry in executors[-1].pending if entry[0] in selected
         ]
         assert pending
+        pass_number = active["pass"]
+        wait_number = wait_count_by_pass.get(pass_number, 0)
+        wait_count_by_pass[pass_number] = wait_number + 1
+        if wait_number == 0:
+            # Return only the fatal first candidate; the submitted peer stays
+            # pending until the scheduler's next wait call.
+            pending = [min(pending, key=lambda entry: entry[2])]
+        done = set()
         for future, function, position in pending:
             assert future.set_running_or_notify_cancel()
             try:
@@ -2644,10 +2667,34 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
             except BaseException as exc:
                 future.set_exception(exc)
                 if isinstance(exc, mutation_module.AssayError):
-                    timeline.append((active["pass"], active["candidate"], "stop"))
+                    state = active["state"]
+                    assert state is not None
+                    timeline.append((state["pass"], state["candidate"], "stop"))
             else:
                 future.set_result(result)
-        return selected, set()
+            done.add(future)
+        not_done = selected - done
+        wait_stages.append(
+            (
+                pass_number,
+                tuple(sorted(entry[2] for entry in pending)),
+                tuple(
+                    sorted(
+                        entry[2]
+                        for entry in executors[-1].pending
+                        if entry[0] in done
+                    )
+                ),
+                tuple(
+                    sorted(
+                        entry[2]
+                        for entry in executors[-1].pending
+                        if entry[0] in not_done
+                    )
+                ),
+            )
+        )
+        return done, not_done
 
     def safe_synthetic_pgid(_pid):
         raise ProcessLookupError
@@ -2668,6 +2715,21 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
         "_read_candidate_resource_counters_during_campaign",
         lambda: (None, "scripted unobserved limit counters"),
     )
+    real_write_state_record = (
+        mutation_module.mutation_store._write_mutation_state_record
+    )
+    persist_order = []
+
+    def record_peer_persistence(state_path, payload, **kwargs):
+        real_write_state_record(state_path, payload, **kwargs)
+        if payload["candidate_id"] == candidate_ids[1]:
+            persist_order.append("peer-persisted")
+
+    monkeypatch.setattr(
+        mutation_module.mutation_store,
+        "_write_mutation_state_record",
+        record_peer_persistence,
+    )
     monkeypatch.setattr(liveness.os, "getpgid", safe_synthetic_pgid)
     monkeypatch.setattr(liveness, "terminate_live_window_hosts", lambda: None)
 
@@ -2677,7 +2739,7 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
                 baseline=baseline,
                 prepared=prepared,
                 plan=make_plan(lane),
-                deadline=make_deadline(budget_seconds=180.0),
+                deadline=make_deadline(budget_seconds=None),
                 targets=_THREE_TARGETS,
                 adapter=PythonAdapter(),
                 jobs=2,
@@ -2698,9 +2760,22 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
         assert excinfo.value.outcome is Outcome.BUDGET_EXCEEDED
         assert excinfo.value.reason_code is ReasonCode.LANE_TIMEOUT
         assert "attempt is unclassified" in str(excinfo.value)
+        persist_order.append("fatal-observed")
 
         assert executors[0].submitted == [0, 1]
-        assert timeline[:2] == [(1, "stopped", "stop"), (1, "peer", "peer-complete")]
+        assert wait_stages[:2] == [
+            (1, (0,), (0,), (1,)),
+            (1, (1,), (1,), ()),
+        ]
+        assert persist_order == ["peer-persisted", "fatal-observed"]
+        assert timeline[:2] == [
+            (1, "stopped", "stop"),
+            (1, "peer", "peer-complete"),
+        ]
+        assert (
+            candidate_states[(1, "stopped")]["clock"]
+            is not candidate_states[(1, "peer")]["clock"]
+        )
         assert (state_root / f"{candidate_ids[1]}.json").is_file()
         assert not (state_root / f"{candidate_ids[0]}.json").exists()
         assert not (state_root / f"{candidate_ids[2]}.json").exists()
@@ -2715,7 +2790,7 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
             baseline=baseline,
             prepared=prepared,
             plan=make_plan(lane),
-            deadline=make_deadline(budget_seconds=180.0),
+            deadline=make_deadline(budget_seconds=None),
             targets=_THREE_TARGETS,
             adapter=PythonAdapter(),
             jobs=2,
@@ -2735,6 +2810,10 @@ def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_iden
         )
 
     assert resumed is not None and not isinstance(resumed, str)
+    assert wait_stages[2:] == [
+        (2, (0,), (0,), (1,)),
+        (2, (1,), (1,), ()),
+    ]
     # The resumed pending list is [the missing first identity, the untouched
     # third candidate], so its local positions are 0 and 1 again.
     assert executors[1].submitted == [0, 1]

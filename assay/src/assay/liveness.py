@@ -1607,29 +1607,17 @@ class _EventProgressReader:
     partially written final record can be completed on a later tick.
 
     Candidate files are unlinked before launch and the pytest plugin appends
-    newline-terminated records. Device/inode changes and truncation reset the
-    file-local parser state so a replaced file is treated as a new stream.
-    The record and completed-event counters remain cumulative, so idle and
-    CPU progress markers cannot fall behind the new stream. An observed test
-    overlap also remains sticky for the whole candidate run.
+    newline-terminated records. Device/inode changes, truncation, disappearance
+    and read errors reset the file-local parser state, so the idle rule sees
+    the current file's counts as it did with the full-file reader. Once a file
+    with at least one record is disrupted, ``stream_broken`` stays true for
+    this candidate run; the monitor disarms the event-derived P4 bounds. The
+    counters and flags reset per file, while that fact alone survives reset.
     """
 
     def __init__(self, candidate_pid: int | None) -> None:
         self._candidate_pid = _valid_pid(candidate_pid)
-        self._count = 0
-        #: (P4/S1) Cumulative completed plugin events on the candidate's own
-        #: timeline. It stays monotonic when file-local state resets, so every
-        #: completion in a replacement or truncated stream reaches the monitor.
-        self.completed_events = 0
-        #: (P4/S2) ``(nodeid, completed_events_at_start, record_index)`` of the
-        #: test currently in flight, or ``None``. `record_index` is the
-        #: reader's own record count at `test_start`, so a caller can tell
-        #: whether that test has since completed. The count is cumulative
-        #: across file resets so a new test cannot reuse a stale index.
-        self.in_flight: tuple[str, int, int] | None = None
-        #: (P4/S2) Sticky for the candidate run: once concurrent tests are
-        #: observed, no single per-test window can be attributed safely.
-        self.overlapping_tests = False
+        self.stream_broken = False
         self._reset()
 
     def _reset(
@@ -1641,13 +1629,27 @@ class _EventProgressReader:
         self._identity = identity
         self._offset = 0
         self._pending = b""
+        self._count = 0
         self._has_finish = False
         self._all_finish_pids_valid = True
         self._candidate_finish_seen = False
         #: The first stamped `session_start` identifies the process whose
         #: pytest hooks own this stream. Before it arrives, use the spawned pid.
         self._owner_pid: int | None = None
+        #: (P4/S1) Per-file count of completed plugin events on the candidate's
+        #: own timeline; a reset returns it to zero, like the valid-record count.
+        self.completed_events = 0
+        #: (P4/S2) ``(nodeid, completed_events_at_start, record_index)`` of the
+        #: test currently in flight, or ``None``. Both counters are per-file.
         self.in_flight = None
+        #: Per-file overlap: after a reset a new stream starts this false again.
+        self.overlapping_tests = False
+
+    def _mark_broken_if_records_seen(self) -> None:
+        """Break only after a complete or valid unterminated record was read."""
+        valid_tail = self._parse_line(self._pending.decode("utf-8")) is not None
+        if self._count or valid_tail:
+            self.stream_broken = True
 
     @staticmethod
     def _parse_line(line: str) -> dict[str, Any] | None:
@@ -1761,6 +1763,7 @@ class _EventProgressReader:
         try:
             stat = events_path.stat()
         except OSError:
+            self._mark_broken_if_records_seen()
             self._reset()
             return 0, False
         identity = (stat.st_dev, stat.st_ino)
@@ -1769,12 +1772,14 @@ class _EventProgressReader:
             or identity != self._identity
             or stat.st_size < self._offset
         ):
+            self._mark_broken_if_records_seen()
             self._reset(events_path, identity)
         try:
             with events_path.open("rb") as stream:
                 stream.seek(self._offset)
                 appended = stream.read()
         except OSError:
+            self._mark_broken_if_records_seen()
             self._reset()
             return 0, False
         self._offset += len(appended)
@@ -2159,8 +2164,8 @@ class LivenessRunner:
         # it is first exceeded, and the candidate continues. Where the watch
         # is NOT armed (this argument is `None`), the caller passes the budget
         # as the ordinary `timeout` instead and it binds exactly as before.
-        # If the FIRST CPU reading fails, the watch could not be armed after
-        # all, so this bound falls back to binding exactly as today.
+        # If the FIRST CPU reading fails or the event stream later breaks, the
+        # watch cannot remain armed, so this bound falls back to binding.
         self.advisory_budget_s = advisory_budget_s
         self.advisory_exceeded_at_s: float | None = None
         self._advisory_warned = False
@@ -2444,8 +2449,8 @@ class LivenessRunner:
         #: (P4/S2) the single in-flight test's own window.
         per_test_window: _PerTestWindow | None = None
         #: (P4/S3) Whether the candidate's CPU was readable at least once --
-        #: the last precondition for arming the watch. Until it is, the
-        #: advisory budget is not advisory at all: it binds as before.
+        #: the CPU precondition for arming the watch. The stream-integrity
+        #: condition is tracked separately by `event_reader.stream_broken`.
         cpu_readable = False
 
         def evidence(reason: str, *, required_idle_s: float) -> dict[str, Any]:
@@ -2535,6 +2540,7 @@ class LivenessRunner:
                 )
 
             event_count, saw_session_finish = event_reader.read(events_path)
+            stream_broken = event_reader.stream_broken
             stdout_size = _safe_size(stdout_path)
             stderr_size = _safe_size(stderr_path)
             try:
@@ -2658,7 +2664,11 @@ class LivenessRunner:
             # closed by the first COMPLETED event (`setup` is one), which
             # meant the body of every test ran unbounded.
             in_flight = event_reader.in_flight
-            if in_flight is None:
+            if stream_broken:
+                # A replaced, truncated, vanished or unreadable stream cannot
+                # support an event-derived per-test CPU window for this run.
+                per_test_window = None
+            elif in_flight is None:
                 per_test_window = None
             else:
                 nodeid, _started_after, start_index = in_flight
@@ -2746,7 +2756,8 @@ class LivenessRunner:
             cpu_since_completed_s = 0.0
             cpu_without_progress = False
             if (
-                self.cpu_without_progress_bound_s is not None
+                not stream_broken
+                and self.cpu_without_progress_bound_s is not None
                 and cpu_series is not None
             ):
                 if completed_marker_cpu is None:
@@ -2764,7 +2775,8 @@ class LivenessRunner:
             per_test_cpu_s = 0.0
             per_test_required = 0.0
             if (
-                per_test_window is not None
+                not stream_broken
+                and per_test_window is not None
                 and cpu_series is not None
                 and per_test_window.started_cpu is not None
             ):
@@ -2819,13 +2831,13 @@ class LivenessRunner:
 
             # (P4/S3) `budget_per_candidate` as an ADVISORY bound: one WARN
             # when it is first exceeded, and the candidate continues. It ends
-            # the candidate ONLY when the watch could not be armed after all
-            # (the CPU series was never readable), which is exactly the case
-            # where the budget still binds today.
+            # the candidate when the CPU series was never readable or a
+            # previously observed event stream broke, which are the cases
+            # where the progress watch is unavailable and the budget binds.
             if self.advisory_budget_s is not None:
                 elapsed_wall = max(0.0, now - start)
                 if elapsed_wall >= self.advisory_budget_s:
-                    if cpu_readable:
+                    if cpu_readable and not stream_broken:
                         if self.advisory_exceeded_at_s is None:
                             self.advisory_exceeded_at_s = elapsed_wall
                             if not self._advisory_warned:
@@ -2874,14 +2886,18 @@ class LivenessRunner:
 
             # (P4/M2) A no-progress backstop for candidates that keep burning
             # a little CPU, or whose CPU source later becomes unreadable. It is
-            # armed only with the calibrated CPU bound. Until the first
-            # comparable resource interval, it uses wall time so missing
-            # pressure data cannot disable the stop; after that it uses the
-            # idle rule's existing pressure-credited liveness clock. Completed
-            # events and the first session_finish re-date both windows above.
+            # armed only with the calibrated CPU bound and an intact stream.
+            # Until the first comparable interval, it uses wall time when
+            # pressure has not been classified, so missing data cannot disable
+            # the stop. After that it uses the idle rule's existing
+            # pressure-credited liveness clock. Completed events and the first
+            # session_finish re-date both windows above.
             # CPU and per-test hung bounds run first; the lane timeout above
             # also wins when it reaches its deadline first.
-            if self.cpu_without_progress_bound_s is not None:
+            if (
+                self.cpu_without_progress_bound_s is not None
+                and not stream_broken
+            ):
                 wall_bound_s = (
                     NO_PROGRESS_WALL_FACTOR * self.cpu_without_progress_bound_s
                 )

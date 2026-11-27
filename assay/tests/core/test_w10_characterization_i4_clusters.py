@@ -190,19 +190,18 @@ _READER_DEFAULTS = {
     "_candidate_finish_seen": False,
 }
 
-#: (P4/S1, P4/S2) The reader's PUBLIC progress counters. They are part of the
-#: class's contract -- `LivenessRunner` reads every one of them -- and are
-#: pinned here beside the private parser defaults, so a new public counter
-#: cannot appear without this characterization test being updated to say what
-#: it means for a fresh reader.
+#: (P4/S1, P4/S2) The reader's progress counters and stream-integrity state.
+#: They are part of the class contract -- `LivenessRunner` reads the counters
+#: and the sticky break flag -- and are pinned beside the parser defaults.
 _READER_PROGRESS_DEFAULTS = {
     "completed_events": 0,
     "in_flight": None,
     "overlapping_tests": False,
+    "stream_broken": False,
 }
 
 
-def test_a_fresh_event_progress_reader_holds_exactly_these_nine_defaults_the_progress_counters_and_the_pid():
+def test_a_fresh_event_progress_reader_holds_exactly_these_defaults_and_the_pid():
     reader = liveness._EventProgressReader(4242)
     assert vars(reader) == {
         "_candidate_pid": 4242,
@@ -221,7 +220,7 @@ def test_a_fresh_event_progress_reader_holds_exactly_these_nine_defaults_the_pro
     }
 
 
-def test_reset_restores_file_state_keeps_cumulative_progress_and_keeps_the_pid():
+def test_reset_restores_file_state_and_keeps_only_the_broken_fact_and_pid():
     reader = liveness._EventProgressReader(7)
     reader._offset = 9
     reader._pending = b"x"
@@ -232,23 +231,20 @@ def test_reset_restores_file_state_keeps_cumulative_progress_and_keeps_the_pid()
     reader.completed_events = 4
     reader.in_flight = ("test::x", 3, 8)
     reader.overlapping_tests = True
+    reader.stream_broken = True
     reader._reset()
     assert vars(reader) == {
         "_candidate_pid": 7,
         **_READER_DEFAULTS,
         **_READER_PROGRESS_DEFAULTS,
-        "_count": 3,
-        "completed_events": 4,
-        "overlapping_tests": True,
+        "stream_broken": True,
     }
     reader._reset(Path("/tmp/events"), (1, 2))
     assert vars(reader) == {
         "_candidate_pid": 7,
         **_READER_DEFAULTS,
         **_READER_PROGRESS_DEFAULTS,
-        "_count": 3,
-        "completed_events": 4,
-        "overlapping_tests": True,
+        "stream_broken": True,
         "_path": Path("/tmp/events"),
         "_identity": (1, 2),
     }

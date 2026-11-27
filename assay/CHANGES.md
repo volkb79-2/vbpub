@@ -130,6 +130,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   times the bound can pass without the candidate receiving useful CPU. This
   ends the sweep as an unclassified lane timeout; it does not identify whether
   the candidate stalled or the host starved it.
+- An event stream breaks after at least one record has been read if the file
+  is replaced (device/inode change), truncated, vanishes, or cannot be read;
+  its first appearance is not a break. From the detecting poll, the
+  CPU-without-progress `hung` bound, the per-test bound, and the no-progress
+  wall stop are disarmed for the rest of that candidate run, even if the file
+  returns. The candidate budget then binds through the same path used when
+  candidate CPU is unreadable. With `budget_per_candidate = "none"`, only the
+  lane deadline remains. The idle rule keeps its origin/main current-file
+  counting: a vanished file reads as zero and an empty return is not progress.
+- Detection uses device/inode and length, not content comparison. A same-inode
+  rewrite that is not shorter than the reader's offset between polls looks
+  like an append, so candidate code can forge progress; B585 tracks this limit.
 - The CPU-without-progress threshold is derived from baseline **wall** seconds
   (`max(3 x baseline wall, baseline wall + 60s)`) and compared with
   process-tree CPU. This is lenient for a serial suite because tree CPU grows

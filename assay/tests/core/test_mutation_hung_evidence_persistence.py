@@ -344,6 +344,95 @@ def test_hung_resource_evidence_is_written_to_state_and_progress(tmp_path: Path)
     )
 
 
+def test_vanished_empty_event_stream_idle_evidence_is_persisted_unchanged(
+    tmp_path: Path,
+) -> None:
+    """A vanish and empty return retain the origin/main idle evidence on disk."""
+
+    class Clock:
+        def __init__(self):
+            self.value = 0.0
+
+        def now(self):
+            return self.value
+
+        def advance(self, duration):
+            self.value += duration
+
+    class Proc:
+        pid = 8877
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    clock = Clock()
+    proc = Proc()
+    events_dir = tmp_path / "events"
+    cwd = tmp_path / "candidate"
+    cwd.mkdir()
+    events_path = liveness.candidate_events_path(events_dir, cwd)
+    initialized = vanished = returned_empty = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, vanished, returned_empty
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            events_path.write_text('{"event":"phase"}\n', encoding="utf-8")
+            initialized = True
+        elif not vanished and clock.value >= 2.0:
+            events_path.unlink()
+            vanished = True
+        elif vanished and not returned_empty:
+            events_path.write_text("", encoding="utf-8")
+            returned_empty = True
+        return 0.0
+
+    runner = liveness.LivenessRunner(
+        events_dir=events_dir,
+        expect_next_event_within_s=20.0,
+        pre_first_event_within_s=32.0,
+        monotonic=clock.now,
+        sleep=clock.advance,
+        cpu_window_s=30.0,
+        cpu_reader=cpu_reader,
+        resource_reader=lambda _pid: _SNAPSHOT,
+        popen=lambda *_args, **_kwargs: proc,
+        process_group_killer=lambda _pgid, _sig: None,
+    )
+
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    evidence = excinfo.value.resource_evidence
+    assert vanished and returned_empty
+    assert clock.value == 33.0
+    assert evidence["decision"] == "idle-hang"
+    assert evidence["required_idle_eligible_s"] == 32.0
+    assert evidence["idle_eligible_s"] == 32.0
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+
+    result = _run_hung(tmp_path, evidence, resume=True)
+    assert len(result.hung) == result.total > 0
+    assert all(
+        record["liveness_resource_evidence"] == evidence
+        for record in _state_records(tmp_path)
+    )
+    candidate_records = [
+        json.loads(line)
+        for line in (tmp_path / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("event") == "candidate"
+    ]
+    assert candidate_records
+    assert all(
+        record["liveness_resource_evidence"] == evidence
+        for record in candidate_records
+    )
+
+
 # --- (P4/S3) the two NEW hung decisions persist, resume and rejudge -------
 #
 # `mutation_store._valid_hung_resource_evidence` learned a SECOND policy in P4
