@@ -69,6 +69,7 @@ query_timeout_s = 5
 lease_reconcile_interval_s = 30
 lease_bind_timeout_s = 10
 max_connections = 4
+runner_user = "vscode"
 requested_by_clients = ["fleetd"]
 extra_argv = {extra_argv}
 dev_argv = [["status"]]

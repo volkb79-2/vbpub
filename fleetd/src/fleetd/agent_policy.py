@@ -37,6 +37,7 @@ class AgentPolicy:
     lease_reconcile_interval_s: float
     lease_bind_timeout_s: float
     max_connections: int
+    runner_user: str
     identities: tuple[AgentIdentity, ...]
     repo_roots: Mapping[str, Path]
     requested_by_clients: frozenset[str]
@@ -213,7 +214,7 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
         parsed, "agent.toml",
         {"schema_version", "idle_connection_s", "query_timeout_s", "identities", "repo_roots", "requested_by_clients",
          "extra_argv", "dev_argv", "env_values", "lease_reconcile_interval_s", "lease_bind_timeout_s",
-         "max_connections"},
+         "max_connections", "runner_user"},
     )
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         raise ContractError("agent.toml.schema_version: expected integer 1")
@@ -226,6 +227,7 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
         root["lease_bind_timeout_s"], "agent.toml.lease_bind_timeout_s",
     )
     max_connections = _positive_integer(root["max_connections"], "agent.toml.max_connections")
+    runner_user = _safe_name(root["runner_user"], "agent.toml.runner_user")
     identities = _identities(root["identities"])
 
     raw_roots = root["repo_roots"]
@@ -251,6 +253,6 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
 
     return AgentPolicy(
         idle_connection_s, query_timeout_s, lease_reconcile_interval_s, lease_bind_timeout_s,
-        max_connections, identities, repo_roots, requested_by_clients,
+        max_connections, runner_user, identities, repo_roots, requested_by_clients,
         extra_argv, dev_argv, env_values,
     )
