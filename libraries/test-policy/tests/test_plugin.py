@@ -1,8 +1,10 @@
 import builtins
+import importlib.util
 import os
 import shlex
 import threading
 import time
+import tokenize
 import types
 
 import pytest
@@ -185,6 +187,167 @@ def test_static_lines_without_function_or_source():
     ns = {}
     exec("def f():\n    pass\n", ns)
     assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == []
+
+
+def test_static_lines_tolerates_source_lookup_failure(monkeypatch):
+    ns = {}
+    exec("def f():\n    pass\n", ns)
+
+    def source_lookup_fails(function):
+        raise OSError("gone")
+
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", source_lookup_fails)
+
+    assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == []
+
+
+def test_static_lines_returns_empty_for_an_uncached_source_file(monkeypatch):
+    ns = {}
+    exec("def f():\n    pass\n", ns)
+    parsed = []
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
+    monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
+    # *_: while patched, pytest's own traceback printer also calls getlines, with module globals.
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename, *_: [])
+    monkeypatch.setattr(plugin.policy, "_module_tree", lambda source: parsed.append(source))
+
+    assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == []
+    assert parsed == []
+
+
+def test_static_lines_checks_the_linecache_before_reading_source(monkeypatch):
+    ns = {}
+    exec("def f():\n    pass\n", ns)
+    calls = []
+    source = "def f():\n    time.sleep(1)\n"
+
+    def checkcache(filename):
+        calls.append(("checkcache", filename))
+
+    def getlines(filename, *_):
+        calls.append(("getlines", filename))
+        return source.splitlines(keepends=True)
+
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
+    monkeypatch.setattr(plugin.linecache, "checkcache", checkcache)
+    monkeypatch.setattr(plugin.linecache, "getlines", getlines)
+
+    assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == [
+        "[fixed-sleep] line 2: time.sleep(1) is a fixed sleep used as synchronisation; "
+        "wait on an event, condition or poll loop"
+    ]
+    assert calls == [("checkcache", "module.py"), ("getlines", "module.py")]
+
+
+def test_static_lines_reports_one_warning_when_no_function_matches(monkeypatch):
+    ns = {}
+    exec("\n" * 9 + "def f():\n    pass\n", ns)
+    source = "def unrelated():\n    pass\n"
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
+    monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename, *_: source.splitlines(keepends=True))
+
+    assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == [
+        "[source-analysis] cannot locate test function in module.py at line 10"
+    ]
+
+
+def test_static_lines_does_not_pass_the_file_through_a_wrapped_analyze_source(monkeypatch):
+    ns = {}
+    exec("\n\ndef f():\n    pass\n", ns)
+    source = "\n\ndef f():\n    time.sleep(1)\n"
+    real_analyze = plugin.policy.analyze_source
+
+    def strips_blank_first_lines(text, **kwargs):
+        return real_analyze(text.lstrip("\n"), **kwargs)  # what a fragment-rewriting consumer shim can do
+
+    monkeypatch.setattr(plugin.policy, "analyze_source", strips_blank_first_lines)
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
+    monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename, *_: source.splitlines(keepends=True))
+
+    assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == [
+        "[fixed-sleep] line 4: time.sleep(1) is a fixed sleep used as synchronisation; "
+        "wait on an event, condition or poll loop"
+    ]
+
+
+@pytest.mark.parametrize("parse_error", [SyntaxError("invalid source"), tokenize.TokenError("invalid token", (2, 0))])
+def test_static_lines_reports_source_parse_failures(monkeypatch, parse_error):
+    ns = {}
+    exec("def f():\n    pass\n", ns)
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
+    monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename, *_: ["def f():\n", "    pass\n"])
+
+    def fail_parse(source):
+        raise parse_error
+
+    monkeypatch.setattr(plugin.policy, "_module_tree", fail_parse)
+
+    lines = plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2)
+
+    assert len(lines) == 1
+    assert lines[0].startswith("[source-analysis] could not analyze module.py:")
+
+
+def test_static_lines_parses_a_nested_method_and_disambiguates_same_names(tmp_path):
+    source = (
+        "import time\n"
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        def test_same(self):\n"
+        "            command = \"\"\"\n"
+        "column-zero content stays inside the string\n"
+        "            \"\"\"\n"
+        "            time.sleep(1)\n"
+        "class Other:\n"
+        "    def test_same(self):\n"
+        "        pass\n"
+    )
+    path = tmp_path / "policy_methods.py"
+    path.write_text(source, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("policy_methods", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    nested = plugin._static_lines(types.SimpleNamespace(function=module.Outer.Inner.test_same), set(), 0.2)
+    other = plugin._static_lines(types.SimpleNamespace(function=module.Other.test_same), set(), 0.2)
+
+    assert nested == [
+        "[fixed-sleep] line 8: time.sleep(1) is a fixed sleep used as synchronisation; "
+        "wait on an event, condition or poll loop"
+    ]
+    assert other == []
+
+
+def test_static_lines_unwraps_a_wrapped_test_function(tmp_path):
+    source = (
+        "import functools\n"
+        "import time\n"
+        "\n"
+        "def wraps_test(function):\n"
+        "    @functools.wraps(function)\n"
+        "    def wrapped(*args, **kwargs):\n"
+        "        return function(*args, **kwargs)\n"
+        "    return wrapped\n"
+        "\n"
+        "@wraps_test\n"
+        "def test_wrapped():\n"
+        "    time.sleep(1)\n"
+    )
+    path = tmp_path / "wrapped_test.py"
+    path.write_text(source, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("wrapped_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert plugin._static_lines(types.SimpleNamespace(function=module.test_wrapped), set(), 0.2) == [
+        "[fixed-sleep] line 12: time.sleep(1) is a fixed sleep used as synchronisation; "
+        "wait on an event, condition or poll loop"
+    ]
 
 
 def test_settle_loop_waits_for_a_leak_that_goes_away(monkeypatch):
