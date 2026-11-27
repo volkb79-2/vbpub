@@ -2304,11 +2304,11 @@ def run_mutation(
     #: (P4/S3) Whether the no-progress watch is ARMED for this run -- the
     #: caller's own per-run decision (`runner._run_prepared_lane`: liveness
     #: injected, the baseline produced plugin events, the candidate's CPU is
-    #: readable). Armed, `budget_per_candidate` is ADVISORY: it never ends a
-    #: candidate (see `assay.liveness.LivenessRunner.advisory_budget_s`) and
-    #: the CPU bounds are the stop. NOT armed, it binds exactly as before --
-    #: this is the only switch, so "which regime judged this run" has one
-    #: source.
+    #: readable). Armed, `budget_per_candidate` is advisory while candidate CPU
+    #: is readable and the event stream intact; it binds if CPU becomes unreadable
+    #: or the stream breaks (see `assay.liveness.LivenessRunner.advisory_budget_s`).
+    #: CPU/per-test/no-progress bounds stop an intact watched run; NOT armed, it
+    #: binds as before -- one switch names the regime for this run.
     liveness_watch_armed: bool = False,
     #: (P4/S3) The machine-readable spelling of WHY the watch is or is not
     #: armed, disclosed on the `plan` progress record beside the fact. `None`

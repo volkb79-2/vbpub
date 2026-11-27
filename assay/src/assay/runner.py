@@ -6118,10 +6118,11 @@ def _run_prepared_lane(
                     # (P4/S2) `jobs > 1` runs the suite distributed, where
                     # "exactly one test in flight" is false by construction.
                     per_test_xdist=lane.judge.mutation.jobs > 1,
-                    # (P4/S3) The per-candidate budget as an ADVISORY wall
-                    # bound: never a stop for this run (one WARN when first
-                    # exceeded), with the CPU and no-progress wall bounds as
-                    # the real stop when the watch is armed.
+                    # (P4/S3) The budget is advisory while CPU is readable
+                    # and the event stream intact (one WARN on first overrun),
+                    # binding if either becomes unreadable or breaks.
+                    # CPU/per-test/no-progress bounds stop an intact watched
+                    # run; a stream break disarms those bounds.
                     advisory_budget_s=(
                         explicit_budget_per_candidate_seconds
                         if (

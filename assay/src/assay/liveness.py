@@ -1761,21 +1761,19 @@ class _EventProgressReader:
     def read(self, events_path: Path) -> tuple[int, bool]:
         """Return the current valid-record count and finish status."""
         try:
-            stat = events_path.stat()
-        except OSError:
-            self._mark_broken_if_records_seen()
-            self._reset()
-            return 0, False
-        identity = (stat.st_dev, stat.st_ino)
-        if (
-            events_path != self._path
-            or identity != self._identity
-            or stat.st_size < self._offset
-        ):
-            self._mark_broken_if_records_seen()
-            self._reset(events_path, identity)
-        try:
             with events_path.open("rb") as stream:
+                # The path may be replaced after opening. Only metadata from
+                # the descriptor whose bytes we will read can identify this
+                # poll's file and detect a truncation before using the offset.
+                stat = os.fstat(stream.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                if (
+                    events_path != self._path
+                    or identity != self._identity
+                    or stat.st_size < self._offset
+                ):
+                    self._mark_broken_if_records_seen()
+                    self._reset(events_path, identity)
                 stream.seek(self._offset)
                 appended = stream.read()
         except OSError:
