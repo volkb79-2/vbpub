@@ -19,11 +19,23 @@ The workspace denies unsafe Rust by default. Only `kernel` and `act` declare the
 unsafe-code allowance. Cargo rejects combining a workspace-lint inheritance stanza with a
 package-level override, so those two manifests declare their allowance directly while the
 other eight inherit the workspace lint. Kernel uses its allowance in exactly one audited
-item, `activation::adopt_raw`, which claims a systemd-owned `LISTEN_FDS` descriptor after
-checking that it is an open listening `AF_UNIX` stream socket. The crate carries
+module, the private `activation::raw`, which holds two `unsafe` expressions: `adopt_raw`
+claims a systemd-owned `LISTEN_FDS` descriptor after checking that it is an open listening
+`AF_UNIX` stream socket, and `peer_credentials_raw` reads the raw `SO_PEERCRED` bytes so a
+pid of 0 is rejected before any non-zero pid type exists (`HOB-90`). The crate carries
 `#![deny(unsafe_code)]` and `tools/check-lints.py` permits exactly that one
-`allow(unsafe_code)` occurrence outside `crates/act`. Held-fd adoption is the only raw-fd
-transfer; every ordinary host read remains `File::open`, `read_dir` and `symlink_metadata`.
+`allow(unsafe_code)` occurrence and those two expressions outside `crates/act`. Held-fd
+adoption is the only raw-fd transfer; every ordinary host read remains `File::open`,
+`read_dir` and `symlink_metadata`.
+
+## Wire: cgroup identity selectors
+
+The `cgroup_id` selector resolves through the key index built during the sampler's walk, and the
+serve backend reads only the turn's `Arc<Tick>`. The pair therefore selects a cgroup in the tick
+being served; it is not a durable record key, and hostobs does not guarantee that a key never names
+a later cgroup, including after a reboot or on another host. A record that needs stable identity
+keeps the reply's `inc` with `boot_id` and `epoch` and compares those fields. Because the key index is
+built with the walk, a cgroup not published in that tick cannot be named by `cgroup_id`.
 
 ## Wire: why fixed-width typed columns (D4)
 
@@ -188,6 +200,13 @@ counter sum `unreadable` (a partial total is a wrong number that looks right), a
 missing optional file is `absent` or `unsupported` according to a code the caller declares
 (`Absence::Controller` versus `Absence::Feature`). Nothing in a reader writes a zero for a
 failure.
+
+`cgroup.freeze` is the cgroup's own freeze setting; `cgevents.frozen` is its effective
+state, including a frozen ancestor, and `cgevents.populated` says whether the cgroup or any
+descendant has a live process.
+Missing `cgroup.freeze` or `cgroup.events` files are `unsupported`; a missing key in a
+successfully read `cgroup.events` file is `absent`, because the quality vocabulary treats a
+missing key as absent and reserves unsupported for a fact the kernel does not provide.
 
 **Unknown device topology is a state, not a bottom device.** The sampler asked each device
 whether its `/sys/dev/block/<dev>/slaves` listing was non-empty and reused the last answer

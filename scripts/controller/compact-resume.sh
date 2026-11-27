@@ -13,11 +13,15 @@ set -u
 # Exit codes: 0 resume prompt sent (a compaction that never showed busy only logs WARN); 2 bad
 # arguments, unreadable guidance/prompt file, unwritable log or no such pane (nothing sent);
 # 3 pane never idle within 30 min (nothing sent); 4 compaction not finished within 60 min (the
-# /compact was sent, the resume prompt was not); 5 the input line never emptied (someone has text
-# there, or the pane stayed busy before the resume prompt; checked before /compact and before the
-# prompt, nothing is typed over it); 6 a send-keys call failed (text may be partly typed, nothing
-# more is sent); 7 the per-pane lock (also taken by ctl-keepalive.sh) was not obtained within 2 min (nothing sent). Progress goes to <log-file>. Footer markers and the shared idle logic: resume-lib.sh. Test seams (tests/test-compact-resume.sh):
-# COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE,LOCK_DIR,LOCK_WAIT}.
+# /compact was sent, the resume prompt was not; an UNRECOGNISED layout - no prompt box, a draft, a
+# dialog or a failed capture - counts as busy here too, so the exit does not prove a compaction was
+# running); 5 the input line never emptied (someone has text there, or the pane stayed busy before
+# the resume prompt; checked before /compact and before the prompt, nothing is typed over it); 6 a
+# send-keys call failed (text may be partly typed, nothing more is sent); 7 the per-pane lock (also
+# taken by ctl-keepalive.sh) was not obtained within 2 min (nothing sent). A pane that is not ready
+# for a reason the helper cannot read logs that reason once per wait, with the footer.
+# Progress goes to <log-file>. Footer markers and the shared idle logic: resume-lib.sh. Test seams
+# (tests/test-compact-resume.sh): COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE,LOCK_DIR,LOCK_WAIT}.
 RESUME_PREFIX=COMPACT_RESUME
 # shellcheck source=resume-lib.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/resume-lib.sh"
@@ -37,7 +41,7 @@ idle_or_exit "$idle_tries" 3 "pane never idle within 30 min"
 guidance=$(cat -- "$guidance_file"); guidance=${guidance//$'\n'/ }
 say "pane idle, input empty; footer before: $(foot | grep -o 'ctx [0-9?]*k\?' | tail -1)"
 send_text "/compact $guidance"
-started=0
+started=0; not_ready_said=0   # one not-ready line for this loop too (see resume-lib.sh say_once)
 for _ in $(seq "$start_tries"); do if busy; then started=1; break; fi; sleep "$poll"; done
 if [[ $started -eq 1 ]]; then say "compaction running"; else say "WARN compaction never showed busy"; fi
 wait_idle "$done_tries" busy-only || { say "ERROR compaction not finished within 60 min"; exit 4; }

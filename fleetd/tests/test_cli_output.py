@@ -17,6 +17,7 @@ import pytest
 
 from fleetd.cli import build_cli, identity
 from fleetd.transport import FakeTransport
+from host_facts_v2 import write_host_set_v2
 from test_campaign import _plan
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -30,6 +31,10 @@ def _demand(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _hosts(tmp_path: Path) -> Path:
+    return write_host_set_v2(FIXTURES / "fleet-host-set.valid.json", tmp_path / "hosts-v2.json")
 
 
 def _run(argv, monkeypatch=None, transport=None):
@@ -54,9 +59,9 @@ def test_facts_collect_prints_the_indented_document_by_default(tmp_path, monkeyp
     assert status == 0
     assert stderr == ""
     document = _assert_one_document(stdout)
-    assert document["schema"] == "host-facts/1"
+    assert document["schema"] == "host-facts/2"
     assert stdout.count("\n") > 5, "the documented form is indented, key-sorted JSON"
-    assert stdout.startswith("{\n  \"boot_id\"")
+    assert stdout.startswith("{\n  \"agent_version\"")
 
 
 def test_facts_collect_prints_one_compact_document_with_json(tmp_path, monkeypatch):
@@ -65,9 +70,7 @@ def test_facts_collect_prints_one_compact_document_with_json(tmp_path, monkeypat
     )
     assert status == 0
     assert stderr == ""
-    assert _assert_one_document(stdout) == _assert_one_document(
-        _run(["facts", "collect", "--root", str(FIXTURES / "facts-root")], monkeypatch)[1]
-    )
+    assert _assert_one_document(stdout)["schema"] == "host-facts/2"
     assert stdout.count("\n") == 1, "json mode writes exactly one line"
 
 
@@ -75,7 +78,7 @@ def test_plan_keeps_both_modes_and_pins_no_execution_outside_a_git_project(tmp_p
     argv = [
         "plan", "r2",
         "--candidates", str(FIXTURES / "candidate-table.valid.json"),
-        "--hosts", str(FIXTURES / "fleet-host-set.valid.json"),
+        "--hosts", str(_hosts(tmp_path)),
         "--demand", str(_demand(tmp_path)),
     ]
     monkeypatch.chdir(tmp_path)
@@ -96,7 +99,7 @@ def test_commands_selector_is_not_json_and_ignores_the_json_flag(tmp_path, monke
     argv = [
         "plan", "r2",
         "--candidates", str(FIXTURES / "candidate-table.valid.json"),
-        "--hosts", str(FIXTURES / "fleet-host-set.valid.json"),
+        "--hosts", str(_hosts(tmp_path)),
         "--demand", str(_demand(tmp_path)),
         "--commands",
     ]

@@ -132,6 +132,38 @@ controller: run name 'pi-run' is already owned by pid 12345 (started 2026-11-16T
 set to `retired/<run>/<utc-stamp>/` (with `PREVIOUS-OWNER.txt`) and starts
 fresh, so a deliberate restart never destroys the previous run's evidence.
 
+Every pi launch also carries a **signal guard** (see the
+[design rationale](DESIGN-GUIDE.md#why-the-pi-signal-guard-is-mechanical-not-advisory)):
+`pi-impl.sh` puts `pi-shims/` first on the agent's `PATH`, so the agent's
+`pkill` and `killall` refuse with `pi-shim: refused <name>` and exit 126, and a
+`pgrep` carrying a signal argument refuses the same way while a plain `pgrep`
+still works. Nothing to configure — but a launch can therefore be **refused
+with exit 2 before pi starts**, naming the reason, and both are facts you can
+fix rather than retry:
+
+```text
+pi signal guard is incomplete: …/scripts/controller/pi-shims/pkill is missing or not executable
+pi signal guard cannot be enforced: …/bin/pkill shadows the shim
+pi signal guard cannot be enforced: PI_CODING_AGENT_DIR must be an absolute path or start with ~/ (got 'agents/pi')
+```
+
+The first means the kit is incomplete (a shim does not resolve or is not
+executable): reinstall or restore `scripts/controller/pi-shims/` (all three
+files, mode 100755). The second means a `pkill`/`killall`/`pgrep` sits in pi's
+**own** managed-bin directory (`$PI_CODING_AGENT_DIR/bin`; a leading `~/` in
+that value is expanded against `$HOME` the way pi expands it, and a value that
+is relative is refused rather than guessed at, because pi would join it to its
+own working directory), which pi puts ahead of the guard: remove that file, or
+move it out of the way. Both refusals happen before the run name is claimed, so
+a refused launch leaves no `.done`, no `.lock` owner record and no evidence
+that would refuse the retry.
+
+An agent that meets the refusal is not to work around it: signal only the exact
+pid you started, and never `pkill`/`killall` by pattern in a shared devcontainer.
+The guard does not cover the bash builtin `kill` on a negative or foreign pid,
+an absolute `/usr/bin/pkill`, a shell loop over `/proc`, or a script that resets
+`PATH`; a brief still has to say so.
+
 Read the `.done` marker's outcome word before deciding what to do next:
 
 | `.done` outcome | What to do |

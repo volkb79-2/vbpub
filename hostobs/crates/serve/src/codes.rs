@@ -210,6 +210,8 @@ pub enum Detail {
     Empty,
     /// `{"key": <path>}`: the schema path of the offending member; empty for a text defect.
     Key(String),
+    /// `{"feature": <name>}`: a feature unavailable at the negotiated protocol minor.
+    Feature(&'static str),
     /// `{"pool": <name>}`: the exhausted budget pool.
     Pool(Pool),
 }

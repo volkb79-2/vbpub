@@ -17,7 +17,12 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 74  # rev 74: RG-307/RG-308a -- R-59-consistent wrapper-budget warning
+__revision__ = 77  # rev 77: RG-320 -- a stall watch on every watchable lane kind
+# rev 76: RG-321/RG-322 -- lane OOM bias and inventory refusals
+# Linux's oom_score_adj steers OOM victim choice; disposable gate lanes
+# should be selected before the interactive controller.
+LANE_CONTAINER_OOM_SCORE_ADJ = 500
+# rev 74: RG-307/RG-308a -- R-59-consistent wrapper-budget warning
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -82,9 +87,10 @@ __revision__ = 74  # rev 74: RG-307/RG-308a -- R-59-consistent wrapper-budget wa
 # (`daemon_not_running_reason()`, shared with `doctor`'s own wording,
 # RG-59) instead of reusing "produced unparsable stdout" for two
 # structurally different failures. RG-58: a bare-host lane declaring
-# `stall_timeout` (silently inert -- no watch of any kind exists on that
-# runner) gets a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
-# never refuse), one shared reason function. RG-61: eight-item SPEC/
+# `stall_timeout` (silently inert -- no watch of any kind existed on that
+# runner) got a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
+# never refuse), one shared reason function. SUPERSEDED by RG-320 (rev 77):
+# that runner has a watch now, so both surfaces print NOTHING for it. RG-61: eight-item SPEC/
 # CONSUMERS/LANE-AUTHORING/backlog/usage() documentation drift sweep (new
 # `R-30c` for the doctor profiler check, R-30's status count, the stale
 # 0/0-as-100% narrative corrected to RW-5's actual SKIPPED design,
@@ -221,6 +227,16 @@ LANE_KILL_GRACE_SECONDS = 5
 # container alive. Docker logs normally replay quickly; 60 s leaves ample room
 # for a large log while still reaching `rm -f` when the daemon is wedged.
 CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS = 60
+# RG-320 fix round 1 (L5): the drain `OutputTee.join()` waits for a child's
+# last chunks must be BOUNDED, for the same reason `LogStreamWatch.join()` is
+# (RG-41 round 1). A local sweep at `OutputTee`'s drain is not enough: a
+# GRANDCHILD that left the terminated lane's process group (`setsid`, a daemon,
+# a `docker` client that outlives its caller) keeps the write end of the lane's
+# pipe open, so `read()` never returns EOF and an unbounded join would hang the
+# lane after its budget and its stall watch had both already ended it. Normal
+# drains finish in milliseconds; this only bounds the pathological case, and the
+# join DISCLOSES when it did not finish rather than silently dropping output.
+OUTPUT_DRAIN_TIMEOUT_SECONDS = 5.0
 FAILED_EVIDENCE_KEEP = 10
 FAILED_NODE_LIMIT = 5
 
@@ -729,6 +745,41 @@ ASSAY_STALL_FLOOR_SECONDS = 2 * ASSAY_PROGRESS_HEARTBEAT_SECONDS
 # Idle bound for an R2 lane between Assay's `command_finished` and its `plan`
 # (evaluate_r1 runs there, unheartbeated; 253 s measured, so 600 s is >2x).
 POST_COMMAND_BOUND_SECONDS = 600.0
+# RG-320 (P1 of the no-time-budgets design, docs/design/no-time-budgets/
+# DESIGN.md 3.4 step 1): the silence bound EVERY lane kind that can be watched
+# is armed with when it declares no `stall_timeout`. Operator answer Q4
+# (2026-11-25): 300 s for a lane of unknown cadence. It is a FLOOR, never a
+# ceiling -- an assay lane with a published cadence keeps `max(300, 3x cadence)`
+# (RG-7) and an R2 lane between `command_finished` and `plan` keeps the 600 s
+# POST_COMMAND_BOUND_SECONDS. Nothing is REMOVED by this bound: a lane's
+# `budget` stays exactly as binding as it was (P2 accepts `unbounded`, not this).
+DEFAULT_STALL_BOUND_SECONDS = 300.0
+# What a watch judges silence FROM, per lane kind -- disclosed by name
+# (`print_lane_bounds`) and recorded (`stall_bound`) so an operator reading a
+# run record never has to infer which signal actually stood behind a bound.
+STALL_SIGNAL_PROGRESS_FILE = "progress-file"
+STALL_SIGNAL_LOG_STREAM = "log-stream"
+STALL_SIGNAL_OUTPUT_STREAM = "output-stream"
+# RG-320 fix round 1 (M2): "cannot tell" is its own answer. A lane table that
+# arrives without `_environment_mode` (a re-attach/follow of a lane whose
+# `[environments.*]` entry has since moved, which `_stamp_environment_modes`
+# deliberately leaves unstamped rather than guessing) must NOT be dressed in a
+# plausible signal: naming one there substitutes a default for a fact (RG-101)
+# and sends an operator debugging the wrong stream.
+STALL_SIGNAL_UNKNOWN = "unknown"
+# The two sources a bound can have. `auto` is the flat 300 s default a COMMAND
+# lane gets; `auto-derived` is the RULE an ASSAY lane is actually armed with
+# (RG-320 fix round 1, M1) — it is not one number, so it is not reported as one.
+STALL_BOUND_DECLARED = "declared"
+STALL_BOUND_AUTO = "auto"
+STALL_BOUND_AUTO_DERIVED = "auto-derived"
+# RG-320 fix round 1 (M1): the RULE a `kind = "assay"` lane's auto bound
+# follows, spelled once. `ProgressWatch._idle_bound` is the enforcer; the
+# disclosure line, the run record and the stop message all name this same
+# rule, because before this an assay lane was disclosed and recorded at 300 s
+# while the watch stopped it at 600 s (or 3x its cadence).
+ASSAY_AUTO_BOUND_RULE = ("max(300s, 3x the published cadence), or 600s "
+                         "between command_finished and the R2 plan")
 
 # RG-55 / SPEC R-43: cgprofile daemon client
 # (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
@@ -1119,11 +1170,41 @@ def _read_toml(path: Path) -> dict:
     return _read_toml_snapshot(path)[0]
 
 
-def _check_keys(table: dict, allowed: set, where: str) -> None:
-    unknown = sorted(set(table) - allowed)
+def _check_keys(table: dict, allowed: set, where: str, *,
+                derived: frozenset = frozenset()) -> None:
+    """Refuse every key this table does not own, by name.
+
+    `derived` lists the names RUN-GATE ITSELF attaches to the table after it
+    is validated (`DERIVED_LANE_KEYS`). They are not config keys: they are
+    run-gate's own state, which is why they are accepted only on a table that
+    has already been through load (`_validate_lane(derived_attached=True)`) —
+    a config file that declares one is refused by name, exactly like any other
+    unknown key (RG-101: an internal fact a config may set is a default where
+    a fact belongs). Nothing else gets a pass: before fix round 1 (M3) EVERY
+    `_`-prefixed key was skipped, so a user's `_stall_timeout` next to
+    `stall_timeout` loaded clean, was inert, and the disclosure printed the
+    auto bound — RG-32's accepted-and-inert shape, re-opened one prefix
+    wider."""
+    unknown = sorted(key for key in set(table) - allowed
+                     if str(key) not in derived)
     if unknown:
         fail(f"{where}: unknown key(s) {', '.join(unknown)} "
              f"(allowed: {', '.join(sorted(allowed))})")
+
+
+# RG-320 fix round 1 (M3): the EXPLICIT set of `_`-prefixed names Run-Gate
+# attaches to a LANE table. Every one is written after `_validate_lane` has
+# passed at load (`_stamp_environment_modes` runs immediately after), so this
+# list only has to be complete — it is never what makes a key legal.
+# `_image_selection` is NOT here: it is attached to an ENVIRONMENT table, in
+# `resolve_environment`, and environment tables take no derived names.
+DERIVED_LANE_KEYS = frozenset({
+    "_environment_mode", "_imported", "_import_unresolved",
+    "_assay_inventory", "_assay_inventory_error", "_selective_assay",
+    "_r2_flex", "_r2_jobs_selection", "_request_args", "_assay_forward",
+    "_assay_forward_paths", "_judge_identity", "_workers_env",
+    "_workers_selection", "_artifact_lane",
+})
 
 
 RESOURCE_IO_SYNC_VALUES = frozenset({"durable", "strict", "relaxed"})
@@ -1441,18 +1522,25 @@ def _validate_pids(value: object, where: str) -> None:
 
 
 def host_mode_stall_timeout_inert_reason(lane_name: str) -> str:
-    """RG-58 (RW-27a: WARN, never refuse — D5's option 2). The ONE wording
-    both the load-time WARNING (`_validate_lane`) and `doctor`'s matching
-    WARN use for a host-mode lane declaring `stall_timeout`:
-    `run_bare_host_lane` is a plain `subprocess.run` with no ProgressWatch,
-    no LogStreamWatch, no timer of any kind (R-40 applies to container/exec
-    lanes only, where `await_container` actually tails logs/polls
-    progress) — the key is accepted at load and then silently inert for
-    the lane's entire run, exactly the "copied a container lane's config
-    as a template" trap the backlog entry describes."""
-    return (f"lane {lane_name!r}: stall_timeout is inert on a host-mode "
-            f"lane (no watch, no timer; R-40 applies to container/exec "
-            f"lanes only)")
+    """SUPERSEDED by RG-320 (P1) — kept only because `doctor` and the load
+    path print NOTHING for this case now, so no wording is needed for it.
+
+    RG-58 (RW-27a) used to WARN here, and it was true then:
+    `run_bare_host_lane` ran the child and only copied its output, so a
+    `stall_timeout` on a host-mode lane loaded clean and did nothing for the
+    lane's whole run. P1 gives that runner a real watch (`StreamWatch` over
+    `OutputTee`'s own chunk arrivals), so the key is no longer inert and a
+    warning claiming it is would be the estate's most expensive defect class
+    — a check whose message asserts a conclusion its code no longer supports.
+    A bare-host lane declaring nothing is watched by the default bound too
+    (`DEFAULT_STALL_BOUND_SECONDS`), disclosed by `print_lane_bounds`.
+
+    This helper is retained (rather than deleted) solely so an out-of-tree
+    caller importing it does not break; no in-tree caller uses it."""
+    return (f"lane {lane_name!r}: stall_timeout is INERT only on a lane "
+            f"runner with no watch — since RG-320 every container, exec and "
+            f"bare-host lane is watched (a sequence lane is not: its members "
+            f"carry the watches)")
 
 
 def _validate_workers_keys(name: str, table: dict, where: str,
@@ -1500,8 +1588,14 @@ def _validate_workers_keys(name: str, table: dict, where: str,
              f"({table.get('workers_max', WORKERS_DEFAULT_MAX)})")
 
 
-def _validate_lane(name: str, table: dict, where: str) -> None:
-    _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
+def _validate_lane(name: str, table: dict, where: str, *,
+                   derived_attached: bool = False) -> None:
+    # `derived_attached` is set by the SECOND pass (`merge_lanes` re-validates
+    # the assay lanes of the effective set, which `_stamp_environment_modes`
+    # has already stamped): only then may Run-Gate's own derived names be
+    # present. A config file is always validated with the default (M3).
+    _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]",
+                derived=DERIVED_LANE_KEYS if derived_attached else frozenset())
     kind = table.get("kind")
     if kind not in ("command", "assay", "sequence"):
         fail(f"{where} [lanes.{name}]: 'kind' must be \"command\", \"assay\" or \"sequence\" (got {kind!r})")
@@ -1654,6 +1748,11 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # thing to get wrong.
         _validate_budget(table["stall_timeout"], f"{where} [lanes.{name}]",
                          "stall_timeout")
+        # RG-320: a sequence lane never reaches this code at all — the
+        # sequence branch above returns before any runner key is read, and
+        # its own key list excludes `stall_timeout` (`_validate_lane`'s
+        # `invalid` check), so a sequence declaring it is REFUSED by name
+        # there rather than accepted and silently inert (RG-32's shape).
         if table.get("kind") == "assay" \
                 and budget_seconds(table["stall_timeout"]) \
                 < ASSAY_STALL_FLOOR_SECONDS:
@@ -1669,6 +1768,9 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # container lane) rather than the assay progress file — the two
         # sources are disclosed by name at run time (print_lane_bounds), not
         # distinguished here. Nothing left to refuse by kind alone.
+        # RG-320: and, since P1, a command lane without this key is watched
+        # anyway (DEFAULT_STALL_BOUND_SECONDS) from its own log stream;
+        # declaring the key only replaces that default with a larger value.
     if "memory" in table:
         _validate_memory(table["memory"], f"{where} [lanes.{name}]")
     if "resources" in table:
@@ -2095,15 +2197,16 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
         _validate_environment(name, table, where)
     for name, table in lanes.items():
         _validate_lane(name, table, where)
-        # RG-58 (RW-27a): a host-mode lane has no stall watch. Resolve this
-        # from the declaration, not the environment name: explicit modes
-        # deliberately removed name-based behavior (RG-78).
-        env = envs.get(table.get("environment"))
-        if table.get("stall_timeout") and isinstance(env, dict) \
-                and env.get("mode") == "host":
-            print(f"{PROG}: WARNING "
-                  f"{host_mode_stall_timeout_inert_reason(name)}",
-                  file=sys.stderr, flush=True)
+    # RG-320 (P1): `_environment_mode` is the one fact the disclosure
+    # functions need about how this lane's output is observed — an ephemeral
+    # `kind = "command"` lane's silence comes from `docker logs`, an exec or
+    # host-mode one's from its own child's stdout. Recorded at LOAD time (the
+    # declaration, not a guess), so the re-attach and follow paths — where the
+    # resolved environment is not in hand — can still name the right signal
+    # instead of defaulting to the container one (RG-58's own remaining
+    # hazard, one level over). `merge_lanes` stamps the EFFECTIVE lane set the
+    # same way, so a lane inherited from a central config gets the fact too.
+    _stamp_environment_modes(lanes, cfg, {})
     for name, table in lanes.items():
         if table.get("kind") == "sequence":
             for member in table["lanes"]:
@@ -2866,10 +2969,45 @@ def _validate_effective_network_settings(project: dict, central: dict,
                  f"{environment.get('mode')!r}; it requires mode = 'ephemeral'")
 
 
+def _stamp_environment_modes(lanes: dict, project: dict, central: dict) -> None:
+    """RG-320 (P1): record each lane's DECLARED environment mode in place.
+
+    The disclosure functions (`lane_stall_signal`) must name the signal a
+    lane's silence is judged by, and where the lane is declared is not where
+    it is watched: an INHERITED central lane is merged here and watched from
+    the project's run, and the follow/re-attach paths do not hold a resolved
+    environment at all. So the mode is read once, from the merged declaration
+    (project `[environments.*]` shadows the central one, as the resolver
+    itself does), and never guessed later.
+
+    A lane whose environment the merge cannot resolve is left UNSTAMPED
+    rather than given a plausible default: `resolve_environment` refuses that
+    lane at run time, naming the file it searched, so stamping a mode here
+    would be a default standing in for a fact (`RG-101`).
+    """
+    project_envs = project.get("environments", {})
+    central_envs = central.get("environments", {})
+    for lane in lanes.values():
+        if not isinstance(lane, dict):
+            continue
+        name = lane.get("environment")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        table = project_envs.get(name)
+        if not isinstance(table, dict):
+            table = central_envs.get(name)
+        mode = table.get("mode") if isinstance(table, dict) else None
+        if isinstance(mode, str):
+            lane["_environment_mode"] = mode
+        elif name == BARE_HOST_ENV:
+            lane["_environment_mode"] = "host"
+
+
 def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
                 project_path: Path, central_path: Path | None,
                 assay_defaults: dict | None = None,
-                imported_lanes: dict | None = None) -> dict:
+                imported_lanes: dict | None = None,
+                project: dict | None = None) -> dict:
     """Effective lane set: central [lanes.*] inherited, project entries
     shadow BY NAME (whole lane — no field merging, RG-16).
 
@@ -2910,7 +3048,7 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
                 or not lane["environment"].strip():
             fail(f"lane '[lanes.{name}]' has no 'environment'; set it on the "
                  f"lane or in [assay] ({project_path})")
-        _validate_lane(name, lane, str(project_path))
+        _validate_lane(name, lane, str(project_path), derived_attached=True)
         if was_imported:
             lane["assay_command"] = copy.deepcopy(defaults["command"])
             lane["pins"] = copy.deepcopy(defaults["pins"])
@@ -2940,6 +3078,7 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
             fail(f"{origin}: pin '{pin_name}' sidecar {pin['sha256']} does not "
                  f"exist in this project ({project_dir}) — vendor it or shadow "
                  f"the lane")
+    _stamp_environment_modes(merged, project or {}, central)
     return merged
 
 
@@ -8562,12 +8701,32 @@ def allocate_lane_log(lane_name: str, run_id: str) -> Path | None:
 
 
 class OutputTee:
-    """Copy a child's combined output to a private log and the live terminal."""
+    """Copy a child's combined output to a private log and the live terminal.
 
-    def __init__(self, proc: subprocess.Popen, path: Path | None):
+    RG-320 (P1): this thread's chunk arrivals are also the ONLY liveness
+    signal an exec/bare-host lane has (no progress file, no `docker logs`
+    stream to time), so the arrival instant of the last chunk is recorded
+    here, where the chunk actually arrives. Reading the lane's `log_path`
+    file from a watcher instead would measure a different clock (the child
+    may buffer, and the file is flushed here, not there). Deliberately NOT
+    an `os.stat` poll: `stream.read(65536)` on a PIPE returns as soon as a
+    partial buffer is available (verified directly), so this is the true
+    arrival time of the bytes, not the time a stat happened to notice them.
+
+    `clock` is injectable exactly like every other watch in this module
+    (tests drive a `FakeClock`); `on_chunk` is called after each arrival so
+    a caller can wake a watcher, and is defaulted to nothing for the two
+    call sites that only want the log copy."""
+
+    def __init__(self, proc: subprocess.Popen, path: Path | None,
+                 clock=time.monotonic, on_chunk=None):
         self.proc = proc
         self.path = path
         self.error: BaseException | None = None
+        self.clock = clock
+        self.last_chunk_at: float | None = None
+        self.chunks = 0
+        self.on_chunk = on_chunk
         self.thread = threading.Thread(target=self._copy, daemon=True)
         self.thread.start()
 
@@ -8593,17 +8752,173 @@ class OutputTee:
                         target.flush()
                     sys.stdout.write(display)
                     sys.stdout.flush()
+                    self.chunks += 1
+                    self.last_chunk_at = self.clock()
+                    if self.on_chunk is not None:
+                        try:
+                            self.on_chunk()
+                        except Exception:
+                            # A watcher wake-up is never the child's problem.
+                            pass
             finally:
                 if target is not None:
                     target.close()
         except BaseException as exc:
             self.error = exc
 
-    def join(self) -> None:
-        self.thread.join()
+    def join(self, timeout: float | None = None) -> bool:
+        """Wait for this reflector to drain what the child last wrote, and
+        return whether the drain actually FINISHED.
+
+        Fix round 1 (L5): `thread.join()` with no timeout is only bounded by
+        EOF on the lane's pipe, and a grandchild that left the process group
+        (`setsid`, a daemon, a `docker` client) can hold that pipe open after
+        the lane itself has been terminated — so the lane would never return,
+        no matter that its `budget` expired or that its stall watch already
+        stopped it. `OUTPUT_DRAIN_TIMEOUT_SECONDS` bounds the wait and an
+        incomplete drain is DISCLOSED (a trailing chunk may still be in flight),
+        exactly as `LogStreamWatch.join()` already does for the container case.
+
+        The timeout is resolved at CALL time rather than defaulted in the
+        signature, so the module constant is the one place the value lives
+        (a `timeout=OUTPUT_DRAIN_TIMEOUT_SECONDS` default would freeze the
+        value at import time and quietly ignore any later change)."""
+        if timeout is None:
+            timeout = OUTPUT_DRAIN_TIMEOUT_SECONDS
+        self.thread.join(timeout)
+        drained = not self.thread.is_alive()
+        if not drained:
+            print(f"{PROG}: WARNING: output drain did not finish within "
+                  f"{timeout}s — a trailing chunk may still be in flight",
+                  file=sys.stderr, flush=True)
         if self.error is not None:
             print(f"{PROG}: WARNING: output log capture stopped: {self.error}",
                   file=sys.stderr, flush=True)
+        return drained
+
+
+class StreamWatch:
+    """RG-320 (P1) — liveness for an exec or bare-host command lane, judged
+    from the ARRIVAL TIME of its own output chunks.
+
+    `LogStreamWatch` (RG-41) covers a container lane, where `await_container`
+    owns the `docker logs -f` pipe. An exec lane and a bare-host lane have no
+    such stream: `OutputTee` pumps the child's own stdout, and until P1 that
+    pump was only a log copy. This watch times the same arrivals, so the
+    statement `stall_timeout` makes is finally true for those two kinds
+    (DESIGN.md G1: on a bare-host lane the key used to be accepted, warned
+    about and then silently inert).
+
+    Same rule as both existing watches -- SILENCE, never total elapsed time
+    -- with `ProgressWatch`'s pressure pause. An AUTO bound pauses only for
+    host memory PSI (`full avg10 > 5`), capped at
+    `PRESSURE_PAUSE_MAX_SECONDS`; CPU contention and IO PSI alone never pause
+    the 300 s clock. Declared bounds do not pause.
+
+    A child that BUFFERS its output is silent for its whole run and this
+    watch cannot tell that apart from a hang; a lane that genuinely prints
+    nothing for minutes must declare a `stall_timeout` wide enough for its
+    quietest phase. That is a documented limit, not a defect to paper over.
+    """
+
+    def __init__(self, tee: "OutputTee", stall_seconds: int | None,
+                 lane_name: str, clock=time.monotonic,
+                 pressure_reader=None, *, auto_bound: bool = False):
+        self.tee = tee
+        self.lane = lane_name
+        self.stall_seconds = stall_seconds
+        self.clock = clock
+        self.auto_bound = auto_bound
+        self.pressure_reader = pressure_reader or (lambda: False)
+        self._paused_total = 0.0
+        self._pause_started: float | None = None
+        # The tee starts pumping at construction time, before this object
+        # exists; anchor the clock at construction of the WATCH so a lane
+        # that prints nothing at all still gets its full window rather than
+        # an age measured from an unset `last_chunk_at`.
+        self._started_at = clock()
+
+    def _pressure_high(self) -> bool:
+        try:
+            value = self.pressure_reader()
+        except Exception:
+            return False
+        return isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and value > 5
+
+    def _update_pressure_pause(self, now: float) -> None:
+        if not self.auto_bound:
+            return
+        if self._pressure_high():
+            if self._pause_started is None:
+                self._pause_started = now
+            return
+        if self._pause_started is not None:
+            self._paused_total += max(0.0, now - self._pause_started)
+            self._pause_started = None
+
+    def _age(self, now: float) -> float:
+        paused = self._paused_total
+        if self._pause_started is not None:
+            paused += max(0.0, now - self._pause_started)
+        paused = min(paused, PRESSURE_PAUSE_MAX_SECONDS)
+        last = self.tee.last_chunk_at
+        since = self._started_at if last is None else last
+        return max(0.0, now - since - paused)
+
+    def poll(self) -> str | None:
+        if self.stall_seconds is None:
+            return None
+        now = self.clock()
+        self._update_pressure_pause(now)
+        age = self._age(now)
+        if age < self.stall_seconds:
+            return None
+        chunks = self.tee.chunks
+        seen = (f"{chunks} chunk(s) of output, the last arriving "
+                f"{int(age)}s ago" if chunks else "(no output yet)")
+        label = (f"stall_timeout {self.stall_seconds}s"
+                 if not self.auto_bound
+                 else f"auto stall bound {int(self.stall_seconds)}s")
+        return (f"the lane subprocess is still RUNNING but has written "
+                f"nothing for {int(age)}s ({label}); "
+                f"last output: {seen}")
+
+
+def stall_bound_facts(lane: dict) -> dict:
+    """RG-320: the silence bound THIS lane is actually armed with, and
+    whether it is the lane's own declaration or the default.
+
+    Derived once, from the config, so the disclosure line, the run record
+    and the two watches cannot disagree about the number they are all
+    talking about (`R-35`'s own rule: read one fact in one place).
+
+    Fix round 1 (M1): the derivation is KIND-AWARE, because the watch is. An
+    ASSAY lane is not armed with the flat default — `ProgressWatch` stops it
+    at `_idle_bound`, i.e. `max(300, 3x its published cadence)` or
+    `POST_COMMAND_BOUND_SECONDS` between `command_finished` and the R2 plan,
+    and those inputs do not exist before the lane runs. So an assay lane's
+    facts name the RULE (`ASSAY_AUTO_BOUND_RULE`), keep `seconds` at None
+    rather than inventing a number, and say so in `text`; its watch and its
+    stop message publish the same rule from the same string, so an operator
+    can verify they agree instead of reading two different numbers.
+
+    `seconds` is None ONLY where nothing is missing: a DECLARED value and a
+    command lane's flat default are both exact, and both report a number."""
+    declared = lane.get("stall_timeout")
+    if declared:
+        return {"seconds": float(budget_seconds(declared)),
+                "source": STALL_BOUND_DECLARED,
+                "text": declared, "rule": None}
+    if lane.get("kind") == "assay":
+        return {"seconds": None,
+                "source": STALL_BOUND_AUTO_DERIVED,
+                "text": ASSAY_AUTO_BOUND_RULE,
+                "rule": ASSAY_AUTO_BOUND_RULE}
+    return {"seconds": DEFAULT_STALL_BOUND_SECONDS,
+            "source": STALL_BOUND_AUTO,
+            "text": f"{int(DEFAULT_STALL_BOUND_SECONDS)}s",
+            "rule": None}
 
 
 class StdinForwarder:
@@ -9416,7 +9731,7 @@ def _pointer_defects(text: str, file_path: Path, root: Path, where: str,
                     repo, worktree, effective)
             lanes_cache[key] = merge_lanes(
                 cfg.get("lanes", {}), central, proj, cfg_path, central_path,
-                assay_defaults, imported)
+                assay_defaults, imported, cfg)
         except GateError as exc:
             lanes_cache[key] = None
             defects.append(f"{where}: loading {proj / CONFIG_NAME}: {exc}")
@@ -10976,9 +11291,6 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     if entry is None:
         lane["_assay_inventory_error"] = why or "Assay lane inventory is unavailable"
         lane.pop("_assay_inventory", None)
-        if lane.get("_selective_assay") or lane.get("_r2_flex"):
-            fail(f"selective assay flags for lane {lane_name!r} require an "
-                 f"inventory proving that it declares R2: {why}")
         if lane.get("_assay_forward"):
             # RG-318 (review r2 M1): the floor above is read FROM the
             # inventory, so a judge whose inventory cannot be read at all used
@@ -10986,12 +11298,19 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
             # refused by the in-lane capability probe -- the very judge RG-318
             # exists to refuse before a container starts. `fail()` (exit 2)
             # is the convention this branch already uses for the same fact
-            # (no inventory) one condition up; the version-based floor stays
+            # (no inventory) in the selective-flags refusal below; the
+            # version-based floor stays
             # GateNotRunError/`judge-floor`, because only a readable inventory
             # can state a version.
+            floor = ".".join(str(part)
+                             for part in ASSAY_FORWARD_ASSAY_FLOOR)
             fail(f"arguments after '--' for lane {lane_name!r} need an "
                  f"inventory proving the judge accepts them "
-                 f"(assay >= 12.3.0, RG-318): {why}")
+                 f"(assay >= {floor}, RG-318): {why}. Update the checkout, "
+                 f"or re-pin the judge to >= {floor}")
+        if lane.get("_selective_assay") or lane.get("_r2_flex"):
+            fail(f"selective assay flags for lane {lane_name!r} require an "
+                 f"inventory proving that it declares R2: {why}")
         if base_flag:
             fail(f"--base {base_flag!r} was given but run-gate cannot tell "
                  f"whether lane {lane_name!r} delegates its comparison base: "
@@ -11702,24 +12021,12 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                f"{len(checked)} lane(s) spawning workers by name: every one "
                f"declares 'resources.cpus' (lane or environment)")
 
-    # 2d. RG-58 (RW-27a): a bare-host lane declaring `stall_timeout` — no
-    # watch, no timer on that runner — gets a matching doctor WARN alongside
-    # the load-time one `_validate_lane` already prints; SAME shared reason
-    # function, so the two can never drift apart.
-    stall_bare_host = []
-    for n in sorted(lanes):
-        if not lanes[n].get("stall_timeout"):
-            continue
-        try:
-            resolved_env, _ = resolve_environment(lanes[n], n, cfg, central,
-                                                  cfg_path, central_path)
-        except GateError:
-            continue
-        if not resolved_env or resolved_env.get("mode") == "host":
-            stall_bare_host.append(n)
-    for name in stall_bare_host:
-        record("WARN", f"lane {name!r} stall_timeout (RG-58)",
-               host_mode_stall_timeout_inert_reason(name))
+    # 2d. RG-320 (P1) REPLACES RG-58's WARN here: a bare-host lane DOES have
+    # a watch now (`StreamWatch` over its own output stream), so doctor has
+    # nothing to warn about. The one kind that remains genuinely unwatched at
+    # its own level is a sequence lane, and its members' watches are the
+    # answer — `lanes --check` reports the sequence row instead of a WARN on
+    # a lane an operator can do nothing about.
 
     # 3. physical-path derivability + git health
     doctor_repo: Path | None = None
@@ -14945,8 +15252,8 @@ def assay_forward_probe(command: str, flags: list[str]) -> str:
     reinterpreted. The flag test is a JSON parse in Python (never a grep on
     the document's text).
 
-    A non-zero exit or unparseable output refuses by name. A judge that
-    refuses `capabilities` itself (Assay before 12.3.0, or a build without
+    A non-zero exit or unparseable output refuses by name. A judge that passes
+    the inventory floor but refuses `capabilities` itself (or a build without
     its required analysis package) keeps ITS OWN one line, unreworded: there
     is no degraded mode and no fallback to the `run --help` probe, which
     stays only for Run-Gate's OWN flags."""
@@ -16769,9 +17076,17 @@ class ProgressWatch:
                    and not isinstance(total, bool) else ""))
 
     def _stall(self, age: float) -> str:
+        # RG-320 fix round 1 (M1): the label names the SAME derivation the
+        # disclosure line and the run record name (`ASSAY_AUTO_BOUND_RULE`),
+        # plus the number this poll actually enforced. Before this the file
+        # said `300s (source: auto)` at start and `idle_bound auto 600s` here,
+        # i.e. one lane published two different bounds about itself.
         bound = self._idle_bound()
-        label = (f"stall_timeout {int(bound)}s" if self.stall_seconds is not None
-                 else f"idle_bound auto {int(bound)}s")
+        if self.stall_seconds is not None:
+            label = f"stall_timeout {int(bound)}s"
+        else:
+            label = (f"auto-derived bound, {ASSAY_AUTO_BOUND_RULE}; "
+                     f"this window was {int(bound)}s")
         return (f"the container is still RUNNING but "
                 f"{self.path.name} has not advanced for {int(age)}s "
                 f"({label}); last event seen: "
@@ -16939,10 +17254,15 @@ class LogStreamWatch:
     the last one"."""
 
     def __init__(self, proc: subprocess.Popen, stall_seconds: int | None,
-                 lane_name: str, clock=time.monotonic):
+                 lane_name: str, clock=time.monotonic,
+                 pressure_reader=None, *, auto_bound: bool = False):
         self.stall_seconds = stall_seconds
         self.lane = lane_name
         self.clock = clock
+        self.auto_bound = auto_bound
+        self.pressure_reader = pressure_reader or (lambda: False)
+        self._paused_total = 0.0
+        self._pause_started: float | None = None
         self._lock = threading.Lock()
         self._last_line_at = clock()
         self._last_line: str | None = None
@@ -17041,17 +17361,44 @@ class LogStreamWatch:
         self._thread.join(timeout)
         return not self._thread.is_alive()
 
+    def _pressure_high(self) -> bool:
+        try:
+            value = self.pressure_reader()
+        except Exception:
+            return False
+        return isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and value > 5
+
     def poll(self) -> str | None:
         if self.stall_seconds is None:
             return None               # no stall_timeout: nothing to check
+        now = self.clock()
+        if self.auto_bound:
+            # RG-320: an AUTO bound is a guess, and a host under memory
+            # pressure delivers `docker logs` lines late for a reason that is
+            # the HOST's, not the lane's. Credit that silence only while the
+            # pressure holds, capped in total exactly like ProgressWatch.
+            if self._pressure_high():
+                if self._pause_started is None:
+                    self._pause_started = now
+            elif self._pause_started is not None:
+                self._paused_total += max(0.0, now - self._pause_started)
+                self._pause_started = None
         with self._lock:
-            age = self.clock() - self._last_line_at
+            age = now - self._last_line_at
             last_line = self._last_line
+        if self.auto_bound:
+            paused = self._paused_total
+            if self._pause_started is not None:
+                paused += max(0.0, now - self._pause_started)
+            age = max(0.0, age - min(paused, PRESSURE_PAUSE_MAX_SECONDS))
         if age < self.stall_seconds:
             return None
         seen = f"{last_line!r}" if last_line is not None else "(no output yet)"
+        label = (f"stall_timeout {self.stall_seconds}s" if not self.auto_bound
+                 else f"auto stall bound {int(self.stall_seconds)}s")
         return (f"the container is still RUNNING but has printed nothing "
-                f"for {int(age)}s (stall_timeout {self.stall_seconds}s); "
+                f"for {int(age)}s ({label}); "
                 f"last line seen: {seen}")
 
 
@@ -17113,7 +17460,59 @@ def print_assay_lane_budget(lane: dict) -> None:
           end="", flush=True)
 
 
-def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
+def lane_stall_signal(lane: dict,
+                      command_signal: str | None = None) -> str:
+    """RG-320: which signal actually judges this lane's SILENCE, named.
+
+    The two facts are independent: the LANE KIND decides whether there is a
+    progress file at all (assay only), and the RUNNER decides how a command
+    lane's own output is observed — `await_container` tails `docker logs -f`
+    for a container lane (either `ephemeral` or, since RG-43, the container
+    `host` environment), while `run_exec_lane` and `run_bare_host_lane`
+    pump the child's own stdout through `OutputTee`. `command_signal` is
+    therefore supplied by the caller that KNOWS which runner it is.
+
+    When no `command_signal` is supplied, the CONFIG's own environment mode
+    decides — `_environment_mode` is stamped from the declaration at load and
+    at merge. A lane table with NEITHER (a caller that never loaded a config,
+    or a replayed lane whose `[environments.*]` entry has since moved, which
+    `_stamp_environment_modes` deliberately leaves unstamped rather than
+    guessing) gets `STALL_SIGNAL_UNKNOWN` and NOT a plausible one: naming a
+    signal there would substitute a default for a fact (RG-101) and send an
+    operator debugging the wrong stream (fix round 1, M2 — the docstring used
+    to promise the container kind and the code answered it, both wrong).
+    A sequence never asks: its dispatch returns before any runner, and its
+    members carry the watches (G2).
+
+    Which signal judged a lane is a fact the operator is entitled to
+    (`R-05`) — they differ in what they can miss (a single silent compile
+    is a line-arrival watch's blind spot, and a fully BUFFERED child is
+    silent for its whole run)."""
+    if lane.get("kind") == "assay":
+        return STALL_SIGNAL_PROGRESS_FILE
+    if command_signal is not None:
+        return command_signal
+    mode = lane.get("_environment_mode")
+    if mode == "ephemeral":
+        return STALL_SIGNAL_LOG_STREAM
+    if isinstance(mode, str) and mode.strip():
+        # `exec` and `host` (the bare-subprocess mode RG-43 renamed
+        # `bare-host` to) both hand the child's own stdout to `OutputTee`.
+        return STALL_SIGNAL_OUTPUT_STREAM
+    return STALL_SIGNAL_UNKNOWN
+
+
+_STALL_SIGNAL_TEXT = {
+    STALL_SIGNAL_PROGRESS_FILE: ("its progress file", "progress file"),
+    STALL_SIGNAL_LOG_STREAM: ("its own log output", "log stream"),
+    STALL_SIGNAL_OUTPUT_STREAM: ("its own output stream", "output stream"),
+    STALL_SIGNAL_UNKNOWN: ("no signal this invocation can name",
+                          "signal not resolvable for this lane"),
+}
+
+
+def print_lane_bounds(lane: dict, owner_pid: int | None = None, *,
+                      command_signal: str | None = None) -> None:
     """RW-18 (review S6): the two numbers that can END this lane, disclosed
     before it is watched — on the fresh path, the RE-ATTACH path and the
     FOLLOW path alike.
@@ -17124,6 +17523,12 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
     and a slice this client did not choose, these two are facts about the
     LANE: whoever is watching it is entitled to them (`R-05`).
 
+    RG-320 (P1): the line is printed for EVERY lane that is actually
+    watched, whether the bound is the lane's own `stall_timeout` or the
+    default one — and it always names the SOURCE, because a lane that
+    declares nothing is now still bounded, and "which number, and whose" is
+    exactly the fact that used to be unknown.
+
     `owner_pid` names the client that will act on the stall when this one is
     only a follower — the same fact, without the false implication that this
     invocation would be the one to stop the container."""
@@ -17131,26 +17536,97 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
     print_assay_lane_budget(lane)
-    if lane.get("stall_timeout"):
+    signal = lane_stall_signal(lane, command_signal)
+    facts = stall_bound_facts(lane)
+    where, source = _STALL_SIGNAL_TEXT[signal]
+    enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
+                f"this one only watches" if owner_pid is not None else "")
+    if facts["source"] == STALL_BOUND_DECLARED:
         # R-40: what this bounds is SILENCE, not elapsed time. Saying so on
         # the line next to the hard budget is the whole point — the two
         # numbers mean opposite things and used to be confused for each
         # other (RG-32's lesson, one lane key over).
-        #
-        # RG-41: the source is DISCLOSED, never inferred — an assay lane's
-        # progress file and a command lane's log stream differ in what they
-        # can miss (a single silent compile is the log stream's known blind
-        # spot), so which one is judging THIS lane is a fact the operator is
-        # entitled to, same as the number itself.
-        signal = ("its progress file" if lane["kind"] == "assay"
-                  else "its own log output")
-        source = "progress file" if lane["kind"] == "assay" else "log stream"
-        enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
-                    f"this one only watches" if owner_pid is not None else "")
         print(f"run-gate: stall_timeout {lane['stall_timeout']} (source: "
-              f"{source}) — the lane is stopped only if {signal} goes "
+              f"{source}) — the lane is stopped only if {where} goes "
               f"silent that long, never on total elapsed time{enforcer}",
               flush=True)
+        return
+    # RG-320: nobody declared a bound, so the derived one is what can stop
+    # this lane. Disclosing it is not noise: an operator who never typed a
+    # number is about to have their lane stopped by one.
+    #
+    # Fix round 1 (M1): an ASSAY lane's derivation is a RULE, not a flat
+    # number, and its disclosure says exactly that — the same string its
+    # `ProgressWatch` stop message carries, so the two cannot describe
+    # different bounds for one lane.
+    if facts["source"] == STALL_BOUND_AUTO_DERIVED:
+        print(f"run-gate: stall bound {facts['text']} (source: auto-derived) "
+              f"— no stall_timeout is declared, so {where} ({source}) is "
+              f"watched and the lane is stopped only if it goes silent past "
+              f"that bound, never on total elapsed time{enforcer}",
+              flush=True)
+        return
+    if signal == STALL_SIGNAL_UNKNOWN:
+        # M2: never wear a plausible name here. The bound is still real and
+        # still disclosed; only the STREAM it is judged from is unknown to
+        # this invocation.
+        print(f"run-gate: stall bound {facts['text']} (source: "
+              f"{facts['source']}) — no stall_timeout is declared and "
+              f"({source}); the lane is stopped only if that silence "
+              f"signal passes the bound, never on total elapsed time"
+              f"{enforcer}", flush=True)
+        return
+    print(f"run-gate: stall bound {facts['text']} (source: "
+          f"{facts['source']}) — no stall_timeout is declared, so {where} "
+          f"({source}) is watched and the lane is stopped only if it goes "
+          f"silent that long, never on total elapsed time{enforcer}",
+          flush=True)
+
+
+def make_output_stream_watch(lane: dict, lane_name: str, tee: "OutputTee",
+                             *, clock=time.monotonic
+                             ) -> "StreamWatch | None":
+    """RG-320 (P1): the watch an exec or bare-host COMMAND lane gets.
+
+    `None` for an assay lane: its liveness is its progress file
+    (`make_progress_watch`, armed by both runners since before P1) and a
+    second, differently-shaped bound on the same lane would double-report.
+    Also `None` when nothing is to be bounded — but there is no such case
+    any more, because a lane declaring no `stall_timeout` gets the default
+    (`stall_bound_facts`): that is the whole point of P1."""
+    if lane.get("kind") != "command":
+        return None
+    facts = stall_bound_facts(lane)
+    pressure_reader = None
+    if facts["source"] == STALL_BOUND_AUTO:
+        def pressure_reader():
+            snapshot = read_host_pressure_snapshot() or {}
+            return snapshot.get("full_avg10")
+    return StreamWatch(tee, int(facts["seconds"]), lane_name, clock,
+                       pressure_reader,
+                       auto_bound=facts["source"] == STALL_BOUND_AUTO)
+
+
+def record_stall_bound(run_record: dict | None, lane: dict, *,
+                       command_signal: str | None = None) -> None:
+    """RG-320: the bound and its source go into the RUN RECORD too.
+
+    Deliberately a NEW key (`stall_bound`), never `run_record['watch']`:
+    that one is the cgprofile daemon's own payload (set by
+    `consume_profiler_watch`), and writing two different facts under one
+    name is how a record stops being readable. Nothing is written for a
+    kind that has no watch, because a record claiming a bound nothing
+    enforces is worse than a record saying nothing."""
+    if run_record is None:
+        return
+    signal = lane_stall_signal(lane, command_signal)
+    facts = stall_bound_facts(lane)
+    run_record["stall_bound"] = {
+        "seconds": (None if facts["seconds"] is None
+                    else int(facts["seconds"])),
+        "source": facts["source"],
+        "signal": signal,
+        "rule": facts["rule"]}
 
 
 _POST_COMMAND_UNPROVEN_ANNOUNCED: set = set()
@@ -17410,15 +17886,14 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
     # future re-attach — a lossy filter defended by a rationale that plain
     # `logs -f` already satisfied (RW-15). Start it inside the guarded block
     # below so every post-spawn failure reaches the same process cleanup.
-    # RG-41: a `kind = "command"` lane declaring `stall_timeout` has no
-    # progress file to watch (that is `watch`/`ProgressWatch`'s case, assay
-    # only) — its only liveness signal is this SAME log stream, timed by
-    # arrival instead of read passively. Captured (PIPE) rather than
-    # inherited only when that watch is actually needed; every other lane
-    # keeps the zero-overhead inherited-stdout path unchanged.
+    # RG-320 (P1): this is the container path by construction, so every
+    # command lane here has a `docker logs -f` signal to watch, whether or not
+    # the loaded lane still carries `_environment_mode`. Disclosure helpers
+    # describe a watch; they do not decide whether this runner arms one.
+    # Assay lanes keep their progress-file watch and inherited-stdout path.
     log_watch: "LogStreamWatch | None" = None
-    watch_log_stream = (lane["kind"] == "command"
-                        and bool(lane.get("stall_timeout")))
+    stall_bound = stall_bound_facts(lane)
+    watch_log_stream = lane.get("kind") == "command"
     proc: subprocess.Popen | None = None
     saved_log: Path | None = None
     stalled: str | None = None
@@ -17491,8 +17966,15 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 [docker, "logs", "-f", "--timestamps", name],
                 stdout=subprocess.PIPE, text=True, bufsize=1,
                 errors="replace")
+            pressure_reader = None
+            if stall_bound["source"] == STALL_BOUND_AUTO:
+                def pressure_reader():
+                    snapshot = read_host_pressure_snapshot() or {}
+                    return snapshot.get("full_avg10")
             log_watch = LogStreamWatch(
-                proc, budget_seconds(lane["stall_timeout"]), lane_name)
+                proc, int(stall_bound["seconds"]), lane_name,
+                auto_bound=stall_bound["source"] == STALL_BOUND_AUTO,
+                pressure_reader=pressure_reader)
         else:
             proc = subprocess.Popen([docker, "logs", "-f", name])
         while True:
@@ -18120,7 +18602,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         # RW-18: the lane's own bounds, on this path too — a follower that is
         # never told the `stall_timeout` cannot make sense of the owner
         # stopping the container out from under its log stream.
-        print_lane_bounds(lane, owner_pid=owner)
+        print_lane_bounds(lane, owner_pid=owner,
+                          command_signal=STALL_SIGNAL_LOG_STREAM)
         disown_run_record(run_record)
         if run_record is not None:
             for artifact in ("verdict", "progress"):
@@ -18200,7 +18683,11 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # RW-18: the `budget` and `stall_timeout` this invocation is armed with.
     # A re-attached lane used to be stopped against a `stall_timeout` its own
     # output had never mentioned — the watch below is armed either way.
-    print_lane_bounds(lane)
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_LOG_STREAM)
+    # RG-320: the bound this re-attach is armed with, in the record too (the
+    # same facts the line above just printed).
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_LOG_STREAM)
     # N3: the artifacts THAT run declared, not the ones this invocation's
     # config would construct — a lane retargeted between the two invocations
     # would otherwise watch a file nothing is appending to and point the
@@ -18424,7 +18911,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     identity = lane_container_identity(repo, project_dir, lane_name,
                                        head_commit(worktree))
     name = identity["name"]
+    # `run -d --name <name>` stays the head of the argv; new flags go after it.
     argv = [docker, "run", "-d", "--name", name, "--init",
+            "--oom-score-adj", str(LANE_CONTAINER_OOM_SCORE_ADJ),
             "--cgroup-parent", slice_name,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}"]
     network, network_source = resolve_network_setting(lane, env)
@@ -18486,6 +18975,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
           f"slice {slice_name} ({slice_src})", flush=True)
     print(f"run-gate: effective network: {network} (source: {network_source})",
           flush=True)
+    print(f"run-gate: gate lane OOM score adjustment: "
+          f"{LANE_CONTAINER_OOM_SCORE_ADJ} (higher scores are selected sooner)",
+          flush=True)
     print(f"run-gate: KSM opt-in: {'enabled' if ksm_enabled else 'disabled'} "
           f"(source: {ksm_settings.get('source', 'unknown')}; image shim: "
           f"{shim_status})", flush=True)
@@ -18497,7 +18989,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     log_resource_forwarded_env(resource_env)
     print_judge_provider(lane)
-    print_lane_bounds(lane)
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_LOG_STREAM)
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_LOG_STREAM)
     print(f"run-gate: docker argv: "
           f"{shlex.join(redact_forwarded_values(
               argv, [*env.get('forward_env', []), *resource_env]))}",
@@ -18894,10 +19388,13 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
           flush=True)
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
     log_resource_forwarded_env(resource_env, skipped_resource_env)
-    if lane.get("budget"):
-        print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
-              f"after admission and lock waits)", flush=True)
-    print_assay_lane_budget(lane)
+    # RG-320 (P1): the silence bound and its source (declared/auto) — this
+    # runner's signal is the child's own output stream, and it is disclosed
+    # here exactly as on the container paths (this is the call site that used
+    # to print the budget inline and say nothing about a stall).
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_OUTPUT_STREAM)
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_OUTPUT_STREAM)
     # Review fix (R-05/R-28): exec lanes disclose the assembled plan exactly
     # like ephemeral lanes do — live AND dry, forwarded VALUES redacted
     # (RG-19). The slice name itself stays visible: it is mechanics, not a
@@ -19139,6 +19636,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         print(f"run-gate: in-process watch — {cause} for lane "
               f"{lane_name!r}", flush=True)
     output_tee = None
+    stream_watch = None
     stdin_forwarder = None
     budget_expired = False
     try:
@@ -19160,6 +19658,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         output_tee = OutputTee(
             proc, Path(run_record["log_path"])
             if run_record is not None and run_record.get("log_path") else None)
+        # RG-320 (P1): the only liveness signal this lane has. Armed AFTER
+        # the tee exists (it times that tee's arrivals) and, when nothing
+        # else was polling, it is what makes the wait loop tick at all.
+        stream_watch = make_output_stream_watch(lane, lane_name, output_tee)
+        if stream_watch is not None and tick is None:
+            tick = PROGRESS_POLL_SECONDS
         while True:
             try:
                 wait_for = tick
@@ -19236,6 +19740,30 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                                       f"for lane {lane_name!r} unavailable; "
                                       "continuing without daemon liveness",
                                       file=sys.stderr, flush=True)
+                if daemon_watch is None and stream_watch is not None:
+                    # RG-320: SILENCE of this lane's own output, on the
+                    # existing tick — the same terminate-then-wait gradation
+                    # the fallback watch path below uses, so a stall ends the
+                    # lane the same way whichever watch saw it. A watch that
+                    # raises is dropped with a disclosure, never turned into
+                    # a verdict (the fallback path's own rule, one signal
+                    # over): a broken liveness reader is not evidence about
+                    # the child.
+                    try:
+                        stalled = stream_watch.poll()
+                    except Exception as exc:
+                        stream_watch = None
+                        print(f"run-gate: WARNING liveness: output-stream "
+                              f"watch failed unexpectedly: {exc}",
+                              file=sys.stderr, flush=True)
+                    if stalled is not None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=LANE_KILL_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        break
                 if daemon_watch is None and fallback_watch is not None:
                     try:
                         stalled = fallback_watch.poll()
@@ -19329,7 +19857,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         raise GateBudgetExceeded(code,
                                  run_record.get("log_path") if run_record else None)
     if stalled is not None:
-        fail_infra(f"lane {lane_name!r} STALLED: {stalled}")
+        # RG-320 fix round 1 (L1): a stall on an exec lane stops the CLIENT,
+        # not the runner's inner command — `docker exec` disconnecting does not
+        # reliably stop the in-container child (the `budget` wrapper above says
+        # exactly that). The message must not leave an operator believing the
+        # suite is gone; ending the survivor itself is RG-327 (a marker-based
+        # stop on a SHARED runner is a design change, not a sentence).
+        fail_infra(f"lane {lane_name!r} STALLED: {stalled}. The `docker exec` "
+                   f"client was stopped; the command inside the runner may "
+                   f"STILL BE RUNNING (KNOWN_ISSUES RG-327)")
     return code
 
 
@@ -19366,10 +19902,13 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         assure_assay_state_root(
             None, lane, {}, lane_environment_name(lane), env_source,
             repo, project_dir, worktree, "", dry_run=dry_run)
-    if lane.get("budget"):
-        print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
-              f"after admission and lock waits)", flush=True)
-    print_assay_lane_budget(lane)
+    # RG-320 (P1): the lane's silence bound and its source, disclosed on
+    # this path (fresh AND dry) exactly as on the container paths —
+    # `print_lane_bounds` also carries the hard budget, so it replaces the
+    # two inline prints this runner used to have.
+    print_lane_bounds(lane, command_signal=STALL_SIGNAL_OUTPUT_STREAM)
+    record_stall_bound(run_record, lane,
+                       command_signal=STALL_SIGNAL_OUTPUT_STREAM)
     if dry_run:
         if profile_plan and profile_plan["enabled"]:
             # Match the live bare-host order: only a discoverable Docker
@@ -19559,6 +20098,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     floor_bytes = (_self_rss_bytes()
                   if profiler_state["mode"] == "rusage" else None)
     output_tee = None
+    stream_watch = None
     budget_expired = False
     daemon_watch = None
     watch_restarts = 0
@@ -19583,7 +20123,20 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
               f"{lane_name!r}", flush=True)
 
     def poll_fallback_watch() -> str | None:
-        nonlocal fallback_watch
+        nonlocal fallback_watch, stream_watch
+        # RG-320 (P1): a bare-host COMMAND lane's watch is its own output
+        # stream, not a progress file it never writes. Polled from the same
+        # place as the assay watch so both wait paths (this one and the
+        # rusage loop above) get the same liveness rule.
+        if stream_watch is not None:
+            try:
+                return stream_watch.poll()
+            except Exception as exc:
+                stream_watch = None
+                print(f"run-gate: WARNING liveness: output-stream watch "
+                      f"failed unexpectedly: {exc}", file=sys.stderr,
+                      flush=True)
+                return None
         if fallback_watch is None:
             return None
         try:
@@ -19610,6 +20163,12 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         output_tee = OutputTee(
             proc, Path(run_record["log_path"])
             if run_record is not None and run_record.get("log_path") else None)
+        # RG-320 (P1): a bare-host COMMAND lane is watched from its own
+        # output stream — the watch RG-58 used to declare impossible here.
+        # Armed before the first wait establishes that the child is running
+        # (`wait4(WNOHANG)` returning 0, or the timeout branch), which is RW-5's
+        # own precondition for deciding a stall.
+        stream_watch = make_output_stream_watch(lane, lane_name, output_tee)
         if profiler_state["mode"] == "rusage":
             kill_deadline = None
             next_progress_poll = 0.0   # first look is immediate
@@ -19633,7 +20192,9 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                     proc.returncode = code
                     break
                 now = time.monotonic()
-                if stalled is None and fallback_watch is not None \
+                if stalled is None \
+                        and (fallback_watch is not None
+                             or stream_watch is not None) \
                         and now >= next_progress_poll:
                     # wait4(WNOHANG) keeps reaping the exact child, so the
                     # liveness poll never costs the lane's rusage accounting.
@@ -19657,7 +20218,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                             pass
                         kill_deadline = float("inf")
                 time.sleep(0.05)
-        elif daemon_watch is not None or fallback_watch is not None:
+        elif daemon_watch is not None or fallback_watch is not None \
+                or stream_watch is not None:
             while True:
                 try:
                     wait_for = PROGRESS_POLL_SECONDS
@@ -20187,10 +20749,13 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "              liveness signal (progress file or log stream) has been",
         "              silent that long: ERROR (exit 2), evidence saved, the last",
         "              event/line named. NEVER on total elapsed time; `budget`",
-        "              is a hard elapsed-time bound. Legal on both assay and command",
-        "              lanes; only meaningful where a container is actually",
-        "              watched — accepted but inert on a host/exec lane,",
-        "              which runs inline and starts nothing to watch",
+        "              is a hard elapsed-time bound. Legal on assay and command",
+        "              lanes. Since RG-320 EVERY watched lane is bounded even",
+        "              when it declares nothing: assay lanes keep their",
+        "              progress-file bound, a command lane is judged from its",
+        "              log stream (container) or its own output stream (exec,",
+        "              bare-host), and the default is 300s. A SEQUENCE lane has",
+        "              no signal of its own — its members carry the watches",
         "  shape       mutation lane: a generous assay `budget` +",
         "              judge.mutation.budget_per_candidate + this key. R0/R1:",
         "              the command's own bound is all there is",
@@ -20355,7 +20920,7 @@ def _lanes_check_effective_lanes(project_dir: Path) -> tuple[
     declared.update(cfg.get("lanes", {}))
     imported = unresolved_import_placeholders(defaults, declared)
     lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
-                        cfg_path, central_path, defaults, imported)
+                        cfg_path, central_path, defaults, imported, cfg)
     return lanes, cfg, cfg_path, central, central_path
 
 
@@ -21544,7 +22109,7 @@ def _dispatch(argv: list[str] | None = None, *,
         # namespace before any CLI verb looks at a lane name.
         lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
                             cfg_path, central_path, assay_defaults,
-                            imported_lanes)
+                            imported_lanes, cfg)
         if args.help or (args.lane is None and not args.list
                          and not args.check_env):
             print(usage(lanes, (set(central.get("lanes", {}))

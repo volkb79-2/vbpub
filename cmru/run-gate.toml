@@ -88,6 +88,11 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py"]
 budget = "10m"
+stall_timeout = "10m"
+# RG-320/H1: SILENT BY CONSTRUCTION. installed_wheel_smoke.py captures the
+# wheel build, venv install and render commands, then prints only after all
+# steps finish. No silence bound has been measured yet; RG-326 tracks a real
+# progress signal.
 
 [lanes.installed-wheel.resources]
 pids = 8192
@@ -103,6 +108,11 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py --require-live-snapshot"]
 budget = "10m"
+stall_timeout = "10m"
+# RG-320/H1: SILENT BY CONSTRUCTION. installed_wheel_smoke.py captures the
+# wheel build, venv install and render commands, then prints only after all
+# steps finish. No silence bound has been measured yet; RG-326 tracks a real
+# progress signal.
 
 [lanes.installed-wheel-live.resources]
 pids = 8192
@@ -131,6 +141,9 @@ exec git update-ref "refs/cmru-gate/${branch#cmru-gate-}/ref-probe" HEAD
 ''',
 ]
 budget = "5m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the local ref-probe git steps;
+# no <=300s output cadence is measured; see RG-326.
+stall_timeout = "5m"
 
 [lanes.ref-probe.resources]
 pids = 8192
@@ -158,6 +171,9 @@ exec /opt/tester-venv/bin/python -m pytest \
 ''',
 ]
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while the release-preconditions
+# pytest selection runs; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "10m"
 
 [lanes.release-preconditions.resources]
 pids = 8192
@@ -195,6 +211,9 @@ exec nice -n 10 /opt/tester-venv/bin/python -m pytest -q --cli-case-partial "$@"
   "--",
 ]
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the quiet editable Assay
+# install and survivor-regression pytest; no output bound is measured; see RG-326.
+stall_timeout = "10m"
 
 # Dedicated ephemeral environment for CMRU's mutation lane. Project environment
 # tables replace central ones as a whole, so this repeats the tester image and
@@ -223,10 +242,14 @@ io_sync = "relaxed"
 # to prepare one-shot origin facts before its aggregate mutation campaign.
 # An empty source diff writes skip evidence bound to candidate HEAD and emits
 # no tag; otherwise only an older skip record is removed before emitting it.
-# The 2026-11-12 R2 rehearsal measured full-suite controls from 368 to 825 s
-# under concurrent lanes (CPU PSI 20-43). The 1800 s control ceiling is 2.18x
-# the longest observed run; it is also the candidate-timeout floor, while
-# candidate_timeout_seconds scales further from the measured control.
+# No elapsed-time limit applies to the known-good control or candidates. The
+# tool runs them with PYTHONUNBUFFERED=1, polls output size via os.fstat at
+# most every 30s, and emits a still-running heartbeat only after output grows.
+# The control's active silence window is 600s; candidate windows are derived
+# from the measured control output-gap bound and capped at 600s. RG-320-style
+# memory-PSI credit is capped so the effective window, polling, and 10s
+# process cleanup fit below the R2 lane's 15m stall_timeout. A child that keeps
+# printing has no elapsed limit. Schema-8 evidence records each bound.
 [lanes.mutation]
 kind = "command"
 environment = "cmru-mutation"
@@ -240,7 +263,7 @@ set -euo pipefail
 cd {worktree}/cmru
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
-/opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
+PYTHONUNBUFFERED=1 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
 BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --skip-evidence)
 if [ -z "$BASE" ]; then
     echo "mutation: no changed source — explicit skip evidence recorded"
@@ -249,7 +272,7 @@ fi
 mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
     --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
-    --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 \
+    --base "$BASE" --max-mutants 10000 \
     --evidence .assay/mutation-cmru.json \
     --progress .assay/progress-mutation-cmru.jsonl \
     --require-candidates --resume -- \
@@ -258,7 +281,12 @@ exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
 ''',
 ]
 budget = "7h"
+# CMRU emits output-growth heartbeats while a control or candidate runs and
+# ends a silent child under its own measured window. This silence-only lane
+# bound matches the retained aggregate budget; it is not a child elapsed limit.
+stall_timeout = "7h"
 artifacts = [".assay/mutation-cmru.json"]
+exit_map = { "2" = "ERROR" }
 
 [lanes.mutation.resources]
 pids = 8192
@@ -275,16 +303,31 @@ kind = "command"
 environment = "cmru-mutation"
 resource_observer = "cgprofile"
 clean_tree = true
+accepts_args = true
 argv = [
   "bash",
   "-c",
   '''
 set -euo pipefail
 cd {worktree}/cmru
+if ! /opt/tester-venv/bin/python - "$@" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / "tools"))
+from mutation_campaign import validate_r2_lane_args
+try:
+    validate_r2_lane_args(sys.argv[1:])
+except ValueError as exc:
+    print(f"r2: {exc}", file=sys.stderr)
+    sys.exit(2)
+PY
+then
+    exit 2
+fi
 BASE="{base}"
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
-/opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
+PYTHONUNBUFFERED=1 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
 CMRU_ASSAY_BASELINE_FACTS=$(/opt/tester-venv/bin/python tools/local_baseline_facts.py --base "$BASE")
 export CMRU_ASSAY_BASELINE_FACTS
 BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --base "$BASE" --skip-evidence)
@@ -293,12 +336,20 @@ if [ -z "$BASE" ]; then
     exit 0
 fi
 mkdir -p .assay
-exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 --evidence .assay/mutation-cmru.json --progress .assay/progress-mutation-cmru.jsonl --require-candidates --resume -- env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
+exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
+    --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
+    --base "$BASE" --max-mutants 10000 \
+    --evidence .assay/mutation-cmru.json \
+    --progress .assay/progress-mutation-cmru.jsonl \
+    --require-candidates --resume "$@" -- \
+    env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 \
+    /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
 ''',
   "--",
 ]
-budget = "7h"
+stall_timeout = "15m"
 artifacts = [".assay/mutation-cmru.json"]
+exit_map = { "2" = "ERROR" }
 
 [lanes.r2.resources]
 pids = 8192
@@ -336,6 +387,14 @@ clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The conjunction includes the Assay R0/R1/R3 lane (budget: [lanes.assay])
 # plus the 7h tag-based R2 mutation.
 budget = "14h"
+stall_timeout = "14h"
+# RG-320/H1: SILENT BY CONSTRUCTION across a nested R2 assay member. This
+# wrapper relays its members' stdout, but an assay mutation candidate writes
+# nothing but a FILE record (assay/src/assay/mutation.py ProgressStream; run-gate
+# prints `progress <lane>` only when that file MOVES), so one candidate running
+# longer than 300 s leaves this lane's stdout empty for that whole window
+# (R-40i / RG-326). Declared EQUAL to this lane's budget, so P1 can never fail a
+# wrapper main would let finish. No silence bound has been measured yet.
 
 # The release gate under the standing release rule (KI-79/KI-159; operator
 # decision 2026-11-18): R0/R1 (full line and branch coverage), R3 (canary) and
@@ -353,3 +412,8 @@ argv = [
 ]
 clean_tree = false
 budget = "3h"
+# RG-320/H1: SILENT BY CONSTRUCTION. run_release_gate.py relays the nested
+# installed-wheel-live lane, whose wheel build, venv install and offline render
+# are captured before the producer prints. No silence bound is measured for
+# that step; RG-326 tracks a real progress signal.
+stall_timeout = "3h"

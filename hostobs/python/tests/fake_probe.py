@@ -100,7 +100,7 @@ def json_bytes(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":")).encode("utf-8")
 
 
-def hello_result(level: str = "observe", minor: int = 1, **over: object) -> dict:
+def hello_result(level: str = "observe", minor: int = 2, **over: object) -> dict:
     limits = {
         "max_frame_bytes": 16 * 1024 * 1024,
         "max_request_bytes": 32 * 1024,
@@ -162,7 +162,7 @@ class Probe:
     def send(self, data: bytes) -> None:
         self.sock.sendall(data)
 
-    def prefix_reply(self, major: int = 1, minor: int = 1) -> None:
+    def prefix_reply(self, major: int = 1, minor: int = 2) -> None:
         self.send(b"HOB\x01" + struct.pack("<HH", major, minor))
 
     def rep_ok(self, corr: int, result: dict | None = None) -> None:
@@ -225,7 +225,7 @@ class Rig:
         self.client = ScriptedSocket(client, self.clock, max_chunk)
         self.probe = Probe(server)
 
-    def connect(self, level: str = "observe", timeout_s: float = 5.0, minor: int = 1, **hello_over: object) -> Connection:
+    def connect(self, level: str = "observe", timeout_s: float = 5.0, minor: int = 2, **hello_over: object) -> Connection:
         self.probe.prefix_reply(1, minor)
         self.probe.rep_ok(1, hello_result(level, minor, **hello_over))
         return Connection(self.client, level, client="test-client", timeout_s=timeout_s, clock=self.clock)

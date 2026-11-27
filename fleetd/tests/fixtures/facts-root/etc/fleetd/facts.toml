@@ -6,12 +6,40 @@ host_setup_env = "/etc/mdt/host-setup.env"
 guard_config = "/etc/cgprofile/guard.toml"
 guard_state = "/run/cgprofile/guard-state"
 ksm_optin_shim = "/usr/lib/fleetd/ksm-optin.so"
+checkout_root = "/var/lib/fleetd"
+docker_root = "/var/lib/docker"
 
 [control_plane]
 slice = "ctl.slice"
+
+[gate_slice]
+slice = "dev-gates.slice"
 
 [policy]
 overcommit = 1.5
 oversubscribe_max = 1.25
 psi_refuse_some_avg10 = 25
 max_lane_containers = 8
+host_reserve_bytes = 671088640
+planning_cap = 5
+max_footprint = "large"
+max_planned_bytes = 7516192768
+max_upload_bytes = 1073741824
+
+[policy.footprint_charges_bytes]
+tiny = 67108864
+small = 268435456
+medium = 1073741824
+large = 4294967296
+
+[policy.priority_classes_by_principal]
+worker = ["dev", "gate", "campaign"]
+
+[policy.disk_floors]
+checkout = 1073741824
+docker = 2147483648
+
+[policy.admission]
+queue_path = "/run/fleetd/queue"
+wait_s = 30
+settle_s = 5

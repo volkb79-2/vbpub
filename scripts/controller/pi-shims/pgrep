@@ -1,0 +1,152 @@
+#!/bin/sh
+# pi-shim: the `pgrep` every pi run launched by scripts/controller/pi-impl.sh
+# sees. pi-impl.sh prepends this directory to the agent's PATH, because a
+# pattern kill in the shared devcontainer hits other controller sessions: a pi
+# agent whose brief banned it still ran `pkill -f 'sleep 30'` and killed other
+# sessions' monitors. A written ban did not hold, so this guard is mechanical.
+#
+# pgrep only LISTS processes, so plain matching passes through. This shim
+# refuses the same way pkill does when any argument would make pgrep act on a
+# match (`--signal`, `--signal=<sig>`, `--kill`, a `-<SIGNAME>` or `-<number>`
+# signal spelling), and otherwise execs the real pgrep found on PATH with this
+# script removed. It never execs itself, so it cannot loop, and it exits 127
+# when no real pgrep exists.
+#
+# pgrep(1)'s value-taking options are read WITH their value, so a value or a
+# pattern beginning with `-` is never misread as an option, and an argument that
+# is not one of pgrep's own options is REFUSED rather than guessed at: a
+# refusal costs an agent one retry, a wrong guess can signal a stranger's
+# process.
+#
+# Known limits (not covered by the guard): the bash builtin `kill` (a negative
+# group pid or a foreign pid), an absolute path such as /usr/bin/pgrep, a shell
+# loop over /proc, and a script that resets PATH itself.
+set -u
+
+refuse() {
+  printf 'pi-shim: refused pgrep: %s\n' "$1" >&2
+  exit 126
+}
+
+# pgrep(1), procps-ng 4.0.4: the options that take a value (short form in
+# `taking_value`, long form in `taking_value_long`), and the ones that take no
+# value. Nothing outside these is passed to the real pgrep.
+taking_value=" d g G O P s t u U F r q "
+taking_value_long=" --delimiter --pgroup --group --older --parent --session --terminal --euid --uid --pidfile --runstates --cgroup --ns --nslist --queue "
+no_value=" c e f i l a n o v w x L A H V h "
+no_value_long=" --count --echo --full --ignore-case --list-name --list-full --newest --oldest --inverse --lightweight --exact --logpidfile --ignore-ancestors --require-handler --version --help "
+
+# One pass, treating every argument as a possible option: GNU getopt permutes,
+# so pgrep's options may follow its pattern. `want_value` is the argument the
+# previous option asked for; after `--` everything is a pattern operand.
+want_value=0
+stop=0
+for arg in "$@"; do
+  if [ "$stop" = 1 ]; then
+    continue
+  fi
+  if [ "$want_value" = 1 ]; then
+    want_value=0
+    continue
+  fi
+  case $arg in
+    --)
+      stop=1
+      ;;
+    --signal | --signal=* | --kill | --kill=*)
+      refuse "'$arg' makes pgrep act on a match; pgrep only lists processes here"
+      ;;
+    --*=*)
+      # A long option carrying its value: only a value-taking one may.
+      name=${arg%%=*}
+      case $taking_value_long in
+        *" $name "*) : ;;
+        *) refuse "unknown pgrep option '$name'" ;;
+      esac
+      ;;
+    --*)
+      case $no_value_long in
+        *" $arg "*) : ;;
+        *)
+          case $taking_value_long in
+            *" $arg "*) want_value=1 ;;
+            *) refuse "unknown pgrep option '$arg'" ;;
+          esac
+          ;;
+      esac
+      ;;
+    -?*)
+      # Short options, possibly clustered (-vw) and possibly carrying a value
+      # (-d, is pgrep's spelling). A value-taking letter takes the rest of the
+      # cluster as its value, else the next argument.
+      letters=${arg#-}
+      while [ -n "$letters" ]; do
+        letter=${letters%"${letters#?}"}
+        letters=${letters#?}
+        case $taking_value in
+          *" $letter "*)
+            if [ -z "$letters" ]; then
+              want_value=1
+            else
+              letters=
+            fi
+            break
+            ;;
+          *)
+            case $no_value in
+              *" $letter "*) ;;
+              *) refuse "'$arg' is not a pgrep option; a signal spelling is refused here" ;;
+            esac
+            ;;
+        esac
+      done
+      ;;
+    *)
+      : # a pattern operand; the real pgrep judges it
+      ;;
+  esac
+done
+
+# Find the real pgrep: the first executable named pgrep on PATH that is not
+# this script itself, and hand the child a PATH with this shim's own directory
+# REMOVED, so nothing it execs can land back on this shim. Self is compared by
+# RESOLVED path, so a symlink to this script is recognised too; a depth counter
+# is the belt to that braces, so a copy of this shim under another name refuses
+# on its second hop instead of recursing.
+self=$(readlink -f -- "$0" 2>/dev/null) || self=$0
+self_dir=$(dirname -- "$self")
+depth=${PI_PGREP_SHIM_DEPTH:-0}
+[ "$depth" -ge 2 ] 2>/dev/null && refuse 'the pgrep lookup looped back to this shim'
+found=
+keep_path=
+old_ifs=$IFS
+IFS=:
+set -f
+# shellcheck disable=SC2086 # PATH is split on ':' here, through IFS
+for dir in ${PATH-}; do
+  [ -n "$dir" ] || continue
+  resolved_dir=$(cd -- "$dir" 2>/dev/null && pwd -P) || resolved_dir=
+  if [ -n "$resolved_dir" ] && [ "$resolved_dir" = "$self_dir" ]; then
+    continue # the shim's own directory never reaches the child
+  fi
+  keep_path=${keep_path:+$keep_path:}$dir
+  [ -z "$found" ] || continue
+  candidate=$dir/pgrep
+  [ -x "$candidate" ] && [ ! -d "$candidate" ] || continue
+  resolved=$(readlink -f -- "$candidate" 2>/dev/null) || resolved=
+  [ "$resolved" = "$self" ] && continue
+  found=$candidate
+done
+IFS=$old_ifs
+set +f
+if [ -z "$found" ]; then
+  printf 'pi-shim: no pgrep found on PATH outside %s\n' "$self_dir" >&2
+  exit 127
+fi
+PI_PGREP_SHIM_DEPTH=$((depth + 1))
+export PI_PGREP_SHIM_DEPTH
+if [ -n "$keep_path" ]; then
+  PATH=$keep_path
+  export PATH
+fi
+exec "$found" "$@"

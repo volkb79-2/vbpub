@@ -1,12 +1,14 @@
 <!-- status: design rev 2 (main review FIX-FIRST + operator rulings); scope: new standalone host service TG-1; operator decision 2026-11-25 -->
 # Design: thrashguard (TG-1) — PSI-driven freeze/thaw of dev-tier work
 
-Nothing of thrashguard exists: no code, no unit, no host service. `grep -rln` over `*.py *.rs *.sh *.toml
-*.service *.socket` finds prose only, and every other tool already points here (fleetd `docs/SPEC.md:24`,
+At proposal time thrashguard had no code, unit, or host service. P1 now implements
+the observe-only slice; this note remains normative for the implementation and
+later phases. Other tools point to this contract (fleetd `docs/SPEC.md:24`,
 `:533-534`, `KNOWN_ISSUES_TODO_BACKLOG.md:20`, `:318`, `:967-974`; hostobs
-`KNOWN_ISSUES_TODO_BACKLOG.md:1163-1164`; agctl `docs/design/agctl/DESIGN.md:7`). This note is normative for the
-first implementation. Operator inputs are quoted with line numbers from `.controller-state/operator-decisions.md`;
-later lines win. The main controller's rev-1 review is answered item by item in the run report.
+`KNOWN_ISSUES_TODO_BACKLOG.md:1163-1164`; agctl `docs/design/agctl/DESIGN.md:7`).
+Operator inputs are quoted with line numbers from
+`.controller-state/operator-decisions.md`; later lines win. The main controller's
+review rulings are tracked in the implementation report.
 
 ## 1. Scope and boundary
 
@@ -146,6 +148,10 @@ lexically (the shape fleetd already reads, `fleetd/src/fleetd/facts.py:440-514`)
 `user.slice`), `state_dir` (`/run/thrashguard`), `registrant` (bool) and `[[static_unit]]` (`{name, cgroup}`) for
 standalone hosts. Unknown keys are errors.
 
+`[[static_unit]].cgroup` is relative to the cgroup v2 root. For example,
+`dev.slice/dev-buildkitd.slice` names the buildkit slice below its parent
+`dev.slice`; it is not a root-level `dev-buildkitd.slice`.
+
 **Sockets (D7).** Two, in separate groups, in the estate's common writer/reader shape
 (`/run/mdtd/{observe,control,root}/mdtd.sock 0660 root:mdt-{observe,control,root}`,
 `docs/design/mdtd/DESIGN-rev4-2026-11-07.md:190`):
@@ -157,9 +163,12 @@ standalone hosts. Unknown keys are errors.
 ```
 
 systemd `.socket` units own them (`LISTEN_FDS`, `Accept=no`), so a daemon restart does not refuse clients
-(`hostobs/docs/WIRE.md:12-16`). Group gating is **advisory**: "container root bypasses socket DAC, and container
-root can `setgroups()` any GID" (`mdtd/DESIGN-rev4-2026-11-07.md:109`); containment is the scope resolution
-below, re-checked on every act. Rejected: one read/write socket (readers would gain the right to park jobs); TCP
+(`hostobs/docs/WIRE.md:12-16`). Group gating is **admission to a socket**, not registration ownership. It is
+advisory because container root can bypass socket DAC and can `setgroups()` any GID
+(`mdtd/DESIGN-rev4-2026-11-07.md:109`). Scope resolution bounds which cgroup a registration names; it does not bind
+an id to the peer that created it. P1 does not capture or enforce that issuer relationship, and cross-issuer
+`update`, `heartbeat` and `deregister` therefore remain possible. TG-12 blocks P2 `enforce` until an issuer check
+can return `not-yours`. Rejected: one read/write socket (readers would gain the right to park jobs); TCP
 (nothing leaves the host). Wire is newline-delimited JSON, versioned (`thrashguard-registration/1`,
 `-event/1`, `-state/1`), one request one reply, unknown keys rejected (`fleetd/docs/SPEC.md:26`) — not hostobs'
 binary codec (`hostobs/docs/WIRE.md:24-40`): a handful of clients per tick, and legibility matters.
@@ -175,8 +184,9 @@ cgroup namespace reads `0::/` and nothing else (`run_gate.py:4296-4312` `cgroup_
 `:18405` `cgroup = None` for the same reason). The guard runs with the host view and resolves the scope itself: it
 finds exactly one `/sys/fs/cgroup/**/<scope>` under `allowed_ancestors`, takes the *shallowest* match (the docker
 scope, D1), and **refuses the registration naming the reason** when it finds none, several, or a match under
-`protected`. Nothing is stored on a refusal; that resolution, not the socket group, is the real boundary (D7). A
-resolved scope is re-checked on every act: still under `allowed_ancestors`, `cgroup.events` readable, not a
+`protected`. Nothing is stored on a refusal; resolution bounds the target cgroup, not ownership of the
+registration id (D7, TG-12). A resolved scope is re-checked on every act: still under `allowed_ancestors`,
+`cgroup.events` readable, not a
 `protected` ancestor, inode unchanged.
 
 **Lifetime is heartbeat liveness, never a job bound (M2).** `ttl_s` is *derived* by the guard as
@@ -197,7 +207,9 @@ no job's own length enters the expiry; a frozen job takes as long as it takes.
 (`{boot_id, seq, event, unit, cgroup, cgroup_id, mono_start_ns, mono_end_ns, seconds, mode, reason}`), rotated
 at 1 MiB to `events.jsonl.1` because `/run` is tmpfs (the psi-guard shape, `scripts/mdt-psi-guard.py:61`,
 `:179-186`). `seq` is monotonic per boot, so a reader pages without a clock. This file is thrashguard's own
-journal and crash record — **not** the consumer path (§4). Every event is also emitted to hostobs (§6c).
+journal and crash record — **not** the consumer path (§4). P4 submits completed
+freeze/thaw interval events to hostobs (§6c); P1 is observe-only and emits no
+hostobs events.
 
 **Standalone (hard requirement, :353).** A host service with its own CLI and `/etc` config, working with no
 fleetd, no agctl, no registrant: `[[static_unit]]` plus `mode = enforce` freezes/thaws by the same rules, and
@@ -206,47 +218,53 @@ fleetd, no agctl, no registrant: `[[static_unit]]` plus `mode = enforce` freezes
 ## 4. Frozen-time accounting — one path: thrashguard -> hostobs -> consumers
 
 Nothing inside a gate container reads thrashguard (H1 replaced by B2). assay runs *in* the frozen container and
-the cockpit runs in a private cgroup namespace, so the consumer path is the host's telemetry: **thrashguard
-emits, hostobs records, consumers read.**
+the cockpit runs in a private cgroup namespace, so the planned P4 consumer path is the host's telemetry:
+**thrashguard emits, hostobs records, consumers read.** P1 is observe-only and emits nothing to hostobs.
 
-**What thrashguard emits.** Per frozen interval: `unit`, `run`, `owner` (registrant-supplied); `cgroup` scope
-name and `cgroup_id` (inode, so a recycled path is detectable); `boot_id` (intervals never span boots);
-`mono_start_ns`, `mono_end_ns` and `seconds` on **`CLOCK_MONOTONIC`**, not wall time — the kernel keeps it
-running while the cgroup is frozen (`compute-design-REVIEW.md:100`); `reason`
-(`pressure|aged_out|guard_stop|deregistered|unreadable_psi|manual`); `reclaim_bytes` (read-back, or `null`).
-Any wall-clock field is derived, never authoritative.
+**What thrashguard emits in P4.** A completed interval is represented by two point events, `thrashguard.freeze`
+and `thrashguard.thaw`. Both carry the same `boot_id` and `seq`, plus the `cgroup` scope name and `cgroup_id`
+(inode, so a recycled path is detectable); `unit`, `run`, `owner` and `reason` retain their meanings below.
+`seconds` appears on the thaw event only and records the interval length on **`CLOCK_MONOTONIC`**, not wall
+time — the kernel keeps it running while the cgroup is frozen (`compute-design-REVIEW.md:100`). Any wall-clock
+field is derived, never authoritative.
 
-**Where it is recorded.** hostobs' event store, two names in its closed vocabulary, `thrashguard.freeze` and
-`thrashguard.thaw`, over the **control** socket's JSON `annotate` request (`hostobs/docs/WIRE.md:492-497`,
-`hostobs/docs/CONSUMERS.md:393-397`). The argument budget is the constraint: `ctx` accepts only `run`, `lane`,
-`candidate`, `txn`, `session`, each <= 128 B (`WIRE.md:493`, which defers to 4.10 at `:476`), so the run id rides
-in `ctx.run` and five factual fields go in `attrs` (8 pairs, key <= 64 B, value <= 256 B,
-`hostobs/crates/store/src/events.rs:42`, `:48`, `:50`): `cgroup` (the scope name), `cgroup_id`, `boot_id`, `seq`,
-`seconds`. `reason` and `unit`/`owner` go in the event's `name`/`key`/`code` fields; `reclaim_bytes` stays in
-thrashguard's own journal, because a ninth attr does not fit. The issuer is the emitting uid plus its cgroup
-incarnation from `SO_PEERCRED`/`SO_PEERPIDFD` (`WIRE.md:498-502`), so no separate emitter identity is invented.
-Emission is best-effort and idempotent on `(boot_id, seq)` (D19): a lost event is `unknown`, never a wrong number.
+**Where it is recorded.** P4 submits `annotate` on hostobs' **OBSERVER socket**, admitted through group
+`hostobs-observer`; the control socket answers `unknown-verb` until hostobs M6. The event names are open and
+append-only. Only the `thrashguard.` prefix is closed for this integration; readers accept events under that
+prefix only from uid 0 or the configured thrashguard uid. The issuer is `uid:<n>` from `SO_PEERCRED` plus an
+**unverified** peer label: this path does not have `SO_PEERPIDFD` cgroup-incarnation binding, so the label is
+not authorization evidence. Hostobs stores the event and consumers read it through its event reader. The argument budget is the
+constraint: `ctx` accepts only `run`, `lane`, `candidate`, `txn`, `session`, each <= 128 B (`WIRE.md:493`, which
+defers to 4.10 at `:476`), so the run id rides in `ctx.run` and factual fields go in `attrs` (8 pairs, key <= 64 B,
+value <= 256 B, `hostobs/crates/store/src/events.rs:42`, `:48`, `:50`): `cgroup`, `cgroup_id`, `boot_id`, `seq`,
+and, on thaw only, `seconds`. `reason` and `unit`/`owner` go in the event's `name`/`key`/`code` fields;
+`reclaim_bytes` stays in thrashguard's own journal. Emission is best-effort and idempotent on
+`(event name, boot_id, seq)` (D19): a lost event is `unknown`, never a wrong number.
 
 ### 4a. What exists today in hostobs, and what is missing (B2 check)
 
 | Part | Today |
 |---|---|
-| event + span store, bounded ring, closed name/attr bounds | **exists**: `hostobs/crates/store/src/events.rs:1-50` |
-| `annotate` verb (control, JSON, peer-bound issuer, 50/s per issuer) | in the table, **not served**: `served: false` at `hostobs/crates/serve/src/verbs.rs:76`; planned M3 (`docs/design/hostobs/PLAN-v4-2026-11-08.md:376`) |
-| `events` read verb | **planned M3**: `verbs.rs:73`, `hostobs/docs/WIRE.md:476-484` |
+| event + span store, bounded ring, bounded name/attr lengths | **exists**: `hostobs/crates/store/src/events.rs:1-50` |
+| `annotate` verb | served on the **OBSERVER** socket, group `hostobs-observer`; the control socket answers `unknown-verb` until M6 |
+| event read and completeness | RAM-only ring; a window is complete only from `started_real_ns` onward with no displacement, otherwise the result is `unknown`, never 0; consumers query at least `max_park_s` back |
 | freeze state as a *sampled* fact (`cgroup.freeze`, `cgroup.events`) | **missing**: not registered in `hostobs/crates/model/src/metric.rs`; `crates/kernel/src/cgroup.rs` reads `cpu.stat`, `memory.*`, `io.stat`, `pids.current`, PSI only |
 
-Owner of every missing row: hostobs (M3; the metric registration needs its own backlog item). Until they land
-the consumer path is **absent** and every consumer reports the frozen total as `unknown`. They gate P4, not
-P1/P2.
+The event ring is volatile: a read window is complete only when it starts at or after the probe's
+`started_real_ns` and no event in the window was displaced. Otherwise consumers report `unknown`, never 0.
+Consumers query at least `max_park_s` back. The freeze-state sample remains missing (hostobs HOB-102/B8) and
+gates the corresponding P4 consumer behavior, not P1/P2.
 
 ### 4b. assay: effective CPU time, and the verdict does not depend on it
 
-Per candidate/test assay combines **cgprofile profiling** of the lane's cgroup with **freeze/thaw events** from
-hostobs, matched by `boot_id` + `cgroup` and unioned. Then `effective_cpu_s = cpu_s` (**unchanged**, M4: a frozen
-candidate accrues no CPU seconds, so a CPU-time bound needs no correction) and `effective_wall = wall -
-frozen_seconds` for the wall-based clocks only. Rejected: "invalidates any candidate frozen mid-run" — "why?
-only if it turns out error? freeze should be harmless" (:344); the refinement stands: re-run only candidates
+TIM-020 is planned and is not implemented in the current assay code. Once that
+work lands, assay will combine **cgprofile profiling** of the lane's cgroup with
+**freeze/thaw events** from hostobs, matched by `boot_id` + `cgroup` and unioned.
+Then `effective_cpu_s = cpu_s` (**unchanged**, M4: a frozen candidate accrues no
+CPU seconds, so a CPU-time bound needs no correction) and
+`effective_wall = wall - frozen_seconds` for the wall-based clocks only. Rejected:
+"invalidates any candidate frozen mid-run" — "why? only if it turns out error?
+freeze should be harmless" (:344); the refinement stands: re-run only candidates
 that overlapped a freeze **and** ended killed/timeout/hung.
 
 **Why no verdict depends on it.** assay's per-candidate bound is the CPU-time no-progress bound (P4: "the
@@ -256,10 +274,17 @@ which also states "CPU accrues only when the candidate runs, so pressure needs n
 and survives, so **thrashguard is optional**: run-gate and assay work unchanged without it, and with no events
 `frozen_seconds` is `unknown`, never `0`.
 
-**Summaries are normalised, not raw.** Time in an assay summary is on the Geekbench single-thread **1500-point**
-basis: `x_ref = x * single_core / baseline_score` with the host's `single_core` from `speed`
-(`cgprofile/docs/PROTOCOL.md:625-627`; table fallback `cgprofile/docs/SCORES-TABLE.md:1-27`, baseline 2500 for
-GB6 and GB7). A host without `speed` has no basis and the summary says so (`speed: null`); majors are never mixed.
+**Summaries retain raw time and may add reference time.** The rule is
+`assay/docs/SPEC.md` chapter **TIM**, requirement **TIM-030**: record effective
+CPU seconds as raw, un-normalized seconds together with the processor model. If
+the host has a Geekbench 7 record, also record
+`ref_cpu_s = effective_cpu_s * single_core / baseline_score`, using that record's
+`tool_major`, `single_core` and `baseline_score`; assay holds no score constant.
+Geekbench 7's own reference is 2500 single-core, and the former 1500-point unit
+is retired. A record for another major counts as no record, majors are not
+compared, and without a Geekbench 7 record retain raw seconds so a score may be
+applied later. This matches TIM-030; `cgprofile/docs/PROTOCOL.md:625-627`
+(`speed`) is not an input.
 
 ### 4c. run-gate: unchanged verdict, one shared bound, optional pause
 
@@ -305,7 +330,8 @@ stall-pause bound (§4c); (ii) optionally read thrashguard's reader socket from 
 pause a wall-based stall watch — an extra, never a requirement.
 
 This is delivered by **P4 `estate`**, the first cut that needs a registrant at all; fleetd later replaces only the
-*caller*, not the contract. run-gate needs the `thrashguard-registrant` group membership (Q5) and nothing else.
+*caller*, not the contract. run-gate needs `thrashguard-registrant` group membership to pass socket DAC (Q5).
+That membership does not authorize only its own ids; issuer binding remains a P2 enforce blocker (TG-12).
 
 ## 5. Packaging, privileges, deploy, tests, MVP
 
@@ -339,6 +365,10 @@ never invoked; a fake clock covers hysteresis, aging, `max_park_s`, `never_park_
 sweep. Live acceptance runs in a `vm-lab` Debian guest under real systemd (AGENTS.md VM rules): a real container
 scope frozen/thawed, `cgroup.events` read back, `ExecStopPost` thaw after `systemctl stop` **and** after `kill -9`,
 a memcg OOM on a frozen scope, an unreadable-PSI run.
+
+No fresh-host systemd acceptance run has happened for P1. The nine open host
+checks are listed in `thrashguard/docs/CONSUMERS.md` §7; they remain open until
+recorded on a disposable fresh systemd and cgroup v2 host.
 
 **MVP split** (each its own review; no freezing in the devcontainer):
 
@@ -395,11 +425,15 @@ refuses and never invents a zero. Absent agctl: thrashguard's CLI and fleetd's s
 
 ### 6c. hostobs: the event intake (B2)
 
-Thrashguard emits `thrashguard.freeze` / `thrashguard.thaw` into hostobs; §4a lists what exists there today and what
-is missing. Emission goes over the **control** socket's JSON `annotate` line (`hostobs/docs/WIRE.md:492-497`,
-`hostobs/docs/CONSUMERS.md:393-397`), group `hostobs-control` (§4), with the attribute budget spent as described
-there. Missing today (owner: hostobs) is exactly §4a's three rows; until they land consumers report `unknown`. The
-`cgroup` attr is exact (`docker-<id>.scope` fits <= 256 B) and readers match on it plus `boot_id`, as §4b does.
+P4 sends `thrashguard.freeze` / `thrashguard.thaw` to hostobs; P1 emits nothing there. Emission uses `annotate`
+on the **OBSERVER** socket, group `hostobs-observer`; the control socket answers `unknown-verb` until hostobs
+M6. The names are open and append-only; only the `thrashguard.` prefix is closed. The two point events for an
+interval share `boot_id` and `seq`, and `seconds` is carried on thaw only. The issuer is `uid:<n>` from
+`SO_PEERCRED` plus an unverified peer label, without `SO_PEERPIDFD` cgroup-incarnation binding. Readers accept `thrashguard.*` events
+only from uid 0 or the configured thrashguard uid. The RAM-only ring is complete only for a window beginning at
+or after the probe's `started_real_ns` with no displacement; otherwise consumers report `unknown`, never 0.
+Consumers query at least `max_park_s` back. The `cgroup` attr is exact (`docker-<id>.scope` fits <= 256 B), and
+readers match it plus `boot_id`, as §4b does.
 
 ### 6d. Standalone is a hard requirement
 
@@ -431,7 +465,7 @@ P2's exit criteria.
 | D16 | thrashguard is optional; verdicts are CPU-time based; no events = `unknown` | a wall-time correction must never become a hidden wall cap |
 | D17 | `max_park_s` (30 min default, configurable, thaw on expiry) is one policy key shared with run-gate's pause bound (Q1) | two bounds drift and one silently reads as silence |
 | D18 | one estate snapshot through fleetd for agctl (H3/B3) | agctl has no host access; a per-host socket read from the cockpit is impossible |
-| D19 | emission is idempotent on `(boot_id, seq)` and best-effort | a retried event must not double count a frozen interval |
+| D19 | emission is idempotent on `(event name, boot_id, seq)` and best-effort | freeze and thaw point events share `boot_id` and `seq`; the event name keeps a retry of one point distinct from its paired point |
 
 Rejected alternatives, by topic:
 
@@ -457,7 +491,7 @@ the record, not a list of open questions.
 | Q4 | does an expired registration thaw? | explicit `deregister` **thaws** (`deregistered`); silent `ttl_s` expiry **does not** (§3, D14) | operator 23:4xZ, with M3's split |
 | Q5 | groups | `thrashguard-registrant`: run-gate's host group + fleetd's service user; `thrashguard-reader`: agctl, fleetd, hostobs (§3) | operator 23:4xZ |
 | Q6 | docs obligation | README + DESIGN-GUIDE + CONSUMERS.md with loader-parsed examples, in P1's file list (§5) | review, accepted |
-| — | consumer path | thrashguard **sends** freeze/thaw events; **hostobs** picks them up; assay gets cgprofile plus those events and recomputes effective CPU time; summaries normalise to Geekbench single-thread 1500 (§4) | operator 00:0xZ |
+| — | consumer path | P4 thrashguard sends freeze/thaw events; hostobs records them; assay gets cgprofile plus those events. Per TIM-030, summaries retain raw CPU seconds and add reference CPU seconds only for a Geekbench 7 record (§4) | operator 00:0xZ, basis retired 2026-11-26 |
 | — | boundaries | verdicts are CPU-time based and thrashguard is optional; fleetd is the one cross-host channel and the placer; agctl never touches a host socket (§4e, §6) | operator 00:0xZ / 00:2xZ |
 
 **Still open** (product calls, not blockers):

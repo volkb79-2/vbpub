@@ -19,6 +19,9 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/tls-edge && exec env TLS_EDGE_REQUIRE_TOOLS=1 PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q -rs -p no:cacheprovider"]
 budget = "15m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the pytest suite; no <=300s
+# output cadence is guaranteed by every test; no bound is measured; see RG-326.
+stall_timeout = "15m"
 
 [lanes.tests.resources]
 cpus = "1"

@@ -97,7 +97,7 @@ impl Transport for ErrorOnceAfterHandshake {
 }
 
 fn with_hello(json: &str) -> Vec<u8> {
-    let mut out = prefix(1, 1);
+    let mut out = prefix(1, 2);
     out.extend(rep_ok(1, json));
     out
 }
@@ -139,7 +139,7 @@ fn end_reason(end: Option<&hostobs_client::StreamEnd>) -> Option<String> {
 fn handshake_sends_the_prefix_alone_then_hello_with_corr_one() {
     let (client, rig) = session(&[]);
     let hello = client.hello();
-    assert_eq!(hello.minor, 1);
+    assert_eq!(hello.minor, 2);
     assert_eq!(hello.level, Level::Observe);
     assert_eq!(hello.server, "hostobsd");
     assert_eq!(hello.boot_id, BOOT);
@@ -151,7 +151,7 @@ fn handshake_sends_the_prefix_alone_then_hello_with_corr_one() {
     assert_eq!(client.level(), Level::Observe);
     assert_eq!(client.closing_reason(), None);
     let written = rig.written.borrow().clone();
-    assert_eq!(written.get(..8), Some(prefix(1, 1).as_slice()));
+    assert_eq!(written.get(..8), Some(prefix(1, 2).as_slice()));
     let text = String::from_utf8_lossy(written.get(8..).unwrap_or_default());
     let needle = "{\"verb\":\"hello\",\"args\":{\"client\":\"test\"";
     assert!(text.contains(needle));
@@ -159,13 +159,31 @@ fn handshake_sends_the_prefix_alone_then_hello_with_corr_one() {
 }
 
 #[test]
+fn handshake_accepts_minor_one_server_and_status_request() {
+    let hello_result = hello_json("observe", &[], BOOT, 7).replace("\"minor\":2", "\"minor\":1");
+    assert!(hello_result.contains("\"proto\":{\"major\":1,\"minor\":1}"));
+    let mut incoming = prefix(1, 1);
+    incoming.extend(rep_ok(1, &hello_result));
+    incoming.extend(rep_ok(2, "{}"));
+    let clock = clock();
+    let (script, rig) = script(&clock, incoming);
+    let mut client = open(script, Level::Observe, None).expect("minor-one server");
+
+    assert_eq!(client.hello().minor, 1);
+    let reply = client.request("status", "{}").expect("status reply");
+    assert_eq!(reply.result_json(), "{}");
+    let expected = frame(1, 2, b"{\"verb\":\"status\",\"args\":{}}");
+    assert!(rig.written.borrow().ends_with(&expected));
+}
+
+#[test]
 fn handshake_accepts_a_hello_exactly_at_its_own_frame_length() {
     let payload = "{\"verb\":\"hello\",\"args\":{\"client\":\"test\",\
-                   \"proto\":{\"major\":1,\"minor\":1}}}";
+                   \"proto\":{\"major\":1,\"minor\":2}}}";
     let total = 12 + payload.len();
     let hello_len = u32::try_from(total).expect("small");
     let json = hello_json("observe", &[("max_request_bytes", hello_len)], BOOT, 7);
-    let mut bytes = prefix(1, 1);
+    let mut bytes = prefix(1, 2);
     bytes.extend(rep_ok(1, &json));
     let clock = clock();
     let (script, _rig) = script(&clock, bytes);
@@ -179,20 +197,20 @@ fn handshake_refusals_are_typed() {
     let small_request = hello_json("observe", &[("max_request_bytes", 10)], BOOT, 7);
     let small_frame = hello_json("observe", &[("max_frame_bytes", 11)], BOOT, 7);
     let mut wrong_magic = b"XOB\x01".to_vec();
-    wrong_magic.extend_from_slice(&[1, 0, 1, 0]);
-    let mut half = prefix(1, 1);
+    wrong_magic.extend_from_slice(&[1, 0, 2, 0]);
+    let mut half = prefix(1, 2);
     half.truncate(4);
-    let mut garbage = prefix(1, 1);
+    let mut garbage = prefix(1, 2);
     garbage.extend(frame(2, 1, b"not json"));
-    let mut server_req = prefix(1, 1);
+    let mut server_req = prefix(1, 2);
     server_req.extend(frame(1, 1, b"{}"));
     let cases: Vec<(Vec<u8>, &str)> = vec![
         (Vec::new(), "connection-lost"),
         (half, "connection-lost"),
-        (prefix(1, 1), "connection-lost"),
+        (prefix(1, 2), "connection-lost"),
         (wrong_magic, "unknown-mode"),
         (prefix(2, 0), "unsupported-version"),
-        (prefix(1, 2), "hello-mismatch"),
+        (prefix(1, 3), "hello-mismatch"),
         (with_hello(&bad_level), "hello-mismatch"),
         (with_hello(&small_request), "hello-mismatch"),
         (with_hello(&small_frame), "hello-mismatch"),
@@ -210,13 +228,13 @@ fn handshake_refusals_are_typed() {
 
 #[test]
 fn handshake_server_errors_and_stray_replies() {
-    let mut required = prefix(1, 1);
+    let mut required = prefix(1, 2);
     required.extend(rep_err(1, "hello-required", "{}"));
-    let mut fatal = prefix(1, 1);
+    let mut fatal = prefix(1, 2);
     fatal.extend(rep_err(0, "deadline", "{}"));
-    let mut stray = prefix(1, 1);
+    let mut stray = prefix(1, 2);
     stray.extend(rep_ok(0, "{}"));
-    let mut other = prefix(1, 1);
+    let mut other = prefix(1, 2);
     other.extend(rep_ok(9, "{}"));
     let cases = [
         (required, "hello-required"),
@@ -239,7 +257,7 @@ fn handshake_waits_are_bounded_by_the_operation_timeout() {
     mute.idle_ns = 2 * MS;
     expect_kind(open(mute, Level::Observe, None), "timeout");
     assert!(rig.closed.get());
-    let (mut half, _rig) = script(&clock, prefix(1, 1));
+    let (mut half, _rig) = script(&clock, prefix(1, 2));
     half.eof = false;
     half.idle_ns = 2 * MS;
     expect_kind(open(half, Level::Observe, None), "timeout");
@@ -252,7 +270,7 @@ fn prefix_idle_timeouts_use_the_exact_handshake_deadline() {
         let (mut script, rig) = script(&clock, Vec::new());
         script.eof = false;
         script.idle_ns = MS + extra;
-        let mut bytes = prefix(1, 1);
+        let mut bytes = prefix(1, 2);
         bytes.extend(rep_ok(1, &hello_json("observe", &[], BOOT, 7)));
         script.later.push_back(bytes);
         expect_kind(open(script, Level::Observe, None), expected);
@@ -499,7 +517,7 @@ fn a_request_at_the_announced_size_boundary_is_sent() {
     let payload = format!("{{\"verb\":\"status\",\"args\":{args}}}");
     let boundary = u32::try_from(12 + payload.len()).expect("small");
     let clock = clock();
-    let mut accepted = prefix(1, 1);
+    let mut accepted = prefix(1, 2);
     accepted.extend(rep_ok(
         1,
         &hello_json("observe", &[("max_request_bytes", boundary)], BOOT, 7),
@@ -509,7 +527,7 @@ fn a_request_at_the_announced_size_boundary_is_sent() {
     let mut client = open(accepted_script, Level::Observe, None).expect("handshake");
     assert!(client.request("status", &args).is_ok());
     let below = boundary - 1;
-    let mut refused = prefix(1, 1);
+    let mut refused = prefix(1, 2);
     refused.extend(rep_ok(
         1,
         &hello_json("observe", &[("max_request_bytes", below)], BOOT, 7),
@@ -989,7 +1007,7 @@ fn reconnect_redoes_the_handshake_and_reports_the_session() {
     let (first, _rig) = script(&clock, session_bytes(Level::Observe, &[]));
     let bytes = session_bytes(Level::Observe, &rep_ok(2, "{}"));
     let (same, _rig) = script(&clock, bytes);
-    let mut other = prefix(1, 1);
+    let mut other = prefix(1, 2);
     other.extend(rep_ok(1, &hello_json("observe", &[], BOOT, 8)));
     let (changed, _rig) = script(&clock, other);
     let (refused, _rig) = script(&clock, prefix(2, 0));
@@ -1095,7 +1113,7 @@ fn drive(bytes: &[u8]) {
     }
 }
 
-/// Every kind a client call can name: the 46 wire kinds of `ProtoError`, the envelope kinds
+/// Every kind a client call can name: the 50 wire kinds of `ProtoError`, the envelope kinds
 /// and the client's own protocol, usage and transport names (the §10 codes are `ERROR_CODES`).
 const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-frame-type \
     unknown-frame-flags unknown-mode unsupported-version section-reserved \
@@ -1109,7 +1127,8 @@ const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-f
     dictionary-entry-control generation-exhausted stale-dictionary-generation rows-and-time \
     no-rows-or-time row-reference-not-entity column-reference-not-metric column-kind-mismatch \
     not-a-block section-order aggregation-not-permitted subject-without-time deadline \
-    generation-regressed json-text duplicate-key unknown-key missing-key wrong-type \
+    generation-regressed event-unknown-code event-field-bound event-text event-order \
+    json-text duplicate-key unknown-key missing-key wrong-type \
     unexpected-frame unknown-corr bad-reply end-counts hello-mismatch corr-exhausted io \
     timeout connection-lost bad-verb bad-args request-too-large bad-selection bad-client \
     bad-timeout no-reconnect";

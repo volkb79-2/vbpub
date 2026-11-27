@@ -16,14 +16,21 @@ and why it lost.
 | **sampler** (`hostobs-sampler`) | the `kernel` readers over `RealFs`, the `IncarnationRegistry`, the clocks; builds one immutable `Tick` per `tick_ms` and publishes it as `Arc<Tick>` | touch a socket, the `Server` or the hub; wait for the server |
 | **store writer** (`hostobs-writer`) | `crates/store` and its existing bounded writer queue (`writer_queue_bytes`, drops counted); later publishes an immutable `Arc` read index (P-15) | run on the sampler or server thread. **Placed, not spawned**: the live slice (P-09/P-10/P-11) starts no writer; P-16 spawns it |
 
+The probe opens one store during startup, before the sampler is spawned, and keeps it alive
+until `driver::run` returns. It records nothing yet.
+
 - **Publication.** `Published` is a `Mutex<Arc<Tick>>`. The sampler swaps the `Arc` under the
   lock (`mem::replace`) and drops the old one after unlocking; the server loop clones the `Arc`
   once per turn in `begin_turn` and drops its previous one after unlocking (§(b)). No lock is held
   across I/O, a scan or an encode. A poisoned lock is recovered with `PoisonError::into_inner` (the
   guarded value is one pointer, never half-written).
-- **`cmdline` and every `/proc/<pid>/*` read never run on the server thread.** The slice reads
-  none at all (P-10 reads cgroupfs and host-wide `/proc` files only). The package that serves
-  process detail gives those reads a bounded worker pool on the sampler side (the archived
+- **Process-detail reads such as `cmdline` and every other `/proc/<pid>/*` read never run on the
+  server thread.** The B1 exception is the accept-time peer label: the driver reads
+  `/proc/<pid>/comm` and `/proc/<pid>/cgroup` once, and every failed or invalid check becomes
+  `None`. The cgroup membership read is limited to 4 KiB and its path to 64 components; a deeper
+  path is refused before any cgroup metadata lookup. These labels are advisory and never affect
+  authorization, dedupe, rate limits, quotas or the per-uid connection cap. The package that
+  serves process detail gives those reads a bounded worker pool on the sampler side (the archived
   sampler's shape: a few workers, a bounded queue, one in-flight read per pid) and publishes the
   results in the tick.
 - **A slow client cannot delay another one** because the loop never waits on any one socket: a
@@ -101,16 +108,16 @@ needed anyway for `poll` and the peer credentials (§(d)), so that gain is void.
 socket buffer that can fill, and a drain-until-`WouldBlock` loop, where eventfd has one fd and a
 counter that coalesces by construction.
 
-## (d) Syscall surface: rustix, one audited `unsafe` line in `kernel`
+## (d) Syscall surface: rustix and raw peer credentials, audited `unsafe` in `kernel`
 
 std has no `poll`, no eventfd and no absolute `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`, and
 `UnixStream::peer_cred` is unstable (E0658, `peer_credentials_unix_socket`, rustc 1.99.1).
 
 - **Crate:** `rustix`, `default-features = false`, features exactly `std` (the std fd types),
-  `event` (`poll`, `eventfd`), `net` (`SO_PEERCRED`, and the `SO_DOMAIN`, `SO_TYPE` and
+  `event` (`poll`, `eventfd`), `net` (the `SO_DOMAIN`, `SO_TYPE` and
   `SO_ACCEPTCONN` checks of an adopted fd) and `time` (`clock_gettime` for `Monotonic` and
   `Boottime`). `crates/kernel` uses `net` (activation) and `time` (`kernel::clock`); `bins/probe`
-  uses `event` and `net`. `fcntl_setfd` and `read`/`write` are in rustix's always-on `io` module. It is
+  uses `event`. `fcntl_setfd` and `read`/`write` are in rustix's always-on `io` module. It is
   licensed `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`, which `deny.toml` allows, and it
   builds no `libc` on Linux. A later feature of the same crate needs no image rebuild unless it
   pulls in a new crate. `getpid` comes from `std::process::id`, so `process` is not enabled.
@@ -126,18 +133,20 @@ std has no `poll`, no eventfd and no absolute `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`
   --precise <ver>` once and hands back the `Cargo.lock` diff. Each new transitive crate takes the
   newest release that is at least 14 days old (`--precise` where needed). P-08 commits exactly
   that diff.
-- **The one `unsafe`:** `OwnedFd::from_raw_fd` for each `LISTEN_FDS` descriptor lives in a new
-  `crates/kernel/src/activation.rs`. `crates/kernel` already carries the plan's allowance
-  (`unsafe_code = "allow"`, §A.3, `_EXPECTED_UNSAFE_OVERRIDES`) and is the plan's home for held
-  fds. Its `lib.rs` changes `#![forbid(unsafe_code)]` to `#![deny(unsafe_code)]`; one private
-  function, `adopt_raw(fd, name)`, carries `#[allow(unsafe_code)]` with a `// SAFETY:` comment.
-  - **Public API, the only one:** `kernel::activation::take(listen_pid, listen_fds,
+- **The audited `unsafe` sites:** both live in `crates/kernel/src/activation.rs`, the kernel's
+  existing raw-fd boundary. Its `raw` submodule carries the one `#[allow(unsafe_code)]`; the lint pins
+  exactly two unsafe expressions, each with a `// SAFETY:` comment: `OwnedFd::from_raw_fd` in
+  `adopt_raw`, and raw `getsockopt(SO_PEERCRED)` in `peer_credentials_raw`.
+  - **Socket activation API:** `kernel::activation::take(listen_pid, listen_fds,
     listen_fdnames, my_pid) -> Result<Vec<(String, UnixListener)>, ActivationError>`. It calls
     `parse` (§(e)), refuses a second call through a process-wide `AtomicBool`, and passes only
     fds in `parse`'s range `3..3+LISTEN_FDS` to `adopt_raw`. `take` checks and sets its
     once-guard before calling `parse`, so a second call is refused even when the first call
-    failed. No safe public function takes a raw fd number, so no caller can adopt an fd something
-    else owns.
+    failed. It is the only entry point that can adopt a raw fd number; no safe public function
+    accepts one directly, so no caller can adopt an fd something else owns.
+  - **Peer credential API:** `kernel::activation::peer_credentials_raw(fd: impl AsFd)` borrows a
+    safe fd handle and returns the raw `SO_PEERCRED` bytes plus their returned length. It neither
+    takes ownership of the descriptor nor accepts a raw fd number.
   - **`adopt_raw`:** before `from_raw_fd` it checks, with the safe
     `std::fs::read_link("/proc/self/fd/<n>")`, that the target starts with `socket:`, which
     proves the fd is open and is a socket (no `mem::forget` path). The SAFETY argument:
@@ -148,19 +157,20 @@ std has no `poll`, no eventfd and no absolute `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`
     `SO_TYPE` is `SOCK_STREAM` and `SO_ACCEPTCONN` is 1; it sets `FD_CLOEXEC` and returns a
     non-blocking std `UnixListener` (`From<OwnedFd>`).
 
-  Everything else in the probe stays safe code: rustix `poll`, `eventfd`,
-  `socket_peercred` and `clock_gettime`. The probe and every client must share one PID
-  namespace: Linux reports pid 0 through `SO_PEERCRED` when the client's pid is invisible from
-  the probe's namespace, and rustix 1.1.6's conversion of that value has undefined behavior.
-  P-11's container demo therefore places the probe and clients in the same PID namespace.
+  Everything else in the probe stays safe code: rustix `poll`, `eventfd` and `clock_gettime`.
+  Peer credentials do not use rustix's `socket_peercred` decoder. The raw read returns exactly
+  12 bytes plus the kernel's returned length; the driver refuses any other length and any
+  negative pid before constructing a peer. Pid 0 becomes `pid: None`, and that peer is served
+  normally. The probe and clients may use different PID namespaces because no rustix `Pid` is
+  constructed from the peer's pid.
   - The kernel doc bullet "free of `unsafe`" and the DESIGN-GUIDE "nothing uses it" paragraph
     change with it (P-09).
 
 **Alternatives.** `libc` plus an unsafe module (the strongest): every call becomes an audited
 `unsafe` block, about ten instead of one. `nix` pulls in `libc` too and adds nothing over rustix.
 std thread-per-connection still needs the peer credentials and gives up the single hub (§(a)).
-For the `unsafe` line, a new `crates/sys` would change `_EXPECTED_PACKAGES` and the override table
-for one line, and `bins/probe` is `forbid` by §A.3.
+For these two `unsafe` expressions, a new `crates/sys` would change `_EXPECTED_PACKAGES` and the
+override table, and `bins/probe` is `forbid` by §A.3.
 
 ## (e) Socket activation
 
@@ -177,6 +187,22 @@ The probe never binds. `main` adopts the systemd-passed sockets before anything 
    check runs both ways: every fd's name is a configured level, and every configured level has
    exactly one fd. The units set `FileDescriptorName=observe` and so on with `Accept=no`. The
    systemd default name (the unit name) is therefore refused, not guessed.
+
+**Accept-time peer credential audit (HOB-90).** `driver::peer` calls
+`kernel::activation::peer_credentials_raw` once on the accepted stream. The raw `getsockopt`
+site reads the 12-byte Linux `ucred` and returns its actual length. `driver::decode_ucred`
+requires length 12, maps pid 0 to `None`, and refuses a negative pid before constructing any
+rustix `Pid` or `NonZeroI32`. A peer with `pid: None` remains accepted. This is the second
+unsafe expression in `activation.rs`, and `check-lints.py` pins both expressions' count.
+`comm` is kept only when valid UTF-8 with no control characters after one trailing newline is
+removed. `cgroup` is kept only for a `0::/…` path with no `..` component, at most 64 components,
+and a target whose nonzero `st_dev` equals the configured cgroup root's `st_dev` and whose inode
+is nonzero; the membership read is at most 4 KiB. Every failed check gives `None`.
+
+The process labels are read after accept and can describe a different process if the connector's
+pid was reused before the read, the socket was passed to another process, or `/proc` belongs to a
+different PID namespace. They carry no authority. Every consumer, including future event or
+watch surfaces, must show them as **unverified**.
 
 A refusal exits 2 before the sampler starts, with one line naming the variable or the adopted
 socket name. `LISTEN_PID` and `LISTEN_FDS` refuse leading-zero decimal spellings. The
@@ -214,7 +240,7 @@ no path is compiled in. The installed path is `/etc/hostobs/hostobsd.toml`, and 
 unit/P-11 passes it explicitly. The file is read whole, bounded to 64 KiB, and parsed with
 `toml::from_str` into serde-derived structs carrying `toml::Spanned` fields. `toml` and `serde`
 are workspace dependencies from the P-09 lock patch; `deny_unknown_fields` is applied at the
-root, `[probe]` and `[limits]`. **Every key is required and there are no others:**
+root, `[probe]`, `[limits]` and `[store]`. **Every key is required and there are no others:**
 
 ```toml
 [probe]
@@ -224,10 +250,31 @@ cgroup_root = "/sys/fs/cgroup"     # absolute, no `..`; the sampler walks under 
 
 [limits]
 max_rows = 1024                    # D8; probe-wide; 1..=4096
+
+[store]
+dir = "/var/lib/hostobs/probe"     # durable cold and events root
+tmpfs_dir = "/run/hostobs/tiers"   # hot and warm tiers; must be on tmpfs
+events_cap_bytes = 67108864        # positive, at most 16 GiB, at least one segment bound
+events_ring_bytes = 4194304        # 4096..=1 GiB
 ```
 
 - `levels` is a non-empty subset of `observe`, `operator` and `observer`, with no duplicates.
+  The shipped `deploy/hostobsd.toml` serves all three.
 - `cgroup_root` is absolute, has no `..` component and contains no NUL or control character.
+- `store.dir` and `store.tmpfs_dir` are absolute, have no `..` component or control character,
+  differ, and neither contains the other. Startup refuses an unknown or non-tmpfs
+  `store.tmpfs_dir`; it never redirects tmpfs tiers below durable `store.dir`.
+- `events_cap_bytes` is checked against the configured events segment file bound, and
+  `events_ring_bytes` is large enough for the largest valid event/1 record.
+- **Store startup limit (M3 B4).** The probe opens the store before `sampler::spawn` and before
+  recording anything. A durable-directory failure (including a full disk or directory fsync
+  error), a symlinked root, or a tier directory over its entry bound stops startup with exit 2;
+  no samples or events have been recorded. `RestartPreventExitStatus=2` prevents an automatic
+  service restart. A non-tmpfs path, unreadable mount table, or missing mount entry for
+  `store.tmpfs_dir` is collapsed to `hostobs-probe: store.tmpfs_dir must be on tmpfs; store.dir is durable storage`,
+  without the underlying mount cause. Other store-open errors are printed
+  as `hostobs-probe: store: <StoreError>`; that prefix does not identify `store.dir` or
+  `store.tmpfs_dir` as a key, although some error variants include a path or segment name.
 - The only probe-wide spelling is the one shown above. A per-level form such as
   `[limits.observe] max_rows = 2` is an unknown-field refusal, not a silent override (P-06
   backlog B3).
@@ -275,13 +322,13 @@ keys, so the shape would change twice.
   `HOSTOBS_PROBE_BIN`, and refuses loudly if that executable is absent before the existing
   Python suite. The test sends
   signals, so it runs only inside `tools/dev` or a lane container with a private PID namespace.
-- **The one check-lints change (P-09)** audits the `unsafe` line instead of permitting a spawn:
+- **The check-lints contract (P-09, extended by M3 B1)** audits the `unsafe` sites instead of permitting a spawn:
   exactly one lint override naming `unsafe_code` may occur in the workspace outside
-  `crates/act`, in `crates/kernel/src/activation.rs`; exactly one unsafe expression may occur
+  `crates/act`, in `crates/kernel/src/activation.rs`; exactly two unsafe expressions may occur
   there too; `crates/kernel/src/lib.rs` must contain `#![deny(unsafe_code)]`; and
   `tools/check-lints-mutation.py` pins list-form `allow`, `expect`, whitespace variants,
   crate-level `warn`, a bare unsafe expression in a kernel integration test, and a second
-  allowance in `activation.rs`.
+  allowance in `activation.rs`, plus an unlisted third unsafe expression in `activation.rs`.
 
 **Alternative: allow `Command::new` in `bins/probe/tests/` and spawn the binary with `LISTEN_FDS`.**
 Lost: it widens the spawn lint to a directory. Setting `LISTEN_PID` after the fork also needs
@@ -327,8 +374,11 @@ R27); only the hub.rs module doc was stale, and this package fixes it.
    6. writes in `ConnId` order: `output` → `write_vectored` of the two slices → `wrote`, until
       `WouldBlock`, an empty queue or 256 KiB written to that connection this turn (the budget is
       per connection).
-5. On accept, set the stream non-blocking and read `socket_peercred` into `Peer{uid,pid}`. A
-   failure passes `None`, which `Server::accept` refuses uncounted. `Refused` drops the stream.
+5. On accept, set the stream non-blocking and read raw `SO_PEERCRED` into
+   `Peer{uid,pid,comm,cgroup}`. A syscall failure, truncated credential or negative pid passes
+   `None`, which `Server::accept` refuses uncounted. Pid 0 gives `pid: None` and remains accepted;
+   unreadable or invalid process labels give `comm: None` or `cgroup: None`. `Refused` drops the
+   stream.
    An accept error other than `WouldBlock`, `EINTR` or `ECONNABORTED` (for example `EMFILE`)
    stops polling that listener for one turn, so the level-triggered loop cannot spin.
 6. **Close ownership:** the driver keeps one `UnixStream` per `ConnId` and drops it exactly when
@@ -338,7 +388,8 @@ R27); only the hub.rs module doc was stale, and this package fixes it.
    ignores `SIGPIPE`, so a gone peer is `EPIPE`). A connection still open after a turn whose poll
    reported `POLLHUP` or `POLLERR` is `finish`ed.
 7. Never bind, install a signal handler, use `SO_PEERPIDFD` or spawn a process. The P-11 systemd
-   units set `RestartPreventExitStatus=2`, so a start-up refusal does not restart in a loop.
+   units set `RestartPreventExitStatus=2`, so `Restart=` does not retry a start-up refusal;
+   socket activation can start it again until the start limit.
 8. Tests (§(h)): hello, `current`, `subscribe` over a real socket on `FixedBackend` (`Turn` via its
    `seq` field);
    a slow reader (the hub sheds, others are served); EOF; refused unknown and missing fd names;
