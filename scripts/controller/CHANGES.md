@@ -6,6 +6,19 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Pi sub-controller harness (P-plat-PICTL)
+- Add a dependency-free JavaScript core and explicit pi extension for
+  peer inboxes, bounded loop guards, persistent wake-ups, PID-namespace
+  monitors, event logging and self-compaction recovery.
+- Add `pi-ctl-launch.sh` and its pane script. The launcher supports either
+  Open Design provider, keeps a per-role pi session, and loads only the matching
+  key inside the tmux pane. It does not write project trust settings.
+- Await injected message-delivery adapters so rejected inbox delivery remains
+  in the processing queue for retry; serialize monitor batches while delivery
+  is pending. Pi 1.6.0's `ExtensionAPI.sendMessage()` itself returns `void`.
+- Add fake-pi API coverage and four mutation checks to the registered controller
+  suite. Live pi/provider behavior remains for an operator smoke run.
+
 ### Parallel controller mutation checks (P-plat-35)
 - `tests/test-mutations.sh` now submits the existing `expect_killed` calls to a
   bounded pool, defaulting to `nproc` capped at the inherited 3-CPU

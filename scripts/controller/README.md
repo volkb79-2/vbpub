@@ -774,6 +774,54 @@ backlog burn-down package a per-project wrapper brief points at). Read the [desi
 for the reasons behind the boundaries, and the [consumer guide](docs/CONSUMERS.md)
 for copyable setup and run examples.
 
+### Pi sub-controllers (`pi-ctl-launch.sh`)
+
+`scripts/controller/pi-ctl-launch.sh <role>` starts a persistent pi session in
+tmux named `vbpub-<role>`. It reads the session id from the controller state
+root on later launches; `--fresh <role>` records a new id, and
+`--print-command <role>` displays the resolved command without starting tmux or
+reading credentials. The state root defaults to `$HOME/controller/pi-ctl` and
+must stay outside the repository. Role names use letters, digits, `.`, `_`, and
+`-`, starting with a letter or digit and at most 64 characters.
+
+```bash
+scripts/controller/pi-ctl-launch.sh hostobs
+PI_CTL_PROVIDER=opendesign_github2 scripts/controller/pi-ctl-launch.sh hostobs
+scripts/controller/pi-ctl-launch.sh --fresh hostobs
+scripts/controller/pi-ctl-launch.sh --print-command hostobs
+```
+
+Defaults are provider `opendesign_volker`, model
+`deepseek-v4.1-flash-eco`, thinking `max`, and the current repository root as
+the working directory. Set `PI_CTL_PROVIDER=opendesign_github2` to switch to
+the other Open Design account. The tmux pane alone sources `$HOME/.env.ai`;
+it clears both provider keys first, then exports only
+`OPENDESIGN_API_KEY_VOLKER` or `OPENDESIGN_API_KEY_GITHUB2` to pi according to
+the selected provider. Override the launch with `PI_CTL_MODEL`,
+`PI_CTL_THINKING`, `PI_CTL_CWD`, `PI_CTL_ROOT`, `PI_CTL_SESSION_DIR`, or
+`PI_CTL_PRIME`. Keep credentials in `$HOME/.env.ai`, never in argv, tmux
+arguments, command output, or logs.
+
+The launcher selects `pi-pidns-extension.js` and `pi-ctl/extension.mjs`
+explicitly with `--no-extensions`; it also uses `--no-approve` so an unattended
+launch ignores trust-gated project-local resources without a trust dialog. It
+does not create project `.pi/settings.json`. Pi's configured global model
+catalogue remains the operator-owned `$HOME/.pi/agent/models.json`.
+
+The `pi-ctl/` extension provides `send_message`, persisted wake-up
+schedule/list/cancel tools, bounded monitor start/list/stop tools, inbox polling,
+an event log and context recovery. See the `Long-running controllers` section
+in the repository's `AGENTS.md` for the main inbox poll command and the defaults
+and limits. In short: inboxes are polled every second; peer messages are
+untrusted and never auto-replied to; send and receive limits default to 10 per
+peer per hour; inbox bodies default to 16 KiB and sends to 64 KiB; wake-ups are
+10 seconds to 24 hours with 32 pending; monitors use the private-PID-namespace
+wrapper and end within one hour. Compaction starts
+only from `agent_end` at 150,000 tokens by default and tells the session to run
+`scripts/controller/resume-read.sh <role>` afterward. Tests run in the
+registered `scripts/controller` suite with a fake pi API, not against a live
+provider.
+
 ## Running the registered gate
 
 The toolkit's `suite` lane is declared in `run-gate.toml`. Run it from this
