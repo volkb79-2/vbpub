@@ -14910,6 +14910,8 @@ rather than in its own registered lane until that image ships `pip`.
 
 Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like a campaign-deadline remainder (not-started `budget_exceeded`), so the verdict's reason code reads `BUDGET_EXCEEDED/LANE_TIMEOUT` although nothing timed out; only the claim detail (`PARTIAL: ...`) and the `unselected_total` telemetry name the selection. The reason is re-derived from the buckets by `assay verify`, so it cannot change without a schema version (observed on v1001, 2026-11-11, one selected candidate of 1459).
 
+Seen again 2026-11-27 (reported by the debian-rollback work): a fully judged selected set reads `BUDGET_EXCEEDED` with the unselected candidates counted as `budget_exceeded_unstarted`. `rgw-r2-20261127T074327-r1002`: 45 selected (44 killed, 1 survived), 124 unstarted. `rgw-r2-20261127T081311-v1001`: 1 selected (killed), 168 unstarted, 161 s elapsed. Wanted: the verdict judges the selected set only; unselected candidates are not reported as `budget_exceeded` and do not set the verdict.
+
 **Proposed solution.** At the next verdict schema version after v19 (v19 landed with B251 / `assay-ptleak-20261110`; this item targets v20), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
 
 **Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.
