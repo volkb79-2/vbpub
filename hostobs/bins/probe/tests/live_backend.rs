@@ -1,5 +1,4 @@
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use hostobs_kernel::clock::{ManualClock, Timeline};
@@ -19,6 +18,7 @@ use hostobs_serve::limits::Level;
 use hostobs_serve::selection::{Sel, Selection};
 use hostobs_serve::server::{Accept, Server, ServerLimits};
 use hostobs_store::annotate::Annotator;
+use hostobs_store::fsio::testdir::TempDir;
 use hostobs_store::store::{Store, StoreConfig};
 use hostobs_store::tmpfs::MountTable;
 
@@ -26,33 +26,6 @@ const WALL: i64 = 1_700_000_000_000_000_000;
 const ID_BOOT: &str = "00112233-4455-6677-8899-aabbccddeeff";
 const ID_EPOCH: u64 = 42;
 const HELLO: &str = r#"{"client":"t","proto":{"major":1,"minor":2}}"#;
-
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new() -> TempDir {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "hostobs-live-backend-{}-{id}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path).expect("create unique live backend directory");
-        TempDir { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
 
 fn fixture_store(temp: &TempDir) -> Store {
     let config = StoreConfig::plan_v4(temp.path(), ID_EPOCH, 1).expect("store config");
@@ -322,7 +295,7 @@ fn cgroup_id(wanted: &str) -> Sel {
 #[test]
 fn hello_and_status_carry_identity_and_survive_the_first_tick() {
     let published = Arc::new(Published::new(1_000_000, WALL));
-    let temp = TempDir::new();
+    let temp = TempDir::new("live-backend");
     let (mut server, id) = server(Arc::clone(&published), 16, &temp);
     let hello = hello_frame(&mut server, id, 1_003_000_000);
     let text = body(&hello);
@@ -353,7 +326,7 @@ fn hello_and_status_carry_identity_and_survive_the_first_tick() {
 #[test]
 fn current_all_path_prefix_and_inc_decode_fixture_values() {
     let (_, published, tick) = first_tick();
-    let temp = TempDir::new();
+    let temp = TempDir::new("live-backend");
     let (mut server, id) = server(Arc::clone(&published), 16, &temp);
     hello_frame(&mut server, id, 1_003_000_000);
     let _ = server.backend_mut().begin_turn(1_003_000_000);
@@ -492,7 +465,7 @@ fn cgroup_id_selects_one_row_by_all_keys_and_rejects_unpublished_keys() {
     let (_, published, tick) = first_tick();
     let target = format!("/system.slice/docker-{}.scope", "a".repeat(64));
     let target_inc = inc(&tick, &target);
-    let temp = TempDir::new();
+    let temp = TempDir::new("live-backend");
     let (mut server, id) = server(Arc::clone(&published), 16, &temp);
     hello_frame(&mut server, id, 1_003_000_000);
     let _ = server.backend_mut().begin_turn(1_003_000_000);
@@ -577,7 +550,7 @@ fn cgroup_id_selects_one_row_by_all_keys_and_rejects_unpublished_keys() {
 #[test]
 fn current_budget_missing_path_and_unregistered_metric_are_client_facts() {
     let (_, published, _) = first_tick();
-    let temp = TempDir::new();
+    let temp = TempDir::new("live-backend");
     let (mut server, id) = server(Arc::clone(&published), 9, &temp);
     hello_frame(&mut server, id, 1_003_000_000);
     let _ = server.backend_mut().begin_turn(1_003_000_000);
@@ -621,7 +594,7 @@ fn current_budget_missing_path_and_unregistered_metric_are_client_facts() {
 fn subscribe_pushes_one_new_tick_and_nothing_when_begin_turn_is_stale() {
     let (mut sampler, published, tick1) = first_tick();
     assert_eq!(tick1.seq(), 1);
-    let temp = TempDir::new();
+    let temp = TempDir::new("live-backend");
     let (mut server, id) = server(Arc::clone(&published), 16, &temp);
     hello_frame(&mut server, id, 1_003_000_000);
     let _ = server.backend_mut().begin_turn(1_003_000_000);
@@ -658,7 +631,7 @@ fn subscribe_pushes_one_new_tick_and_nothing_when_begin_turn_is_stale() {
 #[test]
 fn direct_backend_unavailable_is_distinct_from_a_nonexistent_path() {
     let published = Arc::new(Published::new(0, WALL));
-    let temp = TempDir::new();
+    let temp = TempDir::new("live-backend");
     let mut backend = ProbeBackend::new(
         identity(),
         Arc::clone(&published),
