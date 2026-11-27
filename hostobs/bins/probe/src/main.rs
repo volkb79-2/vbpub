@@ -16,6 +16,7 @@ use hostobs_probe::live::ProbeBackend;
 use hostobs_probe::sampler::{self, Published, SamplerConfig, SamplerError};
 use hostobs_serve::backend::Identity;
 use hostobs_serve::server::Server;
+use hostobs_store::annotate::{Annotator, AnnotatorConfigError};
 use hostobs_store::error::StoreError;
 use hostobs_store::store::Store;
 use rustix::event::{eventfd, EventfdFlags};
@@ -93,8 +94,9 @@ fn serve(config_path: &Path) -> Result<(), ProcessError> {
     let store_config = config
         .store_config(epoch)
         .map_err(|error| ProcessError::Startup(StartupError::Store(error)))?;
-    // The probe opens the store at startup and records nothing yet.
     let store = open_store(store_config).map_err(ProcessError::Startup)?;
+    let annotator = Annotator::new(config.annotate_rate_per_s, config.annotate_burst)
+        .map_err(|error| ProcessError::Startup(StartupError::AnnotatorConfig(error)))?;
 
     let wake = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).map_err(|error| {
         ProcessError::Startup(StartupError::Eventfd(io::Error::from_raw_os_error(
@@ -121,7 +123,14 @@ fn serve(config_path: &Path) -> Result<(), ProcessError> {
         Arc::clone(&stop),
     )
     .map_err(|error| ProcessError::Startup(StartupError::Sampler(error)))?;
-    let backend = ProbeBackend::new(identity, Arc::clone(&published));
+    let backend_clock = clock;
+    let backend = ProbeBackend::new(
+        identity,
+        Arc::clone(&published),
+        store,
+        annotator,
+        move || backend_clock.mono_ns(),
+    );
     let server = Server::new(limits, backend);
     let mut now_ns = || clock.mono_ns();
     let result = driver::run(
@@ -133,7 +142,6 @@ fn serve(config_path: &Path) -> Result<(), ProcessError> {
         &config.cgroup_root,
         &mut now_ns,
     );
-    drop(store);
     result.map_err(ProcessError::Run)
 }
 
@@ -194,6 +202,7 @@ enum StartupError {
     Eventfd(io::Error),
     WakeClone(io::Error),
     Sampler(SamplerError),
+    AnnotatorConfig(AnnotatorConfigError),
     Store(StoreError),
     StoreTmpfsDir,
 }
@@ -210,6 +219,14 @@ impl fmt::Display for StartupError {
             StartupError::Eventfd(error) => write!(f, "cannot create wake eventfd: {error}"),
             StartupError::WakeClone(error) => write!(f, "cannot clone wake eventfd: {error}"),
             StartupError::Sampler(error) => error.fmt(f),
+            StartupError::AnnotatorConfig(error) => match error {
+                AnnotatorConfigError::Rate => {
+                    f.write_str("limits.annotate_rate_per_s must be in 1..=1000")
+                }
+                AnnotatorConfigError::Burst => {
+                    f.write_str("limits.annotate_burst must be in 1..=1024")
+                }
+            },
             StartupError::Store(error) => write!(f, "store: {error}"),
             StartupError::StoreTmpfsDir => {
                 f.write_str("store.tmpfs_dir must be on tmpfs; store.dir is durable storage")

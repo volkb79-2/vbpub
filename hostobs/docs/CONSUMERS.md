@@ -20,14 +20,15 @@ The command is installed at `.venv/bin/hostobs-mark` and is available as
 `hostobs-mark` while the environment is active. Its target is
 `hostobs_client.mark:main`.
 
-**Current server and deployment status:** No hostobs probe currently serves
-`annotate`. `deploy/` installs the observer socket
+**Current server and deployment status:** The probe serves `annotate` on the
+observer socket. `deploy/` installs the observer socket
 (`hostobs-observer.socket`), and connecting to it needs membership in the
-`hostobs-observer` group. Until `annotate` is served, `hostobs-mark` prints a
-notice and exits 0; adding `--require` makes it exit 1.
+`hostobs-observer` group. `hostobs-mark` exits 0 once the probe accepts the
+annotation. When the annotation cannot be written (variable unset, socket
+unreachable, error reply or bad reply), `hostobs-mark` prints a notice and exits
+0; adding `--require` makes it exit 1.
 
-Once the probe serves `annotate`, set the socket path and pass an annotation name
-accepted by WIRE §4.12:
+Set the socket path and pass an annotation name accepted by WIRE §4.12:
 
 ```sh
 HOSTOBS_OBSERVER_SOCKET=/run/hostobs/observer/hostobs.sock \
@@ -470,18 +471,17 @@ The hostobs live slice is on `main`. It is **not** a versioned release: no tag, 
 installer. Use it from a checkout (`PYTHONPATH=hostobs/python`; the units in `hostobs/deploy`
 are installed by hand).
 
-**Available:** the observe and operator sockets; the verbs `hello`, `status`, `current`,
-`subscribe` and `unsubscribe`; fixed-width BLOCK frames with a quality byte per value; the
-Rust client (`hostobs/crates/client`) and the stdlib-only Python `hostobs_client`; the
-`cgroup_id` selector and the `limit.cpu.max.*` metrics (wire minor 2). `deploy/` also installs the
-observer socket, which answers only `hello` so far.
+**Available:** the observe and operator sockets; observer `hello` and `annotate`; the observe and
+operator verbs `hello`, `status`, `current`, `subscribe` and `unsubscribe`; fixed-width BLOCK
+frames with a quality byte per value; the Rust client (`hostobs/crates/client`) and the stdlib-only
+Python `hostobs_client`; the `cgroup_id` selector and the `limit.cpu.max.*` metrics (wire minor 2).
+`deploy/` installs the observer socket.
 
 `hostobs-operator` is reserved for reads with command-line details (`procs`, not served yet);
 today it returns the same data as `hostobs-observe`.
 
-**Not available yet:** `events` and `spans` (they answer `unknown-verb` at observe and operator);
-`annotate` (`unknown-verb` on the observer socket, `forbidden` at observe and operator); the
-control level and sessions; the install CLI. Version 0.1.0 follows after M3, once the release
+**Not available yet:** `events` and `spans` (they answer `unknown-verb` at every probe level);
+the control level and sessions; the install CLI. Version 0.1.0 follows after M3, once the release
 packages are in.
 
 Limits:
@@ -542,12 +542,39 @@ follow them.
    observer features are built in hostobs.
 2. **A span is one JSON line on the observer socket.** The line is a JSON-mode request
    (WIRE §8.1, §8.2) with verb `annotate` and the args of WIRE §4.12 (typed span fields in plan v4
-   §C.4). WIRE §4.12 fixes its args and result; WIRE §4.3 specifies probe service for M3, but
-    the current probe does not serve `annotate` yet. A future control client sends the same line
-    to act on the control socket. The intended integration keeps the judges, assay and run-gate
-    dependency-free; they write that line themselves. `hostobs_client` (WIRE §7) and
-    `hostobs-mark` (WIRE §8.5) serve importers such as cmru, iobench and `cgprofile mark`:
-    programs and scripts that would rather call a helper than speak the wire.
+   §C.4). WIRE §4.12 fixes its args and result, and the probe serves `annotate` on the observer
+   socket. The future control client sends
+   the same line to act on the control socket. The intended integration keeps the judges, assay and
+   run-gate dependency-free; they write that line themselves. `hostobs_client` (WIRE §7) and
+   `hostobs-mark` (WIRE §8.5) serve importers such as cmru, iobench and `cgprofile mark`:
+   programs and scripts that would rather call a helper than speak the wire.
+
+   The server takes `t_mono_ns` from the current turn's monotonic clock. It derives `real_ns` from
+   the startup wall-clock and monotonic-clock pair, so a wall-clock step after startup does not move
+   event time. Peer `uid` comes from `SO_PEERCRED`; pid, comm and cgroup are advisory labels. Every
+   observer member may emit any grammar-valid event name, so a reader trusts `thrashguard.*` only
+   when `issuer` is the expected uid. All root emitters share one uid rate bucket across connections.
+
+   A span belongs to its connection. It may stay quiet longer than `idle_ms`, and it ends when its
+   connection closes; until then it holds one connection slot. The observer caps remain 128 open
+   connections total and 64 per peer uid. A one-shot `hostobs-mark begin` connection closes when
+   the command exits, so its open span is recorded as `abandoned`. A normal connection close also
+   writes inferred abandoned ends. `SIGTERM` keeps its default action under HOB-92: a stopped probe
+   writes no inferred ends, and open spans remain open just as they do after a crash. Only the
+   internal `Server::shutdown` stop path closes connections and records their inferred ends.
+
+   Appends run synchronously on the server thread and do not fsync for an ordinary record. Sealing
+   a segment (and any eviction during that append) can fsync and stall the turn. All clients' replies
+   and subscription ticks wait for it. A stall shorter than a tick interval delays the tick; a longer
+   stall lets the sampler publish several ticks while the server is blocked, then the next
+   `begin_turn` reads the newest published tick and delivers only that one. A new epoch or bucket
+   seal that keeps failing (for example, a full disk) makes every append return `internal` until an
+   append succeeds again. Appends are unsynced and can be lost on a host crash.
+
+   A probe restart empties the events ring, spans and idempotency cache. Readers dedupe events on
+   `(name, boot_id, seq)` across that boundary. `annotate_rate_per_s` and `annotate_burst` are
+   required `[limits]` keys; installed configurations must add both. B5 serves no read verb:
+   reading through `events` remains B6's work and is the one variance from plan §3.4.
 3. **act never writes `io.cost`, `io.weight` or sysctl.** `hostobs-act` serves only the verbs
    of plan v4 §A.2, and iogovmon owns `io.cost.*`, `io.weight` and the sysctls (plan v4 §A.1,
    "Never does" column for `hostobs-act`).

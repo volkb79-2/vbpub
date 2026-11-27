@@ -91,6 +91,9 @@ fn push_detail(out: &mut String, detail: &Detail) {
             push_string(out, pool.name());
             out.push('}');
         }
+        Detail::RetryAfterMs(retry_after_ms) => {
+            out.push_str(&format!("{{\"retry_after_ms\":{retry_after_ms}}}"));
+        }
     }
 }
 
@@ -228,6 +231,13 @@ pub fn current_result(tick_ms: u32) -> String {
 #[must_use]
 pub fn subscribe_result(sub: u32, interval_ms: u32) -> String {
     format!("{{\"sub\":{sub},\"interval_ms\":{interval_ms}}}")
+}
+
+/// The `annotate` success result with the server-stamped time and optional span id.
+#[must_use]
+pub fn annotate_result(t_mono_ns: u64, span: Option<u64>) -> String {
+    let span = span.map_or_else(|| String::from("null"), |span| span.to_string());
+    format!("{{\"t_mono_ns\":{t_mono_ns},\"span\":{span}}}")
 }
 
 /// The `unsubscribe` success result.

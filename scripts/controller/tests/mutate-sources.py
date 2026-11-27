@@ -547,7 +547,8 @@ for _name, _before, _after in (
      'labels_text+=" and ${slot_label[slot]}"'),
     ("exit-code", '    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]]', '    nice -n 10 run-gate "$@"\n    return 0\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]]'),
     # CTL-57: the memory-PSI admission after a slot is held
-    ("psi-threshold", 'BEGIN { exit !(m + 0 >= 3) }', 'BEGIN { exit !(m + 0 > 3) }'),
+    ("psi-threshold", 'BEGIN { exit !(m + 0 >= 10) }', 'BEGIN { exit !(m + 0 > 10) }'),
+    ("psi-window", 'sub("avg60=", "", $3); print $3', 'sub("avg10=", "", $2); print $2'),
     ("psi-unreadable-quiet", "    ''|*[!0-9.]*|.*|*.|*.*.*) return 2 ;;", "    ''|*[!0-9.]*|.*|*.|*.*.*) return 1 ;;"),
     ("psi-unreadable-waits", '(( state != 2 )) || memory_refuse_unreadable\n  (( state == 0 )) || return 0',
      '(( state != 2 )) || state=0\n  (( state == 0 )) || return 0'),

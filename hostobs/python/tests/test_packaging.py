@@ -427,14 +427,17 @@ class Packaging(unittest.TestCase):
         # The claim about the observer socket follows the shipped unit.
         self.assertTrue((project_root / "deploy/systemd/hostobs-observer.socket").is_file())
         for document in (consumers, readme):
-            self.assertIn("No hostobs probe currently serves `annotate`", document)
+            self.assertIn("The probe serves `annotate` on the observer socket", document)
             self.assertIn("`deploy/` installs the observer socket", document)
             self.assertNotIn("does not install an observer socket", document)
             self.assertNotIn("Not available yet:** the observer socket", document)
-            self.assertIn("prints a notice and exits 0", document)
+            self.assertIn("exits 0 once the probe accepts the annotation", document)
+            self.assertIn("When the annotation cannot be written", document)
+            self.assertIn("`hostobs-mark` prints a notice and exits 0", document)
             self.assertIn("membership in the `hostobs-observer` group", document)
+            self.assertNotIn("No hostobs probe currently serves `annotate`", document)
+            self.assertNotIn("Once the probe serves `annotate`", document)
         self.assertIn("adding `--require` makes it exit 1", consumers)
-        self.assertIn("Once the probe serves `annotate`", consumers)
         # Earlier false claims must not come back.
         self.assertNotIn("wheel is built by `cmru handler wheel-build`", packaging)
         self.assertNotIn("A1's CMRU release contract uses", packaging)

@@ -546,6 +546,19 @@ mod tests {
                 }
             }
         }
+
+        fn annotate(
+            &mut self,
+            conn: crate::hub::ConnId,
+            peer: &crate::conn::Peer,
+            args: &crate::backend::AnnotateArgs,
+        ) -> Result<crate::backend::AnnotateReply, crate::backend::AnnotateRefusal> {
+            self.fixed.annotate(conn, peer, args)
+        }
+
+        fn connection_closed(&mut self, conn: crate::hub::ConnId) {
+            self.fixed.connection_closed(conn);
+        }
     }
 
     struct OverfullBackend {
@@ -568,6 +581,19 @@ mod tests {
             _max_rows: u32,
         ) -> Result<TickData, BackendError> {
             Ok(self.tick.clone())
+        }
+
+        fn annotate(
+            &mut self,
+            conn: crate::hub::ConnId,
+            peer: &crate::conn::Peer,
+            args: &crate::backend::AnnotateArgs,
+        ) -> Result<crate::backend::AnnotateReply, crate::backend::AnnotateRefusal> {
+            self.fixed.annotate(conn, peer, args)
+        }
+
+        fn connection_closed(&mut self, conn: crate::hub::ConnId) {
+            self.fixed.connection_closed(conn);
         }
     }
 

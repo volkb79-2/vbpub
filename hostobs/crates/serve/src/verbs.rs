@@ -1,5 +1,5 @@
 //! The verb table of WIRE.md section 4.3 as `const` data: one row per verb with its level
-//! mask, its reply shape, whether this package serves it and whether it is reserved (4.13).
+//! mask, its reply shape, the level mask this package serves and whether it is reserved (4.13).
 //!
 //! A verb that is reserved (M5/M6) or known but not served yet answers `unknown-verb` and is
 //! absent from `hello.verbs`; `forbidden` is still judged from the full table (design R11), so
@@ -28,7 +28,7 @@ pub struct Verb {
     /// The reply shape.
     pub shape: Shape,
     /// Whether this package serves it.
-    pub served: bool,
+    pub served: u8,
     /// Whether the verb is reserved by an M5/M6 package (WIRE.md section 4.13).
     pub reserved: bool,
 }
@@ -39,6 +39,12 @@ impl Verb {
     pub const fn at(&self, level: Level) -> bool {
         self.levels & level.bit() != 0
     }
+
+    /// Whether this build serves the verb at `level`.
+    #[must_use]
+    pub const fn served_at(&self, level: Level) -> bool {
+        self.served & level.bit() != 0
+    }
 }
 
 const OBSERVE: u8 = Level::Observe.bit();
@@ -48,7 +54,7 @@ const CONTROL: u8 = Level::Control.bit();
 const TELEMETRY: u8 = OBSERVE | OPERATOR;
 const EVERY: u8 = TELEMETRY | OBSERVER | CONTROL;
 
-const fn row(name: &'static str, levels: u8, shape: Shape, served: bool, reserved: bool) -> Verb {
+const fn row(name: &'static str, levels: u8, shape: Shape, served: u8, reserved: bool) -> Verb {
     Verb {
         name,
         levels,
@@ -61,33 +67,53 @@ const fn row(name: &'static str, levels: u8, shape: Shape, served: bool, reserve
 /// The number of rows of [`VERBS`].
 pub const VERB_COUNT: usize = 25;
 
+/// Event names registered by WIRE.md §4.12; grammar-valid unregistered names remain accepted.
+pub const REGISTERED_EVENT_NAMES: [&str; 10] = [
+    "run",
+    "lane",
+    "candidate",
+    "candidate.prep",
+    "candidate.build",
+    "candidate.run",
+    "txn",
+    "txn.step",
+    "thrashguard.freeze",
+    "thrashguard.thaw",
+];
+
 /// The verb table (WIRE.md section 4.3, in the table's order).
 pub static VERBS: [Verb; VERB_COUNT] = [
-    row("hello", EVERY, Shape::Json, true, false),
-    row("status", TELEMETRY | CONTROL, Shape::Json, true, false),
-    row("current", TELEMETRY, Shape::Block, true, false),
-    row("subscribe", TELEMETRY, Shape::Block, true, false),
-    row("unsubscribe", TELEMETRY, Shape::Json, true, false),
-    row("snapshot_at", TELEMETRY, Shape::Block, false, false),
-    row("series_batch", TELEMETRY, Shape::Block, false, false),
-    row("events", TELEMETRY | CONTROL, Shape::Json, false, false),
-    row("spans", TELEMETRY | CONTROL, Shape::Json, false, false),
-    row("procs", TELEMETRY, Shape::Json, false, false),
-    row("annotate", OBSERVER | CONTROL, Shape::Json, false, false),
-    row("export", OPERATOR, Shape::Block, false, true),
-    row("resource-limits", OBSERVER, Shape::Json, false, true),
-    row("window-open", OBSERVER, Shape::Json, false, true),
-    row("window-close", OBSERVER, Shape::Json, false, true),
-    row("version", CONTROL, Shape::Json, false, true),
-    row("host", CONTROL, Shape::Json, false, true),
-    row("session.start", CONTROL, Shape::Json, false, true),
-    row("session.stop", CONTROL, Shape::Json, false, true),
-    row("session.status", CONTROL, Shape::Json, false, true),
-    row("session.watch", CONTROL, Shape::Json, false, true),
-    row("session.list", CONTROL, Shape::Json, false, true),
-    row("session.spans", CONTROL, Shape::Json, false, true),
-    row("gc", CONTROL, Shape::Json, false, true),
-    row("reload", CONTROL, Shape::Json, false, true),
+    row("hello", EVERY, Shape::Json, EVERY, false),
+    row(
+        "status",
+        TELEMETRY | CONTROL,
+        Shape::Json,
+        TELEMETRY | CONTROL,
+        false,
+    ),
+    row("current", TELEMETRY, Shape::Block, TELEMETRY, false),
+    row("subscribe", TELEMETRY, Shape::Block, TELEMETRY, false),
+    row("unsubscribe", TELEMETRY, Shape::Json, TELEMETRY, false),
+    row("snapshot_at", TELEMETRY, Shape::Block, 0, false),
+    row("series_batch", TELEMETRY, Shape::Block, 0, false),
+    row("events", TELEMETRY | CONTROL, Shape::Json, 0, false),
+    row("spans", TELEMETRY | CONTROL, Shape::Json, 0, false),
+    row("procs", TELEMETRY, Shape::Json, 0, false),
+    row("annotate", OBSERVER | CONTROL, Shape::Json, OBSERVER, false),
+    row("export", OPERATOR, Shape::Block, 0, true),
+    row("resource-limits", OBSERVER, Shape::Json, 0, true),
+    row("window-open", OBSERVER, Shape::Json, 0, true),
+    row("window-close", OBSERVER, Shape::Json, 0, true),
+    row("version", CONTROL, Shape::Json, 0, true),
+    row("host", CONTROL, Shape::Json, 0, true),
+    row("session.start", CONTROL, Shape::Json, 0, true),
+    row("session.stop", CONTROL, Shape::Json, 0, true),
+    row("session.status", CONTROL, Shape::Json, 0, true),
+    row("session.watch", CONTROL, Shape::Json, 0, true),
+    row("session.list", CONTROL, Shape::Json, 0, true),
+    row("session.spans", CONTROL, Shape::Json, 0, true),
+    row("gc", CONTROL, Shape::Json, 0, true),
+    row("reload", CONTROL, Shape::Json, 0, true),
 ];
 
 /// The row named `name` (the verb's bytes between its quotes), if the table has one.
@@ -101,7 +127,7 @@ pub fn find(name: &[u8]) -> Option<&'static Verb> {
 pub fn served_at(level: Level) -> Vec<&'static str> {
     let mut names = Vec::new();
     for verb in &VERBS {
-        if verb.served && !verb.reserved && verb.at(level) {
+        if verb.served_at(level) && !verb.reserved && verb.at(level) {
             names.push(verb.name);
         }
     }
@@ -110,8 +136,10 @@ pub fn served_at(level: Level) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find, served_at, Shape, VERBS, VERB_COUNT};
+    use super::{find, served_at, Shape, REGISTERED_EVENT_NAMES, VERBS, VERB_COUNT};
     use crate::limits::Level;
+
+    const EVENT_NAMES_FIXTURE: &str = include_str!("../../../fixtures/wire/event-names.json");
 
     const OBS: u8 = Level::Observe.bit();
     const OPR: u8 = Level::Operator.bit();
@@ -126,32 +154,32 @@ mod tests {
 
     #[test]
     fn all_25_rows_are_pinned_independently_of_the_static_array() {
-        let expected: [(&str, u8, Shape, bool, bool); 25] = [
-            ("hello", ALL, Shape::Json, true, false),
-            ("status", TEL | CTL, Shape::Json, true, false),
-            ("current", TEL, Shape::Block, true, false),
-            ("subscribe", TEL, Shape::Block, true, false),
-            ("unsubscribe", TEL, Shape::Json, true, false),
-            ("snapshot_at", TEL, Shape::Block, false, false),
-            ("series_batch", TEL, Shape::Block, false, false),
-            ("events", TEL | CTL, Shape::Json, false, false),
-            ("spans", TEL | CTL, Shape::Json, false, false),
-            ("procs", TEL, Shape::Json, false, false),
-            ("annotate", OBR | CTL, Shape::Json, false, false),
-            ("export", OPR, Shape::Block, false, true),
-            ("resource-limits", OBR, Shape::Json, false, true),
-            ("window-open", OBR, Shape::Json, false, true),
-            ("window-close", OBR, Shape::Json, false, true),
-            ("version", CTL, Shape::Json, false, true),
-            ("host", CTL, Shape::Json, false, true),
-            ("session.start", CTL, Shape::Json, false, true),
-            ("session.stop", CTL, Shape::Json, false, true),
-            ("session.status", CTL, Shape::Json, false, true),
-            ("session.watch", CTL, Shape::Json, false, true),
-            ("session.list", CTL, Shape::Json, false, true),
-            ("session.spans", CTL, Shape::Json, false, true),
-            ("gc", CTL, Shape::Json, false, true),
-            ("reload", CTL, Shape::Json, false, true),
+        let expected: [(&str, u8, Shape, u8, bool); 25] = [
+            ("hello", ALL, Shape::Json, ALL, false),
+            ("status", TEL | CTL, Shape::Json, TEL | CTL, false),
+            ("current", TEL, Shape::Block, TEL, false),
+            ("subscribe", TEL, Shape::Block, TEL, false),
+            ("unsubscribe", TEL, Shape::Json, TEL, false),
+            ("snapshot_at", TEL, Shape::Block, 0, false),
+            ("series_batch", TEL, Shape::Block, 0, false),
+            ("events", TEL | CTL, Shape::Json, 0, false),
+            ("spans", TEL | CTL, Shape::Json, 0, false),
+            ("procs", TEL, Shape::Json, 0, false),
+            ("annotate", OBR | CTL, Shape::Json, OBR, false),
+            ("export", OPR, Shape::Block, 0, true),
+            ("resource-limits", OBR, Shape::Json, 0, true),
+            ("window-open", OBR, Shape::Json, 0, true),
+            ("window-close", OBR, Shape::Json, 0, true),
+            ("version", CTL, Shape::Json, 0, true),
+            ("host", CTL, Shape::Json, 0, true),
+            ("session.start", CTL, Shape::Json, 0, true),
+            ("session.stop", CTL, Shape::Json, 0, true),
+            ("session.status", CTL, Shape::Json, 0, true),
+            ("session.watch", CTL, Shape::Json, 0, true),
+            ("session.list", CTL, Shape::Json, 0, true),
+            ("session.spans", CTL, Shape::Json, 0, true),
+            ("gc", CTL, Shape::Json, 0, true),
+            ("reload", CTL, Shape::Json, 0, true),
         ];
         assert_eq!(VERBS.len(), expected.len());
         let rows = VERBS.iter().zip(expected.iter());
@@ -231,10 +259,10 @@ mod tests {
             assert_eq!(verb.shape, expect, "{}", verb.name);
             let served = matches!(
                 verb.name,
-                "hello" | "status" | "current" | "subscribe" | "unsubscribe"
+                "hello" | "status" | "current" | "subscribe" | "unsubscribe" | "annotate"
             );
-            assert_eq!(verb.served, served, "{}", verb.name);
-            assert!(!(verb.served && verb.reserved));
+            assert_eq!(verb.served != 0, served, "{}", verb.name);
+            assert!(!(verb.served != 0 && verb.reserved));
         }
         let reserved = VERBS.iter().filter(|verb| verb.reserved).count();
         assert_eq!(reserved, 14);
@@ -245,7 +273,24 @@ mod tests {
         let block = ["hello", "status", "current", "subscribe", "unsubscribe"];
         assert_eq!(served_at(Level::Observe), block);
         assert_eq!(served_at(Level::Operator), block);
-        assert_eq!(served_at(Level::Observer), ["hello"]);
+        assert_eq!(served_at(Level::Observer), ["hello", "annotate"]);
         assert_eq!(served_at(Level::Control), ["hello", "status"]);
+    }
+
+    #[test]
+    fn events_and_spans_remain_unserved() {
+        for name in ["events", "spans"] {
+            assert_eq!(find(name.as_bytes()).expect("verb row").served, 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn registered_event_names_match_the_wire_fixture() {
+        let entries = REGISTERED_EVENT_NAMES
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(EVENT_NAMES_FIXTURE.trim(), format!("[{entries}]"));
     }
 }
