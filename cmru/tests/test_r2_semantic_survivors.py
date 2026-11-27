@@ -123,6 +123,18 @@ def test_watchdog_process_tree_line_is_visible_before_failure_returns(monkeypatc
     assert "python child (pid 42)\n" in stream.visible
 
 
+def test_watchdog_process_tree_header_is_visible_before_failure_returns(monkeypatch):
+    stream = _ReaderVisibleStream()
+    watchdog = SimpleNamespace(render=lambda _source: "step stopped after no output", tree_lines=[])
+    result = SimpleNamespace(returncode=-9, warning=None, watchdog=watchdog)
+    monkeypatch.setattr(runner.procio, "run_streaming", lambda *_args, **_kwargs: result)
+
+    with contextlib.redirect_stderr(stream), pytest.raises(subprocess.CalledProcessError):
+        runner.run_command(["child"], Path("."), _LogSink())
+
+    assert "process tree before termination:\n" in stream.visible
+
+
 def test_dind_preflight_skips_when_docker_is_unavailable_by_default(monkeypatch):
     monkeypatch.setattr(release_preconditions.shutil, "which", lambda _name: None)
 
