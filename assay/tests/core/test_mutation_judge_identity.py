@@ -2334,12 +2334,316 @@ def _judge_components_for_sidecar(passthrough: tuple[str, ...] = ()):
     return judge, components
 
 
+def test_pythonpath_preinjection_snapshot_requires_valid_exact_insertions():
+    lane = make_lane(
+        argv=("pytest",), env={}, env_passthrough=("PYTHONPATH",)
+    )
+    original = make_plan(lane, passthrough_source={"PYTHONPATH": "consumer"})
+    injected = replace(
+        original,
+        env_effective={"PYTHONPATH": "/run/plugin:consumer"},
+        assay_pythonpath_insertions=("/run/plugin",),
+    )
+    original_judge = judge_sha256(tree_sha256="a" * 64, plan=original)
+    assert judge_sha256(tree_sha256="a" * 64, plan=injected) == original_judge
+
+    rewritten = replace(
+        injected, env_effective={"PYTHONPATH": "/run/plugin:rewritten"}
+    )
+    assert judge_sha256(tree_sha256="a" * 64, plan=rewritten) != original_judge
+
+    malformed_insertions = replace(injected, assay_pythonpath_insertions=("",))
+    assert (
+        judge_sha256(tree_sha256="a" * 64, plan=malformed_insertions)
+        != original_judge
+    )
+
+    no_snapshot = replace(injected, pre_injection_env_effective=None)
+    assert judge_sha256(tree_sha256="a" * 64, plan=no_snapshot) != original_judge
+
+
 def _rewrite_sidecar_names(document, names: list[str]) -> None:
     components = document["components"]
     components["passthrough_names"] = sorted(names)
     components["passthrough_values"] = {
         name: "b" * 64 for name in names if name in {"PATH", "PYTHONPATH"}
     }
+
+
+def test_sidecar_writer_refuses_invalid_judges_and_oversized_metadata(
+    tmp_path: Path,
+):
+    state_dir = tmp_path / "invalid-judge-state"
+    with pytest.raises(
+        ValueError, match="judge identity must be a SHA-256 digest"
+    ):
+        mutation_store.write_judge_components(
+            state_dir, judge="not-a-digest", components={}
+        )
+    assert not state_dir.exists()
+
+    judge, components = _judge_components_for_sidecar()
+    oversized = {**components, "padding": "x" * mutation_store._JUDGE_COMPONENTS_LIMIT}
+    large_state_dir = tmp_path / "oversized-state"
+    with pytest.raises(ValueError, match="metadata exceeds its size limit"):
+        mutation_store.write_judge_components(
+            large_state_dir, judge=judge, components=oversized
+        )
+    assert large_state_dir.is_dir()
+    assert not (large_state_dir / ".diagnostics").exists()
+
+
+@pytest.mark.parametrize("remove_temp_first", [False, True])
+def test_sidecar_writer_closes_and_removes_temp_after_stream_open_failure(
+    tmp_path: Path, monkeypatch, remove_temp_first: bool
+):
+    judge, components = _judge_components_for_sidecar()
+    state_dir = tmp_path / "state"
+    opened_descriptors: list[int] = []
+
+    def fail_fdopen(descriptor, mode):
+        assert mode == "wb"
+        opened_descriptors.append(descriptor)
+        if remove_temp_first:
+            temporary_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+            temporary_path.unlink()
+        raise OSError("injected sidecar stream-open failure")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(mutation_store.os, "fdopen", fail_fdopen)
+        with pytest.raises(OSError, match="injected sidecar stream-open failure"):
+            mutation_store.write_judge_components(
+                state_dir, judge=judge, components=components
+            )
+
+    assert len(opened_descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened_descriptors[0])
+    sidecar_dir = state_dir / ".diagnostics" / "judge-components"
+    assert sidecar_dir.is_dir()
+    assert list(sidecar_dir.iterdir()) == []
+
+
+def test_sidecar_writer_removes_temp_when_atomic_replace_fails(
+    tmp_path: Path, monkeypatch
+):
+    judge, components = _judge_components_for_sidecar()
+    state_dir = tmp_path / "state"
+    real_unlink = mutation_store.os.unlink
+
+    def remove_source_then_fail(source, destination, *, src_dir_fd, dst_dir_fd):
+        assert destination == f"{judge}.json"
+        real_unlink(source, dir_fd=src_dir_fd)
+        raise OSError("injected sidecar replace failure")
+
+    monkeypatch.setattr(mutation_store.os, "replace", remove_source_then_fail)
+    with pytest.raises(OSError, match="injected sidecar replace failure"):
+        mutation_store.write_judge_components(
+            state_dir, judge=judge, components=components
+        )
+
+    sidecar_dir = state_dir / ".diagnostics" / "judge-components"
+    assert list(sidecar_dir.iterdir()) == []
+
+
+def test_sidecar_writer_removes_temp_after_file_fsync_failure(
+    tmp_path: Path, monkeypatch
+):
+    judge, components = _judge_components_for_sidecar()
+    state_dir = tmp_path / "state"
+    real_fsync = mutation_store._durable.fsync
+
+    def fail_sidecar_file_sync(descriptor):
+        target = os.readlink(f"/proc/self/fd/{descriptor}")
+        if target.endswith(".tmp"):
+            raise OSError("injected sidecar file sync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(
+        mutation_store._durable, "fsync", fail_sidecar_file_sync
+    )
+    with pytest.raises(OSError, match="injected sidecar file sync failure"):
+        mutation_store.write_judge_components(
+            state_dir, judge=judge, components=components
+        )
+
+    sidecar_dir = state_dir / ".diagnostics" / "judge-components"
+    assert list(sidecar_dir.iterdir()) == []
+
+
+def test_read_sidecar_reports_invalid_or_missing_sources_as_unavailable(
+    tmp_path: Path,
+):
+    missing_state = tmp_path / "missing-state"
+    assert mutation_store.read_judge_components(
+        missing_state, judge="not-a-digest"
+    ) is None
+    assert not missing_state.exists()
+    assert mutation_store.read_judge_components(
+        missing_state, judge="a" * 64
+    ) is None
+    assert not missing_state.exists()
+
+    empty_state = tmp_path / "empty-state"
+    empty_state.mkdir()
+    assert mutation_store.read_judge_components(
+        empty_state, judge="a" * 64
+    ) is None
+    assert not (empty_state / ".diagnostics").exists()
+
+
+def test_legacy_v1_generation_sidecar_is_unavailable(tmp_path: Path):
+    judge = "a" * 64
+    legacy_dir = tmp_path / "state" / "judges" / judge
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / mutation_store.JUDGE_COMPONENTS_NAME).write_text(
+        json.dumps(
+            {
+                "schema": "assay-judge-components/1",
+                "judge_sha256": judge,
+                "components": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert mutation_store.read_judge_components(
+        tmp_path / "state", judge=judge
+    ) is None
+
+
+@pytest.mark.parametrize("sidecar_kind", ["directory", "oversized"])
+def test_reader_refuses_nonregular_or_oversized_sidecars(
+    tmp_path: Path, sidecar_kind: str
+):
+    judge = "a" * 64
+    sidecar_dir = tmp_path / ".diagnostics" / "judge-components"
+    sidecar_dir.mkdir(parents=True)
+    sidecar = sidecar_dir / f"{judge}.json"
+    if sidecar_kind == "directory":
+        sidecar.mkdir()
+    else:
+        sidecar.write_bytes(b"x" * (mutation_store._JUDGE_COMPONENTS_LIMIT + 1))
+
+    assert mutation_store.read_judge_components(
+        tmp_path, judge=judge
+    ) is None
+
+
+def test_reader_rechecks_the_size_after_reading_a_growing_sidecar(
+    tmp_path: Path, monkeypatch
+):
+    judge = "a" * 64
+    sidecar_dir = tmp_path / ".diagnostics" / "judge-components"
+    sidecar_dir.mkdir(parents=True)
+    sidecar = sidecar_dir / f"{judge}.json"
+    sidecar.write_bytes(b"x" * (mutation_store._JUDGE_COMPONENTS_LIMIT + 1))
+    real_fstat = mutation_store.os.fstat
+
+    def stale_fstat(descriptor):
+        info = real_fstat(descriptor)
+        if os.readlink(f"/proc/self/fd/{descriptor}") == str(sidecar):
+            return SimpleNamespace(st_mode=info.st_mode, st_size=0)
+        return info
+
+    monkeypatch.setattr(mutation_store.os, "fstat", stale_fstat)
+    assert mutation_store.read_judge_components(tmp_path, judge=judge) is None
+
+
+def test_reader_io_error_closes_sidecar_descriptor_and_degrades_to_unavailable(
+    tmp_path: Path, monkeypatch
+):
+    judge, components = _judge_components_for_sidecar()
+    mutation_store.write_judge_components(
+        tmp_path, judge=judge, components=components
+    )
+    opened_descriptors: list[int] = []
+
+    def fail_fdopen(descriptor, mode):
+        assert mode == "rb"
+        opened_descriptors.append(descriptor)
+        raise OSError("injected sidecar read failure")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(mutation_store.os, "fdopen", fail_fdopen)
+        result = mutation_store.read_judge_components(tmp_path, judge=judge)
+
+    assert result is None
+    assert len(opened_descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened_descriptors[0])
+
+
+@pytest.mark.parametrize("raw", [b"\xff", b"{", b"[" * 2000 + b"]" * 2000])
+def test_reader_refuses_invalid_utf8_json_and_nested_sidecars(
+    tmp_path: Path, raw: bytes
+):
+    judge = "a" * 64
+    sidecar_dir = tmp_path / ".diagnostics" / "judge-components"
+    sidecar_dir.mkdir(parents=True)
+    (sidecar_dir / f"{judge}.json").write_bytes(raw)
+
+    assert mutation_store.read_judge_components(tmp_path, judge=judge) is None
+
+
+def test_reader_refuses_wrong_schema_shape_and_component_digests(tmp_path: Path):
+    judge, components = _judge_components_for_sidecar()
+    mutation_store.write_judge_components(
+        tmp_path, judge=judge, components=components
+    )
+    sidecar = (
+        tmp_path / ".diagnostics" / "judge-components" / f"{judge}.json"
+    )
+    baseline = json.loads(sidecar.read_bytes())
+    malformed_documents = (
+        [],
+        {**baseline, "schema": "assay-judge-components/1"},
+        {**baseline, "judge_sha256": "b" * 64},
+        {**baseline, "components": []},
+        {
+            **baseline,
+            "components": {**baseline["components"], "unexpected": "field"},
+        },
+        {
+            **baseline,
+            "components": {**baseline["components"], "tree": "not-a-digest"},
+        },
+    )
+    for document in malformed_documents:
+        sidecar.write_text(json.dumps(document), encoding="utf-8")
+        assert mutation_store.read_judge_components(
+            tmp_path, judge=judge
+        ) is None
+
+
+def test_judge_component_difference_rejects_nonmapping_passthrough_values():
+    _, current = _judge_components_for_sidecar()
+    previous_components = {**current, "passthrough_values": []}
+
+    result = mutation._judge_component_differences(
+        current, {"a" * 64: previous_components}
+    )
+
+    assert result["components_available"] is False
+    assert result["components"] == []
+    assert result["passthrough_names"] == []
+
+
+def test_judge_component_difference_names_changed_path_values_exactly():
+    _, current = _judge_components_for_sidecar(("PATH",))
+    previous_components = {
+        **current,
+        "passthrough_values": {**current["passthrough_values"], "PATH": "f" * 64},
+    }
+
+    result = mutation._judge_component_differences(
+        current, {"a" * 64: previous_components}
+    )
+
+    assert result["components_available"] is True
+    assert result["components"] == ["passthrough_values"]
+    assert result["passthrough_names"] == ["PATH"]
+    assert result["passthrough_name_diagnostic"] == "passthrough name: PATH"
 
 
 def test_hostile_sidecar_names_make_components_unavailable(tmp_path: Path):
@@ -2423,6 +2727,34 @@ def test_legacy_resume_store_without_component_digests_still_rejects_safely(
     assert "judge component digests are unavailable" in stderr
     assert "/workspaces/instance-a" not in stderr
     assert "/workspaces/instance-b" not in stderr
+
+
+def test_resume_over_component_generation_bound_reports_unavailable(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, capsys
+):
+    _seed(git_repo, _BLIND_JUDGE)
+    git_repo.write("assay.toml", _INSTANCE_LANE)
+    git_repo.commit_all("pass an instance-scoped fact through")
+    state_dir = tmp_path / "state"
+
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-a")
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert len(_candidates(first)) == 1
+    capsys.readouterr()
+
+    # The direct diagnostic test pins the production cap of 32. Tighten it
+    # here so this resume exercises the over-cap run path with one generation.
+    monkeypatch.setattr(mutation, "MAX_JUDGE_MISMATCH_GENERATIONS", 0)
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-b")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+
+    assert _resumed(second) == 0
+    assert len(_candidates(second)) == 1
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert resume["rejected_total"] == 1
+    assert resume["judge_mismatch_components_available"] is False
+    assert resume["judge_mismatch_components"] == []
+    assert "judge component digests are unavailable" in capsys.readouterr().err
 
 
 def test_different_assay_injected_pythonpath_dirs_keep_one_judge_identity(
