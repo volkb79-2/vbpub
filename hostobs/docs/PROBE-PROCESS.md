@@ -16,6 +16,9 @@ and why it lost.
 | **sampler** (`hostobs-sampler`) | the `kernel` readers over `RealFs`, the `IncarnationRegistry`, the clocks; builds one immutable `Tick` per `tick_ms` and publishes it as `Arc<Tick>` | touch a socket, the `Server` or the hub; wait for the server |
 | **store writer** (`hostobs-writer`) | `crates/store` and its existing bounded writer queue (`writer_queue_bytes`, drops counted); later publishes an immutable `Arc` read index (P-15) | run on the sampler or server thread. **Placed, not spawned**: the live slice (P-09/P-10/P-11) starts no writer; P-16 spawns it |
 
+The probe opens one store during startup, before the sampler is spawned, and keeps it alive
+until `driver::run` returns. It records nothing yet.
+
 - **Publication.** `Published` is a `Mutex<Arc<Tick>>`. The sampler swaps the `Arc` under the
   lock (`mem::replace`) and drops the old one after unlocking; the server loop clones the `Arc`
   once per turn in `begin_turn` and drops its previous one after unlocking (§(b)). No lock is held
@@ -237,7 +240,7 @@ no path is compiled in. The installed path is `/etc/hostobs/hostobsd.toml`, and 
 unit/P-11 passes it explicitly. The file is read whole, bounded to 64 KiB, and parsed with
 `toml::from_str` into serde-derived structs carrying `toml::Spanned` fields. `toml` and `serde`
 are workspace dependencies from the P-09 lock patch; `deny_unknown_fields` is applied at the
-root, `[probe]` and `[limits]`. **Every key is required and there are no others:**
+root, `[probe]`, `[limits]` and `[store]`. **Every key is required and there are no others:**
 
 ```toml
 [probe]
@@ -247,11 +250,31 @@ cgroup_root = "/sys/fs/cgroup"     # absolute, no `..`; the sampler walks under 
 
 [limits]
 max_rows = 1024                    # D8; probe-wide; 1..=4096
+
+[store]
+dir = "/var/lib/hostobs/probe"     # durable cold and events root
+tmpfs_dir = "/run/hostobs/tiers"   # hot and warm tiers; must be on tmpfs
+events_cap_bytes = 67108864        # positive, at most 16 GiB, at least one segment bound
+events_ring_bytes = 4194304        # 4096..=1 GiB
 ```
 
 - `levels` is a non-empty subset of `observe`, `operator` and `observer`, with no duplicates.
   The shipped `deploy/hostobsd.toml` serves all three.
 - `cgroup_root` is absolute, has no `..` component and contains no NUL or control character.
+- `store.dir` and `store.tmpfs_dir` are absolute, have no `..` component or control character,
+  differ, and neither contains the other. Startup refuses an unknown or non-tmpfs
+  `store.tmpfs_dir`; it never redirects tmpfs tiers below durable `store.dir`.
+- `events_cap_bytes` is checked against the configured events segment file bound, and
+  `events_ring_bytes` is large enough for the largest valid event/1 record.
+- **Store startup limit (M3 B4).** The probe opens the store before `sampler::spawn` and before
+  recording anything. A durable-directory failure (including a full disk or directory fsync
+  error), a symlinked root, or a tier directory over its entry bound stops startup with exit 2;
+  no samples or events have been recorded. `RestartPreventExitStatus=2` prevents an automatic
+  service restart. A non-tmpfs path, unreadable mount table, or missing mount entry for
+  `store.tmpfs_dir` is collapsed to `hostobs-probe: store.tmpfs_dir must be on tmpfs; store.dir is durable storage`,
+  without the underlying mount cause. Other store-open errors are printed
+  as `hostobs-probe: store: <StoreError>`; that prefix does not identify `store.dir` or
+  `store.tmpfs_dir` as a key, although some error variants include a path or segment name.
 - The only probe-wide spelling is the one shown above. A per-level form such as
   `[limits.observe] max_rows = 2` is an unknown-field refusal, not a silent override (P-06
   backlog B3).
@@ -365,7 +388,8 @@ R27); only the hub.rs module doc was stale, and this package fixes it.
    ignores `SIGPIPE`, so a gone peer is `EPIPE`). A connection still open after a turn whose poll
    reported `POLLHUP` or `POLLERR` is `finish`ed.
 7. Never bind, install a signal handler, use `SO_PEERPIDFD` or spawn a process. The P-11 systemd
-   units set `RestartPreventExitStatus=2`, so a start-up refusal does not restart in a loop.
+   units set `RestartPreventExitStatus=2`, so `Restart=` does not retry a start-up refusal;
+   socket activation can start it again until the start limit.
 8. Tests (§(h)): hello, `current`, `subscribe` over a real socket on `FixedBackend` (`Turn` via its
    `seq` field);
    a slow reader (the hub sheds, others are served); EOF; refused unknown and missing fd names;

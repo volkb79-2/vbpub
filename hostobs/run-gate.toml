@@ -18,6 +18,9 @@ python3 -I tools/check-lints-mutation.py .''',
 ]
 clean_tree = true
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while cargo fmt/clippy/doc/deny and
+# mutation lint steps run; no 300s output cadence is guaranteed; see RG-326.
+stall_timeout = "20m"
 
 [lanes.selftest]
 kind = "command"
@@ -35,16 +38,19 @@ python3 tools/crate-floors.py cov-summary.json coverage-floors.toml''',
 ]
 clean_tree = true
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while nextest and cargo test run;
+# output cadence is not guaranteed within 300s; no bound is measured; see RG-326.
+stall_timeout = "20m"
 artifacts = ["lcov.info", "cov-summary.json"]
 
 # The Python conformance lane (plan v4 §B.5, HOB-4): the independent reference decoders, the
-# fixture regeneration checks, the `hostobs_client` tests, its zipapp packaging test and the
-# real activated-probe socket test, standard library only, no network. Packaging builds a
-# zipapp in `python/tests/test_packaging.py`; `hostobs/cmru.toml` is not present yet, and a
-# CMRU wheel-build contract is planned for package A1. The
-# lane builds the probe offline and exports its executable path; missing lane wiring makes the
-# real-socket test fail rather than skip. It runs on `tester-unified-rust` because that is
-# the image every hostobs lane uses;
+# fixture regeneration checks (byte-exact for `fixtures/event/`), the `hostobs_client` tests,
+# its zipapp packaging test and the real activated-probe socket test, standard library only, no
+# network. Packaging builds a zipapp in `python/tests/test_packaging.py`;
+# `hostobs/cmru.toml` is not present yet, and a CMRU wheel-build contract is planned for
+# package A1. The lane builds the probe offline and exports its executable path; missing lane
+# wiring makes the real-socket test fail rather than skip. It runs on `tester-unified-rust`
+# because that is the image every hostobs lane uses;
 # its `python3` is Debian's apt package (CPython 3.13.5 on Debian 13, no pip), not the CPython
 # 3.14.10 the WIRE.md §7.8 absolute memory bound was measured on, so that one bound is skipped
 # here (its skip reason names the pinned version) and the growth and line-count gates run.
@@ -53,7 +59,7 @@ artifacts = ["lcov.info", "cov-summary.json"]
 kind = "command"
 environment = "tester-unified-rust"
 network = "none"
-description = "Build the probe offline, then run Python reference decoders, fixture checks, hostobs_client and packaging tests, and the real-socket probe test (standard library only)."
+description = "Build the probe offline, then run Python reference decoders, fixture checks (byte-exact event regeneration), hostobs_client and packaging tests, and the real-socket probe test (standard library only)."
 argv = [
   "bash", "-c",
   '''set -eu
@@ -72,6 +78,9 @@ python3 -B -I -W error::ResourceWarning -m unittest discover -s python/tests''',
 ]
 clean_tree = true
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during offline cargo build/metadata
+# and unittest discovery; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "10m"
 
 # Assay R1 over the four functional crates (hostobs plan v4, M1 row: "+ assay-r1
 # once R-2 lands"; assay B243/B523 consumer integration).
@@ -164,10 +173,16 @@ exit "$rc"''',
 exit_map = { "0" = "PASS", "2" = "ERROR" }
 clean_tree = true
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION — this lane shells out to `assay.cli run
+# assay-r1`, which writes its own progress/heartbeat to the file
+# .assay/progress-assay-r1.jsonl; the lane's stdout then only carries the
+# verdict summary `cat`ed at the end. Declared EQUAL to the lane budget;
+# no silence bound has been measured yet (RG-326).
 artifacts = ["lcov.info", "cov-summary.json", ".assay/verdict-assay-r1.json"]
 
 # Assay Rust R2 (mutation, by ingesting cargo-mutants' report) over the CHANGED lines of the
-# five judged crates (assay B245 U8b). The judged lane lives in `assay.toml [lanes.assay-r2]`
+# six judged crates (assay B245 U8b). The judged lane lives in `assay.toml [lanes.assay-r2]`
 # (flags, source roots, output directory, the budget estimate and their reasons); this lane,
 # like `assay-r1` above, only says how to REACH the judge in this image (source Assay from the
 # worktree, no install).
@@ -248,6 +263,12 @@ clean_tree = true
 # (4h, the per-attempt bound, an estimate; the first real run sets the figure), so assay can
 # still write its structured BUDGET_EXCEEDED/LANE_TIMEOUT verdict before this hard limit.
 budget = "5h"
+stall_timeout = "5h"
+# RG-320/H1: SILENT BY CONSTRUCTION — `assay.cli run assay-r2` writes candidate
+# progress to .assay/progress-assay-r2.jsonl, a FILE this command lane never
+# reads, so its stdout is empty until the summary; one candidate can exceed
+# 300 s with no progress record (R-40i / RG-326). Declared EQUAL to the budget;
+# no silence bound has been measured yet.
 artifacts = [".assay/verdict-assay-r2.json"]
 
 # A hard container memory cap. Both first attempts (2026-11-18) ran this lane in a container with NO

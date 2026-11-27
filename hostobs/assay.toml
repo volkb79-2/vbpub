@@ -25,9 +25,10 @@
 #   added and declared `bins/probe/src/server.rs`, 58 since P5b-2b added and declared
 #   `bins/probe/src/registry.rs` and `tick.rs`, 60 after P10 added and declared
 #   `bins/probe/src/live.rs` and `sampler.rs`, 61 now after P09 added and declared
-#   `crates/kernel/src/activation.rs`, `bins/probe/src/config.rs` and `driver.rs`, still 61
+#   `crates/kernel/src/activation.rs`, `bins/probe/src/config.rs` and `driver.rs`, still 61;
 #   after P12 moved 14 executable files (13 from `bins/probe` and `proto/src/hub.rs`) into
-#   `crates/serve`; the measurements below are the historical 33)
+#   `crates/serve` (the measurements below are the historical 33); 62 after M3 B3 added
+#   `crates/proto/src/event.rs`
 #   coverage:   15100 / 15723 executable lines = 96.0377 %
 #               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
 #               kernel 93.52 % (2627/2809), store 94.71 % (7015/7407)
@@ -165,6 +166,7 @@ targets = [
   "crates/proto/src/dict.rs",
   "crates/proto/src/envelope.rs",
   "crates/proto/src/error.rs",
+  "crates/proto/src/event.rs",
   "crates/proto/src/frame.rs",
   "crates/proto/src/quality.rs",
   "crates/proto/src/read.rs",
@@ -187,6 +189,7 @@ targets = [
   "crates/serve/src/verbs.rs",
   "crates/store/src/crc.rs",
   "crates/store/src/dictionary.rs",
+  "crates/store/src/dedupe.rs",
   "crates/store/src/error.rs",
   "crates/store/src/events.rs",
   "crates/store/src/format.rs",

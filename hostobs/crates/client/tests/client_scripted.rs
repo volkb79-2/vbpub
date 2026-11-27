@@ -159,6 +159,24 @@ fn handshake_sends_the_prefix_alone_then_hello_with_corr_one() {
 }
 
 #[test]
+fn handshake_accepts_minor_one_server_and_status_request() {
+    let hello_result = hello_json("observe", &[], BOOT, 7).replace("\"minor\":2", "\"minor\":1");
+    assert!(hello_result.contains("\"proto\":{\"major\":1,\"minor\":1}"));
+    let mut incoming = prefix(1, 1);
+    incoming.extend(rep_ok(1, &hello_result));
+    incoming.extend(rep_ok(2, "{}"));
+    let clock = clock();
+    let (script, rig) = script(&clock, incoming);
+    let mut client = open(script, Level::Observe, None).expect("minor-one server");
+
+    assert_eq!(client.hello().minor, 1);
+    let reply = client.request("status", "{}").expect("status reply");
+    assert_eq!(reply.result_json(), "{}");
+    let expected = frame(1, 2, b"{\"verb\":\"status\",\"args\":{}}");
+    assert!(rig.written.borrow().ends_with(&expected));
+}
+
+#[test]
 fn handshake_accepts_a_hello_exactly_at_its_own_frame_length() {
     let payload = "{\"verb\":\"hello\",\"args\":{\"client\":\"test\",\
                    \"proto\":{\"major\":1,\"minor\":2}}}";
@@ -1095,7 +1113,7 @@ fn drive(bytes: &[u8]) {
     }
 }
 
-/// Every kind a client call can name: the 46 wire kinds of `ProtoError`, the envelope kinds
+/// Every kind a client call can name: the 50 wire kinds of `ProtoError`, the envelope kinds
 /// and the client's own protocol, usage and transport names (the §10 codes are `ERROR_CODES`).
 const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-frame-type \
     unknown-frame-flags unknown-mode unsupported-version section-reserved \
@@ -1109,7 +1127,8 @@ const KNOWN_KINDS: &str = "truncated oversized-frame non-zero-reserved unknown-f
     dictionary-entry-control generation-exhausted stale-dictionary-generation rows-and-time \
     no-rows-or-time row-reference-not-entity column-reference-not-metric column-kind-mismatch \
     not-a-block section-order aggregation-not-permitted subject-without-time deadline \
-    generation-regressed json-text duplicate-key unknown-key missing-key wrong-type \
+    generation-regressed event-unknown-code event-field-bound event-text event-order \
+    json-text duplicate-key unknown-key missing-key wrong-type \
     unexpected-frame unknown-corr bad-reply end-counts hello-mismatch corr-exhausted io \
     timeout connection-lost bad-verb bad-args request-too-large bad-selection bad-client \
     bad-timeout no-reconnect";

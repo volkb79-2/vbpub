@@ -1,0 +1,20 @@
+[Unit]
+Description=thrashguard registrant UNIX socket
+After=systemd-tmpfiles-setup.service thrashguard-reader.socket
+Requires=thrashguard-reader.socket
+# The socket outlives the daemon on purpose (`Accept=no`): a client that connects
+# during a restart waits for the listener instead of being refused (design §3, D7).
+
+[Socket]
+ListenStream=/run/thrashguard/registrant/thrashguard.sock
+FileDescriptorName=registrant
+Accept=no
+SocketUser=root
+SocketGroup=thrashguard-registrant
+SocketMode=0660
+# The directory comes from tmpfiles.d, not DirectoryMode (which would be root:root).
+DirectoryMode=0750
+Service=thrashguard.service
+
+[Install]
+WantedBy=sockets.target

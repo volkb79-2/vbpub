@@ -54,9 +54,10 @@ _CANDIDATE_IDLE_FLOOR_SECONDS = 300.0
 _CANDIDATE_IDLE_WINDOW_MAX_SECONDS = 600.0
 _CANDIDATE_IDLE_CONTROL_GAP_MULTIPLIER = 2.0
 # RG-320 pauses an automatic stall clock only while memory PSI full avg10 > 5
-# and caps credited pressure at 1800s (run-gate-project/run_gate.py:719,
-# 8801-8885 at 5ea5145d6). The R2 lane's stall_timeout is 900s; cap each
-# child's effective idle age at 780s, then allow one 30s poll and the existing
+# and caps credited pressure at 1800s (run-gate-project/run_gate.py:722,
+# 8800-8867 at 5ea5145d657). This tool follows that signal and cap, then
+# constrains the credit further: each child's effective idle age is capped at
+# 780s to fit the R2 lane's 900s stall_timeout. Allow one 30s poll and the existing
 # 10s process-tree cleanup. The resulting 820s maximum leaves 80s for Run-Gate
 # to observe the timeout and prevents its stall watch from ending the lane first.
 _MAX_EFFECTIVE_IDLE_SECONDS = 780.0

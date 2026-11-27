@@ -510,26 +510,27 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "S16.3b — T3 explicit R2 base" in spec
 
 
-def test_r2_timeout_and_assay_source_contract_are_synchronized_across_user_docs():
+def test_r2_silence_and_assay_source_contract_are_synchronized_across_user_docs():
     readme, design, consumers = [
         path.read_text(encoding="utf-8") for path in DOCS
     ]
     for text in (readme, design, consumers):
         normalized = " ".join(text.split())
-        assert "1800 seconds" in normalized
-        assert "368" in normalized and "752" in normalized and "825" in normalized
+        assert "no elapsed-time limit" in normalized
+        assert "600-second no-output window" in normalized
+        assert "control_longest_output_gap_upper_bound" in normalized
+        assert "schema 8" in normalized
         assert "named `package-dir`" in normalized
         assert "Git worktree" in normalized
     assert "mutation source binding design" in readme
     assert "mutation-process-tree-isolation" in {
         _slug(line) for line in design.splitlines()
     }
-    assert "schema 6" in consumers
     contributing = " ".join(
         (ROOT / "docs" / "CONTRIBUTING.md").read_text(encoding="utf-8").split()
     )
-    assert "1800-second ceiling" in contributing
-    assert "timed-out candidate is inconclusive" in contributing
+    assert "600-second no-output window" in contributing
+    assert "outcome: timeout" in contributing
 
 
 def test_cmru_changelog_uses_the_real_canonical_history_validator():

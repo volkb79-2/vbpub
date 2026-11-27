@@ -4,13 +4,79 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed (R2 is a native Assay lane: shardable, resumable, load-independent)
+- `run-gate.toml`'s `[lanes.r2]` is `kind = "assay"` with `assay_lane = "r2"`
+  instead of a `kind = "command"` lane that drove Assay by hand (DIV2-BL-22). A
+  command lane could not shard: Run-Gate refuses `--shard`, `--merge-shards`,
+  `--carry-over` and `--only-candidates` on anything but a native R2 lane.
+  The lane declares `environment = "tester-unified"` (ephemeral),
+  `resource_observer = "cgprofile"`, `jobs = 2`, `clean_tree = false`, `budget =
+  "450m"` and `resources = {pids = 8192, memory = "2g", io_sync = "durable"}`
+  (no `resources.shared`: Run-Gate refuses sharding on a lane that declares
+  one). `io_sync = "durable"` REPLACES tester-unified's inherited `relaxed` and
+  refuses every `--io-sync` override, `strict` included (`run_gate.py:1187-1194`
+  and `:2188-2193`; `SPEC.md:961-966`), so every shard, merge and resume of this
+  lane runs under ONE mode and the installer's own `os.fsync` writes stay real
+  (`debian_install_v2/state.py:26`, `actions.py:388`, `config.py:733`,
+  `failure_notify.py:232`). Assay's own store writes are unaffected: they use
+  the raw `SYS_fsync` of `assay/src/assay/_durable.py:96-107`, which the relaxed
+  preload cannot intercept. The judge binds from the judged worktree's own
+  `assay/` source (RG-285), never a pinned zipapp.
+- `assay.toml`'s `[lanes.r2]` keeps its scope, rigor, argv, isolation and judge
+  policy, and its env is now DECLARED and checkout-RELATIVE
+  (`PYTHONPATH = ".:../../libraries/cowtree/src"`, `env_passthrough = ["PATH"]`).
+  `PYTHONPATH` is no longer a PASSTHROUGH at all, so no passthrough value can
+  carry a checkout path into `judge_sha256` and a seeded resume in a new
+  checkout keeps its records. That is a stronger statement than the earlier
+  one in this file (a checkout-relative passthrough value is stable too, but
+  only because of the value it happens to hold): the absolute `{worktree}`
+  value existed from `c2d7d6729` to `2ea1912ca` and produced the 14-record
+  rejection of 2026-11-24; `c17b2f5f9` made it relative the same evening and
+  the base commit `f57ae80e2` already carried that relative value, so the later
+  186-record rejection of 2026-11-25 happened WITH it. Its cause (from code and
+  recorded fingerprints, not reproduced): the old lane ran with liveness on,
+  Assay prepends a per-run `assay-liveness-*` temp dir to `PYTHONPATH`, and the
+  passthrough fingerprinted that effective value, so every run was a new judge.
+  cli-extended is deliberately NOT on that path: the tester-unified image installs
+  the released wheel, so the lane tests against it (AC-25, as `ciu/assay.toml`
+  does).
+- `judge.mutation.budget_per_candidate = "10m"`, explicit, replacing `auto`
+  (DIV2-BL-22). `auto` derives the bound from the baseline measured at START
+  (`max(3 x baseline, baseline + 60)`), so a quiet baseline (46.5 s -> 139.6 s)
+  followed by a loaded host ended eight `layout_policy.py` candidates as
+  `budget_exceeded` where a loaded baseline (97.8 s -> 293 s) let the same head
+  finish. 10m is twice that 293 s bound, under which all 194 candidates
+  completed: a CEILING for a slow or contended mutant, not a target. It is part
+  of the judge identity, so changing it rebinds every stored record.
+  `liveness = false`, as `libraries/iobench`'s `iobench-diff` lane declares: the
+  explicit 10m ceiling still ends a hung candidate, but without liveness it is
+  recorded exactly like a slow one and costs the full 600 s per attempt.
+- The shard artifacts are `.assay/verdict-r2.r2.shard<K>of3.json` and
+  `.assay/progress-r2.r2.shard<K>of3.jsonl`; the declared `artifacts` list keeps
+  the UNSHARDED spelling (`.assay/verdict-r2.json`, `.assay/progress-r2.jsonl`)
+  as `libraries/iobench/run-gate.toml` does -- Run-Gate appends the shard suffix
+  itself, and the list is disclosure only.
+- New `docs/R2-RUNBOOK.md` (the procedure the two TOML files point at): plan the
+  split, the three shard commands with `--base` and `--collect-store`, the merge
+  run seeded from all three stores with `--merge-shards 3` (the binding verdict),
+  and a seeded resume proved from the progress stream (`resumed_total > 0`;
+  the verdict JSON has no such field). No campaign was run from this change:
+  the documented plan is whole 194 / shards 58 + 72 + 64, and the host proof
+  stays DIV2-BL-22's open half.
+- The `installer.py:4044` survivor test now also asserts that NO create-path
+  `btrfs subvolume create` argv is planned (`actions.planned`), the same class of
+  assertion the other survivors got.
+
 ### Changed (R2 lane budget)
 - The `r2` budgets are 430m (assay) and 450m (run-gate). This is headroom for
   slow or loaded hosts, not a measured need: complete 194-candidate runs took
   174 to 224 min at 2 jobs. The `LANE_TIMEOUT` runs of 2026-11-25 never reached
   the lane bound (`814c5129` ended after 166 min under a 310m bound): their
   candidates exceeded the derived per-candidate bound, which follows the
-  baseline measured at start (DIV2-BL-22).
+  baseline measured at start (DIV2-BL-22). Both figures were measured on the
+  preceding command lane, which declared no `io_sync` and therefore ran under
+  tester-unified's RELAXED mode -- they are history for the sizing, not
+  measurements of the native lane's `durable` mode.
 
 ### Added (WP-10 P2, `io_benchmark_profile`)
 - New config key `io_benchmark_profile` next to `run_io_benchmark`, accepted

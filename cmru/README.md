@@ -1060,7 +1060,8 @@ and [KI-151](KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled
 It accepts the tag or the exact commit ID that `remote-gate` resolves from that
 tag. For example, use `run-gate --base cmru-v6.1.0 r2` when that is the
 controller-selected R2 floor tag.
-The standalone `r2` lane has no total wall budget or per-child elapsed limit.
+The standalone `r2` lane has no total wall budget and no elapsed-time limit for
+a child.
 CMRU samples child output growth at most every 30 seconds and prints a
 still-running line only after output has grown. A child that keeps printing is
 unbounded by the tool. Silence ends a child within its measured idle window;

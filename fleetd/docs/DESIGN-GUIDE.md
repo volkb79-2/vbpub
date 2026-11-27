@@ -73,18 +73,20 @@ were reported, `per-service-default` otherwise), while `reserve_services`
 carries the per-unit provenance (`reported` / `default` / `absent-optional`)
 so the plan evidence shows exactly which term produced each service's
 contribution. The fixed profile constant survives only for the
-no-per-service-fact case (a facts root that queried no service, or a table that
-never arrived), and the collector now emits `service_memory_min_reason` there
-rather than six null rows, so "collection failed" is a stated fact rather than
-an inference from an empty-looking table.
+no-per-service-fact case (every row is a failed query, as for a facts root that
+queried no service). For `/2`, the collector still emits six service rows, with a
+null reason on each unqueried `memory_min_bytes` and `load_state`; it does not
+emit `control_plane.service_memory_min_reason`. That optional-table field is
+retained only by the `/1` compatibility validator.
 
 Two sanity bounds are DERIVED from the same table rather than hand-tuned
 beside it: one service above 4 x its own documented floor, or a total above
 twice the documented floors, is refused with a reason (the host is not planned
 this wave) rather than clamped or summed. A clamped reserve would hide a bad
-drop-in; a refused one puts it in the plan evidence. The collector does not
-read parent `ctl.slice/memory.min`. Older facts may include
-`control_plane.memory_min_bytes`, which is accepted for compatibility and ignored. Then `P = memory.for_lanes_bytes - reserve_h`, O = other
+drop-in; a refused one puts it in the plan evidence. The parent
+`ctl.slice/memory.min` plays no part in the reserve: the collector reports it as
+`control_plane.memory_min_bytes`, and the planner ignores that field, in `/2` as
+in older `/1` facts. Then `P = memory.total_bytes - reserve_h`, O = other
 running expected charges + campaign_slots × instance_memory, and B = P ×
 overcommit - O. It derives worker slots from CPU capacity after other running
 workers and bounds them by
@@ -291,18 +293,25 @@ tool. It names the tester image for measurement evidence.
 
 The collector accepts a root directory so tests use synthetic `/proc` and
 `/sys` trees. Production collection reads the host-owned Geekbench record; it
-does not run the benchmark. Missing facts stay `null` with reasons. Planning
-resolves each service's reserve term separately (reported, documented default,
-or zero for an absent optional unit) and keeps the host profile's constant only
-for the case where no per-service fact exists at all; other required capacity
-facts still fail closed.
+does not run the benchmark. Collection emits `host-facts/2`. Measured and
+configured values are `{ "v": value }` or `{ "v": null, "reason": "..." }`;
+`reason` appears only with null. `schema`, `agent_version`, and `collected_utc`
+are plain metadata. `fleet facts validate` also accepts `/1` for this migration
+release, while the planner and campaign consume `/2` only. Planning resolves
+each service's reserve term separately (reported, documented default, or zero
+for an absent optional unit) and keeps the host profile's constant only for the
+case where no per-service fact exists at all; other required capacity facts
+still fail closed.
 
 Collection requires versioned `/etc/fleetd/facts.toml` policy and source-path
 configuration. `HOST_ROLE` is read from the configured host-setup environment
 file, not duplicated in fleetd policy; unknown or invalid roles remain null
 with a reason and cannot receive work. The CPU lane count comes from the
-online CPU list, and `memory.for_lanes_bytes` is raw `MemTotal`. Fleetd probes
-the fixed `CONTROL_PLANE_SERVICE_UNITS` list with `systemctl show -p MemoryMin`.
+online CPU list, and `memory.total_bytes` is raw `MemTotal`. Load averages come
+from `/proc/loadavg`; disks use `statvfs` on configured checkout and Docker
+roots. Gate-slice warm memory is `memory.current` minus
+`memory.stat[inactive_file]`. Fleetd probes the fixed
+`CONTROL_PLANE_SERVICE_UNITS` list with `systemctl show -p MemoryMin`.
 Each service is one of three terms: its reported value, its documented
 default when the fact is missing or implausible, or zero when a
 declared-optional unit is absent. Legacy parent-slice `memory_min_bytes` is
@@ -314,7 +323,12 @@ constant, so host setup can roll out service drop-ins without a flag day. Calibr
 the profile constant from measured p95 under load remains open as
 [FD-007b](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-007b-calibrate-profile-reserve-from-measured-p95-under-load).
 
-The demand schema validates `candidate`, `worker`, and `run` as its closed
+The optional `/etc/fleetd/facts.toml` additions describe the gate slice, disk
+roots, host reserve, admission policy, and per-host footprint/upload limits.
+They remain null with reasons when absent; fleetd does not invent defaults.
+`policy.host_reserve_bytes` is emitted once as `memory.host_reserve_bytes`.
+These new facts do not change today's planner decisions. The demand schema
+validates `candidate`, `worker`, and `run` as its closed
 vocabulary. This R2 candidate planner only accepts `unit = "candidate"`;
 other units fail with a clear input error until their placement meaning is
 specified.
@@ -459,9 +473,11 @@ baseline cache is already tracked as
 
 ## Deliberate limits
 
-Guard rules are owned by thrashguard (TG-1). Fleetd only reads the guard's
-`enabled` flag and owner-emitted runtime state for `host-facts/1`; it does not
-validate or apply rules. There is no daemon, socket, Docker, or retry service.
+Guard rules are owned by thrashguard (TG-1). Fleetd only reads
+`guard_present`, configuration digest, and owner-emitted runtime state for
+`host-facts/2`; it does not validate or apply rules. `frozen_units` stays null
+with a reason until a source is available. There is no daemon, socket, Docker,
+or retry service.
 Assay owns strict store merging. The future daemon is fleetd FD-011. The current Run-Gate selected-candidate
 interface also does not accept fleetd's host-specific RAM budget; the printed
 commands use the planned worker count while runtime limits remain host and lane
@@ -562,7 +578,7 @@ the library's `--overwrite-modified`, not by this package.
 
 A doctor earns its place when there is an environment to verify and no other
 verb reports it. Here both environments already are reported: `fleet facts
-collect` *is* the host-environment report (`host-facts/1` carries a reason for
+collect` *is* the host-environment report (`host-facts/2` carries a reason for
 every unavailable leaf), and the controller side refuses rather than guesses a
 missing runner checkout or `hx` wrapper. A `doctor` would duplicate those two
 and add a third place to drift. The row is recorded as a judgement in

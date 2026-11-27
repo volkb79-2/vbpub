@@ -972,12 +972,37 @@ heartbeat `sleep` holding the caller's pipe for up to one interval (cmru's
 procio waits 2 s for the drain and then logs an abandoned holder): between the
 heartbeat's `sleep ... &` fork and the `sleep_pid=$!` that records it, and
 between the wrapper's fork of the heartbeat subshell and the `heartbeat_pid=$!`
-that records it. The trap names `${!:-}` beside `$sleep_pid` so the first one
-kills the fork itself, and the wrapper records the pid while the two signals
-are deferred through a `heartbeat_starting` flag the handler already uses for
-the launch window, so no signal is dropped either. A test that cancels while
-the remote `cancel` call is held open pins that no beat survives the cancel:
-with the heartbeat stopped, the wrapper prints nothing at all during that hold.
+that records it. The first one is closed from inside the subshell, and what
+closed it had to be corrected twice. The trap first named `${!:-}`, but a
+subshell INHERITS `$!` from its parent, and the pid the wrapper had just recorded
+was the `remote-gate.py` child (`remote_gate_pid`), so a TERM in the very first
+window would have signalled the run the trap exists to protect. Consuming the
+inherited pid with a placeholder child closed that window, and still left `${!:-}`
+naming the sleep a finished iteration had already reaped: a freed number the
+kernel may by then have handed to an unrelated process. The trap now takes its
+targets from the subshell's own job table (`jobs -p`), never from `$!`. That table
+is empty before the loop's first fork, names the sleep while it is a live job
+(including the window before `sleep_pid=$!` records it), and is empty again once
+`wait` has reaped it, so the trap can signal a job this loop still owns or nothing
+at all -- and, when the loop is waiting on its sleep, exactly that sleep, which a
+test proves by watching it go. The second race is closed by the wrapper: it records
+`heartbeat_pid` while the two signals are deferred
+through a `heartbeat_starting` flag the handler already uses for the launch
+window, so no signal is dropped either. A test that cancels while the remote
+`cancel` call is held open pins that no beat survives the cancel: with the
+heartbeat stopped, the wrapper prints nothing at all during that hold. A second
+test pins the pre-first-fork window by holding the heartbeat inside its own
+trap builtin, and a third pins the opposite direction: the trap still kills the
+live sleep the loop is waiting on, so the pipe is not held for an interval.
+
+The trap reads `jobs -p` through process substitution and has no fork-free fallback
+or cleanup path if that fork cannot start. In that case, a live `sleep` can survive
+until its current interval ends (up to 1500 s).
+
+A wrapper killed by `SIGKILL` cannot stop that heartbeat, so the loop's own
+`kill -0 "$parent_pid"` guard is the fallback: it ends the loop within one
+iteration, which means at most one more line can reach the caller's still-open
+pipe before the subshell exits.
 
 The two non-load settings, the host table and the output directory, had no
 source at all: the wrapper inherited `remote-gate.py`'s cockpit-specific
@@ -1002,13 +1027,21 @@ default for the different reason that it is a load decision. All findings are
 reported in one refusal because the earlier behaviour (one refusal per attempt)
 made every missing setting cost a full release attempt, and each line names the
 source that supplied the value (a problem without its source is a refusal that
-sends the operator to the wrong file). `remote-gate.py`'s defaults are loaded
+sends the operator to the wrong file). A temporary file that cannot be created
+while the defaults are read is reported as its own reason too
+(`cannot create a temporary file for the remote-gate.py defaults import`),
+because the module was never imported and naming an empty default would send
+the operator to `DEFAULT_HOSTS` for a failure that has nothing to do with it.
+`remote-gate.py`'s defaults are loaded
 once, in the main shell, instead of once per value in a `$(...)` that can never
 keep its loaded flag. The combined refusal covers the remote host's settings
 only -- host selector, interval, host table, output directory and `HOME`; a
-`local` host execs the local lane and never reads them, and the CMRU commit
-binding and a missing `remote-gate.py` remain separate refusals with their own
-exit codes.
+`local` host execs the local lane and never reads them. The CMRU commit binding
+and a missing `remote-gate.py` stay separate refusals with their own exit codes,
+but the two are judged at different points: the missing file is checked before
+the settings (the wrapper cannot even locate the module it would import
+defaults from), while the CMRU commit binding is judged after them, so a run
+outside CMRU hears about its settings first.
 
 #### Native R2 cgroup observation (B148/A-494)
 

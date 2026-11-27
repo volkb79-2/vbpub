@@ -424,13 +424,23 @@ class Packaging(unittest.TestCase):
             readme.index("The Rust host-observability daemon"),
             readme.index("## Python client"),
         )
+        # The claim about the observer socket follows the shipped unit.
+        self.assertTrue((project_root / "deploy/systemd/hostobs-observer.socket").is_file())
         for document in (consumers, readme):
             self.assertIn("No hostobs probe currently serves `annotate`", document)
-            self.assertIn("`deploy/` does not install an observer socket yet", document)
+            self.assertIn("`deploy/` installs the observer socket", document)
+            self.assertNotIn("does not install an observer socket", document)
+            self.assertNotIn("Not available yet:** the observer socket", document)
             self.assertIn("prints a notice and exits 0", document)
             self.assertIn("membership in the `hostobs-observer` group", document)
         self.assertIn("adding `--require` makes it exit 1", consumers)
-        self.assertIn("Once the socket is installed and the probe serves `annotate`", consumers)
+        self.assertIn("Once the probe serves `annotate`", consumers)
+        # Earlier false claims must not come back.
+        self.assertNotIn("wheel is built by `cmru handler wheel-build`", packaging)
+        self.assertNotIn("A1's CMRU release contract uses", packaging)
+        self.assertNotIn("A1's CMRU wheel handler builds the release wheel", changes)
+        self.assertNotIn("wheel is built only by A1's CMRU handler", run_gate)
+        self.assertNotIn("python3 -m pip install", consumers)
         self.assertIn("`--require` exits 1", readme)
         self.assertIn("hostobs-mark point hostobs.consumer-check --require", consumers)
         self.assertIn("No release exists yet", readme)

@@ -13,7 +13,7 @@ apt hook's dedupe window (dr-state, default 900 s) is another reason: a second a
 window takes no snapshot, so scenarios that count new snapshots need a guest without a recent one. The guest must be running (vm-lab start --plain-host) with a
 login prompt on ttyS0 and root password "root" (the PoC installer default). The log is a plain transcript
 and is the evidence; the PASS/FAIL lines are a convenience. Exit status is non-zero when any check fails.
-Hot-patching is dev-only: acceptance runs on freshly built disks and refuses these helpers with DR_ACCEPTANCE=1.
+Hot-patching is dev-only: DR_ACCEPTANCE unset, empty or 0 means dev; 1 means acceptance and refuses hot patches; any other value is refused.
 
 How output is read (the echoed command line is part of what comes back on a tty, so nothing may be matched
 against it):
@@ -1247,9 +1247,9 @@ def payload_manifest_digest() -> str:
 
     manifest = hashlib.sha256()
     for path in payload_files():
-        relative = path.relative_to(PAYLOAD_ROOT).as_posix()
+        relative_name = path.relative_to(PAYLOAD_ROOT).as_posix()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        manifest.update(f"{digest}  {relative}\n".encode("ascii"))
+        manifest.update(f"{digest}  {relative_name}\n".encode("ascii"))
     return manifest.hexdigest()
 
 
@@ -1285,9 +1285,15 @@ def payload_archive() -> bytes:
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for path in payload_files():
+            relative = path.relative_to(PAYLOAD_ROOT).as_posix()
+            if relative.startswith("usr/local/") and (
+                relative != "usr/local/sbin/dr-state"
+                and not relative.startswith("usr/local/lib/dr-state/")
+            ):
+                raise ValueError(f"cannot hot-patch unexpected runtime file {relative}")
             archive.add(
                 path,
-                arcname=path.relative_to(PAYLOAD_ROOT).as_posix(),
+                arcname=relative,
                 recursive=False,
                 filter=normalized,
             )
@@ -2013,7 +2019,11 @@ def _update_dr_state(g, log, what="Python runtime"):
     """Install from the seed ISO; dev-only: acceptance runs on freshly built disks."""
     if _hot_patch_refused(log, "_update_dr_state"):
         return False
-    digest = payload_manifest_digest()
+    try:
+        digest = payload_manifest_digest()
+    except (OSError, ValueError) as exc:
+        check(log, "current dr-state source is readable by the guest driver", False, repr(exc))
+        return False
     _, out = g.run(
         "mkdir -p /mnt/seed; mount -o ro /dev/sr0 /mnt/seed; echo MNTRC:$?; "
         "rm -rf /usr/local/lib/dr-state; "

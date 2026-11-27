@@ -1157,17 +1157,29 @@ mutation. When that source diff is empty,
 it records a skipped result bound to the candidate HEAD instead of claiming
 mutants ran. If rerun at a release-tagged HEAD, the checker excludes every
 local CMRU release tag at HEAD and selects the highest-version published tag
-from its full ancestry for the existing aggregate release flow. The known-good
-full-suite control has an 1800-second ceiling (30 minutes), and each serial R2
-candidate has at least that timeout, scaled to twice the measured control when
-higher. The 2026-11-12 rehearsal measured controls at 368, 752, and 825 seconds
-under concurrent lanes; 1800 seconds is 2.18 times the longest measurement.
-This is a hang bound, not a speed target. A failed candidate stops after its
-first failing test (`--maxfail=1`). Mutation outcomes are in
+from its full ancestry for the existing aggregate release flow. There is no
+elapsed-time limit on the known-good control or any candidate. The control
+has a fixed 600-second no-output window; after a successful control, each
+candidate uses
+`min(600, max(300, 2 * control_longest_output_gap_upper_bound))` seconds. The
+measured gap upper bound includes the 30-second sampling resolution. The
+longest concrete silent subprocess timeout found in the tracked suite is 300
+seconds (`cmru/tests/test_release_end_to_end_real_git.py:212`). Full memory PSI
+pressure (`full avg10 > 5`) pauses the silence clock under the Run-Gate RG-320
+pattern; credit is capped by the lesser of 1800 seconds or the remaining
+allowance under the 780-second effective silence bound. Polling and process
+cleanup add at most 40 seconds, below the R2 lane's 900-second
+`stall_timeout`. A child that keeps printing is unbounded by elapsed time. A
+failed candidate stops after its first failing test (`--maxfail=1`). Mutation outcomes are in
 `.assay/mutation-cmru.json`; the append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume reuses killed outcomes only
-when the tests, copied fixture closure, and timeout exactly match the recorded run. Changing
-the timeout requires a new campaign because it changes whether a candidate could have completed.
+when the tests, copied fixture closure, Assay source, silence policy, and
+recorded bounds exactly match the campaign. A control ended for silence writes
+`status: inconclusive`, `baseline_exit_code: 124`, and
+`baseline_termination: no-output`, with no candidate judgment; the tool exits
+2 and Run-Gate reports `ERROR`. A candidate ended for silence has its own
+`outcome: timeout` bucket and makes its shard and any merge fail; it is never
+counted as killed or survived.
 Any test or fixture change also requires a new campaign. Resume also requires a
 clean Assay source tree and unchanged code under every package root declared by
 Assay's `pyproject.toml` (including `analysis/src/` when present). Passing
@@ -1248,12 +1260,16 @@ child subreaper. On timeout or normal exit, CMRU removes and reaps descendants
 before resource counters are sampled or another mutant starts, including
 helpers that call `setsid()` or double-fork. A normal leader exit with leftover
 descendants is recorded as `crashed`; the campaign continues after cleanup,
-but this attempt cannot count as killed or survived. A timeout and any
-observed cgroup resource event are also inconclusive. The evidence file uses
-schema 6 and records `candidate_isolation = "process-tree/1"` plus process-tree
-proof for each run; it also preserves configured resource-limit changes as
-advisories alongside cgroup event evidence. Resume reuses a kill only when
-that proof, the unchanged timeout, and clean resource counters are present.
+but this attempt cannot count as killed or survived. A candidate ended by
+output silence has `outcome: timeout` in its own bucket and fails its shard and
+any merge. A control ended by silence writes inconclusive evidence, exits 2,
+and maps to Run-Gate `ERROR`, with no candidate judgment. Cgroup resource
+events remain separate from kills. The evidence file uses schema 8 and records
+`candidate_isolation = "process-tree/1"`, per-run process-tree proof, the
+silence policy, control output-gap measurement, and candidate idle bounds; it
+also preserves configured resource-limit changes as advisories alongside
+cgroup event evidence. Resume reuses a kill only when that proof, campaign
+identity, silence policy and bounds, and clean resource counters are present.
 Older evidence schemas are refused.
 The record names `assay_distribution_version` as package metadata and
 `assay_source_commit` as the exact source identity. CMRU checks Assay source

@@ -203,7 +203,8 @@ overrides `loader.conf`.
 - **B-5** sdboot pairs are `<kver>-<sha256(sha256(vmlinuz)+sha256(initrd))>`, a shape matched case-insensitively.
   A copy is verified against the source hashes before its rename. A pair is removed only when no remaining owned or
   foreign entry references it (VFAT case-folding and CRLF tolerated).
-- **B-6** A repeated identical `publish` changes nothing and reads no kernel bytes (M5).
+- **B-6** A repeated identical `publish` changes nothing. sdboot rehashes source and ESP payloads until P-23 adds its
+  validated hash cache; the identical second publish still performs no mutating filesystem event (M5).
 - **B-7** GRUB `set-default` republishes like sdboot instead of only editing grubenv (H2).
 
 ### 3.4 ESP marker (M1, B6)
@@ -367,16 +368,18 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
     running state. `list` shows live states as "contents changed since capture".
   - New verbs: `pin STATE`, `unpin STATE`, `snapshot --pin`. Retention never selects a pinned state; `delete`
     ignores `pinned`. The slug-`install` rule is deleted.
-- **D23 Hash cache (M5).** `<control_dir>/cache/kernel-hashes.json`, mode 0600, atomic, written only under the
-  writer lock.
+- **D23 Hash cache (M5; implementation planned for P-23).** `<control_dir>/cache/kernel-hashes.json`, mode 0600,
+  atomic, written only under the writer lock.
+  - Until P-23, sdboot rehashes source and ESP payloads on each publication. Identical publishes may read kernel
+    bytes, but the second identical publish performs no mutating filesystem event (B-6).
   - Record: `{"v": 1, "files": {"<dev>:<ino>": {"size", "mtime_ns", "ctime_ns", "sha256"}}}`, keyed on
     `(dev, ino, size, mtime_ns)`.
   - `ctime_ns` is an extra validator. btrfs snapshots share inode numbers, subvolume `st_dev` values can be
     renumbered across mounts, and an in-place rewrite changes ctime.
   - An entry is invalid when any field differs. Entries that a full publication did not use are dropped. An
     unreadable or other-version file counts as empty, never as an error.
-  - ESP pairs are trusted by their content-addressed name plus both sizes. A fresh copy is hashed once before its
-    rename (B-5). `check --verify-esp` rehashes every pair.
+  - With the P-23 cache, ESP pairs may be trusted by their content-addressed name plus both sizes. A fresh copy is
+    hashed once before its rename (B-5). `check --verify-esp` rehashes every pair.
 
 ## 8. `check` and JSON (H4, B12)
 
@@ -437,15 +440,23 @@ so it never sees a writer's scratch. `list` and `show` take no lock.
   - **Installer.** The two-step install packs `$HERE/files` (ISO, seed) or `$HERE/../files` (repository) into `usr/`
     and `etc/` tar archives whose members are explicitly owned `0:0`, then extracts them as root with `--same-owner`.
     The `usr/` archive lands at the runtime's existing early point; the `etc/` archive lands only after
-    `gen-menu --default`. Each archive omits directory members, so `/`, `/usr`, `/usr/local`, `/etc` and every other
-    pre-existing target directory keep their owner and mode. The installer prints the initial state name with
+    `gen-menu --default`. Each archive omits top-level directory members and descendant directory members that
+    already exist at the destination; pre-existing target directories keep their owner and mode, while missing
+    descendant parents may be archived.
+    The installer prints the initial state name with
     `printf` instead of calling `dr-state _state-name`; `initialize-state` stays the only validator, so the Live
     system needs no Python.
   - **Seed and ISO ownership.** The seed ISO is packed with `-uid 0 -gid 0`; the remastered ISO applies
     `-chown_r 0 /dr/files -- -chgrp_r 0 /dr/files --` before commit. A non-root builder therefore cannot stamp its
     uid on a root-executed runtime.
-  - **Hot patching.** The dev-only hot-patch helpers in dr-serial ship the whole `files/usr/local` tree and are
-    refused with `DR_ACCEPTANCE=1` (P-rollback-25).
+  - **Hot patching.** `install_current_dr_state` in dr-serial archives regular file members from the complete
+    `files/` payload, without directory members. It refuses any file under `files/usr/local` outside
+    `usr/local/sbin/dr-state` and `usr/local/lib/dr-state`, naming the unexpected path. The Python manifest and
+    guest expression cover the runtime subtrees and all three `etc/` hook files; the offline equivalence test
+    checks that they hash the same file set. `install_current_apt_hook` remains available for an APT-hook-only
+    update, and `_update_dr_state` copies the runtime and hooks from the seed. `DR_ACCEPTANCE` unset, empty or `0`
+    selects dev mode; `1` selects acceptance and refuses hot patches; every other value is refused. Newly created
+    directories under `/usr/local/lib/dr-state` take modes from the guest's umask (P-rollback-25).
 
 ## 11. Parity strategy (L1, R3)
 

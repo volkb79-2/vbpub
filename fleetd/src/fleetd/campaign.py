@@ -1225,6 +1225,8 @@ class CampaignManager:
         supervisor does not start work on a host it cannot show is quiet.
         """
         plan_host = next(row for row in state["plan"]["hosts"] if row["id"] == host_id)
+        # The planner resolves host-facts/2 wrappers into the fleet-plan/1
+        # scalar. Campaign state consumes that plan and never rereads host facts.
         threshold = plan_host.get("psi_refuse_some_avg10")
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(float(threshold)):
             return "plan records no psi_refuse_some_avg10; re-plan to start new batches on this host"

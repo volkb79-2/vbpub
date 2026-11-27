@@ -4,6 +4,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- release-gate.sh (B579 round 2 and round 3): a failed defaults import names its own cause,
+  including a temporary file that cannot be created and an import that dies printing nothing;
+  the heartbeat trap signals only a job its own loop owns. The failure branch used to quote the
+  import's last stderr line, so an import killed with no output (a host SIGKILL or a cgroup
+  OOM-kill) left the reason empty and both consumers reported `DEFAULT_HOSTS resolved to an empty
+  path`, a path nothing supplied; it now falls back to `remote-gate.py defaults import exited
+  <status>`, and an unreachable `TMPDIR` is reported as `cannot create a temporary file for the
+  remote-gate.py defaults import`. In 12.3.0, the heartbeat trap signalled the `$!` inherited
+  from the wrapper (the `remote-gate.py` child) if interrupted before the loop's first sleep;
+  this entry fixes that by taking targets from the subshell's own job table
+  (`jobs -p`) rather than `$!`, so it can name a live sleep this loop owns or nothing at all,
+  never the pid `wait` just reaped. CONSUMERS.md no longer says a missing
+  `remote-gate.py` is judged after the settings (it is judged before them, exit 3, and the CMRU
+  binding after), and it documents why the two `mktemp` failures exit 3 and 2 respectively. New
+  pins: the heartbeat trap window and its live sleep, the reader's `-e`-free `set -uo pipefail`,
+  an unusable explicit `REMOTE_GATE_OUT`, set-but-empty explicit values, a failing
+  module-defaults import and one that prints nothing, and the missing-script ordering.
+  `release-gate.sh` is shellchecked by the suite too. The B579 changes do not alter the lane's
+  exit status, cancel path or heartbeat interval.
+- release-gate.sh (B590): 12.3.0 kept `remote_gate_pid` set while stopping the heartbeat after
+  `wait`, so a signal there could target the reaped client. The fix clears it before
+  `stop_heartbeat`; Bash may still run a trap after `wait` returns and before that assignment.
+  After the assignment, a signal still requests remote cancellation when run metadata exists,
+  because a failed client does not prove the host job ended. 12.3.0 could also lose these
+  messages when a signal arrived while `stop_heartbeat`'s stderr redirect was active; the fix
+  saves the wrapper's stderr and restores it in the handler.
+- assay's backlog frontmatter gains the `B580` line whose entry body already existed (filed
+  2026-11-25, recorded in the 12.3.0 notes): a gap fill, with no code or behaviour change.
+
 <!-- cmru: release history -->
 
 ## [12.3.0] - 2026-11-25
