@@ -117,25 +117,36 @@ default; it bounds the whole bind frame from grant on the monotonic clock, so
 trickling bytes cannot extend it. It has no effect after bind. `max_connections`
 is a positive integer with no default and bounds ordinary local connections.
 `query_timeout_s` bounds capacity, legacy-job-list, object-inspector and
-container-identity inspector calls. Production Docker execution uses exactly
+container-identity inspector calls. A lease name consisting of 12 through 63
+lowercase hexadecimal characters is refused at request validation and
+admission with `container_name must not be 12-63 lowercase hexadecimal
+characters`; existing lease-state loading remains compatible. Production
+Docker execution uses exactly
 `/usr/bin/docker --host unix:///var/run/docker.sock inspect --type=container
 <target>`, cwd `/`, and environment `PATH=/usr/bin:/bin`, `HOME=/nonexistent`,
 `LC_ALL=C`; it is argv, never a shell or environment-selected Docker context.
 Names must be exact, full IDs are 64 lowercase hex characters, and lowercase
 hex targets of length 12 through 63 return `ERROR`. Each output stream is
-drained up to 4 MiB with strict UTF-8 decoding. One monotonic deadline covers
-spawn, output collection and reaping; on expiry or output-cap breach the agent
-kills the child process group and attempts a bounded reap. The peer
+drained up to 4 MiB with strict UTF-8 decoding. The outer bounded admission
+call uses `query_timeout_s` to bound its answer. The provider's monotonic
+deadline starts before process creation and bounds output collection and
+direct-child reaping after creation returns. Process creation itself cannot be
+cancelled; it can finish after the outer call refuses, in which case the
+provider immediately attempts to signal the child process group with
+`SIGKILL` and makes a bounded reap attempt before returning `ERROR` (FD-066).
+Expiry or an output-cap breach also attempts to signal the child process group
+and makes a bounded reap. The peer
 table maps exact UID/primary-GID pairs to a principal and group;
 forced-command entries map their trusted group argument to the same identity
 shape. Request fields cannot choose either value. Loading the policy refuses
 overlapping authenticated group prefixes.
 
-Deploy the required key and provider binary together. Stop the agent, install
-the new binary, add the `legacy_jobs_dir` key, then start the agent. For
-rollback, stop the agent, remove that key, reinstall the old binary, then start
-it. Do not enable the new agent until the resolved legacy runner user's
-`$HOME/jobs` directory has been checked.
+Deploy the required key and provider binary together. Resolve and check the
+legacy runner user's real `$HOME/jobs` directory before enabling the agent;
+the configured `legacy_jobs_dir` must be that fully resolved absolute path.
+Stop the agent, install the new binary, add the `legacy_jobs_dir` key, then
+start the agent. For rollback, stop the agent, remove that key, reinstall the
+old binary, then start it.
 
 The agent sends and receives four-byte big-endian length-prefixed UTF-8 JSON
 objects capped at 64 KiB. Each ordinary connection carries one request; the

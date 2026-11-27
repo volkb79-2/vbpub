@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from .admission import InspectorAnswer
+from .admission import InspectorAnswer, is_ambiguous_container_name
 from .hostside import open_beneath
 
 MAX_LEGACY_JOB_ENTRIES = 65536
@@ -25,7 +25,6 @@ _DOCKER_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C"}
 _DOCKER_HOST = "unix:///var/run/docker.sock"
 _ADMISSION_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _FULL_CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}\Z")
-_AMBIGUOUS_ID_TARGET_RE = re.compile(r"[0-9a-f]{12,63}\Z")
 _MISSING_OBJECT_RE = re.compile(
     r"(?:Error:\s*|Error response from daemon:\s*)?"
     r"No such (?:object|container):\s*([^\s]+)\Z",
@@ -144,17 +143,23 @@ def _legacy_job_id(name: str) -> str:
     return f"legacy-{digest}"
 
 
-def _has_regular_exit_marker(root_fd: int, name: str) -> bool:
+def _has_regular_exit_marker(
+    root_fd: int,
+    name: str,
+    *,
+    marker_opener: Callable[..., int] | None = None,
+) -> bool:
     try:
         entry_fd = open_beneath(root_fd, name, directory=True)
     except Exception:
         # Anything that cannot be safely opened remains charged.
         return False
     try:
+        open_marker = os.open if marker_opener is None else marker_opener
         try:
-            marker_fd = os.open(
+            marker_fd = open_marker(
                 "EXIT",
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
                 dir_fd=entry_fd,
             )
         except Exception:
@@ -312,7 +317,13 @@ def _run_bounded(
     kill_group: Callable[[int, int], None] | None = None,
     output_limit: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run Docker with one deadline, bounded pipes and a private process group."""
+    """Collect and reap Docker within a deadline established before creation.
+
+    Process creation cannot be cancelled while ``Popen`` is blocked. If it
+    returns after the deadline, termination of the new child group is attempted
+    immediately; time spent in process creation consumes the available query
+    time.
+    """
 
     spawn = subprocess.Popen if popen_factory is None else popen_factory
     selector_type = selectors.DefaultSelector if selector_factory is None else selector_factory
@@ -327,13 +338,14 @@ def _run_bounded(
     selector: Any | None = None
     stdout = bytearray()
     stderr = bytearray()
-    group_terminated = False
+    leader_reaped = False
+    termination_attempted = False
 
     def terminate_group() -> None:
-        nonlocal group_terminated
-        if process is not None and not group_terminated:
+        nonlocal termination_attempted
+        if process is not None and not leader_reaped and not termination_attempted:
+            termination_attempted = True
             _kill_process_group_and_reap(process, deadline, clock, group_kill)
-            group_terminated = True
 
     try:
         process = spawn(
@@ -393,6 +405,7 @@ def _run_bounded(
         except subprocess.TimeoutExpired as exc:
             terminate_group()
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping") from exc
+        leader_reaped = True
         if clock() >= deadline:
             terminate_group()
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping")
@@ -446,7 +459,7 @@ def _validate_target(target: str, *, full_id_only: bool) -> None:
         return
     if _FULL_CONTAINER_ID_RE.fullmatch(target) is not None:
         return
-    if _AMBIGUOUS_ID_TARGET_RE.fullmatch(target) is not None:
+    if is_ambiguous_container_name(target):
         raise DockerInspectionError("Docker target is an ambiguous container ID prefix")
     if _ADMISSION_NAME_RE.fullmatch(target) is None:
         raise DockerInspectionError("Docker target is not an exact name or full container ID")

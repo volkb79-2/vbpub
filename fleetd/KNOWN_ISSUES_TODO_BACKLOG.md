@@ -68,6 +68,7 @@
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
 | FD-064 | A legacy job directory without EXIT after host reboot remains charged | P2 | OPEN | 2026-11-27 |
 | FD-065 | Legacy-job listing is point-in-time and completed directories consume the entry ceiling | P2 | OPEN | 2026-11-27 |
+| FD-066 | Synchronous Docker process creation cannot be cancelled by the query deadline | P2 | OPEN | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1231,3 +1232,16 @@ ceiling or admission refuses with 75. No cleanup or writer protocol is part of
 this package.
 
 Source: P-fd-05 C3b-2a controller ruling F2/F5 (2026-11-27).
+
+## FD-066 Docker process creation is synchronous and uncancellable
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+`subprocess.Popen` creation is synchronous. While it is blocked, the caller
+cannot cancel it, and the admission thread may remain occupied after its
+`query_timeout_s` outer wait has refused. If creation later returns, the
+provider immediately signals the new process group and makes a bounded reap
+attempt. The deadline still bounds output collection, reaping and the answer
+from the outer admission call; it cannot bound process creation itself.
+
+Source: P-fd-05 C3b-2a fix round 2 controller ruling R2-2 (2026-11-27).

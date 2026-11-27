@@ -90,18 +90,26 @@ unix:///var/run/docker.sock inspect --type=container <target>` with argv, never
 a shell, cwd `/`, and environment `PATH=/usr/bin:/bin`,
 `HOME=/nonexistent`, `LC_ALL=C`. It accepts an exact container name or full
 lowercase 64-character ID; a lowercase hex target of length 12 through 63 is
-ambiguous and returns `ERROR`. It reports `PRESENT` only when one complete
+refused at lease request validation with `container_name must not be 12-63
+lowercase hexadecimal characters` and returns
+`ERROR` if passed directly to the inspector. Loading existing lease state
+does not apply the new-name refusal. It reports `PRESENT` only when one complete
 object matches that exact name or ID. `NO_SUCH_OBJECT` requires a non-zero
 Docker exit, no object output, and Docker's explicit no-such-object or
 no-such-container response for that target. Missing Docker, timeout, output
 over 4 MiB on either stream, invalid UTF-8, partial or unparseable output,
 ambiguous output, and mismatched identities are `ERROR`. The bind identity
 inspector accepts a full ID only, never an ID prefix, and returns Docker's
-name, full ID, and labels only when that exact ID is inspected. One monotonic
-`query_timeout_s` deadline covers spawn, output draining and reaping. Each
-stream is drained with a 4 MiB cap; expiry, a cap breach, or a pipe still held
-at the deadline kills the child process group with `SIGKILL` and makes a
-deadline-bounded reap attempt before returning `ERROR`.
+name, full ID, and labels only when that exact ID is inspected. The admission
+call's outer bounded wait uses `query_timeout_s` to bound its answer. The
+provider's monotonic deadline starts before process creation and bounds Docker
+output collection and direct-child reaping after creation returns. Process
+creation itself cannot be cancelled: it may finish after the outer call has
+refused, in which case the provider immediately attempts to signal the new
+child process group with `SIGKILL` and makes a bounded reap attempt before it
+returns `ERROR` (FD-066). Each output stream is drained with a 4 MiB cap;
+expiry or a cap breach also attempts to signal the child process group and
+makes a bounded reap attempt before returning `ERROR`.
 
 Every `host-facts/2` policy object carries `aging_s`,
 `legacy_charge_bytes`, and `legacy_planned_cores`. An unconfigured key is
@@ -155,10 +163,12 @@ then inspects the exact container name. A delayed create cannot bind to that
 tombstone. When an inspector is configured, the agent reconciles pending and
 bound records at startup and at the required positive
 `agent.toml.lease_reconcile_interval_s`; bound records are inspected by exact
-container ID. Each inspector call is bounded by `query_timeout_s`, and an
-unknown/error result retains the charge. The required positive
-`agent.toml.lease_bind_timeout_s` bounds the complete bind frame from the grant
-on the monotonic clock; trickled bytes do not extend it. Expiry uses the same
+container ID. The outer bounded inspector call uses `query_timeout_s`; Docker
+output collection and reaping use the provider deadline described above, while
+synchronous process creation cannot be cancelled and may finish after the
+outer call refuses (FD-066). An unknown/error result retains the charge. The
+required positive `agent.toml.lease_bind_timeout_s` bounds the complete bind
+frame from the grant on the monotonic clock; trickled bytes do not extend it. Expiry uses the same
 tombstone, exact-name inspection and charge-release rules as a pre-bind
 disconnect. The client receives an error reply and the connection ends. This
 deadline does not apply after binding.
