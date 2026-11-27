@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import json
@@ -20,20 +21,30 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from .admission import AdmissionError, ExitCode
+from .admission import AdmissionBook, AdmissionError, AdmissionHandle, ExitCode
 from .agent_admission import AgentAdmission
 from .agent_policy import AgentPolicy, load_agent_policy
-from .executor import RunnerIdentity, _atomic_json, _job_id, _resolve_system_user
+from .executor import (
+    ProcessSignals,
+    RunnerIdentity,
+    SystemProcessSignals,
+    _atomic_json,
+    _job_state_lock,
+    _job_id,
+    _resolve_system_user,
+)
 from .hostside import open_beneath
 
 _COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}\Z")
 _RG_VERSION_RE = re.compile(
     r"(\d+(?:\.\d+)*)(?:(a|b|rc)(\d+))?(?:\.post(\d+))?(?:\.dev(\d+))?(?:\+[A-Za-z0-9.]+)?\Z",
 )
@@ -42,6 +53,7 @@ _RG_FALLBACK = "/home/vscode/.venvs/gate-tools2502/bin/run-gate"
 _STORE_PATH_RE = re.compile(r"[A-Za-z0-9._@+=,:-]+(?:/[A-Za-z0-9._@+=,:-]+)*\Z")
 _IMAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}\Z")
 _CONTAINER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_SHARD_EVENT_RE = re.compile(r"(.+)\.shard[1-9][0-9]*of[1-9][0-9]*\Z")
 _PSI_LIMIT = 25.0
 _PSI_WAIT_S = 900
 _PSI_POLL_S = 30
@@ -49,9 +61,15 @@ _MEMORY_FLOOR_MIB = 1024
 _MEMORY_WAIT_S = 900
 _MEMORY_POLL_S = 10
 _MEMORY_SETTLE_S = 20
-_STORE_MAX_BYTES = 50 * 1024 * 1024
 _ARTIFACT_MAX_BYTES = 50 * 1024 * 1024
-_ARTIFACT_EXTENSIONS = {".json", ".jsonl", ".log", ".xml"}
+_STORE_MAX_BYTES = 512 * 1024 * 1024
+_RUN_GATE_VERDICT_CODES = {
+    "PASS": 0,
+    "FAIL": 1,
+    "ERROR": 2,
+    "NOT_RUN": 3,
+    "BUDGET_EXCEEDED": 4,
+}
 
 
 @dataclass(frozen=True)
@@ -76,6 +94,10 @@ class RunnerCommands(Protocol):
     def run_with_input(
         self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str], source_fd: int,
         timeout: float | None = None,
+    ) -> CommandResult: ...
+
+    def run_to_fd(
+        self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str], output_fd: int,
     ) -> CommandResult: ...
 
     def start(
@@ -154,6 +176,17 @@ class SubprocessRunnerCommands:
             raise
         return CommandResult(process.returncode, b"", stderr or b"")
 
+    def run_to_fd(
+        self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str], output_fd: int,
+    ) -> CommandResult:
+        process = self._popen(
+            list(argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=dict(env), close_fds=True, pass_fds=(cwd_fd, output_fd),
+            preexec_fn=self._preexec(cwd_fd),
+        )
+        stdout, stderr = process.communicate()
+        return CommandResult(process.returncode, stdout or b"", stderr or b"")
+
     def start(
         self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str], output_fd: int,
     ) -> RunnerProcess:
@@ -225,6 +258,17 @@ class DockerClient:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect {target!r} returned an invalid object")
         return value[0]
 
+    def remove_stopped(self, container_id: str) -> None:
+        if _CONTAINER_ID_RE.fullmatch(container_id) is None:
+            raise AdmissionError(ExitCode.REFUSAL, "container removal requires a full Docker id")
+        result = self.command("rm", container_id)
+        if result.returncode == 0:
+            return
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        if detail == f"Error: No such container: {container_id}":
+            return
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker could not remove stopped container {container_id}: {detail}")
+
 
 def _read_regular(path: Path, *, limit: int = 65536) -> bytes:
     try:
@@ -265,6 +309,191 @@ def _close(*fds: int) -> None:
     for fd in fds:
         if fd >= 0:
             os.close(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _tree_entries(
+    root_fd: int, relative: str, *, reject_special: bool,
+) -> tuple[list[tuple[str, bool, int]], str | None]:
+    """Return regular files/directories under a root fd without following links."""
+
+    try:
+        first_fd = open_beneath(root_fd, relative, directory=True)
+    except FileNotFoundError:
+        return [], "absent"
+    entries: list[tuple[str, bool, int]] = [(relative, True, 0)]
+    pending: list[tuple[str, int]] = [(relative, first_fd)]
+    special_reason: str | None = None
+    try:
+        while pending:
+            directory_rel, directory_fd = pending.pop()
+            try:
+                names = sorted(os.listdir(directory_fd))
+                for name in names:
+                    child_rel = f"{directory_rel}/{name}"
+                    info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode):
+                        child_fd = os.open(
+                            name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd,
+                        )
+                        entries.append((child_rel, True, 0))
+                        pending.append((child_rel, child_fd))
+                    elif stat.S_ISREG(info.st_mode):
+                        entries.append((child_rel, False, info.st_size))
+                    elif reject_special:
+                        special_reason = "symlink" if stat.S_ISLNK(info.st_mode) else "special-file"
+                        break
+            finally:
+                os.close(directory_fd)
+            if special_reason:
+                break
+        for _relative, directory_fd in pending:
+            _close(directory_fd)
+        pending.clear()
+        return ([], special_reason) if special_reason else (entries, None)
+    except BaseException:
+        for _relative, directory_fd in pending:
+            _close(directory_fd)
+        raise
+
+
+def _artifact_filename(name: str) -> bool:
+    return (
+        (name.startswith("verdict") and name.endswith(".json"))
+        or ("progress" in name and name.endswith(".jsonl"))
+        or (name.startswith("coverage") and name.endswith(".json"))
+        or name.endswith((".log", ".xml"))
+    )
+
+
+def _write_archive(
+    root_fd: int, output_fd: int, entries: Sequence[tuple[str, bool, int]],
+) -> None:
+    """Write a gzip tar from fd-opened regular files and directories only."""
+
+    output = os.fdopen(os.dup(output_fd), "wb")
+    try:
+        with tarfile.open(fileobj=output, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
+            for relative, is_directory, expected_size in sorted(entries):
+                member = tarfile.TarInfo(relative + ("/" if is_directory else ""))
+                member.mtime = 0
+                member.uid = member.gid = 0
+                member.uname = member.gname = ""
+                if is_directory:
+                    member.type = tarfile.DIRTYPE
+                    member.mode = 0o755
+                    member.size = 0
+                    archive.addfile(member)
+                    continue
+                source_fd = open_beneath(root_fd, relative)
+                try:
+                    source_info = os.fstat(source_fd)
+                    if not stat.S_ISREG(source_info.st_mode) or source_info.st_size != expected_size:
+                        raise OSError(f"archive source changed while collecting: {relative}")
+                    member.mode = 0o644
+                    member.size = source_info.st_size
+                    with os.fdopen(os.dup(source_fd), "rb") as source:
+                        archive.addfile(member, source)
+                finally:
+                    os.close(source_fd)
+        os.fsync(output_fd)
+    finally:
+        output.close()
+
+
+def _archive_artifacts(root_fd: int, output_fd: int) -> Mapping[str, object]:
+    entries: list[tuple[str, bool, int]] = []
+    for root in (".assay", ".run-gate"):
+        found, reason = _tree_entries(root_fd, root, reject_special=False)
+        if reason not in {None, "absent"}:
+            raise OSError(f"cannot inspect artifact tree {root}: {reason}")
+        for relative, is_directory, size in found:
+            if is_directory or (_artifact_filename(relative.rsplit("/", 1)[-1]) and size < _ARTIFACT_MAX_BYTES):
+                entries.append((relative, is_directory, size))
+    _write_archive(root_fd, output_fd, entries)
+    return {"files": sum(not is_directory for _path, is_directory, _size in entries)}
+
+
+def _archive_store(root_fd: int, output_fd: int, relative: str) -> Mapping[str, object]:
+    if (
+        _STORE_PATH_RE.fullmatch(relative) is None
+        or any(part in {".", "..", ".git"} for part in relative.split("/"))
+    ):
+        return {"status": "failed", "reason": "invalid-path", "log": f"STORE-COLLECT-FAILED {relative} invalid-path"}
+    try:
+        entries, special = _tree_entries(root_fd, relative, reject_special=True)
+    except NotADirectoryError:
+        return {"status": "failed", "reason": "not-a-directory",
+                "log": f"STORE-COLLECT-FAILED {relative} not-a-directory"}
+    except OSError as exc:
+        reason = "symlink" if exc.errno == errno.ELOOP else "unreadable"
+        return {"status": "failed", "reason": reason,
+                "log": f"STORE-COLLECT-FAILED {relative} {reason}"}
+    if special == "absent":
+        return {"status": "absent", "log": f"STORE-ABSENT {relative}"}
+    if special:
+        return {"status": "failed", "reason": special,
+                "log": f"STORE-COLLECT-FAILED {relative} {special}"}
+    total = sum(size for _path, is_directory, size in entries if not is_directory)
+    if total > _STORE_MAX_BYTES:
+        return {"status": "too-large", "bytes": total,
+                "log": f"STORE-TOO-LARGE {relative} {total}"}
+    try:
+        _write_archive(root_fd, output_fd, entries)
+    except (OSError, tarfile.TarError, ValueError):
+        return {"status": "failed", "reason": "pack-failed",
+                "log": f"STORE-COLLECT-FAILED {relative} pack-failed"}
+    return {"status": "collected", "bytes": total, "log": f"STORE-COLLECTED {relative}"}
+
+
+def _verify_archive_fd(fd: int, *, kind: str, store_path: str | None = None) -> int:
+    """Verify a just-written archive's complete member set and return its size."""
+
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "collected archive is not a regular file")
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        with os.fdopen(os.dup(fd), "rb") as stream:
+            with tarfile.open(fileobj=stream, mode="r:gz") as archive:
+                members = archive.getmembers()
+    except (OSError, EOFError, tarfile.TarError) as exc:
+        raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"collected {kind} archive is unreadable: {exc}") from exc
+    finally:
+        os.lseek(fd, 0, os.SEEK_SET)
+    seen: set[str] = set()
+    total = 0
+    for member in members:
+        name = member.name.rstrip("/")
+        parts = name.split("/")
+        if (
+            not name or name.startswith("/") or "\\" in name
+            or any(part in {"", ".", ".."} for part in parts)
+            or name in seen or not (member.isdir() or member.isfile())
+        ):
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"collected {kind} archive has an unsafe member")
+        seen.add(name)
+        if kind == "artifacts" and not (
+            name in {".assay", ".run-gate"} and member.isdir()
+            or name.startswith(".assay/") or name.startswith(".run-gate/")
+        ):
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "artifact archive contains an unexpected path")
+        if kind == "artifacts" and member.isfile() and member.size >= _ARTIFACT_MAX_BYTES:
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "artifact archive contains an oversized file")
+        if kind == "store":
+            if store_path is None or not (name == store_path or name.startswith(store_path + "/")):
+                raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "store archive contains an unexpected path")
+            total += member.size if member.isfile() else 0
+            if total > _STORE_MAX_BYTES:
+                raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "store archive exceeds its uncompressed limit")
+    return info.st_size
 
 
 def _parse_toml_fd(root_fd: int, relative: str) -> Mapping[str, object] | None:
@@ -386,6 +615,7 @@ class HostJobWorker:
         waiter: Callable[[float], None] = time.sleep,
         clock: Callable[[], str] | None = None,
         run_gate_finder: Callable[[str], str | None] = shutil.which,
+        process_signals: ProcessSignals | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.jobs_dir = self.state_dir / "jobs"
@@ -401,7 +631,9 @@ class HostJobWorker:
         self.waiter = waiter
         self.clock = clock or _utc_now
         self.run_gate_finder = run_gate_finder
+        self.process_signals = process_signals or SystemProcessSignals()
         self.request: dict[str, object] = {}
+        self.request_digest = ""
         self.group = ""
         self.runner_identity: RunnerIdentity | None = None
         self.runner: RunnerCommands | None = None
@@ -411,6 +643,7 @@ class HostJobWorker:
         self.checkout_fd = -1
         self.project_fd = -1
         self.event_rel = ""
+        self.event_path = Path()
 
     def _state(self) -> dict[str, object]:
         raw = _read_regular(self.job_dir / "state.json")
@@ -423,10 +656,13 @@ class HostJobWorker:
         return value
 
     def _save_state(self, **updates: object) -> dict[str, object]:
-        state = self._state()
-        state.update(updates)
-        _atomic_json(self.job_dir / "state.json", state)
-        return state
+        with _job_state_lock(self.job_dir):
+            state = self._state()
+            if updates.get("state") == "running" and state.get("state") == "stopping":
+                updates = {key: value for key, value in updates.items() if key != "state"}
+            state.update(updates)
+            _atomic_json(self.job_dir / "state.json", state)
+            return state
 
     def _log(self, message: str) -> None:
         text = " ".join(str(message).splitlines())[:2000]
@@ -458,6 +694,7 @@ class HostJobWorker:
         digest = admission.digest()
         if record.get("digest") != digest:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "durable request digest does not match its payload")
+        self.request_digest = digest
 
     def _environment(self) -> dict[str, str]:
         assert self.runner_identity is not None
@@ -502,6 +739,28 @@ class HostJobWorker:
             cwd_fd=self.repo_root_fd if cwd_fd is None else cwd_fd,
             detail=f"runner-user helper {mode!r} failed",
         )
+
+    def _cancel_checkpoint(self) -> None:
+        state = self._state()
+        if state.get("cancel_requested") is True and state.get("lane_pid") is None:
+            raise AdmissionError(ExitCode.CANCELLED, str(state.get("cancel_reason") or "cancelled before lane start"))
+
+    def _await_scope_confirmation(self) -> bool:
+        """Do not consume the request or charge until the parent confirms scope start."""
+
+        gate_fd = -1
+        try:
+            gate_fd = os.open(self.job_dir / "start.lock", os.O_RDWR | os.O_NOFOLLOW)
+            fcntl.flock(gate_fd, fcntl.LOCK_EX)
+            return self._state().get("start_confirmed") is True
+        except (AdmissionError, OSError):
+            return False
+        finally:
+            if gate_fd >= 0:
+                try:
+                    fcntl.flock(gate_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(gate_fd)
 
     def _create_checkout(self) -> None:
         repo = self.request.get("repo")
@@ -898,7 +1157,7 @@ class HostJobWorker:
         finally:
             _close(name_fd, group_fd, uploads_fd, root_fd)
 
-    def _run_lane(self, binary: str, mode: str, facts: Mapping[str, object], memory_lock_fd: int | None) -> None:
+    def _run_lane(self, binary: str, mode: str, facts: Mapping[str, object], memory_lock_fd: int | None) -> int:
         assert self.runner is not None and self.checkout_fd >= 0
         project = self.request.get("project")
         lane = self.request.get("lane")
@@ -906,8 +1165,16 @@ class HostJobWorker:
             raise AdmissionError(ExitCode.REFUSAL, "request project or lane is invalid")
         project_rel = "" if project == "." else project
         self.project_fd = os.dup(self.checkout_fd) if not project_rel else open_beneath(self.checkout_fd, project_rel, directory=True)
-        self.event_rel = f".fleetd-events/{self.job_id}.jsonl"
-        self._helper("prepare-event", "--relative", self.event_rel)
+        repo_key = self.request.get("repo")
+        if not isinstance(repo_key, str):
+            raise AdmissionError(ExitCode.REFUSAL, "request repo is invalid")
+        self.event_rel = f".fleetd-events/{repo_key}/{self.job_id}.jsonl"
+        event_parent_fd = _open_absolute_directory(self.repo_root.parent)
+        try:
+            self._helper("prepare-event", "--relative", self.event_rel, cwd_fd=event_parent_fd)
+        finally:
+            os.close(event_parent_fd)
+        self.event_path = self.repo_root.parent / self.event_rel
         argv = [binary, lane]
         extra = self.request.get("extra_argv")
         if not isinstance(extra, list) or any(not isinstance(item, str) for item in extra):
@@ -916,7 +1183,7 @@ class HostJobWorker:
         base = self.request.get("base")
         if isinstance(base, str):
             argv.extend(("--base", base))
-        argv.extend(("--event-file", str(self.repo_root / self.event_rel), "--job-id", self.job_id))
+        argv.extend(("--event-file", str(self.event_path), "--job-id", self.job_id))
         if mode == "exec":
             env = dict(self._environment())
             env["RUN_GATE_EXPECTED_RUNNER"] = str(facts["container_name"])
@@ -927,20 +1194,886 @@ class HostJobWorker:
             process = self.runner.start(argv, cwd_fd=self.project_fd, env=env, output_fd=log_fd)
         finally:
             os.close(log_fd)
-        self._save_state(lane_pid=process.pid, state="running", lane=lane, container={
+        state = self._save_state(lane_pid=process.pid, state="running", lane=lane, event_file=str(self.event_path), container={
             "id": None, "name": facts.get("container_name"), "image": facts.get("image"),
         })
+        if state.get("cancel_requested") is True:
+            try:
+                self.process_signals.terminate_group(process.pid)
+            except ProcessLookupError:
+                self._save_state(stop_signal="process-already-exited")
+            except OSError as exc:
+                self._save_state(state="stopping", reason=f"TERM failed: {exc}", stop_signal="failed")
+            else:
+                self._save_state(stop_signal="sent")
         if memory_lock_fd is not None:
             self.waiter(_MEMORY_SETTLE_S)
             fcntl.flock(memory_lock_fd, fcntl.LOCK_UN)
             os.close(memory_lock_fd)
         status = process.wait()
+        state = self._state()
+        while state.get("cancel_requested") is True and state.get("stop_signal") not in {
+            "sent", "process-already-exited",
+        }:
+            self._save_state(state="stopping", reason="TERM was not confirmed; waiting for a stop retry")
+            self.waiter(1)
+            state = self._state()
         self._save_state(state="collecting", lane_process_status=status, exit_code=status)
         self._log(f"lane exited rc={status}")
+        return status
+
+    @staticmethod
+    def _hash_fd(fd: int) -> tuple[str, int]:
+        hasher = hashlib.sha256()
+        size = 0
+        os.lseek(fd, 0, os.SEEK_SET)
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            size += len(chunk)
+        os.lseek(fd, 0, os.SEEK_SET)
+        return hasher.hexdigest(), size
+
+    def _open_job_output(self, name: str) -> tuple[Path, int]:
+        if "/" in name or name in {"", ".", ".."}:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "invalid executor output name")
+        path = self.job_dir / name
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"cannot create {name}: {exc}") from exc
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"{name} is not a regular file")
+        return path, fd
+
+    def _write_archive_from_runner(
+        self, helper_command: str, destination_name: str, arguments: Sequence[str], *, root_fd: int,
+        kind: str, store_path: str | None = None,
+    ) -> tuple[str, int, Mapping[str, object]]:
+        assert self.runner is not None
+        run_to_fd = getattr(self.runner, "run_to_fd", None)
+        if not callable(run_to_fd):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "runner cannot stream a collected archive to the host")
+        temporary_name = f".{destination_name}.part"
+        temporary_path, output_fd = self._open_job_output(temporary_name)
+        try:
+            answer = run_to_fd(
+                [sys.executable, "-m", "fleetd.executor_worker", helper_command, *arguments,
+                 "--output-fd", str(output_fd)],
+                cwd_fd=root_fd, env=self._environment(), output_fd=output_fd,
+            )
+            if answer.returncode != 0:
+                detail = answer.stderr.decode("utf-8", "replace").strip()
+                raise AdmissionError(
+                    ExitCode.STORE_COLLECTION_FAILED,
+                    f"runner could not collect {kind} archive{': ' + detail if detail else ''}",
+                )
+            try:
+                document = json.loads(answer.stdout.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"runner returned invalid {kind} collection details") from exc
+            if not isinstance(document, dict):
+                raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"runner returned invalid {kind} collection details")
+            if kind == "store" and document.get("status") != "collected":
+                return "", 0, document
+            size = _verify_archive_fd(output_fd, kind=kind, store_path=store_path)
+            digest, hashed_size = self._hash_fd(output_fd)
+            if size != hashed_size:
+                raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"{kind} archive size changed during verification")
+            os.fsync(output_fd)
+            return digest, size, document
+        except BaseException:
+            try:
+                os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
+            raise
+        finally:
+            os.close(output_fd)
+
+    def _archive_saved(self, name: str, *, kind: str, store_path: str | None = None) -> tuple[str, int]:
+        path = self.job_dir / name
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"cannot reopen {name}: {exc}") from exc
+        try:
+            size = _verify_archive_fd(fd, kind=kind, store_path=store_path)
+            digest, hashed_size = self._hash_fd(fd)
+            if size != hashed_size:
+                raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"{name} changed during verification")
+            return digest, size
+        finally:
+            os.close(fd)
+
+    def _write_checksum(self, digest: str, name: str) -> None:
+        temporary = self.job_dir / f".{name}.sha256.part"
+        destination = self.job_dir / f"{name}.sha256"
+        fd = -1
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            view = memoryview(f"{digest}  {name}\n".encode("ascii"))
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("checksum write made no progress")
+                view = view[written:]
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            os.replace(temporary, destination)
+            _fsync_dir(self.job_dir)
+        except OSError as exc:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"cannot persist {name} checksum: {exc}") from exc
+        finally:
+            _close(fd)
+
+    def _saved_collection(self, store_rel: str | None) -> Mapping[str, object] | None:
+        state = self._state()
+        collection = state.get("collection")
+        if not isinstance(collection, Mapping) or collection.get("store_rel") != store_rel:
+            return None
+        try:
+            artifact_digest, artifact_size = self._archive_saved("artifacts.tgz", kind="artifacts")
+        except AdmissionError:
+            return None
+        if collection.get("artifacts_sha256") != artifact_digest or collection.get("artifacts_size") != artifact_size:
+            return None
+        store = collection.get("store")
+        if isinstance(store, Mapping) and store.get("status") == "collected":
+            if store_rel is None:
+                return None
+            try:
+                store_digest, store_size = self._archive_saved(
+                    "assay-store.tgz", kind="store", store_path=store_rel,
+                )
+                checksum = _read_regular(self.job_dir / "assay-store.tgz.sha256", limit=256)
+            except AdmissionError:
+                return None
+            if (
+                store.get("sha256") != store_digest or store.get("size") != store_size
+                or checksum != f"{store_digest}  assay-store.tgz\n".encode("ascii")
+            ):
+                return None
+        return collection
+
+    def _collect(self) -> Mapping[str, object]:
+        """Collect and verify artifacts and the optional carry while checkout is live."""
+
+        if self.checkout_fd < 0:
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "cannot collect without a verified checkout")
+        if self.project_fd < 0:
+            project = self.request.get("project")
+            if not isinstance(project, str):
+                raise AdmissionError(ExitCode.REFUSAL, "request project is invalid during collection")
+            self.project_fd = os.dup(self.checkout_fd) if project == "." else open_beneath(self.checkout_fd, project, directory=True)
+        stores = self.request.get("stores")
+        store_rel = stores.get("collect") if isinstance(stores, Mapping) else None
+        if store_rel is not None and (
+            not isinstance(store_rel, str) or _STORE_PATH_RE.fullmatch(store_rel) is None
+            or any(part in {"", ".", "..", ".git"} for part in store_rel.split("/"))
+        ):
+            raise AdmissionError(ExitCode.REFUSAL, "stores.collect is not a safe relative path")
+        saved = self._saved_collection(store_rel)
+        if saved is not None:
+            return saved
+
+        artifact_digest, artifact_size, artifact_details = self._write_archive_from_runner(
+            "archive-artifacts", "artifacts.tgz", (), root_fd=self.project_fd, kind="artifacts",
+        )
+        artifact_part = self.job_dir / ".artifacts.tgz.part"
+        artifact_path = self.job_dir / "artifacts.tgz"
+        os.replace(artifact_part, artifact_path)
+        _fsync_dir(self.job_dir)
+
+        store_details: dict[str, object] = {"status": "none"}
+        if store_rel is not None:
+            store_part = self.job_dir / ".assay-store.tgz.part"
+            store_path = self.job_dir / "assay-store.tgz"
+            checksum_path = self.job_dir / "assay-store.tgz.sha256"
+            for stale in (store_part, store_path, checksum_path, self.job_dir / ".assay-store.tgz.sha256.part"):
+                try:
+                    stale.unlink()
+                except FileNotFoundError:
+                    pass
+            try:
+                store_digest, store_size, details = self._write_archive_from_runner(
+                    "archive-store", "assay-store.tgz", ("--relative", store_rel),
+                    root_fd=self.project_fd, kind="store", store_path=store_rel,
+                )
+                log_line = details.get("log")
+                if isinstance(log_line, str):
+                    self._log(log_line)
+                if details.get("status") == "collected":
+                    os.replace(store_part, store_path)
+                    _fsync_dir(self.job_dir)
+                    self._write_checksum(store_digest, "assay-store.tgz")
+                    store_details = {
+                        "status": "collected", "sha256": store_digest, "size": store_size,
+                    }
+                else:
+                    try:
+                        store_part.unlink()
+                    except FileNotFoundError:
+                        pass
+                    store_details = {
+                        "status": str(details.get("status", "failed")),
+                        "reason": details.get("reason"),
+                    }
+            except AdmissionError as exc:
+                self._log(f"STORE-COLLECT-FAILED {store_rel} pack-failed {exc.reason[:160]}")
+                try:
+                    store_part.unlink()
+                except FileNotFoundError:
+                    pass
+                store_details = {"status": "failed", "reason": "pack-failed"}
+        collection: dict[str, object] = {
+            "artifacts_sha256": artifact_digest,
+            "artifacts_size": artifact_size,
+            "artifact_files": artifact_details.get("files"),
+            "store_rel": store_rel,
+            "store": store_details,
+            "collected_at": self.clock(),
+        }
+        self._save_state(state="collecting", collection=collection)
+        return collection
+
+    def _read_events(self) -> list[Mapping[str, object]]:
+        if not self.event_rel or not self.repo_root.is_absolute():
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "host-owned Run-Gate event file was not established")
+        parent_fd = _open_absolute_directory(self.repo_root.parent)
+        event_fd = -1
+
+        def no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            document: dict[str, object] = {}
+            for key, value in pairs:
+                if key in document:
+                    raise ValueError(f"duplicate Run-Gate event field {key!r}")
+                document[key] = value
+            return document
+
+        try:
+            event_fd = open_beneath(parent_fd, self.event_rel)
+            info = os.fstat(event_fd)
+            assert self.runner_identity is not None
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != self.runner_identity.uid or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "Run-Gate event file has unsafe ownership or links")
+            events: list[Mapping[str, object]] = []
+            with os.fdopen(os.dup(event_fd), "rb") as stream:
+                line_number = 0
+                while True:
+                    line = stream.readline(65537)
+                    if not line:
+                        break
+                    line_number += 1
+                    if len(line) > 65536 or not line.endswith(b"\n"):
+                        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} is incomplete or too large")
+                    try:
+                        document = json.loads(line.decode("utf-8"), object_pairs_hook=no_duplicate_keys)
+                    except (UnicodeDecodeError, ValueError) as exc:
+                        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} is unreadable") from exc
+                    if (
+                        not isinstance(document, dict)
+                        or document.get("api") != "fleet-host-agent/1"
+                        or document.get("job_id") != self.job_id
+                        or not isinstance(document.get("event"), str)
+                        or document.get("event") not in {"lane-started", "lane-verdict"}
+                        or not isinstance(document.get("lane"), str) or not document.get("lane")
+                    ):
+                        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid identity")
+                    if document["event"] == "lane-started":
+                        required = frozenset({"api", "event", "job_id", "lane", "container_id", "image_id", "adopted"})
+                        keys = frozenset(document)
+                        if keys not in {required, required | {"reason"}}:
+                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has an unexpected lane-started shape")
+                        if (
+                            (document["container_id"] is not None and not isinstance(document["container_id"], str))
+                            or (document["image_id"] is not None and not isinstance(document["image_id"], str))
+                            or type(document["adopted"]) is not bool
+                            or ("reason" in document and not isinstance(document["reason"], str))
+                        ):
+                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid lane-started fields")
+                    else:
+                        required = frozenset({"api", "event", "job_id", "lane", "verdict", "exit_code", "lane_exit_code"})
+                        if frozenset(document) != required:
+                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has an unexpected lane-verdict shape")
+                        if (
+                            not isinstance(document["verdict"], str)
+                            or document["verdict"] not in _RUN_GATE_VERDICT_CODES
+                            or type(document["exit_code"]) is not int
+                            or (document["lane_exit_code"] is not None and type(document["lane_exit_code"]) is not int)
+                        ):
+                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid lane-verdict fields")
+                    events.append(document)
+            return events
+        except FileNotFoundError as exc:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "Run-Gate event file is missing") from exc
+        except OSError as exc:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event file is unreadable: {exc}") from exc
+        finally:
+            _close(event_fd, parent_fd)
+
+    def _wait_for_lane_containers(self) -> list[Mapping[str, object]]:
+        events = self._read_events()
+        started = [event for event in events if event.get("event") == "lane-started"]
+        inspect = getattr(self.docker, "inspect", None)
+        if started and not callable(inspect):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker inspect provider is unavailable for lane containers")
+        container_ids: list[tuple[str, str]] = []
+        for event in started:
+            lane = event.get("lane")
+            if not isinstance(lane, str):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lane-started event has no lane")
+            mode, _persistent_name = self._container_mode(lane)
+            container_id = event.get("container_id")
+            if container_id is None:
+                if mode in {"ephemeral", "exec"}:
+                    raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"container lane {lane!r} has no full container id")
+                continue
+            if not isinstance(container_id, str) or _CONTAINER_ID_RE.fullmatch(container_id) is None:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "Run-Gate reported a non-full container id")
+            if mode == "host":
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"host-mode lane {lane!r} reported a container")
+            container_ids.append((container_id, mode))
+        while container_ids:
+            still_running: list[tuple[str, str]] = []
+            for container_id, mode in sorted(set(container_ids)):
+                answer = inspect(container_id)
+                if answer is None:
+                    continue
+                if not isinstance(answer, Mapping) or answer.get("Id") != container_id:
+                    raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Docker inspect did not confirm full id {container_id}")
+                state = answer.get("State")
+                if not isinstance(state, Mapping) or type(state.get("Running")) is not bool:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker state for {container_id} is unreadable")
+                if state.get("Running") is True:
+                    if mode != "exec":
+                        still_running.append((container_id, mode))
+            if still_running:
+                self._save_state(
+                    state="stopping", live_containers=[container_id for container_id, _mode in still_running],
+                    retry_required=True,
+                )
+                self.waiter(1)
+                container_ids = still_running
+            else:
+                container_ids = []
+        self._save_state(live_containers=[], retry_required=False)
+        return events
+
+    def _container_mode(self, event_lane: str) -> tuple[str, str | None]:
+        lane_name = event_lane
+        shard = _SHARD_EVENT_RE.fullmatch(event_lane)
+        if shard is not None:
+            lane_name = shard.group(1)
+        project = self.request.get("project")
+        if not isinstance(project, str):
+            raise AdmissionError(ExitCode.REFUSAL, "request project is invalid during verdict binding")
+        lane, environment = _lane_environment(self.checkout_fd, project, lane_name)
+        mode = environment.get("mode")
+        if mode not in {"host", "exec", "ephemeral"}:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"lane {event_lane!r} has no resolved execution mode")
+        if mode == "exec":
+            environment_name = lane.get("environment")
+            if not isinstance(environment_name, str):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"lane {event_lane!r} has no environment name")
+            return "exec", _exec_container_name(self.checkout_fd, environment_name, environment)
+        return str(mode), None
+
+    def _verify_container_observation(
+        self, answer: Mapping[str, object], *, container_id: str, event_lane: str,
+        mode: str, persistent_name: str | None, expected_sha: str, require_stopped: bool = True,
+    ) -> Mapping[str, object]:
+        if answer.get("Id") != container_id or _CONTAINER_ID_RE.fullmatch(container_id) is None:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Docker did not report exact container id {container_id}")
+        mounts = answer.get("Mounts")
+        checkout_source = str(self.repo_root / self.checkout_rel)
+        if not isinstance(mounts, list) or not any(
+            isinstance(mount, Mapping)
+            and mount.get("Type") == "bind"
+            and mount.get("Source") == checkout_source
+            and isinstance(mount.get("Destination"), str)
+            and str(mount.get("Destination")).startswith("/")
+            for mount in mounts
+        ):
+            raise AdmissionError(
+                ExitCode.IDENTITY_OR_TRANSPORT,
+                f"container {container_id} does not mount this job's checkout",
+            )
+        if mode == "exec":
+            if not isinstance(persistent_name, str) or not persistent_name:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "exec-mode lane has no persistent runner name")
+            actual_name = answer.get("Name")
+            if not isinstance(actual_name, str) or actual_name.removeprefix("/") != persistent_name:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "exec-mode container does not match the persistent runner name")
+            state = answer.get("State")
+            if not isinstance(state, Mapping) or state.get("Running") is not True:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "exec-mode persistent runner is not running")
+        elif mode == "ephemeral":
+            config = answer.get("Config")
+            labels = config.get("Labels") if isinstance(config, Mapping) else None
+            required = {
+                "run-gate.repo", "run-gate.project", "run-gate.lane", "run-gate.commit",
+                "run-gate.name-schema", "run-gate.started", "run-gate.job",
+            }
+            if not isinstance(labels, Mapping) or any(
+                not isinstance(labels.get(key), str) or not labels.get(key) for key in required
+            ):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"container {container_id} has incomplete run-gate labels")
+            if (
+                labels.get("run-gate.lane") != event_lane
+                or labels.get("run-gate.commit") != expected_sha
+                or labels.get("run-gate.job") != self.job_id
+            ):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"container {container_id} labels do not bind this job")
+            state = answer.get("State")
+            if require_stopped and (not isinstance(state, Mapping) or state.get("Running") is not False):
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Run-Gate container {container_id} is not confirmed stopped")
+        else:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"host-mode lane {event_lane!r} emitted a container id")
+        binding: dict[str, object] = {
+            "id": container_id,
+            "lane": event_lane,
+            "mode": mode,
+            "name": persistent_name,
+            "checkout_mount": checkout_source,
+            "observed_name": answer.get("Name"),
+        }
+        if mode == "ephemeral":
+            config = answer.get("Config")
+            labels = config.get("Labels") if isinstance(config, Mapping) else None
+            if isinstance(labels, Mapping):
+                binding["labels"] = {
+                    key: labels.get(key) for key in sorted(labels) if isinstance(key, str) and key.startswith("run-gate.")
+                }
+        return binding
+
+    def _inspect_container_binding(
+        self, event: Mapping[str, object], *, expected_sha: str,
+    ) -> Mapping[str, object] | None:
+        container_id = event.get("container_id")
+        if container_id is None:
+            mode, _name = self._container_mode(str(event.get("lane", "")))
+            if mode == "ephemeral" or mode == "exec":
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "container lane has no full lane-started id")
+            return None
+        if not isinstance(container_id, str) or _CONTAINER_ID_RE.fullmatch(container_id) is None:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lane-started event has an invalid container id")
+        lane = event.get("lane")
+        if not isinstance(lane, str):
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lane-started event has no lane")
+        mode, persistent_name = self._container_mode(lane)
+        inspect = getattr(self.docker, "inspect", None)
+        if not callable(inspect):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker inspect provider is unavailable for verdict binding")
+        try:
+            answer = inspect(container_id)
+        except AdmissionError:
+            raise
+        except Exception as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect {container_id} failed: {exc}") from exc
+        if answer is None:
+            return None
+        if not isinstance(answer, Mapping):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect {container_id} returned an invalid object")
+        if mode == "exec":
+            assert persistent_name is not None
+            try:
+                named_answer = inspect(persistent_name)
+            except AdmissionError:
+                raise
+            except Exception as exc:
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect runner {persistent_name!r} failed: {exc}") from exc
+            if not isinstance(named_answer, Mapping) or named_answer.get("Id") != container_id:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"persistent runner {persistent_name!r} does not match event container {container_id}",
+                )
+        return self._verify_container_observation(
+            answer, container_id=container_id, event_lane=lane, mode=mode,
+            persistent_name=persistent_name, expected_sha=expected_sha,
+        )
+
+    def _teardown_containers(self, containers: Sequence[Mapping[str, object]], *, expected_sha: str) -> None:
+        inspect = getattr(self.docker, "inspect", None)
+        remove = getattr(self.docker, "remove_stopped", None)
+        for container in containers:
+            if container.get("mode") == "exec":
+                continue
+            container_id = container.get("id")
+            lane = container.get("lane")
+            if not isinstance(container_id, str) or not isinstance(lane, str):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "verified container record is incomplete")
+            if not callable(inspect) or not callable(remove):
+                raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker teardown provider is unavailable")
+            while True:
+                try:
+                    answer = inspect(container_id)
+                except AdmissionError:
+                    raise
+                except Exception as exc:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect {container_id} failed: {exc}") from exc
+                if answer is None:
+                    break
+                if not isinstance(answer, Mapping):
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker inspect {container_id} returned an invalid object")
+                self._verify_container_observation(
+                    answer, container_id=container_id, event_lane=lane,
+                    mode=str(container.get("mode")),
+                    persistent_name=container.get("name") if isinstance(container.get("name"), str) else None,
+                    expected_sha=expected_sha, require_stopped=False,
+                )
+                state = answer.get("State")
+                if not isinstance(state, Mapping) or type(state.get("Running")) is not bool:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker state for {container_id} is unreadable")
+                if state.get("Running") is False:
+                    break
+                self._save_state(state="stopping", live_containers=[container_id], retry_required=True)
+                self.waiter(1)
+            if answer is not None:
+                remove(container_id)
+        self._save_state(live_containers=[], retry_required=False)
+
+    def _host_checkout_line(self) -> tuple[str, str]:
+        request_sha = self.request.get("sha")
+        state = self._state()
+        checkout = state.get("checkout")
+        state_sha = checkout.get("sha") if isinstance(checkout, Mapping) else None
+        if (
+            not isinstance(request_sha, str) or _COMMIT_RE.fullmatch(request_sha) is None
+            or not isinstance(state_sha, str) or _COMMIT_RE.fullmatch(state_sha) is None
+            or state_sha != request_sha
+        ):
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "request sha and host checkout state do not agree")
+        raw = _read_regular(self.job_dir / "job.log", limit=1024 * 1024)
+        try:
+            lines = raw.decode("utf-8").splitlines()
+        except UnicodeDecodeError as exc:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "host checkout log is unreadable") from exc
+        expected = str(self.repo_root / self.checkout_rel)
+        pattern = re.compile(rf"^[^ ]+ checkout {re.escape(expected)} at ([0-9a-f]{{40}}|[0-9a-f]{{64}})$")
+        matches = [(line, pattern.fullmatch(line)) for line in lines]
+        matches = [(line, match) for line, match in matches if match is not None]
+        if len(matches) != 1 or matches[0][1].group(1) != request_sha:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "host checkout line is missing, duplicated, or differs from request sha")
+        return matches[0][0], request_sha
+
+    def _last_lane_summary(self) -> tuple[str, str, int | None]:
+        lane = self.request.get("lane")
+        if not isinstance(lane, str):
+            raise AdmissionError(ExitCode.REFUSAL, "request lane is invalid during verdict binding")
+        path = self.job_dir / "lane.log"
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"lane log is unavailable: {exc}") from exc
+        prefix = f"run-gate: lane '{lane}' verdict ".encode("utf-8")
+        last: bytes | None = None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lane log is not a regular file")
+            with os.fdopen(os.dup(fd), "rb") as stream:
+                while True:
+                    line = stream.readline(65537)
+                    if not line:
+                        break
+                    if len(line) > 65536:
+                        if line.startswith(prefix):
+                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is too large")
+                        while line and not line.endswith(b"\n"):
+                            line = stream.readline(65537)
+                        continue
+                    if not line.endswith(b"\n"):
+                        if line.startswith(prefix):
+                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is incomplete")
+                        continue
+                    candidate = line[:-1].removesuffix(b"\r")
+                    if candidate.startswith(prefix):
+                        last = candidate
+        finally:
+            os.close(fd)
+        if last is None:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "exact-lane anchored Run-Gate summary is missing")
+        try:
+            text = last[len(prefix):].decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is unreadable") from exc
+        fields = [field.strip() for field in text.split(";")]
+        verdict = fields[0] if fields else ""
+        if verdict not in _RUN_GATE_VERDICT_CODES:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary has an unknown verdict")
+        code_fields = [field for field in fields[1:] if field.startswith("exit_code")]
+        if len(code_fields) > 1:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary repeats exit_code")
+        lane_exit_code: int | None = None
+        if code_fields:
+            match = re.fullmatch(r"exit_code (-?[0-9]+|null)", code_fields[0])
+            if match is None:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary has an invalid exit_code")
+            if match.group(1) != "null":
+                lane_exit_code = int(match.group(1))
+        return last.decode("ascii"), verdict, lane_exit_code
+
+    def _bind_verdict(
+        self, events: Sequence[Mapping[str, object]], process_status: int,
+        containers: Sequence[Mapping[str, object]], *, cancelled: bool = False,
+    ) -> Mapping[str, object]:
+        """Create the host result from checkout, Run-Gate, and inspected-container facts."""
+
+        reasons: list[str] = []
+        for container in containers:
+            if container.get("status") == "missing-object":
+                reasons.append(f"Run-Gate container {container.get('id')} disappeared before binding")
+        checkout_line: str | None = None
+        checkout_sha: str | None = None
+        try:
+            checkout_line, checkout_sha = self._host_checkout_line()
+        except AdmissionError as exc:
+            reasons.append(exc.reason)
+        lane = self.request.get("lane")
+        if not isinstance(lane, str):
+            raise AdmissionError(ExitCode.REFUSAL, "request lane is invalid")
+        top_mode, _top_runner = self._container_mode(lane)
+        started_events = [event for event in events if event.get("event") == "lane-started"]
+        if top_mode in {"ephemeral", "exec"} and not any(event.get("lane") == lane for event in started_events):
+            reasons.append(f"container lane {lane!r} has no lane-started event")
+        verdict_events = [event for event in events if event.get("event") == "lane-verdict"]
+        verdict_event = verdict_events[0] if len(verdict_events) == 1 else None
+        if len(verdict_events) != 1:
+            reasons.append(f"expected exactly one lane-verdict event, got {len(verdict_events)}")
+        if verdict_event is not None and verdict_event.get("lane") != lane:
+            reasons.append("lane-verdict event names a different lane")
+        summary_line: str | None = None
+        summary_verdict: str | None = None
+        summary_exit: int | None = None
+        try:
+            summary_line, summary_verdict, summary_exit = self._last_lane_summary()
+        except AdmissionError as exc:
+            reasons.append(exc.reason)
+        if verdict_event is not None:
+            event_verdict = verdict_event.get("verdict")
+            event_status = verdict_event.get("exit_code")
+            event_lane_status = verdict_event.get("lane_exit_code")
+            if not isinstance(event_verdict, str) or event_verdict not in _RUN_GATE_VERDICT_CODES:
+                reasons.append("lane-verdict event has an unknown verdict")
+            if type(event_status) is not int:
+                reasons.append("lane-verdict event has no integer process status")
+            if "lane_exit_code" not in verdict_event or (
+                event_lane_status is not None and type(event_lane_status) is not int
+            ):
+                reasons.append("lane-verdict event has no valid lane_exit_code")
+            if type(event_status) is int and event_status != process_status:
+                reasons.append("lane-verdict event differs from the Run-Gate process status")
+            if summary_verdict is not None and event_verdict != summary_verdict:
+                reasons.append("lane-verdict event differs from the anchored summary")
+            if summary_line is not None and event_lane_status != summary_exit:
+                reasons.append("lane-verdict event lane_exit_code differs from the anchored summary")
+            if isinstance(event_verdict, str) and event_verdict in _RUN_GATE_VERDICT_CODES \
+                    and process_status != _RUN_GATE_VERDICT_CODES[event_verdict]:
+                reasons.append("Run-Gate process status is outside its closed verdict table")
+        if cancelled:
+            final_verdict = "CANCELLED"
+            final_exit = int(ExitCode.CANCELLED)
+        elif reasons:
+            final_verdict = "ERROR"
+            final_exit = int(ExitCode.IDENTITY_OR_TRANSPORT)
+        else:
+            assert verdict_event is not None
+            final_verdict = str(verdict_event["verdict"])
+            final_exit = process_status
+        result: dict[str, object] = {
+            "schema": "fleet-host-result/1",
+            "api": "fleet-host-agent/1",
+            "job_id": self.job_id,
+            "repo": self.request.get("repo"),
+            "lane": lane,
+            "request_sha": self.request.get("sha"),
+            "checkout_sha": checkout_sha,
+            "checkout_line": checkout_line,
+            "process_status": process_status,
+            "anchored_summary": summary_line,
+            "lane_verdict_event": dict(verdict_event) if verdict_event is not None else None,
+            "containers": [dict(container) for container in containers],
+            "verdict": final_verdict,
+            "exit_code": final_exit,
+            "binding": {"status": "refused" if reasons else "verified", "reasons": reasons},
+        }
+        _atomic_json(self.job_dir / "result.json", result)
+        result_fd = os.open(self.job_dir / "result.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            result_sha, result_size = self._hash_fd(result_fd)
+        finally:
+            os.close(result_fd)
+        current = self._state()
+        collection = current.get("collection")
+        collected_at = collection.get("collected_at") if isinstance(collection, Mapping) else None
+        return {
+            "verdict": final_verdict,
+            "exit_code": final_exit,
+            "result_sha256": result_sha,
+            "result_size": result_size,
+            "lane": lane,
+            "api": "fleet-host-agent/1",
+            "collected_at": collected_at if isinstance(collected_at, str) else self.clock(),
+            "binding_reasons": reasons,
+        }
+
+    def _bind_container_events(
+        self, events: Sequence[Mapping[str, object]], *, expected_sha: str,
+    ) -> list[Mapping[str, object]]:
+        bindings: list[Mapping[str, object]] = []
+        for event in events:
+            if event.get("event") != "lane-started":
+                continue
+            lane = event.get("lane")
+            if not isinstance(lane, str):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lane-started event has no lane")
+            mode, persistent_name = self._container_mode(lane)
+            container_id = event.get("container_id")
+            inspected = self._inspect_container_binding(event, expected_sha=expected_sha)
+            if inspected is None:
+                status = "no-container" if container_id is None and mode == "host" else "missing-object"
+                bindings.append({
+                    "id": container_id, "lane": lane, "mode": mode,
+                    "name": persistent_name, "status": status,
+                })
+            else:
+                bindings.append({**inspected, "status": "verified"})
+        return bindings
+
+    def _remove_checkout(self) -> None:
+        if not self.checkout_rel:
+            return
+        _close(self.project_fd, self.checkout_fd)
+        self.project_fd = self.checkout_fd = -1
+        self._helper("remove-tree", "--relative", self.checkout_rel, cwd_fd=self.repo_root_fd)
+
+    def _simple_result(
+        self, verdict: str, exit_code: int, reason: str,
+    ) -> Mapping[str, object]:
+        state = self._state()
+        checkout = state.get("checkout")
+        checkout_sha = checkout.get("sha") if isinstance(checkout, Mapping) else None
+        collection = state.get("collection")
+        collected_at = collection.get("collected_at") if isinstance(collection, Mapping) else None
+        if not isinstance(collected_at, str):
+            collected_at = self.clock()
+        document: dict[str, object] = {
+            "schema": "fleet-host-result/1",
+            "api": "fleet-host-agent/1",
+            "job_id": self.job_id,
+            "repo": self.request.get("repo"),
+            "lane": self.request.get("lane"),
+            "request_sha": self.request.get("sha"),
+            "checkout_sha": checkout_sha,
+            "checkout_line": None,
+            "process_status": None,
+            "anchored_summary": None,
+            "lane_verdict_event": None,
+            "containers": [],
+            "verdict": verdict,
+            "exit_code": exit_code,
+            "binding": {"status": "not-run", "reasons": [reason]},
+        }
+        _atomic_json(self.job_dir / "result.json", document)
+        fd = os.open(self.job_dir / "result.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            result_sha, result_size = self._hash_fd(fd)
+        finally:
+            os.close(fd)
+        lane = self.request.get("lane")
+        if not isinstance(lane, str) or not lane:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "cannot persist a result without the request lane")
+        return {
+            "verdict": verdict,
+            "exit_code": exit_code,
+            "result_sha256": result_sha,
+            "result_size": result_size,
+            "lane": lane,
+            "api": "fleet-host-agent/1",
+            "collected_at": collected_at,
+        }
+
+    def _complete_admission(self, terminal_details: Mapping[str, object]) -> None:
+        if not self.group or not self.request_digest or self.lock_fd < 0:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor has no inherited live admission lock")
+        try:
+            os.fstat(self.lock_fd)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"inherited admission lock is unavailable: {exc}") from exc
+        book = AdmissionBook(self.state_dir)
+        handle = AdmissionHandle(book, {
+            "job_id": self.job_id,
+            "group": self.group,
+            "digest": self.request_digest,
+        }, self.lock_fd)
+        book.complete(handle, terminal_details=terminal_details)
+        self.lock_fd = -1
+
+    def _finish_unstarted(self, exit_code: int, reason: str) -> int:
+        try:
+            current = self._state()
+        except AdmissionError:
+            return int(exit_code)
+        if current.get("lane_pid") is not None and current.get("lane_process_status") is None:
+            self._save_state(
+                state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                reason="lane process start could not be confirmed stopped", retry_required=True,
+            )
+            return int(ExitCode.QUEUED_WITHDRAWN)
+        if not self.group or not self.request_digest or self.lock_fd < 0:
+            self._save_state(
+                state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                reason=f"terminal completion requires the inherited admission lock and request identity: {reason}",
+                retry_required=True,
+            )
+            return int(ExitCode.QUEUED_WITHDRAWN)
+        try:
+            if self.checkout_fd >= 0:
+                self._collect()
+            if self.checkout_rel and self.runner is not None:
+                self._remove_checkout()
+            verdict = "CANCELLED" if exit_code == ExitCode.CANCELLED else "NOT_RUN"
+            terminal = self._simple_result(verdict, int(exit_code), reason)
+            final_state = "cancelled" if verdict == "CANCELLED" else "failed"
+            self._save_state(
+                state=final_state, verdict=verdict, exit_code=exit_code, reason=reason,
+                result_sha256=terminal["result_sha256"], result_size=terminal["result_size"],
+                lane=terminal["lane"], api=terminal["api"], collected_at=terminal["collected_at"],
+                ended_utc=self.clock(),
+            )
+            try:
+                self._complete_admission(terminal)
+            except AdmissionError as exc:
+                self._save_state(
+                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                    reason=f"terminal record persistence deferred: {exc.reason}", retry_required=True,
+                )
+                return int(ExitCode.QUEUED_WITHDRAWN)
+            return int(exit_code)
+        except (AdmissionError, OSError, ValueError, UnicodeError) as exc:
+            detail = exc.reason if isinstance(exc, AdmissionError) else str(exc)
+            self._save_state(
+                state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                reason=f"pre-lane finalization deferred: {detail}", retry_required=True,
+            )
+            return int(ExitCode.QUEUED_WITHDRAWN)
 
     def run(self) -> int:
         """Run checkout and lane prerequisites, then return the Run-Gate status."""
 
+        if not self._await_scope_confirmation():
+            return int(ExitCode.RUNNER_FAILURE)
         try:
             self._read_request()
             try:
@@ -953,28 +2086,95 @@ class HostJobWorker:
             self._save_state(state="running", api="fleet-host-agent/1", lane=self.request.get("lane"))
             self._log("executor worker started")
             self._create_checkout()
+            self._cancel_checkpoint()
             if self.request.get("kind") != "lane":
                 raise AdmissionError(ExitCode.REFUSAL, "kind=dev is outside the C3b-1 lane executor")
             binary, mode, facts = self._prerequisites()
+            self._cancel_checkpoint()
             self._wait_for_psi()
+            self._cancel_checkpoint()
             self._seed_stores()
+            self._cancel_checkpoint()
             memory_lock_fd = self._memory_admission()
-            self._run_lane(binary, mode, facts, memory_lock_fd)
-            return 0
-        except AdmissionError as exc:
-            self._log(f"executor stopped exit={exc.exit_code}: {exc.reason}")
+            status = self._run_lane(binary, mode, facts, memory_lock_fd)
+            events = self._wait_for_lane_containers()
+            request_sha = self.request.get("sha")
+            if not isinstance(request_sha, str):
+                raise AdmissionError(ExitCode.REFUSAL, "request sha is invalid during cleanup")
+            containers = self._bind_container_events(events, expected_sha=request_sha)
+            self._save_state(container_bindings=containers)
+            self._collect()
+            state = self._state()
+            cancelled = state.get("cancel_requested") is True
+            terminal = self._bind_verdict(events, status, containers, cancelled=cancelled)
+            self._save_state(**terminal)
+            self._teardown_containers(
+                [container for container in containers if container.get("status") == "verified"],
+                expected_sha=request_sha,
+            )
+            self._remove_checkout()
+            state = self._state()
+            if state.get("cancel_requested") is True and terminal.get("verdict") != "CANCELLED":
+                terminal = self._bind_verdict(events, status, containers, cancelled=True)
+            final_state = "cancelled" if terminal.get("verdict") == "CANCELLED" else (
+                "done" if terminal.get("verdict") == "PASS" else "failed"
+            )
             self._save_state(
-                state="failed", exit_code=exc.exit_code, verdict=None, reason=exc.reason,
+                state=final_state, verdict=terminal.get("verdict"), exit_code=terminal.get("exit_code"),
+                result_sha256=terminal.get("result_sha256"), result_size=terminal.get("result_size"),
+                lane=terminal.get("lane"), api=terminal.get("api"), collected_at=terminal.get("collected_at"),
+                reason=("; ".join(terminal.get("binding_reasons", []))
+                        if isinstance(terminal.get("binding_reasons"), list) and terminal.get("binding_reasons")
+                        else state.get("cancel_reason") if final_state == "cancelled" else None),
                 ended_utc=self.clock(),
             )
-            return int(exc.exit_code)
-        except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as exc:
+            try:
+                self._complete_admission({
+                    field: terminal[field] for field in (
+                        "verdict", "exit_code", "lane", "api", "collected_at", "result_sha256", "result_size",
+                    )
+                })
+            except AdmissionError as exc:
+                self._save_state(
+                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                    reason=f"terminal record persistence deferred: {exc.reason}", retry_required=True,
+                )
+                return int(ExitCode.QUEUED_WITHDRAWN)
+            return int(terminal["exit_code"])
+        except AdmissionError as exc:
+            try:
+                current = self._state()
+            except AdmissionError:
+                current = {}
+            if current.get("lane_pid") is not None and current.get("lane_process_status") is None:
+                self._log(f"executor cleanup deferred exit={exc.exit_code}: {exc.reason}")
+                self._save_state(
+                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN, reason=exc.reason,
+                    retry_required=True,
+                )
+                return int(ExitCode.QUEUED_WITHDRAWN)
+            if current.get("lane_process_status") is not None:
+                self._log(f"executor cleanup deferred exit={exc.exit_code}: {exc.reason}")
+                self._save_state(
+                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN, reason=exc.reason,
+                    retry_required=True,
+                )
+                return int(ExitCode.QUEUED_WITHDRAWN)
+            self._log(f"executor stopped exit={exc.exit_code}: {exc.reason}")
+            return self._finish_unstarted(int(exc.exit_code), exc.reason)
+        except Exception as exc:
             self._log(f"executor stopped exit={ExitCode.RUNNER_FAILURE}: {exc}")
-            self._save_state(
-                state="failed", exit_code=ExitCode.RUNNER_FAILURE, verdict=None,
-                reason=str(exc), ended_utc=self.clock(),
-            )
-            return int(ExitCode.RUNNER_FAILURE)
+            try:
+                current = self._state()
+            except AdmissionError:
+                current = {}
+            if current.get("lane_pid") is not None or current.get("lane_process_status") is not None:
+                self._save_state(
+                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                    reason=f"finalization deferred: {exc}", retry_required=True,
+                )
+                return int(ExitCode.QUEUED_WITHDRAWN)
+            return self._finish_unstarted(int(ExitCode.RUNNER_FAILURE), str(exc))
         finally:
             _close(self.project_fd, self.checkout_fd, self.repo_root_fd)
 
@@ -1067,6 +2267,18 @@ def _remove_tree_at(parent_fd: int, name: str) -> None:
     finally:
         os.close(child_fd)
     os.rmdir(name, dir_fd=parent_fd)
+
+
+def _remove_tree_beneath(root_fd: int, relative: str) -> None:
+    parent_fd, name = _open_parent(root_fd, relative)
+    try:
+        try:
+            _remove_tree_at(parent_fd, name)
+        except FileNotFoundError:
+            return
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
 
 
 def _write_stdin_file(
@@ -1263,9 +2475,10 @@ def _extract_seed(
 def _helper_main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="fleetd-executor-worker-helper")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "prepare-event", "write-file"):
+    for name in ("prepare", "prepare-event", "write-file", "remove-tree", "archive-artifacts", "archive-store"):
         command = commands.add_parser(name)
-        command.add_argument("--relative", required=True)
+        command.add_argument("--relative", required=name in {"write-file", "remove-tree", "archive-store"})
+        command.add_argument("--output-fd", type=int, required=name in {"archive-artifacts", "archive-store"})
         if name == "write-file":
             command.add_argument("--sha256", required=True)
             command.add_argument("--bytes", type=int, required=True)
@@ -1282,6 +2495,14 @@ def _helper_main(argv: Sequence[str]) -> int:
             os.close(fd)
         elif args.command == "prepare-event":
             _prepare_event(cwd_fd, args.relative)
+        elif args.command == "remove-tree":
+            _remove_tree_beneath(cwd_fd, args.relative)
+        elif args.command == "archive-artifacts":
+            document = _archive_artifacts(cwd_fd, args.output_fd)
+            print(json.dumps(document, sort_keys=True, separators=(",", ":")))
+        elif args.command == "archive-store":
+            document = _archive_store(cwd_fd, args.output_fd, args.relative)
+            print(json.dumps(document, sort_keys=True, separators=(",", ":")))
         elif args.command == "extract-seed":
             _extract_seed(cwd_fd, 0, args.relative, args.sha256, args.bytes, args.max_bytes)
         else:

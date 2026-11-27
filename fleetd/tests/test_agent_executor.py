@@ -1,4 +1,5 @@
 import hashlib
+import fcntl
 import io
 import json
 import os
@@ -52,7 +53,7 @@ class _Scope:
         return self.state or ScopeState(unit, True, 412)
 
 
-def _executor(tmp_path, *, scope=None, user_resolver=None):
+def _executor(tmp_path, *, scope=None, user_resolver=None, guard_presence=None, process_signals=None):
     policy, _ = _policy(tmp_path)
     state = tmp_path / "state"
     jobs = state / "jobs"
@@ -62,6 +63,8 @@ def _executor(tmp_path, *, scope=None, user_resolver=None):
         state, policy, policy_path=tmp_path / "agent.toml",
         scope_launcher=scope or _Scope(),
         user_resolver=user_resolver or (lambda name: RunnerIdentity(name, 1001, 1001, (1001, 44))),
+        guard_presence=guard_presence,
+        process_signals=process_signals,
         clock=lambda: "2026-11-27T00:00:00Z",
     ), policy, state
 
@@ -108,6 +111,61 @@ def test_executor_start_hands_off_flock_only_after_scope_confirmation(tmp_path):
     assert json.loads((job_dir / "state.json").read_text(encoding="utf-8"))["scope"] == unit
 
 
+def test_executor_holds_worker_start_gate_until_scope_confirmation(tmp_path):
+    observed = []
+    executor, _policy_value, state = _executor(tmp_path)
+    request = _submit()
+    job_dir = _durable_job(state, request)
+
+    class _CheckingScope:
+        def launch(self, unit, argv, lock_fd):
+            gate_fd = os.open(job_dir / "start.lock", os.O_RDWR)
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(gate_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                observed.append((unit, list(argv), lock_fd))
+            finally:
+                os.close(gate_fd)
+            return ScopeState(unit, True, 413)
+
+    executor.scope_launcher = _CheckingScope()
+    handle = _Handle()
+
+    result = executor.start(request, handle)
+
+    assert handle.handed_off is True
+    assert result["start_confirmed"] is True
+    assert result["executor_pid"] == 413
+    gate_fd = os.open(job_dir / "start.lock", os.O_RDWR)
+    try:
+        fcntl.flock(gate_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert observed[0][2] == handle.fd
+    finally:
+        fcntl.flock(gate_fd, fcntl.LOCK_UN)
+        os.close(gate_fd)
+
+
+def test_cancel_during_scope_start_survives_confirmation_state_write(tmp_path):
+    executor, _policy_value, state = _executor(tmp_path, guard_presence=lambda: False)
+    request = _submit()
+    job_dir = _durable_job(state, request)
+
+    class _CancelDuringLaunch:
+        def launch(self, unit, _argv, _lock_fd):
+            stopped = executor.request_stop(request["job_id"], "cancel during start")
+            assert stopped["stop_signal"] == "pending-lane-start"
+            return ScopeState(unit, True, 414)
+
+    executor.scope_launcher = _CancelDuringLaunch()
+    result = executor.start(request, _Handle())
+    durable = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+
+    assert result["start_confirmed"] is True
+    assert durable["state"] == "stopping"
+    assert durable["cancel_requested"] is True
+    assert durable["stop_signal"] == "pending-lane-start"
+
+
 def test_executor_keeps_the_admission_handle_when_scope_start_is_unconfirmed(tmp_path):
     executor, _policy_value, state = _executor(
         tmp_path, scope=_Scope(ScopeState("fleetd-job-controller-run-1.scope", False, 0)),
@@ -122,6 +180,38 @@ def test_executor_keeps_the_admission_handle_when_scope_start_is_unconfirmed(tmp
     assert handle.live
     assert not handle.handed_off
     assert json.loads((state / "jobs" / request["job_id"] / "state.json").read_text())["state"] == "starting"
+
+
+def test_worker_does_not_consume_or_complete_an_unconfirmed_start(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "start.lock").touch(mode=0o600)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": "controller-run-1",
+        "state": "starting", "start_confirmed": False,
+    }), encoding="utf-8")
+
+    try:
+        assert worker.run() == 70
+        assert not (worker.job_dir / "result.json").exists()
+        assert json.loads((worker.job_dir / "state.json").read_text(encoding="utf-8"))["state"] == "starting"
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_worker_accepts_a_confirmed_scope_start(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "start.lock").touch(mode=0o600)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": "controller-run-1",
+        "state": "running", "start_confirmed": True,
+    }), encoding="utf-8")
+
+    try:
+        assert worker._await_scope_confirmation() is True
+    finally:
+        os.close(worker.repo_root_fd)
 
 
 def test_executor_refuses_unknown_and_root_runner_users_before_launch(tmp_path):
@@ -235,6 +325,91 @@ def test_systemd_scope_launcher_refuses_when_scope_command_cannot_start():
         launcher.launch("fleetd-job-x.scope", ["python3", "worker"], 8)
 
 
+def test_executor_stop_records_absent_guard_and_terms_the_lane_group(tmp_path):
+    class _Signals:
+        def __init__(self):
+            self.pids = []
+
+        def terminate_group(self, pid):
+            self.pids.append(pid)
+
+    signals = _Signals()
+    executor, _policy_value, state_dir = _executor(
+        tmp_path, guard_presence=lambda: False, process_signals=signals,
+    )
+    request = _submit()
+    job_dir = _durable_job(state_dir, request)
+    (job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": request["job_id"],
+        "state": "running", "lane_pid": 412, "guard": {"present": None, "reason": "not-collected"},
+    }), encoding="utf-8")
+
+    stopped = executor.request_stop(request["job_id"], "operator request")
+
+    assert stopped["state"] == "stopping"
+    assert stopped["cancel_requested"] is True
+    assert stopped["stop_signal"] == "sent"
+    assert stopped["guard"] == {"present": False, "reason": "thrashguard-absent"}
+    assert signals.pids == [412]
+
+
+def test_executor_defers_cancel_when_guard_is_present_or_unknown(tmp_path):
+    class _Signals:
+        def terminate_group(self, _pid):
+            pytest.fail("guard refusal must not send TERM")
+
+    for name, presence, expected in (
+        ("present", lambda: True, "deregister/thaw client is unavailable"),
+        ("unknown", lambda: None, "presence is unknown"),
+    ):
+        scenario = tmp_path / name
+        scenario.mkdir()
+        executor, _policy_value, state_dir = _executor(
+            scenario, guard_presence=presence, process_signals=_Signals(),
+        )
+        request = _submit()
+        job_dir = _durable_job(state_dir, request)
+        (job_dir / "state.json").write_text(json.dumps({
+            "schema": "fleet-host-job-state/1", "job_id": request["job_id"],
+            "state": "running", "lane_pid": 412,
+        }), encoding="utf-8")
+        with pytest.raises(AdmissionError, match=expected):
+            executor.request_stop(request["job_id"], "operator request")
+        state = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+        assert state["state"] == "stopping"
+        assert "cancel_requested" not in state
+
+
+def test_executor_stop_keeps_stopping_state_when_term_fails_and_handles_pending_lane(tmp_path):
+    class _Signals:
+        def terminate_group(self, _pid):
+            raise PermissionError("TERM denied")
+
+    executor, _policy_value, state_dir = _executor(
+        tmp_path, guard_presence=lambda: False, process_signals=_Signals(),
+    )
+    request = _submit()
+    job_dir = _durable_job(state_dir, request)
+    (job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": request["job_id"],
+        "state": "running", "lane_pid": 412,
+    }), encoding="utf-8")
+    stopped = executor.request_stop(request["job_id"], "operator request")
+    assert stopped["state"] == "stopping"
+    assert stopped["stop_signal"] == "failed"
+    assert stopped["reason"] == "TERM failed: TERM denied"
+
+    other = tmp_path / "pending"
+    other.mkdir()
+    executor, _policy_value, state_dir = _executor(other, guard_presence=lambda: False)
+    job_dir = _durable_job(state_dir, request)
+    (job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": request["job_id"], "state": "running",
+    }), encoding="utf-8")
+    stopped = executor.request_stop(request["job_id"], "operator request")
+    assert stopped["stop_signal"] == "pending-lane-start"
+
+
 def _worker(tmp_path, runner, *, finder=lambda _name: "/usr/bin/run-gate"):
     policy, _ = _policy(tmp_path)
     worker = HostJobWorker(
@@ -298,6 +473,264 @@ def test_run_gate_selection_uses_supported_fallback_and_refuses_old_tools(tmp_pa
     finally:
         os.close(worker.repo_root_fd)
 
+
+def test_collection_streams_and_verifies_artifacts_and_one_store_archive(tmp_path):
+    from fleetd.executor_worker import _archive_artifacts, _archive_store
+
+    class _ArchiveRunner:
+        def run_to_fd(self, argv, *, cwd_fd, output_fd, **_kwargs):
+            if argv[3] == "archive-artifacts":
+                document = _archive_artifacts(cwd_fd, output_fd)
+            else:
+                relative = argv[argv.index("--relative") + 1]
+                document = _archive_store(cwd_fd, output_fd, relative)
+            return CommandResult(0, json.dumps(document).encode("utf-8"), b"")
+
+    checkout = tmp_path / "checkout"
+    (checkout / ".assay").mkdir(parents=True)
+    (checkout / ".run-gate").mkdir()
+    (checkout / "store" / "nested").mkdir(parents=True)
+    (checkout / ".assay" / "progress-x.jsonl").write_text('{"done":1}\n', encoding="utf-8")
+    (checkout / ".run-gate" / "verdict-x.json").write_text('{"verdict":"PASS"}\n', encoding="utf-8")
+    (checkout / "store" / "nested" / "payload.bin").write_bytes(b"payload")
+    worker = _worker(tmp_path, _ArchiveRunner())
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": "controller-run-1", "state": "collecting",
+    }), encoding="utf-8")
+    worker.request = {"project": ".", "stores": {"collect": "store"}}
+    worker.checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        first = worker._collect()
+        second = worker._collect()
+        assert first == second
+        assert first["artifact_files"] == 2
+        assert first["store"]["status"] == "collected"
+        checksum = (worker.job_dir / "assay-store.tgz.sha256").read_text(encoding="ascii")
+        assert checksum == f"{first['store']['sha256']}  assay-store.tgz\n"
+        with tarfile.open(worker.job_dir / "artifacts.tgz", "r:gz") as archive:
+            assert set(archive.getnames()) >= {".assay/progress-x.jsonl", ".run-gate/verdict-x.json"}
+        with tarfile.open(worker.job_dir / "assay-store.tgz", "r:gz") as archive:
+            assert "store/nested/payload.bin" in archive.getnames()
+    finally:
+        os.close(worker.checkout_fd)
+        os.close(worker.repo_root_fd)
+
+
+def test_store_collection_rejects_symlinks_without_losing_artifacts(tmp_path):
+    from fleetd.executor_worker import _archive_artifacts, _archive_store
+
+    class _ArchiveRunner:
+        def run_to_fd(self, argv, *, cwd_fd, output_fd, **_kwargs):
+            if argv[3] == "archive-artifacts":
+                document = _archive_artifacts(cwd_fd, output_fd)
+            else:
+                document = _archive_store(cwd_fd, output_fd, argv[argv.index("--relative") + 1])
+            return CommandResult(0, json.dumps(document).encode("utf-8"), b"")
+
+    checkout = tmp_path / "checkout"
+    (checkout / ".assay").mkdir(parents=True)
+    (checkout / ".assay" / "coverage.json").write_text("{}", encoding="utf-8")
+    (checkout / "store").mkdir()
+    (checkout / "store" / "escape").symlink_to(tmp_path / "outside")
+    worker = _worker(tmp_path, _ArchiveRunner())
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": "controller-run-1", "state": "collecting",
+    }), encoding="utf-8")
+    worker.request = {"project": ".", "stores": {"collect": "store"}}
+    worker.checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        result = worker._collect()
+        assert result["store"]["status"] == "failed"
+        assert (worker.job_dir / "artifacts.tgz").is_file()
+        assert not (worker.job_dir / "assay-store.tgz").exists()
+        assert any("STORE-COLLECT-FAILED store symlink" in line for line in (worker.job_dir / "job.log").read_text().splitlines())
+    finally:
+        os.close(worker.checkout_fd)
+        os.close(worker.repo_root_fd)
+
+
+def test_worker_waits_for_each_inspected_lane_container_without_a_deadline(tmp_path):
+    container_id = "a" * 64
+
+    class _Docker:
+        def __init__(self):
+            self.calls = []
+
+        def inspect(self, target):
+            self.calls.append(target)
+            return {
+                "Id": container_id,
+                "State": {"Running": len(self.calls) == 1},
+            }
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "run-gate.toml").write_text(
+        "[lanes.r0-r1]\nenvironment = 'tester'\n\n[environments.tester]\nmode = 'ephemeral'\nimage = 'tester:local'\n",
+        encoding="utf-8",
+    )
+    event_dir = tmp_path / ".fleetd-events" / "vbpub"
+    event_dir.mkdir(parents=True)
+    event = event_dir / "controller-run-1.jsonl"
+    event.write_text(json.dumps({
+        "api": "fleet-host-agent/1", "job_id": "controller-run-1", "event": "lane-started",
+        "lane": "r0-r1", "container_id": container_id, "image_id": None, "adopted": False,
+    }) + "\n", encoding="utf-8")
+    event.chmod(0o600)
+    docker = _Docker()
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("test-runner", os.getuid(), os.getgid(), (os.getgid(),))
+    worker.request = {"project": "."}
+    worker.checkout_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": "controller-run-1", "state": "collecting",
+    }), encoding="utf-8")
+    worker.repo_root = repo
+    worker.event_rel = ".fleetd-events/vbpub/controller-run-1.jsonl"
+    worker.docker = docker
+    waits = []
+    worker.waiter = waits.append
+    try:
+        events = worker._wait_for_lane_containers()
+        assert len(events) == 1
+        assert docker.calls == [container_id, container_id]
+        assert waits == [1]
+    finally:
+        os.close(worker.checkout_fd)
+        os.close(worker.repo_root_fd)
+
+
+def test_result_pass_requires_checkout_event_summary_and_process_agreement(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.toml").write_text(
+        "[lanes.r0-r1]\nenvironment = 'host'\n\n[environments.host]\nmode = 'host'\n",
+        encoding="utf-8",
+    )
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.job_dir.mkdir(parents=True)
+    worker.checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    worker.request = {"repo": "vbpub", "sha": SHA, "lane": "r0-r1", "project": "."}
+    worker.repo_root = tmp_path / "repo"
+    worker.checkout_rel = ".fleetd-worktrees/controller-run-1"
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": "controller-run-1", "state": "collecting",
+        "checkout": {"ready": True, "sha": SHA},
+        "collection": {"collected_at": "2026-11-27T00:00:00Z"},
+    }), encoding="utf-8")
+    (worker.job_dir / "job.log").write_text(
+        f"2026-11-27T00:00:00Z checkout {worker.repo_root / worker.checkout_rel} at {SHA}\n",
+        encoding="utf-8",
+    )
+    summary = "run-gate: lane 'r0-r1' verdict PASS; exit_code 0; log /tmp/lane.log\n"
+    (worker.job_dir / "lane.log").write_text(summary, encoding="utf-8")
+    event = {
+        "api": "fleet-host-agent/1", "job_id": "controller-run-1", "event": "lane-verdict",
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0, "lane_exit_code": 0,
+    }
+    try:
+        bound = worker._bind_verdict([event], 0, [])
+        assert bound["verdict"] == "PASS"
+        assert bound["exit_code"] == 0
+        result = json.loads((worker.job_dir / "result.json").read_text(encoding="utf-8"))
+        assert result["checkout_sha"] == SHA
+        assert result["binding"] == {"status": "verified", "reasons": []}
+
+        forged = dict(event, exit_code=1)
+        refused = worker._bind_verdict([forged], 0, [])
+        assert refused["verdict"] == "ERROR"
+        assert refused["exit_code"] == 3
+        result = json.loads((worker.job_dir / "result.json").read_text(encoding="utf-8"))
+        assert result["binding"]["status"] == "refused"
+    finally:
+        os.close(worker.checkout_fd)
+        os.close(worker.repo_root_fd)
+
+
+@pytest.mark.parametrize("event_text", [
+    json.dumps({
+        "api": "fleet-host-agent/1", "job_id": "controller-run-1", "event": "lane-verdict",
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0, "lane_exit_code": 0,
+        "unexpected": "extra",
+    }) + "\n",
+    '{"api":"fleet-host-agent/1","api":"fleet-host-agent/1",'
+    '"job_id":"controller-run-1","event":"lane-verdict","lane":"r0-r1",'
+    '"verdict":"PASS","exit_code":0,"lane_exit_code":0}\n',
+    json.dumps({
+        "api": "fleet-host-agent/1", "job_id": "controller-run-1", "event": "lane-verdict",
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0,
+    }) + "\n",
+    json.dumps({
+        "api": "fleet-host-agent/1", "job_id": "controller-run-1", "event": [],
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0, "lane_exit_code": 0,
+    }) + "\n",
+])
+def test_event_reader_refuses_malformed_missing_extra_and_duplicate_fields(tmp_path, event_text):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("test-runner", os.getuid(), os.getgid(), (os.getgid(),))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    event_dir = tmp_path / ".fleetd-events" / "vbpub"
+    event_dir.mkdir(parents=True)
+    event_path = event_dir / "controller-run-1.jsonl"
+    event_path.write_text(event_text, encoding="utf-8")
+    event_path.chmod(0o600)
+    worker.repo_root = repo
+    worker.event_rel = ".fleetd-events/vbpub/controller-run-1.jsonl"
+    try:
+        with pytest.raises(AdmissionError, match="Run-Gate event line 1"):
+            worker._read_events()
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_container_binding_requires_full_id_checkout_mount_and_run_gate_labels(tmp_path):
+    container_id = "b" * 64
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.toml").write_text(
+        "[lanes.r0-r1]\nenvironment = 'tester'\n\n[environments.tester]\nmode = 'ephemeral'\nimage = 'tester:local'\n",
+        encoding="utf-8",
+    )
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    expected_source = str(repo_root / ".fleetd-worktrees/controller-run-1")
+    answer = {
+        "Id": container_id,
+        "State": {"Running": False},
+        "Mounts": [{"Type": "bind", "Source": expected_source, "Destination": "/workspace"}],
+        "Config": {"Labels": {
+            "run-gate.repo": "vbpub", "run-gate.project": "vbpub", "run-gate.lane": "r0-r1",
+            "run-gate.commit": SHA, "run-gate.name-schema": "2",
+            "run-gate.started": "2026-11-27T00:00:00Z", "run-gate.job": "controller-run-1",
+        }},
+    }
+
+    class _Docker:
+        def inspect(self, _target):
+            return answer
+
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.request = {"project": ".", "sha": SHA, "lane": "r0-r1"}
+    worker.repo_root = repo_root
+    worker.checkout_rel = ".fleetd-worktrees/controller-run-1"
+    worker.checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    worker.docker = _Docker()
+    try:
+        event = {"event": "lane-started", "lane": "r0-r1", "container_id": container_id}
+        bound = worker._inspect_container_binding(event, expected_sha=SHA)
+        assert bound["checkout_mount"] == expected_source
+        assert bound["labels"]["run-gate.job"] == "controller-run-1"
+
+        answer["Mounts"] = [{"Type": "bind", "Source": str(tmp_path / "other"), "Destination": "/workspace"}]
+        with pytest.raises(AdmissionError, match="does not mount this job's checkout"):
+            worker._inspect_container_binding(event, expected_sha=SHA)
+    finally:
+        os.close(worker.checkout_fd)
+        os.close(worker.repo_root_fd)
 
 def _pipe_with(data):
     read_fd, write_fd = os.pipe()

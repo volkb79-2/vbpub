@@ -9,16 +9,19 @@ worker and run as ``agent.toml.runner_user``.
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 
 from .admission import AdmissionError, AdmissionHandle, ExitCode
 from .agent_policy import AgentPolicy, DEFAULT_AGENT_POLICY_PATH
@@ -49,6 +52,17 @@ class ScopeState:
 
 class ScopeLauncher(Protocol):
     def launch(self, unit: str, argv: Sequence[str], lock_fd: int) -> ScopeState: ...
+
+
+class ProcessSignals(Protocol):
+    def terminate_group(self, pid: int) -> None: ...
+
+
+class SystemProcessSignals:
+    """Send TERM to the isolated Run-Gate process group."""
+
+    def terminate_group(self, pid: int) -> None:
+        os.killpg(pid, signal.SIGTERM)
 
 
 class SystemdScopeLauncher:
@@ -155,6 +169,29 @@ def _atomic_json(path: Path, document: Mapping[str, object]) -> None:
         raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot persist executor state: {exc}") from exc
 
 
+@contextmanager
+def _job_state_lock(job_dir: Path) -> Iterator[None]:
+    """Serialize agent and worker read/modify/write operations on state.json."""
+
+    fd = -1
+    locked = False
+    try:
+        fd = os.open(job_dir / "state.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state lock is not a private regular file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        locked = True
+        yield
+    except OSError as exc:
+        raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot lock executor state: {exc}") from exc
+    finally:
+        if locked:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        if fd >= 0:
+            os.close(fd)
+
+
 def _job_id(value: object) -> str:
     if not isinstance(value, str) or _JOB_ID_RE.fullmatch(value) is None:
         raise AdmissionError(ExitCode.REFUSAL, "executor job id is not a safe path component")
@@ -193,6 +230,8 @@ class HostJobExecutor:
         policy_path: Path = DEFAULT_AGENT_POLICY_PATH,
         scope_launcher: ScopeLauncher | None = None,
         user_resolver: Callable[[str], RunnerIdentity] | None = None,
+        guard_presence: Callable[[], bool | None] | None = None,
+        process_signals: ProcessSignals | None = None,
         clock: Callable[[], str] = _utc_now,
         python_executable: str = sys.executable,
     ) -> None:
@@ -200,8 +239,10 @@ class HostJobExecutor:
         self.jobs_dir = self.state_dir / "jobs"
         self.policy = policy
         self.policy_path = Path(policy_path)
-        self.scope_launcher = scope_launcher or SystemdScopeLauncher(policy.query_timeout_s)
+        self.scope_launcher = scope_launcher
         self.user_resolver = user_resolver
+        self.guard_presence = guard_presence or (lambda: None)
+        self.process_signals = process_signals or SystemProcessSignals()
         self.clock = clock
         self.python_executable = python_executable
 
@@ -258,10 +299,20 @@ class HostJobExecutor:
             finally:
                 os.close(request_fd)
         unit = f"fleetd-job-{job_id}.scope"
+        try:
+            guard_present = self.guard_presence()
+        except Exception:
+            guard_present = None
+        if not isinstance(guard_present, bool):
+            guard_present = None
+        guard_reason = "thrashguard-absent" if guard_present is False else (
+            "not-collected" if guard_present is None else "registrant-client-unavailable"
+        )
         initial: dict[str, object] = {
             "schema": "fleet-host-job-state/1",
             "job_id": job_id,
             "state": "starting",
+            "start_confirmed": False,
             "scope": unit,
             "started_utc": self.clock(),
             "ended_utc": None,
@@ -270,30 +321,110 @@ class HostJobExecutor:
             "reason": None,
             "checkout": None,
             "container": {"id": None, "name": None, "image": None},
-            "guard": {"present": None, "reason": "not-checked"},
+            "guard": {"present": guard_present, "reason": guard_reason},
         }
-        _atomic_json(job_dir / "state.json", initial)
+        with _job_state_lock(job_dir):
+            _atomic_json(job_dir / "state.json", initial)
         argv = [
             self.python_executable, "-m", "fleetd.executor_worker", "worker",
             "--state-dir", str(self.state_dir), "--policy", str(self.policy_path),
             "--job-id", job_id, "--lock-fd", str(admission.fileno()),
         ]
+        start_gate_fd = -1
         try:
-            launched = self.scope_launcher.launch(unit, argv, admission.fileno())
-        except Exception:
-            # The durable request and the original admission handle remain with the caller.
-            raise
-        if not launched.active or launched.main_pid <= 0 or launched.unit != unit:
-            raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor scope start was not confirmed")
-        admission.handoff()
-        running = dict(initial)
-        running["state"] = "running"
-        running["executor_pid"] = launched.main_pid
-        return running
+            start_gate_fd = os.open(
+                job_dir / "start.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600,
+            )
+            fcntl.flock(start_gate_fd, fcntl.LOCK_EX)
+            launcher = self.scope_launcher or SystemdScopeLauncher(self.policy.query_timeout_s)
+            launched = launcher.launch(unit, argv, admission.fileno())
+            if not launched.active or launched.main_pid <= 0 or launched.unit != unit:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor scope start was not confirmed")
+            # The worker is blocked on start.lock. Hand off the charge only
+            # after the scope query has confirmed a live worker, then publish
+            # the confirmation before opening the gate.
+            admission.handoff()
+            with _job_state_lock(job_dir):
+                current = self.read_state(job_id)
+                if current is None:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state disappeared during scope start")
+                running = dict(current)
+                running.update(start_confirmed=True, executor_pid=launched.main_pid)
+                if running.get("state") != "stopping":
+                    running["state"] = "running"
+                _atomic_json(job_dir / "state.json", running)
+            return running
+        finally:
+            if start_gate_fd >= 0:
+                try:
+                    fcntl.flock(start_gate_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(start_gate_fd)
 
     def request_stop(self, job_id: str, reason: str) -> Mapping[str, object] | None:
-        _job_id(job_id)
-        raise AdmissionError(ExitCode.REFUSAL, "executor stop path is not available")
+        job_id = _job_id(job_id)
+        job_dir = self._job_dir(job_id, create=False)
+        try:
+            guard_present = self.guard_presence()
+        except Exception:
+            guard_present = None
+        if not isinstance(guard_present, bool):
+            guard_present = None
+        with _job_state_lock(job_dir):
+            current = self.read_state(job_id)
+            if current is None:
+                raise AdmissionError(ExitCode.REFUSAL, f"executor has no state for job {job_id!r}")
+            if current.get("state") in {"done", "failed", "cancelled"}:
+                raise AdmissionError(ExitCode.REFUSAL, f"finished job {job_id!r} cannot be stopped")
+            if current.get("lane_process_status") is not None:
+                raise AdmissionError(ExitCode.REFUSAL, f"lane for job {job_id!r} has exited and is being finalized")
+            state = dict(current)
+            if guard_present is not False:
+                refusal = (
+                    "thrashguard presence is unknown; cancellation deferred"
+                    if guard_present is None else
+                    "thrashguard deregister/thaw client is unavailable; cancellation deferred"
+                )
+                state.update(state="stopping", reason=refusal,
+                             guard={"present": guard_present, "reason": refusal})
+                _atomic_json(job_dir / "state.json", state)
+                raise AdmissionError(ExitCode.REFUSAL, refusal)
+            state.update(
+                state="stopping", reason=reason,
+                guard={"present": False, "reason": "thrashguard-absent"},
+                cancel_requested=True, cancel_reason=reason,
+            )
+            _atomic_json(job_dir / "state.json", state)
+        pid = state.get("lane_pid")
+        if type(pid) is int and pid > 0:
+            try:
+                self.process_signals.terminate_group(pid)
+            except ProcessLookupError:
+                signal_state = "process-already-exited"
+            except OSError as exc:
+                signal_state = "failed"
+                signal_reason = f"TERM failed: {exc}"
+            else:
+                signal_state = "sent"
+                signal_reason = reason
+            with _job_state_lock(job_dir):
+                latest = self.read_state(job_id)
+                if latest is None:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state disappeared during TERM")
+                state = dict(latest)
+                state["stop_signal"] = signal_state
+                if signal_state == "failed":
+                    state["reason"] = signal_reason
+                _atomic_json(job_dir / "state.json", state)
+        else:
+            with _job_state_lock(job_dir):
+                latest = self.read_state(job_id)
+                if latest is None:
+                    raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "executor state disappeared before lane start")
+                state = dict(latest)
+                state["stop_signal"] = "pending-lane-start"
+                _atomic_json(job_dir / "state.json", state)
+        return state
 
     def read_state(self, job_id: str) -> Mapping[str, object] | None:
         job_dir = self._job_dir(job_id, create=False)
