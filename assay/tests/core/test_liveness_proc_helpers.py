@@ -1027,12 +1027,14 @@ def test_incremental_event_reader_resets_when_candidate_file_is_replaced_or_trun
     replacement_identity = (events.stat().st_dev, events.stat().st_ino)
     assert replacement_identity != original_identity
     assert events.stat().st_size > len('{"event":"session_finish","pid":100}\n')
-    assert reader.read(events) == (3, False)
+    assert reader.read(events) == (4, False)
+    assert reader.completed_events == 3
 
     # In-place truncation is a separate reset path; a shorter valid stream
-    # replaces the accumulated three-record summary.
+    # resets its parser state while both progress counters stay cumulative.
     events.write_text('{"event":"test"}\n', encoding="utf-8")
-    assert reader.read(events) == (1, False)
+    assert reader.read(events) == (5, False)
+    assert reader.completed_events == 4
 
 
 # --------------------------------------------------------------------------
