@@ -998,43 +998,43 @@ mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-args-allowed.sh",
        '    --extension | --extension=* | -e | --no-extensions | -ne) return 0 ;;',
        '    --extension | --extension=* | -e | --no-extensions | -ne) return 1 ;;')
 
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-user-namespace",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-user-namespace",
        '  --unshare-user\n  --unshare-pid',
        '  --unshare-pid')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-pid-namespace",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-pid-namespace",
        '  --unshare-pid\n  --die-with-parent',
        '  --die-with-parent')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-die-with-parent",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-die-with-parent",
        '  --die-with-parent\n  --dev-bind / /',
        '  --dev-bind / /')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-root-bind",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-root-bind",
        '  --dev-bind / /\n  --perms 0700',
        '  --perms 0700')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-tmux-perms-not-private",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-tmux-perms-not-private",
        '  --perms 0700 --tmpfs "$tmux_socket_dir"',
        '  --tmpfs "$tmux_socket_dir"')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-tmux-tmpfs",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-tmux-tmpfs",
        '  --perms 0700 --tmpfs "$tmux_socket_dir"\n',
        '')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-no-docker-api-tmpfs",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-docker-api-tmpfs",
        '  --perms 0700 --tmpfs /run/docker-api\n',
        '')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-keeps-docker-host",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-docker-host",
        'unset TMUX TMUX_PANE DOCKER_HOST',
        'unset TMUX TMUX_PANE')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-keeps-tmux",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-tmux",
        'unset TMUX TMUX_PANE DOCKER_HOST',
        'unset TMUX_PANE DOCKER_HOST')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-keeps-tmux-pane",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-tmux-pane",
        'unset TMUX TMUX_PANE DOCKER_HOST',
        'unset TMUX DOCKER_HOST')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-docker-socket-uncovered",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-docker-socket-uncovered",
        '  bwrap_args+=(--bind /dev/null "$docker_socket")',
        '  : # Docker socket remains visible')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-fail-open",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-fail-open",
        'if [[ $(<"$status_file") != *\'"child-pid"\'* ]]; then',
        'if false; then')
-mutant("scripts/controller/pi-pidns-bash", "pi-pidns-command-status-zero",
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-command-status-zero",
        'exit "$command_rc"',
        'exit 0')
 mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",

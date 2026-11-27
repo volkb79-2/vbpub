@@ -2,6 +2,7 @@
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SOURCE=${PI_PIDNS_WRAPPER_SCRIPT:-$SCRIPT_DIR/../pi-pidns-bash}
+WORKER_SOURCE=${PI_PIDNS_WORKER_SCRIPT:-$SCRIPT_DIR/../pi-pidns-bash-worker.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-pidns.XXXXXX")
 cleanup() { rm -rf -- "$ROOT"; }
 trap cleanup EXIT
@@ -9,7 +10,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
 
 FAKE_BWRAP=$ROOT/bin/bwrap
-WRAPPER=$ROOT/pi-pidns-bash
+WRAPPER_DIR=$ROOT/wrapper
+WRAPPER=$WRAPPER_DIR/pi-pidns-bash
 mkdir -p "$ROOT/bin"
 cat > "$FAKE_BWRAP" <<'SH'
 #!/usr/bin/env bash
@@ -19,17 +21,38 @@ for arg in "$@"; do printf '%s\0' "$arg" >> "$FAKE_BWRAP_ARGV"; done
 for name in TMUX TMUX_PANE DOCKER_HOST; do
   if [[ -v $name ]]; then printf '%s=present\n' "$name"; else printf '%s=unset\n' "$name"; fi
 done > "${FAKE_BWRAP_ENV:?}"
+/usr/bin/env | /usr/bin/grep -E '^(BASH_ENV|ENV|SHELLOPTS|BASHOPTS)=' > "${FAKE_BWRAP_STARTUP_ENV:?}" || :
+if declare -F printf >/dev/null; then
+  printf 'FUNCTION_printf=present\n' >> "$FAKE_BWRAP_ENV"
+else
+  printf 'FUNCTION_printf=unset\n' >> "$FAKE_BWRAP_ENV"
+fi
 if [[ ${FAKE_BWRAP_START:-1} == 1 ]]; then
   printf '{"child-pid":2}\n' >&3
 fi
 exit "${FAKE_BWRAP_EXIT:-0}"
 SH
 chmod 0755 "$FAKE_BWRAP"
-sed "s|^BWRAP=/usr/bin/bwrap$|BWRAP=$FAKE_BWRAP|" "$SOURCE" > "$WRAPPER"
-chmod 0755 "$WRAPPER"
 FAKE_BWRAP_ARGV=$ROOT/bwrap.argv
 FAKE_BWRAP_ENV=$ROOT/bwrap.env
-export FAKE_BWRAP_ARGV FAKE_BWRAP_ENV
+FAKE_BWRAP_STARTUP_ENV=$ROOT/bwrap-startup-env
+export FAKE_BWRAP_ARGV FAKE_BWRAP_ENV FAKE_BWRAP_STARTUP_ENV
+make_wrapper() {
+  local directory=$1 bwrap_path=$2
+  mkdir -p "$directory"
+  if [[ -r $WORKER_SOURCE ]]; then
+    cp -- "$SOURCE" "$directory/pi-pidns-bash"
+    sed "s|^BWRAP=/usr/bin/bwrap$|BWRAP=$bwrap_path|" "$WORKER_SOURCE" \
+      > "$directory/pi-pidns-bash-worker.sh"
+  else
+    # Keep the oracle runnable against the reviewed b9f7cdb73 shell wrapper:
+    # its BASH_ENV and exported-function leaks must fail at the marker checks.
+    sed "s|^BWRAP=/usr/bin/bwrap$|BWRAP=$bwrap_path|" "$SOURCE" \
+      > "$directory/pi-pidns-bash"
+  fi
+  chmod 0755 "$directory/pi-pidns-bash"
+}
+make_wrapper "$WRAPPER_DIR" "$FAKE_BWRAP"
 
 argv_is() {
   local expected_name=$1
@@ -104,9 +127,8 @@ PY
 
 check_missing_bwrap_refuses() {
   local missing=$ROOT/missing-bwrap output=$ROOT/missing.out
-  sed "s|^BWRAP=/usr/bin/bwrap$|BWRAP=$missing|" "$SOURCE" > "$ROOT/missing-wrapper"
-  chmod 0755 "$ROOT/missing-wrapper"
-  if TMUX_TMPDIR="$ROOT/tmux-missing" "$ROOT/missing-wrapper" -c 'printf ran' > "$output" 2>&1; then
+  make_wrapper "$ROOT/missing-wrapper" "$missing"
+  if TMUX_TMPDIR="$ROOT/tmux-missing" "$ROOT/missing-wrapper/pi-pidns-bash" -c 'printf ran' > "$output" 2>&1; then
     fail 'a missing bwrap executable let the shell wrapper run'
   else
     local rc=$?
@@ -138,6 +160,32 @@ check_command_status_is_preserved() {
     local rc=$?
     [[ $rc == 37 ]] || fail "the wrapper changed a command exit of 37 to $rc"
   fi
+}
+
+check_startup_environment_is_sanitized() {
+  local bash_env=$ROOT/injected-bash-env function_marker=$ROOT/function-ran
+  local bash_env_marker=$ROOT/bash-env-ran output=$ROOT/startup-env.out
+  cat > "$bash_env" <<'SH'
+: > "${PIDNS_BASH_ENV_MARKER:?}"
+SH
+  rm -f -- "$function_marker" "$bash_env_marker" "$FAKE_BWRAP_STARTUP_ENV"
+  # shellcheck disable=SC2016 # Literal function source imported by Bash through env.
+  if env BASH_ENV="$bash_env" PIDNS_BASH_ENV_MARKER="$bash_env_marker" \
+    PIDNS_FUNCTION_MARKER="$function_marker" \
+    SHELLOPTS=braceexpand BASHOPTS=checkwinsize \
+    'BASH_FUNC_printf%%=() { /usr/bin/touch -- "$PIDNS_FUNCTION_MARKER"; builtin printf "$@"; }' \
+    TMUX_TMPDIR="$ROOT/tmux-startup-env" FAKE_BWRAP_START=0 FAKE_BWRAP_EXIT=1 \
+    "$WRAPPER" -c true > "$output" 2>&1; then
+    fail 'a wrapper setup failure unexpectedly returned success'
+  else
+    local rc=$?
+    [[ $rc == 125 ]] || fail "sanitized wrapper setup failure returned $rc instead of 125"
+  fi
+  [[ ! -e $bash_env_marker ]] || fail 'BASH_ENV ran outside the PID namespace boundary'
+  [[ ! -e $function_marker ]] || fail 'the exported printf function ran outside the PID namespace boundary'
+  [[ ! -s $FAKE_BWRAP_STARTUP_ENV ]] || fail 'Bash startup variables reached the bwrap launcher environment'
+  contains "$FAKE_BWRAP_ENV" 'FUNCTION_printf=unset' \
+    'the exported printf function was not imported by the bwrap launcher'
 }
 
 check_live_isolation() {
@@ -185,6 +233,7 @@ case ${PI_PIDNS_TEST_FOCUS:-all} in
   missing-bwrap) check_missing_bwrap_refuses ;;
   fail-closed) check_bwrap_setup_failure_is_fail_closed ;;
   command-status) check_command_status_is_preserved ;;
+  startup-env) check_startup_environment_is_sanitized ;;
   live) check_live_isolation ;;
   all)
     check_wrapper_argv_and_environment
@@ -192,6 +241,7 @@ case ${PI_PIDNS_TEST_FOCUS:-all} in
     check_missing_bwrap_refuses
     check_bwrap_setup_failure_is_fail_closed
     check_command_status_is_preserved
+    check_startup_environment_is_sanitized
     check_live_isolation
     ;;
   *) fail "unknown PI_PIDNS_TEST_FOCUS=$PI_PIDNS_TEST_FOCUS" ;;

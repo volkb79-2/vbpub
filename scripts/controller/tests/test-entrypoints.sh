@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 set -uo pipefail
 # Every immediate scripts/controller/*.sh entry point must be executable in the git index.
-# Explicit exceptions are the files whose only role is to be sourced by another controller script.
+# Explicit exceptions are libraries sourced by another controller script and
+# the Bash worker interpreted only by the Python PID namespace bootstrap.
 # The pi signal-guard shims (scripts/controller/pi-shims/*) and PID namespace
 # shell wrapper are executable entry points too: otherwise the guard is unusable.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
-SOURCED=(lib.sh resume-lib.sh)
+NON_ENTRYPOINTS=(lib.sh resume-lib.sh pi-pidns-bash-worker.sh)
 bad=()
 rows=0
 while read -r mode _ _ path; do
   name=${path##*/}
-  for excluded in "${SOURCED[@]}"; do
+  for excluded in "${NON_ENTRYPOINTS[@]}"; do
     [[ $name == "$excluded" ]] && continue 2
   done
   rows=$((rows + 1))
@@ -35,5 +36,7 @@ done
 pidns_wrapper_row=$(git -C "$REPO_ROOT" ls-files -s -- scripts/controller/pi-pidns-bash) || pidns_wrapper_row=
 [[ -n $pidns_wrapper_row ]] || { echo 'FAIL: scripts/controller/pi-pidns-bash is not tracked' >&2; exit 1; }
 [[ ${pidns_wrapper_row%% *} == 100755 ]] || bad+=("scripts/controller/pi-pidns-bash (${pidns_wrapper_row%% *})")
+pidns_worker_row=$(git -C "$REPO_ROOT" ls-files -s -- scripts/controller/pi-pidns-bash-worker.sh) || pidns_worker_row=
+[[ -n $pidns_worker_row ]] || { echo 'FAIL: scripts/controller/pi-pidns-bash-worker.sh is not tracked' >&2; exit 1; }
 (( ${#bad[@]} == 0 )) || { printf 'not executable (want 100755): %s\n' "${bad[@]}" >&2; exit 1; }
-echo "PASS controller entry-point modes (${rows} files plus ${shims} pi-shims and PID namespace wrapper; sourced exceptions: ${SOURCED[*]})"
+echo "PASS controller entry-point modes (${rows} files plus ${shims} pi-shims and PID namespace wrapper; non-entrypoint helpers: ${NON_ENTRYPOINTS[*]})"

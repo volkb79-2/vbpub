@@ -275,7 +275,7 @@ for pi_pidns_case in \
   pi_pidns_focus=${pi_pidns_case#*:}
   expect_killed "$pi_pidns_mutant" \
     env PI_PIDNS_TEST_FOCUS="$pi_pidns_focus" \
-      PI_PIDNS_WRAPPER_SCRIPT="$ROOT/mutants/scripts/controller/$pi_pidns_mutant" \
+      PI_PIDNS_WORKER_SCRIPT="$ROOT/mutants/scripts/controller/$pi_pidns_mutant" \
       bash "$SCRIPT_DIR/test-pi-pidns.sh"
 done
 for pi_launch_case in \

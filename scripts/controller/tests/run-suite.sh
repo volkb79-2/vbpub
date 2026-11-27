@@ -16,7 +16,7 @@ files=(
   "$SCRIPT_DIR/../hx.sh"
   "$SCRIPT_DIR/../codex-impl.sh"
   "$SCRIPT_DIR/../pi-impl.sh"
-  "$SCRIPT_DIR/../pi-pidns-bash"
+  "$SCRIPT_DIR/../pi-pidns-bash-worker.sh"
   "$SCRIPT_DIR/../codex-review.sh"
   "$SCRIPT_DIR/../pi-review.sh"
   "$SCRIPT_DIR/../opencode-impl.sh"
@@ -67,8 +67,8 @@ files=(
   "$queue_test"
 )
 for file in "${files[@]}"; do bash -n "$file" || exit $?; done
-for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/test_dev.py"; do
-  python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
+for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/../pi-pidns-bash" "$SCRIPT_DIR/test_dev.py"; do
+  python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
 done
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck "${files[@]}" || exit $?

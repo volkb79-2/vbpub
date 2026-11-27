@@ -174,7 +174,17 @@
 # background jobs end with their command. Only the Docker default socket and an
 # existing socket named by DOCKER_HOST=unix:// outside /run/docker-api are
 # covered; other Unix sockets and network access are not isolated.
-set -uo pipefail
+builtin set -uo pipefail
+# An exported Bash function is imported before a noninteractive Bash script's
+# first command. Drop those inherited functions before the first external
+# command so none can shadow the launcher itself. BASH_ENV is too late to clear
+# here if it ran at interpreter startup; child-process boundaries below clear
+# it before this launcher's preflight and every Pi invocation.
+builtin unset BASH_ENV ENV
+while IFS= builtin read -r inherited_function; do
+  builtin unset -f "$inherited_function"
+done < <(builtin compgen -A function)
+builtin unset inherited_function
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
 caller_pi_model=${PI_MODEL-}
@@ -192,6 +202,19 @@ caller_pi_run_mode_set=0
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 controller_init
+
+# controller.local.env is sourced after this script's Bash startup, so it can
+# still set BASH_ENV/ENV and export functions. Remove the startup hooks before
+# any child Bash (the namespace preflight or Pi's bash tool) can inherit them.
+sanitize_bash_child_environment() {
+  builtin unset BASH_ENV ENV
+  local function_name
+  while IFS= builtin read -r function_name; do
+    builtin export -n -f "$function_name"
+  done < <(builtin compgen -A function)
+}
+sanitize_bash_child_environment
+
 [[ -z $caller_pi_route ]] || PI_ROUTE=$caller_pi_route
 [[ -z $caller_pi_model ]] || PI_MODEL=$caller_pi_model
 [[ -z $caller_pi_thinking ]] || PI_THINKING=$caller_pi_thinking
@@ -992,7 +1015,8 @@ if [[ $run_mode == implementer ]]; then
     echo "pi PID namespace extension is missing or unreadable: $pidns_extension" >&2
     exit 2
   fi
-  if pidns_probe_output=$("$pidns_wrapper" -c true 2>&1); then
+  sanitize_bash_child_environment
+  if pidns_probe_output=$(/usr/bin/env -u SHELLOPTS -u BASHOPTS "$pidns_wrapper" -c true 2>&1); then
     :
   else
     pidns_probe_rc=$?
@@ -1210,6 +1234,7 @@ fi
 invoke_pi() {
   local prompt_text=$1 stream=$2 first_run=$3
   local -a argv=("${base_pi_args[@]}")
+  sanitize_bash_child_environment
   [[ -z $resume_target ]] || argv+=(--session "$resume_target")
   # The shim directory goes FIRST on the agent's PATH and only there: this
   # wrapper's own commands keep the caller's PATH. pi's bash tool hands its
@@ -1220,11 +1245,11 @@ invoke_pi() {
   # command the agent runs.
   if [[ $first_run == 1 ]]; then
     (cd -- "$worktree" && controller_close_ownership_fds \
-      && PATH=$pi_shims_dir${PATH:+:$PATH} exec nice pi "${argv[@]}" -- "$prompt_text" \
+      && PATH=$pi_shims_dir${PATH:+:$PATH} exec /usr/bin/env -u SHELLOPTS -u BASHOPTS nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null > "$stream" 2> "$out/$name.err")
   else
     (cd -- "$worktree" && controller_close_ownership_fds \
-      && PATH=$pi_shims_dir${PATH:+:$PATH} exec nice pi "${argv[@]}" -- "$prompt_text" \
+      && PATH=$pi_shims_dir${PATH:+:$PATH} exec /usr/bin/env -u SHELLOPTS -u BASHOPTS nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null >> "$stream" 2>> "$out/$name.err")
   fi
 }

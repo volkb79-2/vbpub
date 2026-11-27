@@ -14,6 +14,7 @@ unset PI_RUN_MODE
 # ambient PI_EXTRA_ARGS (which is exactly what a review launcher leaves in a
 # controller shell) would refuse or widen every launch this check makes.
 unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_POLL_SECONDS PI_REVIEW_KILL_WAIT_SECONDS
+unset BASH_ENV ENV
 # pi's agent directory decides a launch refusal (pi prepends its bin dir to the
 # agent's PATH), so the caller's ambient value must not decide these checks:
 # every check that cares names it explicitly.
@@ -249,11 +250,25 @@ launch() {
     fake_session_id=$2
     seed_resume_session "$fake_session_id"
   fi
-  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
-    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
-    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
-    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
-    > "$ROOT/$run.launch.log" 2>&1 < "$input"
+  if [[ ${PIDNS_HOOK_ENV_TEST:-0} == 1 ]]; then
+    local function_definition
+    # shellcheck disable=SC2016 # The literal Bash function body is imported by the child Bash through env.
+    printf -v function_definition '() { : > %q; builtin printf "$@"; }' "$PIDNS_FUNCTION_MARKER"
+    env "BASH_FUNC_printf%%=$function_definition" \
+      PIDNS_FUNCTION_MARKER="$PIDNS_FUNCTION_MARKER" \
+      PIDNS_BASH_ENV_MARKER="$PIDNS_BASH_ENV_MARKER" \
+      PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+      > "$ROOT/$run.launch.log" 2>&1 < "$input"
+  else
+    PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+      > "$ROOT/$run.launch.log" 2>&1 < "$input"
+  fi
 }
 
 # Same launch driven by a per-invocation fixture sequence. The run's .live
@@ -263,13 +278,29 @@ launch_sequence() {
   local run=$1 route=$2 sequence=$3
   shift 3
   if [[ ${1:-} == resume && -n ${2:-} ]]; then seed_resume_session "$2"; fi
-  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
-    CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
-    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
-    FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
-    ${SEQUENCE_EXTRA_ENV:-} \
-    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
-    > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+  if [[ ${PIDNS_HOOK_ENV_TEST:-0} == 1 ]]; then
+    local function_definition
+    # shellcheck disable=SC2016 # The literal Bash function body is imported by the child Bash through env.
+    printf -v function_definition '() { : > %q; builtin printf "$@"; }' "$PIDNS_FUNCTION_MARKER"
+    env "BASH_FUNC_printf%%=$function_definition" \
+      PIDNS_FUNCTION_MARKER="$PIDNS_FUNCTION_MARKER" \
+      PIDNS_BASH_ENV_MARKER="$PIDNS_BASH_ENV_MARKER" \
+      PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+      CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
+      FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
+      ${SEQUENCE_EXTRA_ENV:-} \
+      "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+      > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+  else
+    PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+      CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
+      FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
+      ${SEQUENCE_EXTRA_ENV:-} \
+      "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+      > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+  fi
 }
 
 wait_launch_sequence() {
@@ -2950,6 +2981,34 @@ JSON
   [[ $(pidns_probe_count) == 0 ]] || fail 'review mode ran an implementer shell preflight'
 }
 
+check_pidns_startup_environment_is_sanitized() {
+  local env_script=$ROOT/pidns-injected-bash-env
+  local config=$CONTROLLER_ROOT/controller.local.env saved_config=$ROOT/controller.local.env.saved
+  PIDNS_BASH_ENV_MARKER=$ROOT/pidns-bash-env-ran
+  PIDNS_FUNCTION_MARKER=$ROOT/pidns-exported-function-ran
+  cp -- "$config" "$saved_config"
+  cat > "$env_script" <<'SH'
+: > "${PIDNS_BASH_ENV_MARKER:?}"
+SH
+  printf 'BASH_ENV=%q\nENV=%q\n' "$env_script" "$env_script" >> "$config"
+  rm -f -- "$PIDNS_BASH_ENV_MARKER" "$PIDNS_FUNCTION_MARKER"
+
+  PIDNS_HOOK_ENV_TEST=1 wait_launch pidns-env-first deepseek-pi-volker pi-success /dev/null
+  [[ ! -e $PIDNS_BASH_ENV_MARKER && ! -e $PIDNS_FUNCTION_MARKER ]] \
+    || fail 'startup hooks ran during the first implementer preflight or launch'
+
+  PIDNS_HOOK_ENV_TEST=1 wait_launch pidns-env-resume deepseek-pi-volker pi-success /dev/null \
+    resume pidns-env-resume-session
+  [[ ! -e $PIDNS_BASH_ENV_MARKER && ! -e $PIDNS_FUNCTION_MARKER ]] \
+    || fail 'startup hooks ran during a manual implementer resume'
+
+  PIDNS_HOOK_ENV_TEST=1 launch_sequence pidns-env-continuation deepseek-pi-volker \
+    'pi-empty-completion pi-success'
+  [[ ! -e $PIDNS_BASH_ENV_MARKER && ! -e $PIDNS_FUNCTION_MARKER ]] \
+    || fail 'startup hooks ran during an automatic implementer continuation'
+  cp -- "$saved_config" "$config"
+}
+
 check_pidns_preflight_refused() {
   local before runs=$CONTROLLER_ROOT/runs
   clean_worktree
@@ -3447,6 +3506,7 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
     default-thinking) check_pi_default_thinking_max ;;
     pidns-argv) check_pidns_launch_contract ;;
+    pidns-startup-env) check_pidns_startup_environment_is_sanitized ;;
     pidns-preflight) check_pidns_preflight_refused ;;
     pidns-extra-args) check_pidns_extension_args_refused ;;
     xtrace-key) check_xtrace_key ;;
@@ -4343,6 +4403,7 @@ check_refusal_keeps_records
 check_accepted_resume_records
 check_run_mode
 check_pidns_launch_contract
+check_pidns_startup_environment_is_sanitized
 check_pidns_preflight_refused
 check_pidns_extension_args_refused
 
