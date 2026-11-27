@@ -11,6 +11,7 @@ from fleetd.agent_admission import AgentAdmission, BoundedCall
 from fleetd.contracts import ContractError, validate_host_facts
 from fleetd import agent_admission
 from test_agent_capacity import _collect
+from test_admission import _capacity
 from test_agent_protocol import _policy, _submit
 
 
@@ -603,6 +604,51 @@ def test_submit_returns_queue_and_idempotent_state_or_refuses_missing_executor_s
     with pytest.raises(AdmissionError, match="no state for the admitted idempotent job") as no_state:
         agent.submit(request, identity, missing)
     assert no_state.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_terminal_submit_replay_after_restart_uses_only_the_durable_record(tmp_path):
+    identities = (
+        '[[identities]]\n'
+        'transport = "peer"\n'
+        'principal = "ops"\n'
+        'group = "ops"\n'
+        'uid = 1000\n'
+        'gid = 100\n'
+    )
+    policy, _checkout = _policy(tmp_path, identities=identities)
+    identity = policy.resolve_peer(1000, 100)
+    request = _submit()
+    request["job_id"] = "ops-run-1"
+    first = AgentAdmission(tmp_path / "state", policy, lambda: {}, clock=lambda: 123.5)
+    model = first.request_model(request)
+    capacity = _capacity()
+    admitted = first.book.submit(
+        model,
+        authenticated_group=identity.group,
+        capacity_provider=lambda: capacity,
+        legacy_jobs_provider=lambda: (),
+        wait_s=0,
+    )
+    assert admitted.handle is not None
+    admitted.handle.complete()
+    durable = first.book.status(request["job_id"], identity.group)
+    assert durable is not None
+    assert durable["schema"] == "fleet-admission-terminal/1"
+    assert durable["state"] == "completed"
+    assert durable["completed_at"] == 123.5
+
+    restarted = AgentAdmission(tmp_path / "state", policy, lambda: {}, clock=lambda: 123.5)
+
+    def forbidden_executor_read(_job_id):
+        pytest.fail("terminal submit replay consulted executor memory")
+
+    replay = restarted.submit(
+        request, identity, SimpleNamespace(read_state=forbidden_executor_read),
+    )
+    assert replay == {
+        "job_id": "ops-run-1", "state": "completed", "completed_at": 123.5,
+    }
+    assert restarted.status("ops-run-1", identity, None) == replay
 
 
 def test_submit_validates_admission_handles_and_preserves_charge_when_start_fails(tmp_path, monkeypatch):

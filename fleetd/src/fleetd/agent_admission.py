@@ -393,6 +393,8 @@ class AgentAdmission:
         if result.handle is None:
             if result.record.get("schema") == "fleet-admission-waiting/1":
                 return {"job_id": model.job_id, "state": "queued", "reason": None}
+            if result.record.get("schema") == "fleet-admission-terminal/1":
+                return self._terminal_state(model.job_id, result.record)
             state = executor.read_state(model.job_id)
             if state is None:
                 raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor has no state for the admitted idempotent job")
@@ -421,17 +423,21 @@ class AgentAdmission:
         if record.get("schema") == "fleet-admission-waiting/1":
             return {"job_id": job_id, "state": "queued", "reason": None}
         if record.get("schema") == "fleet-admission-terminal/1":
-            return {
-                "job_id": job_id,
-                "state": record["state"],
-                "completed_at": record["completed_at"],
-            }
+            return self._terminal_state(job_id, record)
         if executor is None:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "executor unavailable: cannot read admitted job state")
         state = executor.read_state(job_id)
         if state is None:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"executor has no state for job {job_id!r}")
         return dict(state)
+
+    @staticmethod
+    def _terminal_state(job_id: str, record: Mapping[str, object]) -> Mapping[str, object]:
+        return {
+            "job_id": job_id,
+            "state": record["state"],
+            "completed_at": record["completed_at"],
+        }
 
     def cancel(
         self, job_id: str, reason: str, identity: AgentIdentity, executor: AgentExecutor | None,
