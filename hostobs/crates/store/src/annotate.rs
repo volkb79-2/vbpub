@@ -9,9 +9,7 @@ use hostobs_proto::event::encode_event_frame;
 
 use crate::dedupe::{EventDedup, Reply};
 use crate::error::StoreError;
-use crate::events::{
-    ConnectionSpanTable, CtxKey, Event, EventKind, EventPeer, OpenSpan, Outcome,
-};
+use crate::events::{ConnectionSpanTable, CtxKey, Event, EventKind, EventPeer, OpenSpan, Outcome};
 use crate::store::Store;
 use crate::tier::AppendOutcome;
 
@@ -198,7 +196,10 @@ impl Annotator {
             if request.kind != EventKind::Point {
                 return Err(AnnotateError::Internal);
             }
-            if let Some(reply) = self.dedupe.peek(uid, &request.name, boot_id, *seq, t_mono_ns) {
+            if let Some(reply) = self
+                .dedupe
+                .peek(uid, &request.name, boot_id, *seq, t_mono_ns)
+            {
                 return Ok(reply_from_cache(reply)?);
             }
         }
@@ -211,7 +212,10 @@ impl Annotator {
                     .can_open(uid, &format!("uid:{uid}"))
                     .map_err(|_| AnnotateError::Budget)?;
                 let span = self.next_span;
-                self.next_span = self.next_span.checked_add(1).ok_or(AnnotateError::Internal)?;
+                self.next_span = self
+                    .next_span
+                    .checked_add(1)
+                    .ok_or(AnnotateError::Internal)?;
                 Some(span)
             }
             EventKind::End => Some(
@@ -264,10 +268,7 @@ impl Annotator {
         } else {
             self.dedupe.expire(t_mono_ns);
         }
-        Ok(EventReply {
-            t_mono_ns,
-            span,
-        })
+        Ok(EventReply { t_mono_ns, span })
     }
 
     /// Infer and append one abandoned end for every span owned by `conn`. Spans are removed
@@ -354,9 +355,7 @@ fn reply_from_cache(reply: Reply) -> Result<EventReply, AnnotateError> {
 }
 
 fn ceil_ms(ns: u64) -> u32 {
-    let milliseconds = ns
-        .saturating_add(NS_PER_MILLISECOND.saturating_sub(1))
-        / NS_PER_MILLISECOND;
+    let milliseconds = ns.saturating_add(NS_PER_MILLISECOND.saturating_sub(1)) / NS_PER_MILLISECOND;
     u32::try_from(milliseconds).expect("annotation retry delay fits u32")
 }
 
@@ -371,9 +370,7 @@ mod tests {
         NS_PER_MILLISECOND,
     };
     use crate::error::StoreError;
-    use crate::events::{
-        CtxKey, Event, EventCgroupKey, EventKind, EventPeer, Outcome,
-    };
+    use crate::events::{CtxKey, Event, EventCgroupKey, EventKind, EventPeer, Outcome};
     use crate::tier::{AppendOutcome, Evicted};
 
     #[derive(Default)]
@@ -461,14 +458,7 @@ mod tests {
         let mut sink = MemorySink::default();
         let point = request(EventKind::Point, "run", None);
         for index in 0..64_u64 {
-            expect_ok(
-                &mut annotator,
-                &mut sink,
-                index % 2,
-                9,
-                &point,
-                1_000,
-            );
+            expect_ok(&mut annotator, &mut sink, index % 2, 9, &point, 1_000);
         }
         assert_eq!(sink.events[0].peer, Some(peer()));
         assert_eq!(
@@ -496,7 +486,9 @@ mod tests {
         let mut annotator = Annotator::new(50, 64).expect("config");
         let mut sink = MemorySink::default();
         let mut keyed = request(EventKind::Point, "thrashguard.freeze", None);
-        keyed.attrs.insert(String::from("boot_id"), String::from("boot"));
+        keyed
+            .attrs
+            .insert(String::from("boot_id"), String::from("boot"));
         keyed.attrs.insert(String::from("seq"), String::from("7"));
         keyed.idempotency = Some((String::from("boot"), 7));
         let first = expect_ok(&mut annotator, &mut sink, 1, 9, &keyed, 0);
@@ -505,7 +497,10 @@ mod tests {
             expect_ok(&mut annotator, &mut sink, 1, 9, &ordinary, 0);
         }
 
-        assert_eq!(annotate(&mut annotator, &mut sink, 2, 9, &keyed, 0), Ok(first));
+        assert_eq!(
+            annotate(&mut annotator, &mut sink, 2, 9, &keyed, 0),
+            Ok(first)
+        );
         assert_eq!(sink.events.len(), 64);
         assert_eq!(
             annotate(&mut annotator, &mut sink, 2, 9, &ordinary, 0),
@@ -570,12 +565,19 @@ mod tests {
         let mut end = request(EventKind::End, "candidate.done", Some("shared"));
         end.outcome = Some(Outcome::Fail);
         end.ctx.insert(CtxKey::Run, String::from("run-end"));
-        end.attrs.insert(String::from("phase"), String::from("close"));
+        end.attrs
+            .insert(String::from("phase"), String::from("close"));
         let closed = expect_ok(&mut annotator, &mut sink, 4, 7, &end, 12);
         assert_eq!(closed.span, Some(2));
         assert_eq!(sink.events[2].name, "candidate.done");
-        assert_eq!(sink.events[2].ctx.get(&CtxKey::Run).map(String::as_str), Some("run-end"));
-        assert_eq!(sink.events[2].attrs.get("phase").map(String::as_str), Some("close"));
+        assert_eq!(
+            sink.events[2].ctx.get(&CtxKey::Run).map(String::as_str),
+            Some("run-end")
+        );
+        assert_eq!(
+            sink.events[2].attrs.get("phase").map(String::as_str),
+            Some("close")
+        );
         assert_eq!(annotator.open_spans(), 1);
         let closed = expect_ok(&mut annotator, &mut sink, 4, 7, &end, 13);
         assert_eq!(closed.span, Some(1));
@@ -591,18 +593,24 @@ mod tests {
         let mut annotator = Annotator::new(50, 64).expect("config");
         let mut sink = MemorySink::default();
         let mut freeze = request(EventKind::Point, "thrashguard.freeze", Some("unit"));
-        freeze.attrs.insert(String::from("boot_id"), String::from("boot"));
+        freeze
+            .attrs
+            .insert(String::from("boot_id"), String::from("boot"));
         freeze.attrs.insert(String::from("seq"), String::from("7"));
         freeze.idempotency = Some((String::from("boot"), 7));
         let first = expect_ok(&mut annotator, &mut sink, 1, 7, &freeze, 10);
 
         let mut thaw = request(EventKind::Point, "thrashguard.thaw", Some("unit"));
-        thaw.attrs.insert(String::from("boot_id"), String::from("boot"));
+        thaw.attrs
+            .insert(String::from("boot_id"), String::from("boot"));
         thaw.attrs.insert(String::from("seq"), String::from("7"));
         thaw.idempotency = Some((String::from("boot"), 7));
         expect_ok(&mut annotator, &mut sink, 1, 7, &thaw, 11);
 
-        assert_eq!(annotate(&mut annotator, &mut sink, 2, 7, &freeze, 12), Ok(first));
+        assert_eq!(
+            annotate(&mut annotator, &mut sink, 2, 7, &freeze, 12),
+            Ok(first)
+        );
         assert_eq!(sink.events.len(), 2);
         assert_eq!(sink.events[0].name, "thrashguard.freeze");
         assert_eq!(sink.events[1].name, "thrashguard.thaw");
@@ -651,7 +659,10 @@ mod tests {
             Err(AnnotateError::Internal)
         );
         let first = expect_ok(&mut annotator, &mut sink, 1, 7, &point, 10);
-        assert_eq!(annotate(&mut annotator, &mut sink, 2, 7, &point, 11), Ok(first));
+        assert_eq!(
+            annotate(&mut annotator, &mut sink, 2, 7, &point, 11),
+            Ok(first)
+        );
         assert_eq!(sink.events.len(), 1);
     }
 
@@ -681,7 +692,9 @@ mod tests {
         let mut sink = MemorySink::default();
         let mut begin = request(EventKind::Begin, "candidate", Some("outer"));
         begin.ctx.insert(CtxKey::Run, String::from("run-7"));
-        begin.attrs.insert(String::from("txn"), String::from("txn-9"));
+        begin
+            .attrs
+            .insert(String::from("txn"), String::from("txn-9"));
         let peer = EventPeer {
             pid: Some(17),
             comm: Some(String::from("hostobs")),
@@ -716,7 +729,10 @@ mod tests {
         }));
         assert_eq!(inferred[0].name, "candidate");
         assert_eq!(inferred[0].key, "outer");
-        assert_eq!(inferred[0].attrs.get("txn").map(String::as_str), Some("txn-9"));
+        assert_eq!(
+            inferred[0].attrs.get("txn").map(String::as_str),
+            Some("txn-9")
+        );
         assert_eq!(&sink.real_times[2..], &[900, 900]);
 
         let payload = decode_event_frame(&sink.payloads[2]).expect("event/1 end payload");

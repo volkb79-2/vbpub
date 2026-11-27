@@ -1043,10 +1043,8 @@ max_rows = 1
             ("annotate_burst", "64", ["0", "1025", "-1", "01"]),
         ] {
             for value in invalid {
-                let text = EXAMPLE.replace(
-                    &format!("{key} = {original}"),
-                    &format!("{key} = {value}"),
-                );
+                let text =
+                    EXAMPLE.replace(&format!("{key} = {original}"), &format!("{key} = {value}"));
                 let error = one_line(parse(&text).expect_err("annotation limit out of range"));
                 assert!(error.contains(key), "missing {key:?}: {error}");
             }

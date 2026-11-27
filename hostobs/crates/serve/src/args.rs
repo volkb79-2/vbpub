@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 
 use hostobs_proto::envelope::{members_up_to, EnvelopeError, Kind, Member};
 
-use crate::limits::IntervalRule;
 use crate::backend::{AnnotateArgs, AnnotateCtxKey, AnnotateKind, AnnotateOutcome};
+use crate::limits::IntervalRule;
 use crate::selection::{
     Sel, Selection, SelectionError, MAX_ENTITIES, MAX_METRICS, MAX_NAME_BYTES, MAX_PATH_BYTES,
 };
@@ -513,9 +513,7 @@ fn is_event_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b'a'..=b'z'))
         && bytes.all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'.' | b'_' | b'-')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
 }
 
@@ -1436,10 +1434,7 @@ mod tests {
         assert_eq!(annotate_refused(&unknown), "t_mono_ns");
         let duplicate = point.replace("\"attrs\":{}}", "\"attrs\":{},\"kind\":\"point\"}");
         assert_eq!(annotate_refused(&duplicate), "kind");
-        let duplicate_attr = point.replace(
-            "\"attrs\":{}",
-            "\"attrs\":{\"a\":\"x\",\"a\":\"y\"}",
-        );
+        let duplicate_attr = point.replace("\"attrs\":{}", "\"attrs\":{\"a\":\"x\",\"a\":\"y\"}");
         assert_eq!(annotate_refused(&duplicate_attr), "attrs.a");
     }
 
@@ -1450,10 +1445,8 @@ mod tests {
             ("1run", "name"),
             ("thrashguard.other", "name"),
         ] {
-            let text = point_args("{}", "{}").replace(
-                "\"name\":\"run\"",
-                &format!("\"name\":\"{name}\""),
-            );
+            let text =
+                point_args("{}", "{}").replace("\"name\":\"run\"", &format!("\"name\":\"{name}\""));
             assert_eq!(annotate_refused(&text), key, "{name}");
         }
         let long_name = format!("\"name\":\"{}\"", "n".repeat(65));
@@ -1474,10 +1467,7 @@ mod tests {
         ];
         for (member, value, key) in invalid_strings {
             let needle = format!("\"{member}\":null");
-            let text = point_args("{}", "{}").replace(
-                &needle,
-                &format!("\"{member}\":{value}"),
-            );
+            let text = point_args("{}", "{}").replace(&needle, &format!("\"{member}\":{value}"));
             assert_eq!(annotate_refused(&text), key, "{member}={value}");
         }
         for control in (0_u32..=0x1f).chain([0x7f]) {
@@ -1505,15 +1495,9 @@ mod tests {
                 "attrs.a",
                 "U+{control:04X} in attrs"
             );
-            let name = point_args("{}", "{}").replace(
-                "\"name\":\"run\"",
-                &format!("\"name\":\"run{escaped}\""),
-            );
-            assert_eq!(
-                annotate_refused(&name),
-                "name",
-                "U+{control:04X} in name"
-            );
+            let name = point_args("{}", "{}")
+                .replace("\"name\":\"run\"", &format!("\"name\":\"run{escaped}\""));
+            assert_eq!(annotate_refused(&name), "name", "U+{control:04X} in name");
         }
         let key64 = "k".repeat(64);
         let code64 = "c".repeat(64);
@@ -1587,7 +1571,14 @@ mod tests {
             super::annotate(end.as_bytes()).expect("end").outcome,
             Some(crate::backend::AnnotateOutcome::Ok)
         );
-        for outcome in ["fail", "error", "skipped", "cancelled", "timeout", "abandoned"] {
+        for outcome in [
+            "fail",
+            "error",
+            "skipped",
+            "cancelled",
+            "timeout",
+            "abandoned",
+        ] {
             let text = end.replace("\"ok\"", &format!("\"{outcome}\""));
             assert!(super::annotate(text.as_bytes()).is_ok(), "{outcome}");
         }
@@ -1610,14 +1601,9 @@ mod tests {
         let point = super::annotate(point_args(attrs, "{}").as_bytes()).expect("keyed point");
         assert_eq!(point.idempotency, Some((String::from("boot"), 7)));
         let max_boot = "b".repeat(128);
-        let max_pair = format!(
-            "{{\"boot_id\":\"{max_boot}\",\"seq\":\"18446744073709551615\"}}"
-        );
+        let max_pair = format!("{{\"boot_id\":\"{max_boot}\",\"seq\":\"18446744073709551615\"}}");
         assert!(super::annotate(point_args(&max_pair, "{}").as_bytes()).is_ok());
-        let oversized_boot = format!(
-            "{{\"boot_id\":\"{}\",\"seq\":\"7\"}}",
-            "b".repeat(129)
-        );
+        let oversized_boot = format!("{{\"boot_id\":\"{}\",\"seq\":\"7\"}}", "b".repeat(129));
         assert_eq!(
             annotate_refused(&point_args(&oversized_boot, "{}")),
             "attrs.boot_id"

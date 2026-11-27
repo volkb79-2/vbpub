@@ -92,9 +92,7 @@ impl EventDedup {
                 boot_id: boot_id.to_string(),
                 seq,
             })
-            .filter(|entry| {
-                effective_now.saturating_sub(entry.inserted_at) < EVENT_DEDUP_TTL_NS
-            })
+            .filter(|entry| effective_now.saturating_sub(entry.inserted_at) < EVENT_DEDUP_TTL_NS)
             .map(|entry| entry.reply)
     }
 

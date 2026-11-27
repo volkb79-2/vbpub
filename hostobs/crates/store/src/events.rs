@@ -2356,7 +2356,10 @@ mod tests {
         let payload = decode_event_frame(&frame).expect("decode event/1");
         assert_eq!(payload.span, 44);
         assert_eq!(payload.uid, 7);
-        assert_eq!((payload.peer_pid, payload.peer_dev, payload.peer_inode), (17, 4, 9));
+        assert_eq!(
+            (payload.peer_pid, payload.peer_dev, payload.peer_inode),
+            (17, 4, 9)
+        );
         assert_eq!(payload.name, "thrashguard.freeze");
         assert_eq!(payload.key, "machine-4");
         assert!(payload.inferred);

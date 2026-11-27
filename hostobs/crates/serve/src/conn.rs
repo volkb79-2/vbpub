@@ -68,8 +68,8 @@ use crate::classify::{
 use crate::codes::{Code, Detail, Pool};
 use crate::encode::{
     annotate_result, closing_evt, current_result, end_error, end_ok, error_line, push_string,
-    rep_error, rep_ok, rep_ok_line, server_prefix, subscribe_result, unknown_mode_line,
-    EndReason, UNSUBSCRIBE_RESULT,
+    rep_error, rep_ok, rep_ok_line, server_prefix, subscribe_result, unknown_mode_line, EndReason,
+    UNSUBSCRIBE_RESULT,
 };
 use crate::limits::{ConnLimits, Level};
 use crate::lines::{LineError, LineFeed, LineReader};
@@ -931,9 +931,7 @@ impl Conn {
                         AnnotateRefusal::RateLimited { retry_after_ms } => {
                             (Code::RateLimited, Detail::RetryAfterMs(retry_after_ms))
                         }
-                        AnnotateRefusal::Budget => {
-                            (Code::Budget, Detail::Pool(Pool::Spans))
-                        }
+                        AnnotateRefusal::Budget => (Code::Budget, Detail::Pool(Pool::Spans)),
                         AnnotateRefusal::SpanUnknown => (Code::SpanUnknown, Detail::Empty),
                         AnnotateRefusal::Internal => (Code::Internal, Detail::Empty),
                     };

@@ -681,10 +681,8 @@ mod tests {
             _conn: hostobs_serve::hub::ConnId,
             _peer: &hostobs_serve::conn::Peer,
             args: &hostobs_serve::backend::AnnotateArgs,
-        ) -> Result<
-            hostobs_serve::backend::AnnotateReply,
-            hostobs_serve::backend::AnnotateRefusal,
-        > {
+        ) -> Result<hostobs_serve::backend::AnnotateReply, hostobs_serve::backend::AnnotateRefusal>
+        {
             assert_eq!(args.kind, hostobs_serve::backend::AnnotateKind::Point);
             assert_eq!(args.name, "driver.window");
             self.seq.fetch_add(1, Ordering::SeqCst);
@@ -753,12 +751,8 @@ mod tests {
                 listeners.push((*level, listener));
             }
 
-            let backend = TestBackend::new(
-                Arc::clone(&seq),
-                data,
-                annotate_wake,
-                Arc::clone(&closed),
-            );
+            let backend =
+                TestBackend::new(Arc::clone(&seq), data, annotate_wake, Arc::clone(&closed));
             let server = Server::new(limits, backend);
             let proc_root = peer_fixture_root().join("proc");
             let cgroup_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -860,7 +854,9 @@ mod tests {
     impl JsonClient {
         fn request(&mut self, body: &str) -> String {
             let stream = self.reader.get_mut();
-            stream.write_all(body.as_bytes()).expect("write JSON request");
+            stream
+                .write_all(body.as_bytes())
+                .expect("write JSON request");
             stream.write_all(b"\n").expect("write JSON newline");
             let mut line = String::new();
             self.reader

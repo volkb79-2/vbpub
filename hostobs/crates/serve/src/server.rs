@@ -808,10 +808,7 @@ mod tests {
         }
 
         fn connection_closed(&mut self, conn: ConnId) {
-            self.closed
-                .lock()
-                .expect("close-recording lock")
-                .push(conn);
+            self.closed.lock().expect("close-recording lock").push(conn);
         }
     }
 

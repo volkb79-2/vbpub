@@ -16,7 +16,7 @@ use hostobs_serve::hub::ConnId;
 use hostobs_serve::selection::{Sel, Selection};
 use hostobs_store::annotate::{AnnotateError, Annotator, EventRequest, EventSink};
 use hostobs_store::error::StoreError;
-use hostobs_store::events::{CtxKey, Event, EventKind, EventPeer, EventCgroupKey, Outcome};
+use hostobs_store::events::{CtxKey, Event, EventCgroupKey, EventKind, EventPeer, Outcome};
 use hostobs_store::store::Store;
 use hostobs_store::tier::AppendOutcome;
 
@@ -90,9 +90,7 @@ impl EventSink for TimedEventSink<'_> {
                     eprintln!("{line}");
                 }
                 if *self.append_failed {
-                    eprintln!(
-                        "hostobs-probe: events append succeeded again after {elapsed_ms} ms"
-                    );
+                    eprintln!("hostobs-probe: events append succeeded again after {elapsed_ms} ms");
                     *self.append_failed = false;
                 }
             }

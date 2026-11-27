@@ -84,7 +84,13 @@ pub const REGISTERED_EVENT_NAMES: [&str; 10] = [
 /// The verb table (WIRE.md section 4.3, in the table's order).
 pub static VERBS: [Verb; VERB_COUNT] = [
     row("hello", EVERY, Shape::Json, EVERY, false),
-    row("status", TELEMETRY | CONTROL, Shape::Json, TELEMETRY | CONTROL, false),
+    row(
+        "status",
+        TELEMETRY | CONTROL,
+        Shape::Json,
+        TELEMETRY | CONTROL,
+        false,
+    ),
     row("current", TELEMETRY, Shape::Block, TELEMETRY, false),
     row("subscribe", TELEMETRY, Shape::Block, TELEMETRY, false),
     row("unsubscribe", TELEMETRY, Shape::Json, TELEMETRY, false),
