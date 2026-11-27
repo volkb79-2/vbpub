@@ -415,6 +415,20 @@ REVIEW_ARGV_FILE=$SCRIPT_DIR/../pi-review-argv
 IMPLEMENTER_RULES=$SCRIPT_DIR/../implementer-prompt-rules.md
 REVIEW_RULES=$SCRIPT_DIR/../review-prompt-rules.md
 argv_reset() { : > "$PI_ARGV0_LOG"; }
+argv_has() {
+  local element
+  argv_elements
+  for element in "${ARGV[@]}"; do [[ $element == "$1" ]] && return 0; done
+  fail "$2 (argv: ${ARGV[*]})"
+}
+argv_has_pair() {
+  local i
+  argv_elements
+  for (( i = 0; i + 1 < ${#ARGV[@]}; i++ )); do
+    [[ ${ARGV[i]} == "$1" && ${ARGV[i+1]} == "$2" ]] && return 0
+  done
+  fail "$3 (argv: ${ARGV[*]})"
+}
 argv_absent() {
   local element
   argv_elements
@@ -4456,8 +4470,7 @@ contains "$RULES_SOURCE" 'deepseek-pi-volker' 'controller rules list pinned pi r
 # The signal guard is a capability an adopter must be able to find: its limit is
 # documented where the pi route is, and the changelog records the change.
 contains "$README_SOURCE" '**Signal guard.**' 'README documents the pi signal guard'
-# shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
-contains "$README_SOURCE" 'bash builtin `kill`' 'README documents the signal guard known limit'
+contains "$README_SOURCE" 'absolute command paths, alternate tools' 'README documents the signal guard known limit'
 # The guard has all THREE documents, and each one is checked where the reader
 # would look for it: WHAT (README), WHY (the design guide's own subsection) and
 # HOW (the consumer guide's two launch refusals).
