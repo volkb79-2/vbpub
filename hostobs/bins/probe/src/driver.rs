@@ -432,8 +432,8 @@ fn graceful_stop<B: Turn>(server: &mut Server<B>, sockets: &mut BTreeMap<ConnId,
 
 /// Serve the activated listeners until `stop` is set.
 ///
-/// `now_ns` is called exactly once for a turn that is served. A stop observed at the top of
-/// a turn closes every connection with `shutting-down`, gives each held final frame one
+/// `now_ns` is called once for every served turn and once for an internal stop turn. A stop
+/// observed at the top of a turn closes every connection with `shutting-down`, gives each held final frame one
 /// non-blocking write, releases every socket and returns `Ok(())`.
 ///
 /// # Errors
@@ -536,6 +536,8 @@ pub(crate) fn run<B: Turn>(
         }
 
         if stop.load(Ordering::SeqCst) {
+            let stop_now_ns = now_ns();
+            server.backend_mut().begin_turn(stop_now_ns);
             graceful_stop(&mut server, &mut sockets);
             return Ok(());
         }
@@ -581,7 +583,7 @@ pub(crate) fn run<B: Turn>(
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, Read, Write};
+    use std::io::{self, BufRead, BufReader, Read, Write};
     use std::net::Shutdown;
     use std::os::fd::OwnedFd;
     use std::os::linux::net::SocketAddrExt;
@@ -592,7 +594,9 @@ mod tests {
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
+    use hostobs_probe::live::ProbeBackend;
     use hostobs_proto::envelope::{check_end, check_evt, check_rep};
+    use hostobs_proto::event::decode_event_frame;
     use hostobs_proto::frame::{decode_block, FrameHeader, FrameType};
     use rustix::event::{eventfd, EventfdFlags};
 
@@ -601,14 +605,21 @@ mod tests {
         read_cgroup_key_from, run, MAX_CGROUP_BYTES,
     };
     use hostobs_serve::backend::{
-        Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, Turn,
+        AnnotateArgs, AnnotateRefusal, AnnotateReply, Backend, BackendError, FixedBackend,
+        Identity, StatusInfo, TickData, Turn,
     };
-    use hostobs_serve::conn::CgroupKey;
+    use hostobs_serve::conn::{CgroupKey, Peer};
     use hostobs_serve::encode::{control_frame, server_prefix};
     use hostobs_serve::limits::Level;
     use hostobs_serve::selection::Selection;
     use hostobs_serve::server::{Server, ServerLimits};
     use hostobs_serve::tick::{query_block, BlockBounds};
+    use hostobs_store::annotate::Annotator;
+    use hostobs_store::events::EventKind;
+    use hostobs_store::fsio::testdir::TempDir;
+    use hostobs_store::store::{Store, StoreConfig};
+
+    use crate::sampler::Published;
 
     const CLIENT_WAIT: Duration = Duration::from_secs(30);
     const HELLO_ARGS: &str = r#"{"client":"driver-test","proto":{"major":1,"minor":2}}"#;
@@ -632,13 +643,26 @@ mod tests {
         fixed: FixedBackend,
         seq: Arc<AtomicU64>,
         data: TickData,
+        annotate_wake: OwnedFd,
+        closed: Arc<AtomicU64>,
     }
 
     impl TestBackend {
-        fn new(seq: Arc<AtomicU64>, data: TickData) -> TestBackend {
+        fn new(
+            seq: Arc<AtomicU64>,
+            data: TickData,
+            annotate_wake: OwnedFd,
+            closed: Arc<AtomicU64>,
+        ) -> TestBackend {
             let mut fixed = FixedBackend::new();
             fixed.identity.boot_id = String::from("00000000-0000-4000-8000-000000000009");
-            TestBackend { fixed, seq, data }
+            TestBackend {
+                fixed,
+                seq,
+                data,
+                annotate_wake,
+                closed,
+            }
         }
     }
 
@@ -660,6 +684,29 @@ mod tests {
             data.header.seq = self.fixed.seen;
             Ok(data)
         }
+
+        fn annotate(
+            &mut self,
+            _conn: hostobs_serve::hub::ConnId,
+            _peer: &hostobs_serve::conn::Peer,
+            args: &hostobs_serve::backend::AnnotateArgs,
+        ) -> Result<hostobs_serve::backend::AnnotateReply, hostobs_serve::backend::AnnotateRefusal>
+        {
+            assert_eq!(args.kind, hostobs_serve::backend::AnnotateKind::Point);
+            assert_eq!(args.name, "driver.window");
+            self.seq.fetch_add(1, Ordering::SeqCst);
+            rustix::io::write(&self.annotate_wake, &1u64.to_le_bytes())
+                .expect("annotate wakes the server for the next turn");
+            Ok(hostobs_serve::backend::AnnotateReply {
+                t_mono_ns: 17,
+                span: None,
+            })
+        }
+
+        fn connection_closed(&mut self, conn: hostobs_serve::hub::ConnId) {
+            self.closed.fetch_add(1, Ordering::SeqCst);
+            self.fixed.connection_closed(conn);
+        }
     }
 
     impl Turn for TestBackend {
@@ -671,20 +718,76 @@ mod tests {
         }
     }
 
+    struct ProbeCloseBackend {
+        inner: ProbeBackend,
+        closed: OwnedFd,
+    }
+
+    impl Backend for ProbeCloseBackend {
+        fn identity(&self) -> Identity {
+            self.inner.identity()
+        }
+
+        fn status(&self) -> StatusInfo {
+            self.inner.status()
+        }
+
+        fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
+            self.inner.current(selection, max_rows)
+        }
+
+        fn annotate(
+            &mut self,
+            conn: hostobs_serve::hub::ConnId,
+            peer: &Peer,
+            args: &AnnotateArgs,
+        ) -> Result<AnnotateReply, AnnotateRefusal> {
+            self.inner.annotate(conn, peer, args)
+        }
+
+        fn connection_closed(&mut self, conn: hostobs_serve::hub::ConnId) {
+            self.inner.connection_closed(conn);
+            rustix::io::write(&self.closed, &1_u64.to_le_bytes())
+                .expect("connection close signals the test");
+        }
+    }
+
+    impl Turn for ProbeCloseBackend {
+        fn begin_turn(&mut self, now_ns: u64) -> bool {
+            self.inner.begin_turn(now_ns)
+        }
+    }
+
     struct Rig {
         addresses: Vec<(Level, SocketAddr)>,
         wake: OwnedFd,
         stop: Arc<AtomicBool>,
         seq: Arc<AtomicU64>,
         now: Arc<AtomicU64>,
+        closed: Arc<AtomicU64>,
         join: Option<JoinHandle<io::Result<()>>>,
     }
 
     impl Rig {
         fn new(limits: ServerLimits, levels: &[Level], data: TickData) -> Rig {
+            Self::with_backend(limits, levels, move |annotate_wake, seq, closed| {
+                TestBackend::new(seq, data, annotate_wake, closed)
+            })
+        }
+
+        fn with_backend<B>(
+            limits: ServerLimits,
+            levels: &[Level],
+            build_backend: impl FnOnce(OwnedFd, Arc<AtomicU64>, Arc<AtomicU64>) -> B,
+        ) -> Rig
+        where
+            B: Backend + Turn + Send + 'static,
+        {
             let wake =
                 eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).expect("wake eventfd");
             let sampler_wake = wake.try_clone().expect("clone wake fd");
+            let annotate_wake = wake.try_clone().expect("clone annotate wake fd");
+            let closed = Arc::new(AtomicU64::new(0));
             let stop = Arc::new(AtomicBool::new(false));
             let sampler_stop = Arc::clone(&stop);
             let seq = Arc::new(AtomicU64::new(0));
@@ -710,7 +813,7 @@ mod tests {
                 listeners.push((*level, listener));
             }
 
-            let backend = TestBackend::new(Arc::clone(&seq), data);
+            let backend = build_backend(annotate_wake, Arc::clone(&seq), Arc::clone(&closed));
             let server = Server::new(limits, backend);
             let proc_root = peer_fixture_root().join("proc");
             let cgroup_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -734,6 +837,7 @@ mod tests {
                 stop,
                 seq,
                 now,
+                closed,
                 join: Some(join),
             }
         }
@@ -752,6 +856,24 @@ mod tests {
                 .set_write_timeout(Some(CLIENT_WAIT))
                 .expect("write timeout");
             Client { stream }
+        }
+
+        fn connect_json(&self, level: Level) -> JsonClient {
+            let address = self
+                .addresses
+                .iter()
+                .find_map(|(held, address)| (*held == level).then_some(address))
+                .expect("configured level");
+            let stream = UnixStream::connect_addr(address).expect("connect JSON client");
+            stream
+                .set_read_timeout(Some(CLIENT_WAIT))
+                .expect("read timeout");
+            stream
+                .set_write_timeout(Some(CLIENT_WAIT))
+                .expect("write timeout");
+            JsonClient {
+                reader: BufReader::new(stream),
+            }
         }
 
         fn tick(&self) {
@@ -784,6 +906,25 @@ mod tests {
 
     struct Client {
         stream: UnixStream,
+    }
+
+    struct JsonClient {
+        reader: BufReader<UnixStream>,
+    }
+
+    impl JsonClient {
+        fn request(&mut self, body: &str) -> String {
+            let stream = self.reader.get_mut();
+            stream
+                .write_all(body.as_bytes())
+                .expect("write JSON request");
+            stream.write_all(b"\n").expect("write JSON newline");
+            let mut line = String::new();
+            self.reader
+                .read_line(&mut line)
+                .expect("read JSON reply line");
+            line
+        }
     }
 
     fn request_frame(corr: u32, verb: &str, args: &str) -> Vec<u8> {
@@ -995,6 +1136,115 @@ mod tests {
         assert_eq!(client.block_seq(2), 1);
         rig.tick();
         assert_eq!(client.block_seq(2), 2);
+    }
+
+    #[test]
+    fn an_annotate_tick_published_during_a_request_reaches_subscribers_next_turn() {
+        let mut limits = ServerLimits::new();
+        limits.probe.tick_ms = 1_000;
+        let rig = Rig::new(limits, &[Level::Observe, Level::Observer], small_data());
+        let mut subscriber = rig.connect(Level::Observe);
+        subscriber.hello();
+        subscriber.subscribe(2, &selection_args(&[String::from("m")]));
+        rig.tick();
+        assert_eq!(subscriber.block_seq(2), 1);
+
+        let mut emitter = rig.connect_json(Level::Observer);
+        let reply = emitter.request(
+            r#"{"corr":1,"verb":"annotate","args":{"kind":"point","name":"driver.window","key":null,"ctx":{},"outcome":null,"code":null,"attrs":{}}}"#,
+        );
+        assert!(reply.contains(r#""ok":true"#), "{reply}");
+        assert!(reply.contains(r#""t_mono_ns":17"#), "{reply}");
+        assert_eq!(subscriber.block_seq(2), 2);
+    }
+
+    #[test]
+    fn observer_eof_after_idle_window_stores_the_inferred_end_at_close_time() {
+        let temp = TempDir::new("driver-span-close");
+        let mut store_config = StoreConfig::plan_v4(temp.path(), 4242, 1).expect("store config");
+        for tier in &mut store_config.tiers {
+            tier.require_tmpfs = false;
+        }
+        let store = Store::open(store_config.clone()).expect("store");
+        let fixed = FixedBackend::new();
+        let started_mono_ns = 1;
+        let started_real_ns = 1_000;
+        let probe = ProbeBackend::new(
+            fixed.identity(),
+            Arc::new(Published::new(started_mono_ns, started_real_ns)),
+            store,
+            Annotator::new(50, 64).expect("annotator"),
+            || 0,
+        );
+        let close_signal = eventfd(0, EventfdFlags::CLOEXEC).expect("close eventfd");
+        let backend_signal = close_signal.try_clone().expect("clone close eventfd");
+        let mut rig = Rig::with_backend(
+            ServerLimits::new(),
+            &[Level::Observer],
+            move |_annotate_wake, _seq, _closed| ProbeCloseBackend {
+                inner: probe,
+                closed: backend_signal,
+            },
+        );
+
+        let mut client = rig.connect_json(Level::Observer);
+        let hello = format!("{{\"corr\":1,\"verb\":\"hello\",\"args\":{HELLO_ARGS}}}");
+        assert!(client.request(&hello).contains(r#""ok":true"#));
+        let begin = concat!(
+            r#"{"corr":2,"verb":"annotate","args":{"kind":"begin","name":"run","#,
+            r#""key":null,"ctx":{},"outcome":null,"code":null,"attrs":{}}}"#,
+        );
+        assert!(client.request(begin).contains(r#""span":1"#));
+
+        let close_ns = 400_000_000_001_u64;
+        assert!(close_ns > 300_000_000_000, "close is beyond idle_ms");
+        rig.now.store(close_ns, Ordering::SeqCst);
+        drop(client);
+        let mut signal = [0_u8; 8];
+        assert_eq!(
+            rustix::io::read(&close_signal, &mut signal).expect("peer EOF closes the span"),
+            signal.len()
+        );
+        rig.stop_and_join().expect("driver stops cleanly");
+
+        let expected_real_ns = started_real_ns
+            .checked_add(i64::try_from(close_ns - started_mono_ns).expect("elapsed fits"))
+            .expect("real time fits");
+        let store = Store::open(store_config).expect("reopen store");
+        let disk = store
+            .events()
+            .range(0, i64::MAX, 8, 1 << 16)
+            .expect("read event records");
+        assert_eq!(disk.len(), 2, "begin and inferred end are on disk");
+        let ends: Vec<_> = disk
+            .records
+            .iter()
+            .filter_map(|record| {
+                decode_event_frame(&record.payload)
+                    .ok()
+                    .filter(|payload| payload.kind == EventKind::End.code())
+                    .map(|payload| (record.real_ns, payload))
+            })
+            .collect();
+        assert_eq!(ends.len(), 1);
+        let (real_ns, payload) = &ends[0];
+        assert_eq!(*real_ns, expected_real_ns);
+        assert_eq!(
+            payload.t_mono_ns,
+            i64::try_from(close_ns).expect("monotonic time fits")
+        );
+        assert_eq!(payload.span, 1);
+        assert!(payload.inferred);
+    }
+
+    #[test]
+    fn internal_shutdown_finishes_a_live_connection_once() {
+        let mut rig = Rig::new(ServerLimits::new(), &[Level::Observer], small_data());
+        let mut client = rig.connect(Level::Observer);
+        client.hello();
+
+        rig.stop_and_join().expect("internal shutdown succeeds");
+        assert_eq!(rig.closed.load(Ordering::SeqCst), 1);
     }
 
     #[test]

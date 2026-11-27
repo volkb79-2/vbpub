@@ -783,6 +783,38 @@ impl EventRing {
             .collect()
     }
 
+    fn check_fits(&self, event: &Event) -> Result<(), StoreError> {
+        let bytes = event.bytes();
+        if bytes > self.capacity {
+            return Err(StoreError::JobTooLarge {
+                len: bytes,
+                max: self.capacity,
+            });
+        }
+        Ok(())
+    }
+
+    fn push_fitting(&mut self, event: Event) -> Vec<EvictedEvent> {
+        let bytes = event.bytes();
+        let mut evicted = Vec::new();
+        while self.bytes.saturating_add(bytes) > self.capacity {
+            let Some((old, old_bytes)) = self.events.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(old_bytes);
+            self.displaced = self.displaced.saturating_add(1);
+            self.displaced_bytes = self.displaced_bytes.saturating_add(old_bytes);
+            evicted.push(EvictedEvent {
+                event: old,
+                bytes: old_bytes,
+            });
+        }
+        self.events.push_back((event, bytes));
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.accepted = self.accepted.saturating_add(1);
+        evicted
+    }
+
     /// The displacements so far.
     #[must_use]
     pub const fn displaced(&self) -> u64 {
@@ -808,30 +840,8 @@ impl EventRing {
     /// [`StoreError::JobTooLarge`] when the event alone is larger than the whole ring (a
     /// `VecDeque` that accepted it would have to be over its bound to be honest about it).
     pub fn push(&mut self, event: Event) -> Result<Vec<EvictedEvent>, StoreError> {
-        let bytes = event.bytes();
-        if bytes > self.capacity {
-            return Err(StoreError::JobTooLarge {
-                len: bytes,
-                max: self.capacity,
-            });
-        }
-        let mut evicted = Vec::new();
-        while self.bytes.saturating_add(bytes) > self.capacity {
-            let Some((old, old_bytes)) = self.events.pop_front() else {
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(old_bytes);
-            self.displaced = self.displaced.saturating_add(1);
-            self.displaced_bytes = self.displaced_bytes.saturating_add(old_bytes);
-            evicted.push(EvictedEvent {
-                event: old,
-                bytes: old_bytes,
-            });
-        }
-        self.events.push_back((event, bytes));
-        self.bytes = self.bytes.saturating_add(bytes);
-        self.accepted = self.accepted.saturating_add(1);
-        Ok(evicted)
+        self.check_fits(&event)?;
+        Ok(self.push_fitting(event))
     }
 }
 
@@ -840,6 +850,8 @@ impl EventRing {
 pub struct OpenSpan {
     /// The span's name.
     pub name: String,
+    /// The effective key supplied by the opener.
+    pub key: String,
     /// The issuer that opened it.
     pub issuer: String,
     /// The event/1 span id from the opening event.
@@ -854,6 +866,30 @@ pub struct OpenSpan {
     pub ctx: BTreeMap<CtxKey, String>,
     /// The attributes from the opening event.
     pub attrs: BTreeMap<String, String>,
+}
+
+impl OpenSpan {
+    /// Build an inferred abandoned end from the opening event's identity and event/1 fields.
+    pub fn inferred_end(&self, t_mono_ns: i64, real_ns: i64) -> Result<Event, StoreError> {
+        let mut event = Event::new(
+            EventKind::End,
+            &self.name,
+            Some(&self.key),
+            &self.issuer,
+            t_mono_ns,
+            Some(Outcome::Abandoned),
+        )?;
+        if real_ns < 0 {
+            return Err(StoreError::NegativeTime { ns: real_ns });
+        }
+        event.span = self.span;
+        event.uid = self.uid;
+        event.real_ns = real_ns;
+        event.peer = self.peer.clone();
+        event.ctx = self.ctx.clone();
+        event.attrs = self.attrs.clone();
+        Ok(event.inferred())
+    }
 }
 
 /// What closing a span produced: the span and the event describing its end.
@@ -953,6 +989,7 @@ impl SpanTable {
             .or_default()
             .push(OpenSpan {
                 name: event.name.clone(),
+                key: event.key.clone(),
                 issuer: event.issuer.clone(),
                 span: event.span,
                 uid: event.uid,
@@ -1019,7 +1056,7 @@ impl SpanTable {
     ///
     /// Returns one inferred `end` event per span, in open order (outermost first).
     #[must_use]
-    pub fn abandon_issuer(&mut self, issuer: &str, t_mono_ns: i64) -> Vec<Event> {
+    pub fn abandon_issuer(&mut self, issuer: &str, t_mono_ns: i64, real_ns: i64) -> Vec<Event> {
         let mut keys: Vec<(String, String)> = self
             .open
             .keys()
@@ -1036,15 +1073,8 @@ impl SpanTable {
                         *count = count.saturating_sub(1);
                     }
                     self.abandoned = self.abandoned.saturating_add(1);
-                    if let Ok(event) = Event::new(
-                        EventKind::End,
-                        &span.name,
-                        Some(&key.1),
-                        issuer,
-                        t_mono_ns.max(span.t_mono_ns),
-                        Some(Outcome::Abandoned),
-                    ) {
-                        out.push(event.inferred());
+                    if let Ok(event) = span.inferred_end(t_mono_ns.max(span.t_mono_ns), real_ns) {
+                        out.push(event);
                     }
                 }
                 self.open.remove(&key);
@@ -1054,6 +1084,142 @@ impl SpanTable {
             self.per_issuer.remove(issuer);
         }
         out
+    }
+}
+
+/// Connection-owned open spans used by the observer annotation engine.
+///
+/// Unlike [`SpanTable`], this table keys ownership by the accepted connection and the
+/// effective event key. Per-uid counts are shared across all of that uid's connections.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionSpanTable {
+    open: BTreeMap<(u64, String), Vec<OpenSpan>>,
+    per_uid: BTreeMap<u32, usize>,
+    total: usize,
+}
+
+impl ConnectionSpanTable {
+    /// An empty connection-keyed table.
+    #[must_use]
+    pub fn new() -> ConnectionSpanTable {
+        ConnectionSpanTable::default()
+    }
+
+    /// The number of spans open across the probe.
+    #[must_use]
+    pub const fn open_count(&self) -> usize {
+        self.total
+    }
+
+    /// The number of spans one uid holds open across its connections.
+    #[must_use]
+    pub fn open_for_uid(&self, uid: u32) -> usize {
+        self.per_uid.get(&uid).copied().unwrap_or(0)
+    }
+
+    /// The innermost span for this connection and effective key, without removing it.
+    #[must_use]
+    pub fn peek(&self, conn: u64, key: &str) -> Option<&OpenSpan> {
+        self.open
+            .get(&(conn, key.to_string()))
+            .and_then(|stack| stack.last())
+    }
+
+    /// Check whether a begin for `uid` can fit without changing the table.
+    pub fn can_open(&self, uid: u32, issuer: &str) -> Result<(), StoreError> {
+        let open = self.open_for_uid(uid);
+        if open >= MAX_OPEN_SPANS_PER_ISSUER {
+            return Err(StoreError::SpanLimit {
+                issuer: issuer.to_string(),
+                open,
+                max: MAX_OPEN_SPANS_PER_ISSUER,
+                global: false,
+            });
+        }
+        if self.total >= MAX_OPEN_SPANS {
+            return Err(StoreError::SpanLimit {
+                issuer: issuer.to_string(),
+                open: self.total,
+                max: MAX_OPEN_SPANS,
+                global: true,
+            });
+        }
+        Ok(())
+    }
+
+    /// Add an already validated begin event, enforcing the uid and probe bounds.
+    pub fn begin(&mut self, conn: u64, event: &Event) -> Result<(), StoreError> {
+        if event.kind != EventKind::Begin {
+            return Err(StoreError::EventVocabulary {
+                field: "kind",
+                found: event.kind.code(),
+            });
+        }
+        self.can_open(event.uid, &event.issuer)?;
+        self.open_after_append(conn, event);
+        Ok(())
+    }
+
+    /// Insert a begin whose append has succeeded and whose capacity was checked first.
+    pub fn open_after_append(&mut self, conn: u64, event: &Event) {
+        self.open
+            .entry((conn, event.key.clone()))
+            .or_default()
+            .push(OpenSpan {
+                name: event.name.clone(),
+                key: event.key.clone(),
+                issuer: event.issuer.clone(),
+                span: event.span,
+                uid: event.uid,
+                t_mono_ns: event.t_mono_ns,
+                peer: event.peer.clone(),
+                ctx: event.ctx.clone(),
+                attrs: event.attrs.clone(),
+            });
+        *self.per_uid.entry(event.uid).or_insert(0) += 1;
+        self.total += 1;
+    }
+
+    /// Remove the innermost span for this connection and key after its end was appended.
+    pub fn close(&mut self, conn: u64, key: &str) -> Option<OpenSpan> {
+        let map_key = (conn, key.to_string());
+        let span = self.open.get_mut(&map_key).and_then(Vec::pop)?;
+        if self.open.get(&map_key).is_some_and(Vec::is_empty) {
+            self.open.remove(&map_key);
+        }
+        self.release_uid(span.uid);
+        Some(span)
+    }
+
+    /// Remove and return every span owned by this connection, ordered by span id.
+    pub fn take_connection(&mut self, conn: u64) -> Vec<OpenSpan> {
+        let keys: Vec<(u64, String)> = self
+            .open
+            .keys()
+            .filter(|(owner, _)| *owner == conn)
+            .cloned()
+            .collect();
+        let mut spans = Vec::new();
+        for key in keys {
+            if let Some(mut stack) = self.open.remove(&key) {
+                while let Some(span) = stack.pop() {
+                    self.release_uid(span.uid);
+                    spans.push(span);
+                }
+            }
+        }
+        spans.sort_by_key(|span| span.span);
+        spans
+    }
+
+    fn release_uid(&mut self, uid: u32) {
+        if let Some(count) = self.per_uid.get_mut(&uid) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.per_uid.remove(&uid);
+            }
+        }
+        self.total = self.total.saturating_sub(1);
     }
 }
 
@@ -1133,7 +1299,7 @@ impl EventsStore {
         }
     }
 
-    /// Record one event: validate it, push it into the ring, and append its payload.
+    /// Record one event: preflight its ring charge, append its payload, then commit it to RAM.
     ///
     /// This compatibility entry point keeps the historical `t_mono_ns` segment timestamp;
     /// callers with a serve-side wall timestamp use [`EventsStore::record_at`].
@@ -1147,6 +1313,7 @@ impl EventsStore {
     ///
     /// The vocabulary refusals of [`Event::new`] ([`StoreError::EventVocabulary`],
     /// [`StoreError::EventVocabularyName`], [`StoreError::EventFieldTooLong`]),
+    /// [`StoreError::JobTooLarge`] when the event cannot fit the RAM ring,
     /// [`StoreError::PayloadFrameType`] for a payload that is not an EVT frame, and every
     /// append refusal.
     pub fn record(
@@ -1163,6 +1330,11 @@ impl EventsStore {
     ///
     /// `t_mono_ns` stays on the event for event/1 and in-memory ordering; `real_ns` names,
     /// buckets and evicts the stored segment.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::JobTooLarge`] when the event cannot fit the RAM ring,
+    /// [`StoreError::PayloadFrameType`] for a non-EVT payload, and every append refusal.
     pub fn record_at(
         &mut self,
         event: &Event,
@@ -1171,9 +1343,10 @@ impl EventsStore {
         epoch: u64,
         dict_generation: u32,
     ) -> Result<AppendOutcome, StoreError> {
+        self.ring.check_fits(event)?;
         let job = Job::new(payload.to_vec(), real_ns, Vec::new());
         let outcome = self.tier.append(&job, epoch, dict_generation)?;
-        self.ring.push(event.clone())?;
+        self.ring.push_fitting(event.clone());
         self.stored = self.stored.saturating_add(1);
         Ok(outcome)
     }
@@ -1236,6 +1409,7 @@ mod tests {
     use crate::fsio::testdir::TempDir;
     use crate::fsio::StoreDir;
     use crate::tier::TierConfig;
+    use hostobs_proto::event::{decode_event_frame, encode_event_frame};
     use std::collections::BTreeMap;
 
     /// A minimal `proto` EVT frame: a 12-byte header and `data` zero bytes.
@@ -2141,7 +2315,7 @@ mod tests {
             .begin(&begin("lane", "lane", "u1", 200))
             .expect("open");
         spans.begin(&begin("txn", "txn", "u2", 300)).expect("open");
-        let inferred = spans.abandon_issuer("u1", 1_000);
+        let inferred = spans.abandon_issuer("u1", 1_000, 5_000);
         assert_eq!(inferred.len(), 2, "both of u1's spans close");
         for event in &inferred {
             assert!(event.inferred);
@@ -2156,8 +2330,58 @@ mod tests {
         assert_eq!(spans.len(), 1, "u2's span is untouched");
         assert_eq!(spans.open_for("u1"), 0);
         assert_eq!(spans.open_for("u2"), 1);
-        assert!(spans.abandon_issuer("u1", 5).is_empty());
-        assert!(spans.abandon_issuer("nobody", 5).is_empty());
+        assert!(spans.abandon_issuer("u1", 5, 6).is_empty());
+        assert!(spans.abandon_issuer("nobody", 5, 6).is_empty());
+    }
+
+    #[test]
+    fn inferred_end_payload_copies_open_identity_and_uses_the_callers_real_time() {
+        let peer = EventPeer {
+            pid: Some(17),
+            comm: Some(String::from("hostobs")),
+            cgroup: Some(EventCgroupKey { dev: 4, inode: 9 }),
+        };
+        let mut ctx = BTreeMap::new();
+        ctx.insert(CtxKey::Run, String::from("run-7"));
+        let mut attrs = BTreeMap::new();
+        attrs.insert(String::from("txn"), String::from("txn-9"));
+        let begin = Event::new_record(
+            EventKind::Begin,
+            "thrashguard.freeze",
+            Some("machine-4"),
+            7,
+            200,
+            700,
+            None,
+            44,
+            Some(peer),
+            ctx,
+            attrs,
+        )
+        .expect("record begin");
+        let mut spans = SpanTable::new();
+        spans.begin(&begin).expect("open span");
+
+        let inferred = spans.abandon_issuer("uid:7", 250, 9_000);
+        assert_eq!(inferred.len(), 1);
+        let event = &inferred[0];
+        assert_eq!(event.real_ns, 9_000);
+        assert_eq!(event.issuer, "uid:7");
+
+        let frame = encode_event_frame(&event.to_payload().expect("event/1 payload"))
+            .expect("event/1 frame");
+        let payload = decode_event_frame(&frame).expect("decode event/1");
+        assert_eq!(payload.span, 44);
+        assert_eq!(payload.uid, 7);
+        assert_eq!(
+            (payload.peer_pid, payload.peer_dev, payload.peer_inode),
+            (17, 4, 9)
+        );
+        assert_eq!(payload.name, "thrashguard.freeze");
+        assert_eq!(payload.key, "machine-4");
+        assert!(payload.inferred);
+        assert_eq!(payload.ctx.len(), 1);
+        assert_eq!(payload.attrs.len(), 1);
     }
 
     #[test]
@@ -2277,6 +2501,25 @@ mod tests {
             event.t_mono_ns, 10,
             "monotonic event time stays independent"
         );
+    }
+
+    #[test]
+    fn record_at_rejects_a_ring_oversize_event_before_writing_the_segment() {
+        let temp = TempDir::new("event-ring-preflight");
+        let config =
+            TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false).expect("config");
+        let mut store = EventsStore::open(
+            config,
+            1,
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("events store");
+        let event = point_record("run", None);
+        let error = store.record_at(&event, &evt(8), 10, 1, 1);
+        assert!(matches!(error, Err(StoreError::JobTooLarge { max: 1, .. })));
+        assert!(store.ring().is_empty());
+        assert!(store.tier().scan().segments.is_empty());
     }
 
     #[test]

@@ -72,6 +72,35 @@ impl EventDedup {
             .map(|entry| entry.reply)
     }
 
+    /// Look up an unexpired key without changing retention state.
+    ///
+    /// The annotation engine uses this before append so a failed append cannot evict entries.
+    #[must_use]
+    pub fn peek(
+        &self,
+        uid: u32,
+        name: &str,
+        boot_id: &str,
+        seq: u64,
+        now_mono_ns: u64,
+    ) -> Option<Reply> {
+        let effective_now = self.last_now.max(now_mono_ns);
+        self.entries
+            .get(&Key {
+                uid,
+                name: name.to_string(),
+                boot_id: boot_id.to_string(),
+                seq,
+            })
+            .filter(|entry| effective_now.saturating_sub(entry.inserted_at) < EVENT_DEDUP_TTL_NS)
+            .map(|entry| entry.reply)
+    }
+
+    /// Expire entries after the caller has committed the event that advances retention time.
+    pub fn expire(&mut self, now_mono_ns: u64) {
+        self.advance(now_mono_ns);
+    }
+
     /// Insert a reply or return the first reply already held for this key.
     pub fn insert(
         &mut self,
