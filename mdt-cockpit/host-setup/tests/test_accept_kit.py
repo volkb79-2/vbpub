@@ -417,7 +417,8 @@ class HotsetTests(unittest.TestCase):
 
     def args(self, *extra: str) -> list[str]:
         return ["--evidence", str(self.ev), "--state", str(self.wal), "--units", self.units, "--admin", str(self.admin),
-                "--cgroup", str(self.cg), "--proc", str(self.tmp), "--lib", self.lib, "--damon-stat", str(self.dstat), *extra]
+                "--cgroup", str(self.cg), "--proc", str(self.tmp), "--iomem", str(self.iomem), "--lib", self.lib,
+                "--damon-stat", str(self.dstat), *extra]
 
     def sysfs_model(self, *, count: int = 0, state: str = "off", avail: str = "vaddr paddr",
                     stats: bool = True, filters: bool = True) -> F.DamonSysfsModel:

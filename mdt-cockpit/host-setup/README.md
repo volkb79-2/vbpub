@@ -1345,7 +1345,7 @@ The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped pro
    LOCAL_BOOT=$(tr -d '[:space:]' </proc/sys/kernel/random/boot_id 2>/dev/null || true)
    REMOTE_BOOT=$(ssh -i /root/.ssh/mdt-accept-loopback_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 root@127.0.0.1 cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
    [ -n "$LOCAL_BOOT" ] && [ "$REMOTE_BOOT" = "$LOCAL_BOOT" ] || { echo "loopback SSH did not return this host's boot_id" >&2; exit 1; }
-   UNITS='ssh.service=system.slice/ssh.service docker.service=system.slice/docker.service containerd.service=system.slice/containerd.service systemd-journald.service=system.slice/systemd-journald.service mdt-psi-guard.service=system.slice/mdt-psi-guard.service cgprofiled.service=cgprofile.slice/cgprofiled.service user.slice=user.slice dev-interactive.slice=dev.slice/dev-interactive.slice'
+   UNITS='docker.service=system.slice/docker.service ssh.service=system.slice/ssh.service containerd.service=system.slice/containerd.service systemd-journald.service=system.slice/systemd-journald.service mdt-psi-guard.service=system.slice/mdt-psi-guard.service cgprofiled.service=cgprofile.slice/cgprofiled.service user.slice=user.slice dev-interactive.slice=dev.slice/dev-interactive.slice'
    "$PYTHON" "$K/accept-hotset.py" preflight --evidence /root/accept-preflight --units "$UNITS" 2>&1 || { echo "accept-kit read-only preflight refused; no acceptance run was started" >&2; exit 1; }
    IMAGE_ID=$(docker image inspect tester-unified:local --format '{{.Id}}' 2>&1 || true)
    [ -n "$IMAGE_ID" ] || { echo "tester-unified:local is unavailable" >&2; exit 1; }
