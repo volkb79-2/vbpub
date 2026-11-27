@@ -25,8 +25,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   is part of the judge identity, so they re-execute, as after every upgrade.
 - Independently of the version: on the first resume under the new identity rule,
   old records whose judge included run-local assay-injected `PYTHONPATH`
-  entries re-execute once, including when `PYTHONPATH` was absent before
-  injection and not passed through. A present non-passthrough consumer
+  entries re-execute once,
+  including when `PYTHONPATH` was absent before injection
+  and not passed through. A present non-passthrough consumer
   `PYTHONPATH` and plans with no Assay insertion are unchanged by this rule.
   Records made under a stale post-resolution `PYTHONPATH` snapshot also miss
   once when the current value differs from the recorded insertions.
