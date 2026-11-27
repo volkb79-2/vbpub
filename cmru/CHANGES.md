@@ -65,6 +65,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   suite's longest declared silent timeout and the control's measured gap
   (floor 420 seconds; a wider control gap is INCONCLUSIVE), and let a resumed
   shard merge kills judged under an earlier window (KI-213).
+- tests(cmru): cover the surviving zero-timeout, live-output flush, optional
+  Docker preflight, and captured Git-probe behaviors with reader-visible
+  assertions; the output stream's empty-string/None swap is equivalent.
+- tests(cmru): cover the control-gap-too-wide campaign result as INCONCLUSIVE
+  with exit 2, a complete progress event, and no evidence creation or resume
+  file replacement.
+- tests(cmru): cover the first-20 error diagnostic cap and watchdog process-tree
+  header flush, and keep separate caller-visible tests for both line-587
+  capture/text candidates found across R2 shards.
+- test(cmru): align captured-probe timeout polling with the process-group
+  signalling and leader-reaping contract; clarify that contract in the SPEC
+  (KI-220).
 - docs: correct the 2026-11-26 CMRU/CIU review claims. KI-215 is closed by
   design with prose left to review and `assay.toml` lane facts structurally
   pinned; KI-213 records the silent command-lane log, the temporary evidence
