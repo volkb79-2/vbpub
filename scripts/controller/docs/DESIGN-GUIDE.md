@@ -106,11 +106,14 @@ directory** — the agent's own worktree — both to the shim's lookup and to ev
 command its bash tool runs.
 
 The shims themselves are mechanical refusals for ordinary `PATH` spellings,
-**not a security boundary**. The user+PID namespace described below is the
-kernel boundary for a pi bash process trying to signal an outer PID. The shims
-still refuse `pkill`, `killall`, and signalling `pgrep`, and their managed-bin
-shadow check still fails at launch rather than hoping a download does not take
-precedence.
+**not a security boundary**. The current tracked launcher imposes the user+PID
+namespace described below. With those guard assets unchanged, it blocks that
+command's signal attempts to outer PIDs. The checkout is
+writable by the same user as the agent, so this is an accidental-command guard,
+not tamper-resistant protection against an agent that edits the guard files.
+The shims still refuse `pkill`, `killall`, and signalling `pgrep`, and their
+managed-bin shadow check still fails at launch rather than hoping a download
+does not take precedence.
 
 How each of those can go red is in `tests/test-pi-impl.sh`: the fake pi
 asserts with `command -v` that each spelling resolves **inside** the shim
@@ -126,8 +129,11 @@ guard fact **twice**, because the continuation is a launch too.
 
 The PATH shims cannot catch Bash builtins such as `kill`, and a written ban did
 not stop a pi agent from running signal probes in the shared devcontainer. The
-implementer boundary is therefore selected at pi launch time and enforced by
-the kernel for every Bash execution.
+current launcher therefore starts each implementer Bash execution in a user
+and PID namespace. While its tracked guard files are unchanged, this prevents
+accidental signal commands issued through that launch path from reaching outer
+processes. It is not tamper-resistant: a same-user agent can edit the extension,
+wrapper, worker, or launcher and change how a later command starts (CTL-65).
 
 `pi-impl.sh` passes `--no-extensions -e <absolute pi-pidns-extension.js>` on
 every implementer invocation. The explicit extension replaces the built-in
@@ -159,10 +165,13 @@ existing default or `DOCKER_HOST=unix://` Docker socket outside
 `/run/docker-api` with `/dev/null`. A `--json-status-fd` child-start record lets
 the wrapper distinguish a setup failure from a command's own exit code.
 
-This protects PID-based signals from pi bash to processes outside its PID
-namespace. The mount namespace does not confine file writes, network traffic,
-or other Unix sockets. `/proc` stays the outer procfs because mounting
-`--proc /proc` fails with `Operation not permitted` in the supported container;
+With the tracked guard assets unchanged, the namespace blocks PID-based signals
+from that pi bash process to processes outside its PID namespace. The same-user
+edit limitation above means this does not guarantee that future commands will
+continue to use the guard. The mount namespace does not confine file writes,
+network traffic, or other Unix sockets. `/proc` stays the outer procfs because
+mounting `--proc /proc` fails with `Operation not permitted` in the supported
+container;
 process listings therefore show outer PIDs and `/proc/$$` does not match the
 namespace shell. PID 1 inside is bwrap, so `kill -0 1` succeeds by design.
 `sudo` fails inside, and background jobs end with their command. These are
@@ -251,11 +260,13 @@ missing is refused: a prompt that lost the rule is not the contract the wrapper
 promises, so the absence must be loud rather than silent.
 
 The prompt's ban on shell experiments in the shared devcontainer remains an
-INSTRUCTION. The process boundary is enforced separately: every implementer
-bash command, including a builtin `kill` or a direct signal syscall, runs in a
-fresh user and PID namespace and cannot address outer processes by PID. The
-`pi-shims` PATH guard still refuses ordinary `pkill`, `killall`, and signalling
-`pgrep` spellings, but it is not itself the security boundary. Review mode is
+INSTRUCTION. With the tracked guard assets unchanged, each implementer bash
+command, including a builtin `kill` or a direct signal syscall, runs in a fresh
+user and PID namespace and cannot address outer processes by PID. A same-user
+agent can edit those assets and change a later command's launch path (CTL-65),
+so this prevents accidental signals through the current guard without claiming
+tamper resistance. The `pi-shims` PATH guard still refuses ordinary `pkill`,
+`killall`, and signalling `pgrep` spellings. Review mode is
 tool-set enforcement (no tool that can execute or write), not a sandbox, and
 even it leaves `read` unconfined. The namespace also leaves filesystem writes,
 network traffic, and other Unix sockets available; only the tmux socket

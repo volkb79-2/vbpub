@@ -140,8 +140,9 @@ Use this order for each implementation task.
    Every pi launch runs under a **run mode**, `implementer` (the default) or
    `review` (`PI_RUN_MODE`). An implementer launch keeps pi's tool set, but its
    built-in bash tool and user `!`/`!!` commands go through the tracked
-   `pi-pidns-extension.js` and `pi-pidns-bash`. Each command starts in a fresh
-   user and PID namespace. `pi-impl.sh` passes the extension explicitly with
+   `pi-pidns-extension.js` and `pi-pidns-bash`. With the tracked guard files
+   unchanged, each command starts in a fresh user and PID namespace.
+   `pi-impl.sh` passes the extension explicitly with
    `--no-extensions -e`, so worktree and user extension settings cannot replace
    it; `PI_EXTRA_ARGS` cannot load or disable extensions in implementer mode.
    Before it claims the run name, the launcher probes the wrapper with
@@ -434,8 +435,9 @@ this tool selection. A worktree whose `AGENTS.md` steers the reviewer is a real
 risk, and it is not closed here. **A review mode is tool-set enforcement, not
 a sandbox:** the reviewer cannot execute anything because no tool in its argv
 can, while `read` can still read anything the wrapper's user can. Implementer
-bash has an OS boundary for PID signals: a shell in its new PID namespace cannot
-address outer processes, even though it can see their PIDs in the host `/proc`.
+bash has a per-command OS boundary for PID signals while the tracked launch
+guard files are unchanged: a shell in its new PID namespace cannot address
+outer processes, even though it can see their PIDs in the host `/proc`.
 `/proc` is intentionally not remounted: `--proc /proc` fails in the supported
 container. PID 1 inside is bwrap, so `kill -0 1` succeeds as expected; `sudo`
 fails inside, and background jobs end when their command ends.
@@ -449,6 +451,12 @@ guard still refuses ordinary `pkill`, `killall`, and signalling `pgrep`
 spellings; it is not itself a security boundary. The implementer prompt still
 forbids experiments in the shared devcontainer, whose own shell does not run
 under this guard.
+
+**Guard limitation.** This stops accidental signal commands made through the
+current guarded path. It is not tamper-resistant: a same-user implementer can
+edit the tracked extension, wrapper, worker, or launcher files and change how a
+later command starts. This limitation is tracked as CTL-65 in
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
 
 **Review mode is sticky per run name and pi session.** Every launch records it as
 `<runs-dir>/<run>.mode` (`review` or `implementer`). A resume records its known
@@ -665,8 +673,9 @@ agent's `PATH`; that value is resolved as pi resolves it (`~` and `~/x`
 against `$HOME`) and a value that is still relative is refused, not guessed.
 No variable switches the PATH shims or namespace off. The shims are not a
 security boundary: absolute command paths, alternate tools, and a script that
-resets `PATH` can bypass their refusal. Implementer bash still runs in its own
-PID namespace, so those commands cannot address outer processes by PID. The
+resets `PATH` can bypass their refusal. With the tracked guard assets unchanged,
+the current implementer bash command runs in its own PID namespace and cannot
+address outer processes by PID. The
 namespace does not restrict file writes, network access, or other Unix sockets;
 the exact mounts and measured namespace limits are in the
 [design guide](docs/DESIGN-GUIDE.md#why-implementer-bash-runs-in-a-user-and-pid-namespace).

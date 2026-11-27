@@ -115,9 +115,12 @@
 # review back to the implementer tool set.
 #
 # Review mode enforces its tool selection, not a sandbox: the `read` tool still
-# reads anything the wrapper's user can (credentials included). Implementer
-# bash runs in its own user and PID namespace, which prevents its builtin `kill`
-# and direct signal syscalls from addressing outer processes by PID. The prompt
+# reads anything the wrapper's user can (credentials included). With tracked
+# guard assets unchanged, each implementer bash command runs in its own user
+# and PID namespace, which blocks that command's builtin `kill` and direct
+# signal syscalls from addressing outer processes by PID. This prevents
+# accidental signals through the current launch path; a same-user agent can edit
+# the guard files and change how a later command starts (CTL-65). The prompt
 # still forbids experiments in the shared devcontainer; the pi-shims PATH entry
 # also refuses ordinary `pkill`, `killall` and signalling `pgrep` spellings.
 #
@@ -158,7 +161,8 @@
 # pi-pidns-extension.js explicitly with `-e` and `--no-extensions`. That
 # extension replaces the built-in bash tool and handles user `!`/`!!` commands;
 # both call pi-pidns-bash, which starts each command in a fresh user+PID
-# namespace. The project settings file cannot replace the explicit extension:
+# namespace while the tracked guard assets remain unchanged. The project
+# settings file cannot replace the explicit extension:
 # `--no-extensions` selects only CLI extension paths (dist/core/resource-loader.js:426-428),
 # a same-name extension tool replaces built-in bash (docs/extensions.md:2358-2360),
 # and the extension supplies its own shellPath through createLocalBashOperations
@@ -166,8 +170,10 @@
 # (docs/extensions.md:1078-1095). Review mode has no bash in its fixed tool set
 # and does not load this extension.
 #
-# This isolates bash process signalling, not filesystem access: file writes and
-# other Unix sockets remain available. `/proc` is deliberately left as the host
+# With the tracked guard assets unchanged, this blocks bash signal attempts to
+# outer PIDs. It does not protect against a same-user edit to those assets, or
+# confine filesystem access: file writes and other Unix sockets remain
+# available. `/proc` is deliberately left as the host
 # procfs because `--proc /proc` is unavailable in the supported container; a
 # shell can see outer PIDs there, but its PID namespace cannot signal them. PID
 # 1 inside is bwrap, so `kill -0 1` succeeds by design. `sudo` fails inside, and

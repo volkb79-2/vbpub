@@ -137,8 +137,11 @@ Every pi launch keeps the **PATH signal shims** (see the
 `pi-impl.sh` puts `pi-shims/` first on the agent's `PATH`, so `pkill` and
 `killall` refuse with `pi-shim: refused <name>` and exit 126, and `pgrep` with a
 signal argument refuses the same way while plain `pgrep` still works. In
-implementer mode, a separate kernel boundary runs every bash command in a fresh
-user and PID namespace; details and limits follow below. A launch can be
+implementer mode, while the tracked guard assets are unchanged, the launcher
+runs every bash command in a fresh user and PID namespace. This prevents
+accidental signal commands through that path; it is not tamper-resistant
+against a same-user agent that edits the guard files (CTL-65). Details and
+limits follow below. A launch can be
 **refused with exit 2 before pi starts**, naming a shim misconfiguration:
 
 ```text
@@ -160,8 +163,10 @@ that would refuse the retry.
 
 An agent that meets a shim refusal must not work around it: never use
 `pkill`/`killall` by pattern in a shared devcontainer. The shims still do not
-cover absolute command paths or a script that resets `PATH`; the PID namespace
-is the process-signal boundary for implementer bash.
+cover absolute command paths or a script that resets `PATH`. With guard assets
+unchanged, the namespace blocks the current command's signal attempts to outer
+PIDs; it does not stop a same-user agent from changing those assets for a later
+command (CTL-65).
 
 ### Run mode: implementer or review
 
@@ -236,8 +241,10 @@ unavailable, pi does not start.
 Worktree `.pi/settings.json` extension and `shellPath` values cannot replace
 the explicitly selected extension.
 
-The PID namespace prevents bash from addressing outer processes by PID. `/proc`
-is left as the host procfs because `--proc /proc` is unavailable in the
+With the tracked guard assets unchanged, the PID namespace prevents the current
+bash command from addressing outer processes by PID. A same-user agent can edit
+those assets and change how a later command starts (CTL-65). `/proc` is left as
+the host procfs because `--proc /proc` is unavailable in the
 supported container, so listings show outer PIDs and `/proc/$$` does not match
 `$$`. PID 1 inside is bwrap, so `kill -0 1` succeeds by design. `sudo` fails
 inside, and background jobs end with their command. The mount namespace is not a
