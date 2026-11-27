@@ -495,8 +495,11 @@ class _FakeProcess:
         self.wait_error = wait_error
         self.wait_action = wait_action
         self.wait_timeouts = []
+        self.events = []
 
     def wait(self, *, timeout):
+        assert self.events == ["signal"], "reap began before one group signal"
+        self.events.append("reap")
         self.wait_timeouts.append(timeout)
         if self.wait_action is not None:
             self.wait_action()
@@ -513,7 +516,8 @@ class _FakeSelector:
         self.closed = False
 
     def register(self, stream, _events, data):
-        self.entries[stream.fileno()] = (stream, data)
+        fd = stream if isinstance(stream, int) else stream.fileno()
+        self.entries[fd] = (stream, data)
 
     def get_map(self):
         return dict(self.entries)
@@ -528,7 +532,8 @@ class _FakeSelector:
         ]
 
     def unregister(self, stream):
-        del self.entries[stream.fileno()]
+        fd = stream if isinstance(stream, int) else stream.fileno()
+        del self.entries[fd]
 
     def close(self):
         self.closed = True
@@ -546,13 +551,18 @@ def _bounded_seams(monkeypatch, *, read_map, clock=None, selector=None, process=
 
     monkeypatch.setattr(agent_providers.os, "read", read)
     monkeypatch.setattr(agent_providers.os, "set_blocking", lambda _fd, _value: None)
-
+    monkeypatch.setattr(
+        agent_providers.os,
+        "pidfd_open",
+        lambda _pid: os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC),
+    )
     def process_factory(*_argv, **_options):
         if spawn is not None:
             spawn()
         return active_process
 
     def kill_group(pid, sig):
+        active_process.events.append("signal")
         killed.append((pid, sig))
 
     return active_clock, active_selector, active_process, killed, process_factory, kill_group
@@ -570,8 +580,10 @@ def test_bounded_docker_runner_drains_both_streams_and_reaps(monkeypatch):
     )
     assert result.stdout == b"out"
     assert result.stderr == b"err"
+    assert result.returncode == 0
     assert process.wait_timeouts == [5]
-    assert killed == []
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
 
 
 @pytest.mark.parametrize("overflow_fd", [101, 102], ids=["stdout", "stderr"])
@@ -590,6 +602,7 @@ def test_bounded_docker_runner_kills_on_output_cap_and_reaps_with_deadline(monke
         )
     assert killed == [(process.pid, signal.SIGKILL)]
     assert process.wait_timeouts == [5]
+    assert process.events == ["signal", "reap"]
 
 
 def test_bounded_docker_runner_times_out_while_output_pipes_remain_open(monkeypatch):
@@ -609,6 +622,7 @@ def test_bounded_docker_runner_times_out_while_output_pipes_remain_open(monkeypa
         )
     assert killed == [(process.pid, signal.SIGKILL)]
     assert process.wait_timeouts == [0]
+    assert process.events == ["signal", "reap"]
 
 
 def test_bounded_docker_runner_covers_spawn_timeout_reap_timeout_and_kill_errors(monkeypatch):
@@ -630,6 +644,7 @@ def test_bounded_docker_runner_covers_spawn_timeout_reap_timeout_and_kill_errors
         )
     assert killed == [(process.pid, signal.SIGKILL)]
     assert process.wait_timeouts == [0]
+    assert process.events == ["signal", "reap"]
 
     clock = _FakeClock()
     selector = _FakeSelector()
@@ -639,7 +654,7 @@ def test_bounded_docker_runner_covers_spawn_timeout_reap_timeout_and_kill_errors
         monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
     )
     clock.now = 0
-    with pytest.raises(agent_providers.DockerInspectionError, match="while reaping"):
+    with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
         agent_providers._run_bounded(
             ["/usr/bin/docker"], 1,
             popen_factory=spawn,
@@ -648,7 +663,8 @@ def test_bounded_docker_runner_covers_spawn_timeout_reap_timeout_and_kill_errors
             kill_group=kill_group,
         )
     assert killed == [(process.pid, signal.SIGKILL)]
-    assert process.wait_timeouts == [1, 1]
+    assert process.wait_timeouts == [1]
+    assert process.events == ["signal", "reap"]
 
 
 def test_bounded_docker_runner_kills_child_immediately_after_late_creation(monkeypatch):
@@ -670,6 +686,7 @@ def test_bounded_docker_runner_kills_child_immediately_after_late_creation(monke
 
     def kill_group(pid, sig):
         events.append("group-killed")
+        process.events.append("signal")
         killed.append((pid, sig))
 
     outcome = []
@@ -698,9 +715,10 @@ def test_bounded_docker_runner_kills_child_immediately_after_late_creation(monke
     assert events == ["creation-started", "admission-refused", "creation-returned", "group-killed"]
     assert killed == [(process.pid, signal.SIGKILL)]
     assert process.wait_timeouts == [0]
+    assert process.events == ["signal", "reap"]
 
 
-def test_bounded_docker_runner_does_not_signal_after_late_successful_reap(monkeypatch):
+def test_bounded_docker_runner_signals_before_a_late_successful_reap(monkeypatch):
     clock = _FakeClock()
     selector = _FakeSelector()
     process = _FakeProcess(wait_action=lambda: setattr(clock, "now", 1))
@@ -717,7 +735,80 @@ def test_bounded_docker_runner_does_not_signal_after_late_successful_reap(monkey
             kill_group=kill_group,
         )
     assert process.wait_timeouts == [1]
-    assert killed == []
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_signals_late_same_group_descendant_before_reap(monkeypatch):
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    process = _FakeProcess()
+    process.descendant_alive = True
+    events = []
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, _kill = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+    pidfd, pidfd_writer = os.pipe()
+    monkeypatch.setattr(agent_providers.os, "pidfd_open", lambda _pid: pidfd)
+    real_close = os.close
+    pidfd_closes = []
+
+    def close_and_record(fd):
+        if fd == pidfd:
+            pidfd_closes.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(agent_providers.os, "close", close_and_record)
+
+    original_select = selector.select
+
+    def observe_pidfd(timeout):
+        if any(isinstance(stream, int) for stream, _data in selector.entries.values()):
+            assert timeout == 1
+            events.append("exit-observed")
+            clock.now = 1
+            return [(_FakeSelectorKey(pidfd, ("pidfd", None)), agent_providers.selectors.EVENT_READ)]
+        return original_select(timeout)
+
+    selector.select = observe_pidfd
+
+    def kill_group(pid, sig):
+        events.append("group-signal")
+        process.events.append("signal")
+        killed.append((pid, sig))
+        process.descendant_alive = False
+
+    def reap(*, timeout):
+        events.append("reap")
+        process.events.append("reap")
+        process.wait_timeouts.append(timeout)
+        clock.now = 1
+        assert not process.descendant_alive
+        return 0
+
+    process.wait = reap
+    try:
+        with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
+            agent_providers._run_bounded(
+                ["/usr/bin/docker"], 1,
+                popen_factory=spawn,
+                selector_factory=lambda: selector,
+                monotonic=clock,
+                kill_group=kill_group,
+            )
+    finally:
+        for fd in (pidfd, pidfd_writer):
+            try:
+                real_close(fd)
+            except OSError:
+                pass
+
+    assert events == ["exit-observed", "group-signal", "reap"]
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.wait_timeouts == [0]
+    assert process.events == ["signal", "reap"]
+    assert pidfd_closes == [pidfd]
 
 
 def test_bounded_docker_runner_kills_at_deadline_before_reap(monkeypatch):
@@ -737,7 +828,7 @@ def test_bounded_docker_runner_kills_at_deadline_before_reap(monkeypatch):
         return result
 
     monkeypatch.setattr(agent_providers.os, "read", deadline_read)
-    with pytest.raises(agent_providers.DockerInspectionError, match="while reaping"):
+    with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
         agent_providers._run_bounded(
             ["/usr/bin/docker"], 1,
             popen_factory=spawn,
@@ -747,6 +838,7 @@ def test_bounded_docker_runner_kills_at_deadline_before_reap(monkeypatch):
         )
     assert killed == [(process.pid, signal.SIGKILL)]
     assert process.wait_timeouts == [0]
+    assert process.events == ["signal", "reap"]
 
 
 def test_bounded_docker_runner_handles_reader_and_group_kill_failures(monkeypatch):
@@ -761,23 +853,36 @@ def test_bounded_docker_runner_handles_reader_and_group_kill_failures(monkeypatc
         lambda _fd, _amount: (_ for _ in ()).throw(OSError("pipe read failed")),
     )
     kills = []
+
+    def record_kill(pid, sig):
+        process.events.append("signal")
+        kills.append((pid, sig))
+
     with pytest.raises(agent_providers.DockerInspectionError, match="output pipe failed"):
         agent_providers._run_bounded(
             ["/usr/bin/docker"], 1,
             popen_factory=spawn,
             selector_factory=lambda: selector,
             monotonic=clock,
-            kill_group=lambda pid, sig: kills.append((pid, sig)),
+            kill_group=record_kill,
         )
     assert kills == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+    process.events.clear()
+
+    def denied_kill(_pid, _sig):
+        process.events.append("signal")
+        raise PermissionError("denied")
 
     with pytest.raises(agent_providers.DockerInspectionError, match="could not kill"):
         agent_providers._kill_process_group_and_reap(
             process,
             1,
             lambda: 0,
-            lambda _pid, _sig: (_ for _ in ()).throw(PermissionError("denied")),
+            denied_kill,
         )
+    assert process.events == ["signal", "reap"]
 
 
 def test_bounded_docker_runner_does_not_retry_a_raising_termination_helper(monkeypatch):
@@ -795,6 +900,7 @@ def test_bounded_docker_runner_does_not_retry_a_raising_termination_helper(monke
     calls = []
 
     def failed_kill(pid, sig):
+        process.events.append("signal")
         calls.append((pid, sig))
         raise PermissionError("group denied")
 
@@ -808,6 +914,7 @@ def test_bounded_docker_runner_does_not_retry_a_raising_termination_helper(monke
         )
     assert calls == [(process.pid, signal.SIGKILL)]
     assert process.wait_timeouts == [1]
+    assert process.events == ["signal", "reap"]
 
 
 def test_bounded_docker_runner_handles_spawn_and_invalid_limit_failures():
@@ -838,6 +945,7 @@ def test_bounded_docker_runner_handles_missing_pipe_and_deadline_at_reap(monkeyp
         )
     assert killed == [(process.pid, signal.SIGKILL)]
     assert process.stderr.closed
+    assert process.events == ["signal", "reap"]
 
     for advance_during in ("read", "wait"):
         clock = _FakeClock()
@@ -859,7 +967,7 @@ def test_bounded_docker_runner_handles_missing_pipe_and_deadline_at_reap(monkeyp
             monkeypatch.setattr(agent_providers.os, "read", deadline_read)
         else:
             process.wait_action = lambda: setattr(clock, "now", 1)
-        with pytest.raises(agent_providers.DockerInspectionError, match="while reaping"):
+        with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
             agent_providers._run_bounded(
                 ["/usr/bin/docker"], 1,
                 popen_factory=spawn,
@@ -867,10 +975,8 @@ def test_bounded_docker_runner_handles_missing_pipe_and_deadline_at_reap(monkeyp
                 monotonic=clock,
                 kill_group=kill_group,
             )
-        if advance_during == "read":
-            assert killed == [(process.pid, signal.SIGKILL)]
-        else:
-            assert killed == []
+        assert killed == [(process.pid, signal.SIGKILL)]
+        assert process.events == ["signal", "reap"]
 
 
 def test_bounded_docker_runner_kills_on_selector_setup_error(monkeypatch):
@@ -893,17 +999,128 @@ def test_bounded_docker_runner_kills_on_selector_setup_error(monkeypatch):
         )
     assert killed == [(process.pid, signal.SIGKILL)]
     assert process.wait_timeouts == [1]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_kills_and_reaps_when_pidfd_open_fails(monkeypatch):
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    process = _FakeProcess()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+    monkeypatch.setattr(
+        agent_providers.os,
+        "pidfd_open",
+        lambda _pid: (_ for _ in ()).throw(OSError("pidfd unavailable")),
+    )
+    with pytest.raises(agent_providers.DockerInspectionError, match="pidfd"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_kills_and_reaps_when_pidfd_wait_times_out(monkeypatch):
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    process = _FakeProcess()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+    original_select = selector.select
+
+    def no_pidfd_readiness(timeout):
+        if any(isinstance(stream, int) for stream, _data in selector.entries.values()):
+            return []
+        return original_select(timeout)
+
+    selector.select = no_pidfd_readiness
+    with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_cleans_up_when_pidfd_open_consumes_deadline(monkeypatch):
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    process = _FakeProcess()
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+    opened = []
+
+    def late_pidfd_open(_pid):
+        fd = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
+        opened.append(fd)
+        clock.now = 1
+        return fd
+
+    monkeypatch.setattr(agent_providers.os, "pidfd_open", late_pidfd_open)
+    with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+
+def test_bounded_docker_runner_reports_a_non_timeout_reap_error(monkeypatch):
+    clock = _FakeClock()
+    selector = _FakeSelector()
+    process = _FakeProcess(wait_error=PermissionError("wait denied"))
+    streams = {101: [b""], 102: [b""]}
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map=streams, clock=clock, selector=selector, process=process,
+    )
+    with pytest.raises(agent_providers.DockerInspectionError, match="child reaping failed"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], 1,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            monotonic=clock,
+            kill_group=kill_group,
+        )
+    assert killed == [(process.pid, signal.SIGKILL)]
+    assert process.events == ["signal", "reap"]
 
 
 def test_bounded_docker_runner_treats_an_already_gone_process_group_as_reaped():
     process = _FakeProcess()
+
+    def already_gone(_pid, _sig):
+        process.events.append("signal")
+        raise ProcessLookupError("already gone")
+
     agent_providers._kill_process_group_and_reap(
         process,
         1,
         lambda: 0,
-        lambda _pid, _sig: (_ for _ in ()).throw(ProcessLookupError("already gone")),
+        already_gone,
     )
     assert process.wait_timeouts == [1]
+    assert process.events == ["signal", "reap"]
 
 
 def test_docker_process_boundary_drops_ambient_environment_and_uses_fixed_host(tmp_path, monkeypatch):
@@ -922,9 +1139,43 @@ def test_docker_process_boundary_drops_ambient_environment_and_uses_fixed_host(t
     monkeypatch.setenv("DOCKER_HOST", "tcp://ambient.invalid:2375")
     monkeypatch.setenv("DOCKER_CONTEXT", "ambient-context")
     monkeypatch.setenv("DOCKER_CONFIG", "/ambient/docker-config")
+    kill_calls = []
+    real_runner = agent_providers._run_bounded
+
+    class GateBudgetSelector:
+        def __init__(self):
+            self.inner = agent_providers.selectors.DefaultSelector()
+
+        def register(self, fileobj, events, data=None):
+            self.inner.register(fileobj, events, data)
+
+        def unregister(self, fileobj):
+            return self.inner.unregister(fileobj)
+
+        def get_map(self):
+            return self.inner.get_map()
+
+        def select(self, _timeout):
+            return self.inner.select(None)
+
+        def close(self):
+            self.inner.close()
+
+    def bounded_runner(argv, timeout):
+        return real_runner(
+            argv,
+            timeout,
+            selector_factory=GateBudgetSelector,
+            monotonic=lambda: 0.0,
+            kill_group=lambda pid, sig: kill_calls.append((pid, sig)),
+        )
+
+    monkeypatch.setattr(agent_providers, "_run_bounded", bounded_runner)
 
     inspect = docker_object_inspector(5, docker_binary=str(script))
     assert inspect("legacy-runner") is InspectorAnswer.PRESENT
+    assert len(kill_calls) == 1
+    assert kill_calls[0][1] == signal.SIGKILL
     observed = json.loads(record_file.read_text(encoding="utf-8"))
     assert observed == {
         "env": _DOCKER_ENV,
@@ -933,86 +1184,111 @@ def test_docker_process_boundary_drops_ambient_environment_and_uses_fixed_host(t
     }
 
 
-def test_docker_process_boundary_kills_pipe_holding_descendant(tmp_path):
+@pytest.mark.parametrize("late", [False, True], ids=["success", "late-result"])
+def test_docker_process_boundary_kills_pipe_closing_descendant_on_success_and_late_result(
+    tmp_path,
+    monkeypatch,
+    late,
+):
     ready_read, ready_write = os.pipe()
     pid_file = tmp_path / "descendant.pid"
     script = tmp_path / "fake-docker-descendant"
     script.write_text(
         "#!" + sys.executable + "\n"
         + "import os, signal\n"
-        + "leader = os.getpid()\n"
         + "pid = os.fork()\n"
         + "if pid == 0:\n"
-        + "    while os.getppid() == leader:\n"
-        + "        pass\n"
+        + f"    os.close({ready_read})\n"
+        + "    os.close(1)\n"
+        + "    os.close(2)\n"
         + f"    with open({str(pid_file)!r}, 'w', encoding='ascii') as output:\n"
         + "        output.write(str(os.getpid()))\n"
         + f"    os.write({ready_write}, b'R')\n"
-        + "    while True:\n"
-        + "        signal.pause()\n"
+        + "    signal.pause()\n"
+        + f"os.close({ready_write})\n"
+        + f"assert os.read({ready_read}, 1) == b'R'\n"
+        + f"os.close({ready_read})\n"
+        + "os.write(1, b'[]')\n"
         + "os._exit(0)\n",
         encoding="utf-8",
     )
     script.chmod(0o755)
 
-    class ReadyClock:
-        def __init__(self):
-            self.now = 0.0
-            self.deadline = 1.0
-            self.ready = False
-            self.calls = 0
-            self.pidfd = None
+    class ControlledClock:
+        now = 0.0
+        deadline = 1.0
 
         def __call__(self):
-            self.calls += 1
-            if self.calls == 2 and not self.ready:
-                assert os.read(ready_read, 1) == b"R"
-                descendant_pid = int(pid_file.read_text(encoding="ascii"))
-                self.pidfd = os.pidfd_open(descendant_pid)
-                self.ready = True
             return self.now
 
-    clock = ReadyClock()
+    clock = ControlledClock()
+    real_select = select.select
+    descendant_pidfd = None
+    ready_write_open = True
 
-    class ExpiringSelector:
+    class GateBudgetSelector:
         def __init__(self):
-            self.entries = {}
+            self.inner = selectors.DefaultSelector()
 
-        def register(self, stream, _events, data):
-            self.entries[stream.fileno()] = (stream, data)
+        def register(self, fileobj, events, data=None):
+            self.inner.register(fileobj, events, data)
+
+        def unregister(self, fileobj):
+            return self.inner.unregister(fileobj)
 
         def get_map(self):
-            return dict(self.entries)
+            return self.inner.get_map()
 
         def select(self, _timeout):
-            assert clock.ready
-            clock.now = clock.deadline
-            return []
+            nonlocal descendant_pidfd
+            ready = self.inner.select(None)
+            if any(key.data[0] == "pidfd" for key, _events in ready):
+                descendant_pid = int(pid_file.read_text(encoding="ascii"))
+                descendant_pidfd = os.pidfd_open(descendant_pid)
+                if late:
+                    clock.now = clock.deadline
+            return ready
 
         def close(self):
-            pass
+            self.inner.close()
 
     def spawn(argv, **options):
-        options["pass_fds"] = (ready_write,)
-        return subprocess.Popen(argv, **options)
+        nonlocal ready_write_open
+        options["pass_fds"] = (ready_read, ready_write)
+        child = subprocess.Popen(argv, **options)
+        os.close(ready_write)
+        ready_write_open = False
+        return child
 
     try:
-        with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
-            agent_providers._run_bounded(
+        if late:
+            with pytest.raises(agent_providers.DockerInspectionError, match="query_timeout_s"):
+                agent_providers._run_bounded(
+                    [str(script), "--host", _DOCKER_HOST, "inspect", "--type=container", "legacy-runner"],
+                    1,
+                    popen_factory=spawn,
+                    selector_factory=GateBudgetSelector,
+                    monotonic=clock,
+                )
+        else:
+            result = agent_providers._run_bounded(
                 [str(script), "--host", _DOCKER_HOST, "inspect", "--type=container", "legacy-runner"],
                 1,
                 popen_factory=spawn,
-                selector_factory=ExpiringSelector,
+                selector_factory=GateBudgetSelector,
                 monotonic=clock,
             )
-        assert clock.pidfd is not None
-        ready, _writable, _errors = select.select([clock.pidfd], [], [])
-        assert ready, "pipe-holding descendant did not exit after process-group termination"
+            assert result.returncode == 0
+            assert result.stdout == b"[]"
+        assert descendant_pidfd is not None
+        ready, _writable, _errors = real_select([descendant_pidfd], [], [], None)
+        assert ready, "pipe-closing descendant remained alive after group cleanup"
     finally:
-        if clock.pidfd is not None:
-            os.close(clock.pidfd)
+        if descendant_pidfd is not None:
+            os.close(descendant_pidfd)
         os.close(ready_read)
-        os.close(ready_write)
+        if ready_write_open:
+            os.close(ready_write)
 
 
 def test_agent_entry_wires_real_providers_and_they_work_at_the_service_boundary(tmp_path, monkeypatch):

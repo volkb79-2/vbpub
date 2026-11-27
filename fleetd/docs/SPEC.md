@@ -108,8 +108,14 @@ creation itself cannot be cancelled: it may finish after the outer call has
 refused, in which case the provider immediately attempts to signal the new
 child process group with `SIGKILL` and makes a bounded reap attempt before it
 returns `ERROR` (FD-066). Each output stream is drained with a 4 MiB cap;
-expiry or a cap breach also attempts to signal the child process group and
-makes a bounded reap attempt before returning `ERROR`.
+expiry or a cap breach also attempts group cleanup before reaping. On the
+normal result path, after both pipes reach EOF, the provider waits for the
+leader's pidfd to become readable without reaping it. For every child-created
+outcome, including errors before EOF, it attempts `SIGKILL` on the process
+group before the bounded reap. `ProcessLookupError` means the group is already
+empty; another signal or reap failure returns `ERROR`. A success requires
+both pipes at EOF, exit observed before the deadline, and an exit status
+obtained by that reap.
 
 Every `host-facts/2` policy object carries `aging_s`,
 `legacy_charge_bytes`, and `legacy_planned_cores`. An unconfigured key is

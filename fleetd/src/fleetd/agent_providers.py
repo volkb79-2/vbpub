@@ -317,12 +317,12 @@ def _run_bounded(
     kill_group: Callable[[int, int], None] | None = None,
     output_limit: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Collect and reap Docker within a deadline established before creation.
+    """Collect Docker output, observe exit without reaping, then clean its group.
 
-    Process creation cannot be cancelled while ``Popen`` is blocked. If it
-    returns after the deadline, termination of the new child group is attempted
-    immediately; time spent in process creation consumes the available query
-    time.
+    The deadline starts before synchronous process creation, which cannot be
+    cancelled; time spent there consumes the available query time. A pidfd
+    selector wait observes exit without reaping the group leader, keeping its
+    PID pinned until SIGKILL has been attempted for every result path.
     """
 
     spawn = subprocess.Popen if popen_factory is None else popen_factory
@@ -334,18 +334,17 @@ def _run_bounded(
         raise ValueError("Docker output limit must be a positive integer")
 
     deadline = clock() + timeout_s
-    process: Any | None = None
+    process: Any = None
     selector: Any | None = None
+    pidfd: int | None = None
     stdout = bytearray()
     stderr = bytearray()
-    leader_reaped = False
     termination_attempted = False
 
-    def terminate_group() -> None:
+    def terminate_group_and_reap() -> int:
         nonlocal termination_attempted
-        if process is not None and not leader_reaped and not termination_attempted:
-            termination_attempted = True
-            _kill_process_group_and_reap(process, deadline, clock, group_kill)
+        termination_attempted = True
+        return _kill_process_group_and_reap(process, deadline, clock, group_kill)
 
     try:
         process = spawn(
@@ -361,7 +360,6 @@ def _run_bounded(
             bufsize=0,
         )
         if clock() >= deadline:
-            terminate_group()
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s during spawn")
 
         selector = selector_type()
@@ -375,7 +373,6 @@ def _run_bounded(
         while selector.get_map():
             remaining = deadline - clock()
             if remaining <= 0:
-                terminate_group()
                 raise DockerInspectionError("Docker inspect exceeded query_timeout_s")
             ready = selector.select(remaining)
             if not ready:
@@ -386,37 +383,46 @@ def _run_bounded(
                 try:
                     chunk = os.read(key.fileobj.fileno(), min(65536, max(1, room)))
                 except OSError as exc:
-                    terminate_group()
                     raise DockerInspectionError("Docker inspect output pipe failed") from exc
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
                 if len(chunk) > room:
-                    terminate_group()
                     raise DockerInspectionError("Docker inspect output exceeded MAX_DOCKER_OUTPUT_BYTES")
                 buffer.extend(chunk)
 
         remaining = deadline - clock()
         if remaining <= 0:
-            terminate_group()
-            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping")
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
         try:
-            returncode = process.wait(timeout=remaining)
-        except subprocess.TimeoutExpired as exc:
-            terminate_group()
-            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping") from exc
-        leader_reaped = True
+            pidfd = os.pidfd_open(process.pid)
+        except OSError as exc:
+            raise DockerInspectionError("Docker inspect could not open a child pidfd") from exc
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
+        selector.register(pidfd, selectors.EVENT_READ, ("pidfd", None))
+        ready = selector.select(remaining)
+        if not any(key.fileobj == pidfd for key, _events in ready):
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
+        selector.unregister(pidfd)
         if clock() >= deadline:
-            terminate_group()
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
+        returncode = terminate_group_and_reap()
+        if clock() >= deadline:
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping")
         return subprocess.CompletedProcess(argv, returncode, bytes(stdout), bytes(stderr))
     except DockerInspectionError:
-        terminate_group()
+        if process is not None and not termination_attempted:
+            terminate_group_and_reap()
         raise
     except Exception as exc:
-        terminate_group()
+        if process is not None and not termination_attempted:
+            terminate_group_and_reap()
         raise DockerInspectionError(f"Docker inspect process failed: {exc}") from exc
     finally:
+        if pidfd is not None:
+            os.close(pidfd)
         if selector is not None:
             selector.close()
         if process is not None:
@@ -430,24 +436,27 @@ def _kill_process_group_and_reap(
     deadline: float,
     clock: Callable[[], float],
     kill_group: Callable[[int, int], None],
-) -> None:
-    """Kill the private group and make only a deadline-bounded reap attempt."""
+) -> int:
+    """Signal the private group before making a deadline-bounded reap attempt."""
 
     try:
         kill_group(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        kill_error: OSError | None = None
-    except OSError as exc:
-        kill_error: OSError | None = exc
+        kill_error: Exception | None = None
+    except Exception as exc:
+        kill_error = exc
     else:
         kill_error = None
     remaining = max(0.0, deadline - clock())
     try:
-        process.wait(timeout=remaining)
-    except subprocess.TimeoutExpired:
-        pass
+        returncode = process.wait(timeout=remaining)
+    except subprocess.TimeoutExpired as exc:
+        raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping child") from exc
+    except Exception as exc:
+        raise DockerInspectionError("Docker inspect child reaping failed") from exc
     if kill_error is not None:
         raise DockerInspectionError("could not kill Docker inspect process group") from kill_error
+    return returncode
 
 
 def _validate_target(target: str, *, full_id_only: bool) -> None:
