@@ -255,8 +255,8 @@ two sizing authorities. On the Netcup test disks, swap sat directly behind a
 40 GiB root and the CoW partition was carved after swap; later numbering put a
 data partition behind swaps even though it sat earlier on disk. The single
 `partitioning` plan removes that ambiguity: root, configured data, intentional
-reserve, the raw benchmark partition, and swap have one physical order and one
-whole-disk accounting rule. See the [feature overview](../README.md#disk-layout)
+reserve, and swap have one physical order and one whole-disk accounting rule.
+There is no permanent benchmark allocation. See the [feature overview](../README.md#disk-layout)
 and [design contract](DESIGN-data-area-v2.md).
 
 Root behavior comes from `partitioning.root`: `"keep"` retains current size,
@@ -271,14 +271,45 @@ numeric fixed reserve is subtracted before percentage sizes are resolved;
 `reserve_gb: "*"` remains incompatible with percentages. The plan table is
 included in live `show_plan` output and in refusals when the disk facts suffice.
 
-Every plan reserves the default 8 GiB Linux partition with PARTLABEL
-`iobench-raw`. Its fixed size can be configured or disabled with
-`iobench_raw_gb: false`. It is never formatted or mounted; an enabled
-benchmark wipes it immediately before the direct iobench run and leaves it
-raw in the final layout. Stage two runs the benchmark before configuring
-io.cost, so the measured coefficients reach the model on a fresh install. A
-first-class plan entry prevents a benchmark from temporarily changing
-partition numbers or leaving an interim-table hole.
+`iobench_raw_gb` is removed: absent or `false` is accepted for compatibility,
+while an integer fails as `iobench_raw_removed` and must be deleted. For an
+enabled ext4 benchmark, stage two temporarily replaces the contiguous tail
+swap extents with one `vbpub-swap-span` partition. It uses the first tail
+swap's number, the Linux filesystem type GUID, and the full extent from the
+first swap's start through the last swap's end. Retained pre-root swaps remain
+outside the span. After iobench succeeds or returns an advisory failure, the
+installer runs `wipefs -a` again and writes the planned regular swaps. A
+read-only probe before the first table write rejects non-swap signatures and
+nested partition tables with manual recovery instructions. After package
+setup, identity and quiescence are checked again, then `wipefs -a` clears the
+span before the runner. No zeroing command is used: the marker stays in the
+last MiB of the last swap, identity checks reject a stale marker, and a later
+init overwrites it. A fresh install may replace another inactive blank-or-swap
+tail layout that the benchmark-disabled path would replace; resumes require
+planned swaps or the exact span. No tail swap produces a
+`no_tail_swap_span` warning. Unreapable recovery is in the README.
+
+On ext4 schema 1 and 2, the benchmark requires `swap_policy: "on"` and at
+least one configured swap slot; otherwise it refuses as
+`io_benchmark_requires_tail_swap_span`. Before each conversion, every affected
+partition must be unmounted, absent from `/proc/swaps`, and blank or carry only
+a swap signature. Each write uses the existing transaction: checksum-backed
+pre-change table, geometry and data checks, sfdisk, scoped partx updates,
+udev settle, and table readback. Every written swap fstab row has `nofail` and
+`x-systemd.device-timeout=5s`.
+
+The stage-two resume rule is derived from the live table and benchmark status:
+
+| Live tail table | `io_benchmark` status | Resume action |
+| --- | --- | --- |
+| Planned swaps | not final | Write span, run, wipe signatures, restore swaps |
+| `vbpub-swap-span` | not final | Run, wipe signatures, restore swaps |
+| `vbpub-swap-span` | `success`, `warned`, or `skipped` | Wipe signatures, restore swaps |
+| Planned swaps | final | Continue without a table rewrite |
+| Any other state | any | Named refusal, no table write |
+
+Dry-run records both table writes. Re-benchmarking an installed host remains
+unimplemented, and btrfs benchmark/swap support remains outside this package.
 
 Swap is sized independently from the pool, then placed last. `swap_policy`
 has only `on` and `off`. `on` replaces the guest's configured swap setup with
@@ -312,7 +343,7 @@ and 15 before root partition 1. Unknown partitions after root are refused.
 
 ## The install-time iobench rung (`io_benchmark_profile`)
 
-`run_io_benchmark` chooses *whether* the install measures the raw partition;
+`run_io_benchmark` chooses *whether* the install measures the temporary swap span;
 `io_benchmark_profile` chooses *how long* that measurement runs. The rungs are
 the three iobench ladder profiles the install can afford inside a rebuild:
 `veryquick` (about 3 min), `quick` (about 11 min) and `standard` (about
@@ -332,7 +363,7 @@ budget the rung plans against. The values are the operator decision of
 whose 45 min was *below* standard's own 3600 s budget and would have killed a
 run iobench considers on time.
 
-Why `quick` by default: on the raw partition veryquick's read numbers already
+Why `quick` by default: on the temporary swap span veryquick's read numbers already
 match the longer rungs, so the deciding gain is elsewhere — quick measures
 `rseqiops` and `wseqiops` (about 6 % and 27 % off the true values) where
 veryquick only estimates them, and the write numbers iogovmon corrects after
@@ -370,10 +401,13 @@ IC-M6 owns ZFS-root support.
 `schema_version: 2` adds the root-aware validation. Schema 1 remains loadable
 and retains its legacy ext4 meaning. With a discovered btrfs root, the only
 valid shape released by IC-M1a is root `"*"`, reserve 0, data kind `"none"`
-or `"subvolumes"`, no raw benchmark partition, and
+or `"subvolumes"`, and
 `swap_policy: "off"` with `swap_partition_count: 0`. The root type is never a
 config key. The refusal codes are deliberately part of the contract because
 the ISO layout facts, not generic schema errors, determine the remedy.
+Swap remains refused as `btrfs_swap_needs_p3`. The `run_io_benchmark`
+request is accepted when `iobench_raw_gb` is absent or false, then stage two
+records the skipped benchmark detail `iobench_raw_unavailable_on_btrfs`.
 
 For `data.kind: "subvolumes"`, v2 requires `/.top` to be mounted at
 `subvolid=5` on the same backing partition as `/`; a tmpfs or another btrfs

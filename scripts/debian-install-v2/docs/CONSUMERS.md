@@ -164,17 +164,18 @@ the configured floors fails verification rather than reporting healthy.
 
 ## Disk plan and offline preview
 
-The one `partitioning` plan describes root, optional data, reserve, and the
-raw benchmark partition. Its defaults are root `"*"`, no data, no reserve,
-and an 8 GiB `iobench-raw` partition. The raw partition can be resized with
-`partitioning.iobench_raw_gb` (2–10240 GiB) or disabled with `false` when the
-benchmark is off. Root sizing no longer has a plan-less policy; the removed
+The one `partitioning` plan describes root, optional data, and reserve; tail
+swap is a separate managed allocation. Its defaults are root `"*"`, no data,
+and no reserve. There is no permanent benchmark partition. The old
+`partitioning.iobench_raw_gb` key is accepted only when absent or `false`; an
+integer is refused as `iobench_raw_removed` and should be deleted. When
+enabled on ext4, the benchmark temporarily represents the tail swap extents
+as one `vbpub-swap-span` partition. Root sizing no longer has a plan-less policy; the removed
 `root_resize_policy`, `disk_layout`, `root_max_size_gb`, and `data_area*`
 keys are refused.
 
 This example is for a 512 GiB host with a 160 GiB root, a CoW partition taking
-the remaining allocation, four 4 GiB swaps, and the default 8 GiB raw
-partition:
+the remaining allocation and four 4 GiB swaps:
 
 ```json
 {
@@ -195,7 +196,7 @@ partition:
 
 ### Choose the install-time iobench rung
 
-`io_benchmark_profile` picks how long the raw-partition measurement runs. It
+`io_benchmark_profile` picks how long the temporary tail-swap-span measurement runs. It
 accepts exactly `veryquick`, `quick` (the default) or `standard`, and anything
 else is refused at load with `io_benchmark_profile must be one of: veryquick,
 quick, standard`. The key is accepted and simply unused when
@@ -206,9 +207,31 @@ quick, standard`. The key is accepted and simply unused when
   "schema_version": 1,
   "run_io_benchmark": true,
   "io_benchmark_profile": "standard",
-  "partitioning": {"root": "*", "iobench_raw_gb": 32}
+  "partitioning": {"root": "*"},
+  "swap_policy": "on",
+  "swap_partition_count": 4,
+  "swap_disk_total_gb": 16
 }
 ```
+
+On ext4 schema 1 and 2, `run_io_benchmark: true` requires
+`swap_policy: "on"` and `swap_partition_count >= 1`; otherwise planning
+refuses with `io_benchmark_requires_tail_swap_span`. The span uses the first
+tail swap number and runs from the first tail start through the last tail end.
+It uses the Linux filesystem type GUID so the kernel does not auto-activate it.
+Any retained pre-root swaps remain outside it. Before the first table write,
+a read-only probe checks the planned extent; signatures other than swap and
+nested partition tables refuse with manual recovery instructions. After
+package setup, stage two rechecks identity and quiescence, wipes signatures
+before the runner, then wipes them again before restoring swaps. There is no
+zeroing command: the marker remains in the last MiB of the last swap, where
+identity checks reject a stale marker and a later init overwrites it. A fresh
+install may replace a different tail-swap layout that the benchmark-disabled
+path would replace; resume rows require planned swaps or the exact span. A
+plan with no tail swaps warns `no_tail_swap_span` and continues. The exact
+unreapable recovery is documented in the README and iobench design.
+Every installer-written swap fstab row carries
+`nofail,x-systemd.device-timeout=5s`.
 
 | `io_benchmark_profile` | wall time | installer outer timeout |
 |---|---|---|
@@ -231,16 +254,18 @@ invented or carried over from an earlier file. Enable io.cost only when
 `state_dir/io-benchmark.json` carries all six keys; the file itself names the
 rung (`profile`) that produced them.
 
-Every managed partition is numbered by physical order: root, `MDT_COW`,
-`iobench-raw`, then the tail swap partitions. The exact numbers depend on the
-root number and preserved partitions before root. `provision-runner.sh` finds the CoW
+Every permanent managed partition is numbered by physical order: root,
+`MDT_COW`, then tail swap partitions. During the benchmark only, the span
+reuses the first tail swap number; it is not an extra allocation. The exact
+numbers depend on the root number and preserved partitions before root.
+`provision-runner.sh` finds the CoW
 partition by PARTLABEL `MDT_COW`; it does not infer `/dev/vda8` or carve a
 partition.
 Swap partitions have no PARTLABEL. Their filesystem labels are
 `vbpub-swap1..N` in activation order (`vbpub-swap-pre1..N` for retained
 pre-root swaps), while fstab identifies each partition by PARTUUID. The
 preview's `Identifier` column shows `LABEL=vbpub-swapN` for swap and
-`PARTLABEL=...` for GPT-named data/raw partitions.
+`PARTLABEL=...` for GPT-named data partitions.
 
 Resolve the table for a real target size before ordering a reinstall:
 
@@ -343,7 +368,6 @@ For r1002's CoW area, use `@cow` mounted at `/srv/cow`:
   "partitioning": {
     "root": "*",
     "reserve_gb": 0,
-    "iobench_raw_gb": false,
     "data": {
       "kind": "subvolumes",
       "volumes": [
@@ -355,11 +379,14 @@ For r1002's CoW area, use `@cow` mounted at `/srv/cow`:
 ```
 
 This shape is required because IC-M1a accepts only root `"*"`, reserve 0,
-`data.kind: "none"` or `"subvolumes"`, no raw benchmark partition, and no managed
-swap. Unsupported combinations name their code rather than falling back:
+`data.kind: "none"` or `"subvolumes"`, and no managed swap. Unsupported
+combinations name their code rather than falling back:
 `btrfs_config_requires_schema_version_2`, `btrfs_root_resize_unsupported`,
 `btrfs_reserve_unsupported`, `btrfs_data_kind_unsupported`,
-`btrfs_iobench_raw_unavailable`, and `btrfs_swap_needs_p3`.
+`btrfs_swap_needs_p3`. A benchmark request with `iobench_raw_gb` absent or
+false is accepted for compatibility; the btrfs stage records it as skipped
+with `iobench_raw_unavailable_on_btrfs` and
+swap as skipped with `btrfs_swap_needs_p3`.
 
 v2 creates only top-level `@...` children under `/.top` (subvolid 5) on the
 same btrfs backing partition as `/`. Per-volume `nocow` is applied with
@@ -382,9 +409,10 @@ the live mount check in IC-M1c.
 
 The operator decision recorded for WP-10 supersedes the old C6 `@swap`
 swapfile design and the C9 swap row: this package creates no swapfile and no
-permanent `iobench-raw` partition. WP-10 P3 owns btrfs swap later. The Q-A
-raw-benchmark import also remains pending, so a btrfs installer reports the
-benchmark and io.cost as skipped rather than pretending they ran.
+permanent `iobench-raw` partition. Btrfs swap and benchmark remain unsupported
+and retain their named refusals/skipped step codes. Re-benchmarking an
+installed ext4 host is a separate later package; `tools/swap-bench-window.sh`
+is unchanged.
 
 With the rollback layer present and a managed running state, a completing
 stage two writes `phase=done` and `stage2_done` before one
@@ -425,8 +453,8 @@ sudo tools/swap-bench-window.sh begin "$target" \
   --expect-partuuid "$partuuid" --expect-size "$bytes" --commit
 ```
 
-Run the benchmark while the fixed `iobench-raw` partition is untouched. Always
-close the window, including after a failed benchmark:
+Run the external benchmark against the selected swap partition while the
+wrapper has it off. Always close the window, including after a failed run:
 
 ```bash
 sudo tools/swap-bench-window.sh end "$target" \

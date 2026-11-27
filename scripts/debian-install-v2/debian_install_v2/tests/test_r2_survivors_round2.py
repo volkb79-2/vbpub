@@ -172,15 +172,12 @@ def test_actions_line_197_refuses_a_short_partuuid(tmp_path: Path) -> None:
 SUBVOLUMES_WITHOUT_NOCOW = {
     "root": "*",
     "reserve_gb": 0,
-    "iobench_raw_gb": False,
     "data": {"kind": "subvolumes", "volumes": [{"name": "@cow", "mount": "/srv/cow"}]},
 }
-# An ext4 root plan with the raw benchmark partition explicitly disabled, so
-# `spec.iobench_raw_gb is None` is the whole story.
-EXT4_NO_RAW_IOBENCH = {
+# An ext4 plan whose layout has no permanent benchmark partition.
+EXT4_EMPTY_DATA_LAYOUT = {
     "root": "*",
     "reserve_gb": 0,
-    "iobench_raw_gb": False,
     "data": {"kind": "none"},
 }
 
@@ -269,55 +266,48 @@ def test_layout_policy_line_476_an_absent_nocow_key_means_copy_on_write() -> Non
     assert spec.data.volumes[0].nocow is False
 
 
-def test_layout_policy_line_664_ext4_without_the_benchmark_needs_no_raw_partition() -> None:
-    """layout_policy.py:664 `if run_io_benchmark and spec.iobench_raw_gb is None`.
-
-    And->Or drops the `run_io_benchmark` half, so an ext4 plan whose raw
-    benchmark partition is disabled (`iobench_raw_gb=false`, hence
-    `spec.iobench_raw_gb is None`) is refused as `ext4_iobench_requires_raw_partition`
-    although nothing asks for an iobench partition. The original accepts that
-    plan; the refusal is asserted for the case that genuinely needs the raw
-    partition so both halves of the condition are pinned.
-    """
+def test_layout_policy_ext4_benchmark_requires_tail_swap_span_policy() -> None:
+    """The ext4 benchmark can run only when the plan has at least one tail swap slot."""
     spec = lp.disk_spec(
-        EXT4_NO_RAW_IOBENCH,
+        EXT4_EMPTY_DATA_LAYOUT,
         root_fs="ext4",
         schema_version=2,
         swap_policy="on",
         swap_partition_count=4,
         run_io_benchmark=False,
     )
-    assert spec.iobench_raw_gb is None
-    with pytest.raises(lp.LayoutPolicyError, match="ext4_iobench_requires_raw_partition"):
+    assert spec.partition_count == 0
+    with pytest.raises(lp.LayoutPolicyError, match="io_benchmark_requires_tail_swap_span"):
         lp.disk_spec(
-            EXT4_NO_RAW_IOBENCH,
+            EXT4_EMPTY_DATA_LAYOUT,
+            root_fs="ext4",
+            schema_version=2,
+            swap_policy="off",
+            swap_partition_count=4,
+            run_io_benchmark=True,
+        )
+    with pytest.raises(lp.LayoutPolicyError, match="io_benchmark_requires_tail_swap_span"):
+        lp.disk_spec(
+            EXT4_EMPTY_DATA_LAYOUT,
             root_fs="ext4",
             schema_version=2,
             swap_policy="on",
-            swap_partition_count=4,
+            swap_partition_count=0,
             run_io_benchmark=True,
         )
 
 
-def test_layout_policy_line_729_an_omitted_run_io_benchmark_leaves_the_benchmark_off() -> None:
-    """layout_policy.py:729 `run_io_benchmark: bool = False` (disk_spec keyword default).
-
-    False->True makes every caller that passes `root_fs` without the keyword
-    look like a benchmark run, and the ext4 contract then refuses the plan
-    (`ext4_iobench_requires_raw_partition`) because no raw partition is
-    reserved. Product callers pass `run_io_benchmark` explicitly
-    (installer.py:2589 `_disk_spec`); plan_preview.py:101 and wizard.py:349
-    omit `root_fs` as well, so this default is observable only through the
-    public signature, which is exactly what this test pins.
-    """
+def test_layout_policy_omitted_benchmark_flag_keeps_the_benchmark_off() -> None:
+    """The host-independent parser must not infer that a benchmark is requested."""
     spec = lp.disk_spec(
-        EXT4_NO_RAW_IOBENCH,
+        EXT4_EMPTY_DATA_LAYOUT,
         root_fs="ext4",
         schema_version=2,
         swap_policy="on",
         swap_partition_count=4,
     )
-    assert spec.iobench_raw_gb is None
+    assert spec.partition_count == 0
+    assert not hasattr(spec, "iobench_raw_gb")
 
 
 def test_actions_line_200_refuses_a_relative_state_directory(
@@ -378,10 +368,9 @@ def _btrfs_report_plan(**overrides) -> dict:
         "new_root_size_sectors": 0,
         "root_shrink_check": "not_applicable",
         "root_policy": "untouched",
-        "partitioning": {"root": "*", "reserve_gb": 0, "iobench_raw_gb": False},
+        "partitioning": {"root": "*", "reserve_gb": 0},
         "data_partitions": [],
         "data_subvolumes": [{"name": "@cow", "mount": "/srv/cow", "nocow": False}],
-        "iobench_partition": None,
         "plan_table": [],
         "swap_policy": "off",
         "swap_total_gb": None,
@@ -403,21 +392,19 @@ def _ext4_report_plan(**overrides) -> dict:
         "new_root_size_sectors": 16777216,
         "root_shrink_check": "not required",
         "root_policy": "resize",
-        "partitioning": {"root": "*", "reserve_gb": 0, "iobench_raw_gb": False},
+        "partitioning": {"root": "*", "reserve_gb": 0},
         "data_partitions": [
             {"device": "/dev/vda4", "start": 0, "sectors": 1, "partlabel": "MDT_COW"},
-            {"device": "/dev/vda5", "start": 0, "sectors": 1, "partlabel": "iobench-raw"},
         ],
         "data_subvolumes": [],
-        "iobench_partition": None,
         "plan_table": [{"entry": "root", "gib": 8.0, "start": 100}],
         "swap_policy": "on",
         "swap_total_gb": 8,
         "swap_retained_before_root_gb": 0.0,
         "swap_after_root_gb": 8.0,
         "swap_partition_count": 4,
-        "swap_partitions": [{"device": "/dev/vda6", "start": 200, "sectors": 524288, "label": "vbpub-swap1"}],
-        "sfdisk_plan": "/dev/vda6 type=0657fd6d start=200 size=524288",
+        "swap_partitions": [{"device": "/dev/vda5", "start": 200, "sectors": 524288, "label": "vbpub-swap1"}],
+        "sfdisk_plan": "/dev/vda5 type=0657fd6d start=200 size=524288",
     }
     plan.update(overrides)
     return plan
@@ -433,7 +420,7 @@ def _report_message(tmp_path: Path, monkeypatch, plan: dict) -> str:
     return installer._initial_report_message()
 
 
-SORTED_PARTITIONING = '{"iobench_raw_gb": false, "reserve_gb": 0, "root": "*"}'
+SORTED_PARTITIONING = '{"reserve_gb": 0, "root": "*"}'
 
 
 def test_installer_line_426_a_btrfs_root_reports_the_retained_iso_layout(
@@ -456,7 +443,7 @@ def test_installer_line_438_btrfs_data_is_reported_instead_of_a_partition_table(
     """installer.py:438 `if plan.get("root_fs") == "btrfs"` (partitioning details).
 
     Eq->NotEq sends a btrfs plan down the ext4 branch, which then announces
-    "Partitioning: ... 0 planned data/raw partition(s)" for a plan that has no
+    "Partitioning: ... 0 planned data-area partition(s)" for a plan that has no
     partition table at all.
     """
     message = _report_message(tmp_path, monkeypatch, _btrfs_report_plan())
@@ -470,8 +457,8 @@ def test_installer_line_440_btrfs_data_json_is_key_sorted(
     """installer.py:440 `json.dumps(plan["partitioning"], sort_keys=True)` (btrfs).
 
     True->False renders the operator's dict in its insertion order
-    (root, reserve_gb, iobench_raw_gb), so two equivalent configs would print
-    differently. The plan's dict is deliberately not in sorted order.
+    (root, reserve_gb), so two equivalent configs would print differently.
+    The plan's dict is deliberately not in sorted order.
     """
     message = _report_message(tmp_path, monkeypatch, _btrfs_report_plan())
     assert SORTED_PARTITIONING in message
@@ -1037,7 +1024,7 @@ def test_installer_line_5397_a_data_kind_none_plan_does_not_configure_a_data_are
     installer = _btrfs_installer(
         tmp_path,
         partitioning={
-            "root": "*", "reserve_gb": 0, "iobench_raw_gb": False,
+            "root": "*", "reserve_gb": 0,
             "data": {"kind": "none"},
         },
     )

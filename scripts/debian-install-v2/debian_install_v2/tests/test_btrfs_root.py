@@ -31,7 +31,6 @@ NOCOW_VOLUME = {"name": "@cow-nocow", "mount": "/srv/cow-nocow", "nocow": True}
 VALID_PARTITIONING = {
     "root": "*",
     "reserve_gb": 0,
-    "iobench_raw_gb": False,
     "data": {"kind": "subvolumes", "volumes": [COW_VOLUME]},
 }
 VALID_BTRFS_CONFIG = {
@@ -230,8 +229,6 @@ def test_zfs_root_is_refused_with_root_fs_unsupported(tmp_path):
             "btrfs_data_kind_unsupported",
         ),
         (2, {**VALID_PARTITIONING, "data": {}}, "off", 0, "btrfs_data_kind_unsupported"),
-        (2, {k: v for k, v in VALID_PARTITIONING.items() if k != "iobench_raw_gb"}, "off", 0,
-         "btrfs_iobench_raw_unavailable"),
         (2, VALID_PARTITIONING, "on", 4, "btrfs_swap_needs_p3"),
         (2, VALID_PARTITIONING, "off", 1, "btrfs_swap_needs_p3"),
     ],
@@ -267,7 +264,7 @@ def test_schema_two_subvolumes_require_btrfs_and_schema_two():
         )
 
 
-def test_ext4_keeps_the_existing_positive_swap_count_and_raw_iobench_contract():
+def test_ext4_keeps_positive_swap_count_and_requires_tail_swap_for_iobench():
     with pytest.raises(layout_policy.LayoutPolicyError, match="ext4_swap_partition_count_required"):
         layout_policy.disk_spec(
             {**VALID_PARTITIONING, "data": {"kind": "none"}},
@@ -276,13 +273,22 @@ def test_ext4_keeps_the_existing_positive_swap_count_and_raw_iobench_contract():
             swap_policy="off",
             swap_partition_count=0,
         )
-    with pytest.raises(layout_policy.LayoutPolicyError, match="ext4_iobench_requires_raw_partition"):
+    with pytest.raises(layout_policy.LayoutPolicyError, match="io_benchmark_requires_tail_swap_span"):
         layout_policy.disk_spec(
             {**VALID_PARTITIONING, "data": {"kind": "none"}},
             root_fs="ext4",
             schema_version=2,
-            swap_policy="on",
+            swap_policy="off",
             swap_partition_count=4,
+            run_io_benchmark=True,
+        )
+    with pytest.raises(layout_policy.LayoutPolicyError, match="io_benchmark_requires_tail_swap_span"):
+        layout_policy.disk_spec(
+            {"root": "*", "reserve_gb": 0, "data": {"kind": "none"}},
+            root_fs="ext4",
+            schema_version=2,
+            swap_policy="on",
+            swap_partition_count=0,
             run_io_benchmark=True,
         )
 
@@ -313,6 +319,44 @@ def test_schema_one_still_loads_and_means_ext4():
         )
 
 
+@pytest.mark.parametrize("partitioning", [
+    {"root": "*", "reserve_gb": 0},
+    {"root": "*", "reserve_gb": 0, "iobench_raw_gb": False},
+])
+def test_btrfs_install_benchmark_request_is_accepted_but_stage_two_skips_it(
+    tmp_path, monkeypatch, partitioning,
+):
+    spec = layout_policy.disk_spec(
+        partitioning,
+        root_fs="btrfs",
+        schema_version=2,
+        swap_policy="off",
+        swap_partition_count=0,
+        run_io_benchmark=True,
+    )
+    assert spec.partition_count == 0
+
+    installer = _btrfs_installer(
+        tmp_path,
+        partitioning=partitioning,
+        config_overrides={"run_io_benchmark": True},
+    )
+    installer._validate_root_config()
+    # The other stage-two steps write real host paths; only the benchmark step is under test.
+    for name in (
+        "_configure_control_plane_memory_min", "_packages", "_configure_zswap",
+        "_configure_cgroup2_flags", "_configure_ksm", "_configure_oomd",
+        "_configure_fstrim", "_configure_auto_reboot", "_configure_iocost",
+        "_configure_data_area", "_health_gate_swap_devices",
+        "_verify_control_plane_memory_min", "_run_cpu_benchmark",
+        "_release_apt_timers", "_cleanup_cloud_init_cache",
+    ):
+        monkeypatch.setattr(installer, name, lambda *args, **kwargs: None)
+    installer._stage2()
+    assert installer.state.data["steps"]["io_benchmark"]["status"] == "skipped"
+    assert "iobench_raw_unavailable_on_btrfs" in installer.state.data["steps"]["io_benchmark"]["detail"]
+
+
 def test_schema_two_btrfs_subvolume_config_loads_and_is_accepted():
     config = load_config(raw_json=json.dumps(VALID_BTRFS_CONFIG))
     spec = layout_policy.disk_spec(
@@ -326,13 +370,13 @@ def test_schema_two_btrfs_subvolume_config_loads_and_is_accepted():
     assert spec.data.kind == "subvolumes"
     assert spec.data.volumes[0].name == "@cow"
     assert spec.data.volumes[0].nocow is False
-    assert spec.iobench_raw_gb is None
+    assert spec.partition_count == 0
     assert layout_policy.data_area_packages(spec.data) == ["btrfs-progs"]
 
 
 def test_data_none_is_accepted_on_btrfs():
     partitioning = {
-        "root": "*", "reserve_gb": 0, "iobench_raw_gb": False,
+        "root": "*", "reserve_gb": 0,
         "data": {"kind": "none"},
     }
     spec = layout_policy.disk_spec(
@@ -791,7 +835,7 @@ def test_btrfs_iocost_ignores_a_stale_benchmark_file_and_names_the_skip(tmp_path
     step = installer.state.data["steps"]["iocost"]
     assert step["status"] == "skipped"
     assert "iocost_not_configured_btrfs" in step["detail"]
-    assert "Q-A" in step["detail"]
+    assert "install-time benchmark import on a btrfs root is pending" in step["detail"]
     assert actions.planned[0].argv == (
         "/usr/bin/systemctl", "disable", "vbpub-iocost.service",
     )

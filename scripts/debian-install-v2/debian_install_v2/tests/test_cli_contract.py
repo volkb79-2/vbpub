@@ -121,12 +121,12 @@ def test_plan_cli_resolves_a_disk_size_without_host_inspection(capsys):
     assert "Resolved plan table (GiB):" in output
     assert "  3  root" in output and "1.19" in output
     assert "  4  data" in output
-    assert "MDT_COW" in output and "iobench-raw" in output and "swap" in output
+    assert "MDT_COW" in output and "swap" in output and "iobench-raw" not in output
 
 
 def test_plan_refusal_shows_the_resolvable_gib_table(capsys):
     config = {
-        "partitioning": {"root": 5, "iobench_raw_gb": False, "data": {
+        "partitioning": {"root": 5, "data": {
             "kind": "partitions", "volumes": [
                 {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
             ],

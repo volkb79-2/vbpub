@@ -64,7 +64,7 @@ def test_io_benchmark_defaults():
     config = Config()
     assert config.run_io_benchmark is False
     assert config.partitioning == {}
-    assert layout_policy.disk_spec(config.partitioning).iobench_raw_gb == 8
+    assert layout_policy.disk_spec(config.partitioning).partition_count == 0
 
 
 @pytest.mark.parametrize("key", ["io_benchmark_duration_s", "io_benchmark_max_size_gb"])
