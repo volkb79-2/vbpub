@@ -186,6 +186,7 @@ def test_lease_grant_bind_ack_and_reconnect_hold_the_admission_handle(tmp_path):
     service, identity, facts = _lease_service(
         tmp_path, lambda target: inspections.append(target) or InspectorAnswer.NO_SUCH_OBJECT,
     )
+    assert "lease" in service.handle({"verb": "probe"}, identity).document["capabilities"]
     initial_request = {
         "verb": "lease", "lease_id": lease_id, "container_name": "rg-test",
         "footprint": "tiny", "planned_cores": 1, "priority": "gate",
@@ -549,6 +550,25 @@ def test_progress_caps_each_range_and_reports_the_next_offset(tmp_path):
         assert reply.body_length == MAX_FETCH_BYTES
     finally:
         reply.close()
+
+
+def test_missing_command_progress_returns_an_empty_range(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    job_dir = _job(service, identity)
+    checkout = job_dir / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.toml").write_text(
+        '[lanes."r0-r1"]\nkind = "command"\n', encoding="utf-8",
+    )
+
+    reply = service.handle({
+        "verb": "progress", "job_id": "controller-run-1", "offset": 9,
+    }, identity)
+
+    assert reply.document["offset"] == 9
+    assert reply.document["next_offset"] == 9
+    assert reply.document["length"] == 0
+    assert reply.document["unit"] == "log_bytes"
 
 
 def test_terminal_status_uses_only_durable_record_and_cancel_refuses(tmp_path):

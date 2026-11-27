@@ -13,6 +13,7 @@ from fleetd.agent_protocol import (
     MAX_FRAME_BYTES,
     FrameError,
     read_frame,
+    require_end_of_input,
     validate_relative_path,
     validate_request,
     write_frame,
@@ -226,6 +227,61 @@ def test_read_frame_drops_an_idle_stream_without_waiting(monkeypatch):
 def test_read_frame_rejects_invalid_idle_deadlines(timeout):
     with pytest.raises(FrameError, match="idle timeout"):
         read_frame(0, timeout)
+
+
+@pytest.mark.parametrize(
+    "timeout", [0, -1, True, float("inf"), 10 ** 10000],
+    ids=["zero", "negative", "bool", "infinite", "float-overflow"],
+)
+def test_require_end_of_input_rejects_invalid_deadlines(timeout):
+    with pytest.raises(FrameError, match="idle timeout"):
+        require_end_of_input(object(), timeout)
+
+
+def test_require_end_of_input_rejects_invalid_descriptors_and_wait_failures(monkeypatch):
+    class InvalidDescriptor:
+        def fileno(self):
+            return -1
+
+    with pytest.raises(FrameError, match="file descriptor"):
+        require_end_of_input(InvalidDescriptor(), 1)
+    with pytest.raises(FrameError, match="expose a file descriptor"):
+        require_end_of_input(object(), 1)
+
+    client, server = socket.socketpair()
+    try:
+        monkeypatch.setattr("fleetd.agent_protocol.select.select", lambda *_args: ([], [], []))
+        with pytest.raises(FrameError, match="before request end"):
+            require_end_of_input(server, 1)
+
+        def failed_select(*_args):
+            raise OSError("select failed")
+
+        monkeypatch.setattr("fleetd.agent_protocol.select.select", failed_select)
+        with pytest.raises(FrameError, match="cannot wait for request end"):
+            require_end_of_input(server, 1)
+    finally:
+        client.close()
+        server.close()
+
+
+def test_require_end_of_input_maps_read_errors(monkeypatch):
+    client, server = socket.socketpair()
+    try:
+        monkeypatch.setattr(
+            "fleetd.agent_protocol.select.select",
+            lambda readers, _writers, _errors, _timeout: (readers, [], []),
+        )
+
+        def failed_read(*_args):
+            raise OSError("read failed")
+
+        monkeypatch.setattr("fleetd.agent_protocol.os.read", failed_read)
+        with pytest.raises(FrameError, match="cannot read request end"):
+            require_end_of_input(server, 1)
+    finally:
+        client.close()
+        server.close()
 
 
 def test_write_frame_refuses_oversized_or_invalid_responses():

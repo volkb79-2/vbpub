@@ -1,4 +1,5 @@
 import os
+import hashlib
 import select
 import socket
 import threading
@@ -310,6 +311,27 @@ def test_server_rejects_data_after_one_ordinary_request(tmp_path):
 
     assert result == ExitCode.IDENTITY_OR_TRANSPORT
     assert response["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    server_socket.close()
+    client_socket.close()
+
+
+def test_server_reads_put_body_before_accepting_request_eof(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    client_socket, server_socket = socket.socketpair()
+    content = b"candidate bytes"
+    write_frame(client_socket, {
+        "verb": "put", "name": "candidates", "sha256": hashlib.sha256(content).hexdigest(),
+        "bytes": len(content),
+    })
+    client_socket.sendall(content)
+    client_socket.shutdown(socket.SHUT_WR)
+
+    result = serve_connection(server_socket, server_socket, service, service.policy, identity)
+    response = read_frame(client_socket, None)
+
+    assert result == ExitCode.PASS
+    assert response["name"] == "candidates"
+    assert response["bytes"] == len(content)
     server_socket.close()
     client_socket.close()
 
