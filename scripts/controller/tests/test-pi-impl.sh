@@ -322,12 +322,13 @@ last_prompt_element() {
 # trailing newline is part of that) and then carry the paragraph -- never a
 # rewritten or re-wrapped brief.
 prompt_starts_with() {
-  local prompt_file=$1 description=$2 text
+  local prompt_file=$1 description=$2 text brief=''
   argv_elements
   text=${ARGV[${#ARGV[@]}-1]}
-  # A file read with `< ` keeps its trailing newline; the comparison is
-  # literal, so nothing here is a pattern match.
-  if [[ $text != "$(<"$prompt_file")"$'\n'* ]]; then
+  # `read -d ''` keeps the file's trailing newlines (`$(<file)` strips them);
+  # the quoted operand is compared literally, so only the final `*` is a pattern.
+  IFS= read -r -d '' brief < "$prompt_file" || :
+  if [[ -z $brief || $text != "$brief"$'\n'* ]]; then
     fail "$description (prompt did not start with the brief: $(printf '%s' "$text" | head -c 120))"
   fi
 }
