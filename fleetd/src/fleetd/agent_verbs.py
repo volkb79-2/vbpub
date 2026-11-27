@@ -418,7 +418,13 @@ class AgentVerbService:
                 ) from exc
             locked = False
             try:
-                info = os.fstat(fd)
+                try:
+                    info = os.fstat(fd)
+                except OSError as exc:
+                    raise self._upload_recovery_refusal(
+                        owner_name,
+                        f"cannot establish owner absence because the lock cannot be inspected ({exc}); check owner-lock permissions and active upload processes",
+                    ) from exc
                 if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
                     raise self._upload_recovery_refusal(
                         owner_name,
@@ -481,10 +487,20 @@ class AgentVerbService:
                         self._remove_upload_metadata(metadata_name)
                     except AdmissionError as exc:
                         raise self._upload_recovery_refusal(metadata_name, str(exc)) from exc
+                    except OSError as exc:
+                        raise self._upload_recovery_refusal(
+                            metadata_name,
+                            f"reservation artifact cleanup failed ({exc}); check the incoming directory",
+                        ) from exc
                 try:
                     self._remove_upload_partial(partial_name)
                 except AdmissionError as exc:
                     raise self._upload_recovery_refusal(partial_name, str(exc)) from exc
+                except OSError as exc:
+                    raise self._upload_recovery_refusal(
+                        partial_name,
+                        f"partial cleanup failed ({exc}); check the incoming directory",
+                    ) from exc
                 self._fsync_directory(self.paths.incoming_dir)
                 try:
                     current = owner_path.lstat()

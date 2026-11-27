@@ -1121,6 +1121,20 @@ def test_put_refuses_reservation_without_owner_lock(tmp_path):
     assert partial.read_bytes() == b"unowned partial"
 
 
+def test_put_refuses_temporary_record_without_owner_lock(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    temporary = service.paths.incoming_dir / ".upload-reservation-token.tmp"
+    temporary.write_bytes(b"unfinished")
+
+    with pytest.raises(AdmissionError, match="owner lock .* is missing") as missing:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert missing.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert temporary.name in str(missing.value)
+    assert temporary.read_bytes() == b"unfinished"
+
+
 def test_put_refuses_duplicate_upload_artifact_listing(tmp_path, monkeypatch):
     service, identity, _checkout = _service(tmp_path)
     _upload_policy(service, store_bytes=100, floors={"checkout": 0})
@@ -1141,6 +1155,199 @@ def test_put_refuses_duplicate_upload_artifact_listing(tmp_path, monkeypatch):
     assert duplicate.value.exit_code == ExitCode.RUNNER_FAILURE
     assert ".upload-owner-token.lock" in str(duplicate.value)
     assert incoming.is_dir()
+
+
+def test_put_ignores_unrelated_incoming_file(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    unrelated = service.paths.incoming_dir / "operator-note"
+    unrelated.write_bytes(b"preserve")
+
+    reply = _direct_put(service, identity, "candidates", b"new")
+
+    assert Path(reply["path"]).read_bytes() == b"new"
+    assert unrelated.read_bytes() == b"preserve"
+
+
+def test_put_refuses_dead_symlink_reservation_artifact_without_following_it(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    owner = _write_upload_owner_lock(service, "token")
+    outside = tmp_path / "outside-record"
+    outside.write_bytes(b"must stay")
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    reservation.symlink_to(outside)
+
+    with pytest.raises(AdmissionError, match="not a regular file") as linked:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert linked.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert reservation.name in str(linked.value)
+    assert outside.read_bytes() == b"must stay"
+    assert owner.exists()
+
+
+def test_put_maps_orphan_partial_cleanup_error_by_filename(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    partial = service.paths.incoming_dir / "upload-part-orphan"
+    partial.write_bytes(b"orphan")
+    real_unlink = os.unlink
+
+    def refuse_partial_unlink(path, *args, **kwargs):
+        if Path(path) == partial:
+            raise PermissionError("partial removal refused")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "unlink", refuse_partial_unlink)
+    with pytest.raises(AdmissionError, match="partial cleanup failed") as failure:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert failure.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert partial.name in str(failure.value)
+    assert "check the named files" in str(failure.value)
+    assert partial.read_bytes() == b"orphan"
+
+
+def test_put_refuses_orphan_symlink_partial_without_following_it(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    outside = tmp_path / "outside-orphan-partial"
+    outside.write_bytes(b"preserve")
+    partial = service.paths.incoming_dir / "upload-part-orphan"
+    partial.symlink_to(outside)
+
+    with pytest.raises(AdmissionError, match="not a regular file") as linked:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert linked.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert partial.name in str(linked.value)
+    assert "check the named files" in str(linked.value)
+    assert outside.read_bytes() == b"preserve"
+
+
+def test_put_maps_dead_owner_cleanup_error_and_recovers_on_retry(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    owner = _write_upload_owner_lock(service, "token")
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    partial = service.paths.incoming_dir / "upload-part-token"
+    reservation.write_bytes(b"torn")
+    partial.write_bytes(b"dead bytes")
+    real_unlink = os.unlink
+
+    def refuse_owner_unlink(path, *args, **kwargs):
+        if Path(path) == owner:
+            raise PermissionError("owner lock cleanup refused")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "unlink", refuse_owner_unlink)
+    with pytest.raises(AdmissionError, match="cleanup or owner-state inspection failed") as failure:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert failure.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert owner.name in str(failure.value)
+    assert "check the incoming directory" in str(failure.value)
+    assert owner.exists()
+    assert not reservation.exists()
+    assert not partial.exists()
+    monkeypatch.undo()
+
+    reply = _direct_put(service, identity, "candidates", b"new")
+    assert Path(reply["path"]).read_bytes() == b"new"
+    assert not owner.exists()
+
+
+@pytest.mark.parametrize("cleanup_kind", ["metadata", "partial"])
+def test_put_names_dead_reservation_cleanup_errors_by_artifact(tmp_path, monkeypatch, cleanup_kind):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    owner = _write_upload_owner_lock(service, "token")
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    partial = service.paths.incoming_dir / "upload-part-token"
+    reservation.write_bytes(b"torn")
+    partial.write_bytes(b"dead bytes")
+    real_unlink = os.unlink
+    target = reservation if cleanup_kind == "metadata" else partial
+
+    def fail_cleanup(path, *args, **kwargs):
+        if Path(path) == target:
+            raise PermissionError(f"{cleanup_kind} cleanup failed")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "unlink", fail_cleanup)
+    with pytest.raises(AdmissionError, match=f"{cleanup_kind if cleanup_kind == 'metadata' else 'partial'} cleanup failed") as failure:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert failure.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert target.name in str(failure.value)
+    assert "check the named files" in str(failure.value)
+    assert owner.exists()
+    monkeypatch.undo()
+
+    reply = _direct_put(service, identity, "candidates", b"new")
+    assert Path(reply["path"]).read_bytes() == b"new"
+    assert not owner.exists()
+    assert not reservation.exists()
+    assert not partial.exists()
+
+
+def test_put_refuses_owner_path_replaced_during_dead_recovery(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    owner = _write_upload_owner_lock(service, "token")
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    reservation.write_bytes(b"torn")
+    real_lstat = Path.lstat
+
+    def report_changed_owner(path):
+        info = real_lstat(path)
+        if path == owner:
+            return SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino + 1)
+        return info
+
+    monkeypatch.setattr(Path, "lstat", report_changed_owner)
+    with pytest.raises(AdmissionError, match="owner lock changed before cleanup") as changed:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert changed.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert owner.name in str(changed.value)
+    assert owner.exists()
+    assert not reservation.exists()
+    monkeypatch.undo()
+
+    reply = _direct_put(service, identity, "candidates", b"new")
+    assert Path(reply["path"]).read_bytes() == b"new"
+    assert not owner.exists()
+
+
+def test_put_names_owner_path_inspection_failure_during_dead_recovery(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    owner = _write_upload_owner_lock(service, "token")
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    reservation.write_bytes(b"torn")
+    real_lstat = Path.lstat
+
+    def fail_owner_lstat(path):
+        if path == owner:
+            raise PermissionError("owner path stat failed")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", fail_owner_lstat)
+    with pytest.raises(AdmissionError, match="owner lock changed before cleanup") as failure:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert failure.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert owner.name in str(failure.value)
+    assert "owner path stat failed" in str(failure.value)
+    assert owner.exists()
+    assert not reservation.exists()
+    monkeypatch.undo()
+
+    reply = _direct_put(service, identity, "candidates", b"new")
+    assert Path(reply["path"]).read_bytes() == b"new"
+    assert not owner.exists()
 
 
 def test_put_reaps_orphan_partials_and_maps_reservation_scan_failures(tmp_path, monkeypatch):
@@ -1286,7 +1493,7 @@ def test_put_preserves_partial_owned_by_live_reservation(tmp_path):
         os.close(owner_fd)
 
 
-@pytest.mark.parametrize("live_state", ["missing-record", "temporary-record", "missing-partial"])
+@pytest.mark.parametrize("live_state", ["missing-record", "temporary-record", "missing-partial", "symlink-partial"])
 def test_put_names_inconsistent_live_reservation_artifacts(tmp_path, live_state):
     service, identity, _checkout = _service(tmp_path)
     _upload_policy(service, store_bytes=100, floors={"checkout": 0})
@@ -1305,6 +1512,13 @@ def test_put_names_inconsistent_live_reservation_artifacts(tmp_path, live_state)
         reservation.write_text(json.dumps(_upload_reservation_record("live")), encoding="utf-8")
         expected_reason = "live reservation partial cannot be inspected"
         offending = partial.name
+    elif live_state == "symlink-partial":
+        reservation.write_text(json.dumps(_upload_reservation_record("live")), encoding="utf-8")
+        outside = tmp_path / "live-outside-partial"
+        outside.write_bytes(b"live bytes")
+        partial.symlink_to(outside)
+        expected_reason = "live reservation partial is not a regular file"
+        offending = partial.name
     else:
         partial.write_bytes(b"live bytes")
         expected_reason = "owner lock is held without its durable reservation record"
@@ -1320,6 +1534,8 @@ def test_put_names_inconsistent_live_reservation_artifacts(tmp_path, live_state)
             assert partial.read_bytes() == b"live bytes"
         if temporary_record.exists():
             assert temporary_record.read_bytes() == b"unfinished record"
+        if live_state == "symlink-partial":
+            assert outside.read_bytes() == b"live bytes"
     finally:
         agent_verbs.fcntl.flock(owner_fd, agent_verbs.fcntl.LOCK_UN)
         os.close(owner_fd)
@@ -1375,6 +1591,68 @@ def test_put_refuses_unsafe_upload_owner_lock_files(tmp_path, owner_state):
     assert "check" in str(unsafe.value)
     if owner_state == "symlink":
         assert outside.read_bytes() == b"outside"
+
+
+def test_put_refuses_owner_lock_reported_as_non_regular(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    owner = _write_upload_owner_lock(service, "token")
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    reservation.write_bytes(b"torn")
+    owner_fds = set()
+    real_open = os.open
+    real_fstat = os.fstat
+
+    def capture_owner_fd(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if Path(path) == owner:
+            owner_fds.add(fd)
+        return fd
+
+    def report_directory_for_owner(fd):
+        if fd in owner_fds:
+            return SimpleNamespace(st_mode=agent_verbs.stat.S_IFDIR)
+        return real_fstat(fd)
+
+    monkeypatch.setattr(agent_verbs.os, "open", capture_owner_fd)
+    monkeypatch.setattr(agent_verbs.os, "fstat", report_directory_for_owner)
+    with pytest.raises(AdmissionError, match="owner lock is not a private regular file") as unsafe:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert unsafe.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert owner.name in str(unsafe.value)
+    assert reservation.read_bytes() == b"torn"
+
+
+def test_put_refuses_owner_lock_fstat_failure_by_name(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    owner = _write_upload_owner_lock(service, "token")
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    reservation.write_bytes(b"torn")
+    owner_fds = set()
+    real_open = os.open
+    real_fstat = os.fstat
+
+    def capture_owner_fd(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if Path(path) == owner:
+            owner_fds.add(fd)
+        return fd
+
+    def fail_owner_fstat(fd):
+        if fd in owner_fds:
+            raise OSError("owner stat refused")
+        return real_fstat(fd)
+
+    monkeypatch.setattr(agent_verbs.os, "open", capture_owner_fd)
+    monkeypatch.setattr(agent_verbs.os, "fstat", fail_owner_fstat)
+    with pytest.raises(AdmissionError, match="cannot establish owner absence because the lock cannot be inspected") as failed:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+
+    assert failed.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert owner.name in str(failed.value)
+    assert reservation.read_bytes() == b"torn"
 
 
 @pytest.mark.parametrize("seam", ["before-write", "before-rename", "after-rename"])
@@ -1674,6 +1952,7 @@ def test_put_reservation_setup_tolerates_partial_cleanup_races(tmp_path, monkeyp
         if candidate.parent == service.paths.incoming_dir and (
             candidate.name.startswith("upload-part-")
             or candidate.name.startswith(".upload-reservation-")
+            or candidate.name.startswith(".upload-owner-")
         ):
             real_unlink(path, *args, **kwargs)
             removed.append(candidate.name)
@@ -1699,6 +1978,60 @@ def test_put_reservation_setup_tolerates_partial_cleanup_races(tmp_path, monkeyp
     assert any(name.startswith("upload-part-") for name in removed)
     assert any(name.startswith(".upload-reservation-") for name in removed)
     assert list(service.paths.incoming_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("cleanup_kind", ["partial", "metadata", "owner"])
+def test_put_setup_cleanup_errors_leave_recoverable_owner_state(tmp_path, monkeypatch, cleanup_kind):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+
+    def fail_record_write(*_args):
+        raise OSError("injected setup write failure")
+
+    monkeypatch.setattr(service, "_write_upload_reservation", fail_record_write)
+    if cleanup_kind == "partial":
+        real_unlink = os.unlink
+
+        def fail_partial_cleanup(path, *args, **kwargs):
+            if Path(path).parent == service.paths.incoming_dir and Path(path).name.startswith("upload-part-"):
+                raise PermissionError("partial cleanup failed")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(agent_verbs.os, "unlink", fail_partial_cleanup)
+    elif cleanup_kind == "metadata":
+        real_unlink = os.unlink
+
+        def fail_metadata_cleanup(path, *args, **kwargs):
+            if Path(path).parent == service.paths.incoming_dir and Path(path).name.endswith(".tmp"):
+                raise PermissionError("metadata cleanup failed")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(agent_verbs.os, "unlink", fail_metadata_cleanup)
+    else:
+        monkeypatch.setattr(
+            service, "_remove_upload_owner",
+            lambda *_args: (_ for _ in ()).throw(OSError("owner cleanup failed")),
+        )
+
+    with pytest.raises(AdmissionError, match="cannot store put body") as failure:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert failure.value.exit_code == ExitCode.RUNNER_FAILURE
+    artifacts = [path.name for path in service.paths.incoming_dir.iterdir()]
+    assert any(name.startswith(".upload-owner-") for name in artifacts)
+    if cleanup_kind == "partial":
+        assert any(name.startswith("upload-part-") for name in artifacts)
+    elif cleanup_kind == "metadata":
+        assert any(name.endswith(".tmp") for name in artifacts)
+    else:
+        assert not any(name.startswith(("upload-part-", ".upload-reservation-")) for name in artifacts)
+
+    monkeypatch.undo()
+    reply = _direct_put(service, identity, "candidates", b"new")
+    assert Path(reply["path"]).read_bytes() == b"new"
+    assert not [
+        path.name for path in service.paths.incoming_dir.iterdir()
+        if path.name.startswith((".upload-owner-", ".upload-reservation-", "upload-part-"))
+    ]
 
 
 def test_put_discard_and_release_are_idempotent_when_reservation_was_removed(tmp_path):
