@@ -2432,7 +2432,8 @@ check_mode_claimed_name_reread() {
   mkdir -p "$race_dir" "$runs/session-modes"
   src_dir=$(dirname -- "$SRC")
   for sibling in lib.sh opendesign-accounts.py continue-empty-completion.md \
-    implementer-prompt-rules.md review-prompt-rules.md pi-review-argv; do
+    implementer-prompt-rules.md review-prompt-rules.md pi-review-argv \
+    pi-pidns-bash pi-pidns-extension.js; do
     cp -- "$src_dir/$sibling" "$race_dir/$sibling"
   done
   cp -a -- "$src_dir/pi-shims" "$race_dir/pi-shims"
