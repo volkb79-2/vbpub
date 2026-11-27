@@ -711,6 +711,33 @@ class ShellKitTests(F.ShellKitBase):
         self.assertIn("restore=ok", man)
         self.assertEqual(man.count("restore=ok"), 1, "accept-restore.sh writes restore=ok; finish never states it twice")
 
+    def test_warmup_uses_its_own_tick_count_and_records_the_ticks_that_ran(self) -> None:
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="12", MDT_ACCEPT_WARMUP_TICKS="4",
+                         **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = list(csv.DictReader((self.ev / "samples.csv").open()))
+        self.assertEqual(sum(row["phase"] == "warmup" for row in rows), 4, "the warm-up is not the settle window")
+        manifest = (self.ev / "manifest.env").read_text()
+        self.assertIn("warmup=0\n", manifest, "the interval-zero test run records no elapsed warm-up seconds")
+        self.assertIn("warmup_ticks=4\n", manifest, "the manifest records the four warm-up ticks that ran")
+
+    def test_dummy_deadline_is_twice_the_computed_nominal_run_budget(self) -> None:
+        r = self.run_kit("--steps", "2", "--dwell", "300", "--warmup", "0", ticks="12",
+                         **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        fields = dict(line.split("=", 1) for line in (self.ev / "manifest.env").read_text().splitlines() if "=" in line)
+        nominal = int(fields["warmup"]) + (int(fields["squeeze_step"]) + 2) * int(fields["squeeze_dwell"])
+        self.assertEqual(int(fields["dummy_deadline_s"]), 2 * nominal)
+
+    def test_control_pass_abort_is_recorded_as_info_and_keeps_a_ladder_pass(self) -> None:
+        # A 3-tick total lets step 0 finish (settle + judge) and aborts the first INFO-only control tick.
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="3", **self.judge_env("PASS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.judge_steps(), ["0"])
+        manifest = (self.ev / "manifest.env").read_text()
+        self.assertIn("squeeze_verdict=PASS\n", manifest)
+        self.assertIn("control_pass=aborted:INCONCLUSIVE:ticks\n", manifest)
+
     def test_dockerd_probe_requires_success_and_a_version_shaped_stdout(self) -> None:
         body = r'''if [ "$1" = info ] && [ "$3" = "{{.DockerRootDir}}" ]; then
   echo "$FAKE_DOCKER_ROOT"; exit 0

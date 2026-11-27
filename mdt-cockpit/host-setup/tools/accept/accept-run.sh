@@ -6,7 +6,7 @@
 #   accept-run.sh --evidence DIR [--steps N] [--step SIZE] [--dwell S] [--warmup S] [--probe-image REF]
 #                  [--control auto|on|off]
 # Exit 0 PASS, 1 FAIL (step 0 failed), 4 INCONCLUSIVE, 3 refused, 2 usage.
-# Test hooks (env): MDT_ACCEPT_{CGROUP,PROC,HOST_ENV,BOOT_ID,INTERVAL,DWELL_TICKS,SETTLE_TICKS,MAX_TICKS,UNITS,
+# Test hooks (env): MDT_ACCEPT_{CGROUP,PROC,HOST_ENV,BOOT_ID,INTERVAL,DWELL_TICKS,SETTLE_TICKS,WARMUP_TICKS,MAX_TICKS,UNITS,
 # PAGESIZE,LOCK,MIN_DISK,SQUEEZE_STATE,HOTSET,HOTSET_JSON,HOTSET_EVERY,DAMON,DAMON_STAT,JUDGE,SSH_TARGET,EXTRA_UNITS,
 # PROBE_IMAGE,PROBE_CMD_<NAME>,PROBE_TIMEOUT,PROBE_TIMEOUT_<NAME>,POLL_STEP,GROW_TRIES,PSI_HOLD,RESTORE_TIMEOUT,
 # RM_TIMEOUT,SYSTEMCTL_TIMEOUT,GUARD_EVERY,MIN_EVID_DISK,SSHD_BANNER_CMD}.
@@ -91,6 +91,16 @@ case "$STEPS$DWELL$WARMUP$INTERVAL" in ''|*[!0-9]*) usage ;; esac
 case "$STEP$PSI_HOLD$GROW_TRIES" in ''|*[!0-9]*) usage ;; esac
 case "$SYSTEMCTL_TIMEOUT" in ''|0*|*[!0-9]*) usage ;; esac
 case "$CONTROL" in auto|on|off) ;; *) usage ;; esac
+if [ -n "${MDT_ACCEPT_WARMUP_TICKS:-}" ]; then
+  case $MDT_ACCEPT_WARMUP_TICKS in *[!0-9]*) usage ;; esac
+  WARMUP_TICKS=$MDT_ACCEPT_WARMUP_TICKS
+elif [ "$INTERVAL" = 0 ]; then
+  [ "$WARMUP" = 0 ] || { echo "accept-run: a tick-driven run with --warmup > 0 needs MDT_ACCEPT_WARMUP_TICKS; refusing" >&2; exit 3; }
+  WARMUP_TICKS=0
+else
+  WARMUP_TICKS=$(( (WARMUP + INTERVAL - 1) / INTERVAL ))
+fi
+WARMUP_RUN_SECONDS=$((WARMUP_TICKS * INTERVAL))
 role=$(sed -n 's/^HOST_ROLE=//p' "$HOSTENV" 2>/dev/null | tail -n 1 | tr -d "\"' ")
 if [ "$role" != dedicated-dev ]; then echo "accept-run: HOST_ROLE=${role:-<unset>} in $HOSTENV, not dedicated-dev; refusing" >&2; exit 3; fi
 # Environment refusals must happen before the lock, evidence directory, stale
@@ -307,7 +317,8 @@ trap finish EXIT; trap 'EXIT_RC=130; exit 130' INT; trap 'EXIT_RC=143; exit 143'
 # ---------- the evidence header ----------
 {
   echo "host=$(hostname)"; echo "start_utc=$START_UTC"; echo "kit_version=2"; echo "pid=$$"; echo "interval=$INTERVAL"
-  echo "squeeze_step=$STEPS"; echo "squeeze_dwell=$DWELL"; echo "step_bytes=$STEP"; echo "warmup=$WARMUP"
+  echo "squeeze_step=$STEPS"; echo "squeeze_dwell=$DWELL"; echo "step_bytes=$STEP"
+  echo "warmup=$WARMUP_RUN_SECONDS"; echo "warmup_ticks=$WARMUP_TICKS"
   echo "k_tested=$K0"; echo "floors_installed=$F_INSTALLED"
   echo "floors_snapshot=system.slice=$F_SYSTEM cgprofile.slice=$F_CGP user.slice=$F_USER"
   echo "limit_source=derived"; echo "probe_image=$IMAGE"; echo "damon_stat_enabled=$DAMON_STATE"
@@ -364,8 +375,10 @@ D0=${D0:-0}
 A0=$((DEV_MAX_START - D0 - 64 * MIB))
 [ "$A0" -lt $((256 * MIB)) ] && A0=$((256 * MIB))
 DEEPEST=$((DEV_MAX_START + STEPS * STEP))
-dummy_deadline=$((WARMUP + (STEPS + 2) * DWELL + 600)) # a safety cap only: step 0, the control pass and slack are in it
+dummy_budget=$((WARMUP_RUN_SECONDS + (STEPS + 2) * DWELL)) # warm-up, every ladder step, and the control pass
+dummy_deadline=$((2 * dummy_budget)) # twice the computed nominal run budget; finish() removes it first
 echo "dummy_a0=$A0" >>"$MAN"; echo "dummy_d0=$D0" >>"$MAN"; echo "dummy_deepest_ceiling=$DEEPEST" >>"$MAN"
+echo "dummy_deadline_s=$dummy_deadline" >>"$MAN"
 printf 'container=%s\nboot_id=%s\npid=%s\nstarted_utc=%s\nk_tested=%s\ndev_orig=%s\n' \
   "$DUMMY" "$BOOT_ID" "$$" "$START_UTC" "$K0" "$DEV_MAX_START" >>"$STATE" || {
   # M3: no cgroup write without its write-ahead record. hotset setup already WAL-recorded kdamond= and the traps are
@@ -826,7 +839,7 @@ fi
 [ "$SETTLE_TICKS" -ge "$DWELL_TICKS" ] && SETTLE_TICKS=$((DWELL_TICKS - 1))
 [ "$SETTLE_TICKS" -lt 0 ] && SETTLE_TICKS=0
 JUDGED_TICKS=$((DWELL_TICKS - SETTLE_TICKS)); [ "$JUDGED_TICKS" -lt 1 ] && JUDGED_TICKS=1
-dwell warmup 0 "$SETTLE_TICKS" 0 || step_mark 0
+dwell warmup 0 "$WARMUP_TICKS" 0 || step_mark 0
 for s in $(seq 0 "$STEPS"); do
   [ -n "$ABORT" ] && break
   if [ "$s" -gt 0 ]; then # step 0 writes nothing: it is the read of the live configuration
@@ -848,13 +861,21 @@ for s in $(seq 0 "$STEPS"); do
 done
 # the DAMON-off control pass (9 risk 3): one dwell at the ceilings in force (the deepest step actually taken),
 # with the kdamond off. INFO only, never judged; the hard criteria keep the DAMON-on numbers.
+CONTROL_RESULT=not_run
 if [ "$CONTROL" != off ] && [ "${DAMON_OK:-1}" = 1 ] && [ -n "$KDM" ] && [ -z "$ABORT" ] && [ -n "$LAST_PASS_STEP" ]; then
   say "the DAMON-off control pass (INFO only)"
   if hotset off >/dev/null 2>&1; then
-    dwell control "$LAST_PASS_STEP" "$SETTLE_TICKS" "$JUDGED_TICKS" || note "the control pass was aborted by a guard"
-    hotset on >/dev/null 2>&1 || note "the kdamond could not be switched back on"
+    if dwell control "$LAST_PASS_STEP" "$SETTLE_TICKS" "$JUDGED_TICKS"; then
+      CONTROL_RESULT=complete
+    else
+      CONTROL_RESULT="aborted:${ABORT_VERDICT:-unknown}:${ABORT_CAUSE:-unknown}"
+      note "the control pass was aborted by a guard (INFO only): ${ABORT_CAUSE:-unknown}"
+      ABORT=""; ABORT_VERDICT=""; ABORT_CAUSE=""
+    fi
+    hotset on >/dev/null 2>&1 || { note "the kdamond could not be switched back on"; CONTROL_RESULT="${CONTROL_RESULT}:damon_on_failed"; }
   else
     note "the kdamond could not be switched off; the control pass is skipped"
+    CONTROL_RESULT=skipped:damon_off_failed
   fi
 fi
 # ---------- the run's verdict (3.5): PASS iff a step passed and the floors/M are derivable; FAIL iff step 0 failed ----------
@@ -863,6 +884,7 @@ if [ "$FIRST_FAIL_STEP" = 0 ]; then VERDICT=FAIL; VERDICT_RC=1
 elif [ "$ABORT_VERDICT" = INCONCLUSIVE ] || [ "$LADDER_INCONCLUSIVE" = 1 ]; then VERDICT=INCONCLUSIVE; VERDICT_RC=4
 elif [ -n "$LAST_PASS_STEP" ]; then VERDICT=PASS; VERDICT_RC=0; fi
 {
+  echo "control_pass=$CONTROL_RESULT"
   echo "squeeze_steps_run=$STEPS_RUN"
   echo "squeeze_last_pass_step=${LAST_PASS_STEP:-}"
   echo "squeeze_first_fail_step=${FIRST_FAIL_STEP:-}"
