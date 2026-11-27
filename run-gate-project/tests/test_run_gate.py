@@ -11,6 +11,7 @@ import calendar
 import contextlib
 import concurrent.futures
 import ctypes
+import errno
 import fcntl
 import hashlib
 from importlib import metadata as importlib_metadata
@@ -43262,6 +43263,50 @@ class TestJobEventOptionsAndWriter:
         assert "resolves inside protected checkout path" in str(exc.value)
         assert str(repo) in str(exc.value)
 
+    def test_event_destination_refuses_an_hardlinked_file(self, tmp_path):
+        """M3: a path can be outside every protected root and still share one
+        inode with a file inside it; the link count is the fact the path
+        checks cannot see."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        checkout = tmp_path / "repo" / "worktree"
+        checkout.mkdir(parents=True)
+        inside = checkout / "events.jsonl"
+        inside.write_text("")
+        shared = outside / "events.jsonl"
+        os.link(inside, shared)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.validate_job_event_destination(
+                str(shared), worktree=checkout)
+        assert "hard links" in str(exc.value)
+        assert str(shared) in str(exc.value)
+        # An UNLINKED name for the same inode still reaches it: unlink the
+        # checkout path, keep the shared one -- the count drops to 1 and the
+        # path check passes, which is the ordinary single-link state.
+        inside.unlink()
+        assert run_gate.validate_job_event_destination(
+            str(shared), worktree=checkout) == shared
+
+    def test_event_writer_refuses_an_unrecognised_final_component(self, tmp_path,
+                                                                  monkeypatch):
+        """L1: the final component can be swapped for a symlink between the
+        path check and the open; `O_NOFOLLOW` is what answers that, and its
+        refusal must stay honest."""
+        event_file = tmp_path / "swapped.jsonl"
+        real_open = os.open
+
+        def nofollow_swapped(path, flags, mode=0o777):
+            if Path(path) == event_file:
+                raise OSError(errno.ELOOP, "fixture swapped a symlink in")
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(run_gate.os, "open", nofollow_swapped)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.open_job_event_writer(str(event_file), "job-elooop",
+                                           "suite")
+        assert "cannot open --event-file" in str(exc.value)
+        assert "too many levels of symbolic links" in str(exc.value)
+
     def test_event_writer_open_refusal_names_the_os_error(self, tmp_path,
                                                            monkeypatch):
         event_file = tmp_path / "events.jsonl"
@@ -43277,6 +43322,43 @@ class TestJobEventOptionsAndWriter:
             run_gate.open_job_event_writer(str(event_file), "job-open", "suite")
         assert "cannot open --event-file" in str(exc.value)
         assert "fixture denies open" in str(exc.value)
+
+    def test_event_writer_refuses_a_hardlinked_open_descriptor(
+            self, tmp_path, monkeypatch):
+        """M3, second check: the refusal is repeated on the OPENED
+        descriptor, so a second link created between the path check and the
+        open is still caught by the inode the run is about to append into."""
+        outside = tmp_path / "shared.jsonl"
+        outside.write_text("")
+        checkout = tmp_path / "repo"
+        checkout.mkdir()
+        event_file = checkout / "events.jsonl"
+        real_open = os.open
+        real_fstat = os.fstat
+
+        def open_then_link(path, flags, mode=0o777):
+            fd = real_open(path, flags, mode)
+            if Path(path) == event_file and not event_file.exists():
+                event_file.write_text("")
+            if Path(path) == event_file:
+                # The path check saw a fresh, single-link name; this link is
+                # created after it, exactly the window the descriptor check
+                # exists for.
+                try:
+                    os.link(event_file, outside)
+                except FileExistsError:
+                    pass
+            return fd
+
+        monkeypatch.setattr(run_gate.os, "open", open_then_link)
+        try:
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.open_job_event_writer(str(event_file), "job-nlink",
+                                               "suite")
+        finally:
+            monkeypatch.setattr(run_gate.os, "open", real_open)
+            monkeypatch.setattr(run_gate.os, "fstat", real_fstat)
+        assert "hard links once opened" in str(exc.value)
 
     def test_event_writer_refuses_nonregular_open_descriptor(self, tmp_path,
                                                               monkeypatch):
@@ -43402,8 +43484,12 @@ class TestJobEventOptionsAndWriter:
         assert "fixture inspect refusal" in str(exc.value)
 
     @pytest.mark.parametrize(("outcome", "expected"), [
-        ("id", "container-full-id"), ("empty", None), ("error", None),
+        ("id", "a" * 64), ("empty", None), ("error", None),
         ("oserror", None), ("timeout", None),
+        # M1: an inspect answer that is not a full 64-hex id is NO id. A
+        # shim/relay can put anything there, and "never invent an id" binds
+        # every source of the value, not only `docker run`'s stdout.
+        ("short-id", None), ("not-an-id", None), ("uppercase", None),
     ])
     def test_container_id_best_effort_handles_inspect_outcomes(
             self, monkeypatch, outcome, expected):
@@ -43414,12 +43500,50 @@ class TestJobEventOptionsAndWriter:
                 raise subprocess.TimeoutExpired(argv, 10)
             if outcome == "error":
                 return subprocess.CompletedProcess(argv, 1, "", "not found")
-            return subprocess.CompletedProcess(
-                argv, 0, "container-full-id\n" if outcome == "id" else "\n", "")
+            payload = {
+                "id": "a" * 64 + "\n",
+                "short-id": "a" * 12 + "\n",
+                "not-an-id": "warning: fixture shim\n",
+                "uppercase": "A" * 64 + "\n",
+            }.get(outcome, "\n")
+            return subprocess.CompletedProcess(argv, 0, payload, "")
 
         monkeypatch.setattr(run_gate.subprocess, "run", inspect)
         assert run_gate.inspect_container_id_best_effort(
             "docker", "runner") == expected
+
+    def test_emit_lane_started_refuses_an_unrecognised_container_id(
+            self, tmp_path):
+        event_file = tmp_path / "unrecognised-start.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-unrecognised", "suite")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        try:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+            run_gate._NESTED_JOB_EVENT_WRITER = None
+            run_gate.emit_lane_started("a" * 12, "sha256:image", True)
+            run_gate.emit_lane_started("warning: fixture shim", None, False)
+            run_gate.emit_lane_started(
+                "a" * 12, None, False, reason="docker-run-failed")
+            run_gate.emit_lane_started(None, None, False)
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+            writer.close()
+        events = [json.loads(line)
+                  for line in event_file.read_text().splitlines()]
+        assert [event["container_id"] for event in events] == [
+            None, None, None, None]
+        assert events[0]["image_id"] == "sha256:image"
+        assert [event.get("reason") for event in events] == [
+            "container-id-unrecognised", "container-id-unrecognised",
+            "docker-run-failed", "container-id-unavailable"]
+        assert run_gate.recognised_container_id("A" * 64) is None
+        assert run_gate.recognised_container_id("a" * 12) is None
+        assert run_gate.recognised_container_id(None) is None
+        assert run_gate.recognised_container_id(" a" + "a" * 63 + " ") \
+            == "a" * 64
 
     def test_emit_lane_started_null_default_and_no_sink_are_explicit(
             self, tmp_path):
@@ -43435,7 +43559,7 @@ class TestJobEventOptionsAndWriter:
             run_gate.emit_lane_started(
                 None, None, True, reason="runner-not-identifiable")
             run_gate.emit_lane_started(
-                "container-full-id", "sha256:image", True, lane="member")
+                "b" * 64, "sha256:image", True, lane="member")
             run_gate._ACTIVE_JOB_EVENT_WRITER = None
             run_gate.emit_lane_started("must-not-appear", "image", False)
         finally:
@@ -43445,7 +43569,7 @@ class TestJobEventOptionsAndWriter:
         events = [json.loads(line) for line in event_file.read_text().splitlines()]
         assert [event["reason"] for event in events[:2]] == [
             "container-id-unavailable", "runner-not-identifiable"]
-        assert events[2]["container_id"] == "container-full-id"
+        assert events[2]["container_id"] == "b" * 64
         assert events[2]["image_id"] == "sha256:image"
         assert events[2]["adopted"] is True
         assert events[2]["lane"] == "member"
@@ -43737,21 +43861,38 @@ class TestJobEventContainerEvents:
     @staticmethod
     def _fake_event_docker(tmp_path, monkeypatch, container_id, image_id,
                            *, lane_run_returncode=0, lane_stdout_id=True,
-                           inspect_id=True, running_names=""):
+                           inspect_id=True, running_names="",
+                           name_resolves=False, lane_stdout_text=None):
+        """A docker shim whose NAME answer is not the started container.
+
+        M4: a name is not an identity, so this shim refuses to resolve one to
+        the container it started unless `name_resolves` says a real docker
+        is answering that name (a fresh `docker run -d --name` did create it).
+        Answering a name with the FOREIGN id/image is what makes an
+        inspect-by-name regression observable: the emitted identity and the
+        recorded inspect argv both change. Each `inspect` line's LAST field is
+        its target, so a test can assert exactly what was inspected.
+        """
         shim_dir = tmp_path / "event-docker"
         shim_dir.mkdir()
         calls = tmp_path / "event-docker-calls.log"
         shim = shim_dir / "docker"
-        lane_id_line = (f"printf '%s\\n' \"{container_id}\""
-                        if lane_stdout_id else ":")
+        foreign_id = "c" * 64
+        foreign_image_id = "sha256:" + "c" * 64
+        lane_id_line = (
+            f"printf '%s\\n' \"{lane_stdout_text}\"" if lane_stdout_text
+            is not None else
+            f"printf '%s\\n' \"{container_id}\"" if lane_stdout_id else ":")
         inspected_id_line = (f"printf '%s\\n' \"{container_id}\""
                              if inspect_id else ":")
         image_id_line = (f"printf '%s\\n' \"{image_id}\""
                          if image_id else ":")
+        name_yes = 1 if name_resolves else 0
         shim.write_text(textwrap.dedent(f"""\
             #!/bin/sh
             printf '%s\\037' "$@" >> "{calls}"
             printf '\\n' >> "{calls}"
+            last_arg() {{ for a in "$@"; do last="$a"; done; }}
             case "$1" in
               run)
                 case "$*" in
@@ -43760,15 +43901,30 @@ class TestJobEventContainerEvents:
                     exit {lane_run_returncode}
                     ;;
                   *)
-                    printf '%s\\n' "{'c' * 64}"
+                    printf '%s\\n' "{foreign_id}"
                     ;;
                 esac
                 ;;
               ps) printf '%s\\n' "{running_names}" ;;
               inspect)
+                last_arg "$@"
                 case "$*" in
-                  *"{{{{.Image}}}}"*) {image_id_line} ;;
-                  *"{{{{.Id}}}}"*) {inspected_id_line} ;;
+                  *"{{{{.Image}}}}"*)
+                    if [ "$last" = "{container_id}" ] || [ "{name_yes}" = 1 ]; then
+                      {image_id_line}
+                    else
+                      printf '%s\\n' "{foreign_image_id}"
+                    fi
+                    ;;
+                  *"{{{{.Id}}}}"*)
+                    if [ "$last" = "{container_id}" ] || [ "{name_yes}" = 1 ]; then
+                      {inspected_id_line}
+                    elif [ "{inspect_id}" = 0 ]; then
+                      :
+                    else
+                      printf '%s\\n' "{foreign_id}"
+                    fi
+                    ;;
                   *"{{{{.State.Status}}}}"*)
                     printf '%s\\n' 'running|0|2026-01-01T00:00:01Z|2026-01-01T00:00:00Z|{container_id}'
                     ;;
@@ -43790,15 +43946,31 @@ class TestJobEventContainerEvents:
         return calls
 
     @staticmethod
+    def _inspect_targets(calls, format_token: str) -> list[str]:
+        """The container argument of every inspect that used `format_token`."""
+        separator = "\x1f"
+        targets: list[str] = []
+        for line in calls.read_text().splitlines():
+            if separator not in line:
+                continue
+            argv = line.split(separator)[:-1]
+            if argv[:1] == ["inspect"] and format_token in line:
+                targets.append(argv[-1])
+        return targets
+
+    @staticmethod
     def _run_ephemeral_event_lane(tmp_path, monkeypatch, event_file, *,
                                   container_id, image_id,
                                   lane_run_returncode=0,
                                   lane_stdout_id=True, inspect_id=True,
-                                  event_flags=True):
+                                  event_flags=True, name_resolves=False,
+                                  lane_stdout_text=None):
         calls = TestJobEventContainerEvents._fake_event_docker(
             tmp_path, monkeypatch, container_id, image_id,
             lane_run_returncode=lane_run_returncode,
-            lane_stdout_id=lane_stdout_id, inspect_id=inspect_id)
+            lane_stdout_id=lane_stdout_id, inspect_id=inspect_id,
+            name_resolves=name_resolves,
+            lane_stdout_text=lane_stdout_text)
         repo = make_repo(tmp_path)
         config = f"""\
             schema_version = 1
@@ -43903,6 +44075,13 @@ class TestJobEventContainerEvents:
         docker_argv = calls.read_text()
         assert "run-gate.lane=suite" in docker_argv
         assert "run-gate.project=proj" in docker_argv
+        # M4: the identity is bound to the container Docker REPORTED, so the
+        # image inspect names that 64-hex id -- never the deterministic lane
+        # name. This shim answers a name with a FOREIGN id/image, so an
+        # inspect-by-name regression changes both the recorded argv and the
+        # emitted image_id.
+        assert self._inspect_targets(calls, "{{.Image}}") == [container_id]
+        assert self._inspect_targets(calls, "{{.Id}}") == []
 
     @pytest.mark.parametrize(("lane_stdout_id", "expected_id", "reason"), [
         (True, "f" * 64, None),
@@ -43936,6 +44115,41 @@ class TestJobEventContainerEvents:
         else:
             assert started["image_id"] is None
             assert started["reason"] == reason
+
+    def test_partial_start_with_an_unrecognised_stdout_emits_null_and_reason(
+            self, tmp_path, monkeypatch, capsys):
+        """M1: `docker run`'s stdout is not authoritative when the text on it
+        is not a container id."""
+        event_file = tmp_path / "partial-unrecognised.jsonl"
+        code, _calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="f" * 64,
+            image_id="sha256:" + "e" * 64, lane_run_returncode=9,
+            inspect_id=False, lane_stdout_text="warning: fixture shim")
+        assert code == 2
+        captured = capsys.readouterr()
+        assert "docker run failed (exit 9)" in captured.err
+        events = [json.loads(line) for line in event_file.read_text().splitlines()]
+        [started, verdict] = events
+        assert started["container_id"] is None
+        assert started["image_id"] is None
+        assert started["reason"] == "container-id-unrecognised"
+        assert verdict["verdict"] == "ERROR"
+
+    def test_successful_start_with_an_unrecognised_stdout_emits_null_and_reason(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "success-unrecognised.jsonl"
+        code, _calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="f" * 64,
+            image_id="sha256:" + "e" * 64, lane_stdout_text="a" * 12,
+            inspect_id=False)
+        assert code == 0
+        capsys.readouterr()
+        [started] = [json.loads(line)
+                     for line in event_file.read_text().splitlines()
+                     if '"event":"lane-started"' in line]
+        assert started["container_id"] is None
+        assert started["image_id"] is None
+        assert started["reason"] == "container-id-unrecognised"
 
     def test_partial_start_without_event_flags_keeps_normal_refusal(
             self, tmp_path, monkeypatch, capsys):
@@ -43985,6 +44199,28 @@ class TestJobEventContainerEvents:
         assert started["adopted"] is False
         assert "reason" not in started
         assert "inspect" in calls.read_text()
+
+    def test_inspected_id_answers_are_accepted_only_in_full_form(
+            self, tmp_path, monkeypatch, capsys):
+        """M1 at the inspect fallback: the shim answers the lane NAME (docker
+        reported no id on stdout) with a FOREIGN 64-hex id, so the fallback
+        path is exercised end to end; and a non-id answer from the same
+        source is refused by name rather than published."""
+        event_file = tmp_path / "fallback-foreign.jsonl"
+        code, calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="f" * 64,
+            image_id="sha256:" + "e" * 64, lane_stdout_id=False,
+            inspect_id=True)
+        assert code == 0
+        capsys.readouterr()
+        [target] = self._inspect_targets(calls, "{{.Id}}")
+        assert target != "f" * 64
+        [started] = [json.loads(line)
+                     for line in event_file.read_text().splitlines()
+                     if '"event":"lane-started"' in line]
+        assert started["container_id"] == "c" * 64
+        assert started["image_id"] == "sha256:" + "c" * 64
+        assert run_gate.recognised_container_id("c" * 12) is None
 
     @pytest.mark.parametrize(("running_names", "reason"), [
         ("", "down"), ("runner-shadow", "foreign-name"),

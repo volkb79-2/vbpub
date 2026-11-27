@@ -229,6 +229,10 @@ FAILED_NODE_LIMIT = 5
 JOB_EVENT_API = "fleet-host-agent/1"
 JOB_ID_MAX_LENGTH = 128
 JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# Docker's FULL container id. A shim, a relay, or a docker plugin on PATH can
+# put arbitrary text on `docker run`'s stdout or in an inspect answer, so only
+# this shape is ever published as a run's container identity (RG-329).
+CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}")
 
 _ACTIVE_JOB_EVENT_WRITER = None
 _NESTED_JOB_EVENT_WRITER = None
@@ -571,6 +575,14 @@ def validate_job_event_destination(event_file: str,
             fail(f"--event-file {event_file!r} must not be a symlink")
         if not stat.S_ISREG(info.st_mode):
             fail(f"--event-file {event_file!r} must be a regular file")
+        if info.st_nlink > 1:
+            # A hardlink defeats every PATH check below: the link this run
+            # names can sit outside the checkout while the SAME inode is
+            # reachable inside a tree the judged checkout or a lane container
+            # can see. Refuse rather than append event bytes into it.
+            fail(f"--event-file {event_file!r} already has "
+                 f"{info.st_nlink} hard links; a shared inode is not a "
+                 f"host-owned sink")
 
     # `canonical` has a resolved parent and a verified non-symlink final
     # component. Worktree/repository roots are local paths and can be resolved
@@ -706,8 +718,15 @@ def open_job_event_writer(event_file: str, job_id: str, lane: str,
     except OSError as exc:
         fail(f"cannot open --event-file {event_file!r}: {exc}")
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
             fail(f"--event-file {event_file!r} must be a regular file")
+        if opened.st_nlink > 1:
+            # Re-checked on the DESCRIPTOR, not just on the path: the path
+            # checks above answer about a name, this answers about the inode
+            # this run is about to append into.
+            fail(f"--event-file {event_file!r} has {opened.st_nlink} hard "
+                 f"links once opened; refusing a sink another path reaches")
         os.fchmod(fd, 0o600)
     except OSError as exc:
         os.close(fd)
@@ -764,6 +783,20 @@ def inspect_container_mount_sources(docker: str, container: str) -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
+def recognised_container_id(value) -> str | None:
+    """Return Docker's container id only in its full 64-hex form.
+
+    Any other text (a warning line from a shim, a relay's message, a plugin's
+    extra output) is NOT this run's container identity: publishing it would
+    be an invented fact in a file a host agent trusts, so it reads as no id
+    at all and the reason field says why.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if CONTAINER_ID_RE.fullmatch(candidate) else None
+
+
 def inspect_container_id_best_effort(docker: str,
                                      container: str) -> str | None:
     """Return Docker's reported full id, or None without guessing."""
@@ -776,8 +809,7 @@ def inspect_container_id_best_effort(docker: str,
         return None
     if result.returncode != 0:
         return None
-    container_id = result.stdout.strip()
-    return container_id or None
+    return recognised_container_id(result.stdout)
 
 
 def emit_lane_started(container_id: str | None, image_id: str | None,
@@ -787,11 +819,16 @@ def emit_lane_started(container_id: str | None, image_id: str | None,
     writer = _ACTIVE_JOB_EVENT_WRITER or _NESTED_JOB_EVENT_WRITER
     if writer is None:
         return
-    fields = {"container_id": container_id, "image_id": image_id,
+    published = recognised_container_id(container_id)
+    unrecognised = container_id is not None and published is None
+    reason_override = reason
+    if unrecognised and reason is None:
+        reason_override = "container-id-unrecognised"
+    fields = {"container_id": published, "image_id": image_id,
               "adopted": bool(adopted)}
-    if reason is not None:
-        fields["reason"] = reason
-    elif container_id is None:
+    if reason_override is not None:
+        fields["reason"] = reason_override
+    elif published is None:
         fields["reason"] = "container-id-unavailable"
     writer.emit("lane-started", lane=lane, **fields)
 
@@ -18436,7 +18473,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
              f"container for the same lane. {remedy}")
     event_writer = current_job_event_writer()
     if event_writer is not None:
-        container_id = state.get("id") if isinstance(state, dict) else None
+        container_id = recognised_container_id(
+            state.get("id") if isinstance(state, dict) else None)
         mount_sources = inspect_container_mount_sources(
             docker, container_id or name)
         validate_job_event_destination(
@@ -18918,8 +18956,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         if ksm_monitor is not None:
             report_ksm_measurement(ksm_monitor, run_record)
         if event_writer is not None:
-            container_id = ((started.stdout or "").strip().splitlines()
-                            or [None])[-1]
+            raw_id = ((started.stdout or "").strip().splitlines()
+                      or [None])[-1]
+            container_id = recognised_container_id(raw_id)
             if container_id:
                 image_id, image_error = inspect_container_image_id(
                     docker, container_id)
@@ -18927,6 +18966,14 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                           if image_id is None else None)
                 emit_lane_started(container_id, image_id, False,
                                   reason=reason, lane=lane_name)
+            elif raw_id:
+                # Docker's stdout carried text that is not a full container
+                # id (a shim's warning, a relay's line): publish null plus
+                # the reason rather than an invented identity.
+                emit_lane_started(
+                    None, None, False,
+                    reason="container-id-unrecognised",
+                    lane=lane_name)
             else:
                 emit_lane_started(
                     None, None, False,
@@ -18942,8 +18989,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
         fail_infra(f"docker run failed (exit {started.returncode}); last "
                    f"stderr line(s):\n{tail}{where}")
-    started_container_id = ((started.stdout or "").strip().splitlines()
-                            or [None])[-1]
+    raw_started_id = ((started.stdout or "").strip().splitlines()
+                      or [None])[-1]
+    started_container_id = recognised_container_id(raw_started_id)
     if event_writer is not None and not started_container_id:
         started_container_id = inspect_container_id_best_effort(docker, name)
     image_id = image_error = None
@@ -18958,6 +19006,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                       if image_id is None else None)
             emit_lane_started(started_container_id, image_id, False,
                               reason=reason, lane=lane_name)
+        elif raw_started_id:
+            # A `docker run` that SUCCEEDED but whose stdout was not a full
+            # container id, and whose inspect fallback found none either.
+            emit_lane_started(
+                None, None, False,
+                reason="container-id-unrecognised",
+                lane=lane_name)
         else:
             emit_lane_started(
                 None, None, False,
@@ -19261,7 +19316,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     event_writer = current_job_event_writer()
     if event_writer is not None and not dry_run:
         inspected = container_state(docker, name)
-        container_id = inspected.get("id") if inspected else None
+        container_id = recognised_container_id(
+            inspected.get("id") if inspected else None)
         if not container_id:
             container_id = inspect_container_id_best_effort(docker, name)
         mount_sources = inspect_container_mount_sources(
