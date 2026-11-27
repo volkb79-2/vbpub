@@ -919,6 +919,11 @@ class CommandPlan:
     #: command), and it gets that behaviour by construction rather than by
     #: remembering to opt out.
     cwd_declared: str | None = None
+    #: (B577) The resolved environment before assay adds run-local plugin
+    #: paths. Child execution keeps ``env_effective``; judge identity reads
+    #: this snapshot for ``PYTHONPATH`` so liveness and cold-witness plugin
+    #: directories do not make otherwise identical resumes miss.
+    pre_injection_env_effective: Mapping[str, str] | None = None
     #: (B245 U5b) The changed-lines diff the ``{assay.changed_diff}``
     #: placeholder in ``argv_declared`` resolves to; ``None`` on every plan
     #: but the ingested cargo-mutants baseline's.
@@ -1153,6 +1158,7 @@ def resolve_command_plan(
         budget_seconds=lane.budget_seconds,
         project_prefix=project_prefix,
         cwd_declared=lane.cwd,
+        pre_injection_env_effective=MappingProxyType(dict(env_effective)),
     )
 
 

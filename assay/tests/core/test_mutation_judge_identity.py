@@ -2201,6 +2201,36 @@ def test_two_instances_with_different_passthrough_values_do_not_resume(
     assert "/workspaces/instance-b" not in stderr
 
 
+def test_legacy_resume_store_without_component_digests_still_rejects_safely(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, capsys
+):
+    _seed(git_repo, _BLIND_JUDGE)
+    git_repo.write("assay.toml", _INSTANCE_LANE)
+    git_repo.commit_all("pass an instance-scoped fact through")
+    state_dir = tmp_path / "state"
+
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-a")
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert len(_candidates(first)) == 1
+    component_files = tuple((state_dir / "judges").glob("*/judge-components.json"))
+    assert len(component_files) == 1
+    component_files[0].unlink()
+    capsys.readouterr()
+
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-b")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    assert _resumed(second) == 0
+    assert len(_candidates(second)) == 1
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert resume["rejected_total"] == 1
+    assert resume["judge_mismatch_components_available"] is False
+    assert resume["judge_mismatch_components"] == []
+    stderr = capsys.readouterr().err
+    assert "judge component digests are unavailable" in stderr
+    assert "/workspaces/instance-a" not in stderr
+    assert "/workspaces/instance-b" not in stderr
+
+
 def test_different_assay_injected_pythonpath_dirs_keep_one_judge_identity(
     tmp_path: Path,
 ):
@@ -2253,6 +2283,28 @@ def test_different_assay_injected_pythonpath_dirs_keep_one_judge_identity(
     assert str(second_liveness_dir) in second.env_effective["PYTHONPATH"].split(os.pathsep)
     assert judge_sha256(tree_sha256="a" * 64, plan=first) == judge_sha256(
         tree_sha256="a" * 64, plan=second
+    )
+
+    other_consumer_plan = make_plan(
+        make_lane(
+            argv=("pytest", "tests"),
+            env_passthrough=("PYTHONPATH",),
+        ),
+        passthrough_source={"PYTHONPATH": "/checkout/other-src"},
+    )
+    other_liveness = liveness.inject_liveness_plugin(
+        other_consumer_plan,
+        liveness_dir=first_liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    other = mutation_witness.inject_witness_plugin(
+        other_liveness,
+        plugin_dir=first_receipt_dir,
+        liveness_plugin_path=first_liveness_dir / "assay_liveness_plugin.py",
+    ).plan
+    assert judge_sha256(tree_sha256="a" * 64, plan=first) != judge_sha256(
+        tree_sha256="a" * 64, plan=other
     )
 
 

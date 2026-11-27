@@ -12,6 +12,7 @@ import threading
 import tomllib
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from . import safeio
@@ -1187,6 +1188,11 @@ def inject_witness_plugin(
             argv_appended=appended,
             argv_effective=plan.argv_declared + appended,
             env_effective=env,
+            pre_injection_env_effective=(
+                plan.pre_injection_env_effective
+                if plan.pre_injection_env_effective is not None
+                else MappingProxyType(dict(plan.env_effective))
+            ),
             cli_argv_appended=cli_only,
         ),
         active=True,
