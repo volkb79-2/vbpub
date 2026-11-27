@@ -1830,18 +1830,21 @@ def test_put_rejects_a_symlinked_incoming_directory(tmp_path):
     assert list(moved.iterdir()) == []
 
 
-def test_put_maps_reservation_directory_scan_errors(tmp_path, monkeypatch):
+def test_put_recovers_orphan_scan_errors_after_reservation_scan(tmp_path, monkeypatch):
     service, identity, _checkout = _service(tmp_path)
     incoming = service.paths.incoming_dir
     real_scandir = os.scandir
+    calls = [0]
 
-    def fail_reservation_scan(path):
+    def fail_orphan_scan(path):
         if Path(path) == incoming:
-            raise OSError("reservation scan failed")
+            calls[0] += 1
+            if calls[0] == 2:
+                raise OSError("orphan scan failed")
         return real_scandir(path)
 
-    monkeypatch.setattr(agent_verbs.os, "scandir", fail_reservation_scan)
-    with pytest.raises(AdmissionError, match="cannot inspect upload reservations") as scan_error:
+    monkeypatch.setattr(agent_verbs.os, "scandir", fail_orphan_scan)
+    with pytest.raises(AdmissionError, match="cannot recover orphaned upload partials") as scan_error:
         service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
     assert scan_error.value.exit_code == ExitCode.RUNNER_FAILURE
 

@@ -400,12 +400,6 @@ class AgentVerbService:
                         offender,
                         f"owner lock {owner_name!r} is missing, so owner absence cannot be established; check whether an upload process is active and inspect the owner-lock path",
                     )
-                try:
-                    self._remove_upload_partial(partial_name)
-                except AdmissionError as exc:
-                    raise self._upload_recovery_refusal(partial_name, str(exc)) from exc
-                except OSError as exc:
-                    raise self._upload_recovery_refusal(partial_name, f"partial cleanup failed: {exc}") from exc
                 continue
 
             owner_path = self.paths.incoming_dir / owner_name
@@ -525,6 +519,26 @@ class AgentVerbService:
                 if locked:
                     fcntl.flock(fd, fcntl.LOCK_UN)
                 os.close(fd)
+        try:
+            entries = list(os.scandir(self.paths.incoming_dir))
+            for entry in entries:
+                if entry.name.startswith("upload-part-") and entry.name not in live_partials:
+                    try:
+                        self._remove_upload_partial(entry.name)
+                    except AdmissionError as exc:
+                        raise self._upload_recovery_refusal(entry.name, str(exc)) from exc
+                    except OSError as exc:
+                        raise self._upload_recovery_refusal(
+                            entry.name,
+                            f"partial cleanup failed ({exc}); check the incoming directory",
+                        ) from exc
+        except AdmissionError:
+            raise
+        except OSError as exc:
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot recover orphaned upload partials: {exc}",
+            ) from exc
         return expected_total, reservation_total, live_partials
 
     def _stored_upload_bytes(self) -> int:
