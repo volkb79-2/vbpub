@@ -55,7 +55,7 @@ def open_beneath(root_fd: int, relative: str, *, directory: bool = False) -> int
             flags = os.O_RDONLY | os.O_NOFOLLOW
             if not final or directory:
                 flags |= os.O_DIRECTORY
-            elif not directory:
+            else:
                 flags |= os.O_NONBLOCK
             next_fd = os.open(part, flags, dir_fd=current)
             os.close(current)

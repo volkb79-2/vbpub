@@ -42,6 +42,17 @@ def test_open_beneath_checks_relative_components_and_file_types(tmp_path):
             hostside.open_beneath(root_fd, "dir")
         with pytest.raises(OSError):
             hostside.open_beneath(root_fd, "file-link")
+        real_open = os.open
+
+        def ignore_final_directory_flag(path, flags, *, dir_fd):
+            if path == "file" and flags & os.O_DIRECTORY:
+                return real_open(path, flags & ~os.O_DIRECTORY, dir_fd=dir_fd)
+            return real_open(path, flags, dir_fd=dir_fd)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(hostside.os, "open", ignore_final_directory_flag)
+            with pytest.raises(NotADirectoryError, match="dir/file"):
+                hostside.open_beneath(root_fd, "dir/file", directory=True)
     finally:
         os.close(root_fd)
 
@@ -66,6 +77,18 @@ def test_resolve_assay_lane_uses_trusted_root_descriptor(tmp_path):
     root_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
     try:
         assert hostside.resolve_assay_lane(checkout, "project", "r0-r1", root_fd=root_fd) == "root-assay"
+    finally:
+        os.close(root_fd)
+
+
+def test_resolve_assay_lane_rejects_malformed_trusted_config(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.root.toml").write_text("[lanes\n", encoding="utf-8")
+    root_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(hostside.tomllib.TOMLDecodeError):
+            hostside.resolve_assay_lane(checkout, "project", "r0-r1", root_fd=root_fd)
     finally:
         os.close(root_fd)
 
