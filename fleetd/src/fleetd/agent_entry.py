@@ -11,6 +11,7 @@ from typing import Sequence
 
 from .admission import AdmissionError, ExitCode
 from .agent_policy import AgentPolicy, DEFAULT_AGENT_POLICY_PATH, load_agent_policy
+from .agent_providers import docker_container_identity_inspector, docker_object_inspector, legacy_job_ids
 from .agent_server import AgentServer, serve_forced_command
 from .agent_verbs import AgentVerbService
 from .contracts import ContractError
@@ -77,11 +78,19 @@ def _parser() -> argparse.ArgumentParser:
 
 def _service(policy_path: Path, state_dir: Path) -> tuple[AgentVerbService, AgentPolicy]:
     policy = load_agent_policy(policy_path)
+    provider_kwargs: dict[str, object] = {}
+    if isinstance(policy, AgentPolicy):
+        provider_kwargs = {
+            "legacy_jobs_provider": lambda: legacy_job_ids(policy.legacy_jobs_dir),
+            "inspector": docker_object_inspector(policy.query_timeout_s),
+            "container_inspector": docker_container_identity_inspector(policy.query_timeout_s),
+        }
     service = AgentVerbService(
         state_dir,
         policy,
         collect_host_facts,
         agent_version=installed_agent_version(),
+        **provider_kwargs,
     )
     return service, policy
 

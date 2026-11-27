@@ -66,6 +66,7 @@ group = "worker"
     path.write_text(f'''schema_version = 1
 idle_connection_s = 20
 query_timeout_s = 5
+legacy_jobs_dir = "{tmp_path / 'legacy-jobs'}"
 lease_reconcile_interval_s = 30
 lease_bind_timeout_s = 10
 max_connections = 4

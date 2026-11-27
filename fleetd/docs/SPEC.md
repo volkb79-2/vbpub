@@ -66,6 +66,29 @@ timeouts become 75, and inspector timeouts become `ERROR`. One callback can
 time out without retaining `queue.lock` or creating an unbounded worker backlog
 (FD-054).
 
+The host agent's legacy-job provider scans the required absolute
+`agent.toml.legacy_jobs_dir`. Every directory entry is charged unless it safely
+contains a regular `EXIT` file. Symlinks, non-directories, unreadable entries,
+and names outside the admission-ID grammar remain charged; generated IDs are
+valid, unique, and deterministic for a sorted listing. A root-directory listing
+failure or provider timeout returns 75 rather than an empty list. The scan uses
+directory descriptors and no-follow opens below the configured root. The
+legacy `run-job` writer creates `EXIT` only after the command exits; a host
+reboot can therefore leave a directory charged until it is removed manually
+(FD-064).
+
+The lease object inspector invokes `docker inspect --type=container` with one
+argv target, never a shell. It accepts only a syntactically exact container
+name or a full lowercase 64-character ID, and reports `PRESENT` only when one
+complete object matches that exact name or ID. `NO_SUCH_OBJECT` requires a
+non-zero Docker exit, no object output, and Docker's explicit no-such-object or
+no-such-container response for that target. Missing Docker, timeout, partial or
+unparseable output, ambiguous output, and mismatched identities are `ERROR`.
+The bind identity inspector accepts a full ID only, never an ID prefix, and
+returns Docker's name, full ID, and labels only when that exact ID is inspected.
+Docker child processes receive `query_timeout_s`; timeout terminates and waits
+for the child before returning.
+
 Every `host-facts/2` policy object carries `aging_s`,
 `legacy_charge_bytes`, and `legacy_planned_cores`. An unconfigured key is
 `null` with a reason; a configured key carries its unit and source. These are
@@ -140,16 +163,18 @@ The closed exit-code table assigns 79 to prerequisite-missing; 73 is reserved
 by fleetd's runner. Code 75 is a missing required fact, a held admission, or a
 wait withdrawn before start; code 2 is a request or static-eligibility refusal.
 
-## Host agent protocol (P-fd-05 C3a)
+## Host agent protocol and admission providers (P-fd-05 C3b-2a)
 
 `fleetd.agent_policy`, `fleetd.agent_protocol`, `fleetd.agent_verbs`,
-`fleetd.agent_admission`, `fleetd.agent_server`, `fleetd.agent_client` and
-`fleetd.agent_entry` use the Python standard library only. The `fleetd-agent`
+`fleetd.agent_admission`, `fleetd.agent_providers`, `fleetd.agent_server`,
+`fleetd.agent_client` and `fleetd.agent_entry` use the Python standard library
+only. The `fleetd-agent`
 entry point reads the closed host-owned `agent.toml` policy and serves a Unix
 socket path, an inherited listening descriptor, or one ssh forced-command
-request on stdin/stdout. It
-does not execute a shell command. C3a does not install a systemd unit or socket
-group, and does not include the C3b executor or C3c service setup.
+request on stdin/stdout. It does not execute a shell command. C3b-2a wires the
+legacy-job and Docker inspection providers into the entry point; it does not
+include the separate in-flight executor work. This package does not install a
+systemd unit or socket group, which belong to C3c.
 
 Local socket peers are authenticated from `SO_PEERCRED`'s UID and primary GID;
 the configured supplementary socket group only grants connect permission. The
@@ -197,9 +222,10 @@ file but never removes the directory. `fleetd-agent forced-command --group
 GROUP` applies the identical framing to ssh-provided stdin/stdout.
 
 The CLI omits `lease` from `probe` unless exact-object inspection, the
-legacy-job list and container-identity inspection are configured. C3b wires
-those runtime providers; the C3a CLI has none. A direct C3a service call to
-`lease` without them refuses with exit 2.
+legacy-job list and container-identity inspection are configured. C3b-2a wires
+those runtime providers from the required `agent.toml.legacy_jobs_dir` and the
+configured `query_timeout_s`. A direct service call without them refuses with
+exit 2.
 
 The closed verbs are `probe`, `facts`, `have`, `put`, `fetch`, `progress`,
 `submit`, `status`, `cancel`, and controller-socket-only `lease`. Every field,

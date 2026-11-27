@@ -77,7 +77,7 @@ wrapper, which must sit beside a repository checkout. A facts-only host needs
 neither the wrapper nor a checkout (FD-023 tracks the installed-wheel path for
 the wrapper).
 
-### Host agent package C3a
+### Host agent packages C3a and C3b-2a
 
 `fleetd-agent serve --socket-path /run/fleetd-agent/agent.sock` binds a local
 Unix socket, while `fleetd-agent serve --listen-fd 3` accepts an inherited
@@ -85,21 +85,29 @@ listening descriptor. The direct path form requires an existing real runtime
 directory and never creates or removes that directory. `fleetd-agent
 forced-command --group GROUP` serves one framed request on the ssh forced
 command's stdin/stdout. Package C3a supplies the protocol, admission wiring and
-CLI only; the systemd units, socket group and host mounts belong to C3c, and
-the executor belongs to C3b.
+CLI. C3b-2a adds the legacy-job and Docker inspection providers. It does not
+include the separate in-flight job executor work. The systemd units, socket
+group and host mounts belong to C3c.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
-`schema_version`, `idle_connection_s`, `query_timeout_s`,
+`schema_version`, `idle_connection_s`, `query_timeout_s`, `legacy_jobs_dir`,
 `lease_reconcile_interval_s`, `lease_bind_timeout_s`, `max_connections`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
 `env_values`; none has a consumer-invented fallback. All four time values are
-positive. `lease_reconcile_interval_s` sets the exact-lease reconciliation
+positive. `legacy_jobs_dir` is an absolute path with no default. It points to
+the legacy `run-job` directory scanned for entries without a regular `EXIT`
+file. The provider treats symlinks, non-directories, unreadable entries and
+unexpected names as charged work, and refuses admission if it cannot list the
+root directory. It uses descriptor-relative no-follow access below that root.
+`lease_reconcile_interval_s` sets the exact-lease reconciliation
 period; there is no default. `lease_bind_timeout_s` is also positive with no
 default; it bounds the whole bind frame from grant on the monotonic clock, so
 trickling bytes cannot extend it. It has no effect after bind. `max_connections`
 is a positive integer with no default and bounds ordinary local connections.
-`query_timeout_s` bounds each capacity,
-legacy-job-list and object-inspector callback made while the admission queue lock is held. The peer
+`query_timeout_s` bounds capacity, legacy-job-list, object-inspector and
+container-identity inspector calls. Docker is run as argv with one exact name
+or full container ID; it is never invoked through a shell. The Docker child is
+terminated and waited for at the timeout. The peer
 table maps exact UID/primary-GID pairs to a principal and group;
 forced-command entries map their trusted group argument to the same identity
 shape. Request fields cannot choose either value. Loading the policy refuses
@@ -123,8 +131,9 @@ top-level `exit_code` or `reason`; success omits `error`. The client looks only
 for `error`, so a status `exit_code` is returned as job data. A malformed
 `error` maps to exit 70. See the [response schema](agent-response.schema.json).
 A probe includes `lease` only when exact-object inspection, the legacy-job
-list, and container-identity inspection are configured. C3b wires these
-providers; the shipped C3a CLI has none and refuses lease with exit 2.
+list, and container-identity inspection are configured. C3b-2a wires these
+providers from `legacy_jobs_dir` and `query_timeout_s`. The shipped C3a CLI has
+none and refuses lease with exit 2.
 A configured inspector reconciles pending and bound leases at startup and at
 the configured interval. Pre-bind disconnect tombstones before checking the
 exact name; bound leases are checked by immutable ID. Only a confirmed absence
@@ -132,8 +141,8 @@ releases a charge. The granted-but-never-bound live-connection case has no
 deadline in §4.5; its held flock prevents pending reconciliation, so it remains
 charged until disconnect and exact-name reconciliation confirms absence.
 A missing or refusing local socket returns 3 with no fallback transport. The
-C3a wheel has no executor: submit refuses with exit 2 and a named reason before
-admission or a durable request write.
+C3a and C3b-2a wheels have no executor: submit refuses with exit 2 and a named
+reason before admission or a durable request write.
 
 Lane declarations and progress files are opened from trusted directory
 descriptors with no-follow traversal of every component. Progress replies cap

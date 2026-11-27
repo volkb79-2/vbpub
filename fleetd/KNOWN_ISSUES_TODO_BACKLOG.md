@@ -66,6 +66,7 @@
 | FD-061 | Persist executor result details for terminal status | P2 | OPEN | 2026-11-27 |
 | FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b follow-up) | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
+| FD-064 | A legacy job directory without EXIT after host reboot remains charged | P2 | OPEN | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1199,3 +1200,17 @@ no-follow descriptor safety of the current reader. No checkpoint format or
 retention policy is defined here.
 
 Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).
+
+## FD-064 Legacy job directories without EXIT remain charged after host reboot
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+The admission provider charges every entry in `legacy_jobs_dir` without a
+regular `EXIT` marker. If a host reboots while a legacy `run-job` command is
+running, the command may never write that marker, so the directory continues
+to consume its legacy RAM and planned-core charge after reboot. This package
+does not infer completion or remove the directory; someone must remove the
+stale directory for its charge to clear. Restart recovery and cleanup are
+separate work.
+
+Source: P-fd-05 C3b-2a controller ruling (2026-11-27).

@@ -83,6 +83,7 @@ All notable changes to this project are recorded here.
 
 <!-- cmru: pending release notes begin -->
 ### Added
+- Add descriptor-safe legacy-job listing, exact Docker object and full-ID container identity inspectors, and wire them into `fleetd-agent`; require `agent.toml.legacy_jobs_dir`. The executor remains separate work.
 - Add the standard-library host-agent protocol, closed policy validation, bounded framing, socket and forced-command server, local version-checking client, and `fleetd-agent` entry point. C3a does not ship the C3b executor or the C3c service installation.
 - Wire `probe`, `facts`, `have`, `put`, `fetch`, `progress`, `submit`, `status`, `cancel`, and controller-local `lease` to host-owned state and the C2 admission book. Without an injected executor, submit refuses before admission or a durable `request.json` write.
 - Bound capacity, legacy-list and object-inspector callbacks made under `queue.lock` with required `agent.toml.query_timeout_s`; apply the same timeout to every callback, mapping timeouts to 75 or `ERROR`.
@@ -99,7 +100,7 @@ All notable changes to this project are recorded here.
 - Convert JSON parser depth and integer-digit failures to protocol errors, type-check closed enum fields, and keep their exit codes on the wire.
 - Open lane declarations and progress streams through trusted directory descriptors without following any path component; cap progress ranges and client response bodies at 8 MiB.
 - Return terminal status only from its durable completion record and refuse cancel of completed jobs. C3b owns executor-backed terminal details (FD-061).
-- Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b wires those providers, so the shipped C3a CLI does not advertise it.
+- Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b-2a wires those providers from `agent.toml.legacy_jobs_dir`, so the shipped C3a CLI does not advertise it.
 - Keep each upload's full declared size reserved through durable commit or partial removal; bytes buffered or written do not lower the upload filesystem disk-floor charge. Publish reservation records atomically under a stable owner lock and reclaim torn records only after confirming the owner is absent. Leave retention and garbage collection to C3b (FD-062).
 - Bound Assay progress candidate counting to the opened file's 8 MiB snapshot; larger files return `done: null` with a reason, and incremental counting remains FD-063.
 
