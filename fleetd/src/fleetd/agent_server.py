@@ -198,10 +198,6 @@ class AgentServer:
                 connection.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            try:
-                connection.close()
-            except OSError:
-                pass
 
 
 def _check_socket_parent(path: Path) -> None:

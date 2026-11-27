@@ -3,6 +3,7 @@ import hashlib
 import os
 import select
 import socket
+import stat
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,7 @@ from fleetd.agent_verbs import AgentReply
 from fleetd.agent_protocol import FrameError, read_frame, write_frame
 from fleetd.agent_server import AgentServer, open_agent_socket, serve_connection, serve_forced_command
 from fleetd import agent_server
+from fleetd import agent_protocol
 from test_agent_verbs import _lease_service, _service
 
 
@@ -102,6 +104,67 @@ def test_held_idle_connection_does_not_block_another_client(tmp_path):
         assert serving_done.wait(3), "server did not stop before the failure watchdog"
         serving.join(timeout=3)
         assert not serving.is_alive(), "server worker remained alive after close"
+
+
+def test_close_does_not_reuse_worker_owned_descriptor_during_response_write(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    server = AgentServer.on_path(tmp_path / "fd-reuse.sock", service, service.policy)
+    client, worker_stream = socket.socketpair()
+    assert server._register_ordinary(worker_stream)
+    write_parked = threading.Event()
+    resume_write = threading.Event()
+    captured = []
+    real_select = select.select
+
+    def park_response_write(readers, writers, errors, timeout=None):
+        if writers:
+            captured.extend(writers)
+            write_parked.set()
+            if not resume_write.wait(3):
+                raise AssertionError("response writer was not released by the failure watchdog")
+            return [], writers, []
+        return real_select(readers, writers, errors, timeout)
+
+    monkeypatch.setattr(agent_protocol.select, "select", park_response_write)
+    worker = threading.Thread(target=server._serve_connection, args=(worker_stream,))
+    replacement_pairs = []
+    replacement_peer = None
+    try:
+        worker.start()
+        write_frame(client, {"verb": "probe"})
+        client.shutdown(socket.SHUT_WR)
+        assert write_parked.wait(3), "worker did not park after capturing its response descriptor"
+        worker_fd = captured[0]
+
+        server.close()
+        assert stat.S_ISSOCK(os.fstat(worker_fd).st_mode), "close released the worker-owned descriptor"
+        for _attempt in range(16):
+            left, right = socket.socketpair()
+            replacement_pairs.append((left, right))
+            if left.fileno() == worker_fd:
+                replacement_peer = right
+                break
+            if right.fileno() == worker_fd:
+                replacement_peer = left
+                break
+        assert replacement_peer is None, "a live worker's descriptor number was reused"
+
+        resume_write.set()
+        worker.join(timeout=3)
+        assert not worker.is_alive(), "connection worker remained parked after its write was released"
+        with pytest.raises(OSError):
+            os.fstat(worker_fd)
+    finally:
+        resume_write.set()
+        if worker.ident is not None:
+            worker.join(timeout=3)
+        client.close()
+        for left, right in replacement_pairs:
+            left.close()
+            right.close()
+        server.close()
 
 
 def test_lease_reconciliation_uses_injected_interval_without_wall_clock_wait(tmp_path):
@@ -778,7 +841,7 @@ def test_server_close_contains_wake_and_connection_close_oserrors(tmp_path):
     server._ordinary_connections.add(connection)
     server.close()
     server.close()
-    assert connection.calls == ["shutdown", "close"]
+    assert connection.calls == ["shutdown"]
 
     wake_server = AgentServer.on_path(tmp_path / "wake-error.sock", service, service.policy)
     wake_read = wake_server._wake_read
