@@ -244,6 +244,10 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     assert "Rust R2 is not adopted yet" in consumers
     assert "not a per-release waiver" in consumers
     assert "## Rust lanes (R1)" in consumers
+    assert "`rust-r2-qualification`" in readme
+    assert "passed 12/12 cases" in readme
+    assert "real-toolchain qualification is open" not in readme
+    assert "hand-run consumer lane" in readme
     assert "run-gate lint" in consumers and "run-gate selftest" in consumers
     assert "Status: R-2 registers the Assay adapter at R1." in methodology
     assert "R3 remains unregistered; Rust R2 only by\ncargo-mutants ingestion (B245)" in methodology
@@ -1368,8 +1372,11 @@ def test_native_r2_resume_and_progress_contract_is_documented_across_public_docs
         assert build_note in " ".join(text.split()), (
             f"{document.name} omits the new-build resume behavior"
         )
-        assert "--resume --rejudge crashed" in text, (
+        assert "--resume --rejudge-outcome crashed" in text, (
             f"{document.name} omits the crashed-candidate recovery command"
+        )
+        assert "--rejudge crashed" not in text, (
+            f"{document.name} uses candidate IDs where an outcome bucket is required"
         )
         assert "resource_limit_changes" in text, (
             f"{document.name} omits the candidate progress field"

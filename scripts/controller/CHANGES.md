@@ -6,6 +6,55 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Added
+- **A pi run mode, and review mode is the wrapper's own switch (P-plat-26c).**
+  `pi-impl.sh` takes `PI_RUN_MODE=implementer` (default) or `review`. Review
+  mode puts the read-only set defined ONCE in `scripts/controller/pi-review-argv`
+  (`--tools read,grep,find,ls`, `--exclude-tools mcp__*`, `--no-extensions`,
+  `--no-mcp`) in the wrapper's OWN argv, so the first launch, a manual `resume`
+  and every automatic continuation carry it; the previous seam (a caller
+  exporting the list through `PI_EXTRA_ARGS`) is gone, and `pi-review.sh` sets
+  the mode instead of carrying a second copy of the list. In review mode any
+  non-empty `PI_EXTRA_ARGS` is refused (exit 2) — every spelling pi accepts for
+  tools, extensions, MCP, skills, prompt templates and project trust is named in
+  the message first — so a review cannot be widened back to a shell, and an
+  unclassified spelling takes the same exit rather than slipping through. The
+  mode is recorded by run name (`<runs-dir>/<run>.mode`) and by session
+  (`<runs-dir>/session-modes/<session-id>`): a resume records its known id before
+  invoking pi, and a first launch records it after pi returns with the id.
+  Resumes require an exact id in a session-mode record, `.thread`, or a session
+  event in the bounded 64 KiB head of a run stream. They read the matching
+  names' mode records and review material, so an active or killed first review
+  is found before `.thread` or session-mode state exists. Forced name reuse
+  persists the old session mode before retiring its `.thread` and `.jsonl`.
+  Review is sticky across
+  fresh run names; a CALLER asking for implementer mode on a recorded review is
+  refused before the name is claimed. Session records are locked and monotonic:
+  review can never be replaced with implementer. An implementer name or session
+  resumed as review keeps the stricter mode and records it. An unreadable or
+  invalid record is refused instead of guessed, a missing current-name record
+  with `<run>.review/before-state.txt` beside it is resumed as review, and a
+  pre-existing implementer session without review evidence resumes unchanged.
+  A `PI_RUN_MODE` value supplied only by `controller.local.env` is a default for
+  launches that name none: it never flips a caller's review, and against a
+  record it is printed, not obeyed.
+- **A fixed rule paragraph on every pi prompt.** `<mode>-prompt-rules.md` beside
+  the wrapper is appended to the prompt of every launch and to the automatic
+  continuation; a launch whose file is missing is refused (exit 2). The
+  implementer paragraph bans pattern kills (`pkill`, `killall`, `pgrep`-then-kill,
+  a `/proc` loop, signals to a group or a foreign pid), confines signal and
+  TERM-trap tests to a capped container with a private PID namespace against PIDs
+  the test recorded itself, and forbids shell experiments in the shared
+  devcontainer; the review paragraph says the run executes nothing.
+- Tests: `tests/test-pi-impl.sh` gains the run-mode checks (`review-argv`,
+  `implementer-mode`, `review-argv-definition`, `mode-value`, `mode-extra-args`,
+  `mode-sticky`, `mode-session-thread`, `mode-session-record`,
+  `mode-session-implementer`, `mode-evidence`, `mode-rules-file`, `mode-local-env`,
+  `mode-record`, `mode-prompt`), the fake pi now records one argv element per
+  NUL-terminated record, and `tests/test-mutations.sh`/`mutate-sources.py` carry
+  one hand mutant per new refusal. `tests/test-pi-review.sh` asserts the review
+  launch is in review mode and records its mode.
+
 ### Resume and keep-alive pane guards (P-plat-22c)
 - `resume-lib.sh` owns the pane view and shared markers used by both resume helpers and `ctl-keepalive.sh`. `pane_view`
   trims rows below the mode line only for the unfocused agents-panel hint, so panel rows cannot hide busy markers or

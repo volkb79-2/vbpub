@@ -17,14 +17,22 @@
 #
 # Read-only, enforced and detected.
 #
-# 1. ENFORCED before the launch: pi is started with a tool set that has no
-#    shell and no writer -- `--tools read,grep,find,ls`, `--exclude-tools
-#    mcp__*`, `--no-extensions`, `--no-mcp` -- passed through pi-impl.sh's
-#    PI_EXTRA_ARGS seam. The reviewer cannot run a program, so it cannot loop
-#    in a shell or write a multi-gigabyte stream through one. What it needs
-#    instead is pre-rendered: the commits, the diff and the file list are
-#    written to <runs-dir>/<run>.review/ (OUTSIDE the reviewed worktree) and a
-#    copy of the prompt naming those files and the tool set is what pi reads.
+# 1. ENFORCED before the launch: the run is started in pi-impl.sh's REVIEW mode
+#    (`PI_RUN_MODE=review`), whose read-only tool set has no shell and no writer:
+#    `--tools read,grep,find,ls --exclude-tools mcp__* --no-extensions --no-mcp`.
+#    The list has ONE definition, the tracked file `pi-review-argv` beside
+#    pi-impl.sh; this launcher sets the mode and never carries a second copy of
+#    it. The reviewer cannot run a program, so it cannot loop in a shell or write
+#    a multi-gigabyte stream through one. What it needs instead is pre-rendered:
+#    the commits, the diff and the file list are written to
+#    <runs-dir>/<run>.review/ (OUTSIDE the reviewed worktree) and a copy of the
+#    prompt naming those files and the tool set is what pi reads. The mode is
+#    sticky per run name and per pi session: a later resume of this name is
+#    forced back into review mode even when the caller does not ask for it, and
+#    a resume of that session under a fresh name is also forced into review.
+#    Either resume is refused if the caller asks for implementer mode. pi-impl.sh also
+#    appends its own fixed review rule paragraph (`review-prompt-rules.md`:
+#    execute nothing) to the prompt of every launch.
 #    A review report is not written by the reviewer either (it has no write
 #    tool): the reviewer's FINAL assistant message is the report, and this
 #    wrapper persists it at --report after the run settles -- but ONLY for a
@@ -72,7 +80,12 @@
 # records (--report is NOT passed to it, because the reviewer cannot write the
 # file; the wrapper persists the final message instead). The model and thinking
 # level are pi-impl.sh's defaults (the eco model at `max`) unless the caller
-# already set PI_MODEL / PI_THINKING, which pi-impl.sh preserves.
+# already set PI_MODEL / PI_THINKING, which pi-impl.sh preserves. The run's mode
+# record (<run>.mode) is review for a name this launcher starts, and pi-impl.sh
+# also records the learned session id. A manual `pi-impl.sh ... resume
+# <session-id>` of either that name or session is a review too (pi-impl.sh forces
+# review and refuses an implementer resume), and it does the same for a name
+# that carries <run>.review/ material but no mode record.
 #
 # Exit codes: 2 for the refusals above (usage, unreadable worktree, report
 # inside the worktree, an existing report, an earlier review of this name's own
@@ -453,14 +466,17 @@ if ! prepare_review_material "$worktree"; then
   exit 2
 fi
 
-# The read-only tool set, through pi-impl.sh's PI_EXTRA_ARGS seam (one argv
-# element per line, so nothing here is word-split). The launcher owns this
-# variable: a caller's value is replaced, not merged, so a review cannot be
-# widened back to a shell.
-# Built with printf, one element per line, so the list is readable and a
-# mutant of it is plain text.
-export PI_EXTRA_ARGS
-PI_EXTRA_ARGS=$(printf '%s\n' --tools read,grep,find,ls --exclude-tools 'mcp__*' --no-extensions --no-mcp)
+# The read-only tool set has ONE definition: `pi-review-argv` beside
+# pi-impl.sh, which pi-impl.sh reads in review mode and puts in its own argv, so
+# the first run, every automatic continuation and every resume carry it alike.
+# This launcher sets the mode instead of exporting the list through the
+# PI_EXTRA_ARGS seam (which pi-impl.sh also refuses, by name, for anything that
+# would add a tool, an extension, a skill, a prompt template or project trust in
+# review mode). `export` is used so the value survives into the launch below;
+# a caller's PI_EXTRA_ARGS is cleared rather than replaced, because review mode
+# refuses a widened seam by name and does not need a restricted one.
+# shellcheck disable=SC2034 # PI_EXTRA_ARGS is read by pi-impl.sh, not here
+export PI_RUN_MODE=review PI_EXTRA_ARGS=''
 
 # --- the launch, under the budget --------------------------------------------
 # `set -m` puts the launch in its OWN process group, which is what makes a stop
@@ -472,7 +488,10 @@ budget_reason=''
 set -m
 # PI_REPORT is cleared: the reviewer cannot write the file, so pi-impl.sh must
 # not run its report check (that would always read NO-REPORT); the report is
-# persisted below from the run's final message.
+# persisted below from the run's final message. PI_RUN_MODE is exported rather
+# than passed as an assignment: the sticky mode record is what a later resume
+# reads, and this launch must state its mode the same way every other launch
+# does.
 PI_ROUTE="deepseek-pi-$review_account" PI_REPORT='' \
   "$SCRIPT_DIR/pi-impl.sh" "$worktree" "$review_prompt" "$name" &
 launch_pid=$!
