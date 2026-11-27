@@ -31,6 +31,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -39,7 +40,14 @@ from types import SimpleNamespace
 import pytest
 from conftest import GitRepo, make_lane, make_plan, zero_resource_limit_evidence_dict
 
-from assay import isolation, mutation, mutation_store, observer_windows
+from assay import (
+    isolation,
+    liveness,
+    mutation,
+    mutation_store,
+    mutation_witness,
+    observer_windows,
+)
 from assay.cli import main
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationStateError, judge_sha256
@@ -2159,7 +2167,7 @@ _INSTANCE_LANE = _LANE.replace(
 
 
 def test_two_instances_with_different_passthrough_values_do_not_resume(
-    git_repo: GitRepo, tmp_path: Path, monkeypatch
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, capsys
 ):
     """B142's resume identity binds each present passthrough value.
 
@@ -2176,11 +2184,76 @@ def test_two_instances_with_different_passthrough_values_do_not_resume(
     monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-a")
     first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
     assert len(_candidates(first)) == 1
+    capsys.readouterr()
 
     monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-b")
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
     assert _resumed(second) == 0, "changed passthrough values must invalidate resume"
     assert len(_candidates(second)) == 1
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert resume["judge_mismatch_components_available"] is True
+    assert resume["judge_mismatch_components"] == ["passthrough_values"]
+    assert resume["judge_mismatch_passthrough_names"] == ["INSTANCE_ROOT"]
+    stderr = capsys.readouterr().err
+    assert "passthrough_values" in stderr
+    assert "INSTANCE_ROOT" in stderr
+    assert "/workspaces/instance-a" not in stderr
+    assert "/workspaces/instance-b" not in stderr
+
+
+def test_different_assay_injected_pythonpath_dirs_keep_one_judge_identity(
+    tmp_path: Path,
+):
+    """Liveness and cold-witness prepend run-local plugins for the child.
+
+    Those paths differ across runs, while the consumer's own passthrough
+    PYTHONPATH remains identical and must be the only path value folded into
+    the judge identity.
+    """
+    plan = make_plan(
+        make_lane(
+            argv=("pytest", "tests"),
+            env_passthrough=("PYTHONPATH",),
+        ),
+        passthrough_source={"PYTHONPATH": "/checkout/src"},
+    )
+
+    first_liveness_dir = tmp_path / "run-one" / "liveness"
+    first_receipt_dir = tmp_path / "run-one" / "receipt"
+    first_liveness = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=first_liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    first = mutation_witness.inject_witness_plugin(
+        first_liveness,
+        plugin_dir=first_receipt_dir,
+        liveness_plugin_path=first_liveness_dir / "assay_liveness_plugin.py",
+    ).plan
+
+    second_liveness_dir = tmp_path / "run-two" / "liveness"
+    second_receipt_dir = tmp_path / "run-two" / "receipt"
+    second_liveness = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=second_liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    second = mutation_witness.inject_witness_plugin(
+        second_liveness,
+        plugin_dir=second_receipt_dir,
+        liveness_plugin_path=second_liveness_dir / "assay_liveness_plugin.py",
+    ).plan
+
+    assert first.env_effective["PYTHONPATH"] != second.env_effective["PYTHONPATH"]
+    assert str(first_receipt_dir) in first.env_effective["PYTHONPATH"].split(os.pathsep)
+    assert str(first_liveness_dir) in first.env_effective["PYTHONPATH"].split(os.pathsep)
+    assert str(second_receipt_dir) in second.env_effective["PYTHONPATH"].split(os.pathsep)
+    assert str(second_liveness_dir) in second.env_effective["PYTHONPATH"].split(os.pathsep)
+    assert judge_sha256(tree_sha256="a" * 64, plan=first) == judge_sha256(
+        tree_sha256="a" * 64, plan=second
+    )
 
 
 def test_dropping_a_passthrough_declaration_re_executes(
