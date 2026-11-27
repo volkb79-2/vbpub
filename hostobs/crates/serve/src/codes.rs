@@ -69,7 +69,7 @@ pub enum Pool {
     Rows,
     /// Queued query blocks.
     Query,
-    /// History spans, reserved for P5b-3.
+    /// Open event spans.
     Spans,
 }
 
@@ -214,6 +214,8 @@ pub enum Detail {
     Feature(&'static str),
     /// `{"pool": <name>}`: the exhausted budget pool.
     Pool(Pool),
+    /// `{"retry_after_ms": <n>}`: the annotation token refill delay.
+    RetryAfterMs(u32),
 }
 
 impl Detail {

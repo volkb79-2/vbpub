@@ -53,6 +53,7 @@
     clippy::checked_conversions
 )]
 
+pub mod annotate;
 pub mod crc;
 pub mod dedupe;
 pub mod dictionary;

@@ -852,9 +852,10 @@ fn write_all(file: &mut File, name: &str, bytes: &[u8]) -> Result<usize, StoreEr
 /// file, `crates/store/src/fsio.rs`. That rule is not suspended for tests: a test that called
 /// `std::fs::create_dir` or `OpenOptions::write` directly would be a second write path, and the
 /// lint could no longer tell a test's scratch directory from a product's silent write. So the
-/// test helpers live here, behind `#[cfg(test)]`, and every test — in `fsio`, `segment`,
-/// `tier`, `events`, `store` — goes through [`TempDir`].
-#[cfg(test)]
+/// test helpers live here, behind `#[cfg(test)]` or the `testdir` feature (which only
+/// another crate's dev-dependency turns on), and every test — in `fsio`, `segment`, `tier`,
+/// `events`, `store` and those other crates — goes through [`TempDir`].
+#[cfg(any(test, feature = "testdir"))]
 pub mod testdir {
     use std::path::{Path, PathBuf};
 
