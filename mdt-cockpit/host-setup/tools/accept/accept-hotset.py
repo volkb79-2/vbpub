@@ -33,11 +33,13 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 
 MIB = 1024 ** 2
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,6 +52,7 @@ HOTSET_COLUMNS = ("utc", "step", "unit", "memcg_leaves", "sz_filter_passed_one_a
 TOPOLOGY_LOG = "hotset-topology.jsonl"
 SELF_TEST_CURRENT = MIB   # above this, sz_filter_passed 0 is a refused floor, never "no hot pages" (4.1)
 RETRY_ATTEMPTS = 3
+DEFAULT_RETRY_DELAY = 0.1
 
 
 class Refusal(Exception):
@@ -66,6 +69,22 @@ def say(msg: str) -> None:
 
 def note(msg: str) -> None:
     print(f"accept-hotset: NOTE {msg}")
+
+
+def retry_delay_seconds(value: str) -> float:
+    try:
+        delay = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("retry delay must be a finite non-negative number of seconds") from exc
+    if not math.isfinite(delay) or delay < 0:
+        raise argparse.ArgumentTypeError("retry delay must be a finite non-negative number of seconds")
+    return delay
+
+
+def retry_pause(args, attempt: int, label: str, exc: Exception) -> None:
+    note(f"{label} attempt {attempt}/{RETRY_ATTEMPTS} failed ({exc}); re-enumerating cgroups and retrying")
+    if args.retry_delay > 0:
+        time.sleep(args.retry_delay)
 
 
 def read_int(path: str, default: int | None = None) -> int:
@@ -703,7 +722,7 @@ def refresh(args) -> int:
         except (Refusal, OSError, ValueError) as exc:
             last_error = exc
             if attempt < RETRY_ATTEMPTS:
-                note(f"scheme refresh attempt {attempt}/{RETRY_ATTEMPTS} failed ({exc}); re-enumerating cgroups and retrying")
+                retry_pause(args, attempt, "scheme refresh", exc)
     if isinstance(last_error, Inconclusive):
         raise last_error
     raise Refusal(f"scheme refresh failed after {RETRY_ATTEMPTS} attempts; refusing: {last_error}") from last_error
@@ -915,7 +934,7 @@ def sample(args) -> int:
         except (Refusal, OSError, ValueError) as exc:
             last_error = exc
             if attempt < RETRY_ATTEMPTS:
-                note(f"sample attempt {attempt}/{RETRY_ATTEMPTS} failed ({exc}); re-enumerating cgroups and retrying")
+                retry_pause(args, attempt, "sample", exc)
     else:
         if isinstance(last_error, Inconclusive):
             raise last_error
@@ -956,6 +975,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--damon-stat", default="/sys/module/damon_stat/parameters/enabled")
     ap.add_argument("--kdamond", type=int, help="override the index the WAL records")
     ap.add_argument("--step", type=int, default=0)
+    ap.add_argument("--retry-delay", type=retry_delay_seconds, default=DEFAULT_RETRY_DELAY,
+                    help="seconds to wait between topology retry attempts (default: 0.1; 0 disables the wait)")
     ap.add_argument("--fixture")
     try:
         args = ap.parse_args(argv)

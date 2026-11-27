@@ -445,7 +445,7 @@ class HotsetTests(unittest.TestCase):
     def args(self, *extra: str) -> list[str]:
         return ["--evidence", str(self.ev), "--state", str(self.wal), "--units", self.units, "--admin", str(self.admin),
                 "--cgroup", str(self.cg), "--proc", str(self.tmp), "--iomem", str(self.iomem), "--lib", self.lib,
-                "--damon-stat", str(self.dstat), *extra]
+                "--damon-stat", str(self.dstat), "--retry-delay", "0", *extra]
 
     def setup_user_topology(self, user_leaves: list[str] | None) -> F.DamonSysfsModel:
         self.units = "user.slice=user.slice docker.service=system.slice/docker.service"
@@ -734,6 +734,25 @@ class HotsetTests(unittest.TestCase):
         self.assertIn("hot-set sample failed after 3 attempts", out)
         self.assertEqual(apply.call_count, 3)
         self.assertFalse((self.ev / "hotset.csv").exists(), "an incomplete sample is never appended")
+
+    def test_sample_and_refresh_wait_between_retries_with_an_injected_delay(self) -> None:
+        self.tree(nr=1, state="off")
+        self.ready()
+        da = hs.load_lib(self.lib, str(self.admin))
+        with mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions",
+                               side_effect=[OSError("transient sample read"), None]), \
+                mock.patch.object(hs.time, "sleep") as sample_sleep:
+            rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0", "--retry-delay", "0.125"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sample_sleep.call_args_list, [mock.call(0.125)])
+
+        with mock.patch.object(hs, "load_lib", return_value=object()), \
+                mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
+                mock.patch.object(hs, "configure", side_effect=[hs.Refusal("transient refresh write"), None]), \
+                mock.patch.object(hs.time, "sleep") as refresh_sleep:
+            rc, out = run_hotset("refresh-schemes", *self.args("--step", "1", "--kdamond", "0", "--retry-delay", "0.125"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(refresh_sleep.call_args_list, [mock.call(0.125)])
 
     def test_refresh_reenumerates_and_retries_configuration(self) -> None:
         with mock.patch.object(hs, "load_lib", return_value=object()), \
