@@ -138,14 +138,16 @@ For `put`, exactly `bytes` follows, streamed and capped by required
 `policy.max_upload_bytes`. Before reading the body, the agent reserves the
 declared size under a cross-process upload-store lock and requires
 `stored + in_flight + new <= policy.max_upload_store_bytes` and
-`upload_fs_available - in_flight_remaining - new >= max(policy.disk_floors)`.
+`upload_fs_available - in_flight - new >= max(policy.disk_floors)`.
 Both facts are required; unavailable facts refuse. The stored scan counts
 regular files across all groups without following symlinks and refuses an
-unreadable file. A reservation starts before the first body byte and ends only
-when the object is committed or its partial is discarded. The lock is not held
-while the body streams. Client half-closes after the request and server rejects
-truncation/extra input. Retention and garbage collection are C3b follow-up
-FD-062.
+unreadable file. Each reservation holds its full declared size from admission
+through durable commit (file fsync, rename, and directory fsync) or, after
+abandonment, until its partial is removed. Buffered and written bytes do not
+reduce that reservation; bytes already on disk are counted twice during
+streaming, conservatively. The lock is not held while the body streams. Client
+half-closes after the request and server rejects truncation/extra input.
+Retention and garbage collection are C3b follow-up FD-062.
 `fetch` ranges are at most 8 MiB; responses use the same frame + body.
 
 **Several clients, several ciu roots.** The record names `repo` and `requested_by`, and the host

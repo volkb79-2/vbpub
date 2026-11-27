@@ -24,6 +24,7 @@ from test_agent_protocol import _policy, _submit
 
 
 FACTS_ROOT = Path(__file__).parent / "fixtures" / "facts-root"
+THREAD_WATCHDOG_S = 60
 
 
 def _service(tmp_path, *, extra_argv='[["--verbose"]]', peer_credentials=None):
@@ -756,6 +757,100 @@ def test_concurrent_puts_reserve_across_processes_before_reading_their_bodies(tm
             second_receive.close()
 
 
+def test_disk_floor_keeps_full_reservation_while_first_body_is_buffered(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    actual_free = service._upload_free_bytes()
+    floor = actual_free - 1
+    _upload_policy(service, store_bytes=100, floors={"checkout": floor})
+    monkeypatch.setattr(service, "_upload_free_bytes", lambda: actual_free)
+
+    reserved = threading.Event()
+    waiting_for_eof = threading.Event()
+    finished = threading.Event()
+    real_reserve = service._reserve_upload
+
+    def observe_reserve(*args):
+        result = real_reserve(*args)
+        reserved.set()
+        return result
+
+    monkeypatch.setattr(service, "_reserve_upload", observe_reserve)
+    first_client, first_server = socket.socketpair()
+    first_result = []
+    real_select = agent_verbs.select.select
+    worker_holder = []
+    select_calls = 0
+
+    def observe_body_wait(readers, writers, errors, timeout):
+        nonlocal select_calls
+        if worker_holder and threading.current_thread() is worker_holder[0]:
+            select_calls += 1
+            if select_calls == 2:
+                waiting_for_eof.set()
+        return real_select(readers, writers, errors, timeout)
+
+    monkeypatch.setattr(agent_verbs.select, "select", observe_body_wait)
+
+    def upload_first():
+        try:
+            reply = service._put({
+                "name": "candidates", "sha256": hashlib.sha256(b"x").hexdigest(), "bytes": 1,
+            }, identity, first_server)
+            first_result.append(("ok", reply.document))
+        except AdmissionError as exc:
+            first_result.append(("error", exc.exit_code, str(exc)))
+        finally:
+            first_server.close()
+            finished.set()
+
+    worker = threading.Thread(target=upload_first, name="first-buffered-put")
+    worker_holder.append(worker)
+    second_client = second_server = None
+    try:
+        worker.start()
+        assert reserved.wait(THREAD_WATCHDOG_S), "first put did not reserve its full size"
+        first_client.sendall(b"x")
+        assert waiting_for_eof.wait(THREAD_WATCHDOG_S), "first put did not park after buffering its body"
+        partial = next(service.paths.incoming_dir.glob("upload-part-*"))
+        assert partial.stat().st_size == 0
+        record_path = next(service.paths.incoming_dir.glob(".upload-reservation-*.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        assert record["expected"] == 1
+
+        second_client, second_server = socket.socketpair()
+        second_client.sendall(b"y")
+        second_client.shutdown(socket.SHUT_WR)
+        try:
+            service._put({
+                "name": "candidates", "sha256": hashlib.sha256(b"y").hexdigest(), "bytes": 1,
+            }, identity, second_server)
+        except AdmissionError as exc:
+            second_result = ("error", exc.exit_code, str(exc))
+        else:
+            second_result = ("ok",)
+        assert second_result[0:2] == ("error", ExitCode.REFUSAL)
+        assert "breach configured disk floor" in second_result[2]
+        assert json.loads(record_path.read_text(encoding="utf-8"))["remaining"] == 1
+        assert not finished.is_set()
+        assert partial.exists()
+        assert service._upload_free_bytes() == actual_free
+    finally:
+        try:
+            first_client.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        first_client.close()
+        if second_client is not None:
+            second_client.close()
+        if second_server is not None:
+            second_server.close()
+        worker.join(THREAD_WATCHDOG_S)
+        assert not worker.is_alive(), "first upload worker did not exit"
+
+    assert first_result[0][0] == "ok"
+    assert Path(first_result[0][1]["path"]).read_bytes() == b"x"
+
+
 def test_put_disk_floor_reservation_subtracts_live_remaining_bytes(tmp_path, monkeypatch):
     service, _identity, _checkout = _service(tmp_path)
     monkeypatch.setattr(
@@ -908,7 +1003,6 @@ def test_put_recovers_dead_partial_and_restart_counts_committed_objects(tmp_path
     _upload_policy(restarted, store_bytes=6, floors={"checkout": 0})
     reservation = restarted._reserve_upload(2, 6, 0)
     os.write(reservation.temporary_fd, b"p")
-    restarted._update_upload_remaining(reservation, 1)
     partial = Path(reservation.temporary_name)
     record = reservation.path
     os.close(reservation.temporary_fd)

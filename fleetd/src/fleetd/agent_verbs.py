@@ -330,9 +330,9 @@ class AgentVerbService:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     locked = True
                 except BlockingIOError:
-                    expected, remaining, temporary = self._read_upload_reservation(fd, token)
+                    expected, _remaining, temporary = self._read_upload_reservation(fd, token)
                     expected_total += expected
-                    remaining_total += remaining
+                    remaining_total += expected
                     live_partials.add(temporary)
                     continue
                 expected, _remaining, temporary = self._read_upload_reservation(fd, token)
@@ -460,13 +460,6 @@ class AgentVerbService:
                 raise
             return _UploadReservation(
                 reservation_fd, reservation_path, temporary_fd, temporary_name, expected,
-            )
-
-    def _update_upload_remaining(self, reservation: _UploadReservation, remaining: int) -> None:
-        with self._upload_store_lock():
-            self._write_upload_reservation(
-                reservation.fd, reservation.expected, remaining,
-                Path(reservation.temporary_name).name,
             )
 
     def _discard_upload_reservation(self, reservation: _UploadReservation) -> None:
@@ -641,7 +634,6 @@ class AgentVerbService:
 
     def _stream_upload(
         self, stream: object, expected: int, digest: str, target: object,
-        on_chunk: Callable[[int], None] | None = None,
     ) -> None:
         try:
             fd = stream if type(stream) is int else stream.fileno()
@@ -667,8 +659,6 @@ class AgentVerbService:
             target.write(chunk)  # type: ignore[attr-defined]
             hasher.update(chunk)
             remaining -= len(chunk)
-            if on_chunk is not None:
-                on_chunk(remaining)
 
         try:
             readable, _, _ = select.select([fd], [], [], self.policy.idle_connection_s)
@@ -695,10 +685,7 @@ class AgentVerbService:
             reservation = self._reserve_upload(expected, store_limit, floor_bytes)
             with os.fdopen(reservation.temporary_fd, "wb", closefd=True) as target:
                 reservation.temporary_fd = -1
-                self._stream_upload(
-                    body_stream, expected, digest, target,
-                    lambda remaining: self._update_upload_remaining(reservation, remaining),
-                )
+                self._stream_upload(body_stream, expected, digest, target)
                 target.flush()
                 os.fsync(target.fileno())
             uploads_dir = self.paths.uploads_dir

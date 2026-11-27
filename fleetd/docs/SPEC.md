@@ -225,11 +225,15 @@ serializes the stored-byte scan and reservation. The scan counts regular files
 across all upload groups without following symlinks; an unreadable stored file
 refuses. The aggregate check is `stored + in_flight + new <= policy.max_upload_store_bytes`,
 including re-uploads of an existing object. Before accepting a reservation,
-the upload filesystem must also satisfy `available - in_flight_remaining - new
->= max(policy.disk_floors.values())`. Reservations count from before the first
-body byte through commit or discard. The lock is not held while the body
-streams. Dead-process partials are reaped only after their reservation flock
-is available. Retention and garbage collection are not implemented (FD-062).
+the upload filesystem must also satisfy `available - in_flight - new
+>= max(policy.disk_floors.values())`. Each in-flight reservation holds its full
+declared size from admission through durable commit (file fsync, rename, and
+directory fsync) or, after abandonment, until its partial is removed. Bytes
+written or buffered do not reduce the reservation; during streaming they may
+also consume disk space, which is conservatively counted twice. The accounting
+lock is not held while the body streams. Dead-process partials are reaped only
+after their reservation flock is available. Retention and garbage collection
+are not implemented (FD-062).
 
 `agent.toml.max_connections` is a required positive integer with no default. It
 bounds ordinary local connections; an excess connection is refused with exit
