@@ -29,17 +29,27 @@ all.
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
 from conftest import GitRepo, make_lane, make_plan, zero_resource_limit_evidence_dict
 
-from assay import isolation, mutation, mutation_store, observer_windows
+from assay import (
+    isolation,
+    liveness,
+    mutation,
+    mutation_store,
+    mutation_witness,
+    observer_windows,
+)
 from assay.cli import main
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationStateError, judge_sha256
@@ -354,6 +364,15 @@ def test_a_changed_passthrough_value_is_a_different_judge():
     )
 
 
+def test_absent_and_empty_passthrough_pythonpath_are_different_judges():
+    lane = make_lane(argv=("pytest", "tests"), env={}, env_passthrough=("PYTHONPATH",))
+    absent = make_plan(lane, passthrough_source={})
+    empty = make_plan(lane, passthrough_source={"PYTHONPATH": ""})
+    assert judge_sha256(tree_sha256="a" * 64, plan=absent) != judge_sha256(
+        tree_sha256="a" * 64, plan=empty
+    )
+
+
 def test_surrogateescaped_passthrough_bytes_have_a_stable_judge_identity():
     """POSIX environment values can carry non-UTF-8 bytes, represented by
     Python's surrogateescape range. Hash their original bytes rather than
@@ -367,6 +386,18 @@ def test_surrogateescaped_passthrough_bytes_have_a_stable_judge_identity():
     digest = judge_sha256(tree_sha256="a" * 64, plan=first)
     assert digest == judge_sha256(tree_sha256="a" * 64, plan=same)
     assert digest != judge_sha256(tree_sha256="a" * 64, plan=other)
+
+
+def test_component_digests_accept_surrogateescaped_passthrough_values():
+    """Component metadata hashes the same original POSIX bytes as the judge."""
+    lane = make_lane(argv=("pytest",), env={}, env_passthrough=("DSN",))
+    plan = make_plan(lane, passthrough_source={"DSN": "dsn-\udcff-value"})
+    components = {}
+
+    judge_sha256(tree_sha256="a" * 64, plan=plan, _component_digests=components)
+
+    assert components["passthrough_names"] == ["DSN"]
+    assert len(components["passthrough_other_values_sha256"]) == 64
 
 
 def test_an_identical_passthrough_value_still_resumes_across_plans():
@@ -2159,7 +2190,7 @@ _INSTANCE_LANE = _LANE.replace(
 
 
 def test_two_instances_with_different_passthrough_values_do_not_resume(
-    git_repo: GitRepo, tmp_path: Path, monkeypatch
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, capsys
 ):
     """B142's resume identity binds each present passthrough value.
 
@@ -2176,11 +2207,396 @@ def test_two_instances_with_different_passthrough_values_do_not_resume(
     monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-a")
     first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
     assert len(_candidates(first)) == 1
+    capsys.readouterr()
 
     monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-b")
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
     assert _resumed(second) == 0, "changed passthrough values must invalidate resume"
     assert len(_candidates(second)) == 1
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert resume["judge_mismatch_components_available"] is True
+    assert resume["judge_mismatch_components"] == ["passthrough_values"]
+    assert resume["judge_mismatch_passthrough_names"] == ["INSTANCE_ROOT"]
+    stderr = capsys.readouterr().err
+    assert "passthrough_values" in stderr
+    assert "INSTANCE_ROOT" in stderr
+    assert "/workspaces/instance-a" not in stderr
+    assert "/workspaces/instance-b" not in stderr
+
+
+def test_other_passthrough_value_digests_are_not_written_to_the_sidecar(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    _seed(git_repo, _BLIND_JUDGE, lane=_INSTANCE_LANE)
+    value = "low-entropy-instance-secret"
+    monkeypatch.setenv("INSTANCE_ROOT", value)
+    state_dir = tmp_path / "state"
+    _run(git_repo, state_dir, tmp_path / "progress.jsonl")
+
+    sidecars = tuple(
+        (state_dir / ".diagnostics" / "judge-components").glob("*.json")
+    )
+    assert len(sidecars) == 1
+    raw = sidecars[0].read_bytes()
+    assert hashlib.sha256(value.encode("utf-8")).hexdigest().encode("ascii") not in raw
+    components = json.loads(raw)["components"]
+    assert "INSTANCE_ROOT" in components["passthrough_names"]
+    assert set(components["passthrough_values"]) <= {"PATH", "PYTHONPATH"}
+    assert len(components["passthrough_other_values_sha256"]) == 64
+
+
+def test_sidecar_write_failure_does_not_undo_candidate_records(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    _seed(git_repo, _BLIND_JUDGE)
+    state_dir = tmp_path / "state"
+    real_fsync = mutation._durable.fsync
+    state_directory_syncs = 0
+
+    def fail_diagnostic_directory_sync(descriptor):
+        nonlocal state_directory_syncs
+        if os.readlink(f"/proc/self/fd/{descriptor}") == str(state_dir):
+            state_directory_syncs += 1
+            if state_directory_syncs == 2:
+                raise OSError("injected diagnostic directory sync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(mutation._durable, "fsync", fail_diagnostic_directory_sync)
+    events = _run(git_repo, state_dir, tmp_path / "progress.jsonl")
+
+    records = _records(state_dir)
+    assert len(_candidates(events)) == 1
+    assert len(records) == 1
+    assert state_directory_syncs == 2
+    assert not (
+        state_dir
+        / ".diagnostics"
+        / "judge-components"
+        / f"{records[0]['judge_sha256']}.json"
+    ).exists()
+
+
+_TWO_INSTANCE_LANE = _LANE.replace(
+    'env_passthrough = ["PATH"]',
+    'env_passthrough = ["PATH", "INSTANCE_A", "INSTANCE_B"]',
+)
+
+
+def test_aggregated_passthrough_mismatch_names_candidates(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, capsys
+):
+    _seed(git_repo, _BLIND_JUDGE, lane=_TWO_INSTANCE_LANE)
+    monkeypatch.setenv("INSTANCE_A", "value-a-one")
+    monkeypatch.setenv("INSTANCE_B", "value-b-one")
+    state_dir = tmp_path / "state"
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert len(_candidates(first)) == 1
+    capsys.readouterr()
+
+    monkeypatch.setenv("INSTANCE_A", "value-a-two")
+    monkeypatch.setenv("INSTANCE_B", "value-b-two")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert resume["judge_mismatch_passthrough_names"] == []
+    assert resume["judge_mismatch_passthrough_name_candidates"] == [
+        "INSTANCE_A",
+        "INSTANCE_B",
+    ]
+    stderr = capsys.readouterr().err
+    assert "one or more of: INSTANCE_A, INSTANCE_B" in stderr
+
+
+def test_passthrough_name_appearing_is_named_exactly(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, capsys
+):
+    _seed(git_repo, _BLIND_JUDGE, lane=_TWO_INSTANCE_LANE)
+    monkeypatch.setenv("INSTANCE_A", "same-a")
+    monkeypatch.delenv("INSTANCE_B", raising=False)
+    state_dir = tmp_path / "state"
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert len(_candidates(first)) == 1
+    capsys.readouterr()
+
+    monkeypatch.setenv("INSTANCE_B", "new-b")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert "INSTANCE_B" in resume["judge_mismatch_passthrough_names"]
+    assert "INSTANCE_B" in capsys.readouterr().err
+
+
+def _judge_components_for_sidecar(passthrough: tuple[str, ...] = ()):
+    components = {}
+    judge = judge_sha256(
+        tree_sha256="a" * 64,
+        plan=_plan(passthrough=passthrough),
+        _component_digests=components,
+    )
+    return judge, components
+
+
+def _rewrite_sidecar_names(document, names: list[str]) -> None:
+    components = document["components"]
+    components["passthrough_names"] = sorted(names)
+    components["passthrough_values"] = {
+        name: "b" * 64 for name in names if name in {"PATH", "PYTHONPATH"}
+    }
+
+
+def test_hostile_sidecar_names_make_components_unavailable(tmp_path: Path):
+    judge, components = _judge_components_for_sidecar(("PATH",))
+    state_dir = tmp_path / "state"
+    mutation_store.write_judge_components(
+        state_dir, judge=judge, components=components
+    )
+    sidecar = state_dir / ".diagnostics" / "judge-components" / f"{judge}.json"
+    baseline = json.loads(sidecar.read_bytes())
+    hostile_name_sets = (
+        ["PATH", "BAD\nNAME"],
+        ["PATH", "BAD\x1b[31mNAME"],
+        ["PATH", "A" * 129],
+        ["PATH", *(f"X{index:03d}" for index in range(128))],
+    )
+    for names in hostile_name_sets:
+        document = copy.deepcopy(baseline)
+        _rewrite_sidecar_names(document, names)
+        sidecar.write_text(json.dumps(document), encoding="utf-8")
+        assert mutation_store.read_judge_components(state_dir, judge=judge) is None
+
+
+def test_judge_component_diagnostic_bounds_generation_count(tmp_path: Path):
+    _, components = _judge_components_for_sidecar()
+    previous = {f"{index:064x}": components for index in range(33)}
+    result = mutation._judge_component_differences(components, previous)
+    assert result["components_available"] is False
+    assert result["components"] == []
+    assert result["passthrough_names"] == []
+
+
+def test_judge_component_diagnostic_bounds_output_size(tmp_path: Path):
+    judge, components = _judge_components_for_sidecar()
+    state_dir = tmp_path / "state"
+    mutation_store.write_judge_components(
+        state_dir, judge=judge, components=components
+    )
+    sidecar = state_dir / ".diagnostics" / "judge-components" / f"{judge}.json"
+    document = json.loads(sidecar.read_bytes())
+    names = [f"N{index:03d}" + "A" * 124 for index in range(64)]
+    _rewrite_sidecar_names(document, names)
+    sidecar.write_text(json.dumps(document), encoding="utf-8")
+    previous = mutation_store.read_judge_components(state_dir, judge=judge)
+    assert previous is not None
+    result = mutation._judge_component_differences(
+        components, {judge: previous}
+    )
+    assert result["components_available"] is False
+    assert result["components"] == []
+    assert result["passthrough_names"] == []
+
+
+def test_legacy_resume_store_without_component_digests_still_rejects_safely(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, capsys
+):
+    _seed(git_repo, _BLIND_JUDGE)
+    git_repo.write("assay.toml", _INSTANCE_LANE)
+    git_repo.commit_all("pass an instance-scoped fact through")
+    state_dir = tmp_path / "state"
+
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-a")
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert len(_candidates(first)) == 1
+    component_files = tuple(
+        (state_dir / ".diagnostics" / "judge-components").glob("*.json")
+    )
+    assert len(component_files) == 1
+    component_files[0].unlink()
+    capsys.readouterr()
+
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-b")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    assert _resumed(second) == 0
+    assert len(_candidates(second)) == 1
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert resume["rejected_total"] == 1
+    assert resume["judge_mismatch_components_available"] is False
+    assert resume["judge_mismatch_components"] == []
+    stderr = capsys.readouterr().err
+    assert "judge component digests are unavailable" in stderr
+    assert "/workspaces/instance-a" not in stderr
+    assert "/workspaces/instance-b" not in stderr
+
+
+def test_different_assay_injected_pythonpath_dirs_keep_one_judge_identity(
+    tmp_path: Path,
+):
+    """Liveness and cold-witness prepend run-local plugins for the child.
+
+    Those paths differ across runs, while the consumer's own passthrough
+    PYTHONPATH remains identical and must be the only path value folded into
+    the judge identity.
+    """
+    plan = make_plan(
+        make_lane(
+            argv=("pytest", "tests"),
+            env_passthrough=("PYTHONPATH",),
+        ),
+        passthrough_source={"PYTHONPATH": "/checkout/src"},
+    )
+
+    first_liveness_dir = tmp_path / "run-one" / "liveness"
+    first_receipt_dir = tmp_path / "run-one" / "receipt"
+    first_liveness = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=first_liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    first = mutation_witness.inject_witness_plugin(
+        first_liveness,
+        plugin_dir=first_receipt_dir,
+        liveness_plugin_path=first_liveness_dir / "assay_liveness_plugin.py",
+    ).plan
+
+    second_liveness_dir = tmp_path / "run-two" / "liveness"
+    second_receipt_dir = tmp_path / "run-two" / "receipt"
+    second_liveness = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=second_liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    second = mutation_witness.inject_witness_plugin(
+        second_liveness,
+        plugin_dir=second_receipt_dir,
+        liveness_plugin_path=second_liveness_dir / "assay_liveness_plugin.py",
+    ).plan
+
+    assert first.env_effective["PYTHONPATH"] != second.env_effective["PYTHONPATH"]
+    assert str(first_receipt_dir) in first.env_effective["PYTHONPATH"].split(os.pathsep)
+    assert str(first_liveness_dir) in first.env_effective["PYTHONPATH"].split(os.pathsep)
+    assert str(second_receipt_dir) in second.env_effective["PYTHONPATH"].split(os.pathsep)
+    assert str(second_liveness_dir) in second.env_effective["PYTHONPATH"].split(os.pathsep)
+    assert judge_sha256(tree_sha256="a" * 64, plan=first) == judge_sha256(
+        tree_sha256="a" * 64, plan=second
+    )
+
+    other_consumer_plan = make_plan(
+        make_lane(
+            argv=("pytest", "tests"),
+            env_passthrough=("PYTHONPATH",),
+        ),
+        passthrough_source={"PYTHONPATH": "/checkout/other-src"},
+    )
+    other_liveness = liveness.inject_liveness_plugin(
+        other_consumer_plan,
+        liveness_dir=first_liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    other = mutation_witness.inject_witness_plugin(
+        other_liveness,
+        plugin_dir=first_receipt_dir,
+        liveness_plugin_path=first_liveness_dir / "assay_liveness_plugin.py",
+    ).plan
+    assert judge_sha256(tree_sha256="a" * 64, plan=first) != judge_sha256(
+        tree_sha256="a" * 64, plan=other
+    )
+
+
+def test_consumer_pythonpath_entry_equal_to_injected_path_is_preserved(
+    tmp_path: Path,
+):
+    liveness_dir = tmp_path / "same-entry"
+    lane = make_lane(
+        argv=("pytest", "tests"), env_passthrough=("PYTHONPATH",), env={}
+    )
+    plan = make_plan(
+        lane, passthrough_source={"PYTHONPATH": str(liveness_dir)}
+    )
+    injected = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    assert injected.env_effective["PYTHONPATH"].split(os.pathsep) == [
+        str(liveness_dir),
+        str(liveness_dir),
+    ]
+
+    changed_plan = make_plan(
+        lane, passthrough_source={"PYTHONPATH": "/consumer/other"}
+    )
+    changed = liveness.inject_liveness_plugin(
+        changed_plan,
+        liveness_dir=liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    assert judge_sha256(tree_sha256="a" * 64, plan=injected) != judge_sha256(
+        tree_sha256="a" * 64, plan=changed
+    )
+
+
+def test_rewritten_pythonpath_after_resolution_uses_the_current_value(
+    tmp_path: Path,
+):
+    lane = make_lane(
+        argv=("pytest", "tests"), env_passthrough=("PYTHONPATH",), env={}
+    )
+    plan = make_plan(
+        lane, passthrough_source={"PYTHONPATH": "/consumer/original"}
+    )
+    liveness_dir = tmp_path / "liveness"
+    injected = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=liveness_dir,
+        diagnostics=None,
+        liveness_policy="true",
+    ).plan
+    rewritten = replace(
+        injected,
+        env_effective={
+            **injected.env_effective,
+            "PYTHONPATH": "/consumer/rewritten",
+        },
+    )
+    assert judge_sha256(tree_sha256="a" * 64, plan=injected) != judge_sha256(
+        tree_sha256="a" * 64, plan=rewritten
+    )
+
+
+_PYTEST_LANE = _LANE.replace(
+    'argv = ["/bin/sh", "tests/judge.sh"]',
+    'argv = ["python", "-m", "pytest", "-q", "tests"]',
+).replace("env = {}", 'env = { PYTHONDONTWRITEBYTECODE = "1" }')
+
+
+def test_real_resume_restores_records_across_run_local_liveness_dirs(
+    git_repo: GitRepo, tmp_path: Path
+):
+    _seed(git_repo, _BLIND_JUDGE, lane=_PYTEST_LANE)
+    git_repo.write(
+        "tests/test_flag.py",
+        "from pkg.flags import a\n\ndef test_flag_is_true():\n    assert a is True\n",
+    )
+    git_repo.commit_all("add pytest judgment for liveness resume")
+    state_dir = tmp_path / "state"
+
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    first_plan = next(event for event in first if event.get("event") == "plan")
+    first_plugin = first_plan["liveness"]["plugin"]
+    assert first_plan["liveness"]["active"] is True
+    assert first_plugin
+    assert len(_candidates(first)) == 1
+
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    second_plan = next(event for event in second if event.get("event") == "plan")
+    second_plugin = second_plan["liveness"]["plugin"]
+    assert second_plan["liveness"]["active"] is True
+    assert second_plugin != first_plugin
+    assert _resumed(second) == 1
+    assert _candidates(second) == []
+    assert len(_records(state_dir)) == 1
 
 
 def test_dropping_a_passthrough_declaration_re_executes(
