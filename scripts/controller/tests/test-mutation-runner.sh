@@ -245,6 +245,7 @@ contains "$ROOT/node-address-space.out" 'SUMMARY: PASS checks=2 reported=2 kille
 export CONTROLLER_MUTATION_JOBS=1
 mutation_runner_init "$ROOT/node-invalid-limit" || fail 'valid width 1 was refused for invalid node limit case'
 {
+  # shellcheck disable=SC2016 # single quotes intentional: $1 expands in the child bash
   if expect_assertion_killed_with_address_space_limit invalid-node-limit 2147483649 \
     bash -c 'printf ran > "$1"; exit 1' _ "$ROOT/invalid-node-limit-ran"; then
     invalid_limit_rc=0
