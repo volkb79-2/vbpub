@@ -1934,5 +1934,5 @@ pi_ctl_mutant(
     "\t\t\t\t\tclaimed++;\n\t\t\t\t\tif (await processClaim(source)) delivered++;",
 )
 pi_ctl_mutant("name-validation", '\t\trequireName(to, "to");', "\t\t// mutant: recipient name validation omitted")
-pi_ctl_mutant('agent-end-only', '\tpi.on("agent_end", (_event, ctx) => triggerSelfCompaction(ctx));', '\tpi.on("turn_end", (_event, ctx) => triggerSelfCompaction(ctx));')
+pi_ctl_mutant('agent-end-only', '\tpi.on("agent_end", (_event, ctx) => {', '\tpi.on("turn_end", (_event, ctx) => {')
 pi_ctl_mutant("wrapper-required", "\t\tverifyWrapper();", "\t\t// mutant: PID namespace wrapper is not required")

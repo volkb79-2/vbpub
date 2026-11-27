@@ -75,7 +75,7 @@ for file in "${files[@]}"; do bash -n "$file" || exit $?; done
 for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/../pi-pidns-bash" "$SCRIPT_DIR/test_dev.py" "$SCRIPT_DIR/mutate-sources.py"; do
   python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
 done
-for file in "$SCRIPT_DIR/../pi-ctl/core.mjs" "$SCRIPT_DIR/../pi-ctl/extension.mjs" "$SCRIPT_DIR/../pi-ctl/test-core.mjs"; do
+for file in "$SCRIPT_DIR/../pi-ctl/core.mjs" "$SCRIPT_DIR/../pi-ctl/extension.mjs" "$SCRIPT_DIR/../pi-ctl/bridge.mjs" "$SCRIPT_DIR/../pi-ctl/test-core.mjs"; do
   node --check "$file" || exit $?
 done
 if command -v shellcheck >/dev/null 2>&1; then

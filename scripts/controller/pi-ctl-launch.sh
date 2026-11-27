@@ -64,6 +64,11 @@ prime=${PI_CTL_PRIME:-$MAIN_ROOT/.controller-state/PROGRAM-2026-11-24/PRIME-$rol
 pi_bin=${PI_CTL_BIN:-pi}
 session_dir=${PI_CTL_SESSION_DIR:-$HOME/.pi/agent/sessions}
 [[ $session_dir == /* ]] || { echo 'ERROR: PI_CTL_SESSION_DIR must be an absolute path' >&2; exit 2; }
+ready_timeout=${PI_CTL_STARTUP_TIMEOUT_SECONDS:-30}
+[[ $ready_timeout =~ ^[0-9]+$ && $ready_timeout -ge 1 && $ready_timeout -le 120 ]] || {
+  echo 'ERROR: PI_CTL_STARTUP_TIMEOUT_SECONDS must be from 1 to 120' >&2
+  exit 2
+}
 pidns_extension=$SCRIPT_DIR/pi-pidns-extension.js
 controller_extension=$SCRIPT_DIR/pi-ctl/extension.mjs
 pidns_wrapper=$SCRIPT_DIR/pi-pidns-bash
@@ -102,7 +107,9 @@ for env_name in PI_CTL_POLL_MS PI_CTL_MAX_MESSAGE_BYTES PI_CTL_MAX_SEND_BYTES \
   PI_CTL_COMPACT_AT PI_CTL_COMPACT_BACKOFF_SECONDS; do
   if [[ -v $env_name ]]; then controller_env+=("$env_name=${!env_name}"); fi
 done
-pane_args=(env "${controller_env[@]}" "$pane_script" "$role" "$provider" "$model" "$thinking" \
+ready_token=$session_id-$$
+ready_file=$root/sessions/.ready-$role-$ready_token
+pane_args=(env "${controller_env[@]}" "PI_CTL_READY_FILE=$ready_file" "PI_CTL_READY_TOKEN=$ready_token" "$pane_script" "$role" "$provider" "$model" "$thinking" \
   "$session_id" "$root" "$prime" "$pi_bin" "$session_dir" "$pidns_extension" \
   "$controller_extension" "$pidns_wrapper" "$session_name")
 printf -v pane_command '%q ' "${pane_args[@]}"
@@ -151,25 +158,26 @@ if [[ -e $lock_file || -L $lock_file ]]; then
   }
   lock_pid='' lock_start='' lock_extra=''
   IFS=' ' read -r lock_pid lock_start lock_extra < "$lock_file" || :
-  [[ $lock_pid =~ ^[1-9][0-9]*$ && ( $lock_start =~ ^[0-9]+$ || $lock_start == unknown ) && -z $lock_extra ]] || {
-    printf 'ERROR: unreadable live lock for controller %s\n' "$role" >&2
-    exit 2
-  }
-  if [[ -e /proc/$lock_pid ]]; then
-    if [[ $lock_start == unknown ]]; then
-      printf 'ERROR: controller %s has a live lock (pid %s)\n' "$role" "$lock_pid" >&2
-      exit 2
+  if [[ $lock_pid =~ ^[1-9][0-9]*$ && ( $lock_start =~ ^[0-9]+$ || $lock_start == unknown ) && -z $lock_extra ]]; then
+    if [[ -e /proc/$lock_pid ]]; then
+      if [[ $lock_start == unknown ]]; then
+        printf 'ERROR: controller %s has a live lock (pid %s)\n' "$role" "$lock_pid" >&2
+        exit 2
+      fi
+      current_start=$(process_start_ticks "$lock_pid") || {
+        printf 'ERROR: cannot verify controller lock liveness for pid %s\n' "$lock_pid" >&2
+        exit 2
+      }
+      if [[ $current_start == "$lock_start" ]]; then
+        printf 'ERROR: controller %s has a live lock (pid %s)\n' "$role" "$lock_pid" >&2
+        exit 2
+      fi
     fi
-    current_start=$(process_start_ticks "$lock_pid") || {
-      printf 'ERROR: cannot verify controller lock liveness for pid %s\n' "$lock_pid" >&2
-      exit 2
-    }
-    if [[ $current_start == "$lock_start" ]]; then
-      printf 'ERROR: controller %s has a live lock (pid %s)\n' "$role" "$lock_pid" >&2
-      exit 2
-    fi
+  else
+    echo "INFO: controller lock for $role is an incomplete legacy record; the extension will verify and recover it"
   fi
-  rm -f -- "$lock_file"
+  # Leave stale records in place. The extension atomically reclaims them after
+  # verifying the observed inode; the launcher must not race that replacement.
 fi
 
 if tmux has-session -t "$session_name" 2>/dev/null; then
@@ -177,10 +185,29 @@ if tmux has-session -t "$session_name" 2>/dev/null; then
   exit 2
 fi
 
-session_tmp=$session_file.tmp.$$
+rm -f -- "$ready_file"
+if ! tmux new-session -d -s "$session_name" -c "$cwd" "$pane_command"; then
+  printf 'ERROR: tmux could not create controller session %s\n' "$session_name" >&2
+  exit 2
+fi
+
+ready=0
+for ((tick = 0; tick < ready_timeout * 10; tick++)); do
+  if [[ -f $ready_file && ! -L $ready_file ]]; then
+    IFS= read -r observed_token < "$ready_file" || :
+    if [[ $observed_token == "$ready_token" ]]; then ready=1; break; fi
+  fi
+  if ! tmux has-session -t "$session_name" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+if (( ! ready )); then
+  printf 'ERROR: pi pane %s did not signal extension session_start within %s seconds; saved session id was not changed\n' "$session_name" "$ready_timeout" >&2
+  exit 2
+fi
+
+session_tmp=$session_file.tmp.$BASHPID
 printf '%s\n' "$session_id" > "$session_tmp"
 chmod 0600 -- "$session_tmp"
 mv -f -- "$session_tmp" "$session_file"
-
-tmux new-session -d -s "$session_name" -c "$cwd" "$pane_command"
+rm -f -- "$ready_file"
 printf 'Started pi controller %s in tmux session %s (session id %s).\n' "$role" "$session_name" "$session_id"

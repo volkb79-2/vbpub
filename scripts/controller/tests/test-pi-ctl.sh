@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The launcher defaults are under test here; ambient operator routing must not
+# change the expected default-provider case below.
+unset PI_CTL_PROVIDER
+
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 CONTROLLER_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-ctl.XXXXXX")
@@ -12,6 +16,10 @@ contains_arg() {
   shift
   for argument in "$@"; do [[ $argument == "$wanted" ]] && return 0; done
   fail "expected argv element: $wanted"
+}
+command_contains_word() {
+  local wanted=$1 command=$2
+  [[ " $command " == *" $wanted "* ]]
 }
 
 BIN=$ROOT/bin
@@ -34,6 +42,7 @@ cat > "$BIN/tmux" <<'TMUX'
 set -uo pipefail
 : "${PI_CTL_TEST_TMUX_ARGV:?}"
 : "${PI_CTL_TEST_TMUX_KEYS:?}"
+: "${PI_CTL_TEST_TMUX_STATE:?}"
 printf '%s\0' "$@" >> "$PI_CTL_TEST_TMUX_ARGV"
 {
   if [[ -v OPENDESIGN_API_KEY_VOLKER ]]; then printf 'VOLKER=present\n'; else printf 'VOLKER=unset\n'; fi
@@ -41,7 +50,19 @@ printf '%s\0' "$@" >> "$PI_CTL_TEST_TMUX_ARGV"
 } > "$PI_CTL_TEST_TMUX_KEYS"
 case ${1-} in
   has-session) exit "${PI_CTL_TEST_HAS_SESSION_RC:-1}" ;;
-  new-session) exit 0 ;;
+  new-session)
+    : > "$PI_CTL_TEST_TMUX_STATE"
+    pane_command=${!#}
+    if [[ ${PI_CTL_TEST_READY_MODE:-ready} == ready ]]; then
+      [[ $pane_command =~ PI_CTL_READY_FILE=([^[:space:]]+) ]] || exit 3
+      ready_file=${BASH_REMATCH[1]}
+      [[ $pane_command =~ PI_CTL_READY_TOKEN=([^[:space:]]+) ]] || exit 3
+      ready_token=${BASH_REMATCH[1]}
+      mkdir -p "$(dirname -- "$ready_file")"
+      printf '%s\n' "$ready_token" > "$ready_file"
+    fi
+    exit 0
+    ;;
   *) exit 2 ;;
 esac
 TMUX
@@ -61,24 +82,27 @@ PATH_VALUE=$BIN:/usr/bin:/bin
 TMUX_ARGV=$ROOT/tmux.argv
 PI_ARGV=$ROOT/pi.argv
 PI_KEYS=$ROOT/pi.keys
+TMUX_STATE=$ROOT/tmux.state
 
 run_launcher() {
   local env_name
   local -a configured=()
+  local -a routing=()
+  if [[ -v PI_CTL_PROVIDER ]]; then routing+=("PI_CTL_PROVIDER=$PI_CTL_PROVIDER"); fi
   for env_name in PI_CTL_POLL_MS PI_CTL_MAX_MESSAGE_BYTES PI_CTL_MAX_SEND_BYTES \
     PI_CTL_SEND_LIMIT PI_CTL_INBOUND_LIMIT PI_CTL_LOOP_WINDOW_SECONDS \
-    PI_CTL_COMPACT_AT PI_CTL_COMPACT_BACKOFF_SECONDS; do
+    PI_CTL_COMPACT_AT PI_CTL_COMPACT_BACKOFF_SECONDS PI_CTL_STARTUP_TIMEOUT_SECONDS; do
     if [[ -v $env_name ]]; then configured+=("$env_name=${!env_name}"); fi
   done
   env -i HOME="$HOME_DIR" PATH="$PATH_VALUE" PI_CTL_ROOT="$STATE_ROOT" \
     PI_CTL_CWD="$WORK_DIR" PI_CTL_PRIME="$PRIME" PI_CTL_BIN="$BIN/pi" \
-    PI_CTL_PROVIDER="${PI_CTL_PROVIDER:-opendesign_volker}" \
     PI_CTL_SESSION_DIR="$ROOT/sessions" PI_CTL_TEST_TMUX_ARGV="$TMUX_ARGV" \
-    PI_CTL_TEST_TMUX_KEYS="$ROOT/tmux.keys" \
+    PI_CTL_TEST_TMUX_KEYS="$ROOT/tmux.keys" PI_CTL_TEST_TMUX_STATE="$TMUX_STATE" \
+    PI_CTL_TEST_READY_MODE="${PI_CTL_TEST_READY_MODE:-ready}" \
     PI_CTL_TEST_HAS_SESSION_RC="${PI_CTL_TEST_HAS_SESSION_RC:-1}" \
     OPENDESIGN_API_KEY_VOLKER='ambient-volker-secret-marker' \
     OPENDESIGN_API_KEY_GITHUB2='ambient-github2-secret-marker' \
-    "${configured[@]}" \
+    "${configured[@]}" "${routing[@]}" \
     "$CONTROLLER_DIR/pi-ctl-launch.sh" "$@"
 }
 
@@ -96,6 +120,13 @@ mapfile -d '' -t tmux_args < "$TMUX_ARGV"
 contains_arg 'has-session' "${tmux_args[@]}"
 contains_arg 'new-session' "${tmux_args[@]}"
 contains_arg 'vbpub-hostobs' "${tmux_args[@]}"
+pane_command=${tmux_args[-1]}
+command_contains_word 'opendesign_volker' "$pane_command" \
+  || fail 'default provider was not an exact pane-command argument'
+command_contains_word 'deepseek-v4.1-flash-eco' "$pane_command" \
+  || fail 'default model was not an exact pane-command argument'
+command_contains_word 'max' "$pane_command" \
+  || fail 'default thinking level was not an exact pane-command argument'
 [[ $(<"$STATE_ROOT/sessions/hostobs.session") == 'vbpub-hostobs' ]] || fail 'launcher did not persist the per-role pi session id'
 [[ $(stat -c '%a' "$STATE_ROOT") == 700 && $(stat -c '%a' "$STATE_ROOT/sessions") == 700 ]] \
   || fail 'launcher state directories were not private'
@@ -113,7 +144,9 @@ mapfile -d '' -t tmux_args < "$TMUX_ARGV"
 : > "$TMUX_ARGV"
 PI_CTL_PROVIDER=opendesign_github2 run_launcher hostobs > "$ROOT/github2.out"
 mapfile -d '' -t tmux_args < "$TMUX_ARGV"
-contains_arg 'opendesign_github2' "${tmux_args[@]}"
+pane_command=${tmux_args[-1]}
+command_contains_word 'opendesign_github2' "$pane_command" \
+  || fail 'github2 provider was not an exact pane-command argument'
 if grep -aFq 'test-volker-secret-marker' "$TMUX_ARGV" "$ROOT/github2.out"; then fail 'volker key appeared in tmux argv or output'; fi
 if grep -aFq 'test-github2-secret-marker' "$TMUX_ARGV" "$ROOT/github2.out"; then fail 'github2 key appeared in tmux argv or output'; fi
 
@@ -125,6 +158,13 @@ fresh_id=$(<"$STATE_ROOT/sessions/hostobs.session")
 run_launcher hostobs > "$ROOT/resume.out"
 mapfile -d '' -t tmux_args < "$TMUX_ARGV"
 [[ ${tmux_args[*]} == *"$fresh_id"* ]] || fail 'normal launch did not resume the selected fresh session id'
+
+: > "$TMUX_ARGV"
+if PI_CTL_TEST_READY_MODE=fail PI_CTL_STARTUP_TIMEOUT_SECONDS=1 run_launcher --fresh hostobs > "$ROOT/startup-failed.out" 2>&1; then
+  fail 'launcher reported success before extension session_start readiness'
+fi
+[[ $(<"$STATE_ROOT/sessions/hostobs.session") == "$fresh_id" ]] \
+  || fail 'failed pane startup replaced the last resumable session id'
 
 : > "$TMUX_ARGV"
 if PI_CTL_TEST_HAS_SESSION_RC=0 run_launcher hostobs > "$ROOT/existing.out" 2>&1; then fail 'existing tmux session was not refused'; fi
