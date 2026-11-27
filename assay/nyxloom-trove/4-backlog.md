@@ -16366,7 +16366,8 @@ single-statement rule in 6104416d6, red proof c4dc20c85; byte-exact capture
 (round-2 HOLD finding left open by round 3: extra newlines and NUL bytes were
 dropped) in aa2a1ab85, red proof a822202f4; Docker's stderr now goes to a file
 with no pipeline between Docker and its exit status (follow-up review HOLD), in
-the commit after red proof 9822c7ead; severity: medium.**
+353b1fce6, red proof 9822c7ead; severity: medium. The unchecked removal of that
+capture file is filed as B608.**
 
 Implementation: `assay/tools/cgroup-parent.sh:125` (verified probe identity and
 definite-absence classification), `:205` (ambiguous failure retains ownership),
@@ -16426,3 +16427,19 @@ there, `test_cgroup_parent.py` among them, are collected only by the
 **Close when.** The lane collects every `gate/tests` file it can run, with each
 exclusion named and explained, or a check fails when a `gate/tests` file is in
 neither the lane's list nor that exclusion list.
+
+## B608 — a failed removal of the probe's capture file is ignored
+
+**Status: OPEN, filed 2026-11-27 (final B599 review, accepted as a follow-up);
+severity: low.**
+
+`inspect_owned_unit_probe` (`assay/tools/cgroup-parent.sh:155`) runs
+`rm -f -- "$stderr_file"` without checking its status. The function is called
+from `if` and `||` contexts, where `errexit` does not apply. If the removal
+fails, an exact absent-object answer still returns 1,
+`discard_failed_unit_probe` clears the probe identity, the unmounted retry
+runs, and the file stays behind.
+
+**Close when.** A failed removal returns 3 (`rm -f -- "$stderr_file" || return
+3`), so there is no unmounted retry and the identity stays for the EXIT trap,
+and a `tester-unified` case that makes only this removal fail proves it.
