@@ -62,6 +62,27 @@ def test_zero_no_progress_timeout_is_refused_as_invalid_configuration():
         runner.parse_step(config, "build")
 
 
+def test_quiet_failure_limits_error_block_to_the_first_twenty_matches(monkeypatch, capsys):
+    lines = [f"[ERROR] diagnostic {index}\n" for index in range(21)]
+    result = SimpleNamespace(returncode=1, warning=None, watchdog=None)
+
+    def fake_run_streaming(_argv, **kwargs):
+        for line in lines:
+            kwargs["on_line"](line)
+        return result
+
+    monkeypatch.setattr(runner.procio, "run_streaming", fake_run_streaming)
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        runner.run_command(["child"], Path("."), _LogSink(), quiet=True)
+
+    assert failed.value.returncode == 1
+    error_block = capsys.readouterr().err.split("[ERROR] Last ", 1)[0]
+    assert "[ERROR] 20 error-looking line(s)" in error_block
+    assert error_block.count("[ERROR] diagnostic ") == 20
+    assert "[ERROR] diagnostic 19\n" in error_block
+    assert "[ERROR] diagnostic 20\n" not in error_block
+
+
 def test_streamed_child_line_is_visible_before_run_command_returns(monkeypatch):
     stream = _ReaderVisibleStream()
     result = SimpleNamespace(returncode=0, warning=None, watchdog=None)
