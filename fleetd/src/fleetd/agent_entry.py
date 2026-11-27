@@ -89,28 +89,30 @@ def _service(policy_path: Path, state_dir: Path) -> tuple[AgentVerbService, Agen
             "container_inspector": docker_container_identity_inspector(policy.query_timeout_s),
         }
 
-    def guard_presence() -> bool | None:
-        try:
-            facts = collect_host_facts()
-        except Exception:
-            return None
-        guard = facts.get("guard") if isinstance(facts, Mapping) else None
-        present = guard.get("guard_present") if isinstance(guard, Mapping) else None
-        value = present.get("v") if isinstance(present, Mapping) else None
-        return value if isinstance(value, bool) else None
+    executor = None
+    if getattr(policy, "executor_enabled", False) is True:
+        def guard_presence() -> bool | None:
+            try:
+                facts = collect_host_facts()
+            except Exception:
+                return None
+            guard = facts.get("guard") if isinstance(facts, Mapping) else None
+            present = guard.get("guard_present") if isinstance(guard, Mapping) else None
+            value = present.get("v") if isinstance(present, Mapping) else None
+            return value if isinstance(value, bool) else None
 
-    executor = HostJobExecutor(
-        state_dir,
-        policy,
-        policy_path=policy_path,
-        guard_presence=guard_presence,
-    )
+        executor = HostJobExecutor(
+            state_dir,
+            policy,
+            policy_path=policy_path,
+            guard_presence=guard_presence,
+        )
     service_args = (state_dir, policy, collect_host_facts)
     service_kwargs = {"agent_version": installed_agent_version(), **provider_kwargs}
     constructor = inspect.signature(AgentVerbService).parameters
-    if "executor" in constructor or any(
+    if executor is not None and ("executor" in constructor or any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in constructor.values()
-    ):
+    )):
         service_kwargs["executor"] = executor
     service = AgentVerbService(*service_args, **service_kwargs)
     return service, policy

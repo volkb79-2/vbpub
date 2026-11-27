@@ -161,7 +161,7 @@ def test_service_loads_policy_and_converts_the_packaged_version(tmp_path, monkey
 
 
 def test_service_wires_executor_and_reads_guard_presence_from_host_facts(tmp_path, monkeypatch):
-    policy = object()
+    policy = type("Policy", (), {"executor_enabled": True})()
 
     class Executor:
         def __init__(self, state_dir, loaded_policy, *, policy_path, guard_presence):
@@ -194,8 +194,31 @@ def test_service_wires_executor_and_reads_guard_presence_from_host_facts(tmp_pat
     assert service.executor.guard_presence() is False
 
 
+def test_service_does_not_construct_or_wire_executor_until_enabled(tmp_path, monkeypatch):
+    policy = type("Policy", (), {"executor_enabled": False})()
+    calls = {}
+
+    def forbidden_executor(*_args, **_kwargs):
+        raise AssertionError("disabled executor must not be constructed")
+
+    class Service:
+        def __init__(self, state_dir, loaded_policy, facts_provider, *, agent_version, **kwargs):
+            calls["service"] = (state_dir, loaded_policy, facts_provider, agent_version, kwargs)
+
+    monkeypatch.setattr(agent_entry, "load_agent_policy", lambda _path: policy)
+    monkeypatch.setattr(agent_entry, "HostJobExecutor", forbidden_executor)
+    monkeypatch.setattr(agent_entry, "AgentVerbService", Service)
+    monkeypatch.setattr(agent_entry, "installed_agent_version", lambda: "1.2.3")
+
+    service, loaded = agent_entry._service(tmp_path / "agent.toml", tmp_path / "state")
+
+    assert isinstance(service, Service)
+    assert loaded is policy
+    assert "executor" not in calls["service"][4]
+
+
 def test_service_guard_presence_stays_unknown_when_host_facts_fail(tmp_path, monkeypatch):
-    policy = object()
+    policy = type("Policy", (), {"executor_enabled": True})()
 
     class Executor:
         def __init__(self, *_args, guard_presence, **_kwargs):

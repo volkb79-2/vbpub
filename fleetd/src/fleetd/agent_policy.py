@@ -45,6 +45,7 @@ class AgentPolicy:
     extra_argv: frozenset[tuple[str, ...]]
     dev_argv: frozenset[tuple[str, ...]]
     env_values: Mapping[str, frozenset[str]]
+    executor_enabled: bool = False
 
     def resolve_peer(self, uid: int, gid: int) -> AgentIdentity:
         """Map Linux SO_PEERCRED's UID and primary GID to one identity."""
@@ -211,12 +212,14 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
     except tomllib.TOMLDecodeError as exc:
         raise ContractError(f"agent policy {path}: invalid TOML: {exc}") from exc
 
-    root = _object(
-        parsed, "agent.toml",
-        {"schema_version", "idle_connection_s", "query_timeout_s", "identities", "repo_roots", "requested_by_clients",
-         "extra_argv", "dev_argv", "env_values", "lease_reconcile_interval_s", "lease_bind_timeout_s",
-         "max_connections", "legacy_jobs_dir", "runner_user"},
-    )
+    policy_keys = {
+        "schema_version", "idle_connection_s", "query_timeout_s", "identities", "repo_roots", "requested_by_clients",
+        "extra_argv", "dev_argv", "env_values", "lease_reconcile_interval_s", "lease_bind_timeout_s",
+        "max_connections", "legacy_jobs_dir", "runner_user",
+    }
+    if isinstance(parsed, dict) and "executor_enabled" in parsed:
+        policy_keys.add("executor_enabled")
+    root = _object(parsed, "agent.toml", policy_keys)
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         raise ContractError("agent.toml.schema_version: expected integer 1")
     idle_connection_s = _positive_number(root["idle_connection_s"], "agent.toml.idle_connection_s")
@@ -230,6 +233,9 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
     )
     max_connections = _positive_integer(root["max_connections"], "agent.toml.max_connections")
     runner_user = _safe_name(root["runner_user"], "agent.toml.runner_user")
+    executor_enabled = root.get("executor_enabled", False)
+    if type(executor_enabled) is not bool:
+        raise ContractError("agent.toml.executor_enabled: expected boolean")
     identities = _identities(root["identities"])
 
     raw_roots = root["repo_roots"]
@@ -256,5 +262,5 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
     return AgentPolicy(
         idle_connection_s, query_timeout_s, legacy_jobs_dir, lease_reconcile_interval_s, lease_bind_timeout_s,
         max_connections, runner_user, identities, repo_roots, requested_by_clients,
-        extra_argv, dev_argv, env_values,
+        extra_argv, dev_argv, env_values, executor_enabled,
     )
