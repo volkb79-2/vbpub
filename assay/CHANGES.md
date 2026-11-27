@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+- fix(assay): include reclaimable file cache and slab in B105 RAM admission
+  (B599)
+
 <!-- cmru: release history -->
 
 ## [12.4.0] - 2026-11-27

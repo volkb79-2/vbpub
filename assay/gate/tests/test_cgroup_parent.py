@@ -100,14 +100,19 @@ if args and args[0] == "logs":
     except (OSError, json.JSONDecodeError):
         probe = {}
     if probe.get("memory_stat_mount"):
-        output += "\nASSAY_MEMORY_STAT_BEGIN\n"
+        memory_stat_output = "\nASSAY_MEMORY_STAT_BEGIN\n"
         if os.environ["MEMORY_STAT_READ_ERROR"] == "1":
-            output += "ASSAY_MEMORY_STAT_READ_ERROR\n"
+            memory_stat_output += "ASSAY_MEMORY_STAT_READ_ERROR\n"
         else:
-            output += os.environ["MEMORY_STAT_DATA"]
-            if not output.endswith("\n"):
-                output += "\n"
-        output += "ASSAY_MEMORY_STAT_END"
+            memory_stat_output += os.environ["MEMORY_STAT_DATA"]
+            if not memory_stat_output.endswith("\n"):
+                memory_stat_output += "\n"
+        memory_stat_output += "ASSAY_MEMORY_STAT_END\n"
+        output = output.replace(
+            "ASSAY_UNIT_END=dev-gates.slice\n",
+            memory_stat_output + "ASSAY_UNIT_END=dev-gates.slice\n",
+            1,
+        )
     print(output)
     raise SystemExit(0)
 if args and args[0] == "rm":
@@ -157,6 +162,7 @@ raise SystemExit(2)
             "MemorySwapMax": "18446744073709551615",
         })
     legacy_names = {
+        "ControlGroup": "ControlGroup",
         "memory.max": "MemoryMax",
         "memory.high": "MemoryHigh",
         "memory.swap.max": "MemorySwapMax",
@@ -280,6 +286,7 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert "--cgroupns=private" in unit_call
     assert "--cgroupns=host" not in unit_call
     assert "source=/sys/fs/cgroup" not in " ".join(unit_call)
+    assert "host-memory.stat" not in " ".join(unit_call)
     assert owner_check_call[0:2] == ["inspect", "f" * 64]
     assert remove_check_call[0:2] == ["inspect", "f" * 64]
     assert wait_call == ["wait", "f" * 64]
@@ -658,6 +665,256 @@ def test_b105_admits_when_reclaimable_cache_makes_reservation_fit(tmp_path: Path
     assert proc.returncode == 0, proc.stderr
     assert "raw_headroom=1073741824" in proc.stderr
     assert "adjusted_headroom=3221225472" in proc.stderr
+
+
+def test_b105_reclaimable_mount_is_one_read_only_file(tmp_path: Path):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "7516192768"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    unit_run = next(call for call in calls if call[0] == "run")
+    memory_mounts = [
+        arg for arg in unit_run
+        if arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+    ]
+    assert memory_mounts == [
+        "--mount=type=bind,source=/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.stat,"
+        "target=/tmp/host-memory.stat,readonly"
+    ]
+    assert "--cgroupns=private" in unit_run
+    assert "--cgroupns=host" not in unit_run
+
+
+@pytest.mark.parametrize(
+    "memory_stat",
+    [
+        "inactive_file 1073741824\nslab_reclaimable 0\nfile_dirty 0\n",
+        "inactive_file 1073741824\ninactive_file 1\nslab_reclaimable 0\nfile_dirty 0\nfile_writeback 0\n",
+        "inactive_file 1073741824\nslab_reclaimable 0\nfile_dirty many\nfile_writeback 0\n",
+        "inactive_file 1000000000000000000\nslab_reclaimable 0\nfile_dirty 0\nfile_writeback 0\n",
+    ],
+    ids=["missing-key", "duplicate-key", "non-numeric", "out-of-range"],
+)
+def test_invalid_memory_stat_uses_raw_headroom(
+    tmp_path: Path, memory_stat: str
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=memory_stat,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "raw_headroom=3221225472" in proc.stderr
+    assert "adjusted_headroom=3221225472" in proc.stderr
+    assert "basis=raw" in proc.stderr
+
+
+def test_unreadable_memory_stat_uses_raw_headroom(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+        memory_stat_read_error=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "raw_headroom=3221225472" in proc.stderr
+    assert "adjusted_headroom=3221225472" in proc.stderr
+    assert "basis=raw" in proc.stderr
+
+
+def test_memory_stat_mount_failure_retries_unmounted_and_cleans_owned_probe(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+        memory_stat_mount_failure=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "retrying the unmounted systemd probe" in proc.stderr
+    assert "raw_headroom=3221225472" in proc.stderr
+    assert "adjusted_headroom=3221225472" in proc.stderr
+    assert "basis=raw" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    run_indexes = [index for index, call in enumerate(calls) if call[0] == "run"]
+    assert len(run_indexes) == 2
+    first_run, fallback_run = (calls[index] for index in run_indexes)
+    first_name = next(arg.split("=", 1)[1] for arg in first_run if arg.startswith("--name="))
+    fallback_name = next(arg.split("=", 1)[1] for arg in fallback_run if arg.startswith("--name="))
+    first_owner = next(
+        arg.split("=", 1)[1]
+        for arg in first_run
+        if arg.startswith("--label=io.assay.cgroup-parent.owner=")
+    )
+    fallback_owner = next(
+        arg.split("=", 1)[1]
+        for arg in fallback_run
+        if arg.startswith("--label=io.assay.cgroup-parent.owner=")
+    )
+    assert first_name != fallback_name
+    assert first_owner != fallback_owner
+    assert any(
+        arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+        for arg in first_run
+    )
+    assert not any(
+        arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+        for arg in fallback_run
+    )
+    assert calls[run_indexes[0] + 1][0:2] == ["inspect", first_name]
+    assert calls[run_indexes[0] + 2] == ["rm", "--force", "f" * 64]
+    assert any(
+        "io.assay.cgroup-parent.owner" in arg
+        for arg in calls[run_indexes[0] + 1]
+    )
+
+
+def test_dirty_and_writeback_subtract_reclaimable_memory_down_to_zero(
+    tmp_path: Path,
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "7516192768"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 1073741824\n"
+            "slab_reclaimable 1073741824\n"
+            "file_dirty 1073741824\n"
+            "file_writeback 1073741824\n"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert "has 1073741824 bytes of RAM headroom" in proc.stderr
+    assert "raw_headroom=1073741824" in proc.stderr
+    assert "adjusted_headroom=1073741824" in proc.stderr
+    assert "basis=memory.stat-adjusted" in proc.stderr
+
+
+def test_adjusted_headroom_is_clamped_at_memory_max(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "1073741824"},
+        memory_reserve_bytes=8053063680,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 2147483648\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "raw_headroom=7516192768" in proc.stderr
+    assert "adjusted_headroom=8589934592" in proc.stderr
+    assert "basis=memory.stat-adjusted" in proc.stderr
+
+
+def test_reservation_refuses_when_adjusted_headroom_is_still_short(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "7516192768"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 536870912\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert "has 1610612736 bytes of RAM headroom" in proc.stderr
+    assert "raw_headroom=1073741824" in proc.stderr
+    assert "adjusted_headroom=1610612736" in proc.stderr
+    assert "basis=memory.stat-adjusted" in proc.stderr
+
+
+def test_memory_stat_is_not_used_when_control_group_does_not_match_rel(
+    tmp_path: Path,
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={
+            "ControlGroup": "/dev.slice/dev-other.slice",
+            "memory.current": "7516192768",
+        },
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert "unexpected ControlGroup" in proc.stderr
+    assert "RAM admission OK" not in proc.stderr
+
+
+def test_memory_current_above_max_still_refuses_with_reclaimable_cache(
+    tmp_path: Path,
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "9663676416"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert "reports memory.current above memory.max" in proc.stderr
 
 
 def test_b105_refuses_insufficient_or_unknown_ram_headroom(tmp_path: Path):
