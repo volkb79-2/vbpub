@@ -141,7 +141,7 @@ class PolicyFacts:
     priority_classes_by_principal: Fact[Mapping[str, tuple[str, ...]]]
     disk_floors: Fact[Mapping[str, int]]
     psi_refuse_some_avg10: Fact[float]
-    admission: Fact[Mapping[str, float]]
+    admission: Fact[Mapping[str, object]]
     aging_s: Fact[float]
     legacy_charge_bytes: Fact[int]
     legacy_planned_cores: Fact[float]

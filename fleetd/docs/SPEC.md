@@ -24,9 +24,12 @@ so the full charge remains reserved. Stored observations never reduce a
 reservation. Policy is host-owned and includes footprint charges, planned RAM
 and CPU caps, PSI and disk floors, allowed priorities, and required `aging_s`.
 `legacy_charge_bytes` and `legacy_planned_cores` are required when the legacy
-job provider lists any job. Design package C adds these values to the host
-policy schema; it must extend the closed `facts.toml.policy` key set in
-`facts.py` before deployment writes those keys.
+job provider lists any job. The closed `facts.toml.policy` schema accepts all
+three as optional positive inputs: seconds, bytes, and cores. `/2` reports each
+with its unit and source, or with a `not-configured` reason; `/1` is unchanged.
+Host config must gain these keys only after installing a fleetd release that
+accepts them. The current policy values for legacy jobs are required when used;
+`legacy_planned_cores` is positive.
 
 `AdmissionBook(state_dir, clock, waiter)` makes one serialized decision at a
 time. The caller supplies the state directory (production uses
@@ -49,8 +52,9 @@ freeze rule. Each listed legacy job without an `EXIT` marker is charged
 `legacy_charge_bytes` and `legacy_planned_cores`; its directory remains charged
 until an `EXIT` marker removes it from the required provider's list. Unknown
 needed policy values return 75 with the key named in the reason; an expired wait
-appends its last refusal reason. `legacy_planned_cores` may be 0. A known but
-invalid policy value (for example `aging_s` of 0) refuses with 2. A capacity
+appends its last refusal reason. `legacy_planned_cores` must be positive when
+configured. A known but invalid policy value (for example `aging_s` of 0)
+refuses with 2. A capacity
 provider that raises returns 75.
 
 The capacity provider, the legacy job provider and the inspector run under

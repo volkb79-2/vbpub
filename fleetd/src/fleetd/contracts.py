@@ -547,6 +547,29 @@ def _wrapped(
     return check(obj["v"], f"{where}.v")
 
 
+def _wrapped_configured(
+    value: object,
+    where: str,
+    check: Callable[[object, str], object],
+    *,
+    unit: str,
+) -> object:
+    """Validate a configured fact with explicit source and unit metadata."""
+    obj = _object(value, where, {"v", "unit", "source"}, {"reason"})
+    actual_unit = _string(obj["unit"], f"{where}.unit")
+    if actual_unit != unit:
+        raise ContractError(f"{where}.unit: expected {unit!r}")
+    _string(obj["source"], f"{where}.source")
+    if obj["v"] is None:
+        if "reason" not in obj:
+            raise ContractError(f"{where}: null requires reason")
+        _string(obj["reason"], f"{where}.reason")
+        return None
+    if "reason" in obj:
+        raise ContractError(f"{where}.reason: only allowed when v is null")
+    return check(obj["v"], f"{where}.v")
+
+
 def _wrapped_int(value: object, where: str, *, minimum: int = 0) -> object:
     return _wrapped(value, where, lambda item, path: _integer(item, path, minimum=minimum))
 
@@ -886,7 +909,7 @@ def _validate_host_facts_2(value: object) -> HostFacts:
     policy = _object(root["policy"], "host-facts/2.policy", {
         "host_role", "psi_refuse_some_avg10", "max_lane_containers", "planning_cap", "max_footprint",
         "max_planned_bytes", "footprint_charges_bytes", "priority_classes_by_principal", "disk_floors",
-        "max_upload_bytes", "admission",
+        "max_upload_bytes", "admission", "aging_s", "legacy_charge_bytes", "legacy_planned_cores",
     })
     def host_role(value: object, where: str) -> object:
         role = _string(value, where)
@@ -909,6 +932,22 @@ def _validate_host_facts_2(value: object) -> HostFacts:
     _wrapped(policy["disk_floors"], "host-facts/2.policy.disk_floors", _v2_policy_object("disk_floors"))
     _wrapped_int(policy["max_upload_bytes"], "host-facts/2.policy.max_upload_bytes", minimum=1)
     _wrapped(policy["admission"], "host-facts/2.policy.admission", _v2_policy_object("admission"))
+    def positive_number(value: object, where: str) -> object:
+        result = _number(value, where, minimum=0)
+        if result <= 0:
+            raise ContractError(f"{where}: must be greater than zero")
+        return result
+    _wrapped_configured(
+        policy["aging_s"], "host-facts/2.policy.aging_s", positive_number, unit="seconds",
+    )
+    _wrapped_configured(
+        policy["legacy_charge_bytes"], "host-facts/2.policy.legacy_charge_bytes",
+        lambda item, path: _integer(item, path, minimum=1), unit="bytes",
+    )
+    _wrapped_configured(
+        policy["legacy_planned_cores"], "host-facts/2.policy.legacy_planned_cores",
+        positive_number, unit="cores",
+    )
 
     _wrapped_group(root["queue"], "host-facts/2.queue", {
         "planned_cores": lambda item, path: _wrapped_num(item, path, minimum=0),

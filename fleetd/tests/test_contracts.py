@@ -49,6 +49,10 @@ def _unknown(reason="not-collected by this host-facts source"):
     return {"v": None, "reason": reason}
 
 
+def _configured(value, unit):
+    return {"v": value, "unit": unit, "source": "/etc/fleetd/facts.toml"}
+
+
 def _host_facts_2():
     services = {
         unit: {"memory_min_bytes": _v(1024), "load_state": _v("loaded")}
@@ -118,6 +122,9 @@ def _host_facts_2():
             "disk_floors": _v({"checkout": 1000, "docker": 2000}),
             "max_upload_bytes": _v(1024**3),
             "admission": _v({"queue_path": "/run/fleetd/queue", "wait_s": 30, "settle_s": 5}),
+            "aging_s": _configured(60, "seconds"),
+            "legacy_charge_bytes": _configured(512 * 1024**2, "bytes"),
+            "legacy_planned_cores": _configured(1.5, "cores"),
         },
         "queue": {
             "planned_cores": _unknown("not-collected: admission book arrives with the host agent"),
@@ -131,7 +138,11 @@ def _host_facts_2():
 
 def _walk_v2_wrappers(value, path=()):
     if isinstance(value, dict):
-        if "v" in value and set(value) <= {"v", "reason"}:
+        allowed = {"v", "reason", "unit", "source"}
+        is_value_wrapper = "v" in value and set(value) <= allowed and (
+            set(value) <= {"v", "reason"} or {"unit", "source"}.issubset(value)
+        )
+        if is_value_wrapper:
             yield path, value
             yield from _walk_v2_wrappers(value["v"], (*path, "v"))
             return
@@ -221,6 +232,11 @@ def test_host_facts_v2_rejects_invalid_metadata_shapes_and_policy_values():
         (lambda data: data["policy"].update(priority_classes_by_principal=_v({"worker": ["unknown"]})), "contains an unknown priority class"),
         (lambda data: data["policy"].update(disk_floors=_v({"checkout": -1})), "disk_floors.v.checkout: must be at least 0"),
         (lambda data: data["policy"].update(admission=_v({"queue_path": "/queue", "wait_s": -1, "settle_s": 5})), "admission.v.wait_s: must be at least 0"),
+        (lambda data: data["policy"].update(aging_s=_configured(0, "seconds")), "aging_s.v: must be greater than zero"),
+        (lambda data: data["policy"].update(aging_s=_configured(60, "milliseconds")), "aging_s.unit: expected 'seconds'"),
+        (lambda data: data["policy"].update(legacy_charge_bytes=_configured(0, "bytes")), "legacy_charge_bytes.v: must be at least 1"),
+        (lambda data: data["policy"].update(legacy_planned_cores=_configured(False, "cores")), "legacy_planned_cores.v: expected number"),
+        (lambda data: data["policy"].update(legacy_planned_cores=_configured(0, "cores")), "legacy_planned_cores.v: must be greater than zero"),
         (lambda data: data.update(jobs=_v("not-an-array")), "jobs.v: expected array"),
         (lambda data: data.update(tools=_v({"run_gate": [], "images": []})), "tools.v.images: expected object"),
         (lambda data: data.update(tools=_v({"run_gate": [], "images": {"": "digest"}})), "images name: expected non-empty string"),

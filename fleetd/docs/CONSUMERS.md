@@ -209,6 +209,15 @@ configured policy value; `cpu.planning_cap` is separately derived from the
 gate-slice CPU limit. Checkout and Docker roots enable `disks[]` collection;
 without either configured root, the disk list is null with a reason, and a
 missing per-disk floor is null in that disk's row.
+
+The optional admission policy keys `aging_s`, `legacy_charge_bytes`, and
+`legacy_planned_cores` are accepted by this fleetd version. They are positive
+seconds, bytes, and cores respectively, and `/2` records their unit and
+`/etc/fleetd/facts.toml` source. Omission produces a null fact with a reason;
+it does not create an admission default. Add these keys to a host's config only
+after installing a released fleetd version that accepts them, because the
+config schema rejects unknown keys.
+
 The host role is read from `host_setup_env`, which points to the existing
 host-owned `HOST_ROLE` setting. `max_lane_containers`, `guard_state`, and
 `ksm_optin_shim` may be omitted; their facts stay null with a reason. The
