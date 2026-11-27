@@ -1918,10 +1918,10 @@ state. Progress emits
 
 `--resume` reuses matching saved records, including records bucketed
 `crashed`; those records do not receive an automatic tail retry. To explicitly
-execute cached crashes again, pass `--rejudge crashed` with `--resume`:
+execute cached crashes again, pass `--resume --rejudge-outcome crashed`:
 
 ```sh
-assay run <lane> --resume --rejudge crashed \
+assay run <lane> --resume --rejudge-outcome crashed \
   --progress .assay/progress-<lane>.jsonl
 ```
 
@@ -1996,7 +1996,7 @@ mutant was never re-executed against the assertion that kills it.
 A new Assay build re-executes resumed campaign state because the Assay version
 is part of the judge identity. A matching cached `crashed` record is reused by
 `--resume`; see [B179](#retry-unresolved-native-r2-candidates-at-sweep-end-b179)
-for the explicit `--rejudge crashed` command.
+for the explicit `--resume --rejudge-outcome crashed` command.
 
 Every native R2 `candidate` progress event includes `resource_limit_changes`,
 with an empty list when no configured limit values changed.
@@ -2199,9 +2199,9 @@ format still lets the annotated lines feed `--only-candidates`.
 
 A carried survivor can be carried again from the old generation even after a
 new test would kill it. When at least one survivor is carried, the run's text
-output says once that carried survivors stay carried until `--rejudge-carried`
-(or a WP4 replay) runs. Until that flag lands, `--rejudge-outcome survived`
-forces the full re-run now.
+output says once that carried survivors stay carried. Re-run them with
+`assay run <lane> --resume --rejudge-outcome survived`; the resume path drops
+matching `survived` records before it resumes candidates.
 
 `--merge-state DIR` (repeatable) copies records of the SAME judge from another
 store -- the way shard stores are merged (below). It needs no reason; records

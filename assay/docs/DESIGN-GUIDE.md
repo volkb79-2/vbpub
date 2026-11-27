@@ -1884,7 +1884,7 @@ existing schema. The additive `candidate_retry` progress event records
 This ordering reserves the initial campaign budget for full candidate coverage
 and keeps resource-event windows serial. A retry result is evidence from the
 current invocation, so `--resume` reuses a matching cached `crashed` record
-without starting another retry. Use `--resume --rejudge crashed` when an
+without starting another retry. Use `--resume --rejudge-outcome crashed` when an
 operator intends to execute those saved candidates again; a rejudged candidate
 can receive the same one retry if its fresh result remains unresolved.
 
