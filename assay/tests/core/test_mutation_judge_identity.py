@@ -2221,7 +2221,9 @@ def test_other_passthrough_value_digests_are_not_written_to_the_sidecar(
     state_dir = tmp_path / "state"
     _run(git_repo, state_dir, tmp_path / "progress.jsonl")
 
-    sidecars = tuple((state_dir / "judges").glob("*/judge-components.json"))
+    sidecars = tuple(
+        (state_dir / ".diagnostics" / "judge-components").glob("*.json")
+    )
     assert len(sidecars) == 1
     raw = sidecars[0].read_bytes()
     assert hashlib.sha256(value.encode("utf-8")).hexdigest().encode("ascii") not in raw
@@ -2229,6 +2231,37 @@ def test_other_passthrough_value_digests_are_not_written_to_the_sidecar(
     assert "INSTANCE_ROOT" in components["passthrough_names"]
     assert set(components["passthrough_values"]) <= {"PATH", "PYTHONPATH"}
     assert len(components["passthrough_other_values_sha256"]) == 64
+
+
+def test_sidecar_write_failure_does_not_undo_candidate_records(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    _seed(git_repo, _BLIND_JUDGE)
+    state_dir = tmp_path / "state"
+    real_fsync = mutation._durable.fsync
+    state_directory_syncs = 0
+
+    def fail_diagnostic_directory_sync(descriptor):
+        nonlocal state_directory_syncs
+        if os.readlink(f"/proc/self/fd/{descriptor}") == str(state_dir):
+            state_directory_syncs += 1
+            if state_directory_syncs == 2:
+                raise OSError("injected diagnostic directory sync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(mutation._durable, "fsync", fail_diagnostic_directory_sync)
+    events = _run(git_repo, state_dir, tmp_path / "progress.jsonl")
+
+    records = _records(state_dir)
+    assert len(_candidates(events)) == 1
+    assert len(records) == 1
+    assert state_directory_syncs == 2
+    assert not (
+        state_dir
+        / ".diagnostics"
+        / "judge-components"
+        / f"{records[0]['judge_sha256']}.json"
+    ).exists()
 
 
 _TWO_INSTANCE_LANE = _LANE.replace(
@@ -2303,7 +2336,7 @@ def test_hostile_sidecar_names_make_components_unavailable(tmp_path: Path):
     mutation_store.write_judge_components(
         state_dir, judge=judge, components=components
     )
-    sidecar = state_dir / "judges" / judge / "judge-components.json"
+    sidecar = state_dir / ".diagnostics" / "judge-components" / f"{judge}.json"
     baseline = json.loads(sidecar.read_bytes())
     hostile_name_sets = (
         ["PATH", "BAD\nNAME"],
@@ -2333,7 +2366,7 @@ def test_judge_component_diagnostic_bounds_output_size(tmp_path: Path):
     mutation_store.write_judge_components(
         state_dir, judge=judge, components=components
     )
-    sidecar = state_dir / "judges" / judge / "judge-components.json"
+    sidecar = state_dir / ".diagnostics" / "judge-components" / f"{judge}.json"
     document = json.loads(sidecar.read_bytes())
     names = [f"N{index:03d}" + "A" * 124 for index in range(64)]
     _rewrite_sidecar_names(document, names)
@@ -2359,7 +2392,9 @@ def test_legacy_resume_store_without_component_digests_still_rejects_safely(
     monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-a")
     first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
     assert len(_candidates(first)) == 1
-    component_files = tuple((state_dir / "judges").glob("*/judge-components.json"))
+    component_files = tuple(
+        (state_dir / ".diagnostics" / "judge-components").glob("*.json")
+    )
     assert len(component_files) == 1
     component_files[0].unlink()
     capsys.readouterr()

@@ -3265,21 +3265,6 @@ def run_mutation(
             if state_root is not None
             else None
         )
-        if state_root is not None and judge is not None:
-            if state_root_guard is not None:
-                state_root_guard()
-            try:
-                mutation_store.write_judge_components(
-                    Path(state_root),
-                    judge=judge,
-                    components=judge_components,
-                    state_root_fd=state_root_fd,
-                )
-            except OSError:
-                # Component metadata is diagnostic only. A store without it
-                # still resumes under the same record rules and will say the
-                # reason is unavailable if a later judge mismatch occurs.
-                pass
         if shard_specified and judge is not None and flex is not None:
             assert state_root is not None and shard_index is not None
             assert shard_count is not None
@@ -3574,6 +3559,14 @@ def run_mutation(
             candidate_fail_fast=candidate_fail_fast,
         )
 
+        # The component sidecar is diagnostic only. Remember whether this
+        # invocation has any durable current-judge records before adding
+        # unselected, never-started outcomes below; the sidecar belongs in the
+        # same store but outside the candidate and generation namespaces.
+        has_judge_records = bool(resumed_records) or any(
+            getattr(result_payload, bucket) for bucket in MUTATION_BUCKETS
+        )
+
         if resumed_records:
             executed_telemetry = result_payload.r2_telemetry
             result_payload = merge_mutations(result_payload, resumed_records)
@@ -3675,6 +3668,18 @@ def run_mutation(
             )
             if complete_campaign:
                 deadline.remaining()
+        if state_root is not None and judge is not None and has_judge_records:
+            try:
+                mutation_store.write_judge_components(
+                    Path(state_root),
+                    judge=judge,
+                    components=judge_components,
+                    state_root_fd=state_root_fd,
+                )
+            except Exception:
+                # Diagnostic metadata must never affect record durability,
+                # rollback, deadline checks, or the campaign result.
+                pass
         return result_payload
 
 

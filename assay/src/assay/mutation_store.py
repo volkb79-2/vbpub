@@ -582,6 +582,11 @@ JUDGE_GENERATIONS_DIR = "judges"
 #: store; not a `<id>.json` name, so no record reader ever mistakes it.
 SHARD_MANIFEST_NAME = "shard.manifest"
 SHARD_MANIFEST_SCHEMA = "assay-shard-store/1"
+# Diagnostic component digests live outside the record-generation namespace.
+# They remain inside the state root so whole-store collection and seeding carry
+# them along, while record scans under the root and `judges/` never see them.
+JUDGE_COMPONENTS_DIR = ".diagnostics"
+JUDGE_COMPONENTS_SUBDIR = "judge-components"
 JUDGE_COMPONENTS_NAME = "judge-components.json"
 JUDGE_COMPONENTS_SCHEMA = "assay-judge-components/2"
 _JUDGE_COMPONENTS_LIMIT = 256 * 1024
@@ -1086,6 +1091,35 @@ def _open_generation_dir(
             os.close(descriptor)
 
 
+def _open_judge_components_dir(root_fd: int, *, create: bool) -> int | None:
+    """Open ``.diagnostics/judge-components`` below *root_fd* safely."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    current = root_fd
+    opened: list[int] = []
+    try:
+        for name in (JUDGE_COMPONENTS_DIR, JUDGE_COMPONENTS_SUBDIR):
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+                else:
+                    # This directory is diagnostic only. Sync its parent for
+                    # store-copy durability, independently of candidate
+                    # record ordering and only after the campaign work ends.
+                    _durable.fsync(current)
+            try:
+                current = os.open(name, flags, dir_fd=current)
+            except FileNotFoundError:
+                return None
+            opened.append(current)
+        result = opened.pop()
+        return result
+    finally:
+        for descriptor in opened:
+            os.close(descriptor)
+
+
 def write_judge_components(
     state_root: Path | str,
     *,
@@ -1093,10 +1127,12 @@ def write_judge_components(
     components: Mapping[str, Any],
     state_root_fd: int | None = None,
 ) -> None:
-    """Persist B577's diagnostic digests beside this judge's records.
+    """Persist B577's diagnostic digests inside the store, outside records.
 
     Component metadata is diagnostic only. It contains digests and names,
-    never environment values; older stores without it remain valid.
+    never environment values; older stores without it remain valid. Its
+    ``.diagnostics/judge-components/<judge>.json`` location travels with a
+    collected or seeded store without entering the durable record namespace.
     """
     if _CANDIDATE_ID_RE.fullmatch(judge) is None:
         raise ValueError(f"judge identity must be a SHA-256 digest, got {judge!r}")
@@ -1114,17 +1150,17 @@ def write_judge_components(
         raise ValueError("judge component metadata exceeds its size limit")
     root_fd = _open_state_dir_fd(state_root, state_root_fd)
     try:
-        generation_fd = _open_generation_dir(root_fd, judge, create=True)
-        assert generation_fd is not None
+        components_fd = _open_judge_components_dir(root_fd, create=True)
+        assert components_fd is not None
         try:
             temporary = (
-                f".{JUDGE_COMPONENTS_NAME}-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+                f".{judge}-{os.getpid()}-{os.urandom(8).hex()}.tmp"
             )
             descriptor = os.open(
                 temporary,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
                 0o600,
-                dir_fd=generation_fd,
+                dir_fd=components_fd,
             )
             try:
                 stream = os.fdopen(descriptor, "wb")
@@ -1137,26 +1173,26 @@ def write_judge_components(
                 if descriptor >= 0:
                     os.close(descriptor)
                 try:
-                    os.unlink(temporary, dir_fd=generation_fd)
+                    os.unlink(temporary, dir_fd=components_fd)
                 except FileNotFoundError:
                     pass
                 raise
             try:
                 os.replace(
                     temporary,
-                    JUDGE_COMPONENTS_NAME,
-                    src_dir_fd=generation_fd,
-                    dst_dir_fd=generation_fd,
+                    f"{judge}.json",
+                    src_dir_fd=components_fd,
+                    dst_dir_fd=components_fd,
                 )
             except BaseException:
                 try:
-                    os.unlink(temporary, dir_fd=generation_fd)
+                    os.unlink(temporary, dir_fd=components_fd)
                 except FileNotFoundError:
                     pass
                 raise
-            _durable.fsync(generation_fd)
+            _durable.fsync(components_fd)
         finally:
-            os.close(generation_fd)
+            os.close(components_fd)
     finally:
         os.close(root_fd)
 
@@ -1179,27 +1215,44 @@ def read_judge_components(
     except OSError:
         return None
     try:
-        generation_fd = _open_generation_dir(root_fd, judge, create=False)
-        if generation_fd is None:
-            return None
-        try:
-            descriptor = os.open(
-                JUDGE_COMPONENTS_NAME,
-                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
-                dir_fd=generation_fd,
-            )
+        components_fd = _open_judge_components_dir(root_fd, create=False)
+        if components_fd is not None:
             try:
-                info = os.fstat(descriptor)
-                if not stat.S_ISREG(info.st_mode) or info.st_size > _JUDGE_COMPONENTS_LIMIT:
-                    return None
-                with os.fdopen(descriptor, "rb") as stream:
-                    descriptor = -1
-                    raw = stream.read(_JUDGE_COMPONENTS_LIMIT + 1)
+                descriptor = os.open(
+                    f"{judge}.json",
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=components_fd,
+                )
+            except FileNotFoundError:
+                descriptor = -1
             finally:
-                if descriptor >= 0:
-                    os.close(descriptor)
+                os.close(components_fd)
+        else:
+            descriptor = -1
+        if descriptor < 0:
+            # Read stores written before B577's sidecar was moved out of the
+            # generation namespace. New writes never use this legacy path.
+            generation_fd = _open_generation_dir(root_fd, judge, create=False)
+            if generation_fd is None:
+                return None
+            try:
+                descriptor = os.open(
+                    JUDGE_COMPONENTS_NAME,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=generation_fd,
+                )
+            finally:
+                os.close(generation_fd)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _JUDGE_COMPONENTS_LIMIT:
+                return None
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                raw = stream.read(_JUDGE_COMPONENTS_LIMIT + 1)
         finally:
-            os.close(generation_fd)
+            if descriptor >= 0:
+                os.close(descriptor)
     except OSError:
         return None
     finally:
