@@ -2201,7 +2201,9 @@ A carried survivor can be carried again from the old generation even after a
 new test would kill it. When at least one survivor is carried, the run's text
 output says once that carried survivors stay carried. Re-run them with
 `assay run <lane> --resume --rejudge-outcome survived`; the resume path drops
-matching `survived` records before it resumes candidates.
+matching `survived` records before it resumes candidates. The printed command
+shows only these flags: keep the run's own `--state-dir`, `--file`, `--shard`
+and appended arguments when you repeat it.
 
 `--merge-state DIR` (repeatable) copies records of the SAME judge from another
 store -- the way shard stores are merged (below). It needs no reason; records
@@ -3085,9 +3087,9 @@ run-gate assay-r1      # command lane: no install, no pip needed (B549 / HOB-44)
 Rust R2 is not adopted yet; this is a known issue, not a per-release waiver.
 Assay's side of it (B245 U0-U5c: the `cargo-mutants-outcomes` ingestion, the
 changed-lines diff and the zero-mutant verdict) is implemented and documented
-in [Rust R2 lanes (cargo-mutants)](#rust-r2-lanes-cargo-mutants); what is still
-open is the consumer lane itself (hostobs, B245 U8) and the real-run
-qualification (U7). Its
+in [Rust R2 lanes (cargo-mutants)](#rust-r2-lanes-cargo-mutants). Real Rust R2
+qualification passed and hostobs has a hand-run consumer lane; what is still
+open is adoption, since no release gate runs Rust R2. Its
 target is a diff-scoped, 100%-killed cargo-mutants campaign at T3, run
 asynchronously against the latest release with `--base <previous release
 tag>`. It never gates a merge or release, and survivors become backlog items.

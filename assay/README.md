@@ -27,8 +27,8 @@ linking against assay itself.
   files; the lane must supply a real Rust toolchain. Stable Rust branch totals
   are reported as unavailable, and R3 remains unregistered. Rust R2 exists only
   by ingesting cargo-mutants' `outcomes.json` (format `cargo-mutants-outcomes`,
-  see [Rust R2 lanes](docs/CONSUMERS.md#rust-r2-lanes-cargo-mutants)); no
-  consumer has adopted it yet. Hostobs keeps
+  see [Rust R2 lanes](docs/CONSUMERS.md#rust-r2-lanes-cargo-mutants)); hostobs
+  has a hand-run consumer lane, but no release gate runs it. Hostobs keeps
   separate 90% line / 85% region crate floors, and has also adopted the
   `assay-r1` consumer lane (33 whole-target `src` files at a 95.0% line floor,
   declared alongside its own `selftest`) as a `kind = "command"` lane that runs
