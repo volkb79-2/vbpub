@@ -89,11 +89,13 @@ CLI only; the systemd units, socket group and host mounts belong to C3c, and
 the executor belongs to C3b.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
-`schema_version`, `idle_connection_s`, `query_timeout_s`, `identities`,
+`schema_version`, `idle_connection_s`, `query_timeout_s`,
+`lease_reconcile_interval_s`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
 `env_values`; none has a consumer-invented fallback. Both time values are
-positive. `query_timeout_s` bounds each capacity, legacy-job-list and
-object-inspector callback made while the admission queue lock is held. The peer
+positive. `lease_reconcile_interval_s` sets the exact-lease reconciliation
+period; there is no default. `query_timeout_s` bounds each capacity,
+legacy-job-list and object-inspector callback made while the admission queue lock is held. The peer
 table maps exact UID/primary-GID pairs to a principal and group;
 forced-command entries map their trusted group argument to the same identity
 shape. Request fields cannot choose either value. Loading the policy refuses
@@ -105,6 +107,12 @@ reading a request; it is not a submit wait or a run limit, and it does not
 apply to a lease after grant. `probe` includes `agent_version` and the verb
 field capabilities. Clients refuse a major-version mismatch; a minor or patch
 mismatch requires the host to advertise the requested verb and every field.
+A configured inspector reconciles pending and bound leases at startup and at
+the configured interval. Pre-bind disconnect tombstones before checking the
+exact name; bound leases are checked by immutable ID. Only a confirmed absence
+releases a charge. The granted-but-never-bound live-connection case has no
+deadline in §4.5; its held flock prevents pending reconciliation, so it remains
+charged until disconnect and exact-name reconciliation confirms absence.
 A missing or refusing local socket returns 3 with no fallback transport. The
 C3a wheel has no executor: submit refuses with exit 2 and a named reason before
 admission or a durable request write.

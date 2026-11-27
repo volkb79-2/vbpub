@@ -409,6 +409,8 @@ class AgentAdmission:
             existing = self.book.status(lease_id, identity.group)
             if existing is None or existing.get("schema") != "fleet-admission-lease/1":
                 raise AdmissionError(ExitCode.REFUSAL, "unknown lease id")
+            if existing.get("state") == "tombstone" or existing.get("released") is True:
+                raise AdmissionError(ExitCode.REFUSAL, "a revoked lease cannot be reconnected")
             prior_id = existing.get("container_id")
             if prior_id is not None and prior_id != container_id:
                 raise AdmissionError(ExitCode.REFUSAL, "reconnect container id does not match the immutable binding")
@@ -444,6 +446,8 @@ class AgentAdmission:
             waiter=waiter,
         )
         if result.handle is None:
+            if result.record.get("state") == "tombstone" or result.record.get("released") is True:
+                raise AdmissionError(ExitCode.REFUSAL, "a revoked lease cannot be reconnected")
             raise AdmissionError(
                 ExitCode.QUEUED_WITHDRAWN,
                 "lease already exists; reconnect with its immutable container_id",
@@ -487,3 +491,27 @@ class AgentAdmission:
         if inspector is None:
             raise AdmissionError(ExitCode.REFUSAL, "lease reconciliation requires an injected object inspector")
         return self.book.reconcile_lease(lease_id, identity.group, inspector)
+
+    def revoke_lease(self, lease_id: str, identity: AgentIdentity) -> Mapping[str, object] | None:
+        """Persist the no-more-bindings tombstone before a pending lease is inspected."""
+
+        return self.book.revoke_lease(lease_id, identity.group)
+
+    def reconcile_leases(self) -> tuple[Mapping[str, object], ...]:
+        """Reconcile exact durable lease targets; an unconfigured inspector is a no-op."""
+
+        inspector = self._inspector_provider()
+        if inspector is None:
+            return ()
+        results: list[Mapping[str, object]] = []
+        for record in self.book.lease_records():
+            lease_id = str(record["lease_id"])
+            group = str(record["group"])
+            try:
+                reconciled = self.book.reconcile_lease(lease_id, group, inspector)
+            except Exception:
+                # Uncertainty never releases the durable accounting charge.
+                continue
+            if reconciled is not None:
+                results.append(reconciled)
+        return tuple(results)

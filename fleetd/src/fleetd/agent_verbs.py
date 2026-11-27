@@ -137,6 +137,12 @@ class AgentVerbService:
             container_inspector=container_inspector,
         )
         self.executor = executor
+        self.admission.reconcile_leases()
+
+    def reconcile_leases(self) -> tuple[Mapping[str, object], ...]:
+        """Reconcile exact lease identities when the configured inspector is available."""
+
+        return self.admission.reconcile_leases()
 
     def _envelope(self, **fields: object) -> dict[str, object]:
         return {"schema": AGENT_SCHEMA, "agent_version": self.agent_version, **fields}
@@ -217,6 +223,7 @@ class AgentVerbService:
         lease_id = str(normalized["lease_id"])
         container_id = normalized.get("container_id")
         result = None
+        pending_new_lease = False
         try:
             if isinstance(container_id, str):
                 result = self.admission.reserve_lease(
@@ -232,6 +239,7 @@ class AgentVerbService:
                     priority=str(normalized["priority"]),
                     waiter=_lease_queue_waiter(stream),
                 )
+                pending_new_lease = True
                 self._write_lease_message(
                     stream, event="grant", lease_id=lease_id,
                     container_name=str(result.record["container_name"]),
@@ -247,11 +255,28 @@ class AgentVerbService:
                     raise AdmissionError(ExitCode.REFUSAL, "lease bind frame has an invalid closed shape")
                 container_id = str(bind_request["container_id"])
                 self.admission.bind_lease(lease_id, container_id, identity, result.handle)
+                pending_new_lease = False
                 self._write_lease_message(stream, event="bound", lease_id=lease_id, container_id=container_id)
             _wait_for_lease_disconnect(stream)
         finally:
             if result is not None and result.handle is not None:
-                result.handle.close()
+                if pending_new_lease:
+                    tombstoned = False
+                    try:
+                        self.admission.revoke_lease(lease_id, identity)
+                        tombstoned = True
+                    except Exception:
+                        pass
+                    finally:
+                        result.handle.close()
+                    if tombstoned:
+                        try:
+                            self.admission.reconcile_lease(lease_id, identity)
+                        except Exception:
+                            # A failed inspection leaves the tombstone charged for later reconciliation.
+                            pass
+                else:
+                    result.handle.close()
 
     def _write_lease_message(self, stream: object, **fields: object) -> None:
         write_frame(stream, self._envelope(**fields))

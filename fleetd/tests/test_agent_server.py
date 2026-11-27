@@ -1,10 +1,11 @@
 import os
+import select
 import socket
 import threading
 
 from fleetd.admission import ExitCode
 from fleetd.agent_protocol import read_frame, write_frame
-from fleetd.agent_server import AgentServer, serve_forced_command
+from fleetd.agent_server import AgentServer, open_agent_socket, serve_forced_command
 from test_agent_verbs import _service
 
 
@@ -82,6 +83,48 @@ def test_held_idle_connection_does_not_block_another_client(tmp_path):
         active_client.close()
         server.close()
         serving.join()
+
+
+def test_lease_reconciliation_uses_injected_interval_without_wall_clock_wait(tmp_path):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    socket_dir = tmp_path / "runtime"
+    socket_dir.mkdir()
+    socket_path = socket_dir / "agent.sock"
+    now = [0.0]
+    select_calls = [0]
+    reconciled = threading.Event()
+    server = None
+
+    def select_waiter(readers, writers, errors, timeout):
+        select_calls[0] += 1
+        if select_calls[0] == 1:
+            assert timeout == service.policy.lease_reconcile_interval_s
+            now[0] += timeout
+            return [], [], []
+        return select.select(readers, writers, errors, 0)
+
+    server = AgentServer(
+        open_agent_socket(socket_path), service, service.policy,
+        monotonic=lambda: now[0], select_waiter=select_waiter,
+    )
+    original_reconcile = service.reconcile_leases
+
+    def reconcile_and_close():
+        result = original_reconcile()
+        reconciled.set()
+        server.close()
+        return result
+
+    service.reconcile_leases = reconcile_and_close
+    serving = threading.Thread(target=server.serve_forever)
+    serving.start()
+
+    assert reconciled.wait(3), "periodic reconciliation did not run before the failure watchdog"
+    serving.join(timeout=3)
+    assert not serving.is_alive(), "server did not exit after its wake event"
+    assert select_calls[0] == 2
 
 
 def test_forced_command_uses_framed_stdin_stdout_and_transport_group(tmp_path):

@@ -11,7 +11,7 @@ import pytest
 from fleetd.admission import AdmissionError, ExitCode
 from fleetd.admission import InspectorAnswer
 from fleetd.agent_verbs import AgentVerbService
-from fleetd.agent_protocol import read_frame, write_frame
+from fleetd.agent_protocol import FrameError, read_frame, write_frame
 from fleetd.contracts import validate_host_facts
 from fleetd.facts import collect_host_facts
 from test_agent_protocol import _policy, _submit
@@ -91,8 +91,52 @@ def _body(reply):
         reply.close()
 
 
+def _lease_service(tmp_path, inspector, lease_id="controller-run-1"):
+    policy, _checkout = _policy(tmp_path)
+    raw_facts = collect_host_facts(
+        FACTS_ROOT,
+        disk_statvfs_reader=lambda _path: SimpleNamespace(
+            f_frsize=4096, f_bsize=4096, f_blocks=1_000_000, f_bavail=750_000,
+        ),
+    )
+    raw_facts["policy"]["priority_classes_by_principal"] = {
+        "v": {"controller-devcontainer": ["gate"]},
+    }
+    raw_facts["policy"]["admission"] = {
+        "v": {"queue_path": "/run/fleetd/queue", "wait_s": 30, "settle_s": 1},
+    }
+    facts = validate_host_facts(raw_facts)
+    service = AgentVerbService(
+        tmp_path / "state", policy, lambda: facts, agent_version="1.0.0",
+        legacy_jobs_provider=lambda: (),
+        inspector=inspector,
+        container_inspector=lambda inspected_id: {
+            "id": inspected_id, "name": "rg-test",
+            "labels": {"fleetd.lease": lease_id},
+        },
+    )
+    return service, policy.resolve_peer(1000, 100), facts
+
+
+def _lease_worker(service, request, identity, server, outcomes, finished):
+    try:
+        service.serve_lease(request, identity, server)
+    except BaseException as exc:
+        outcomes.append(exc)
+    finally:
+        server.close()
+        finished.set()
+
+
+def _assert_worker_finished(thread, finished):
+    assert finished.wait(3), "lease worker did not finish before the failure watchdog"
+    thread.join(timeout=3)
+    assert not thread.is_alive(), "lease worker remained alive after its completion event"
+
+
 def test_probe_facts_and_have_return_host_owned_data(tmp_path):
     service, identity, checkout = _service(tmp_path)
+    assert service.reconcile_leases() == ()
     (checkout / ".git").write_text("gitdir: ../.git/worktrees/test\n", encoding="utf-8")
 
     probe = service.handle({"verb": "probe"}, identity)
@@ -120,79 +164,181 @@ def test_submit_without_executor_refuses_before_admission_or_durable_write(tmp_p
 
 
 def test_lease_grant_bind_ack_and_reconnect_hold_the_admission_handle(tmp_path):
-    policy, _checkout = _policy(tmp_path)
-    raw_facts = collect_host_facts(
-        FACTS_ROOT,
-        disk_statvfs_reader=lambda _path: SimpleNamespace(
-            f_frsize=4096, f_bsize=4096, f_blocks=1_000_000, f_bavail=750_000,
-        ),
-    )
-    raw_facts["policy"]["priority_classes_by_principal"] = {
-        "v": {"controller-devcontainer": ["gate"]},
-    }
-    raw_facts["policy"]["admission"] = {
-        "v": {"queue_path": "/run/fleetd/queue", "wait_s": 30, "settle_s": 1},
-    }
-    facts = validate_host_facts(raw_facts)
     lease_id = "controller-run-1"
     container_id = "c" * 64
-    service = AgentVerbService(
-        tmp_path / "state", policy, lambda: facts, agent_version="1.0.0",
-        legacy_jobs_provider=lambda: (),
-        inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
-        container_inspector=lambda inspected_id: {
-            "id": inspected_id, "name": "rg-test",
-            "labels": {"fleetd.lease": lease_id},
-        },
+    inspections = []
+    service, identity, facts = _lease_service(
+        tmp_path, lambda target: inspections.append(target) or InspectorAnswer.NO_SUCH_OBJECT,
     )
-    identity = policy.resolve_peer(1000, 100)
     initial_request = {
         "verb": "lease", "lease_id": lease_id, "container_name": "rg-test",
         "footprint": "tiny", "planned_cores": 1, "priority": "gate",
     }
     errors = []
-
-    def serve(request, server):
-        try:
-            service.serve_lease(request, identity, server)
-        except BaseException as exc:
-            errors.append(exc)
-            try:
-                write_frame(server, {"event": "test-error", "reason": str(exc)})
-            except Exception:
-                pass
-        finally:
-            try:
-                server.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            server.close()
+    first_done = threading.Event()
 
     client, server = socket.socketpair()
-    first = threading.Thread(target=serve, args=(initial_request, server))
+    first = threading.Thread(target=_lease_worker, args=(service, initial_request, identity, server, errors, first_done))
     first.start()
-    grant = read_frame(client, None)
+    grant = read_frame(client, 3)
     assert grant["event"] == "grant", grant
     write_frame(client, {"event": "bind", "lease_id": lease_id, "container_id": container_id})
-    bound = read_frame(client, None)
+    bound = read_frame(client, 3)
     assert bound["event"] == "bound"
     assert bound["container_id"] == container_id
     client.close()
-    first.join()
+    _assert_worker_finished(first, first_done)
     assert errors == []
+    assert service.admission.book.status(lease_id, identity.group)["released"] is False
+    assert inspections and set(inspections) == {"rg-test"}
+
+    reconnect_done = threading.Event()
 
     client, server = socket.socketpair()
-    reconnect = threading.Thread(target=serve, args=(
-        {"verb": "lease", "lease_id": lease_id, "container_id": container_id}, server,
+    reconnect = threading.Thread(target=_lease_worker, args=(
+        service,
+        {"verb": "lease", "lease_id": lease_id, "container_id": container_id},
+        identity, server, errors, reconnect_done,
     ))
     reconnect.start()
-    resumed = read_frame(client, None)
+    resumed = read_frame(client, 3)
     assert resumed["event"] == "bound"
     assert resumed["container_id"] == container_id
     client.close()
-    reconnect.join()
+    _assert_worker_finished(reconnect, reconnect_done)
     assert errors == []
     assert service.admission.book.status(lease_id, identity.group)["container_id"] == container_id
+
+    restart_inspections = []
+    restarted = AgentVerbService(
+        tmp_path / "state", service.policy, lambda: facts, agent_version="1.0.0",
+        legacy_jobs_provider=lambda: (),
+        inspector=lambda target: restart_inspections.append(target) or InspectorAnswer.NO_SUCH_OBJECT,
+        container_inspector=lambda inspected_id: {
+            "id": inspected_id, "name": "rg-test", "labels": {"fleetd.lease": lease_id},
+        },
+    )
+    assert restart_inspections == [container_id]
+    assert restarted.admission.book.status(lease_id, identity.group)["released"] is True
+
+
+def test_prebind_disconnect_tombstones_then_reconciles_exact_name(tmp_path):
+    lease_id = "controller-run-1"
+    container_id = "c" * 64
+    inspections = []
+
+    client_disconnected = threading.Event()
+    failed_tombstone_inspection = threading.Event()
+
+    def inspect(target):
+        inspections.append(target)
+        if client_disconnected.is_set() and not failed_tombstone_inspection.is_set():
+            failed_tombstone_inspection.set()
+            raise RuntimeError("inspector unavailable")
+        return InspectorAnswer.NO_SUCH_OBJECT
+
+    service, identity, _facts = _lease_service(tmp_path, inspect)
+    request = {
+        "verb": "lease", "lease_id": lease_id, "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    outcomes = []
+    finished = threading.Event()
+    client, server = socket.socketpair()
+    worker = threading.Thread(target=_lease_worker, args=(service, request, identity, server, outcomes, finished))
+    worker.start()
+    grant = read_frame(client, 3)
+    assert grant["event"] == "grant"
+    client_disconnected.set()
+    client.close()
+    _assert_worker_finished(worker, finished)
+
+    record = service.admission.book.status(lease_id, identity.group)
+    assert isinstance(outcomes[0], FrameError)
+    assert record["state"] == "tombstone"
+    assert record["released"] is False
+    assert failed_tombstone_inspection.is_set()
+    assert inspections and set(inspections) == {"rg-test"}
+
+    reconcile = service.admission.book.reconcile_lease
+    service.admission.book.reconcile_lease = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("record reconciliation failed"),
+    )
+    assert service.reconcile_leases() == ()
+    assert service.admission.book.status(lease_id, identity.group)["released"] is False
+    service.admission.book.reconcile_lease = reconcile
+
+    service.reconcile_leases()
+    assert service.admission.book.status(lease_id, identity.group)["released"] is True
+    assert inspections and set(inspections) == {"rg-test"}
+    with pytest.raises(AdmissionError, match="revoked lease") as error:
+        service.admission.reserve_lease(lease_id, identity, container_id=container_id)
+    assert error.value.exit_code == ExitCode.REFUSAL
+    with pytest.raises(AdmissionError, match="revoked lease") as duplicate_error:
+        service.admission.reserve_lease(
+            lease_id, identity, container_name="rg-test", footprint="tiny",
+            planned_cores=1.0, priority="gate",
+        )
+    assert duplicate_error.value.exit_code == ExitCode.REFUSAL
+
+
+@pytest.mark.parametrize("cleanup_stage", ["tombstone", "inspect"])
+def test_prebind_cleanup_failures_keep_the_lease_charge(tmp_path, cleanup_stage):
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT,
+    )
+    lease_id = "controller-run-1"
+    request = {
+        "verb": "lease", "lease_id": lease_id, "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    if cleanup_stage == "tombstone":
+        service.admission.revoke_lease = lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("cannot persist tombstone"),
+        )
+    else:
+        service.admission.reconcile_lease = lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("inspection transport failed"),
+        )
+    outcomes = []
+    finished = threading.Event()
+    client, server = socket.socketpair()
+    worker = threading.Thread(target=_lease_worker, args=(service, request, identity, server, outcomes, finished))
+    worker.start()
+    grant = read_frame(client, 3)
+    assert grant["event"] == "grant"
+    client.close()
+    _assert_worker_finished(worker, finished)
+
+    record = service.admission.book.status(lease_id, identity.group)
+    assert isinstance(outcomes[0], FrameError)
+    assert record["released"] is False
+    assert record["state"] == ("pending" if cleanup_stage == "tombstone" else "tombstone")
+
+
+def test_pregrant_disconnect_withdraws_connection_bound_waiter(tmp_path):
+    service, identity, _facts = _lease_service(tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT)
+    request = {
+        "verb": "lease", "lease_id": "controller-run-1", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+
+    def waiting_reservation(_request, *, waiter, **_kwargs):
+        waiter(0.0)
+        raise AssertionError("disconnected waiter must be rejected before grant")
+
+    service.admission.book.reserve_lease = waiting_reservation
+    outcomes = []
+    finished = threading.Event()
+    client, server = socket.socketpair()
+    client.close()
+    worker = threading.Thread(target=_lease_worker, args=(service, request, identity, server, outcomes, finished))
+    worker.start()
+    _assert_worker_finished(worker, finished)
+
+    assert isinstance(outcomes[0], AdmissionError)
+    assert outcomes[0].exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    assert list(service.admission.book.leases_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize(

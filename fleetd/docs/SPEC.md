@@ -66,6 +66,13 @@ timeouts become 75, and inspector timeouts become `ERROR`. One callback can
 time out without retaining `queue.lock` or creating an unbounded worker backlog
 (FD-054).
 
+Every `host-facts/2` policy object carries `aging_s`,
+`legacy_charge_bytes`, and `legacy_planned_cores`. An unconfigured key is
+`null` with a reason; a configured key carries its unit and source. These are
+required producer keys even when the host does not configure them. `/1` is
+unchanged, and host config must add these keys only after a release accepts
+them.
+
 The shared wait queue clamps priority to the authenticated group's host policy
 and orders by priority, submission time, then group-prefixed job id. The first
 aged, statically eligible waiter in that order holds the reservation, whether it
@@ -106,6 +113,16 @@ charge. Reconcile is an observation: it tombstones and releases only for an
 explicit no-such-object answer; a pending lease also requires an acquirable
 flock. `PRESENT`, `ERROR`, other answers, and inspector exceptions leave the
 record unchanged. Released lease names remain tombstoned and cannot be reused.
+A pre-bind disconnect first tombstones the lease, releases the connection flock,
+then inspects the exact container name. A delayed create cannot bind to that
+tombstone. When an inspector is configured, the agent reconciles pending and
+bound records at startup and at the required positive
+`agent.toml.lease_reconcile_interval_s`; bound records are inspected by exact
+container ID. Each inspector call is bounded by `query_timeout_s`, and an
+unknown/error result retains the charge. No deadline applies after grant to a
+client that stays connected without binding: §4.5 does not define one, and the
+held flock prevents pending reconciliation. The charge remains until
+disconnect and exact-name reconciliation confirms absence.
 A fitting lease waiter whose inspector keeps answering `ERROR` can block every
 waiter that sorts after it, in lower priority classes too, until its admission
 wait expires; a waiter holds no charge. This is a known limit (FD-052). The package does

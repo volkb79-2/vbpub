@@ -1057,6 +1057,15 @@ class AdmissionBook:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read lease records: {exc}") from exc
         return {path.stem: _read_lease_record(path, expected_id=path.stem) for path in paths}
 
+    def lease_records(self) -> tuple[Mapping[str, object], ...]:
+        """Return a stable snapshot of durable lease records for reconciliation."""
+
+        queue_fd = self._queue_lock()
+        try:
+            return tuple(dict(record) for record in self._lease_records_locked().values())
+        finally:
+            _unlock_close(queue_fd)
+
     @staticmethod
     def _inspection(inspector: Callable[[str], InspectorAnswer], target: str) -> InspectorAnswer | object:
         try:

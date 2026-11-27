@@ -8,7 +8,9 @@ import select
 import socket
 import stat
 import threading
+import time
 from pathlib import Path
+from typing import Callable
 
 from .admission import AdmissionError, ExitCode
 from .agent_policy import AgentIdentity, AgentPolicy
@@ -19,10 +21,20 @@ from .agent_verbs import AGENT_SCHEMA, AgentVerbService, write_agent_reply
 class AgentServer:
     """Accept authenticated local peers on a path or inherited listener."""
 
-    def __init__(self, listener: socket.socket, service: AgentVerbService, policy: AgentPolicy) -> None:
+    def __init__(
+        self,
+        listener: socket.socket,
+        service: AgentVerbService,
+        policy: AgentPolicy,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        select_waiter: Callable[..., tuple[list[object], list[object], list[object]]] = select.select,
+    ) -> None:
         self.listener = listener
         self.service = service
         self.policy = policy
+        self._monotonic = monotonic
+        self._select_waiter = select_waiter
         self._wake_read, self._wake_write = socket.socketpair()
         self._state_lock = threading.Lock()
         self._closed = False
@@ -38,7 +50,7 @@ class AgentServer:
 
     def serve_once(self) -> None:
         """Accept and handle one client synchronously; useful for lifecycle probes."""
-        readable, _, _ = select.select([self.listener, self._wake_read], [], [])
+        readable, _, _ = self._select_waiter([self.listener, self._wake_read], [], [], None)
         if self._wake_read in readable:
             return
         connection, _address = self.listener.accept()
@@ -58,11 +70,21 @@ class AgentServer:
             if self._serving:
                 raise AdmissionError(ExitCode.RUNNER_FAILURE, "fleetd agent listener is already serving")
             self._serving = True
+        next_reconcile = self._monotonic() + self.policy.lease_reconcile_interval_s
         try:
             while True:
-                readable, _, _ = select.select([self.listener, self._wake_read], [], [])
+                timeout = max(0.0, next_reconcile - self._monotonic())
+                readable, _, _ = self._select_waiter(
+                    [self.listener, self._wake_read], [], [], timeout,
+                )
                 if self._wake_read in readable:
                     return
+                if not readable:
+                    now = self._monotonic()
+                    if now >= next_reconcile:
+                        self.service.reconcile_leases()
+                        next_reconcile = now + self.policy.lease_reconcile_interval_s
+                    continue
                 connection, _address = self.listener.accept()
                 threading.Thread(
                     target=self._serve_connection,

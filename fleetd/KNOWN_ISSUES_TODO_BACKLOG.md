@@ -62,6 +62,7 @@
 | FD-057 | Admission subprocess tests have no timeout, and the two-process test is weak | P3 | OPEN | 2026-11-26 |
 | FD-058 | Aged-holder scan can skip queue-ordered merge-gate waiters | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 | FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
+| FD-060 | A granted lease client can stay connected forever without binding | P2 | OPEN (design bound missing) | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1120,3 +1121,18 @@ predictive refusal is enabled; no coefficients, sample counts, or error bounds
 have measurement support yet.
 
 Source: operator ruling for P-fd-05 C3a subtask 6 (2026-11-27).
+
+## FD-060 Granted lease never binds while its connection stays alive
+
+**State:** OPEN; waiting on an operator decision. **Priority:** P2. **Filed:** 2026-11-27.
+
+Design §4.5 defines pre-bind disconnect cleanup, delayed-create refusal, and
+post-bind reconciliation, but gives no bound for a client that receives a grant,
+keeps the lease connection open, and never sends its bind frame. C3a must not
+invent a deadline: after grant the held connection has no idle timeout, and its
+flock prevents pending reconciliation while connected. The lease remains
+charged until disconnect and exact-name reconciliation confirms absence. Decide whether a future protocol needs a
+separate binding deadline and how it is made compatible with slow container
+creation.
+
+Source: P-fd-05 C3a round 1 review and §4.5 contract audit (2026-11-27).
