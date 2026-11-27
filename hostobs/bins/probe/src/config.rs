@@ -780,7 +780,7 @@ events_ring_bytes = 4194304
         let missing_table = one_line(parse(without_store).expect_err("store table is required"));
         assert!(missing_table.contains("store"), "{missing_table}");
         let text = format!("{EXAMPLE}unexpected = 1\n");
-        parse_refusal(&text, "line 14", "unexpected");
+        parse_refusal(&text, "line 16", "unexpected");
     }
 
     #[test]
