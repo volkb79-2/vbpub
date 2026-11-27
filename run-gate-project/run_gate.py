@@ -15480,6 +15480,8 @@ def attach_r2_flex(lane: dict, lane_name: str,
         run_name = f"{lane_name}{suffix}"
         lane["_artifact_lane"] = f"{lane['assay_lane']}.{lane_name}{suffix}"
         flex["base_lane"] = lane_name
+    if run_name != lane_name and _ACTIVE_JOB_EVENT_WRITER is not None:
+        _ACTIVE_JOB_EVENT_WRITER.lane = run_name
     return lane, run_name
 
 
@@ -22358,6 +22360,8 @@ def _dispatch(argv: list[str] | None = None, *,
             if current_job_event_writer() is not None:
                 fail("nested run-gate invocations cannot use the active job "
                      "event file")
+        # `_dispatch` is also called recursively and can be used as a library
+        # entry, so keep this guard in addition to `main`'s earlier refusal.
         if is_pid1_without_init() and not args.version:
             return LaneResult("ERROR", reason="pid1-without-init",
                               _json=args.json)

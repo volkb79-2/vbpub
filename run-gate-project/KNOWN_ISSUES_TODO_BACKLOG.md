@@ -10307,7 +10307,7 @@ dual-version support. Sources: `assay/src/assay/cli.py` and
 
 ## RG-329 — host runners need a private Run-Gate start and verdict event stream
 
-**Status:** FIXED IN THIS BRANCH (rev 78, P-fd-05 package A2). Severity: Enhancement.
+**Status:** FIXED IN THIS BRANCH (rev 78, P-fd-05 package A2, review r1 fix round 1). Severity: Enhancement.
 
 A fleet runner cannot trust the shared lane log for container identity or
 verdict: lane output can forge Run-Gate's anchored summary, and Run-Gate can
@@ -10327,6 +10327,18 @@ summary and sequence-inheritance tests were observed failing before their
 implementation.
 
 Source: P-fd-05 package A2 controller rulings and design §§2.2, 4.4, 7.
+
+**Review r1 closure.** Existing event files must be single-link regular files;
+container IDs are published only as recognized lowercase 64-hex values; the
+consumer selects exec or Run-Gate-started inspection from its own resolved
+request and checks the checkout mount in both modes. A write error after a
+partial line may leave an unparseable tail, which is ignored; a missing or
+duplicate job verdict is not passed. Tests cover path and descriptor hardlink
+refusals, post-validation `ELOOP`, inspect-by-ID argv and the foreign-name red
+proof, strict mount-source refusal, a forged PASS relayed by a failing lane,
+the direct `_dispatch` PID-1 library guard, and shard-name verdict fallback.
+The consumer contract also says a cleanup-time signal status mismatch and a
+container removed after a partial start are not-pass cases.
 
 ## RG-330 — the command-lane liveness check has known escapes and untested rules
 

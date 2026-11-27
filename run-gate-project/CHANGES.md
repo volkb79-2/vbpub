@@ -13,6 +13,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - run-gate: paired `--event-file` and `--job-id` flags emit host-owned
   `lane-started` and `lane-verdict` JSONL events for fleet runners (RG-329,
   rev 78).
+
+### Fixed
+- fix(run-gate): validate event container identities, protect event files,
+  bind consumer acceptance to lane mode, and close the RG-329 review findings
+  (rev 78).
 <!-- cmru: release history -->
 
 ## [25.10.0] - 2026-11-26

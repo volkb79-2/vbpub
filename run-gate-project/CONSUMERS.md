@@ -3182,6 +3182,13 @@ required. For a Run-Gate-started container lane, including an adopted
 container lane, require both the expected `run-gate.*` labels and the checkout
 mount. The checkout-mount check applies in both modes. A null ID has no
 container to inspect. Never identify a lane container from its name alone.
+When SIGTERM or SIGINT is deferred until cleanup after the verdict event, the
+resulting process status falls outside the closed verdict table, so the
+consumer treats the run as not passed. If a partial `docker run` failure
+emits `lane-started` before Run-Gate removes the container, its identity can
+no longer be confirmed by `docker inspect`, and the ERROR verdict is not
+passed.
+
 ## Partner integration notes
 
 - **assay:** see the split table above. assay's own docs document

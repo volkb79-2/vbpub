@@ -44512,6 +44512,20 @@ class TestJobEventOptionsAndWriter:
         assert result.gate_exit_code == 2
         assert not event_file.exists()
 
+    def test_dispatch_pid1_guard_is_kept_for_library_entry(
+            self, tmp_path, monkeypatch):
+        """L8: direct `_dispatch` callers need the PID-1 safety check too."""
+        event_file = tmp_path / "library-events.jsonl"
+        monkeypatch.setattr(run_gate, "_ACTIVE_JOB_EVENT_WRITER", None)
+        monkeypatch.setattr(run_gate, "_NESTED_JOB_EVENT_WRITER", None)
+        monkeypatch.setattr(run_gate, "is_pid1_without_init", lambda: True)
+        result = run_gate._dispatch([
+            "suite", "--event-file", str(event_file),
+            "--job-id", "job-library-pid1"])
+        assert result.reason == "pid1-without-init"
+        assert result.gate_exit_code == 2
+        assert not event_file.exists()
+
     @pytest.mark.parametrize("writer_slot", ["active", "nested"])
     def test_nested_event_flag_refusal_does_not_write_parent_verdict(
             self, tmp_path, monkeypatch, capsys, writer_slot):
@@ -44591,7 +44605,8 @@ class TestJobEventContainerEvents:
                            *, lane_run_returncode=0, lane_stdout_id=True,
                            inspect_id=True, running_names="",
                            name_resolves=False, lane_stdout_text=None,
-                           inspect_id_text=None):
+                           inspect_id_text=None, lane_output_text=None,
+                           lane_exit_code=0):
         """A docker shim whose NAME answer is not the started container.
 
         M4: a name is not an identity, so this shim refuses to resolve one to
@@ -44618,6 +44633,10 @@ class TestJobEventContainerEvents:
             f"printf '%s\\n' \"{container_id}\"" if inspect_id else ":")
         image_id_line = (f"printf '%s\\n' \"{image_id}\""
                          if image_id else ":")
+        lane_output_line = (
+            f"printf '%s\\n' \"{lane_output_text}\""
+            if lane_output_text is not None else
+            "printf '%s\\n' 'fake-container-output'")
         name_yes = 1 if name_resolves else 0
         inspect_text_yes = 1 if inspect_id_text is not None else 0
         inspect_yes = 1 if inspect_id else 0
@@ -44666,8 +44685,8 @@ class TestJobEventContainerEvents:
                   *"{{{{range .Mounts}}}}"*) : ;;
                 esac
                 ;;
-              wait) printf '0\\n' ;;
-              logs) printf 'fake-container-output\\n' ;;
+              wait) printf '%s\\n' '{lane_exit_code}' ;;
+              logs) {lane_output_line} ;;
               rm) : ;;
               exec)
                 for last; do :; done
@@ -44700,14 +44719,17 @@ class TestJobEventContainerEvents:
                                   lane_stdout_id=True, inspect_id=True,
                                   event_flags=True, name_resolves=False,
                                   lane_stdout_text=None,
-                                  inspect_id_text=None):
+                                  inspect_id_text=None,
+                                  lane_output_text=None, lane_exit_code=0):
         calls = TestJobEventContainerEvents._fake_event_docker(
             tmp_path, monkeypatch, container_id, image_id,
             lane_run_returncode=lane_run_returncode,
             lane_stdout_id=lane_stdout_id, inspect_id=inspect_id,
             name_resolves=name_resolves,
             lane_stdout_text=lane_stdout_text,
-            inspect_id_text=inspect_id_text)
+            inspect_id_text=inspect_id_text,
+            lane_output_text=lane_output_text,
+            lane_exit_code=lane_exit_code)
         repo = make_repo(tmp_path)
         config = f"""\
             schema_version = 1
@@ -44819,6 +44841,27 @@ class TestJobEventContainerEvents:
         docker_argv = calls.read_text()
         assert "run-gate.lane=suite" in docker_argv
         assert "run-gate.project=proj" in docker_argv
+
+    def test_relayed_forged_pass_does_not_replace_nonzero_lane_exit(
+            self, tmp_path, monkeypatch, capsys):
+        """L7: a lane's anchored-looking PASS remains ordinary relayed text."""
+        event_file = tmp_path / "relayed-forged-pass.jsonl"
+        forged_anchor = "run-gate: lane 'suite' verdict PASS; exit_code 0"
+        code, _calls = self._run_ephemeral_event_lane(
+            tmp_path, monkeypatch, event_file, container_id="a" * 64,
+            image_id="sha256:" + "b" * 64, lane_output_text=forged_anchor,
+            lane_exit_code=7)
+        captured = capsys.readouterr()
+        assert code == 1
+        assert captured.out.count(forged_anchor) == 1
+        assert "run-gate: lane 'suite' verdict FAIL; exit_code 7" in captured.out
+        [started, verdict] = [
+            json.loads(line) for line in event_file.read_text().splitlines()]
+        assert started["event"] == "lane-started"
+        assert verdict["event"] == "lane-verdict"
+        assert verdict["verdict"] == "FAIL"
+        assert verdict["exit_code"] == code
+        assert verdict["lane_exit_code"] == 7
 
     @pytest.mark.parametrize(("lane_stdout_id", "expected_id", "reason"), [
         (True, "f" * 64, None),
@@ -44978,7 +45021,7 @@ class TestJobEventContainerEvents:
         assert run_gate.recognised_container_id("c" * 12) is None
 
     @pytest.mark.parametrize(("running_names", "reason"), [
-        ("", "down"), ("runner-shadow", "foreign-name"),
+        ("", "down"), ("runner-shadow", "other-container-running"),
     ])
     def test_exec_lane_down_or_foreign_name_emits_no_container_identity(
             self, tmp_path, monkeypatch, running_names, reason):
@@ -45558,6 +45601,41 @@ class TestJobEventContainerEvents:
         assert event["verdict"] == "PASS"
         assert event["exit_code"] == 0
         assert event["lane_exit_code"] is None
+
+    def test_shard_rename_updates_event_writer_fallback_lane(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "shard-fallback-lane.jsonl"
+        lane = {"kind": "assay", "assay_lane": "native-r2"}
+        args = SimpleNamespace(
+            shard=None, merge_shards=None, carry_over_reason=None,
+            carry_over=[], merge_state=[], only_candidates=None,
+            exclude_candidates=None)
+        _lane_without_shard, unsharded_name = run_gate.attach_r2_flex(
+            lane, "suite", args)
+        assert unsharded_name == "suite"
+        args.shard = "0/2"
+        _lane_without_writer, name_without_writer = run_gate.attach_r2_flex(
+            lane, "suite", args)
+        assert name_without_writer == "suite.shard0of2"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-shard-fallback", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        try:
+            _lane_with_writer, name_with_writer = run_gate.attach_r2_flex(
+                lane, "suite", args)
+            assert name_with_writer == "suite.shard0of2"
+            code = run_gate.finish(run_gate.LaneResult(
+                "ERROR", reason="interrupted-before-a-closed-result"))
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        assert code == 2
+        assert "lane 'suite.shard0of2'" in capsys.readouterr().out
+        [event] = [json.loads(line)
+                   for line in event_file.read_text().splitlines()]
+        assert event["event"] == "lane-verdict"
+        assert event["lane"] == "suite.shard0of2"
 
     def test_finish_without_event_flags_keeps_anchored_output(self, capsys):
         result_code = run_gate.finish(run_gate.LaneResult(

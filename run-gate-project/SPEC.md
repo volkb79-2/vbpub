@@ -420,6 +420,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   and the checkout mount. The checkout-mount check applies to both modes.
   A null ID has no container to inspect. See `CONSUMERS.md` for the
   integration contract.
+  When SIGTERM or SIGINT is deferred until cleanup after the verdict event,
+  the resulting process status falls outside the closed verdict table, so the
+  consumer treats the run as not passed. If a partial `docker run` failure
+  emits `lane-started` before Run-Gate removes the container, its identity can
+  no longer be confirmed by `docker inspect`, and the ERROR verdict is not
+  passed.
 - `R-05` The tool prints, before executing: the selected project config path
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure
