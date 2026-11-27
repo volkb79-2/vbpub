@@ -240,6 +240,7 @@ items:
   - {id: B591, title: "P-assay-14b final-review follow-ups: a test read race, a wrong CONSUMERS reason, a wrong CHANGES claim about 12.3.0, trap loose ends", type: bugfix, component: gate, context_estimate: small}
   - {id: B592, title: "release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown", type: bugfix, component: gate, context_estimate: small}
   - {id: B597, title: "An armed no-progress wall stop ends the sweep and can repeat on resume", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B598, title: "P-assay-4f final-review follow-ups M1, M3 and L4-L7", type: bugfix, component: mutation, context_estimate: small}
 ---
 
 # assay — backlog
@@ -16236,3 +16237,37 @@ semantics and making resume safe for the candidate's retry.
 serial and parallel jobs, including a repeated stall, without turning the
 attempt into `hung` or `budget_exceeded` and without persisting a candidate
 result for the stopped attempt.
+
+## B598 — P-assay-4f final-review follow-ups M1, M3 and L4-L7
+
+**Status: FIXED (M1 red test `b9b4c775f`, M1 implementation `7010cc267`, M2
+implementation and tests `b34868fa7`, M3/L4/L5 code and tests `13053b72a`,
+characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
+`edb509410`); severity: small.**
+
+- **M1:** `assay/tests/core/test_liveness_runner_monitor.py:2317` pins the
+  session-owner PID and nested-pytest exclusion (`b9b4c775f`, red proof;
+  `7010cc267`, implementation). `assay/src/assay/liveness.py:1635` stores the
+  owner, and `assay/tests/core/test_w10_characterization_i4_clusters.py:181`
+  includes it in the reader defaults (`c56273ab5`).
+- **M3:** `assay/tests/core/test_mutation_progress_budget_plan.py:2465` pins
+  lane-remainder versus candidate-budget timeouts and the retry gate;
+  `assay/tests/core/test_runner_run_lane_r2.py:132` pins the injected runner's
+  calibration and advisory budget, including the empty-baseline case
+  (`13053b72a`).
+- **L4:** `assay/src/assay/runner.py:6092` retains `LivenessRunner` whenever
+  liveness is injected and disables armed bounds when calibration is absent;
+  `assay/tests/core/test_liveness_runner_monitor.py:218` pins the idle and
+  `ASSAY_LIVENESS_EXIT` behavior (`13053b72a`).
+- **L5:** `assay/src/assay/liveness.py:1719` clears the in-flight item at
+  `session_finish`; `assay/tests/core/test_liveness_runner_monitor.py:2497`
+  pins teardown survival (`13053b72a`).
+- **L6:** `assay/tools/self-qualification-gate.sh:767` sets the provisional
+  expiry to 3 hours; `assay/assay.toml:499` and `assay/CHANGES.md:6` state the
+  effective cap (`edb509410`).
+- **L7:** `assay/docs/CONSUMERS.md:410` and
+  `assay/docs/DESIGN-GUIDE.md:1181` name all six pinned hooks;
+  `assay/tests/core/test_docs_examples_and_vocabulary.py:1444` derives and
+  checks them from `_LIVENESS_PLUGIN_HOOKS` (`edb509410`).
+- **Nit 8:** `assay/src/assay/liveness.py:1391` corrects the calibration
+  comment without changing the calculation (`edb509410`).
