@@ -66,6 +66,9 @@
 | FD-061 | Persist executor result details for terminal status | P2 | OPEN | 2026-11-27 |
 | FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b follow-up) | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
+| FD-064 | A legacy job directory without EXIT after host reboot remains charged | P2 | OPEN | 2026-11-27 |
+| FD-065 | Legacy-job listing is point-in-time and completed directories consume the entry ceiling | P2 | OPEN | 2026-11-27 |
+| FD-066 | Synchronous Docker process creation cannot be cancelled by the query deadline | P2 | OPEN | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1199,3 +1202,46 @@ no-follow descriptor safety of the current reader. No checkpoint format or
 retention policy is defined here.
 
 Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).
+
+## FD-064 Legacy job directories without EXIT remain charged after host reboot
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+The admission provider charges every entry in `legacy_jobs_dir` without a
+regular `EXIT` marker. If a host reboots while a legacy `run-job` command is
+running, the command may never write that marker, so the directory continues
+to consume its legacy RAM and planned-core charge after reboot. This package
+does not infer completion or remove the directory; someone must remove the
+stale directory for its charge to clear. Restart recovery and cleanup are
+separate work.
+
+Source: P-fd-05 C3b-2a controller ruling (2026-11-27).
+
+## FD-065 Legacy-job scan observation and directory retention
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+The admission scan lists the pinned `legacy_jobs_dir` twice and checks that the
+configured path still names that directory. It does not coordinate with
+`scripts/netcup/runner/run-job`, which does not take `queue.lock`: a job created
+after the final listing is not seen until the next admission observation. The
+jobs-directory owner is trusted to manage its own `EXIT` markers. Completed
+job directories remain in the namespace and count toward
+`MAX_LEGACY_JOB_ENTRIES` (65,536); an operator must prune them before the
+ceiling or admission refuses with 75. No cleanup or writer protocol is part of
+this package.
+
+Source: P-fd-05 C3b-2a controller ruling F2/F5 (2026-11-27).
+
+## FD-066 Docker process creation is synchronous and uncancellable
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+`subprocess.Popen` creation is synchronous. While it is blocked, the caller
+cannot cancel it, and the admission thread may remain occupied after its
+`query_timeout_s` outer wait has refused. If creation later returns, the
+provider immediately signals the new process group and makes a bounded reap
+attempt. The deadline still bounds output collection, reaping and the answer
+from the outer admission call; it cannot bound process creation itself.
+
+Source: P-fd-05 C3b-2a fix round 2 controller ruling R2-2 (2026-11-27).

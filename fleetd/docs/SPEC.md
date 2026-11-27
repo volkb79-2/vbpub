@@ -66,6 +66,65 @@ timeouts become 75, and inspector timeouts become `ERROR`. One callback can
 time out without retaining `queue.lock` or creating an unbounded worker backlog
 (FD-054).
 
+The host agent's legacy-job provider scans the required absolute,
+fully-resolved `agent.toml.legacy_jobs_dir`. It opens the path from `/` one
+component at a time with `O_DIRECTORY | O_NOFOLLOW`; a symlink or non-directory
+component refuses admission. Every entry is charged unless it safely contains
+a regular `EXIT` file. Symlinks, non-directories, unreadable entries, and odd
+names remain charged. IDs are `legacy-` plus the first 40 lowercase hex digits
+of SHA-256 over `os.fsencode(name)`, so another entry's insertion or removal
+does not change an existing ID. The provider lists the pinned directory twice,
+keeps entries judged live in the first pass, evaluates names found only in the
+second pass, and reopens the configured path to require the same device and
+inode. A scan error, changed root, or more than `MAX_LEGACY_JOB_ENTRIES`
+(65,536) entries refuses admission with 75. This is a point-in-time observation,
+not a writer protocol: `run-job` does not take `queue.lock`, a job created after
+the final listing is not seen, and the jobs-directory owner is trusted to write
+its own `EXIT` markers. Completed directories therefore accumulate and must be
+pruned before the entry limit. The legacy `run-job` writer creates `EXIT` only
+after the command exits; a host reboot can therefore leave a directory charged
+until someone removes it manually (FD-064).
+
+The lease object inspector invokes exactly `/usr/bin/docker --host
+unix:///var/run/docker.sock inspect --type=container <target>` with argv, never
+a shell, cwd `/`, and environment `PATH=/usr/bin:/bin`,
+`HOME=/nonexistent`, `LC_ALL=C`. It accepts an exact container name or full
+lowercase 64-character ID; a lowercase hex target of length 12 through 63 is
+refused at lease request validation with `container_name must not be 12-63
+lowercase hexadecimal characters` and returns
+`ERROR` if passed directly to the inspector. Loading existing lease state
+does not apply the new-name refusal. It reports `PRESENT` only when one complete
+object matches that exact name or ID. `NO_SUCH_OBJECT` requires a non-zero
+Docker exit, no object output, and Docker's explicit no-such-object or
+no-such-container response for that target. Missing Docker, timeout, output
+over 4 MiB on either stream, invalid UTF-8, partial or unparseable output,
+ambiguous output, and mismatched identities are `ERROR`. The bind identity
+inspector accepts a full ID only, never an ID prefix, and returns Docker's
+name, full ID, and labels only when that exact ID is inspected. The admission
+call's outer bounded wait uses `query_timeout_s` to bound its answer. The
+provider's monotonic deadline starts before process creation and bounds Docker
+output collection and direct-child reaping after creation returns. Process
+creation itself cannot be cancelled: it may finish after the outer call has
+refused, in which case the provider immediately attempts to signal the new
+child process group with `SIGKILL` and makes a bounded reap attempt before it
+returns `ERROR` (FD-066). Each output stream is drained with a 4 MiB cap;
+expiry or a cap breach also attempts group cleanup before reaping. On the
+normal result path, after both pipes reach EOF, the provider waits for the
+leader's pidfd to become readable without reaping it. Cleanup runs in
+`finally`: after any child-created outcome, including `Exception` and
+`BaseException` paths before EOF, it attempts `SIGKILL` on the process group
+while the leader is unreaped, then attempts the bounded reap even if signaling
+raises. `ProcessLookupError` means the group is already empty; another signal
+or reap failure returns `ERROR`. The pidfd, selector, stdout pipe, and stderr
+pipe are each closed independently; a close failure is reported as `ERROR`
+after the remaining closes are attempted. Any non-`Exception` interruption
+from the body or cleanup is re-raised without wrapping; if several occur, the
+first in occurrence order takes precedence over ordinary failures from the
+body, signal, deadline calculation, reap, post-reap check, or closes. When no
+interruption occurs, ordinary errors keep the existing precedence. A success
+requires both pipes at EOF, exit observed before the deadline, and an exit
+status obtained by that reap.
+
 Every `host-facts/2` policy object carries `aging_s`,
 `legacy_charge_bytes`, and `legacy_planned_cores`. An unconfigured key is
 `null` with a reason; a configured key carries its unit and source. These are
@@ -118,10 +177,12 @@ then inspects the exact container name. A delayed create cannot bind to that
 tombstone. When an inspector is configured, the agent reconciles pending and
 bound records at startup and at the required positive
 `agent.toml.lease_reconcile_interval_s`; bound records are inspected by exact
-container ID. Each inspector call is bounded by `query_timeout_s`, and an
-unknown/error result retains the charge. The required positive
-`agent.toml.lease_bind_timeout_s` bounds the complete bind frame from the grant
-on the monotonic clock; trickled bytes do not extend it. Expiry uses the same
+container ID. The outer bounded inspector call uses `query_timeout_s`; Docker
+output collection and reaping use the provider deadline described above, while
+synchronous process creation cannot be cancelled and may finish after the
+outer call refuses (FD-066). An unknown/error result retains the charge. The
+required positive `agent.toml.lease_bind_timeout_s` bounds the complete bind
+frame from the grant on the monotonic clock; trickled bytes do not extend it. Expiry uses the same
 tombstone, exact-name inspection and charge-release rules as a pre-bind
 disconnect. The client receives an error reply and the connection ends. This
 deadline does not apply after binding.
@@ -140,16 +201,18 @@ The closed exit-code table assigns 79 to prerequisite-missing; 73 is reserved
 by fleetd's runner. Code 75 is a missing required fact, a held admission, or a
 wait withdrawn before start; code 2 is a request or static-eligibility refusal.
 
-## Host agent protocol (P-fd-05 C3a)
+## Host agent protocol and admission providers (P-fd-05 C3b-2a)
 
 `fleetd.agent_policy`, `fleetd.agent_protocol`, `fleetd.agent_verbs`,
-`fleetd.agent_admission`, `fleetd.agent_server`, `fleetd.agent_client` and
-`fleetd.agent_entry` use the Python standard library only. The `fleetd-agent`
+`fleetd.agent_admission`, `fleetd.agent_providers`, `fleetd.agent_server`,
+`fleetd.agent_client` and `fleetd.agent_entry` use the Python standard library
+only. The `fleetd-agent`
 entry point reads the closed host-owned `agent.toml` policy and serves a Unix
 socket path, an inherited listening descriptor, or one ssh forced-command
-request on stdin/stdout. It
-does not execute a shell command. C3a does not install a systemd unit or socket
-group, and does not include the C3b executor or C3c service setup.
+request on stdin/stdout. It does not execute a shell command. C3b-2a wires the
+legacy-job and Docker inspection providers into the entry point; it does not
+include the separate in-flight executor work. This package does not install a
+systemd unit or socket group, which belong to C3c.
 
 Local socket peers are authenticated from `SO_PEERCRED`'s UID and primary GID;
 the configured supplementary socket group only grants connect permission. The
@@ -197,9 +260,10 @@ file but never removes the directory. `fleetd-agent forced-command --group
 GROUP` applies the identical framing to ssh-provided stdin/stdout.
 
 The CLI omits `lease` from `probe` unless exact-object inspection, the
-legacy-job list and container-identity inspection are configured. C3b wires
-those runtime providers; the C3a CLI has none. A direct C3a service call to
-`lease` without them refuses with exit 2.
+legacy-job list and container-identity inspection are configured. C3b-2a wires
+those runtime providers from the required `agent.toml.legacy_jobs_dir` and the
+configured `query_timeout_s`. A direct service call without them refuses with
+exit 2.
 
 The closed verbs are `probe`, `facts`, `have`, `put`, `fetch`, `progress`,
 `submit`, `status`, `cancel`, and controller-socket-only `lease`. Every field,

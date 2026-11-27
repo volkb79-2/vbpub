@@ -12,7 +12,15 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .admission import AdmissionError, ExitCode, JOB_ID_RE, MAX_JOB_ID_LENGTH, PRIORITIES
+from .admission import (
+    AMBIGUOUS_CONTAINER_NAME_REASON,
+    AdmissionError,
+    ExitCode,
+    JOB_ID_RE,
+    MAX_JOB_ID_LENGTH,
+    PRIORITIES,
+    is_ambiguous_container_name,
+)
 from .agent_policy import AgentIdentity, AgentPolicy
 
 MAX_FRAME_BYTES = 64 * 1024
@@ -460,6 +468,8 @@ def validate_request(
         name = _string(request["container_name"], "lease.container_name", maximum=128)
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None:
             _refuse("lease.container_name is invalid")
+        if is_ambiguous_container_name(name):
+            _refuse(AMBIGUOUS_CONTAINER_NAME_REASON)
         _number(request["planned_cores"], "lease.planned_cores", positive=True)
         _enum(request["footprint"], "lease.footprint", {"tiny", "small", "medium", "large"})
         _enum(request["priority"], "lease.priority", PRIORITIES)

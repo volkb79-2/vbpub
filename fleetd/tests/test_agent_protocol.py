@@ -66,6 +66,7 @@ group = "worker"
     path.write_text(f'''schema_version = 1
 idle_connection_s = 20
 query_timeout_s = 5
+legacy_jobs_dir = "{tmp_path / 'legacy-jobs'}"
 lease_reconcile_interval_s = 30
 lease_bind_timeout_s = 10
 max_connections = 4
@@ -804,6 +805,7 @@ def test_validate_request_covers_request_shape_argv_candidate_and_dev_errors(tmp
         }, identity, policy)
     assert bad_container_name.value.exit_code == ExitCode.REFUSAL
 
+
     malformed_dev = _submit()
     malformed_dev["kind"] = "dev"
     malformed_dev["dev"] = {
@@ -844,6 +846,23 @@ def test_validate_request_covers_request_shape_argv_candidate_and_dev_errors(tmp
     candidates["extra_argv"] = ["--only-candidates"]
     with pytest.raises(AdmissionError, match="requires exactly one host-created file"):
         validate_request(candidates, identity, policy)
+
+
+@pytest.mark.parametrize("length", [12, 63])
+def test_validate_request_refuses_ambiguous_hex_lease_names(tmp_path, length):
+    policy, _checkout = _policy(tmp_path)
+    identity = policy.resolve_peer(1000, 100)
+    request = {
+        "verb": "lease", "lease_id": "controller-lease-hex",
+        "container_name": "a" * length,
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    with pytest.raises(
+        AdmissionError,
+        match=agent_protocol.AMBIGUOUS_CONTAINER_NAME_REASON,
+    ) as refused:
+        validate_request(request, identity, policy)
+    assert refused.value.exit_code == ExitCode.REFUSAL
 
 
 def test_validate_request_accepts_status_progress_cancel_and_lease_and_checks_required_strings(tmp_path):
