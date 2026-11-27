@@ -25,8 +25,10 @@ reservation. Policy is host-owned and includes footprint charges, planned RAM
 and CPU caps, PSI and disk floors, allowed priorities, and required `aging_s`.
 `legacy_charge_bytes` and `legacy_planned_cores` are required when the legacy
 job provider lists any job. The closed `facts.toml.policy` schema accepts all
-three as optional positive inputs: seconds, bytes, and cores. `/2` reports each
-with its unit and source, or with a `not-configured` reason; `/1` is unchanged.
+three as optional positive inputs: seconds, bytes, and cores. `/2` always
+carries `aging_s`, `legacy_charge_bytes`, and `legacy_planned_cores`; an
+unconfigured value is null with a reason, while a configured value carries its
+unit and source. `/1` is unchanged.
 Host config must gain these keys only after installing a fleetd release that
 accepts them. The current policy values for legacy jobs are required when used;
 `legacy_planned_cores` is positive.

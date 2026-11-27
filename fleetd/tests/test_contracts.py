@@ -174,6 +174,17 @@ def test_host_facts_v2_validates_wrapped_values_and_metadata():
     assert result.to_dict()["schema"] == "host-facts/2"
 
 
+def test_host_facts_v2_accepts_unconfigured_admission_policy_facts_with_reason():
+    data = _host_facts_2()
+    for key in ("aging_s", "legacy_charge_bytes", "legacy_planned_cores"):
+        data["policy"][key] = {"v": None, "reason": f"not-configured: {key}"}
+
+    result = validate_host_facts(data)
+
+    for key in ("aging_s", "legacy_charge_bytes", "legacy_planned_cores"):
+        assert result.to_dict()["policy"][key] == {"v": None, "reason": f"not-configured: {key}"}
+
+
 def test_host_facts_v2_applies_null_reason_rules_to_every_wrapped_field():
     data = _host_facts_2()
     data["jobs"] = _v([_host_fact_job()])

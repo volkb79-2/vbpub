@@ -12,6 +12,7 @@ All notable changes to this project are recorded here.
 - Persist terminal job group/digest records before releasing completed charges; the host agent package C owns terminal retention.
 - Collect, validate and consume `host-facts/2` with explicit null reasons, load, gate-slice, disk, guard and policy facts; `fleet facts validate` retains `/1` for one migration release.
 - Document the new facts and optional host policy keys without changing planner placement decisions; close FD-049's guard fact reshape.
+- Require `aging_s`, `legacy_charge_bytes`, and `legacy_planned_cores` in every `host-facts/2` policy object; unconfigured values are null with a reason.
 
 ### Changed
 - Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.

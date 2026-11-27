@@ -555,6 +555,9 @@ def _wrapped_configured(
     unit: str,
 ) -> object:
     """Validate a configured fact with explicit source and unit metadata."""
+    if isinstance(value, dict) and set(value) == {"v", "reason"} and value["v"] is None:
+        _string(value["reason"], f"{where}.reason")
+        return None
     obj = _object(value, where, {"v", "unit", "source"}, {"reason"})
     actual_unit = _string(obj["unit"], f"{where}.unit")
     if actual_unit != unit:
