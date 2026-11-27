@@ -1695,7 +1695,9 @@ def judge_sha256(
     if _component_digests is not None:
         def component_digest(fields: Sequence[str]) -> str:
             encoded = "\0".join(netstring(field) for field in fields)
-            return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            return hashlib.sha256(
+                encoded.encode("utf-8", errors="surrogateescape")
+            ).hexdigest()
 
         passthrough_names = sorted(passthrough_value_digests)
         special_passthrough_values = {
@@ -3513,6 +3515,12 @@ def run_mutation(
         # Keep the executor's partial-campaign fact separate from its outcome
         # buckets: a terminal per-candidate timeout belongs in
         # `budget_exceeded` without making the campaign incomplete.
+        has_judge_records = bool(resumed_records)
+
+        def _record_commit_succeeded() -> None:
+            nonlocal has_judge_records
+            has_judge_records = True
+
         result_payload, complete_campaign = _execute_mutation_jobs(
             job_list=pending_jobs,
             deadline=deadline,
@@ -3535,6 +3543,7 @@ def run_mutation(
             state_root_fd=state_root_fd,
             state_root_guard=state_root_guard,
             judge=judge,
+            record_committed=_record_commit_succeeded,
             resource_sha256=(
                 projection.resource_sha256 if projection is not None else None
             ),
@@ -3557,14 +3566,6 @@ def run_mutation(
             manifest_node_ids=manifest_node_ids,
             schedule=schedule,
             candidate_fail_fast=candidate_fail_fast,
-        )
-
-        # The component sidecar is diagnostic only. Remember whether this
-        # invocation has any durable current-judge records before adding
-        # unselected, never-started outcomes below; the sidecar belongs in the
-        # same store but outside the candidate and generation namespaces.
-        has_judge_records = bool(resumed_records) or any(
-            getattr(result_payload, bucket) for bucket in MUTATION_BUCKETS
         )
 
         if resumed_records:
@@ -3841,6 +3842,7 @@ def _execute_mutation_jobs(
     state_root: Path | str | None = None,
     state_root_fd: int | None = None,
     state_root_guard: Callable[[], None] | None = None,
+    record_committed: Callable[[], None] | None = None,
     #: (B088) This sweep's judge identity, resolved ONCE by the caller and
     #: written onto every record. Required whenever *state_root* is set --
     #: a record written without one would be indistinguishable from a
@@ -4902,6 +4904,8 @@ def _execute_mutation_jobs(
                 state_root_fd=state_root_fd,
                 commit_guard=deadline.remaining,
             )
+            if record_committed is not None:
+                record_committed()
         # What this candidate measured feeds the next campaign's predictions:
         # its own wall clock and the profile's peak RSS (none when the observer
         # produced no number).
