@@ -644,7 +644,7 @@ class ConvergeTests(unittest.TestCase):
     """mdt-dev-governance-reconcile.sh's memory converge (design 6.2): the real function over a fake cgroupfs."""
 
     RECONCILE = (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text(encoding="utf-8")
-    FN = shell_block(RECONCILE, "_mdt_converge_prop() {", 'if [ "${HOST_ROLE:-}" = dedicated-dev ]; then\n  rm -f')
+    FN = shell_block(RECONCILE, "_mdt_converge_prop() {", 'if [ "${HOST_ROLE:-}" = dedicated-dev ]; then\n  # P-plat-19m')
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())

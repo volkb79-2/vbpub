@@ -9,6 +9,7 @@ set -uo pipefail
 CG=${MDT_ACCEPT_CGROUP:-/sys/fs/cgroup}; NAME=mdt-accept-memcheck; WANT=2147483648
 DEFERRED=${MDT_ACCEPT_DEFERRED:-/run/mdt/reconcile/memory-deferred}
 IMAGE=${MDT_ACCEPT_IMAGE:-${1:-tester-unified:local}}
+RM_TIMEOUT=${MDT_ACCEPT_RM_TIMEOUT:-30}
 exec 9>"${MDT_ACCEPT_LOCK:-/run/mdt-accept.lock}" || exit 3   # the lock accept-run.sh holds: a reload never happens under a live run
 flock -n 9 || { echo "daemon-reload-check: an accept run holds the lock; refusing, nothing done" >&2; exit 3; }
 if [ -e "$DEFERRED" ]; then echo "daemon-reload-check: $DEFERRED exists (a memory lowering is deferred); refusing, nothing done" >&2; exit 3; fi
@@ -22,8 +23,8 @@ for s in dev.slice dev.slice/dev-gates.slice dev.slice/dev-background.slice; do
     echo "daemon-reload-check: ${s##*/} MemoryMax systemd='$want' kernel='$have' differ; refusing, nothing done" >&2; exit 3
   fi
 done
-trap 'docker rm -f "$NAME" >/dev/null 2>&1' EXIT; trap 'exit 143' TERM; trap 'exit 130' INT
-docker rm -f "$NAME" >/dev/null 2>&1   # stale container of a killed run, exact name
+trap 'timeout -k 5 "$RM_TIMEOUT" docker rm -f "$NAME" >/dev/null 2>&1' EXIT; trap 'exit 143' TERM; trap 'exit 130' INT
+timeout -k 5 "$RM_TIMEOUT" docker rm -f "$NAME" >/dev/null 2>&1   # stale container of a killed run, exact name
 id=$(docker run -d --rm --network none --name "$NAME" --memory 2G --memory-swap 4G "$IMAGE" sleep 600) || { echo "daemon-reload-check: container did not start" >&2; exit 3; }
 read_max() {
   local f
