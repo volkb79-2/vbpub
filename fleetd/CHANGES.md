@@ -4,6 +4,84 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.2.0] - 2026-11-27
+<!-- cmru: generated -->
+<!-- cmru: source-end=eb6517dfd90c67866a74f2bb2fb172bcd37f0614 -->
+
+### Added
+- feat(fleetd): queue host admission and account leases (3140d540b)
+- feat(fleetd): persist host admission charges (99d054d18)
+- feat(fleetd): add host admission capacity primitives (8bdb852a5)
+- feat(fleetd): consume host-facts/2 (a6a248f11)
+- feat(fleetd): collect host-facts/2 (16add8a0d)
+- feat(fleetd): validate host-facts/2 (a4c95defe)
+
+### Fixed
+- fix(fleetd): refuse a FIFO reservation record and supervise two upload tests (656578637)
+- fix(fleetd): close C2 r2 H-1, M-1, M-2 and M-3, plus L-1, L-2, L-4, L-7 (controller fix-forward) (439cab41f)
+- fix(run-gate): bound silent command lanes across estate (18b12369d)
+- fix(fleetd): persist re-clamped waiter priority (68ef2a523)
+- fix(fleetd): close C1 r2 findings (CLI refusal wording, memory.min collection stated, job wrappers walked) (fd25db593)
+
+### Changed
+- refactor(fleetd): move unbound lease cleanup into one method (b04b2182b)
+- Preserve orphan upload recovery scan errors (e1d8392cd)
+- Cover upload recovery failure branches (c4e890ec2)
+- Raise concurrent test watchdogs to 60 seconds (88b68c5a2)
+- Recover upload reservations from stable owner locks (18dccb5d6)
+- Keep full upload size reserved through commit (1c6449b19)
+- Remove no-op lease cleanup branch (57e934a07)
+- Expire unbound lease grants (8a643ad2a)
+- Bound assay progress counting (1cf5928dc)
+- Define nested agent response errors (b3152e5f2)
+- Refuse lease records at job status and cancel (176e309e3)
+- Replay terminal submits from durable records (c412669b2)
+- Wake and drain active serve_once on close (3489b4676)
+- Keep client descriptors worker-owned on shutdown (0f514df53)
+- Bound aggregate host upload storage (c4f8248d3)
+- Cover agent server lifecycle failures (405a028fd)
+- Cover agent protocol validation branches (3b100022f)
+- Cover agent policy validation failures (30e4ec97f)
+- Fix agent entry error mapping (8029e7d35)
+- Cover agent client protocol failures (960414500)
+- Cover agent verb failure paths (400781602)
+- Cover agent admission failure paths (adb5a957b)
+- Cover hostside validation failures (949409d91)
+- Cover agent capacity fact failures (8a62d5051)
+- Cover host agent hardening edge cases (a130f0b43)
+- Document fleetd pressure freeze policy (2d99b2209)
+- Fix round-one host agent protocol findings (f86e5289d)
+- Bound host agent connections and writes (f7e258926)
+- Serialize same-job submit transactions (4aadf3526)
+- Reconcile host agent leases safely (4814aecf0)
+- Preserve nullable host-facts v2 policy keys (849fc6ef4)
+- Design PSI-aware fleetd admission (fe97c80c1)
+- Add fleetd host agent protocol and entry point (2b29d9c6e)
+- Wire fleetd host admission (9b3a9dd46)
+- Implement fleetd host filesystem verbs (369684af2)
+- Add fleetd agent protocol validation (1faa41b92)
+- Add host admission facts projection (6ee5d5952)
+- Make campaign lock test exit without signals (1f7299435)
+- Document admission review rulings and follow-ups (2f8b78336)
+- Fix admission recovery and cover decision paths (97737d0c3)
+- Fix admission queue and recovery findings (7e7c19c12)
+- fleetd: align host-facts/2 documentation (2ceb183cf)
+- fleetd: enforce nested host-facts reasons (0d6025952)
+- fleetd: fix host-facts/2 round-one gate failures (1cf25a9bc)
+
+### Documentation
+- docs(fleetd): specify admission core and hostobs freeze facts (9562309b6)
+- docs(fleetd): document host-facts/2 package (d05d33d21)
+
+### Testing
+- test(fleetd): expect the error object from the shipped CLI and wait for the lease worker before its outcome (b14f25113)
+- test(fleetd): cover the passed-through capacity refusal and a wait that expires before any decision (c24b7418f)
+- test(fleetd): reproduce C2 r2 H-1, M-1, M-3 and L-4 (expected to fail before the fix) (10ec1211c)
+- test(fleetd): restore the killed-lock-holder test beside the signal-free variant (controller fix-forward) (c0b1cb67d)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - Add the standard-library host-agent protocol, closed policy validation, bounded framing, socket and forced-command server, local version-checking client, and `fleetd-agent` entry point. C3a does not ship the C3b executor or the C3c service installation.
 - Wire `probe`, `facts`, `have`, `put`, `fetch`, `progress`, `submit`, `status`, `cancel`, and controller-local `lease` to host-owned state and the C2 admission book. Without an injected executor, submit refuses before admission or a durable `request.json` write.
@@ -41,8 +119,7 @@ All notable changes to this project are recorded here.
 - `fleet facts collect` emits `host-facts/2` only.
 - The planner reads `/2` `cpu.online` and `memory.total_bytes`, and refuses `/1`; legacy `/1` `cpu.for_lanes` and `memory.for_lanes_bytes` are therefore accepted only by `fleet facts validate` during the migration release and no longer affect placement.
 - The collector reads the parent control-plane slice's `memory.min` again and reports it as `control_plane.memory_min_bytes`; the planner ignores it.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.1.0] - 2026-11-24
 <!-- cmru: generated -->
