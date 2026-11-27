@@ -589,10 +589,10 @@ fn annotate_ctx(object: &Obj<'_>) -> Result<BTreeMap<AnnotateCtxKey, String>, Ar
     Ok(values)
 }
 
-fn annotate_attrs(
-    object: &Obj<'_>,
-    kind: AnnotateKind,
-) -> Result<(BTreeMap<String, String>, Option<(String, u64)>), ArgError> {
+/// The accepted attributes and, for a keyed point event, its `(boot_id, seq)` identity.
+type AnnotateAttrs = (BTreeMap<String, String>, Option<(String, u64)>);
+
+fn annotate_attrs(object: &Obj<'_>, kind: AnnotateKind) -> Result<AnnotateAttrs, ArgError> {
     let attrs = object.object("attrs")?;
     if attrs.len() > 8 {
         return Err(fail("attrs"));
@@ -1513,7 +1513,7 @@ mod tests {
             (format!("{{\"run\":\"{}\"}}", "x".repeat(129)), "ctx.run"),
         ];
         for (ctx, key) in invalid_ctx {
-            assert_eq!(annotate_refused(&point_args("{}", ctx)), key, "{ctx}");
+            assert_eq!(annotate_refused(&point_args("{}", &ctx)), key, "{ctx}");
         }
 
         let nine = (0..9)
