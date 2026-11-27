@@ -308,6 +308,13 @@ def test_live_span_partition_replacement_default_refuses_an_unplanned_tail_shape
         installer._validate_swap_span_table_replacement(
             disk.table, partitions, before_root, target_root
         )
+    # The table writer keeps the same default: a caller that omits the flag (resume) writes nothing.
+    with pytest.raises(
+        InstallerError,
+        match="io_benchmark_swap_span_state_mismatch: live tail is neither the planned swaps nor their exact span",
+    ):
+        installer._apply_known_swap_shape(tail_swap_span=True)
+    assert sfdisk_write_count(disk) == 0
 
 
 def test_extent_probe_and_findmnt_actions_are_non_dangerous(tmp_path):
