@@ -16368,12 +16368,13 @@ and `assay/tools/cgroup-parent.sh:543` (bounded admission). Behavioral tests:
 and `:852`. Documentation and changelog: `assay/docs/DESIGN-GUIDE.md:3119`
 and `assay/CHANGES.md:7`.
 
-`assay/tools/cgroup-parent.sh` computes the gates slice headroom as
-`memory.max - memory.current`. `memory.current` includes reclaimable file
-cache and reclaimable slab, so an idle-cached slice refuses a self-qualification
-run although the kernel could reclaim the memory. Observed on v1001 at
-2026-11-27T07:31Z: 2066 MB reported against the 2147 MB requirement, with
-about 3.3 GB of the slice usage in file cache and memory PSI full avg60 0.06
+Before the fix, `assay/tools/cgroup-parent.sh` computed the gates slice
+headroom as `memory.max - memory.current`. `memory.current` includes
+reclaimable file cache and reclaimable slab, so an idle-cached slice refused a
+self-qualification run although the kernel could reclaim the memory. Observed
+on v1001 at 2026-11-27T07:31Z: 2066 MB reported against the 2147 MB
+requirement, with about 3.3 GB of the slice usage in file cache and memory PSI
+full avg60 0.06
 (`rgw-self-qualification-provisional-20261127T073114-v1001`, refused before
 the lane started). The matching run-gate admission defect is RG-332.
 
