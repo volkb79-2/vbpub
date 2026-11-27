@@ -207,7 +207,8 @@ def test_static_lines_returns_empty_for_an_uncached_source_file(monkeypatch):
     parsed = []
     monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
     monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
-    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename: [])
+    # *_: while patched, pytest's own traceback printer also calls getlines, with module globals.
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename, *_: [])
     monkeypatch.setattr(plugin.policy, "_module_tree", lambda source: parsed.append(source))
 
     assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == []
@@ -223,7 +224,7 @@ def test_static_lines_checks_the_linecache_before_reading_source(monkeypatch):
     def checkcache(filename):
         calls.append(("checkcache", filename))
 
-    def getlines(filename):
+    def getlines(filename, *_):
         calls.append(("getlines", filename))
         return source.splitlines(keepends=True)
 
@@ -244,7 +245,7 @@ def test_static_lines_reports_one_warning_when_no_function_matches(monkeypatch):
     source = "def unrelated():\n    pass\n"
     monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
     monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
-    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename: source.splitlines(keepends=True))
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename, *_: source.splitlines(keepends=True))
 
     assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == [
         "[source-analysis] cannot locate test function in module.py at line 10"
@@ -263,7 +264,7 @@ def test_static_lines_does_not_pass_the_file_through_a_wrapped_analyze_source(mo
     monkeypatch.setattr(plugin.policy, "analyze_source", strips_blank_first_lines)
     monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
     monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
-    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename: source.splitlines(keepends=True))
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename, *_: source.splitlines(keepends=True))
 
     assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == [
         "[fixed-sleep] line 4: time.sleep(1) is a fixed sleep used as synchronisation; "
@@ -277,7 +278,7 @@ def test_static_lines_reports_source_parse_failures(monkeypatch, parse_error):
     exec("def f():\n    pass\n", ns)
     monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
     monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
-    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename: ["def f():\n", "    pass\n"])
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename, *_: ["def f():\n", "    pass\n"])
 
     def fail_parse(source):
         raise parse_error
