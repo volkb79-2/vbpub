@@ -209,5 +209,5 @@ run_pane opendesign_github2
 if grep -aFq 'test-volker-secret-marker' "$PI_ARGV" "$ROOT/pane.out"; then fail 'volker key appeared in github2 pi argv or output'; fi
 if grep -aFq 'test-github2-secret-marker' "$PI_ARGV" "$ROOT/pane.out"; then fail 'github2 key appeared in pi argv or output'; fi
 
-node --test "$CONTROLLER_DIR/pi-ctl/test-core.mjs"
+node --test --test-reporter=tap "$CONTROLLER_DIR/pi-ctl/test-core.mjs"
 echo 'PASS pi controller harness tests'

@@ -634,9 +634,22 @@ for profile_mutant in image-regex work-mount; do
   expect_killed "dev-profile-$profile_mutant" \
     env DEV_PROFILE_SCRIPT="$ROOT/mutants/scripts/controller/dev-profile-$profile_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
 done
+# Node 26's process-isolated test runner starts a child process per test file
+# and inherits NODE_OPTIONS into that child. A finite 2 TiB address-space cap
+# leaves about 0.7 TiB beyond V8's optional 1 TiB sandbox region plus roughly
+# 320 GiB of guards, and also covers the pointer-compression cage, code range,
+# external/trusted pointer tables and Wasm guard mappings. NODE_OPTIONS caps
+# each Node process's old space at 256 MiB; the lane's existing cgroup memory
+# ceiling remains the real-memory cap. Only these four checks get the larger cap.
+# See Node's test isolation and CLI docs, and V8's sandbox layout:
+# https://nodejs.org/api/test.html#child-process-option-inheritance
+# https://nodejs.org/api/cli.html#--max-old-space-size-size-in-mib
+# https://github.com/v8/v8/blob/main/src/sandbox/sandbox.h
+# https://github.com/nodejs/node/blob/main/deps/v8/include/v8-internal.h
 for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required; do
-  expect_killed "pi-ctl-$pi_ctl_mutant" \
-    env PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \
+  expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_mutant" 2147483648 \
+    env NODE_OPTIONS=--max-old-space-size=256 \
+      PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \
       bash "$SCRIPT_DIR/test-pi-ctl.sh"
 done
 mutation_runner_finish || exit $?

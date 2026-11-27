@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
+unset NODE_OPTIONS
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-mutation-runner-test.XXXXXX")
 SURVIVOR_FIRST_FD=
@@ -214,6 +215,86 @@ contains "$ROOT/memory-limit.out" 'SUMMARY: FAIL checks=1 reported=1 killed=0 el
 MUTATION_RUNNER_MEMORY_LIMIT_KB=1048576
 
 export CONTROLLER_MUTATION_JOBS=1
+mutation_runner_init "$ROOT/node-address-space" || fail 'valid width 1 was refused for node address-space case'
+NODE_CHECK_BIN=$ROOT/node-check-bin
+mkdir -p "$NODE_CHECK_BIN"
+cat > "$NODE_CHECK_BIN/node" <<'NODECHECK'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ $(ulimit -v) == 2147483648 && ${NODE_OPTIONS-} == --max-old-space-size=256 ]] || exit 91
+printf 'TAP version 13\nnot ok 1 - assertion\n  error: AssertionError [ERR_ASSERTION]: expected\n'
+exit 1
+NODECHECK
+chmod 0700 "$NODE_CHECK_BIN/node"
+{
+  # The explicit large virtual-address cap and heap option apply to this one
+  # check. The following ordinary check sees the original 1 GiB cap and no
+  # NODE_OPTIONS value from the first command.
+  expect_assertion_killed_with_address_space_limit node-assertion 2147483648 \
+    env PATH="$NODE_CHECK_BIN:$PATH" NODE_OPTIONS=--max-old-space-size=256 node
+  # shellcheck disable=SC2016
+  expect_killed default-after-node bash -c \
+    '[[ $(ulimit -v) == 1048576 && ! ${NODE_OPTIONS+x} ]] || exit 92; exit 7'
+  if mutation_runner_finish; then node_address_rc=0; else node_address_rc=$?; fi
+} > "$ROOT/node-address-space.out" 2>&1
+[[ $node_address_rc == 0 ]] || fail 'node-only address-space override or its cleanup failed'
+contains "$ROOT/node-address-space.out" 'KILLED: node-assertion'
+contains "$ROOT/node-address-space.out" 'KILLED: default-after-node'
+contains "$ROOT/node-address-space.out" 'SUMMARY: PASS checks=2 reported=2 killed=2 elapsed_seconds='
+
+export CONTROLLER_MUTATION_JOBS=1
+mutation_runner_init "$ROOT/node-invalid-limit" || fail 'valid width 1 was refused for invalid node limit case'
+{
+  if expect_assertion_killed_with_address_space_limit invalid-node-limit 2147483649 \
+    bash -c 'printf ran > "$1"; exit 1' _ "$ROOT/invalid-node-limit-ran"; then
+    invalid_limit_rc=0
+  else
+    invalid_limit_rc=$?
+  fi
+  if mutation_runner_finish; then invalid_limit_finish_rc=0; else invalid_limit_finish_rc=$?; fi
+} > "$ROOT/node-invalid-limit.out" 2>&1
+[[ $invalid_limit_rc != 0 ]] || fail 'an address-space limit above the explicit cap was accepted'
+[[ $invalid_limit_finish_rc != 0 ]] || fail 'a refused address-space limit passed the runner'
+[[ ! -e $ROOT/invalid-node-limit-ran ]] || fail 'a command ran after its address-space limit was refused'
+contains "$ROOT/node-invalid-limit.out" 'invalid per-check address-space limit: 2147483649 KiB'
+contains "$ROOT/node-invalid-limit.out" 'SUMMARY: FAIL checks=1 reported=0 killed=0 elapsed_seconds='
+
+for node_failure_case in syntax missing-module; do
+  export CONTROLLER_MUTATION_JOBS=1
+  mutation_runner_init "$ROOT/node-$node_failure_case" \
+    || fail "valid width 1 was refused for node $node_failure_case classification"
+  {
+    if [[ $node_failure_case == syntax ]]; then
+      # shellcheck disable=SC2016
+      expect_assertion_killed_with_address_space_limit "node-$node_failure_case" 2147483648 \
+        bash -c 'printf "TAP version 13\\nnot ok 1 - mutant parse\\n  error: SyntaxError: Unexpected token\\n"; exit 1'
+    else
+      # shellcheck disable=SC2016
+      expect_assertion_killed_with_address_space_limit "node-$node_failure_case" 2147483648 \
+        bash -c 'printf "TAP version 13\\nnot ok 1 - mutant import\\n  error: ERR_MODULE_NOT_FOUND\\n"; exit 1'
+    fi
+    if mutation_runner_finish; then node_failure_rc=0; else node_failure_rc=$?; fi
+  } > "$ROOT/node-$node_failure_case.out" 2>&1
+  [[ $node_failure_rc != 0 ]] || fail "Node $node_failure_case failure was counted as a killed mutant"
+  not_contains "$ROOT/node-$node_failure_case.out" "KILLED: node-$node_failure_case"
+  contains "$ROOT/node-$node_failure_case.out" 'failed without a TAP test assertion failure'
+  contains "$ROOT/node-$node_failure_case.out" 'SUMMARY: FAIL checks=1 reported=1 killed=0 elapsed_seconds='
+done
+
+export CONTROLLER_MUTATION_JOBS=1
+mutation_runner_init "$ROOT/node-startup-abort" || fail 'valid width 1 was refused for Node startup-abort classification'
+{
+  expect_assertion_killed_with_address_space_limit node-startup-abort 2147483648 \
+    bash -c 'printf "Fatal process out of memory: SegmentedTable::InitializeTable\\n"; exit 133'
+  if mutation_runner_finish; then node_abort_rc=0; else node_abort_rc=$?; fi
+} > "$ROOT/node-startup-abort.out" 2>&1
+[[ $node_abort_rc != 0 ]] || fail 'a Node startup abort was counted as a killed mutant'
+not_contains "$ROOT/node-startup-abort.out" 'KILLED: node-startup-abort'
+contains "$ROOT/node-startup-abort.out" 'RESOURCE LIMIT: node-startup-abort ended with status 133'
+contains "$ROOT/node-startup-abort.out" 'check hit a per-check resource limit (status 133)'
+contains "$ROOT/node-startup-abort.out" 'SUMMARY: FAIL checks=1 reported=1 killed=0 elapsed_seconds='
+
+export CONTROLLER_MUTATION_JOBS=1
 mutation_runner_init "$ROOT/spawn-failure" || fail 'valid width 1 was refused for spawn-failure case'
 mkdir -p "$ROOT/empty-path"
 {
@@ -379,4 +460,4 @@ QUEUE_SECOND_FD=
 [[ $pending_exclusive_rc == 0 ]] || fail 'pending exclusive scheduling did not finish cleanly'
 contains "$ROOT/pending-exclusive.out" 'SUMMARY: PASS checks=3 reported=3 killed=3 elapsed_seconds='
 
-echo 'PASS mutation runner: bounded outcomes, survivors, result guards, eligible and exclusive queues, final counts'
+echo 'PASS mutation runner: bounded outcomes, per-check limits, assertion-only kills, survivors, result guards, queues and final counts'
