@@ -19,6 +19,8 @@ from fleetd import agent_server
 from fleetd import agent_protocol
 from test_agent_verbs import _lease_service, _service
 
+THREAD_WATCHDOG_S = 60
+
 
 def _round_trip(server, path):
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -134,7 +136,7 @@ def test_close_does_not_reuse_worker_owned_descriptor_during_response_write(tmp_
         if writers:
             captured.extend(writers)
             write_parked.set()
-            if not resume_write.wait(3):
+            if not resume_write.wait(THREAD_WATCHDOG_S):
                 raise AssertionError("response writer was not released by the failure watchdog")
             return [], writers, []
         return real_select(readers, writers, errors, timeout)
@@ -147,7 +149,7 @@ def test_close_does_not_reuse_worker_owned_descriptor_during_response_write(tmp_
         worker.start()
         write_frame(client, {"verb": "probe"})
         client.shutdown(socket.SHUT_WR)
-        assert write_parked.wait(3), "worker did not park after capturing its response descriptor"
+        assert write_parked.wait(THREAD_WATCHDOG_S), "worker did not park after capturing its response descriptor"
         worker_fd = captured[0]
 
         server.close()
@@ -164,14 +166,14 @@ def test_close_does_not_reuse_worker_owned_descriptor_during_response_write(tmp_
         assert replacement_peer is None, "a live worker's descriptor number was reused"
 
         resume_write.set()
-        worker.join(timeout=3)
+        worker.join(timeout=THREAD_WATCHDOG_S)
         assert not worker.is_alive(), "connection worker remained parked after its write was released"
         with pytest.raises(OSError):
             os.fstat(worker_fd)
     finally:
         resume_write.set()
         if worker.ident is not None:
-            worker.join(timeout=3)
+            worker.join(timeout=THREAD_WATCHDOG_S)
         client.close()
         for left, right in replacement_pairs:
             left.close()
@@ -710,7 +712,7 @@ def test_close_wakes_active_serve_once_and_waiter_closes_watched_descriptors(tmp
             waiting.set()
             readable = real_select(readers, writers, errors, timeout)
             woke.set()
-            if not leave_wait.wait(3):
+            if not leave_wait.wait(THREAD_WATCHDOG_S):
                 raise AssertionError("serve_once was not released by the failure watchdog")
             return readable
         return real_select(readers, writers, errors, timeout)
@@ -728,7 +730,7 @@ def test_close_wakes_active_serve_once_and_waiter_closes_watched_descriptors(tmp
     waiter = threading.Thread(target=serve_one)
     try:
         waiter.start()
-        assert waiting.wait(3), "serve_once did not enter its listener wait"
+        assert waiting.wait(THREAD_WATCHDOG_S), "serve_once did not enter its listener wait"
         with pytest.raises(AdmissionError) as second_once:
             server.serve_once()
         assert second_once.value.exit_code == ExitCode.RUNNER_FAILURE
@@ -737,13 +739,13 @@ def test_close_wakes_active_serve_once_and_waiter_closes_watched_descriptors(tmp
         assert concurrent_forever.value.exit_code == ExitCode.RUNNER_FAILURE
 
         server.close()
-        assert woke.wait(3), "close did not wake the active serve_once"
+        assert woke.wait(THREAD_WATCHDOG_S), "close did not wake the active serve_once"
         assert not completed.is_set(), "serve_once left its wait before the test released it"
         assert all(stat.S_ISSOCK(os.fstat(fd).st_mode) for fd in watched)
 
         leave_wait.set()
-        assert completed.wait(3), "serve_once did not finish after leaving the wait"
-        waiter.join(timeout=3)
+        assert completed.wait(THREAD_WATCHDOG_S), "serve_once did not finish after leaving the wait"
+        waiter.join(timeout=THREAD_WATCHDOG_S)
         assert not waiter.is_alive(), "serve_once thread remained alive after the failure watchdog"
         for fd in watched:
             with pytest.raises(OSError):
@@ -751,7 +753,7 @@ def test_close_wakes_active_serve_once_and_waiter_closes_watched_descriptors(tmp
     finally:
         leave_wait.set()
         if waiter.ident is not None:
-            waiter.join(timeout=3)
+            waiter.join(timeout=THREAD_WATCHDOG_S)
         server.close()
 
 

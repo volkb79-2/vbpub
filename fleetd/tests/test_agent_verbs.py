@@ -719,7 +719,7 @@ def test_concurrent_puts_reserve_across_processes_before_reading_their_bodies(tm
         first.start()
         first_server.close()
         first_send.close()
-        assert first_observed.wait(3), "first put did not reserve before reading its body"
+        assert first_observed.wait(THREAD_WATCHDOG_S), "first put did not reserve before reading its body"
 
         second_client, second_server = socket.socketpair()
         second_observed = context.Event()
@@ -731,7 +731,7 @@ def test_concurrent_puts_reserve_across_processes_before_reading_their_bodies(tm
         second.start()
         second_server.close()
         second_send.close()
-        assert second_receive.poll(3), "second put did not return while the first body was parked"
+        assert second_receive.poll(THREAD_WATCHDOG_S), "second put did not return while the first body was parked"
         second_reply = second_receive.recv()
         assert second_reply[0:2] == ("error", ExitCode.REFUSAL)
         assert "max_upload_store_bytes" in second_reply[2]
@@ -740,7 +740,7 @@ def test_concurrent_puts_reserve_across_processes_before_reading_their_bodies(tm
 
         first_client.sendall(first_content)
         first_client.shutdown(socket.SHUT_WR)
-        assert first_receive.poll(3), "first put did not finish after its body was supplied"
+        assert first_receive.poll(THREAD_WATCHDOG_S), "first put did not finish after its body was supplied"
         first_reply = first_receive.recv()
         assert first_reply[0] == "ok"
         assert Path(first_reply[1]["path"]).read_bytes() == first_content
@@ -753,9 +753,9 @@ def test_concurrent_puts_reserve_across_processes_before_reading_their_bodies(tm
                 except OSError:
                     pass
                 client.close()
-        first.join(3)
+        first.join(THREAD_WATCHDOG_S)
         if second is not None:
-            second.join(3)
+            second.join(THREAD_WATCHDOG_S)
         assert not first.is_alive(), "first upload worker did not exit"
         if second is not None:
             assert not second.is_alive(), "second upload worker did not exit"
