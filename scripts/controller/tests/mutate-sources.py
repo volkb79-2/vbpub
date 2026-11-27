@@ -986,7 +986,7 @@ mutant("scripts/controller/pi-impl.sh", "pi-pidns-project-extensions-enabled.sh"
        '  base_pi_args+=(--no-extensions -e "$pidns_extension")',
        '  base_pi_args+=(-e "$pidns_extension")')
 mutant("scripts/controller/pi-impl.sh", "pi-pidns-preflight-dropped.sh",
-       '  if pidns_probe_output=$("$pidns_wrapper" -c true 2>&1); then',
+       '  if pidns_probe_output=$(/usr/bin/env -u SHELLOPTS -u BASHOPTS "$pidns_wrapper" -c true 2>&1); then',
        '  if true; then')
 mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-check-dropped.sh",
        '  if [[ ! -r $pidns_extension ]]; then\n'

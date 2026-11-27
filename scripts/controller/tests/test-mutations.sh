@@ -288,7 +288,7 @@ for pi_launch_case in \
   pi_launch_focus=${pi_launch_case#*:}
   expect_killed "$pi_launch_mutant" \
     env PI_TEST_FOCUS="$pi_launch_focus" \
-      PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_launch_mutant" \
+      PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_launch_mutant.sh" \
       bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 for pi_live_case in \
