@@ -231,9 +231,16 @@ declared size from admission through durable commit (file fsync, rename, and
 directory fsync) or, after abandonment, until its partial is removed. Bytes
 written or buffered do not reduce the reservation; during streaming they may
 also consume disk space, which is conservatively counted twice. The accounting
-lock is not held while the body streams. Dead-process partials are reaped only
-after their reservation flock is available. Retention and garbage collection
-are not implemented (FD-062).
+lock is not held while the body streams. The writer holds a stable owner-lock
+file before publishing the reservation record. It writes the record to a
+temporary file, fsyncs it, renames it atomically, and fsyncs the incoming
+directory. Recovery derives record, temporary-record, and partial names from
+the validated token and never from record contents. It removes torn records,
+leftover record temporaries, and partials only after acquiring the owner's
+lock; a live owner keeps its partial. If the owner lock is missing, inaccessible,
+or busy while its record is invalid, `put` refuses with the offending filename
+and an operator check. Retention and garbage collection are not implemented
+(FD-062).
 
 `agent.toml.max_connections` is a required positive integer with no default. It
 bounds ordinary local connections; an excess connection is refused with exit

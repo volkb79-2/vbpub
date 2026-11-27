@@ -146,8 +146,14 @@ through durable commit (file fsync, rename, and directory fsync) or, after
 abandonment, until its partial is removed. Buffered and written bytes do not
 reduce that reservation; bytes already on disk are counted twice during
 streaming, conservatively. The lock is not held while the body streams. Client
-half-closes after the request and server rejects truncation/extra input.
-Retention and garbage collection are C3b follow-up FD-062.
+half-closes after the request and server rejects truncation/extra input. A
+stable owner lock is held before the atomic reservation record is published
+(temporary file, fsync, rename, incoming-directory fsync). Recovery derives
+artifact names from the validated token and reclaims torn records or leftover
+record temporaries only after it acquires the owner lock; a partial with a live
+owner is retained. Missing or inaccessible owner locks and invalid live records
+refuse with the offending filename and an operator check. Retention and garbage
+collection are C3b follow-up FD-062.
 `fetch` ranges are at most 8 MiB; responses use the same frame + body.
 
 **Several clients, several ciu roots.** The record names `repo` and `requested_by`, and the host

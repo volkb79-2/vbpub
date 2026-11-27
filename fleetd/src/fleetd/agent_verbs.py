@@ -125,7 +125,9 @@ class AgentReply:
 @dataclass
 class _UploadReservation:
     fd: int
+    owner_path: Path
     path: Path
+    temporary_record_path: Path
     temporary_fd: int
     temporary_name: str
     expected: int
@@ -302,58 +304,212 @@ class AgentVerbService:
             return
         if not stat.S_ISREG(info.st_mode):
             raise AdmissionError(ExitCode.RUNNER_FAILURE, f"upload partial {temporary_name!r} is not a regular file")
-        os.unlink(path)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            return
+
+    def _remove_upload_metadata(self, name: str) -> None:
+        path = self.paths.incoming_dir / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(info.st_mode):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"upload reservation artifact {name!r} is not a regular file")
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            return
+
+    def _remove_upload_owner(self, owner_path: Path, fd: int) -> None:
+        try:
+            current = owner_path.lstat()
+        except FileNotFoundError:
+            return
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"upload owner lock {owner_path.name!r} changed before cleanup; inspect the incoming directory and active upload processes",
+            )
+        try:
+            os.unlink(owner_path)
+        except FileNotFoundError:
+            return
+        self._fsync_directory(self.paths.incoming_dir)
+
+    @staticmethod
+    def _upload_recovery_refusal(filename: str, reason: str) -> AdmissionError:
+        return AdmissionError(
+            ExitCode.RUNNER_FAILURE,
+            f"cannot safely recover upload artifact {filename!r}: {reason}; check the named files in the agent incoming directory and repair or remove them only after confirming no upload writer is active",
+        )
 
     def _recover_upload_reservations_locked(self) -> tuple[int, int, set[str]]:
         expected_total = 0
-        remaining_total = 0
+        reservation_total = 0
         live_partials: set[str] = set()
         try:
             entries = list(os.scandir(self.paths.incoming_dir))
         except OSError as exc:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect upload reservations: {exc}") from exc
+        groups: dict[str, dict[str, str]] = {}
         for entry in entries:
-            if not entry.name.startswith(".upload-reservation-") or not entry.name.endswith(".json"):
+            name = entry.name
+            kind = ""
+            token = ""
+            if name.startswith(".upload-reservation-"):
+                if name.endswith(".json"):
+                    kind = "record"
+                    token = name[len(".upload-reservation-"):-len(".json")]
+                elif name.endswith(".tmp"):
+                    kind = "temporary_record"
+                    token = name[len(".upload-reservation-"):-len(".tmp")]
+                else:
+                    raise self._upload_recovery_refusal(name, "reservation filename is malformed; inspect its suffix and token")
+            elif name.startswith(".upload-owner-"):
+                if not name.endswith(".lock"):
+                    raise self._upload_recovery_refusal(name, "owner-lock filename is malformed; inspect its suffix and token")
+                kind = "owner"
+                token = name[len(".upload-owner-"):-len(".lock")]
+            elif name.startswith("upload-part-"):
+                kind = "partial"
+                token = name[len("upload-part-"):]
+            else:
                 continue
-            token = entry.name[len(".upload-reservation-"):-len(".json")]
             if not token or re.fullmatch(r"[A-Za-z0-9_-]+", token) is None:
-                raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload reservation filename is malformed")
+                raise self._upload_recovery_refusal(name, "filename token is malformed; check the incoming directory for unexpected names")
+            group = groups.setdefault(token, {})
+            if kind in group:
+                raise self._upload_recovery_refusal(name, "duplicate artifact kind for one token; inspect the incoming directory")
+            group[kind] = name
+
+        for token, artifacts in groups.items():
+            record_name = f".upload-reservation-{token}.json"
+            temporary_record_name = f".upload-reservation-{token}.tmp"
+            owner_name = f".upload-owner-{token}.lock"
+            partial_name = f"upload-part-{token}"
+            if "owner" not in artifacts:
+                if "record" in artifacts or "temporary_record" in artifacts:
+                    offender = artifacts.get("record", artifacts.get("temporary_record", owner_name))
+                    raise self._upload_recovery_refusal(
+                        offender,
+                        f"owner lock {owner_name!r} is missing, so owner absence cannot be established; check whether an upload process is active and inspect the owner-lock path",
+                    )
+                try:
+                    self._remove_upload_partial(partial_name)
+                except AdmissionError as exc:
+                    raise self._upload_recovery_refusal(partial_name, str(exc)) from exc
+                except OSError as exc:
+                    raise self._upload_recovery_refusal(partial_name, f"partial cleanup failed: {exc}") from exc
+                continue
+
+            owner_path = self.paths.incoming_dir / owner_name
             try:
-                fd = os.open(entry.path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
-            except FileNotFoundError as exc:
-                raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload reservation changed during recovery") from exc
+                fd = os.open(owner_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
             except OSError as exc:
-                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot recover upload reservation: {exc}") from exc
+                raise self._upload_recovery_refusal(
+                    owner_name,
+                    f"cannot establish owner absence ({exc}); check owner-lock permissions and whether an upload process is active",
+                ) from exc
             locked = False
             try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+                    raise self._upload_recovery_refusal(
+                        owner_name,
+                        "owner lock is not a private regular file; check its type and permissions",
+                    )
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     locked = True
                 except BlockingIOError:
-                    expected, _remaining, temporary = self._read_upload_reservation(fd, token)
+                    if "temporary_record" in artifacts:
+                        raise self._upload_recovery_refusal(
+                            temporary_record_name,
+                            f"owner lock {owner_name!r} is held while an atomic record temporary remains; inspect the active uploader",
+                        )
+                    if "record" not in artifacts:
+                        raise self._upload_recovery_refusal(
+                            owner_name,
+                            "owner lock is held without its durable reservation record; inspect the active uploader and incoming directory",
+                        )
+                    record_path = self.paths.incoming_dir / record_name
+                    try:
+                        record_fd = os.open(record_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    except OSError as exc:
+                        raise self._upload_recovery_refusal(
+                            record_name,
+                            f"live reservation cannot be read ({exc}); inspect the active uploader and record permissions",
+                        ) from exc
+                    try:
+                        expected, _remaining, temporary = self._read_upload_reservation(record_fd, token)
+                    except (AdmissionError, OSError) as exc:
+                        raise self._upload_recovery_refusal(
+                            record_name,
+                            f"live reservation is invalid ({exc}); inspect the active uploader and record",
+                        ) from exc
+                    finally:
+                        os.close(record_fd)
+                    try:
+                        partial_info = (self.paths.incoming_dir / temporary).lstat()
+                    except OSError as exc:
+                        raise self._upload_recovery_refusal(
+                            temporary,
+                            f"live reservation partial cannot be inspected ({exc}); inspect the active uploader and partial",
+                        ) from exc
+                    if not stat.S_ISREG(partial_info.st_mode):
+                        raise self._upload_recovery_refusal(
+                            temporary,
+                            "live reservation partial is not a regular file; inspect the active uploader and partial",
+                        )
                     expected_total += expected
-                    remaining_total += expected
+                    reservation_total += expected
                     live_partials.add(temporary)
                     continue
-                expected, _remaining, temporary = self._read_upload_reservation(fd, token)
-                self._remove_upload_partial(temporary)
-                os.unlink(entry.path)
-            except FileNotFoundError:
-                raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload reservation changed during recovery")
+                except OSError as exc:
+                    raise self._upload_recovery_refusal(
+                        owner_name,
+                        f"cannot establish owner absence ({exc}); check owner-lock permissions and whether an upload process is active",
+                    ) from exc
+                for metadata_name in (record_name, temporary_record_name):
+                    try:
+                        self._remove_upload_metadata(metadata_name)
+                    except AdmissionError as exc:
+                        raise self._upload_recovery_refusal(metadata_name, str(exc)) from exc
+                try:
+                    self._remove_upload_partial(partial_name)
+                except AdmissionError as exc:
+                    raise self._upload_recovery_refusal(partial_name, str(exc)) from exc
+                self._fsync_directory(self.paths.incoming_dir)
+                try:
+                    current = owner_path.lstat()
+                except OSError as exc:
+                    raise self._upload_recovery_refusal(
+                        owner_name,
+                        f"owner lock changed before cleanup ({exc}); inspect the incoming directory",
+                    ) from exc
+                if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                    raise self._upload_recovery_refusal(
+                        owner_name,
+                        "owner lock changed before cleanup; inspect the incoming directory and active upload processes",
+                    )
+                os.unlink(owner_path)
+                self._fsync_directory(self.paths.incoming_dir)
             except OSError as exc:
-                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot recover upload reservation: {exc}") from exc
+                raise self._upload_recovery_refusal(
+                    owner_name,
+                    f"cleanup or owner-state inspection failed ({exc}); check the incoming directory and active upload processes",
+                ) from exc
             finally:
                 if locked:
                     fcntl.flock(fd, fcntl.LOCK_UN)
                 os.close(fd)
-        try:
-            entries = list(os.scandir(self.paths.incoming_dir))
-            for entry in entries:
-                if entry.name.startswith("upload-part-") and entry.name not in live_partials:
-                    self._remove_upload_partial(entry.name)
-        except OSError as exc:
-            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot recover orphaned upload partials: {exc}") from exc
-        return expected_total, remaining_total, live_partials
+        return expected_total, reservation_total, live_partials
 
     def _stored_upload_bytes(self) -> int:
         total = 0
@@ -423,9 +579,12 @@ class AgentVerbService:
                     f"put would breach configured disk floor {floor_bytes}",
                 )
             temporary_fd = -1
-            reservation_fd = -1
+            owner_fd = -1
+            record_fd = -1
             temporary_name = ""
             reservation_path: Path | None = None
+            temporary_record_path: Path | None = None
+            owner_path: Path | None = None
             try:
                 temporary_fd, temporary_name = tempfile.mkstemp(
                     prefix="upload-part-", dir=self.paths.incoming_dir,
@@ -433,43 +592,71 @@ class AgentVerbService:
                 os.fchmod(temporary_fd, 0o600)
                 token = Path(temporary_name).name.removeprefix("upload-part-")
                 reservation_path = self.paths.incoming_dir / f".upload-reservation-{token}.json"
-                reservation_fd = os.open(
-                    reservation_path,
+                temporary_record_path = self.paths.incoming_dir / f".upload-reservation-{token}.tmp"
+                owner_path = self.paths.incoming_dir / f".upload-owner-{token}.lock"
+                owner_fd = os.open(
+                    owner_path,
                     os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
                     0o600,
                 )
-                fcntl.flock(reservation_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self._write_upload_reservation(reservation_fd, expected, expected, Path(temporary_name).name)
-                os.fsync(reservation_fd)
+                fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                os.fsync(owner_fd)
+                self._fsync_directory(self.paths.incoming_dir)
+                record_fd = os.open(
+                    temporary_record_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                self._write_upload_reservation(record_fd, expected, expected, Path(temporary_name).name)
+                os.fsync(record_fd)
+                closing_fd, record_fd = record_fd, -1
+                os.close(closing_fd)
+                os.replace(temporary_record_path, reservation_path)
                 self._fsync_directory(self.paths.incoming_dir)
             except OSError:
+                if record_fd >= 0:
+                    os.close(record_fd)
                 if temporary_fd >= 0:
                     os.close(temporary_fd)
+                    temporary_fd = -1
+                cleaned = True
                 if temporary_name:
                     try:
-                        os.unlink(temporary_name)
-                    except FileNotFoundError:
-                        pass
-                if reservation_fd >= 0:
-                    os.close(reservation_fd)
-                if reservation_path is not None:
+                        self._remove_upload_partial(Path(temporary_name).name)
+                    except (AdmissionError, OSError):
+                        cleaned = False
+                for path in (temporary_record_path, reservation_path):
+                    if path is not None:
+                        try:
+                            self._remove_upload_metadata(path.name)
+                        except (AdmissionError, OSError):
+                            cleaned = False
+                if cleaned:
                     try:
-                        os.unlink(reservation_path)
-                    except FileNotFoundError:
-                        pass
+                        self._fsync_directory(self.paths.incoming_dir)
+                    except OSError:
+                        cleaned = False
+                if owner_fd >= 0:
+                    if cleaned and owner_path is not None:
+                        try:
+                            self._remove_upload_owner(owner_path, owner_fd)
+                        except (AdmissionError, OSError):
+                            pass
+                    fcntl.flock(owner_fd, fcntl.LOCK_UN)
+                    os.close(owner_fd)
                 raise
             return _UploadReservation(
-                reservation_fd, reservation_path, temporary_fd, temporary_name, expected,
+                owner_fd, owner_path, reservation_path, temporary_record_path,
+                temporary_fd, temporary_name, expected,
             )
 
     def _discard_upload_reservation(self, reservation: _UploadReservation) -> None:
         with self._upload_store_lock():
             self._remove_upload_partial(Path(reservation.temporary_name).name)
-            try:
-                os.unlink(reservation.path)
-            except FileNotFoundError:
-                pass
+            self._remove_upload_metadata(reservation.temporary_record_path.name)
+            self._remove_upload_metadata(reservation.path.name)
             self._fsync_directory(self.paths.incoming_dir)
+            self._remove_upload_owner(reservation.owner_path, reservation.fd)
 
     def _release_upload_reservation(self, reservation: _UploadReservation) -> None:
         if reservation.fd >= 0:
@@ -712,11 +899,15 @@ class AgentVerbService:
                     if existing != (expected, digest):
                         raise AdmissionError(ExitCode.REFUSAL, "existing host-created upload does not match its content address")
                     os.unlink(reservation.temporary_name)
+                    self._fsync_directory(self.paths.incoming_dir)
                 else:
                     os.replace(reservation.temporary_name, destination)
                     self._fsync_directory(destination_dir)
-                os.unlink(reservation.path)
+                    self._fsync_directory(self.paths.incoming_dir)
+                self._remove_upload_metadata(reservation.temporary_record_path.name)
+                self._remove_upload_metadata(reservation.path.name)
                 self._fsync_directory(self.paths.incoming_dir)
+                self._remove_upload_owner(reservation.owner_path, reservation.fd)
             reply_path = str(destination.resolve(strict=True))
             completed = True
             return AgentReply(self._envelope(name=name, sha256=digest, bytes=expected, path=reply_path))

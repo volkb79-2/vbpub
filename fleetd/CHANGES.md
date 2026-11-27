@@ -22,7 +22,7 @@ All notable changes to this project are recorded here.
 - Open lane declarations and progress streams through trusted directory descriptors without following any path component; cap progress ranges and client response bodies at 8 MiB.
 - Return terminal status only from its durable completion record and refuse cancel of completed jobs. C3b owns executor-backed terminal details (FD-061).
 - Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b wires those providers, so the shipped C3a CLI does not advertise it.
-- Keep each upload's full declared size reserved through durable commit or partial removal; bytes buffered or written do not lower the upload filesystem disk-floor charge. Leave retention and garbage collection to C3b (FD-062).
+- Keep each upload's full declared size reserved through durable commit or partial removal; bytes buffered or written do not lower the upload filesystem disk-floor charge. Publish reservation records atomically under a stable owner lock and reclaim torn records only after confirming the owner is absent. Leave retention and garbage collection to C3b (FD-062).
 - Bound Assay progress candidate counting to the opened file's 8 MiB snapshot; larger files return `done: null` with a reason, and incremental counting remains FD-063.
 
 ### Fixed
