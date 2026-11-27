@@ -16271,7 +16271,7 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B596 — release gate should simulate the cmru CHANGES fold as a pre-flight
 
-**Status: OPEN (filed 2026-11-27 from the 2026-11-26 manual release simulation); severity: medium.**
+**Status: IMPLEMENTED on this branch (red registration proof `159231d50`, implementation `e090f5a37`); tester-unified lane pending the sub-controller; dev run passed 88 tests but is not gate evidence; severity: medium.**
 
 **Symptom.** cmru folds `[Unreleased]` into the new release section in the release candidate before the release gate runs. A docs test that reads `[Unreleased]` or assumes only branch-current sections can pass on every package head and then fail after the fold; this happened on the first 12.3.0 attempt and again in the 2026-11-26 manual simulation (`tooling-tests` run `rgw-tooling-tests-20261126T231821-v1001`). The affected test is `test_rust_baseline_docs_match_the_available_assay_surface` (`tests/core/test_docs_examples_and_vocabulary.py:230` at c06b1a829). At that base it still reads current sections only (`:236`, `:249-250`), while the entry it needs is in `[12.3.0]` (`CHANGES.md:388`), so the next fold fails it. The helper it uses, `_current_changes_text` (`[Unreleased]` plus the newest release, `:146`), and the helper's two tests (`:253`, `:267`) came from commit `08e27ea7f`. Commit `153737031` (on main through merge `a4571315c`, q342; not in this branch's base) fixes this one test by reading the whole history. Its original form, `0fb0b687b` (branch-only), also covers a P4 liveness pin of the same shape. Neither makes the release gate run the docs tests against a changelog folded by cmru.
 
