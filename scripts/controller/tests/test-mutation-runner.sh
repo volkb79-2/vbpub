@@ -4,9 +4,15 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-mutation-runner-test.XXXXXX")
 SURVIVOR_FIRST_FD=
 SURVIVOR_SECOND_FD=
+LATE_EARLIER_FD=
+QUEUE_FIRST_FD=
+QUEUE_SECOND_FD=
 cleanup() {
   if [[ -n $SURVIVOR_FIRST_FD ]]; then printf 'release\n' >&"$SURVIVOR_FIRST_FD" || :; fi
   if [[ -n $SURVIVOR_SECOND_FD ]]; then printf 'release\n' >&"$SURVIVOR_SECOND_FD" || :; fi
+  if [[ -n $LATE_EARLIER_FD ]]; then printf 'release\n' >&"$LATE_EARLIER_FD" || :; fi
+  if [[ -n $QUEUE_FIRST_FD ]]; then printf 'release\n' >&"$QUEUE_FIRST_FD" || :; fi
+  if [[ -n $QUEUE_SECOND_FD ]]; then printf 'release\n' >&"$QUEUE_SECOND_FD" || :; fi
   rm -rf -- "$ROOT"
 }
 trap cleanup EXIT
@@ -198,15 +204,23 @@ contains "$ROOT/spawn-failure.out" 'SUMMARY: FAIL checks=1 reported=1 killed=0 e
 
 export CONTROLLER_MUTATION_JOBS=2
 mutation_runner_init "$ROOT/late-survivor" || fail 'valid width 2 was refused for late survivor case'
+earlier_fifo=$ROOT/earlier-survivor.fifo
 late_fifo=$ROOT/late-survivor.fifo
-mkfifo "$late_fifo" || fail 'could not create late-survivor FIFO'
+mkfifo "$earlier_fifo" "$late_fifo" || fail 'could not create late-survivor FIFOs'
+exec {LATE_EARLIER_FD}<>"$earlier_fifo" || fail 'could not open earlier-survivor FIFO'
 exec {late_fifo_fd}<>"$late_fifo" || fail 'could not open late-survivor FIFO'
 {
-  expect_killed earlier-check bash -c 'printf "earlier check log\n"; exit 5'
+  # Hold the first survivor until both worker slots are registered. The late
+  # worker then stays blocked while the parent observes the first survivor.
+  # shellcheck disable=SC2016
+  expect_killed earlier-check bash -c \
+    'IFS= read -r token < "$1"; [[ $token == release ]] || exit 7; printf "earlier survivor log\n"; exit 0' \
+    _ "$earlier_fifo"
   # shellcheck disable=SC2016
   expect_killed late-survivor bash -c \
     'IFS= read -r token < "$1"; [[ $token == release ]] || exit 8; printf "late survivor log\n"; exit 0' \
     _ "$late_fifo"
+  printf 'release\n' >&"$LATE_EARLIER_FD"
   mutation_runner_reap_one
   [[ -f $MUTATION_RUNNER_RESULTS/earlier-check.result ]] || fail 'earlier check was not collected first'
   printf 'release\n' >&"$late_fifo_fd"
@@ -215,15 +229,130 @@ exec {late_fifo_fd}<>"$late_fifo" || fail 'could not open late-survivor FIFO'
   reported_at_finish=$MUTATION_RUNNER_REPORTED_COUNT
   late_result_present=0
   [[ -f $MUTATION_RUNNER_RESULTS/late-survivor.result ]] && late_result_present=1
-  # If a broken finish returned without collecting the late worker, reap it
-  # here so the test itself leaves no child behind before reporting the defect.
-  while (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); do mutation_runner_reap_one || :; done
+  # If a broken finish returned early, cleanup may reap only the recorded
+  # workers. Bound that fallback and report an empty-wait error explicitly.
+  late_reaps=0
+  late_reap_failed=0
+  while (( ${#MUTATION_RUNNER_PIDS[@]} > 0 && late_reaps < 2 )); do
+    if ! mutation_runner_reap_one; then late_reap_failed=1; break; fi
+    late_reaps=$((late_reaps + 1))
+  done
+  (( ${#MUTATION_RUNNER_PIDS[@]} == 0 )) || late_reap_failed=1
 } > "$ROOT/late-survivor.out" 2>&1
+exec {LATE_EARLIER_FD}>&-
 exec {late_fifo_fd}>&-
+LATE_EARLIER_FD=
 (( finish_rc != 0 )) || fail 'late survivor passed'
 (( late_result_present == 1 )) || fail 'final wait did not collect the late survivor result'
 (( reported_at_finish == 2 )) || fail 'final wait returned before reaping the late survivor worker'
+(( late_reap_failed == 0 )) || fail 'late-survivor test cleanup could not drain its recorded worker'
 contains "$ROOT/late-survivor.out" 'SURVIVED: late-survivor'
-contains "$ROOT/late-survivor.out" 'SUMMARY: FAIL checks=2 reported=2 killed=1 elapsed_seconds='
+contains "$ROOT/late-survivor.out" 'SUMMARY: FAIL checks=2 reported=2 killed=0 elapsed_seconds='
 
-echo 'PASS mutation runner: killed status, exit 127, survivors, stop-after-survivor, missing result, spawn failure, duplicate, invalid width, final wait'
+export CONTROLLER_MUTATION_JOBS=3
+mutation_runner_init "$ROOT/eligible-queue" || fail 'valid width 3 was refused for eligible-queue case'
+queue_first_fifo=$ROOT/queue-first.fifo
+queue_second_fifo=$ROOT/queue-second.fifo
+mkfifo "$queue_first_fifo" "$queue_second_fifo" || fail 'could not create eligible-queue FIFOs'
+exec {QUEUE_FIRST_FD}<>"$queue_first_fifo" || fail 'could not open first eligible-queue FIFO'
+exec {QUEUE_SECOND_FD}<>"$queue_second_fifo" || fail 'could not open second eligible-queue FIFO'
+{
+  # Both commands name the same serialized suite. The second stays pending,
+  # while unrelated commands can occupy the other worker slots.
+  # shellcheck disable=SC2016
+  expect_killed grouped-first bash -c \
+    'IFS= read -r token < "$1"; [[ $token == release ]] || exit 10; exit 7' \
+    test-pi-impl.sh "$queue_first_fifo"
+  # shellcheck disable=SC2016
+  expect_killed grouped-second bash -c \
+    'IFS= read -r token < "$1"; [[ $token == release ]] || exit 11; exit 8' \
+    test-pi-impl.sh "$queue_second_fifo"
+  expect_killed unrelated-one bash -c 'exit 5'
+  expect_killed unrelated-two bash -c 'exit 6'
+  expect_killed unrelated-late bash -c 'exit 9'
+  [[ ! -e $MUTATION_RUNNER_STARTED/grouped-second ]] \
+    || fail 'a second check in one serialized suite started concurrently'
+  [[ ! -e $MUTATION_RUNNER_STARTED/unrelated-late ]] \
+    || fail 'the pool exceeded its configured width'
+  mutation_runner_reap_one
+  mutation_runner_dispatch_pending
+  [[ -e $MUTATION_RUNNER_STARTED/unrelated-late ]] \
+    || fail 'a completed worker did not free a slot for an eligible pending check'
+  [[ ! -e $MUTATION_RUNNER_STARTED/grouped-second ]] \
+    || fail 'a queued same-suite check started while its group was active'
+  printf 'release\n' >&"$QUEUE_FIRST_FD"
+  printf 'release\n' >&"$QUEUE_SECOND_FD"
+  if mutation_runner_finish; then queue_rc=0; else queue_rc=$?; fi
+} > "$ROOT/eligible-queue.out" 2>&1
+exec {QUEUE_FIRST_FD}>&-
+exec {QUEUE_SECOND_FD}>&-
+QUEUE_FIRST_FD=
+QUEUE_SECOND_FD=
+[[ $queue_rc == 0 ]] || fail 'eligible pending checks did not finish cleanly'
+contains "$ROOT/eligible-queue.out" 'SUMMARY: PASS checks=5 reported=5 killed=5 elapsed_seconds='
+
+export CONTROLLER_MUTATION_JOBS=3
+mutation_runner_init "$ROOT/exclusive-queue" || fail 'valid width 3 was refused for exclusive-queue case'
+exclusive_fifo=$ROOT/exclusive.fifo
+mkfifo "$exclusive_fifo" || fail 'could not create exclusive FIFO'
+exec {QUEUE_FIRST_FD}<>"$exclusive_fifo" || fail 'could not open exclusive FIFO'
+{
+  # An exclusive check owns the entire pool until it finishes. A normal check
+  # queued behind it starts as soon as exclusivity is released.
+  # shellcheck disable=SC2016
+  expect_killed exclusive-first bash -c \
+    'IFS= read -r token < "$1"; [[ $token == release ]] || exit 12; exit 3' \
+    test-ctx-hooks.sh "$exclusive_fifo"
+  expect_killed ordinary-after-exclusive bash -c 'exit 4'
+  [[ ${#MUTATION_RUNNER_PIDS[@]} == 1 ]] \
+    || fail 'an ordinary check overlapped an active exclusive check'
+  [[ ! -e $MUTATION_RUNNER_STARTED/ordinary-after-exclusive ]] \
+    || fail 'an ordinary check started during an exclusive check'
+  printf 'release\n' >&"$QUEUE_FIRST_FD"
+  if mutation_runner_finish; then exclusive_rc=0; else exclusive_rc=$?; fi
+} > "$ROOT/exclusive-queue.out" 2>&1
+exec {QUEUE_FIRST_FD}>&-
+QUEUE_FIRST_FD=
+[[ $exclusive_rc == 0 ]] || fail 'exclusive pending checks did not finish cleanly'
+[[ -e $ROOT/exclusive-queue/mutation-started/ordinary-after-exclusive ]] \
+  || fail 'an ordinary check was lost behind the exclusive check'
+contains "$ROOT/exclusive-queue.out" 'SUMMARY: PASS checks=2 reported=2 killed=2 elapsed_seconds='
+
+export CONTROLLER_MUTATION_JOBS=3
+mutation_runner_init "$ROOT/pending-exclusive" || fail 'valid width 3 was refused for pending-exclusive case'
+pending_exclusive_first_fifo=$ROOT/pending-exclusive-first.fifo
+pending_exclusive_fifo=$ROOT/pending-exclusive.fifo
+mkfifo "$pending_exclusive_first_fifo" "$pending_exclusive_fifo" \
+  || fail 'could not create pending-exclusive FIFOs'
+exec {QUEUE_FIRST_FD}<>"$pending_exclusive_first_fifo" \
+  || fail 'could not open pre-exclusive FIFO'
+exec {QUEUE_SECOND_FD}<>"$pending_exclusive_fifo" \
+  || fail 'could not open pending-exclusive FIFO'
+{
+  # The exclusive check is queued behind an active worker. A later ordinary
+  # check may use a free slot, but the exclusive check still waits to run alone.
+  # shellcheck disable=SC2016
+  expect_killed ordinary-before-exclusive bash -c \
+    'IFS= read -r token < "$1"; [[ $token == release ]] || exit 14; exit 5' \
+    _ "$pending_exclusive_first_fifo"
+  # shellcheck disable=SC2016
+  expect_killed exclusive-after-ordinary bash -c \
+    'IFS= read -r token < "$1"; [[ $token == release ]] || exit 15; exit 4' \
+    test-ctx-hooks.sh "$pending_exclusive_fifo"
+  expect_killed ordinary-after-pending-exclusive bash -c 'exit 6'
+  [[ ! -e $MUTATION_RUNNER_STARTED/exclusive-after-ordinary ]] \
+    || fail 'an exclusive check started while an earlier worker was active'
+  [[ -e $MUTATION_RUNNER_STARTED/ordinary-after-pending-exclusive ]] \
+    || fail 'a pending exclusive check stalled an eligible ordinary worker'
+  printf 'release\n' >&"$QUEUE_FIRST_FD"
+  printf 'release\n' >&"$QUEUE_SECOND_FD"
+  if mutation_runner_finish; then pending_exclusive_rc=0; else pending_exclusive_rc=$?; fi
+} > "$ROOT/pending-exclusive.out" 2>&1
+exec {QUEUE_FIRST_FD}>&-
+exec {QUEUE_SECOND_FD}>&-
+QUEUE_FIRST_FD=
+QUEUE_SECOND_FD=
+[[ $pending_exclusive_rc == 0 ]] || fail 'pending exclusive scheduling did not finish cleanly'
+contains "$ROOT/pending-exclusive.out" 'SUMMARY: PASS checks=3 reported=3 killed=3 elapsed_seconds='
+
+echo 'PASS mutation runner: bounded outcomes, survivors, result guards, eligible and exclusive queues, final counts'

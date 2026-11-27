@@ -96,12 +96,13 @@ mutation_runner_mutant(
 )
 mutation_runner_mutant(
     "mutation-runner-late-wait.sh",
-    "  while (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); do\n"
-    "    mutation_runner_reap_one || :\n"
-    "  done",
-    "  while false; do\n"
-    "    mutation_runner_reap_one || :\n"
-    "  done",
+    "      if (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); then\n"
+    "        if ! mutation_runner_reap_one; then break; fi\n"
+    "        continue\n"
+    "      fi",
+    "      if (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); then\n"
+    "        break # mutant skips the final worker wait\n"
+    "      fi",
 )
 
 

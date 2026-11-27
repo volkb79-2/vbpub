@@ -67,14 +67,19 @@ mutation_runner_init() {
     printf 'ERROR: mutation checks require GNU timeout for the per-check wall limit\n' >&2
     return 2
   fi
+  if (( BASH_VERSINFO[0] < 5 || ( BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1 ) )); then
+    printf 'ERROR: mutation scheduling requires Bash 5.1 or newer for wait -n -p\n' >&2
+    return 2
+  fi
 
   MUTATION_RUNNER_ROOT=$root
   MUTATION_RUNNER_RESULTS=$root/mutation-results
   MUTATION_RUNNER_REGISTERED=$root/mutation-registered
   MUTATION_RUNNER_STARTED=$root/mutation-started
+  MUTATION_RUNNER_PENDING_DIR=$root/mutation-pending
   MUTATION_RUNNER_STOP=$root/mutation-survivor-seen
   if ! mkdir -p -- "$MUTATION_RUNNER_RESULTS" "$MUTATION_RUNNER_REGISTERED" \
-    "$MUTATION_RUNNER_STARTED"; then
+    "$MUTATION_RUNNER_STARTED" "$MUTATION_RUNNER_PENDING_DIR"; then
     printf 'ERROR: cannot create mutation runner state under %s\n' "$root" >&2
     return 1
   fi
@@ -91,6 +96,8 @@ mutation_runner_init() {
   MUTATION_RUNNER_PIDS=()
   MUTATION_RUNNER_PID_LABELS=()
   MUTATION_RUNNER_PID_GROUPS=()
+  MUTATION_RUNNER_PENDING_LABELS=()
+  MUTATION_RUNNER_PENDING_GROUPS=()
   MUTATION_RUNNER_FAILURE_LABELS=()
   MUTATION_RUNNER_FAILURE_REASONS=()
   MUTATION_RUNNER_REGISTERED_COUNT=0
@@ -119,14 +126,12 @@ mutation_runner_observe_survivor() {
 mutation_runner_group_for_command() {
   local argument basename
   MUTATION_RUNNER_COMMAND_GROUP=
-  MUTATION_RUNNER_COMMAND_EXCLUSIVE=0
   for argument in "$@"; do
     basename=${argument##*/}
     case $basename in
       # Short wall-clock checks are isolated from all other pool work.
       test-ctl-status.sh|test-ctx-hooks.sh|test-pi-review.sh|test_remote_gate_cache.sh)
         MUTATION_RUNNER_COMMAND_GROUP=exclusive:$basename
-        MUTATION_RUNNER_COMMAND_EXCLUSIVE=1
         return 0
         ;;
       # Longer event polls are serialized by suite; each still has the worker
@@ -294,19 +299,150 @@ mutation_runner_worker() {
   return 0
 }
 
+mutation_runner_pending_remove() {
+  local index=$1
+  unset 'MUTATION_RUNNER_PENDING_LABELS[index]' 'MUTATION_RUNNER_PENDING_GROUPS[index]'
+  MUTATION_RUNNER_PENDING_LABELS=("${MUTATION_RUNNER_PENDING_LABELS[@]}")
+  MUTATION_RUNNER_PENDING_GROUPS=("${MUTATION_RUNNER_PENDING_GROUPS[@]}")
+}
+
+mutation_runner_start_check() {
+  local label=$1 group=$2 argv_file=$3 log pid
+  local -a command_argv=()
+  if ! mapfile -d '' -t command_argv < "$argv_file" || (( ${#command_argv[@]} == 0 )); then
+    mutation_runner_fail "$label" 'pending check has no readable command'
+    return 1
+  fi
+  if ! flock -x "$MUTATION_RUNNER_LOCK_FD"; then
+    mutation_runner_fail "$label" 'could not acquire the worker admission lock'
+    return 1
+  fi
+  if mutation_runner_should_stop; then
+    mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
+    return 0
+  fi
+  if ! : > "$MUTATION_RUNNER_STARTED/$label"; then
+    mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
+    mutation_runner_fail "$label" 'could not record worker start'
+    return 1
+  fi
+  log=$MUTATION_RUNNER_ROOT/$label.log
+  if ! : > "$log"; then
+    mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
+    mutation_runner_fail "$label" 'could not create per-check log'
+    return 1
+  fi
+  ( mutation_runner_worker "$label" "$log" "${command_argv[@]}" ) &
+  pid=$!
+  if [[ ! $pid =~ ^[0-9]+$ ]] || [[ $pid == 0 ]]; then
+    mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
+    mutation_runner_fail "$label" 'worker spawn did not return a usable PID'
+    return 1
+  fi
+  MUTATION_RUNNER_PIDS+=("$pid")
+  MUTATION_RUNNER_PID_LABELS+=("$label")
+  MUTATION_RUNNER_PID_GROUPS+=("$group")
+  MUTATION_RUNNER_STARTED_COUNT=$((MUTATION_RUNNER_STARTED_COUNT + 1))
+  mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
+  return 0
+}
+
+mutation_runner_dispatch_pending() {
+  local index exclusive_index candidate label group argv_file
+  if ! mutation_runner_width_is_valid; then
+    mutation_runner_fail '<runner>' \
+      "effective mutation worker width is outside 1..$MUTATION_RUNNER_MAX_JOBS at dispatch"
+    return 1
+  fi
+  mutation_runner_should_stop && return 0
+
+  while (( ${#MUTATION_RUNNER_PIDS[@]} < MUTATION_RUNNER_JOBS )); do
+    (( ${#MUTATION_RUNNER_PENDING_LABELS[@]} > 0 )) || return 0
+    mutation_runner_should_stop && return 0
+    mutation_runner_exclusive_active && return 0
+
+    exclusive_index=-1
+    for (( index = 0; index < ${#MUTATION_RUNNER_PENDING_GROUPS[@]}; index++ )); do
+      if [[ ${MUTATION_RUNNER_PENDING_GROUPS[index]} == exclusive:* ]]; then
+        exclusive_index=$index
+        break
+      fi
+    done
+
+    candidate=-1
+    if (( ${#MUTATION_RUNNER_PIDS[@]} == 0 )); then
+      for (( index = 0; index < ${#MUTATION_RUNNER_PENDING_GROUPS[@]}; index++ )); do
+        (( exclusive_index < 0 || index < exclusive_index )) || break
+        group=${MUTATION_RUNNER_PENDING_GROUPS[index]}
+        if [[ -n $group ]] && mutation_runner_group_active "$group"; then
+          continue
+        fi
+        candidate=$index
+        break
+      done
+      if (( candidate < 0 && exclusive_index >= 0 )); then
+        candidate=$exclusive_index
+      fi
+    else
+      # A pending exclusive check waits for current workers to drain, but it
+      # does not reserve free slots while those workers are still running.
+      for (( index = 0; index < ${#MUTATION_RUNNER_PENDING_GROUPS[@]}; index++ )); do
+        group=${MUTATION_RUNNER_PENDING_GROUPS[index]}
+        [[ $group == exclusive:* ]] && continue
+        if [[ -n $group ]] && mutation_runner_group_active "$group"; then
+          continue
+        fi
+        candidate=$index
+        break
+      done
+    fi
+    if (( candidate < 0 )); then
+      return 0
+    fi
+
+    label=${MUTATION_RUNNER_PENDING_LABELS[candidate]}
+    group=${MUTATION_RUNNER_PENDING_GROUPS[candidate]}
+    argv_file=$MUTATION_RUNNER_PENDING_DIR/$label.argv
+    mutation_runner_pending_remove "$candidate"
+    if ! mutation_runner_start_check "$label" "$group" "$argv_file"; then
+      rm -f -- "$argv_file"
+      continue
+    fi
+    rm -f -- "$argv_file"
+  done
+  return 0
+}
+
 mutation_runner_reap_one() {
-  local pid label wait_status=0 result_file outcome status extra
+  local pid label wait_status=0 result_file outcome status extra index completed_pid=
   if (( ${#MUTATION_RUNNER_PIDS[@]} == 0 )); then
     mutation_runner_fail '<runner>' 'attempted to wait with no registered worker'
     return 1
   fi
 
-  pid=${MUTATION_RUNNER_PIDS[0]}
-  label=${MUTATION_RUNNER_PID_LABELS[0]}
-  wait "$pid" || wait_status=$?
-  MUTATION_RUNNER_PIDS=("${MUTATION_RUNNER_PIDS[@]:1}")
-  MUTATION_RUNNER_PID_LABELS=("${MUTATION_RUNNER_PID_LABELS[@]:1}")
-  MUTATION_RUNNER_PID_GROUPS=("${MUTATION_RUNNER_PID_GROUPS[@]:1}")
+  if wait -n -p completed_pid "${MUTATION_RUNNER_PIDS[@]}"; then
+    wait_status=0
+  else
+    wait_status=$?
+  fi
+  if [[ ! $completed_pid =~ ^[0-9]+$ ]]; then
+    mutation_runner_fail '<runner>' "wait did not identify a worker (status $wait_status)"
+    return 1
+  fi
+  pid=$completed_pid
+  index=-1
+  for (( index = 0; index < ${#MUTATION_RUNNER_PIDS[@]}; index++ )); do
+    [[ ${MUTATION_RUNNER_PIDS[index]} == "$pid" ]] && break
+  done
+  if (( index >= ${#MUTATION_RUNNER_PIDS[@]} )); then
+    mutation_runner_fail '<runner>' "wait returned unregistered worker $pid"
+    return 1
+  fi
+  label=${MUTATION_RUNNER_PID_LABELS[index]}
+  unset 'MUTATION_RUNNER_PIDS[index]' 'MUTATION_RUNNER_PID_LABELS[index]' 'MUTATION_RUNNER_PID_GROUPS[index]'
+  MUTATION_RUNNER_PIDS=("${MUTATION_RUNNER_PIDS[@]}")
+  MUTATION_RUNNER_PID_LABELS=("${MUTATION_RUNNER_PID_LABELS[@]}")
+  MUTATION_RUNNER_PID_GROUPS=("${MUTATION_RUNNER_PID_GROUPS[@]}")
   MUTATION_RUNNER_REAPED_COUNT=$((MUTATION_RUNNER_REAPED_COUNT + 1))
 
   if (( wait_status != 0 )); then
@@ -317,7 +453,7 @@ mutation_runner_reap_one() {
   if [[ ! -f $result_file ]]; then
     mutation_runner_fail "$label" 'worker ended without writing a result'
     mutation_runner_observe_survivor
-    return 1
+    return 0
   fi
   MUTATION_RUNNER_REPORTED_COUNT=$((MUTATION_RUNNER_REPORTED_COUNT + 1))
 
@@ -384,7 +520,7 @@ mutation_runner_should_stop() {
 }
 
 expect_killed() {
-  local label=${1-} log pid group
+  local label=${1-} group argv_file
   if (( $# < 2 )); then
     mutation_runner_fail "${label:-<missing-label>}" 'check has no command'
     return 0
@@ -422,80 +558,15 @@ expect_killed() {
     return 0
   fi
 
-  if (( MUTATION_RUNNER_COMMAND_EXCLUSIVE )); then
-    while (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); do
-      mutation_runner_reap_one || :
-      mutation_runner_observe_survivor
-      if (( MUTATION_RUNNER_SURVIVOR_OBSERVED )); then
-        mutation_runner_progress
-        return 0
-      fi
-    done
-  else
-    while mutation_runner_exclusive_active; do
-      mutation_runner_reap_one || :
-      mutation_runner_observe_survivor
-      if (( MUTATION_RUNNER_SURVIVOR_OBSERVED )); then
-        mutation_runner_progress
-        return 0
-      fi
-    done
-  fi
-
-  while (( ${#MUTATION_RUNNER_PIDS[@]} >= MUTATION_RUNNER_JOBS )); do
-    mutation_runner_reap_one || :
-    mutation_runner_observe_survivor
-    if (( MUTATION_RUNNER_SURVIVOR_OBSERVED )); then
-      mutation_runner_progress
-      return 0
-    fi
-  done
-
-  while [[ -n $group ]] && mutation_runner_group_active "$group"; do
-    mutation_runner_reap_one || :
-    mutation_runner_observe_survivor
-    if (( MUTATION_RUNNER_SURVIVOR_OBSERVED )); then
-      mutation_runner_progress
-      return 0
-    fi
-  done
-
-  if ! flock -x "$MUTATION_RUNNER_LOCK_FD"; then
-    mutation_runner_fail "$label" 'could not acquire the worker admission lock'
+  argv_file=$MUTATION_RUNNER_PENDING_DIR/$label.argv
+  if ! printf '%s\0' "$@" > "$argv_file"; then
+    mutation_runner_fail "$label" 'could not save pending check command'
     mutation_runner_progress
     return 0
   fi
-  if mutation_runner_should_stop; then
-    mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
-    mutation_runner_progress
-    return 0
-  fi
-  if ! : > "$MUTATION_RUNNER_STARTED/$label"; then
-    mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
-    mutation_runner_fail "$label" 'could not record worker start'
-    mutation_runner_progress
-    return 0
-  fi
-  log=$MUTATION_RUNNER_ROOT/$label.log
-  if ! : > "$log"; then
-    mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
-    mutation_runner_fail "$label" 'could not create per-check log'
-    mutation_runner_progress
-    return 0
-  fi
-  ( mutation_runner_worker "$label" "$log" "$@" ) &
-  pid=$!
-  if [[ ! $pid =~ ^[0-9]+$ ]] || [[ $pid == 0 ]]; then
-    mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
-    mutation_runner_fail "$label" 'worker spawn did not return a usable PID'
-    mutation_runner_progress
-    return 0
-  fi
-  MUTATION_RUNNER_PIDS+=("$pid")
-  MUTATION_RUNNER_PID_LABELS+=("$label")
-  MUTATION_RUNNER_PID_GROUPS+=("$group")
-  MUTATION_RUNNER_STARTED_COUNT=$((MUTATION_RUNNER_STARTED_COUNT + 1))
-  mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
+  MUTATION_RUNNER_PENDING_LABELS+=("$label")
+  MUTATION_RUNNER_PENDING_GROUPS+=("$group")
+  mutation_runner_dispatch_pending || :
   mutation_runner_progress
   return 0
 }
@@ -520,8 +591,29 @@ mutation_runner_finish() {
   local old_nullglob=0
   local -a result_files=()
 
-  while (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); do
-    mutation_runner_reap_one || :
+  while (( ${#MUTATION_RUNNER_PIDS[@]} > 0 || ${#MUTATION_RUNNER_PENDING_LABELS[@]} > 0 )); do
+    mutation_runner_observe_survivor
+    if (( MUTATION_RUNNER_SURVIVOR_OBSERVED )); then
+      if (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); then
+        if ! mutation_runner_reap_one; then break; fi
+        continue
+      fi
+      MUTATION_RUNNER_PENDING_LABELS=()
+      MUTATION_RUNNER_PENDING_GROUPS=()
+      break
+    fi
+
+    mutation_runner_dispatch_pending || :
+    if (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); then
+      if ! mutation_runner_reap_one; then break; fi
+      continue
+    fi
+    if (( ${#MUTATION_RUNNER_PENDING_LABELS[@]} > 0 )); then
+      mutation_runner_fail '<runner>' 'pending checks remain but no worker is available to start them'
+      MUTATION_RUNNER_PENDING_LABELS=()
+      MUTATION_RUNNER_PENDING_GROUPS=()
+      break
+    fi
   done
 
   if shopt -q nullglob; then old_nullglob=1; fi
