@@ -245,6 +245,7 @@ items:
   - {id: B596, title: "release gate should simulate the cmru CHANGES fold as a pre-flight", type: bugfix, component: gate, context_estimate: medium}
   - {id: B597, title: "An armed no-progress wall stop ends the sweep and can repeat on resume", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B598, title: "P-assay-4f final-review follow-ups M1, M3 and L4-L7", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B599, title: "B105 RAM admission counts reclaimable file cache as used", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -16353,3 +16354,16 @@ characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
   checks them from `_LIVENESS_PLUGIN_HOOKS` (`edb509410`).
 - **Nit 8:** `assay/src/assay/liveness.py:1391` corrects the calibration
   comment without changing the calculation (`edb509410`).
+
+## B599 — B105 RAM admission counts reclaimable file cache as used
+
+**Status: OPEN, filed 2026-11-27 (fix after 12.4.0); severity: medium.**
+
+`assay/tools/cgroup-parent.sh` computes the gates slice headroom as
+`memory.max - memory.current`. `memory.current` includes reclaimable file
+cache and reclaimable slab, so an idle-cached slice refuses a self-qualification
+run although the kernel could reclaim the memory. Observed on v1001 at
+2026-11-27T07:31Z: 2066 MB reported against the 2147 MB requirement, with
+about 3.3 GB of the slice usage in file cache and memory PSI full avg60 0.06
+(`rgw-self-qualification-provisional-20261127T073114-v1001`, refused before
+the lane started). The matching run-gate admission defect is RG-332.
