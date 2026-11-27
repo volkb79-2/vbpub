@@ -12,10 +12,12 @@ function fixture(envExtra = {}) {
 	const repo = path.join(temp, "repo");
 	const root = path.join(temp, "state");
 	const wrapper = path.join(temp, "pi-pidns-bash");
+	const prime = path.join(temp, "PRIME-receiver.md");
 	fs.mkdirSync(repo, { mode: 0o700 });
 	fs.writeFileSync(path.join(repo, ".git"), "gitdir: fake\n", { mode: 0o600 });
 	fs.writeFileSync(wrapper, "#!/bin/sh\n", { mode: 0o700 });
 	fs.chmodSync(wrapper, 0o700);
+	fs.writeFileSync(prime, "Role rules marker: preserve the T4 queue and report to main.\n", { mode: 0o600 });
 	const calls = [];
 	const events = new Map();
 	const tools = new Map();
@@ -61,6 +63,7 @@ function fixture(envExtra = {}) {
 		HOME: temp,
 		PI_CTL_NAME: "receiver",
 		PI_CTL_ROOT: root,
+		PI_CTL_PRIME: prime,
 		...envExtra,
 	};
 	const controller = createController(fakePi, {
@@ -78,6 +81,7 @@ function fixture(envExtra = {}) {
 		repo,
 		root,
 		wrapper,
+		prime,
 		env,
 		calls,
 		events,
@@ -324,6 +328,79 @@ test("monitor batches capped lines, stops only its own child, and reports exit o
 	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-monitor" && /expired/.test(message.content));
 	assert.equal(notices.length, 1);
 	assert.match(notices[0].message.content, /Re-arm if still needed/);
+});
+
+test("self-compaction runs only at agent_end and carries the goal, in-flight ids and role rules", (t) => {
+	const f = fixture({ PI_CTL_COMPACT_AT: "1000" });
+	t.after(f.cleanup);
+	let tokens = 2000;
+	let compactOptions;
+	let compactCalls = 0;
+	const ctx = {
+		getContextUsage: () => ({ tokens }),
+		sessionManager: {
+			getEntries: () => [{ type: "message", message: { role: "user", content: "Keep this original goal verbatim.\nSecond line." } }],
+		},
+		compact(options) { compactCalls++; compactOptions = options; },
+	};
+	f.controller.scheduleWakeup(30, "wake-id body is not in the log");
+	f.events.get("turn_end")({}, ctx);
+	assert.equal(compactCalls, 0);
+	f.events.get("agent_end")({}, ctx);
+	assert.equal(compactCalls, 1);
+	assert.match(compactOptions.customInstructions, /Keep this original goal verbatim\.\nSecond line\./);
+	assert.match(compactOptions.customInstructions, /wake-/);
+	assert.match(compactOptions.customInstructions, /T4 queue and report to main/);
+	assert.match(compactOptions.customInstructions, new RegExp(f.prime.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	tokens = 500;
+	compactOptions.onComplete({});
+	assert.equal(f.calls.length, 1);
+	assert.match(f.calls[0].message.content, /scripts\/controller\/resume-read\.sh receiver/);
+	assert.match(f.calls[0].message.content, /continue the original goal/);
+	const log = fs.readFileSync(path.join(f.root, "events", "receiver.jsonl"), "utf8");
+	assert.doesNotMatch(log, /Keep this original goal verbatim/);
+});
+
+test("automatic compaction receives the same readback requirements", (t) => {
+	const f = fixture({ PI_CTL_COMPACT_AT: "1000" });
+	t.after(f.cleanup);
+	const ctx = {
+		getContextUsage: () => ({ tokens: 2000 }),
+		sessionManager: { getEntries: () => [{ type: "message", message: { role: "user", content: "Preserve automatic goal." } }] },
+	};
+	const result = f.events.get("session_before_compact")({ reason: "threshold", customInstructions: "pi original guidance" }, ctx);
+	assert.match(result.customInstructions, /Preserve automatic goal\./);
+	assert.match(result.customInstructions, /pi original guidance/);
+	assert.match(result.customInstructions, /IN-FLIGHT list/);
+});
+
+test("self-compaction backs off after failures and sends one notice to main after three", (t) => {
+	const f = fixture({ PI_CTL_COMPACT_AT: "1000", PI_CTL_COMPACT_BACKOFF_SECONDS: "1" });
+	t.after(f.cleanup);
+	let current = 1_800_000_000_000;
+	f.setTime(current);
+	let compactCalls = 0;
+	let options;
+	const ctx = {
+		getContextUsage: () => ({ tokens: 2000 }),
+		sessionManager: { getEntries: () => [{ type: "message", message: { role: "user", content: "Goal" } }] },
+		compact(value) { compactCalls++; options = value; },
+	};
+	for (let failure = 1; failure <= 3; failure++) {
+		f.events.get("agent_end")({}, ctx);
+		assert.equal(compactCalls, failure);
+		options.onError(new Error("no compaction"));
+		if (failure < 3) {
+			const backoffMs = 1000 * (2 ** (failure - 1));
+			current += backoffMs + 1;
+			f.setTime(current);
+		}
+	}
+	const mainInbox = path.join(f.root, "inbox", "main");
+	assert.equal(fs.readdirSync(mainInbox).length, 1);
+	f.events.get("agent_end")({}, ctx);
+	assert.equal(compactCalls, 3, "third failure disables repeated compaction attempts");
+	assert.equal(fs.readdirSync(mainInbox).length, 1, "main receives one failure alert");
 });
 
 function fakeApiNoop() {

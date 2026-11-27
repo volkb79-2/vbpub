@@ -25,6 +25,10 @@ export const CONFIG_DEFAULTS = Object.freeze({
 	monitorRatePerMinute: 10,
 	monitorMaxQueuedLines: 1000,
 	monitorFlushMs: 1000,
+	compactAt: 150_000,
+	compactPrimeMaxBytes: 8192,
+	compactMaxFailures: 3,
+	compactBackoffMs: 60_000,
 });
 
 const PEER_MESSAGE_HEADER = (sender) =>
@@ -184,6 +188,8 @@ export function createController(pi, injected = {}, overrides = {}) {
 		sendLimit: envInteger(env, "PI_CTL_SEND_LIMIT", CONFIG_DEFAULTS.sendLimit, { min: 1, max: 1000 }),
 		inboundLimit: envInteger(env, "PI_CTL_INBOUND_LIMIT", CONFIG_DEFAULTS.inboundLimit, { min: 1, max: 1000 }),
 		loopWindowMs: envInteger(env, "PI_CTL_LOOP_WINDOW_SECONDS", CONFIG_DEFAULTS.loopWindowMs / 1000, { min: 1, max: 86_400 }) * 1000,
+		compactAt: envInteger(env, "PI_CTL_COMPACT_AT", CONFIG_DEFAULTS.compactAt, { min: 1, max: 2_000_000 }),
+		compactBackoffMs: envInteger(env, "PI_CTL_COMPACT_BACKOFF_SECONDS", CONFIG_DEFAULTS.compactBackoffMs / 1000, { min: 1, max: 3600 }) * 1000,
 		eventLimit: CONFIG_DEFAULTS.eventLimit,
 	};
 	const dirs = {
@@ -197,8 +203,9 @@ export function createController(pi, injected = {}, overrides = {}) {
 		events: path.join(root, "events"),
 		wakeups: path.join(root, "wakeups"),
 		monitors: path.join(root, "monitors"),
+		compaction: path.join(root, "compaction"),
 	};
-	for (const directory of [dirs.root, dirs.inbox, dirs.ownInbox, dirs.processing, dirs.rejected, dirs.locks, dirs.guards, dirs.events, dirs.wakeups, dirs.monitors]) {
+	for (const directory of [dirs.root, dirs.inbox, dirs.ownInbox, dirs.processing, dirs.rejected, dirs.locks, dirs.guards, dirs.events, dirs.wakeups, dirs.monitors, dirs.compaction]) {
 		secureDirectory(fs, path, directory);
 	}
 	const eventFile = path.join(dirs.events, `${name}.jsonl`);
@@ -206,11 +213,14 @@ export function createController(pi, injected = {}, overrides = {}) {
 	const lockFile = path.join(dirs.locks, `${name}.lock`);
 	const wakeupFile = path.join(dirs.wakeups, `${name}.json`);
 	const monitorFile = path.join(dirs.monitors, `${name}.json`);
+	const compactionFile = path.join(dirs.compaction, `${name}.json`);
 	const wrapperPath = overrides.wrapperPath ?? injected.wrapperPath ?? env.PI_CTL_PIDNS_WRAPPER ?? null;
 	let pollTimer = null;
 	let stopped = false;
 	let lockRecord = null;
 	let initialized = false;
+	let compactionAttempt = null;
+	let alertRetryTimer = null;
 	const wakeupTimers = new Map();
 	const monitors = new Map();
 
@@ -764,6 +774,177 @@ export function createController(pi, injected = {}, overrides = {}) {
 		return [...monitors.values()].filter((monitor) => !monitor.processClosed).map(({ id, expiresAt, stopRequested }) => ({ id, expiresAt, stopping: stopRequested }));
 	}
 
+	function readCompactionState() {
+		const value = readJsonFile(fs, compactionFile, { failures: 0, backoffUntil: 0, alertSent: false, alertPending: false });
+		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid compaction state");
+		return {
+			failures: Number.isSafeInteger(value.failures) && value.failures >= 0 ? value.failures : 0,
+			backoffUntil: Number.isSafeInteger(value.backoffUntil) && value.backoffUntil >= 0 ? value.backoffUntil : 0,
+			alertSent: value.alertSent === true,
+			alertPending: value.alertPending === true,
+		};
+	}
+
+	function writeCompactionState(state) {
+		atomicWrite(fs, path, compactionFile, `${JSON.stringify(state)}\n`);
+	}
+
+	function originalGoal(ctx) {
+		let entries = [];
+		try {
+			entries = ctx?.sessionManager?.getEntries?.() ?? [];
+		} catch {
+			return "[Original goal unavailable from the session API.]";
+		}
+		const first = entries.find((entry) => entry?.type === "message" && entry.message?.role === "user");
+		if (!first) return "[No original user goal was available from the session API.]";
+		const content = first.message.content;
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content.map((part) => part?.type === "text" ? part.text : part?.type === "image" ? "[image content in original user message]" : "").join("");
+		}
+		return "[Original goal had a non-text content form.]";
+	}
+
+	function primeRulesExcerpt() {
+		const filename = env.PI_CTL_PRIME;
+		if (typeof filename !== "string" || filename.length === 0) return { path: "(PI_CTL_PRIME is unset)", text: "[No role rules pointer was supplied.]" };
+		let fd;
+		try {
+			fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+			const stat = fs.fstatSync(fd);
+			if (!stat.isFile()) return { path: filename, text: "[Role rules pointer is not a regular file.]" };
+			const limit = CONFIG_DEFAULTS.compactPrimeMaxBytes;
+			const buffer = Buffer.alloc(limit + 1);
+			const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, stat.size), 0);
+			const truncated = stat.size > limit;
+			return {
+				path: filename,
+				text: `${buffer.subarray(0, Math.min(count, limit)).toString("utf8")}${truncated ? `\n[Role rules truncated at ${limit} bytes.]` : ""}`,
+			};
+		} catch {
+			return { path: filename, text: "[Role rules file could not be read.]" };
+		} finally {
+			if (fd !== undefined) fs.closeSync(fd);
+		}
+	}
+
+	function compactionInstructions(ctx, extraInstructions = "") {
+		const prime = primeRulesExcerpt();
+		let wakeIds = [];
+		try {
+			wakeIds = readWakeups().map((entry) => entry.id);
+		} catch {
+			wakeIds = ["[pending wake-up state unavailable; report uncertainty]"];
+		}
+		const monitorIds = listMonitors().map((monitor) => monitor.id);
+		const goal = originalGoal(ctx);
+		return [
+			"Controller self-compaction readback requirements:",
+			"Keep the session's ORIGINAL GOAL verbatim, byte-for-byte in its text, and preserve every identifier in the IN-FLIGHT list. Include running dispatched work, pending wake-ups, active monitors, open decisions and their identifiers; do not invent identifiers. If an item is uncertain, say so explicitly.",
+			"ORIGINAL GOAL (verbatim):",
+			goal,
+			`CURRENT PERSISTED WAKE-UP IDS: ${wakeIds.length ? wakeIds.join(", ") : "none"}`,
+			`CURRENT MONITOR IDS: ${monitorIds.length ? monitorIds.join(", ") : "none"}`,
+			`ROLE RULES POINTER: ${prime.path}`,
+			"ROLE RULES TEXT (bounded excerpt):",
+			prime.text,
+			"After compaction, run scripts/controller/resume-read.sh " + name + " and continue the original goal and in-flight work.",
+			extraInstructions,
+		].filter(Boolean).join("\n\n");
+	}
+
+	function scheduleAlertRetry(delay) {
+		if (alertRetryTimer !== null) return;
+		alertRetryTimer = timers.setTimeout(() => {
+			alertRetryTimer = null;
+			attemptCompactionAlert();
+		}, Math.max(1, delay));
+	}
+
+	function attemptCompactionAlert() {
+		const state = readCompactionState();
+		if (!state.alertPending || state.alertSent) return;
+		try {
+			const result = writePeerMessage("main", `pi controller ${name} has reached ${state.failures} consecutive self-compaction failures. It is backing off; inspect the session before deciding the next step.`);
+			if (result.ok) {
+				state.alertPending = false;
+				state.alertSent = true;
+				writeCompactionState(state);
+				log("compaction_main_notice", { failures: state.failures });
+				return;
+			}
+			const guard = readGuardState();
+			const recent = sendWindow(guard, "main");
+			const nextAllowed = recent.length ? recent[0] + config.loopWindowMs - now() + 1 : config.compactBackoffMs;
+			scheduleAlertRetry(nextAllowed);
+		} catch {
+			log("compaction_main_notice_error", { failures: state.failures });
+			scheduleAlertRetry(config.compactBackoffMs);
+		}
+	}
+
+	function recordCompactionFailure(reason, tokens) {
+		const state = readCompactionState();
+		state.failures++;
+		state.backoffUntil = now() + Math.min(config.compactBackoffMs * (2 ** Math.min(state.failures - 1, 6)), 60 * 60 * 1000);
+		if (state.failures >= CONFIG_DEFAULTS.compactMaxFailures && !state.alertSent) state.alertPending = true;
+		writeCompactionState(state);
+		log("compaction_failed", { failures: state.failures, reason, tokens: tokens ?? null, backoffUntil: state.backoffUntil });
+		if (state.alertPending) attemptCompactionAlert();
+	}
+
+	function recordCompactionSuccess(tokens) {
+		const state = readCompactionState();
+		state.failures = 0;
+		state.backoffUntil = now() + config.compactBackoffMs;
+		writeCompactionState(state);
+		log("compaction_complete", { tokens: tokens ?? null, backoffUntil: state.backoffUntil });
+	}
+
+	function triggerSelfCompaction(ctx) {
+		const tokens = ctx?.getContextUsage?.()?.tokens ?? null;
+		log("agent_end", { tokens });
+		if (tokens === null || tokens < config.compactAt || compactionAttempt) return;
+		const state = readCompactionState();
+		if (now() < state.backoffUntil || state.failures >= CONFIG_DEFAULTS.compactMaxFailures) {
+			if (state.alertPending) attemptCompactionAlert();
+			log("compaction_backoff", { tokens, failures: state.failures, backoffUntil: state.backoffUntil });
+			return;
+		}
+		const attempt = { settled: false };
+		compactionAttempt = attempt;
+		const fail = (reason) => {
+			if (attempt.settled) return;
+			attempt.settled = true;
+			compactionAttempt = null;
+			recordCompactionFailure(reason, ctx?.getContextUsage?.()?.tokens ?? tokens);
+		};
+		attempt.fail = fail;
+		log("compaction_start", { tokens, threshold: config.compactAt });
+		try {
+			ctx.compact({
+				customInstructions: compactionInstructions(ctx),
+				onComplete: () => {
+					if (attempt.settled) return;
+					attempt.settled = true;
+					compactionAttempt = null;
+					const afterTokens = ctx?.getContextUsage?.()?.tokens ?? null;
+					if (afterTokens !== null && afterTokens >= config.compactAt) recordCompactionFailure("context remained above the threshold", afterTokens);
+					else recordCompactionSuccess(afterTokens);
+					try {
+						inject("pi-ctl-resume", `[Resume after compaction] Compaction completed. Run scripts/controller/resume-read.sh ${name}, then continue the original goal and the in-flight work.`);
+					} catch {
+						log("compaction_resume_inject_error", {});
+					}
+				},
+				onError: () => fail("compaction API error"),
+			});
+		} catch {
+			fail("compaction API threw");
+		}
+	}
+
 	function ownProcStartTicks() {
 		return parseProcStartTicks(fs, pid) ?? "unknown";
 	}
@@ -919,6 +1100,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 			recoverMonitors();
 			initialized = true;
 		}
+		if (readCompactionState().alertPending) attemptCompactionAlert();
 		pollInbox();
 		armWakeups();
 		if (pollTimer !== null) timers.clearInterval(pollTimer);
@@ -934,12 +1116,29 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const tokens = ctx?.getContextUsage?.()?.tokens ?? null;
 		log("turn_tokens", { tokens });
 	});
+	pi.on("agent_end", (_event, ctx) => triggerSelfCompaction(ctx));
+	pi.on("session_before_compact", (event, ctx) => {
+		const instructions = compactionAttempt
+			? (event?.customInstructions ?? compactionInstructions(ctx))
+			: compactionInstructions(ctx, event?.customInstructions ?? "");
+		log("compaction_before", { reason: event?.reason ?? "unknown" });
+		return { customInstructions: instructions };
+	});
+	pi.on("session_compact", (event) => {
+		log("compaction_event", { result: "completed", reason: event?.reason ?? "unknown" });
+	});
+	pi.on("session_compact_failed", (event) => {
+		log("compaction_event", { result: "failed", reason: event?.reason ?? "unknown" });
+		if (compactionAttempt) compactionAttempt.fail("session compaction event failed");
+	});
 	pi.on("session_shutdown", () => {
 		stopped = true;
 		if (pollTimer !== null) timers.clearInterval(pollTimer);
 		pollTimer = null;
 		for (const handle of wakeupTimers.values()) timers.clearTimeout(handle);
 		wakeupTimers.clear();
+		if (alertRetryTimer !== null) timers.clearTimeout(alertRetryTimer);
+		alertRetryTimer = null;
 		for (const monitor of monitors.values()) requestMonitorStop(monitor, "session shutdown");
 		releaseLock();
 		log("shutdown", { name });
@@ -967,5 +1166,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		listMonitors,
 		startMonitor,
 		stopMonitor,
+		compactionInstructions,
+		triggerSelfCompaction,
 	};
 }
