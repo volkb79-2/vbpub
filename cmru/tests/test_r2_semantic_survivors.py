@@ -124,21 +124,21 @@ def _install_noisy_git(tmp_path: Path, monkeypatch, script: str) -> None:
     )
 
 
-def test_tag_ancestor_probe_keeps_git_output_out_of_the_callers_terminal(
-    tmp_path, monkeypatch, capfd,
-):
+def test_tag_ancestor_failure_diagnostic_remains_text_for_the_caller(tmp_path, monkeypatch):
     _install_noisy_git(
         tmp_path, monkeypatch,
         "printf 'internal git stdout\\n'\n"
-        "printf 'internal git stderr\\n' >&2\n"
-        "exit 0\n",
+        "printf 'git merge-base diagnostic\\n' >&2\n"
+        "exit 2\n",
     )
 
-    assert version._tag_covers_head(tmp_path, "release-tag") is True
+    with pytest.raises(version.ReleasePlanRefused) as refused:
+        version._tag_covers_head(tmp_path, "release-tag")
 
-    output = capfd.readouterr()
-    assert output.out == ""
-    assert output.err == ""
+    assert str(refused.value) == (
+        "cannot compare HEAD against tag 'release-tag' "
+        "(git merge-base exited 2): git merge-base diagnostic"
+    )
 
 
 def test_tag_relationship_probe_keeps_second_git_result_out_of_the_callers_terminal(
@@ -168,3 +168,34 @@ def test_tag_relationship_probe_keeps_second_git_result_out_of_the_callers_termi
     output = capfd.readouterr()
     assert output.out == ""
     assert output.err == ""
+
+
+def test_tag_relationship_failure_diagnostic_remains_text_for_the_caller(
+    tmp_path, monkeypatch,
+):
+    _install_noisy_git(
+        tmp_path, monkeypatch,
+        "if [ \"$1\" = rev-parse ]; then\n"
+        "  case \"$2\" in\n"
+        "    tag*) printf 'tag-commit\\n' ;;\n"
+        "    HEAD) printf 'head-commit\\n' ;;\n"
+        "    *) exit 2 ;;\n"
+        "  esac\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = merge-base ]; then\n"
+        "  if [ \"$3\" = HEAD ]; then exit 1; fi\n"
+        "  printf 'internal merge-base stdout\\n'\n"
+        "  printf 'second merge-base diagnostic\\n' >&2\n"
+        "  exit 2\n"
+        "fi\n"
+        "exit 2\n",
+    )
+
+    with pytest.raises(version.ReleasePlanRefused) as refused:
+        version._tag_head_relationship(tmp_path, "tag")
+
+    assert str(refused.value) == (
+        "cannot compare tag 'tag' with HEAD "
+        "(git merge-base exited 2): second merge-base diagnostic"
+    )
