@@ -1819,3 +1819,9 @@ B1 counts an entry as closed only from a `Status:` line (or a closed word in the
 **Status:** OPEN (filed 2026-11-24, P-plat-22b-C review r1 F6).
 
 `ctl-hygiene.sh` resolves `state_dir` to the main checkout's `.controller-state` but leaves `repo` at the checkout that holds the script. Run from a lagging worktree such as `.worktrees/controller-tools`, B1 reports stale backlog numbers beside fresh state numbers. Fix: resolve the default `repo` to the main checkout too (`${common%/.git}`), or say in the header that B1 follows the script's checkout.
+
+## CTL-66 — remote-gate admission line prints `slice_oom_kill_delta=-1` for "could not read"
+
+**Status:** OPEN (filed 2026-11-27 by vbpub-core on main's request; CTL-65 is taken by an unmerged platform branch). Do not fix with this entry.
+
+Run rgw-r2-20261127T021120-v1001 (cmru `r2`, shard 1) ended with `admission: weight=2048MiB slots=1/8 slice_oom_kill_delta=-1`. A counter delta cannot be negative. Read from `scripts/controller/remote-gate.sh`: `oomd` starts at `-1` and is replaced only when both readings of the `dev-gates.slice` `oom_kill` counter are non-negative integers; `oom_kill()` prints `-1` when the identity check or the probe fails. So `-1` is most likely the "unreadable" sentinel (not established for this run: the two readings are not logged). It is also indistinguishable from a real difference of -1, which a recreated slice could produce. Wanted: print an explicit `unknown` with the reason (which reading failed), and report a decreased counter by name instead of subtracting.
