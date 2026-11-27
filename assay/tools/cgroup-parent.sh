@@ -125,6 +125,7 @@ new_unit_probe_identity() {
 inspect_owned_unit_probe() {
   local target="$1" facts message absent
   local inspect_status inspected_id inspected_name inspected_owner
+  local stderr_file nul_found
   local format='{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}'
   if facts="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
     --format "$format")"; then
@@ -132,31 +133,29 @@ inspect_owned_unit_probe() {
   else
     inspect_status=$?
     [[ "$inspect_status" == 1 && "$target" == "$unit_probe_name" ]] || return 3
-    # Absence needs Docker's own statement for this exact name. Ask again with
-    # only stderr captured: with --format, a failed inspect also writes an
-    # empty stdout line. The second call must exit 1 and its whole stderr must
-    # be that one statement with at most one line terminator; success, another
-    # status or any extra byte is ambiguous. The final "x" stops $(...) from
-    # stripping newlines, and NUL becomes "?" so that bash cannot drop it.
-    if message="$(
-      set -o pipefail
-      if timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
-        --format "$format" 2>&1 >/dev/null | tr '\0' '?'; then
-        probe_status=0
-      else
-        probe_status=$?
-      fi
-      printf x
-      exit "$probe_status"
-    )"; then
-      return 3
+    # Absence needs Docker's own statement for this exact name. Ask again and
+    # keep only stderr, in a file: with --format, a failed inspect also writes
+    # an empty stdout line. The second call must exit 1 and its whole stderr
+    # must be that one statement with at most one line terminator; success,
+    # another status or any extra byte is ambiguous.
+    stderr_file="$(mktemp)" || return 3
+    if timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
+      --format "$format" >/dev/null 2>"$stderr_file"; then
+      inspect_status=0
     else
       inspect_status=$?
     fi
-    message="${message%x}"
+    # This read keeps every newline. It succeeds only when it stops at a NUL
+    # byte, so success means the file holds more than the plain statement.
+    message=""
+    nul_found=0
+    if IFS= read -r -d '' message <"$stderr_file"; then
+      nul_found=1
+    fi
+    rm -f -- "$stderr_file"
     message="${message%$'\n'}"
     absent="no such object: $target"
-    [[ "$inspect_status" == 1 \
+    [[ "$inspect_status" == 1 && "$nul_found" == 0 \
       && ( "${message,,}" == "${absent,,}" \
         || "${message,,}" == "error: ${absent,,}" ) ]] || return 3
     return 1

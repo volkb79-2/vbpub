@@ -16364,19 +16364,21 @@ proof f94090150 and a6b9f193a at baseline 268725a06; Docker's real
 absent-object answer handled by efa9aae16, red proof 2ee5aa9a4; exact exit-1
 single-statement rule in 6104416d6, red proof c4dc20c85; byte-exact capture
 (round-2 HOLD finding left open by round 3: extra newlines and NUL bytes were
-dropped) in the fix commit after red proof a822202f4; severity: medium.**
+dropped) in aa2a1ab85, red proof a822202f4; Docker's stderr now goes to a file
+with no pipeline between Docker and its exit status (follow-up review HOLD), in
+the commit after red proof 9822c7ead; severity: medium.**
 
 Implementation: `assay/tools/cgroup-parent.sh:125` (verified probe identity and
-definite-absence classification), `:206` (ambiguous failure retains ownership),
-`:230` (bounded memory.stat reader), `:503` (validated reclaimable calculation),
-and `:569` (bounded admission). Behavioral tests:
-`assay/gate/tests/test_cgroup_parent.py:820` (admission), `:840` (single-file
-mount), `:880` (invalid stat fallback), `:920` (mount fallback), `:987`
-(definite absence), `:1035` (other inspect failures), `:1069` (inexact absence
-keeps a created probe), `:1095` (stderr warning), `:1109` (ambiguous inspect and
-EXIT cleanup), `:1134` (owner mismatch), `:1156` (execute generated probe
-script), `:1255` (dirty and writeback), `:1279` (clamp), and `:1300` (continued
-refusal). Documentation and
+definite-absence classification), `:205` (ambiguous failure retains ownership),
+`:229` (bounded memory.stat reader), `:502` (validated reclaimable calculation),
+and `:568` (bounded admission). Behavioral tests:
+`assay/gate/tests/test_cgroup_parent.py:829` (admission), `:849` (single-file
+mount), `:889` (invalid stat fallback), `:929` (mount fallback), `:996`
+(definite absence), `:1044` (other inspect failures), `:1078` (inexact absence
+keeps a created probe), `:1105` (failing text tool), `:1135` (stderr warning),
+`:1149` (ambiguous inspect and EXIT cleanup), `:1174` (owner mismatch), `:1196`
+(execute generated probe script), `:1295` (dirty and writeback), `:1319`
+(clamp), and `:1340` (continued refusal). Documentation and
 changelog: `assay/docs/DESIGN-GUIDE.md:3119` and `assay/CHANGES.md:7`.
 
 Before the fix, `assay/tools/cgroup-parent.sh` computed the gates slice
