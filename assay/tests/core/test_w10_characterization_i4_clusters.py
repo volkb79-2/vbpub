@@ -221,7 +221,7 @@ def test_a_fresh_event_progress_reader_holds_exactly_these_nine_defaults_the_pro
     }
 
 
-def test_reset_restores_the_nine_defaults_the_progress_counters_and_keeps_the_pid():
+def test_reset_restores_file_state_keeps_cumulative_progress_and_keeps_the_pid():
     reader = liveness._EventProgressReader(7)
     reader._offset = 9
     reader._pending = b"x"
@@ -237,12 +237,14 @@ def test_reset_restores_the_nine_defaults_the_progress_counters_and_keeps_the_pi
         "_candidate_pid": 7,
         **_READER_DEFAULTS,
         **_READER_PROGRESS_DEFAULTS,
+        "completed_events": 4,
     }
     reader._reset(Path("/tmp/events"), (1, 2))
     assert vars(reader) == {
         "_candidate_pid": 7,
         **_READER_DEFAULTS,
         **_READER_PROGRESS_DEFAULTS,
+        "completed_events": 4,
         "_path": Path("/tmp/events"),
         "_identity": (1, 2),
     }

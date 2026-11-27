@@ -1608,13 +1608,16 @@ class _EventProgressReader:
 
     Candidate files are unlinked before launch and the pytest plugin appends
     newline-terminated records. Device/inode changes and truncation reset the
-    reader so a replaced file is treated as a new stream.
+    file-local parser state so a replaced file is treated as a new stream.
+    ``completed_events`` remains cumulative across resets so the monitor's
+    progress marker cannot fall behind the new stream.
     """
 
     def __init__(self, candidate_pid: int | None) -> None:
         self._candidate_pid = _valid_pid(candidate_pid)
-        #: (P4/S1) How many records were COMPLETED plugin events
-        #: (:data:`COMPLETED_EVENT_KINDS`) on the candidate's own timeline.
+        #: (P4/S1) Cumulative completed plugin events on the candidate's own
+        #: timeline. It stays monotonic when file-local state resets, so every
+        #: completion in a replacement or truncated stream reaches the monitor.
         self.completed_events = 0
         #: (P4/S2) ``(nodeid, completed_events_at_start, record_index)`` of the
         #: test currently in flight, or ``None``. `record_index` is the
@@ -1639,7 +1642,6 @@ class _EventProgressReader:
         #: The first stamped `session_start` identifies the process whose
         #: pytest hooks own this stream. Before it arrives, use the spawned pid.
         self._owner_pid: int | None = None
-        self.completed_events = 0
         self.in_flight = None
         #: (P4/S2) A file that opened a SECOND test before the first
         #: completed proves more than one test is in flight, so no single
