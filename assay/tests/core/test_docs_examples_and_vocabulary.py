@@ -1469,7 +1469,9 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
     assert "does not become `budget_exceeded`" in design
     assert "candidate starved by host load can still be stopped after four times the bound" in design
     assert "cannot distinguish host starvation from a candidate stall" in design
+    assert "ends the sweep as an unclassified lane timeout" in design
     assert "The fallback can stop a candidate starved by host load when pressure data is never comparable" in config
+    assert "This ends the sweep as an unclassified attempt" in config
     assert "candidate starved by host load after four times the bound" in backlog
 
 

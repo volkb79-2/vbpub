@@ -2638,11 +2638,11 @@ def _refuse_unbounded_without_unit_bounds(
     fallback can stop a candidate starved by host load when pressure data is
     never comparable: readable CPU and no completed event can reach four
     times the bound without distinguishing host starvation from a candidate
-    stall; the attempt remains unclassified. The per-candidate budget is
-    advisory only after the candidate's CPU reads are available. Arming is a
-    RUNTIME fact -- it needs liveness injection and baseline plugin records --
-    and a config file is read before either is known. So this rule keeps
-    refusing `"none"` by name and admitting the omitted / `"auto"` key, but it
+    stall. This ends the sweep as an unclassified attempt. The per-candidate
+    budget is advisory only after the candidate's CPU reads are available.
+    Arming is a RUNTIME fact -- it needs liveness injection and baseline plugin
+    records -- and a config file is read before either is known. So this rule
+    keeps refusing `"none"` by name and admitting the omitted / `"auto"` key, but it
     does not promise a total wall bound for every stalled candidate on an
     armed run. The binding budget still ends runs where the watch is not armed
     or CPU never becomes readable. A candidate that keeps completing events

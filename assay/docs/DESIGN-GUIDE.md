@@ -2127,8 +2127,9 @@ are ineligible. Later unreadable pressure intervals do not restore the wall
 fallback, so sustained pressure can delay or prevent the stop. Candidate CPU
 readability is not required. If pressure data is never comparable, a candidate
 starved by host load can still be stopped after four times the bound when CPU
-is readable but no completed event arrives; the resulting lane timeout is
-unclassified and cannot distinguish host starvation from a candidate stall.
+is readable but no completed event arrives. This ends the sweep as an
+unclassified lane timeout and cannot distinguish host starvation from a
+candidate stall.
 The lane deadline and the CPU/per-test bounds
 still win when they fire first. This is a decision, not an artifact of the
 code path, and it is worth stating plainly because the rest of the
