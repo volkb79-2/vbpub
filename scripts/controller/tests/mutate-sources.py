@@ -81,8 +81,8 @@ mutation_runner_mutant(
 )
 mutation_runner_mutant(
     "mutation-runner-invalid-width.sh",
-    "  if ! mutation_runner_configure_width; then",
-    "  if false; then",
+    "    [[ $value != 0 ]] || return 1",
+    "    : # mutant lets zero reach the effective-width guard",
 )
 mutation_runner_mutant(
     "mutation-runner-survivor-stop.sh",

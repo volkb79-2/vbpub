@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Bounded worker pool for scripts/controller mutation checks.
 #
-# The lane inherits a three-CPU tester-unified limit. Keep the default and
-# explicit width within that bound; a missing memory cap is not a reason to
-# invent a larger worker count.
+# The lane has three CPUs and a 4 GiB memory cap. Each worker also has its own
+# address-space and wall-clock bounds before its test command is started.
 
 MUTATION_RUNNER_MAX_JOBS=3
+MUTATION_RUNNER_CHECK_TIMEOUT_SECONDS=600
+MUTATION_RUNNER_MEMORY_LIMIT_KB=1048576
+
+mutation_runner_width_is_valid() {
+  [[ ${MUTATION_RUNNER_JOBS:-} =~ ^[0-9]+$ ]] \
+    && (( MUTATION_RUNNER_JOBS >= 1 && MUTATION_RUNNER_JOBS <= MUTATION_RUNNER_MAX_JOBS ))
+}
 
 mutation_runner_configure_width() {
   local value detected
@@ -50,6 +56,15 @@ mutation_runner_init() {
       printf 'ERROR: nproc did not return a positive CPU count; set CONTROLLER_MUTATION_JOBS to 1..%s\n' \
         "$MUTATION_RUNNER_MAX_JOBS" >&2
     fi
+    return 2
+  fi
+  if ! mutation_runner_width_is_valid; then
+    printf 'ERROR: effective mutation worker width must be from 1 to %s\n' \
+      "$MUTATION_RUNNER_MAX_JOBS" >&2
+    return 2
+  fi
+  if ! command -v timeout >/dev/null 2>&1; then
+    printf 'ERROR: mutation checks require GNU timeout for the per-check wall limit\n' >&2
     return 2
   fi
 
@@ -203,6 +218,12 @@ mutation_runner_worker() {
     printf 'WORKER ERROR: could not open log for %s\n' "$label" >&2
     return 69
   fi
+  if ! ulimit -v "$MUTATION_RUNNER_MEMORY_LIMIT_KB"; then
+    printf 'WORKER ERROR: could not apply the %s KiB per-check address-space limit for %s\n' \
+      "$MUTATION_RUNNER_MEMORY_LIMIT_KB" "$label" >&"$log_fd"
+    exec {log_fd}>&-
+    return 73
+  fi
 
   # Resolve command startup separately: an executed command's nonzero status,
   # including 126 or 127, keeps the original KILLED meaning.
@@ -210,7 +231,8 @@ mutation_runner_worker() {
     status=127
     outcome=SPAWN_ERROR
     printf 'WORKER ERROR: test command could not be started: %s\n' "$1" >&"$log_fd"
-  elif "$@" >&"$log_fd" 2>&1; then
+  elif timeout --verbose --signal=TERM --kill-after=2s \
+    "$MUTATION_RUNNER_CHECK_TIMEOUT_SECONDS" "$@" >&"$log_fd" 2>&1; then
     status=0
     outcome=SURVIVED
     local worker_lock_fd
@@ -227,7 +249,17 @@ mutation_runner_worker() {
     fi
   else
     status=$?
-    outcome=KILLED
+    if (( status == 124 )) \
+      || { (( status >= 128 )) && grep -Fq 'timeout: sending signal' "$log"; }; then
+      outcome=TIMEOUT
+    elif (( status == 125 )); then
+      outcome=RUNNER_ERROR
+    elif (( status >= 128 )) \
+      || grep -Eiq 'out of memory|cannot allocate|failed to allocate|allocation failed|xmalloc:|memoryerror' "$log"; then
+      outcome=RESOURCE_LIMIT
+    else
+      outcome=KILLED
+    fi
   fi
   exec {log_fd}>&-
 
@@ -245,6 +277,15 @@ mutation_runner_worker() {
     printf 'SURVIVED: %s\n' "$label" >&2
   elif [[ $outcome == SPAWN_ERROR ]]; then
     printf 'WORKER ERROR: test command could not be started for %s (status %s)\n' \
+      "$label" "$status" >&2
+  elif [[ $outcome == TIMEOUT ]]; then
+    printf 'TIMEOUT: %s exceeded %s seconds\n' \
+      "$label" "$MUTATION_RUNNER_CHECK_TIMEOUT_SECONDS" >&2
+  elif [[ $outcome == RESOURCE_LIMIT ]]; then
+    printf 'RESOURCE LIMIT: %s ended with status %s under the per-check memory bound\n' \
+      "$label" "$status" >&2
+  elif [[ $outcome == RUNNER_ERROR ]]; then
+    printf 'WORKER ERROR: timeout utility failed for %s (status %s)\n' \
       "$label" "$status" >&2
   else
     printf 'KILLED: %s\n' "$label"
@@ -306,6 +347,23 @@ mutation_runner_reap_one() {
         mutation_runner_fail "$label" "invalid SPAWN_ERROR result status: ${status:-missing}"
       fi
       ;;
+    TIMEOUT)
+      if [[ $status == 124 || $status == 137 ]]; then
+        mutation_runner_fail "$label" "check exceeded the ${MUTATION_RUNNER_CHECK_TIMEOUT_SECONDS}s wall limit"
+      else
+        mutation_runner_fail "$label" "invalid TIMEOUT result status: ${status:-missing}"
+      fi
+      ;;
+    RESOURCE_LIMIT)
+      if [[ $status =~ ^[0-9]+$ ]] && (( status > 0 )); then
+        mutation_runner_fail "$label" "check hit a per-check resource limit (status $status)"
+      else
+        mutation_runner_fail "$label" "invalid RESOURCE_LIMIT result status: ${status:-missing}"
+      fi
+      ;;
+    RUNNER_ERROR)
+      mutation_runner_fail "$label" "timeout utility failed (status ${status:-missing})"
+      ;;
     *)
       mutation_runner_fail "$label" "invalid worker result: $(<"$result_file")"
       ;;
@@ -335,6 +393,13 @@ expect_killed() {
   mutation_runner_group_for_command "$@"
   group=$MUTATION_RUNNER_COMMAND_GROUP
   MUTATION_RUNNER_REGISTERED_COUNT=$((MUTATION_RUNNER_REGISTERED_COUNT + 1))
+
+  if ! mutation_runner_width_is_valid; then
+    mutation_runner_fail '<runner>' \
+      "effective mutation worker width is outside 1..$MUTATION_RUNNER_MAX_JOBS at dispatch"
+    mutation_runner_progress
+    return 0
+  fi
 
   if [[ ! $label =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
     mutation_runner_fail '<runner>' "invalid check label: $label"
@@ -493,6 +558,10 @@ mutation_runner_finish() {
       fi
     elif [[ $outcome == SPAWN_ERROR && $status == 127 ]]; then
       : # The reap path has already recorded this as a failed command spawn.
+    elif [[ $outcome == TIMEOUT && ( $status == 124 || $status == 137 ) ]] \
+      || [[ $outcome == RESOURCE_LIMIT && $status =~ ^[0-9]+$ ]] \
+      || [[ $outcome == RUNNER_ERROR ]]; then
+      : # The reap path records these as lane failures, never as KILLED.
     elif [[ $outcome != KILLED || ! $status =~ ^[0-9]+$ ]] || (( status == 0 )); then
       mutation_runner_fail "$label" 'worker result did not say the check was killed'
     fi
