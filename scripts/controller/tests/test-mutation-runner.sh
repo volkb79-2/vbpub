@@ -2,7 +2,13 @@
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-mutation-runner-test.XXXXXX")
-cleanup() { rm -rf -- "$ROOT"; }
+SURVIVOR_FIRST_FD=
+SURVIVOR_SECOND_FD=
+cleanup() {
+  if [[ -n $SURVIVOR_FIRST_FD ]]; then printf 'release\n' >&"$SURVIVOR_FIRST_FD" || :; fi
+  if [[ -n $SURVIVOR_SECOND_FD ]]; then printf 'release\n' >&"$SURVIVOR_SECOND_FD" || :; fi
+  rm -rf -- "$ROOT"
+}
 trap cleanup EXIT
 RUNNER=${CONTROLLER_MUTATION_RUNNER_SCRIPT:-$SCRIPT_DIR/mutation-runner.sh}
 # shellcheck source=mutation-runner.sh
@@ -34,20 +40,39 @@ contains "$ROOT/status-127.out" 'KILLED: command-status-127'
 
 export CONTROLLER_MUTATION_JOBS=2
 mutation_runner_init "$ROOT/survivors" || fail 'valid width 2 was refused'
-survivor_marker=$ROOT/after-survivor-ran
+survivor_marker=$ROOT/survivor-second-started
+after_survivor_marker=$ROOT/after-survivor-ran
+survivor_first_fifo=$ROOT/survivor-first.fifo
+survivor_second_fifo=$ROOT/survivor-second.fifo
+mkfifo "$survivor_first_fifo" "$survivor_second_fifo" || fail 'could not create survivor FIFOs'
+exec {SURVIVOR_FIRST_FD}<>"$survivor_first_fifo" || fail 'could not open first survivor FIFO'
+exec {SURVIVOR_SECOND_FD}<>"$survivor_second_fifo" || fail 'could not open second survivor FIFO'
 {
-  expect_killed survivor-first bash -c 'printf "first survivor log\n"; exit 0'
-  expect_killed survivor-second bash -c 'printf "second survivor log\n"; exit 0'
+  # The second survivor creates its start file before releasing the first; it
+  # then waits on its own FIFO until the parent has observed the first result.
+  # shellcheck disable=SC2016
+  expect_killed survivor-first bash -c \
+    'IFS= read -r token < "$1"; [[ $token == release && -f $2 ]] || exit 8; printf "first survivor log\n"; exit 0' \
+    _ "$survivor_first_fifo" "$survivor_marker"
+  # shellcheck disable=SC2016
+  expect_killed survivor-second bash -c \
+    ': > "$1"; printf "release\n" > "$2"; IFS= read -r token < "$3"; [[ $token == release ]] || exit 9; printf "second survivor log\n"; exit 0' \
+    _ "$survivor_marker" "$survivor_first_fifo" "$survivor_second_fifo"
   mutation_runner_reap_one
   # shellcheck disable=SC2016
-  expect_killed after-survivors bash -c 'printf "ran\n" > "$1"; exit 7' _ "$survivor_marker"
+  expect_killed after-survivors bash -c 'printf "ran\n" > "$1"; exit 7' _ "$after_survivor_marker"
+  printf 'release\n' >&"$SURVIVOR_SECOND_FD"
   if mutation_runner_finish; then survivor_rc=0; else survivor_rc=$?; fi
 } > "$ROOT/survivors.out" 2>&1
+exec {SURVIVOR_FIRST_FD}>&-
+exec {SURVIVOR_SECOND_FD}>&-
+SURVIVOR_FIRST_FD=
+SURVIVOR_SECOND_FD=
 [[ $survivor_rc != 0 ]] || fail 'survivors were accepted'
 contains "$ROOT/survivors.out" 'SURVIVED: survivor-first'
 contains "$ROOT/survivors.out" 'SURVIVED: survivor-second'
 not_contains "$ROOT/survivors.out" 'KILLED: after-survivors'
-[[ ! -e $survivor_marker ]] || fail 'a new check started after the first observed survivor'
+[[ ! -e $after_survivor_marker ]] || fail 'a new check started after the first observed survivor'
 contains "$ROOT/survivors.out" 'SUMMARY: FAIL checks=3 reported=2 killed=0 elapsed_seconds='
 
 export CONTROLLER_MUTATION_JOBS=1
