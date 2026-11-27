@@ -510,8 +510,20 @@ def validate_request(
 
     stores = _object(request["stores"], "stores", {"collect", "seed"})
     if stores["collect"] is not None:
-        collect = validate_relative_path(stores["collect"], "stores.collect")
-        _inside(checkout_root, collect, "stores.collect")
+        raw_collect = stores["collect"]
+        collect_paths = raw_collect if isinstance(raw_collect, list) else [raw_collect]
+        if not collect_paths or len(set(item for item in collect_paths if isinstance(item, str))) != len(collect_paths):
+            _refuse("stores.collect must contain unique relative paths")
+        for index, value in enumerate(collect_paths):
+            where = "stores.collect" if not isinstance(raw_collect, list) else f"stores.collect[{index}]"
+            collect = validate_relative_path(value, where)
+            _inside(checkout_root, collect, where)
+        normalized_collect = [value for value in collect_paths if isinstance(value, str)]
+        if any(
+            left != right and right.startswith(left + "/")
+            for left in normalized_collect for right in normalized_collect
+        ):
+            _refuse("stores.collect paths may not overlap")
     if stores["seed"] is not None:
         seed = _file_descriptor(stores["seed"], "stores.seed")
         _inside(checkout_root, str(seed["path"]), "stores.seed.path")

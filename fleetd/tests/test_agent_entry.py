@@ -171,11 +171,12 @@ def test_service_wires_executor_and_reads_guard_presence_from_host_facts(tmp_pat
             self.guard_presence = guard_presence
 
     class Service:
-        def __init__(self, state_dir, loaded_policy, facts_provider, *, agent_version):
+        def __init__(self, state_dir, loaded_policy, facts_provider, *, agent_version, executor):
             self.state_dir = state_dir
             self.policy = loaded_policy
             self.facts_provider = facts_provider
             self.agent_version = agent_version
+            self.executor = executor
 
     monkeypatch.setattr(agent_entry, "load_agent_policy", lambda _path: policy)
     monkeypatch.setattr(agent_entry, "HostJobExecutor", Executor)
@@ -191,6 +192,28 @@ def test_service_wires_executor_and_reads_guard_presence_from_host_facts(tmp_pat
     assert isinstance(service.executor, Executor)
     assert service.executor.policy_path == tmp_path / "agent.toml"
     assert service.executor.guard_presence() is False
+
+
+def test_service_guard_presence_stays_unknown_when_host_facts_fail(tmp_path, monkeypatch):
+    policy = object()
+
+    class Executor:
+        def __init__(self, *_args, guard_presence, **_kwargs):
+            self.guard_presence = guard_presence
+
+    class Service:
+        def __init__(self, *_args, executor, **_kwargs):
+            self.executor = executor
+
+    monkeypatch.setattr(agent_entry, "load_agent_policy", lambda _path: policy)
+    monkeypatch.setattr(agent_entry, "HostJobExecutor", Executor)
+    monkeypatch.setattr(agent_entry, "AgentVerbService", Service)
+    monkeypatch.setattr(agent_entry, "installed_agent_version", lambda: "1.2.3")
+    monkeypatch.setattr(agent_entry, "collect_host_facts", lambda: (_ for _ in ()).throw(OSError("facts unavailable")))
+
+    service, _loaded = agent_entry._service(tmp_path / "agent.toml", tmp_path / "state")
+
+    assert service.executor.guard_presence() is None
 
 
 def test_main_serves_path_and_inherited_listeners_and_closes_both(tmp_path, monkeypatch):

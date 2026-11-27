@@ -2347,6 +2347,57 @@ def test_progress_reads_executor_checkout_through_root_owned_pointer(tmp_path):
         service.handle({"verb": "progress", "job_id": job_id, "offset": 0}, identity)
 
 
+def test_executor_checkout_pointer_limits_and_missing_target_paths(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    job_id = "controller-run-1"
+    job_dir = _job(service, identity, {"repo": "vbpub", "project": ".", "lane": "r0-r1"})
+    job_fd = os.open(job_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        (job_dir / "checkout.json").write_bytes(b"x" * 4097)
+        with pytest.raises(AdmissionError, match="checkout pointer is too large"):
+            service._open_job_checkout(job_fd, job_id, {"repo": "vbpub"})
+
+        (job_dir / "checkout.json").write_bytes(b"\xff")
+        with pytest.raises(AdmissionError, match="checkout pointer is unreadable"):
+            service._open_job_checkout(job_fd, job_id, {"repo": "vbpub"})
+
+        relative = f".fleetd-worktrees/{job_id}"
+        (job_dir / "checkout.json").write_text(json.dumps({
+            "schema": "fleet-host-checkout/1", "repo": "vbpub", "relative": relative,
+        }), encoding="utf-8")
+        with pytest.raises(FileNotFoundError):
+            service._open_job_checkout(job_fd, job_id, {"repo": "vbpub"})
+
+        original_roots = service.policy.repo_roots
+        original_roots["vbpub"] = Path("/")
+        with pytest.raises(AdmissionError, match="configured repo root.*unsafe"):
+            service._open_job_checkout(job_fd, job_id, {"repo": "vbpub"})
+        original_roots["vbpub"] = _checkout
+    finally:
+        os.close(job_fd)
+
+
+def test_executor_checkout_pointer_closes_root_fd_when_repo_path_is_a_symlink(tmp_path):
+    service, identity, checkout = _service(tmp_path)
+    job_id = "controller-run-1"
+    job_dir = _job(service, identity, {"repo": "vbpub", "project": ".", "lane": "r0-r1"})
+    job_fd = os.open(job_dir, os.O_RDONLY | os.O_DIRECTORY)
+    link = tmp_path / "repo-link"
+    link.symlink_to(checkout, target_is_directory=True)
+    original_root = service.policy.repo_roots["vbpub"]
+    service.policy.repo_roots["vbpub"] = link
+    (job_dir / "checkout.json").write_text(json.dumps({
+        "schema": "fleet-host-checkout/1", "repo": "vbpub",
+        "relative": f".fleetd-worktrees/{job_id}",
+    }), encoding="utf-8")
+    try:
+        with pytest.raises((AdmissionError, OSError)):
+            service._open_job_checkout(job_fd, job_id, {"repo": "vbpub"})
+    finally:
+        service.policy.repo_roots["vbpub"] = original_root
+        os.close(job_fd)
+
+
 def test_progress_caps_each_range_and_reports_the_next_offset(tmp_path):
     service, identity, _checkout = _service(tmp_path)
     job_dir = _job(service, identity)

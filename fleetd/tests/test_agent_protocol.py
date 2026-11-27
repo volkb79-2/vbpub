@@ -903,3 +903,23 @@ def test_validate_request_checks_successful_seed_environment_and_candidate_allow
     request["extra_argv"] = ["--only-candidates", candidate_path]
     with pytest.raises(AdmissionError, match="extra_argv is not on the host allow-list"):
         validate_request(request, identity, policy, created_candidate_paths=frozenset({candidate_path}))
+
+
+def test_validate_request_refuses_overlapping_store_paths(tmp_path):
+    policy, _checkout = _policy(tmp_path)
+    identity = policy.resolve_peer(1000, 100)
+    request = _submit()
+    request["stores"] = {"collect": ["scripts", "scripts/netcup"], "seed": None}
+
+    with pytest.raises(AdmissionError, match="stores.collect paths may not overlap"):
+        validate_request(request, identity, policy)
+
+
+def test_validate_request_refuses_duplicate_store_paths(tmp_path):
+    policy, _checkout = _policy(tmp_path)
+    identity = policy.resolve_peer(1000, 100)
+    request = _submit()
+    request["stores"] = {"collect": ["scripts", "scripts"], "seed": None}
+
+    with pytest.raises(AdmissionError, match="stores.collect must contain unique relative paths"):
+        validate_request(request, identity, policy)
