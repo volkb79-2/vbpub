@@ -72,6 +72,12 @@ no separate version number, so entries are grouped by the work that landed.
   one hand mutant per new refusal. `tests/test-pi-review.sh` asserts the review
   launch is in review mode and records its mode.
 
+### Local gate admission on the 60 s window (CTL-57, operator 2026-11-27)
+- `gate-run.sh` now waits while memory PSI `full` **avg60 >= 10** (was avg10 >= 3); avg10 spikes are ignored. The wait,
+  bound, exit 75 and unreadable-file rules are unchanged. `dev` host-admission/1 (`full` avg10 >= 3) and
+  `scripts/netcup/runner/remote-gate.py` (memory `some` / io `full` avg10 > 25) are unchanged and differ; unifying them
+  is open. Tests: `tests/test-gate-slots.sh`; one new hand mutant (`psi-window`).
+
 ### Resume and keep-alive pane guards (P-plat-22c)
 - `resume-lib.sh` owns the pane view and shared markers used by both resume helpers and `ctl-keepalive.sh`. `pane_view`
   trims rows below the mode line only for the unfocused agents-panel hint, so panel rows cannot hide busy markers or
