@@ -1476,6 +1476,76 @@ class HostJobWorker:
             os.close(fd)
             raise
 
+    def _save_post_start_retry(self, reason: str) -> None:
+        """Keep a post-start failure visible without transferring ownership."""
+
+        try:
+            self._save_state(
+                state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                reason=f"post-start retry required: {reason}", retry_required=True,
+            )
+        except Exception:
+            # A later retry may succeed; the worker and admission lock remain
+            # the live owner while this record is unavailable.
+            pass
+
+    def _finalize_lane_with_retry(self, status: int) -> int:
+        """Retry unexpected finalization failures while retaining the charge."""
+
+        while True:
+            try:
+                return self._finalize_lane(status)
+            except Exception as exc:
+                self._save_post_start_retry(f"finalization deferred: {exc}")
+                self.waiter(1)
+
+    def _resume_lane_after_worker_error(self, reason: str) -> int:
+        """Recover the worker-owned lane wait after an unexpected exception."""
+
+        self.lane_error = self.lane_error or f"worker-post-start-error: {reason}"
+        self._save_post_start_retry(reason)
+        while True:
+            try:
+                state = self._state()
+            except Exception as exc:
+                self._save_post_start_retry(f"cannot read lane state: {exc}")
+                self.waiter(1)
+                continue
+            status = state.get("lane_process_status")
+            if type(status) is int:
+                return self._finalize_lane_with_retry(status)
+            process = self.runner_process
+            if process is None:
+                # Start was marked as possibly live before Popen returned. With
+                # no owned process handle there is no safe stop or release.
+                self.waiter(1)
+                continue
+            try:
+                status = process.poll()
+            except Exception as exc:
+                self._save_post_start_retry(f"lane status query deferred: {exc}")
+                self.waiter(1)
+                continue
+            if status is not None:
+                self.runner_process = None
+                self._record_lane_exit(status)
+                return self._finalize_lane_with_retry(status)
+            try:
+                self._follow_lane_events(final=False)
+            except Exception as exc:
+                self._save_post_start_retry(f"lane event query deferred: {exc}")
+            try:
+                state = self._state()
+            except Exception as exc:
+                self._save_post_start_retry(f"cannot read cancel state: {exc}")
+                state = {}
+            if state.get("cancel_requested") is True or self.lane_error is not None:
+                try:
+                    self._request_worker_stop(process)
+                except Exception as exc:
+                    self._save_post_start_retry(f"lane stop request deferred: {exc}")
+            self.waiter(1)
+
     def _seed_stores(self) -> None:
         stores = self.request.get("stores")
         seed = stores.get("seed") if isinstance(stores, Mapping) else None
@@ -3205,7 +3275,7 @@ class HostJobWorker:
             memory_lock_fd = self._memory_admission()
             self.memory_lock_fd = memory_lock_fd if memory_lock_fd is not None else -1
             status = self._run_lane(binary, mode, facts, memory_lock_fd)
-            return self._finalize_lane(status)
+            return self._finalize_lane_with_retry(status)
         except AdmissionError as exc:
             try:
                 current = self._state()
@@ -3214,19 +3284,13 @@ class HostJobWorker:
             if current.get("lane_process_status") is None and (
                 current.get("lane_pid") is not None or current.get("lane_may_be_live") is True
             ):
-                self._log(f"executor cleanup deferred exit={exc.exit_code}: {exc.reason}")
-                self._save_state(
-                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN, reason=exc.reason,
-                    retry_required=True,
-                )
-                return int(ExitCode.QUEUED_WITHDRAWN)
+                return self._resume_lane_after_worker_error(exc.reason)
             if current.get("lane_process_status") is not None:
-                self._log(f"executor cleanup deferred exit={exc.exit_code}: {exc.reason}")
-                self._save_state(
-                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN, reason=exc.reason,
-                    retry_required=True,
-                )
-                return int(ExitCode.QUEUED_WITHDRAWN)
+                status = current.get("lane_process_status")
+                if type(status) is int:
+                    self._save_post_start_retry(exc.reason)
+                    return self._finalize_lane_with_retry(status)
+                return self._resume_lane_after_worker_error(exc.reason)
             self._log(f"executor stopped exit={exc.exit_code}: {exc.reason}")
             return self._finish_unstarted(int(exc.exit_code), exc.reason)
         except Exception as exc:
@@ -3240,11 +3304,11 @@ class HostJobWorker:
                 or current.get("lane_process_status") is not None
                 or current.get("lane_may_be_live") is True
             ):
-                self._save_state(
-                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
-                    reason=f"finalization deferred: {exc}", retry_required=True,
-                )
-                return int(ExitCode.QUEUED_WITHDRAWN)
+                status = current.get("lane_process_status")
+                self._save_post_start_retry(str(exc))
+                if type(status) is int:
+                    return self._finalize_lane_with_retry(status)
+                return self._resume_lane_after_worker_error(str(exc))
             return self._finish_unstarted(int(ExitCode.RUNNER_FAILURE), str(exc))
         finally:
             if self.memory_lock_fd >= 0:

@@ -3815,6 +3815,9 @@ def test_worker_cancel_deregisters_guard_before_term_and_handles_deregister_erro
 
 
 def test_worker_keeps_charge_if_lane_start_outcome_is_uncertain(tmp_path):
+    class StopRetry(BaseException):
+        pass
+
     worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
     request = worker.request
     request["sha"] = SHA
@@ -3828,6 +3831,11 @@ def test_worker_keeps_charge_if_lane_start_outcome_is_uncertain(tmp_path):
     worker._seed_stores = lambda: None
     worker._memory_admission = lambda: None
     finalized = []
+    waits = []
+
+    def interrupt_retry(seconds):
+        waits.append(seconds)
+        raise StopRetry("test ended a pending worker retry")
 
     def start_attempt(_binary, _mode, _facts, _memory_lock_fd):
         worker._save_state(state="lane-starting", lane_may_be_live=True, lane_start_attempted=True)
@@ -3835,13 +3843,47 @@ def test_worker_keeps_charge_if_lane_start_outcome_is_uncertain(tmp_path):
 
     worker._run_lane = start_attempt
     worker._finish_unstarted = lambda *_args: finalized.append("unstarted")
-    code = worker.run()
+    worker.waiter = interrupt_retry
+    with pytest.raises(StopRetry, match="test ended a pending worker retry"):
+        worker.run()
     state = worker._state()
-    assert code == int(75)
+    assert waits == [1]
     assert state["state"] == "stopping" and state["lane_may_be_live"] is True
     assert "start outcome not confirmed" in state["reason"]
     assert finalized == []
     assert not (job_dir / "result.json").exists()
+
+
+def test_worker_retries_transient_finalization_failure_after_lane_exit(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["sha"] = SHA
+    worker._read_request = lambda: None
+    worker._await_scope_confirmation = lambda: True
+    worker._create_checkout = lambda: None
+    worker._prerequisites = lambda: ("/usr/bin/run-gate", "25.0.1", {
+        "lane": {}, "environment": {"mode": "host"}, "runner_name": None,
+    })
+    worker._wait_for_psi = lambda: None
+    worker._seed_stores = lambda: None
+    worker._memory_admission = lambda: None
+    worker._run_lane = lambda *_args: (worker._save_state(
+        state="collecting", lane_process_status=0, lane_may_be_live=False,
+    ) and 0)
+    attempts = []
+
+    def finalize_once_then_succeed(status):
+        attempts.append(status)
+        if len(attempts) == 1:
+            raise OSError("temporary result-store failure")
+        return status
+
+    worker._finalize_lane = finalize_once_then_succeed
+    waits = []
+    worker.waiter = lambda seconds: waits.append(seconds)
+
+    assert worker.run() == 0
+    assert attempts == [0, 0]
+    assert waits == [1]
 
 
 def test_worker_run_routes_pre_lane_refusal_to_terminal_completion(tmp_path):
